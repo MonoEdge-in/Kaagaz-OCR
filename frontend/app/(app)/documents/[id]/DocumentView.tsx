@@ -17,7 +17,7 @@
 // least 1024 px wide and 36rem tall the page column sticks, as tall as <main>, with
 // the page fitted to its width (DD5, STICKY_VIEWER_QUERY), and a handle between the
 // columns resizes them (by drag past 5px, or the arrow keys). Values found shows about
-// six values, then "Show all N" (never hiding a Needs review value); its third column
+// six values, then "Show all N" (never hiding a Ready to verify value); its third column
 // is the label with its reason under it. Under the page: "Highlighted: <field>".
 // While it is checked or read, on load too, its summary is asked for again
 // (lib/poll.ts); once it settles, the whole detail is asked for once, and the screen
@@ -368,7 +368,7 @@ export function DocumentView({
   const position = versionPosition(detail);
   const note = versionNote(detail);
   const readingNote = valuesNote(detail.status, detail.values.length);
-  // About six values, then "Show all N"; a Needs review value and the one highlighted always show.
+  // About six values, then "Show all N"; a Ready to verify value and the one highlighted always show.
   const shownValues =
     allValues || detail.values.length <= FIRST_VALUES
       ? detail.values
@@ -460,7 +460,7 @@ export function DocumentView({
                       />
                     </td>
                     <td role="cell" className={styles.labelCell}>
-                      <LabelBadge label={value.label} />
+                      <LabelBadge label={value.label} confidence={value.confidence ?? null} />
                       <div className={styles.reason}>
                         {reasonText(value.label_reason)}
                         {value.votes && <div className={styles.pageNote}>{voteText(value.votes)}</div>}

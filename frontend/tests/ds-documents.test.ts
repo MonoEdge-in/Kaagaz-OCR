@@ -115,14 +115,15 @@ describe("the MonoEdge design system on the documents screens", () => {
     expect(read("components/documents/Documents.module.css")).toContain("No overflow wrapper (the MonoEdge rule for tables)");
   });
 
-  it("tells Verified and Needs review apart by icon and word, not colour alone", () => {
+  // Changed on purpose (Tushar, 16 Oct 2026: Ready to verify).
+  it("tells Verified and Ready to verify apart by icon and word, not colour alone", () => {
     const verified = renderToStaticMarkup(createElement(LabelBadge, { label: "verified" }));
     const review = renderToStaticMarkup(createElement(LabelBadge, { label: "needs_review" }));
     expect(verified).toContain("Verified");
-    expect(review).toContain("Needs review");
+    expect(review).toContain("Ready to verify");
     expect(verified).toContain("<svg");
     expect(review).toContain("<svg");
-    expect(verified).not.toEqual(review.replace("Needs review", "Verified"));
+    expect(verified).not.toEqual(review.replace("Ready to verify", "Verified"));
   });
 
   it("keeps a button's width while it works: both labels stay laid out, one hidden", () => {

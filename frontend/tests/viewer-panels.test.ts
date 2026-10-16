@@ -171,7 +171,7 @@ describe("checkChip", () => {
       check_reasons: ["lines_sum_mismatch", "bad_gstin"],
     });
     expect(chip).toEqual({
-      text: "Needs review",
+      text: "Ready to verify", // Changed on purpose (Tushar, 16 Oct 2026: Ready to verify)
       label: "needs_review",
       reasons: ["Line items don't add up to the subtotal", "A GSTIN isn't valid"],
     });
@@ -179,15 +179,15 @@ describe("checkChip", () => {
 
   it("never says passed when no check could run, and says why", () => {
     expect(checkChip({ check_status: "not_checked", check_reasons: [] })).toEqual({
-      text: "Needs review",
+      text: "Ready to verify", // Changed on purpose (Tushar, 16 Oct 2026: Ready to verify)
       label: "needs_review",
-      reasons: ["The amounts couldn't be checked"],
+      reasons: ["The amounts are not checked yet"],
     });
   });
 
-  it("still says needs review when a failed check gives no reason", () => {
+  it("still says ready to verify when a failed check gives no reason", () => {
     expect(checkChip({ check_status: "failed", check_reasons: [] })).toEqual({
-      text: "Needs review",
+      text: "Ready to verify", // Changed on purpose (Tushar, 16 Oct 2026: Ready to verify)
       label: "needs_review",
       reasons: [],
     });

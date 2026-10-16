@@ -27,13 +27,17 @@ import type { DocumentSummary, Message, ReviewItem, ReviewList } from "@/lib/typ
 const read = (path: string) => readFileSync(join(__dirname, "..", path), "utf8");
 
 describe("Review (R2 to R6)", () => {
-  it("R2: says why a value needs review instead of repeating Needs review", () => {
+  // Changed on purpose (Tushar, 16 Oct 2026: Ready to verify): the words, and the badge is a Tip
+  // with the value's confidence.
+  it("R2: says why a value is ready to verify instead of repeating Ready to verify", () => {
     expect(reasonTag("readers_disagree")).toBe("Readers disagree");
     expect(reasonTag("low_confidence")).toBe("Low confidence");
-    expect(reasonTag("direct_cell")).toBe("Needs review"); // a reason with no short words
+    expect(reasonTag("direct_cell")).toBe("Ready to verify"); // a reason with no short words
     const card = read("components/review/ReviewCard.tsx");
     expect(card).not.toContain("<LabelBadge");
-    expect(card).toMatch(/className="badge badge-review">\s*<Icon name="eye-alert"[^>]*\/>\s*<span className="visually-hidden">Needs review: <\/span>\s*\{reasonTag\(value\.label_reason\)\}/);
+    expect(card).toMatch(
+      /<Tip className="badge badge-review" text=\{confidenceTip\(value\.confidence \?\? null\)\}>\s*<Icon name="eye-alert"[^>]*\/>\s*<span className="visually-hidden">Ready to verify: <\/span>\s*\{reasonTag\(value\.label_reason\)\}/,
+    );
   });
 
   it("R3: maps the keys 1, 2, E, S and Enter, never while typing or with a modifier", () => {

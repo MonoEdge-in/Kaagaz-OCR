@@ -1,7 +1,7 @@
 "use client";
 
 // The headline numbers for this customer (UI audit AD4, 16 Oct 2026): four large
-// ones (Total documents, Ready, Needs review, Failed), then small lists in plain
+// ones (Total documents, Ready, Ready to verify, Failed), then small lists in plain
 // words: the pipeline, questions and how they were answered, the pages read this
 // month by how they were read (PRD 2, R6), and what is kept. A row that is 0 is
 // left out; a list with nothing says so. Which reader or model read them is the
@@ -9,6 +9,7 @@
 
 import { useEffect, useState } from "react";
 import { Icon } from "@/components/ui/Icon";
+import { Tip } from "@/components/ui/Tip";
 import { ApiError, getStats } from "@/lib/api";
 import type { Stats } from "@/lib/types";
 import { breakdowns, kpiTiles } from "./logic";
@@ -81,7 +82,7 @@ export function NumbersPanel() {
           <dl className={styles.tiles}>
             {kpiTiles(stats).map((tile) => (
               <div key={tile.label} className={`${styles.tile} ${styles.kpi}`}>
-                <dt className={styles.tileLabel}>{tile.label}</dt>
+                <dt className={styles.tileLabel}>{tile.tip ? <Tip text={tile.tip}>{tile.label}</Tip> : tile.label}</dt>
                 <dd className={`${styles.tileValue} tabular`}>{tile.value}</dd>
                 {tile.note && <dd className={styles.tileNote}>{tile.note}</dd>}
               </div>

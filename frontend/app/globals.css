@@ -998,9 +998,9 @@ td.num {
   font-variant-numeric: tabular-nums;
 }
 
-/* --- Labels: Verified and Needs review --------------------------------------
+/* --- Labels: Verified and Ready to verify -----------------------------------
    Square, never pills. The two differ by icon, word and edge style, never by
-   colour or shape alone: Verified has a solid edge, Needs review a dashed one.
+   colour or shape alone: Verified has a solid edge, Ready to verify a dashed one.
    Document status uses .status-chip, never these. */
 
 .badge {
@@ -1035,6 +1035,31 @@ td.num {
   background: var(--review-bg);
   color: var(--review-fg);
   border: 1px dashed var(--review-solid);
+}
+
+/* A tooltip (components/ui/Tip.tsx): fixed, placed by script inside the screen. */
+.tip {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: var(--z-tooltip);
+  width: max-content;
+  max-width: min(20rem, calc(100vw - 16px));
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 2px;
+  background: var(--surface);
+  color: var(--fg);
+  font-size: var(--fs-sm);
+  font-weight: 400;
+  line-height: 1.4;
+  text-transform: none;
+  letter-spacing: normal;
+  white-space: normal;
+}
+
+.tip[hidden] {
+  display: none;
 }
 
 /* Document status: square, outlined, a square dot, ink or neutral colours. */

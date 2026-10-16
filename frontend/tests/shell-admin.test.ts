@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   TABS,
+  TO_VERIFY_TIP,
   adminGate,
   allowForeverQuestion,
   breakdowns,
@@ -285,11 +286,12 @@ describe("kpiTiles and breakdowns", () => {
     pages_this_month: { cells: 0, text_layer: 1200, ocr: 3, blank: 0 },
   };
 
-  it("shows Total documents, Ready, Needs review and Failed, with Indian digit grouping", () => {
+  // Changed on purpose (Tushar, 16 Oct 2026: Ready to verify), with a tooltip on its label.
+  it("shows Total documents, Ready, Ready to verify and Failed, with Indian digit grouping", () => {
     expect(kpiTiles(stats)).toEqual([
       { label: "Total documents", value: "1,20,002" },
       { label: "Ready", value: "1,20,000" },
-      { label: "Needs review", value: "3", note: "Values to check in Review" },
+      { label: "Ready to verify", value: "3", note: "Values to verify in Review", tip: TO_VERIFY_TIP },
       { label: "Failed", value: "2" },
     ]);
   });
@@ -302,7 +304,7 @@ describe("kpiTiles and breakdowns", () => {
       "Answered",
       "Not found in the documents",
       "Answers labelled Verified",
-      "Answers labelled Needs review",
+      "Answers labelled Ready to verify", // Changed on purpose (Tushar, 16 Oct 2026: Ready to verify)
       "Thumbs up",
     ]);
     // Plain words, no "OCR" (UI quality council, 15 Oct 2026).

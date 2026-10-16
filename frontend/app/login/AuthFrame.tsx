@@ -80,7 +80,7 @@ export function AuthFrame({
             </li>
             <li>
               <Icon name="check-seal" />
-              Every value is Verified or Needs review.
+              Every value is Verified or Ready to verify.
             </li>
             <li>
               <Icon name="search-off" />

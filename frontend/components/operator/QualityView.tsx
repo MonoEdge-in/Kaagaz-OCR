@@ -170,7 +170,7 @@ function Answers({ row }: { row: QualityRow }) {
           parts={[
             { label: "Answered", value: answered },
             { label: "Not found", value: notFound },
-            { label: "Needs a check", value: unchecked },
+            { label: "Ready to verify", value: unchecked },
           ]}
         />
       )}
@@ -202,7 +202,7 @@ function Review({ row }: { row: QualityRow }) {
       <h3 className={admin.tilesHeading}>Review</h3>
       <Facts
         items={[
-          { label: "Needs review when read", value: rateText(row.values_needs_review, row.values_total), note: of(row.values_total, "values") },
+          { label: "Ready to verify when read", value: rateText(row.values_needs_review, row.values_total), note: of(row.values_total, "values") },
           { label: "Fixes made in review", value: formatNumber(corrections) },
           { label: "Fixed with the first suggestion", value: rateText(first, corrections), note: of(corrections, "fixes") },
           { label: "Fixed with the second suggestion", value: rateText(second, corrections), note: of(corrections, "fixes") },
@@ -213,7 +213,7 @@ function Review({ row }: { row: QualityRow }) {
   );
 }
 
-const ORG_COLUMNS = ["Organisation", "Runs", "Failed, platform", "Ready without a card", "On the backup", "Answers", "Not found", "Needs review"];
+const ORG_COLUMNS = ["Organisation", "Runs", "Failed, platform", "Ready without a card", "On the backup", "Answers", "Not found", "Ready to verify"];
 
 function PerOrg({ data }: { data: QualityData }) {
   const cap = useRowCap();

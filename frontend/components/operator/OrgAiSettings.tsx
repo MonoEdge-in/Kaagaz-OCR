@@ -471,8 +471,8 @@ export function AiFields(props: {
                 <span>Ensemble: models work together</span>
               </label>
               <span id="ai-ensemble-hint" className="hint">
-                Up to {maxAgents} models. Scanning: the main model reads each page; every value that needs review is
-                read by the others too, and the value most of them read is kept, or it stays Needs review. Answering:
+                Up to {maxAgents} models. Scanning: the main model reads each page; every value that is ready to verify is
+                read by the others too, and the value most of them read is kept, or it stays Ready to verify. Answering:
                 people may ask more than one model. Never a platform default.
               </span>
             </div>

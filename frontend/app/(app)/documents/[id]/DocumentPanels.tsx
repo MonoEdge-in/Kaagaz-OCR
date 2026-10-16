@@ -4,7 +4,7 @@
 // documents and the invoice; and first, the Attention panel (PRD 5 U5): every
 // reading problem in the document, by page, each page a jump link, with the
 // shown page's marks as a list of the same buttons as on the page. While a page not kept as is
-// has problems, it carries the Needs review dashed edge, "N to check" and a lead line (board 2).
+// has problems, it carries the Ready to verify dashed edge, "N to check" and a lead line (board 2).
 // UI audit DD7 (16 Oct 2026): each mark is a short chip, the word, "1/3" and a jump icon
 // (its full name for screen readers); pointing at one lights its mark on the page, and
 // pointing at a mark on the page lights its chip (`hot`).
@@ -187,7 +187,7 @@ export function InvoicePanel({ detail, active, onShow }: PanelProps) {
         </span>
       </p>
       {chip.reasons.length > 0 && (
-        <ul className={styles.checkReasons} aria-label="Why it needs review">
+        <ul className={styles.checkReasons} aria-label="Why to verify it">
           {chip.reasons.map((reason) => (
             <li key={reason}>{reason}</li>
           ))}

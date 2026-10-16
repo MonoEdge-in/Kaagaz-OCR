@@ -1,6 +1,6 @@
 "use client";
 
-// One value that needs review: the spot on its page, zoomed in, whether the
+// One value that is ready to verify: the spot on its page, zoomed in, whether the
 // reader was not sure of it, a link to its page's scanned text, the two
 // readings side by side, and three ways to settle it. The chosen value becomes
 // the stored truth for this customer; the original file never changes.
@@ -12,8 +12,9 @@ import Link from "next/link";
 import { useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import { Icon } from "@/components/ui/Icon";
+import { Tip } from "@/components/ui/Tip";
 import { PageViewer } from "@/components/viewer/PageViewer";
-import { fieldText, reasonText, voteText } from "@/components/viewer/labels";
+import { confidenceTip, fieldText, reasonText, voteText } from "@/components/viewer/labels";
 import { CONFIDENCE_NOTE, confidenceText, notSure, routeOrigin } from "@/components/viewer/scanned";
 import { ApiError, resolveReview } from "@/lib/api";
 import { pageLink } from "@/lib/regions";
@@ -99,12 +100,13 @@ export function ReviewCard({
           <h2 id={reviewTitleId(value.id)} className={styles.title} tabIndex={-1}>
             {fieldText(value.field)}
           </h2>
-          {/* Every value here needs review: the badge says why (R2), with its icon and dashed edge. */}
-          <span className="badge badge-review">
+          {/* Every value here is ready to verify: the badge says why (R2), with its icon and
+              dashed edge; its tooltip gives the confidence (Tushar, 16 Oct 2026). */}
+          <Tip className="badge badge-review" text={confidenceTip(value.confidence ?? null)}>
             <Icon name="eye-alert" size={16} />
-            <span className="visually-hidden">Needs review: </span>
+            <span className="visually-hidden">Ready to verify: </span>
             {reasonTag(value.label_reason)}
-          </span>
+          </Tip>
         </div>
         <p className={styles.meta}>
           <Link href={link} className={styles.docLink}>
