@@ -20,7 +20,7 @@ import type { Confirm } from "./ConfirmDialog";
 import { modelConfirm, modelFocusId } from "./confirms";
 import { LoadFailed } from "./LoadFailed";
 import { afterDone, operatorErrorMessage } from "./logic";
-import { VENDOR_NOT_ALLOWED, modelAction, notEnabledReason, pageCostText, priceText, yesNo } from "./models";
+import { VENDOR_NOT_ALLOWED, modelAction, notEnabledReason, priceText, realCostText, yesNo } from "./models";
 import { PlatformDefaults } from "./PlatformDefaults";
 import admin from "@/components/admin/Admin.module.css";
 import styles from "./Operator.module.css";
@@ -134,7 +134,8 @@ function ModelRow({ model, onChange }: { model: OperatorModel; onChange(enable: 
       </td>
       <td role="cell" data-label="Verified">
         Scanning: {yesNo(model.verified)}, answering: {yesNo(model.chat_verified)}
-        <span className={styles.statusNote}>{pageCostText(model)}</span>
+        {model.eligible && <span className={`${styles.statusNote} tabular`}>Scanning: {realCostText(model, "scan")}</span>}
+        {model.chat_eligible && <span className={`${styles.statusNote} tabular`}>Answering: {realCostText(model, "chat")}</span>}
       </td>
       <td role="cell" data-label="Enabled">
         {model.enabled_at ? `Yes, since ${formatDate(model.enabled_at)}` : "No"}

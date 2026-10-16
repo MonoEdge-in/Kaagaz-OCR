@@ -966,6 +966,16 @@ export interface OperatorModel {
   tokens_per_page_out: number | null;
   ledger_tokens_in: number | null; // MC3: a scanned page's average over the last 30 days; null: none
   ledger_tokens_out: number | null;
+  // 0031: the real cost OpenRouter reported over the last 30 days, every organisation's
+  // ledger together. *_costed: those with a reported cost; cost null: none reported.
+  scan_pages: number;
+  scan_pages_costed: number;
+  scan_cost_usd: number | null;
+  scan_cost_unknown_calls: number;
+  answer_questions: number;
+  answer_questions_costed: number;
+  answer_cost_usd: number | null;
+  answer_cost_unknown_calls: number;
   enabled_at: string | null; // null: not enabled on the platform
   chat_eligible: boolean; // may answer questions (features 25-27, C11)
   chat_verified: boolean; // verify-models passed for the current answer prompt
@@ -1043,6 +1053,18 @@ export interface InsightDay {
   cost_questions_usd: number | null; // chat, memory, search
   cost_estimated: boolean;
   cost_part_unknown: boolean;
+  // 0032, from the ledger: pages a model read first (scan, upgrade, not cached) and read
+  // again (careful, ensemble_scan), the first reads with a reported cost, and only the cost
+  // OpenRouter reported (null: none); calls with no reported cost are counted apart.
+  pages_read: number;
+  pages_reread: number;
+  pages_read_costed: number;
+  cost_real_usd: number | null;
+  cost_scan_real_usd: number | null;
+  cost_answer_real_usd: number | null;
+  cost_unknown_calls: number;
+  scan_unknown_calls: number;
+  answer_unknown_calls: number;
 }
 
 /** F2: one organisation's health now. */

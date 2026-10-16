@@ -18,13 +18,17 @@ import { getAiDefaults, putAiDefaults } from "@/lib/api";
 import type { AiDefaults, OperatorModel } from "@/lib/types";
 import { LoadFailed } from "./LoadFailed";
 import { canCloseDialog, countText, operatorErrorMessage } from "./logic";
-import { aiBody, aiErrors, defaultsImpact, draftOf, inheritedText } from "./models";
+import { KEEP_OWN, aiBody, aiErrors, defaultsImpact, draftOf, inheritedText } from "./models";
 import type { AiDraft, AiErrors } from "./models";
 import { AiFields, CODE_ID, fieldId, firstProblem, refusalOf } from "./OrgAiSettings";
 import admin from "@/components/admin/Admin.module.css";
 import styles from "./Operator.module.css";
 
 const CHANGE_ID = "platform-defaults-change";
+const IMPACT_ID = "platform-defaults-impact";
+// Short, so it never clips or wraps on a narrow screen (MonoEdge buttons: nowrap labels
+// that fit); the impact list above it says what it applies to.
+export const SAVE_LABEL = "Save and apply";
 
 export function PlatformDefaults({ catalogue, onSaved }: { catalogue: OperatorModel[]; onSaved(message: string): void }) {
   const [attempt, setAttempt] = useState(0);
@@ -157,9 +161,7 @@ function DefaultsDialog(props: { reply: AiDefaults; catalogue: OperatorModel[]; 
           busy={busy}
           onChange={setDraft}
         />
-        <p id="platform-defaults-impact" aria-live="polite">
-          {defaultsImpact(reply.defaults, aiBody(draft), reply.orgs_inheriting)}
-        </p>
+        <DefaultsImpact id={IMPACT_ID} impact={defaultsImpact(reply.defaults, aiBody(draft), reply.orgs_inheriting)} />
         <CodeField
           id={CODE_ID}
           label="A new 6-digit code from your app"
@@ -182,13 +184,32 @@ function DefaultsDialog(props: { reply: AiDefaults; catalogue: OperatorModel[]; 
             className={`btn btn-primary ${busy ? admin.busy : ""}`}
             disabled={busy}
             aria-busy={busy || undefined}
-            aria-describedby="platform-defaults-impact"
+            aria-describedby={IMPACT_ID}
           >
             {busy && <span className="spinner" aria-hidden="true" />}
-            Save and apply to organisations still on defaults
+            {SAVE_LABEL}
           </button>
         </div>
       </form>
     </ActionDialog>
+  );
+}
+
+/** What a defaults save changes, as a short list the save button points at. */
+export function DefaultsImpact({ id, impact }: { id: string; impact: ReturnType<typeof defaultsImpact> }) {
+  return (
+    <div id={id} className={styles.impact} aria-live="polite">
+      <p>{impact.lead}</p>
+      {impact.areas.length > 0 && (
+        <>
+          <ul>
+            {impact.areas.map((area) => (
+              <li key={area}>{area}</li>
+            ))}
+          </ul>
+          <p>{KEEP_OWN}</p>
+        </>
+      )}
+    </div>
   );
 }

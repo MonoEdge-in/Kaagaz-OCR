@@ -218,6 +218,19 @@
   margin: 0;
 }
 
+/* A defaults save's impact: a lead line, the areas as a list, then who keeps their own. */
+.impact {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.impact ul {
+  margin: 0;
+  padding-inline-start: var(--space-6);
+}
+
 /* [Destructive] ... [Cancel] [Primary]: the primary last, a destructive one pushed to the start. */
 .buttons {
   display: flex;

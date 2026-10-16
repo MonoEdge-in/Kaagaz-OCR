@@ -224,7 +224,10 @@ OPERATOR_RIGHTS = {
         " verified_prompt_version text, verified_at timestamp with time zone, tokens_per_page_in integer,"
         " tokens_per_page_out integer, enabled_at timestamp with time zone, ledger_tokens_in numeric,"
         " ledger_tokens_out numeric, chat_eligible boolean, chat_verified_prompt text,"
-        " chat_verified_at timestamp with time zone)",  # 0026: the answer columns
+        " chat_verified_at timestamp with time zone, scan_pages bigint, scan_pages_costed bigint,"
+        " scan_cost_usd numeric, scan_cost_unknown_calls bigint, answer_questions bigint,"
+        " answer_questions_costed bigint, answer_cost_usd numeric, answer_cost_unknown_calls bigint)",
+        # 0026: the answer columns; 0033: the real cost, counts and sums only
         EMPTY_PATH,
     ),
     "kaagaz_op_set_model_enabled": ("text", EMPTY_PATH),
@@ -261,7 +264,10 @@ OPERATOR_RIGHTS = {
         "TABLE(customer_id uuid, day date, uploads bigint, sign_ins bigint, questions bigint,"
         " corrections bigint, runs bigint, runs_failed bigint, pages bigint, scan_pages bigint,"
         " cached_pages bigint, cost_usd numeric, cost_scan_usd numeric, cost_documents_usd numeric,"
-        " cost_questions_usd numeric, cost_estimated boolean, cost_part_unknown boolean)",
+        " cost_questions_usd numeric, cost_estimated boolean, cost_part_unknown boolean, pages_read bigint,"
+        " pages_reread bigint, pages_read_costed bigint, cost_real_usd numeric, cost_scan_real_usd numeric,"
+        " cost_answer_real_usd numeric, cost_unknown_calls bigint, scan_unknown_calls bigint,"
+        " answer_unknown_calls bigint)",  # 0034: the real figures, counts and sums only
         EMPTY_PATH,
     ),
     "kaagaz_op_org_health": (
