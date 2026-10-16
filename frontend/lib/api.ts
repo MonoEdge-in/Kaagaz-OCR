@@ -26,7 +26,11 @@ import type {
   DocumentList,
   DocumentSearch,
   DocumentSummary,
+  EnsembleEstimate,
+  EnsembleRun,
+  EnsembleScope,
   FailedDocument,
+  FlagState,
   Folder,
   InsightsReply,
   Me,
@@ -51,6 +55,7 @@ import type {
   ReviewItem,
   ReviewList,
   ReviewReason,
+  ReviewStatus,
   Role,
   ScopeBody,
   SheetCells,
@@ -61,6 +66,8 @@ import type {
   UploadReading,
   UploadResult,
   UsageReport,
+  WordChange,
+  WordFlag,
   WordSaved,
 } from "./types";
 
@@ -555,3 +562,40 @@ export const getOperatorInsights = (days: number) =>
 export const getOperatorQuality = (days: number) => request<QualityReply>("GET", `/operator/quality${query({ days })}`);
 /** Compare models (F4): observational, not an A/B test. */
 export const getModelBoard = (days: number) => request<BoardReply>("GET", `/operator/model-board${query({ days })}`);
+
+// --- word-level review and Ensemble after the scan (routers/word_review.py, ensemble.py) ---
+
+const doc = (id: string) => `/documents/${encodeURIComponent(id)}`;
+const word = (id: string, key: string) => `${doc(id)}/flags/${encodeURIComponent(key)}`;
+
+export const getReviewStatus = (id: string) => request<ReviewStatus>("GET", `${doc(id)}/review-status`);
+export const listFlags = (id: string, params: { page?: number; state?: FlagState } = {}) =>
+  request<{ items: WordFlag[]; total: number }>("GET", `${doc(id)}/flags${query(params)}`);
+/** A reviewer or an admin; `expectedText` is the text they saw (409 changed_since if it moved on). */
+export const confirmWord = (id: string, key: string, expectedText: string) =>
+  request<WordFlag>("POST", `${word(id, key)}/confirm`, { expected_text: expectedText });
+export const editWord = (id: string, key: string, text: string, expectedText: string) =>
+  request<WordFlag>("POST", `${word(id, key)}/edit`, { text, expected_text: expectedText });
+export const listChanges = (
+  id: string,
+  params: { source?: "person" | "ensemble"; limit?: number; before?: string } = {},
+) => request<{ items: WordChange[]; next_before: string | null }>("GET", `${doc(id)}/changes${query(params)}`);
+export const undoChange = (id: string, changeId: string) =>
+  request<WordChange>("POST", `${doc(id)}/changes/${encodeURIComponent(changeId)}/undo`);
+
+export const getEnsembleEstimate = (id: string, scope: EnsembleScope, wordKeys: string[] = []) =>
+  request<EnsembleEstimate>("GET", `${doc(id)}/ensemble/estimate${query({ scope, word_keys: wordKeys })}`);
+export const startEnsemble = (id: string, scope: EnsembleScope, wordKeys: string[] = []) =>
+  request<EnsembleRun>("POST", `${doc(id)}/ensemble`, { scope, word_keys: wordKeys });
+/** The document's latest run; 404 when it has none. */
+export const getEnsemble = (id: string) => request<EnsembleRun>("GET", `${doc(id)}/ensemble`);
+const run = (id: string, runId: string) => `${doc(id)}/ensemble/${encodeURIComponent(runId)}`;
+export const stopEnsemble = (id: string, runId: string) => request<EnsembleRun>("POST", `${run(id, runId)}/stop`);
+export const retryEnsemble = (id: string, runId: string) => request<EnsembleRun>("POST", `${run(id, runId)}/retry`);
+export const keepAllEnsemble = (id: string, runId: string) =>
+  request<{ kept: number; skipped: number }>("POST", `${run(id, runId)}/keep-all`);
+const reading = (id: string, readingId: string) => `${doc(id)}/ensemble/readings/${encodeURIComponent(readingId)}`;
+export const keepReading = (id: string, readingId: string) =>
+  request<{ id: string; decision: "kept"; change_id: string }>("POST", `${reading(id, readingId)}/keep`);
+export const revertReading = (id: string, readingId: string) =>
+  request<{ id: string; decision: "reverted" }>("POST", `${reading(id, readingId)}/revert`);
