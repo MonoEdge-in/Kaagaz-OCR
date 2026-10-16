@@ -112,7 +112,9 @@
   flex-direction: column;
   align-items: flex-start;
   gap: 2px;
-  padding: var(--space-2) var(--space-3);
+  /* Its title's first line (1.35em) sits on the middle of the More button
+     beside it (one control tall), at 36 and at 44px. */
+  padding: max(var(--space-1), (var(--control-h) - 1.35em) / 2) var(--space-3) var(--space-2);
   border: 0;
   border-radius: var(--r-sm);
   background: transparent;
@@ -383,8 +385,8 @@
   align-items: center;
   justify-content: center;
   flex: none;
-  min-width: 26px;
-  height: 26px;
+  min-width: var(--badge-h);
+  height: var(--badge-h);
   padding: 0 var(--space-1);
   border: 1px solid var(--accent);
   border-radius: var(--r-sm);
@@ -420,7 +422,7 @@
 
   .openLink,
   .reviewLink {
-    min-height: 44px;
+    min-height: var(--h-lg);
     align-items: center;
   }
 }
@@ -454,8 +456,8 @@
   align-items: center;
   justify-content: center;
   flex: none;
-  width: 36px;
-  height: 36px;
+  width: var(--h-md);
+  height: var(--h-md);
   border-radius: var(--r-full);
   background: var(--surface-2);
   color: var(--fg-muted);
@@ -470,13 +472,15 @@
   gap: var(--space-2);
 }
 
+/* A chip that is a link: one control tall (taller only when a long name wraps). */
 .docChip {
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
   max-width: 100%;
-  min-height: 32px;
+  min-height: var(--control-h);
   padding: var(--space-1) var(--space-3);
+  line-height: 1.25;
   border: 1px solid var(--border-strong);
   border-radius: var(--r-full);
   background: var(--surface);
@@ -484,12 +488,6 @@
   font-size: var(--fs-sm);
   font-weight: 600;
   text-decoration: none;
-}
-
-@media (pointer: coarse) {
-  .docChip {
-    min-height: 44px;
-  }
 }
 
 .docChip:hover {
@@ -567,12 +565,14 @@
   gap: var(--space-3);
 }
 
+/* Its title's first line (1.35em) sits on the middle of the number badge beside it. */
 .sourceHeading {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: var(--space-1);
   min-width: 0;
+  padding-block-start: max(0px, (var(--badge-h) - 1.35em) / 2);
 }
 
 .sourceTitle {
@@ -804,15 +804,17 @@
   margin-inline-start: auto;
 }
 
-/* A quiet chip that opens a panel (ComposerMenu.tsx): its words, then a small caret. */
+/* A quiet chip that opens a panel (ComposerMenu.tsx): its words, then a small caret.
+   One control tall, like Send at the row's end (it was 32px beside a 36px Send). */
 .tool {
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
   min-width: 0;
   max-width: 100%;
-  min-height: 32px;
-  padding: 0 6px 0 10px;
+  height: var(--control-h);
+  padding: 0 var(--space-2) 0 var(--space-3);
+  line-height: 1.25;
   border: 1px solid transparent;
   border-radius: var(--r-full);
   background: transparent;
@@ -830,12 +832,6 @@
 .tool:has(+ .menu:popover-open) {
   background: var(--surface-2);
   color: var(--fg);
-}
-
-@media (pointer: coarse) {
-  .tool {
-    min-height: 44px;
-  }
 }
 
 /* A long folder or document name ends in "…"; the whole name is still read out. */
@@ -861,12 +857,6 @@
    (.btn[aria-disabled]), a spinner over its words while the answer is out. */
 .send {
   flex: none;
-}
-
-@media (pointer: coarse) {
-  .send {
-    min-height: 44px;
-  }
 }
 
 /* The panel a chip opens: a native popover just above its chip, flipped below
@@ -981,12 +971,6 @@
   margin: 0;
 }
 
-@media (pointer: coarse) {
-  .menuOption {
-    min-height: 44px;
-  }
-}
-
 .menuHint {
   margin: 0;
   padding: 2px var(--space-2) var(--space-1);
@@ -1013,7 +997,8 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 32px;
+  /* The track (2px padding and a 1px edge each side) is one control tall. */
+  height: calc(var(--control-h) - 6px);
   padding: 0 var(--space-3);
   border-radius: 1px;
   color: var(--fg-muted);
@@ -1049,9 +1034,10 @@
   outline: none;
 }
 
+/* On touch each segment is a full 44px target, so the track is taller. */
 @media (pointer: coarse) {
   .segment {
-    min-height: 44px;
+    height: var(--h-lg);
   }
 }
 
@@ -1093,9 +1079,10 @@
   font-size: var(--fs-sm);
 }
 
+/* As tall as the first line of words, so the icon sits on its middle. */
 .sendErrorText svg {
   flex: none;
-  margin-top: 0.15em;
+  height: 1lh;
 }
 
 /* PRD 5 U7: F6's note under an answer, with the pages that couldn't be read. */

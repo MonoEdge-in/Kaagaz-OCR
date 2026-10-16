@@ -115,6 +115,7 @@
 .typedRow {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: var(--space-2);
 }
 
@@ -133,9 +134,10 @@
   min-width: 0;
 }
 
+/* Its words may wrap, so the box sits on the middle of their first line. */
 .remember input {
   flex: none;
-  margin-top: 3px;
+  margin-block: calc((1lh - 18px) / 2) 0;
 }
 
 .saving,
@@ -196,10 +198,17 @@
   color: var(--text-primary);
 }
 
+/* Icon, words and Try again: the icon and the first line of words sit on the
+   button's middle line; a longer message runs on below it. */
 .errorIcon {
   flex: none;
-  margin-top: 3px;
+  height: 1lh;
   color: var(--critical);
+}
+
+.errorIcon,
+.errorBody {
+  margin-block-start: max(0px, (var(--control-h) - 1lh) / 2);
 }
 
 .errorBody {
@@ -241,16 +250,25 @@
   background: var(--bg-subdued);
 }
 
+/* The track (2px padding and a 1px edge each side) is one control tall. On
+   touch each segment is a full 44px target, so the track is taller. */
 .segment {
   position: relative;
   display: inline-flex;
   align-items: center;
-  min-height: var(--h-md);
+  height: calc(var(--control-h) - 6px);
+  line-height: 1.25;
   padding-inline: var(--space-4);
   color: var(--text-secondary);
   font-size: var(--fs-sm);
   font-weight: 600;
   cursor: pointer;
+}
+
+@media (pointer: coarse) {
+  .segment {
+    height: var(--h-lg);
+  }
 }
 
 .segment:has(input:checked) {
@@ -273,12 +291,6 @@
   margin: 0;
   opacity: 0;
   cursor: pointer;
-}
-
-@media (pointer: coarse) {
-  .segment {
-    min-height: var(--h-lg);
-  }
 }
 
 /* R3, focus mode: the keys, then Skip at the end of the row. */

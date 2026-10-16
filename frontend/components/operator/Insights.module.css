@@ -36,8 +36,10 @@
   color: var(--text-primary);
 }
 
+/* As tall as the first line of words, so the icon sits on its middle. */
 .stale svg {
   flex: none;
+  height: 1lh;
   color: var(--warning);
 }
 
@@ -206,8 +208,12 @@
 /* --- Compare models: the column's best value, in a word (board 12 P8) -------------
    Ink, not the Verified green: it ranks a column, it does not label a value. */
 
+/* A badge: one height, centred words, on the cell's middle line. */
 .best {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+  min-height: var(--badge-h);
   padding: 0 var(--space-2);
   border: 1px solid var(--accent);
   border-radius: 2px;
@@ -215,7 +221,7 @@
   color: var(--accent);
   font-size: var(--fs-sm);
   font-weight: 600;
-  line-height: 1.4;
+  line-height: 1.25;
 }
 
 /* Compare models: a model id in mono, so it reads exactly (board 8 P3). */

@@ -9,7 +9,7 @@
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2) var(--space-3);
-  min-height: 56px;
+  min-height: var(--header-h);
   padding: max(var(--space-2), env(safe-area-inset-top)) max(var(--space-4), env(safe-area-inset-right))
     var(--space-2) max(var(--space-4), env(safe-area-inset-left));
   background: var(--bg-surface);
@@ -61,7 +61,12 @@
   max-width: 28rem;
 }
 
+/* In the toolbar (bottom-aligned, as each field's label sits above its box): one
+   control tall, so its words sit on the boxes' middle line. */
 .summary {
+  display: flex;
+  align-items: center;
+  min-height: var(--control-h);
   margin: 0;
   color: var(--text-secondary);
   font-size: var(--fs-sm);
@@ -85,11 +90,8 @@
   white-space: nowrap;
 }
 
-/* --- The Manage menu (ManageMenu.tsx): one per row, in a portal on <body> ------ */
-
-.manage {
-  min-height: 32px; /* .btn is 36px, 44px on touch */
-}
+/* --- The Manage menu (ManageMenu.tsx): one per row, in a portal on <body> ------
+   Its button is a plain .btn, one control tall (36px, 44px on touch). */
 
 .menu {
   position: fixed;
@@ -112,7 +114,7 @@
 .menuItem {
   display: flex;
   align-items: center;
-  min-height: var(--h-md);
+  min-height: var(--control-h);
   padding: 0 var(--space-3);
   border: 0;
   border-radius: 2px;
@@ -134,12 +136,6 @@
 
 .menuDanger {
   color: var(--critical);
-}
-
-@media (pointer: coarse) {
-  .menuItem {
-    min-height: var(--h-lg);
-  }
 }
 
 /* The status changes sit apart from the safe items, 16px between the groups. */
@@ -334,12 +330,6 @@
   outline-offset: 4px;
 }
 
-@media (pointer: coarse) {
-  .buttons :global(.btn) {
-    min-height: 44px;
-  }
-}
-
 /* --- One organisation's AI models (model choice) ------------------------------- */
 
 .choices {
@@ -352,11 +342,13 @@
   min-width: 0;
 }
 
+/* A choice's words may wrap: its box sits on the middle of their first line. */
 .choice {
   display: flex;
   align-items: flex-start;
   gap: var(--space-2);
-  min-height: var(--h-md);
+  min-height: var(--control-h);
+  padding-block: calc((var(--control-h) - 1lh) / 2) 0;
   overflow-wrap: anywhere;
 }
 
@@ -364,7 +356,7 @@
   flex: none;
   width: 1.125rem;
   height: 1.125rem;
-  margin-top: 0.125rem;
+  margin: calc((1lh - 1.125rem) / 2) 0 0;
 }
 
 /* --- AI settings: an organisation's and the platform defaults (features 25-27) ---- */
@@ -387,7 +379,10 @@
 
 /* Board 9: "Same as platform default" or "Changed from platform default", in words. */
 .sectionTag {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+  min-height: var(--badge-h);
   margin-inline-start: var(--space-2);
   padding: 0 var(--space-2);
   border: 1px solid var(--border);
@@ -397,7 +392,7 @@
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  line-height: 1.6;
+  line-height: 1.25;
 }
 
 .sectionTools {
@@ -445,9 +440,3 @@
   font-size: var(--fs-sm);
 }
 
-@media (pointer: coarse) {
-  .choice {
-    min-height: 44px;
-    align-items: center;
-  }
-}

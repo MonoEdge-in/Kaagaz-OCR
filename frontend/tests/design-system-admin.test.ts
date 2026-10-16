@@ -102,7 +102,9 @@ describe("flat, square, hairline", () => {
   });
 
   it("uses MonoEdge tokens only, never the old names", () => {
-    const old = /var\(--(fg|fg-muted|surface|surface-2|accent-soft|accent-fg|brand-lal|danger-bg|danger-fg|review-bg|review-fg|review-solid|verified-[a-z]+|r-sm|r-md|r-full|e-1|e-2|control-h|space-5|space-7)\)/g;
+    // Changed on purpose (Tushar, 16 Oct 2026, one control height / centred icons): --control-h is
+    // now THE control height (36px, 44px on touch), not an old alias, so screens use it.
+    const old = /var\(--(fg|fg-muted|surface|surface-2|accent-soft|accent-fg|brand-lal|danger-bg|danger-fg|review-bg|review-fg|review-solid|verified-[a-z]+|r-sm|r-md|r-full|e-1|e-2|space-5|space-7)\)/g;
     const found = CSS_MODULES.flatMap((file) => [...noComments(read(file)).matchAll(old)].map((m) => `${file}: ${m[0]}`));
     expect(found).toEqual([]);
   });

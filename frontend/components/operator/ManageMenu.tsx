@@ -153,7 +153,7 @@ export function ManageMenu({
         ref={button}
         id={buttonId}
         type="button"
-        className={`btn ${styles.manage}`}
+        className="btn"
         aria-label={`Manage ${name}`}
         aria-haspopup="menu"
         aria-expanded={open}
