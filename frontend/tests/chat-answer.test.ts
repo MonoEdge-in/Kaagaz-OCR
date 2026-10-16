@@ -21,6 +21,7 @@ import {
   questionReading,
   questionsByAnswer,
   readingNote,
+  shortNote,
   restoreAfterFailure,
   sendsOnKey,
   sentenceCitations,
@@ -301,7 +302,9 @@ describe("pages that couldn't be read (PRD 5 F6, U7)", () => {
 
   it("gives the server's note with a link to each page it names, and how many more", () => {
     const note = readingNote(notFound);
-    expect(note?.text).toBe(NOTE);
+    // Changed on purpose (Tushar, 16 Oct 2026): the page names are links in Sources, so
+    // the note keeps only its count.
+    expect(note?.text).toBe("Not found in the readable text. 2 pages to check.");
     expect(note?.pages).toEqual([
       { href: "/documents/d1?page=3", text: "Invoice_12.pdf page 3" },
       { href: "/documents/d2?page=1", text: "Register.jpg page 1" },
@@ -330,6 +333,29 @@ describe("pages that couldn't be read (PRD 5 F6, U7)", () => {
     expect(html).toContain("Not found in the readable text.");
     expect(html).toContain('href="/documents/d1?page=3"');
     expect(html).toContain("and 1 more");
+  });
+
+  it("puts the pages to check in one Sources bar, closed at first, and names them only there", () => {
+    const message: Message = {
+      id: "a1",
+      role: "assistant",
+      text: "",
+      created_at: "2026-10-09T10:00:00Z",
+      answer: notFound,
+      feedback: null,
+    };
+    const html = renderToStaticMarkup(createElement(AnswerView, { message, question: "total?" }));
+    expect(html).toMatch(/<details class="[^"]*"><summary/);
+    expect(html).not.toMatch(/<details[^>]* open/);
+    expect(html).toContain("3 pages to check");
+    expect(html.match(/Invoice_12\.pdf page 3/g)).toHaveLength(1);
+  });
+
+  it("keeps a note of another shape whole", () => {
+    expect(shortNote("Not found in the readable text. 2 pages to check: A.pdf page 1.")).toBe(
+      "Not found in the readable text. 2 pages to check.",
+    );
+    expect(shortNote(HARD_TO_READ_TEXT)).toBe(HARD_TO_READ_TEXT);
   });
 
   it("says a source card's text was hard to read, and nothing when it was not", () => {

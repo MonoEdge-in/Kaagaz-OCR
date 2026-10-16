@@ -272,5 +272,13 @@ export function readingNote(
     text: `${page.document_name} page ${page.page_no}`,
   }));
   const more = Math.max(0, (answer.unreadable_page_count ?? pages.length) - pages.length);
-  return { text: answer.reading_note, pages, more };
+  return { text: pages.length > 0 ? shortNote(answer.reading_note) : answer.reading_note, pages, more };
+}
+
+/** The note without the page names it lists, when the pages are shown as links in
+ * Sources (Tushar, 16 Oct 2026): "Not found in the readable text. 20 pages to check."
+ * A note of another shape is kept whole. O(n). */
+export function shortNote(note: string): string {
+  const head = /^(.*?\bpages? to check):\s/s.exec(note);
+  return head ? `${head[1]}.` : note;
 }

@@ -17,7 +17,8 @@
 // ask with the words the document uses, teach chat a word, or upload the document.
 
 import Link from "next/link";
-import { memo, useId, useState } from "react";
+import { memo, useState } from "react";
+import type React from "react";
 import { Icon } from "@/components/ui/Icon";
 import { LabelBadge } from "@/components/viewer/LabelBadge";
 import { understoodNotes } from "@/components/words/words";
@@ -37,13 +38,36 @@ import { scrollBehavior } from "./hooks";
 import { SourceCard } from "./SourceCard";
 import styles from "./Chat.module.css";
 
-/** Bring the source card into view (only as far as needed) and move focus to it. */
+/** Bring the source card into view (only as far as needed) and move focus to it,
+ * opening its Sources bar first when it is closed. */
 function goToSource(id: string) {
   const card = window.document.getElementById(id);
   if (!card) return;
+  const bar = card.closest("details");
+  if (bar && !bar.open) bar.open = true;
   card.scrollIntoView({ block: "nearest", behavior: scrollBehavior() });
   card.focus({ preventScroll: true });
 }
+
+/**
+ * One collapsible bar holding an answer's sources (Tushar, 16 Oct 2026): closed at
+ * first, its summary saying what is inside ("Sources · 4", "Sources · 20 pages to
+ * check · 3 documents"). A citation number opens it (goToSource).
+ */
+function SourcesBar({ count, children }: { count: string; children: React.ReactNode }) {
+  return (
+    <details className={styles.sourcesBar}>
+      <summary className={styles.sourcesSummary}>
+        <Icon name="chevron-right" size={16} className={styles.sourcesChevron} />
+        <span className={styles.sourcesLabel}>Sources</span>
+        <span className={styles.sourcesCount}>{count}</span>
+      </summary>
+      <div className={styles.sourcesBody}>{children}</div>
+    </details>
+  );
+}
+
+const counted = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
 // Memo: the chat keeps each message object as it was when a new answer arrives,
 // so old answer cards skip re-rendering (UI quality council, 15 Oct 2026).
@@ -56,7 +80,6 @@ export const AnswerView = memo(function AnswerView({
   question: string | null;
   onAskAll?: () => void;
 }) {
-  const sourcesHeadingId = useId();
   // The source a chip is pointed at or focused: its card lights up (UI quality council, 15 Oct 2026).
   const [hot, setHot] = useState<number | null>(null);
   const answer = message.answer;
@@ -72,10 +95,12 @@ export const AnswerView = memo(function AnswerView({
 
   const reading = questionReading(question, answer);
   const note = readingNote(answer);
-  const noteBlock = note ? (
-    <div className={styles.readingNote}>
-      <p className={styles.plain}>{note.text}</p>
-      {note.pages.length > 0 && (
+  const noteText = note ? <p className={styles.plain}>{note.text}</p> : null;
+  const pageCount = note ? note.pages.length + note.more : 0;
+  const notePages =
+    note && note.pages.length > 0 ? (
+      <div className={styles.readingNote}>
+        <h3 className={styles.subheading}>Pages to check</h3>
         <ul className={styles.docChips} aria-label="Pages to check">
           {note.pages.map((page) => (
             <li key={page.href}>
@@ -87,9 +112,8 @@ export const AnswerView = memo(function AnswerView({
           ))}
           {note.more > 0 && <li className={styles.understood}>and {note.more} more</li>}
         </ul>
-      )}
-    </div>
-  ) : null;
+      </div>
+    ) : null;
   // My words chat used (A3 sends understood_words; nothing shows before it). Text only.
   const notes = understoodNotes(answer);
   const understood = (
@@ -140,9 +164,23 @@ export const AnswerView = memo(function AnswerView({
           </span>
           <p className={styles.plain}>{NOT_FOUND_TEXT}</p>
         </div>
-        {noteBlock}
+        {noteText}
         {understood}
-        {documentChips("Closest documents")}
+        {notePages || answer.closest_documents.length > 0 ? (
+          <SourcesBar
+            count={[
+              pageCount > 0 ? counted(pageCount, "page to check", "pages to check") : "",
+              answer.closest_documents.length > 0
+                ? counted(answer.closest_documents.length, "document", "documents")
+                : "",
+            ]
+              .filter(Boolean)
+              .join(" · ")}
+          >
+            {notePages}
+            {documentChips("Closest documents")}
+          </SourcesBar>
+        ) : null}
         <div>
           <h3 className={styles.subheading}>Next steps</h3>
           <ul className={styles.nextSteps}>
@@ -229,18 +267,25 @@ export const AnswerView = memo(function AnswerView({
           </span>
         ))}
       </p>
-      {noteBlock}
-      {answer.citations.length > 0 ? (
-        <section aria-labelledby={sourcesHeadingId}>
-          <h3 id={sourcesHeadingId} className={styles.subheading}>
-            Sources ({answer.citations.length})
-          </h3>
-          <div className={styles.sources}>
-            {answer.citations.map((citation) => (
-              <SourceCard key={citation.n} citation={citation} messageId={message.id} hot={hot === citation.n} />
-            ))}
-          </div>
-        </section>
+      {noteText}
+      {answer.citations.length > 0 || notePages ? (
+        <SourcesBar
+          count={[
+            answer.citations.length > 0 ? String(answer.citations.length) : "",
+            pageCount > 0 ? counted(pageCount, "page to check", "pages to check") : "",
+          ]
+            .filter(Boolean)
+            .join(" · ")}
+        >
+          {answer.citations.length > 0 ? (
+            <div className={styles.sources}>
+              {answer.citations.map((citation) => (
+                <SourceCard key={citation.n} citation={citation} messageId={message.id} hot={hot === citation.n} />
+              ))}
+            </div>
+          ) : null}
+          {notePages}
+        </SourcesBar>
       ) : null}
       {feedback}
     </div>
