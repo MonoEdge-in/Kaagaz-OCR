@@ -5,11 +5,12 @@
 // - One request at a time. A refresh asked for while one is out runs once after it.
 // - Nothing is sent while the tab is hidden. When it is shown again, or the
 //   browser is back online, a planned poll is sent at once.
-// - It waits 3 s, then 6, 12 and 15 s while nothing changes, and goes back to
-//   3 s when something does (the signature: status, status_message, progress).
+// - It waits 3 s, then 5 s while nothing changes, and goes back to 3 s when
+//   something does (the signature: status, status_message, progress). Never more
+//   than 5 s, so Ready shows within 5 s (council 16 Oct 2026).
 // - A failed request is tried again on the same steps: one failure never stops it.
 
-export const POLL_STEPS_MS = [3000, 6000, 12000, 15000] as const;
+export const POLL_STEPS_MS = [3000, 5000] as const;
 
 export interface PollTask<T> {
   load(): Promise<T>;

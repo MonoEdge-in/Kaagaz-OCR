@@ -101,16 +101,20 @@ def test_status_messages() -> None:
     def message(status: str, failure_code: str | None = None, detected_type: str = "pdf") -> str:
         return status_message(status, failure_code, detected_type=detected_type, max_pages=100)
 
-    assert message("received") == "Waiting for the virus check."
+    # Changed on purpose (council 16 Oct 2026): it waits in the queue; the virus check runs
+    # later, in the worker.
+    assert message("received") == "Waiting to start."
     assert message("clean") == "Reading the document…"
     assert message("ready") == "Ready. You can ask about it."
     assert message("needs_reader") == "Stored safely. This kind of file can't be read yet."
     assert message("rejected", "virus_found") == CUSTOMER_MESSAGES["virus_found"]
     assert message("rejected") == "This file was not processed."
     # Changed on purpose (UI quality council, 15 Oct 2026): no failure code on screen.
+    # Changed on purpose (council 16 Oct 2026): the same file uploaded again is a duplicate
+    # and is never read again.
     assert (
         message("failed", "corrupt_file")
-        == "This file could not be read. Upload it again, or try another copy of it."
+        == "This file could not be read. Read it again, or try another copy of it."
     )
     # PROVISIONAL: the PRD quotes the real page count, which is not stored when a PDF fails.
     assert message("failed", "too_many_pages") == (
@@ -120,6 +124,21 @@ def test_status_messages() -> None:
     assert message("failed", "too_many_pages", "tiff") == (
         "This file has more than 100 pages. The limit is 100. Split it into parts."
     )
+
+
+def test_a_ready_document_with_unreadable_pages_says_how_many() -> None:
+    """Council 16 Oct 2026: since e01b937d a document with pages that can't be read is
+    ready with those pages flagged, so its message must say so, not only "Ready"."""
+
+    def message(status: str, pages_unreadable: int) -> str:
+        return status_message(
+            status, None, detected_type="pdf", max_pages=100, pages_unreadable=pages_unreadable
+        )
+
+    assert message("ready", 0) == "Ready. You can ask about it."
+    assert message("ready", 1) == "Ready. 1 page couldn't be read. Open it to check."
+    assert message("ready", 3) == "Ready. 3 pages couldn't be read. Open it to check."
+    assert message("clean", 3) == "Reading the document…"  # only once it is ready
 
 
 # Every failure code the reading code raises (ReadError("...") in kaagaz/), plus the ones
@@ -180,13 +199,13 @@ def test_status_messages_name_the_tries_and_the_real_page_count() -> None:
     assert message("clean", attempts=7, max_attempts=5) == "Waiting to try again. Try 5 of 5."
     assert message("clean", attempts=3, max_attempts=None) == "Waiting to try again."
     assert message("ready", attempts=3, max_attempts=5) == "Ready. You can ask about it."
-    # The tries ran out.
+    # The tries ran out. Changed on purpose (council 16 Oct 2026): a re-upload is a
+    # duplicate, never read again.
     assert message("failed", "retries_exhausted", attempts=5, max_attempts=5) == (
-        "We tried 5 times and couldn't read this file. Upload it again, or ask your admin to look at it."
+        "We tried 5 times and couldn't read this file. Read it again, or ask your admin to look at it."
     )
     assert message("failed", "retries_exhausted") == (
-        "We tried several times and couldn't read this file."
-        " Upload it again, or ask your admin to look at it."
+        "We tried several times and couldn't read this file. Read it again, or ask your admin to look at it."
     )
     # The worker stored the real page count before the file failed.
     assert message("failed", "too_many_pages", page_count=180) == (
@@ -280,7 +299,8 @@ def test_a_try_a_backend_stopped_says_waiting_to_try_again() -> None:
         )
 
     assert message("received", 1) == message("clean", 1) == "Waiting to try again."
-    assert message("received", 0) == "Waiting for the virus check."  # no try yet
+    # No try yet. Changed on purpose (council 16 Oct 2026): it waits in the queue.
+    assert message("received", 0) == "Waiting to start."
     assert message("clean", 1, {"step": "reading", "done": 0, "total": 4}) == "Reading page 1 of 4\u2026"
     assert message("ready", 1) == "Ready. You can ask about it."
     assert document_time_left({"status": "clean", "progress": None, "deleted_at": None}, now=NOW) is None
@@ -294,9 +314,11 @@ def test_old_progress_is_ignored_once_a_document_is_ready_or_failed() -> None:
 
     assert message("ready") == "Ready. You can ask about it."
     # Changed on purpose (UI quality council, 15 Oct 2026): no failure code on screen.
+    # Changed on purpose (council 16 Oct 2026): the same file uploaded again is a duplicate
+    # and is never read again.
     assert (
         message("failed", "corrupt_file")
-        == "This file could not be read. Upload it again, or try another copy of it."
+        == "This file could not be read. Read it again, or try another copy of it."
     )
     assert in_progress("ready", progress) is None
     assert in_progress("failed", progress) is None
@@ -388,7 +410,7 @@ def test_upload_stores_queues_and_returns_the_summary(db: Database) -> None:
     assert document["detected_type"] == "pdf"
     assert document["size_bytes"] == len(PDF_BYTES)
     assert document["status"] == "received"
-    assert document["status_message"] == "Waiting for the virus check."
+    assert document["status_message"] == "Waiting to start."  # Changed on purpose (council 16 Oct 2026)
     assert document["uploaded_by_name"] == "Test member"
     assert api.storage.has(signed.customer_id, document["id"])
     assert [(job.customer_id, job.document_id) for job in api.queue.jobs] == [

@@ -12,7 +12,7 @@ import { memo, useState } from "react";
 import { useMediaQuery } from "@/components/chat/hooks";
 import { advance, barValue, documentFraction } from "@/lib/progress";
 import type { ShownProgress } from "@/lib/progress";
-import { ESTIMATING, STARTING, WAITING, describe, hold, receivedAt } from "@/lib/timeLeft";
+import { ESTIMATING, STARTING, describe, hold, receivedAt } from "@/lib/timeLeft";
 import type { Held } from "@/lib/timeLeft";
 import { useTick } from "@/lib/tick";
 import type { DocumentSummary, TimeLeft as TimeLeftValue } from "@/lib/types";
@@ -35,10 +35,9 @@ export function TimeLeft({ document }: { document: Shown }) {
       />
     );
   }
-  // After a try with no progress (a backend stopped it), the status message says
-  // "Waiting to try again" (api/views.py), so nothing more is shown here.
-  const waiting = document.status === "received" && progress === null && document.attempts === 0;
-  return waiting ? <Words text={WAITING.text} spoken={WAITING.spoken} /> : null;
+  // With no progress the status message says what it waits for (api/views.py: "Waiting to
+  // start.", "Waiting to try again." and the like), so nothing more is shown here.
+  return null;
 }
 
 interface ProgressingProps {
@@ -86,7 +85,7 @@ function Progressing({ value, step, attempt, name }: ProgressingProps) {
 }
 
 // Renders again only when the words change, not on every tick. The same words for eyes and
-// ears are written once, so a copy or a text read-out never says "Waiting to start" twice.
+// ears are written once, so a copy or a text read-out never says the same words twice.
 const Words = memo(function Words({ text, spoken }: { text: string; spoken: string }) {
   if (text === spoken) return <span className={styles.timeLeft}>{text}</span>;
   return (

@@ -22,7 +22,7 @@ from kaagaz.reading.page_quality import ILLEGIBLE_WORDS, READERS_DISAGREE, UNPIN
 from kaagaz.scanning.gate import CUSTOMER_MESSAGES
 
 _STATUS_MESSAGES = {
-    "received": "Waiting for the virus check.",
+    "received": "Waiting to start.",  # in the queue: the virus check runs later, in the worker
     "clean": "Reading the document…",
     "ready": "Ready. You can ask about it.",
     "needs_reader": "Stored safely. This kind of file can't be read yet.",
@@ -66,6 +66,7 @@ def status_message(
     max_attempts: int | None = None,
     progress: Mapping[str, Any] | None = None,
     batch_ahead: int = 0,
+    pages_unreadable: int = 0,
 ) -> str:
     """``max_pages`` is the MAX_PAGES setting, named when a file had too many pages
     (a PDF's pages, or a TIFF's frames: ``detected_type`` says which to call it),
@@ -77,7 +78,8 @@ def status_message(
     with no progress after a try: "Waiting to try again." (council of 5 Oct 2026).
     PRD 5 Q6: a progress of ``{"step": "waiting"}`` says the reader is down; with no
     progress, ``batch_ahead`` files of the uploader's own batch still before it say
-    how many are ahead."""
+    how many are ahead. A ready document with ``pages_unreadable`` pages still flagged
+    says so (council 16 Oct 2026: such a document is ready, not failed, since e01b937d)."""
     if status == "rejected":
         return CUSTOMER_MESSAGES.get(failure_code or "", "This file was not processed.")
     if status == "failed" and failure_code == "too_many_pages":
@@ -89,7 +91,7 @@ def status_message(
     if status == "failed" and failure_code == "retries_exhausted":
         tries = f"{max_attempts} times" if max_attempts else "several times"
         return (
-            f"We tried {tries} and couldn't read this file. Upload it again, or ask your admin to look at it."
+            f"We tried {tries} and couldn't read this file. Read it again, or ask your admin to look at it."
         )
     if status == "failed" and failure_code == "unreadable":
         # PRD 5 F4: every non-blank page was unreadable; a document with one readable page is ready.
@@ -101,7 +103,10 @@ def status_message(
         # The worker came to it while the organisation was turned off (0014): nothing was read.
         return "This file was not read because your organisation was turned off. Read it again."
     if status == "failed":
-        return "This file could not be read. Upload it again, or try another copy of it."
+        return "This file could not be read. Read it again, or try another copy of it."
+    if status == "ready" and pages_unreadable > 0:
+        pages = "1 page" if pages_unreadable == 1 else f"{pages_unreadable} pages"
+        return f"Ready. {pages} couldn't be read. Open it to check."
     message = _STATUS_MESSAGES.get(status, "")
     if status in _IN_PROGRESS and progress is not None and progress.get("step") == _WAITING_STEP:
         message = READER_WAITING
@@ -206,6 +211,7 @@ def document_summary(
             max_attempts=row["max_attempts"],
             progress=row["progress"],
             batch_ahead=int(row["batch_ahead"]),
+            pages_unreadable=int(row["pages_unreadable"]),
         ),
         "progress": in_progress(row["status"], row["progress"]),
         "time_left": document_time_left(row, now=now),

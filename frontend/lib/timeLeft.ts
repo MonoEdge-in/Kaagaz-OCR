@@ -8,7 +8,8 @@
 //   usual" until the next answer, which then applies. A new step applies at once.
 // - While preparing or reading, it never counts below the time after that step's
 //   pages (the floor: after_seconds).
-// - No move past slow_after_seconds: "Taking longer than usual". Low confidence:
+// - No move past slow_after_seconds, or (preparing or reading) the countdown more than
+//   10 s past the floor: "Taking longer than usual". Low confidence:
 //   the number is labelled a rough guess, "About 3 min (rough guess)".
 //   "Estimating..." only when there is no estimate at all; "Starting..." while the
 //   file is scanned.
@@ -28,7 +29,7 @@ export interface Held {
 }
 
 export type TimeLeftView = {
-  state: "waiting" | "starting" | "estimating" | "counting" | "rough" | "almost" | "longer";
+  state: "starting" | "estimating" | "counting" | "rough" | "almost" | "longer";
   text: string;
   spoken: string;
 };
@@ -62,9 +63,14 @@ function stalled(held: Held, now: number): boolean {
   return since > held.value.slow_after_seconds;
 }
 
-export const WAITING: TimeLeftView = { state: "waiting", text: "Waiting to start", spoken: "Waiting to start" };
 export const STARTING: TimeLeftView = { state: "starting", text: "Starting\u2026", spoken: "Starting" };
 export const ESTIMATING: TimeLeftView = { state: "estimating", text: "Estimating\u2026", spoken: "Estimating the time left" };
+
+/** Preparing or reading, and the countdown is more than 10 s past the floor (council 16 Oct 2026). */
+function pastStepEnd(held: Held, now: number): boolean {
+  if (held.step !== "preparing" && held.step !== "reading") return false;
+  return held.seconds - (now - held.anchor) / 1000 < held.value.after_seconds - 10;
+}
 
 /** The seconds left at ``now``, counted down from the held answer, never below the floor. */
 export function secondsLeft(held: Held, now: number): number {
@@ -75,7 +81,7 @@ export function secondsLeft(held: Held, now: number): number {
 
 /** What to show at ``now``. */
 export function describe(held: Held, now: number, reducedMotion: boolean): TimeLeftView {
-  if (held.rising || stalled(held, now)) {
+  if (held.rising || stalled(held, now) || pastStepEnd(held, now)) {
     return { state: "longer", text: "Taking longer than usual", spoken: "Taking longer than usual" };
   }
   const left = secondsLeft(held, now);
