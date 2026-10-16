@@ -76,6 +76,7 @@ const tray = (document: DocumentSummary, folders = [{ id: INVOICES, name: "Invoi
       onRetry: () => undefined,
       tree: buildTree(folders),
       onUndone: () => undefined,
+      canReread: true,
     }),
   );
 
@@ -220,6 +221,7 @@ describe("the super admin's allow and stop", () => {
     last_activity_at: null,
     autofile_granted: false,
     autofile_on: false,
+    two_step_granted: false,
   };
 
   it("asks first, saying files already uploaded stay where they are, and stopping turns the switch off", async () => {

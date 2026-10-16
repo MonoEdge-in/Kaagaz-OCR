@@ -42,7 +42,19 @@ describe("progress", () => {
     expect(fractionAt(held, 0)).toBe(0.25);
     expect(fractionAt(held, 30_000)).toBe(0.5); // counts on between answers: 60 s in, 60 s left
     const reading = hold(null, value({ after_seconds: 80 }), "reading", 0);
-    expect(fractionAt(reading, 30_000)).toBe(60 / 140); // never below the time after reading
+    // Changed on purpose (council 16 Oct 2026): past the step's end (10 s here) it holds, never
+    // below the time after reading: 40 s in, 80 s left (was 60 / 140 at 30 s).
+    expect(fractionAt(reading, 30_000)).toBe(40 / 120);
+  });
+
+  // Council 16 Oct 2026, the "82% frozen" bar: as kaagaz/eta.py fraction_at (tests/test_eta.py).
+  it("does not climb past the step's expected end while preparing or reading", () => {
+    const held = hold(null, value({ seconds: 55, after_seconds: 20, elapsed_seconds: 3 }), "reading", 0);
+    expect(fractionAt(held, 100_000)).toBe(fractionAt(held, 35_000)); // the step's end: 35 s
+    expect(fractionAt(held, 35_000)).toBe(38 / 58);
+    expect(fractionAt(held, 20_000)).toBeLessThan(fractionAt(held, 35_000)); // moves until then
+    const after = hold(null, value({ seconds: 55, after_seconds: 20, elapsed_seconds: 3 }), "understanding", 0);
+    expect(fractionAt(after, 100_000)).toBeGreaterThan(fractionAt(after, 35_000)); // no floor after reading
   });
 
   it("never goes back, even when a new estimate says more is left", () => {
@@ -160,8 +172,9 @@ describe("a refresh", () => {
   });
 
   it("shows no stale bar while a try a backend stopped waits to come back", () => {
-    // QA, 15 Oct 2026: once, not "Waiting to start Waiting to start" (seen and spoken words are the same).
-    expect(render({ status: "received", progress: null, attempts: 0 }).match(/Waiting to start/g)).toHaveLength(1);
+    // Changed on purpose (council 16 Oct 2026): the status message itself now says "Waiting to
+    // start." (api/views.py), so the bar's place says nothing, never the words twice in the row.
+    expect(render({ status: "received", progress: null, attempts: 0 })).toBe("");
     expect(render({ status: "received", progress: null, attempts: 1 })).toBe(""); // the status message says it
     expect(render({ status: "clean", progress: null, attempts: 2 })).toBe("");
   });

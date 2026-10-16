@@ -75,6 +75,8 @@ export interface PageViewerProps {
   /** PRD 5 U3: the page's reading problems, and what a mark does when pressed (with its name). */
   readingMarks?: ReadingMark[];
   onMark?: (mark: ReadingMark, name: string) => void;
+  /** Said under the page while a box is highlighted ("Highlighted: Grand total"); else how many boxes mark spots. */
+  highlightNote?: string;
 }
 
 export function PageViewer({
@@ -91,6 +93,7 @@ export function PageViewer({
   fit = "width",
   readingMarks,
   onMark,
+  highlightNote,
 }: PageViewerProps) {
   const isCrop = crop !== undefined;
   const { ref: measureRef, box, near } = useObservedBox(isCrop);
@@ -417,9 +420,10 @@ export function PageViewer({
         </div>
         {boxes.length > 0 ? (
           <p className={`muted ${styles.note}`}>
-            {boxes.length === 1
-              ? "The highlighted box marks the spot on this page."
-              : `${boxes.length} highlighted boxes mark the spots on this page.`}
+            {highlightNote ??
+              (boxes.length === 1
+                ? "The highlighted box marks the spot on this page."
+                : `${boxes.length} highlighted boxes mark the spots on this page.`)}
           </p>
         ) : null}
       </>

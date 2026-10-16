@@ -230,6 +230,8 @@ def test_must_change_blocks_every_route_except_password_logout_and_me(db: Databa
         ("POST", "/api/auth/login"),
         ("POST", "/api/auth/admin/login"),
         ("POST", "/api/auth/admin/enrol"),
+        ("GET", "/api/auth/signup"),
+        ("POST", "/api/auth/signup"),
     }
     allowed = {("POST", "/api/auth/password"), ("POST", "/api/auth/logout"), ("GET", "/api/auth/me")}
     calls = route_calls(api.app)

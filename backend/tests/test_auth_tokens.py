@@ -512,6 +512,7 @@ def _user(**changes: Any) -> CurrentUser:
         "must_change_password": False,
         "totp_enabled": False,
         "delete_forever_allowed": False,
+        "two_step_allowed": True,
     }
     return CurrentUser(**{**fields, **changes})
 
@@ -668,6 +669,8 @@ def _forever(client: TestClient, confirm: dict[str, Any] | None = None) -> tuple
         ({"delete_forever_allowed": True}, "app", (403, "admin_session_required")),
         ({"delete_forever_allowed": True}, "admin", (403, "two_step_required")),
         ({"totp_enabled": True}, "admin", (200, None)),
+        # Without the two-step grant (0029), still only in an admin session (and see below).
+        ({"two_step_allowed": False}, "app", (403, "admin_session_required")),
         ({"role": "member"}, "app", (403, "forbidden")),
         ({"role": "reviewer", "delete_forever_allowed": True}, "app", (200, None)),
     ],
@@ -686,4 +689,15 @@ def test_a_granted_member_needs_their_own_fresh_confirm_token(monkeypatch: pytes
     assert _forever(client) == (403, "password_confirm_required")  # none typed
     for stale in ({"exp": NOW}, {"uid": CID}, {"ver": 2}):  # expired, another user's, an older session's
         assert _forever(client, {**CONFIRM, **stale}) == (403, "password_confirm_required")
+    assert _forever(client, CONFIRM) == (200, None)
+
+
+@pytest.mark.parametrize("totp_enabled", [False, True])
+def test_an_admin_without_two_step_allowed_needs_a_fresh_confirm_token(
+    monkeypatch: pytest.MonkeyPatch, totp_enabled: bool
+) -> None:
+    client = _client(monkeypatch, _user(two_step_allowed=False, totp_enabled=totp_enabled))
+    _cookie(client, _session(scope="admin", expires_at=NOW + 60))
+    assert _forever(client) == (403, "password_confirm_required")  # a stored code is not enough
+    assert _forever(client, {**CONFIRM, "exp": NOW}) == (403, "password_confirm_required")
     assert _forever(client, CONFIRM) == (200, None)

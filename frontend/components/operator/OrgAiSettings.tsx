@@ -8,19 +8,23 @@
 // Ensemble (the organisation's own switch, never a default) and the monthly budget in US
 // dollars: money is shown here, in the operator console, and nowhere an organisation sees.
 // A status line says which areas are its own. "Use platform defaults" empties both areas.
+// Each section says "Same as platform default" or "Changed from platform default", with
+// "Reset section" (board 9). Answering shows what the organisation's people will see, and
+// the budget its rough rupees and this month's spend. A save bar at the foot lists the
+// unsaved changes, with Discard and Save (both off while nothing changed).
 // Saving asks for a fresh code (step-up); a refusal is said next to the field it is about.
 // Once the settings load, the focus moves to the first control, and it goes back to the
 // row's "AI settings" button when the dialog closes. AiFields is shared with the platform
 // defaults (PlatformDefaults.tsx).
 
 import { useCallback, useEffect, useState } from "react";
-import type { FormEvent } from "react";
+import type { FormEvent, ReactNode } from "react";
 import { CodeField } from "@/app/admin/login/CodeField";
 import { codeError, normalizeCode } from "@/app/admin/login/adminSignIn";
 import { ActionDialog } from "@/components/documents/ActionDialog";
-import { ApiError, getOperatorModels, getOrgAi, putOrgAi } from "@/lib/api";
+import { ApiError, getOperatorInsights, getOperatorModels, getOrgAi, putOrgAi } from "@/lib/api";
 import type { AiEnv, AiLevel, AiValues, OperatorModel, Organisation, OrgAiReply } from "@/lib/types";
-import { canCloseDialog, operatorErrorMessage } from "./logic";
+import { canCloseDialog, countText, operatorErrorMessage } from "./logic";
 import {
   DYNAMIC_HINT,
   LEVELS,
@@ -28,18 +32,24 @@ import {
   VENDOR_NOT_ALLOWED,
   aiBody,
   aiErrors,
+  changesText,
   draftOf,
-  follows,
   followDefaults,
   inheritedText,
+  inrText,
+  monthSpentText,
   offered,
   parseBudget,
+  per1000Text,
+  pickerText,
   refusalField,
+  resetSection,
+  sameAsDefault,
   statusText,
   toggled,
   toggledLevel,
 } from "./models";
-import type { AiDraft, AiErrors, AiField, Area } from "./models";
+import type { AiDraft, AiErrors, AiField, Area, Section } from "./models";
 import styles from "./Operator.module.css";
 
 /** The row's "AI settings" button, where the focus goes back. */
@@ -64,7 +74,7 @@ export function firstProblem(errors: AiErrors): AiField | null {
 }
 
 export function OrgAiSettings({ org, onClose, onSaved }: { org: Organisation; onClose(): void; onSaved(message: string): void }) {
-  const [loaded, setLoaded] = useState<{ catalogue: OperatorModel[]; reply: OrgAiReply } | null>(null);
+  const [loaded, setLoaded] = useState<{ catalogue: OperatorModel[]; reply: OrgAiReply; spent: string | null } | null>(null);
   const [draft, setDraft] = useState<AiDraft | null>(null);
   const [loadFailed, setLoadFailed] = useState<string | null>(null);
   const [errors, setErrors] = useState<AiErrors>({});
@@ -80,10 +90,12 @@ export function OrgAiSettings({ org, onClose, onSaved }: { org: Organisation; on
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([getOperatorModels(), getOrgAi(org.id)]).then(
-      ([catalogue, reply]) => {
+    // This month's spend comes from the insights (one day is the smallest ask); without them the line is left out.
+    Promise.all([getOperatorModels(), getOrgAi(org.id), getOperatorInsights(1).catch(() => null)]).then(
+      ([catalogue, reply, insights]) => {
         if (cancelled) return;
-        setLoaded({ catalogue: catalogue.items, reply });
+        const spent = monthSpentText(insights?.organisations.find((each) => each.organisation_id === org.id));
+        setLoaded({ catalogue: catalogue.items, reply, spent });
         setDraft(draftOf(reply.own, reply));
         setLoadFailed(null);
       },
@@ -94,9 +106,13 @@ export function OrgAiSettings({ org, onClose, onSaved }: { org: Organisation; on
     };
   }, [org.id, attempt]);
 
+  const saved = loaded ? draftOf(loaded.reply.own, loaded.reply) : null;
+  const changes = saved && draft ? changesText(saved, draft, loaded?.catalogue ?? []) : [];
+  const unchanged = changes.length === 0;
+
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (busy || !draft) return;
+    if (busy || !draft || unchanged) return;
     const found = aiErrors(draft, false);
     const badCode = codeError(code);
     setErrors(found);
@@ -171,6 +187,8 @@ export function OrgAiSettings({ org, onClose, onSaved }: { org: Organisation; on
           </div>
           <AiFields
             platform={false}
+            orgName={org.name}
+            spent={loaded.spent}
             catalogue={loaded.catalogue}
             saved={loaded.reply.own}
             defaults={loaded.reply.defaults}
@@ -197,14 +215,39 @@ export function OrgAiSettings({ org, onClose, onSaved }: { org: Organisation; on
               {errors.form}
             </p>
           )}
-          <div className={styles.buttons}>
-            <button type="button" className="btn" onClick={onClose} disabled={busy}>
-              Cancel
-            </button>
-            <button type="submit" className="btn btn-primary" disabled={busy} aria-busy={busy || undefined}>
-              {busy && <span className="spinner" aria-hidden="true" />}
-              Save
-            </button>
+          <div className={styles.saveBar}>
+            <p className={styles.changes}>
+              <strong id="ai-changes-count" aria-live="polite">
+                {unchanged ? "No unsaved changes" : countText(changes.length, "unsaved change", "unsaved changes")}
+              </strong>
+              {!unchanged && <span id="ai-changes"> {changes.join(" · ")}</span>}
+            </p>
+            <div className={styles.buttons}>
+              <button
+                type="button"
+                className="btn"
+                disabled={busy || unchanged}
+                onClick={(event) => {
+                  // The button goes off: the focus moves to the form's first control.
+                  event.currentTarget.form?.querySelector<HTMLElement>("input, select, button")?.focus();
+                  setDraft(saved);
+                  setErrors({});
+                  setReset(false);
+                }}
+              >
+                Discard
+              </button>
+              <button
+                type="submit"
+                className="btn btn-primary"
+                disabled={busy || unchanged}
+                aria-busy={busy || undefined}
+                aria-describedby={unchanged ? "ai-changes-count" : "ai-changes-count ai-changes"}
+              >
+                {busy && <span className="spinner" aria-hidden="true" />}
+                Save
+              </button>
+            </div>
           </div>
         </form>
       )}
@@ -224,11 +267,53 @@ function FieldError({ field, errors }: { field: AiField; errors: AiErrors }) {
 const describedBy = (field: AiField, errors: AiErrors, hint?: string) =>
   [errors[field] ? `${fieldId(field)}-error` : "", hint ?? ""].filter(Boolean).join(" ") || undefined;
 
+/** One section of the fields. An organisation's says where it stands against the platform
+ * default and, once changed, offers "Reset section" (board 9); the platform's says neither. */
+function SectionBox(props: {
+  title: string;
+  section: Section;
+  platform: boolean;
+  draft: AiDraft;
+  busy: boolean;
+  onChange(draft: AiDraft): void;
+  children: ReactNode;
+}) {
+  const { title, section, platform, draft, busy, onChange, children } = props;
+  const same = sameAsDefault(draft, section);
+  return (
+    <fieldset className={styles.area} disabled={busy}>
+      <legend>
+        {title}
+        {!platform && <span className={styles.sectionTag}>{same ? "Same as platform default" : "Changed from platform default"}</span>}
+      </legend>
+      {!platform && !same && (
+        <div className={styles.sectionTools}>
+          <button
+            type="button"
+            className="btn"
+            aria-label={`Reset section: ${title}`}
+            onClick={(event) => {
+              // The button goes once the section is back: the focus moves to its first field.
+              event.currentTarget.closest("fieldset")?.querySelector<HTMLElement>("input, select")?.focus();
+              onChange(resetSection(draft, section));
+            }}
+          >
+            Reset section
+          </button>
+        </div>
+      )}
+      {children}
+    </fieldset>
+  );
+}
+
 /** The two areas' fields. ``platform``: the defaults (no Ensemble, no budget; an empty
  * list is the server's model); else an organisation's (an empty list or "Platform
  * default" follows ``defaults``). */
 export function AiFields(props: {
   platform: boolean;
+  orgName?: string; // an organisation's: "People at <name> will see"
+  spent?: string | null; // an organisation's: "This month: $X used", when known
   catalogue: OperatorModel[];
   saved: AiValues;
   defaults: AiValues;
@@ -239,16 +324,13 @@ export function AiFields(props: {
   busy: boolean;
   onChange(draft: AiDraft): void;
 }) {
-  const { platform, catalogue, saved, defaults, env, maxAgents, draft, errors, busy, onChange } = props;
+  const { platform, orgName, spent, catalogue, saved, defaults, env, maxAgents, draft, errors, busy, onChange } = props;
   const from = (field: Parameters<typeof inheritedText>[0]) => inheritedText(field, defaults, env, catalogue);
-  const area = follows(aiBody(draft));
+  const section = { platform, draft, busy, onChange };
+  const rupees = inrText(parseBudget(draft.budget));
   return (
     <>
-      <fieldset className={styles.area} disabled={busy}>
-        <legend>
-          Scanning
-          {!platform && area.scan === "all" && <span className={styles.fromDefaults}>From platform defaults</span>}
-        </legend>
+      <SectionBox title="Scanning" section="scan" {...section}>
         <ModelChoices
           area="scan"
           title="Models its scans may be read with"
@@ -303,13 +385,9 @@ export function AiFields(props: {
         <span id="ai-dynamic-hint" className="hint">
           {DYNAMIC_HINT} Needs at least two scanning models.
         </span>
-      </fieldset>
+      </SectionBox>
 
-      <fieldset className={styles.area} disabled={busy}>
-        <legend>
-          Answering
-          {!platform && area.chat === "all" && <span className={styles.fromDefaults}>From platform defaults</span>}
-        </legend>
+      <SectionBox title="Answering" section="chat" {...section}>
         <ModelChoices
           area="chat"
           title="Models people may ask"
@@ -355,47 +433,58 @@ export function AiFields(props: {
             </select>
           </div>
         )}
-      </fieldset>
+        {orgName && <p className="hint">{pickerText(orgName, draft, defaults, env, catalogue)}</p>}
+      </SectionBox>
 
       {!platform && (
         <>
-          <div className="field">
-            <label className={styles.choice}>
+          <SectionBox title="Ensemble" section="ensemble" {...section}>
+            <div className="field">
+              <label className={styles.choice}>
+                <input
+                  type="checkbox"
+                  checked={draft.ensemble}
+                  disabled={busy}
+                  aria-describedby="ai-ensemble-hint"
+                  onChange={(event) => onChange({ ...draft, ensemble: event.target.checked })}
+                />
+                <span>Ensemble: models work together</span>
+              </label>
+              <span id="ai-ensemble-hint" className="hint">
+                Up to {maxAgents} models. Scanning: the main model reads each page; every value that needs review is
+                read by the others too, and the value most of them read is kept, or it stays Needs review. Answering:
+                people may ask more than one model. Never a platform default.
+              </span>
+            </div>
+          </SectionBox>
+          <SectionBox title="Budget" section="budget" {...section}>
+            <div className="field">
+              <label htmlFor={fieldId("budget")}>Monthly AI budget, in US dollars</label>
               <input
-                type="checkbox"
-                checked={draft.ensemble}
+                id={fieldId("budget")}
+                className="input"
+                type="number"
+                inputMode="decimal"
+                min="0.01"
+                step="0.01"
+                value={draft.budget}
                 disabled={busy}
-                aria-describedby="ai-ensemble-hint"
-                onChange={(event) => onChange({ ...draft, ensemble: event.target.checked })}
+                onChange={(event) => onChange({ ...draft, budget: event.target.value })}
+                aria-invalid={errors.budget ? true : undefined}
+                aria-describedby={describedBy("budget", errors, rupees ? "ai-budget-hint ai-budget-inr" : "ai-budget-hint")}
               />
-              <span>Ensemble: models work together</span>
-            </label>
-            <span id="ai-ensemble-hint" className="hint">
-              Up to {maxAgents} models. Scanning: the main model reads each page; every value that needs review is
-              read by the others too, and the value most of them read is kept, or it stays Needs review. Answering:
-              people may ask more than one model. Never a platform default.
-            </span>
-          </div>
-          <div className="field">
-            <label htmlFor={fieldId("budget")}>Monthly AI budget, in US dollars</label>
-            <input
-              id={fieldId("budget")}
-              className="input"
-              type="number"
-              inputMode="decimal"
-              min="0.01"
-              step="0.01"
-              value={draft.budget}
-              disabled={busy}
-              onChange={(event) => onChange({ ...draft, budget: event.target.value })}
-              aria-invalid={errors.budget ? true : undefined}
-              aria-describedby={describedBy("budget", errors, "ai-budget-hint")}
-            />
-            <span id="ai-budget-hint" className="hint">
-              Warn only, and seen only here. Leave it empty for no budget.
-            </span>
-            <FieldError field="budget" errors={errors} />
-          </div>
+              <span id="ai-budget-hint" className="hint">
+                Warn only, and seen only here. Leave it empty for no budget.
+              </span>
+              {rupees && (
+                <span id="ai-budget-inr" className="hint">
+                  {rupees}
+                </span>
+              )}
+              <FieldError field="budget" errors={errors} />
+            </div>
+            {spent && <p className="hint">{spent}</p>}
+          </SectionBox>
         </>
       )}
     </>
@@ -435,6 +524,7 @@ function ModelChoices(props: {
               />
               <span>
                 {model.name}
+                {area === "scan" && <span className={styles.statusNote}>{per1000Text(model)}</span>}
                 {!model.vendor_allowed && <span className={styles.statusNote}>{VENDOR_NOT_ALLOWED}</span>}
               </span>
             </label>

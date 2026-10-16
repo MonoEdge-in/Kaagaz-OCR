@@ -8,13 +8,14 @@
 // their names (PRD 3 Q3, insideSearch.ts). The folder and the filters live in
 // the page address (libraryQuery.ts), so a reload keeps them and Back returns to the folder
 // before. While any document is still being checked or read, the list is
-// asked for again (lib/poll.ts: from every 3 s to every 15 s, never while the
+// asked for again (lib/poll.ts: every 3 s, then every 5 s, never while the
 // tab is hidden); once all have settled, it stops. Each finished upload asks
 // for it at once; the screen is never reloaded.
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, FormEvent } from "react";
+import { canReview } from "@/components/review/review";
 import { Drawer } from "@/components/ui/Drawer";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Icon } from "@/components/ui/Icon";
@@ -337,7 +338,7 @@ export function DocumentsView({ library }: { library: LibraryState }) {
   const uploadButton = (
     <button type="button" className="btn btn-primary" onClick={openPicker}>
       <Icon name="upload" />
-      Upload files
+      Upload<span className="narrow-hide"> files</span>
     </button>
   );
   const readerSelect = (
@@ -551,6 +552,7 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                 onRetry={(key) => void uploads.retry(key)}
                 tree={tree}
                 onUndone={() => setReload((n) => n + 1)}
+                canReread={canReview(me.user.role)}
               />
               {!library.trash && <UploadWords entries={uploads.entries} settled={uploads.settled} />}
 
@@ -571,6 +573,7 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                             enterKeyHint="search"
                             autoComplete="off"
                             maxLength={MAX_SEARCH_LENGTH}
+                            placeholder="Search documents"
                             ref={searchRef}
                             defaultValue={q}
                           />

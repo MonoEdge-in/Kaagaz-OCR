@@ -80,7 +80,7 @@ def test_a_reviewer_or_an_admin_sends_a_document_to_be_read_again(db: Database, 
     assert (body["id"], body["status"], body["attempts"], body["max_attempts"]) == (doc, "received", 0, None)
     assert (body["failure_code"], body["status_message"], body["progress"]) == (
         None,
-        "Waiting for the virus check.",
+        "Waiting to start.",  # changed on purpose (council 16 Oct 2026): it waits in the queue
         None,
     )
     assert stored(api, c, doc) == ("received", None, 0, None, None, True)

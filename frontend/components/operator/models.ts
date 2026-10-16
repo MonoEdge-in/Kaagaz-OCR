@@ -5,8 +5,8 @@
 // can prove them. Dollars stay in the operator console: org admins and members never see
 // money (Tushar, 15 Oct 2026).
 
-import { formatUsd } from "@/lib/format";
-import type { AiDefaults, AiEnv, AiLevel, AiValues, OperatorModel, OperatorUsageRow, UsageTotals } from "@/lib/types";
+import { PART_NOT_KNOWN, formatUsd } from "@/lib/format";
+import type { AiDefaults, AiEnv, AiLevel, AiValues, OperatorModel, OperatorUsageRow, OrgInsight, UsageTotals } from "@/lib/types";
 import { countText } from "./logic";
 
 const TOKENS_PER_M = 1_000_000;
@@ -50,6 +50,55 @@ export function pageCostText(model: OperatorModel): string {
   if (cost === null) return "Cost not measured yet";
   const text = cost.usd < 0.01 ? "under $0.01 a page" : `about ${usd(cost.usd)} a page`;
   return cost.rough ? `${text} (rough estimate)` : text;
+}
+
+/** A scan model's cost in the AI settings (board 9): "$1.92 per 1,000 pages". */
+export function per1000Text(model: OperatorModel): string {
+  const cost = pageCost(model);
+  if (cost === null) return "Cost not measured yet";
+  const text = `${usd(cost.usd * 1000)} per 1,000 pages`;
+  return cost.rough ? `${text} (rough estimate)` : text;
+}
+
+// ponytail: one rate set by hand (Oct 2026), so the rupees drift from the real rate; read a
+// live rate if anyone ever acts on the rupee figure rather than the dollars.
+export const INR_PER_USD = 88;
+const rupees = new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 });
+
+/** The budget in rupees, roughly: "≈ ₹10,560 a month (at ₹88 per $)"; null without a budget. */
+export const inrText = (dollars: number | null | undefined) =>
+  typeof dollars === "number" ? `≈ ${rupees.format(dollars * INR_PER_USD)} a month (at ₹${INR_PER_USD} per $)` : null;
+
+/** "This month: $58.10 used", from the operator insights; null when no cost is known. */
+export function monthSpentText(org: OrgInsight | undefined): string | null {
+  if (!org || org.month_cost_usd === null) return null;
+  const part = org.month_cost_part_unknown ? ` ${PART_NOT_KNOWN}` : "";
+  return `This month: ${usd(org.month_cost_usd, org.month_cost_estimated)} used${part}`;
+}
+
+const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
+
+/** A model's job in Compare models (board 8): "Scan default (High) · chat default (Medium)",
+ * else what it can do: "Chat only · not used for scan". */
+export function jobText(model: OperatorModel, platform: AiDefaults | null): string {
+  const jobs: string[] = [];
+  if (platform) {
+    const { defaults, env } = platform;
+    const scanDefault = defaults.scan_models.length > 0 ? defaults.scan_default : env.scan_model;
+    const chatDefault = defaults.chat_models.length > 0 ? defaults.chat_default : env.chat_model;
+    const scanLevel = defaults.scan_thinking ? LEVEL_WORDS[defaults.scan_thinking] : env.scan_thinking;
+    if (model.id === scanDefault) jobs.push(`scan default (${scanLevel})`);
+    if (model.id === chatDefault)
+      jobs.push(defaults.chat_default_level ? `chat default (${LEVEL_WORDS[defaults.chat_default_level]})` : "chat default");
+  }
+  if (jobs.length === 0) {
+    const scan = canScan(model);
+    const chat = canAnswer(model);
+    if (model.enabled_at === null) jobs.push("not enabled");
+    else if (!model.vendor_allowed) jobs.push("never used: its maker is not allowed");
+    else jobs.push(scan && chat ? "scan and chat" : scan ? "scan only · not used for chat" : chat ? "chat only · not used for scan" : "not used for scan or chat");
+  }
+  return capital(jobs.join(" · "));
 }
 
 export const yesNo = (value: boolean) => (value ? "Yes" : "No");
@@ -124,12 +173,34 @@ export function draftOf(values: AiValues, extra: { ensemble: boolean; ai_budget_
   };
 }
 
+/** A section of an organisation's AI settings (board 9). Ensemble and the budget have no
+ * platform default: off and no budget stand for it. */
+export type Section = "scan" | "chat" | "ensemble" | "budget";
+
+/** Does a section of the draft follow the platform default ("Same as platform default")? */
+export function sameAsDefault(draft: AiDraft, section: Section): boolean {
+  if (section === "ensemble") return !draft.ensemble;
+  if (section === "budget") return draft.budget.trim() === "";
+  return follows(aiBody(draft))[section] === "all";
+}
+
+/** "Reset section": that section back to the platform default, the others as they are. */
+export function resetSection(draft: AiDraft, section: Section): AiDraft {
+  switch (section) {
+    case "scan":
+      return { ...draft, scan_models: [], scan_default: null, scan_thinking: null, dynamic: null };
+    case "chat":
+      return { ...draft, chat_models: [], chat_default: null, chat_levels: [], chat_default_level: null };
+    case "ensemble":
+      return { ...draft, ensemble: false };
+    case "budget":
+      return { ...draft, budget: "" };
+  }
+}
+
 /** Follow the platform defaults in both areas: no own models, levels or switches, and no
  * Ensemble (it is never a default). The budget stays. */
-export const followDefaults = (draft: AiDraft): AiDraft => ({
-  ...draftOf({ scan_models: [], scan_default: null, chat_models: [], chat_default: null, scan_thinking: null, chat_levels: null, chat_default_level: null, dynamic: null }),
-  budget: draft.budget,
-});
+export const followDefaults = (draft: AiDraft): AiDraft => resetSection(resetSection(resetSection(draft, "scan"), "chat"), "ensemble");
 
 /** Tick or untick a model of an area. The first ticked becomes the area's default;
  * unticking the default moves it to the first left, or to none. */
@@ -242,28 +313,84 @@ export function inheritedText(
       return defaults.chat_models.length > 0 ? namesOf(defaults.chat_models, catalogue, defaults.chat_default) : `the server's model (${env.chat_model})`;
     case "scan_thinking":
       return defaults.scan_thinking !== null ? LEVEL_WORDS[defaults.scan_thinking] : `the server's level (${env.scan_thinking})`;
-    case "chat_levels": {
-      const levels = defaults.chat_levels ?? [];
-      const words = levels.map((level) => LEVEL_WORDS[level]).join(", ");
-      return defaults.chat_default_level ? `${words}; default ${LEVEL_WORDS[defaults.chat_default_level]}` : words;
-    }
+    case "chat_levels":
+      return levelText(defaults);
     case "dynamic":
       return defaults.dynamic ? "On" : "Off";
   }
 }
 
-// The platform defaults' areas, in the order the save's summary says them.
-const DEFAULT_AREAS: { area: keyof AiDefaults["orgs_inheriting"]; label: string; changed(a: AiValues, b: AiValues): boolean }[] = [
-  { area: "scan_models", label: "scanning models", changed: (a, b) => !same(a.scan_models, b.scan_models) || a.scan_default !== b.scan_default },
-  { area: "scan_thinking", label: "scanning level", changed: (a, b) => a.scan_thinking !== b.scan_thinking },
-  { area: "dynamic", label: "Dynamic", changed: (a, b) => a.dynamic !== b.dynamic },
-  { area: "chat_models", label: "answering models", changed: (a, b) => !same(a.chat_models, b.chat_models) || a.chat_default !== b.chat_default },
+/** "High, Medium; default Medium". */
+function levelText(values: Pick<AiValues, "chat_levels" | "chat_default_level">): string {
+  const words = (values.chat_levels ?? []).map((level) => LEVEL_WORDS[level]).join(", ");
+  return values.chat_default_level ? `${words}; default ${LEVEL_WORDS[values.chat_default_level]}` : words;
+}
+
+/** Board 9: "People at Sharma Traders will see: Two (default), One; levels High, Medium;
+ * default Medium", from the draft, or the platform defaults where it follows them. */
+export function pickerText(orgName: string, draft: AiDraft, defaults: AiValues, env: AiEnv, catalogue: OperatorModel[]): string {
+  const own = aiBody(draft);
+  const models = own.chat_models.length > 0 ? namesOf(own.chat_models, catalogue, own.chat_default) : inheritedText("chat_models", defaults, env, catalogue);
+  const levels = own.chat_levels !== null ? levelText(own) : inheritedText("chat_levels", defaults, env, catalogue);
+  return `People at ${orgName} will see: ${models}; levels ${levels}`;
+}
+
+// The platform defaults' areas, in the order the save's summary says them; `now` says an
+// organisation's value, for its save bar.
+const DEFAULT_AREAS: {
+  area: keyof AiDefaults["orgs_inheriting"];
+  label: string;
+  changed(a: AiValues, b: AiValues): boolean;
+  now(v: AiValues, catalogue: OperatorModel[]): string;
+}[] = [
+  {
+    area: "scan_models",
+    label: "scanning models",
+    changed: (a, b) => !same(a.scan_models, b.scan_models) || a.scan_default !== b.scan_default,
+    now: (v, catalogue) => (v.scan_models.length > 0 ? namesOf(v.scan_models, catalogue, v.scan_default) : "platform defaults"),
+  },
+  {
+    area: "scan_thinking",
+    label: "scanning level",
+    changed: (a, b) => a.scan_thinking !== b.scan_thinking,
+    now: (v) => (v.scan_thinking ? LEVEL_WORDS[v.scan_thinking] : "platform default"),
+  },
+  {
+    area: "dynamic",
+    label: "Dynamic",
+    changed: (a, b) => a.dynamic !== b.dynamic,
+    now: (v) => (v.dynamic === null ? "platform default" : v.dynamic ? "On" : "Off"),
+  },
+  {
+    area: "chat_models",
+    label: "answering models",
+    changed: (a, b) => !same(a.chat_models, b.chat_models) || a.chat_default !== b.chat_default,
+    now: (v, catalogue) => (v.chat_models.length > 0 ? namesOf(v.chat_models, catalogue, v.chat_default) : "platform defaults"),
+  },
   {
     area: "chat_levels",
     label: "answering levels",
     changed: (a, b) => !same(a.chat_levels ?? [], b.chat_levels ?? []) || a.chat_default_level !== b.chat_default_level,
+    now: (v) => (v.chat_levels !== null ? levelText(v) : "platform defaults"),
   },
 ];
+
+const budgetWords = (text: string) => {
+  const value = parseBudget(text);
+  return value === null ? "none" : value === undefined ? text.trim() : usd(value);
+};
+
+/** The save bar's list (board 9): what saving the draft changes, in words; empty: nothing. */
+export function changesText(saved: AiDraft, draft: AiDraft, catalogue: OperatorModel[]): string[] {
+  const [before, after] = [aiBody(saved), aiBody(draft)];
+  const changes = DEFAULT_AREAS.filter((each) => each.changed(before, after)).map(
+    (each) => `${capital(each.label)}: ${each.now(after, catalogue)}`,
+  );
+  if (saved.ensemble !== draft.ensemble) changes.push(`Ensemble: ${draft.ensemble ? "on" : "off"}`);
+  const [was, now] = [budgetWords(saved.budget), budgetWords(draft.budget)];
+  if (was !== now) changes.push(`Budget: ${was} to ${now}`);
+  return changes;
+}
 
 const same = (a: string[], b: string[]) => [...a].sort().join("\n") === [...b].sort().join("\n");
 

@@ -160,6 +160,11 @@ export const pageImageUrl = (documentId: string, pageNo: number) =>
 export const login = (email: string, password: string) =>
   request<Me>("POST", "/auth/login", { email, password });
 export const logout = () => request<void>("POST", "/auth/logout");
+/** Whether anyone may create an organisation at /signup (SELF_SIGNUP_ENABLED). */
+export const signUpOpen = () => request<{ enabled: boolean }>("GET", "/auth/signup");
+/** A new organisation and its first admin; signs in as that admin (an admin session). */
+export const signUp = (body: { organisation_name: string; name: string; email: string; password: string }) =>
+  request<Me>("POST", "/auth/signup", body);
 export const me = () => request<Me>("GET", "/auth/me");
 
 /** The admin screen's sign-in. The code is needed only once the admin has turned 2FA on. */
@@ -499,6 +504,9 @@ export const enableOrg = (id: string) => request<unknown>("POST", `/operator/org
 /** Feature 28: allow or stop auto-filing; stopping it also switches it off. */
 export const setOrgAutofile = (id: string, granted: boolean) =>
   request<unknown>("PUT", `/operator/orgs/${id}/autofile`, { granted });
+/** Allow or stop two-step sign-in for its admins; stopping it keeps each admin's code. */
+export const setOrgTwoStep = (id: string, granted: boolean) =>
+  request<unknown>("PUT", `/operator/orgs/${id}/two-step`, { granted });
 /** A disabled organisation, its name typed exactly (step-up); deleted after the grace period. */
 export const scheduleDelete = (id: string, name: string, code: string) =>
   request<unknown>("POST", `/operator/orgs/${id}/schedule-delete`, { name, code });

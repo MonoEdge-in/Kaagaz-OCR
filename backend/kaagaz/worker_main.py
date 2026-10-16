@@ -231,8 +231,15 @@ class MarkExhausted:
         )
 
 
-def admission(reader_state: Callable[[], str], slot: Admit) -> Admit:
-    """The worker's ``admit`` (PRD 5 Q5): while ``reader_state()`` (the gate's state) is
+STOPPING = "stopping"  # a job handed back by a worker that is stopping
+
+
+def admission(
+    reader_state: Callable[[], str], slot: Admit, stopping: Callable[[], bool] = lambda: False
+) -> Admit:
+    """The worker's ``admit`` (PRD 5 Q5): once ``stopping()`` (SIGTERM came while the queue
+    was polled), the job is handed straight back for another worker (council 16 Oct 2026),
+    never started and then cut off by Docker; while ``reader_state()`` (the gate's state) is
     ``key_problem``, every job is handed back for KEY_PROBLEM_DEFER_SECONDS; otherwise
     ``slot(job)`` (FairShare.slot) holds the customer's slot for the try, or hands the
     job back. Each hand-back is logged at debug with the job's ids and a fixed code,
@@ -243,6 +250,8 @@ def admission(reader_state: Callable[[], str], slot: Admit) -> Admit:
         ids = {"customer_id": job.customer_id, "document_id": job.document_id}
         with contextlib.ExitStack() as held:
             try:
+                if stopping():
+                    raise Deferred(0, STOPPING)
                 if reader_state() == READER_KEY_PROBLEM:
                     raise Deferred(KEY_PROBLEM_DEFER_SECONDS, READER_KEY_PROBLEM)
                 held.enter_context(slot(job))
@@ -379,6 +388,10 @@ class EmbedMissing:
             )
         if done.down is None:
             self._backoff = EMBED_EVERY
+            if done.written >= EMBED_PASS_PIECES:
+                # A full pass: more are waiting (Ready comes before vectors, fast scan), so the
+                # next turn runs again rather than in EMBED_EVERY (council 16 Oct 2026).
+                self._next = now
         else:
             logger.warning("model unavailable, vectors wait", extra={"code": done.down})
             self._next = now + self._backoff
@@ -606,7 +619,7 @@ def _serve(settings: Settings) -> None:
             customer, document, now=_utc_now(), max_attempts=settings.job_max_attempts
         ),
         record_attempt=documents.record_attempt,
-        admit=admission(lambda: gate.status()[0], fair_share.slot),
+        admit=admission(lambda: gate.status()[0], fair_share.slot, stop.is_set),
     )
     purge = functools.partial(_purge, db, storage, settings.trash_days)
     embed = None if model is None else functools.partial(embed_missing, db, model, limit=EMBED_PASS_PIECES)

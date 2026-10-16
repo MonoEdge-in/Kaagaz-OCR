@@ -56,7 +56,7 @@ _BASE: dict[str, Any] = {
     "ocr_thinking_level": "low",
     "ocr_retry_media_resolution": "high",  # the "detail" shape sends low or high only
     "ocr_retry_thinking_level": "high",
-    "ocr_page_concurrency": 6,
+    "ocr_page_concurrency": 8,
     "careful_early_max_pages": 2,
     "cpu_workers": 2,
     "max_check_crops": 200,
@@ -110,6 +110,7 @@ _BASE: dict[str, Any] = {
     "timezone": "Asia/Kolkata",
     "rate_limit_per_minute": 1000,
     "chat_questions_per_minute": 1000,
+    "self_signup_enabled": True,
     "log_level": "WARNING",
 }
 

@@ -16,6 +16,7 @@ import {
   valueText,
 } from "@/components/documents/uploadStages";
 import type { Shown, StageTimes } from "@/components/documents/uploadStages";
+import { estimateIngestSeconds } from "@/components/documents/logic";
 import type { UploadState } from "@/components/documents/logic";
 import { uploadDocument } from "@/lib/api";
 import { documentFraction } from "@/lib/progress";
@@ -124,6 +125,14 @@ describe("the upload bar (U10)", () => {
     expect(sent).toBeLessThan(0.5);
     const saved = jobFraction({ kind: "saving" }, SIZE, READ_SECONDS, times(0, 10_000), 60_000);
     expect(saved).toBeLessThan(0.5);
+  });
+
+  // Council 16 Oct 2026: Gemini reads a photo in 30 to 130 s, so its 2 MB of bytes (4 s at the
+  // assumed speed) are a small part of the job, not 30% of it as with 7 s a page.
+  it("weights reading a photo at 35 s: after its last byte a 2 MB image is under 15%", () => {
+    const size = 2 * MB;
+    const sent = jobFraction({ kind: "sending", fraction: 1 }, size, estimateIngestSeconds("image", size), times(0), 4000);
+    expect(sent).toBeLessThan(0.15);
   });
 
   it("weights sending by the measured speed: a fast upload is a small part of the bar", () => {

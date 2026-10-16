@@ -114,6 +114,11 @@
   .ask {
     flex: 1 1 auto;
   }
+
+  /* The Scanned text button says "Text"; its whole name is still read out. */
+  .textWord {
+    text-transform: capitalize;
+  }
 }
 
 /* The versions: one small link per version, the one being viewed filled in. */
@@ -206,17 +211,28 @@
   }
 }
 
-/* A wide window: the page column is only as wide as a page fitted to the
-   window's height needs (an A4 page plus its frame; never past 55%), and the
-   panels take the rest. */
+/* A wide window (board 3): three columns. The page column is only as wide as
+   a page fitted to the window's height needs (an A4 page plus its frame; never
+   past 40%), and the panels take the rest as two equal columns: the page's own
+   panels with Attention and Values found, then the card, related documents,
+   the invoice and the story. Narrower, the two groups stack as one column. */
 @media (min-width: 90rem) and (min-height: 36rem) {
   .layout {
-    grid-template-columns: minmax(0, min(calc((100svh - 7rem) * 0.8), 55%)) minmax(0, 1fr);
+    grid-template-columns: minmax(0, min(calc((100svh - 7rem) * 0.8), 40%)) minmax(0, 1fr);
+  }
+
+  .panels {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: var(--space-5);
+    align-items: start;
   }
 }
 
 .viewer,
-.panels {
+.panels,
+.panelsMain,
+.panelsSide {
   min-width: 0;
 }
 
@@ -304,13 +320,20 @@
   font-weight: 600;
 }
 
-.labelCell {
+/* Label and reason: the badge stays on one line, its reason wraps under it. */
+.labelCell :global(.badge) {
   white-space: nowrap;
 }
 
-.reasonCell {
+.reason {
+  margin-top: var(--space-1);
   font-size: var(--fs-sm);
   color: var(--fg-muted);
+}
+
+/* "Show all N" under a long values list: quiet, at the list's start. */
+.showAll {
+  align-self: flex-start;
 }
 
 .valueButton {
@@ -348,11 +371,30 @@
   }
 }
 
-/* The panels beside the page (DocumentPanels.tsx, PRD 3 Y1 to Y3). */
-.panels {
+/* The panels beside the page (DocumentPanels.tsx, PRD 3 Y1 to Y3), in two
+   groups that stack as one column until the wide layout puts them side by side. */
+.panels,
+.panelsMain,
+.panelsSide {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
+}
+
+/* Attention with something to check: the same hatched edge as a Needs review value. */
+.attentionToCheck {
+  padding-inline-start: calc(var(--space-3) + 4px);
+  background-image: repeating-linear-gradient(45deg, var(--review-solid) 0 4px, transparent 4px 8px);
+  background-size: 4px 100%;
+  background-repeat: no-repeat;
+}
+
+:global([dir="rtl"]) .attentionToCheck {
+  background-position: right;
+}
+
+.attentionLead {
+  margin: 0;
 }
 
 .panel {
@@ -475,11 +517,11 @@
 
   .valuesTable tbody tr {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr);
     grid-template-areas:
-      "field label"
-      "value value"
-      "reason reason";
+      "field"
+      "value"
+      "label";
     gap: var(--space-1) var(--space-3);
     padding: var(--space-3) var(--space-4);
     border: 1px solid var(--border);
@@ -513,8 +555,17 @@
     color: var(--fg-muted);
   }
 
-  .labelCell {
+  /* The badge, then its reason beside it, wrapping under it when long. */
+  .valuesTable td.labelCell {
     grid-area: label;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-1) var(--space-2);
+  }
+
+  .reason {
+    margin-top: 0;
   }
 
   .valueCell {
@@ -525,9 +576,6 @@
     font-size: var(--fs-lg);
   }
 
-  .reasonCell {
-    grid-area: reason;
-  }
 }
 
 /* Loading and errors */

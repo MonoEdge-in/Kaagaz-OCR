@@ -155,11 +155,12 @@ export interface UserActions {
 /**
  * Which buttons a row shows. Nothing on the admin's own row: they cannot
  * disable themselves or reset their own 2FA (the server refuses both), and
- * they change their own password by signing in with it.
+ * they change their own password by signing in with it. No Reset 2FA until the
+ * super admin allows two-step sign-in for the organisation (twoStepAllowed).
  */
 export function userActions(
   user: AdminUser,
-  { isSelf, now }: { isSelf: boolean; now: number },
+  { isSelf, now, twoStepAllowed }: { isSelf: boolean; now: number; twoStepAllowed: boolean },
 ): UserActions {
   if (isSelf) {
     return { toggleDisabled: false, unlock: false, resetPassword: false, reset2fa: false };
@@ -168,12 +169,13 @@ export function userActions(
     toggleDisabled: true,
     unlock: isLocked(user, now),
     resetPassword: true,
-    reset2fa: user.totp_enabled,
+    reset2fa: twoStepAllowed && user.totp_enabled,
   };
 }
 
 /** The row's Delete forever button: none for an admin or yourself; Stop when allowed; else
- * Allow, which needs your own two-step sign-in (the server says 403 two_step_required). */
+ * Allow, which needs your own two-step sign-in (the server says 403 two_step_required) once
+ * the super admin allows two-step sign-in for the organisation; until then nothing more. */
 export type ForeverControl =
   | { kind: "none" }
   | { kind: "stop" }
@@ -181,13 +183,14 @@ export type ForeverControl =
 
 export function foreverControl(
   user: AdminUser,
-  { isSelf, adminTwoStep }: { isSelf: boolean; adminTwoStep: boolean },
+  { isSelf, adminTwoStep, twoStepAllowed }: { isSelf: boolean; adminTwoStep: boolean; twoStepAllowed: boolean },
 ): ForeverControl {
   if (isSelf || user.role === "admin") return { kind: "none" };
   if (user.can_delete_forever) return { kind: "stop" };
   return {
     kind: "allow",
-    disabledReason: adminTwoStep ? null : "Turn on your two-step sign-in in Settings to allow this.",
+    disabledReason:
+      adminTwoStep || !twoStepAllowed ? null : "Turn on your two-step sign-in in Settings to allow this.",
   };
 }
 
@@ -378,6 +381,7 @@ const ACTION_WORDS: Record<string, string> = {
   "user_word.changed": "Changed a word in My words",
   "user_word.deleted": "Deleted a word from My words",
   "customer.create": "Organisation set up",
+  "org.self_signup": "Created the organisation at sign-up",
   "customer.enable": "Organisation turned on",
   "customer.disable": "Organisation turned off",
   "chat.ask": "Asked a question",
@@ -405,6 +409,8 @@ const ACTION_WORDS: Record<string, string> = {
   "settings.autofile_off": "Turned auto-filing off",
   "org.autofile_grant": "Auto-filing allowed",
   "org.autofile_revoke": "Auto-filing stopped",
+  "org.two_step_grant": "Two-step sign-in allowed",
+  "org.two_step_revoke": "Two-step sign-in stopped",
 };
 
 /** The audit action in words; an action this screen does not know is shown as is. */
@@ -414,7 +420,9 @@ export function describeAction(action: string, details: Record<string, unknown> 
 }
 
 // What Kaagaz did by itself (feature 28) has no person: the Who column says "Kaagaz".
-const BY_KAAGAZ = new Set(["document.autofile", "org.autofile_grant", "org.autofile_revoke"]);
+const BY_KAAGAZ = new Set([
+  "document.autofile", "org.autofile_grant", "org.autofile_revoke", "org.two_step_grant", "org.two_step_revoke",
+]);
 
 /** Who did it: the person's name, "Kaagaz" for auto-filing, else a dash (a removed user). */
 export function whoText(entry: Pick<AuditEntry, "action" | "actor_name" | "details">): string {

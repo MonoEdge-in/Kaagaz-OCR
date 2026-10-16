@@ -57,7 +57,13 @@ export function AdminView({ twoStep }: { twoStep: ReactNode }) {
 
   return (
     <div className="page">
-      <h1>Admin</h1>
+      {/* No people count: it would need its own ask for the users list on every tab. */}
+      <header className="page-header">
+        <div>
+          <h1>Admin</h1>
+          <p>{me.customer.name}</p>
+        </div>
+      </header>
       <div role="tablist" aria-label="Admin sections" className={styles.tabs}>
         {TABS.map((tab, index) => {
           const selected = tab.id === active;
@@ -93,12 +99,16 @@ export function AdminView({ twoStep }: { twoStep: ReactNode }) {
           className={styles.panel}
         >
           {tab.id === active && tab.id === "users" && (
-            <UsersPanel currentUserId={me.user.id} adminTwoStep={me.user.totp_enabled} />
+            <UsersPanel
+              currentUserId={me.user.id}
+              adminTwoStep={me.user.totp_enabled}
+              twoStepAllowed={me.user.two_step_allowed === true}
+            />
           )}
           {tab.id === active && tab.id === "settings" && (
             <div className={styles.panelStack}>
               <SettingsPanel />
-              {twoStep}
+              {me.user.two_step_allowed === true && twoStep}
             </div>
           )}
           {tab.id === active && tab.id === "activity" && <ActivityPanel />}

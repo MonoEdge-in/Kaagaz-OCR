@@ -491,6 +491,12 @@
   color: var(--fg-muted);
 }
 
+/* "Create an account" right under it (SignUpLink): one hairline for both. */
+.switch + .switch {
+  padding-top: 0;
+  border-top: 0;
+}
+
 .switch a {
   display: inline-flex;
   align-items: center;

@@ -5,8 +5,12 @@
 // path, its tags) and its versions ("Version 2 of 2", each a link to that
 // version's own id), the page viewer and, beside it, the panels with the
 // values table right after Attention (side by side from 1024 px, stacked
-// below). A newer version still being read, or one that failed, gets a line
-// linking to it. A document in Trash says so. A reviewer
+// below; from 90rem, three columns: the page, then Attention and Values found,
+// then the card, related documents, the invoice and the story, board 3). Values
+// found shows about six values, then "Show all N"; its third column is the
+// label with its reason under it. Under the page: "Highlighted: <field>". A
+// newer version still being read, or one that failed, gets a line linking to
+// it. A document in Trash says so. A reviewer
 // or an admin can have it read again (ReadAgain.tsx, PRD 2 X1), and anyone can
 // "Ask about this document" in chat (PRD 3 H2). While it is checked or read,
 // on load too, its summary is asked for again (lib/poll.ts); once it settles,
@@ -44,6 +48,7 @@ import { Icon } from "@/components/ui/Icon";
 import { PageViewer } from "@/components/viewer/PageViewer";
 import { STICKY_VIEWER_QUERY, bringPageForSpot } from "@/components/viewer/viewer";
 import { SCANNED_PANEL_ID, ScannedTextPanel } from "@/components/viewer/ScannedTextPanel";
+import { valueAt } from "@/components/viewer/scanned";
 import { WhatWasRead } from "@/components/viewer/WhatWasRead";
 import { AddMeaningDialog, PageWordsList, useViewerWords } from "@/components/words/ViewerWords";
 import wordStyles from "@/components/words/Words.module.css";
@@ -85,6 +90,11 @@ export interface DocumentViewProps {
   scannedParam: string | null;
 }
 
+const FIRST_VALUES = 6; // shown before "Show all N"
+// Said after "Highlighted: <field>" when the spot came in a link (a source card, a search
+// hit or a review item), not from a pick on this screen.
+const FROM_LINK = ", from the link you opened";
+
 type Loaded =
   | { attempt: number; detail: DocumentDetail }
   | { attempt: number; error: ReturnType<typeof loadFailure> };
@@ -125,6 +135,7 @@ export function DocumentView({
   // "Add meaning": what it is for, and the button that opened it (focus goes back there).
   const [adding, setAdding] = useState<{ text: string; region: Region } | null>(null);
   const opener = useRef<HTMLElement | null>(null);
+  const [allValues, setAllValues] = useState(false); // "Show all N" pressed
 
   // While it is read: merge each summary; once it settles, ask for the detail once.
   const merge = (summary: DocumentSummary) =>
@@ -322,6 +333,20 @@ export function DocumentView({
   const position = versionPosition(detail);
   const note = versionNote(detail);
   const readingNote = valuesNote(detail.status, detail.values.length);
+  // About six values, then "Show all N"; a Needs review value and the one highlighted always show.
+  const shownValues =
+    allValues || detail.values.length <= FIRST_VALUES
+      ? detail.values
+      : detail.values.filter(
+          (value, index) => index < FIRST_VALUES || value.label === "needs_review" || value.id === selection?.valueId,
+        );
+  // "Highlighted: Grand total, from the link you opened" under the page; else PageViewer's own words.
+  const highlighted =
+    selection?.region && (detail.values.find((v) => v.id === selection.valueId) ?? valueAt(detail.values, selection.region));
+  const fromLink = regionParam !== null && !(chosen && chosen.linkKey === linkKey);
+  const highlightNote = highlighted
+    ? `Highlighted: ${fieldText(highlighted.field)}${fromLink ? FROM_LINK : ""}`
+    : undefined;
 
   return (
     <div className="page page-wide">
@@ -460,6 +485,7 @@ export function DocumentView({
               document={detail}
               page={page}
               highlights={highlightsOf(selection)}
+              highlightNote={highlightNote}
               pageNumbers={pageNumbers}
               onPageChange={changePage}
               marks={words.markers}
@@ -481,7 +507,8 @@ export function DocumentView({
                     }}
                   >
                     <Icon name="scan-text" />
-                    Scanned<span className="narrow-hide"> text</span>
+                    <span className="narrow-hide">Scanned </span>
+                    <span className={styles.textWord}>text</span>
                   </button>
                 )
               }
@@ -492,108 +519,119 @@ export function DocumentView({
           )}
         </section>
         <div className={styles.panels}>
-          {stickyViewer && problemsBanner}
-          {stickyViewer && scannedPanel}
-          {page && <PageWordsList words={words} />}
-          <AttentionPanel
-            status={detail.status}
-            pages={detail.pages}
-            current={page?.page_no ?? null}
-            marks={readingMarks}
-            onPage={changePage}
-            onMark={showMark}
-          />
-          <section className={styles.values} aria-labelledby="values-heading">
-            <h2 id="values-heading" className={styles.valuesHeading}>
-              Values found
-              {detail.values.length > 0 ? (
-                <span className={`${styles.count} tabular`}>{detail.values.length}</span>
-              ) : null}
-            </h2>
-            {readingNote && <p className="muted">{readingNote}</p>}
-            {detail.values.length === 0 ? (
-              !readingNote && <p className="muted">{untilRead(detail.status, "No values were found in this document.")}</p>
-            ) : (
-              <table className={`table ${styles.valuesTable}`} role="table">
-                <caption className="visually-hidden">
-                  Values found. Pick a value to show it on its page.
-                </caption>
-                <thead role="rowgroup">
-                  <tr role="row">
-                    <th scope="col" role="columnheader">
-                      Field
-                    </th>
-                    <th scope="col" role="columnheader">
-                      Value
-                    </th>
-                    <th scope="col" role="columnheader">
-                      Label
-                    </th>
-                    <th scope="col" role="columnheader">
-                      Reason
-                    </th>
-                  </tr>
-                </thead>
-                <tbody role="rowgroup">
-                  {detail.values.map((value) => {
-                    const active = selection?.valueId === value.id;
-                    return (
-                      <tr
-                        key={value.id}
-                        role="row"
-                        className={active ? styles.activeRow : undefined}
-                        data-label={value.label}
-                      >
-                        <td role="cell" className={styles.fieldCell}>
-                          {fieldText(value.field)}
-                        </td>
-                        <td role="cell" className={styles.valueCell}>
-                          <button
-                            type="button"
-                            className={styles.valueButton}
-                            aria-pressed={active}
-                            onClick={() => showValue(value)}
-                          >
-                            {value.value}
-                            <span className="visually-hidden">
-                              {`, show on page ${value.region.page}`}
-                            </span>
-                          </button>
-                          <button
-                            type="button"
-                            className={`btn btn-quiet ${wordStyles.target}`}
-                            onClick={(event) => addMeaning(value.value, value.region, event.currentTarget)}
-                          >
-                            Add meaning
-                            <span className="visually-hidden">{` for ${fieldText(value.field)}`}</span>
-                          </button>
-                          <div className={styles.pageNote}>
-                            Page {value.region.page}
-                            {active ? ", highlighted on the page" : ""}
-                          </div>
-                          <WhatWasRead
-                            value={value}
-                            page={detail.pages.find((p) => p.page_no === value.region.page)}
-                          />
-                        </td>
-                        <td role="cell" className={styles.labelCell}>
-                          <LabelBadge label={value.label} />
-                        </td>
-                        <td role="cell" className={styles.reasonCell}>
-                          {reasonText(value.label_reason)}
-                          {value.votes && <div className={styles.pageNote}>{voteText(value.votes)}</div>}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            )}
-          </section>
-          <CardPanel {...panel} />
-          <RelatedPanel detail={detail} />
-          <InvoicePanel {...panel} />
-          <StoryPanel documentId={detail.id} inTrash={detail.deleted_at !== null} />
+          <div className={styles.panelsMain}>
+            {stickyViewer && problemsBanner}
+            {stickyViewer && scannedPanel}
+            {page && <PageWordsList words={words} />}
+            <AttentionPanel
+              status={detail.status}
+              pages={detail.pages}
+              current={page?.page_no ?? null}
+              marks={readingMarks}
+              onPage={changePage}
+              onMark={showMark}
+            />
+            <section className={styles.values} aria-labelledby="values-heading">
+              <h2 id="values-heading" className={styles.valuesHeading}>
+                Values found
+                {detail.values.length > 0 ? (
+                  <span className={`${styles.count} tabular`}>{detail.values.length}</span>
+                ) : null}
+              </h2>
+              {readingNote && <p className="muted">{readingNote}</p>}
+              {detail.values.length === 0 ? (
+                !readingNote && <p className="muted">{untilRead(detail.status, "No values were found in this document.")}</p>
+              ) : (
+                <table className={`table ${styles.valuesTable}`} role="table">
+                  <caption className="visually-hidden">
+                    Values found. Pick a value to show it on its page.
+                  </caption>
+                  <thead role="rowgroup">
+                    <tr role="row">
+                      <th scope="col" role="columnheader">
+                        Field
+                      </th>
+                      <th scope="col" role="columnheader">
+                        Value
+                      </th>
+                      <th scope="col" role="columnheader">
+                        Label and reason
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody role="rowgroup">
+                    {shownValues.map((value) => {
+                      const active = selection?.valueId === value.id;
+                      return (
+                        <tr
+                          key={value.id}
+                          role="row"
+                          className={active ? styles.activeRow : undefined}
+                          data-label={value.label}
+                        >
+                          <td role="cell" className={styles.fieldCell}>
+                            {fieldText(value.field)}
+                          </td>
+                          <td role="cell" className={styles.valueCell}>
+                            <button
+                              type="button"
+                              className={styles.valueButton}
+                              aria-pressed={active}
+                              onClick={() => showValue(value)}
+                            >
+                              {value.value}
+                              <span className="visually-hidden">
+                                {`, show on page ${value.region.page}`}
+                              </span>
+                            </button>
+                            <button
+                              type="button"
+                              className={`btn btn-quiet ${wordStyles.target}`}
+                              onClick={(event) => addMeaning(value.value, value.region, event.currentTarget)}
+                            >
+                              Add meaning
+                              <span className="visually-hidden">{` for ${fieldText(value.field)}`}</span>
+                            </button>
+                            <div className={styles.pageNote}>
+                              Page {value.region.page}
+                              {active ? ", highlighted on the page" : ""}
+                            </div>
+                            <WhatWasRead
+                              value={value}
+                              page={detail.pages.find((p) => p.page_no === value.region.page)}
+                            />
+                          </td>
+                          <td role="cell" className={styles.labelCell}>
+                            <LabelBadge label={value.label} />
+                            <div className={styles.reason}>
+                              {reasonText(value.label_reason)}
+                              {value.votes && <div className={styles.pageNote}>{voteText(value.votes)}</div>}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+              {detail.values.length > FIRST_VALUES && (
+                <button
+                  type="button"
+                  className={`btn btn-quiet ${styles.showAll}`}
+                  aria-expanded={allValues}
+                  onClick={() => setAllValues(!allValues)}
+                >
+                  {allValues ? "Show fewer" : `Show all ${detail.values.length.toLocaleString("en-IN")}`}
+                </button>
+              )}
+            </section>
+          </div>
+          <div className={styles.panelsSide}>
+            <CardPanel {...panel} />
+            <RelatedPanel detail={detail} />
+            <InvoicePanel {...panel} />
+            <StoryPanel documentId={detail.id} inTrash={detail.deleted_at !== null} />
+          </div>
         </div>
       </div>
       {adding && (

@@ -249,6 +249,7 @@ def test_login_sets_the_cookie_and_me_works(db: Database) -> None:
             "must_change_password": False,
             "totp_enabled": False,
             "can_delete_forever": False,
+            "two_step_allowed": True,
         },
         "customer": {"id": customer_id, "name": "Sharma Traders"},
         "session": {"scope": "app"},

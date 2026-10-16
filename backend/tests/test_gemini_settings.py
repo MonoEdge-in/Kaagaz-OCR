@@ -46,21 +46,24 @@ def test_the_shipped_env_example_has_the_prds_starting_values_and_no_key() -> No
         settings.ocr_thinking_level,
         settings.ocr_retry_media_resolution,
         settings.ocr_retry_thinking_level,
-    ) == ("high", "low", "high", "high")  # the "detail" shape sends low or high only
+    ) == ("high", "high", "high", "high")  # changed on purpose (Tushar, 16 Oct): scans at high
     assert (
         settings.ocr_timeout_seconds,
         settings.ocr_page_concurrency,
         settings.cpu_workers,
         settings.max_check_crops,
         settings.reader_outage_fallback_minutes,
-    ) == (120.0, 6, 2, 200, 15)
+    ) == (120.0, 8, 2, 200, 15)  # 8 pages at once: a 7-page document in one round (16 Oct)
     assert settings.model_rpm >= 1
 
 
 def test_the_test_settings_match_the_shipped_reader_values() -> None:
     # Changed on purpose (16 Oct 2026): the tests keep 3.1 Pro as their OCR_MODEL, a model id
     # apart from the shipped default (3.8 Flash), which many tests use as "another model".
-    names = {name.lower() for name in READER_SETTINGS if name != "OCR_MODEL"} | {"openrouter_api_key"}
+    # Also on purpose (16 Oct 2026): the tests keep low as their own scan level, so a timeout in
+    # them is final (the shipped default is high; a high read that times out is read again at low).
+    kept = {"OCR_MODEL", "OCR_THINKING_LEVEL"}
+    names = {name.lower() for name in READER_SETTINGS if name not in kept} | {"openrouter_api_key"}
     shipped_settings = Settings.from_env(shipped())
     made = make_settings()
     assert {name: getattr(made, name) for name in names} == {
@@ -76,8 +79,16 @@ def test_an_unset_scan_or_chat_model_is_gemini_flash(name: str) -> None:
     assert DEFAULT_MODEL == "google/gemini-3.8-flash"
 
 
-# Changed on purpose (16 Oct 2026): OCR_MODEL has a default (test above).
-@pytest.mark.parametrize("name", [name for name in READER_SETTINGS if name != "OCR_MODEL"])
+def test_an_unset_scan_thinking_level_is_high() -> None:
+    """Tushar, 16 Oct 2026: the default scanner is Gemini 3.8 Flash at high."""
+    for unset in (None, ""):
+        assert Settings.from_env(shipped(OCR_THINKING_LEVEL=unset)).ocr_thinking_level == "high"
+
+
+# Changed on purpose (16 Oct 2026): OCR_MODEL and OCR_THINKING_LEVEL have defaults (tests above).
+@pytest.mark.parametrize(
+    "name", [name for name in READER_SETTINGS if name not in ("OCR_MODEL", "OCR_THINKING_LEVEL")]
+)
 def test_a_missing_reader_setting_stops_start_up_by_name(name: str) -> None:
     """No defaults in code: each is Vrushit's setting, so a missing one names itself."""
     with pytest.raises(SettingsError, match=name):

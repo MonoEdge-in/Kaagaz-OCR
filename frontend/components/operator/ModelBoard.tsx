@@ -9,13 +9,13 @@
 
 import { useRef, useState } from "react";
 import table from "@/components/documents/Table.module.css";
-import { getModelBoard, getOperatorModels } from "@/lib/api";
+import { getAiDefaults, getModelBoard, getOperatorModels } from "@/lib/api";
 import { formatCost, formatNumber } from "@/lib/format";
 import type { BoardReply } from "@/lib/types";
 import { BOARD_MIN_DOCUMENTS, boardBest, boardRows, rateText } from "./insights";
 import type { BoardBest, BoardLine, InsightPeriod } from "./insights";
 import { LoadFailed } from "./LoadFailed";
-import { usd } from "./models";
+import { jobText, usd } from "./models";
 import { AI_OFF, PeriodSelect, Skeleton, useLoad } from "./OverviewView";
 import type { LoadState } from "./OverviewView";
 import admin from "@/components/admin/Admin.module.css";
@@ -30,12 +30,22 @@ const LOCAL_READER = "rapidocr";
 export interface BoardData {
   reply: BoardReply;
   names: ReadonlyMap<string, string>; // model id to name, from the catalogue
+  jobs?: ReadonlyMap<string, string>; // model id to its job in words (board 8); none without the catalogue
 }
 
 async function loadBoard(days: InsightPeriod): Promise<BoardData> {
-  // The catalogue only gives the names: without it the board shows the model ids.
-  const [reply, catalogue] = await Promise.all([getModelBoard(days), getOperatorModels().catch(() => null)]);
-  return { reply, names: new Map((catalogue?.items ?? []).map((model) => [model.id, model.name])) };
+  // The catalogue and the defaults only give the names and jobs: without them the board shows the model ids.
+  const [reply, catalogue, platform] = await Promise.all([
+    getModelBoard(days),
+    getOperatorModels().catch(() => null),
+    getAiDefaults().catch(() => null),
+  ]);
+  const items = catalogue?.items ?? [];
+  return {
+    reply,
+    names: new Map(items.map((model) => [model.id, model.name])),
+    jobs: new Map(items.map((model) => [model.id, jobText(model, platform)])),
+  };
 }
 
 export function ModelBoard() {
@@ -88,15 +98,16 @@ export function ModelBoardScreen(props: {
   );
 }
 
+// Board 8 P2: the figure columns line up at the end (.num).
 const COLUMNS = [
-  "Model",
-  "Pages",
-  "$ per 1,000 pages (est.)",
-  "Cache saved",
-  "Seconds per page",
-  "Page signals",
-  "Failed or without a card",
-  "AI cost",
+  { label: "Model", num: false },
+  { label: "Pages", num: true },
+  { label: "$ per 1,000 pages (est.)", num: true },
+  { label: "Cache saved", num: true },
+  { label: "Seconds per page", num: true },
+  { label: "Page signals", num: false },
+  { label: "Failed or without a card", num: true },
+  { label: "AI cost", num: true },
 ];
 
 function BoardTable({ data }: { data: BoardData }) {
@@ -108,8 +119,8 @@ function BoardTable({ data }: { data: BoardData }) {
         <caption className={admin.caption}>Compare models, observational</caption>
         <thead role="rowgroup">
           <tr role="row">
-            {COLUMNS.map((label) => (
-              <th key={label} scope="col" role="columnheader">
+            {COLUMNS.map(({ label, num }) => (
+              <th key={label} scope="col" role="columnheader" className={num ? "num" : undefined}>
                 {label}
               </th>
             ))}
@@ -117,7 +128,13 @@ function BoardTable({ data }: { data: BoardData }) {
         </thead>
         <tbody role="rowgroup">
           {lines.map((line, i) => (
-            <BoardLineRow key={line.row.model} line={line} best={best[i]} name={modelName(line.row.model, data.names)} />
+            <BoardLineRow
+              key={line.row.model}
+              line={line}
+              best={best[i]}
+              name={modelName(line.row.model, data.names)}
+              job={data.jobs?.get(line.row.model)}
+            />
           ))}
         </tbody>
       </table>
@@ -145,7 +162,8 @@ const Best = ({ word, on }: { word: string; on: boolean | undefined }) =>
     </>
   ) : null;
 
-function BoardLineRow({ line, best, name }: { line: BoardLine; best: BoardBest | undefined; name: string }) {
+function BoardLineRow(props: { line: BoardLine; best: BoardBest | undefined; name: string; job: string | undefined }) {
+  const { line, best, name, job } = props;
   const { row } = line;
   const reads = row.runs > 0 || line.pages > 0; // chat and embedding models only spend
   const compare = (text: string) => (!reads ? <span className="muted">Does not read pages</span> : line.tooFew ? TOO_FEW : text);
@@ -159,14 +177,15 @@ function BoardLineRow({ line, best, name }: { line: BoardLine; best: BoardBest |
     <tr role="row">
       <td role="cell" className={styles.orgName}>
         {name}
-        {name !== row.model && <span className={styles.statusNote}>{row.model}</span>}
+        {name !== row.model && <span className={`${styles.statusNote} ${css.modelId}`}>{row.model}</span>}
+        {job && <span className={styles.statusNote}>{job}</span>}
         {reads && (
           <span className={styles.statusNote}>
             {formatNumber(row.documents)} documents{line.tooFew ? `, too few (under ${BOARD_MIN_DOCUMENTS})` : ""}
           </span>
         )}
       </td>
-      <td role="cell" data-label="Pages" className="tabular">
+      <td role="cell" data-label="Pages" className="num">
         {formatNumber(line.pages)}
         {reads && (
           <span className={styles.statusNote}>
@@ -174,14 +193,14 @@ function BoardLineRow({ line, best, name }: { line: BoardLine; best: BoardBest |
           </span>
         )}
       </td>
-      <td role="cell" data-label="$ per 1,000 pages (est.)" className="tabular">
+      <td role="cell" data-label="$ per 1,000 pages (est.)" className="num">
         {compare(usd(line.usdPer1000Pages, row.cost_estimated))}
         <Best word="lowest" on={best?.per1000} />
       </td>
-      <td role="cell" data-label="Cache saved" className="tabular">
+      <td role="cell" data-label="Cache saved" className="num">
         {compare(cacheText(line.cachedShare))}
       </td>
-      <td role="cell" data-label="Seconds per page" className="tabular">
+      <td role="cell" data-label="Seconds per page" className="num">
         {compare(secondsText("typical", row.seconds_per_page_p50))}
         <Best word="fastest" on={best?.seconds} />
         {reads && !line.tooFew && <span className={styles.statusNote}>{secondsText("slowest 5%", row.seconds_per_page_p95)}</span>}
@@ -199,7 +218,7 @@ function BoardLineRow({ line, best, name }: { line: BoardLine; best: BoardBest |
           </ul>
         )}
       </td>
-      <td role="cell" data-label="Failed or without a card" className="tabular">
+      <td role="cell" data-label="Failed or without a card" className="num">
         {compare(`${rateText(row.runs_failed, row.runs)} failed`)}
         <Best word="fewest" on={best?.failed} />
         {reads && !line.tooFew && (
@@ -208,7 +227,7 @@ function BoardLineRow({ line, best, name }: { line: BoardLine; best: BoardBest |
           </span>
         )}
       </td>
-      <td role="cell" data-label="AI cost" className="tabular">
+      <td role="cell" data-label="AI cost" className="num">
         {formatCost(row)}
         <Best word="lowest" on={best?.cost} />
       </td>

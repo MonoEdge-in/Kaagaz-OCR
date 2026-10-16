@@ -3,7 +3,10 @@
 * ``POST /auth/login`` {email, password}: an app session (``scope: "app"``).
 * ``POST /auth/admin/login`` {email, password, code?}: admins only, an admin
   session (ADMIN_SESSION_MINUTES). Each admin chooses two-step sign-in: while
-  it is off the password alone is enough; once on, the right code too.
+  it is off the password alone is enough; once on, the right code too, asked for
+  by 401 ``code_required`` (counted like a failure). Until the operator allows
+  two-step sign-in for the organisation (0029), the password alone: any code is
+  ignored, a stored one kept.
 * ``POST /auth/admin/2fa/start`` {password} (admin session): with the current
   password, ``{enrol_token, secret, otpauth_uri}`` for turning it on. Asking
   for the password means a stolen admin cookie alone cannot put its own key
@@ -15,15 +18,27 @@
 * ``POST /auth/password`` {current_password, new_password}: a new password;
   every other browser is signed out, this one is re-signed.
 * ``POST /auth/confirm-password`` {password}: only for a member or reviewer an
-  admin allowed to delete forever; the password, counted like a sign-in, then a
+  admin allowed to delete forever, or an admin (admin session) without the two-step
+  grant; the password, counted like a sign-in, then a
   5-minute confirm cookie (kaagaz/api/auth.py) for Delete forever. 204.
+* ``/2fa/start`` and ``/enrol`` without the grant: 403 ``two_step_not_allowed``.
 * ``POST /auth/logout``, ``POST /auth/logout-everywhere``, ``GET /auth/me``.
+* ``POST /auth/signup`` {organisation_name, name, email, password} (16 Oct 2026): anyone
+  makes a new organisation and its first admin, with their own password, and is signed
+  in as that admin. ``kaagaz_create_customer`` (the CLI's function) makes both in one
+  statement, with an operator-made organisation's defaults (models, permissions and
+  features off, two-step off). A taken e-mail is the admin screens' 409. At most
+  ``SIGNUPS_PER_HOUR`` a client address (429). Off (``SELF_SIGNUP_ENABLED=false``): 404;
+  ``GET /auth/signup`` says ``{enabled}`` for the sign-in pages' link. Audited
+  ``org.self_signup`` in the new organisation's log, the new admin as actor. No e-mail
+  check: whoever types an address owns that account (PROVISIONAL).
 
 Why the sign-in looks the way it does (council record 29 Sep, WP1.3):
 
 * **One reply for every failure.** A wrong password, an unknown e-mail, a
   locked or disabled account, a non-admin on the admin screen and a wrong or
-  reused code all get the same 401 ``bad_credentials`` text, and every path
+  reused code all get the same 401 ``bad_credentials`` text (``code_required``
+  only ever follows a right password), and every path
   spends exactly one scrypt hash, so neither the reply nor its time says
   which accounts exist or which part was wrong.
 * **The attempt is counted before the password is checked**
@@ -53,7 +68,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 from sqlalchemy import Connection
 
 from kaagaz.api import totp
@@ -77,7 +92,8 @@ from kaagaz.api.auth import (
 )
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
-from kaagaz.api.routers.admin import MAX_PASSWORD, MIN_PASSWORD
+from kaagaz.api.middleware import RateLimiter
+from kaagaz.api.routers.admin import MAX_PASSWORD, MIN_PASSWORD, valid_email
 from kaagaz.api.secret_box import SecretBoxError
 from kaagaz.api.twostep import box as _box
 from kaagaz.api.twostep import digits as _digits
@@ -93,6 +109,18 @@ router = APIRouter()
 Context = Annotated[AppContext, Depends(get_context)]
 
 MAX_CODE = 16  # 6 digits, plus room for the spaces people type
+NOT_ALLOWED = "Two-step sign-in is not turned on for your organisation."
+# Sign-ups an hour (PROVISIONAL). Behind the Next.js proxy every visitor shares the proxy's
+# address (kaagaz/api/middleware.py), so in production this is one cap for the whole site,
+# sized for real sign-ups. ponytail: site-wide cap; per-visitor once X-Forwarded-For is trusted.
+# No e-mail is proven at sign-up (there is no mail service yet): the super admin can disable
+# an organisation, and SELF_SIGNUP_ENABLED=false turns sign-up off.
+SIGNUPS_PER_HOUR = 20
+signup_limits = RateLimiter(SIGNUPS_PER_HOUR, window_seconds=3600)
+TOO_MANY_SIGNUPS = "Too many sign-ups from here. Try again in an hour."
+# Trimmed, then the operator's limits (routers/operator_orgs.py NewOrgBody).
+OrgName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
+PersonName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
 
 
 class LoginBody(BaseModel):
@@ -126,13 +154,22 @@ class PasswordBody(BaseModel):
     new_password: str = Field(min_length=MIN_PASSWORD, max_length=MAX_PASSWORD)
 
 
+class SignupBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    organisation_name: OrgName
+    name: PersonName
+    email: str = Field(min_length=3, max_length=254)
+    password: str = Field(min_length=MIN_PASSWORD, max_length=MAX_PASSWORD)
+
+
 # --- the routes ----------------------------------------------------------------------
 
 
 @router.post("/auth/login")
 def login(body: LoginBody, context: Context) -> JSONResponse:
     attempt = _check_password(context, body.email, body.password)
-    return _start_session(context, attempt, scope="app", action="auth.login")
+    return _start_session(context, attempt.customer_id, attempt.user_id, scope="app", action="auth.login")
 
 
 @router.post("/auth/admin/login")
@@ -142,11 +179,20 @@ def admin_login(body: AdminLoginBody, context: Context) -> JSONResponse:
         # The password was right; the screen sends them to /login to change it first.
         _succeeded(context, attempt)
         raise ApiError(403, "password_change_required")
-    if attempt.totp_enabled_at is None:
-        # This admin has not turned two-step sign-in on: the password is enough.
+    if attempt.totp_enabled_at is None or not attempt.two_step_granted:
+        # Two-step sign-in is off for this admin, or not allowed for the organisation
+        # (any code sent is ignored): the password is enough.
         return _start_session(
-            context, attempt, scope="admin", action="auth.admin_login", details={"second_factor": False}
+            context,
+            attempt.customer_id,
+            attempt.user_id,
+            scope="admin",
+            action="auth.admin_login",
+            details={"second_factor": False},
         )
+    if not _digits(body.code):
+        _failed(context, attempt, "code_required")  # counted: a wrong code next can't reset it
+        raise ApiError(401, "code_required", "Enter the 6-digit code from your authenticator app.")
 
     try:  # a missing secret ("") does not open either
         secret = _box(context.settings.totp_encryption_key).open(
@@ -164,7 +210,9 @@ def admin_login(body: AdminLoginBody, context: Context) -> JSONResponse:
     if not accepted:  # another request used this code a moment ago
         _failed(context, attempt, "code_reused")
         raise _refused(context)
-    return _start_session(context, attempt, scope="admin", action="auth.admin_login")
+    return _start_session(
+        context, attempt.customer_id, attempt.user_id, scope="admin", action="auth.admin_login"
+    )
 
 
 @router.post("/auth/admin/enrol")
@@ -194,6 +242,9 @@ def admin_enrol(body: EnrolBody, context: Context) -> JSONResponse:
     ):
         _failed(context, attempt, "enrol_refused")
         raise ApiError(401, "not_signed_in")
+    if not attempt.two_step_granted:  # stopped since the key was shown
+        _failed(context, attempt, "enrol_refused")
+        raise ApiError(403, "two_step_not_allowed", NOT_ALLOWED)
     try:
         secret = _box(context.settings.totp_encryption_key).open(claims.sealed_secret, aad=user_id)
     except SecretBoxError:
@@ -219,11 +270,47 @@ def admin_enrol(body: EnrolBody, context: Context) -> JSONResponse:
     if not enrolled:  # a second request with the same token, or something changed
         _failed(context, attempt, "enrol_refused")
         raise ApiError(401, "not_signed_in")
-    return _start_session(context, attempt, scope="admin", action="auth.admin_login")
+    return _start_session(
+        context, attempt.customer_id, attempt.user_id, scope="admin", action="auth.admin_login"
+    )
+
+
+@router.get("/auth/signup")
+def signup_open(context: Context) -> dict[str, bool]:
+    return {"enabled": context.settings.self_signup_enabled}
+
+
+@router.post("/auth/signup", status_code=201)
+def signup(body: SignupBody, request: Request, context: Context) -> JSONResponse:
+    if not context.settings.self_signup_enabled:
+        raise ApiError(404, "not_found")
+    if not signup_limits.allow(request.client.host if request.client else "-"):
+        raise ApiError(429, "rate_limited", TOO_MANY_SIGNUPS, headers={"Retry-After": "3600"})
+    email = valid_email(body.email)
+    password_hash = hash_password(body.password)  # before the transaction, never during it
+    try:
+        with context.db.system() as conn:
+            customer_id = users_sql.create_customer(
+                conn,
+                name=body.organisation_name,
+                admin_email=email,
+                admin_name=body.name,
+                password_hash=password_hash,
+            )
+            found = users_sql.login_lookup(conn, email)
+    except users_sql.EmailTaken:
+        raise ApiError(409, "conflict", "That e-mail is already in use.") from None
+    if found is None:  # never: made in this transaction
+        raise ApiError(500, "internal_error")
+    response = _start_session(context, customer_id, found.user_id, scope="admin", action="org.self_signup")
+    response.status_code = 201
+    return response
 
 
 @router.post("/auth/admin/2fa/start")
 def turn_on_two_step(body: CurrentPasswordBody, user: AdminSession, context: Context) -> dict[str, str]:
+    if not user.two_step_allowed:
+        raise ApiError(403, "two_step_not_allowed", NOT_ALLOWED)  # nothing is counted
     if user.totp_enabled:
         raise ApiError(409, "conflict", "Two-step sign-in is already on.")
     now = context.clock()
@@ -277,7 +364,12 @@ def change_password(
 
 @router.post("/auth/confirm-password", status_code=204)
 def confirm_password(body: CurrentPasswordBody, user: User, context: Context) -> Response:
-    if user.role == "admin" or not user.delete_forever_allowed:
+    if user.role == "admin":
+        # Only in place of two-step sign-in, which this admin's organisation does not have (0029).
+        allowed = user.scope == "admin" and not user.two_step_allowed
+    else:
+        allowed = user.delete_forever_allowed
+    if not allowed:
         raise ApiError(403, "forbidden")  # nothing is counted
     now = context.clock()
     _check_current_password(context, user, body.password, now)
@@ -402,7 +494,8 @@ def _keep_this_browser(
 
 def _start_session(
     context: AppContext,
-    attempt: AttemptRow,
+    customer_id: str,
+    user_id: str,
     *,
     scope: str,
     action: str,
@@ -410,7 +503,7 @@ def _start_session(
 ) -> JSONResponse:
     """The ``Me`` reply and a new session cookie of this scope; clears the count."""
     now = context.clock()
-    user = load_user(context.db, attempt.customer_id, attempt.user_id, scope=scope)
+    user = load_user(context.db, customer_id, user_id, scope=scope)
     if user is None:  # disabled in the meantime
         raise _refused(context)
     with context.db.customer(user.customer_id) as conn:

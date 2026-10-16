@@ -647,6 +647,31 @@ def test_a_reply_that_keeps_trickling_in_still_times_out_at_the_deadline(fake: O
     assert time.monotonic() - started < 3
 
 
+def test_a_page_out_of_its_own_time_never_opens_the_breaker(fake: OpenRouterFake) -> None:
+    """Scan reliability (16 Oct 2026): a slow page at high thinking runs out of its own time;
+    that is not the model failing, so five of them leave the model working and the next call
+    goes out (it used to open the breaker and make every other page wait for its lease)."""
+    fake.script("completions", *[slow(json_reply(GOOD), 2)] * BREAKER_FAILURES, json_reply(GOOD))
+    client = _client(fake.url)
+    for _ in range(BREAKER_FAILURES):
+        with pytest.raises(ModelUnavailable) as caught:
+            _read(client, deadline=client.now() + 0.2)
+        assert caught.value.code == "timeout"
+    assert client.status() == ("working", None)
+    assert _read(client).value == GOOD
+
+
+def test_a_call_that_cannot_start_before_its_deadline_is_a_timeout() -> None:
+    """The caller's time ran out under the limiter: a timeout (read locally), not a rate limit
+    (which makes the document wait as an outage)."""
+    clock = Clock()
+    gate = ModelGate(make_settings(model_rpm=1), workers=1, clock=lambda: clock.now)
+    gate.take_slot(clock.now + 120, "m")  # books the next 60 s
+    with pytest.raises(ModelUnavailable) as caught:
+        gate.take_slot(clock.now + 30, "m")
+    assert caught.value.code == "timeout"
+
+
 def test_a_trickled_reply_inside_the_deadline_is_read(fake: OpenRouterFake) -> None:
     fake.script("completions", trickled(json_reply(GOOD), 0.2))
     assert _read(_client(fake.url)).value == GOOD
@@ -830,14 +855,16 @@ def test_the_limiter_waits_add_up_only_where_a_caller_holds_the_counter(fake: Op
     assert clock.sleeps == [1.0, 1.0, 1.0]
 
 
-def test_a_limiter_slot_past_the_deadline_is_rate_limited_without_a_request(fake: OpenRouterFake) -> None:
+def test_a_limiter_slot_past_the_deadline_is_a_timeout_without_a_request(fake: OpenRouterFake) -> None:
+    # Changed on purpose (16 Oct 2026): the caller's time ran out, so the page is read locally
+    # for review (a timeout), not held as an outage (rate_limited).
     fake.responder = lambda request: json_reply(GOOD)
     clock = Clock()
     client = _client(fake.url, clock, model_rpm=1)  # one call a minute
     _read(client)
     with pytest.raises(ModelUnavailable) as caught:
         _read(client, deadline=clock.now + 30)
-    assert caught.value.code == "rate_limited"
+    assert caught.value.code == "timeout"
     assert len(fake.requests) == 1
 
 

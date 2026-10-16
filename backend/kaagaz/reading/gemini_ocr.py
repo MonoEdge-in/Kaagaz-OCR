@@ -221,6 +221,12 @@ BLOCKED = "blocked"
 # The client's code when the page's one budget (OCR_TIMEOUT_SECONDS) ran out (16 Oct 2026).
 PAGE_TIMEOUT = "timeout"
 LOW_THINKING = "low"  # a timed-out page's second read (never failed, 16 Oct 2026)
+# Tushar's reading budget (16 Oct 2026): a document gets OCR_SECONDS_PER_PAGE x its pages, but
+# never less than one full read, its low read again and a local read (DOCUMENT_FLOOR), so a
+# healthy high read is never cut short. A model call never starts with less than MIN_CALL left.
+LOCAL_READ_SECONDS = 15.0
+MIN_CALL_SECONDS = 20.0
+DOCUMENT_BUDGET = "document_budget"  # the code of a page read locally when the budget ran out
 QUICKEST_THINKING = frozenset({"minimal", LOW_THINKING})  # a timeout here is not read again
 # G3: the kinds the model may give a line (all in spans.BLOCK_KINDS).
 LINE_KINDS: tuple[str, ...] = (
@@ -398,6 +404,8 @@ class GeminiEngine:
     ) -> None:
         self._model = settings.ocr_model
         self._timeout = settings.ocr_timeout_seconds
+        self._per_page = float(settings.ocr_seconds_per_page)
+        self._doc_deadline = math.inf  # the open document's reading budget (client clock)
         self._normal = (settings.ocr_media_resolution, settings.ocr_thinking_level)
         self._harder = (settings.ocr_retry_media_resolution, settings.ocr_retry_thinking_level)
         self._early_max = settings.careful_early_max_pages
@@ -441,10 +449,18 @@ class GeminiEngine:
                 raise RuntimeError("the Gemini reader is already reading a document")
             self._pages = pages
             self._read_with = self._model if pages.model is None else pages.model
+            # O(1): max(seconds per page x pages, the floor); no budget without a page count
+            # (Dynamic's second reading of a long document: each page keeps its own budget).
+            floor = 2 * self._timeout + LOCAL_READ_SECONDS
+            count = pages.page_count
+            self._doc_deadline = (
+                self._client.now() + max(self._per_page * count, floor) if count > 0 else math.inf
+            )
         try:
             yield
         finally:
             with self._lock:
+                self._doc_deadline = math.inf
                 self._pages = None
 
     def read(self, image: Image.Image) -> list[OcrLine]:
@@ -516,7 +532,10 @@ class GeminiEngine:
         again = page_no in pages.read_again
         with ThreadPoolExecutor(1) as early:
             started = None
-            if agent is not None and not again and 0 < pages.page_count <= self._early_max:
+            # Not when Careful would be the very same call (same model, provider and level as
+            # the first read): it would be a duplicate paid for and waited on, never better.
+            same = agent == (lead, pages.provider) and self._harder[1] == (pages.thinking or self._normal[1])
+            if agent is not None and not again and not same and 0 < pages.page_count <= self._early_max:
                 started = early.submit(contextvars.copy_context().run, self._careful, page, pages, agent)
             memo[key] = first = page(pages=pages)
             careful = None if started is None else started.result()
@@ -632,6 +651,11 @@ class GeminiEngine:
                 record_call(model, None, 0, 0, 0, 0.0, cached=True)  # SP1: a cached page costs 0
                 return self._page(reply, image, page_no, model, cached=True, boxes=boxes)
         started = self._client.now()
+        careful_read = pages is not None and pages.careful_read
+        if self._left() < MIN_CALL_SECONDS:  # the document's budget ran out (never failed)
+            if careful_read:
+                raise BackendUnavailable(GEMINI_BACKEND)  # Careful is dropped: the first read stays
+            return self._read_locally(image, page_no, READER_REFUSED, DOCUMENT_BUDGET)
         spent = (0, 0)  # a timed-out read's tokens, before it was read again at low
         try:
             try:
@@ -642,7 +666,8 @@ class GeminiEngine:
                 # Never failed (16 Oct 2026): a dense page can outlast its budget at a high level;
                 # it is read once more at low, with a budget of its own, before the local reader.
                 quickest = not again and thinking in QUICKEST_THINKING
-                if error.code != PAGE_TIMEOUT or quickest or (pages is not None and pages.careful_read):
+                no_time = self._left() < MIN_CALL_SECONDS
+                if error.code != PAGE_TIMEOUT or quickest or careful_read or no_time:
                     raise
                 spent, thinking, again = (error.input_tokens, error.output_tokens), LOW_THINKING, False
                 _log.warning("page read again at low thinking", extra={"code": PAGE_TIMEOUT})
@@ -652,6 +677,9 @@ class GeminiEngine:
                     image, model, provider, harder=False, thinking=thinking
                 )
         except ModelUnavailable as error:
+            if error.code == PAGE_TIMEOUT and careful_read:
+                # Careful ran out of time: dropped (``_careful``), the first read stays; no local read.
+                raise BackendUnavailable(GEMINI_BACKEND) from None
             return self._outage(
                 image,
                 page_no,
@@ -693,8 +721,9 @@ class GeminiEngine:
         the normal level (C4); a page read again is read harder."""
         resolution, thinking = self._harder if harder else (self._normal[0], thinking)
         # One budget for the page (stuck reading, 16 Oct 2026): the whole page, its halves and
-        # any repair all end by OCR_TIMEOUT_SECONDS from now, never three times that.
-        deadline = self._client.now() + self._timeout
+        # any repair all end by OCR_TIMEOUT_SECONDS from now, never three times that, and never
+        # after the document's reading budget (``document``).
+        deadline = min(self._client.now() + self._timeout, self._doc_deadline)
         ask = functools.partial(self._call, model=model, provider=provider, deadline=deadline)
         try:
             whole = ask(image, resolution, thinking)
@@ -858,6 +887,10 @@ class GeminiEngine:
             input_tokens=tokens[0],
             output_tokens=tokens[1],
         )
+
+    def _left(self) -> float:
+        """Seconds left in the open document's reading budget (inf without one). O(1)."""
+        return self._doc_deadline - self._client.now()
 
     def _local_reader(self) -> PageEngine:
         with self._lock:

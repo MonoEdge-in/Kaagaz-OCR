@@ -188,10 +188,10 @@ def test_turning_on_with_the_code_means_the_code_is_needed_from_then_on(db: Data
     assert api.audit_actions(enrolling.customer_id)[-2:] == ["auth.totp_on", "auth.admin_login"]
 
     api.clock.advance(totp.STEP_SECONDS)
-    for code in (None, wrong_code(api, enrolling.secret)):
+    for code, error in ((None, "code_required"), (wrong_code(api, enrolling.secret), "bad_credentials")):
         refused = api.admin_login(api.client(), enrolling.email, code=code)
         assert refused.status_code == 401
-        assert refused.json()["error"]["code"] == "bad_credentials"
+        assert refused.json()["error"]["code"] == error
     assert api.admin_login(api.client(), enrolling.email, code=api.code(enrolling.secret)).status_code == 200
 
 
@@ -321,10 +321,10 @@ def test_an_enrolled_admin_without_a_code_is_never_offered_enrolment(db: Databas
     before = api.user_state(customer_id, admin.user_id)
     client = api.client()
 
-    for code in (None, ""):
+    for code in (None, "", "   "):
         reply = api.admin_login(client, admin.email, code=code)
         assert reply.status_code == 401
-        assert reply.json()["error"]["code"] == "bad_credentials"
+        assert reply.json()["error"]["code"] == "code_required"  # the screen then asks for it
         assert "enrol" not in reply.text
         assert "set-cookie" not in reply.headers
 

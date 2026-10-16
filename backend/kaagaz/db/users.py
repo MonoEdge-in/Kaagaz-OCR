@@ -10,8 +10,9 @@ The exceptions have no customer yet:
 
 * ``login_lookup`` (``Database.system()``): signing in starts from an e-mail only.
   It calls the SECURITY DEFINER function ``kaagaz_login_lookup``, which returns one row.
-* ``create_customer``: calls ``kaagaz_create_customer`` (the CLI only, on its owner
-  connection ``cli._owner``, so its ``platform_audit`` row is in the same transaction).
+* ``create_customer``: calls ``kaagaz_create_customer``: the CLI, on its owner
+  connection ``cli._owner``, so its ``platform_audit`` row is in the same transaction;
+  self sign-up (``POST /auth/signup``), inside ``Database.system()``.
 
 E-mails are unique across all customers (the ``users.email`` constraint), so
 adding a taken e-mail raises ``EmailTaken`` even when another customer holds it.
@@ -74,6 +75,9 @@ class AttemptRow:
     failed_logins: int
     # False while the customer is disabled or being deleted (0014): sign-in is refused.
     customer_active: bool
+    # The platform operator allowed two-step sign-in for this customer (0029). While false
+    # an admin signs in with the password alone, whatever code is stored.
+    two_step_granted: bool
 
 
 def login_lookup(conn: Connection, email: str) -> LoginRow | None:
@@ -96,7 +100,8 @@ def login_lookup(conn: Connection, email: str) -> LoginRow | None:
 def create_customer(
     conn: Connection, *, name: str, admin_email: str, admin_name: str, password_hash: str
 ) -> str:
-    """Create a customer and its first admin. ``conn`` is the CLI's owner connection.
+    """Create a customer and its first admin. ``conn``: the CLI's owner connection, or
+    ``Database.system()`` for self sign-up.
     Raises EmailTaken if the admin's e-mail is in use."""
     try:
         customer_id: object = conn.execute(
@@ -139,7 +144,7 @@ def begin_attempt(
 
     ``customer_active`` comes in the same statement (0014), so the sign-in can
     refuse a disabled customer's user like a disabled user, before any reply
-    says the password was right.
+    says the password was right. ``two_step_granted`` too (0029).
 
     O(log n): one indexed row.
     """
@@ -156,7 +161,9 @@ def begin_attempt(
                 " RETURNING u.id, u.customer_id, u.password_hash, u.role, u.disabled, u.session_version,"
                 " u.must_change_password, u.totp_secret_enc, u.totp_enabled_at, u.totp_last_step,"
                 " u.failed_logins, EXISTS (SELECT 1 FROM customers c"
-                " WHERE c.id = u.customer_id AND c.status = 'active') AS customer_active"
+                " WHERE c.id = u.customer_id AND c.status = 'active') AS customer_active,"
+                " EXISTS (SELECT 1 FROM customers c"
+                " WHERE c.id = u.customer_id AND c.two_step_granted) AS two_step_granted"
             ),
             {
                 "c": customer_id,
@@ -185,6 +192,7 @@ def begin_attempt(
         totp_last_step=None if last_step is None else int(last_step),
         failed_logins=int(row["failed_logins"]),
         customer_active=bool(row["customer_active"]),
+        two_step_granted=bool(row["two_step_granted"]),
     )
 
 
@@ -361,7 +369,7 @@ def session_user(conn: Connection, customer_id: str, user_id: str) -> RowMapping
                 "SELECT u.id, u.email, u.display_name, u.role, u.disabled,"
                 " u.session_version, u.must_change_password, u.totp_enabled_at IS NOT NULL AS totp_enabled,"
                 " u.delete_forever_allowed_at IS NOT NULL AS delete_forever_allowed,"
-                " c.id AS customer_id, c.name AS customer_name"
+                " c.id AS customer_id, c.name AS customer_name, c.two_step_granted"
                 " FROM users u JOIN customers c ON c.id = u.customer_id"
                 " WHERE u.customer_id = :c AND u.id = :u AND c.status = 'active'"
             ),
