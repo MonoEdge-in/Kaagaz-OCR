@@ -7,6 +7,7 @@ one ``kaagaz_op_*`` function, which writes its own ``platform_audit`` row.
   user's name). ``POST /operator/orgs`` {name, admin_email, admin_name}: the
   organisation and its first admin; the temporary password is in this reply ONCE
   (stored only as its hash, never logged) and must be changed at the first sign-in.
+  A name too short or an obvious test word ("asd") is a 400 (``names.org_name_ok``).
 * ``POST /operator/orgs/{id}/disable`` {code} (step-up) and ``/enable``.
 * ``PUT /operator/orgs/{id}/autofile`` {granted} (feature 28): allow or stop auto-filing;
   its admin then switches it on in Settings. Stopping it switches it off too. No step-up,
@@ -51,6 +52,7 @@ from kaagaz.api import totp
 from kaagaz.api.auth import CurrentOperator, OperatorSession, current_operator, hash_password
 from kaagaz.api.context import AppContext, get_context, get_operator_db
 from kaagaz.api.errors import ApiError
+from kaagaz.api.names import ORG_NAME_PROBLEM, org_name_ok
 from kaagaz.api.routers.admin import TEMPORARY_PASSWORD_BYTES, valid_email
 from kaagaz.api.routers.auth import MAX_CODE
 from kaagaz.api.secret_box import SecretBoxError
@@ -136,6 +138,8 @@ def list_orgs(operator: OperatorSession, db: OperatorDb) -> dict[str, Any]:
 @router.post("", status_code=201)
 def create_org(body: NewOrgBody, operator: OperatorSession, db: OperatorDb, context: Context) -> JSONResponse:
     name, email, admin_name = _name(body.name), valid_email(body.admin_email), _name(body.admin_name)
+    if not org_name_ok(name):
+        raise ApiError(400, "bad_request", ORG_NAME_PROBLEM)
     temporary = secrets.token_urlsafe(TEMPORARY_PASSWORD_BYTES)
     with db.operator() as conn:
         outcome = orgs_sql.create_customer(

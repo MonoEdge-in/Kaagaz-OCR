@@ -29,3 +29,21 @@ def clean_name(name: str, *, max_length: int) -> str | None:
 def clean_document_name(name: str) -> str | None:
     """A document's new name (PATCH): the same rule, 1 to 255 characters. O(len(name))."""
     return clean_name(name, max_length=DOCUMENT_NAME_MAX)
+
+
+# An organisation's name (UI audit G12, 16 Oct 2026): "asd" once became an admin screen's
+# title. At least ORG_NAME_MIN characters, not one character over and over ("aaa"), and
+# not an obvious test word. Checked where an organisation is made: sign-up and the
+# operator's console. Folded case, so "TEST" is refused too.
+ORG_NAME_MIN = 2
+PLACEHOLDER_ORG_NAMES = frozenset(
+    {"asd", "asdf", "asdfgh", "qwe", "qwerty", "test", "tests", "testing", "test org", "abc", "xyz"}
+    | {"foo", "bar", "foobar", "dummy", "sample", "null", "none", "na", "n/a", "xxx", "temp"}
+)
+ORG_NAME_PROBLEM = "Enter the organisation's real name, at least 2 characters. For example: Sharma Traders."
+
+
+def org_name_ok(name: str) -> bool:
+    """False for a name too short, one repeated character, or a placeholder. O(len(name))."""
+    folded = " ".join(name.split()).casefold()
+    return len(folded) >= ORG_NAME_MIN and len(set(folded)) > 1 and folded not in PLACEHOLDER_ORG_NAMES

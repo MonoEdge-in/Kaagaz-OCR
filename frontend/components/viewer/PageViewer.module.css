@@ -187,8 +187,10 @@
   margin: 0;
 }
 
-/* A crop preview: the space is reserved before anything loads, so the page
-   below never jumps; the spot is fitted inside, never clipped. */
+/* A crop preview: the box takes its frame's height (UI audit R1, 16 Oct 2026: no
+   empty band), which is known from the page's size before anything is drawn, so
+   the page below never jumps; the spot is fitted inside with a margin, never
+   clipped. Until the box is measured it holds one control's height. */
 .cropFigure {
   margin: 0;
   min-width: 0;
@@ -199,8 +201,7 @@
   display: grid;
   place-items: center;
   width: 100%;
-  aspect-ratio: 16 / 9;
-  max-height: 11rem;
+  min-height: var(--h-lg);
   overflow: hidden;
   border: 1px solid var(--border);
   border-radius: 2px;

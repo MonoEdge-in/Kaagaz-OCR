@@ -411,6 +411,9 @@ export const listConversations = () =>
   request<{ items: ConversationSummary[] }>("GET", "/conversations");
 export const getConversation = (id: string) =>
   request<Conversation>("GET", `/conversations/${id}`);
+export const renameConversation = (id: string, title: string) =>
+  request<ConversationSummary>("PATCH", `/conversations/${id}`, { title });
+export const deleteConversation = (id: string) => request<void>("DELETE", `/conversations/${id}`);
 export const sendFeedback = (messageId: string, rating: "up" | "down", reason?: string) =>
   request<void>("POST", `/messages/${messageId}/feedback`, {
     rating,

@@ -122,7 +122,8 @@ describe("answer label text", () => {
   });
 
   it("uses the agreed not found sentence", () => {
-    expect(NOT_FOUND_TEXT).toBe("I couldn't find this in your documents.");
+    // Changed on purpose (UI audit, 16 Oct 2026): A4, calm words, no "couldn't".
+    expect(NOT_FOUND_TEXT).toBe("Not found in the documents searched.");
   });
 });
 
@@ -324,7 +325,8 @@ describe("pages that couldn't be read (PRD 5 F6, U7)", () => {
       feedback: null,
     };
     const html = renderToStaticMarkup(createElement(AnswerView, { message, question: "total?" }));
-    expect(html).toContain("find this in your documents.");
+    // Changed on purpose (UI audit, 16 Oct 2026): A4.
+    expect(html).toContain("Not found in the documents searched.");
     expect(html).toContain("Not found in the readable text.");
     expect(html).toContain('href="/documents/d1?page=3"');
     expect(html).toContain("and 1 more");

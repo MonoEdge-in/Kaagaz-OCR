@@ -4,18 +4,21 @@
 // reader was not sure of it, a link to its page's scanned text, the two
 // readings side by side, and three ways to settle it. The chosen value becomes
 // the stored truth for this customer; the original file never changes.
+// UI audit (16 Oct 2026): the badge says why it needs review (R2); Remember starts
+// off (R4, no pre-ticked box); no second reading is one muted line (R5). In focus
+// mode (R3, `onSkip` given) the card takes the keys 1, 2, E, S and Enter.
 
 import Link from "next/link";
-import { useState } from "react";
+import { useRef, useState } from "react";
+import type { KeyboardEvent } from "react";
 import { Icon } from "@/components/ui/Icon";
-import { LabelBadge } from "@/components/viewer/LabelBadge";
 import { PageViewer } from "@/components/viewer/PageViewer";
 import { fieldText, reasonText, voteText } from "@/components/viewer/labels";
 import { CONFIDENCE_NOTE, confidenceText, notSure, routeOrigin } from "@/components/viewer/scanned";
 import { ApiError, resolveReview } from "@/lib/api";
 import { pageLink } from "@/lib/regions";
 import type { ReviewChoice, ReviewItem } from "@/lib/types";
-import { checkChoice, checkReasonsText, MAX_TYPED_LENGTH } from "./review";
+import { checkChoice, checkReasonsText, focusKeyAction, MAX_TYPED_LENGTH, reasonTag } from "./review";
 import styles from "./Review.module.css";
 
 /** The id of a card's heading; the queue moves focus there after a resolve. */
@@ -23,16 +26,28 @@ export function reviewTitleId(valueId: string): string {
   return `review-${valueId}-title`;
 }
 
+/** Where a key was pressed: in a text field, on a button, link or box, or elsewhere on the card. */
+function keyTarget(target: EventTarget): "typing" | "control" | "other" {
+  if (!(target instanceof HTMLElement)) return "other";
+  if (target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) return "typing";
+  if (target instanceof HTMLInputElement) return target.type === "checkbox" ? "control" : "typing";
+  return target.closest("button, a") ? "control" : "other";
+}
+
 export function ReviewCard({
   item,
   onResolved,
+  onSkip,
 }: {
   item: ReviewItem;
   onResolved: (before: ReviewItem, after: ReviewItem) => void;
+  /** Focus mode (R3): Skip, and the keys. */
+  onSkip?: () => void;
 }) {
   const { value } = item;
   const [typed, setTyped] = useState("");
-  const [remember, setRemember] = useState(true);
+  const [remember, setRemember] = useState(false);
+  const typedRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const idBase = `review-${value.id}`;
@@ -63,14 +78,33 @@ export function ReviewCard({
     }
   };
 
+  const onKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+    const modifier = event.ctrlKey || event.metaKey || event.altKey;
+    const action = focusKeyAction(event.key, keyTarget(event.target), modifier);
+    if (action === null) return;
+    event.preventDefault(); // E never types an "e" into the box it focuses
+    if (action === "edit") typedRef.current?.focus();
+    else if (action === "skip") onSkip?.();
+    else void resolve(action === "save" ? "typed" : action);
+  };
+
   return (
-    <article className={`card ${styles.item}`} aria-labelledby={reviewTitleId(value.id)}>
+    <article
+      className={`card ${styles.item}`}
+      aria-labelledby={reviewTitleId(value.id)}
+      onKeyDown={onSkip ? onKeyDown : undefined}
+    >
       <header className={styles.head}>
         <div className={styles.titleRow}>
           <h2 id={reviewTitleId(value.id)} className={styles.title} tabIndex={-1}>
             {fieldText(value.field)}
           </h2>
-          <LabelBadge label="needs_review" />
+          {/* Every value here needs review: the badge says why (R2), with its icon and dashed edge. */}
+          <span className="badge badge-review">
+            <Icon name="eye-alert" size={16} />
+            <span className="visually-hidden">Needs review: </span>
+            {reasonTag(value.label_reason)}
+          </span>
         </div>
         <p className={styles.meta}>
           <Link href={link} className={styles.docLink}>
@@ -120,32 +154,33 @@ export function ReviewCard({
             type="button"
             className="btn"
             disabled={busy}
+            aria-keyshortcuts={onSkip ? "1" : undefined}
             onClick={() => void resolve("first")}
           >
             Use first reading
           </button>
         </section>
-        <section className={styles.reading} aria-labelledby={`${idBase}-second`}>
-          <h3 id={`${idBase}-second`} className={styles.readingHeading}>
-            Second reading
-          </h3>
-          {value.second_reading !== null ? (
-            <>
-              <p className={styles.readingText}>{value.second_reading}</p>
-              <button
-                type="button"
-                className="btn"
-                disabled={busy}
-                onClick={() => void resolve("second")}
-              >
-                Use second reading
-              </button>
-            </>
-          ) : (
-            <p className={styles.noReading}>No second reading for this value.</p>
-          )}
-        </section>
+        {value.second_reading !== null ? (
+          <section className={styles.reading} aria-labelledby={`${idBase}-second`}>
+            <h3 id={`${idBase}-second`} className={styles.readingHeading}>
+              Second reading
+            </h3>
+            <p className={styles.readingText}>{value.second_reading}</p>
+            <button
+              type="button"
+              className="btn"
+              disabled={busy}
+              aria-keyshortcuts={onSkip ? "2" : undefined}
+              onClick={() => void resolve("second")}
+            >
+              Use second reading
+            </button>
+          </section>
+        ) : null}
       </div>
+      {value.second_reading === null ? (
+        <p className={`muted ${styles.noReading}`}>No second reading for this value.</p>
+      ) : null}
 
       <form
         className={styles.typedForm}
@@ -160,6 +195,7 @@ export function ReviewCard({
         </label>
         <div className={styles.typedRow}>
           <input
+            ref={typedRef}
             id={`${idBase}-typed`}
             className={`input ${styles.typed}`}
             type="text"
@@ -169,6 +205,7 @@ export function ReviewCard({
             value={typed}
             onChange={(event) => setTyped(event.target.value)}
             aria-describedby={error ? errorId : undefined}
+            aria-keyshortcuts={onSkip ? "E" : undefined}
           />
           <button type="submit" className="btn btn-primary" disabled={busy}>
             Save
@@ -185,6 +222,18 @@ export function ReviewCard({
         />
         <span>Remember this correction for future documents</span>
       </label>
+
+      {onSkip ? (
+        <div className={styles.focusBar}>
+          <p className={`muted ${styles.keys}`}>
+            Keys: <kbd>1</kbd> first reading · <kbd>2</kbd> second reading · <kbd>E</kbd> type it ·{" "}
+            <kbd>S</kbd> skip · <kbd>Enter</kbd> save
+          </p>
+          <button type="button" className="btn" disabled={busy} aria-keyshortcuts="S" onClick={onSkip}>
+            Skip
+          </button>
+        </div>
+      ) : null}
 
       {busy ? (
         <p className={styles.saving} role="status">

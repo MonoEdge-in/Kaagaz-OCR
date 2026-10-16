@@ -2,7 +2,7 @@
 
 import pytest
 
-from kaagaz.api.names import clean_document_name, clean_name
+from kaagaz.api.names import clean_document_name, clean_name, org_name_ok
 
 
 @pytest.mark.parametrize(
@@ -44,3 +44,14 @@ def test_a_new_document_name_is_1_to_255_characters_with_no_path_strip(
     given: str, expected: str | None
 ) -> None:
     assert clean_document_name(given) == expected
+
+
+# UI audit G12 (16 Oct 2026): "asd" once became an admin screen's title.
+@pytest.mark.parametrize("name", ["", "a", " b ", "asd", "ASD", "Test", "test  org", "aaa", "zz", "N/A"])
+def test_a_placeholder_or_too_short_organisation_name_is_refused(name: str) -> None:
+    assert not org_name_ok(name)
+
+
+@pytest.mark.parametrize("name", ["Sharma Traders", "AB", "Test Prep Academy", "ACME", "मेहता टेक्सटाइल्स"])
+def test_a_real_organisation_name_is_kept(name: str) -> None:
+    assert org_name_ok(name)

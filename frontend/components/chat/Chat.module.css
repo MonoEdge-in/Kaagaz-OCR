@@ -161,6 +161,36 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* A1: a conversation and its menu (Rename, Delete) on one row; the rename box in its place. */
+.itemRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+}
+
+.itemRow > .item {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.listSearch {
+  padding-inline: var(--space-3);
+}
+
+.renameForm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+}
+
+.renameButtons {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
 .listNote {
   margin: 0;
   padding-inline: var(--space-3);
@@ -715,7 +745,8 @@
 
 .composerBox:has(.composerInput:focus) {
   border-color: var(--accent);
-  outline: 1px solid var(--accent);
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
 }
 
 .composerBox:has(.composerInput[aria-invalid="true"]) {
@@ -748,11 +779,11 @@
   outline: none;
 }
 
-/* The toolbar: chips on the left, answer settings and Send on the right. On a
-   narrow screen the right group wraps to its own row and stays at the right. */
+/* The toolbar: chips on the left, answer settings and Send on the right, always one
+   row (UI audit A2): the chips give way first, their words ending in "…". */
 .toolbar {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-1) var(--space-2);
@@ -761,14 +792,15 @@
 
 .toolGroup {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: var(--space-1);
   min-width: 0;
+  flex: 0 1 auto;
 }
 
 .toolEnd {
-  flex-wrap: nowrap;
+  flex: none;
   margin-inline-start: auto;
 }
 
@@ -825,18 +857,15 @@
   transform: rotate(-90deg);
 }
 
+/* A3: Send is the screen's one solid primary, with its words; dimmed while empty
+   (.btn[aria-disabled]), a spinner over its words while the answer is out. */
 .send {
   flex: none;
-  width: var(--control-h);
-  height: var(--control-h);
-  padding: 0;
-  border-radius: var(--r-full);
 }
 
 @media (pointer: coarse) {
   .send {
-    width: 44px;
-    height: 44px;
+    min-height: 44px;
   }
 }
 
@@ -881,8 +910,10 @@
   }
 }
 
+/* The panel itself takes focus only when its choices are locked: a ring then too. */
 .menu:focus-visible {
-  outline: none;
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
 }
 
 /* A section of choices; a second section gets a hairline above it. */
@@ -999,7 +1030,7 @@
 
 .segment:has(input:focus-visible) {
   outline: 2px solid var(--focus);
-  outline-offset: 1px;
+  outline-offset: 2px;
 }
 
 /* The native radio covers the segment, invisible, for the keyboard and screen readers. */
@@ -1071,4 +1102,66 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+}
+
+/* A5: example questions on the empty screen, each a quiet button naming its document. */
+.starters {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-6);
+}
+
+.starterList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr));
+  gap: var(--space-2);
+}
+
+.starter {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  width: 100%;
+  height: 100%;
+  min-height: var(--h-lg);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.starter:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.starter:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.starterDoc {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+
+/* A4: what to do after "not found". */
+.nextSteps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 0;
+  padding-inline-start: var(--space-4);
 }

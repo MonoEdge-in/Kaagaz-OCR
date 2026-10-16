@@ -255,8 +255,8 @@ describe("layout guards", () => {
 
   it("leaves the admin Users table's User column room where it becomes a table", () => {
     const found = budgets(ADMIN_CSS, "reflow", USER_REM);
-    // Changed on purpose (UI touch-up council, 15 Oct 2026): from 64rem the actions sit side by side.
-    expect(found.map((b) => b.start)).toEqual([48, 64]);
+    // Changed on purpose (UI audit, 16 Oct 2026): AD2, the actions are in one menu, so no wider column from 64rem.
+    expect(found.map((b) => b.start)).toEqual([48]);
     for (const { start, needs } of found) expect(needs, `at ${start}rem`).toBeLessThanOrEqual(start);
   });
 
@@ -328,6 +328,8 @@ describe("layout guards", () => {
       // Changed on purpose (MonoEdge design system, 16 Oct 2026): the composer's panel, the shell's two
       // scrollers, the page (no rubber band) and a tab row's sideways scroll.
       "components/chat/Chat.module.css: .menu: overscroll-behavior",
+      // Changed on purpose (UI audit, 16 Oct 2026): AD3, Add user's side panel, a modal dialog.
+      "components/admin/Admin.module.css: .sidePanelBody: overscroll-behavior",
       "components/shell/Shell.module.css: .sidebar: overscroll-behavior",
       "components/shell/Shell.module.css: .main: overscroll-behavior",
       "app/globals.css: html: overscroll-behavior-y",
@@ -622,7 +624,8 @@ describe("layout guards", () => {
     // "auto": an answer seen once keeps its real height while off screen.
     expect(lazy[0]?.body).toMatch(/contain-intrinsic-block-size:\s*auto \d+px;/);
     const chat = read("components/chat/ChatScreen.tsx");
-    expect(chat).toMatch(/<div className=\{styles\.answerWrap\}>\s*<AnswerView /);
+    // Changed on purpose (UI audit, 16 Oct 2026): A4, AnswerView takes onAskAll, so its props wrap.
+    expect(chat).toMatch(/<div className=\{styles\.answerWrap\}>\s*<AnswerView\s/);
     // Opening a conversation pins its end again after the first paint, when real heights are in.
     expect(chat).toContain("frame = requestAnimationFrame(pin);");
     // A chip pointed at re-renders two source cards, and typing a search never re-renders the list.

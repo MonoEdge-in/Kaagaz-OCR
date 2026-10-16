@@ -52,7 +52,10 @@ export function AdminView({ twoStep }: { twoStep: ReactNode }) {
       <header className="page-header">
         <div>
           <h1>Admin</h1>
-          <p>{me.customer.name}</p>
+          {/* G12 (UI audit, 16 Oct 2026): the organisation's name with its label, never alone as a title. */}
+          <p>
+            Workspace: <strong>{me.customer.name}</strong>
+          </p>
         </div>
       </header>
       <Tabs<TabId> prefix="admin" label="Admin sections" tabs={TABS} active={active} onChange={setActive}>
