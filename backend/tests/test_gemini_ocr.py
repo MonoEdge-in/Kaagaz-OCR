@@ -784,11 +784,12 @@ class NeverFailedTest(unittest.TestCase):
             read = built.engine.read_page(page(), page_no=1)
         self.assertEqual([call.thinking_level for call in built.client.calls], ["high", "low"])
         first, second = (call.deadline for call in built.client.calls)
-        self.assertGreater(second, first)  # a budget of its own
+        # Changed on purpose (Tushar, 16 Oct 2026): one page deadline (60 s max) for both reads.
+        self.assertEqual(second, first)
         self.assertNotEqual(read.read_by, "rapidocr")
         self.assertNotIn(READER_REFUSED, read.issues)
         self.assertEqual([item.text for item in read.lines], ["Survey No 72"])
-        self.assertEqual((read.input_tokens, read.output_tokens), (107, 1009))
+        self.assertEqual((read.input_tokens, read.output_tokens), (100, 1000))  # the read used
         (put,) = cache.puts  # kept as a low read (OCR_THINKING_LEVEL is low here), never as high
         self.assertEqual(put.prompt_version, cache_prompt_version("low", "low"))
 
@@ -796,12 +797,13 @@ class NeverFailedTest(unittest.TestCase):
         built = build(
             ModelUnavailable("timeout", input_tokens=7, output_tokens=9),
             ModelUnavailable("timeout", input_tokens=1, output_tokens=2),
+            ocr_timeout_seconds=60.0,  # room for the low read (at least MIN_CALL_SECONDS)
         )
         with built.engine.document(dataclasses.replace(pages(FakeCache()), thinking="high")):
             read = built.engine.read_page(page(), page_no=1)
         self.assertEqual(len(built.client.calls), 2)
         self.assertEqual((read.read_by, read.issues[0]), ("rapidocr", READER_REFUSED))
-        self.assertEqual((read.input_tokens, read.output_tokens), (8, 11))
+        self.assertEqual((read.input_tokens, read.output_tokens), (1, 2))  # the read that ran out
 
     def test_a_low_read_that_runs_out_of_time_is_not_read_again(self) -> None:
         built = build(ModelUnavailable("timeout"))
@@ -818,6 +820,48 @@ class NeverFailedTest(unittest.TestCase):
         with built.engine.document(careful), self.assertRaises(BackendUnavailable):
             built.engine.read_page(page(), page_no=1)
         self.assertEqual((len(built.client.calls), built.local_builds), (1, 0))
+
+
+class LowAlongsideTest(unittest.TestCase):
+    """Tushar (16 Oct 2026): a page is read in at most OCR_TIMEOUT_SECONDS; a slow high read
+    gets a low read alongside, and the high reply is used when it comes in time."""
+
+    def _slow_high(self, high_wins: bool) -> tuple[Built, PageRead]:
+        low_started = threading.Event()
+        built = Built(FakeClient(), ocr_timeout_seconds=0.4)
+        calls: list[str] = []
+
+        def read_page(**kwargs: Any) -> PageReply:
+            calls.append(kwargs["thinking_level"])
+            if kwargs["thinking_level"] == "low":
+                low_started.set()
+                return reply(value(line("low read")), 10, 100)
+            assert low_started.wait(3.0)  # high is still out when low starts
+            if high_wins:
+                return reply(value(line("high read")), 20, 200)
+            raise ModelUnavailable("timeout")
+
+        document = dataclasses.replace(pages(FakeCache()), thinking="high")
+        with built.engine.document(document), mock.patch.object(built.client, "read_page", read_page):
+            read = built.engine.read_page(page(), page_no=1)
+        self.assertEqual(sorted(calls), ["high", "low"])
+        return built, read
+
+    def test_the_low_read_is_used_when_the_high_one_runs_out_of_time(self) -> None:
+        _built, read = self._slow_high(high_wins=False)
+        self.assertEqual([item.text for item in read.lines], ["low read"])
+        self.assertNotIn(READER_REFUSED, read.issues)
+
+    def test_the_high_read_is_used_when_it_comes_in_time(self) -> None:
+        _built, read = self._slow_high(high_wins=True)
+        self.assertEqual([item.text for item in read.lines], ["high read"])
+        self.assertEqual((read.input_tokens, read.output_tokens), (20, 200))
+
+    def test_a_fast_high_read_never_starts_a_low_one(self) -> None:
+        built = build(reply(value(line("ok"))), ocr_timeout_seconds=60.0)
+        with built.engine.document(dataclasses.replace(pages(FakeCache()), thinking="high")):
+            built.engine.read_page(page(), page_no=1)
+        self.assertEqual([call.thinking_level for call in built.client.calls], ["high"])
 
 
 class DocumentBudgetTest(unittest.TestCase):
