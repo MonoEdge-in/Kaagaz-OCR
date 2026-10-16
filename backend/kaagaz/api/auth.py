@@ -164,6 +164,8 @@ _ENROL_FIELDS = frozenset({"uid", "cid", "ver", "sec", "exp"})
 _CONFIRM_FIELDS = frozenset({"uid", "cid", "ver", "exp"})
 _OPERATOR_PURPOSE = b"operator"
 _OPERATOR_FIELDS = frozenset({"oid", "ver", "exp"})
+_MOVE_PURPOSE = b"operator_move"
+_MOVE_FIELDS = frozenset({"oid", "ver", "sec", "exp"})
 
 
 def session_seconds(scope: str, settings: Settings) -> int:
@@ -302,6 +304,40 @@ def read_operator(token: str, secret: str, now: int) -> OperatorClaims | None:
     if not (isinstance(oid, str) and _is_uuid(oid) and _is_version(ver) and _is_int(exp)) or exp <= now:
         return None
     return OperatorClaims(operator_id=oid, session_version=ver, expires_at=exp)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class MoveClaims:
+    """Moving the operator's two-step to a new device (0031): the new secret, sealed."""
+
+    operator_id: str
+    session_version: int
+    sealed_secret: str  # SecretBox.seal(new secret, aad=operator_id)
+    expires_at: int  # seconds since the epoch
+
+
+def sign_move(claims: MoveClaims, secret: str) -> str:
+    """A move token: exactly ``{oid, ver, sec, exp}``, MAC purpose ``operator_move``."""
+    payload = {
+        "oid": claims.operator_id,
+        "ver": claims.session_version,
+        "sec": claims.sealed_secret,
+        "exp": claims.expires_at,
+    }
+    return _sign(payload, _MOVE_PURPOSE, secret)
+
+
+def read_move(token: str, secret: str, now: int) -> MoveClaims | None:
+    """The claims of a genuine, unexpired move token, else None. Strict, as ``read_operator``."""
+    data = _verified(token, _MOVE_PURPOSE, secret)
+    if not isinstance(data, dict) or set(data) != _MOVE_FIELDS:
+        return None
+    oid, ver, sec, exp = data["oid"], data["ver"], data["sec"], data["exp"]
+    if not (isinstance(oid, str) and _is_uuid(oid) and isinstance(sec, str) and sec):
+        return None
+    if not (_is_version(ver) and _is_int(exp)) or exp <= now:
+        return None
+    return MoveClaims(operator_id=oid, session_version=ver, sealed_secret=sec, expires_at=exp)
 
 
 def set_operator_cookie(response: Response, claims: OperatorClaims, settings: Settings, *, now: int) -> None:
@@ -610,6 +646,7 @@ class CurrentOperator:
     email: str
     display_name: str
     expires_at: int  # the session's, seconds since the epoch
+    session_version: int  # the session's (a two-step move binds its token to it)
 
 
 def current_operator(request: Request) -> CurrentOperator:
@@ -625,7 +662,7 @@ def current_operator(request: Request) -> CurrentOperator:
         found = operators_sql.session_operator(conn, claims.operator_id)
     if found is None or found[2] != claims.session_version:
         raise ApiError(401, "not_signed_in")
-    return CurrentOperator(claims.operator_id, found[0], found[1], claims.expires_at)
+    return CurrentOperator(claims.operator_id, found[0], found[1], claims.expires_at, claims.session_version)
 
 
 OperatorSession = Annotated[CurrentOperator, Depends(current_operator)]
