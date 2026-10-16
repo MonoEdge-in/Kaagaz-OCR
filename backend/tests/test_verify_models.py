@@ -18,6 +18,7 @@ import pytest
 
 from kaagaz import cli, verify_models
 from kaagaz.ai import openrouter
+from kaagaz.answering import draft
 from kaagaz.reading.gemini_ocr import PAGE_SCHEMA
 from kaagaz.reading.ocr import READER_PROMPT_VERSION
 from kaagaz.settings import Settings
@@ -388,18 +389,41 @@ def test_a_cut_reply_that_does_not_end_length_fails(fake: OpenRouterFake) -> Non
     assert lines["max_tokens_finish"][0] == "FAIL"
 
 
-def test_no_reasoning_tokens_at_high_fails(fake: OpenRouterFake) -> None:
-    def no_reasoning(request: Recorded) -> Reply:
-        reply = openrouter_like(request)
-        if isinstance(reply.body, dict) and "usage" in reply.body:
-            reply.body["usage"].pop("completion_tokens_details", None)
-        return reply
+def _no_reasoning(request: Recorded) -> Reply:
+    """Google Vertex as seen live (11 Oct 2026): every effort accepted, no thinking reported."""
+    reply = openrouter_like(request)
+    if isinstance(reply.body, dict) and "usage" in reply.body:
+        reply.body["usage"].pop("completion_tokens_details", None)
+    return reply
 
-    fake.responder = no_reasoning
+
+def test_no_reasoning_tokens_reported_is_info_and_a_model_is_still_recorded(fake: OpenRouterFake) -> None:
+    fake.responder = _no_reasoning
     _, _, lines = _run(_settings(fake))
-    assert lines["reasoning_levels"][0] == "FAIL"
+    assert lines["reasoning_levels"][0] == "INFO"
     assert "reasoning at high 0" in lines["reasoning_levels"][1]
     assert "includes reasoning unknown" in lines["usage_fields"][1]
+    recorded: list[tuple[str, int, int]] = []
+    code, text, lines = _model_run(fake, FLASH, record=lambda *row: recorded.append(row))
+    assert lines["model_efforts"] == ("PASS", f"{FLASH}: high=200 json reasoning=0 low=200 json reasoning=0")
+    assert (code, len(recorded)) == (0, 1), text
+
+
+def test_an_effort_we_send_that_is_refused_fails_reasoning_levels_and_model_efforts(
+    fake: OpenRouterFake,
+) -> None:
+    def no_high(request: Recorded) -> Reply:
+        body = request.body if isinstance(request.body, dict) else {}
+        if body.get("reasoning", {}).get("effort") == "high":
+            return error_reply(400, error_type="bad_request")
+        return openrouter_like(request)
+
+    fake.responder = no_high
+    recorded: list[tuple[str, int, int]] = []
+    _, _, lines = _model_run(fake, FLASH, record=lambda *row: recorded.append(row))
+    assert lines["reasoning_levels"][0] == "FAIL"
+    assert lines["model_efforts"][0] == "FAIL"
+    assert recorded == []
 
 
 def test_an_inexact_read_fails_default_temperature(fake: OpenRouterFake) -> None:
@@ -637,11 +661,28 @@ def test_a_length_finish_passes_whatever_the_providers_native_reason(
         assert lines["max_tokens_finish"][0] == "PASS", (ocr_model, lines["max_tokens_finish"])
 
 
+def test_the_replys_own_provider_passes_model_reply_with_no_generation_lookup(fake: OpenRouterFake) -> None:
+    """Live 11 Oct 2026: a zero-data-retention call is not kept for /generation to find."""
+
+    def not_kept(request: Recorded) -> Reply:
+        if request.action.startswith("generation"):
+            return error_reply(404)
+        return openrouter_like(request)
+
+    fake.responder = not_kept
+    _, _, lines = _model_run(fake, FLASH)
+    assert lines["model_reply"] == ("PASS", f"{FLASH}: 200; provider_name Google")
+    assert not [r for r in fake.requests if r.action.startswith("generation")]
+
+
 def test_a_reply_with_no_provider_name_fails_model_reply_after_three_tries(fake: OpenRouterFake) -> None:
     def no_name(request: Recorded) -> Reply:
         if request.action.startswith("generation"):
             return error_reply(404)
-        return openrouter_like(request)
+        reply = openrouter_like(request)
+        if isinstance(reply.body, dict):
+            reply.body.pop("provider", None)
+        return reply
 
     fake.responder = no_name
     waits: list[float] = []
@@ -666,3 +707,62 @@ def test_record_checks_exactly_one_model(fake: OpenRouterFake, models: list[str]
     code, text, _ = _run(_settings(fake), *models, "--record")
     assert code == 2 and text == ""
     assert fake.requests == []
+
+
+# --- --chat (features 25-27, council 15 Oct 2026, C11) -------------------------------------
+
+
+def _answers(cited: list[int], total: str = "12,345.00") -> Any:
+    """openrouter_like, but a request with the answer's system prompt gets an answer citing
+    ``cited``."""
+
+    def responder(request: Recorded) -> Reply:
+        body = request.body if isinstance(request.body, dict) else {}
+        messages = body.get("messages") or [{}]
+        if messages[0].get("content") != draft.SYSTEM_PROMPT:
+            return openrouter_like(request)
+        sentence = {"text": f"The total of invoice 4471 is Rs {total}.", "evidence": cited}
+        return json_reply({"status": "answered", "sentences": [sentence]}, counts=usage(cost=0.0012))
+
+    return responder
+
+
+def _chat_run(fake: OpenRouterFake, record: Any) -> tuple[int, str, dict[str, tuple[str, str]]]:
+    out = io.StringIO()
+    code = verify_models.run(
+        _settings(fake), out, models=[FLASH], sleep=lambda seconds: None, chat=True, record_chat=record
+    )
+    lines = {}
+    for line in out.getvalue().splitlines():
+        if line.startswith("VERIFY "):
+            _, item, verdict, evidence = [*line.split(" ", 3), ""][:4]
+            lines[item] = (verdict, evidence)
+    return code, out.getvalue(), lines
+
+
+def test_chat_checks_a_model_for_answering_and_records_its_pass(fake: OpenRouterFake) -> None:
+    fake.responder = _answers([1])
+    recorded: list[str] = []
+    code, text, lines = _chat_run(fake, recorded.append)
+    assert code == 0, text
+    assert [item for item in lines if item not in ITEMS] == list(verify_models.CHAT_REQUIRED)
+    assert all(lines[item][0] == "PASS" for item in verify_models.CHAT_REQUIRED)
+    assert recorded == [FLASH]
+    assert f"RECORDED {FLASH} for answers, prompt {draft.ANSWER_PROMPT_HASH}" in text
+    efforts = [
+        r.body["reasoning"]["effort"]
+        for r in fake.requests
+        if r.body and r.body.get("messages", [{}])[0].get("content") == draft.SYSTEM_PROMPT
+    ]
+    assert sorted(set(efforts)) == ["high", "low", "medium"]
+
+
+@pytest.mark.parametrize(("cited", "total"), [([1, 2], "12,345.00"), ([2], "8,100.00"), ([1], "12,000.00")])
+def test_chat_records_nothing_when_the_answer_cites_the_wrong_evidence(
+    fake: OpenRouterFake, cited: list[int], total: str
+) -> None:
+    fake.responder = _answers(cited, total)
+    recorded: list[str] = []
+    code, text, lines = _chat_run(fake, recorded.append)
+    assert lines["chat_cites"][0] == "FAIL"
+    assert code == 1 and recorded == [] and f"NOT RECORDED {FLASH}" in text

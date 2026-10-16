@@ -1,5 +1,11 @@
-"""POST /api/chat, GET /api/conversations, GET /api/conversations/{id} and
-POST /api/messages/{id}/feedback.
+"""POST /api/chat, GET /api/chat/options, GET /api/conversations, GET
+/api/conversations/{id} and POST /api/messages/{id}/feedback.
+
+Who drafts the answer (features 25-27, council 15 Oct 2026, C7, C10): the asker may name
+the chat models (by id, at most MAX_AGENTS, more than one only with the organisation's
+Ensemble switch) and the thinking level; ``resolve_chat`` checks them for this
+organisation in the first transaction, before anything is stored (403 otherwise), and
+the audit row names them. ``GET /api/chat/options`` lists what may be chosen, by name.
 
 Why the order in ``ask``: one short transaction checks the conversation and
 resolves the scope (PRD 3 H2), the one sent or else the last question's
@@ -9,7 +15,7 @@ question and answer pairs for a follow-up's rewrite (H1). The answer is worked
 out outside a transaction (it may wait on the model), then the conversation, both
 messages (the question with its scope and rewrite) and the audit row are written
 in one transaction.
-The audit row holds only the ids and ``answer.status``.
+The audit row holds only the ids, ``answer.status`` and the models asked and their level.
 
 The asker's own words (My words, A3) may help the answer, which then lists them in
 ``understood_words``; they are never in a message's text, so never in the history.
@@ -31,6 +37,7 @@ is made only after the answer); the memory's to the same user, kind ``memory``
 (``usage_scope``).
 """
 
+import functools
 import json
 import logging
 import uuid
@@ -38,7 +45,7 @@ from collections.abc import Sequence
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Response
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError, field_validator
 from sqlalchemy import Connection, RowMapping
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -49,11 +56,21 @@ from kaagaz.answering.rewrite import Turn
 from kaagaz.api.auth import User
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
+from kaagaz.api.middleware import RateLimiter
 from kaagaz.api.views import answer_with_source_states, cited_document_ids, conversation_summary, message
 from kaagaz.db import audit
 from kaagaz.db import chat as chat_sql
+from kaagaz.db.models import (
+    LEVELS,
+    MAX_AGENTS,
+    AiNotAllowed,
+    effective_settings,
+    resolve_chat,
+    usable_chat_models,
+)
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.search.scope import EVERYTHING, ScopeBody, resolve
+from kaagaz.settings import MODEL_ID
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -63,6 +80,17 @@ Context = Annotated[AppContext, Depends(get_context)]
 MAX_TITLE = 200
 NOT_FOUND_TEXT = "I couldn't find this in your documents."
 MAX_SCOPE_BYTES = 4096  # the messages.scope CHECK (migration 0006)
+TOO_MANY_QUESTIONS = "You have asked many questions in a short time. Please wait a minute and ask again."
+
+
+@functools.cache
+def chat_limits(per_minute: int) -> RateLimiter:
+    """Questions a user may ask a minute (CHAT_QUESTIONS_PER_MINUTE, security checklist
+    15 Oct 2026), beside the site-wide limit: one limiter a process for each value."""
+    return RateLimiter(per_minute)
+
+
+ModelId = Annotated[str, StringConstraints(max_length=257, pattern=f"^{MODEL_ID.pattern}$")]
 
 
 class AskBody(BaseModel):
@@ -71,6 +99,25 @@ class AskBody(BaseModel):
     question: str = Field(min_length=1, max_length=1000)
     conversation_id: uuid.UUID | None = None
     scope: ScopeBody | None = None  # left out: the conversation's last scope, or everything
+    # Features 25-27 (C10, S8): who drafts the answer, checked again for this customer
+    # (resolve_chat); left out, the organisation's default. Ids only, never trusted.
+    agents: list[ModelId] | None = Field(default=None, min_length=1, max_length=MAX_AGENTS)
+    thinking: Literal["low", "medium", "high"] | None = None
+
+    @field_validator("agents")
+    @classmethod
+    def _distinct(cls, agents: list[str] | None) -> list[str] | None:
+        if agents is not None and len(set(agents)) != len(agents):
+            raise ValueError("each model once")
+        return agents
+
+
+# The 403s of resolve_chat (C10), in plain words: no model id or level is named.
+NOT_ALLOWED = {
+    "model_not_allowed": "That way of answering is not available. Choose another in Answer settings.",
+    "ensemble_not_allowed": "Your organisation does not allow more than one answer model at once.",
+    "thinking_not_allowed": "That thinking level is not available here. Choose another in Answer settings.",
+}
 
 
 class FeedbackBody(BaseModel):
@@ -91,6 +138,8 @@ def answer_text(answer: dict[str, Any]) -> str:
 
 @router.post("/chat")
 def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks) -> dict[str, Any]:
+    if not chat_limits(context.settings.chat_questions_per_minute).allow(user.user_id):
+        raise ApiError(429, "rate_limited", TOO_MANY_QUESTIONS, headers={"Retry-After": "60"})
     question = body.question.strip()
     if not question:
         raise ApiError(400, "bad_request", "Type a question first.")
@@ -114,6 +163,12 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
             if chosen is None
             else resolve(conn, user.customer_id, chosen, timezone=context.settings.timezone)
         )
+        try:
+            choice = resolve_chat(
+                conn, user.customer_id, body.agents, body.thinking, settings=context.settings
+            )
+        except AiNotAllowed as refused:
+            raise ApiError(403, refused.code, NOT_ALLOWED[refused.code]) from None
     saved = None if chosen is None else chosen.model_dump(mode="json")
     # json.dumps writes ", " and ": " as jsonb's text does, so this is the CHECK's length.
     if saved is not None and len(json.dumps(saved).encode()) > MAX_SCOPE_BYTES:
@@ -128,7 +183,13 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
         conversation_id=conversation_id,
     ) as spend:
         answer = context.answers.answer(
-            user.customer_id, question, scope=scope, history=history, user_id=user.user_id, memory=memory
+            user.customer_id,
+            question,
+            scope=scope,
+            history=history,
+            user_id=user.user_id,
+            memory=memory,
+            choice=choice,
         ).to_json()
 
         with context.db.customer(user.customer_id) as conn:
@@ -168,6 +229,10 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
                     "conversation_id": conversation_id,
                     "question_id": str(asked["id"]),
                     "status": status if isinstance(status, str) else None,
+                    # S5c: who was asked to draft it (model ids, lead first, comma-separated:
+                    # details hold no lists) and at what level.
+                    "agents": ",".join(agent.model for agent in choice.agents),
+                    "thinking": choice.thinking,
                 },
             )
         spend.conversation_id = conversation_id  # committed: the ledger row may name it
@@ -176,6 +241,29 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
             _remember, context, user.customer_id, user.user_id, conversation_id, summary_turn, turns + 1
         )
     return {"conversation_id": conversation_id, "question": message(asked), "answer": message(answered)}
+
+
+@router.get("/chat/options")
+def chat_options(user: User, context: Context) -> dict[str, Any]:
+    """Features 25-27 (C10): the answer settings the asker's organisation allows now, for
+    the composer: its usable chat models by name (the default first, ``resolve_chat``'s
+    list), the thinking levels and the default one, and whether more than one model may
+    answer at once (its Ensemble switch and at least two models), at most ``max_agents``.
+    No price, cost or budget (Tushar, 15 Oct 2026). Two statements."""
+    with context.db.customer(user.customer_id) as conn:
+        rows = usable_chat_models(conn, user.customer_id, settings=context.settings)
+        allowed = effective_settings(conn, user.customer_id)
+    levels = allowed["chat_levels"] or ["low"]
+    return {
+        "agents": [
+            {"id": row["id"], "name": row["name"] or row["id"], "default": bool(row["is_default_chat"])}
+            for row in rows
+        ],
+        "levels": [level for level in LEVELS if level in levels],
+        "default_level": allowed["chat_default_level"] or "low",
+        "ensemble": bool(allowed["ensemble"]) and len(rows) >= 2,
+        "max_agents": MAX_AGENTS,
+    }
 
 
 def _live_memory(conn: Connection, customer_id: str, state: RowMapping) -> Memory:

@@ -23,7 +23,9 @@ any item FAILs. INFO means a person reads the evidence and decides. The items:
 3. ``strict_schema``: structured output with ``strict`` true and false; PASS when the value
    requests use (``openrouter.STRICT_SCHEMA``) gives schema-following JSON.
 4. ``reasoning_levels``: each ``reasoning.effort``; PASS when the levels we send are
-   accepted and ``reasoning_tokens`` is above 0 at high.
+   accepted and ``reasoning_tokens`` is above 0 at high; INFO when they are accepted but
+   no thinking is reported (Google Vertex reports 0, live 11 Oct 2026: whether the effort
+   reaches Google is a question for a person); FAIL when one is refused.
 5. ``detail_tokens``: ``prompt_tokens`` with no detail, low and high; PASS when high costs
    more than low (the detail reaches Google), INFO when it does not (then
    ``MEDIA_RESOLUTION_SHAPE`` "passthrough" is the question for Vrushit).
@@ -56,7 +58,9 @@ rule found, with the reader's own ``INSTRUCTION`` and ``PAGE_SCHEMA`` where a pa
 * ``model_endpoint``: the catalogue's endpoint rule (``jobs/catalog``): a zero-data-
   retention endpoint with status 0, of a provider in OPENROUTER_PROVIDERS, listing
   structured_outputs and the parameters of item 1.
-* ``model_reply``: a 200, and the ``provider_name`` OpenRouter's ``/generation`` gives.
+* ``model_reply``: a 200, and the provider that served it: the reply's own ``provider``
+  (what the ledger keeps), else the ``provider_name`` OpenRouter's ``/generation`` gives
+  (a zero-data-retention call may not be kept there to look up).
 * ``model_page_schema``: the made-up page read with the real ``PAGE_SCHEMA``, and the reply
   follows it (``schema_problem``).
 * ``model_made_up_page``: that read has every line of the page exactly.
@@ -64,8 +68,8 @@ rule found, with the reader's own ``INSTRUCTION`` and ``PAGE_SCHEMA`` where a pa
   (the reader's ``pinned``); each box's best IoU is shown.
 * ``model_devanagari``: INFO: no Devanagari page is drawn, since no Devanagari font is
   bundled (Pillow's own is Latin only, and a font would be a new dependency).
-* ``model_efforts``: OCR_THINKING_LEVEL and OCR_RETRY_THINKING_LEVEL are accepted, each with
-  ``reasoning_tokens`` above 0.
+* ``model_efforts``: OCR_THINKING_LEVEL and OCR_RETRY_THINKING_LEVEL are accepted, each
+  giving JSON; its ``reasoning_tokens`` are shown, not required (``reasoning_levels``).
 * ``model_cost``: the page read's ``usage.cost`` is above 0.
 * ``model_truncation``: a tiny output cap ends ``length``, which the client calls
   ``output_truncated``; ``model_token_cap``: it gave at most that many tokens.
@@ -76,6 +80,16 @@ rule found, with the reader's own ``INSTRUCTION`` and ``PAGE_SCHEMA`` where a pa
 no item of the whole run FAILs, the command writes the pass for ``READER_PROMPT_VERSION``
 and the page read's tokens in and out (``record``, as the owner, with a ``platform_audit``
 row ``model.verified``: ``cli``). Otherwise nothing is written.
+
+``--chat`` (features 25-27, council 15 Oct 2026, C11) checks each ``--model`` for drafting
+answers instead: ``model_endpoint``, ``model_reply``, then ``chat_schema`` (a made-up
+question with two made-up pieces of evidence, the answer's own SYSTEM_PROMPT and
+ANSWER_SCHEMA: the reply follows it and the answer can read it), ``chat_levels`` (low,
+medium and high each give such a reply), ``chat_cites`` (it answers from piece 1 only,
+with its total) and ``model_refusal``. ``--chat --record`` writes the pass for
+ANSWER_PROMPT_HASH (``chat_verified_*``, platform_audit ``model.chat_verified``) the same
+way. Deploy runbook: after a migration or a changed answer prompt, run it for each answer
+model, or answers stay on MODEL_CHAT.
 
 Cost: about 25 model calls with a small picture, a few cents on the Pro model, and about 8
 more per ``--model``.
@@ -100,6 +114,7 @@ from kaagaz.ai import openrouter
 from kaagaz.ai.openrouter import (
     CHAT_PATH,
     CHAT_THINKING_LEVEL,
+    CHAT_THINKING_TOKENS,
     EMBEDDINGS_PATH,
     KEY_PATH,
     OpenRouterClient,
@@ -112,6 +127,7 @@ from kaagaz.ai.openrouter import (
     reply_text,
 )
 from kaagaz.ai.replies import ModelOutputError, ModelUnavailable, parse_reply
+from kaagaz.answering import draft
 from kaagaz.jobs import catalog
 from kaagaz.reading.ocr import READER_PROMPT_VERSION
 from kaagaz.reading.wiring import gemini_reader_module
@@ -158,6 +174,13 @@ REQUIRED = (
     "model_token_cap",
     "model_refusal",
 )
+# The --model --chat items --record needs to PASS (features 25-27, C11).
+CHAT_REQUIRED = ("model_endpoint", "model_reply", "chat_schema", "chat_levels", "chat_cites", "model_refusal")
+CHAT_LEVELS = ("low", "medium", "high")
+# A made-up question and two made-up pieces of evidence (chat_cites): only piece 1 answers it.
+CHAT_QUESTION = "What is the total of invoice 4471?"
+CHAT_EVIDENCE = ("Invoice 4471\nTotal Rs 12,345.00", "Invoice 5520\nTotal Rs 8,100.00")
+CHAT_TOTAL = "12,345.00"
 # A made-up invoice: nothing here belongs to anyone.
 TRUTH = ("INVOICE 4471", "Total Rs 12,345.00", "Date 08-10-2026")
 INSTRUCTION = (
@@ -269,6 +292,7 @@ class Verifier:
         embed_model: str | None,
         timer: Callable[[], float],
         sleep: Callable[[float], None] = time.sleep,
+        chat: bool = False,
     ) -> None:
         self.settings = settings
         self.key_set = settings.openrouter_api_key is not None
@@ -276,11 +300,11 @@ class Verifier:
         self.timer = timer
         self.sleep = sleep
         self.timeout = settings.ocr_timeout_seconds
-        chat = [settings.model_chat] if valid_model_id(settings.model_chat) else []
-        wanted = list(dict.fromkeys([settings.ocr_model, *chat, *models]))
+        chat_model = [settings.model_chat] if valid_model_id(settings.model_chat) else []
+        wanted = list(dict.fromkeys([settings.ocr_model, *chat_model, *models]))
         self.models = [model for model in wanted if valid_model_id(model)]
         self.bad_models = [model for model in wanted if not valid_model_id(model)]
-        self.checks = [ModelCheck(self, model) for model in dict.fromkeys(models)]
+        self.checks = [ModelCheck(self, model, chat=chat) for model in dict.fromkeys(models)]
         if embed_model is None:
             embed_model = settings.model_embed
         self.embed_model = embed_model
@@ -434,7 +458,7 @@ class Verifier:
             self.settings.ocr_retry_thinking_level,
             CHAT_THINKING_LEVEL,
         }
-        verdict = PASS if needed <= accepted and high_reasoning > 0 else FAIL
+        verdict = FAIL if not needed <= accepted else PASS if high_reasoning > 0 else INFO
         evidence = f"{' '.join(said)}; we send {','.join(sorted(needed))}; reasoning at high {high_reasoning}"
         return Finding("reasoning_levels", verdict, evidence)
 
@@ -671,16 +695,27 @@ class ModelCheck:
     after ``model_endpoint`` goes through the provider it found, and fails with no request
     when it found none. ``tokens`` is the page read's (input, output) for ``--record``."""
 
-    def __init__(self, verifier: Verifier, model: str) -> None:
+    def __init__(self, verifier: Verifier, model: str, *, chat: bool = False) -> None:
         self.verifier = verifier
         self.model = model
+        self.chat = chat
         self.provider: str | None = None
         self.read: Probe | None = None  # the PAGE_SCHEMA read
         self.value: dict[str, Any] | None = None
         self.capped: Probe | None = None  # the tiny output cap's reply
         self.tokens: tuple[int, int] | None = None
+        self.answer: dict[str, Any] | None = None  # chat_schema's reply
 
     def items(self) -> list[tuple[str, Callable[[], Finding]]]:
+        if self.chat:
+            return [
+                ("model_endpoint", self.endpoint),
+                ("model_reply", self.reply),
+                ("chat_schema", self.chat_schema),
+                ("chat_levels", self.chat_levels),
+                ("chat_cites", self.chat_cites),
+                ("model_refusal", self.refusal),
+            ]
         return [
             ("model_endpoint", self.endpoint),
             ("model_reply", self.reply),
@@ -751,8 +786,10 @@ class ModelCheck:
             return cannot
         probe = self.verifier._probe(CHAT_PATH, _text_only(self.model, self.provider or DEFAULT_PROVIDER))
         reply_id = probe.reply.get("id") if probe.reply is not None else None
-        name = None
-        if probe.status == 200 and isinstance(reply_id, str) and _REPLY_ID.fullmatch(reply_id):
+        named = probe.reply.get("provider") if probe.reply is not None else None
+        name = named if isinstance(named, str) and _PROVIDER_NAME.fullmatch(named) else None
+        lookup = probe.status == 200 and isinstance(reply_id, str) and _REPLY_ID.fullmatch(reply_id)
+        if name is None and lookup:
             for attempt in range(GENERATION_TRIES):
                 if attempt:
                     self.verifier.sleep(1.0)
@@ -825,7 +862,7 @@ class ModelCheck:
             probe = self._page(SCHEMA, INSTRUCTION, thinking=level, max_output_tokens=None)
             good, description = _outcome(probe)
             thought = reasoning_tokens(probe.reply) if probe.reply is not None else 0
-            ok = ok and good and thought > 0
+            ok = ok and good
             said.append(f"{level}={description} reasoning={thought}")
         return self._found("model_efforts", PASS if ok else FAIL, " ".join(said))
 
@@ -861,6 +898,64 @@ class ModelCheck:
             return self._found("model_token_cap", FAIL, "no completion_tokens (model_truncation)")
         verdict = PASS if given <= TINY_OUTPUT_TOKENS else FAIL
         return self._found("model_token_cap", verdict, f"completion {given} at a cap of {TINY_OUTPUT_TOKENS}")
+
+    # Answering (features 25-27, C11): the answer's own prompt and schema, made-up evidence.
+
+    def _answer(self, thinking: str) -> Probe:
+        """The made-up question answered by this model at ``thinking``, with the answer's
+        SYSTEM_PROMPT and ANSWER_SCHEMA as a draft sends them."""
+        blocks = "\n".join(
+            f'<evidence id="{n}">\n{text}\n</evidence>' for n, text in enumerate(CHAT_EVIDENCE, 1)
+        )
+        user = f"Question:\n<question>\n{CHAT_QUESTION}\n</question>\n\nEvidence:\n{blocks}"
+        body = chat_request(
+            model=self.model,
+            messages=[{"role": "system", "content": draft.SYSTEM_PROMPT}, {"role": "user", "content": user}],
+            thinking=thinking,
+            schema=draft.ANSWER_SCHEMA,
+            max_output_tokens=self.verifier.settings.model_answer_max_tokens + CHAT_THINKING_TOKENS[thinking],
+            provider_slug=self.provider or DEFAULT_PROVIDER,
+        )
+        return self.verifier._probe(CHAT_PATH, body)
+
+    def chat_schema(self) -> Finding:
+        if (cannot := self._cannot("chat_schema")) is not None:
+            return cannot
+        self.answer, said = _parsed(self._answer(CHAT_THINKING_LEVEL), draft.ANSWER_SCHEMA)
+        if self.answer is None:
+            return self._found("chat_schema", FAIL, said)
+        try:
+            draft.checked(self.answer)
+        except ModelOutputError as error:
+            return self._found("chat_schema", FAIL, f"{said}; the answer reads it as {error.code}")
+        return self._found("chat_schema", PASS, f"{said} follows ANSWER_SCHEMA")
+
+    def chat_levels(self) -> Finding:
+        if (cannot := self._cannot("chat_levels")) is not None:
+            return cannot
+        ok, said = True, []
+        for level in CHAT_LEVELS:
+            value, description = _parsed(self._answer(level), draft.ANSWER_SCHEMA)
+            ok = ok and value is not None
+            said.append(f"{level}={description}")
+        return self._found("chat_levels", PASS if ok else FAIL, " ".join(said))
+
+    def chat_cites(self) -> Finding:
+        if (cannot := self._cannot("chat_cites")) is not None:
+            return cannot
+        if self.answer is None:
+            return self._found("chat_cites", FAIL, "no answer (chat_schema)")
+        try:
+            answered = draft.checked(self.answer)
+        except ModelOutputError as error:
+            return self._found("chat_cites", FAIL, error.code)
+        cited = sorted({n for sentence in answered.sentences for n in sentence.evidence})
+        total = any(CHAT_TOTAL in sentence.text for sentence in answered.sentences)
+        verdict = PASS if answered.status == "answered" and cited == [1] and total else FAIL
+        evidence = (
+            f"{answered.status}, cites {cited or 'nothing'}, the right total {'yes' if total else 'no'}"
+        )
+        return self._found("chat_cites", verdict, evidence)
 
     def refusal(self) -> Finding:
         said, ok = [], True
@@ -944,12 +1039,16 @@ def run(
     timer: Callable[[], float] = time.perf_counter,
     sleep: Callable[[float], None] = time.sleep,
     record: Callable[[str, int, int], None] | None = None,
+    chat: bool = False,
+    record_chat: Callable[[str], None] | None = None,
 ) -> int:
     """Check every item, print one line each and a summary; 1 when any FAILs, else 0.
     ``record`` (``--record``, exactly one model): called with (model, tokens in, tokens
     out) only when every REQUIRED item of that model PASSes and no item FAILs; else
-    nothing is written."""
-    verifier = Verifier(settings, models=models, embed_model=embed_model, timer=timer, sleep=sleep)
+    nothing is written. ``chat`` (``--chat``, features 25-27): each ``--model`` is checked
+    for answering (CHAT_REQUIRED) instead, and ``record_chat`` (``--chat --record``) is
+    called with the model the same way."""
+    verifier = Verifier(settings, models=models, embed_model=embed_model, timer=timer, sleep=sleep, chat=chat)
     out.write(f"KEY OPENROUTER_API_KEY {'set' if verifier.key_set else 'missing'}\n")
     out.write(f"MODELS ocr {settings.ocr_model} chat {settings.model_chat} embed {verifier.embed_model}\n")
     findings = [_said_finding(out, item) for _, item in verifier.items()]
@@ -960,6 +1059,15 @@ def run(
         findings += mine
     counts = {verdict: sum(1 for f in findings if f.verdict == verdict) for verdict in (PASS, FAIL, INFO)}
     out.write(f"SUMMARY {counts[PASS]} PASS, {counts[FAIL]} FAIL, {counts[INFO]} INFO\n")
+    if record_chat is not None:
+        [check] = verifier.checks
+        failed = [item for item in CHAT_REQUIRED if item not in passed[check.model]]
+        failed += [f.item for f in findings if f.verdict == FAIL and f.item not in failed]
+        if failed:
+            out.write(f"NOT RECORDED {check.model}: {','.join(failed)} did not pass\n")
+            return 1
+        record_chat(check.model)
+        out.write(f"RECORDED {check.model} for answers, prompt {draft.ANSWER_PROMPT_HASH}\n")
     if record is not None:
         [check] = verifier.checks
         failed = [item for item in REQUIRED if item not in passed[check.model]]

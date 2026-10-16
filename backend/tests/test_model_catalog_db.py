@@ -41,7 +41,11 @@ def test_a_refresh_saves_the_candidates_and_a_model_no_longer_listed_stays_ineli
     db: Database, fake: OpenRouterFake
 ) -> None:
     done = _refresh(db, fake)
-    assert (done.saved, done.eligible) == (5, 2)
+    # Changed on purpose (features 25-27, 15 Oct 2026): answer-only candidates are saved too,
+    # and the fixture has Gemini 3.8 Flash.
+    assert (done.saved, done.eligible) == (8, 3)
+    chat = "SELECT id FROM model_catalog WHERE chat_eligible ORDER BY id"
+    assert [row[0] for row in _owner(db, chat, {})] == sorted([SONNET, PRO, "google/gemini-3.8-flash"])
     assert tuple(_owner(db, _ROW, {"m": PRO})[0]) == ("Google: Gemini 3.1 Pro Preview", 2, True, None)
     _owner(
         db,

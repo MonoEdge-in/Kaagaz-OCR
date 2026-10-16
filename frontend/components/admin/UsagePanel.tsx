@@ -2,11 +2,11 @@
 
 // The organisation's AI use (model choice SP2, SP4): pick a period (Today,
 // Last 7 days, This month, or two dates) and, if wanted, one user; then the
-// spend, the tokens and how much of this month's budget is used, with a line
-// at 80% and at 100% (warn only: nothing stops). Then tables by user, model,
-// kind of work and the costliest documents, a daily table whose bars are
-// drawn with CSS (the number is in the cell; no chart library), and the same
-// rows as a CSV download. Keyless mode says AI is off rather than "no use".
+// tokens used, the tokens by day (bars drawn with CSS, the number in the cell; no
+// chart library), by user, kind of work and the top documents. Org admins and their
+// users never see money, spend or the budget: those stay in the super admin's console
+// (Tushar, 15 Oct 2026). Models stay the operator's only.
+// Keyless mode says AI is off rather than "no use".
 // The view is UsageReportView, rendered in node by tests/admin-usage.test.ts.
 
 import Link from "next/link";
@@ -14,15 +14,11 @@ import { useEffect, useId, useState } from "react";
 import type { ReactNode } from "react";
 import table from "@/components/documents/Table.module.css";
 import { Icon } from "@/components/ui/Icon";
-import { ApiError, adminUsageCsvUrl, getAdminUsage, listUsers } from "@/lib/api";
-import type { UsageParams } from "@/lib/api";
-import { formatCost, formatDate, formatNumber } from "@/lib/format";
-import type { AdminUser, UsageReport, UsageTotals } from "@/lib/types";
+import { ApiError, getAdminUsage, listUsers } from "@/lib/api";
+import { formatDate, formatNumber } from "@/lib/format";
+import type { AdminUser, UsageReport, UsageTokens } from "@/lib/types";
 import {
   USAGE_PERIODS,
-  budgetLine,
-  budgetShareText,
-  budgetWarning,
   usageKindText,
   usageRange,
   usageState,
@@ -30,50 +26,49 @@ import {
 import type { UsagePeriod, UsageState } from "./logic";
 import styles from "./Admin.module.css";
 
-const SKELETON_TILES = [0, 1, 2];
+const SKELETON_TILES = [0];
 // A by-user row with no user: work no user asked for (the sweeps), or a removed user's.
 export const REMOVED_OR_SYSTEM = "Removed user or system work";
+
+/** All tokens of some calls: output_tokens already counts the thinking (reasoning_tokens). */
+export function usageTokens(totals: UsageTokens): number {
+  return totals.input_tokens + totals.output_tokens;
+}
 
 interface Row {
   key: string;
   name: ReactNode;
-  totals: UsageTotals;
+  totals: UsageTokens;
 }
 
-const AMOUNTS = ["Tokens in", "Tokens out", "Cost"] as const;
-
 /**
- * One table of rows: a name, then the tokens in and out and the cost, all as
- * text. The shared reflow (Table.module.css): cards below 48rem.
+ * One table of rows: a name, then the tokens, the most first (the server sorts by
+ * cost). The shared reflow (Table.module.css): cards below 48rem.
  */
 function UsageTable({ caption, first, rows }: { caption: string; first: string; rows: Row[] }) {
+  const sorted = [...rows].sort((a, b) => usageTokens(b.totals) - usageTokens(a.totals));
   return (
     <div className={table.reflowWrap}>
       <table className={`table ${table.reflow}`} role="table">
         <caption className={styles.caption}>{caption}</caption>
         <thead role="rowgroup">
           <tr role="row">
-            {[first, ...AMOUNTS].map((name) => (
-              <th key={name} scope="col" role="columnheader">
-                {name}
-              </th>
-            ))}
+            <th scope="col" role="columnheader">
+              {first}
+            </th>
+            <th scope="col" role="columnheader" className="num">
+              Tokens
+            </th>
           </tr>
         </thead>
         <tbody role="rowgroup">
-          {rows.map((row) => (
+          {sorted.map((row) => (
             <tr key={row.key} role="row">
               <td role="cell" data-label={first} className={`${styles.strong} ${styles.wrap}`}>
                 {row.name}
               </td>
-              <td role="cell" data-label="Tokens in" className="tabular">
-                {formatNumber(row.totals.input_tokens)}
-              </td>
-              <td role="cell" data-label="Tokens out" className="tabular">
-                {formatNumber(row.totals.output_tokens)}
-              </td>
-              <td role="cell" data-label="Cost" className="tabular">
-                {formatCost(row.totals)}
+              <td role="cell" data-label="Tokens" className="num">
+                {formatNumber(usageTokens(row.totals))}
               </td>
             </tr>
           ))}
@@ -83,20 +78,20 @@ function UsageTable({ caption, first, rows }: { caption: string; first: string; 
   );
 }
 
-/** Each day's spend: the number in the cell, and a bar as wide as its share of the costliest day. */
+/** Each day's tokens: the number in the cell, and a bar as wide as its share of the heaviest day. */
 function DailyTable({ report }: { report: UsageReport }) {
-  const most = Math.max(0, ...report.by_day.map((day) => day.cost_usd ?? 0));
+  const most = Math.max(0, ...report.by_day.map(usageTokens));
   return (
     <div className={table.reflowWrap}>
       <table className={`table ${table.reflow}`} role="table">
-        <caption className={styles.caption}>Spend by day</caption>
+        <caption className={styles.caption}>Tokens by day</caption>
         <thead role="rowgroup">
           <tr role="row">
             <th scope="col" role="columnheader">
               Day
             </th>
-            <th scope="col" role="columnheader">
-              Cost
+            <th scope="col" role="columnheader" className="num">
+              Tokens
             </th>
           </tr>
         </thead>
@@ -106,12 +101,12 @@ function DailyTable({ report }: { report: UsageReport }) {
               <td role="cell" data-label="Day">
                 {formatDate(`${day.day}T12:00:00+05:30`)}
               </td>
-              <td role="cell" data-label="Cost" className={`tabular ${styles.barCell}`}>
-                <span>{formatCost(day)}</span>
+              <td role="cell" data-label="Tokens" className={`num ${styles.barCell}`}>
+                <span>{formatNumber(usageTokens(day))}</span>
                 <span
                   className={styles.bar}
                   aria-hidden="true"
-                  style={{ width: `${most > 0 ? ((day.cost_usd ?? 0) / most) * 100 : 0}%` }}
+                  style={{ width: `${most > 0 ? (usageTokens(day) / most) * 100 : 0}%` }}
                 />
               </td>
             </tr>
@@ -122,15 +117,7 @@ function DailyTable({ report }: { report: UsageReport }) {
   );
 }
 
-export function UsageReportView({
-  state,
-  params,
-  onRetry,
-}: {
-  state: UsageState;
-  params: UsageParams;
-  onRetry: () => void;
-}) {
+export function UsageReportView({ state, onRetry }: { state: UsageState; onRetry: () => void }) {
   if (state.kind === "error") {
     return (
       <div className={styles.errorBanner} role="alert">
@@ -161,41 +148,21 @@ export function UsageReportView({
     );
   }
   if (state.kind === "off") {
-    return <p className={styles.emptyLine}>AI is off on this server, so nothing is spent.</p>;
+    return <p className={styles.emptyLine}>AI is off on this server, so no tokens are used.</p>;
   }
   if (state.kind === "empty") return <p className={styles.emptyLine}>No AI use in this period.</p>;
 
   const { report } = state;
-  const warning = budgetWarning(report.budget);
   return (
     <>
       <dl className={styles.tiles}>
         <div className={styles.tile}>
-          <dt className={styles.tileLabel}>AI spend</dt>
-          <dd className={`${styles.tileValue} tabular`}>{formatCost(report.totals)}</dd>
-        </div>
-        <div className={styles.tile}>
-          <dt className={styles.tileLabel}>Tokens</dt>
-          <dd className={`${styles.tileValue} tabular`}>
-            {formatNumber(report.totals.input_tokens + report.totals.output_tokens)}
-          </dd>
-        </div>
-        <div className={styles.tile}>
-          <dt className={styles.tileLabel}>Budget used this month</dt>
-          <dd className={`${styles.tileValue} tabular`}>{budgetShareText(report.budget) ?? "No budget"}</dd>
+          <dt className={styles.tileLabel}>Tokens in this period</dt>
+          <dd className={`${styles.tileValue} tabular`}>{formatNumber(usageTokens(report.totals))}</dd>
         </div>
       </dl>
-      <p className="tabular">{budgetLine(report.budget)}</p>
-      {/* Always mounted, so a screen reader hears the warning when its text comes. */}
-      <p className={warning ? styles.budgetWarning : undefined} role="status">
-        {warning && (
-          <>
-            <Icon name="alert" className={styles.errorIcon} />
-            {warning}
-          </>
-        )}
-      </p>
       <div className={styles.usageTables}>
+        <DailyTable report={report} />
         <UsageTable
           caption="By user"
           first="User"
@@ -206,17 +173,12 @@ export function UsageReportView({
           }))}
         />
         <UsageTable
-          caption="By model"
-          first="Model"
-          rows={report.by_model.map((row) => ({ key: row.model, name: row.model_name, totals: row }))}
-        />
-        <UsageTable
           caption="By kind of work"
           first="Kind"
           rows={report.by_kind.map((row) => ({ key: row.kind, name: usageKindText(row.kind), totals: row }))}
         />
         <UsageTable
-          caption="Costliest documents"
+          caption="Top documents"
           first="Document"
           rows={report.top_documents.map((row, index) => ({
             key: row.document_id ?? `deleted-${index}`,
@@ -224,13 +186,8 @@ export function UsageReportView({
             totals: row,
           }))}
         />
-        <DailyTable report={report} />
       </div>
-      <p>
-        <a className="btn" href={adminUsageCsvUrl(params)} download>
-          Download as CSV
-        </a>
-      </p>
+      {/* No CSV here: it has money and model names, which are the super admin's only. */}
     </>
   );
 }
@@ -357,11 +314,7 @@ export function UsagePanel() {
         </div>
       </div>
       {range ? (
-        <UsageReportView
-          state={state}
-          params={{ ...range, user_id: userId || undefined }}
-          onRetry={() => setAttempt((n) => n + 1)}
-        />
+        <UsageReportView state={state} onRetry={() => setAttempt((n) => n + 1)} />
       ) : (
         <p className="hint">Pick a start date and an end date, the start first.</p>
       )}

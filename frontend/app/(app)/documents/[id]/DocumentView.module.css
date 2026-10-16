@@ -17,16 +17,29 @@
   min-width: 0;
 }
 
+/* The title, then Download original and Ask about this document at its end;
+   they wrap under a long title. */
+.titleRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+}
+
 .title {
+  flex: 1 1 20rem;
+  min-width: 0;
   margin: 0;
   overflow-wrap: anywhere;
 }
 
+/* One meta line (board 12 P4): status, type and pages, Read again, the folder
+   path, the tags and the versions, wrapping as one line of items. */
 .status {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-1) var(--space-3);
+  gap: var(--space-1) var(--space-4);
 }
 
 .meta {
@@ -34,12 +47,8 @@
   font-size: var(--fs-sm);
 }
 
-/* "Read again" (ReadAgain.tsx): the button ends the status line; its
+/* "Read again" (ReadAgain.tsx): the button sits in the meta line; its
    question, its error and its note each take a line of their own. */
-.readAgain {
-  margin-inline-start: auto;
-}
-
 .readAgainLine {
   flex: 1 1 100%;
   margin: 0;
@@ -72,14 +81,7 @@
   gap: var(--space-2);
 }
 
-/* Where it is filed: the folder path, the tags, and Download original. */
-.place {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2) var(--space-5);
-}
-
+/* Where it is filed: the folder path, the tags, the versions. */
 .placeItem {
   display: flex;
   flex-wrap: wrap;
@@ -96,6 +98,22 @@
 
 .download {
   margin-inline-start: auto;
+}
+
+/* A phone: the title has its own row; Download original is its icon alone
+   (globals.css .narrow-hide) and shares the next row with Ask about this document. */
+@media (max-width: 639.98px) {
+  .title {
+    flex-basis: 100%;
+  }
+
+  .download {
+    margin-inline-start: 0;
+  }
+
+  .ask {
+    flex: 1 1 auto;
+  }
 }
 
 /* The versions: one small link per version, the one being viewed filled in. */
@@ -159,7 +177,8 @@
   margin-top: 2px;
 }
 
-/* Viewer 3fr, the panels then the values 2fr from 1024 px; stacked below that. */
+/* Viewer 3fr, the panels (the values among them) 2fr from 1024 px; stacked
+   below that. Wider still: see below. */
 .layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -170,11 +189,6 @@
 @media (min-width: 1024px) {
   .layout {
     grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
-    grid-template-rows: auto 1fr;
-  }
-
-  .viewer {
-    grid-row: span 2;
   }
 }
 
@@ -188,13 +202,21 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
-    height: calc(100dvh - 2 * var(--space-4));
+    height: calc(100svh - 2 * var(--space-4));
+  }
+}
+
+/* A wide window: the page column is only as wide as a page fitted to the
+   window's height needs (an A4 page plus its frame; never past 55%), and the
+   panels take the rest. */
+@media (min-width: 90rem) and (min-height: 36rem) {
+  .layout {
+    grid-template-columns: minmax(0, min(calc((100svh - 7rem) * 0.8), 55%)) minmax(0, 1fr);
   }
 }
 
 .viewer,
-.panels,
-.values {
+.panels {
   min-width: 0;
 }
 
@@ -250,7 +272,7 @@
 
 .valuesTable th,
 .valuesTable td {
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 
 .valuesTable thead th {
@@ -267,6 +289,11 @@
 
 .valuesTable thead th:last-child {
   border-start-end-radius: var(--r-md);
+}
+
+/* A control focused from the keyboard scrolls clear of the sticky header row too (2.4.11). */
+.valuesTable tbody :is(a, button, input, select, summary) {
+  scroll-margin-top: calc(var(--topbar-space) + 4rem);
 }
 
 .valuesTable tbody tr:last-child td {
@@ -289,6 +316,7 @@
 .valueButton {
   display: inline-block;
   min-height: 24px;
+  margin-inline-end: var(--space-2);
   padding: 0;
   border: none;
   background: none;
@@ -305,6 +333,19 @@
 
 .valueButton:hover {
   color: var(--accent-hover);
+}
+
+/* Touch: a value and Back are 44px tall, clear of Add meaning beside them. */
+@media (pointer: coarse) {
+  .valueButton {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+  }
+
+  .back {
+    min-height: var(--control-h);
+  }
 }
 
 /* The panels beside the page (DocumentPanels.tsx, PRD 3 Y1 to Y3). */
@@ -357,26 +398,22 @@
 }
 
 .factRow {
-  display: grid;
-  grid-template-columns: minmax(8rem, 2fr) 3fr;
-  gap: var(--space-2);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--space-2);
 }
 
 .factRow dt {
+  flex: 0 0 8rem;
   font-weight: 600;
 }
 
+/* A long value (a GSTIN) moves under its name rather than breaking. */
 .factRow dd {
+  flex: 1 1 auto;
+  min-width: 0;
   margin: 0;
   overflow-wrap: anywhere;
-}
-
-.linesWrap {
-  overflow-x: auto;
-}
-
-.linesTable {
-  min-width: 32rem;
 }
 
 .pageNote {
@@ -384,12 +421,28 @@
   color: var(--fg-muted);
 }
 
+/* background-color, so a selected Needs review row keeps its hatched edge. */
 .activeRow td {
-  background: var(--accent-soft);
+  background-color: var(--accent-soft);
 }
 
 .activeRow .valueButton {
   text-decoration-thickness: 2px;
+}
+
+/* A Needs review value: a hatched edge at the row's inline start, as on a
+   Needs review answer (the label badge still says it). */
+@container (min-width: 36rem) {
+  .valuesTable tr[data-label="needs_review"] td:first-child {
+    background-image: repeating-linear-gradient(45deg, var(--review-solid) 0 4px, transparent 4px 8px);
+    background-size: 4px 100%;
+    background-repeat: no-repeat;
+  }
+}
+
+:global([dir="rtl"]) .valuesTable tr[data-label="needs_review"],
+:global([dir="rtl"]) .valuesTable tr[data-label="needs_review"] td:first-child {
+  background-position: right;
 }
 
 @container (max-width: 35.99rem) {
@@ -435,8 +488,15 @@
   }
 
   .valuesTable tbody tr.activeRow {
-    background: var(--accent-soft);
+    background-color: var(--accent-soft);
     border-color: var(--accent);
+  }
+
+  .valuesTable tr[data-label="needs_review"] {
+    padding-inline-start: calc(var(--space-4) + 4px);
+    background-image: repeating-linear-gradient(45deg, var(--review-solid) 0 4px, transparent 4px 8px);
+    background-size: 4px 100%;
+    background-repeat: no-repeat;
   }
 
   .valuesTable td,
@@ -484,7 +544,7 @@
 
 .pageSkeleton {
   aspect-ratio: 1 / 1.3;
-  max-height: 80vh;
+  max-height: 80dvh;
   border-radius: var(--r-md);
 }
 

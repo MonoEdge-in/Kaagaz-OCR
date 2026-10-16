@@ -24,6 +24,7 @@ from typing import IO, Any
 from PIL import Image
 
 from kaagaz.chunking.piece import Piece
+from kaagaz.chunking.sections import MAP_SCHEMA
 from kaagaz.eta import HISTORY_RUNS, RunTiming
 from kaagaz.extraction.learned import LearnedCorrection
 from kaagaz.extraction.values import ExtractedValue
@@ -247,6 +248,8 @@ class MemoryDocuments(MemoryRepository):
         self.attempts: dict[tuple[str, str], tuple[int, int]] = {}
         self.page_counts: dict[tuple[str, str], int] = {}
         self.read_again: dict[tuple[str, str], set[int]] = {}  # PRD 5 F5: the marked pages
+        self.filed: list[tuple[str, str]] = []  # feature 28: each file_document asked for
+        self.file_error: Exception | None = None  # raised by file_document when set
 
     def set_failed(self, customer_id: str, document_id: str, code: str, *, run_id: str | None = None) -> None:
         """Failed, with the read-again marks cleared at once, as PgDocuments.set_failed."""
@@ -281,6 +284,13 @@ class MemoryDocuments(MemoryRepository):
         self.set_page_count(customer_id, document_id, page_count)
         self._statuses.set_status(customer_id, document_id, DocumentStatus.READY)
         self._finish(customer_id, run)
+
+    def file_document(self, customer_id: str, document_id: str) -> None:
+        """Records the call, or raises ``file_error``. The filing rules themselves are
+        tested on PostgreSQL (tests/test_autofile_db.py)."""
+        if self.file_error is not None:
+            raise self.file_error
+        self.filed.append((customer_id, document_id))
 
     def _open(self, customer_id: str, document_id: str, run_id: str) -> bool:
         return self.runs is None or self.runs.is_open(customer_id, document_id, run_id)
@@ -608,6 +618,8 @@ class ModelDown(Exception):
 class FakeChat:
     """A chat model (kaagaz.extraction.card.ChatModel): gives its preset replies in
     order, one per call; an exception in the list is raised at that call instead.
+    The map call (MAP_SCHEMA) takes the last reply: the pipeline asks it alongside
+    the card (fast scan), so a reading's replies are listed card, invoice windows, map.
     Records every call's system prompt, user message, schema and reply budget."""
 
     chat_model = "fake-chat"
@@ -615,12 +627,23 @@ class FakeChat:
     def __init__(self, *replies: dict[str, Any] | Exception) -> None:
         self.replies = list(replies)
         self.calls: list[dict[str, Any]] = []
+        self._lock = threading.Lock()
 
     def chat_json(
-        self, *, system: str, user: str, schema: dict[str, Any], max_tokens: int | None = None
+        self,
+        *,
+        system: str,
+        user: str,
+        schema: dict[str, Any],
+        max_tokens: int | None = None,
+        model: str | None = None,
+        thinking: str | None = None,
+        provider: str | None = None,
+        deadline: float | None = None,
     ) -> dict[str, Any]:
-        self.calls.append({"system": system, "user": user, "schema": schema, "max_tokens": max_tokens})
-        reply = self.replies.pop(0)
+        with self._lock:
+            self.calls.append({"system": system, "user": user, "schema": schema, "max_tokens": max_tokens})
+            reply = self.replies.pop(-1 if schema is MAP_SCHEMA else 0)
         if isinstance(reply, Exception):
             raise reply
         return reply

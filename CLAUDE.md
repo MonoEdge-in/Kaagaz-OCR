@@ -8,15 +8,17 @@ Customers upload business documents (invoices, registers, receipts, statements, 
 
 **People.** Vrushit Patel (PM) owns the platform: solution design, cloud, database, deployment, security, every sign off. Tushar owns the application: everything a user touches. You are working with Tushar. Every line you write will be read by Vrushit before it merges.
 
-**Plan.** The build before handover runs Wed 30 Sep to Fri 2 Oct 2026, in three PRDs (sprint tag `s2`). Scope, names and work packages come from them:
+**Plan.** The build runs in PRDs (sprint tag `s2`). Scope, names and work packages come from them:
 
 | PRD | Build days | Scope |
 |---|---|---|
 | 1 Accounts and Files: https://claude.ai/artifact/1wgupLxkQ95aZonGgmSfQN | 30 Sep | Sign-in, upload limits, file storage, folders, tags, Trash, versions |
 | 2 Document Understanding: https://claude.ai/artifact/WNnL11dDXw2Lozt1679RMx | 30 Sep to 1 Oct | Page route, the scan reader and models (replaced on 8 Oct 2026 by PRD 5's Gemini reader), cross-page pieces, document card, invoice tables, checks |
 | 3 Search and Handover: https://claude.ai/artifact/448jQMudfNE8JJssD2UTNS | 2 Oct | Embeddings, search, chat follow-ups, viewer panels, golden questions, handover |
+| EC2 Deployment: https://claude.ai/artifact/U86yAYShZXEEbB7XMCk3oh | 4 Oct | One EC2 server in ap-south-1, the `production` branch, work packages A to G |
+| 5 Gemini Reader: https://claude.ai/artifact/QyEEZDdw5vVybtkRFYJTcG (the page calls itself PRD 4) | 8 to 9 Oct | Gemini reader with the RapidOCR checker, bulk queue, context and memory, removals. Live on 9 Oct 2026 |
 
-After handover: the NL-to-SQL agent and hosting in AWS. The architecture page for both: https://claude.ai/artifact/7ATLDAJRxG3Qaab16NhjN8
+Next: the NL-to-SQL agent. The architecture page: https://claude.ai/artifact/7ATLDAJRxG3Qaab16NhjN8
 
 Build one PRD work package per branch, as the PRD names it. PRDs are never stored in the repository.
 
@@ -36,7 +38,7 @@ Hard rules. If a task seems to need one broken, stop and ask.
 6. **Never guess to fill a gap.** "Unreadable" and "not found" are correct answers.
 7. **Never push to `main`.** Work on a branch and open a pull request.
 8. **Never game a check.** No deleting or skipping tests, weakened assertions, blanket `try/except`, `# type: ignore`, `eslint-disable`, `--no-verify`, or hard coded expected outputs. If a test is wrong, say why and ask.
-9. **Never create a new Markdown file unless the user asks for that file by name.** No summaries, plans, notes, reports, checklists, guides or READMEs of your own. Report back in the chat or the pull request description. If a doc truly needs to change, edit the existing file that covers it, in as few lines as possible, and only when the task changed behaviour, settings or the schema. `docs/` holds two files: `docs/architecture.md` is the one file for the system design and every decision, and `docs/running-locally.md` covers running and checking the product. PRDs are never stored in the repository.
+9. **Never create a new Markdown file unless the user asks for that file by name.** No summaries, plans, notes, reports, checklists, guides or READMEs of your own. Report back in the chat or the pull request description. If a doc truly needs to change, edit the existing file that covers it, in as few lines as possible, and only when the task changed behaviour, settings or the schema. `docs/` holds two files and one runbook: `docs/architecture.md` is the one file for the system design and every decision, `docs/running-locally.md` covers running and checking the product, and `docs/runbooks/prd5-cpu-server-switch.md` covers the server switch. PRDs are never stored in the repository.
 
 ## Never weaken these, not even to make a test pass
 
@@ -90,7 +92,7 @@ If code depends on one of these and it is not written down in the Decisions sect
 | What "verified" promises, in writing | Fri 9 Oct |
 | The go or no go bar for launch, as a number | Fri 16 Oct |
 
-Made on 29 Sep 2026 and recorded in `docs/architecture.md`: the scan reader (Gemini through OpenRouter since 8 Oct 2026, PRD 5), the second reader for scans (RapidOCR on value crops), the models, and the design.
+Made on 29 Sep 2026 and recorded in `docs/architecture.md`: the scan reader (Gemini through OpenRouter since 8 Oct 2026, PRD 5), the second reader for scans (RapidOCR on value crops), the models, and the design. Sending pages through OpenRouter was Tushar's call on 8 Oct; Vrushit's written approval is still pending (PRD 5 question 10).
 
 Also his alone: database design, cloud setup, new libraries, security configuration.
 
@@ -105,28 +107,37 @@ Also his alone: database design, cloud setup, new libraries, security configurat
 
 ## Stack
 
-Python with FastAPI. Next.js with PDF.js. PostgreSQL with pgvector, full text search and fuzzy matching. S3 API for files (SeaweedFS on the laptop), one prefix per customer. SQS API with worker processes (ElasticMQ on the laptop). Gemini models through OpenRouter for scans, chat and embeddings, with RapidOCR on the CPU to pin boxes, check values and read when Gemini is down. Everything runs with Docker Compose. After handover: AWS in Mumbai (ap-south-1), with its infrastructure as code.
+Python with FastAPI. Next.js with PDF.js. PostgreSQL with pgvector, full text search and fuzzy matching. S3 API for files (SeaweedFS on the laptop), one prefix per customer. SQS API with worker processes (ElasticMQ on the laptop). Gemini models through OpenRouter for scans, chat and embeddings (`OCR_MODEL`, `MODEL_CHAT`, `MODEL_EMBED`; key in `OPENROUTER_API_KEY`), with RapidOCR on the CPU to pin boxes, check values and read when Gemini is down. ClamAV scans uploads. Everything runs with Docker Compose. Live on one AWS EC2 server in Mumbai (ap-south-1) behind Caddy: `infra/ec2/deploy.sh` deploys each new `origin/production` commit on a systemd timer.
 
 Folders: `backend/`, `frontend/`, `infra/`, `docs/`.
 
 Commands for install, run, test, lint and typecheck are in `docs/running-locally.md`. If one you need is not there, find it in `backend/pyproject.toml` or `frontend/package.json` and say where you found it. Never guess one.
 
+Facts that bite:
+
+- **Every model call goes through `backend/kaagaz/ai/openrouter.py`** with the fixed provider block: Google Vertex only, no fallbacks, data collection denied, zero data retention (ZDR). Embeddings send `require_parameters: false` (OpenRouter lists none for embedding endpoints) and **one text per request** (Vertex embeds one at a time; batches would go to AI Studio, which the rule refuses).
+- **`rapidocr` is pinned to `==3.9.2`** in `backend/pyproject.toml`: 3.10.0 moved its model files and broke the image build. The backend has no lock file, only minimums, so a new upstream release can break a build.
+- **Removed readers and settings stay removed.** `backend/tests/test_removed_names_guard.py` fails if any tracked file names them again; read its pattern before writing about old readers.
+- **Check settings before a deploy** (from the server's checkout): `docker run --rm --env-file .env kaagaz-backend:local python -c "import os; from kaagaz.settings import Settings; Settings.from_env(dict(os.environ)); print('SETTINGS OK')"`. Containers also stop at start-up naming a bad or missing setting.
+
 ## Branches, pull requests and CI
 
-Branch: `<type>/<sprint>-<short-name>`, for example `feat/s1-upload-endpoint`. Types: `feat`, `fix`, `chore`, `docs`, `test`, `infra`.
+Branch: `<type>/<sprint>-<short-name>`, for example `feat/s1-upload-endpoint`. Types: `feat`, `fix`, `chore`, `docs`, `test`, `infra`. Sprint: `s1` to `s4`, or `repo` for repo-wide work.
 
 Pull request title: `feat(s1): upload endpoint with deduplication`; CI fails any other shape. Fill the template fully.
 
-A ruleset on `main` blocks the merge until CI is green and Vrushit has approved. CI runs on pull requests into `main` and checks:
+The server deploys the `production` branch; `main` holds the same code. Never push to `production` either: changes reach it only by pull request. A ruleset on `main` blocks the merge until CI is green and Vrushit has approved. Resolve merge conflicts locally and run the tests, never in GitHub's web editor (it once kept both sides and broke `production`). After every merge, check `origin/production` holds what was reviewed.
+
+CI runs on pull requests into `main` and `production` and checks:
 
 | Scope | Checks |
 |---|---|
-| Always (`ci.yml`) | No secret files or secret values in the diff. No conflict markers. No file over 2MB. |
-| The pull request (`pr.yml`) | Title and branch format. Size, failing over 1000 changed lines. Tests alongside code, suppressed checks, new dependencies and identity-number shapes, as warnings. |
-| Backend, from `backend/` | `ruff check`, `ruff format --check`, `mypy`, migrations from an empty database, then `pytest`. Dependency licences, failing on AGPL, SSPL or GPL v3. |
+| Always (`ci.yml`) | No secret files or secret values in the diff. No conflict markers. No file over 2MB. The production compose files render. |
+| The pull request (`pr.yml`) | Title format. Size, failing over 1000 changed lines (lock files excluded). Branch name, linked issue, tests alongside code, suppressed checks, new dependencies and identity-number shapes, as warnings. |
+| Backend, from `backend/` | Install with `pip install -c constraints.txt -e ".[dev,ocr]"`. `ruff check`, `ruff format --check`, `mypy`, migrations from an empty database, then `pytest`. Dependency licences, failing on AGPL, SSPL or GPL v3. |
 | Frontend, from `frontend/` | `npm ci`, lint, typecheck, tests, production build. |
 
-**Customer isolation tests carry the pytest marker `isolation`** and run first, on their own, so a failure is impossible to miss. Any test proving one customer cannot reach another customer's data gets that marker.
+**Customer isolation tests carry the pytest marker `isolation`** and run first, on their own, so a failure is impossible to miss. Any test proving one customer cannot reach another customer's data gets that marker; `backend/tests/conftest.py` adds it to every module named `test_isolation_*.py`. Tests marked `db` need a real PostgreSQL (`DATABASE_URL`); `pytest -m "not db"` runs without one.
 
 If a hook or permission rule blocks you, do not work around it. Explain what you needed and ask.
 

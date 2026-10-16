@@ -70,6 +70,8 @@ def test_a_page_read_is_frozen_and_built_by_name_only() -> None:
         "output_tokens",
         "cached",
         "continues_on_next_page",
+        # Changed on purpose (features 25-27, 15 Oct 2026): Ensemble's other models' reads of the page.
+        "others",
     ]
 
 

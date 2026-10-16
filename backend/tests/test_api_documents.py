@@ -6,6 +6,7 @@ are tested first, without a database.
 
 import io
 import json
+import re
 from collections.abc import Callable, Iterator, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -17,7 +18,7 @@ from PIL import Image
 from sqlalchemy import Connection, event, text
 
 from kaagaz.api.routers.documents import day_start, display_name, upload_policy
-from kaagaz.api.views import document_time_left, in_progress, status_message
+from kaagaz.api.views import document_time_left, in_progress, progress_message, status_message
 from kaagaz.db import folders as folders_sql
 from kaagaz.db.engine import Database
 from kaagaz.db.folders import FolderRow
@@ -106,7 +107,11 @@ def test_status_messages() -> None:
     assert message("needs_reader") == "Stored safely. This kind of file can't be read yet."
     assert message("rejected", "virus_found") == CUSTOMER_MESSAGES["virus_found"]
     assert message("rejected") == "This file was not processed."
-    assert message("failed", "corrupt_file") == "This file could not be read. (corrupt_file)"
+    # Changed on purpose (UI quality council, 15 Oct 2026): no failure code on screen.
+    assert (
+        message("failed", "corrupt_file")
+        == "This file could not be read. Upload it again, or try another copy of it."
+    )
     # PROVISIONAL: the PRD quotes the real page count, which is not stored when a PDF fails.
     assert message("failed", "too_many_pages") == (
         "This PDF has more than 100 pages. The limit is 100. Split it into parts."
@@ -115,6 +120,36 @@ def test_status_messages() -> None:
     assert message("failed", "too_many_pages", "tiff") == (
         "This file has more than 100 pages. The limit is 100. Split it into parts."
     )
+
+
+# Every failure code the reading code raises (ReadError("...") in kaagaz/), plus the ones
+# status_message words itself.
+_FAILURE_CODES = sorted(
+    {
+        code
+        for path in Path(__file__).parents[1].joinpath("kaagaz").rglob("*.py")
+        for code in re.findall(r'ReadError\("([a-z_]+)"', path.read_text(encoding="utf-8"))
+    }
+    | {
+        "too_many_pages",
+        "retries_exhausted",
+        "unreadable",
+        "ocr_failed",
+        "customer_disabled",
+        "document_missing",
+    }
+)
+
+
+@pytest.mark.parametrize("failure_code", [*_FAILURE_CODES, None])
+def test_a_failed_files_message_names_no_code_and_no_dpi(failure_code: str | None) -> None:
+    """UI quality council, 15 Oct 2026: the failure code and DPI stay off user screens."""
+    said = status_message(
+        "failed", failure_code, detected_type="pdf", max_pages=100, attempts=3, max_attempts=3
+    )
+    assert said and not re.search(r"\([a-z_]+\)|\bDPI\b", said), said
+    if failure_code is not None:
+        assert failure_code not in said
 
 
 def test_status_messages_name_the_tries_and_the_real_page_count() -> None:
@@ -228,6 +263,11 @@ def test_status_messages_say_how_far_the_worker_has_got() -> None:
     assert message("clean", "understanding", 1, 3) == "Understanding the document…"
     assert message("clean", "indexing", 0, 1) == "Making it searchable…"
     assert message("clean", "reading", 2, 40, attempts=2) == "Reading page 3 of 40… Try 2 of 5."
+    # Progress fix, 16 Oct 2026: Careful's second reading says what it does, never a frozen line.
+    assert message("clean", "rereading", 0, 3) == "Reading 3 pages again carefully…"
+    assert message("clean", "rereading", 0, 1) == "Reading 1 page again carefully…"
+    for step in ("preparing", "reading", "rereading", "understanding", "indexing"):  # every timed step
+        assert progress_message({"step": step, "done": 0, "total": 2})
 
 
 def test_a_try_a_backend_stopped_says_waiting_to_try_again() -> None:
@@ -253,7 +293,11 @@ def test_old_progress_is_ignored_once_a_document_is_ready_or_failed() -> None:
         return status_message(status, failure_code, detected_type="pdf", max_pages=100, progress=progress)
 
     assert message("ready") == "Ready. You can ask about it."
-    assert message("failed", "corrupt_file") == "This file could not be read. (corrupt_file)"
+    # Changed on purpose (UI quality council, 15 Oct 2026): no failure code on screen.
+    assert (
+        message("failed", "corrupt_file")
+        == "This file could not be read. Upload it again, or try another copy of it."
+    )
     assert in_progress("ready", progress) is None
     assert in_progress("failed", progress) is None
     assert in_progress("clean", progress) == progress
@@ -325,6 +369,7 @@ def test_upload_stores_queues_and_returns_the_summary(db: Database) -> None:
         "pages_uncertain",
         "values_to_review",
         "words_unsure",  # PRD 5 U2
+        "autofile",  # feature 28: null, nothing was filed
     }
     assert (document["folder_id"], document["tags"]) == (None, [])
     assert (document["pages_unreadable"], document["pages_uncertain"], document["values_to_review"]) == (

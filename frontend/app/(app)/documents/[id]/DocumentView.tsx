@@ -1,10 +1,12 @@
 "use client";
 
-// The document screen: header and status, where it is filed (its folder path,
-// its tags, Download original), its versions ("Version 2 of 2", each a link to
-// that version's own id), the page viewer and the values table (side by side
-// from 1024 px, stacked below). A newer version still being read, or one that
-// failed, gets a line linking to it. A document in Trash says so. A reviewer
+// The document screen: the title with Download original and Ask beside it, then
+// one meta line (board 12 P4) with the status, where it is filed (its folder
+// path, its tags) and its versions ("Version 2 of 2", each a link to that
+// version's own id), the page viewer and, beside it, the panels with the
+// values table right after Attention (side by side from 1024 px, stacked
+// below). A newer version still being read, or one that failed, gets a line
+// linking to it. A document in Trash says so. A reviewer
 // or an admin can have it read again (ReadAgain.tsx, PRD 2 X1), and anyone can
 // "Ask about this document" in chat (PRD 3 H2). While it is checked or read,
 // on load too, its summary is asked for again (lib/poll.ts); once it settles,
@@ -22,8 +24,10 @@
 // problems (PRD 5) gets a banner with its fixes (PageProblems.tsx, U4), its marks
 // drawn on it (U3, from the page's readings) and the Attention panel (U5); a mark
 // pressed shows its spot and opens the Scanned text panel, with both readings.
-// With the column sticky, the Scanned text panel sits atop the panels, so the
-// page keeps its height; opened by its button, focus goes to its heading.
+// With the column sticky, the reading problems banner and the Scanned text panel
+// sit atop the panels, so the page keeps its height; opened by its button, focus
+// goes to the Scanned text panel's heading. A family Kaagaz filed by its type says
+// "Filed here by Kaagaz · Undo" by its folder (feature 28, AutofileNote).
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
@@ -32,11 +36,13 @@ import { askAboutHref } from "@/components/chat/logic";
 import { downloadHref, folderTrail } from "@/components/documents/library";
 import libraryStyles from "@/components/documents/Library.module.css";
 import { ALL_DOCUMENTS, libraryHref } from "@/components/documents/libraryQuery";
+import { FILED_HERE_TEXT } from "@/components/documents/batchTray";
 import { StatusChip } from "@/components/documents/StatusChip";
 import { TimeLeft } from "@/components/documents/TimeLeft";
+import { AutofileNote } from "@/components/documents/UploadArea";
 import { Icon } from "@/components/ui/Icon";
 import { PageViewer } from "@/components/viewer/PageViewer";
-import { STICKY_VIEWER_QUERY } from "@/components/viewer/viewer";
+import { STICKY_VIEWER_QUERY, bringPageForSpot } from "@/components/viewer/viewer";
 import { SCANNED_PANEL_ID, ScannedTextPanel } from "@/components/viewer/ScannedTextPanel";
 import { WhatWasRead } from "@/components/viewer/WhatWasRead";
 import { AddMeaningDialog, PageWordsList, useViewerWords } from "@/components/words/ViewerWords";
@@ -50,15 +56,15 @@ import {
   versionText,
 } from "@/components/viewer/versions";
 import { LabelBadge } from "@/components/viewer/LabelBadge";
-import { fieldText, reasonText } from "@/components/viewer/labels";
-import { lowResolutionText } from "@/components/viewer/panels";
+import { fieldText, reasonText, voteText } from "@/components/viewer/labels";
+import { lowResolutionText, untilRead } from "@/components/viewer/panels";
 import type { Spot } from "@/components/viewer/panels";
-import { beingRead, canReprocess, settledText, valuesNote } from "@/components/viewer/reprocess";
+import { beingRead, canReprocess, loadFailure, settledText, valuesNote } from "@/components/viewer/reprocess";
 import { highlightsOf, initialSelection, pageChange } from "@/components/viewer/selection";
 import { selectSpot, selectValue } from "@/components/viewer/selection";
 import type { Selection } from "@/components/viewer/selection";
 import { canReview } from "@/components/review/review";
-import { ApiError, getDocument, getDocumentSummary, getPageReadings } from "@/lib/api";
+import { getDocument, getDocumentSummary, getPageReadings } from "@/lib/api";
 import { formatDate, formatDateTime, typeLabel } from "@/lib/format";
 import { progressSignature } from "@/lib/poll";
 import { markReceived } from "@/lib/timeLeft";
@@ -79,7 +85,9 @@ export interface DocumentViewProps {
   scannedParam: string | null;
 }
 
-type Loaded = { attempt: number; detail: DocumentDetail } | { attempt: number; error: string };
+type Loaded =
+  | { attempt: number; detail: DocumentDetail }
+  | { attempt: number; error: ReturnType<typeof loadFailure> };
 
 function BackLink() {
   return (
@@ -154,11 +162,7 @@ export function DocumentView({
         settling.current = null;
       })
       .catch((error: unknown) => {
-        const message =
-          error instanceof ApiError
-            ? error.message
-            : "Check your internet connection, then try again.";
-        if (!cancelled) setLoaded({ attempt, error: message });
+        if (!cancelled) setLoaded({ attempt, error: loadFailure(error) });
       });
     return () => {
       cancelled = true;
@@ -181,7 +185,7 @@ export function DocumentView({
 
   if (!current) {
     return (
-      <div className="page">
+      <div className="page page-wide">
         <BackLink />
         <p className="visually-hidden" role="status">
           Loading the document…
@@ -199,18 +203,20 @@ export function DocumentView({
 
   if ("error" in current) {
     return (
-      <div className="page">
+      <div className="page page-wide">
         <BackLink />
         <div className={styles.errorBanner} role="alert">
           <Icon name="alert" className={styles.errorIcon} />
           <div className={styles.errorBody}>
             <p className={styles.errorTitle}>This document could not be shown.</p>
-            <p>{current.error}</p>
+            <p>{current.error.message}</p>
           </div>
-          <button type="button" className="btn" onClick={() => setAttempt((n) => n + 1)}>
-            <Icon name="refresh" />
-            Try again
-          </button>
+          {current.error.retry && (
+            <button type="button" className="btn" onClick={() => setAttempt((n) => n + 1)}>
+              <Icon name="refresh" />
+              Try again
+            </button>
+          )}
         </div>
       </div>
     );
@@ -221,16 +227,19 @@ export function DocumentView({
   const pageNumbers = detail.pages.map((p) => p.page_no);
 
   const choose = (next: Selection) => setChosen({ linkKey, selection: next });
+  // Stacked on a phone, the page is above the list: bring it into view, unless PageViewer will.
+  const bringPage = (region: Region) => {
+    if (bringPageForSpot(selection?.region ?? null, region)) viewerRef.current?.scrollIntoView({ block: "nearest" });
+  };
   const showValue = (value: ExtractedValue) => {
     choose(selectValue(value));
     setAnnouncement(`Showing ${fieldText(value.field)} on page ${value.region.page}.`);
-    // Stacked on a phone, the page is above the list: bring it into view.
-    viewerRef.current?.scrollIntoView({ block: "nearest" });
+    bringPage(value.region);
   };
   const showSpot = (spot: Spot, said = `Showing ${spot.name} on page ${spot.region.page}.`) => {
     choose(selectSpot(spot.region, spot.label));
     setAnnouncement(said);
-    viewerRef.current?.scrollIntoView({ block: "nearest" });
+    bringPage(spot.region);
   };
   // A scanned line ("line 14"): "Line 14 highlighted on page 1."
   const showLine = (spot: Spot) =>
@@ -273,6 +282,7 @@ export function DocumentView({
     <ScannedTextPanel
       documentId={detail.id}
       page={page}
+      voted={detail.values.filter((value) => value.votes && value.region.page === page.page_no)}
       active={selection?.region ?? null}
       cited={scannedParam === "1" ? decodeRegion(regionParam) : null}
       onShow={showLine}
@@ -282,6 +292,23 @@ export function DocumentView({
         if (heading && focusScanned.current) heading.focus();
         focusScanned.current = false;
       }}
+    />
+  );
+
+  const problemsBanner = page && (
+    <PageProblems
+      key={`${page.page_no}:${reloads}`}
+      documentId={detail.id}
+      page={page}
+      userId={me.user.id}
+      canFix={canReview(me.user.role) && detail.deleted_at === null}
+      canUpload={detail.deleted_at === null}
+      onReadAgain={(reply) => {
+        merge(reply);
+        readingAgain.current = true;
+        poll.later();
+      }}
+      onKept={keepPage}
     />
   );
 
@@ -297,10 +324,24 @@ export function DocumentView({
   const readingNote = valuesNote(detail.status, detail.values.length);
 
   return (
-    <div className="page">
+    <div className="page page-wide">
       <header className={styles.header}>
         <BackLink />
-        <h1 className={styles.title}>{detail.display_name}</h1>
+        <div className={styles.titleRow}>
+          <h1 className={styles.title}>{detail.display_name}</h1>
+          {download && (
+            <a className={`btn btn-quiet ${styles.download}`} href={download} download>
+              <Icon name="download" />
+              <span className="narrow-hide">Download original</span>
+            </a>
+          )}
+          {usedInChat(detail) && (
+            <Link className={`btn btn-primary ${styles.ask}`} href={askAboutHref(detail.id)}>
+              <Icon name="chat" />
+              Ask about this document
+            </Link>
+          )}
+        </div>
         <div className={styles.status}>
           <StatusChip status={detail.status} />
           <span>{detail.status_message}</span>
@@ -322,8 +363,6 @@ export function DocumentView({
               poll.later();
             }}
           />
-        </div>
-        <div className={styles.place}>
           <nav aria-label="Folder" className={`${libraryStyles.crumbs} ${styles.placeItem}`}>
             <span className={styles.placeLabel}>Folder</span>
             {trail.length === 0 ? (
@@ -339,6 +378,13 @@ export function DocumentView({
                 ))}
               </ol>
             )}
+            <AutofileNote
+              document={detail}
+              name={detail.display_name}
+              filed={FILED_HERE_TEXT}
+              folderHref={null}
+              onUndone={() => setReloads((n) => n + 1)}
+            />
           </nav>
           {detail.tags.length > 0 && (
             <div className={styles.placeItem}>
@@ -378,17 +424,6 @@ export function DocumentView({
               </ol>
             </nav>
           )}
-          {download && (
-            <a className={`btn ${styles.download}`} href={download} download>
-              Download original
-            </a>
-          )}
-          {usedInChat(detail) && (
-            <Link className="btn" href={askAboutHref(detail.id)}>
-              <Icon name="chat" />
-              Ask about this document
-            </Link>
-          )}
         </div>
         {note && <p className={styles.note}>{note}</p>}
         {detail.newer_version && (
@@ -413,22 +448,7 @@ export function DocumentView({
       </p>
       <div className={styles.layout}>
         <section ref={viewerRef} className={styles.viewer} aria-label="Page">
-          {page && (
-            <PageProblems
-              key={`${page.page_no}:${reloads}`}
-              documentId={detail.id}
-              page={page}
-              userId={me.user.id}
-              canFix={canReview(me.user.role) && detail.deleted_at === null}
-              canUpload={detail.deleted_at === null}
-              onReadAgain={(reply) => {
-                merge(reply);
-                readingAgain.current = true;
-                poll.later();
-              }}
-              onKept={keepPage}
-            />
-          )}
+          {!stickyViewer && problemsBanner}
           {lowResolution && !page?.problems?.length && (
             <p className={styles.trashNotice} role="note">
               <Icon name="alert" />
@@ -461,7 +481,7 @@ export function DocumentView({
                     }}
                   >
                     <Icon name="scan-text" />
-                    Scanned text
+                    Scanned<span className="narrow-hide"> text</span>
                   </button>
                 )
               }
@@ -472,105 +492,109 @@ export function DocumentView({
           )}
         </section>
         <div className={styles.panels}>
+          {stickyViewer && problemsBanner}
           {stickyViewer && scannedPanel}
           {page && <PageWordsList words={words} />}
           <AttentionPanel
+            status={detail.status}
             pages={detail.pages}
             current={page?.page_no ?? null}
             marks={readingMarks}
             onPage={changePage}
             onMark={showMark}
           />
+          <section className={styles.values} aria-labelledby="values-heading">
+            <h2 id="values-heading" className={styles.valuesHeading}>
+              Values found
+              {detail.values.length > 0 ? (
+                <span className={`${styles.count} tabular`}>{detail.values.length}</span>
+              ) : null}
+            </h2>
+            {readingNote && <p className="muted">{readingNote}</p>}
+            {detail.values.length === 0 ? (
+              !readingNote && <p className="muted">{untilRead(detail.status, "No values were found in this document.")}</p>
+            ) : (
+              <table className={`table ${styles.valuesTable}`} role="table">
+                <caption className="visually-hidden">
+                  Values found. Pick a value to show it on its page.
+                </caption>
+                <thead role="rowgroup">
+                  <tr role="row">
+                    <th scope="col" role="columnheader">
+                      Field
+                    </th>
+                    <th scope="col" role="columnheader">
+                      Value
+                    </th>
+                    <th scope="col" role="columnheader">
+                      Label
+                    </th>
+                    <th scope="col" role="columnheader">
+                      Reason
+                    </th>
+                  </tr>
+                </thead>
+                <tbody role="rowgroup">
+                  {detail.values.map((value) => {
+                    const active = selection?.valueId === value.id;
+                    return (
+                      <tr
+                        key={value.id}
+                        role="row"
+                        className={active ? styles.activeRow : undefined}
+                        data-label={value.label}
+                      >
+                        <td role="cell" className={styles.fieldCell}>
+                          {fieldText(value.field)}
+                        </td>
+                        <td role="cell" className={styles.valueCell}>
+                          <button
+                            type="button"
+                            className={styles.valueButton}
+                            aria-pressed={active}
+                            onClick={() => showValue(value)}
+                          >
+                            {value.value}
+                            <span className="visually-hidden">
+                              {`, show on page ${value.region.page}`}
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            className={`btn btn-quiet ${wordStyles.target}`}
+                            onClick={(event) => addMeaning(value.value, value.region, event.currentTarget)}
+                          >
+                            Add meaning
+                            <span className="visually-hidden">{` for ${fieldText(value.field)}`}</span>
+                          </button>
+                          <div className={styles.pageNote}>
+                            Page {value.region.page}
+                            {active ? ", highlighted on the page" : ""}
+                          </div>
+                          <WhatWasRead
+                            value={value}
+                            page={detail.pages.find((p) => p.page_no === value.region.page)}
+                          />
+                        </td>
+                        <td role="cell" className={styles.labelCell}>
+                          <LabelBadge label={value.label} />
+                        </td>
+                        <td role="cell" className={styles.reasonCell}>
+                          {reasonText(value.label_reason)}
+                          {value.votes && <div className={styles.pageNote}>{voteText(value.votes)}</div>}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+          </section>
           <CardPanel {...panel} />
           <RelatedPanel detail={detail} />
           <InvoicePanel {...panel} />
           <StoryPanel documentId={detail.id} inTrash={detail.deleted_at !== null} />
         </div>
-        <section className={styles.values} aria-labelledby="values-heading">
-          <h2 id="values-heading" className={styles.valuesHeading}>
-            Values found
-            {detail.values.length > 0 ? (
-              <span className={`${styles.count} tabular`}>{detail.values.length}</span>
-            ) : null}
-          </h2>
-          {readingNote && <p className="muted">{readingNote}</p>}
-          {detail.values.length === 0 ? (
-            !readingNote && <p className="muted">No values were found in this document.</p>
-          ) : (
-            <table className={`table ${styles.valuesTable}`} role="table">
-              <caption className="visually-hidden">
-                Values found. Pick a value to show it on its page.
-              </caption>
-              <thead role="rowgroup">
-                <tr role="row">
-                  <th scope="col" role="columnheader">
-                    Field
-                  </th>
-                  <th scope="col" role="columnheader">
-                    Value
-                  </th>
-                  <th scope="col" role="columnheader">
-                    Label
-                  </th>
-                  <th scope="col" role="columnheader">
-                    Reason
-                  </th>
-                </tr>
-              </thead>
-              <tbody role="rowgroup">
-                {detail.values.map((value) => {
-                  const active = selection?.valueId === value.id;
-                  return (
-                    <tr
-                      key={value.id}
-                      role="row"
-                      className={active ? styles.activeRow : undefined}
-                    >
-                      <td role="cell" className={styles.fieldCell}>
-                        {fieldText(value.field)}
-                      </td>
-                      <td role="cell" className={styles.valueCell}>
-                        <button
-                          type="button"
-                          className={styles.valueButton}
-                          aria-pressed={active}
-                          onClick={() => showValue(value)}
-                        >
-                          {value.value}
-                          <span className="visually-hidden">
-                            {`, show on page ${value.region.page}`}
-                          </span>
-                        </button>
-                        <button
-                          type="button"
-                          className={`btn btn-quiet ${wordStyles.target}`}
-                          onClick={(event) => addMeaning(value.value, value.region, event.currentTarget)}
-                        >
-                          Add meaning
-                          <span className="visually-hidden">{` for ${fieldText(value.field)}`}</span>
-                        </button>
-                        <div className={styles.pageNote}>
-                          Page {value.region.page}
-                          {active ? ", highlighted on the page" : ""}
-                        </div>
-                        <WhatWasRead
-                          value={value}
-                          page={detail.pages.find((p) => p.page_no === value.region.page)}
-                        />
-                      </td>
-                      <td role="cell" className={styles.labelCell}>
-                        <LabelBadge label={value.label} />
-                      </td>
-                      <td role="cell" className={styles.reasonCell}>
-                        {reasonText(value.label_reason)}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          )}
-        </section>
       </div>
       {adding && (
         <AddMeaningDialog

@@ -53,14 +53,12 @@ export const SIGN_IN_DOWN = "Sign-in is not working right now. Try again in a mi
 /**
  * The banner text for a failed sign-in. A 401 shows the backend's own message
  * (it is the same for an unknown e-mail, a wrong password and a disabled
- * account, so it reveals nothing) followed by what to do.
+ * account, so it reveals nothing); it already says what to do, so nothing is
+ * added to it (QA, 15 Oct 2026: the two read as one contradictory message).
  */
 export function signInErrorMessage(caught: unknown): string {
   if (caught instanceof ApiError) {
-    if (caught.status === 401) {
-      const said = caught.message.trim();
-      return said ? `${said} ${WRONG_DETAILS_ADVICE}` : WRONG_DETAILS_ADVICE;
-    }
+    if (caught.status === 401) return caught.message.trim() || WRONG_DETAILS_ADVICE;
     if (caught.status === 429) return TOO_MANY_ATTEMPTS;
     if (caught.status === 0) return NETWORK_FAILURE;
     return SIGN_IN_DOWN;

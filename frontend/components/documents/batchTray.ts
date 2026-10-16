@@ -6,6 +6,8 @@
 // never a file name. Signing out forgets them (AppShell). Every storage access is
 // wrapped: blocked site data only means the tray does not come back.
 
+import { ApiError } from "@/lib/api";
+import { documentFraction, longerThanUsual } from "@/lib/progress";
 import type { BatchView, DocumentSummary } from "@/lib/types";
 import { attentionWords } from "./library";
 import { estimateIngestSeconds, estimatePages, uploadKind } from "./logic";
@@ -184,27 +186,43 @@ export function announcement(drops: readonly (readonly Pick<UploadEntry, "state"
   return parts.length > 0 ? `Uploads: ${parts.join(" · ")}` : "";
 }
 
-/** "about 6 min left" for the whole drop; null when nothing is left to read or it is not known. */
-export function leftText(view: Pick<BatchView, "time_left"> | null): string | null {
+/**
+ * "about 6 min left" for the whole drop; "Taking longer than usual" while any of its files
+ * is, by its row's rule (longerThanUsual); null when nothing is left to read or it is not known.
+ */
+export function leftText(
+  view: Pick<BatchView, "time_left" | "documents"> | null,
+  now = performance.now(),
+): string | null {
+  const longer = view?.documents.some(
+    (document) => document.progress && document.time_left && longerThanUsual(document.time_left, document.progress.step, now),
+  );
+  if (longer) return "Taking longer than usual";
   const seconds = view?.time_left?.seconds;
   if (seconds === undefined || !Number.isFinite(seconds) || seconds <= 0) return null;
   return seconds < 60 ? "under a minute left" : `about ${Math.ceil(seconds / 60)} min left`;
 }
 
 /**
- * The drop's bar, 0 to 1: pages read over all its pages (the batch API's), with each
- * file not stored yet counted by its expected pages. A file still sending or saving
- * counts its bytes (U1, U10), weighed as its own row's bar weighs them (jobFraction at
- * ``now``), so the bytes are part of the job and never stand in for pages read.
+ * The drop's bar, 0 to 1 (progress fix, 16 Oct 2026): each stored file's own fraction (its
+ * row's, documentFraction; a finished file whole), weighed by its pages (1 while not
+ * known). A file not stored yet counts by its expected pages, and one still sending or
+ * saving by its row's bar (jobFraction at ``now``), so a one-file drop's bar is its row's.
  */
 export function batchFraction(
-  view: Pick<BatchView, "pages_read" | "pages_total" | "documents"> | null,
+  view: Pick<BatchView, "documents"> | null,
   entries: readonly Pick<UploadEntry, "state" | "name" | "size" | "pages" | "times">[],
   now = 0,
 ): number {
   const stored = new Set(view?.documents.map((document) => document.id) ?? []);
-  let total = view?.pages_total ?? 0;
-  let read = view?.pages_read ?? 0;
+  let total = 0;
+  let read = 0;
+  for (const document of view?.documents ?? []) {
+    const pages = document.page_count ?? 1;
+    const busy = document.status === "received" || document.status === "clean";
+    total += pages;
+    read += pages * (busy ? (documentFraction(document.progress?.step, document.time_left, now) ?? 0) : 1);
+  }
   for (const entry of entries) {
     const { state } = entry;
     const kind = uploadKind(entry.name);
@@ -214,7 +232,7 @@ export function batchFraction(
     if (!moving && !unknown && state.kind !== "waiting") continue;
     const pages = estimatePages(kind, entry.size, entry.pages ?? null);
     total += pages;
-    if (moving) {
+    if (moving || unknown) {
       const readSeconds = estimateIngestSeconds(kind, entry.size, 1, entry.pages ?? null);
       read += pages * jobFraction(state, entry.size, readSeconds, entry.times ?? NO_TIMES, now);
     }
@@ -284,4 +302,21 @@ export function clearStored(store: Store | null = batchStore()): void {
   } catch {
     // nothing kept, or nothing to clear
   }
+}
+
+// --- auto-filing (feature 28) -------------------------------------------------------
+
+export const NOT_FILED_TEXT =
+  "Not filed. Kaagaz couldn't tell which folder this belongs in. You can move it to a folder.";
+export const UNDONE_TEXT = "Moved back. It is not in a folder now. The folder stays.";
+export const FILED_HERE_TEXT = "Filed here by Kaagaz";
+
+/** "Filed into Invoices" with the folder's path; "a folder" while the folders are not loaded yet. */
+export function filedText(path: string): string {
+  return `Filed into ${path || "a folder"}`;
+}
+
+/** What a refused or failed Undo says: the server's plain words, else a hint to try again. */
+export function undoErrorText(caught: unknown): string {
+  return caught instanceof ApiError ? caught.message : "Could not undo it. Check your connection, then try again.";
 }

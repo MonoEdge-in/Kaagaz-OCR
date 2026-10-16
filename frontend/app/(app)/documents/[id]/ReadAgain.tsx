@@ -10,13 +10,21 @@
 // components/viewer/reprocess.ts; the server checks the role again.
 // When the organisation has two or more models (model choice MS4), the
 // question also has "Read with", set to the model the document asked for
-// (detail.read_model, else the default), and says every page is read again by
-// it; a model is sent only when the user changes it, so the document never
-// moves to the default unasked. The models come from GET /upload-limits, and
-// without them there is no choice.
+// (detail.read_model, else the default), and says every page is read again
+// (no cost words for the organisation, Tushar 15 Oct 2026); a model is sent
+// only when the user changes it, so the document never moves to the default
+// unasked. The models come from GET /upload-limits, and without them there is
+// no choice. Dynamic and "More than one reader…" (features 26, 27) are offered
+// here as at upload; picking nothing keeps the document's own reading.
 
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
-import { offersChoice, pickedReader, readAgainModel, readAgainWarning } from "@/components/documents/readers";
+import {
+  offersChoice,
+  pickedReader,
+  readAgainReading,
+  readAgainWarning,
+  startAgents,
+} from "@/components/documents/readers";
 import { ReaderSelect } from "@/components/documents/UploadArea";
 import { Icon } from "@/components/ui/Icon";
 import {
@@ -26,7 +34,7 @@ import {
   reprocessReducer,
 } from "@/components/viewer/reprocess";
 import { getUploadLimits, reprocessDocument } from "@/lib/api";
-import type { DocumentSummary, UploadReader } from "@/lib/types";
+import type { DocumentSummary, EnsembleOffer, UploadReader } from "@/lib/types";
 import styles from "./DocumentView.module.css";
 
 export interface ReadAgainProps {
@@ -42,8 +50,11 @@ export interface ReadAgainProps {
 export function ReadAgain({ documentId, fixes, pages, readModel, offered, reading, onStarted }: ReadAgainProps) {
   const [state, dispatch] = useReducer(reprocessReducer, { step: "idle" });
   const [readers, setReaders] = useState<UploadReader[]>([]);
+  const [ensemble, setEnsemble] = useState<EnsembleOffer | null>(null);
   const [picked, setPicked] = useState<string | null>(null);
-  const model = readAgainModel(readers, picked); // sent: only a model the user picked
+  const [ticked, setTicked] = useState<string[] | null>(null);
+  const agents = ticked ?? startAgents(ensemble);
+  const model = readAgainReading(readers, ensemble, picked, agents); // sent: only what the user picked
   const shown = pickedReader(readers, picked ?? readModel); // what the select shows
 
   useEffect(() => {
@@ -52,7 +63,9 @@ export function ReadAgain({ documentId, fixes, pages, readModel, offered, readin
     // Not loaded: no "Read with", and the server reads with the organisation's own model.
     getUploadLimits().then(
       (limits) => {
-        if (!cancelled) setReaders(limits.readers);
+        if (cancelled) return;
+        setReaders(limits.readers);
+        setEnsemble(limits.ensemble ?? null);
       },
       () => undefined,
     );
@@ -123,8 +136,17 @@ export function ReadAgain({ documentId, fixes, pages, readModel, offered, readin
           Read this document again?
         </p>
         <p id="read-again-text">{reprocessConfirmText(fixes)}</p>
-        <ReaderSelect readers={readers} picked={picked ?? readModel} onPick={setPicked} />
-        {offersChoice(readers) && shown !== null && <p role="status">{readAgainWarning(pages, shown.title)}</p>}
+        <ReaderSelect
+          readers={readers}
+          picked={picked ?? readModel}
+          onPick={setPicked}
+          ensemble={ensemble}
+          agents={agents}
+          onAgents={setTicked}
+        />
+        {offersChoice(readers, ensemble) && shown !== null && (
+          <p role="status">{readAgainWarning(pages)}</p>
+        )}
         <div className={styles.readAgainButtons}>
           <button type="button" className="btn btn-primary" onClick={send} disabled={sending}>
             {sending ? (
@@ -150,7 +172,7 @@ export function ReadAgain({ documentId, fixes, pages, readModel, offered, readin
       <button
         ref={holdButton}
         type="button"
-        className={`btn ${styles.readAgain}`}
+        className="btn"
         onClick={() => dispatch({ type: "open" })}
       >
         <Icon name="refresh" />

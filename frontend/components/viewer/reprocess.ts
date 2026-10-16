@@ -84,6 +84,12 @@ export function reprocessErrorText(error: unknown): string {
   return "Check your internet connection, then try again.";
 }
 
+/** Why the document could not be shown, and whether Try again can help: not when it is not there (404). */
+export function loadFailure(error: unknown): { message: string; retry: boolean } {
+  if (error instanceof ApiError) return { message: error.message, retry: error.status !== 404 };
+  return { message: "Check your internet connection, then try again.", retry: true };
+}
+
 /** Still being checked or read: the viewer asks again until it is not. */
 export function beingRead(status: DocumentStatus): boolean {
   return status === "received" || status === "clean";

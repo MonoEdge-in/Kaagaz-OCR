@@ -72,7 +72,16 @@ class MemoryModel:
         raise ModelUnavailable("down")
 
     def chat_json(
-        self, *, system: str, user: str, schema: Any, max_tokens: int | None = None
+        self,
+        *,
+        system: str,
+        user: str,
+        schema: Any,
+        max_tokens: int | None = None,
+        model: str | None = None,
+        thinking: str | None = None,
+        provider: str | None = None,
+        deadline: float | None = None,
     ) -> dict[str, Any]:
         assert system == memory_module.SYSTEM_PROMPT
         self.prompts.append(user)
@@ -194,7 +203,16 @@ def test_m3_the_prompt_text_has_the_summary_then_each_list() -> None:
 
 class RewriteOnly(MemoryModel):
     def chat_json(
-        self, *, system: str, user: str, schema: Any, max_tokens: int | None = None
+        self,
+        *,
+        system: str,
+        user: str,
+        schema: Any,
+        max_tokens: int | None = None,
+        model: str | None = None,
+        thinking: str | None = None,
+        provider: str | None = None,
+        deadline: float | None = None,
     ) -> dict[str, Any]:
         self.prompts.append(user)
         return {"question": REWRITTEN}

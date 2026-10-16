@@ -9,10 +9,12 @@
 // a neutral card that says so and lists the closest documents. "Unchecked" says
 // a figure is only in values nobody has checked yet, and where. F6's note
 // (PRD 5 U7) goes under the answer, with a link to each page that couldn't be
-// read. All text is plain text; answers are built from document text, which is untrusted.
+// read. An answer more than one model was asked to draft (features 25-27) says who
+// answered and whether they agreed, under its label. All text is plain text; answers
+// are built from document text, which is untrusted.
 
 import Link from "next/link";
-import { useId } from "react";
+import { memo, useId, useState } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { LabelBadge } from "@/components/viewer/LabelBadge";
 import { understoodNotes } from "@/components/words/words";
@@ -25,6 +27,7 @@ import {
   questionReading,
   readingNote,
   sentenceCitations,
+  teamLine,
 } from "./answer";
 import { FeedbackControls } from "./FeedbackControls";
 import { scrollBehavior } from "./hooks";
@@ -39,8 +42,12 @@ function goToSource(id: string) {
   card.focus({ preventScroll: true });
 }
 
-export function AnswerView({ message, question }: { message: Message; question: string | null }) {
+// Memo: the chat keeps each message object as it was when a new answer arrives,
+// so old answer cards skip re-rendering (UI quality council, 15 Oct 2026).
+export const AnswerView = memo(function AnswerView({ message, question }: { message: Message; question: string | null }) {
   const sourcesHeadingId = useId();
+  // The source a chip is pointed at or focused: its card lights up (UI quality council, 15 Oct 2026).
+  const [hot, setHot] = useState<number | null>(null);
   const answer = message.answer;
 
   if (!answer) {
@@ -155,6 +162,7 @@ export function AnswerView({ message, question }: { message: Message; question: 
 
   const cards = citationMap(answer);
   const label = answer.label;
+  const team = teamLine(answer);
 
   return (
     <div className={styles.answerCard} data-label={label ?? undefined}>
@@ -162,9 +170,10 @@ export function AnswerView({ message, question }: { message: Message; question: 
       {label ? (
         <div className={styles.labelLine}>
           <LabelBadge label={label} />
-          <span className={styles.labelExplanation}>{answerLabelText(label).explanation}</span>
+          <span className={styles.labelExplanation}>{answerLabelText(label, answer).explanation}</span>
         </div>
       ) : null}
+      {team ? <p className={styles.understood}>{team}</p> : null}
       {understood}
       <p className={styles.answerText}>
         {answer.sentences.map((sentence, index) => (
@@ -178,6 +187,10 @@ export function AnswerView({ message, question }: { message: Message; question: 
                 className={`${styles.numberMark} ${styles.cite}`}
                 aria-label={`Source ${n}`}
                 onClick={() => goToSource(cardId(message.id, n))}
+                onPointerEnter={() => setHot(n)}
+                onPointerLeave={() => setHot(null)}
+                onFocus={() => setHot(n)}
+                onBlur={() => setHot(null)}
               >
                 {n}
               </button>
@@ -193,7 +206,7 @@ export function AnswerView({ message, question }: { message: Message; question: 
           </h3>
           <div className={styles.sources}>
             {answer.citations.map((citation) => (
-              <SourceCard key={citation.n} citation={citation} messageId={message.id} />
+              <SourceCard key={citation.n} citation={citation} messageId={message.id} hot={hot === citation.n} />
             ))}
           </div>
         </section>
@@ -201,4 +214,4 @@ export function AnswerView({ message, question }: { message: Message; question: 
       {feedback}
     </div>
   );
-}
+});

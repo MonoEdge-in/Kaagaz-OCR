@@ -1,10 +1,21 @@
 """The time-left estimate (kaagaz.eta), with fixed numbers (PRD 4 #13)."""
 
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 
-from kaagaz.eta import OCR_SECONDS_OTHER, RunTiming, after_reading, mean, preparing, rates, reading, time_left
+from kaagaz.eta import (
+    MODEL_SLOW_MIN_S,
+    OCR_SECONDS_OTHER,
+    RunTiming,
+    after_reading,
+    mean,
+    preparing,
+    rates,
+    reading,
+    time_left,
+)
 
 T0 = datetime(2026, 10, 4, 10, 0, tzinfo=UTC)
 NONE = (0.0, 0.0)
@@ -47,6 +58,31 @@ def test_a_stall_is_three_pages_long_and_at_least_20_s() -> None:
     assert reading(rates([scan_run(1.0)] * 3, "rapidocr"), T0, 0, 5, NONE, NONE).slow_after_s == 20.0
 
 
+def test_a_page_read_by_a_model_is_not_slow_at_25_s() -> None:
+    """Progress fix, 16 Oct 2026: a High-thinking page call often passes 20 s, so a model
+    read stalls only past 3 x its own seconds a call (90 s at least, PROVISIONAL)."""
+    cold = reading(rates([], "gemini"), T0, 0, 1, NONE, NONE)
+    # Changed on purpose (fast scan, council 16 Oct 2026): Gemini starts from 35 s a call.
+    assert cold.slow_after_s == 3 * 35.0 > MODEL_SLOW_MIN_S == 90.0
+    stored_read = {"step": "reading", "done": 0, "total": 1, "started_at": T0.isoformat(), **cold.to_json()}
+
+    def at(seconds: float) -> dict[str, Any]:
+        left = time_left(stored_read, now=T0 + timedelta(seconds=seconds))
+        assert left is not None
+        return left
+
+    # The screen's rule (lib/timeLeft.ts stalled): longer than usual once since_move passes slow_after.
+    assert at(25)["since_move_seconds"] <= at(25)["slow_after_seconds"]  # not slow at 25 s
+    assert at(60)["done_fraction"] > at(25)["done_fraction"]  # and the bar still moves
+    assert at(200)["since_move_seconds"] > at(200)["slow_after_seconds"]  # slow well past it
+    assert at(200)["done_fraction"] == at(400)["done_fraction"]  # held still, no work shown
+    run = RunTiming("gemini 2.5", 10, 0, 0, 10 * 40.0, 10 * 40.0, 30.0)  # 40 s a call, learned
+    learned = rates([run] * 5, "gemini")
+    slow = reading(learned, T0, 0, 1, NONE, NONE).slow_after_s
+    assert slow == pytest.approx(3 * mean(learned.ocr)) and slow > MODEL_SLOW_MIN_S
+    assert reading(rates([], "rapidocr"), T0, 0, 1, NONE, NONE).slow_after_s == 20.0  # RapidOCR as before
+
+
 def test_after_reading_is_the_median_and_slow_the_90th_percentile() -> None:
     history = [scan_run(after=after) for after in (50.0, 10.0, 40.0, 20.0, 30.0)]
     estimate = after_reading(rates(history, "rapidocr"), T0)
@@ -63,10 +99,22 @@ def test_only_this_engines_runs_and_the_last_20_count() -> None:
 
 
 def test_an_engine_with_no_figure_of_its_own_starts_from_the_default() -> None:
-    """A Gemini run, or an old run's reader the server no longer has, starts from
-    OCR_SECONDS_OTHER (PRD 5 Q6) until its own history replaces it."""
-    for engine in ("gemini", "an-old-reader"):
-        assert mean(rates([], engine).ocr) == pytest.approx(OCR_SECONDS_OTHER)
+    """An old run's reader the server no longer has starts from OCR_SECONDS_OTHER (PRD 5 Q6)
+    until its own history replaces it. Changed on purpose (fast scan, council 16 Oct 2026):
+    Gemini has its own figure, 35 s a call."""
+    assert mean(rates([], "an-old-reader").ocr) == pytest.approx(OCR_SECONDS_OTHER)
+    assert mean(rates([], "gemini").ocr) == pytest.approx(35.0)
+
+
+def test_a_model_readers_pages_are_read_ocr_page_concurrency_at_a_time() -> None:
+    """Fast scan (council 16 Oct 2026): a 1-page scan by Gemini starts at 35 s or more, and
+    20 pages read 6 at a time take ceil(20 / 6) = 4 calls of 35 s, not 20 x 35 s."""
+    one = reading(rates([], "gemini", pages_at_once=6, scanned=True), T0, 0, 1, NONE, NONE)
+    assert (one.finish_at - T0).total_seconds() - one.after_s >= 35.0
+    twenty = reading(rates([], "gemini", pages_at_once=6, scanned=True), T0, 0, 20, NONE, NONE)
+    assert (twenty.finish_at - T0).total_seconds() - twenty.after_s == pytest.approx(140.0)
+    # Another engine reads one page at a time, as before.
+    assert rates([], "rapidocr", pages_at_once=6).pages_at_once == 1
 
 
 def test_a_sheet_is_one_file_with_no_pages() -> None:
@@ -130,6 +178,8 @@ def test_time_left_from_preparing_to_indexing_and_never_while_scanning() -> None
     lefts = [time_left(stored(step=step), now=T0) for step in ("preparing", "understanding", "indexing")]
     assert [None if left is None else left["items_left"] for left in lefts] == [8, 0, 0]
     assert time_left(stored(step="scanning"), now=T0) is None
+    rereading = time_left(stored(step="rereading"), now=T0)  # Careful's second reading keeps its bar
+    assert rereading is not None and rereading["items_left"] == 0
 
 
 BAD = [

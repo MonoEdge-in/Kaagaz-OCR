@@ -88,7 +88,7 @@ export function canReview(role: Role): boolean {
 /** The reason filter's choices, in the order the screen lists them (PRD 3 Y5, PRD 5 U6). */
 export const REASON_FILTERS: readonly { value: ReviewReason; text: string }[] = [
   { value: "check_failed", text: "An invoice check failed" },
-  { value: "readers_disagree", text: "The two readers disagree" },
+  { value: "readers_disagree", text: "Readers disagree" },
   { value: "low_confidence", text: "The reader was not sure" },
   { value: "single_reader", text: "Only one reader read it" },
   { value: "unsure_text", text: REASON_FILTER_TEXT.unsure_text },

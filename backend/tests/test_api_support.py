@@ -42,6 +42,7 @@ from kaagaz.api.ports import Answers
 from kaagaz.api.secret_box import SecretBox
 from kaagaz.db import users as users_sql
 from kaagaz.db.engine import Database
+from kaagaz.db.models import ChatChoice
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import BlobNotFound
 from kaagaz.search.scope import Scope
@@ -145,6 +146,7 @@ class FakeAnswers:
     memories: list[Memory] = field(default_factory=list)  # PRD 5 M3: the memory each question got
     remembered: Memory | None = None  # what ``remember`` gives back
     summarised: list[tuple[list[Turn], Memory, list[str]]] = field(default_factory=list)
+    choices: list[ChatChoice | None] = field(default_factory=list)  # features 25-27: who drafts each
 
     def answer(
         self,
@@ -155,8 +157,10 @@ class FakeAnswers:
         history: Sequence[Turn],
         user_id: str,
         memory: Memory,
+        choice: ChatChoice | None = None,
     ) -> _FixedAnswer:
         self.asked.append((customer_id, question))
+        self.choices.append(choice)
         self.scopes.append(scope)
         self.memories.append(memory)
         return _FixedAnswer(self.reply)

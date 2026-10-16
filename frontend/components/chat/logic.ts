@@ -6,8 +6,16 @@
 
 import { formatDate, typeLabel } from "@/lib/format";
 import { pageLink } from "@/lib/regions";
-import type { Citation, ConversationSummary, DetectedType, Region } from "@/lib/types";
-import { citationRegion } from "./answer";
+import type {
+  AnswerChoice,
+  ChatOptions,
+  Citation,
+  ConversationSummary,
+  DetectedType,
+  Region,
+  ThinkingLevel,
+} from "@/lib/types";
+import { citationRegion, modelName } from "./answer";
 
 // --- Grouping the conversation list by day ------------------------------------
 
@@ -256,4 +264,71 @@ export function documentFromSearch(search: string): string | null {
 /** The chat address that asks about one document. */
 export function askAboutHref(documentId: string): string {
   return `/chat?document=${encodeURIComponent(documentId)}`;
+}
+
+// --- Answer settings (features 25-27) ------------------------------------------
+// Which models answer and how hard they think, picked by name in the composer from
+// what the organisation allows (GET /chat/options). No price or cost ever: names
+// and levels only. Kept in React state only; a reload starts from the defaults.
+
+export const LEVEL_NAMES: Record<ThinkingLevel, string> = { low: "Low", medium: "Medium", high: "High" };
+
+export interface AnswerPick {
+  agents: string[]; // model ids, in the order picked; [] for the organisation's default
+  level: ThinkingLevel;
+}
+
+/** The organisation's defaults: its default model (none listed: the server's), its level. */
+export function defaultPick(options: ChatOptions): AnswerPick {
+  const main = options.agents.find((agent) => agent.default);
+  return { agents: main ? [main.id] : [], level: options.default_level };
+}
+
+/** Answer settings are shown only when there is something to choose. */
+export function hasChoices(options: ChatOptions | null): options is ChatOptions {
+  return options !== null && (options.agents.length > 1 || options.levels.length > 1);
+}
+
+/** The levels this pick may use: High with one model only (the server refuses more). */
+export function allowedLevels(options: ChatOptions, pick: AnswerPick): ThinkingLevel[] {
+  return options.levels.filter((level) => level !== "high" || pick.agents.length <= 1);
+}
+
+/** `pick` with its level moved to an allowed one when it no longer is. */
+function keepLevel(options: ChatOptions, pick: AnswerPick): AnswerPick {
+  const levels = allowedLevels(options, pick);
+  if (levels.includes(pick.level)) return pick;
+  const level = levels.includes(options.default_level) ? options.default_level : levels[levels.length - 1];
+  return level ? { ...pick, level } : pick;
+}
+
+/** One model (no Ensemble): that one. */
+export function chooseAgent(options: ChatOptions, pick: AnswerPick, id: string): AnswerPick {
+  return keepLevel(options, { ...pick, agents: [id] });
+}
+
+/** Ensemble: tick or untick a model; at most `max_agents`, never none. */
+export function toggleAgent(options: ChatOptions, pick: AnswerPick, id: string): AnswerPick {
+  if (pick.agents.includes(id)) {
+    return pick.agents.length > 1 ? { ...pick, agents: pick.agents.filter((agent) => agent !== id) } : pick;
+  }
+  if (pick.agents.length >= options.max_agents) return pick;
+  return keepLevel(options, { ...pick, agents: [...pick.agents, id] });
+}
+
+/** The chip: the models by name and the level, "Gemini 3.8 Flash · Medium". */
+export function pickSummary(options: ChatOptions, pick: AnswerPick): string {
+  const names = pick.agents
+    .map((id) => options.agents.find((agent) => agent.id === id)?.name)
+    .filter((name): name is string => Boolean(name))
+    .map(modelName);
+  return [names.join(" + "), LEVEL_NAMES[pick.level]].filter(Boolean).join(" · ");
+}
+
+/** What POST /chat sends: nothing when the pick is the organisation's default. */
+export function choiceBody(options: ChatOptions | null, pick: AnswerPick | null): AnswerChoice | undefined {
+  if (options === null || pick === null) return undefined;
+  const usual = defaultPick(options);
+  if (pick.level === usual.level && pick.agents.join(",") === usual.agents.join(",")) return undefined;
+  return { ...(pick.agents.length > 0 ? { agents: pick.agents } : {}), thinking: pick.level };
 }

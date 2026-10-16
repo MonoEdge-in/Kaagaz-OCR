@@ -1,6 +1,6 @@
-// Admin → Usage (model choice SP2, SP4): its states, the budget warnings, the
-// tables and the CSV link, rendered in node from fixtures shaped like GET
-// /admin/usage (lib/types UsageReport).
+// Admin → Usage (model choice SP2, SP4): its states, the budget warnings and the
+// tables in tokens, rendered in node from fixtures shaped like GET /admin/usage
+// (lib/types UsageReport).
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -10,16 +10,13 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import {
   budgetLine,
-  budgetShareText,
-  budgetWarning,
   indiaDay,
   usageKindText,
   usageRange,
   usageState,
 } from "@/components/admin/logic";
 import type { UsageState } from "@/components/admin/logic";
-import { UsagePanel, UsageReportView } from "@/components/admin/UsagePanel";
-import type { UsageParams } from "@/lib/api";
+import { UsagePanel, UsageReportView, usageTokens } from "@/components/admin/UsagePanel";
 import type { UsageBudget, UsageReport, UsageTotals } from "@/lib/types";
 
 const totals = (changes: Partial<UsageTotals> = {}): UsageTotals => ({
@@ -46,8 +43,8 @@ const REPORT: UsageReport = {
   to: "2026-10-11",
   totals: totals(),
   by_user: [
-    { ...totals({ cost_usd: 10 }), user_id: "u1", user_name: "Ravi Sharma" },
-    { ...totals({ cost_usd: 2.4 }), user_id: null, user_name: null },
+    { ...totals({ cost_usd: 10, input_tokens: 1000, output_tokens: 500 }), user_id: "u1", user_name: "Ravi Sharma" },
+    { ...totals({ cost_usd: 2.4, input_tokens: 90000, output_tokens: 10000 }), user_id: null, user_name: null },
   ],
   by_model: [{ ...totals(), model: "google/gemini-3.1-pro-preview", model_name: "Gemini 3.1 Pro" }],
   by_kind: [
@@ -55,21 +52,19 @@ const REPORT: UsageReport = {
     { ...totals({ cost_usd: 0.4, cost_estimated: true }), kind: "chat" },
   ],
   by_day: [
-    { ...totals({ cost_usd: 8 }), day: "2026-10-10" },
-    { ...totals({ cost_usd: 4 }), day: "2026-10-11" },
+    { ...totals({ cost_usd: 8, input_tokens: 80000, output_tokens: 20000 }), day: "2026-10-10" },
+    { ...totals({ cost_usd: 4, input_tokens: 40000, output_tokens: 10000 }), day: "2026-10-11" },
   ],
   top_documents: [
     { ...totals({ cost_usd: 3 }), document_id: "d1", name: "Invoice 42.pdf" },
     { ...totals({ cost_usd: 0.003 }), document_id: null, name: "Deleted document" },
   ],
-  budget: budget(12.4, 50),
+  // Changed on purpose (features 25-27, 15 Oct 2026): GET /admin/usage sends no budget any more.
   ai_enabled: true,
 };
 
-const PARAMS: UsageParams = { from: "2026-10-01", to: "2026-10-11", user_id: "u1" };
-
-const view = (state: UsageState, onRetry: () => void = () => undefined, params: UsageParams = PARAMS) =>
-  renderToStaticMarkup(createElement(UsageReportView, { state, params, onRetry }));
+const view = (state: UsageState, onRetry: () => void = () => undefined) =>
+  renderToStaticMarkup(createElement(UsageReportView, { state, onRetry }));
 
 /** The first <button> in a React element tree. */
 function findButton(node: ReactNode): ReactElement | null {
@@ -123,7 +118,7 @@ describe("the Usage tab's states", () => {
     expect(html).toContain('role="alert"');
     expect(html).toContain("The server is busy.");
     expect(html).toMatch(/<button[^>]*>.*Retry<\/button>/);
-    const button = findButton(UsageReportView({ state, params: PARAMS, onRetry }));
+    const button = findButton(UsageReportView({ state, onRetry }));
     (button?.props as { onClick: () => void }).onClick();
     expect(retried).toBe(1);
   });
@@ -150,39 +145,43 @@ describe("the Usage tab's states", () => {
 describe("the report", () => {
   const html = view({ kind: "ready", report: REPORT });
 
-  it("has tiles for the spend, the tokens and the budget used", () => {
-    expect(html).toContain("AI spend</dt>");
-    expect(html).toContain("$12.40");
-    expect(html).toContain("1,50,000"); // 1,20,000 in + 30,000 out, Indian grouping
-    expect(html).toContain("24%");
-    expect(html).toContain("$12.40 of $50.00 this month");
+  // Changed on purpose (UI quality council, 15 Oct 2026): Tushar's decisions (17:40, 18:38), org
+  // admins see AI use in tokens only: no money, no spend, no budget.
+  it("has one tile for the tokens used, and no money or budget", () => {
+    expect(html).toContain("Tokens in this period</dt>");
+    expect(html).toContain(">1,50,000</dd>"); // input + output (output counts the thinking)
+    expect(html).not.toMatch(/spen[dt]|cost|budget|[$₹]|\bRs\b|\bUSD\b/i);
+    expect(html).not.toContain("Budget used");
   });
 
-  it("has a captioned table each by user, model, kind, document and day, every header scope=col", () => {
-    for (const caption of ["By user", "By model", "By kind of work", "Costliest documents", "Spend by day"]) {
+  it("adds input and output tokens, the thinking being part of the output", () => {
+    expect(usageTokens(totals())).toBe(150000);
+  });
+
+  it("has a captioned table each by day, user, kind and document, every header scope=col", () => {
+    for (const caption of ["Tokens by day", "By user", "By kind of work", "Top documents"]) {
       expect(html).toMatch(new RegExp(`<caption[^>]*>${caption}</caption>`));
     }
-    expect(html.match(/<th scope="col"/g)).toHaveLength(4 * 4 + 2);
-    expect(html.match(/<th[ >]/g)).toHaveLength(4 * 4 + 2);
+    expect(html).not.toContain("By model");
+    expect(html.match(/<th scope="col"/g)).toHaveLength(3 * 2 + 2);
+    expect(html.match(/<th[ >]/g)).toHaveLength(3 * 2 + 2);
   });
 
-  it("shows the numbers with tabular figures", () => {
-    expect(html).toContain('class="tabular">1,20,000</td>');
+  it("shows the tokens with tabular figures, the most first", () => {
+    // Changed on purpose (UI quality council, 15 Oct 2026): tokens, not cost, in the "num" column.
+    expect(html).toContain('class="num">1,500</td>');
+    // The server sorts by cost; the screen by tokens, so system work (1,00,000) comes before Ravi (1,500).
+    expect(html.indexOf("Removed user or system work")).toBeLessThan(html.indexOf("Ravi Sharma"));
   });
 
-  it("names the user, the system, the model, the kind and the documents in words", () => {
+  it("names the user, the system, the kind and the documents in words, never a model", () => {
     expect(html).toContain("Ravi Sharma");
     expect(html).toContain("Removed user or system work");
-    expect(html).toContain("Gemini 3.1 Pro");
+    expect(html).not.toContain("Gemini");
     expect(html).toContain("Reading scanned pages");
     expect(html).toContain('<a href="/documents/d1">Invoice 42.pdf</a>');
     expect(html).toContain("Deleted document");
     expect(html).not.toContain('href="/documents/null"');
-  });
-
-  it("says estimated in words, and under a cent as < $0.01", () => {
-    expect(html).toContain("≈ $0.40 (estimated)");
-    expect(html).toContain("&lt; $0.01");
   });
 
   it("draws each day's bar with CSS, hidden from screen readers, the number in the cell", () => {
@@ -190,52 +189,26 @@ describe("the report", () => {
     expect(bars).toHaveLength(2);
     expect(bars[0]).toContain("width:100%");
     expect(bars[1]).toContain("width:50%");
-    expect(html).toContain("<span>$8.00</span>");
+    expect(html).toContain("<span>1,00,000</span>");
     expect(html).not.toMatch(/<canvas|role="img"/);
   });
 
-  it("links the CSV with the same period and user", () => {
-    expect(html).toMatch(
-      /<a [^>]*href="\/api\/admin\/usage\.csv\?from=2026-10-01&amp;to=2026-10-11&amp;user_id=u1"[^>]*download/,
-    );
-  });
-
-  it("leaves the user out of the CSV link for everyone", () => {
-    const everyone = view({ kind: "ready", report: REPORT }, undefined, { from: "2026-10-11", to: "2026-10-11" });
-    expect(everyone).toContain('href="/api/admin/usage.csv?from=2026-10-11&amp;to=2026-10-11"');
+  // Changed on purpose (UI quality council, 15 Oct 2026): the CSV has cost and model columns, so it
+  // is off the org admin's screen until the operator's money switch (follow-up PR).
+  it("has no CSV download", () => {
+    expect(html).not.toContain("usage.csv");
+    expect(html).not.toContain("Download as CSV");
   });
 });
 
-describe("the budget (SP4, warn only)", () => {
-  it("says nothing under 80%", () => {
-    expect(budgetWarning(budget(39.99, 50))).toBeNull();
-    expect(budgetShareText(budget(39.99, 50))).toBe("79%");
-  });
-
-  it("warns at 80%, as a status line", () => {
-    expect(budgetWarning(budget(40, 50))).toBe(
-      "This month's AI spend is at 80% of the budget ($40.00 of $50.00 this month).",
-    );
-    const html = view({ kind: "ready", report: { ...REPORT, budget: budget(42, 50) } });
-    expect(html).toMatch(/<p[^>]*role="status"[^>]*>.*at 84% of the budget/);
-  });
-
-  it("warns at 100% and over, saying work goes on", () => {
-    const full = budgetWarning(budget(50, 50));
-    expect(full).toContain("has reached the budget ($50.00 of $50.00 this month)");
-    expect(full).toContain("Work goes on");
-    expect(budgetWarning(budget(61, 50))).toContain("has reached the budget ($61.00 of $50.00 this month)");
-    const html = view({ kind: "ready", report: { ...REPORT, budget: budget(61, 50) } });
-    expect(html).toMatch(/<p[^>]*role="status"[^>]*>.*has reached the budget/);
-    expect(html).toContain("122%");
-  });
-
+// Changed on purpose (UI quality council, 15 Oct 2026): org admins see no budget (Tushar, 18:38), so
+// the 80% / 100% warning tests went with the warning; the operator's money line stays.
+describe("the operator's budget line, and rows with no user", () => {
+  // The operator's console still shows this money line (components/operator/insights.ts).
   it("says when part of this month's spend is not known (R9)", () => {
     expect(budgetLine({ ...budget(5, 50), spent_part_unknown: true })).toBe(
       "$5.00 (part not known) of $50.00 this month",
     );
-    const html = view({ kind: "ready", report: { ...REPORT, totals: totals({ cost_part_unknown: true }) } });
-    expect(html).toContain("$12.40 (part not known)");
   });
 
   it("names a by-user row with no user as removed or system work (R13)", () => {
@@ -243,13 +216,8 @@ describe("the budget (SP4, warn only)", () => {
     expect(html).toContain(">Removed user or system work</td>");
   });
 
-  it("has no warning, and says so, when there is no budget", () => {
-    expect(budgetWarning(budget(500, null))).toBeNull();
+  it("says when the operator set no budget", () => {
     expect(budgetLine(budget(500, null))).toBe("No monthly AI budget is set.");
-    const html = view({ kind: "ready", report: { ...REPORT, budget: budget(500, null) } });
-    expect(html).toContain("No budget");
-    // R13: the status region stays, empty, so a warning that comes later is heard.
-    expect(html).toContain('<p role="status"></p>');
   });
 });
 

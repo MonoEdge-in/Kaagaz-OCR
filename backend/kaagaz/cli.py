@@ -60,6 +60,8 @@
   ``--model``: when that model passes them all, its pass for the reader's prompt
   version and its tokens per page are written to ``model_catalog`` as the owner
   (``_owner``); the model must be in the catalogue (``refresh-models`` first).
+  ``--chat`` (features 25-27) checks each ``--model`` for drafting answers instead, and
+  ``--chat --record`` writes its pass for the answer prompt's hash the same way.
 * ``refresh-models``: read OpenRouter's model lists now and refresh ``model_catalog``
   (``kaagaz.jobs.catalog``, MC1), as the worker does once a day. Needs
   OPENROUTER_API_KEY. Prints counts only.
@@ -78,6 +80,11 @@
   is current. A customer that is not active is skipped and named.
   Each customer's calls are billed to it as "embed", with no user (SP1). Prints ids
   and counts only.
+* ``scan-times [--customer-id ID] [--last N]``: the last N ready runs (5), one line each,
+  ids and seconds only: upload to Ready, queued, the run to Ready, and its steps (preparing,
+  reading, Careful, card, map, checker, from the run's config), then how long after Ready
+  its vectors were made (the ``embed`` ledger row; fast scan, council 16 Oct 2026). Each
+  customer is read in its own ``db.customer()``.
 
 Why passwords are never flags: a flag lands in the shell history and the
 process list. They come from ``KAAGAZ_ADMIN_PASSWORD`` (``KAAGAZ_DEMO_PASSWORD``
@@ -99,14 +106,15 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TextIO
+from typing import Any, TextIO
 
-from sqlalchemy import Connection
+from sqlalchemy import Connection, RowMapping, text
 
 from kaagaz import verify_models
 from kaagaz.ai.client import ModelClient, ModelOutputError, ModelUnavailable, build_model_client
 from kaagaz.ai.openrouter import OpenRouterClient
 from kaagaz.ai.usage import usage_scope
+from kaagaz.answering.draft import ANSWER_PROMPT_HASH
 from kaagaz.api import totp
 from kaagaz.api.auth import ROLES, hash_password
 from kaagaz.api.twostep import box
@@ -220,12 +228,17 @@ def _parser() -> argparse.ArgumentParser:
     verify.add_argument(
         "--record", action="store_true", help="write the one --model's pass to the catalogue when it passes"
     )
+    verify.add_argument("--chat", action="store_true", help="check each --model for answering instead")
 
     commands.add_parser("refresh-models", help="refresh the model catalogue from OpenRouter now")
 
     reembed = commands.add_parser("reembed", help="embed pieces again after a model or recipe change")
     reembed.add_argument("--customer-id", help="one customer only (default: every customer)")
     reembed.add_argument("--all", action="store_true", help="embed every piece again, not only stale ones")
+
+    times = commands.add_parser("scan-times", help="how long the last documents took, step by step")
+    times.add_argument("--customer-id", help="one customer only (default: every customer)")
+    times.add_argument("--last", type=int, default=5, help="the last N ready runs (default 5)")
     return parser
 
 
@@ -505,6 +518,67 @@ def _reembed(db: Database, model: ModelClient, customer_id: str | None, every: b
         )
 
 
+def _scan_times(db: Database, customer_id: str | None, last: int, out: TextIO) -> None:
+    """The last ``last`` ready runs, newest first, each customer's read in its own
+    ``db.customer()`` (one query a customer), one line each (``scan_times_line``)."""
+    if last < 1:
+        raise CliError("--last must be at least 1")
+    if customer_id is None:
+        with db.system() as conn:
+            customers = indexing.customer_ids(conn)
+    else:
+        try:
+            uuid.UUID(customer_id)
+        except ValueError:
+            raise CliError("the customer id is not valid") from None
+        customers = [customer_id]
+    rows: list[RowMapping] = []
+    for customer in customers:
+        with db.customer(customer) as conn:
+            rows += conn.execute(_SCAN_TIMES, {"c": customer, "n": last}).mappings().all()
+    rows.sort(key=lambda row: row["finished_at"], reverse=True)
+    for row in rows[:last]:
+        out.write(scan_times_line(row) + "\n")
+
+
+# scan-times: a ready run's times; indexed_at is when its embeddings' ledger row was saved
+# (the embed usage scope ends when the last vector is written, after Ready).
+_SCAN_TIMES = text(
+    "SELECT r.document_id, d.created_at AS uploaded_at, r.started_at, r.finished_at, r.pages_ocr,"
+    " r.config, (SELECT max(u.created_at) FROM model_usage u WHERE u.customer_id = r.customer_id"
+    " AND u.document_id = r.document_id AND u.kind = 'embed' AND u.created_at >= r.finished_at)"
+    " AS indexed_at"
+    " FROM processing_runs r JOIN documents d ON d.customer_id = r.customer_id AND d.id = r.document_id"
+    " WHERE r.customer_id = :c AND r.status = 'ready' ORDER BY r.finished_at DESC LIMIT :n"
+)
+
+
+def scan_times_line(row: Mapping[Any, Any]) -> str:
+    """One run's line: ids and seconds only (fast scan, council 16 Oct 2026). Upload to
+    Ready counts from the upload (a read-again run from its first upload); careful is "inline"
+    when Careful read inside reading (the pages it read). O(1)."""
+    config = row["config"] or {}
+
+    def seconds(key: str) -> str:
+        value = config.get(key)
+        return "-" if not isinstance(value, int | float) else f"{value:.1f}"
+
+    def between(start: datetime | None, end: datetime | None) -> str:
+        return "-" if start is None or end is None else f"{(end - start).total_seconds():.1f}"
+
+    escalated = (config.get("reading") or {}).get("escalated") or []
+    careful = seconds("seconds_careful") if "seconds_careful" in config else f"inline({len(escalated)} pages)"
+    return (
+        f"document {row['document_id']} ocr_pages {row['pages_ocr']}"
+        f" upload_to_ready {between(row['uploaded_at'], row['finished_at'])}"
+        f" queued {between(row['uploaded_at'], row['started_at'])}"
+        f" run_to_ready {between(row['started_at'], row['finished_at'])}"
+        f" preparing {seconds('seconds_preparing')} reading {seconds('seconds_reading')} careful {careful}"
+        f" card {seconds('seconds_card')} map {seconds('seconds_map')} checker {seconds('seconds_checker')}"
+        f" index_after_ready {between(row['finished_at'], row['indexed_at'])}"
+    )
+
+
 def _reembed_stories(db: Database, model: ModelClient, customer: str) -> int:
     """Embed the customer's stories with no current vector, a pass at a time, each
     pass after the last one's cursor, so each story is tried once a run (one edited
@@ -559,6 +633,17 @@ def _record_verified(db: Database, model: str, tokens_in: int, tokens_out: int) 
         )
         if found:
             operators_sql.record(conn, "model.verified", target_type="model", target_id=model[:64])
+    if not found:
+        raise CliError(f"{model} is not in the model catalogue: run refresh-models first")
+
+
+def _record_chat_verified(db: Database, model: str) -> None:
+    """verify-models --chat --record (features 25-27): the model's pass for the answer
+    prompt's hash, as ``_record_verified`` (``model.chat_verified``)."""
+    with _owner(db) as conn:
+        found = operator_models_sql.record_chat_verified(conn, model, prompt_hash=ANSWER_PROMPT_HASH)
+        if found:
+            operators_sql.record(conn, "model.chat_verified", target_type="model", target_id=model[:64])
     if not found:
         raise CliError(f"{model} is not in the model catalogue: run refresh-models first")
 
@@ -780,14 +865,23 @@ def main(
             return 0
         if args.command == "verify-models":  # no database either, but --record's one row
             checked = settings or Settings.from_env(env)
-            record = None
+            record = record_chat = None
             if args.record:
                 if len(set(args.model)) != 1:
                     raise CliError("--record checks exactly one --model")
                 owner = db or Database(make_engine(checked.database_url), checked.db_app_role)
-                record = functools.partial(_record_verified, owner)
+                if args.chat:
+                    record_chat = functools.partial(_record_chat_verified, owner)
+                else:
+                    record = functools.partial(_record_verified, owner)
             return verify_models.run(
-                checked, stdout, models=args.model, embed_model=args.embed_model, record=record
+                checked,
+                stdout,
+                models=args.model,
+                embed_model=args.embed_model,
+                record=record,
+                chat=args.chat,
+                record_chat=record_chat,
             )
         if db is None:
             settings = settings or Settings.from_env(env)
@@ -808,6 +902,8 @@ def main(
             if model is None:
                 raise CliError("reembed needs the model: set MODEL_ENABLED=true")
             _reembed(db, model, args.customer_id, args.all, stdout)
+        elif args.command == "scan-times":
+            _scan_times(db, args.customer_id, args.last, stdout)
         elif args.command in CUSTOMER_STATUS:
             line = _set_customer_status(db, args.command, args.customer_id, datetime.now(UTC))
             stdout.write(line + "\n")

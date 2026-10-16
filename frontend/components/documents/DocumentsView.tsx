@@ -26,7 +26,7 @@ import { markReceived } from "@/lib/timeLeft";
 import { useSession } from "@/lib/session";
 import { usePoll } from "@/lib/usePoll";
 import type { DocumentList, DocumentSearch, DocumentSummary, Folder, Tag } from "@/lib/types";
-import { DocumentsTable } from "./DocumentsTable";
+import { DocumentsTable, listScrollKey } from "./DocumentsTable";
 import { FolderActions } from "./FolderActions";
 import { FolderNav } from "./FolderNav";
 import { buildTree, folderPath } from "./folderTree";
@@ -41,8 +41,9 @@ import {
 } from "./insideSearch";
 import type { SearchMode } from "./insideSearch";
 import { noMatchTitle } from "./library";
+import { mergeList } from "./listMerge";
 import { LibraryFilters } from "./LibraryFilters";
-import { isFiltered, libraryHref, listParams } from "./libraryQuery";
+import { includeSubfoldersHref, isFiltered, libraryHref, listParams } from "./libraryQuery";
 import type { LibraryState } from "./libraryQuery";
 import {
   ACCEPT_ATTRIBUTE,
@@ -65,6 +66,13 @@ interface Loaded {
 }
 
 const SKELETON_ROWS = [0, 1, 2, 3, 4];
+
+// Back from a document: the browser restores the scroll against the short
+// loading skeleton, so the list puts it back itself once its rows are in.
+const back = { pending: false };
+if (typeof window !== "undefined") {
+  window.addEventListener("popstate", () => (back.pending = location.pathname === "/documents"));
+}
 const DRAWER_ID = "documents-folders";
 
 const errorText = (caught: unknown) =>
@@ -78,7 +86,8 @@ export function DocumentsView({ library }: { library: LibraryState }) {
   const versionOf = useRef<DocumentSummary | null>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const viewKey = libraryHref(library);
-  const [draft, setDraft] = useState("");
+  // The search box keeps what is typed itself: a key press never re-renders the list.
+  const searchRef = useRef<HTMLInputElement>(null);
   // The page belongs to the view it was turned in: a new folder or filter starts at page 1.
   const [search, setSearch] = useState({ view: viewKey, q: "", offset: 0 });
   const q = search.q;
@@ -109,6 +118,8 @@ export function DocumentsView({ library }: { library: LibraryState }) {
   const [heardBatches, setHeardBatches] = useState(0);
   if (uploads.settled !== heardBatches) {
     setHeardBatches(uploads.settled);
+    setFoldersVersion((n) => n + 1); // a folder Kaagaz made for them (feature 28) shows in the tree
+
     if (uploads.finished) setAnnouncement(uploadsFinishedText(uploads.finished, q !== "" || filtered));
   }
 
@@ -154,7 +165,12 @@ export function DocumentsView({ library }: { library: LibraryState }) {
         return { view: viewKey, list, now: Date.now() };
       }),
     onResult: (result) => {
-      setLoaded(result);
+      // Unchanged rows keep their objects (listMerge.ts) and are memoised, so only rows
+      // whose words change render again; the new `now` keeps "x minutes ago" moving.
+      setLoaded((before) => {
+        if (before === null || before.view !== result.view) return result;
+        return { ...result, list: mergeList(before.list, result.list) };
+      });
       setFailure(null);
     },
     onFailure: (caught) => setFailure({ view: viewKey, message: errorText(caught) }),
@@ -186,6 +202,30 @@ export function DocumentsView({ library }: { library: LibraryState }) {
   // A new folder or filter shows "loading" until its own list arrives.
   const shown = loaded && loaded.view === viewKey ? loaded : null;
   const error = failure && failure.view === viewKey ? failure.message : null;
+
+  const scrollSettled = useRef(false);
+  useEffect(() => {
+    // Once, when the list first shows: a Back puts the saved place back; any other way
+    // here drops it, so an old place can't come back later.
+    if (!shown || scrollSettled.current) return;
+    scrollSettled.current = true;
+    if (!back.pending) {
+      try {
+        sessionStorage.removeItem(listScrollKey());
+      } catch {
+        // Storage blocked: nothing was kept.
+      }
+      return;
+    }
+    back.pending = false;
+    try {
+      const y = Number(sessionStorage.getItem(listScrollKey()));
+      sessionStorage.removeItem(listScrollKey());
+      if (y > 0) scrollTo(0, y);
+    } catch {
+      // Storage blocked: nothing was kept.
+    }
+  }, [shown]);
 
   const tree = useMemo(() => buildTree(folders ?? []), [folders]);
   const current = library.folderId === null ? null : (tree.byId.get(library.folderId) ?? null);
@@ -228,16 +268,17 @@ export function DocumentsView({ library }: { library: LibraryState }) {
 
   function submitSearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setSearch({ view: viewKey, q: draft.trim(), offset: 0 });
+    setSearch({ view: viewKey, q: (searchRef.current?.value ?? "").trim(), offset: 0 });
   }
 
   function clearSearch() {
-    setDraft("");
+    if (searchRef.current) searchRef.current.value = "";
     setSearch({ view: viewKey, q: "", offset: 0 });
   }
 
   function turnPage(nextOffset: number) {
     setSearch({ view: viewKey, q, offset: nextOffset });
+    headingRef.current?.focus(); // the pager's button is disabled while the page loads
   }
 
   // Moved to Trash, restored or deleted for good: the row has left this list.
@@ -279,6 +320,7 @@ export function DocumentsView({ library }: { library: LibraryState }) {
   // Nothing is uploaded into Trash, and it has no folder to change.
   const canUpload = !folderGone && !library.trash;
   const above = current ? folderPath(tree, current.folder.id).slice(0, -1) : [];
+  const withSubfolders = includeSubfoldersHref(library, current?.children.length ?? 0);
 
   const nav = (
     <FolderNav
@@ -291,6 +333,7 @@ export function DocumentsView({ library }: { library: LibraryState }) {
     />
   );
 
+  // An empty list shows this button in its empty state, and the header leaves it out.
   const uploadButton = (
     <button type="button" className="btn btn-primary" onClick={openPicker}>
       <Icon name="upload" />
@@ -298,7 +341,14 @@ export function DocumentsView({ library }: { library: LibraryState }) {
     </button>
   );
   const readerSelect = (
-    <ReaderSelect readers={uploads.limits.readers} picked={uploads.reader} onPick={uploads.chooseReader} />
+    <ReaderSelect
+      readers={uploads.limits.readers}
+      picked={uploads.reader}
+      onPick={uploads.chooseReader}
+      ensemble={uploads.limits.ensemble ?? null}
+      agents={uploads.agents}
+      onAgents={uploads.chooseAgents}
+    />
   );
 
   return (
@@ -311,7 +361,7 @@ export function DocumentsView({ library }: { library: LibraryState }) {
         {canUpload && (
           <div className={styles.uploadControls}>
             {readerSelect}
-            {uploadButton}
+            {view !== "empty" && uploadButton}
           </div>
         )}
       </header>
@@ -466,7 +516,16 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                     icon="file"
                     title={current ? "No documents in this folder yet" : "No documents yet"}
                     headingLevel={3}
-                    action={uploadButton}
+                    action={
+                      <>
+                        {uploadButton}
+                        {withSubfolders && (
+                          <Link href={withSubfolders} className="btn" scroll={false}>
+                            Include subfolders
+                          </Link>
+                        )}
+                      </>
+                    }
                   >
                     {current
                       ? "Upload files here, or move documents in with their Actions button."
@@ -479,7 +538,6 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                   limits={uploads.limits}
                   onFiles={addFiles}
                   onChoose={openPicker}
-                  readerChoice={readerSelect}
                 />
               )}
 
@@ -491,6 +549,8 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                 onClearFinished={uploads.clearFinished}
                 onRestore={(key, documentId, name) => void uploads.restore(key, documentId, name)}
                 onRetry={(key) => void uploads.retry(key)}
+                tree={tree}
+                onUndone={() => setReload((n) => n + 1)}
               />
               {!library.trash && <UploadWords entries={uploads.entries} settled={uploads.settled} />}
 
@@ -511,8 +571,8 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                             enterKeyHint="search"
                             autoComplete="off"
                             maxLength={MAX_SEARCH_LENGTH}
-                            value={draft}
-                            onChange={(event) => setDraft(event.target.value)}
+                            ref={searchRef}
+                            defaultValue={q}
                           />
                         </div>
                         <button type="submit" className="btn">
@@ -595,7 +655,7 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                   {searchKey === null && view === "no-match" && (
                     <EmptyState
                       icon="search-off"
-                      title={noMatchTitle(q, filtered)}
+                      title={noMatchTitle(q, filtered, library.attention && !isFiltered({ ...library, attention: false }))}
                       headingLevel={3}
                       action={
                         <>

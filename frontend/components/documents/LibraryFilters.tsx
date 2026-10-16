@@ -7,7 +7,8 @@
 // once, and the list follows it. In a folder with subfolders, a checkbox also
 // takes in what is inside them.
 
-import { useId, useState } from "react";
+import { useId, useRef, useState } from "react";
+import type { KeyboardEvent } from "react";
 import { typeLabel } from "@/lib/format";
 import type { Tag } from "@/lib/types";
 import { dateChipText, tagsChipText, typeChipText } from "./library";
@@ -37,6 +38,7 @@ export function LibraryFilters({
   const [open, setOpen] = useState<Panel | null>(null);
   const id = useId();
   const panelId = `${id}-panel`;
+  const rowRef = useRef<HTMLDivElement>(null);
   const filtered = isFiltered(library);
   const tagNames = library.tagIds.map((tagId) =>
     tags === null ? "…" : (tags.find((tag) => tag.id === tagId)?.name ?? "a tag no longer there"),
@@ -62,14 +64,21 @@ export function LibraryFilters({
     onChange({ ...library, tagIds });
   }
 
+  // Esc in an open panel closes it and goes back to the chip that opened it.
+  function closeOnEscape(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key !== "Escape" || open === null) return;
+    rowRef.current?.querySelector<HTMLElement>('[aria-expanded="true"]')?.focus();
+    setOpen(null);
+  }
+
   function clear() {
     setOpen(null);
     onChange({ ...library, tagIds: [], type: null, from: null, to: null, attention: false });
   }
 
   return (
-    <div className={styles.filters}>
-      <div className={styles.filterRow} role="group" aria-label="Filters">
+    <div className={styles.filters} onKeyDown={closeOnEscape}>
+      <div ref={rowRef} className={styles.filterRow} role="group" aria-label="Filters">
         {chip("tags", tagsChipText(tagNames), library.tagIds.length > 0)}
         {chip("type", typeChipText(library.type), library.type !== null)}
         {chip("date", dateChipText(library.from, library.to), library.from !== null || library.to !== null)}

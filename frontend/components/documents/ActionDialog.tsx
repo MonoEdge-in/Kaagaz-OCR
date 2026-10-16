@@ -4,15 +4,16 @@
 // It is a native <dialog> opened with showModal(), so the browser gives the
 // top layer, a focus trap, Esc to close and an inert page behind it. It shows
 // only while mounted: the caller renders it to open it and removes it to close
-// it. It focuses the field marked data-autofocus, closes on a backdrop click
-// (the same rule as the Drawer), and calls onClosed once it is shut, when the
-// page can take focus again. canClose, when given, can refuse a way of closing
+// it. It focuses the field marked data-autofocus (else its first field), closes
+// on a backdrop click (the same rule as the Drawer), and calls onClosed once it
+// is shut, when the page can take focus again; if onClosed places focus nowhere,
+// it goes back to whatever opened the dialog. canClose, when given, can refuse a way of closing
 // (the Close button, Esc, a backdrop click), e.g. while a request runs; without
 // it every way closes, as before.
 
 import { useEffect, useEffectEvent, useId, useRef } from "react";
 import type { ReactNode } from "react";
-import { isBackdropClick } from "@/components/ui/drawerLogic";
+import { isBackdropClick, shouldReturnFocus } from "@/components/ui/drawerLogic";
 import { IconButton } from "@/components/ui/IconButton";
 import styles from "./ActionDialog.module.css";
 
@@ -35,11 +36,13 @@ export function ActionDialog({ title, onClose, onClosed, canClose = () => true, 
   useEffect(() => {
     const dialog = dialogRef.current;
     if (!dialog) return;
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     if (!dialog.open) dialog.showModal();
-    dialog.querySelector<HTMLElement>("[data-autofocus]")?.focus();
+    (dialog.querySelector<HTMLElement>("[data-autofocus]") ?? dialog.querySelector<HTMLElement>("input, select, textarea"))?.focus();
     return () => {
       if (dialog.open) dialog.close();
       afterClose();
+      if (opener?.isConnected && shouldReturnFocus(document.activeElement, document.body, dialog)) opener.focus();
     };
   }, []);
 

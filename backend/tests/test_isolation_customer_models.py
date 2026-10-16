@@ -12,14 +12,18 @@ switching a model on or off takes a fresh code; and their rows carry no user and
 document (the signatures are pinned in test_isolation_schema).
 """
 
+import itertools
 import uuid
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
 import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
+from kaagaz.answering.draft import ANSWER_PROMPT_HASH
+from kaagaz.db import operator_models as ops
 from kaagaz.db.engine import Database, OperatorDatabase
 from kaagaz.db.models import resolve, usable_models
 from tests.db_support import insert_document, new_customer, violation
@@ -29,24 +33,22 @@ from tests.test_migration_0023_db import PROMPT, add_usage, allow, as_owner, cat
 pytestmark = pytest.mark.db
 
 SETTINGS = make_settings()
-_SET_ORG = text(
-    "SELECT outcome, CAST(result_id AS text) FROM kaagaz_op_set_org_models("
-    "CAST(:o AS uuid), CAST(:c AS uuid), CAST(:m AS text[]), CAST(:d AS text), CAST(:b AS numeric),"
-    " CAST(:p AS text))"
-)
+# Changed on purpose (features 25-27, 15 Oct 2026): 0026 replaced kaagaz_op_org_models and
+# kaagaz_op_set_org_models by kaagaz_op_org_ai and kaagaz_op_set_org_ai (a fresh code on
+# every save, scan and answer models), and kaagaz_op_set_model_enabled takes the answer
+# prompt hash too. These tests keep their rules on the new functions; what is new is in
+# test_isolation_ai_settings.
 _SET_ENABLED = text(
     "SELECT kaagaz_op_set_model_enabled(CAST(:o AS uuid), CAST(:m AS text), CAST(:on AS boolean),"
-    " CAST(:p AS text), CAST(:s AS bigint))"
+    " CAST(:p AS text), CAST(:h AS text), CAST(:s AS bigint))"
 )
-_ORG = text("SELECT * FROM kaagaz_op_org_models(CAST(:o AS uuid), CAST(:c AS uuid))")
+_ORG = text("SELECT * FROM kaagaz_op_org_ai(CAST(:o AS uuid), CAST(:c AS uuid))")
 _CATALOG = text("SELECT * FROM kaagaz_op_models(CAST(:o AS uuid))")
 _USAGE = text("SELECT * FROM kaagaz_op_usage(CAST(:o AS uuid), :start, :end)")
+_STEPS = itertools.count(1_000)  # each new operator has no step yet, so any rising step is fresh
 OP_CALLS = (
     "SELECT * FROM kaagaz_op_models(gen_random_uuid())",
-    "SELECT kaagaz_op_set_model_enabled(gen_random_uuid(), 'a/b', true, 'g2', 1)",
-    "SELECT * FROM kaagaz_op_org_models(gen_random_uuid(), gen_random_uuid())",
-    "SELECT * FROM kaagaz_op_set_org_models(gen_random_uuid(), gen_random_uuid(), ARRAY['a/b'], 'a/b', 1,"
-    " 'g2')",
+    "SELECT kaagaz_op_set_model_enabled(gen_random_uuid(), 'a/b', true, 'g2', NULL, 1)",
     "SELECT * FROM kaagaz_op_usage(gen_random_uuid(), now() - interval '1 day', now())",
 )
 USAGE_COLUMNS = [
@@ -75,15 +77,25 @@ def _set_org(
     default: str | None,
     budget: float | None = None,
 ) -> tuple[str, str | None]:
-    params = {"o": operator, "c": customer, "m": models, "d": default, "b": budget, "p": PROMPT}
+    """The organisation's scan models, default and budget (kaagaz_op_set_org_ai, a fresh code)."""
     with _operator(db).operator() as conn:
-        outcome, result = conn.execute(_SET_ORG, params).one()
-    return str(outcome), result
+        outcome = ops.set_org_ai(
+            conn,
+            operator,
+            customer,
+            ops.AiChoice(models, default),
+            ensemble=False,
+            budget=None if budget is None else Decimal(str(budget)),
+            scan_prompt=PROMPT,
+            chat_prompt=ANSWER_PROMPT_HASH,
+            step=next(_STEPS),
+        )
+    return outcome.code, outcome.result_id
 
 
 def _set_enabled(db: Database, operator: str, model: str, on: bool | None, step: int | None) -> str:
     with _operator(db).operator() as conn:
-        params = {"o": operator, "m": model, "on": on, "p": PROMPT, "s": step}
+        params = {"o": operator, "m": model, "on": on, "p": PROMPT, "h": ANSWER_PROMPT_HASH, "s": step}
         return str(conn.execute(_SET_ENABLED, params).scalar_one())
 
 
@@ -229,35 +241,43 @@ def test_an_organisations_models_and_budget_are_replaced_and_audited_in_both_log
     assert _allowed(db, customer) == sorted([(good, True), (other, False)])
     with _operator(db).operator() as conn:
         org = conn.execute(_ORG, {"o": operator, "c": customer}).mappings().one()
-    assert (sorted(org["models"]), org["default_scan"], float(org["ai_budget_usd"])) == (
+    assert (sorted(org["scan_models"]), org["scan_default"], float(org["ai_budget_usd"])) == (
         sorted([good, other]),
         good,
         12.5,
     )
+    # Changed on purpose (features 25-27, 15 Oct 2026): the action is org.ai_settings_set, and
+    # the organisation's own log holds no budget (D1); the operator's log holds it.
     logged = as_owner(
         db,
         "SELECT actor_user_id, target_id, details FROM audit_log"
-        " WHERE customer_id = :c AND action = 'org.models_set'",
+        " WHERE customer_id = :c AND action = 'org.ai_settings_set'",
         {"c": customer},
     )
-    assert logged == [
-        (
-            None,
-            customer,
-            {"by": "operator", "models": sorted([good, other]), "default": good, "budget_usd": 12.5},
-        )
-    ]
-    platform = "SELECT operator_id, action, target_type, target_id FROM platform_audit"
+    details = {
+        "by": "operator",
+        "scan_models": sorted([good, other]),
+        "scan_default": good,
+        "chat_models": [],
+        "chat_default": None,
+        "scan_thinking": None,
+        "chat_levels": None,
+        "chat_default_level": None,
+        "dynamic": None,
+        "ensemble": False,
+    }
+    assert logged == [(None, customer, details)]
+    platform = "SELECT operator_id, action, target_type, target_id, details FROM platform_audit"
     platform += " WHERE subject_customer_id = :c"
     assert as_owner(db, platform, {"c": customer}) == [
-        (uuid.UUID(operator), "org.models_set", "customer", customer)
+        (uuid.UUID(operator), "org.ai_settings_set", "customer", customer, {**details, "budget_usd": 12.5})
     ]
 
     assert _set_org(db, operator, customer, [], None) == ("done", customer)  # back to OCR_MODEL, no budget
     assert _allowed(db, customer) == []
     with _operator(db).operator() as conn:
         cleared = conn.execute(_ORG, {"o": operator, "c": customer}).mappings().one()
-    assert (cleared["models"], cleared["default_scan"], cleared["ai_budget_usd"]) == ([], None, None)
+    assert (cleared["scan_models"], cleared["scan_default"], cleared["ai_budget_usd"]) == ([], None, None)
 
     with pytest.raises(DBAPIError) as refused:
         _set_org(db, operator, customer, [good], good, 0)

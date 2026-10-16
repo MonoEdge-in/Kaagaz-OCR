@@ -28,7 +28,7 @@
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
-  min-height: 24px;
+  min-height: var(--control-h);
 }
 
 .title,
@@ -65,11 +65,11 @@
 }
 
 .scroll {
-  max-height: min(40vh, 24rem);
+  position: relative;
+  max-height: min(40dvh, 24rem);
   overflow: auto;
   border: 1px solid var(--border);
   border-radius: var(--r-sm);
-  overscroll-behavior: contain;
 }
 
 .lines {
@@ -96,7 +96,7 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
-  width: 100%;
+  flex: 1 1 12rem;
   min-height: 24px;
   padding: var(--space-1) var(--space-2);
   border: none;
@@ -105,6 +105,12 @@
   font-size: var(--fs-base);
   text-align: start;
   cursor: pointer;
+}
+
+/* Inside the scrolling list: the ring drawn inside, so the list never cuts it. */
+.lineButton:focus-visible,
+.addMeaning:focus-visible {
+  outline-offset: -2px;
 }
 
 .lineButton:hover {
@@ -117,6 +123,7 @@
 
 .lineRow {
   display: flex;
+  flex-wrap: wrap;
   align-items: stretch;
 }
 
@@ -139,7 +146,7 @@
 }
 
 .read summary {
-  min-height: 24px;
+  min-height: var(--control-h);
   color: var(--fg-muted);
   cursor: pointer;
 }

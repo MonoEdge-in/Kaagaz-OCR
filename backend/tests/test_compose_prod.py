@@ -150,6 +150,8 @@ def test_the_caddyfile_sends_api_unchanged_to_the_api_and_the_rest_to_the_fronte
         "request_body {",
         "max_size 60MB",
         "}",
+        # Changed on purpose (final polish, 16 Oct 2026): HSTS on the HTTPS site (security checklist).
+        'header Strict-Transport-Security "max-age=31536000"',
         # handle, not handle_path: the API's routes are mounted under /api (kaagaz/api/app.py).
         "handle /api/* {",
         "reverse_proxy api:8000",

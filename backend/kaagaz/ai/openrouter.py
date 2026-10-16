@@ -5,8 +5,9 @@ decision of 8 October 2026 (council ``2026-10-08-prd5-openrouter.md``). ``OpenRo
 implements ``ModelClient`` (``chat_json`` and ``embed``), and adds ``read_page`` for the
 Gemini reader (G1, G2, G3). ``read_page`` reads with the model and provider its caller
 names (the document's, ``kaagaz.db.models.resolve``; model choice, council 11 Oct 2026),
-or OCR_MODEL; ``MODEL_CHAT`` answers ``chat_json`` and ``MODEL_EMBED`` embeds. No code
-here picks or switches a model.
+or OCR_MODEL; ``MODEL_CHAT`` answers ``chat_json`` unless its caller names the answer's
+chosen model (``kaagaz.db.models.resolve_chat``, features 25-27) and ``MODEL_EMBED`` embeds.
+No code here picks or switches a model.
 
 **The key is a secret.** It goes in the ``Authorization: Bearer`` header only, added with
 ``add_unredirected_header`` so it is never copied onto a redirect, and redirects are
@@ -24,8 +25,9 @@ code only, raised ``from None``.
 another provider, every parameter honoured, no data collection, zero data retention. A page
 read may name another provider (model choice, council 11 Oct 2026): ``provider(slug)`` is
 the same block with ``only`` that one slug, and the client refuses a slug outside
-OPENROUTER_PROVIDERS (``ProviderNotAllowed``): a page read's, and DEFAULT_PROVIDER for
-``chat_json`` and ``embed`` (the settings require it; checked again here).
+OPENROUTER_PROVIDERS (``ProviderNotAllowed``): a page read's or an answer draft's, and
+DEFAULT_PROVIDER for any other ``chat_json`` and ``embed`` (the settings require it;
+checked again here).
 
 **The request** (``POST /chat/completions``, ``stream: false``, G2). A system prompt is
 ``messages[0]`` with role system. A picture is a user message whose content is the
@@ -95,14 +97,17 @@ thread-safe: pages of a document are read in parallel (G8).
 
 The gate's clock, sleep and random number are injected, so tests run with a fake clock.
 The clock is ``time.monotonic`` by default, and ``read_page``'s deadline is an absolute
-time on it (``now()`` gives the current one).
+time on it (``now()`` gives the current one). ``LIMITER_WAIT`` (ask precision PR 1a, D):
+while a caller holds a one-item list in it, every limiter sleep adds its seconds there
+(threads started with ``copy_context`` add to the same list); it changes nothing else.
 
 Cost: one ``read_page`` is one request (two with a repair), plus retries inside its
-deadline; ``embed`` makes ceil(n / 32) requests for n texts. Checking a reply is O(its
-size).
+deadline; ``embed`` makes n requests for n texts, EMBED_FAN_OUT at once through the one
+limiter (fast scan, council 16 Oct 2026). Checking a reply is O(its size).
 """
 
 import base64
+import contextvars
 import copy
 import email.utils
 import json
@@ -116,6 +121,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.message import Message
@@ -136,6 +142,10 @@ from kaagaz.settings import (
 )
 
 API_KEY_HEADER = "Authorization"
+# The limiter's waits in seconds, for the answer timing log (the module docstring).
+LIMITER_WAIT: contextvars.ContextVar[list[float] | None] = contextvars.ContextVar(
+    "limiter_wait", default=None
+)
 CHAT_PATH = "/chat/completions"
 EMBEDDINGS_PATH = "/embeddings"
 KEY_PATH = "/key"
@@ -163,6 +173,9 @@ EMBED_PROVIDER: Mapping[str, Any] = {**PROVIDER, "require_parameters": False}
 # ponytail: one call per piece; raise MODEL_RPM for indexing speed, or batch again if Vertex
 # ever serves batches.
 EMBED_TEXTS_PER_REQUEST = 1
+# Fast scan (council 16 Oct 2026): at most this many embedding requests at once, through the
+# one limiter (never a gate of its own: OpenRouter's limit is the key's).
+EMBED_FAN_OUT = 8
 
 # Structured output (G3): response_format json_schema with strict set to this. Whether
 # Google honours strict through OpenRouter is checked by verify-models (strict_schema).
@@ -176,12 +189,17 @@ SCHEMA_NAME = "page"
 PAGE_MAX_OUTPUT_TOKENS = 32768
 # chat_json thinks at this effort: the card, the invoice windows, answers
 # and the follow-up rewrite want a short exact reply. gemini-3.1-pro-preview has no
-# "minimal" level (Google's thinking page), so "low" is the least it accepts.
+# "minimal" level (Google's thinking page), so "low" is the least it accepts. An answer's
+# draft may think at the level its asker chose (features 25-27, C7).
 CHAT_THINKING_LEVEL = "low"
-# A chat_json call with a reply budget asks for the budget plus this much room to think;
-# the reply itself (completion_tokens less reasoning_tokens) is then held to the caller's
-# budget.
-CHAT_THINKING_TOKENS = 8192
+# A chat_json call with a reply budget asks for the budget plus this much room to think, by
+# thinking level; the reply itself (completion_tokens less reasoning_tokens) is then held to
+# the caller's budget.
+CHAT_THINKING_TOKENS = {"low": 8192, "medium": 16384, "high": 32768}
+# The vendor whose models honour a schema's maxLength (Google's); response_format leaves it
+# out for every other vendor's model, whose structured output may refuse it (features 25-27,
+# C7). The answer's sentences are capped after the reply anyway (draft._parse).
+MAX_LENGTH_VENDOR = "google"
 
 # Backoff (G6): attempt n waits a random time up to min(BACKOFF_MAX_SECONDS,
 # BACKOFF_BASE_SECONDS * 2**n) ("full jitter"), or the server's Retry-After if longer.
@@ -329,12 +347,29 @@ def reasoning(name: str) -> dict[str, Any]:
     return {"effort": name, "exclude": True}
 
 
-def response_format(schema: Mapping[str, Any], *, strict: bool = STRICT_SCHEMA) -> dict[str, Any]:
-    """The ``response_format`` asking for JSON that follows ``schema`` (G3)."""
+def response_format(
+    schema: Mapping[str, Any], *, strict: bool = STRICT_SCHEMA, max_length: bool = True
+) -> dict[str, Any]:
+    """The ``response_format`` asking for JSON that follows ``schema`` (G3), sent with no
+    ``maxItems``: Google Vertex refuses the document card's schema with it (400
+    INVALID_ARGUMENT, live 11 Oct 2026) and takes it without. Every caller caps its own
+    lists after the reply (card ``_capped``, invoice lines, memory, answer sentences).
+    ``max_length`` False leaves every ``maxLength`` out too (a model not of
+    MAX_LENGTH_VENDOR)."""
+    left_out = {"maxItems"} if max_length else {"maxItems", "maxLength"}
     return {
         "type": "json_schema",
-        "json_schema": {"name": SCHEMA_NAME, "strict": strict, "schema": dict(schema)},
+        "json_schema": {"name": SCHEMA_NAME, "strict": strict, "schema": _without(schema, left_out)},
     }
+
+
+def _without(schema: Any, keys: set[str]) -> Any:
+    """``schema`` with every one of ``keys`` left out, at any depth; nothing else changes."""
+    if isinstance(schema, Mapping):
+        return {key: _without(value, keys) for key, value in schema.items() if key not in keys}
+    if isinstance(schema, list):
+        return [_without(value, keys) for value in schema]
+    return schema
 
 
 def image_content(png: bytes, instruction: str, media_resolution: str | None) -> list[dict[str, Any]]:
@@ -368,7 +403,8 @@ def chat_request(
     if max_output_tokens is not None:
         body["max_completion_tokens"] = max_output_tokens
     if schema is not None:
-        body["response_format"] = response_format(schema, strict=strict)
+        google = model.split("/", 1)[0] == MAX_LENGTH_VENDOR
+        body["response_format"] = response_format(schema, strict=strict, max_length=google)
     return body
 
 
@@ -552,6 +588,28 @@ def _error_codes(error: urllib.error.HTTPError) -> _ErrorCodes:
         _code(metadata.get("provider_name")),
         isinstance(reasons, list) and bool(reasons),
     )
+
+
+# The most one read of a reply body asks for.
+_READ_CHUNK_BYTES = 64 * 1024
+
+
+def _read_until(response: Any, ends: float, limit: int) -> bytes | None:
+    """The body, at most ``limit`` bytes, or None once ``ends`` (on time.monotonic) has passed.
+    The socket timeout only bounds each read, so a reply that keeps trickling in (whitespace
+    sent while a model thinks) would otherwise outlast the deadline without end (stuck
+    reading, 16 Oct 2026). O(body)."""
+    chunks: list[bytes] = []
+    size = 0
+    while size < limit:
+        if time.monotonic() >= ends:
+            return None
+        chunk = response.read1(min(_READ_CHUNK_BYTES, limit - size))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        size += len(chunk)
+    return b"".join(chunks)
 
 
 @dataclass(slots=True)
@@ -797,50 +855,83 @@ class OpenRouterClient:
         halfvec(1024) does not change). /embeddings, ``EMBED_TEXTS_PER_REQUEST`` texts a
         request."""
         self._check_provider(DEFAULT_PROVIDER)
-        vectors: list[list[float]] = []
-        for start in range(0, len(texts), EMBED_TEXTS_PER_REQUEST):
-            batch = texts[start : start + EMBED_TEXTS_PER_REQUEST]
-            body = {
-                "model": self.embed_model,
-                "input": batch,
-                "dimensions": self._dim,
-                "encoding_format": "float",
-                "provider": provider(embeddings=True),
-            }
-            reply = self._call(EMBEDDINGS_PATH, body, self.now() + self._timeout)
-            data = reply.get("data")
-            if not isinstance(data, list):
-                raise ModelUnavailable("bad_response")
-            vectors.extend(self._in_order(data, len(batch)))
-        return vectors
+        step = EMBED_TEXTS_PER_REQUEST
+        batches = [texts[start : start + step] for start in range(0, len(texts), step)]
+        if not batches:
+            return []
+        # Fast scan (council 16 Oct 2026): the requests at the same time, EMBED_FAN_OUT at
+        # most, each through the one gate (its limiter still spaces their starts) in its own
+        # copy of the context (billing, SP1); the vectors stay in the texts' order, and the
+        # first failure in that order is raised.
+        with ThreadPoolExecutor(min(EMBED_FAN_OUT, len(batches))) as pool:
+            futures = [
+                pool.submit(contextvars.copy_context().run, self._embed_batch, batch) for batch in batches
+            ]
+        return [vector for future in futures for vector in future.result()]
+
+    def _embed_batch(self, batch: list[str]) -> list[list[float]]:
+        body = {
+            "model": self.embed_model,
+            "input": batch,
+            "dimensions": self._dim,
+            "encoding_format": "float",
+            "provider": provider(embeddings=True),
+        }
+        reply = self._call(EMBEDDINGS_PATH, body, self.now() + self._timeout)
+        data = reply.get("data")
+        if not isinstance(data, list):
+            raise ModelUnavailable("bad_response")
+        return self._in_order(data, len(batch))
 
     def chat_json(
-        self, *, system: str, user: str, schema: dict[str, Any], max_tokens: int | None = None
+        self,
+        *,
+        system: str,
+        user: str,
+        schema: dict[str, Any],
+        max_tokens: int | None = None,
+        model: str | None = None,
+        thinking: str | None = None,
+        provider: str | None = None,
+        deadline: float | None = None,
     ) -> dict[str, Any]:
-        """One JSON object following ``schema``, from MODEL_CHAT. A first reply that does not
-        follow it goes back once for a repair; a second bad one raises ``invalid_output``. A
-        reply longer than ``max_tokens`` (thinking not counted) raises ``output_truncated``
-        with no repair."""
-        self._check_provider(DEFAULT_PROVIDER)
+        """One JSON object following ``schema``, from ``model`` at ``thinking`` through
+        ``provider`` (None: MODEL_CHAT, CHAT_THINKING_LEVEL, DEFAULT_PROVIDER; features
+        25-27, C7), with CHAT_THINKING_TOKENS of the level to think in. A provider outside
+        OPENROUTER_PROVIDERS raises ``ProviderNotAllowed`` before anything is sent. A first
+        reply that does not follow it goes back once for a repair; a second bad one raises
+        ``invalid_output``. A reply longer than ``max_tokens`` (thinking not counted) raises
+        ``output_truncated`` with no repair. ``deadline`` (on ``time.monotonic()``): both
+        tries end by then (``timeout`` once it has passed); None, each has the chat
+        timeout."""
+        if model is not None and not valid_model_id(model):
+            raise ValueError("a model ID must be an OpenRouter author/slug with no :variant")
+        slug = DEFAULT_PROVIDER if provider is None else provider
+        self._check_provider(slug)
+        level = CHAT_THINKING_LEVEL if thinking is None else thinking
+        if level not in CHAT_THINKING_TOKENS:
+            raise ValueError("unknown thinking level")
+        ends = None if deadline is None else self.now() + (deadline - time.monotonic())
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ]
         output_limit = self._default_chat_tokens if max_tokens is None else max_tokens
         body = chat_request(
-            model=self.chat_model,
+            model=self.chat_model if model is None else model,
             messages=messages,
-            thinking=CHAT_THINKING_LEVEL,
+            thinking=level,
             schema=schema,
-            max_output_tokens=output_limit + CHAT_THINKING_TOKENS,
+            max_output_tokens=output_limit + CHAT_THINKING_TOKENS[level],
+            provider_slug=slug,
         )
-        content, spent = self._chat_reply(body, output_limit, (0, 0))
+        content, spent = self._chat_reply(body, output_limit, (0, 0), ends)
         value, problem = parse_reply(content, schema)
         if value is not None:
             return value
         messages.append({"role": "assistant", "content": content})
         messages.append({"role": "user", "content": REPAIR.format(problem=problem)})
-        content, spent = self._chat_reply(body, output_limit, spent)
+        content, spent = self._chat_reply(body, output_limit, spent, ends)
         value, _ = parse_reply(content, schema)
         if value is None:
             raise ModelOutputError("invalid_output", input_tokens=spent[0], output_tokens=spent[1])
@@ -927,11 +1018,12 @@ class OpenRouterClient:
     # Internals.
 
     def _chat_reply(
-        self, body: dict[str, Any], max_tokens: int | None, before: tuple[int, int]
+        self, body: dict[str, Any], max_tokens: int | None, before: tuple[int, int], deadline: float | None
     ) -> tuple[str, tuple[int, int]]:
-        """(the reply's text, the tokens billed so far: ``before`` plus this reply's). Its
+        """(the reply's text, the tokens billed so far: ``before`` plus this reply's), by
+        ``deadline`` on ``now()`` (None: the chat timeout from now). Its
         ``ModelOutputError`` carries the same tokens."""
-        reply = self._call(CHAT_PATH, body, self.now() + self._chat_timeout)
+        reply = self._call(CHAT_PATH, body, self.now() + self._chat_timeout if deadline is None else deadline)
         text, _ = _billed_text(reply, before)
         input_tokens, output_tokens = reply_usage(reply)
         spent = (before[0] + input_tokens, before[1] + output_tokens)
@@ -973,8 +1065,12 @@ class OpenRouterClient:
         while True:
             gate.admit(model)
             start = gate.take_slot(deadline, model)
-            if start > gate.clock():
-                gate.sleep(start - gate.clock())
+            ahead = start - gate.clock()
+            if ahead > 0:
+                gate.sleep(ahead)
+                waited = LIMITER_WAIT.get()
+                if waited is not None:
+                    waited[0] += ahead
             remaining = deadline - gate.clock()
             if remaining <= 0:
                 gate.release_probe(model)
@@ -1056,9 +1152,12 @@ class OpenRouterClient:
             request = urllib.request.Request(f"http://{self._host_path}{path}", data, headers, method=method)
         if send_key:
             request.add_unredirected_header(API_KEY_HEADER, "Bearer " + self._key)
+        ends = time.monotonic() + timeout
         try:
             with self._opener.open(request, timeout=timeout) as response:
-                raw = response.read(replies.MAX_RESPONSE_BYTES + 1)
+                raw = _read_until(response, ends, replies.MAX_RESPONSE_BYTES + 1)
+                if raw is None:
+                    return _Reply(0, None, None, "timeout")
                 status, reply_headers = response.status, response.headers
         except urllib.error.HTTPError as error:
             return _Reply(error.code, error.headers, None, codes=_error_codes(error))

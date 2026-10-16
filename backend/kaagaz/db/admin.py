@@ -6,6 +6,11 @@ policy lets a customer see and change only its own row.
 
 ``max_upload_mb`` NULL means the platform limit applies.
 
+Auto-filing (feature 28, 0025): the admin may switch ``autofile_on`` only while the
+platform operator granted it (``autofile_granted``, which the app can't write). The UPDATE
+says so itself, so a switch-on without the grant changes no row; the CHECK
+``customers_autofile_check`` refuses it as well.
+
 The numbers count each family once, by its current version, and leave out
 Trash (``LISTED``, kaagaz/db/visibility.py); values waiting for review are
 counted as the review queue shows them (``LIVE_CURRENT``). Older versions and
@@ -21,7 +26,10 @@ from sqlalchemy import Connection, RowMapping, text
 
 def get_settings(conn: Connection, customer_id: str) -> RowMapping | None:
     return (
-        conn.execute(text("SELECT name, max_upload_mb FROM customers WHERE id = :c"), {"c": customer_id})
+        conn.execute(
+            text("SELECT name, max_upload_mb, autofile_granted, autofile_on FROM customers WHERE id = :c"),
+            {"c": customer_id},
+        )
         .mappings()
         .first()
     )
@@ -30,11 +38,28 @@ def get_settings(conn: Connection, customer_id: str) -> RowMapping | None:
 def update_settings(conn: Connection, customer_id: str, *, max_upload_mb: int | None) -> RowMapping | None:
     return (
         conn.execute(
-            text("UPDATE customers SET max_upload_mb = :mb WHERE id = :c RETURNING name, max_upload_mb"),
+            text(
+                "UPDATE customers SET max_upload_mb = :mb WHERE id = :c"
+                " RETURNING name, max_upload_mb, autofile_granted, autofile_on"
+            ),
             {"c": customer_id, "mb": max_upload_mb},
         )
         .mappings()
         .first()
+    )
+
+
+def set_autofile(conn: Connection, customer_id: str, *, on: bool) -> bool:
+    """Switch auto-filing on or off. False, and nothing changed: on without the grant. O(1)."""
+    return (
+        conn.execute(
+            text(
+                "UPDATE customers SET autofile_on = :on WHERE id = :c AND (autofile_granted OR NOT :on)"
+                " RETURNING id"
+            ),
+            {"c": customer_id, "on": on},
+        ).first()
+        is not None
     )
 
 

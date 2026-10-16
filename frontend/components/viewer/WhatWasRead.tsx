@@ -6,8 +6,8 @@
 import Link from "next/link";
 import { pageLink } from "@/lib/regions";
 import type { ExtractedValue, PageSummary } from "@/lib/types";
-import { fieldText, reasonText } from "./labels";
-import { CONFIDENCE_NOTE, confidenceText, routeOrigin, visibleText } from "./scanned";
+import { fieldText, reasonText, voteText } from "./labels";
+import { CONFIDENCE_NOTE, confidenceText, notSure, routeOrigin, visibleText } from "./scanned";
 import styles from "./ScannedText.module.css";
 
 export function WhatWasRead({ value, page }: { value: ExtractedValue; page: PageSummary | undefined }) {
@@ -49,7 +49,7 @@ export function WhatWasRead({ value, page }: { value: ExtractedValue; page: Page
             <dt>Confidence</dt>
             <dd>
               {confidence}
-              <span className={styles.muted}>{CONFIDENCE_NOTE}</span>
+              {notSure(value.confidence) && <span className={styles.muted}>{CONFIDENCE_NOTE}</span>}
             </dd>
           </div>
         )}
@@ -57,6 +57,16 @@ export function WhatWasRead({ value, page }: { value: ExtractedValue; page: Page
           <div>
             <dt>Why it needs review</dt>
             <dd>{reasonText(value.label_reason)}</dd>
+          </div>
+        )}
+        {value.votes && (
+          <div>
+            <dt>Readers</dt>
+            <dd>
+              <bdi dir="auto" className="readText">
+                {visibleText(voteText(value.votes))}
+              </bdi>
+            </dd>
           </div>
         )}
       </dl>

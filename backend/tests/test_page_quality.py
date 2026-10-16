@@ -1,5 +1,6 @@
 """The page reading result's codes and the sentences the user sees (PRD 5 F1, F2, G3)."""
 
+import re
 from collections.abc import MutableMapping
 from typing import cast
 
@@ -13,8 +14,9 @@ F1_TABLE = [
     ("blurry", "This page is blurry.", "Scan it again, or hold the phone still in good light."),
     (
         "low_resolution",
-        "This page was scanned at 96 DPI, so small letters may be misread.",
-        "Scan at 300 DPI.",
+        # Changed on purpose (UI quality council, 15 Oct 2026): no DPI on user screens.
+        "This page was scanned at low quality, so small letters may be misread.",
+        "Scan it again at a higher quality setting, or take the photo closer.",
     ),
     ("faint", "The text is faint.", "Scan darker, or photocopy the original first."),
     (
@@ -46,7 +48,8 @@ F1_TABLE = [
     ("illegible_words", "12 words couldn't be read.", "Read this page again, or upload a better scan."),
     ("readers_disagree", "Two readers read 3 values differently.", "Confirm the marked values."),
     ("unpinned", "The exact spot of 4 lines couldn't be confirmed.", "Confirm the marked values."),
-    ("reader_refused", "The reader declined this page.", "Read again, or upload a better scan."),
+    # Changed on purpose (UI quality council, 15 Oct 2026): plain words, not "declined".
+    ("reader_refused", "This page couldn't be read.", "Read it again, or upload a better scan."),
     (
         "read_locally",
         "Read by the backup reader while the main reader was down. It will be read again automatically.",
@@ -65,7 +68,7 @@ def test_the_issue_codes_are_the_f1_tables_and_nothing_else() -> None:
 
 @pytest.mark.parametrize(("code", "text", "suggested"), F1_TABLE)
 def test_each_issue_says_the_prds_sentence_and_fix(code: str, text: str, suggested: str) -> None:
-    assert says(code, count=EXAMPLE_NUMBERS.get(code), dpi=96) == text
+    assert says(code, count=EXAMPLE_NUMBERS.get(code)) == text
     assert fix(code) == suggested
 
 
@@ -80,9 +83,15 @@ def test_a_sentence_is_never_shown_with_a_made_up_number() -> None:
         for count in (None, -1):
             with pytest.raises(ValueError, match=code):
                 says(code, count=count)
-    for dpi in (None, 0):
-        with pytest.raises(ValueError, match="low_resolution"):
-            says("low_resolution", dpi=dpi)
+
+
+def test_no_sentence_or_fix_names_a_dpi_a_model_or_a_code() -> None:
+    """UI quality council, 15 Oct 2026: technical words stay off user screens."""
+    technical = re.compile(r"\bDPI\b|\d+\s?%|gemini|claude|openrouter|\bOCR\b|\bmodel\b|\([a-z_]+\)", re.I)
+    for code, issue in ISSUES.items():
+        said = says(code, count=EXAMPLE_NUMBERS.get(code))
+        assert not technical.search(said), said
+        assert not technical.search(issue.fix), issue.fix
 
 
 def test_an_unknown_code_is_refused() -> None:

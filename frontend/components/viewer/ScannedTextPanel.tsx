@@ -4,10 +4,13 @@
 // Mounted only while open (no fetch before); a late reply for another page is
 // dropped (key + cancelled). Plain React text, never sent to the model. Each
 // line can also get a meaning in My words ("Add meaning", ViewerWords.tsx).
+// Ensemble (feature 27): under a main reader's line that holds a voted value, the
+// readers' vote in plain words ("2 of 3 readers read …", voteText).
 
 import { useEffect, useState } from "react";
 import { ApiError, getPageReadings } from "@/lib/api";
-import type { PageReadings, PageSummary, Region } from "@/lib/types";
+import type { ExtractedValue, PageReadings, PageSummary, Region } from "@/lib/types";
+import { voteText } from "./labels";
 import type { Spot } from "./panels";
 import {
   CHECKER,
@@ -15,9 +18,9 @@ import {
   FIRST_LINES,
   confidenceText,
   emptyState,
-  hasScore,
   lineMarked,
   MAIN_READER,
+  notSure,
   plural,
   readerHeading,
   secondReaderNote,
@@ -33,6 +36,7 @@ export const SCANNED_PANEL_ID = "scanned-text";
 export interface ScannedTextPanelProps {
   documentId: string;
   page: PageSummary;
+  voted?: ExtractedValue[]; // this page's values the readers voted on (Ensemble)
   active: Region | null; // the spot highlighted now
   cited: Region | null; // the cited spot a "See scanned text" link carried
   onShow: (spot: Spot) => void;
@@ -44,7 +48,7 @@ export interface ScannedTextPanelProps {
 type Loaded = { key: string; readings: PageReadings } | { key: string; httpStatus: number | null };
 
 export function ScannedTextPanel(props: ScannedTextPanelProps) {
-  const { documentId, page, active, cited, onShow, onClose, onAddMeaning, headingRef } = props;
+  const { documentId, page, voted = [], active, cited, onShow, onClose, onAddMeaning, headingRef } = props;
   const [attempt, setAttempt] = useState(0);
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [role, setRole] = useState<"first" | "second">("first");
@@ -143,7 +147,7 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
         </div>
       ) : (
         <>
-          {hasScore(lines) && <p className={styles.muted}>{CONFIDENCE_NOTE}</p>}
+          {lines.some((line) => notSure(line.confidence)) && <p className={styles.muted}>{CONFIDENCE_NOTE}</p>}
           {truncated && <p className={styles.note}>{truncated}</p>}
           <div
             className={styles.scroll}
@@ -184,6 +188,16 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
                         </button>
                       )}
                     </div>
+                    {reader?.role === "first" &&
+                      voted.map((value) =>
+                        value.votes && sameRegion(value.region, line.region) ? (
+                          <p key={value.id} className={styles.note}>
+                            <bdi dir="auto" className="readText">
+                              {visibleText(voteText(value.votes))}
+                            </bdi>
+                          </p>
+                        ) : null,
+                      )}
                   </li>
                 );
               })}

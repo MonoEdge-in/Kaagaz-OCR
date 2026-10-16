@@ -6,8 +6,9 @@
 // one hidden status line says short things instead. While a question is out, it
 // shows as pending and the conversation cannot be switched. Only the latest
 // conversation opened may fill the thread, so a slow reply for an earlier one
-// is dropped. Above the composer, the scope chip and picker (ScopePicker.tsx):
-// a reopened conversation shows its last question's scope again.
+// is dropped. In the composer's toolbar, the scope chip and picker (ScopePicker.tsx):
+// a reopened conversation shows its last question's scope again. Beside Send, the
+// Answer settings button (AnswerSettings.tsx, features 25-27) when there is a choice.
 // Beside each question, the user's own story matches are asked in parallel,
 // in the chip's scope (lib/storyMatches.ts), and shown apart from the answer,
 // never in it. They belong to the question, not to the answer succeeding
@@ -31,7 +32,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { Icon } from "@/components/ui/Icon";
 import { IconButton } from "@/components/ui/IconButton";
 import { useHydrated } from "@/components/ui/useHydrated";
-import { ApiError, ask, getConversation, listConversations, listDocuments } from "@/lib/api";
+import { ApiError, ask, getChatOptions, getConversation, listConversations, listDocuments } from "@/lib/api";
 import { MODE_TEXTS, modeLockedText, readMode, saveMode, sendPlan, startMode, STORY_SEARCH_LIMIT } from "@/lib/chatMode";
 import type { ChatMode } from "@/lib/chatMode";
 import {
@@ -43,8 +44,9 @@ import {
   STORY_NOTE_CHAT,
   storyStatusText,
 } from "@/lib/storyMatches";
-import type { ConversationSummary, Message } from "@/lib/types";
+import type { ChatOptions, ConversationSummary, Message } from "@/lib/types";
 import { answerStatusText, ASKING_STATUS, LOADED_STATUS, questionsByAnswer } from "./answer";
+import { AnswerSettings } from "./AnswerSettings";
 import { AnswerView } from "./AnswerView";
 import { ConversationList } from "./ConversationList";
 import { scrollBehavior } from "./hooks";
@@ -52,11 +54,15 @@ import {
   answerScrollTop,
   askErrorText,
   chatHref,
+  choiceBody,
   conversationFromSearch,
+  defaultPick,
   documentFromSearch,
+  hasChoices,
   isNearBottom,
   STILL_LOOKING_AFTER_MS,
 } from "./logic";
+import type { AnswerPick } from "./logic";
 import { ModeSwitch } from "./ModeSwitch";
 import { QuestionBox } from "./QuestionBox";
 import {
@@ -163,6 +169,10 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
   // The drawer is open for the path it was opened on, so any route change closes it.
   const [listOpenOn, setListOpenOn] = useState<string | null>(null);
   const listOpen = listOpenOn !== null && listOpenOn === pathname;
+  // Answer settings (features 25-27): what the organisation allows, and this tab's pick.
+  // Not loaded or failed: no chip, and the organisation's defaults answer.
+  const [chatOptions, setChatOptions] = useState<ChatOptions | null>(null);
+  const [answerPick, setAnswerPick] = useState<AnswerPick | null>(null);
 
   // Only the latest conversation opened may fill the thread.
   const openRequest = useRef(0);
@@ -218,6 +228,13 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
       .catch(() => {
         if (!cancelled) setListFailed(true);
       });
+    getChatOptions()
+      .then((options) => {
+        if (cancelled) return;
+        setChatOptions(options);
+        setAnswerPick(defaultPick(options));
+      })
+      .catch(() => undefined); // no chip: the organisation's defaults answer
     return () => {
       cancelled = true;
     };
@@ -272,13 +289,19 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
   }, []);
 
   // Keep the thread's scroll padding equal to the composer's height, so a card
-  // scrolled into view is never hidden behind it.
+  // scrolled into view is never hidden behind it. A thread at its very end stays
+  // there when the composer grows (the scope chip's folder name arrives after
+  // a conversation opened, or the question wraps to a new line).
   useEffect(() => {
     const composer = composerRef.current;
     const thread = threadRef.current;
     if (!composer || !thread || typeof ResizeObserver === "undefined") return;
+    let height = composer.offsetHeight;
     const observer = new ResizeObserver(() => {
-      thread.style.setProperty("--composer-h", `${composer.offsetHeight}px`);
+      const grew = composer.offsetHeight - height;
+      height = composer.offsetHeight;
+      thread.style.setProperty("--composer-h", `${height}px`);
+      if (grew > 0 && isNearBottom(thread, grew + 2)) thread.scrollTop = thread.scrollHeight;
     });
     observer.observe(composer);
     return () => observer.disconnect();
@@ -291,9 +314,17 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
     if (!thread || !log) return;
     if (jumpToEnd.current) {
       jumpToEnd.current = false;
-      thread.scrollTop = thread.scrollHeight;
+      const pin = () => {
+        thread.scrollTop = thread.scrollHeight;
+      };
+      pin();
       nearBottom.current = true;
-      return;
+      // Older answers are painted only near view (.answerWrap, Chat.module.css), so
+      // their real heights replace the placeholder after the first paint: pin again then.
+      let frame = requestAnimationFrame(() => {
+        frame = requestAnimationFrame(pin);
+      });
+      return () => cancelAnimationFrame(frame);
     }
     // The newest answer, not the story box that may follow it.
     let last = log.lastElementChild;
@@ -403,7 +434,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
       });
     }
     try {
-      const reply = await ask(question, activeId ?? undefined, sentScope(scope));
+      const reply = await ask(question, activeId ?? undefined, sentScope(scope), choiceBody(chatOptions, answerPick));
       setMessages((current) => [...current, reply.question, reply.answer]);
       setScope((current) => answeredScope(current, reply.question));
       const answerStatus = answerStatusText(reply.answer.answer);
@@ -567,7 +598,9 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
                   </div>
                 ) : (
                   <Fragment key={message.id}>
-                    <AnswerView message={message} question={questions.get(message.id) ?? null} />
+                    <div className={styles.answerWrap}>
+                      <AnswerView message={message} question={questions.get(message.id) ?? null} />
+                    </div>
                     {place.at === "answer" && place.answerId === message.id ? storyCards() : null}
                   </Fragment>
                 ),
@@ -586,20 +619,27 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
             </div>
           </div>
           <div ref={composerRef} className={styles.composer}>
-            <div className={styles.composerTools}>
-              <ModeSwitch mode={mode} locked={modeLockedText(busy)} onChange={chooseMode} />
-              <ScopePicker
-                state={scope}
-                locked={scopeLockedText(busy, threadState === "loading")}
-                onChoose={(next) => setScope((current) => chooseScope(current, next))}
-              />
-            </div>
             <QuestionBox
               pending={busy || search.kind === "loading"}
               error={mode === "documents" ? askError : null}
               onAsk={onAsk}
               inputRef={inputRef}
               texts={MODE_TEXTS[mode]}
+              tools={
+                <>
+                  <ModeSwitch mode={mode} locked={modeLockedText(busy)} onChange={chooseMode} />
+                  <ScopePicker
+                    state={scope}
+                    locked={scopeLockedText(busy, threadState === "loading")}
+                    onChoose={(next) => setScope((current) => chooseScope(current, next))}
+                  />
+                </>
+              }
+              settings={
+                mode === "documents" && hasChoices(chatOptions) && answerPick ? (
+                  <AnswerSettings options={chatOptions} pick={answerPick} locked={busy} onPick={setAnswerPick} />
+                ) : null
+              }
             />
           </div>
         </div>

@@ -1,13 +1,13 @@
 "use client";
 
-// The failed jobs (PRD 3 Z1): documents that failed or can't be read, newest
+// The failed documents (PRD 3 Z1): documents that failed or can't be read, newest
 // first, with the plain message the document screen shows and when each was
 // last tried. Retry calls the document's Read again route; a refusal (someone
 // already retried it, 409, or too many at once, 429) shows the server's words
 // on that row. One table, reflowed into cards below 768 px.
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { StatusChip } from "@/components/documents/StatusChip";
 import { pageInfo } from "@/components/documents/logic";
 import table from "@/components/documents/Table.module.css";
@@ -22,6 +22,12 @@ type Retry = { busy: true } | { busy: false; message: string; started: boolean }
 
 export function FailedPanel() {
   const [offset, setOffset] = useState(0);
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  // The pager's button is disabled while the next page loads: start reading at the heading.
+  const turnPage = (next: number) => {
+    setOffset(next);
+    headingRef.current?.focus();
+  };
   const [attempt, setAttempt] = useState(0);
   const [page, setPage] = useState<{
     offset: number;
@@ -64,14 +70,14 @@ export function FailedPanel() {
 
   return (
     <section className={styles.section} aria-labelledby="failed-heading">
-      <h2 id="failed-heading" className={styles.sectionHeading}>
-        Failed jobs
+      <h2 id="failed-heading" ref={headingRef} tabIndex={-1} className={styles.sectionHeading}>
+        Failed documents
       </h2>
       {failed && (
         <div className={styles.errorBanner} role="alert">
           <Icon name="alert" className={styles.errorIcon} />
           <div className={styles.errorBody}>
-            <p className={styles.errorTitle}>Could not load the failed jobs.</p>
+            <p className={styles.errorTitle}>Could not load the failed documents.</p>
             <p>{failed}</p>
           </div>
           <button type="button" className="btn" onClick={() => setAttempt((n) => n + 1)}>
@@ -82,19 +88,19 @@ export function FailedPanel() {
       )}
       {!page && !failed && (
         <p className="delayed muted" role="status">
-          Loading the failed jobs…
+          Loading the failed documents…
         </p>
       )}
       {page && page.total === 0 && (
-        <p className={styles.emptyLine}>No failed jobs. Every document was read.</p>
+        <p className={styles.emptyLine}>No failed documents. Every document was read.</p>
       )}
       {page && page.items.length > 0 && (
         <div className={table.reflowWrap}>
           <table className={`table ${table.reflow}`} role="table">
-            <caption className="visually-hidden">Failed jobs, newest first</caption>
+            <caption className="visually-hidden">Failed documents, newest first</caption>
             <thead role="rowgroup">
               <tr role="row">
-                {["Document", "Status", "What happened", "Last run", "Retry"].map((name) => (
+                {["Document", "Status", "What happened", "Last tried", "Retry"].map((name) => (
                   <th key={name} scope="col" role="columnheader">
                     {name}
                   </th>
@@ -121,7 +127,7 @@ export function FailedPanel() {
                     <td role="cell" data-label="What happened" className={styles.wrap}>
                       {item.message}
                     </td>
-                    <td role="cell" data-label="Last run">
+                    <td role="cell" data-label="Last tried">
                       {lastRunText(item.last_run_at)}
                     </td>
                     <td role="cell" data-label="Retry">
@@ -152,7 +158,7 @@ export function FailedPanel() {
         </div>
       )}
       {pages && page && page.total > FAILED_PAGE_SIZE && (
-        <nav className={styles.pager} aria-label="Failed jobs pages">
+        <nav className={styles.pager} aria-label="Failed documents pages">
           <span className="muted tabular">
             {pages.from}–{pages.to} of {page.total}
           </span>
@@ -160,7 +166,7 @@ export function FailedPanel() {
             type="button"
             className="btn"
             disabled={!pages.hasPrevious || page.offset !== offset}
-            onClick={() => setOffset(Math.max(0, page.offset - FAILED_PAGE_SIZE))}
+            onClick={() => turnPage(Math.max(0, page.offset - FAILED_PAGE_SIZE))}
           >
             Previous
           </button>
@@ -168,7 +174,7 @@ export function FailedPanel() {
             type="button"
             className="btn"
             disabled={!pages.hasNext || page.offset !== offset}
-            onClick={() => setOffset(page.offset + FAILED_PAGE_SIZE)}
+            onClick={() => turnPage(page.offset + FAILED_PAGE_SIZE)}
           >
             Next
           </button>

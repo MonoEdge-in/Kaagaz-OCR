@@ -165,7 +165,16 @@ class Routed(FakeModel):
         self.drafted: list[str] = []
 
     def chat_json(
-        self, *, system: str, user: str, schema: dict[str, Any], max_tokens: int | None = None
+        self,
+        *,
+        system: str,
+        user: str,
+        schema: dict[str, Any],
+        max_tokens: int | None = None,
+        model: str | None = None,
+        thinking: str | None = None,
+        provider: str | None = None,
+        deadline: float | None = None,
     ) -> dict[str, Any]:
         if system == rewrite.SYSTEM_PROMPT:
             self.rewrites.append(user)
@@ -593,3 +602,10 @@ def test_m4_the_evidence_is_cut_from_its_end_neighbours_first() -> None:
     budget = estimate_tokens_cautiously(user_prompt(question, hits))
     assert fit_evidence(question, [*hits, *near], budget) == hits
     assert fit_evidence(question, [*hits, *near], budget - 1) == hits[:1]
+
+
+def test_a_model_answer_keeps_at_most_max_sentences() -> None:
+    """The request carries no maxItems (openrouter.response_format), so the cap is ours."""
+    raw = [{"text": f"Sentence {n}.", "evidence": [1]} for n in range(draft.MAX_SENTENCES + 2)]
+    parsed = draft._parse({"status": "answered", "sentences": raw})
+    assert [s.text for s in parsed.sentences] == [f"Sentence {n}." for n in range(draft.MAX_SENTENCES)]

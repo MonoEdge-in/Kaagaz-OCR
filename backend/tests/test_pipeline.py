@@ -318,6 +318,33 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(system.store.for_document(CUSTOMER, doc), [])
 
 
+class AutoFilingTest(unittest.TestCase):
+    """Feature 28: filing is asked for once a document is ready, in its own step after
+    mark_ready, and never fails the reading (R4). Its rules: tests/test_autofile_db.py."""
+
+    def test_a_ready_document_is_filed_once_and_a_failed_one_never(self) -> None:
+        system = build()
+        ready = system.upload.accept(CUSTOMER, io.BytesIO(CSV)).document_id
+        failed = system.upload.accept(CUSTOMER, io.BytesIO(b'a,"never closed\n')).document_id
+        system.worker.run_once()
+        system.worker.run_once()
+        self.assertIs(system.statuses.get_status(CUSTOMER, failed), DocumentStatus.FAILED)
+        self.assertEqual(system.repo.filed, [(CUSTOMER, ready)])
+
+    def test_a_filing_error_leaves_the_document_ready_and_logs_no_message(self) -> None:
+        system = build()
+        system.repo.file_error = RuntimeError("Mehta Textiles 27AAAPL1234C1ZV")
+        doc = system.upload.accept(CUSTOMER, io.BytesIO(CSV)).document_id
+        with self.assertLogs("kaagaz.pipeline", level="WARNING") as logs:
+            self.assertTrue(system.worker.run_once())
+        self.assertIs(system.statuses.get_status(CUSTOMER, doc), DocumentStatus.READY)
+        self.assertEqual(system.queue.pending(), 0)  # acked: nothing is read again
+        [record] = logs.records
+        self.assertEqual((record.getMessage(), record.__dict__["code"]), ("autofile failed", "RuntimeError"))
+        self.assertEqual(record.__dict__["document_id"], doc)
+        self.assertNotIn("Mehta", "".join(logs.output))
+
+
 class StatusAndFailureTest(unittest.TestCase):
     def test_a_type_with_no_reader_is_needs_reader_and_keeps_its_pages(self) -> None:
         page = FakePreparer({sniff.PDF: _prepared(pages=2)})

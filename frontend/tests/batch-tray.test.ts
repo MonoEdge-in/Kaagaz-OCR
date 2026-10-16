@@ -28,12 +28,15 @@ import {
   writeStored,
 } from "@/components/documents/batchTray";
 import type { StoredBatch } from "@/components/documents/batchTray";
+import { buildTree } from "@/components/documents/folderTree";
 import { estimateIngestSeconds, uploadStateText } from "@/components/documents/logic";
 import type { UploadState } from "@/components/documents/logic";
 import type { UploadEntry } from "@/components/documents/uploadQueue";
 import { NO_TIMES, jobFraction } from "@/components/documents/uploadStages";
 import { getBatch } from "@/lib/api";
-import type { BatchView, DocumentSummary } from "@/lib/types";
+import { documentFraction, longerThanUsual } from "@/lib/progress";
+import { markReceived } from "@/lib/timeLeft";
+import type { BatchView, DocumentSummary, TimeLeft as TimeLeftValue } from "@/lib/types";
 
 const ID = "6f1c2d3e-4a5b-4c6d-8e7f-901a2b3c4d5e";
 const NOW = 1_800_000_000_000;
@@ -253,6 +256,8 @@ describe("what the tray says out loud", () => {
         onClearFinished: () => undefined,
         onRestore: () => undefined,
         onRetry: () => undefined,
+        tree: buildTree([]),
+        onUndone: () => undefined,
       }),
     );
     expect(html.match(/role="status"/g)).toHaveLength(1);
@@ -271,22 +276,71 @@ describe("the drop's bar and time", () => {
     time_left: null,
   };
 
-  it("is pages read over all pages", () => {
-    expect(batchFraction(view, [row("a", reading(doc("d1", { status: "clean" })))])).toBe(0.5);
+  // Progress fix, 16 Oct 2026: a document being read, 30 s in with 90 s left by its answer.
+  const timeLeft = (more: Partial<TimeLeftValue> = {}): TimeLeftValue => ({
+    seconds: 90,
+    since_move_seconds: 0,
+    slow_after_seconds: 100,
+    items_left: 1,
+    item_seconds: 7,
+    after_seconds: 0,
+    confidence: "high",
+    elapsed_seconds: 30,
+    done_fraction: 0.1,
+    ...more,
+  });
+  const readingDoc = (more: Partial<DocumentSummary> = {}) =>
+    doc("d1", { status: "clean", page_count: 6, progress: { step: "reading", done: 0, total: 6 }, ...more });
+
+  it("weighs each stored file's own fraction by its pages; a finished file counts whole", () => {
+    // Changed on purpose (progress fix, 16 Oct 2026): not the server's pages_read, which
+    // stayed 0 until page 1 was read whole and then jumped; a file not started counts 0.
+    expect(batchFraction(view, [row("a", reading(doc("d1", { status: "clean" })))])).toBe(0);
+    const ready = doc("d2", { page_count: 2 });
+    const busy = readingDoc({ time_left: timeLeft() });
+    markReceived([busy], 0);
+    const both = { ...view, documents: [busy, ready] };
+    expect(batchFraction(both, [], 0)).toBeCloseTo((6 * 0.25 + 2) / 8); // 30 / (30 + 90) live
     expect(batchFraction(null, [])).toBe(0);
   });
 
+  it("is a one-file drop's row and table row exactly: one rule (documentFraction)", () => {
+    const busy = readingDoc({ time_left: timeLeft({ done_fraction: 0.2 }) });
+    markReceived([busy], 0);
+    const entry = row("a", reading(busy), { pages: 6 });
+    const one = { ...view, documents: [busy] };
+    for (const now of [0, 20_000, 60_000, 500_000]) {
+      const table = documentFraction("reading", busy.time_left, now);
+      const tray = jobFraction(entry.state, entry.size, 42, NO_TIMES, now);
+      expect(tray).toBe(table);
+      expect(batchFraction(one, [entry], now)).toBeCloseTo(table ?? -1, 12);
+      expect(batchFraction(null, [entry], now)).toBeCloseTo(table ?? -1, 12); // before the batch view has it
+    }
+    // Past slow_after_seconds with no move it holds the server's done_fraction, all three alike.
+    expect(documentFraction("reading", busy.time_left, 500_000)).toBe(0.2);
+  });
+
   it("counts a file not stored yet by its expected pages, and one still sending by its bytes", () => {
+    const shown = { ...view, documents: [doc("d1", { page_count: 6 })] }; // read whole: 6 of 12
     const waiting = row("b", { kind: "waiting" }, { pages: 6 });
-    expect(batchFraction(view, [waiting])).toBe(0.25); // none of it read or sent
+    expect(batchFraction(shown, [waiting])).toBe(0.5); // none of it read or sent
     const unsent = row("b", { kind: "sending", fraction: 0 }, { pages: 6 });
-    expect(batchFraction(view, [unsent])).toBe(0.25);
+    expect(batchFraction(shown, [unsent])).toBe(0.5);
     const sending = row("b", { kind: "sending", fraction: 0.9 }, { pages: 6 });
     // Weighed as its own row's bar weighs it (uploadStages.ts): the bytes are part of the job.
     const sent = jobFraction(sending.state, 1000, estimateIngestSeconds("pdf", 1000, 1, 6), NO_TIMES, 0);
     expect(sent).toBeGreaterThan(0);
-    expect(batchFraction(view, [sending])).toBeCloseTo((3 + 6 * sent) / 12);
-    expect(batchFraction(view, [sending])).toBeLessThan(0.5); // never as if it were read
+    expect(batchFraction(shown, [sending])).toBeCloseTo((6 + 6 * sent) / 12);
+    expect(batchFraction({ ...view, documents: [] }, [sending])).toBeCloseTo(sent, 12); // a one-file drop: its row
+  });
+
+  it("says taking longer than usual by the rows' own rule, never under a minute while stuck", () => {
+    const stuck = readingDoc({ time_left: timeLeft({ seconds: 20, since_move_seconds: 90 }) });
+    markReceived([stuck], 0);
+    const drop = { time_left: stuck.time_left, documents: [stuck] };
+    expect(leftText(drop, 5_000)).toBe("under a minute left"); // 95 s since a move: not yet
+    expect(leftText(drop, 11_000)).toBe("Taking longer than usual"); // 101 s, past 100
+    expect(longerThanUsual(stuck.time_left!, "reading", 11_000)).toBe(true); // the row says it too
   });
 
   it("says the time left for the whole drop, or nothing", () => {
@@ -302,10 +356,11 @@ describe("the drop's bar and time", () => {
         elapsed_seconds: 10,
         done_fraction: 0.2,
       },
+      documents: [],
     });
     expect(leftText(timeLeft(330))).toBe("about 6 min left");
     expect(leftText(timeLeft(20))).toBe("under a minute left");
-    expect(leftText({ time_left: null })).toBeNull();
+    expect(leftText({ time_left: null, documents: [] })).toBeNull();
     expect(leftText(null)).toBeNull();
   });
 });

@@ -73,7 +73,8 @@ NO_TEXT = "no_text"  # no lines on a page that is not blank
 class Issue:
     """One row of the F1 table. ``text`` is what the user sees; when ``counts`` names
     what it counts ("word", "value", "line"), ``{n}`` in it is that count, as
-    "12 words"; ``{dpi}`` is the page's effective DPI. ``fix`` is the suggested fix."""
+    "12 words". ``fix`` is the suggested fix. No sentence names a DPI, a model or a code
+    (UI quality council, 15 Oct 2026)."""
 
     code: str
     text: str
@@ -93,8 +94,8 @@ ISSUES: Mapping[str, Issue] = MappingProxyType(
             Issue(BLURRY, "This page is blurry.", "Scan it again, or hold the phone still in good light."),
             Issue(
                 LOW_RESOLUTION,
-                "This page was scanned at {dpi} DPI, so small letters may be misread.",
-                "Scan at 300 DPI.",
+                "This page was scanned at low quality, so small letters may be misread.",
+                "Scan it again at a higher quality setting, or take the photo closer.",
             ),
             Issue(FAINT, "The text is faint.", "Scan darker, or photocopy the original first."),
             Issue(GLARE, "Glare or a shadow covers part of the page.", _LIGHT),
@@ -110,7 +111,7 @@ ISSUES: Mapping[str, Issue] = MappingProxyType(
             Issue(ILLEGIBLE_WORDS, "{n} couldn't be read.", _REREAD_OR_RESCAN, counts="word"),
             Issue(READERS_DISAGREE, "Two readers read {n} differently.", _CONFIRM_VALUES, counts="value"),
             Issue(UNPINNED, "The exact spot of {n} couldn't be confirmed.", _CONFIRM_VALUES, counts="line"),
-            Issue(READER_REFUSED, "The reader declined this page.", "Read again, or upload a better scan."),
+            Issue(READER_REFUSED, "This page couldn't be read.", "Read it again, or upload a better scan."),
             Issue(
                 READ_LOCALLY,
                 "Read by the backup reader while the main reader was down. It will be read again"
@@ -150,22 +151,18 @@ def grade(
     return "good"
 
 
-def says(code: str, *, count: int | None = None, dpi: int | None = None) -> str:
-    """What the user sees for issue ``code``, with its count or DPI filled in.
+def says(code: str, *, count: int | None = None) -> str:
+    """What the user sees for issue ``code``, with its count filled in.
 
-    A code not in the F1 table is a KeyError; a count or DPI the sentence needs and
-    was not given (or a negative one) is a ValueError: a sentence is never shown
-    with a made-up number."""
+    A code not in the F1 table is a KeyError; a count the sentence needs and was not
+    given (or a negative one) is a ValueError: a sentence is never shown with a
+    made-up number."""
     issue = ISSUES[code]
     if issue.counts is not None:
         if count is None or count < 0:
             raise ValueError(f"{code} needs a count of 0 or more")
         noun = issue.counts if count == 1 else f"{issue.counts}s"
         return issue.text.format(n=f"{count} {noun}")
-    if "{dpi}" in issue.text:
-        if dpi is None or dpi < 1:
-            raise ValueError(f"{code} needs the page's DPI")
-        return issue.text.format(dpi=dpi)
     return issue.text
 
 

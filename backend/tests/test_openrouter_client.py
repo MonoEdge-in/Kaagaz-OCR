@@ -27,6 +27,7 @@ from kaagaz.ai.openrouter import (
     CHAT_THINKING_TOKENS,
     EMBED_PROVIDER,
     KEY_LATCH_SECONDS,
+    LIMITER_WAIT,
     PAGE_MAX_OUTPUT_TOKENS,
     PROVIDER,
     STRICT_SCHEMA,
@@ -63,6 +64,7 @@ from tests.openrouter_fake import (
     refused_403,
     running_fake,
     slow,
+    trickled,
     usage,
 )
 from tests.settings_factory import make_settings
@@ -633,6 +635,23 @@ def test_a_slow_reply_past_the_deadline_times_out(fake: OpenRouterFake) -> None:
     assert time.monotonic() - started < 3
 
 
+def test_a_reply_that_keeps_trickling_in_still_times_out_at_the_deadline(fake: OpenRouterFake) -> None:
+    """Stuck reading (16 Oct 2026): a space every 0.05 s keeps each socket read short, so
+    only the whole reply's deadline can end it."""
+    fake.script("completions", trickled(json_reply(GOOD), 5))
+    client = _client(fake.url)
+    started = time.monotonic()
+    with pytest.raises(ModelUnavailable) as caught:
+        _read(client, deadline=client.now() + 0.5)
+    assert caught.value.code == "timeout"
+    assert time.monotonic() - started < 3
+
+
+def test_a_trickled_reply_inside_the_deadline_is_read(fake: OpenRouterFake) -> None:
+    fake.script("completions", trickled(json_reply(GOOD), 0.2))
+    assert _read(_client(fake.url)).value == GOOD
+
+
 class RealTimeClock(Clock):
     """``Clock`` that also moves with real time, for a refused connection: Windows takes
     about 2 seconds to refuse one on loopback, Linux none."""
@@ -794,6 +813,23 @@ def test_the_limiter_spaces_calls_by_rpm_over_the_workers(
     assert clock.sleeps == [interval, interval]
 
 
+def test_the_limiter_waits_add_up_only_where_a_caller_holds_the_counter(fake: OpenRouterFake) -> None:
+    """Ask precision PR 1a (D): the answer timing line reads the limiter's waits."""
+    fake.responder = lambda request: json_reply(GOOD)
+    clock = Clock()
+    client = _client(fake.url, clock, model_rpm=60)
+    _read(client)
+    _read(client)  # no counter held: the wait goes nowhere
+    held = LIMITER_WAIT.set([0.0])
+    try:
+        _read(client)
+        _read(client)
+        assert LIMITER_WAIT.get() == [2.0]
+    finally:
+        LIMITER_WAIT.reset(held)
+    assert clock.sleeps == [1.0, 1.0, 1.0]
+
+
 def test_a_limiter_slot_past_the_deadline_is_rate_limited_without_a_request(fake: OpenRouterFake) -> None:
     fake.responder = lambda request: json_reply(GOOD)
     clock = Clock()
@@ -840,7 +876,8 @@ def test_chat_json_sends_the_system_prompt_first_the_schema_and_default_budget(f
         "messages": [{"role": "system", "content": "rules"}, {"role": "user", "content": "question"}],
         "stream": False,
         "reasoning": {"effort": "low", "exclude": True},
-        "max_completion_tokens": 512 + CHAT_THINKING_TOKENS,
+        # Changed on purpose (features 25-27, 15 Oct 2026): the room to think is per level now.
+        "max_completion_tokens": 512 + CHAT_THINKING_TOKENS["low"],
         "provider": THE_PROVIDER_BLOCK,
         "response_format": {
             "type": "json_schema",
@@ -860,7 +897,8 @@ def test_chat_json_holds_the_reply_to_the_callers_budget(fake: OpenRouterFake) -
     )
     client = _client(fake.url, Clock())
     assert client.chat_json(system="s", user="u", schema=SCHEMA, max_tokens=512) == GOOD
-    assert fake.bodies()[0]["max_completion_tokens"] == 512 + CHAT_THINKING_TOKENS
+    # Changed on purpose (features 25-27, 15 Oct 2026): the room to think is per level now.
+    assert fake.bodies()[0]["max_completion_tokens"] == 512 + CHAT_THINKING_TOKENS["low"]
     with pytest.raises(ModelOutputError) as caught:
         client.chat_json(system="s", user="u", schema=SCHEMA, max_tokens=512)
     assert caught.value.code == "output_truncated"
@@ -915,17 +953,14 @@ def test_the_worker_chat_timeout_is_used_for_chat_only(fake: OpenRouterFake) -> 
 
 def test_embed_sends_one_text_a_request_at_the_dimensions_in_order(fake: OpenRouterFake) -> None:
     """Google Vertex embeds one text per request (a batch is served only by AI Studio, which
-    the provider block refuses), so each text is its own request, in order."""
-    fake.script(
-        "embeddings",
-        embed_reply([[0.0, 0.5, 0.25, 1.0]]),
-        embed_reply([[1.0, 0.5, 0.25, 1.0]]),
-        embed_reply([[2.0, 0.5, 0.25, 1.0]]),
-    )
+    the provider block refuses), so each text is its own request; the vectors in order.
+    Changed on purpose (fast scan, council 16 Oct 2026): the requests go at the same time,
+    so each is answered by its text, not by turn."""
+    fake.responder = lambda request: embed_reply([[float(request.body["input"][0][-1]), 0.5, 0.25, 1.0]])
     client = _client(fake.url, Clock())
     vectors = client.embed(["piece 0", "piece 1", "piece 2"])
     assert [vector[0] for vector in vectors] == [0.0, 1.0, 2.0]
-    bodies = fake.bodies("embeddings")
+    bodies = sorted(fake.bodies("embeddings"), key=lambda body: str(body["input"]))
     assert (fake.requests[0].method, fake.requests[0].path) == ("POST", "/api/v1/embeddings")
     assert [body["input"] for body in bodies] == [["piece 0"], ["piece 1"], ["piece 2"]]
     assert bodies[0] == {
@@ -971,7 +1006,9 @@ def test_embeddings_are_checked(fake: OpenRouterFake, reply: Reply, code: str) -
 
 def test_two_vectors_with_the_same_index_are_refused(fake: OpenRouterFake) -> None:
     item = {"embedding": [0.1, 0.2, 0.3, 0.4], "index": 0}
-    fake.script("embeddings", _data(item, item))
+    # Changed on purpose (fast scan, council 16 Oct 2026): both requests go at once, so both
+    # get the bad reply (a script would answer whichever came first).
+    fake.responder = lambda request: _data(item, item)
     with pytest.raises(ModelOutputError) as caught:
         _client(fake.url, Clock()).embed(["one", "two"])
     assert caught.value.code == "embedding_count"
@@ -1170,3 +1207,20 @@ def test_every_client_of_the_process_shares_one_gate(fake: OpenRouterFake) -> No
     assert process_gate(settings, workers=1).interval == pytest.approx(chat.interval / 4)
     with pytest.raises(ValueError, match="workers"):
         ModelGate(settings, workers=0)
+
+
+def test_a_schema_goes_out_with_no_max_items_and_nothing_else_changed() -> None:
+    """Live 11 Oct 2026: Google Vertex refused the card's schema with maxItems (400
+    INVALID_ARGUMENT) and took it without; maxLength is kept."""
+    from kaagaz.extraction.card import CARD_SCHEMA
+
+    sent = openrouter.response_format(CARD_SCHEMA)["json_schema"]["schema"]
+    assert '"maxItems"' in json.dumps(CARD_SCHEMA) and '"maxItems"' not in json.dumps(sent)
+    assert '"maxLength"' in json.dumps(sent)
+
+    def dropped(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: dropped(item) for key, item in value.items() if key != "maxItems"}
+        return [dropped(item) for item in value] if isinstance(value, list) else value
+
+    assert sent == dropped(CARD_SCHEMA)

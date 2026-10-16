@@ -1,7 +1,7 @@
 """Preparing streams the page pictures (council A5b; R2 findings 2 and 3).
 
-Each page is drawn, made WebP straight from its picture, stored, then the
-heartbeat beats, and the picture is dropped before the next page is drawn: no
+Each page is drawn and made WebP straight from its picture, PICTURE_WORKERS
+pages at a time (fast scan), so at most that many pictures are alive at once: no
 PNG of every page is kept. A vision crop draws its page again, at the same
 PAGE_IMAGE_DPI and through the same helpers, so its pixels are the ones
 preparing drew. These use the real preparer (``prepare_pages``) with fakes for
@@ -11,6 +11,7 @@ everything else.
 import functools
 import io
 import math
+import time
 import unittest
 import weakref
 from collections.abc import Callable
@@ -24,7 +25,7 @@ from kaagaz.ingestion.policy import UploadPolicy, limits_by_type
 from kaagaz.ingestion.ports import Job
 from kaagaz.ingestion.service import UploadService
 from kaagaz.jobs.worker import JobFailed
-from kaagaz.pipeline import DocumentProcessor
+from kaagaz.pipeline import PICTURE_WORKERS, DocumentProcessor
 from kaagaz.preparing import pages as preparing
 from kaagaz.preparing.pages import prepare_pages
 from kaagaz.reading.spans import BoxLocation, Span
@@ -136,25 +137,51 @@ def jpeg_photo() -> bytes:
 
 
 class StreamingTest(unittest.TestCase):
-    def test_each_page_is_drawn_stored_and_beaten_before_the_next_is_drawn(self) -> None:
-        """Draw -> put -> beat, page by page, and no picture drawn earlier is still alive
-        when the next page is drawn: at most one picture at a time (PDF and TIFF)."""
-        frames = [text_like_picture(200, 260) for _ in range(3)]
+    def test_pages_are_stored_at_most_picture_workers_at_a_time_and_all_before_reading(self) -> None:
+        """Fast scan: pages are drawn one by one and stored PICTURE_WORKERS at a time, so
+        no more than that many pictures drawn earlier are alive when the next is drawn,
+        each page is stored once with a beat, and all are stored before reading starts
+        (PDF and TIFF). The store is slow, so the drawing waits for a free worker."""
+        frames = [text_like_picture(200, 260) for _ in range(6)]
         tiff = io.BytesIO()
         frames[0].save(tiff, format="TIFF", save_all=True, append_images=frames[1:])
         for data, helper in (
-            (make_pdf([SCAN, SCAN, SCAN]), "render_pdf_page"),
+            (make_pdf([SCAN] * 6), "render_pdf_page"),
             (tiff.getvalue(), "_decode_frame"),
         ):
             with self.subTest(helper=helper):
                 rig = Rig(data)
-                with watching_draws(helper, rig.log):
+                put = rig.pictures.put_page_image
+
+                def slow_put(*args: Any, put: Callable[..., None] = put) -> None:
+                    time.sleep(0.05)
+                    put(*args)
+
+                def read(
+                    *args: Any,
+                    real: Callable[..., Any] = rig.processor._socket.read,
+                    log: list[str] = rig.log,
+                    **kw: Any,
+                ) -> Any:
+                    log.append("read")
+                    return real(*args, **kw)
+
+                with (
+                    watching_draws(helper, rig.log),
+                    mock.patch.object(rig.pictures, "put_page_image", slow_put),
+                    mock.patch.object(rig.processor._socket, "read", read),
+                ):
                     rig.run()
-                first = rig.log.index("draw alive=0")
+                alive = [int(event.split("=")[1]) for event in rig.log if event.startswith("draw alive=")]
+                self.assertEqual(len(alive), 6)
+                self.assertLessEqual(max(alive), PICTURE_WORKERS)
+                self.assertGreater(max(alive), 1)  # stored at the same time, not one by one
+                before_reading = rig.log[: rig.log.index("read")]
                 self.assertEqual(
-                    rig.log[first : first + 9],
-                    [event for page in (1, 2, 3) for event in ("draw alive=0", f"put {page}", "beat")],
+                    sorted(e for e in before_reading if e.startswith("put ")),
+                    [f"put {n}" for n in range(1, 7)],
                 )
+                self.assertGreaterEqual(before_reading.count("beat"), 6)
 
     def test_preparing_encodes_no_png(self) -> None:
         real = Image.SAVE["PNG"]

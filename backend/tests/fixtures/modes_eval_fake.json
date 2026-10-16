@@ -1,0 +1,100 @@
+{
+  "about": "Scripted page replies for scripts/run_modes_eval.py --fake (features 25-27, council C13 invariant 4 and C14's slices). Each case is one scanned page with one value line; 'reads' is each model's reading of that line (a model left out fails on the page), 'checker' is RapidOCR's, 'truth' what the page prints. Made up: no real document.",
+  "cases": [
+    {
+      "name": "clean total",
+      "slice": "clean",
+      "truth": {"total_amount": "1,180.00"},
+      "checker": "Total: 1,180.00",
+      "reads": {
+        "standard": {"line": "Total: 1,180.00"},
+        "careful": {"line": "Total: 1,180.00"},
+        "second": {"line": "Total: 1,180.00"},
+        "third": {"line": "Total: 1,180.00"}
+      }
+    },
+    {
+      "name": "unclear page read right by everyone",
+      "slice": "clean",
+      "truth": {"total_amount": "2,500.00"},
+      "checker": "Total: 2,500.00",
+      "reads": {
+        "standard": {"line": "Total: 2,500.00", "quality": "fair"},
+        "careful": {"line": "Total: 2,500.00"},
+        "second": {"line": "Total: 2,500.00"},
+        "third": {"line": "Total: 2,500.00"}
+      }
+    },
+    {
+      "name": "3 read as 8 by the main model only",
+      "slice": "hard",
+      "truth": {"total_amount": "1,130.00"},
+      "checker": "Total: 1,130.00",
+      "reads": {
+        "standard": {"line": "Total: 1,180.00", "quality": "fair", "unsure": true},
+        "careful": {"line": "Total: 1,130.00"},
+        "second": {"line": "Total: 1,130.00"},
+        "third": {"line": "Total: 1,130.00"}
+      }
+    },
+    {
+      "name": "GSTIN 0 read as O by the main model only",
+      "slice": "hard",
+      "truth": {"gstin": "27AAKFS0812L1Z9"},
+      "checker": "GSTIN: 27AAKFS0812L1Z9",
+      "reads": {
+        "standard": {"line": "GSTIN: 27AAKFSO812L1Z9", "unsure": true},
+        "careful": {"line": "GSTIN: 27AAKFS0812L1Z9"},
+        "second": {"line": "GSTIN: 27AAKFS0812L1Z9"},
+        "third": {"line": "GSTIN: 27AAKFS0812L1Z9"}
+      }
+    },
+    {
+      "name": "1 read as 7 by the main model and the checker",
+      "slice": "hard",
+      "truth": {"total_amount": "11,500.00"},
+      "checker": "Total: 17,500.00",
+      "reads": {
+        "standard": {"line": "Total: 17,500.00"},
+        "careful": {"line": "Total: 11,500.00"},
+        "second": {"line": "Total: 11,500.00"},
+        "third": {"line": "Total: 11,500.00"}
+      }
+    },
+    {
+      "name": "stamp over digits misleads the checker and the other models",
+      "slice": "hard",
+      "truth": {"total_amount": "1,180.00"},
+      "checker": "Total: 1,130.00",
+      "reads": {
+        "standard": {"line": "Total: 1,180.00", "quality": "fair", "issues": ["stamp_over_text"]},
+        "careful": {"line": "Total: 1,130.00"},
+        "second": {"line": "Total: 1,130.00"},
+        "third": {"line": "Total: 1,130.00"}
+      }
+    },
+    {
+      "name": "one other model fails on the page",
+      "slice": "hard",
+      "truth": {"total_amount": "4,720.00"},
+      "checker": "Total: 4,720.00",
+      "reads": {
+        "standard": {"line": "Total: 4,120.00"},
+        "careful": {"line": "Total: 4,720.00"},
+        "second": {"line": "Total: 4,720.00"}
+      }
+    },
+    {
+      "name": "faint total the main model cannot read",
+      "slice": "hard",
+      "truth": {"total_amount": "960.00"},
+      "checker": "Total: 960.00",
+      "reads": {
+        "standard": {"line": "Total: 9[?]0.00", "quality": "poor", "issues": ["faint"]},
+        "careful": {"line": "Total: 960.00"},
+        "second": {"line": "Total: 960.00"},
+        "third": {"line": "Total: 960.00"}
+      }
+    }
+  ]
+}

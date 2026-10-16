@@ -51,11 +51,13 @@ _BASE: dict[str, Any] = {
     "openrouter_api_key": None,  # laptops and CI call no model through OpenRouter
     "openrouter_base_url": "https://openrouter.ai/api/v1",
     "openrouter_providers": frozenset({"google-vertex"}),
+    "openrouter_model_vendors": frozenset({"google", "anthropic"}),  # DEFAULT_MODEL_VENDORS
     "ocr_media_resolution": "high",
     "ocr_thinking_level": "low",
     "ocr_retry_media_resolution": "high",  # the "detail" shape sends low or high only
     "ocr_retry_thinking_level": "high",
     "ocr_page_concurrency": 6,
+    "careful_early_max_pages": 2,
     "cpu_workers": 2,
     "max_check_crops": 200,
     "model_rpm": 60,
@@ -107,6 +109,7 @@ _BASE: dict[str, Any] = {
     "chat_summary_every": 6,
     "timezone": "Asia/Kolkata",
     "rate_limit_per_minute": 1000,
+    "chat_questions_per_minute": 1000,
     "log_level": "WARNING",
 }
 

@@ -58,7 +58,7 @@ import math
 import re
 import statistics
 import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Collection, Iterator, Mapping
 from dataclasses import dataclass
 from importlib import metadata
 from typing import TYPE_CHECKING, Any, NoReturn, Protocol, runtime_checkable
@@ -67,7 +67,7 @@ from PIL import Image
 
 from kaagaz.chunking.script import ocr_script_suspect, ocr_suspect_count
 from kaagaz.reading.lines import PageFrame, WordBox, line_spans
-from kaagaz.reading.page_quality import ILLEGIBLE_MARK, NO_TEXT
+from kaagaz.reading.page_quality import ILLEGIBLE_MARK, ILLEGIBLE_WORDS, NO_TEXT
 from kaagaz.reading.rapid_pool import (
     DEVANAGARI_REC_MODEL,
     PixelBox,
@@ -106,6 +106,27 @@ READER_PROMPT_VERSION = "g2"
 LOCAL_READ_BY = "rapidocr"
 # PRD 5 F3: the span qualities that mark one word of a line, not the line.
 WORD_MARK_QUALITIES = frozenset({"unsure", "illegible"})
+# Features 26 and 27 (council 15 Oct 2026, C5, C6): at most this many pages of a document are
+# read again with Careful (Dynamic), worst first; a page of at least CROWDED_LINES lines is
+# crowded; the other readers of Ensemble read the pages numbered up to ENSEMBLE_MAX_PAGES.
+DYNAMIC_MAX_PAGES = 25
+CROWDED_LINES = 60  # ponytail: fixed threshold, tune on the golden set
+ENSEMBLE_MAX_PAGES = 50
+# C5: the page issues that make a page worth a careful read. cut_off, low_resolution and
+# tilted never do: more care can't read what is not on the picture.
+CAREFUL_ISSUES = frozenset(
+    {
+        "blurry",
+        "faint",
+        "glare",
+        "shadow",
+        "stamp_over_text",
+        "overwritten",
+        "handwriting_hard",
+        ILLEGIBLE_WORDS,
+        NO_TEXT,
+    }
+)
 
 _log = logging.getLogger(__name__)
 
@@ -187,6 +208,9 @@ class PageRead:
     * ``continues_on_next_page``: the last line's flag (G3, CX1): its sentence
       goes on at the top of the next page.
 
+    * ``others`` (Ensemble, F27): the page as each other chosen model read it, for the
+      vote on the values that need review; never stored.
+
     The counts F1 stores are worked out from the lines, so they always agree with
     them: ``unsure_words`` (every word listed as unsure), ``illegible_words``
     (every ``[?]``) and ``unpinned_lines`` (lines with box_source "model").
@@ -203,6 +227,7 @@ class PageRead:
     output_tokens: int = 0
     cached: bool = False
     continues_on_next_page: bool = False
+    others: tuple["OtherRead", ...] = ()
 
     @property
     def unsure_words(self) -> int:
@@ -215,6 +240,67 @@ class PageRead:
     @property
     def unpinned_lines(self) -> int:
         return sum(line.box_source == "model" for line in self.lines)
+
+
+@dataclass(frozen=True, slots=True)
+class OtherRead:
+    """Ensemble (F27, Tushar 15 Oct 2026): one other chosen model's read of a page, as
+    spans on the page (``ocr_spans``, word marks included), or None when it could not
+    read the page (an outage, a refusal: it is left out of the vote, never counted)."""
+
+    model: str
+    spans: tuple[Span, ...] | None
+
+
+def careful_pages(
+    reads: Mapping[int, PageRead], *, lead: str, read_again: Collection[int] = ()
+) -> tuple[list[dict[str, Any]], int]:
+    """Dynamic (F26, C5): ([{"page", "reasons"}] to read again with Careful, how many more
+    were left out by the cap). A page counts when ``lead`` read it (not the local reader),
+    it was not asked to be read again (F5 reads it harder already), and it has a reason:
+    an issue in CAREFUL_ISSUES, handwriting, a fair or poor grade, unsure words, or at least
+    CROWDED_LINES lines. Worst first (most reasons, then page order), at most
+    DYNAMIC_MAX_PAGES: the same reads give the same pages, whatever order the threads
+    read them in. O(p log p + lines)."""
+    found = {
+        page_no: reasons
+        for page_no, read in reads.items()
+        if (reasons := careful_reasons(read, lead=lead, again=page_no in read_again))
+    }
+    return worst_first(found)
+
+
+def careful_reasons(read: PageRead, *, lead: str, again: bool = False) -> list[str]:
+    """Why one page is worth a careful read (``careful_pages``' rule, also used page by page
+    while a Dynamic document is read, fast scan, council 16 Oct 2026); none when ``lead`` did
+    not read it or it was asked to be read again (``again``). O(issues)."""
+    if read.read_by != lead or again:
+        return []
+    reasons = sorted(CAREFUL_ISSUES.intersection(read.issues))
+    if read.handwritten:
+        reasons.append("handwritten")
+    if read.quality in ("fair", "poor"):
+        reasons.append(f"quality_{read.quality}")
+    if read.unsure_words:
+        reasons.append("unsure_words")
+    if len(read.lines) >= CROWDED_LINES:
+        reasons.append("crowded")
+    return reasons
+
+
+def worst_first(found: Mapping[int, list[str]]) -> tuple[list[dict[str, Any]], int]:
+    """([{"page", "reasons"}], how many past the cap): most reasons first, then page order,
+    at most DYNAMIC_MAX_PAGES (C5). O(p log p)."""
+    ordered = sorted(found.items(), key=lambda page: (-len(page[1]), page[0]))
+    chosen = [{"page": page_no, "reasons": reasons} for page_no, reasons in ordered[:DYNAMIC_MAX_PAGES]]
+    return chosen, max(0, len(ordered) - DYNAMIC_MAX_PAGES)
+
+
+def cache_prompt_version(thinking: str, env_thinking: str) -> str:
+    """The page cache's prompt version (C4): READER_PROMPT_VERSION, with "+<level>" when a
+    page is read at another thinking level than OCR_THINKING_LEVEL, so a read at one level
+    is never taken for another; the reads cached before stay valid."""
+    return READER_PROMPT_VERSION if thinking == env_thinking else f"{READER_PROMPT_VERSION}+{thinking}"
 
 
 @runtime_checkable
@@ -415,7 +501,22 @@ class DocumentPages:
     this document is read with and the OpenRouter provider it is called through
     (``kaagaz.db.models.resolve``; model choice, council 11 Oct 2026); None for both reads
     with OCR_MODEL through the default provider, as before model choice. A page read again
-    keeps the document's model."""
+    keeps the document's model.
+
+    Features 25-27 (council 15 Oct 2026, ``kaagaz.db.models.Reading``): ``thinking`` the
+    scan level (None: OCR_THINKING_LEVEL); ``others`` Ensemble's other (model, provider)
+    pairs, which read each page numbered up to ENSEMBLE_MAX_PAGES after the main model, in
+    its page thread; ``careful`` Dynamic's Careful (model, provider), ``escalate`` the
+    pages it reads again (``careful_pages``) and ``memo`` the first reading's pages by
+    (page, pixels), so the second reading of the document calls no model for the rest.
+
+    Fast scan (council 16 Oct 2026): with ``inline_careful`` (a Dynamic document of at most
+    DYNAMIC_MAX_PAGES pages, ``page_count``) there is no second reading: each page is read
+    with Careful on its own thread right after its first read when ``careful_reasons`` says
+    so, and its reasons are kept in ``escalated`` for run_config.reading.
+
+    Never failed (16 Oct 2026): a page whose read runs out of time above low thinking is read
+    once more at low (``careful_read`` reads are not: their first read stays)."""
 
     customer_id: str
     document_id: str
@@ -423,6 +524,15 @@ class DocumentPages:
     read_again: frozenset[int] = frozenset()
     model: str | None = None
     provider: str | None = None
+    thinking: str | None = None
+    others: tuple[tuple[str, str], ...] = ()
+    careful: tuple[str, str] | None = None
+    escalate: frozenset[int] = frozenset()
+    memo: dict[tuple[int, str], PageRead] | None = None
+    inline_careful: bool = False
+    page_count: int = 0
+    escalated: dict[int, list[str]] | None = None
+    careful_read: bool = False  # Careful's own read: a timeout is not read again at low
 
 
 @runtime_checkable

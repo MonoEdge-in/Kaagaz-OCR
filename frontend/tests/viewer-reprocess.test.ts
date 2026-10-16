@@ -3,6 +3,7 @@ import {
   beingRead,
   canReprocess,
   canSend,
+  loadFailure,
   reprocessConfirmText,
   reprocessErrorText,
   reprocessReducer,
@@ -102,6 +103,20 @@ describe("reprocessReducer", () => {
   });
 });
 
+describe("loadFailure (QA, 15 Oct 2026)", () => {
+  it("offers Try again for a server or network failure, never for a document that is not there", () => {
+    expect(loadFailure(new ApiError(404, "not_found", "We couldn't find that."))).toEqual({
+      message: "We couldn't find that.",
+      retry: false,
+    });
+    expect(loadFailure(new ApiError(503, "backend_unavailable", "Busy.")).retry).toBe(true);
+    expect(loadFailure(new TypeError("Failed to fetch"))).toEqual({
+      message: "Check your internet connection, then try again.",
+      retry: true,
+    });
+  });
+});
+
 describe("reprocessErrorText", () => {
   it("explains a 409: only a ready, failed or unreadable document out of Trash", () => {
     const error = new ApiError(409, "not_reprocessable", "server words");
@@ -155,8 +170,15 @@ describe("reprocessDocument", () => {
       return new Response(JSON.stringify({ id: "d1", status: "received" }), { status: 200 });
     });
     await reprocessDocument("d1");
-    await reprocessDocument("d1", "anthropic/claude-sonnet-5.5");
-    expect(bodies).toEqual([undefined, { read_model: "anthropic/claude-sonnet-5.5" }]);
+    // Changed on purpose (features 25-27, 15 Oct 2026): the reading is sent whole (a model,
+    // Dynamic, or more than one reader), as the body.
+    await reprocessDocument("d1", { read_model: "anthropic/claude-sonnet-5.5" });
+    await reprocessDocument("d1", { read_mode: "ensemble", read_agents: ["google/a", "google/b"] });
+    expect(bodies).toEqual([
+      undefined,
+      { read_model: "anthropic/claude-sonnet-5.5" },
+      { read_mode: "ensemble", read_agents: ["google/a", "google/b"] },
+    ]);
   });
 });
 

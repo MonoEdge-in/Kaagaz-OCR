@@ -11,10 +11,10 @@
 // A source from an older version says so; one whose document is in Trash or
 // deleted shows only "From a deleted document" and its label (citationSource).
 // Cited text with an unsure or illegible word says "Part of this text was hard
-// to read." (PRD 5 F6, U7).
+// to read." (PRD 5 F6, U7). Its chip pointed at or focused lights the card (data-hot).
 
 import Link from "next/link";
-import { useRef } from "react";
+import { memo, useRef } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { useDocumentDetail } from "@/components/viewer/documentCache";
 import { LabelBadge } from "@/components/viewer/LabelBadge";
@@ -70,13 +70,24 @@ function LazySourcePreview({ citation }: { citation: Citation }) {
   );
 }
 
-export function SourceCard({ citation, messageId }: { citation: Citation; messageId: string }) {
+// Memo: a chip pointed at or focused re-renders only the two cards whose `hot`
+// changed, not every card and preview of the answer.
+export const SourceCard = memo(function SourceCard({
+  citation,
+  messageId,
+  hot = false,
+}: {
+  citation: Citation;
+  messageId: string;
+  /** Its chip in the answer is pointed at or focused: the card lights up. */
+  hot?: boolean;
+}) {
   const id = cardId(messageId, citation.n);
   const headingId = `${id}-title`;
   const source = citationSource(citation);
   if (source === "gone") {
     return (
-      <article id={id} className={styles.source} tabIndex={-1} aria-labelledby={headingId}>
+      <article id={id} className={styles.source} tabIndex={-1} aria-labelledby={headingId} data-hot={hot || undefined}>
         <div className={styles.sourceHeader}>
           <span className={styles.numberMark} aria-hidden="true">
             {citation.n}
@@ -97,7 +108,7 @@ export function SourceCard({ citation, messageId }: { citation: Citation; messag
   const jumps = pageJumps(citation);
   const scanned = scannedLink(citation);
   return (
-    <article id={id} className={styles.source} tabIndex={-1} aria-labelledby={headingId}>
+    <article id={id} className={styles.source} tabIndex={-1} aria-labelledby={headingId} data-hot={hot || undefined}>
       <div className={styles.sourceHeader}>
         <span className={styles.numberMark} aria-hidden="true">
           {citation.n}
@@ -164,4 +175,4 @@ export function SourceCard({ citation, messageId }: { citation: Citation; messag
       </div>
     </article>
   );
-}
+});

@@ -84,9 +84,11 @@ def test_locked_unknown_wrong_and_disabled_replies_are_identical(db: Database) -
     }
 
     assert {reply.status_code for reply in replies.values()} == {401}
+    # Changed on purpose (UI quality council, 15 Oct 2026): one clear message, spelt e-mail.
     assert {reply.text for reply in replies.values()} == {
         '{"error":{"code":"bad_credentials","message":'
-        '"Email or password is wrong, or the account is locked. Try again in 15 minutes."}}'
+        '"E-mail or password is wrong, or the account is locked.'
+        ' Check them, or wait 15 minutes, then try again."}}'
     }
     assert all("set-cookie" not in reply.headers for reply in replies.values())
 
@@ -212,8 +214,10 @@ def test_the_limits_come_from_the_settings(db: Database) -> None:
     reply = _login(api.client(), email)
 
     assert api.user_state(customer_id, user_id)["locked_until"] == api.clock() + timedelta(minutes=7)
+    # Changed on purpose (UI quality council, 15 Oct 2026): one clear message, spelt e-mail.
     assert reply.json()["error"]["message"] == (
-        "Email or password is wrong, or the account is locked. Try again in 7 minutes."
+        "E-mail or password is wrong, or the account is locked."
+        " Check them, or wait 7 minutes, then try again."
     )
 
 

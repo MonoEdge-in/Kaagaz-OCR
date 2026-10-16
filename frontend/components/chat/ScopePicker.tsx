@@ -1,9 +1,9 @@
 "use client";
 
-// Which documents the next question may use (PRD 3 H2), above the question
-// box: a chip saying the scope in words (said aloud once, by a separate status
-// line, after a pick or when a conversation loads),
-// and "Change", which opens one labelled group of choices: all documents, one
+// Which documents the next question may use (PRD 3 H2), in the composer's
+// toolbar: a quiet chip saying the scope in words (said aloud once, by a separate
+// status line, after a pick or when a conversation loads), which opens a small
+// panel (ComposerMenu.tsx) with one labelled group of choices: all documents, one
 // folder (with or without its subfolders), or the documents chat was opened
 // for. A choice applies to the next question; until then a follow-up keeps
 // the conversation's scope (scope.ts). Folders load only when needed. Folder
@@ -12,10 +12,10 @@
 import { useEffect, useId, useState } from "react";
 import type { ReactNode } from "react";
 import { buildTree, inTreeOrder, pathLabel } from "@/components/documents/folderTree";
-import libraryStyles from "@/components/documents/Library.module.css";
 import { loadDocument } from "@/components/viewer/documentCache";
 import { listFolders } from "@/lib/api";
 import type { Folder } from "@/lib/types";
+import { ComposerMenu } from "./ComposerMenu";
 import { EVERY_DOCUMENT, scopeAnnouncement, scopeText } from "./scope";
 import type { ChosenScope, ScopeState } from "./scope";
 import styles from "./Chat.module.css";
@@ -32,7 +32,7 @@ interface ChoiceProps {
 /** One labelled radio button (or checkbox) in the group. */
 function Choice({ type = "radio", children, ...input }: ChoiceProps) {
   return (
-    <label className={libraryStyles.check}>
+    <label className={styles.menuOption}>
       <input type={type} {...input} />
       {children}
     </label>
@@ -101,29 +101,14 @@ export function ScopePicker({
     (scope.kind === "documents" && scope.ids.length === 1 && named?.id !== scope.ids[0]);
 
   return (
-    <div className={styles.scope}>
+    <>
       {/* The visible chip is not a live region; this line speaks once per pick or restore. */}
       <p className="visually-hidden" role="status" aria-atomic="true">
         {scopeAnnouncement(state, text, namesLoading)}
       </p>
-      <div className={styles.scopeBar}>
-        <p className={styles.scopeChip}>
-          <span className="muted">Asking about:</span> <strong>{text}</strong>
-        </p>
-        <button
-          type="button"
-          className="btn btn-quiet"
-          aria-expanded={open}
-          aria-controls={`${id}-panel`}
-          onClick={() => setOpen((shown) => !shown)}
-        >
-          {open ? "Done" : "Change"}
-          <span className="visually-hidden"> which documents to ask about</span>
-        </button>
-      </div>
-      <div id={`${id}-panel`} className={styles.scopePanel} hidden={!open}>
+      <ComposerMenu label={text} name="Asking about" title="Which documents to ask about" onToggle={setOpen}>
         <fieldset
-          className={`${libraryStyles.fieldset} ${styles.scopeChoices}`}
+          className={styles.menuGroup}
           disabled={locked !== null}
           aria-describedby={`${id}-hint`}
         >
@@ -197,7 +182,7 @@ export function ScopePicker({
             {locked ?? "Applies from your next question."}
           </p>
         </fieldset>
-      </div>
-    </div>
+      </ComposerMenu>
+    </>
   );
 }

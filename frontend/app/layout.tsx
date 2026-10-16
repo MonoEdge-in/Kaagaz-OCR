@@ -6,9 +6,10 @@ import { parseTheme, THEME_COOKIE, themeAttribute } from "@/lib/theme";
 import "./globals.css";
 
 // Tab titles stay generic: browser history syncs off the device, so no
-// document or customer name ever goes here.
+// document or customer name ever goes here. A section sets only its own
+// fixed name ("Documents · Kaagaz").
 export const metadata: Metadata = {
-  title: "Kaagaz",
+  title: { default: "Kaagaz", template: "%s · Kaagaz" },
   description: "Ask your business documents. Every answer shows its source.",
 };
 

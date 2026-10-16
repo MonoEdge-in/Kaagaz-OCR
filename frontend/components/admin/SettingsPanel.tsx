@@ -1,18 +1,21 @@
 "use client";
 
-// This customer's settings: for now, the largest file one upload may be.
-// Empty means the platform limit applies; the platform limit is the ceiling.
+// This customer's settings: the largest file one upload may be (empty means the
+// platform limit applies; the platform limit is the ceiling), and auto-filing
+// (feature 28), shown only once the platform has allowed it, saved by the same Save.
 
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
+import libraryStyles from "@/components/documents/Library.module.css";
 import { ApiError, getSettings, updateSettings } from "@/lib/api";
 import type { CustomerSettings } from "@/lib/types";
-import { parseUploadLimit } from "./logic";
+import { AUTOFILE_HELP, AUTOFILE_LABEL, parseUploadLimit, settingsErrorText } from "./logic";
 import styles from "./Admin.module.css";
 
 export function SettingsPanel() {
   const [settings, setSettings] = useState<CustomerSettings | null>(null);
   const [text, setText] = useState("");
+  const [autofileOn, setAutofileOn] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
@@ -25,6 +28,7 @@ export function SettingsPanel() {
         if (cancelled) return;
         setSettings(result);
         setText(result.max_upload_mb === null ? "" : String(result.max_upload_mb));
+        setAutofileOn(result.autofile.on);
       },
       (caught: unknown) => {
         if (!cancelled) {
@@ -48,21 +52,19 @@ export function SettingsPanel() {
     const parsed = parseUploadLimit(text, settings.platform_max_upload_mb);
     if (!parsed.ok) {
       setError(parsed.message);
+      document.getElementById("upload-limit")?.focus();
       return;
     }
     setError(null);
     setBusy(true);
     try {
-      const result = await updateSettings(parsed.value);
+      const result = await updateSettings(parsed.value, settings.autofile.granted ? autofileOn : undefined);
       setSettings(result);
       setText(result.max_upload_mb === null ? "" : String(result.max_upload_mb));
+      setAutofileOn(result.autofile.on);
       setSaved("Saved.");
     } catch (caught) {
-      setError(
-        caught instanceof ApiError
-          ? caught.message
-          : "Could not save the settings. Check your connection, then try again.",
-      );
+      setError(settingsErrorText(caught));
     } finally {
       setBusy(false);
     }
@@ -99,7 +101,10 @@ export function SettingsPanel() {
               type="text"
               inputMode="numeric"
               value={text}
-              onChange={(event) => setText(event.target.value)}
+              onChange={(event) => {
+                setText(event.target.value);
+                setSaved(null); // "Saved." is about the old value
+              }}
               aria-invalid={error ? true : undefined}
               aria-describedby={error ? "upload-limit-hint upload-limit-error" : "upload-limit-hint"}
             />
@@ -108,11 +113,12 @@ export function SettingsPanel() {
               use it.
             </span>
             {error && (
-              <span id="upload-limit-error" className="error-text">
+              <span id="upload-limit-error" className="error-text" role="alert">
                 {error}
               </span>
             )}
           </div>
+          <AutofileSwitch granted={settings.autofile.granted} on={autofileOn} onChange={setAutofileOn} />
           <div className="row">
             <button type="submit" className="btn btn-primary" disabled={busy}>
               {busy ? (
@@ -131,5 +137,26 @@ export function SettingsPanel() {
         </form>
       )}
     </section>
+  );
+}
+
+/** Auto-filing's checkbox (feature 28), saved by the form's one Save; nothing until the platform allows it. */
+export function AutofileSwitch({ granted, on, onChange }: { granted: boolean; on: boolean; onChange(on: boolean): void }) {
+  if (!granted) return null;
+  return (
+    <div className="field">
+      <label className={libraryStyles.check}>
+        <input
+          type="checkbox"
+          checked={on}
+          onChange={(event) => onChange(event.target.checked)}
+          aria-describedby="autofile-hint"
+        />
+        {AUTOFILE_LABEL}
+      </label>
+      <span id="autofile-hint" className="hint">
+        {AUTOFILE_HELP}
+      </span>
+    </div>
   );
 }

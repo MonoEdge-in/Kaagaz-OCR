@@ -21,9 +21,14 @@ an ``Estimate`` with each step from preparing on (pipeline ``_progress``).
 * While preparing: ``finish_at = now + pages_left * prepare_s + after_s``, where
   ``after_s`` is all of reading (``total * item_s`` before any page is read) and the
   time after it; stalled after ``max(SLOW_MIN_S, SLOW_FACTOR * prepare_s)``.
-* While reading: ``finish_at = now + pages_left * item_s + after_s``, stalled after
-  ``max(SLOW_MIN_S, SLOW_FACTOR * item_s)`` with no page read. From the end of
-  reading (understanding, then indexing): ``finish_at = now + after_s``, stalled after ``slow``.
+* While reading: ``finish_at = now + pages_left * item_s + after_s`` (a model reader, fast
+  scan: ``ceil(p * pages_left / OCR_PAGE_CONCURRENCY) * ocr_rate + (1 - p) * pages_left *
+  fast_rate``, its pages being read that many at a time), stalled after
+  ``max(SLOW_MIN_S, SLOW_FACTOR * item_s)`` with no page read; for a model reader
+  (MODEL_READERS), ``max(MODEL_SLOW_MIN_S, SLOW_FACTOR * ocr rate, SLOW_FACTOR * item_s)``.
+  From the end of reading (Careful's second reading, understanding, then indexing):
+  ``finish_at = now + after_s``, stalled after ``slow``; the worker writes it again with
+  ``moved_at`` now at every beat, so each beat is a move (pipeline ``_estimate``).
 * ``confidence`` is "high" only with MIN_EVIDENCE pages read in this run or runs of
   history for reading, and MIN_EVIDENCE runs with an after-reading time (and, while
   preparing, MIN_EVIDENCE pages or runs for preparing too); else "low", and the
@@ -64,11 +69,10 @@ PRIOR_WEIGHT = 2.0  # n0
 MIN_EVIDENCE = 3
 # RapidOCR: 6.9 s a scanned page on average (cli measure, 30 Sep 2026, docs/architecture.md).
 # Any other engine name (an old run's reader too) starts from OCR_SECONDS_OTHER.
-# Gemini (PRD 5 Q6, V6) has no entry: its figure is the seconds a page from the `measure` run,
-# divided by OCR_PAGE_CONCURRENCY (the pages read at once), and that run has not been made, so
-# no number is guessed. Until it is, a "gemini" page starts from OCR_SECONDS_OTHER, and the
-# customer's own Gemini runs replace it as they finish.
-OCR_SECONDS = {"rapidocr": 6.9}
+# Gemini (fast scan, council 16 Oct 2026, PROVISIONAL: a dense page's call at High thinking
+# takes 20 to 45 s): 35 s a call, and a model reader's pages are read OCR_PAGE_CONCURRENCY
+# at a time (``reading``); the customer's own Gemini runs replace it as they finish.
+OCR_SECONDS = {"rapidocr": 6.9, "gemini": 35.0}
 OCR_SECONDS_OTHER = 7.0  # the upload estimate's 7 s a page
 # Not measured yet: a guess for an A4 page drawn at 400 DPI, checked and stored, until history replaces it.
 PREPARE_PAGE_SECONDS = 1.0
@@ -77,9 +81,15 @@ CELLS_FILE_SECONDS = 2.0
 AFTER_READING_SECONDS = 45.0
 SLOW_FACTOR = 3.0
 SLOW_MIN_S = 20.0
+# PROVISIONAL (progress fix, 16 Oct 2026; not measured yet): one page read by a model takes
+# about 25 to 40 s a call (High thinking), so 20 s with no page read is not slow. Reading by
+# a model is slow only past 3 x its seconds a call, learned from this customer's own runs of
+# it (the ``ocr`` rate: a call's seconds per page), and never before 3 x 30 s.
+MODEL_READERS = frozenset({"gemini"})
+MODEL_SLOW_MIN_S = 90.0
 MAX_SECONDS = 86400.0  # a stored number past a day is not believed
 
-_TIMED_STEPS = ("preparing", "reading", "understanding", "indexing")
+_TIMED_STEPS = ("preparing", "reading", "rereading", "understanding", "indexing")
 FLOORED_STEPS = ("preparing", "reading")  # the time left never counts below after_s
 
 Pair = tuple[float, float]  # (seconds, units): a rate's sums, or this run's own measure
@@ -111,6 +121,8 @@ class Rates:
     reading_runs: int
     after_runs: int
     preparing_runs: int
+    read_slow_s: float = SLOW_MIN_S  # reading is slow past this with no page read, at least
+    pages_at_once: int = 1  # a model reader's OCR_PAGE_CONCURRENCY (fast scan); else 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,9 +145,13 @@ def mean(rate: Pair, now: Pair = (0.0, 0.0)) -> float:
     return (rate[0] + now[0]) / (rate[1] + now[1])
 
 
-def rates(history: Sequence[RunTiming], engine: str | None) -> Rates:
+def rates(
+    history: Sequence[RunTiming], engine: str | None, *, pages_at_once: int = 1, scanned: bool = False
+) -> Rates:
     """The rates from this customer's history, newest first, for the OCR engine in use
-    (its ``name``). O(K)."""
+    (its ``name``). Fast scan (council 16 Oct 2026): a model reader reads ``pages_at_once``
+    pages at a time (OCR_PAGE_CONCURRENCY), and a ``scanned`` file (a photo) is all OCR
+    pages (share 1). O(K)."""
     prior = OCR_SECONDS.get(engine or "", OCR_SECONDS_OTHER)
     ocr = [PRIOR_WEIGHT * prior, PRIOR_WEIGHT]
     fast = [PRIOR_WEIGHT * FAST_PAGE_SECONDS, PRIOR_WEIGHT]
@@ -164,9 +180,12 @@ def rates(history: Sequence[RunTiming], engine: str | None) -> Rates:
     after_s = _nearest_rank(after, 0.5) if after else AFTER_READING_SECONDS
     slow = max(_nearest_rank(after, 0.9) if after else 0.0, after_s + SLOW_MIN_S)
     reading_runs = sum(1 for run in history[:HISTORY_RUNS] if run.seconds_reading is not None)
-    share = ocr_pages / routed_pages if routed_pages else 0.5
+    share = 1.0 if scanned else ocr_pages / routed_pages if routed_pages else 0.5
     sums = ((ocr[0], ocr[1]), (fast[0], fast[1]), (cells[0], cells[1]), (prepare[0], prepare[1]))
-    return Rates(*sums, share, after_s, slow, reading_runs, len(after), preparing_runs)
+    read_slow, at_once = SLOW_MIN_S, 1
+    if engine in MODEL_READERS:
+        read_slow, at_once = max(MODEL_SLOW_MIN_S, SLOW_FACTOR * ocr[0] / ocr[1]), max(1, pages_at_once)
+    return Rates(*sums, share, after_s, slow, reading_runs, len(after), preparing_runs, read_slow, at_once)
 
 
 def preparing(rates: Rates, now: datetime, done: int, total: int, own: Pair) -> Estimate:
@@ -188,11 +207,16 @@ def reading(rates: Rates, now: datetime, done: int, total: int, ocr: Pair, fast:
         item_s = left = mean(rates.cells)
     else:
         share = (PRIOR_WEIGHT * rates.ocr_share + ocr[1]) / (PRIOR_WEIGHT + ocr[1] + fast[1])
-        item_s = share * mean(rates.ocr, ocr) + (1 - share) * mean(rates.fast, fast)
-        left = max(0, total - done) * item_s
+        ocr_s, fast_s = mean(rates.ocr, ocr), mean(rates.fast, fast)
+        item_s = share * ocr_s + (1 - share) * fast_s
+        pages_left = max(0, total - done)
+        left = pages_left * item_s
+        if rates.pages_at_once > 1:  # a model reader: pages_at_once OCR pages a call's time
+            rounds = math.ceil(round(share * pages_left / rates.pages_at_once, 9))
+            left = rounds * ocr_s + (1 - share) * pages_left * fast_s
     known = done >= MIN_EVIDENCE or rates.reading_runs >= MIN_EVIDENCE
     confidence = "high" if known and rates.after_runs >= MIN_EVIDENCE else "low"
-    finish, slow = now + timedelta(seconds=left + rates.after_s), max(SLOW_MIN_S, SLOW_FACTOR * item_s)
+    finish, slow = now + timedelta(seconds=left + rates.after_s), max(rates.read_slow_s, SLOW_FACTOR * item_s)
     return Estimate(now, finish, item_s, rates.after_s, slow, confidence)
 
 

@@ -399,3 +399,13 @@ def test_the_whole_documents_must_fit_the_context_window() -> None:
         Settings.from_env(shipped(MODEL_CONTEXT_TOKENS=context, ANSWER_WHOLE_DOC_TOKENS="120001"))
     off = Settings.from_env(shipped(MODEL_CONTEXT_TOKENS="8192", ANSWER_WHOLE_DOC_TOKENS="0"))
     assert off.answer_whole_doc_tokens == 0
+
+
+def test_chat_questions_per_minute_is_20_when_unset_and_at_least_1() -> None:
+    """Security checklist (15 Oct 2026): the chat limit a user, beside RATE_LIMIT_PER_MINUTE."""
+    env = shipped()
+    env.pop("CHAT_QUESTIONS_PER_MINUTE", None)
+    assert Settings.from_env(env).chat_questions_per_minute == 20
+    assert Settings.from_env(shipped(CHAT_QUESTIONS_PER_MINUTE="5")).chat_questions_per_minute == 5
+    with pytest.raises(SettingsError, match="CHAT_QUESTIONS_PER_MINUTE"):
+        Settings.from_env(shipped(CHAT_QUESTIONS_PER_MINUTE="0"))

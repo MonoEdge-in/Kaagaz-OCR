@@ -88,7 +88,7 @@ function Cells({ totals }: { totals: UsageTotals }) {
       <td role="cell" data-label="Tokens out" className="tabular">
         {formatNumber(totals.output_tokens)}
       </td>
-      <td role="cell" data-label="Cost" className="tabular">
+      <td role="cell" data-label="Cost" className="num">
         {formatCost(totals)}
       </td>
     </>
@@ -108,7 +108,7 @@ export function SpendTable({ rows }: { rows: OperatorUsageRow[] }) {
             <th scope="col" role="columnheader">Calls</th>
             <th scope="col" role="columnheader">Tokens in</th>
             <th scope="col" role="columnheader">Tokens out</th>
-            <th scope="col" role="columnheader">Cost</th>
+            <th scope="col" role="columnheader" className="num">Cost</th>
           </tr>
         </thead>
         <tbody role="rowgroup">

@@ -56,10 +56,16 @@ NULL (the system). ``documents.read_model`` is the model the reading asked for:
 ``mark_for_reprocess`` replaces it only when given one (a page read again keeps the
 document's model, FINAL 4), and the upgrade sweep keeps it. The worker checks it again
 (``kaagaz.db.models.resolve``).
+
+Auto-filing (feature 28, council 15 Oct 2026; 0025): ``add_if_absent`` marks a new upload
+``autofile = 'pending'`` in its own insert when it goes in no folder and the customer's
+switch is on; a new version never is, and a duplicate makes no row. ``file_document`` is
+``kaagaz.db.autofile.file_document`` in its own transaction after ``mark_ready``.
 """
 
 import dataclasses
 import json
+import logging
 from collections.abc import Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -67,7 +73,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import Connection, text
 from sqlalchemy.exc import IntegrityError
 
-from kaagaz.db import audit, customers
+from kaagaz.db import audit, autofile, customers
 from kaagaz.db.engine import Database, unavailable
 from kaagaz.db.runs import close_running, finish_run, is_run_open
 from kaagaz.db.sqlstate import FOREIGN_KEY_VIOLATION, retry_on_deadlock, sqlstate
@@ -78,6 +84,8 @@ from kaagaz.scanning.gate import DocumentStatus
 
 if TYPE_CHECKING:
     from kaagaz.pipeline import FinishedRun, Progress  # the processor's records; pipeline builds this store
+
+_log = logging.getLogger(__name__)
 
 # PRD 5 Q6: the progress of a document waiting for the reader to come back.
 WAITING_FOR_READER = {"step": "waiting"}
@@ -209,10 +217,15 @@ _REPROCESSED_LATELY = (
     " AND target_id = :target AND created_at > now() - make_interval(mins => :minutes))"
 )
 
+# Features 26 and 27 (0026): the reading asked for. A mode given replaces read_also too, in
+# the same statement, so the ai_documents_read_mode_models check always sees a pair it
+# allows; a model or mode left out (NULL) keeps the document's (as listing.set_reading).
 _REPROCESS = (
     "UPDATE documents SET status = 'received', failure_code = NULL, attempts = 0, max_attempts = NULL,"
     " progress = NULL, read_requested_by = CAST(:by AS uuid),"
-    " read_model = COALESCE(CAST(:model AS text), read_model)"
+    " read_model = COALESCE(CAST(:m AS text), read_model),"
+    " read_mode = COALESCE(CAST(:mode AS text), read_mode),"
+    " read_also = CASE WHEN CAST(:mode AS text) IS NULL THEN read_also ELSE CAST(:also AS text[]) END"
     " WHERE customer_id = :c AND id = :d AND status IN ('ready', 'failed', 'needs_reader')"
     " AND deleted_at IS NULL"
 )
@@ -226,12 +239,15 @@ def mark_for_reprocess(
     per_hour: int,
     requested_by: str | None = None,
     read_model: str | None = None,
+    read_mode: str | None = None,
+    read_also: Sequence[str] = (),
 ) -> str | None:
     """Set the document to be read again (X1), and return the status it had; None
     when this customer has no such document. ``requested_by`` is who asked: the reading's
     scan spend is billed to them (SP1; None: the system). ``read_model``, when given,
     replaces the model the document asked for (MS5; the caller checked it is allowed);
-    None keeps it.
+    None keeps it. ``read_mode``, when given, replaces its mode and Ensemble's other
+    readers (``read_also``); None keeps both (features 26 and 27).
 
     ``conn`` comes from ``Database.customer(customer_id)``. The family lock comes
     first, and is waited for, never skipped: a family being moved to Trash is
@@ -256,7 +272,8 @@ def mark_for_reprocess(
     lately = {**params, "target": document_id, "minutes": REPROCESS_COOLDOWN_MINUTES}
     if conn.execute(text(_REPROCESSED_LATELY), lately).scalar_one():
         raise ReprocessLimited("cooldown")
-    conn.execute(text(_REPROCESS), {**params, "by": requested_by, "model": read_model})
+    reading = {"m": read_model, "mode": read_mode, "also": list(read_also)}
+    conn.execute(text(_REPROCESS), {**params, "by": requested_by, **reading})
     return str(state.status)
 
 
@@ -321,6 +338,87 @@ def mark_for_upgrade(conn: Connection, customer_id: str, document_id: str) -> bo
         target_type="document",
         target_id=document_id,
     )
+    return True
+
+
+# --- the stuck-document sweep (stuck reading, 16 Oct 2026, kaagaz/jobs/revive.py) ---------
+
+# In progress, out of Trash, and nothing written on it for :stale seconds, on the database's
+# clock (the touch trigger sets updated_at at every change: each try, each progress step).
+# Each statement below repeats it, so a change is made in all three.
+_STUCK_FIND = (
+    "SELECT id, attempts FROM documents"
+    " WHERE customer_id = :c AND status IN ('received', 'clean') AND deleted_at IS NULL"
+    " AND updated_at < now() - make_interval(secs => :stale)"
+    " ORDER BY updated_at, id LIMIT :n"
+)
+_STUCK_REQUEUE = (
+    "UPDATE documents SET attempts = attempts + 1, max_attempts = :max, progress = NULL"
+    " WHERE id = :d AND customer_id = :c AND status IN ('received', 'clean') AND deleted_at IS NULL"
+    " AND updated_at < now() - make_interval(secs => :stale)"
+    " AND attempts < :max RETURNING attempts"
+)
+_STUCK_FAIL = (
+    "UPDATE documents SET status = 'failed', failure_code = :code"
+    " WHERE id = :d AND customer_id = :c AND status IN ('received', 'clean') AND deleted_at IS NULL"
+    " AND updated_at < now() - make_interval(secs => :stale)"
+    " AND attempts >= :max RETURNING id"
+)
+STUCK_NO_JOB = "stuck_no_job"
+
+
+def stuck_documents(
+    conn: Connection, customer_id: str, *, stale_seconds: int, limit: int
+) -> list[tuple[str, int]]:
+    """This customer's stuck documents (``_STUCK_FIND``) as (id, tries so far), longest stuck first,
+    at most ``limit``. ``conn`` comes from ``Database.customer(customer_id)``. One statement."""
+    rows = conn.execute(
+        text(_STUCK_FIND),
+        {"c": customer_id, "stale": stale_seconds, "n": limit},
+    )
+    return [(str(row[0]), int(row[1])) for row in rows]
+
+
+def requeue_stuck(
+    conn: Connection, customer_id: str, document_id: str, *, stale_seconds: int, max_attempts: int
+) -> int | None:
+    """Count one more try on a stuck document with a try left, and clear its stale progress
+    ("Waiting to try again" then shows); that try's number, or None when it is no longer
+    stuck or has no try left, and then nothing changes. The caller queues its job, carrying
+    the tries before this one, in the same transaction. One conditional statement."""
+    row = conn.execute(
+        text(_STUCK_REQUEUE),
+        {"c": customer_id, "d": document_id, "stale": stale_seconds, "max": max_attempts},
+    ).first()
+    return None if row is None else int(row[0])
+
+
+def fail_stuck(
+    conn: Connection,
+    customer_id: str,
+    document_id: str,
+    *,
+    stale_seconds: int,
+    max_attempts: int,
+    now: datetime,
+) -> bool:
+    """Mark a stuck document with no try left failed with ``stuck_no_job``, ending its runs
+    still running and clearing its read-again marks, as ``mark_exhausted`` does; False when it
+    is no longer stuck or has a try left, and then nothing changes. 1 to 3 statements."""
+    marked = conn.execute(
+        text(_STUCK_FAIL),
+        {
+            "c": customer_id,
+            "d": document_id,
+            "stale": stale_seconds,
+            "max": max_attempts,
+            "code": STUCK_NO_JOB,
+        },
+    ).first()
+    if marked is None:
+        return False
+    close_running(conn, customer_id, document_id, status="failed", error_code=STUCK_NO_JOB, now=now)
+    conn.execute(text(_CLEAR_READ_AGAIN), {"c": customer_id, "d": document_id})
     return True
 
 
@@ -562,8 +660,9 @@ class PgDocuments:
                     text(
                         "INSERT INTO documents (id, customer_id, display_name, sha256, size_bytes,"
                         " detected_type, uploaded_by, read_requested_by, folder_id, family_id, version_no,"
-                        " ocr_choice, batch_id) VALUES (:d, :c, :name, :h, :size, :type, :by, :by, :folder,"
-                        " :family, :version, :ocr, :batch)"
+                        " ocr_choice, batch_id, autofile) VALUES (:d, :c, :name, :h, :size, :type, :by, :by,"
+                        " :folder, :family, :version, :ocr, :batch, (SELECT 'pending' FROM customers"
+                        " WHERE id = :c AND autofile_on AND CAST(:folder AS uuid) IS NULL))"
                         " ON CONFLICT (customer_id, sha256) DO NOTHING RETURNING id"
                     ),
                     params,
@@ -664,6 +763,20 @@ class PgDocuments:
 
         with unavailable():
             retry_on_deadlock(transaction, customer_id=customer_id, document_id=document_id)
+
+    def file_document(self, customer_id: str, document_id: str) -> None:
+        """Auto-filing (feature 28) in its own transaction, run again on a deadlock, right
+        after ``mark_ready``. What was decided is logged as a code with the ids only."""
+
+        def transaction() -> str | None:
+            with self._db.customer(customer_id) as conn:
+                return autofile.file_document(conn, customer_id, document_id)
+
+        with unavailable():
+            code = retry_on_deadlock(transaction, customer_id=customer_id, document_id=document_id)
+        if code is not None:
+            ids = {"customer_id": customer_id, "document_id": document_id}
+            _log.info("autofile", extra={**ids, "code": code})
 
     def set_progress(
         self, customer_id: str, document_id: str, progress: "Progress", *, run_id: str | None = None

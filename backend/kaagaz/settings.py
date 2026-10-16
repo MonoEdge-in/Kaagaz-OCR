@@ -52,6 +52,14 @@ MODEL_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,127}/[A-Za-z0-9][A-Za-z0-9._-]{0,127
 PROVIDER_SLUG = re.compile(r"[a-z0-9-]{1,64}")
 # The provider every call used before model choice, and OPENROUTER_PROVIDERS when unset.
 DEFAULT_PROVIDER = "google-vertex"
+# OCR_MODEL and MODEL_CHAT when unset (Tushar, 16 Oct 2026): with no super admin setting,
+# Gemini 3.8 Flash scans and answers; embeddings keep MODEL_EMBED.
+DEFAULT_MODEL = "google/gemini-3.8-flash"
+# The model vendors (the part of a model id before "/") the operator may allow, a ceiling
+# apart from the providers (features 25-27, council 15 Oct 2026, S1). Tushar decided on 15
+# Oct 2026 that Sonnet 5.5 is allowed by default, so the default is google and anthropic.
+DEFAULT_MODEL_VENDORS = frozenset({"google", "anthropic"})
+MODEL_VENDOR = re.compile(r"[a-z0-9][a-z0-9-]{0,127}")  # MODEL_ID's part before "/"
 # OPENROUTER_BASE_URL may be plain http only on these hosts (a fake server in tests, or the
 # exit test's closed port); anywhere else the key would cross the network in the clear.
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
@@ -207,6 +215,8 @@ class Settings:
     # (G8). At most max_check_crops values of a document are read again by the CPU checker
     # (V1). model_rpm is the key's calls a minute, shared by the workers (G9). Pages are
     # read locally once the reader has been down for reader_outage_fallback_minutes (Q7).
+    # Fast scan (council 16 Oct 2026): a Dynamic document of at most careful_early_max_pages
+    # pages starts each page's Careful read with its first read (0: never); optional, 2.
     ocr_model: str
     openrouter_api_key: str | None = field(repr=False)
     openrouter_base_url: str
@@ -215,11 +225,16 @@ class Settings:
     # of a new data processor. Optional: unset is DEFAULT_PROVIDER only; set, it must include
     # DEFAULT_PROVIDER (chat, embeddings and OCR_MODEL are called through it).
     openrouter_providers: frozenset[str]
+    # Features 25-27 (S1): the model vendors a chosen model may come from, checked on its
+    # id; a model of another vendor is never used, even when enabled and verified.
+    # Optional: unset is DEFAULT_MODEL_VENDORS.
+    openrouter_model_vendors: frozenset[str]
     ocr_media_resolution: str
     ocr_thinking_level: str
     ocr_retry_media_resolution: str
     ocr_retry_thinking_level: str
     ocr_page_concurrency: int
+    careful_early_max_pages: int
     cpu_workers: int
     max_check_crops: int
     model_rpm: int
@@ -326,6 +341,7 @@ class Settings:
 
     # API.
     rate_limit_per_minute: int
+    chat_questions_per_minute: int  # chat questions a user may ask a minute (security, 15 Oct 2026)
     log_level: str
 
     @classmethod
@@ -414,7 +430,7 @@ class Settings:
             raise SettingsError("MODEL_TRANSLATE_TIMEOUT_SECONDS must be a number above 0")
         # PRD 5 CX and M: unset is the PRD's value. The whole documents (CX5) must fit the
         # context window with the answer's reply, its repair retry and the system prompt.
-        model_chat = env.text("MODEL_CHAT")
+        model_chat = env.optional("MODEL_CHAT") or DEFAULT_MODEL
         whole_doc_tokens = env.at_least("ANSWER_WHOLE_DOC_TOKENS", 0, default=120_000)
         prompt_tokens = MAX_SYSTEM_PROMPT_TOKENS + CHAT_OVERHEAD_TOKENS
         room = 2 * answer_max_tokens + prompt_tokens
@@ -426,7 +442,7 @@ class Settings:
         model_enabled = env.boolean("MODEL_ENABLED")
         model_embed = env.text("MODEL_EMBED")
         openrouter_api_key = env.optional("OPENROUTER_API_KEY")
-        ocr_model = env.text("OCR_MODEL")
+        ocr_model = env.optional("OCR_MODEL") or DEFAULT_MODEL
         if not valid_model_id(ocr_model):
             raise SettingsError(
                 "OCR_MODEL must be an OpenRouter model ID such as google/gemini-3.1-pro-preview (no :variant)"
@@ -450,6 +466,16 @@ class Settings:
         if DEFAULT_PROVIDER not in providers:
             # Chat, embeddings and the platform's own model (resolve's fallback) all go there.
             raise SettingsError(f"OPENROUTER_PROVIDERS must include {DEFAULT_PROVIDER}")
+        vendors = (
+            DEFAULT_MODEL_VENDORS
+            if env.optional("OPENROUTER_MODEL_VENDORS") is None
+            else env.words("OPENROUTER_MODEL_VENDORS")
+        )
+        if any(MODEL_VENDOR.fullmatch(name) is None for name in vendors):
+            raise SettingsError(
+                "OPENROUTER_MODEL_VENDORS must list model vendors such as google,"
+                " each lower-case letters, digits and dashes, at most 128"
+            )
         if openrouter_api_key is None and (ocr_engine == "gemini" or model_enabled):
             raise SettingsError(
                 "OPENROUTER_API_KEY is not set: OCR_ENGINE=gemini, or MODEL_ENABLED, needs it"
@@ -501,11 +527,13 @@ class Settings:
             openrouter_api_key=openrouter_api_key,
             openrouter_base_url=_openrouter_base_url(env.text("OPENROUTER_BASE_URL")),
             openrouter_providers=providers,
+            openrouter_model_vendors=vendors,
             ocr_media_resolution=env.media_resolution("OCR_MEDIA_RESOLUTION"),
             ocr_thinking_level=env.choice("OCR_THINKING_LEVEL", set(THINKING_LEVELS)),
             ocr_retry_media_resolution=env.media_resolution("OCR_RETRY_MEDIA_RESOLUTION"),
             ocr_retry_thinking_level=env.choice("OCR_RETRY_THINKING_LEVEL", set(THINKING_LEVELS)),
             ocr_page_concurrency=env.positive("OCR_PAGE_CONCURRENCY"),
+            careful_early_max_pages=env.at_least("CAREFUL_EARLY_MAX_PAGES", 0, default=2),
             cpu_workers=env.positive("CPU_WORKERS"),
             max_check_crops=env.positive("MAX_CHECK_CROPS"),
             model_rpm=env.positive("MODEL_RPM"),
@@ -558,6 +586,7 @@ class Settings:
             chat_summary_every=env.at_least("CHAT_SUMMARY_EVERY", 1, default=6),
             timezone=_time_zone(env.text("TIMEZONE")),
             rate_limit_per_minute=env.integer("RATE_LIMIT_PER_MINUTE"),
+            chat_questions_per_minute=env.at_least("CHAT_QUESTIONS_PER_MINUTE", 1, default=20),
             log_level=env.text("LOG_LEVEL"),
         )
 

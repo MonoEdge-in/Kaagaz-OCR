@@ -614,7 +614,16 @@ class QuotingChat:
         self.calls: list[dict[str, Any]] = []
 
     def chat_json(
-        self, *, system: str, user: str, schema: dict[str, Any], max_tokens: int | None = None
+        self,
+        *,
+        system: str,
+        user: str,
+        schema: dict[str, Any],
+        max_tokens: int | None = None,
+        model: str | None = None,
+        thinking: str | None = None,
+        provider: str | None = None,
+        deadline: float | None = None,
     ) -> dict[str, Any]:
         self.calls.append({"system": system, "user": user, "schema": schema, "max_tokens": max_tokens})
         if self.fail_at == len(self.calls) and self.error is not None:

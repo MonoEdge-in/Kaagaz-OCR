@@ -11,8 +11,13 @@ import type {
   AdminChange,
   AdminCreated,
   AdminUser,
+  AiDefaults,
+  AiValues,
+  AnswerChoice,
   AuditEntry,
   BatchView,
+  BoardReply,
+  ChatOptions,
   ChatResponse,
   Conversation,
   ConversationSummary,
@@ -23,16 +28,16 @@ import type {
   DocumentSummary,
   FailedDocument,
   Folder,
+  InsightsReply,
   Me,
   MySpot,
   MyStory,
   MyWord,
   OperatorMe,
   OperatorModel,
-  OperatorOrgModels,
   OperatorUsageRow,
   OrgAdmin,
-  OrgModels,
+  OrgAiReply,
   Organisation,
   OrganisationCreated,
   PageReadings,
@@ -40,6 +45,7 @@ import type {
   PasswordReset,
   PlatformEvent,
   PlatformHealth,
+  QualityReply,
   ReviewChoice,
   ReviewItem,
   ReviewList,
@@ -51,6 +57,7 @@ import type {
   Tag,
   TwoStepSetup,
   UploadLimits,
+  UploadReading,
   UploadResult,
   UsageReport,
   WordSaved,
@@ -198,15 +205,11 @@ export const restoreDocument = (id: string) =>
  * Read the document again from the start (PRD 2, X1): a reviewer or an admin,
  * for a ready, failed or unreadable document out of Trash (403 forbidden or
  * 409 not_reprocessable otherwise). The reply has its new status, received.
- * readModel: the model to read it with (one the organisation allows, else 403
- * model_not_allowed); none keeps the server's choice.
+ * reading: the reading asked for (a model, Dynamic, or Ensemble's readers; one the
+ * organisation may not use is 403); none keeps the document's own.
  */
-export const reprocessDocument = (id: string, readModel?: string) =>
-  request<DocumentSummary>(
-    "POST",
-    `/documents/${id}/reprocess`,
-    readModel ? { read_model: readModel } : undefined,
-  );
+export const reprocessDocument = (id: string, reading?: UploadReading) =>
+  request<DocumentSummary>("POST", `/documents/${id}/reprocess`, reading);
 /**
  * An admin session with two-step sign-in, or a granted user who just confirmed
  * their password (403 otherwise), and only from Trash (409 not_in_trash
@@ -223,6 +226,11 @@ export const updateDocument = (
   id: string,
   changes: { display_name?: string; folder_id?: string | null },
 ) => request<DocumentSummary>("PATCH", `/documents/${id}`, changes);
+/**
+ * Feature 28: move a family Kaagaz filed back to "Not in a folder"; the folder stays.
+ * 409 already_moved when someone moved it since, 409 in_trash in Trash.
+ */
+export const undoAutofile = (id: string) => request<DocumentSummary>("POST", `/documents/${id}/autofile/undo`);
 /** Replace the document's tags with exactly these. */
 export const setDocumentTags = (id: string, tagIds: string[]) =>
   request<{ items: Tag[] }>("PUT", `/documents/${id}/tags`, { tag_ids: tagIds });
@@ -260,8 +268,8 @@ export const deleteMyStory = (id: string, userId: string) =>
  * into a folder when one is given, else at the top level. userId is who was
  * signed in when the file was chosen: the server refuses the file (409
  * session_changed) if someone else has signed in since, in another tab.
- * readModel is the model chosen in "Read with" (readers.ts), sent as read_model; none
- * means the organisation's default.
+ * reading is what was chosen in "Read with" (readers.ts), sent as read_mode, read_model
+ * and read_agents (one field each); none means the organisation's default.
  * batchId is the drop it came in (PRD 5 Q1, a UUID the browser made; 409 batch_full
  * past MAX_FILES_PER_BATCH). onSent: the last byte has gone, so Saving starts (U10).
  */
@@ -270,13 +278,13 @@ export function uploadDocument(
   userId: string,
   onProgress: (fraction: number) => void,
   folderId?: string,
-  readModel?: string,
+  reading?: UploadReading,
   batchId?: string,
   onSent?: () => void,
 ): Promise<UploadResult> {
   const form = new FormData();
   if (folderId) form.append("folder_id", folderId);
-  if (readModel) form.append("read_model", readModel);
+  appendReading(form, reading);
   if (batchId) form.append("batch_id", batchId);
   form.append("user_id", userId);
   form.append("file", file);
@@ -286,21 +294,28 @@ export function uploadDocument(
 /**
  * Upload a new version of a document, with progress. The server gives it the
  * next version number and the family's folder and tags; the reply has the
- * same shape as an upload. readModel and onSent as for uploadDocument.
+ * same shape as an upload. reading and onSent as for uploadDocument.
  */
 export function uploadVersion(
   documentId: string,
   file: File,
   userId: string,
   onProgress: (fraction: number) => void,
-  readModel?: string,
+  reading?: UploadReading,
   onSent?: () => void,
 ): Promise<UploadResult> {
   const form = new FormData();
-  if (readModel) form.append("read_model", readModel);
+  appendReading(form, reading);
   form.append("user_id", userId);
   form.append("file", file);
   return sendForm(`/api/documents/${documentId}/versions`, form, onProgress, onSent);
+}
+
+/** The reading's form fields (features 26, 27): read_agents once per reader. */
+function appendReading(form: FormData, reading: UploadReading | undefined): void {
+  if (reading?.read_mode) form.append("read_mode", reading.read_mode);
+  if (reading?.read_model) form.append("read_model", reading.read_model);
+  for (const agent of reading?.read_agents ?? []) form.append("read_agents", agent);
 }
 
 /**
@@ -366,13 +381,19 @@ export const createTag = (name: string) => request<Tag>("POST", "/tags", { name 
 
 // --- chat ----------------------------------------------------------------------
 
-/** Left out, `scope` stays the conversation's last one (PRD 3 H2); {} is every document. */
-export const ask = (question: string, conversationId?: string, scope?: ScopeBody) =>
+/**
+ * Left out, `scope` stays the conversation's last one (PRD 3 H2); {} is every document.
+ * `choice`: the composer's answer settings (features 25-27); left out, the organisation's.
+ */
+export const ask = (question: string, conversationId?: string, scope?: ScopeBody, choice?: AnswerChoice) =>
   request<ChatResponse>("POST", "/chat", {
     question,
     ...(conversationId ? { conversation_id: conversationId } : {}),
     ...(scope ? { scope } : {}),
+    ...(choice ?? {}),
   });
+/** The answer settings the organisation allows (features 25-27): names and levels, never prices. */
+export const getChatOptions = () => request<ChatOptions>("GET", "/chat/options");
 /**
  * The user's own documents whose story the question tells again (S3): beside
  * ask() for the side cards, or instead of it for "Search my stories", never
@@ -444,22 +465,22 @@ export const resetUser2fa = (id: string) =>
 export const setDeleteForever = (id: string, allowed: boolean) =>
   request<AdminUser>("PUT", `/admin/users/${id}/delete-forever`, { allowed });
 export const getSettings = () => request<CustomerSettings>("GET", "/admin/settings");
-export const updateSettings = (maxUploadMb: number | null) =>
-  request<CustomerSettings>("PATCH", "/admin/settings", { max_upload_mb: maxUploadMb });
+/** ``autofileOn`` left out: the switch is left as it is (feature 28). */
+export const updateSettings = (maxUploadMb: number | null, autofileOn?: boolean) =>
+  request<CustomerSettings>("PATCH", "/admin/settings", {
+    max_upload_mb: maxUploadMb,
+    ...(autofileOn === undefined ? {} : { autofile_on: autofileOn }),
+  });
 export const listAudit = (params: { limit?: number; offset?: number } = {}) =>
   request<{ items: AuditEntry[]; total: number }>("GET", `/admin/audit${query(params)}`);
 export const getStats = () => request<Stats>("GET", "/admin/stats");
 /** Documents that failed or can't be read (PRD 3 Z1); Retry is reprocessDocument. */
 export const listFailed = (params: { limit?: number; offset?: number } = {}) =>
   request<{ items: FailedDocument[]; total: number }>("GET", `/admin/failed${query(params)}`);
-/** The organisation's models, read-only: the operator sets them. */
-export const getAdminModels = () => request<OrgModels>("GET", "/admin/models");
 /** AI use from `from` to `to` (YYYY-MM-DD, both included; the server's default when left out), for one user when given. */
 export type UsageParams = { from?: string; to?: string; user_id?: string };
 export const getAdminUsage = (params: UsageParams = {}) =>
   request<UsageReport>("GET", `/admin/usage${query(params)}`);
-/** The same rows as a CSV file, for a plain download link. */
-export const adminUsageCsvUrl = (params: UsageParams = {}) => `/api/admin/usage.csv${query(params)}`;
 
 // --- the platform operator (super admin) -----------------------------------------
 // Its own cookie (path /api/operator), sent only to these routes.
@@ -475,6 +496,9 @@ export const createOrg = (org: { name: string; admin_email: string; admin_name: 
 export const disableOrg = (id: string, code: string) =>
   request<unknown>("POST", `/operator/orgs/${id}/disable`, { code });
 export const enableOrg = (id: string) => request<unknown>("POST", `/operator/orgs/${id}/enable`);
+/** Feature 28: allow or stop auto-filing; stopping it also switches it off. */
+export const setOrgAutofile = (id: string, granted: boolean) =>
+  request<unknown>("PUT", `/operator/orgs/${id}/autofile`, { granted });
 /** A disabled organisation, its name typed exactly (step-up); deleted after the grace period. */
 export const scheduleDelete = (id: string, name: string, code: string) =>
   request<unknown>("POST", `/operator/orgs/${id}/schedule-delete`, { name, code });
@@ -496,10 +520,19 @@ export const listActivity = (params: { before?: string; org?: string; action?: s
 export const getHealth = () => request<PlatformHealth>("GET", "/operator/health");
 /** The model catalogue, every model OpenRouter lists that a scan could use. */
 export const getOperatorModels = () => request<{ items: OperatorModel[] }>("GET", "/operator/models");
-export const getOperatorOrgModels = (id: string) =>
-  request<OperatorOrgModels>("GET", `/operator/orgs/${id}/models`);
-export const putOperatorOrgModels = (id: string, body: OperatorOrgModels) =>
-  request<OperatorOrgModels>("PUT", `/operator/orgs/${id}/models`, body);
+/** One organisation's AI settings, the defaults it follows and its budget (features 25-27). */
+export const getOrgAi = (id: string) => request<OrgAiReply>("GET", `/operator/orgs/${id}/ai`);
+/** Save them, with a fresh code (step-up). */
+export const putOrgAi = (
+  id: string,
+  body: AiValues & { ensemble: boolean; ai_budget_usd: number | null },
+  code: string,
+) => request<OrgAiReply>("PUT", `/operator/orgs/${id}/ai`, { ...body, code });
+/** The platform defaults and how many organisations follow each area. */
+export const getAiDefaults = () => request<AiDefaults>("GET", "/operator/ai-defaults");
+/** Save them, with a fresh code: every organisation still on them follows. */
+export const putAiDefaults = (body: AiValues, code: string) =>
+  request<AiDefaults>("PUT", "/operator/ai-defaults", { ...body, code });
 /** Enable or disable one model on the platform, with a fresh code (step-up). The id's
  * slash stays a slash: the route takes the whole author/slug. */
 export const setOperatorModelEnabled = (id: string, enabled: boolean, code: string) =>
@@ -511,3 +544,10 @@ export const setOperatorModelEnabled = (id: string, enabled: boolean, code: stri
 /** Tokens and dollars per organisation and model; no user or document. */
 export const getOperatorUsage = (params: { from?: string; to?: string } = {}) =>
   request<{ from: string; to: string; items: OperatorUsageRow[] }>("GET", `/operator/usage${query(params)}`);
+/** Operator insights (F1, F2) over the last `days` days (1 to 90) and the period before. */
+export const getOperatorInsights = (days: number) =>
+  request<InsightsReply>("GET", `/operator/insights${query({ days })}`);
+/** Reading, answers and review (F3); outcome values below K come as null. */
+export const getOperatorQuality = (days: number) => request<QualityReply>("GET", `/operator/quality${query({ days })}`);
+/** Compare models (F4): observational, not an A/B test. */
+export const getModelBoard = (days: number) => request<BoardReply>("GET", `/operator/model-board${query({ days })}`);

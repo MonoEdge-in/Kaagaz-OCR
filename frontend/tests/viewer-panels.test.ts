@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  LINE_FIELDS,
+  MONEY_LINE_FIELDS,
   cardSections,
   checkChip,
   checkReasonText,
@@ -11,6 +13,7 @@ import {
   noCardText,
   normaliseIdentifier,
   spotNote,
+  untilRead,
 } from "@/components/viewer/panels";
 import { ALL_CLEAR, attentionPages } from "@/components/viewer/pageProblems";
 import { highlightsOf, pageChange, selectSpot } from "@/components/viewer/selection";
@@ -215,8 +218,9 @@ describe("invoiceSpot", () => {
 
 describe("lowResolutionText", () => {
   it("gives the exact warning for a low-resolution page", () => {
+    // Changed on purpose (UI quality council, 15 Oct 2026): no DPI on user screens.
     expect(lowResolutionText({ low_resolution: true, effective_dpi: 96.4 })).toBe(
-      "This page was scanned at 96 DPI. Small text may be misread. Upload a sharper scan if values look wrong.",
+      "This page was scanned at low quality. Small text may be misread. Upload a sharper scan if values look wrong.",
     );
   });
 
@@ -250,6 +254,21 @@ describe("spot selection", () => {
   });
 });
 
+describe("untilRead (QA, 15 Oct 2026)", () => {
+  it("says all clear and no related documents only once the document is read", () => {
+    expect(untilRead("ready", ALL_CLEAR)).toBe(ALL_CLEAR);
+    for (const status of ["received", "clean"] as const) {
+      expect(untilRead(status, ALL_CLEAR)).toBe("Not read yet. This fills in once the document is read.");
+    }
+  });
+
+  it("never promises a fill-in for a document that was not read", () => {
+    for (const status of ["needs_reader", "failed", "rejected"] as const) {
+      expect(untilRead(status, ALL_CLEAR)).toBe("This document was not read, so there is nothing to show.");
+    }
+  });
+});
+
 describe("spotNote and noCardText", () => {
   it("names the label's page only when it differs", () => {
     expect(spotNote({ name: "Area", region: box(2), label: box(1) })).toBe(
@@ -260,8 +279,9 @@ describe("spotNote and noCardText", () => {
   });
 
   it("explains a missing card without calling it an error", () => {
+    // Changed on purpose (UI quality council, 15 Oct 2026): plain words, and what may fix it.
     expect(noCardText("ready")).toBe(
-      "No document card. The AI model was off, could not be reached, or its reply could not be used when this was read.",
+      "No document card. The AI could not make one when this was read. Reading it again may fix this.",
     );
     expect(noCardText("clean")).toBe("The document card comes once the document is read.");
   });
@@ -315,5 +335,11 @@ describe("the Attention panel (PRD 5 U5)", () => {
     expect(attentionPages([page(4, { read_quality: "unreadable", illegible_words: 3 })])).toEqual([
       { pageNo: 4, lines: ["This page couldn't be read.", "3 words couldn't be read."], kept: false },
     ]);
+  });
+});
+
+describe("the invoice lines' money columns", () => {
+  it("lines up rate and amount only, the lines' money", () => {
+    expect(LINE_FIELDS.filter((field) => MONEY_LINE_FIELDS.has(field))).toEqual(["rate", "amount"]);
   });
 });

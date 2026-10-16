@@ -4,6 +4,7 @@ Why one place: the frontend's types are the contract. Each function here is
 named after the type it builds, so a reviewer can hold the two side by side.
 """
 
+import re
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from decimal import Decimal
@@ -17,7 +18,7 @@ from kaagaz.db.folders import FolderRow
 from kaagaz.db.listing import MAX_READING_LINES, MAX_READING_TEXT
 from kaagaz.db.tags import TagRow
 from kaagaz.eta import time_left
-from kaagaz.reading.page_quality import ILLEGIBLE_WORDS, LOW_RESOLUTION, READERS_DISAGREE, UNPINNED, fix, says
+from kaagaz.reading.page_quality import ILLEGIBLE_WORDS, READERS_DISAGREE, UNPINNED, fix, says
 from kaagaz.scanning.gate import CUSTOMER_MESSAGES
 
 _STATUS_MESSAGES = {
@@ -27,6 +28,7 @@ _STATUS_MESSAGES = {
     "needs_reader": "Stored safely. This kind of file can't be read yet.",
 }
 _IN_PROGRESS = ("received", "clean")
+_MONEY_KEY = re.compile(r"usd|price|budget|cost", re.IGNORECASE)
 
 # How far the worker has got (PRD 2 X3), by step. PROVISIONAL wording (plan 3.3).
 # "done" counts the pages finished, so the page being worked on is the next one.
@@ -99,7 +101,7 @@ def status_message(
         # The worker came to it while the organisation was turned off (0014): nothing was read.
         return "This file was not read because your organisation was turned off. Read it again."
     if status == "failed":
-        return "This file could not be read." + (f" ({failure_code})" if failure_code else "")
+        return "This file could not be read. Upload it again, or try another copy of it."
     message = _STATUS_MESSAGES.get(status, "")
     if status in _IN_PROGRESS and progress is not None and progress.get("step") == _WAITING_STEP:
         message = READER_WAITING
@@ -120,6 +122,8 @@ def progress_message(progress: Mapping[str, Any]) -> str | None:
     step, done, total = progress.get("step"), progress.get("done"), progress.get("total")
     if step in _STEP_MESSAGES:
         return _STEP_MESSAGES[step]
+    if step == "rereading" and isinstance(total, int) and total > 0:  # Dynamic's Careful (F26)
+        return f"Reading {total} {'page' if total == 1 else 'pages'} again carefully…"
     if step not in _PAGE_STEPS or not isinstance(done, int) or not isinstance(total, int):
         return None
     if total <= 0:
@@ -225,6 +229,7 @@ def document_summary(
         "pages_uncertain": int(row["pages_uncertain"]),
         "values_to_review": int(row["values_to_review"]),
         "words_unsure": int(row["words_unsure"]),  # PRD 5 U2: on the same pages
+        "autofile": row["autofile"],  # feature 28: filed, not_filed or null (db/listing.py's _COLUMNS)
     }
 
 
@@ -395,22 +400,19 @@ def first_unreadable(page: Mapping[str, Any] | None) -> dict[str, Any] | None:
 
 def page_problems(row: RowMapping) -> list[dict[str, Any]]:
     """``PageProblem`` for each issue in ``read_issues``, in the F1 table's order (as
-    stored): what happened (``page_quality.says``, with its count or the page's DPI) and
-    the fix. An issue whose count is 0 now (every disputed value since given another
-    reason) or whose DPI is not known is left out: a sentence never shows a made-up
-    number. O(issues)."""
+    stored): what happened (``page_quality.says``, with its count) and the fix. An issue
+    whose count is 0 now (every disputed value since given another reason) is left out: a
+    sentence never shows a made-up number. O(issues)."""
     counts = {
         ILLEGIBLE_WORDS: int(row["illegible_words"]),
         UNPINNED: int(row["unpinned_lines"]),
         READERS_DISAGREE: int(row["values_disputed"]),
     }
-    dpi = row["effective_dpi"]
     problems = []
     for code in row["read_issues"] or []:
-        if (code in counts and counts[code] == 0) or (code == LOW_RESOLUTION and dpi is None):
+        if code in counts and counts[code] == 0:
             continue
-        said = says(code, count=counts.get(code), dpi=dpi)
-        problems.append({"code": code, "says": said, "fix": fix(code)})
+        problems.append({"code": code, "says": says(code, count=counts.get(code)), "fix": fix(code)})
     return problems
 
 
@@ -433,6 +435,25 @@ def extracted_value(row: RowMapping) -> dict[str, Any]:
         # PRD 2 D3: the value's label spot, which can be on another page; null when it has none.
         "label_page_no": row["label_page_no"],
         "label_region": row["label_region"],
+        "votes": value_votes(row.get("votes")),
+    }
+
+
+def value_votes(votes: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """``ValueVotes`` (Ensemble, F27): the readers' vote saved with a value, for the user in
+    plain words: what each reader read there, the main reader first, how many read the
+    decided text and of how many; never a model's id or name (members never see them on a
+    value). None when one reader read it."""
+    if votes is None:
+        return None
+    reads = [
+        {"main": index == 0, "text": read.get("text")} for index, read in enumerate(votes.get("reads", []))
+    ]
+    return {
+        "value": votes.get("value"),
+        "agreed": votes.get("agreed"),
+        "readers": votes.get("readers"),
+        "reads": reads,
     }
 
 
@@ -701,6 +722,13 @@ def audit_entry(row: RowMapping) -> dict[str, Any]:
         "actor_name": row["actor_name"],
         "target_type": row["target_type"],
         "target_id": row["target_id"],
-        "details": row["details"],
+        # Older org.models_set rows hold the operator's budget_usd: never shown to the org.
+        "details": without_money(row["details"]) if isinstance(row["details"], dict) else row["details"],
         "created_at": iso(row["created_at"]),
     }
+
+
+def without_money(values: Mapping[str, Any]) -> dict[str, Any]:
+    """``values`` without any key that names money (``usd``, ``price``, ``budget``,
+    ``cost``): org admins and members never see money (Tushar, 15 Oct 2026)."""
+    return {key: value for key, value in values.items() if not _MONEY_KEY.search(key)}

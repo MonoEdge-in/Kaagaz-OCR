@@ -391,7 +391,9 @@ class HiddenTextInjectionTest(unittest.TestCase):
 
 
 class ProgressTest(unittest.TestCase):
-    def test_the_progress_goes_scanning_preparing_reading_indexing(self) -> None:
+    def test_the_progress_goes_scanning_preparing_reading_understanding(self) -> None:
+        # Changed on purpose (fast scan, council 16 Oct 2026): the document is ready before
+        # its vectors are made, so no "indexing" progress is written.
         system = rig(embed=FakeEmbedder())
         job = system.job(
             make_pdf([Page(texts=[Text(72, 700, LONG_LINE)]), Page(texts=[Text(72, 700, LONG_LINE)])])
@@ -407,7 +409,6 @@ class ProgressTest(unittest.TestCase):
                 Progress("reading", 1, 2),
                 Progress("reading", 2, 2),
                 Progress("understanding", 0, 2),  # right after reading, before the second reader
-                Progress("indexing", 0, 1),
             ],
         )
         # Every write carries the run's start, so the screen can show how far it has got.
@@ -420,7 +421,7 @@ class ProgressTest(unittest.TestCase):
         system.processor(job, beat)
         steps = [progress for _, _, progress in system.progress.history]
         read = [Progress("scanning", 0, 1), Progress("reading", 0, 0), Progress("understanding", 0, 2)]
-        self.assertEqual(steps, [*read, Progress("indexing", 0, 1)])
+        self.assertEqual(steps, read)  # Changed on purpose (fast scan): no "indexing" step
 
     def test_no_progress_is_written_during_save(self) -> None:
         """Plan 4.5, risk 6: progress is its own transaction, never inside T_save."""
@@ -431,17 +432,27 @@ class ProgressTest(unittest.TestCase):
         start, end = log.index("save starts"), log.index("save ends")
         self.assertEqual(end, start + 1)
         self.assertEqual(log[start - 1], "understanding")
-        self.assertEqual(log[end + 1 :], ["indexing"])
+        self.assertEqual(log[end + 1 :], [])  # Changed on purpose (fast scan): no "indexing" step
 
-    def test_each_written_batch_beats_then_shows_indexing_i_of_n(self) -> None:
+    def test_each_written_batch_beats_after_the_document_is_ready_and_writes_no_progress(self) -> None:
+        """Changed on purpose (fast scan, council 16 Oct 2026): the vectors are made after
+        Ready, so a batch beats the heartbeat and writes no progress (it would move a ready
+        document's screen back to "indexing")."""
         log: list[str] = []
+        statuses: list[DocumentStatus | None] = []
         system = rig(embed=FakeEmbedder(batches=2), log=log)
         job = system.job(CSV)
-        system.processor(job, lambda: log.append("beat"))
+
+        def beat_and_look() -> None:
+            log.append("beat")
+            statuses.append(system.statuses.get_status(job.customer_id, job.document_id))
+
+        system.processor(job, beat_and_look)
         after_save = log[log.index("save ends") + 1 :]
-        self.assertEqual(after_save, ["beat", "indexing", "beat", "indexing", "beat", "indexing"])
+        self.assertEqual(after_save, ["beat", "beat", "beat"])
+        self.assertEqual(statuses[-2:], [DocumentStatus.READY, DocumentStatus.READY])  # each batch
         steps = [progress for _, _, progress in system.progress.history]
-        self.assertEqual(steps[-2:], [Progress("indexing", 1, 2), Progress("indexing", 2, 2)])
+        self.assertEqual(steps[-1].step, "understanding")
 
     def test_preparing_reading_and_after_carry_the_time_left(self) -> None:
         """PRD 4 #13, cold: the constants (an unknown engine: 7 s a page), then this run's
@@ -464,7 +475,9 @@ class ProgressTest(unittest.TestCase):
         self.assertAlmostEqual(
             (prep.finish_at - T0).total_seconds(), prep.item_s + 2 * first.item_s + 45.0, 3
         )
-        self.assertEqual((by[("scanning", 0)], by[("indexing", 0)]), (None, after))  # indexing keeps it
+        # Changed on purpose (fast scan, council 16 Oct 2026): no "indexing" step any more.
+        self.assertIsNone(by[("scanning", 0)])
+        self.assertNotIn(("indexing", 0), by)
 
     def test_the_percent_never_goes_back_when_a_slow_page_1_raises_item_s(self) -> None:
         """Council of 5 Oct 2026: page 1 of 6 takes 15 s against the 7 s guess, so the next
@@ -524,12 +537,19 @@ class ProgressTest(unittest.TestCase):
         self.assertAlmostEqual(prep.item_s, (2 + 2.44 * 3 + 1.5) / (2 + 2.44 * 2 + 1))
 
     def test_three_ready_runs_teach_the_time_after_reading(self) -> None:
-        moves: list[Callable[[float], None]] = []
-        system = rig(embed=FakeEmbedder(batches=1, during_batch=lambda _: moves[0](30.0)))
-        moves.append(system.timer.advance)
+        # Changed on purpose (fast scan, council 16 Oct 2026): the run ends at Ready, before
+        # the vectors, so the 30 s after reading are spent in the save, not in the embeddings.
+        system = rig(embed=FakeEmbedder(batches=1))
+        save = system.store.save
+
+        def slow_save(content: DocumentContent, *, run_id: str | None = None) -> None:
+            system.timer.advance(30.0)
+            save(content, run_id=run_id)
+
         for n in range(4):
             job = system.job(make_pdf([Page(texts=[Text(72, 700, f"{LONG_LINE} {n}")])]))
-            system.processor(job, beat)
+            with mock.patch.object(system.store, "save", slow_save):
+                system.processor(job, beat)
         timings = {"seconds_reading": 0.0, "seconds_after_reading": 30.0, "seconds_preparing": 0.0}
         self.assertEqual(system.totals(job).config, {**CONFIG, **timings})
         after = [p for _, _, p in system.progress.history if p.step == "understanding"][-1].estimate
@@ -896,24 +916,26 @@ class RunFenceTest(unittest.TestCase):
         assert old.totals is not None
         self.assertEqual(old.totals.pages_text_layer, 1)
 
-    def test_a_newer_run_during_indexing_stops_the_older_one_before_it_is_ready(self) -> None:
-        """A delivery whose lease ran out while embedding overlaps the next one, which starts
-        a new run. The fence refuses the older run's next write (its progress after the
-        batch), so it embeds no more and never marks the document ready."""
+    def test_a_newer_run_during_indexing_stops_the_older_one_within_a_batch(self) -> None:
+        """Changed on purpose (fast scan, council 16 Oct 2026): the document is ready before
+        its vectors, so a redelivery skips it; only "read again" (status received, a new
+        run) can overlap the indexing. The older run then embeds no more after the batch, and
+        writes nothing: the document keeps the newer run's status."""
         batches: list[int] = []
 
-        def newer_run_starts(done: int) -> None:
+        def read_again(done: int) -> None:
             batches.append(done)
             if done == 1:
+                system.statuses.set_status(CUSTOMER, job.document_id, DocumentStatus.RECEIVED)
                 system.runs.start(CUSTOMER, job.document_id, now=T0)
 
-        system = rig(embed=FakeEmbedder(batches=3, during_batch=newer_run_starts))
+        system = rig(embed=FakeEmbedder(batches=3, during_batch=read_again))
         job = system.job(CSV)
         system.processor(job, beat)  # returns normally: the worker acks it
 
         self.assertEqual(batches, [1])
-        self.assertIs(system.statuses.get_status(CUSTOMER, job.document_id), DocumentStatus.CLEAN)
-        self.assertEqual(statuses_of(system.runs_of(job)), [("superseded", None), ("running", None)])
+        self.assertIs(system.statuses.get_status(CUSTOMER, job.document_id), DocumentStatus.RECEIVED)
+        self.assertEqual(statuses_of(system.runs_of(job)), [("ready", None), ("running", None)])
 
 
 class LoggingTest(unittest.TestCase):

@@ -4,6 +4,8 @@ Pure helpers (the answer text, and a saved answer's sources as they are now)
 are tested first, without a database.
 """
 
+import json
+import re
 import uuid
 from typing import Any
 
@@ -11,14 +13,26 @@ import pytest
 from sqlalchemy import text
 
 from kaagaz.api.app import create_app
-from kaagaz.api.routers.chat import NOT_FOUND_TEXT, answer_text
+from kaagaz.api.auth import CurrentUser, current_user
+from kaagaz.api.routers.chat import NOT_FOUND_TEXT, TOO_MANY_QUESTIONS, answer_text
 from kaagaz.api.views import GONE_SENTENCE, answer_with_source_states, cited_document_ids
-from kaagaz.db.engine import Database
+from kaagaz.db.engine import Database, make_engine
 from kaagaz.search.scope import ScopeBody
 from tests.settings_factory import make_settings
-from tests.test_api_support import CSRF, NOW, PASSWORD, Api, TestClient, answer_json
+from tests.test_api_support import (
+    CSRF,
+    NOW,
+    PASSWORD,
+    Api,
+    ApiFakeQueue,
+    ApiFakeStorage,
+    FakeAnswers,
+    TestClient,
+    answer_json,
+)
 
 PAN = "ABCDE1234F"  # made up
+MONEY = re.compile(r"usd|price|budget|cost|spend|\$|₹", re.IGNORECASE)  # features 25-27: never to members
 REGION = {"kind": "box", "page": 1, "box": [0.1, 0.2, 0.3, 0.25]}
 
 
@@ -113,6 +127,49 @@ def test_a_sentence_whose_every_source_is_gone_is_replaced_and_one_without_sourc
     }
 
 
+def _offline_chat_client(user_id: str, **settings: object) -> TestClient:
+    """An app whose database is never reached, signed in as ``user_id``."""
+    app = create_app(
+        make_settings(**settings),
+        db=Database(make_engine("postgresql://unused@localhost:1/unused"), "kaagaz_app"),
+        storage=ApiFakeStorage(),
+        queue=ApiFakeQueue(),
+        answers=FakeAnswers(),
+        clock=lambda: NOW,
+    )
+    app.dependency_overrides[current_user] = lambda: CurrentUser(
+        user_id=user_id,
+        customer_id=str(uuid.uuid4()),
+        email="a@b.c",
+        display_name="A",
+        role="member",
+        customer_name="C",
+        scope="app",
+        session_version=1,
+        must_change_password=False,
+        totp_enabled=False,
+        delete_forever_allowed=False,
+    )
+    return TestClient(app)
+
+
+def test_a_user_asking_too_fast_is_429_with_a_plain_message_and_others_are_not() -> None:
+    """Security checklist (15 Oct 2026): CHAT_QUESTIONS_PER_MINUTE questions a user a
+    minute, checked first. An empty question is 400 before the database, so the
+    first two use the limit up without one."""
+    fast = _offline_chat_client(str(uuid.uuid4()), chat_questions_per_minute=2)
+    for _ in range(2):
+        assert fast.post("/api/chat", json={"question": " "}, headers=CSRF).status_code == 400
+
+    refused = fast.post("/api/chat", json={"question": " "}, headers=CSRF)
+
+    assert refused.status_code == 429
+    assert refused.headers["Retry-After"] == "60"
+    assert refused.json()["error"] == {"code": "rate_limited", "message": TOO_MANY_QUESTIONS}
+    other = _offline_chat_client(str(uuid.uuid4()), chat_questions_per_minute=2)
+    assert other.post("/api/chat", json={"question": " "}, headers=CSRF).status_code == 400
+
+
 @pytest.mark.db
 def test_ask_keeps_the_question_as_asked_stores_both_messages_and_audits(db: Database) -> None:
     api = Api(db)
@@ -141,10 +198,14 @@ def test_ask_keeps_the_question_as_asked_stores_both_messages_and_audits(db: Dat
         ).scalar_one()
     assert PAN in stored
     assert title == asked
+    # Changed on purpose (features 25-27, 15 Oct 2026): the audit row names who was asked to
+    # draft the answer and at what level (S5c); with no chat model set anywhere, MODEL_CHAT at low.
     assert details == {
         "conversation_id": body["conversation_id"],
         "question_id": body["question"]["id"],
         "status": "answered",
+        "agents": api.settings.model_chat,
+        "thinking": "low",
     }
 
 
@@ -385,3 +446,57 @@ def test_a_scope_too_big_to_save_is_400_before_asking(db: Database) -> None:
     reply = api.new_signed().client.post("/api/chat", json={"question": "?", "scope": scope}, headers=CSRF)
     assert reply.status_code == 400
     assert api.answers.asked == []
+
+
+# --- answer settings (features 25-27, council 15 Oct 2026, C10) ------------------------------
+
+
+@pytest.mark.db
+def test_chat_options_list_only_what_the_organisation_allows_and_no_money(db: Database) -> None:
+    signed = Api(db).new_signed()
+    reply = signed.client.get("/api/chat/options")
+    assert reply.status_code == 200
+    # No chat model set anywhere: nothing to pick, the one level, no Ensemble (as before).
+    assert reply.json() == {
+        "agents": [],
+        "levels": ["low"],
+        "default_level": "low",
+        "ensemble": False,
+        "max_agents": 3,
+    }
+    assert MONEY.search(json.dumps(reply.json())) is None
+
+
+@pytest.mark.db
+@pytest.mark.parametrize(
+    ("choice", "status", "code"),
+    [
+        ({"agents": ["google/not-allowed-1"]}, 403, "model_not_allowed"),
+        ({"thinking": "high"}, 403, "thinking_not_allowed"),
+        ({"agents": ["google/a-1", "google/a-1"]}, 400, "bad_request"),
+        ({"agents": ["google/a-1", "google/b-1", "google/c-1", "google/d-1"]}, 400, "bad_request"),
+    ],
+)
+def test_ask_refuses_a_choice_it_may_not_make_before_anything_is_stored(
+    db: Database, choice: dict[str, Any], status: int, code: str
+) -> None:
+    api = Api(db)
+    signed = api.new_signed()
+    reply = signed.client.post("/api/chat", json={"question": "total?", **choice}, headers=CSRF)
+    assert (reply.status_code, reply.json()["error"]["code"]) == (status, code)
+    assert MONEY.search(reply.text) is None and "google/" not in reply.text  # plain words, no model id
+    assert api.answers.asked == []
+    with db.customer(signed.customer_id) as conn:
+        assert conn.execute(text("SELECT count(*) FROM messages")).scalar_one() == 0
+
+
+@pytest.mark.db
+def test_ask_sends_the_checked_choice_to_the_answer(db: Database) -> None:
+    api = Api(db)
+    signed = api.new_signed()
+    chosen = {"agents": [api.settings.model_chat], "thinking": "low"}
+    reply = signed.client.post("/api/chat", json={"question": "total?", **chosen}, headers=CSRF)
+    assert reply.status_code == 200
+    [choice] = api.answers.choices
+    assert choice is not None
+    assert ([agent.model for agent in choice.agents], choice.thinking) == ([api.settings.model_chat], "low")

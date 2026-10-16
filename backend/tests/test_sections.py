@@ -1,5 +1,6 @@
 """A document's map (PRD 5 CX2, CX3) and the save's check of it (CX4), with a fake chat model."""
 
+import threading
 import unittest
 from typing import Any
 
@@ -301,7 +302,27 @@ class PipelineMapTest(unittest.TestCase):
         self.assertEqual([s.summary for s in content.sections], ["A receipt."])
         self.assertEqual(content.topics, (Topic("payment", ("paid",), (0,)),))
         self.assertEqual((system.totals(job).model_calls, system.totals(job).error_code), (2, None))
-        self.assertEqual(chat.calls[1]["system"], MAP_SYSTEM_PROMPT.format(topic_max=40))
+        self.assertIn(MAP_SYSTEM_PROMPT.format(topic_max=40), [call["system"] for call in chat.calls])
+
+    def test_fast_scan_the_map_is_asked_while_the_card_is(self) -> None:
+        mapping = threading.Event()
+
+        class CardWaitsForMap(FakeChat):
+            seen_map_first = False
+
+            def chat_json(self, **kwargs: Any) -> dict[str, Any]:
+                if kwargs["schema"] is MAP_SCHEMA:
+                    mapping.set()
+                else:  # the card: it only ends once the map call has started
+                    CardWaitsForMap.seen_map_first = mapping.wait(timeout=10)
+                return super().chat_json(**kwargs)
+
+        chat = CardWaitsForMap(CARD, reply(sections=[{"seq": 0, "summary": "A receipt."}]))
+        system = rig(chat, map_budget=BUDGET)
+        job = system.read()
+        self.assertTrue(CardWaitsForMap.seen_map_first)
+        self.assertEqual([s.summary for s in system.content(job).sections], ["A receipt."])
+        self.assertEqual(system.totals(job).model_calls, 2)
 
     def test_cx4_keyless_sections_come_from_the_headings_and_there_are_no_topics(self) -> None:
         system = rig(None, map_budget=BUDGET)

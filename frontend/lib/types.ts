@@ -96,6 +96,9 @@ export interface DocumentSummary {
   // PRD 5 U1: from GET /api/batches/{id} only: its first unreadable page still to look at, or null.
   first_unreadable?: FirstUnreadablePage | null;
   values_found?: number; // PRD 5 U1: from GET /api/batches/{id} only: the values extracted from it
+  // Feature 28: Kaagaz filed it into its folder by type ("filed", Undo offered), or could not
+  // tell where it belongs ("not_filed"); null when auto-filing had nothing to do with it.
+  autofile?: "filed" | "not_filed" | null;
 }
 
 /** A file's first unreadable page, for the tray's "Couldn't read page n" (U1): what
@@ -112,7 +115,7 @@ export interface BatchView {
   id: string;
   documents: DocumentSummary[]; // in upload order; the tray sorts them worst first
   counts: { total: number; ready: number; reading: number; waiting: number; attention: number; failed: number };
-  pages_read: number; // the batch bar is pages_read / pages_total (U1)
+  pages_read: number; // of pages_total (U1); the bar weighs each document's own fraction (batchTray.ts)
   pages_total: number;
   time_left: TimeLeft | null; // until the whole drop is ready; null when nothing is left to read
 }
@@ -158,7 +161,8 @@ export type DocType =
 /** How far the worker has got (PRD 2, X3), e.g. step "reading", done 3, total 40. */
 export interface DocumentProgress {
   // "waiting" (PRD 5 Q6): held back in its batch or for the reader; the status message says why.
-  step: "scanning" | "preparing" | "reading" | "understanding" | "indexing" | "waiting";
+  // "rereading": some pages read again carefully (Dynamic's Careful); total is how many.
+  step: "scanning" | "preparing" | "reading" | "rereading" | "understanding" | "indexing" | "waiting";
   done: number;
   total: number; // 0 for a sheet, which is read as a whole
 }
@@ -295,6 +299,17 @@ export interface ExtractedValue {
   confidence: number | null;
   label_page_no: number | null; // the value's label spot, which can be on another page (PRD 2 D3); null without one
   label_region: Region | null;
+  votes?: ValueVotes | null; // Ensemble (feature 27): the readers' vote, saved with the value; null: one reader
+}
+
+/** Ensemble's vote on one value (feature 27, Tushar 15 Oct 2026): what each reader read at the
+ * value's spot, the main reader first (text null: it read nothing there), how many read the
+ * decided value (value null: no majority, so the value needs review). Never a model's name. */
+export interface ValueVotes {
+  value: string | null;
+  agreed: number;
+  readers: number;
+  reads: { main: boolean; text: string | null }[];
 }
 
 /** The AI model's document card (PRD 2 D1, D3): what the document is, and where each
@@ -398,6 +413,21 @@ export interface UploadLimits {
   sheet_bytes: number;
   max_pages: number; // for a PDF's pages and a TIFF's frames
   readers: UploadReader[]; // the scan readers an upload may choose, the server's default first
+  ensemble?: EnsembleOffer | null; // "More than one reader…" (feature 27); null: not allowed here
+}
+
+/** What an upload or a whole document's Read again asks for (features 26, 27); nothing: the default. */
+export interface UploadReading {
+  read_mode?: "dynamic" | "ensemble";
+  read_model?: string;
+  read_agents?: string[];
+}
+
+/** The models an upload may read with together (feature 27), by name; main is the main reader. */
+export interface EnsembleOffer {
+  readers: { id: string; name: string }[];
+  max: number;
+  main: string;
 }
 
 /** One scan reader the server offers (PRD 4 #17): reason says why it can't be used here. */
@@ -500,6 +530,31 @@ export interface Answer {
   reading_note?: string | null;
   unreadable_pages?: UnreadablePage[];
   unreadable_page_count?: number;
+  // Features 25-27 (C7), only on an answer drafted with the asker's answer settings: the
+  // names (and ids) of the models that replied, the one used first; how many were asked;
+  // whether the others confirmed it (null with one model); the thinking level.
+  agents?: string[];
+  agent_ids?: string[];
+  agents_asked?: number;
+  agreement?: "agreed" | "not_confirmed" | null;
+  thinking?: ThinkingLevel;
+}
+
+export type ThinkingLevel = "low" | "medium" | "high";
+
+/** GET /chat/options (features 25-27): the answer settings this organisation allows now. */
+export interface ChatOptions {
+  agents: { id: string; name: string; default: boolean }[]; // by name; [] when none is set
+  levels: ThinkingLevel[];
+  default_level: ThinkingLevel;
+  ensemble: boolean; // more than one model may answer at once
+  max_agents: number;
+}
+
+/** POST /chat's answer settings; a field left out is the organisation's default. */
+export interface AnswerChoice {
+  agents?: string[];
+  thinking?: ThinkingLevel;
 }
 
 /** One of my words (GET /me/words). Text from the user: shown as text only. */
@@ -660,6 +715,8 @@ export interface CustomerSettings {
   customer_name: string;
   max_upload_mb: number | null; // null: the platform limit applies
   platform_max_upload_mb: number;
+  // Feature 28: the platform allowed auto-filing (granted), and the admin switched it on.
+  autofile: { granted: boolean; on: boolean };
 }
 
 export interface AuditEntry {
@@ -686,9 +743,9 @@ export interface Stats {
   in_trash: number;
   pages_this_month: Record<PageRoute, number>; // pages read this month, by route (PRD 2, R6); 0 when none
   // PRD 5 U9: this month's OCR pages by who read them (read_again: pages read again), and the
-  // model's spend estimate from its tokens; usd comes from the AI spend ledger (null when not known).
+  // scan tokens. No money: org admins never see it (Tushar, 15 Oct 2026).
   reader_pages?: { gemini: number; local: number; cached: number; read_again: number };
-  spend_estimate?: { input_tokens: number; output_tokens: number; usd: number | null };
+  scan_tokens?: { input_tokens: number; output_tokens: number };
 }
 
 /** The signed-in user's own story about a document's family (GET / PUT /documents/{id}/my-story).
@@ -723,6 +780,8 @@ export interface Organisation {
   pages: number;
   storage_bytes: number;
   last_activity_at: string | null;
+  autofile_granted: boolean; // feature 28: auto-filing allowed; its admin switches it on
+  autofile_on: boolean;
 }
 
 /** POST /operator/orgs: the temporary password is in this one reply only. */
@@ -808,7 +867,10 @@ export type UsageKind =
   | "chat"
   | "memory"
   | "search"
-  | "story";
+  | "story"
+  | "careful" // Dynamic's careful re-reads (feature 26)
+  | "ensemble_scan" // Ensemble's other readers (feature 27)
+  | "ensemble_chat"; // Ensemble's other answer drafts (feature 27)
 
 /** One model an upload may read scans with (GET /upload-limits readers), the default first. */
 export interface ReaderOption {
@@ -818,63 +880,46 @@ export interface ReaderOption {
   available: boolean;
 }
 
-/** One model the operator allowed this organisation, with its live price. */
-export interface OrgModel {
-  id: string;
-  name: string;
-  price_in_usd_per_m: number; // US dollars per million input tokens
-  price_out_usd_per_m: number;
-  is_default_scan: boolean;
-  provider?: string; // the zero-data-retention provider its pages go to ("google-vertex")
-  usd_per_page?: number | null; // estimated a page (MC3); null: not measured yet
-  page_hint: string; // the same in words, as "Read with" says it: "about $0.04 a page", "... (rough estimate)"
-}
-
-/** GET /admin/models: read-only, set by the operator ("Set by MonoEdge"). */
-export interface OrgModels {
-  set_by: "operator";
-  default_scan: string | null; // the model reading scans now: the default, or the platform's; null in keyless mode
-  models: OrgModel[]; // [] when the operator set none: every scan is read by the platform's model
-  ai_budget_usd: number | null; // the monthly budget; null: none
-  spent_this_month_usd: number; // this month's AI spend, from the ledger
-}
-
-/** Tokens and US dollars of some model calls. cost_usd is null when not known. */
-export interface UsageTotals {
+/** Tokens of some model calls: all an org admin sees (no money, Tushar, 15 Oct 2026). */
+export interface UsageTokens {
   calls: number;
   cached_calls: number; // pages taken from the page cache, at no cost
   input_tokens: number;
   output_tokens: number; // thinking included
   reasoning_tokens: number;
+}
+
+/** Tokens and US dollars of some model calls (operator only). cost_usd is null when not known. */
+export interface UsageTotals extends UsageTokens {
   cost_usd: number | null;
   cost_estimated: boolean; // some of it is the catalogue price times the tokens
   cost_part_unknown: boolean; // some call's cost is not known: cost_usd counts the known ones only
 }
 
-export interface UsageByUser extends UsageTotals {
+export interface UsageByUser extends UsageTokens {
   user_id: string | null; // null: work no user asked for (the upgrade sweep, re-indexing)
   user_name: string | null;
 }
 
-export interface UsageByModel extends UsageTotals {
+export interface UsageByModel extends UsageTokens {
   model: string;
   model_name: string;
 }
 
-export interface UsageByKind extends UsageTotals {
+export interface UsageByKind extends UsageTokens {
   kind: UsageKind;
 }
 
-export interface UsageByDay extends UsageTotals {
+export interface UsageByDay extends UsageTokens {
   day: string; // YYYY-MM-DD in the server's TIMEZONE
 }
 
-export interface UsageTopDocument extends UsageTotals {
+export interface UsageTopDocument extends UsageTokens {
   document_id: string | null; // null: the document was deleted
   name: string; // "Deleted document" when it was deleted
 }
 
-/** This month's spend against the operator's budget (warn only: nothing stops at 100%). */
+/** This month's spend against the operator's budget (warn only: nothing stops at 100%). Operator only. */
 export interface UsageBudget {
   ai_budget_usd: number | null;
   spent_this_month_usd: number;
@@ -886,13 +931,12 @@ export interface UsageBudget {
 export interface UsageReport {
   from: string; // YYYY-MM-DD
   to: string;
-  totals: UsageTotals;
+  totals: UsageTokens;
   by_user: UsageByUser[];
   by_model: UsageByModel[];
   by_kind: UsageByKind[];
   by_day: UsageByDay[];
   top_documents: UsageTopDocument[]; // at most 10, the costliest first
-  budget: UsageBudget;
   ai_enabled?: boolean; // false: keyless mode (no OpenRouter key, MODEL_ENABLED=false), no model is called
 }
 
@@ -914,13 +958,50 @@ export interface OperatorModel {
   ledger_tokens_in: number | null; // MC3: a scanned page's average over the last 30 days; null: none
   ledger_tokens_out: number | null;
   enabled_at: string | null; // null: not enabled on the platform
+  chat_eligible: boolean; // may answer questions (features 25-27, C11)
+  chat_verified: boolean; // verify-models passed for the current answer prompt
+  vendor_allowed: boolean; // its maker is in OPENROUTER_MODEL_VENDORS; else never used
 }
 
-/** GET and PUT /operator/orgs/{id}/models. default_scan is one of models, or null when models is []. */
-export interface OperatorOrgModels {
-  models: string[];
-  default_scan: string | null;
+/** A thinking level, as the operator console says it (High / Medium / Low). */
+export type AiLevel = "low" | "medium" | "high";
+
+/** One organisation's own AI settings or the platform defaults (features 25-27, C10). For an
+ * organisation, an empty list or a null field follows the platform defaults; for the
+ * platform, an empty list uses the server's model and a null scan level the server's. */
+export interface AiValues {
+  scan_models: string[];
+  scan_default: string | null;
+  chat_models: string[];
+  chat_default: string | null;
+  scan_thinking: AiLevel | null;
+  chat_levels: AiLevel[] | null;
+  chat_default_level: AiLevel | null;
+  dynamic: boolean | null;
+}
+
+/** What the server uses when the platform defaults name no model or scan level. */
+export interface AiEnv {
+  scan_model: string;
+  chat_model: string;
+  scan_thinking: string;
+}
+
+/** GET /operator/orgs/{id}/ai (operator only: the budget is in US dollars). */
+export interface OrgAiReply {
+  own: AiValues;
+  defaults: AiValues;
+  env: AiEnv;
+  ensemble: boolean;
+  max_agents: number; // the most models that read or answer together
   ai_budget_usd: number | null;
+}
+
+/** GET /operator/ai-defaults: the defaults and how many organisations follow each area. */
+export interface AiDefaults {
+  defaults: AiValues;
+  env: AiEnv;
+  orgs_inheriting: Record<"scan_models" | "chat_models" | "scan_thinking" | "chat_levels" | "dynamic", number>;
 }
 
 /** One row of GET /operator/usage: one organisation's use of one model. No user or document. */
@@ -928,4 +1009,137 @@ export interface OperatorUsageRow extends UsageTotals {
   organisation_id: string;
   organisation_name: string;
   model: string;
+}
+
+// --- Operator insights (council 11 Oct 2026, F1-F4). Counts, sums, rates and durations
+// per organisation or model only; null where the database suppressed a value below K
+// (or a p95 below 20) or where no cost is known. Days are YYYY-MM-DD in TIMEZONE. -----
+
+/** F1: one organisation's day; only days with something are sent. */
+export interface InsightDay {
+  organisation_id: string;
+  day: string;
+  uploads: number;
+  sign_ins: number;
+  questions: number;
+  corrections: number;
+  runs: number;
+  runs_failed: number;
+  pages: number;
+  scan_pages: number; // scan pages read by a model (not from the cache)
+  cached_pages: number;
+  cost_usd: number | null; // every kind; null: no cost known
+  cost_scan_usd: number | null;
+  cost_documents_usd: number | null; // scan, upgrade, card, invoice, map, embed
+  cost_questions_usd: number | null; // chat, memory, search
+  cost_estimated: boolean;
+  cost_part_unknown: boolean;
+}
+
+/** F2: one organisation's health now. */
+export interface OrgInsight {
+  organisation_id: string;
+  active_users_7d: number;
+  active_users_30d: number;
+  active_users_prev_30d: number;
+  answers_30d: number;
+  not_found_30d: number | null; // null: fewer than K answers
+  open_review: number;
+  oldest_open_review_at: string | null; // ISO 8601
+  ai_budget_usd: number | null; // null: no budget
+  month_cost_usd: number | null; // this calendar month; null: no cost known
+  month_cost_estimated: boolean;
+  month_cost_part_unknown: boolean;
+  last_active_day: string | null; // ISO date: the latest local day with an upload, question or run; null: never
+}
+
+/** GET /operator/insights?days= */
+export interface InsightsReply {
+  from: string;
+  to: string;
+  previous_from: string; // the period before: previous_from to the day before from
+  ai_enabled: boolean; // false: keyless mode, no model is called
+  month: { from: string; today: string; days_in_month: number };
+  organisations: OrgInsight[];
+  daily: InsightDay[]; // previous_from to to
+}
+
+/** F3: reading, answers and review of one organisation, or the platform (organisation_id null). */
+export interface QualityRow {
+  organisation_id: string | null;
+  runs: number;
+  runs_failed: number;
+  runs_failed_platform: number;
+  runs_degraded: number;
+  documents_run: number;
+  pages_cells: number;
+  pages_text_layer: number;
+  pages_ocr: number;
+  pages_blank: number;
+  pages_ai: number;
+  pages_local: number;
+  pages_cached: number;
+  pages_unreadable: number;
+  ready_documents: number;
+  ready_p50_seconds: number | null;
+  ready_p95_seconds: number | null; // null: fewer than 20 documents
+  answers: number;
+  answered: number | null;
+  not_found: number | null;
+  unchecked: number | null;
+  answers_verified: number | null;
+  answers_fixed_query: number | null;
+  citations: number | null;
+  feedback: number;
+  feedback_up: number | null;
+  values_total: number;
+  values_needs_review: number | null;
+  corrections: number;
+  corrections_second: number | null;
+  corrections_typed: number | null;
+}
+
+/** GET /operator/quality?days= */
+export interface QualityReply {
+  from: string;
+  to: string;
+  ai_enabled: boolean;
+  platform: QualityRow | null; // null: no platform row
+  organisations: QualityRow[];
+}
+
+/** F4: one model, observational (not an A/B test). No organisation. */
+export interface BoardRow {
+  model: string;
+  documents: number;
+  runs: number;
+  runs_failed: number;
+  runs_degraded: number;
+  pages_ai: number;
+  pages_local: number;
+  pages_cached: number;
+  seconds_per_page_p50: number | null;
+  seconds_per_page_p95: number | null;
+  calls: number;
+  scan_calls: number;
+  cached_scan_calls: number;
+  input_tokens: number;
+  output_tokens: number;
+  cost_usd: number | null;
+  scan_cost_usd: number | null;
+  cost_estimated: boolean;
+  cost_part_unknown: boolean;
+  ocr_pages: number;
+  pages_disagree: number | null; // page signals: null when documents < K
+  pages_refused: number | null;
+  pages_fell_back: number | null;
+  pages_unpinned: number | null;
+}
+
+/** GET /operator/model-board?days= */
+export interface BoardReply {
+  from: string;
+  to: string;
+  ai_enabled: boolean;
+  items: BoardRow[];
 }

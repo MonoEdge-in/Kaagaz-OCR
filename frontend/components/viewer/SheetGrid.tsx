@@ -42,7 +42,8 @@ export function SheetGrid({ documentId, page, highlights, crop, marks = [], acti
   const base = `${documentId}:${page.page_no}:${initial.rowFrom}`;
   const from = rowFrom && rowFrom.base === base ? rowFrom.value : initial.rowFrom;
   const to = crop ? initial.rowTo : from + SHEET_ROWS_PER_VIEW - 1;
-  const key = `${base}:${from}:${to}`;
+  const [tries, setTries] = useState(0); // Try again asks once more
+  const key = `${base}:${from}:${to}:${tries}`;
 
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   useEffect(() => {
@@ -85,7 +86,14 @@ export function SheetGrid({ documentId, page, highlights, crop, marks = [], acti
     );
   }
   if (current.error || !current.sheet) {
-    return <p className="error-text">{current.error ?? "Could not load this sheet."}</p>;
+    return (
+      <div role="alert">
+        <p className="error-text">{current.error ?? "Could not load this sheet."}</p>
+        <button type="button" className="btn" onClick={() => setTries((n) => n + 1)}>
+          Try again
+        </button>
+      </div>
+    );
   }
 
   const sheet = current.sheet;

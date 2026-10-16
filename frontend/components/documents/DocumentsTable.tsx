@@ -21,7 +21,7 @@
 // after an inline question.
 
 import Link from "next/link";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { PasswordField } from "@/components/ui/PasswordField";
 import { canReprocess } from "@/components/viewer/reprocess";
@@ -35,7 +35,7 @@ import {
   restoreDocument,
 } from "@/lib/api";
 import { useSession } from "@/lib/session";
-import { docTypeLabel, formatBytes, formatDateTime, formatRelative, typeLabel } from "@/lib/format";
+import { docTypeLabel, formatBytes, formatDate, formatDateTime, formatRelative, typeLabel } from "@/lib/format";
 import type { DocumentSummary, Me, Tag } from "@/lib/types";
 import { EditDialog, RowMenu } from "./DocumentActions";
 import type { FolderTree } from "./folderTree";
@@ -126,7 +126,8 @@ export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events 
   const allSelected = deletableItems.length > 0 && selectedCount === deletableItems.length;
   const partiallySelected = selectedCount > 0 && !allSelected;
 
-  function toggle(id: string) {
+  // Stable, with the row events below, so a poll that changes one row renders only that row.
+  const toggle = useCallback((id: string) => {
     setSelectedIds((current) => {
       const next = new Set(current);
       if (next.has(id)) next.delete(id);
@@ -134,7 +135,21 @@ export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events 
       return next;
     });
     setError(null);
-  }
+  }, []);
+  const latestEvents = useRef(events);
+  useEffect(() => {
+    latestEvents.current = events;
+  });
+  const rowEvents = useMemo<RowEvents>(
+    () => ({
+      onRemoved: (message) => latestEvents.current.onRemoved(message),
+      onSaved: (message) => latestEvents.current.onSaved(message),
+      onFocusList: () => latestEvents.current.onFocusList(),
+      onTagCreated: () => latestEvents.current.onTagCreated(),
+      onUploadVersion: (document) => latestEvents.current.onUploadVersion(document),
+    }),
+    [],
+  );
 
   function toggleAll() {
     setSelectedIds(allSelected ? new Set() : new Set(deletableItems.map((item) => item.id)));
@@ -338,16 +353,16 @@ export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events 
             <DocumentRow
               key={document.id}
               document={document}
-              now={now}
+              whenText={whenText(document, inTrash, now)}
               inTrash={inTrash}
               deletable={selectable(document, inTrash, canForever) || readable(document)}
               canForever={canForever}
               askPassword={askPassword}
               selected={selectedIds.has(document.id)}
-              onToggle={() => toggle(document.id)}
+              onToggle={toggle}
               tree={tree}
               tags={tags}
-              events={events}
+              events={rowEvents}
             />
           ))}
         </tbody>
@@ -357,6 +372,16 @@ export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events 
 }
 
 // One call per document for each selection action; the server checks every rule again.
+/** The list's scroll as a document opens, so Back can return to the same row (DocumentsView). */
+export const listScrollKey = () => `docs-y:${location.search}`;
+function rememberListScroll() {
+  try {
+    sessionStorage.setItem(listScrollKey(), String(Math.round(scrollY)));
+  } catch {
+    // Storage blocked (private window): Back starts at the top, as before.
+  }
+}
+
 const BULK_CALLS: Record<BulkAction, (id: string) => Promise<unknown>> = {
   trash: deleteDocument,
   restore: restoreDocument,
@@ -397,9 +422,20 @@ const PROGRESS_LABEL: Record<BulkAction, string> = {
 
 type Confirming = "trash" | "forever" | null;
 
-function DocumentRow({
+// In Trash the time column is when it was trashed; elsewhere, when it was uploaded.
+const whenOf = (document: DocumentSummary, inTrash: boolean) =>
+  inTrash && document.deleted_at !== null ? document.deleted_at : document.created_at;
+
+// Worked out here, so a row renders again only when its own words change, not on every poll.
+function whenText(document: DocumentSummary, inTrash: boolean, now: number): string {
+  const when = whenOf(document, inTrash);
+  const relative = formatRelative(when, now);
+  return relative === formatDate(when) ? relative : `${relative} · ${formatDate(when)}`;
+}
+
+const DocumentRow = memo(function DocumentRow({
   document,
-  now,
+  whenText,
   inTrash,
   deletable,
   canForever,
@@ -411,13 +447,13 @@ function DocumentRow({
   events,
 }: {
   document: DocumentSummary;
-  now: number;
+  whenText: string;
   inTrash: boolean;
   deletable: boolean; // it gets a checkbox (selectable)
   canForever: boolean;
   askPassword: boolean;
   selected: boolean;
-  onToggle: () => void;
+  onToggle: (id: string) => void;
   tree: FolderTree;
   tags: Tag[] | null;
   events: RowEvents;
@@ -520,8 +556,7 @@ function DocumentRow({
   }
 
   const by = document.uploaded_by_name;
-  // In Trash the time column is when it was trashed; elsewhere, when it was uploaded.
-  const when = inTrash && document.deleted_at !== null ? document.deleted_at : document.created_at;
+  const when = whenOf(document, inTrash);
   const question = confirming === "forever" ? foreverQuestion(document) : trashQuestion(document);
   return (
     <tr role="row" data-selected={selected ? "true" : undefined}>
@@ -535,7 +570,7 @@ function DocumentRow({
             <input
               type="checkbox"
               checked={selected}
-              onChange={onToggle}
+              onChange={() => onToggle(document.id)}
               aria-label={`Select ${document.display_name}`}
               title={`Select ${document.display_name}`}
             />
@@ -547,6 +582,7 @@ function DocumentRow({
           href={`/documents/${document.id}`}
           className={styles.name}
           title={document.display_name}
+          onClick={rememberListScroll}
         >
           <WrapName name={document.display_name} />
         </Link>
@@ -589,8 +625,9 @@ function DocumentRow({
       </td>
       <td role="cell" className={styles.meta}>
         {inTrash && <span className="visually-hidden">Trashed </span>}
+        {/* The exact date too: a touch screen never shows the hover title. */}
         <time dateTime={when} title={formatDateTime(when)}>
-          {formatRelative(when, now)}
+          {whenText}
         </time>
         {by && (
           <span className={styles.bandBy}>
@@ -687,4 +724,4 @@ function DocumentRow({
       </td>
     </tr>
   );
-}
+});

@@ -1,10 +1,13 @@
-// The operator's Models and AI spend tabs and the "AI models" dialog (model choice,
-// council 11 Oct 2026, MC2, MC3, MS1, MS2, SP3, SP4): the words for a model and for
-// money, the dialog's checks, the spend periods and totals. Kept pure, so vitest can
-// prove them.
+// The operator's Models and AI spend tabs, an organisation's AI settings and the platform
+// defaults (model choice, council 11 Oct 2026, MC2, MC3, MS1, MS2, SP3, SP4; features
+// 25-27, council 15 Oct 2026, C10, C12): the words for a model and for money, the AI
+// settings form's draft and checks, the spend periods and totals. Kept pure, so vitest
+// can prove them. Dollars stay in the operator console: org admins and members never see
+// money (Tushar, 15 Oct 2026).
 
 import { formatUsd } from "@/lib/format";
-import type { OperatorModel, OperatorOrgModels, OperatorUsageRow, UsageTotals } from "@/lib/types";
+import type { AiDefaults, AiEnv, AiLevel, AiValues, OperatorModel, OperatorUsageRow, UsageTotals } from "@/lib/types";
+import { countText } from "./logic";
 
 const TOKENS_PER_M = 1_000_000;
 // numeric(12,2): the largest budget the server's column holds.
@@ -51,8 +54,13 @@ export function pageCostText(model: OperatorModel): string {
 
 export const yesNo = (value: boolean) => (value ? "Yes" : "No");
 
-/** Enable only an eligible model verified for the reader's current prompt, as the server. */
-export const canEnable = (model: OperatorModel) => model.eligible && model.verified && model.enabled_at === null;
+/** Scanning: eligible and verified for the reader's current prompt, as the server. */
+export const canScan = (model: OperatorModel) => model.eligible && model.verified;
+/** Answering: chat-eligible and verified for the current answer prompt, as the server. */
+export const canAnswer = (model: OperatorModel) => model.chat_eligible && model.chat_verified;
+
+/** Enable a model that can scan or answer, as the server. */
+export const canEnable = (model: OperatorModel) => (canScan(model) || canAnswer(model)) && model.enabled_at === null;
 
 /** What the operator can do to a model now: enable it, disable it, or nothing. */
 export function modelAction(model: OperatorModel): "enable" | "disable" | null {
@@ -63,30 +71,82 @@ export function modelAction(model: OperatorModel): "enable" | "disable" | null {
 /** Why a model can't be enabled, in plain words; null when it can (or is). */
 export function notEnabledReason(model: OperatorModel): string | null {
   if (model.enabled_at !== null || canEnable(model)) return null;
-  if (!model.eligible) return "Does not pass the catalogue's rules now.";
+  if (!model.eligible && !model.chat_eligible) return "Does not pass the catalogue's rules now.";
   return "Run verify-models --record for it first.";
 }
 
-// --- The "AI models" dialog ----------------------------------------------------------
-
-export interface OrgModelsDraft {
-  models: string[];
-  default_scan: string | null;
-  budget: string; // as typed; empty: no budget
+/** What a model is for, in words: "Scanning and answering", "Scanning", "Answering" or "Neither yet". */
+export function usesText(model: OperatorModel): string {
+  const scan = canScan(model);
+  const chat = canAnswer(model);
+  if (scan && chat) return "Scanning and answering";
+  return scan ? "Scanning" : chat ? "Answering" : "Neither yet";
 }
 
-export const draftOf = (saved: OperatorOrgModels): OrgModelsDraft => ({
-  models: [...saved.models],
-  default_scan: saved.default_scan,
-  budget: saved.ai_budget_usd === null ? "" : String(saved.ai_budget_usd),
+/** S1: a model whose maker is not allowed is never used, even when enabled. */
+export const VENDOR_NOT_ALLOWED = "Never used: its maker is not on the allowed list (OPENROUTER_MODEL_VENDORS).";
+
+// --- AI settings: one organisation's, or the platform defaults (features 25-27) ----------
+
+export const LEVELS: AiLevel[] = ["low", "medium", "high"];
+export const LEVEL_WORDS: Record<AiLevel, string> = { low: "Low", medium: "Medium", high: "High" };
+export const DYNAMIC_HINT = "Picks the right reading for each page.";
+
+export type Area = "scan" | "chat";
+
+/** The form as typed. For an organisation an empty list or a null field follows the
+ * platform defaults; for the platform an empty model list uses the server's model. */
+export interface AiDraft {
+  scan_models: string[];
+  scan_default: string | null;
+  chat_models: string[];
+  chat_default: string | null;
+  scan_thinking: AiLevel | null;
+  chat_levels: AiLevel[];
+  chat_default_level: AiLevel | null;
+  dynamic: boolean | null;
+  ensemble: boolean; // an organisation's own; never a platform default
+  budget: string; // US dollars as typed; empty: no budget (organisation only)
+}
+
+export function draftOf(values: AiValues, extra: { ensemble: boolean; ai_budget_usd: number | null } = { ensemble: false, ai_budget_usd: null }): AiDraft {
+  return {
+    scan_models: [...values.scan_models],
+    scan_default: values.scan_default,
+    chat_models: [...values.chat_models],
+    chat_default: values.chat_default,
+    scan_thinking: values.scan_thinking,
+    chat_levels: [...(values.chat_levels ?? [])],
+    chat_default_level: values.chat_default_level,
+    dynamic: values.dynamic,
+    ensemble: extra.ensemble,
+    budget: extra.ai_budget_usd === null ? "" : String(extra.ai_budget_usd),
+  };
+}
+
+/** Follow the platform defaults in both areas: no own models, levels or switches, and no
+ * Ensemble (it is never a default). The budget stays. */
+export const followDefaults = (draft: AiDraft): AiDraft => ({
+  ...draftOf({ scan_models: [], scan_default: null, chat_models: [], chat_default: null, scan_thinking: null, chat_levels: null, chat_default_level: null, dynamic: null }),
+  budget: draft.budget,
 });
 
-/** Tick or untick a model. The first model ticked becomes the default; unticking the
- * default moves it to the first model left, or to none. */
-export function toggled(draft: OrgModelsDraft, id: string, on: boolean): OrgModelsDraft {
-  const models = on ? [...new Set([...draft.models, id])] : draft.models.filter((model) => model !== id);
-  const keep = draft.default_scan !== null && models.includes(draft.default_scan);
-  return { ...draft, models, default_scan: keep ? draft.default_scan : (models[0] ?? null) };
+/** Tick or untick a model of an area. The first ticked becomes the area's default;
+ * unticking the default moves it to the first left, or to none. */
+export function toggled(draft: AiDraft, area: Area, id: string, on: boolean): AiDraft {
+  const list = draft[`${area}_models` as const];
+  const models = on ? [...new Set([...list, id])] : list.filter((model) => model !== id);
+  const current = draft[`${area}_default` as const];
+  const keep = current !== null && models.includes(current);
+  return { ...draft, [`${area}_models`]: models, [`${area}_default`]: keep ? current : (models[0] ?? null) };
+}
+
+/** Tick or untick an answer level, kept Low, Medium, High; the default stays among them. */
+export function toggledLevel(draft: AiDraft, level: AiLevel, on: boolean): AiDraft {
+  const levels = LEVELS.filter((each) => (each === level ? on : draft.chat_levels.includes(each)));
+  const current = draft.chat_default_level;
+  const keep = current !== null && levels.includes(current);
+  return { ...draft, chat_levels: levels, chat_default_level: keep ? current : (levels[0] ?? null) };
 }
 
 /** The budget as a number of dollars, null for none, or undefined when it is not one. */
@@ -98,33 +158,138 @@ export function parseBudget(text: string): number | null | undefined {
   return value > 0 && value <= MAX_BUDGET ? value : undefined;
 }
 
-export interface DraftErrors {
-  default_scan: string | null;
-  budget: string | null;
+/** Where a problem is shown: next to its field. "form" is the form's own line. */
+export type AiField = "scan_models" | "scan_default" | "chat_models" | "chat_default" | "chat_levels" | "budget" | "form";
+export type AiErrors = Partial<Record<AiField, string>>;
+
+/** The form's own checks, before a code is asked for or anything is sent. */
+export function aiErrors(draft: AiDraft, platform: boolean): AiErrors {
+  const errors: AiErrors = {};
+  if (draft.scan_models.length > 0 && (draft.scan_default === null || !draft.scan_models.includes(draft.scan_default)))
+    errors.scan_default = "Choose the default scanning model from the ticked models.";
+  if (draft.chat_models.length > 0 && (draft.chat_default === null || !draft.chat_models.includes(draft.chat_default)))
+    errors.chat_default = "Choose the default answering model from the ticked models.";
+  if (platform && draft.chat_levels.length === 0) errors.chat_levels = "Tick at least one thinking level.";
+  else if (
+    draft.chat_levels.length > 0 &&
+    (draft.chat_default_level === null || !draft.chat_levels.includes(draft.chat_default_level))
+  )
+    errors.chat_levels = "Choose the default level from the ticked levels.";
+  if (!platform && parseBudget(draft.budget) === undefined)
+    errors.budget = "Enter dollars above 0, with at most 2 decimals, or leave it empty.";
+  return errors;
 }
 
-/** The dialog's own checks, before anything is sent. */
-export function draftErrors(draft: OrgModelsDraft): DraftErrors {
-  const default_scan =
-    draft.models.length > 0 && (draft.default_scan === null || !draft.models.includes(draft.default_scan))
-      ? "Choose the default scan model from the ticked models."
-      : null;
-  const budget = parseBudget(draft.budget) === undefined ? "Enter dollars above 0, with at most 2 decimals, or leave it empty." : null;
-  return { default_scan, budget };
-}
-
-/** What PUT /operator/orgs/{id}/models is sent; call it only when draftErrors finds none. */
-export function bodyOf(draft: OrgModelsDraft): OperatorOrgModels {
+/** What is saved; call it only when aiErrors finds none. Empty lists send no default; no
+ * levels send no default level (an organisation then follows the platform's). */
+export function aiBody(draft: AiDraft): AiValues {
+  const levels = draft.chat_levels.length > 0;
   return {
-    models: draft.models,
-    default_scan: draft.models.length === 0 ? null : draft.default_scan,
-    ai_budget_usd: parseBudget(draft.budget) ?? null,
+    scan_models: draft.scan_models,
+    scan_default: draft.scan_models.length > 0 ? draft.scan_default : null,
+    chat_models: draft.chat_models,
+    chat_default: draft.chat_models.length > 0 ? draft.chat_default : null,
+    scan_thinking: draft.scan_thinking,
+    chat_levels: levels ? draft.chat_levels : null,
+    chat_default_level: levels ? draft.chat_default_level : null,
+    dynamic: draft.dynamic,
   };
 }
 
-/** The models the dialog offers: every enabled one, and any the organisation still has. */
-export const offered = (catalogue: OperatorModel[], saved: string[]) =>
-  catalogue.filter((model) => model.enabled_at !== null || saved.includes(model.id));
+/** The models a list offers: every enabled one that can do that work, and any already in it. */
+export function offered(catalogue: OperatorModel[], area: Area, saved: string[]): OperatorModel[] {
+  const can = area === "scan" ? canScan : canAnswer;
+  return catalogue.filter((model) => (model.enabled_at !== null && can(model)) || saved.includes(model.id));
+}
+
+/** Does an organisation's own value follow the platform defaults? Per area: scanning is
+ * its models, scan level and Dynamic; answering its models and levels. */
+export function follows(own: AiValues): { scan: "all" | "some" | "none"; chat: "all" | "some" | "none" } {
+  const part = (inherited: boolean[]) =>
+    inherited.every(Boolean) ? "all" : inherited.some(Boolean) ? "some" : "none";
+  return {
+    scan: part([own.scan_models.length === 0, own.scan_thinking === null, own.dynamic === null]),
+    chat: part([own.chat_models.length === 0, own.chat_levels === null]),
+  };
+}
+
+/** "Scanning: platform defaults · Answering: own settings" (C12). */
+export function statusText(own: AiValues): string {
+  const words = { all: "platform defaults", some: "partly own settings", none: "own settings" };
+  const area = follows(own);
+  return `Scanning: ${words[area.scan]} · Answering: ${words[area.chat]}`;
+}
+
+/** Model names by id; an id the catalogue no longer has is shown as itself. */
+export function namesOf(ids: string[], catalogue: OperatorModel[], first: string | null = null): string {
+  const named = (id: string) => catalogue.find((model) => model.id === id)?.name ?? id;
+  const ordered = first !== null && ids.includes(first) ? [first, ...ids.filter((id) => id !== first)] : ids;
+  return ordered.map((id, index) => (index === 0 && first !== null ? `${named(id)} (default)` : named(id))).join(", ");
+}
+
+/** What an organisation that follows the platform gets, in words, for "From platform
+ * defaults: …". An empty platform list is the server's own model. */
+export function inheritedText(
+  field: "scan_models" | "chat_models" | "scan_thinking" | "chat_levels" | "dynamic",
+  defaults: AiValues,
+  env: AiEnv,
+  catalogue: OperatorModel[],
+): string {
+  switch (field) {
+    case "scan_models":
+      return defaults.scan_models.length > 0 ? namesOf(defaults.scan_models, catalogue, defaults.scan_default) : `the server's model (${env.scan_model})`;
+    case "chat_models":
+      return defaults.chat_models.length > 0 ? namesOf(defaults.chat_models, catalogue, defaults.chat_default) : `the server's model (${env.chat_model})`;
+    case "scan_thinking":
+      return defaults.scan_thinking !== null ? LEVEL_WORDS[defaults.scan_thinking] : `the server's level (${env.scan_thinking})`;
+    case "chat_levels": {
+      const levels = defaults.chat_levels ?? [];
+      const words = levels.map((level) => LEVEL_WORDS[level]).join(", ");
+      return defaults.chat_default_level ? `${words}; default ${LEVEL_WORDS[defaults.chat_default_level]}` : words;
+    }
+    case "dynamic":
+      return defaults.dynamic ? "On" : "Off";
+  }
+}
+
+// The platform defaults' areas, in the order the save's summary says them.
+const DEFAULT_AREAS: { area: keyof AiDefaults["orgs_inheriting"]; label: string; changed(a: AiValues, b: AiValues): boolean }[] = [
+  { area: "scan_models", label: "scanning models", changed: (a, b) => !same(a.scan_models, b.scan_models) || a.scan_default !== b.scan_default },
+  { area: "scan_thinking", label: "scanning level", changed: (a, b) => a.scan_thinking !== b.scan_thinking },
+  { area: "dynamic", label: "Dynamic", changed: (a, b) => a.dynamic !== b.dynamic },
+  { area: "chat_models", label: "answering models", changed: (a, b) => !same(a.chat_models, b.chat_models) || a.chat_default !== b.chat_default },
+  {
+    area: "chat_levels",
+    label: "answering levels",
+    changed: (a, b) => !same(a.chat_levels ?? [], b.chat_levels ?? []) || a.chat_default_level !== b.chat_default_level,
+  },
+];
+
+const same = (a: string[], b: string[]) => [...a].sort().join("\n") === [...b].sort().join("\n");
+
+/** Before a platform defaults save (C12): which organisations still on the defaults it
+ * changes, per area; "Nothing changes." when it changes no area. */
+export function defaultsImpact(saved: AiValues, next: AiValues, counts: AiDefaults["orgs_inheriting"]): string {
+  const parts = DEFAULT_AREAS.filter((each) => each.changed(saved, next)).map(
+    (each) => `the ${each.label} of ${countText(counts[each.area], "organisation", "organisations")}`,
+  );
+  if (parts.length === 0) return "Nothing changes.";
+  return `This save changes ${parts.join(", ")} still on the platform defaults. Organisations with their own settings keep them.`;
+}
+
+/** A refusal of a save, next to the field it is about (C12): the server's code, its field. */
+export function refusalField(code: string): AiField {
+  switch (code) {
+    case "not_verified":
+    case "needs_two_models_scan":
+      return "scan_models";
+    case "chat_not_verified":
+    case "needs_two_models_chat":
+      return "chat_models";
+    default: // unavailable, default_not_allowed, level_not_supported: either area
+      return "form";
+  }
+}
 
 // --- AI spend ---------------------------------------------------------------------------
 

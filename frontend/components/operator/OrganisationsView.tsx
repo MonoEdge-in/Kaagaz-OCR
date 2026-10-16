@@ -3,13 +3,15 @@
 // Organisations, the first tab of /operator: every organisation with its
 // status and counts only (never a document's or a person's name), a search by
 // name, and Create organisation. Admins opens one organisation's admins
-// (AdminsDialog); AI models opens its models, default and budget (OrgModelsDialog,
-// model choice). Each change opens a dialog (ConfirmDialog): disable, enable,
+// (AdminsDialog); AI settings opens its scanning and answering settings, Ensemble and
+// budget (OrgAiSettings, features 25-27). Each change opens a dialog (ConfirmDialog): disable, enable,
 // delete (only a disabled organisation) and cancel the deletion; a row being
-// deleted shows its date and the days left. The table is the shared reflow
+// deleted shows its date and the days left. Auto-filing (feature 28) is allowed or
+// stopped per organisation, also in a ConfirmDialog. The table is the shared reflow
 // (Table.module.css): cards below 48rem of room, a table from there.
+// initialSearch (Needs attention on Overview) fills the search and focuses it.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMinuteNow } from "@/components/chat/hooks";
 import table from "@/components/documents/Table.module.css";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -20,10 +22,10 @@ import type { Organisation } from "@/lib/types";
 import { AdminsDialog } from "./AdminsDialog";
 import { ConfirmDialog } from "./ConfirmDialog";
 import type { Confirm } from "./ConfirmDialog";
-import { orgConfirm, orgFocusId } from "./confirms";
+import { autofileConfirm, orgConfirm, orgFocusId } from "./confirms";
 import type { OrgChange } from "./confirms";
 import { CreateDialog } from "./CreateDialog";
-import { OrgModelsDialog, orgModelsFocusId } from "./OrgModelsDialog";
+import { OrgAiSettings, orgAiFocusId } from "./OrgAiSettings";
 import { afterDone, countText, deleteCountdown, filterOrgs, lastActivityText, operatorErrorMessage, orgStatus, searchSummary, userCounts } from "./logic";
 import admin from "@/components/admin/Admin.module.css";
 import styles from "./Operator.module.css";
@@ -42,11 +44,13 @@ const COLUMNS: { label: string; className?: string }[] = [
   { label: "Actions", className: styles.actionsColumn },
 ];
 
-export function OrganisationsView() {
+export function OrganisationsView({ initialSearch = "" }: { initialSearch?: string }) {
   const [attempt, setAttempt] = useState(0);
   const [orgs, setOrgs] = useState<Organisation[] | null>(null);
   const [error, setError] = useState<{ attempt: number; message: string } | null>(null);
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState(initialSearch);
+  const [searched, setSearched] = useState(initialSearch); // the initialSearch last applied
+  const searchRef = useRef<HTMLInputElement>(null);
   const [creating, setCreating] = useState(false);
   const [changing, setChanging] = useState<Confirm | null>(null);
   const [adminsOf, setAdminsOf] = useState<Organisation | null>(null);
@@ -68,6 +72,17 @@ export function OrganisationsView() {
       cancelled = true;
     };
   }, [attempt]);
+
+  if (initialSearch !== searched) {
+    setSearched(initialSearch);
+    setSearch(initialSearch);
+  }
+
+  // The search box exists once the organisations are in.
+  const loaded = orgs !== null;
+  useEffect(() => {
+    if (initialSearch && loaded) searchRef.current?.focus();
+  }, [initialSearch, loaded]);
 
   const failed = error !== null && error.attempt === attempt ? error.message : null;
   const reload = () => setAttempt((n) => n + 1);
@@ -130,6 +145,7 @@ export function OrganisationsView() {
             <div className={`field ${styles.search}`}>
               <label htmlFor="org-search">Search by name</label>
               <input
+                ref={searchRef}
                 id="org-search"
                 className="input"
                 type="search"
@@ -168,6 +184,7 @@ export function OrganisationsView() {
                       onAdmins={() => setAdminsOf(org)}
                       onModels={() => setModelsOf(org)}
                       onChange={(change) => setChanging(orgConfirm(org, change, Date.now()))}
+                      onAutofile={() => setChanging(autofileConfirm(org, !org.autofile_granted))}
                     />
                   ))}
                 </tbody>
@@ -187,7 +204,7 @@ export function OrganisationsView() {
         />
       )}
       {adminsOf && <AdminsDialog org={adminsOf} onClose={() => setAdminsOf(null)} />}
-      {modelsOf && <OrgModelsDialog org={modelsOf} onClose={() => setModelsOf(null)} onSaved={setDone} />}
+      {modelsOf && <OrgAiSettings org={modelsOf} onClose={() => setModelsOf(null)} onSaved={setDone} />}
       {changing && (
         <ConfirmDialog
           confirm={changing}
@@ -219,8 +236,9 @@ function OrgRow(props: {
   onAdmins(): void;
   onModels(): void;
   onChange(change: OrgChange): void;
+  onAutofile(): void;
 }) {
-  const { org, now, onAdmins, onModels, onChange } = props;
+  const { org, now, onAdmins, onModels, onChange, onAutofile } = props;
   const status = orgStatus(org);
   const countdown = org.status === "deleting" ? deleteCountdown(org.delete_after, now) : null;
   const size = formatBytes(org.storage_bytes);
@@ -236,6 +254,9 @@ function OrgRow(props: {
           {status.text}
         </span>
         {status.note && <span className={styles.statusNote}>{status.note}</span>}
+        {org.autofile_granted && (
+          <span className={styles.statusNote}>{org.autofile_on ? "Auto-filing on" : "Auto-filing allowed, off"}</span>
+        )}
         {countdown && <span className={styles.statusNote}>{countdown}</span>}
       </td>
       <td role="cell" data-label="Users">
@@ -267,13 +288,23 @@ function OrgRow(props: {
           </button>
           {org.status !== "deleting" && (
             <button
-              id={orgModelsFocusId(org.id)}
+              id={orgAiFocusId(org.id)}
               type="button"
               className="btn"
               onClick={onModels}
-              aria-label={`AI models of ${org.name}`}
+              aria-label={`AI settings of ${org.name}`}
             >
-              AI models
+              AI settings
+            </button>
+          )}
+          {org.status !== "deleting" && (
+            <button
+              type="button"
+              className="btn"
+              onClick={onAutofile}
+              aria-label={`${org.autofile_granted ? "Stop" : "Allow"} auto-filing for ${org.name}`}
+            >
+              {org.autofile_granted ? "Stop auto-filing" : "Allow auto-filing"}
             </button>
           )}
           {CHANGES[org.status].map(({ change, label, danger }) => (

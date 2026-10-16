@@ -71,6 +71,13 @@ _COLUMNS = (
     " AND ev.document_id = d.id AND ev.label = 'needs_review') AS values_to_review,"
     " (SELECT array_agg(o.uploaded_by) FROM documents o"
     " WHERE o.customer_id = d.customer_id AND o.family_id = d.family_id) AS family_uploaders,"
+    # Auto-filing (feature 28), from the family's first version: filed while it is still in a
+    # folder; not filed when skipped, or read as current with no type (the filing that runs
+    # right after a typed read is not shown as "not filed" in the moment before it commits).
+    " (SELECT CASE WHEN r.autofile = 'filed' AND r.folder_id IS NOT NULL THEN 'filed'"
+    " WHEN r.autofile = 'skipped' OR (r.autofile = 'pending' AND d.status = 'ready' AND d.is_current"
+    " AND d.doc_type IS NULL) THEN 'not_filed' END"
+    " FROM documents r WHERE r.customer_id = d.customer_id AND r.id = d.family_id) AS autofile,"
     " (SELECT json_build_object('id', n.id, 'version_no', n.version_no, 'status', n.status,"
     " 'failure_code', n.failure_code, 'detected_type', n.detected_type, 'page_count', n.page_count,"
     " 'attempts', n.attempts, 'max_attempts', n.max_attempts, 'progress', n.progress)"
@@ -146,8 +153,10 @@ _RENAME_HEADERS = (
     " AND (context_header = :old OR left(context_header, length(:old) + 3) = :old || ' | ')"
 )
 
+# Auto-filing (feature 28, R3): a person's move, to the top level too, ends the family's
+# auto-filing state, so Kaagaz never moves it after them.
 _MOVE_FAMILY = (
-    "UPDATE documents SET folder_id = :f WHERE customer_id = :c"
+    "UPDATE documents SET folder_id = :f, autofile = NULL WHERE customer_id = :c"
     " AND family_id = (SELECT family_id FROM documents WHERE customer_id = :c AND id = :d)"
 )
 
@@ -418,7 +427,7 @@ def list_values(conn: Connection, customer_id: str, document_id: str) -> Sequenc
         conn.execute(
             text(
                 "SELECT id, document_id, record_key, field, value_text, value_raw, second_reading,"
-                " page_no, region, label, label_reason, confidence, label_page_no, label_region"
+                " page_no, region, label, label_reason, confidence, label_page_no, label_region, votes"
                 " FROM extracted_values WHERE customer_id = :c AND document_id = :d"
                 " ORDER BY page_no, record_key, field, id"
             ),
@@ -575,19 +584,40 @@ def move_family(conn: Connection, customer_id: str, document_id: str, *, folder_
 
 # --- Model choice and AI spend (council 11 Oct 2026, MS5, SP2, SP4) -------------------
 
+# Features 26 and 27 (0026): a mode given replaces read_also too, in the same statement, so
+# the ai_documents_read_mode_models check always sees a pair it allows.
 _SET_READING = (
-    "UPDATE documents SET read_requested_by = :u, read_model = COALESCE(:m, read_model)"
+    "UPDATE documents SET read_requested_by = :u,"
+    " read_model = COALESCE(CAST(:m AS text), read_model),"
+    " read_mode = COALESCE(CAST(:mode AS text), read_mode),"
+    " read_also = CASE WHEN CAST(:mode AS text) IS NULL THEN read_also ELSE CAST(:also AS text[]) END"
     " WHERE customer_id = :c AND id = :d"
 )
 
 
 def set_reading(
-    conn: Connection, customer_id: str, document_id: str, *, requested_by: str, model: str | None
+    conn: Connection,
+    customer_id: str,
+    document_id: str,
+    *,
+    requested_by: str,
+    model: str | None,
+    mode: str | None = None,
+    also: Sequence[str] = (),
 ) -> None:
     """Who asked for the document's next reading, the user its scan spend is billed to, and
-    the model chosen (already checked against the organisation's usable models); ``model``
-    None keeps the document's own choice. O(log D)."""
-    conn.execute(text(_SET_READING), {"c": customer_id, "d": document_id, "u": requested_by, "m": model})
+    the reading chosen (already checked by ``api.readers.check_reading``): ``model`` None
+    keeps the document's own model, ``mode`` None its mode and other readers (``also``,
+    Ensemble's). O(log D)."""
+    params = {
+        "c": customer_id,
+        "d": document_id,
+        "u": requested_by,
+        "m": model,
+        "mode": mode,
+        "also": list(also),
+    }
+    conn.execute(text(_SET_READING), params)
 
 
 def ai_budget(conn: Connection, customer_id: str) -> float | None:

@@ -1,3 +1,5 @@
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   TABS,
@@ -5,13 +7,13 @@ import {
   allowForeverQuestion,
   describeAction,
   describeDetails,
+  describeTarget,
   firstInvalidField,
   foreverControl,
   isLocked,
   lastRunText,
   lockedUntilText,
   pageRouteTiles,
-  readerTiles,
   parseUploadLimit,
   retryErrorText,
   statTiles,
@@ -299,31 +301,65 @@ describe("statTiles", () => {
 });
 
 describe("pageRouteTiles (PRD 2, R6)", () => {
-  it("shows the pages read this month by route, in a fixed order, zeros included", () => {
+  it("shows the pages read this month by how they were read, in a fixed order, zeros included", () => {
     const pages_this_month = { ocr: 3, blank: 0, text_layer: 120000, cells: 0 };
+    // Changed on purpose (UI quality council, 15 Oct 2026): plain words, no "OCR".
     expect(pageRouteTiles({ pages_this_month })).toEqual([
-      { label: "Spreadsheet cells", value: "0" },
-      { label: "PDF text", value: "1,20,000" },
-      { label: "OCR", value: "3" },
+      { label: "From spreadsheets", value: "0" },
+      { label: "From PDF text", value: "1,20,000" },
+      { label: "Scanned pages", value: "3" },
       { label: "Blank pages", value: "0" },
     ]);
   });
 });
 
+// Changed on purpose (UI quality council, 15 Oct 2026): only known keys, in words; ids,
+// the model a Read again asked for and any other key are left out.
 describe("describeDetails", () => {
-  it("lists keys in order as plain text", () => {
-    expect(describeDetails({ status: "ready", count: 3, ok: true, parent: null })).toBe(
-      "count: 3, ok: true, parent: none, status: ready",
-    );
+  it("says the known keys in words, in key order", () => {
+    expect(describeDetails({ status: "ready", page_no: 3 })).toBe("Page 3, Status: Ready");
+    expect(describeDetails({ versions: 2 })).toBe("2 versions");
+    expect(describeDetails({ versions: 1, tag_count: 1 })).toBe("1 tag, 1 version");
+    expect(describeDetails({ tag_count: 3 })).toBe("3 tags");
+    expect(describeDetails({ max_upload_mb: 25 })).toBe("Upload limit 25 MB");
+    expect(describeDetails({ max_upload_mb: null })).toBe("Upload limit: the platform's");
+    expect(describeDetails({ role: "reviewer", disabled: false, password_changed: true })).toBe("Role: Reviewer");
   });
 
-  it("shows nested values as JSON text, never markup", () => {
-    expect(describeDetails({ ids: ["a", "b"] })).toBe('ids: ["a","b"]');
-    expect(describeDetails({ status: "<b>x</b>" })).toBe("status: <b>x</b>");
+  it("leaves out ids, the model, unknown keys and values it has no words for", () => {
+    expect(
+      describeDetails({
+        status: "failed",
+        read_model: "google/gemini-3.1-pro-preview",
+        folder_id: "8f0c",
+        document_id: "d1",
+        conversation_id: "c1",
+      }),
+    ).toBe("Status: Failed");
+    expect(describeDetails({ status: "answered", reason: "bad_password", ids: ["a"] })).toBe("");
+    expect(describeDetails({ role: "<b>x</b>" })).toBe("");
   });
 
   it("is empty for no details", () => {
     expect(describeDetails({})).toBe("");
+  });
+});
+
+describe("describeTarget", () => {
+  it("names what a row was done on in a word, never its id", () => {
+    expect(describeTarget("document")).toBe("Document");
+    expect(describeTarget("user")).toBe("User");
+    expect(describeTarget("folder")).toBe("Folder");
+    expect(describeTarget("tag")).toBe("Tag");
+    expect(describeTarget("customer")).toBe("Settings");
+    expect(describeTarget(null)).toBe("—");
+    expect(describeTarget("something_new")).toBe("—");
+  });
+
+  it("is what the Activity tab shows, with no target id", () => {
+    const panel = readFileSync(join(__dirname, "..", "components/admin/ActivityPanel.tsx"), "utf8");
+    expect(panel).toContain("{describeTarget(entry.target_type)}");
+    expect(panel).not.toContain("target_id");
   });
 });
 
@@ -350,19 +386,38 @@ describe("describeAction", () => {
     }
     expect(describeAction("user.reset_totp")).toBe("Reset a user's 2FA");
   });
+
+  it("has words for every action the backend writes to the audit log", () => {
+    // Every "family.action" string literal in backend/kaagaz of the families audit_log holds.
+    const root = join(__dirname, "..", "..", "backend", "kaagaz");
+    const files = readdirSync(root, { recursive: true, encoding: "utf8" }).filter((file) => file.endsWith(".py"));
+    const family = "auth|user|user_word|document|document_story|folder|tag|review|chat|settings|customer";
+    const pattern = new RegExp(`"((?:${family})\\.[a-z_]+)"`, "g");
+    const actions = new Set<string>();
+    for (const file of files) {
+      for (const [, action = ""] of readFileSync(join(root, file), "utf8").matchAll(pattern)) actions.add(action);
+    }
+    expect(actions.size).toBeGreaterThan(30);
+    for (const action of actions) {
+      expect(describeAction(action), action).not.toBe(action);
+    }
+  });
 });
 
-describe("the failed jobs tab", () => {
+// Changed on purpose (UI quality council, 15 Oct 2026): "Failed documents", and no AI
+// models tab (the models are the operator's only).
+describe("the failed documents tab", () => {
   it("is the last tab", () => {
-    expect(TABS.at(-1)).toEqual({ id: "failed", label: "Failed jobs" });
+    expect(TABS.at(-1)).toEqual({ id: "failed", label: "Failed documents" });
   });
 
-  it("comes after the AI models and Usage tabs (model choice)", () => {
-    expect(TABS.map((tab) => tab.label).slice(-3)).toEqual(["AI models", "Usage", "Failed jobs"]);
+  it("comes after the Usage tab, with no AI models tab", () => {
+    expect(TABS.map((tab) => tab.label).slice(-2)).toEqual(["Usage", "Failed documents"]);
+    expect(TABS.map((tab) => tab.id)).not.toContain("models");
   });
 
-  it("says when a document was last tried, or that it never ran", () => {
-    expect(lastRunText(null)).toBe("Never run");
+  it("says when a document was last tried, or that it was not tried yet", () => {
+    expect(lastRunText(null)).toBe("Not tried yet");
     expect(lastRunText("2026-10-01T09:00:00+00:00")).toMatch(/^Last tried .*2026/);
   });
 
@@ -374,36 +429,5 @@ describe("the failed jobs tab", () => {
     expect(retryErrorText(new TypeError("fetch failed"))).toBe(
       "Could not reach the server. Check your connection, then try again.",
     );
-  });
-});
-
-describe("readerTiles (PRD 5 U9)", () => {
-  const reader_pages = { gemini: 1200, local: 30, cached: 4, read_again: 2 };
-
-  it("shows the scanned pages by who read them, then this month's AI spend from the ledger", () => {
-    const spend_estimate = { input_tokens: 900000, output_tokens: 120000, usd: 1.5 };
-    expect(readerTiles({ reader_pages, spend_estimate })).toEqual([
-      { label: "Read by AI model", value: "1,200" },
-      { label: "Read by the backup reader", value: "30" },
-      { label: "From the cache", value: "4" },
-      { label: "Read again", value: "2" },
-      { label: "AI spend this month", value: "$1.50" },
-    ]);
-  });
-
-  it("hides the money while the prices are not known, and everything from an older server", () => {
-    const unknown = { input_tokens: 900000, output_tokens: 120000, usd: null };
-    expect(readerTiles({ reader_pages, spend_estimate: unknown }).map((tile) => tile.label)).not.toContain(
-      "AI spend this month",
-    );
-    expect(readerTiles({})).toEqual([]);
-  });
-
-  it("never shows a spend under a cent as $0.00", () => {
-    const tiny = { input_tokens: 10, output_tokens: 2, usd: 0.0004 };
-    expect(readerTiles({ reader_pages, spend_estimate: tiny }).at(-1)).toEqual({
-      label: "AI spend this month",
-      value: "< $0.01",
-    });
   });
 });
