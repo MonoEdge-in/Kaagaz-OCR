@@ -392,10 +392,6 @@
 }
 
 /* Kept in the row while it does nothing ("Fit page" at 100%), so the row never shifts. */
-.unseen {
-  visibility: hidden;
-}
-
 .legend {
   display: flex;
   flex-direction: column;

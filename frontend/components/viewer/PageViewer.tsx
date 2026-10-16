@@ -528,7 +528,12 @@ export function PageViewer({
   const canZoom = mode === "pdf" || mode === "image";
   const showPages = onPageChange !== undefined && numbers.length > 0;
   // On a phone only "Fit" shows; the whole name is still read out.
-  const fitName = <>Fit<span className="narrow-hide">{fit === "page" ? " page" : " width"}</span></>;
+  // One span, so the button's gap never adds to the space before "page" / "width".
+  const fitName = (
+    <span>
+      Fit<span className="narrow-hide">{fit === "page" ? " page" : " width"}</span>
+    </span>
+  );
   const otherFit = fit === "page" ? "width" : "page";
 
   return (
@@ -569,24 +574,23 @@ export function PageViewer({
                 onClick={() => setZoom(stepZoom(zoom, "out"))}
                 disabled={zoom <= MIN_ZOOM}
               />
-              <span className={`tabular ${styles.readout}`} aria-live="polite">
+              {/* The readout is the way back to the fit (Tushar, 16 Oct 2026: no hidden button
+                  holding room in the row). Its least width keeps the buttons beside it still. */}
+              <button
+                type="button"
+                className={`btn btn-quiet tabular ${styles.readout}`}
+                onClick={() => setZoom(1)}
+                aria-live="polite"
+                title={zoom === 1 ? undefined : `Back to fit ${fit}`}
+              >
                 {zoom === 1 ? fitName : `${Math.round(zoom * 100)}%`}
-              </span>
+              </button>
               <IconButton
                 icon="zoom-in"
                 label="Zoom in"
                 onClick={() => setZoom(stepZoom(zoom, "in"))}
                 disabled={zoom >= MAX_ZOOM}
               />
-              {/* Always laid out, hidden at 100%, so zooming in never shifts the row under the pointer. */}
-              <button
-                type="button"
-                className={zoom === 1 ? `btn btn-quiet ${styles.unseen}` : "btn btn-quiet"}
-                onClick={() => setZoom(1)}
-                disabled={zoom === 1}
-              >
-                {fitName}
-              </button>
               {fill ? (
                 <button
                   type="button"

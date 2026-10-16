@@ -26,7 +26,8 @@ export function wheelZoom(event: Pick<WheelEvent, "ctrlKey" | "metaKey" | "delta
 }
 
 /** The page column's share of the document screen, in percent (DD5's split), and its key step. */
-export const SPLIT = { min: 30, max: 75, start: 60, step: 5 } as const;
+// start 55 (Tushar, 16 Oct 2026): the panel's four tabs fit beside the page at 1280px.
+export const SPLIT = { min: 30, max: 75, start: 55, step: 5 } as const;
 /** A press on the split's handle becomes a drag only past this many pixels (brief B: 4-5px). */
 export const DRAG_THRESHOLD_PX = 5;
 

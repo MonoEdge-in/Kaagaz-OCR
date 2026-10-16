@@ -696,7 +696,8 @@ describe("the document screen (boards 2, 3 and 6)", () => {
     expect(rules(read(VIEW_CSS)).filter((rule) => rule.at.includes("90rem"))).toEqual([]);
     const sticky = rules(read(VIEW_CSS)).filter((rule) => rule.at === `@media ${STICKY_VIEWER_QUERY}`);
     expect(sticky.find((rule) => rule.selector === ".layout")?.body).toMatch(
-      /grid-template-columns:\s*minmax\(0, var\(--split, 60%\)\) var\(--space-6\) minmax\(0, 1fr\);/,
+      // Changed on purpose (Tushar, 16 Oct 2026): the split starts at 55%.
+      /grid-template-columns:\s*minmax\(0, var\(--split, 55%\)\) var\(--space-6\) minmax\(0, 1fr\);/,
     );
     expect(sticky.find((rule) => rule.selector === ".handle")?.body).toMatch(/cursor:\s*col-resize;[\s\S]*touch-action:\s*none;/);
     expect(rulesFor(VIEW_CSS, ".tabPanel")[0]?.body).toMatch(/min-height:\s*24rem;/);

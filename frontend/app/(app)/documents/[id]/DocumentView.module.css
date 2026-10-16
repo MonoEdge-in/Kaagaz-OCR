@@ -70,10 +70,19 @@
 
 .headActions {
   display: flex;
+  flex: none;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
   margin-inline-start: auto;
+}
+
+/* One row from 768px (Tushar, 16 Oct 2026): a long title wraps inside its own room
+   and the actions stay beside it, never on a row of their own. */
+@media (min-width: 768px) {
+  .titleRow {
+    flex-wrap: nowrap;
+  }
 }
 
 /* One meta line (board 12 P4): status, type and pages, Read again, the folder
@@ -266,7 +275,7 @@
    line, the whole gap its target; hover and focus change its colour only. */
 @media (min-width: 1024px) and (min-height: 36rem) {
   .layout {
-    grid-template-columns: minmax(0, var(--split, 60%)) var(--space-6) minmax(0, 1fr);
+    grid-template-columns: minmax(0, var(--split, 55%)) var(--space-6) minmax(0, 1fr);
     gap: 0;
   }
 
@@ -447,7 +456,15 @@
 }
 
 .tabs {
+  gap: var(--space-3);
   margin-block-end: var(--space-4);
+  font-size: var(--fs-sm);
+}
+
+/* The status keeps its words on one line beside a long title. */
+.titleRow > :global(.status-chip) {
+  flex: none;
+  white-space: nowrap;
 }
 
 .tabCount[data-zero] {

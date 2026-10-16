@@ -162,7 +162,10 @@ describe("the MonoEdge design system on the documents screens", () => {
 
   it("never shifts the viewer's toolbar: Fit stays laid out, the page readout keeps its width", () => {
     const viewer = read("components/viewer/PageViewer.tsx");
-    expect(viewer).toContain("className={zoom === 1 ? `btn btn-quiet ${styles.unseen}` : \"btn btn-quiet\"}");
+    // Changed on purpose (Tushar, 16 Oct 2026): the zoom readout is the way back to the fit,
+    // so no hidden button holds room in the row; its least width keeps the row still.
+    expect(viewer).toContain("className={`btn btn-quiet tabular ${styles.readout}`}");
+    expect(viewer).not.toContain("styles.unseen");
     expect(viewer).toContain("style={{ minWidth: `${9 + 2 * String(numbers.length).length}ch` }}");
     // Changed on purpose (UI audit, 16 Oct 2026): DD1, the wheel zooms only with Ctrl or Cmd held
     // (wheelZoom); every other wheel is left to scroll the page and then <main>.
