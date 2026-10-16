@@ -4,7 +4,7 @@
 // documents and the invoice; and first, the Attention panel (PRD 5 U5): every
 // reading problem in the document, by page, each page a jump link, with the
 // shown page's marks as a list of the same buttons as on the page. While a page not kept as is
-// has problems, it carries the Needs review hatched edge, "N to check" and a lead line (board 2).
+// has problems, it carries the Needs review dashed edge, "N to check" and a lead line (board 2).
 // Each item with a spot is a button that shows it
 // on its page, with its label's spot too. Every text came from the document or
 // the AI model, so it is shown as plain text; the AI's own words sit under a

@@ -561,11 +561,11 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                   {showControls && (
                     <div className={styles.listHead}>
                       <form className={styles.search} role="search" onSubmit={submitSearch}>
-                        <label htmlFor="documents-q" className="visually-hidden">
+                        <label htmlFor="documents-q" className={styles.searchLabel}>
                           {mode === "inside" ? "Search inside documents" : "Search documents by name"}
                         </label>
                         <div className={styles.searchField}>
-                          <Icon name="search" className={styles.searchIcon} />
+                          <Icon name="search" size={16} className={styles.searchIcon} />
                           <input
                             id="documents-q"
                             className={`input ${styles.searchInput}`}
@@ -573,7 +573,7 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                             enterKeyHint="search"
                             autoComplete="off"
                             maxLength={MAX_SEARCH_LENGTH}
-                            placeholder="Search documents"
+                            placeholder="e.g. Sharma Industries invoice"
                             ref={searchRef}
                             defaultValue={q}
                           />

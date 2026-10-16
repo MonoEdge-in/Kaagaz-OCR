@@ -1,6 +1,9 @@
 /* The page viewer. The page itself is white paper (--paper) in both themes, on
    a frame (--paper-frame); highlights use the fixed paper colours plus a halo
-   ring, so they read the same on the page whatever the theme. */
+   ring, so they read the same on the page whatever the theme. MonoEdge design system
+   (16 Oct 2026): no shadows or gradients; the only box-shadows left are the 0-blur rings
+   round marks on the page (the amber highlight, my words, reading problems), which mark a
+   place and keep 3:1 against the paper and the print (1.4.11). */
 
 .viewer {
   display: flex;
@@ -23,11 +26,14 @@
   gap: var(--space-2);
 }
 
+/* Wide enough for "Fit width" and "250%", so the buttons beside it never move as it
+   changes; "Page N of M" is given its own width from M (PageViewer.tsx). */
 .readout {
-  min-width: 5.5em;
+  flex: none;
+  min-width: 9ch;
   text-align: center;
   font-size: var(--fs-sm);
-  color: var(--fg-muted);
+  color: var(--text-secondary);
 }
 
 /* The page buttons, and "Blank page" beside them for a blank page. */
@@ -40,7 +46,7 @@
 
 .route {
   font-size: var(--fs-sm);
-  color: var(--fg-muted);
+  color: var(--text-secondary);
 }
 
 /* The full page: fits the frame's content width (measured), zooms from there.
@@ -52,8 +58,8 @@
   overflow: auto;
   padding: var(--space-3);
   border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--paper-frame);
+  border-radius: 2px;
+  background: var(--bg-subdued);
   scrollbar-gutter: stable both-edges;
   overscroll-behavior-x: contain; /* a sideways swipe pans the page, never goes back */
 }
@@ -71,7 +77,7 @@
 .stage {
   position: relative;
   background: var(--paper);
-  box-shadow: var(--e-1);
+  outline: 1px solid var(--border);
 }
 
 /* The highlight: amber, then a paper ring and an ink ring, so it stands out
@@ -122,7 +128,7 @@
   display: inline-block;
   min-width: 1.25rem;
   padding: 0 0.25rem;
-  border-radius: var(--r-full);
+  border-radius: 2px;
   font-size: 0.75rem;
   font-weight: 700;
   line-height: 1.25rem;
@@ -150,7 +156,7 @@
 .cellMineNumber {
   margin-inline-start: var(--space-1);
   background: var(--accent);
-  color: var(--accent-fg);
+  color: var(--text-onaccent);
 }
 
 .fill {
@@ -174,7 +180,7 @@
   height: 100%;
   padding: var(--space-4);
   text-align: center;
-  color: var(--fg);
+  color: var(--text-primary);
 }
 
 .failed p {
@@ -197,8 +203,8 @@
   max-height: 11rem;
   overflow: hidden;
   border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--paper-frame);
+  border-radius: 2px;
+  background: var(--bg-subdued);
 }
 
 .cropSheetBox {
@@ -227,6 +233,12 @@
   min-height: 0;
 }
 
+/* Fitted to the column, the frame is the page's pan area: a scroll inside it, either way,
+   never runs on into the window. */
+.fitPage .frame {
+  overscroll-behavior: contain;
+}
+
 .fitPage .sheetFrame {
   flex: 1 1 0;
   min-height: 0;
@@ -247,9 +259,9 @@
   max-height: 70dvh;
   overflow: auto;
   border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--surface);
-  overscroll-behavior-x: contain;
+  border-radius: 2px;
+  background: var(--bg-surface);
+  overscroll-behavior: contain; /* the sheet's pan area: its scroll never runs on into the window */
 }
 
 .sheetCrop {
@@ -270,7 +282,7 @@
 .sheet th,
 .sheet td {
   white-space: nowrap;
-  border-right: 1px solid var(--border);
+  border-inline-end: 1px solid var(--border);
   padding: var(--space-1) var(--space-3);
 }
 
@@ -278,14 +290,14 @@
   position: sticky;
   top: 0;
   z-index: 1;
-  background: var(--surface-2);
+  background: var(--bg-subdued);
 }
 
 .sheet tbody th {
-  color: var(--fg-muted);
+  color: var(--text-secondary);
   font-weight: 600;
   font-size: var(--fs-sm);
-  background: var(--surface-2);
+  background: var(--bg-subdued);
 }
 
 .cellHit {
@@ -334,14 +346,12 @@
   border: 2px dashed var(--hl-border);
 }
 
+/* A double edge and a light fill (no hatch: MonoEdge has no gradients), still unlike the
+   dashed "unsure" and the dotted "unpinned" marks. */
 .problem[data-quality="illegible"],
 .swatch[data-quality="illegible"] {
-  border: 2px solid var(--illegible-on-paper);
-  background: repeating-linear-gradient(
-    45deg,
-    color-mix(in srgb, var(--illegible-on-paper) 45%, transparent) 0 2px,
-    transparent 2px 6px
-  );
+  border: 4px double var(--illegible-on-paper);
+  background: color-mix(in srgb, var(--illegible-on-paper) 18%, transparent);
 }
 
 .problem[data-quality="unpinned"],
@@ -361,7 +371,18 @@
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
-  min-height: var(--control-h);
+  min-height: var(--h-md);
+}
+
+@media (pointer: coarse) {
+  .problemToggle {
+    min-height: var(--h-lg);
+  }
+}
+
+/* Kept in the row while it does nothing ("Fit page" at 100%), so the row never shifts. */
+.unseen {
+  visibility: hidden;
 }
 
 .legend {
@@ -386,7 +407,8 @@
   border-radius: 2px;
 }
 
-/* After the patterns: a swatch sits on paper, like the marks it explains. */
-.legend .swatch {
+/* After the patterns: a swatch sits on paper, like the marks it explains (the "couldn't read"
+   swatch keeps its own light fill). */
+.legend .swatch:not([data-quality="illegible"]) {
   background-color: var(--paper);
 }

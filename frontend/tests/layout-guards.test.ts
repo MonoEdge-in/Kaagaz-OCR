@@ -303,7 +303,12 @@ describe("layout guards", () => {
       "components/documents/Library.module.css: .treePane: overscroll-behavior",
       // Sideways only: a wide page scrolls without a swipe going back a screen.
       "components/viewer/PageViewer.module.css: .frame: overscroll-behavior-x",
-      "components/viewer/PageViewer.module.css: .sheetFrame: overscroll-behavior-x",
+      // Changed on purpose (MonoEdge design system, 16 Oct 2026): the page's and the sheet's pan
+      // areas keep their scroll both ways, and the tables' sideways wrappers keep theirs.
+      "components/viewer/PageViewer.module.css: .fitPage .frame: overscroll-behavior",
+      "components/viewer/PageViewer.module.css: .sheetFrame: overscroll-behavior",
+      "components/documents/Table.module.css: .reflowWrap: overscroll-behavior-x",
+      "app/(app)/documents/[id]/DocumentView.module.css: .valuesWrap: overscroll-behavior-x",
     ];
     const found = everyRule(/overscroll-behavior/).flatMap(({ rule, name }) =>
       [...rule.body.matchAll(/(overscroll-behavior[-\w]*):/g)].map((match) => `${name}: ${match[1]}`),
@@ -340,9 +345,9 @@ describe("layout guards", () => {
   });
 
   it("animates opacity and transform, not background-position (a repaint every frame)", () => {
-    // The saving bar's moving stripe (PRD 5 U10).
     // Changed on purpose (sign-in redesign, 15 Oct 2026): the sign-in title's sweep is gone.
-    const allowed = ["components/documents/Documents.module.css: @keyframes saving"];
+    // Changed on purpose (MonoEdge design system, 16 Oct 2026): the saving bar fades (opacity), no stripe.
+    const allowed: string[] = [];
     const found = everyRule(/background-position/)
       .filter(({ rule }) => rule.at.startsWith("@keyframes"))
       .map(({ file, rule }) => `${file}: ${rule.at}`);
@@ -493,16 +498,23 @@ describe("layout guards", () => {
     expect(read("components/chat/AnswerView.tsx")).toContain("export const AnswerView = memo(function AnswerView(");
   });
 
-  it("hatches the edge of a Needs review value row, as a table and as a card, and keeps it when selected", () => {
+  // Changed on purpose (MonoEdge design system, 16 Oct 2026): no gradients, so the hatch is a 1px
+  // dashed edge for Needs review beside a solid one for Verified (the badge keeps its icon and word).
+  it("edges a value row solid for Verified and dashed for Needs review, as a table and as a card, and keeps it when selected", () => {
     const css = "app/(app)/documents/[id]/DocumentView.module.css";
-    const HATCH = /background-image:\s*repeating-linear-gradient\(45deg, var\(--review-solid\) 0 4px, transparent 4px 8px\);/;
-    const table = rulesFor(css, '.valuesTable tr[data-label="needs_review"] td:first-child').filter((rule) => HATCH.test(rule.body));
-    expect(table.map((rule) => rule.at)).toEqual(["@container (min-width: 36rem)"]);
-    const card = rulesFor(css, '.valuesTable tr[data-label="needs_review"]').filter((rule) => HATCH.test(rule.body));
+    const solid = rulesFor(css, ".valuesTable tr[data-label] td:first-child::before");
+    expect(solid.map((rule) => rule.at)).toEqual(["@container (min-width: 36rem)"]);
+    expect(solid[0]?.body).toMatch(/border-inline-start:\s*1px solid var\(--success\);/);
+    const dashed = rulesFor(css, '.valuesTable tr[data-label="needs_review"] td:first-child::before');
+    expect(dashed.map((rule) => rule.at)).toEqual(["@container (min-width: 36rem)"]);
+    expect(dashed[0]?.body).toMatch(/border-inline-start-style:\s*dashed;/);
+    const card = rulesFor(css, '.valuesTable tr[data-label="needs_review"]');
     expect(card.map((rule) => rule.at)).toEqual(["@container (max-width: 35.99rem)"]);
-    // Selection sets only the colour, so the hatch stays.
+    expect(card[0]?.body).toMatch(/border-style:\s*dashed;/);
+    expect(read(css).replace(/\/\*[\s\S]*?\*\//g, "")).not.toMatch(/gradient/);
+    // Selection sets only the colour, so the edge stays.
     const selected = [...rulesFor(css, ".activeRow td"), ...rulesFor(css, ".valuesTable tbody tr.activeRow")];
-    expect(selected.filter((rule) => /background-color:\s*var\(--accent-soft\)/.test(rule.body))).toHaveLength(2);
+    expect(selected.filter((rule) => /background-color:\s*var\(--accent-subtle\)/.test(rule.body))).toHaveLength(2);
     expect(read("app/(app)/documents/[id]/DocumentView.tsx")).toContain("data-label={value.label}");
   });
 
@@ -637,9 +649,10 @@ describe("the document screen (boards 2, 3 and 6)", () => {
     expect(view).toContain('`Show all ${detail.values.length.toLocaleString("en-IN")}`');
   });
 
-  it("hatches the Attention card's edge like a Needs review value", () => {
-    const hatch = rulesFor(VIEW_CSS, ".attentionToCheck").find((rule) => rule.at === "");
-    expect(hatch?.body).toMatch(/background-image:\s*repeating-linear-gradient\(45deg, var\(--review-solid\) 0 4px, transparent 4px 8px\);/);
+  // Changed on purpose (MonoEdge design system, 16 Oct 2026): a dashed edge, not a hatch.
+  it("edges the Attention card dashed, like a Needs review value", () => {
+    const edge = rulesFor(VIEW_CSS, ".attentionToCheck").find((rule) => rule.at === "");
+    expect(edge?.body).toMatch(/border-inline-start:\s*1px dashed var\(--warning\);/);
   });
 
   it("names the highlighted value under the page", () => {

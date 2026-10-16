@@ -452,7 +452,11 @@ export function PageViewer({
                   disabled={previous === undefined}
                   onClick={() => previous !== undefined && onPageChange?.(previous)}
                 />
-                <span className={`tabular ${styles.readout}`} aria-live="polite">
+                <span
+                  className={`tabular ${styles.readout}`}
+                  aria-live="polite"
+                  style={{ minWidth: `${9 + 2 * String(numbers.length).length}ch` }}
+                >
                   Page {page.page_no} of {numbers.length}
                 </span>
                 <IconButton
@@ -482,11 +486,15 @@ export function PageViewer({
                 onClick={() => setZoom(stepZoom(zoom, "in"))}
                 disabled={zoom >= MAX_ZOOM}
               />
-              {zoom !== 1 ? (
-                <button type="button" className="btn btn-quiet" onClick={() => setZoom(1)}>
-                  {fitName}
-                </button>
-              ) : null}
+              {/* Always laid out, hidden at 100%, so zooming in never shifts the row under the pointer. */}
+              <button
+                type="button"
+                className={zoom === 1 ? `btn btn-quiet ${styles.unseen}` : "btn btn-quiet"}
+                onClick={() => setZoom(1)}
+                disabled={zoom === 1}
+              >
+                {fitName}
+              </button>
             </div>
           ) : null}
           {tools}

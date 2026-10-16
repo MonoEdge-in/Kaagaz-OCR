@@ -691,7 +691,10 @@ describe("the documents header and search on a phone", () => {
     expect(view).toContain('Upload<span className="narrow-hide"> files</span>');
   });
 
-  it("shows Search documents in the empty search box", () => {
-    expect(view).toMatch(/id="documents-q"[\s\S]{0,400}placeholder="Search documents"/);
+  // Changed on purpose (MonoEdge design system, 16 Oct 2026): a label you can always see says
+  // what the box is for, and the placeholder is an example.
+  it("labels the search box in words you can see, with an example inside it", () => {
+    expect(view).toContain('<label htmlFor="documents-q" className={styles.searchLabel}>');
+    expect(view).toMatch(/id="documents-q"[\s\S]{0,400}placeholder="e\.g\. Sharma Industries invoice"/);
   });
 });

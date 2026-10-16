@@ -25,6 +25,7 @@ import {
   readAgainWarning,
   startAgents,
 } from "@/components/documents/readers";
+import { BusyLabel } from "@/components/documents/BusyLabel";
 import { ReaderSelect } from "@/components/documents/UploadArea";
 import { Icon } from "@/components/ui/Icon";
 import {
@@ -148,18 +149,11 @@ export function ReadAgain({ documentId, fixes, pages, readModel, offered, readin
           <p role="status">{readAgainWarning(pages)}</p>
         )}
         <div className={styles.readAgainButtons}>
-          <button type="button" className="btn btn-primary" onClick={send} disabled={sending}>
-            {sending ? (
-              <>
-                <span className="spinner" aria-hidden="true" />
-                Starting…
-              </>
-            ) : (
-              "Read again"
-            )}
-          </button>
           <button ref={focusOnMount} type="button" className="btn" onClick={cancel} disabled={sending}>
             Cancel
+          </button>
+          <button type="button" className="btn btn-primary" onClick={send} disabled={sending}>
+            <BusyLabel busy={sending} idle="Read again" working="Starting…" />
           </button>
         </div>
       </div>

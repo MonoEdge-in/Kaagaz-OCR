@@ -11,6 +11,7 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { FormEvent, MouseEvent } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { createFolder, deleteFolder, updateFolder } from "@/lib/api";
+import { BusyLabel } from "./BusyLabel";
 import { MAX_FOLDER_DEPTH, canAddSubfolder, pathLabel, validMoveTargets } from "./folderTree";
 import type { FolderNode, FolderTree } from "./folderTree";
 import { folderNameProblem, libraryErrorText } from "./library";
@@ -168,6 +169,15 @@ export function FolderActions({ tree, current, onChanged }: FolderActionsProps) 
   };
   const blocked = mode === "new" && !fits;
   const unchanged = mode === "move" && target === parentId;
+  const submitButton = mode !== null && (
+    <button
+      type="submit"
+      className={mode === "delete" ? `btn btn-danger ${styles.apart}` : "btn btn-primary"}
+      disabled={busy || unchanged}
+    >
+      <BusyLabel busy={busy} idle={submitWords[mode]} working={submitWords[mode]} />
+    </button>
+  );
 
   return (
     <div className={styles.folderActions}>
@@ -221,16 +231,8 @@ export function FolderActions({ tree, current, onChanged }: FolderActionsProps) 
             </p>
           )}
           <div className={styles.formButtons}>
-            {!blocked && (
-              <button
-                type="submit"
-                className={mode === "delete" ? "btn btn-danger" : "btn btn-primary"}
-                disabled={busy || unchanged}
-              >
-                {busy && <span className="spinner" aria-hidden="true" />}
-                {submitWords[mode]}
-              </button>
-            )}
+            {/* [Delete folder] ... [Cancel], or [Cancel] [Primary]. */}
+            {!blocked && mode === "delete" && submitButton}
             <button
               ref={mode === "delete" || blocked ? focusOnMount : undefined}
               type="button"
@@ -240,6 +242,7 @@ export function FolderActions({ tree, current, onChanged }: FolderActionsProps) 
             >
               {blocked ? "Close" : "Cancel"}
             </button>
+            {!blocked && mode !== "delete" && submitButton}
           </div>
         </form>
       )}

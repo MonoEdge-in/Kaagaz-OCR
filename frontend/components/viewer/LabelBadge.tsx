@@ -4,7 +4,8 @@ import { labelBadgeClass, labelIcon, labelText } from "./labels";
 
 /**
  * "Verified" or "Needs review": for values and answers only, never document
- * status. They differ by shape, edge, icon and word, not colour alone.
+ * status. They differ by icon, word and edge (solid or dashed, globals.css), never by
+ * colour or shape alone.
  */
 export function LabelBadge({ label }: { label: Label }) {
   return (

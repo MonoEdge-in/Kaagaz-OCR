@@ -13,6 +13,7 @@
 import Link from "next/link";
 import { useCallback, useReducer, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
+import { BusyLabel } from "@/components/documents/BusyLabel";
 import { ACCEPT_ATTRIBUTE } from "@/components/documents/logic";
 import { Icon } from "@/components/ui/Icon";
 import {
@@ -144,17 +145,20 @@ export function PageProblems({ documentId, page, userId, canFix, canUpload, onRe
               {fixQuestion(confirming.fix, page.page_no)}
             </p>
             <div className={styles.readAgainButtons}>
+              <button type="button" className="btn" onClick={cancel} disabled={confirming.step === "sending"}>
+                Cancel
+              </button>
               <button
                 type="button"
                 className="btn btn-primary"
                 onClick={() => send(confirming.fix)}
                 disabled={confirming.step === "sending"}
               >
-                {confirming.step === "sending" && <span className="spinner" aria-hidden="true" />}
-                {confirming.fix === "read" ? "Read it again" : "Keep it as is"}
-              </button>
-              <button type="button" className="btn" onClick={cancel} disabled={confirming.step === "sending"}>
-                Cancel
+                <BusyLabel
+                  busy={confirming.step === "sending"}
+                  idle={confirming.fix === "read" ? "Read it again" : "Keep it as is"}
+                  working={confirming.fix === "read" ? "Read it again" : "Keep it as is"}
+                />
               </button>
             </div>
           </div>
@@ -180,7 +184,7 @@ export function PageProblems({ documentId, page, userId, canFix, canUpload, onRe
                 disabled={upload?.step === "sending"}
               >
                 <Icon name="upload" />
-                {upload?.step === "sending" ? "Sending…" : "Upload a better scan"}
+                <BusyLabel busy={upload?.step === "sending"} idle="Upload a better scan" working="Sending…" />
               </button>
             )}
             {canFix && kept === null && (

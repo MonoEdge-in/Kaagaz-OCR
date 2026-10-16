@@ -22,6 +22,7 @@ import {
   storyProblem,
   tidyStory,
 } from "@/components/viewer/story";
+import { BusyLabel } from "@/components/documents/BusyLabel";
 import { deleteMyStory, getMyStory, saveMyStory } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
 import { useSession } from "@/lib/session";
@@ -163,7 +164,6 @@ export function StoryPanel({ documentId, inTrash }: { documentId: string; inTras
 
   const problem = refused ?? (tried ? storyProblem(draft) : null);
   const over = codePoints(tidyStory(draft)) > STORY_MAX;
-  const spinner = <span className="spinner" aria-hidden="true" />;
   const target = `btn ${styles.storyTarget}`;
   const describedBy = [story ? null : `${id}-hint`, `${id}-count`, problem ? `${id}-problem` : null];
 
@@ -217,16 +217,16 @@ export function StoryPanel({ documentId, inTrash }: { documentId: string; inTras
               </p>
             )}
           </div>
-          <div className="row">
-            <button type="submit" className={`${target} btn-primary`} aria-disabled={busy !== null || undefined}>
-              {busy === "save" && spinner}
-              {busy === "save" ? "Saving…" : "Save"}
-            </button>
+          {/* [Cancel] [Save]: the primary last, at the end of the row. */}
+          <div className={`row ${styles.readAgainButtons}`}>
             {story && (
               <button type="button" className={target} onClick={cancelEdit}>
                 Cancel
               </button>
             )}
+            <button type="submit" className={`${target} btn-primary`} aria-disabled={busy !== null || undefined}>
+              <BusyLabel busy={busy === "save"} idle="Save" working="Saving…" />
+            </button>
           </div>
         </form>
       )}
@@ -239,10 +239,15 @@ export function StoryPanel({ documentId, inTrash }: { documentId: string; inTras
           {confirming ? (
             <div role="group" aria-labelledby={`${id}-ask`} className="stack">
               <p id={`${id}-ask`}>Delete your story about this document? This can&apos;t be undone.</p>
+              {/* [Delete] ... [Cancel]: the destructive button stands apart; focus starts on Cancel. */}
               <div className="row">
-                <button type="button" className={`${target} btn-danger`} onClick={remove} aria-disabled={busy !== null || undefined}>
-                  {busy === "delete" && spinner}
-                  {busy === "delete" ? "Deleting…" : "Delete"}
+                <button
+                  type="button"
+                  className={`${target} btn-danger ${styles.apart}`}
+                  onClick={remove}
+                  aria-disabled={busy !== null || undefined}
+                >
+                  <BusyLabel busy={busy === "delete"} idle="Delete" working="Deleting…" />
                 </button>
                 <button
                   ref={focusOnMount}
@@ -259,11 +264,16 @@ export function StoryPanel({ documentId, inTrash }: { documentId: string; inTras
             </div>
           ) : (
             <div className="row">
+              <button
+                ref={deleteRef}
+                type="button"
+                className={`${target} ${styles.apart}`}
+                onClick={() => setConfirming(true)}
+              >
+                Delete<span className="visually-hidden"> your story</span>
+              </button>
               <button ref={editRef} type="button" className={target} onClick={() => startEdit(story.story)}>
                 Edit<span className="visually-hidden"> your story</span>
-              </button>
-              <button ref={deleteRef} type="button" className={target} onClick={() => setConfirming(true)}>
-                Delete<span className="visually-hidden"> your story</span>
               </button>
             </div>
           )}
