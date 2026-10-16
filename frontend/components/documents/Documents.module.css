@@ -688,6 +688,14 @@ table.docs > tbody > tr:hover {
 }
 
 /* Type and size under the name, only in the narrowest table. */
+/* "In Suppliers / 2026": the folder a row is filed in. */
+.inFolder {
+  display: block;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
 .bandType {
   display: none;
   font-size: var(--fs-sm);
