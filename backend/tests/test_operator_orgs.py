@@ -21,6 +21,7 @@ from kaagaz.api.auth import (
     sign_session,
     verify_password,
 )
+from kaagaz.api.names import ORG_NAME_PROBLEM
 from kaagaz.api.secret_box import SecretBox
 from kaagaz.db import operator_orgs as orgs_sql
 from kaagaz.db import operators as operators_sql
@@ -221,6 +222,13 @@ def test_the_first_admins_temporary_password_is_shown_once_and_only_its_hash_is_
     taken = offline.post(path, body)
     assert (taken.status_code, taken.json()["error"]["message"]) == (409, "That e-mail is already in use.")
     assert offline.post(path, {**body, "extra": "x"}).status_code == 400
+
+
+def test_a_placeholder_organisation_name_is_refused_before_anything_is_made(offline: _Offline) -> None:
+    reply = offline.post("", {"name": " Test ", "admin_email": "boss@mehta.example", "admin_name": "Boss"})
+    assert reply.status_code == 400
+    assert reply.json()["error"]["message"] == ORG_NAME_PROBLEM
+    assert offline.calls == []
 
 
 def test_the_organisation_list_holds_counts_only(offline: _Offline) -> None:

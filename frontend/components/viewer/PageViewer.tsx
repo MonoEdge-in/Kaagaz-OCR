@@ -33,7 +33,7 @@ import { markerId } from "@/components/words/ViewerWords";
 import { markerRect } from "@/components/words/spots";
 import type { Marker } from "@/components/words/spots";
 import { pageImageUrl } from "@/lib/api";
-import { boxToPixels, cropRect, fitCropView, pageAspect, regionsOnPage } from "@/lib/regions";
+import { boxToPixels, cropRect, framedCropView, pageAspect, regionsOnPage } from "@/lib/regions";
 import type { BoxRegion, CropView, FractionRect } from "@/lib/regions";
 import type { DocumentSummary, PageSummary, ReadingMark, Region } from "@/lib/types";
 import { MARK_WORDS, legend, markName, markRect, marksOnPage, showByDefault } from "./readingMarks";
@@ -50,6 +50,9 @@ const PdfPage = dynamic(() => import("./PdfPage"), {
 });
 
 const MAX_CROP_PAGE_WIDTH = 2400; // a tiny spot is not enlarged beyond this
+const CROP_MAX_HEIGHT = 176; // 11rem: the tallest a crop preview gets
+// 8px of page around the highlight's 4px ring (UI audit R1), so it never touches or clips the text.
+const CROP_MARGIN = 12;
 const WHOLE_PAGE: FractionRect = { x0: 0, y0: 0, x1: 1, y1: 1 };
 const MIN_ZOOM = ZOOM_STEPS[0];
 const MAX_ZOOM = ZOOM_STEPS[ZOOM_STEPS.length - 1] ?? 3;
@@ -382,33 +385,35 @@ export function PageViewer({
 
   if (isCrop) {
     let preview: ReactNode;
-    if (!near) {
-      preview = <span className={`skeleton ${styles.fill}`} aria-hidden="true" />;
-    } else if (mode === "sheet") {
-      preview = (
+    if (mode === "sheet") {
+      preview = near ? (
         <SheetGrid
           documentId={document.id}
           page={page}
           highlights={onThisPage}
           crop={cropHere?.kind === "cell" ? cropHere : undefined}
         />
+      ) : (
+        <span className={`skeleton ${styles.fill}`} aria-hidden="true" />
       );
     } else if (mode === "none") {
       preview = failed;
-    } else if (!box || box.width < 1 || box.height < 1) {
+    } else if (!box || box.width < 1) {
       preview = <span className={`skeleton ${styles.fill}`} aria-hidden="true" />;
     } else {
+      // The frame's size comes from the page's size and the spot alone, so it holds
+      // its place before the page is drawn (or near the screen): nothing jumps.
       const rect = (cropHere ? cropRect(cropHere, page) : null) ?? WHOLE_PAGE;
-      const view = fitCropView(rect, aspect, box.width, box.height, MAX_CROP_PAGE_WIDTH);
+      const view = framedCropView(rect, aspect, box.width, CROP_MAX_HEIGHT, MAX_CROP_PAGE_WIDTH, CROP_MARGIN);
       preview = (
         <>
           <div
             className={styles.cropFrame}
             style={{ width: `${view.frameWidth}px`, height: `${view.frameHeight}px` }}
           >
-            {stage(view.pageWidth, view.pageHeight, view)}
+            {near ? stage(view.pageWidth, view.pageHeight, view) : null}
           </div>
-          {drawn ? null : <span className={`skeleton ${styles.fill}`} aria-hidden="true" />}
+          {near && drawn ? null : <span className={`skeleton ${styles.fill}`} aria-hidden="true" />}
         </>
       );
     }

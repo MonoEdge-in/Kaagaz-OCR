@@ -64,6 +64,19 @@ export function shareText(part: number, all: number): string {
   return percent === 0 ? "Under 1%" : `${percent}%`;
 }
 
+/** The days of the report with any AI use. */
+export function activeDays(report: Pick<UsageReport, "by_day">): number {
+  return report.by_day.filter((day) => usageTokens(day) > 0).length;
+}
+
+/**
+ * AD5 (UI audit, 16 Oct 2026): the average over the days with use, not every day of the
+ * period, so one busy day is not spread thin: "Average per active day: 75K (2 of 11 days)".
+ */
+export function averageText(total: number, active: number, days: number): string {
+  return `Average per active day: ${compactNumber(Math.round(total / active))} (${active} of ${days} days)`;
+}
+
 /** All tokens of some calls: output_tokens already counts the thinking (reasoning_tokens). */
 export function usageTokens(totals: UsageTokens): number {
   return totals.input_tokens + totals.output_tokens;
@@ -201,8 +214,9 @@ function DailyChart({ report }: { report: UsageReport }) {
   );
 }
 
-/** Each day's tokens, for screen readers (DailyChart draws them). */
+/** Each day's tokens, every day of the period with 0 for none, for screen readers (DailyChart draws them). */
 function DailyTable({ report }: { report: UsageReport }) {
+  const used = new Map(report.by_day.map((day) => [day.day, usageTokens(day)]));
   return (
     <table className="table" role="table">
       <caption>Tokens by day</caption>
@@ -217,11 +231,11 @@ function DailyTable({ report }: { report: UsageReport }) {
         </tr>
       </thead>
       <tbody role="rowgroup">
-        {report.by_day.map((day) => (
-          <tr key={day.day} role="row">
-            <td role="cell">{formatDate(`${day.day}T12:00:00+05:30`)}</td>
+        {periodDays(report.from, report.to).map((day) => (
+          <tr key={day} role="row">
+            <td role="cell">{formatDate(`${day}T12:00:00+05:30`)}</td>
             <td role="cell" data-label="Tokens" className="num">
-              {formatNumber(usageTokens(day))}
+              {formatNumber(used.get(day) ?? 0)}
             </td>
           </tr>
         ))}
@@ -268,6 +282,7 @@ export function UsageReportView({ state, onRetry }: { state: UsageState; onRetry
   const { report } = state;
   const total = usageTokens(report.totals);
   const days = periodDays(report.from, report.to).length;
+  const active = activeDays(report);
   return (
     <>
       <dl className={styles.tiles}>
@@ -280,7 +295,11 @@ export function UsageReportView({ state, onRetry }: { state: UsageState; onRetry
           <dd className={`${styles.tileValue} tabular`} title={formatNumber(total)}>
             {compactNumber(total)} <span className={styles.tileUnit}>tokens</span>
           </dd>
-          {days > 1 && <dd className={styles.tileNote}>About {compactNumber(Math.round(total / days))} a day</dd>}
+          {days > 1 && active > 0 && (
+            <dd className={styles.tileNote}>
+              {averageText(total, active, days)}
+            </dd>
+          )}
         </div>
       </dl>
       <div className={styles.usageTables}>

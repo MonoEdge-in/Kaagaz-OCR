@@ -31,7 +31,8 @@
   ``SIGNUPS_PER_HOUR`` a client address (429). Off (``SELF_SIGNUP_ENABLED=false``): 404;
   ``GET /auth/signup`` says ``{enabled}`` for the sign-in pages' link. Audited
   ``org.self_signup`` in the new organisation's log, the new admin as actor. No e-mail
-  check: whoever types an address owns that account (PROVISIONAL).
+  check: whoever types an address owns that account (PROVISIONAL). A name too short or
+  an obvious test word ("asd") is a 400 (``names.org_name_ok``, UI audit G12).
 
 Why the sign-in looks the way it does (council record 29 Sep, WP1.3):
 
@@ -93,6 +94,7 @@ from kaagaz.api.auth import (
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.middleware import RateLimiter
+from kaagaz.api.names import ORG_NAME_PROBLEM, org_name_ok
 from kaagaz.api.routers.admin import MAX_PASSWORD, MIN_PASSWORD, valid_email
 from kaagaz.api.secret_box import SecretBoxError
 from kaagaz.api.twostep import box as _box
@@ -287,6 +289,8 @@ def signup(body: SignupBody, request: Request, context: Context) -> JSONResponse
     if not signup_limits.allow(request.client.host if request.client else "-"):
         raise ApiError(429, "rate_limited", TOO_MANY_SIGNUPS, headers={"Retry-After": "3600"})
     email = valid_email(body.email)
+    if not org_name_ok(body.organisation_name):
+        raise ApiError(400, "bad_request", ORG_NAME_PROBLEM)
     password_hash = hash_password(body.password)  # before the transaction, never during it
     try:
         with context.db.system() as conn:

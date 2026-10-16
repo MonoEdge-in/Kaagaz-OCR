@@ -3,13 +3,15 @@
 // This customer's settings: the largest file one upload may be (empty means the
 // platform limit applies; the platform limit is the ceiling), and auto-filing
 // (feature 28), shown only once the platform has allowed it, saved by the same Save.
+// UI audit AD6 (16 Oct 2026): each in its own section (Uploads, Filing), and the Save
+// bar sticks to the foot of the screen only while something is changed.
 
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import libraryStyles from "@/components/documents/Library.module.css";
 import { ApiError, getSettings, updateSettings } from "@/lib/api";
 import type { CustomerSettings } from "@/lib/types";
-import { AUTOFILE_HELP, AUTOFILE_LABEL, parseUploadLimit, settingsErrorText } from "./logic";
+import { AUTOFILE_HELP, AUTOFILE_LABEL, parseUploadLimit, settingsChanged, settingsErrorText } from "./logic";
 import styles from "./Admin.module.css";
 
 export function SettingsPanel() {
@@ -70,6 +72,8 @@ export function SettingsPanel() {
     }
   }
 
+  const changed = settings !== null && settingsChanged(settings, text, autofileOn);
+
   return (
     <section className="card stack" aria-labelledby="settings-heading">
       <h2 id="settings-heading" className={styles.sectionHeading}>
@@ -91,48 +95,59 @@ export function SettingsPanel() {
       {settings && (
         <form className="stack" onSubmit={submit} noValidate>
           <p className={styles.customer}>
-            Customer: <strong>{settings.customer_name}</strong>
+            Workspace: <strong>{settings.customer_name}</strong>
           </p>
-          <div className="field">
-            <label htmlFor="upload-limit">Largest file one upload may be, in MB</label>
-            <input
-              id="upload-limit"
-              className={`input ${styles.narrow}`}
-              type="text"
-              inputMode="numeric"
-              value={text}
-              onChange={(event) => {
-                setText(event.target.value);
-                setSaved(null); // "Saved." is about the old value
-              }}
-              aria-invalid={error ? true : undefined}
-              aria-describedby={error ? "upload-limit-hint upload-limit-error" : "upload-limit-hint"}
-            />
-            <span id="upload-limit-hint" className="hint">
-              The platform limit is {settings.platform_max_upload_mb} MB. Leave the box empty to
-              use it.
-            </span>
-            {error && (
-              <span id="upload-limit-error" className="error-text" role="alert">
-                {error}
+          <fieldset className={styles.settingsGroup}>
+            <legend className={styles.settingsLegend}>Uploads</legend>
+            <div className="field">
+              <label htmlFor="upload-limit">Largest file one upload may be, in MB</label>
+              <input
+                id="upload-limit"
+                className={`input ${styles.narrow}`}
+                type="text"
+                inputMode="numeric"
+                value={text}
+                onChange={(event) => {
+                  setText(event.target.value);
+                  setSaved(null); // "Saved." is about the old value
+                }}
+                aria-invalid={error ? true : undefined}
+                aria-describedby={error ? "upload-limit-hint upload-limit-error" : "upload-limit-hint"}
+              />
+              <span id="upload-limit-hint" className="hint">
+                The platform limit is {settings.platform_max_upload_mb} MB. Leave the box empty to
+                use it.
               </span>
-            )}
-          </div>
-          <AutofileSwitch granted={settings.autofile.granted} on={autofileOn} onChange={setAutofileOn} />
-          <div className="row">
-            <button
-              type="submit"
-              className={`btn btn-primary ${busy ? styles.busy : ""}`}
-              disabled={busy}
-              aria-busy={busy || undefined}
-            >
-              {busy && <span className="spinner" aria-hidden="true" />}
-              Save
-            </button>
-            <span aria-live="polite" className={styles.saved}>
-              {saved ?? ""}
-            </span>
-          </div>
+              {error && (
+                <span id="upload-limit-error" className="error-text" role="alert">
+                  {error}
+                </span>
+              )}
+            </div>
+          </fieldset>
+          {settings.autofile.granted && (
+            <fieldset className={styles.settingsGroup}>
+              <legend className={styles.settingsLegend}>Filing</legend>
+              <AutofileSwitch granted on={autofileOn} onChange={setAutofileOn} />
+            </fieldset>
+          )}
+          {changed && (
+            <div className={`row ${styles.saveBar}`}>
+              <span className="muted">You have changes that are not saved.</span>
+              <button
+                type="submit"
+                className={`btn btn-primary ${busy ? styles.busy : ""}`}
+                disabled={busy}
+                aria-busy={busy || undefined}
+              >
+                {busy && <span className="spinner" aria-hidden="true" />}
+                Save
+              </button>
+            </div>
+          )}
+          <span aria-live="polite" className={styles.saved}>
+            {saved ?? ""}
+          </span>
         </form>
       )}
     </section>

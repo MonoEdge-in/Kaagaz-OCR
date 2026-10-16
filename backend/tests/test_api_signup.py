@@ -11,6 +11,7 @@ from sqlalchemy import text
 
 from kaagaz.api.app import create_app
 from kaagaz.api.middleware import RateLimiter
+from kaagaz.api.names import ORG_NAME_PROBLEM
 from kaagaz.api.routers import auth as auth_router
 from kaagaz.db.engine import Database, make_engine
 from tests.settings_factory import make_settings
@@ -89,6 +90,12 @@ def test_a_weak_password_a_blank_name_or_a_bad_email_is_400(changes: dict[str, s
     assert reply.status_code == 400
     assert reply.json()["error"]["code"] == "bad_request"
     assert PASSWORD not in reply.text
+
+
+def test_a_placeholder_organisation_name_is_400_in_plain_words() -> None:
+    reply = _offline_client().post(URL, json=_body(organisation_name="asd"), headers=CSRF)
+    assert reply.status_code == 400
+    assert reply.json()["error"] == {"code": "bad_request", "message": ORG_NAME_PROBLEM}
 
 
 def test_it_needs_the_csrf_header() -> None:

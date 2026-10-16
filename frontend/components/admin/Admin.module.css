@@ -188,6 +188,16 @@
   font-size: var(--fs-lg);
 }
 
+/* A section's heading with its one action at the end (Users: Add user). */
+.sectionHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-4);
+  min-width: 0;
+}
+
 .emptyLine {
   margin: 0;
   padding: var(--space-6) var(--space-4);
@@ -264,20 +274,28 @@
   min-width: 0;
 }
 
-/* A row's actions: the safe ones, then the ones that take something away on their own row,
-   16px under them, so a slip never lands on Disable or Reset. */
-.actionGroups {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: var(--space-4);
+/* AD1 (UI audit, 16 Oct 2026): the e-mail on one line, cut with "…" (its title holds
+   it all); the Added date never breaks. */
+.userCell {
+  min-width: 0;
+  max-width: 0; /* the table cell takes the column's width, not the e-mail's */
 }
 
-.actions {
-  display: flex;
-  flex-direction: column;
+.userName,
+.userEmail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.date {
+  white-space: nowrap;
+}
+
+.rowActions {
+  display: inline-flex;
+  align-items: center;
   gap: var(--space-2);
-  align-items: flex-start;
 }
 
 /* Status: Active / Locked until 14:05 / Disabled, then 2FA on or off. */
@@ -287,19 +305,81 @@
   gap: var(--space-1);
 }
 
-.confirm {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  font-size: var(--fs-sm);
-  font-weight: 600;
+/* AD2: one row's menu (RowMenu.tsx), a native popover under its button, flipped above
+   near the window's foot; centred where anchor positioning is missing. The action that
+   takes something away is last, under a hairline, 16px from the rest. */
+.rowMenuButton {
+  padding-inline: var(--space-2);
 }
 
-/* [Cancel] [Yes, reset]: the action last, 16px from Cancel. */
-.confirmButtons {
+.rowMenuCaret {
+  transform: rotate(90deg);
+}
+
+.rowMenu {
+  position: fixed;
+  min-width: 12rem;
+  max-width: min(20rem, calc(100% - 2 * var(--space-4)));
+  margin: 0;
+  padding: var(--space-1);
+  border: 1px solid var(--border-strong);
+  border-radius: 2px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+}
+
+@supports (position-area: bottom) {
+  .rowMenu {
+    inset: auto;
+    margin-block: var(--space-1);
+    position-area: bottom span-left;
+    position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline;
+  }
+}
+
+.rowMenuItem {
   display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-4);
+  flex-direction: column;
+  align-items: flex-start;
+  width: 100%;
+  min-height: var(--h-md);
+  padding: var(--space-2) var(--space-3);
+  border: 0;
+  border-radius: 2px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: var(--fs-sm);
+  text-align: start;
+  cursor: pointer;
+}
+
+.rowMenuItem:hover,
+.rowMenuItem:focus-visible {
+  background: var(--bg-hover);
+}
+
+.rowMenuItem[aria-disabled="true"] {
+  color: var(--text-secondary);
+  cursor: not-allowed;
+}
+
+.rowMenuHint {
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+
+.rowMenuDanger {
+  margin-top: var(--space-4);
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+  color: var(--critical);
+}
+
+@media (pointer: coarse) {
+  .rowMenuItem {
+    min-height: var(--h-lg);
+  }
 }
 
 /* The Users table's short columns (Table.module.css switches at 48rem); the
@@ -318,20 +398,7 @@
   }
 
   .actionsColumn {
-    width: 10rem;
-  }
-}
-
-/* Room enough: the row's actions side by side, so a row stays short. */
-@container reflow (min-width: 64rem) {
-  .actionsColumn {
-    width: 20rem;
-  }
-
-  .actions {
-    flex-direction: row;
-    flex-wrap: wrap;
-    align-items: center;
+    width: 6.5rem; /* "More" and a spinner: the actions are in its menu */
   }
 }
 
@@ -344,11 +411,8 @@
     padding-block-start: var(--space-2);
   }
 
-  .actions {
-    flex-direction: row;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: var(--space-2);
+  .userCell {
+    max-width: none;
   }
 }
 
@@ -397,6 +461,94 @@
   max-width: 10rem;
 }
 
+/* AD6: Settings in sections; the Save bar sticks to the screen's foot while changed. */
+.settingsGroup {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  margin: 0;
+  padding: var(--space-4) 0 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+
+.settingsLegend {
+  float: left;
+  width: 100%;
+  margin-bottom: var(--space-3);
+  padding: 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.saveBar {
+  position: sticky;
+  bottom: 0;
+  z-index: var(--z-sticky);
+  justify-content: flex-end;
+  padding: var(--space-3) 0;
+  border-top: 1px solid var(--border);
+  background: var(--bg-surface);
+}
+
+/* AD3: Add user's side panel, at the end of the window; flat, a hairline edge. */
+.sidePanel {
+  position: fixed;
+  inset-block: 0;
+  inset-inline: auto 0;
+  width: min(100%, 28rem);
+  max-width: 100%;
+  height: 100%;
+  max-height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-inline-start: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  overflow: hidden;
+}
+
+.sidePanel::backdrop {
+  background: var(--backdrop);
+}
+
+.sidePanelBody {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  height: 100%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--space-6);
+  padding-block-end: max(var(--space-6), env(safe-area-inset-bottom));
+}
+
+.passwordBlock {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.passwordTools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.toastText {
+  margin: 0;
+  min-width: 0;
+}
+
 /* --- Numbers ---------------------------------------------------------------- */
 
 .tiles {
@@ -439,6 +591,55 @@
 }
 
 /* A second row of tiles under its own heading (the pages read by route). */
+/* AD4: the small lists under the four large numbers. */
+.breakdowns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
+  gap: var(--space-4);
+}
+
+.breakdown {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: var(--bg-surface);
+}
+
+.breakdown p {
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+.breakdownList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+.breakdownRow {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.breakdownRow dt {
+  min-width: 0;
+  color: var(--text-secondary);
+}
+
+.breakdownRow dd {
+  margin: 0;
+  font-weight: 600;
+  text-align: end;
+}
+
 .tilesHeading {
   margin: var(--space-3) 0 0;
   font-size: var(--fs-base);
@@ -593,6 +794,12 @@
    the number with its unit, then a day's average. */
 .usageTile {
   flex-direction: column;
+}
+
+/* AD4: a headline number reads label, number, note, top down. */
+.kpi {
+  flex-direction: column;
+  justify-content: flex-start;
 }
 
 .usageTileHead {

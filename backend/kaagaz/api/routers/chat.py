@@ -1,5 +1,9 @@
-"""POST /api/chat, GET /api/chat/options, GET /api/conversations, GET
-/api/conversations/{id} and POST /api/messages/{id}/feedback.
+"""POST /api/chat, GET /api/chat/options, GET /api/conversations, GET, PATCH {title}
+and DELETE /api/conversations/{id}, and POST /api/messages/{id}/feedback.
+
+A new conversation's title is its first question made short (``short_title``, UI audit
+A1, 16 Oct 2026: no model call); its owner may rename it or delete it with its messages
+(audited ``chat.rename`` / ``chat.delete``, ids only).
 
 Who drafts the answer (features 25-27, council 15 Oct 2026, C7, C10): the asker may name
 the chat models (by id, at most MAX_AGENTS, more than one only with the organisation's
@@ -57,6 +61,7 @@ from kaagaz.api.auth import User
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.middleware import RateLimiter
+from kaagaz.api.names import clean_name
 from kaagaz.api.views import answer_with_source_states, cited_document_ids, conversation_summary, message
 from kaagaz.db import audit
 from kaagaz.db import chat as chat_sql
@@ -78,6 +83,7 @@ logger = logging.getLogger(__name__)
 Context = Annotated[AppContext, Depends(get_context)]
 
 MAX_TITLE = 200
+SHORT_TITLE = 60  # characters of the first question a new conversation's title keeps
 NOT_FOUND_TEXT = "I couldn't find this in your documents."
 MAX_SCOPE_BYTES = 4096  # the messages.scope CHECK (migration 0006)
 TOO_MANY_QUESTIONS = "You have asked many questions in a short time. Please wait a minute and ask again."
@@ -118,6 +124,23 @@ NOT_ALLOWED = {
     "ensemble_not_allowed": "Your organisation does not allow more than one answer model at once.",
     "thinking_not_allowed": "That thinking level is not available here. Choose another in Answer settings.",
 }
+
+
+class TitleBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1, max_length=MAX_TITLE)  # then clean_name, as a folder's
+
+
+def short_title(question: str) -> str:
+    """The first question as a short title: one line, at most SHORT_TITLE characters, cut
+    at a word with "…" when longer. O(len(question))."""
+    line = " ".join(question.split())
+    if len(line) <= SHORT_TITLE:
+        return line
+    cut = line[: SHORT_TITLE - 1]
+    at = cut.rfind(" ")
+    return (cut[:at] if at > SHORT_TITLE // 2 else cut).rstrip(" ,.;:") + "…"
 
 
 class FeedbackBody(BaseModel):
@@ -195,7 +218,7 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
         with context.db.customer(user.customer_id) as conn:
             if conversation_id is None:
                 conversation_id = chat_sql.create_conversation(
-                    conn, user.customer_id, user.user_id, question[:MAX_TITLE]
+                    conn, user.customer_id, user.user_id, short_title(question)
                 )
             elif chat_sql.get_conversation(conn, user.customer_id, conversation_id, user.user_id) is None:
                 raise ApiError(404, "not_found")
@@ -390,6 +413,48 @@ def get_conversation(conversation_id: uuid.UUID, user: User, context: Context) -
             shown["answer"] = answer_with_source_states(shown["answer"], states)
         messages.append(shown)
     return {"id": str(found["id"]), "title": found["title"], "messages": messages}
+
+
+@router.patch("/conversations/{conversation_id}")
+def rename_conversation(
+    conversation_id: uuid.UUID, body: TitleBody, user: User, context: Context
+) -> dict[str, Any]:
+    title = clean_name(body.title, max_length=MAX_TITLE)
+    if title is None:
+        raise ApiError(400, "bad_request", "Enter a name for the conversation.")
+    with context.db.customer(user.customer_id) as conn:
+        found = chat_sql.rename_conversation(
+            conn, user.customer_id, str(conversation_id), user.user_id, title
+        )
+        if found is None:
+            raise ApiError(404, "not_found")
+        audit.record(
+            conn,
+            user.customer_id,
+            actor_user_id=user.user_id,
+            action="chat.rename",
+            target_type="conversation",
+            target_id=str(conversation_id),
+        )
+    return conversation_summary(found)
+
+
+@router.delete("/conversations/{conversation_id}", status_code=204)
+def delete_conversation(conversation_id: uuid.UUID, user: User, context: Context) -> Response:
+    """The conversation and its messages and feedback (ON DELETE CASCADE); its AI spend
+    stays, without the conversation (model_usage, ON DELETE SET NULL)."""
+    with context.db.customer(user.customer_id) as conn:
+        if not chat_sql.delete_conversation(conn, user.customer_id, str(conversation_id), user.user_id):
+            raise ApiError(404, "not_found")
+        audit.record(
+            conn,
+            user.customer_id,
+            actor_user_id=user.user_id,
+            action="chat.delete",
+            target_type="conversation",
+            target_id=str(conversation_id),
+        )
+    return Response(status_code=204)
 
 
 @router.post("/messages/{message_id}/feedback", status_code=204)
