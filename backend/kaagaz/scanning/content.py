@@ -28,20 +28,30 @@ A file it cannot inspect is not called safe: that is ``unscannable``.
 PROVISIONAL: which content is refused is Vrushit's security decision. These
 rules follow the upload threat list Tushar raised on 28 Sep 2026.
 
-Time and memory are O(n) in the file size, plus O(objects) for a PDF: the
-index walk and the repair walk are each bounded by what the file can hold
-(_BYTES_PER_OBJECT, _READ_FACTOR), and past that a PDF is ``unscannable``.
-Decompressing a stream is not bounded here (pdfminer's own; see the ponytail
-note in kaagaz/jobs/worker.py).
+Time and memory are bounded for a PDF (security review, 17 Oct 2026):
+* before pdfminer touches the file, every structural stream (an object stream or
+  an index stream, the only streams pdfminer decompresses here) must use a filter
+  this check understands and decompress to at most _MAX_STRUCTURE_BYTES, or the
+  file is ``unscannable`` (no zlib bomb, no filter only a viewer can decode);
+* one read budget for the whole check: _READ_FACTOR times the file, plus at most
+  _MAX_GRANT_BYTES granted per object in all, never reset;
+* one deadline for the whole check, _DEADLINE_SECONDS.
+Past any bound a PDF is ``unscannable``.
 """
 
 import io
 import re
 import struct
+import threading
+import time
 import zipfile
 import zlib
+from collections.abc import Callable
 from enum import Enum
+from typing import Any
 
+from pdfminer import pdftypes
+from pdfminer.lzw import LZWDecoder
 from pdfminer.pdfdocument import LITERAL_OBJSTM, PDFDocument, PDFXRefFallback
 from pdfminer.pdfparser import PDFParser, PDFStreamParser
 from pdfminer.pdftypes import PDFObjRef, PDFStream
@@ -113,46 +123,196 @@ _DAMAGED = (
 _OBJECT_HEADER = re.compile(rb"(?<![0-9])\d+\s+\d+\s+obj\b")
 _ENDS_A_DICTIONARY_PART = frozenset({b"stream", b"endobj", b"obj"})
 
-# Work bounds, so a damaged index can never make the check hang (council 17 Oct 2026:
-# an xref stream declaring /Size 999999999 in a 404-byte file walked ~1e9 ids, ~3 hours).
-# PROVISIONAL, Vrushit may tune:
+# Work bounds, so no PDF can make the check hang or fill memory (council 17 Oct 2026: an
+# xref stream declaring /Size 999999999 in a 404-byte file walked ~1e9 ids, ~3 hours;
+# security review 17 Oct 2026: per-object read grants let a file of tiny "1 0 obj"
+# headers grant itself ~1000x its size, and pdfminer's decompression had no limit).
+# One _Bounds per check, shared by every walk, never reset. PROVISIONAL, Vrushit may tune:
 # * an object needs at least ~8 bytes ("1 0 obj\n"), so an index listing more ids than
 #   len // _BYTES_PER_OBJECT + _SPARE_OBJECT_IDS is not walked past that: the repair walk
 #   (O(file size)) looks at every object the file can actually hold instead;
 # * pdfminer may read the file's bytes at most _READ_FACTOR times over, plus
-#   _READ_PER_OBJECT (two of its 4 KiB buffers) for each object it is asked for: past
-#   that, the index walk gives way to the repair walk, and the repair walk to unscannable.
+#   _READ_PER_OBJECT (two of its 4 KiB buffers) for each object it is asked for, those
+#   grants adding up to at most _MAX_GRANT_BYTES;
+# * everything pdfminer decompresses during the check (Flate, LZW, run length) adds up
+#   to at most _MAX_DECODED_BYTES; a CCITT fax stream is never decoded here (no index or
+#   object stream uses one);
+# * the whole check ends after _DEADLINE_SECONDS.
+# Past any bound the PDF is unscannable.
 _BYTES_PER_OBJECT = 8
 _SPARE_OBJECT_IDS = 1000
 _READ_FACTOR = 4
 _READ_PER_OBJECT = 8192
+_MAX_GRANT_BYTES = 16 * 1024 * 1024
+_MAX_DECODED_BYTES = 64 * 1024 * 1024
+_DEADLINE_SECONDS = 20.0
 
 
 class _ReadBudgetSpent(Exception):
-    """pdfminer read past the file's budget: a damaged index sends it over the same bytes
-    again and again."""
+    """The check went past one of its work bounds (reads, decoded bytes or time)."""
+
+
+class _Bounds:
+    """One check's work bounds: bytes read, bytes decoded and a deadline. O(1) a call."""
+
+    def __init__(self, size: int, *, clock: Callable[[], float] = time.monotonic) -> None:
+        self.reads = _READ_FACTOR * size
+        self.grants = _MAX_GRANT_BYTES
+        self.decoded = _MAX_DECODED_BYTES
+        self._clock = clock
+        self._deadline = clock() + _DEADLINE_SECONDS
+
+    def grant(self, size: int) -> None:
+        given = min(size, self.grants)
+        self.grants -= given
+        self.reads += given
+
+    def read(self, size: int) -> None:
+        self.reads -= size
+        self._check(self.reads)
+
+    def decode(self, size: int) -> None:
+        self.decoded -= size
+        self._check(self.decoded)
+
+    def _check(self, left: int) -> None:
+        if left < 0 or self._clock() > self._deadline:
+            raise _ReadBudgetSpent
+
+
+# The check in progress on this thread (pdfminer's decoders below look here).
+_current = threading.local()
+
+
+def _bounds() -> "_Bounds | None":
+    return getattr(_current, "bounds", None)
+
+
+class _BoundedDecompressor:
+    """A zlib decompressor whose output counts against the check's decoded bytes."""
+
+    def __init__(self, inner: Any, bounds: _Bounds) -> None:
+        self._inner = inner
+        self._bounds = bounds
+
+    def decompress(self, data: bytes, max_length: int = 0) -> bytes:
+        room = self._bounds.decoded + 1
+        out = self._inner.decompress(data, room if max_length <= 0 else min(max_length, room))
+        self._bounds.decode(len(out))
+        return out
+
+    def flush(self, *args: Any) -> bytes:
+        out = self._inner.flush(*args)
+        self._bounds.decode(len(out))
+        return out
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+class _GuardedZlib:
+    """Stands in for ``zlib`` inside pdfminer.pdftypes: the same calls, bounded while a
+    PDF is being checked on this thread, untouched everywhere else (the readers)."""
+
+    error = zlib.error
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(zlib, name)
+
+    def decompress(self, data: bytes, *args: Any, **kwargs: Any) -> bytes:
+        bounds = _bounds()
+        if bounds is None:
+            return zlib.decompress(data, *args, **kwargs)
+        inner = zlib.decompressobj(*args, **kwargs)
+        out = _BoundedDecompressor(inner, bounds).decompress(data)
+        if not inner.eof:
+            raise zlib.error("incomplete or truncated stream")  # as zlib.decompress says
+        return out
+
+    def decompressobj(self, *args: Any, **kwargs: Any) -> Any:
+        inner = zlib.decompressobj(*args, **kwargs)
+        bounds = _bounds()
+        return inner if bounds is None else _BoundedDecompressor(inner, bounds)
+
+
+_PLAIN_LZW = pdftypes.lzwdecode
+_PLAIN_RL = pdftypes.rldecode
+_PLAIN_CCITT = pdftypes.ccittfaxdecode
+
+
+def _guarded_lzw(data: bytes) -> bytes:
+    bounds = _bounds()
+    if bounds is None:
+        return _PLAIN_LZW(data)
+    parts = []
+    for chunk in LZWDecoder(io.BytesIO(data)).run():
+        bounds.decode(len(chunk))
+        parts.append(chunk)
+    return b"".join(parts)
+
+
+def _run_length_size(data: bytes) -> int:
+    """How many bytes a run-length stream decodes to, without decoding it. O(n)."""
+    size, at = 0, 0
+    while at < len(data) and data[at] != 128:
+        length = data[at]
+        if length < 128:
+            size, at = size + length + 1, at + length + 2
+        else:
+            size, at = size + 257 - length, at + 2
+    return size
+
+
+def _guarded_rl(data: bytes) -> bytes:
+    bounds = _bounds()
+    if bounds is not None:
+        bounds.decode(_run_length_size(data))
+    return _PLAIN_RL(data)
+
+
+def _guarded_ccitt(data: bytes, params: Any) -> bytes:
+    if _bounds() is not None:
+        raise _ReadBudgetSpent  # never an index or object stream's filter
+    return _PLAIN_CCITT(data, params)
+
+
+# ponytail: pdfminer's own decoders, swapped for bounded ones (they delegate unchanged
+# outside a check); if pdfminer ever renames them, the import-time names below fail loudly.
+pdftypes.zlib = _GuardedZlib()  # type: ignore[assignment]
+pdftypes.lzwdecode = _guarded_lzw
+pdftypes.rldecode = _guarded_rl
+pdftypes.ccittfaxdecode = _guarded_ccitt
 
 
 class _MeteredFile(io.BytesIO):
-    """The file, counting what pdfminer reads from it against ``left`` bytes."""
+    """The file, counting what pdfminer reads from it against the check's bounds."""
 
-    def __init__(self, data: bytes) -> None:
+    def __init__(self, data: bytes, bounds: _Bounds) -> None:
         super().__init__(data)
-        self.left = _READ_FACTOR * len(data)
+        self._bounds = bounds
 
     def read(self, size: int | None = -1, /) -> bytes:
         chunk = super().read(size)
-        self.left -= len(chunk)
-        if self.left < 0:
-            raise _ReadBudgetSpent
+        self._bounds.read(len(chunk))
         return chunk
 
 
 def _pdf_finding(data: bytes) -> Finding | None:
-    file = _MeteredFile(data)
+    bounds = _Bounds(len(data))
+    _current.bounds = bounds
+    try:
+        return _bounded_pdf_finding(data, bounds)
+    except _ReadBudgetSpent:
+        return Finding.UNSCANNABLE
+    finally:
+        _current.bounds = None
+
+
+def _bounded_pdf_finding(data: bytes, bounds: _Bounds) -> Finding | None:
+    file = _MeteredFile(data, bounds)
     try:
         document = PDFDocument(PDFParser(file))
-    except (*_DAMAGED, _ReadBudgetSpent):
+    except _DAMAGED:
         return Finding.UNSCANNABLE
     # pdfminer's own fallback index stops at the first trailer, so it is no proof of
     # having seen every object.
@@ -163,8 +323,8 @@ def _pdf_finding(data: bytes) -> Finding | None:
             for object_id in xref.get_objids():
                 most_ids -= 1
                 if most_ids < 0:
-                    raise _ReadBudgetSpent  # more ids than the file can hold objects
-                file.left += _READ_PER_OBJECT
+                    break  # more ids than the file can hold objects: the repair walk looks
+                bounds.grant(_READ_PER_OBJECT)
                 try:
                     obj = document.getobj(object_id)
                 except _DAMAGED:
@@ -174,36 +334,29 @@ def _pdf_finding(data: bytes) -> Finding | None:
                     return Finding.BLOCKED
     except _DAMAGED:
         damaged = True  # the index itself broke part way
-    except _ReadBudgetSpent:
-        damaged = True
-    if not damaged:
-        return None
     if document.encryption is not None:
-        return Finding.UNSCANNABLE  # objects outside the index cannot be decrypted here
-    file.left = _READ_FACTOR * len(data)  # for an object stream's indirect /Filter, say
-    try:
-        return _repair_walk(data, document)
-    except _ReadBudgetSpent:
-        return Finding.UNSCANNABLE
+        # Objects outside the index cannot be decrypted here; a whole index was read.
+        return Finding.UNSCANNABLE if damaged else None
+    # Always, not only when damaged (security review, 17 Oct 2026): a sound index can
+    # leave out an object a viewer still finds and runs (one written after the end, say).
+    return _repair_walk(data, document, bounds)
 
 
-def _repair_walk(data: bytes, document: PDFDocument) -> Finding | None:
+def _repair_walk(data: bytes, document: PDFDocument, bounds: _Bounds) -> Finding | None:
     """BLOCKED if any object in the whole file, found by its header as a viewer rebuilds
-    a broken index (pdfium, pdf.js and Acrobat all do), or inside an object stream, is
-    active; else None. Raises _ReadBudgetSpent past the read budget. Only for a damaged
-    index, so an ordinary file never pays for it. O(file size) reads, at most
-    _READ_FACTOR times over plus _READ_PER_OBJECT per header.
+    an index (pdfium, pdf.js and Acrobat all do), or inside an object stream, is active;
+    else None. Raises _ReadBudgetSpent past the check's bounds. O(file size) reads.
 
     Each object is parsed on its own from its header. A parse that fails (an odd or
     unclosed dictionary) has its dictionary part scanned for active names token by
     token, and what an unfinished parse left on the parser's stacks (an object with no
     "endobj") is checked too, so damage cannot hide a name a viewer would still read."""
-    file = _MeteredFile(data)
+    file = _MeteredFile(data, bounds)
     parser = PDFParser(file)
     parser.set_document(document)
     parser.fallback = True  # a stream runs to its "endstream", whatever its /Length says
     for header in _OBJECT_HEADER.finditer(data):
-        file.left += _READ_PER_OBJECT
+        bounds.grant(_READ_PER_OBJECT)
         parser.seek(header.end())
         try:
             found = [parser.nextobject()[1], *_leftovers(parser)]
@@ -261,8 +414,10 @@ def _object_stream_active(stream: PDFStream, document: PDFDocument) -> bool:
     """Any active object inside an object stream, read to its end or its first damage."""
     try:
         parser = PDFStreamParser(stream.get_data())
-    except _DAMAGED:
-        return False  # it cannot be decoded: no viewer reads it either
+    except _DAMAGED as error:
+        # It cannot be decoded here, but a viewer may decode it (security review, 17 Oct
+        # 2026: "no viewer reads it either" was not safe to assume): not called safe.
+        raise _ReadBudgetSpent from error
     parser.set_document(document)
     while True:
         try:
