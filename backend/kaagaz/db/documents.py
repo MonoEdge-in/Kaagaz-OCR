@@ -186,6 +186,11 @@ class NotReprocessable(Exception):
     """The document is being read, was rejected, or is in Trash."""
 
 
+class EnsembleRunning(NotReprocessable):
+    """An Ensemble run of the document is queued or running (scan review UX rules, 16 Oct
+    2026): it is read again once the run ends or is stopped."""
+
+
 class ReprocessLimited(Exception):
     """Too many "read again" requests. ``reason`` is ``hourly`` (the customer's
     REPROCESS_PER_HOUR) or ``cooldown`` (this document, within the cooldown)."""
@@ -197,6 +202,11 @@ class ReprocessLimited(Exception):
 
 _REPROCESS_STATE = (
     "SELECT status, deleted_at IS NOT NULL AS in_trash FROM documents WHERE customer_id = :c AND id = :d"
+)
+# A queued or running Ensemble run of the document (0030's ensemble_runs_one_active index).
+_ENSEMBLE_RUNNING = (
+    "SELECT EXISTS (SELECT 1 FROM ensemble_runs WHERE customer_id = :c AND document_id = :d"
+    " AND status IN ('queued', 'running'))"
 )
 
 # One customer's "read again" requests take their counts one after the other
@@ -253,7 +263,8 @@ def mark_for_reprocess(
     first, and is waited for, never skipped: a family being moved to Trash is
     waited for, then seen. Then the customer's reprocess lock (a transaction
     advisory lock), so the hourly count is exact. Raises NotReprocessable unless the status is ready,
-    failed or needs_reader and it is out of Trash, and ReprocessLimited when the
+    failed or needs_reader and it is out of Trash (EnsembleRunning while an Ensemble run of
+    it is queued or running), and ReprocessLimited when the
     customer already started ``per_hour`` in the last hour, or this document one
     in the last REPROCESS_COOLDOWN_MINUTES. Nothing is changed when it raises.
     ``is_current`` is kept, so an older version never takes its place.
@@ -266,6 +277,8 @@ def mark_for_reprocess(
     state = conn.execute(text(_REPROCESS_STATE), params).one()
     if state.in_trash or state.status not in REPROCESSABLE:
         raise NotReprocessable(document_id)
+    if conn.execute(text(_ENSEMBLE_RUNNING), params).scalar_one():
+        raise EnsembleRunning(document_id)
     conn.execute(text(_REPROCESS_LOCK), params)  # held to the end of the transaction
     if int(conn.execute(text(_REPROCESSED_THIS_HOUR), params).scalar_one()) >= per_hour:
         raise ReprocessLimited("hourly")
@@ -294,6 +307,8 @@ _OLDEST_READ_LOCALLY = (
     " WHERE d.customer_id = :c AND d.status = 'ready' AND d.deleted_at IS NULL"
     " AND d.id IN (SELECT p.document_id FROM pages p"
     " WHERE p.customer_id = :c AND 'read_locally' = ANY (p.read_issues))"
+    " AND NOT EXISTS (SELECT 1 FROM ensemble_runs r WHERE r.customer_id = :c AND r.document_id = d.id"
+    " AND r.status IN ('queued', 'running'))"
     " AND NOT EXISTS (SELECT 1 FROM audit_log a WHERE a.customer_id = :c"
     " AND a.action = 'document.read_upgrade' AND a.target_id = d.id::text"
     " AND a.created_at > now() - make_interval(hours => :hours))"
@@ -316,7 +331,7 @@ def mark_for_upgrade(conn: Connection, customer_id: str, document_id: str) -> bo
     """Set a document read locally to be read again by the main reader (PRD 5 Q7):
     True when it was set and audited as ``document.read_upgrade`` (no actor, the
     sweep's own); False when this customer has no such document, or it is being read,
-    rejected or in Trash, and then nothing changes.
+    rejected, in Trash or in an Ensemble run, and then nothing changes.
 
     ``conn`` comes from ``Database.customer(customer_id)``. The family lock comes first,
     as in ``mark_for_reprocess``, then the same change (``_REPROCESS``), with none of
@@ -326,6 +341,8 @@ def mark_for_upgrade(conn: Connection, customer_id: str, document_id: str) -> bo
     in the same transaction.
     3 statements; O(v log D) for the family's v versions."""
     if lock_family(conn, customer_id, document_id) is None:
+        return False
+    if conn.execute(text(_ENSEMBLE_RUNNING), {"c": customer_id, "d": document_id}).scalar_one():
         return False
     params = {"c": customer_id, "d": document_id, "by": None, "model": None}
     if conn.execute(text(_REPROCESS + " RETURNING id"), params).first() is None:

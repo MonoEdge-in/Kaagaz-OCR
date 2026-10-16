@@ -70,23 +70,30 @@ ENSEMBLE_ACTIONS = ("resolve", "keep")
 OPEN, REVIEWED, RESOLVED = "open", "reviewed", "resolved"
 
 # The first reader's spans read by OCR that may be flagged, with their page's reading
-# result: word marks, and lines that are unpinned or on a backup-read or unreadable page.
-# flags.span_flag decides; this is a superset of what it keeps.
+# result: word marks, lines that are unpinned or on a backup-read or unreadable page, and
+# lines a run of Ensemble on the whole document read differently (``ensemble``: a reading
+# changed or unresolved at the same spot and text). flags.span_flag decides; this is a
+# superset of what it keeps.
+# ponytail: the readings are looked up per span; fine while a document has few unsettled ones.
 _FLAG_SPANS = text(
     "SELECT e.span ->> 'kind' AS kind, e.span ->> 'quality' AS quality,"
     " e.span ->> 'box_source' AS box_source,"
     " e.span ->> 'text' AS text, e.span -> 'region' AS region,"
     " CAST(e.span ->> 'confidence' AS double precision) AS confidence,"
-    " p.page_no, p.read_quality, p.read_issues"
+    " p.page_no, p.read_quality, p.read_issues, u.ensemble"
     " FROM reader_outputs ro"
     " CROSS JOIN LATERAL jsonb_array_elements(ro.output) WITH ORDINALITY AS e(span, ord)"
     " JOIN pages p ON p.customer_id = ro.customer_id AND p.document_id = ro.document_id"
     " AND p.page_no = CAST(e.span -> 'region' ->> 'page' AS integer)"
+    " CROSS JOIN LATERAL (SELECT e.span ->> 'kind' IS NOT NULL AND EXISTS (SELECT 1 FROM ensemble_readings r"
+    " WHERE r.customer_id = ro.customer_id AND r.document_id = ro.document_id AND r.page_no = p.page_no"
+    " AND r.outcome IN ('changed', 'unresolved') AND r.before_text = e.span ->> 'text'"
+    " AND r.region = e.span -> 'region') AS ensemble) u"
     " WHERE ro.customer_id = :c AND ro.document_id = :d AND ro.role = 'first'"
     " AND e.span ->> 'origin' = 'ocr' AND e.span -> 'region' ->> 'kind' = 'box'"
     " AND ((e.span ->> 'kind' IS NULL AND e.span ->> 'quality' IN ('unsure', 'illegible'))"
     " OR e.span ->> 'box_source' = 'model' OR p.read_quality = 'unreadable'"
-    " OR p.read_issues && CAST(ARRAY['read_locally', 'reader_refused'] AS text[]))"
+    " OR p.read_issues && CAST(ARRAY['read_locally', 'reader_refused'] AS text[]) OR u.ensemble)"
     " ORDER BY p.page_no, e.ord"
 )
 # The values that may be flagged (flags.value_flag decides), with their page's issues.
@@ -124,9 +131,9 @@ _DOCUMENT_STATE = text(
 # when the clock stands still or steps back.
 _INSERT_CHANGE = text(
     "INSERT INTO word_changes (customer_id, document_id, word_key, kind, page_no, region, as_read, action,"
-    " before_text, after_text, user_id, applied, created_at)"
-    " VALUES (:c, :d, :key, :kind, :page_no, CAST(:region AS jsonb), :as_read, :action, :before, :after, :u,"
-    " CAST(:applied AS jsonb), greatest(CAST(:now AS timestamptz), (SELECT max(w.created_at)"
+    " before_text, after_text, reading_id, user_id, applied, created_at)"
+    " VALUES (:c, :d, :key, :kind, :page_no, CAST(:region AS jsonb), :as_read, :action, :before, :after, :r,"
+    " :u, CAST(:applied AS jsonb), greatest(CAST(:now AS timestamptz), (SELECT max(w.created_at)"
     " + interval '1 microsecond' FROM word_changes w WHERE w.customer_id = :c AND w.document_id = :d)))"
     " RETURNING id"
 )
@@ -153,6 +160,10 @@ _VALUES_BY_ID = text(
 _PIECES_BY_ID = text(
     "SELECT id, text FROM pieces WHERE customer_id = :c AND document_id = :d"
     " AND id = ANY(CAST(:ids AS uuid[])) ORDER BY id FOR UPDATE"
+)
+# Keep (Ensemble): the value keeps the readings that changed it (extracted_values.votes, 0026).
+_SET_VOTES = text(
+    "UPDATE extracted_values SET votes = CAST(:votes AS jsonb) WHERE customer_id = :c AND id = :v"
 )
 _SET_VALUE_TEXT = text(
     "UPDATE extracted_values SET value_text = :t, value_number = :n, value_date = :dt"
@@ -210,6 +221,11 @@ def load(conn: Connection, customer_id: str, document_id: str) -> Review:
     return Review(list(found.values()), changes)
 
 
+def latest_changes(conn: Connection, customer_id: str, document_id: str) -> dict[str, RowMapping]:
+    """``Review.latest`` without the flags: one statement."""
+    return Review([], conn.execute(_CHANGES, {"c": customer_id, "d": document_id}).mappings().all()).latest()
+
+
 def state(flag: Flag, latest: Mapping[str, RowMapping]) -> str:
     change = latest.get(flag.key)
     if change is None:
@@ -253,11 +269,16 @@ def change_word(
     new_text: str | None,
     user_id: str,
     now: datetime,
+    reading_id: str | None = None,
+    votes: Mapping[str, Any] | None = None,
 ) -> str:
     """Confirm (``new_text`` None, or the same text) or edit one flagged word, and return
-    the change's id. Raises Refused (not_found, in_trash, not_ready, changed_since)."""
+    the change's id. Raises Refused (not_found, in_trash, not_ready, changed_since).
+    With ``reading_id`` it is Ensemble's Keep of that reading's ``new_text``: action keep,
+    written the same way but never Verifying a value nor writing into a Verified one, and a
+    value flag's own value keeps ``votes`` (kaagaz.db.ensemble.keep)."""
     ids = {"c": customer_id, "d": document_id}
-    _lock_ready(conn, ids)
+    lock_ready(conn, ids)
     review = load(conn, customer_id, document_id)
     flag = review.flag(key)
     if flag is None:
@@ -267,7 +288,7 @@ def change_word(
     if before != expected_text:
         raise Refused("changed_since")
     after = before if new_text is None else new_text
-    action = "confirm" if after == before else "edit"
+    action = "keep" if reading_id is not None else "confirm" if after == before else "edit"
     change_id = str(
         conn.execute(
             _INSERT_CHANGE,
@@ -281,21 +302,27 @@ def change_word(
                 "action": action,
                 "before": before,
                 "after": after,
+                "r": reading_id,
                 "u": user_id,
                 "applied": "{}",
                 "now": now,
             },
         ).scalar_one()
     )
-    reviewed = {word for word, row in latest.items() if row["action"] in PERSON_ACTIONS} | {key}
-    applied = _apply(conn, ids, flag, before, after, review.flags, reviewed, user_id, change_id)
+    person = reading_id is None
+    reviewed = {word for word, row in latest.items() if row["action"] in PERSON_ACTIONS}
+    if person:
+        reviewed.add(key)
+    applied = _apply(
+        conn, ids, flag, before, after, review.flags, reviewed, user_id, change_id, verify=person, votes=votes
+    )
     applied["flag"] = {"band": flag.band, "reason": flag.reason}
     conn.execute(_SET_APPLIED, {"c": customer_id, "id": change_id, "applied": json.dumps(applied)})
     audit.record(
         conn,
         customer_id,
         actor_user_id=user_id,
-        action=f"word_review.{action}",
+        action="ensemble.keep" if reading_id is not None else f"word_review.{action}",
         target_type="document",
         target_id=document_id,
         details=_audit_details(change_id, flag, applied),
@@ -309,7 +336,7 @@ def undo_change(
     """Undo the document's latest change in force. Raises Refused (not_found, in_trash,
     not_ready, not_latest, changed_since); nothing is changed then."""
     ids = {"c": customer_id, "d": document_id}
-    _lock_ready(conn, ids)
+    lock_ready(conn, ids)
     changes = conn.execute(_CHANGES, ids).mappings().all()
     live = [row for row in changes if row["undone_at"] is None]
     change = next((row for row in changes if str(row["id"]) == change_id), None)
@@ -381,14 +408,55 @@ def reapply(conn: Connection, customer_id: str, document_id: str) -> None:
             reviewed.add(flag.key)
         before, after = str(change["before_text"]), str(change["after_text"])
         change_id = str(change["id"])
+        verify = change["action"] in PERSON_ACTIONS  # a Keep never Verifies (Ensemble)
         applied = _apply(
-            conn, ids, flag, before, after, review.flags, reviewed, str(change["user_id"]), change_id
+            conn,
+            ids,
+            flag,
+            before,
+            after,
+            review.flags,
+            reviewed,
+            str(change["user_id"]),
+            change_id,
+            verify=verify,
         )
         applied["flag"] = (change["applied"] or {}).get("flag")
         conn.execute(_SET_APPLIED, {"c": customer_id, "id": change_id, "applied": json.dumps(applied)})
 
 
-def _lock_ready(conn: Connection, ids: dict[str, str]) -> None:
+def resolve_word(
+    conn: Connection,
+    customer_id: str,
+    document_id: str,
+    flag: Flag,
+    text_now: str,
+    reading_id: str,
+    now: datetime,
+) -> str:
+    """Ensemble's readings agreed with the word's text ``text_now``: a ``resolve`` change by no
+    person, which writes nothing (the text stays), and its id. The caller holds the family lock
+    (kaagaz.db.ensemble.save_page)."""
+    params = {
+        "c": customer_id,
+        "d": document_id,
+        "key": flag.key,
+        "kind": flag.kind,
+        "page_no": flag.page_no,
+        "region": json.dumps(flag.region),
+        "as_read": flag.as_read,
+        "action": "resolve",
+        "before": text_now,
+        "after": text_now,
+        "r": reading_id,
+        "u": None,
+        "applied": "{}",
+        "now": now,
+    }
+    return str(conn.execute(_INSERT_CHANGE, params).scalar_one())
+
+
+def lock_ready(conn: Connection, ids: dict[str, str]) -> None:
     """Take the family lock, then refuse a document that is not there, in Trash, or not
     ready and current."""
     if lock_family(conn, ids["c"], ids["d"]) is None:
@@ -410,9 +478,14 @@ def _apply(
     reviewed: set[str],
     user_id: str,
     change_id: str,
+    *,
+    verify: bool = True,
+    votes: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Write one change into the values and pieces of the word's page, and verify each
-    value whose box flags are all reviewed. Returns what was written (``applied``)."""
+    value whose box flags are all reviewed. Returns what was written (``applied``). With
+    ``verify`` False (a Keep) no value is Verified and a Verified one is left as it is;
+    ``votes`` go on the flag's own value."""
     params = {**ids, "p": flag.page_no}
     written_values = []
     for value in conn.execute(_PAGE_VALUES, params).mappings().all():
@@ -432,11 +505,13 @@ def _apply(
             and bool(box)
             and all(f.key in reviewed for f in box)
         )
-        verify = ready or (value["label"] == "verified" and new is not None)
-        if not verify and new is None:
+        if not verify and value["label"] == "verified":
+            continue  # Ensemble's Keep never changes a value a person Verified
+        verified = verify and (ready or (value["label"] == "verified" and new is not None))
+        if not verified and new is None:
             continue
         final = text_now if new is None else new
-        if verify:
+        if verified:
             review_sql.resolve_value(
                 conn,
                 ids["c"],
@@ -452,7 +527,9 @@ def _apply(
                 _SET_VALUE_TEXT,
                 {**ids, "v": str(value["id"]), "t": final, "n": parse_amount(final), "dt": parse_date(final)},
             )
-        entry = {"id": str(value["id"]), "before": _value_before(value), "after": final, "verified": verify}
+            if mine and votes is not None:
+                conn.execute(_SET_VOTES, {**ids, "v": str(value["id"]), "votes": json.dumps(votes)})
+        entry = {"id": str(value["id"]), "before": _value_before(value), "after": final, "verified": verified}
         written_values.append(entry)
     written_pieces = []
     if before != after:

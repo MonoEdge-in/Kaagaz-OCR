@@ -7,7 +7,8 @@ reading says now (kaagaz/db/word_review.py reads the rows). A flag is one of:
 * a word mark (``mark``, PRD 5 F3): a word the reader was unsure of, or ``[?]`` where it
   could not read;
 * a line (``line``) whose spot no box confirmed (G5, ``box_source`` model), or on a page the
-  backup reader read (``read_locally``, ``reader_refused``) or graded unreadable (F2);
+  backup reader read (``read_locally``, ``reader_refused``) or graded unreadable (F2), or
+  that Ensemble read differently after the scan (``ensemble``: changed or unresolved);
 * a value (``value``) the readers read differently (``readers_disagree``, or an Ensemble
   vote with no majority), read with low confidence, or read in an unexpected script
   (``ocr_script``).
@@ -136,6 +137,8 @@ def span_flag(row: Mapping[Any, Any]) -> Flag | None:
         kind, band, reason = LINE, REVIEW, SPOT_UNCONFIRMED
     elif unreadable:
         kind, band, reason = LINE, REVIEW, page_reason(issues)
+    elif row.get("ensemble"):
+        kind, band, reason = LINE, REVIEW, READINGS_DIFFER
     else:
         return None
     page_no, region, text = int(row["page_no"]), row["region"], str(row["text"])

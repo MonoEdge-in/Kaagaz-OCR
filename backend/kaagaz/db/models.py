@@ -19,6 +19,7 @@ longer allowed falls back, with a note for ``processing_runs.config.reading``.
 
 * ``usable_models``: the scan models an upload may name, the default first.
 * ``resolve_scan``: the ``Reading`` of one document (mode, lead, others, careful, thinking).
+* ``resolve_ensemble``: who reads a document again for Ensemble after the scan.
 * ``usable_chat_models`` and ``resolve_chat``: the ``ChatChoice`` of one question; a
   choice the organisation may not make raises ``AiNotAllowed`` (the API's 403 codes).
 * ``pick_tiers``: Standard and Careful among the usable scan models (the API's "Read
@@ -40,7 +41,7 @@ from typing import Any
 from sqlalchemy import Connection, RowMapping, text
 
 from kaagaz.answering.draft import ANSWER_PROMPT_HASH
-from kaagaz.reading.ocr import READER_PROMPT_VERSION
+from kaagaz.reading.ocr import GEMINI, READER_PROMPT_VERSION
 from kaagaz.settings import DEFAULT_PROVIDER, Settings
 
 # MC3: the days of ledger a page's estimate averages over.
@@ -291,6 +292,23 @@ def resolve_scan(conn: Connection, customer_id: str, document_id: str, *, settin
             return Reading("single", lead, thinking=thinking, notes=(*notes, "careful_missing"))
         return Reading("dynamic", lead, careful=_agent(careful, settings), thinking=thinking, notes=notes)
     return Reading("single", lead, thinking=thinking, notes=notes)
+
+
+def resolve_ensemble(conn: Connection, customer_id: str, document_id: str, *, settings: Settings) -> Reading:
+    """Who reads ``document_id`` again for Ensemble after the scan (scan review UX rules, 16
+    Oct 2026): ``lead`` is ``resolve_scan``'s (the stored reading's own model), ``others`` the
+    first two usable scan models that are not the lead (the default first, then by name).
+    Raises ``AiNotAllowed("ensemble_not_allowed")`` when the organisation's Ensemble grant is
+    off, scans are not read by a model (OCR_ENGINE is not gemini), or no other model is
+    usable. The API checks it before a run and the job again when it starts (S2)."""
+    if settings.ocr_engine != GEMINI or not effective_settings(conn, customer_id)["ensemble"]:
+        raise AiNotAllowed("ensemble_not_allowed")
+    scan = resolve_scan(conn, customer_id, document_id, settings=settings)
+    rows = usable_models(conn, customer_id, settings=settings)
+    others = tuple(_agent(row, settings) for row in rows if row["id"] != scan.lead.model)[: MAX_AGENTS - 1]
+    if not others:
+        raise AiNotAllowed("ensemble_not_allowed")
+    return Reading("ensemble", scan.lead, others, thinking=scan.thinking, notes=scan.notes)
 
 
 def resolve(
