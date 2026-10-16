@@ -29,10 +29,16 @@ const me = (role: Role, scope: SessionScope = "app", totp_enabled = true): Me =>
     must_change_password: false,
     totp_enabled,
     can_delete_forever: false,
+    two_step_allowed: true,
   },
   customer: { id: "c1", name: "Sharma Traders" },
   session: { scope },
 });
+/** An admin of an organisation the super admin has not allowed two-step sign-in for. */
+const noTwoStep = (scope: SessionScope, totp_enabled = false): Me => {
+  const base = me("admin", scope, totp_enabled);
+  return { ...base, user: { ...base.user, two_step_allowed: false } };
+};
 const granted = (role: Role, scope: SessionScope = "app"): Me => {
   const base = me(role, scope, false);
   return { ...base, user: { ...base.user, can_delete_forever: true } };
@@ -61,6 +67,17 @@ describe("who may delete for good", () => {
     expect([canDeleteForever(granted("admin")), foreverNeedsPassword(me("admin", "admin"))]).toEqual([false, false]);
     expect(selectable({ can_delete: false }, true, true)).toBe(true); // ticked in Trash to delete for good
     expect(selectable({ can_delete: false }, false, true)).toBe(false);
+  });
+
+  it("lets an admin without two-step sign-in allowed delete with their password, in an admin session", () => {
+    for (const totp of [false, true]) {
+      // A code stored before the super admin stopped it is never used.
+      expect(canDeleteForever(noTwoStep("admin", totp))).toBe(true);
+      expect(foreverNeedsPassword(noTwoStep("admin", totp))).toBe(true);
+      expect(foreverNeeds(noTwoStep("admin", totp))).toBeNull();
+    }
+    expect(canDeleteForever(noTwoStep("app"))).toBe(false);
+    expect(foreverNeeds(noTwoStep("app"))).toBe("admin_sign_in");
   });
 
   it("checks the password once, then deletes each; a refused password deletes nothing", async () => {

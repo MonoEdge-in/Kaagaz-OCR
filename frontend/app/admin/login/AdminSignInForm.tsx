@@ -9,9 +9,10 @@
 // - the password is masked again as soon as the form is submitted;
 // - typed values stay after an error, except the code: a code works once and
 //   changes every 30 seconds.
-// The code is optional: an admin who has not turned on two-step sign-in
-// leaves it empty (they can turn it on in Admin, Settings). Signed in, the
-// browser goes to /admin.
+// First the e-mail and password. Only when the server says a code is needed
+// (401 code_required: the password was right and this admin has two-step
+// sign-in on, where the super admin allows it) does a second step ask for the
+// 6-digit code, then send all three again. Signed in, the browser goes to /admin.
 
 import Link from "next/link";
 import { useState } from "react";
@@ -26,9 +27,10 @@ import login from "../../login/login.module.css";
 import { SignedOutNotice } from "../../login/SignedOutNotice";
 import {
   adminSignInError,
+  codeError,
+  codeNeeded,
   firstInvalidAdmin,
   normalizeCode,
-  optionalCodeError,
   validateAdminSignIn,
 } from "./adminSignIn";
 import type { AdminSignInError, AdminSignInErrors, AdminSignInField } from "./adminSignIn";
@@ -43,7 +45,7 @@ const FIELD_IDS: Record<AdminSignInField, string> = {
 
 const NO_ERRORS: AdminSignInErrors = { email: null, password: null, code: null };
 
-const CODE_HINT = "From your authenticator app. Leave it empty if two-step sign-in is off.";
+const CODE_HINT = "From your authenticator app. A new code shows every 30 seconds.";
 
 /** note: what the page says after a session ending (SignedOutNotice). */
 export function AdminSignInForm({ note }: { note: string | null }) {
@@ -51,6 +53,8 @@ export function AdminSignInForm({ note }: { note: string | null }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
+  // The second step: the server asked for the code (codeNeeded).
+  const [askCode, setAskCode] = useState(false);
   const [masked, setMasked] = useState(true);
   const [errors, setErrors] = useState<AdminSignInErrors>(NO_ERRORS);
   // A field is checked on blur only once it has been typed in.
@@ -75,12 +79,19 @@ export function AdminSignInForm({ note }: { note: string | null }) {
     if (edited[field]) setErrors((was) => ({ ...was, [field]: fieldError(field, value) }));
   }
 
+  function back() {
+    setAskCode(false);
+    setCode("");
+    setFailure(null);
+    setErrors(NO_ERRORS);
+  }
+
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (busy) return;
     setMasked(true);
     setFailure(null);
-    const found = validateAdminSignIn(email, password, code);
+    const found = validateAdminSignIn(email, password, askCode ? code : null);
     const invalid = firstInvalidAdmin(found);
     if (invalid) {
       // Commit the messages first, so the field is described when it gets focus.
@@ -90,17 +101,24 @@ export function AdminSignInForm({ note }: { note: string | null }) {
     }
     setErrors(found);
     setBusy(true);
-    const typedCode = normalizeCode(code);
     try {
       const signedIn = await adminLogin(
         normalizeEmail(email),
         password,
-        typedCode === "" ? undefined : typedCode,
+        askCode ? normalizeCode(code) : undefined,
       );
       // As the normal sign-in: a full page load, and the other tabs are told.
       announceSession(signedIn.user.id);
       leavePage("/admin");
     } catch (caught) {
+      if (!askCode && codeNeeded(caught)) {
+        flushSync(() => {
+          setAskCode(true);
+          setBusy(false);
+        });
+        document.getElementById(FIELD_IDS.code)?.focus();
+        return;
+      }
       setFailure(adminSignInError(caught));
       setCode("");
       setBusy(false);
@@ -119,59 +137,69 @@ export function AdminSignInForm({ note }: { note: string | null }) {
         <h1 id="admin-login-title" className={styles.title}>
           Admin sign-in
         </h1>
-        <p className={styles.lead}>For account admins: users, settings and activity.</p>
+        <p className={styles.lead}>
+          {askCode
+            ? `Two-step sign-in is on for ${normalizeEmail(email)}. Enter the 6-digit code from your authenticator app.`
+            : "For account admins: users, settings and activity."}
+        </p>
       </div>
       <SignedOutNotice message={note} />
 
-      <div className="field">
-        <label htmlFor={FIELD_IDS.email}>E-mail</label>
-        <input
-          id={FIELD_IDS.email}
-          className="input"
-          type="email"
-          autoComplete="username"
-          inputMode="email"
-          autoCapitalize="none"
-          autoCorrect="off"
-          spellCheck={false}
-          enterKeyHint="next"
-          required
-          value={email}
-          onChange={(event) => change("email", event.target.value)}
-          onBlur={() => blur("email", email)}
-          aria-invalid={errors.email ? true : undefined}
-          aria-describedby={errors.email ? "admin-login-email-error" : undefined}
+      {!askCode && (
+        <>
+          <div className="field">
+            <label htmlFor={FIELD_IDS.email}>E-mail</label>
+            <input
+              id={FIELD_IDS.email}
+              className="input"
+              type="email"
+              autoComplete="username"
+              inputMode="email"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+              enterKeyHint="next"
+              required
+              value={email}
+              onChange={(event) => change("email", event.target.value)}
+              onBlur={() => blur("email", email)}
+              aria-invalid={errors.email ? true : undefined}
+              aria-describedby={errors.email ? "admin-login-email-error" : undefined}
+            />
+            {errors.email && (
+              <p id="admin-login-email-error" className={`error-text ${login.fieldError}`}>
+                {errors.email}
+              </p>
+            )}
+          </div>
+
+          <PasswordField
+            id={FIELD_IDS.password}
+            label="Password"
+            value={password}
+            onChange={(value) => change("password", value)}
+            onBlur={() => blur("password", password)}
+            autoComplete="current-password"
+            enterKeyHint="next"
+            required
+            error={errors.password}
+            masked={masked}
+            onMaskedChange={setMasked}
+          />
+        </>
+      )}
+
+      {askCode && (
+        <CodeField
+          id={FIELD_IDS.code}
+          label="6-digit code"
+          value={code}
+          onChange={(value) => change("code", value)}
+          onBlur={() => blur("code", code)}
+          error={errors.code}
+          hint={CODE_HINT}
         />
-        {errors.email && (
-          <p id="admin-login-email-error" className={`error-text ${login.fieldError}`}>
-            {errors.email}
-          </p>
-        )}
-      </div>
-
-      <PasswordField
-        id={FIELD_IDS.password}
-        label="Password"
-        value={password}
-        onChange={(value) => change("password", value)}
-        onBlur={() => blur("password", password)}
-        autoComplete="current-password"
-        enterKeyHint="next"
-        required
-        error={errors.password}
-        masked={masked}
-        onMaskedChange={setMasked}
-      />
-
-      <CodeField
-        id={FIELD_IDS.code}
-        label="6-digit code, if you turned on two-step sign-in"
-        value={code}
-        onChange={(value) => change("code", value)}
-        onBlur={() => blur("code", code)}
-        error={errors.code}
-        hint={CODE_HINT}
-      />
+      )}
 
       {failure && (
         <div className={login.banner} role="alert">
@@ -194,6 +222,12 @@ export function AdminSignInForm({ note }: { note: string | null }) {
         {busy ? "Signing in…" : "Sign in"}
       </button>
 
+      {askCode && (
+        <button type="button" className="btn btn-block" disabled={busy} onClick={back}>
+          Back to e-mail and password
+        </button>
+      )}
+
       <p className={login.help}>
         Not an admin, or here for documents and questions?{" "}
         <Link href="/login">Use the normal sign-in</Link>.
@@ -205,5 +239,5 @@ export function AdminSignInForm({ note }: { note: string | null }) {
 function fieldError(field: AdminSignInField, value: string): string | null {
   if (field === "email") return emailError(value);
   if (field === "password") return passwordError(value);
-  return optionalCodeError(value);
+  return codeError(value);
 }

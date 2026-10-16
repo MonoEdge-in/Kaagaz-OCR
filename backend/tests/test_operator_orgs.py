@@ -53,6 +53,7 @@ ORG_ROUTES = {
     ("GET", f"{ORGS}/{ANY_ID}/ai"),
     ("PUT", f"{ORGS}/{ANY_ID}/ai"),
     ("PUT", f"{ORGS}/{ANY_ID}/autofile"),  # feature 28: allow or stop auto-filing
+    ("PUT", f"{ORGS}/{ANY_ID}/two-step"),  # 0029: allow or stop two-step sign-in
 }
 ORG_ROW = {
     "customer_id": CID,
@@ -70,6 +71,7 @@ ORG_ROW = {
     "last_activity_at": NOW,
     "autofile_granted": True,
     "autofile_on": False,
+    "two_step_granted": False,
 }
 
 
@@ -104,6 +106,7 @@ class _Offline:
         monkeypatch.setattr(orgs_sql, "list_customers", lambda conn, oid: [ORG_ROW])
         for name in ("create_customer", "set_customer_status", "step_up_failed", "set_org_autofile"):
             monkeypatch.setattr(orgs_sql, name, self._recorder(name))
+        monkeypatch.setattr(orgs_sql, "set_org_two_step", self._recorder("set_org_two_step"))
         token = sign_operator(
             OperatorClaims(operator_id=OID, session_version=2, expires_at=AT + 600),
             self.settings.session_secret,
@@ -237,8 +240,10 @@ def test_the_organisation_list_holds_counts_only(offline: _Offline) -> None:
         "last_activity_at",
         "autofile_granted",  # feature 28
         "autofile_on",
+        "two_step_granted",  # 0029
     }
     assert (org["autofile_granted"], org["autofile_on"]) == (True, False)
+    assert org["two_step_granted"] is False
 
 
 @pytest.mark.parametrize(
@@ -257,3 +262,24 @@ def test_auto_filing_is_allowed_or_stopped_without_a_code_and_each_outcome_gets_
         assert reply.json() == {"organisation": {"id": CID, "autofile_granted": False, "changed": changed}}
     bad = offline.client.put(path, json={"granted": True, "on": True}, headers=offline.headers)
     assert bad.status_code == 400  # the operator never sets the organisation's own switch
+
+
+@pytest.mark.parametrize(
+    ("code", "status"), [("done", 200), ("unchanged", 200), ("missing", 404), ("deleting", 409)]
+)
+def test_two_step_sign_in_is_allowed_or_stopped_without_a_code_and_each_outcome_gets_its_reply(
+    offline: _Offline, code: str, status: int
+) -> None:
+    offline.outcome = Outcome(code, CID)
+    path = f"{ORGS}/{CID}/two-step"
+    reply = offline.client.put(path, json={"granted": True}, headers=offline.headers)
+    assert reply.status_code == status, reply.text
+    assert offline.calls == [("set_org_two_step", (OID, CID), {"granted": True})]
+    if status == 200:
+        changed = code == "done"
+        assert reply.json() == {"organisation": {"id": CID, "two_step_granted": True, "changed": changed}}
+    assert (
+        offline.client.put(path, json={"granted": "yes please"}, headers=offline.headers).status_code == 400
+    )
+    signed_out = offline.client.put(path, json={"granted": True}, headers=CSRF)
+    assert signed_out.status_code == 401  # the operator cookie only

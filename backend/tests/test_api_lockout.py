@@ -109,7 +109,7 @@ def test_the_admin_screen_replies_are_identical_too(db: Database) -> None:
         "unknown": api.admin_login(client, "nobody-at-all@example.test", code="123456"),
         "wrong password": api.admin_login(client, admin.email, password=WRONG, code=api.code(admin.secret)),
         "wrong code": api.admin_login(client, admin.email, code=wrong_code(api, admin.secret)),
-        "no code": api.admin_login(client, admin.email),
+        "wrong password, no code": api.admin_login(client, admin.email, password=WRONG),
         "not an admin": api.admin_login(client, member_email),
         "2FA off, wrong password": api.admin_login(client, no_2fa_email, password=WRONG),
     }
@@ -117,6 +117,9 @@ def test_the_admin_screen_replies_are_identical_too(db: Database) -> None:
     assert {reply.status_code for reply in replies.values()} == {401}
     assert len({reply.text for reply in replies.values()}) == 1
     assert replies["locked"].json()["error"]["code"] == "bad_credentials"
+    # Only a right password learns that a code is needed (0029, the two-step sign-in screen).
+    no_code = api.admin_login(client, admin.email)
+    assert (no_code.status_code, no_code.json()["error"]["code"]) == (401, "code_required")
 
 
 def test_an_expired_lock_lets_the_right_password_in_and_resets(db: Database) -> None:

@@ -241,9 +241,19 @@ class Api:
 
     # --- people ------------------------------------------------------------------
 
-    def customer(self, name: str = "Test customer") -> tuple[str, str]:
-        """A new customer and its admin (whose password is not usable)."""
-        return new_customer(self.db, name=name)
+    def customer(self, name: str = "Test customer", *, two_step: bool = True) -> tuple[str, str]:
+        """A new customer and its admin (password not usable); ``two_step``: the grant (0029)."""
+        customer_id, admin_id = new_customer(self.db, name=name)
+        self.grant_two_step(customer_id, two_step)
+        return customer_id, admin_id
+
+    def grant_two_step(self, customer_id: str, granted: bool = True) -> None:
+        """Set the operator's two-step grant (0029) as the table owner: the app can't."""
+        with self.db.engine.begin() as conn:
+            conn.execute(
+                text("UPDATE customers SET two_step_granted = :g WHERE id = :c"),
+                {"g": granted, "c": customer_id},
+            )
 
     def add_user(self, customer_id: str, role: str, *, password: str = PASSWORD) -> tuple[str, str]:
         email = f"{role}-{uuid.uuid4().hex[:12]}@example.test"
@@ -275,6 +285,7 @@ class Api:
         """A new admin with a two-step code already set up, written by SQL the way
         ``POST /auth/admin/enrol`` leaves it (the secret sealed with SecretBox)."""
         user_id, email = self.add_user(customer_id, "admin")
+        self.grant_two_step(customer_id)  # an enrolled admin means the operator allowed it
         secret = totp.new_secret()
         sealed = SecretBox(self.settings.totp_encryption_key).seal(secret, aad=user_id)
         with self.db.customer(customer_id) as conn:

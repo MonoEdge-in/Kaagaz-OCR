@@ -70,6 +70,7 @@ USER = CurrentUser(
     must_change_password=False,
     totp_enabled=False,
     delete_forever_allowed=False,
+    two_step_allowed=True,
 )
 
 

@@ -45,6 +45,7 @@ export interface Me {
     must_change_password: boolean;
     totp_enabled: boolean; // two-step sign-in is on (each admin chooses)
     can_delete_forever: boolean; // an admin allowed this member or reviewer (never an admin)
+    two_step_allowed: boolean; // the super admin allowed two-step sign-in for the organisation
   };
   customer: { id: string; name: string };
   session: { scope: SessionScope };
@@ -782,6 +783,7 @@ export interface Organisation {
   last_activity_at: string | null;
   autofile_granted: boolean; // feature 28: auto-filing allowed; its admin switches it on
   autofile_on: boolean;
+  two_step_granted: boolean; // two-step sign-in allowed for its admins; until then the password alone
 }
 
 /** POST /operator/orgs: the temporary password is in this one reply only. */

@@ -25,7 +25,8 @@ admin may allow a member or reviewer to delete documents in Trash forever, and
 stop it again. Allowing needs this admin's two-step sign-in on (403
 ``two_step_required``), else a password-only admin could route round two-step by
 allowing a made-up account; an admin is never a target (400), a role change
-clears the grant, and stopping it works at the user's next request.
+clears the grant, and stopping it works at the user's next request. Without the
+operator's two-step grant (0029) there is no code to route round: the session is enough.
 
 Why AI models and use look the way they do (model choice, council 11 Oct 2026):
 the operator sets the organisation's models and budget, so ``/admin/models`` only
@@ -266,7 +267,7 @@ def set_delete_forever(
     user_id: uuid.UUID, body: DeleteForeverBody, user: AdminSession, context: Context
 ) -> dict[str, Any]:
     """Allow or stop a member's or reviewer's Delete forever. Audited with ids only."""
-    if body.allowed and not user.totp_enabled:
+    if body.allowed and user.two_step_allowed and not user.totp_enabled:
         raise ApiError(403, "two_step_required", "Turn on two-step sign-in in Admin, Settings to allow this.")
     target = str(user_id)
     with context.db.customer(user.customer_id) as conn:
