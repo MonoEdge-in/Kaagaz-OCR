@@ -79,9 +79,10 @@
 
 /* D1: the room "Read with" and its one-line hint need is kept from the first paint
    (min-height), and a skeleton holds the select's place until the limits come, so the
-   header never grows under the pointer. Two rows, as the title beside it (Tushar, 16 Oct
-   2026): "Read with" and the select on the h1's row, the hint on the subtitle's row,
-   starting under the select. */
+   list never moves under the pointer. It sits at the end of the list's head row, at the
+   content's right edge (Tushar, 16 Oct 2026: it only touches uploads, so not above the
+   folders): "Read with" and the select on the heading's line, centred, the hint under
+   the select. */
 .uploadControls {
   display: flex;
   flex-wrap: wrap;
@@ -90,12 +91,14 @@
   gap: var(--space-2) var(--space-3);
   min-width: 0;
   min-height: calc(var(--h-md) + var(--space-1) + 1.5em);
+  margin-inline-start: auto; /* at the right edge, also when it wraps under the heading */
 }
 
 @media (max-width: 639.98px) {
   .uploadControls {
     flex: 1 1 100%;
     justify-content: flex-start;
+    margin-inline-start: 0;
   }
 }
 
@@ -106,6 +109,17 @@
   height: var(--h-md);
 }
 
+/* On touch the select is 44px: the room kept for it is too. */
+@media (pointer: coarse) {
+  .uploadControls {
+    min-height: calc(var(--h-lg) + var(--space-1) + 1.5em);
+  }
+
+  .readerSkeleton {
+    height: var(--h-lg);
+  }
+}
+
 .uploadControls .reader {
   display: grid;
   grid-template-columns: auto minmax(0, auto);
@@ -113,7 +127,7 @@
   flex: 0 1 auto;
 }
 
-/* In the header the hint is one line, its full words in its title, under the select and as
+/* Here the hint is one line, its full words in its title, under the select and as
    wide as it (width 0: the hint never widens its column). */
 .uploadControls .readerHint {
   display: -webkit-box;
@@ -312,12 +326,14 @@
   gap: var(--space-3);
 }
 
+/* The search row is as wide as the list: its end is the table's and the cards' end. */
 .search {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
-  flex: 0 1 36rem;
+  flex: 1 1 100%;
+  min-width: 0;
 }
 
 .searchField {
@@ -577,14 +593,25 @@ table.docs tbody tr[data-selected="true"] .selectHit input {
    The markup carries role="table|rowgroup|row|columnheader|cell", so the cards
    keep the table's meaning. */
 
+/* The whole row is in the UI's sans, numbers in tabular figures (Tushar, 16 Oct 2026: the
+   name, size, flagged count and date were mono beside sans words). Each cell's first line is
+   the control height (--row-line), the ⋯ button's own, and everything on it is centred in it:
+   the tick box, the file icon and name, the status chip, the date and the menu. */
 table.docs {
-  --row-line: 32px; /* each cell's first line: the tick box, the name, the dates */
+  --row-line: var(--h-md);
   width: 100%;
   border-collapse: separate;
   border-spacing: 0;
   background: var(--bg-surface);
   border: 1px solid var(--border);
   border-radius: 2px;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (pointer: coarse) {
+  table.docs {
+    --row-line: var(--h-lg); /* the touch control height */
+  }
 }
 
 /* Long words break only when they cannot fit; names wrap at <wbr> (names.ts). */
@@ -604,13 +631,16 @@ table.docs > tbody > tr:hover {
   background: var(--bg-hover);
 }
 
+/* The first line is centred in --row-line (the padding); a long name's next lines sit close. */
 .name {
+  --name-line: 1.5em;
   display: inline-flex;
   align-items: flex-start;
   gap: var(--space-2);
+  padding-block: calc((var(--row-line) - var(--name-line)) / 2);
   color: var(--text-primary);
   font-weight: 600;
-  line-height: var(--row-line);
+  line-height: var(--name-line);
   text-decoration: none;
   overflow-wrap: break-word;
 }
@@ -631,7 +661,7 @@ table.docs > tbody > tr:hover {
 
 .fileIcon {
   flex: none;
-  height: var(--row-line);
+  height: var(--name-line);
   color: var(--text-secondary);
 }
 
@@ -669,6 +699,20 @@ table.docs > tbody > tr:hover {
 .bandSize,
 .bandBy {
   display: none;
+}
+
+/* Uploaded (Tushar, 16 Oct 2026: it wrapped to 5 lines): "2h ago" and "by tusharsaini", one
+   line each; a long name is cut with an ellipsis, its full words in the title (and the exact
+   date in the time's title and read out). */
+.bandBy,
+.byName {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.bandBy {
+  line-height: 1.5;
 }
 
 /* What kind of document it is (PRD 2, D6), under its file type. */
@@ -735,7 +779,8 @@ table.docs > tbody > tr:hover {
   color: var(--text-secondary);
 }
 
-/* The action that ends a read document's line: ink, not blue (blue is punctuation). */
+/* The action that ends a read document's line: ink, not blue (blue is punctuation). "Review",
+   after "7 flagged" in full, on the line under the chip, starting at its left edge. */
 .statusAction {
   display: inline-flex;
   align-items: center;
@@ -787,6 +832,7 @@ table.docs > tbody > tr:hover {
     z-index: var(--z-sticky);
     background: var(--bg-surface);
     border-bottom: 1px solid var(--border);
+    vertical-align: middle; /* the labels on the select-all box's line */
   }
 
   table.docs thead th:first-child {
@@ -830,6 +876,19 @@ table.docs > tbody > tr:hover {
 
   .uploadedColumn {
     width: 7.5rem;
+  }
+
+  /* In the table the time is a line of its own; on a card it joins the meta line. */
+  .when {
+    display: block;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  /* The menu cell's own start padding is the gap after it: room for "by tusharsaini". */
+  table.docs .uploadedCell {
+    padding-inline-end: 0;
   }
 
   /* The menu's icon button (36px) and its padding. */
@@ -913,6 +972,10 @@ table.docs > tbody > tr:hover {
 
   .byColumn {
     width: 9rem;
+  }
+
+  .byName {
+    display: block;
   }
 
   .byLabel {

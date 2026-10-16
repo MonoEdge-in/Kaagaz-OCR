@@ -21,14 +21,19 @@
   align-items: start;
 }
 
+/* Below 1024 px the folder column stacks above the list, its "+" with it (Tushar, 16 Oct 2026). */
 .treePane {
-  display: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
 }
 
+/* One gap between the screen's sections: the place, Words in these files, the search and list. */
 .main {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-6);
   min-width: 0;
 }
 
@@ -38,18 +43,11 @@
   }
 
   .treePane {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2);
     position: sticky;
     top: var(--space-4);
     max-height: calc(var(--main-h) - 2 * var(--space-4)); /* <main> is the one scroller */
     overflow-y: auto;
     overscroll-behavior: contain;
-  }
-
-  .placeHead .foldersButton {
-    display: none;
   }
 }
 
@@ -114,12 +112,26 @@
   outline-offset: -1px;
 }
 
-/* D12: the column's header, "Folders" and "+ New folder" on one row. */
+/* D12: the column's header, "Folders" and its "+" (New folder) on one row. It is the control
+   height, as is the place heading's line beside it, so "FOLDERS" and "All documents" share
+   one line; the small label sits on the heading's baseline, not its middle. */
 .paneHead {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
+  min-height: var(--h-md);
+}
+
+.paneHead .paneHeading {
+  padding-block-start: var(--space-2);
+}
+
+/* On touch the "+" is 44px (the place heading's line beside it too, below). */
+@media (pointer: coarse) {
+  .paneHead {
+    min-height: var(--h-lg);
+  }
 }
 
 /* Trash sits apart, after every folder. */
@@ -164,10 +176,12 @@
 
 /* --- Where you are: the path, the folder's name and its actions ------------- */
 
+/* The place and "Read with" start on one line, at the top: the heading's line is the
+   control height, beside the folder column's header. */
 .placeHead {
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-end;
+  align-items: flex-start;
   justify-content: space-between;
   gap: var(--space-3);
 }
@@ -184,7 +198,14 @@
 .placeHeading {
   margin: 0;
   font-size: var(--fs-xl);
+  line-height: var(--h-md);
   overflow-wrap: anywhere;
+}
+
+@media (pointer: coarse) {
+  .placeHeading {
+    line-height: var(--h-lg);
+  }
 }
 
 /* Focused by the screen after a delete or a move; the heading is not a control. */
@@ -225,6 +246,11 @@
   flex-direction: column;
   gap: var(--space-3);
   flex: 1 1 100%;
+}
+
+/* All documents with no form open: nothing here, so no empty row either. */
+.folderActions:empty {
+  display: none;
 }
 
 .folderButtons {

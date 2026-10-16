@@ -20,8 +20,8 @@
 // or "Unknown" without the AI model's card: PRD 2, D6). Names wrap in full at
 // their _ . - and @ marks (WrapName.tsx). The By cell says "Uploaded by" in
 // words; the full table hides those words under its By header. A document with
-// reading problems says so in its status ("Scan complete" then "12 flagged for
-// review · Open to review"), and a reviewer or an admin can have ticked documents
+// reading problems says so in its status ("Scan complete" then "12 flagged · Review",
+// the link read out as "Review 12 flagged words in ..."), and a reviewer or an admin can have ticked documents
 // read again, one at a time, after an inline question.
 // Scan states (16 Oct 2026): the status cell is two fixed lines while a document
 // is queued, being read, or read, so a scan finishing never changes its row's height;
@@ -54,7 +54,15 @@ import type { FolderTree } from "./folderTree";
 import { BusyLabel } from "./BusyLabel";
 import type { EditAction, RowAction } from "./library";
 import { rowsInPlace } from "./listMerge";
-import { UNDERSTANDING_TEXT, deletedMessage, flaggedText, formatProgressPercent, scanWords, toReview } from "./logic";
+import {
+  UNDERSTANDING_TEXT,
+  deletedMessage,
+  flaggedShort,
+  formatProgressPercent,
+  scanWords,
+  shortWhen,
+  toReview,
+} from "./logic";
 import { StatusChip } from "./StatusChip";
 import { TimeLeft } from "./TimeLeft";
 import { WrapName } from "./WrapName";
@@ -302,7 +310,8 @@ export function DocumentsTable({ items: listed, inTrash, me, now, tree, tags, ..
             <DocumentRow
               key={document.id}
               document={document}
-              whenText={whenText(document, inTrash, now)}
+              whenShort={shortWhen(whenOf(document, inTrash), now)}
+              whenSpoken={whenSpoken(document, inTrash, now)}
               inTrash={inTrash}
               deletable={selectable(document, inTrash, canForever) || readable(document)}
               canForever={canForever}
@@ -491,15 +500,17 @@ const whenOf = (document: DocumentSummary, inTrash: boolean) =>
   inTrash && document.deleted_at !== null ? document.deleted_at : document.created_at;
 
 // Worked out here, so a row renders again only when its own words change, not on every poll.
-function whenText(document: DocumentSummary, inTrash: boolean, now: number): string {
+// Shown "2h ago" (shortWhen); read out "2 hours ago, 16 Oct 2026, 2:05 pm".
+function whenSpoken(document: DocumentSummary, inTrash: boolean, now: number): string {
   const when = whenOf(document, inTrash);
   const relative = formatRelative(when, now);
-  return relative === formatDate(when) ? relative : `${relative} · ${formatDate(when)}`;
+  return relative === formatDate(when) ? formatDateTime(when) : `${relative}, ${formatDateTime(when)}`;
 }
 
 const DocumentRow = memo(function DocumentRow({
   document,
-  whenText,
+  whenShort,
+  whenSpoken,
   inTrash,
   deletable,
   canForever,
@@ -511,7 +522,8 @@ const DocumentRow = memo(function DocumentRow({
   events,
 }: {
   document: DocumentSummary;
-  whenText: string;
+  whenShort: string;
+  whenSpoken: string;
   inTrash: boolean;
   deletable: boolean; // it gets a checkbox (selectable)
   canForever: boolean;
@@ -655,13 +667,12 @@ const DocumentRow = memo(function DocumentRow({
           }}
         >
           <Icon name="file" className={styles.fileIcon} />
-          <span className="mono">
+          <span>
             <WrapName name={document.display_name} />
           </span>
         </Link>
         <span className={styles.bandType}>
-          {typeLabel(document.detected_type)} · {docTypeLabel(document.doc_type)} ·{" "}
-          <span className="mono">{formatBytes(document.size_bytes)}</span>
+          {typeLabel(document.detected_type)} · {docTypeLabel(document.doc_type)} · {formatBytes(document.size_bytes)}
         </span>
         {document.tags.length > 0 && (
           <ul className={`${library.tags} ${library.rowTags}`} aria-label="Tags">
@@ -686,18 +697,19 @@ const DocumentRow = memo(function DocumentRow({
         <span className={styles.docType}>{docTypeLabel(document.doc_type)}</span>
         <span className={`${styles.bandSize} tabular`}>{formatBytes(document.size_bytes)}</span>
       </td>
-      <td role="cell" className={`${styles.meta} ${styles.sizeCell} tabular mono`}>
+      <td role="cell" className={`${styles.meta} ${styles.sizeCell} tabular`}>
         {formatBytes(document.size_bytes)}
       </td>
-      <td role="cell" className={styles.meta}>
+      <td role="cell" className={`${styles.meta} ${styles.uploadedCell}`}>
         {inTrash && <span className="visually-hidden">Trashed </span>}
-        {/* The exact date too: a touch screen never shows the hover title. */}
-        <time dateTime={when} title={formatDateTime(when)} className="mono">
-          {whenText}
+        {/* One short line, the exact date in its title; read out in full instead. */}
+        <time dateTime={when} title={formatDateTime(when)} className={styles.when} aria-hidden="true">
+          {whenShort}
         </time>
+        <span className="visually-hidden">{whenSpoken}</span>
         {by && (
-          <span className={styles.bandBy}>
-            Uploaded by <WrapName name={by} />
+          <span className={styles.bandBy} title={by}>
+            <span className="visually-hidden">Uploaded </span>by {by}
           </span>
         )}
       </td>
@@ -705,7 +717,9 @@ const DocumentRow = memo(function DocumentRow({
         {by ? (
           <>
             <span className={styles.byLabel}>Uploaded by </span>
-            <WrapName name={by} />
+            <span className={styles.byName} title={by}>
+              <WrapName name={by} />
+            </span>
           </>
         ) : (
           <>
@@ -812,7 +826,7 @@ export function StatusCell({ document, inTrash }: { document: DocumentSummary; i
     );
   }
   if (document.status === "ready") {
-    const flagged = flaggedText(document);
+    const flagged = flaggedShort(document);
     // UI audit D4 (16 Oct 2026): a clean read is its badge alone; the second line stays laid out.
     const clean = !toReview(document);
     return (
@@ -827,14 +841,14 @@ export function StatusCell({ document, inTrash }: { document: DocumentSummary; i
             </span>
           ) : (
             !clean && (
-              <span className={`${styles.statusText} mono`} title={flagged}>
-                {flagged}
+              <span className={styles.statusText} title={flagged.shown}>
+                {flagged.shown}
               </span>
             )
           )}
           {!inTrash && toReview(document) && (
             <Link href={`/documents/${document.id}`} className={styles.statusAction} onClick={rememberListScroll}>
-              Open to review<span className="visually-hidden">{` ${document.display_name}`}</span>
+              Review<span className="visually-hidden">{` ${flagged.spoken} in ${document.display_name}`}</span>
             </Link>
           )}
         </span>

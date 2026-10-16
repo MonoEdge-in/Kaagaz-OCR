@@ -6,8 +6,8 @@
 // a taken name, a move into itself, more than 5 levels or a folder that is not
 // empty come back as 409 and are shown as it words them. The screen gives this
 // a new key for each folder, so an open form never outlives its folder.
-// UI audit D12 (16 Oct 2026): "+ New folder" in the folder column's header opens the same
-// New folder form here (`askNew` counts its presses).
+// UI audit D12 (16 Oct 2026): the folder column header's "+" is the one New folder (Tushar, 16 Oct
+// 2026: no second button here); it opens the New folder form here (`askNew` counts its presses).
 
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { FormEvent, MouseEvent } from "react";
@@ -192,46 +192,35 @@ export function FolderActions({ tree, current, onChanged, askNew = 0 }: FolderAc
 
   return (
     <div className={styles.folderActions}>
-      <div className={styles.folderButtons}>
-        <button
-          type="button"
-          className="btn"
-          aria-expanded={mode === "new"}
-          onClick={(event) => open("new", event)}
-        >
-          <Icon name="plus" />
-          New folder
-        </button>
-        {current && (
-          <>
-            <button
-              type="button"
-              className="btn btn-quiet"
-              aria-expanded={mode === "rename"}
-              onClick={(event) => open("rename", event)}
-            >
-              Rename<span className="visually-hidden"> this folder</span>
-            </button>
-            <button
-              type="button"
-              className="btn btn-quiet"
-              aria-expanded={mode === "move"}
-              onClick={(event) => open("move", event)}
-            >
-              Move<span className="visually-hidden"> this folder</span>
-            </button>
-            <button
-              type="button"
-              className={`btn btn-quiet ${styles.danger}`}
-              aria-expanded={mode === "delete"}
-              onClick={(event) => open("delete", event)}
-            >
-              <Icon name="trash" />
-              Delete<span className="visually-hidden"> this folder</span>
-            </button>
-          </>
-        )}
-      </div>
+      {current && (
+        <div className={styles.folderButtons}>
+          <button
+            type="button"
+            className="btn btn-quiet"
+            aria-expanded={mode === "rename"}
+            onClick={(event) => open("rename", event)}
+          >
+            Rename<span className="visually-hidden"> this folder</span>
+          </button>
+          <button
+            type="button"
+            className="btn btn-quiet"
+            aria-expanded={mode === "move"}
+            onClick={(event) => open("move", event)}
+          >
+            Move<span className="visually-hidden"> this folder</span>
+          </button>
+          <button
+            type="button"
+            className={`btn btn-quiet ${styles.danger}`}
+            aria-expanded={mode === "delete"}
+            onClick={(event) => open("delete", event)}
+          >
+            <Icon name="trash" />
+            Delete<span className="visually-hidden"> this folder</span>
+          </button>
+        </div>
+      )}
 
       {mode !== null && (
         <form className={styles.folderForm} onSubmit={submit} noValidate aria-label={submitWords[mode]}>

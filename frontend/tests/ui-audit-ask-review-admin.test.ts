@@ -19,6 +19,7 @@ import {
   focusProgress,
   reasonTag,
 } from "@/components/review/review";
+import { WORDS_HINT, lone } from "@/components/words/UploadWords";
 import { draftFilled, wordsCsv } from "@/components/words/words";
 import { MODE_TEXTS } from "@/lib/chatMode";
 import type { DocumentSummary, Message, ReviewItem, ReviewList } from "@/lib/types";
@@ -206,12 +207,36 @@ describe("Words in these files (D8)", () => {
   it("shows it opens: a chevron that turns, a one-line hint, a 44px summary", () => {
     const view = read("components/words/UploadWords.tsx");
     expect(view).toMatch(/<summary>\s*<Icon name="chevron-right" size=\{16\} className=\{styles\.chevron\} \/>/);
-    expect(view).toContain("Add names or terms from these files, so chat reads them correctly.");
+    // Changed on purpose (Tushar, 16 Oct 2026): the hint and the paragraph under it said the
+    // same twice; now one short line, in the summary.
+    expect(view).toContain("<span className={styles.summaryHint}>{WORDS_HINT}</span>");
+    expect(WORDS_HINT).toBe("Add their meaning in English (malak → owner), so chat reads them right. Only you see them.");
+    expect(view).not.toContain('<p className="hint">');
     const css = read("components/words/Words.module.css");
     expect(css).toMatch(/\.uploadWords\[open\] > summary \.chevron \{\s*transform: rotate\(90deg\);/);
     expect(css).toMatch(/\.chevron \{[^}]*transition: transform 160ms/);
     expect(css).toMatch(/prefers-reduced-motion: reduce\) \{\s*\.chevron \{\s*transition: none;/);
     expect(css).toMatch(/\.uploadWords > summary,[^{]*\{\s*min-height: 44px;/);
+  });
+
+  // Tushar's fix list, 16 Oct 2026.
+  it("starts collapsed, every line of it under the summary's words", () => {
+    const view = read("components/words/UploadWords.tsx");
+    expect(view).toMatch(/<details className=\{`card \$\{styles\.uploadWords\}`\}>/); // no open attribute
+    const css = read("components/words/Words.module.css");
+    expect(css).toMatch(/\.uploadWords > summary \+ \* \{[^}]*padding-inline-start: calc\(16px \+ var\(--space-2\)\);/);
+  });
+
+  it("shows Remove only when there is something to remove, and Add another word at normal width", () => {
+    const pair = (word: string, meaning = "") => ({ key: word || "k", word, meaning, state: { kind: "draft" as const } });
+    expect(lone([pair("")])).toBe(true);
+    expect(lone([pair("malak")])).toBe(false);
+    expect(lone([pair("", "owner")])).toBe(false);
+    expect(lone([pair(""), pair("")])).toBe(false);
+    const view = read("components/words/UploadWords.tsx");
+    expect(view).toMatch(/\{!lone\(pairs\) && \(\s*<button[\s\S]{0,200}?\}>\s*Remove</);
+    expect(view).toContain("className={`btn ${styles.target} ${styles.addWord}`}");
+    expect(read("components/words/Words.module.css")).toMatch(/\.addWord \{\s*align-self: flex-start;/);
   });
 });
 

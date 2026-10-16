@@ -172,13 +172,16 @@ describe("one calm, fixed-height status cell", () => {
     expect(scanningCell).not.toMatch(/%|rough guess|Reading page/);
     const readCell = html(read);
     expect(readCell).toMatch(/data-tone="ready"[^>]*>Scan complete<\/span>/);
-    expect(readCell).toContain("12 flagged for review");
-    expect(readCell).toMatch(/<a [^>]*href="\/documents\/r"[^>]*>Open to review<span class="visually-hidden"> r.pdf<\/span><\/a>/);
+    // Changed on purpose (Tushar, 16 Oct 2026, Documents table sans): "12 flagged" in full, then a
+    // short "Review" link read out with what is to review and where; the UI's sans, no mono.
+    expect(readCell).toContain(">12 flagged</span>");
+    expect(readCell).not.toContain("mono");
+    expect(readCell).toMatch(/<a [^>]*href="\/documents\/r"[^>]*>Review<span class="visually-hidden"> 12 flagged words in r.pdf<\/span><\/a>/);
     // Changed on purpose (UI audit, 16 Oct 2026): D4, a clean read is its badge alone; the second
     // line stays laid out (two lines above), so the row keeps its height.
     expect(html(doc("n"))).not.toContain("Nothing flagged");
-    expect(html(doc("n"))).not.toContain("Open to review");
-    expect(html(read, true)).not.toContain("Open to review"); // nothing to open for review in Trash
+    expect(html(doc("n"))).not.toContain(">Review<");
+    expect(html(read, true)).not.toContain(">Review<"); // nothing to open for review in Trash
     expect(html(queued)).toMatch(/>Queued<\/span>.*Waiting to start\./);
   });
 

@@ -113,9 +113,10 @@ describe("the Read with select in the source", () => {
     expect(select).toContain("className={`input ");
   });
 
-  it("is offered once, alone in the page header", () => {
+  it("is offered once, at the end of the list's head row", () => {
     const view = readFileSync(join(__dirname, "..", "components/documents/DocumentsView.tsx"), "utf8");
-    // Changed on purpose (Tushar, 16 Oct 2026): the header has no Upload files beside it.
+    // Changed on purpose (Tushar, 16 Oct 2026): no Upload files beside it, and out of the page
+    // header (it only touches uploads): in the list's head row, at the content's right edge.
     expect(view).toContain("<div className={styles.uploadControls}>{readerSelect}</div>");
     // Changed on purpose (UI touch-up council, 15 Oct 2026): the slim dropzone no longer repeats
     // it; two "Read with" pickers on one screen looked like two different choices.
@@ -128,13 +129,13 @@ describe("the Read with select in the source", () => {
   it("leaves Upload files out of the page header, and keeps it in the empty state", () => {
     const view = readFileSync(join(__dirname, "..", "components/documents/DocumentsView.tsx"), "utf8");
     const header = view.slice(view.indexOf('<header className="page-header">'), view.indexOf("</header>"));
-    expect(header).toContain("{readerSelect}");
+    expect(header).not.toContain("{readerSelect}"); // Changed on purpose (Tushar, 16 Oct 2026): see above
     expect(header).not.toContain("uploadButton");
     expect(view.match(/\{uploadButton\}/g)).toHaveLength(1);
     expect(view).toMatch(/view === "empty" \? \(\s*<Dropzone[\s\S]*?action=\{\s*<>\s*\{uploadButton\}/);
   });
 
-  it("lays Read with out as one row in the header: the label beside the select, the hint under it", () => {
+  it("lays Read with out as one row: the label beside the select, the hint under it", () => {
     const docs = readFileSync(join(__dirname, "..", "components/documents/Documents.module.css"), "utf8");
     expect(docs).toMatch(/\.uploadControls \.reader \{[^}]*display: grid;[^}]*grid-template-columns: auto minmax\(0, auto\);/);
     expect(docs).toMatch(/\.uploadControls \.readerHint \{[^}]*grid-column: 2;/);

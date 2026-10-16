@@ -702,6 +702,11 @@ describe("the documents header and search on a phone", () => {
   // what the box is for, and the placeholder is an example.
   it("labels the search box in words you can see, with an example inside it", () => {
     expect(view).toContain('<label htmlFor="documents-q" className={styles.searchLabel}>');
-    expect(view).toMatch(/id="documents-q"[\s\S]{0,400}placeholder="e\.g\. Sharma Industries invoice"/);
+    // Changed on purpose (Tushar, 16 Oct 2026): the example follows the mode, words inside the
+    // documents or a name.
+    expect(view).toMatch(
+      /id="documents-q"[\s\S]{0,400}placeholder=\{mode === "inside" \? "e\.g\. rent paid in September" : "e\.g\. Sharma Industries invoice"\}/,
+    );
+    expect(view).toContain('{mode === "inside" ? "Search inside documents" : "Search documents by name"}');
   });
 });
