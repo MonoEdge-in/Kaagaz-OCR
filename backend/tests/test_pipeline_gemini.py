@@ -689,8 +689,10 @@ class RunCountersTest(unittest.TestCase):
                 self.assertEqual((totals.pages_gemini, totals.pages_local), (1, 1))
 
     def test_g9_the_model_clients_own_calls_in_the_job_add_to_the_runs_tokens(self) -> None:
-        """FY5: the embeddings' tokens (and the card's and the invoice windows') reach the
-        run, as the client's count at the end less its count at the start."""
+        """FY5: the card's and the invoice windows' tokens reach the run, as the client's
+        count at the end less its count at the start. Changed on purpose (fast scan, council
+        16 Oct 2026): the run ends at Ready, before the embeddings, whose tokens are in the
+        usage ledger only, so they are no longer in the run's."""
         local = page_read(TOTAL, read_by="rapidocr", quality=None)
         reader = ScriptedReader({1: page_read(TOTAL, tokens=(1700, 4000)), 2: local})
         embed = CountingEmbedder()
@@ -699,7 +701,7 @@ class RunCountersTest(unittest.TestCase):
         self.assertEqual(len(embed.calls), 2)  # once for each document
         for job in (first, second):
             totals = system.totals(job)
-            self.assertEqual((totals.input_tokens, totals.output_tokens), (1700 + 100, 4000 + 20))
+            self.assertEqual((totals.input_tokens, totals.output_tokens), (1700, 4000))
 
     def test_a_run_a_backend_stopped_still_counts_the_pages_it_read(self) -> None:
         reader = ScriptedReader({1: page_read(TOTAL, tokens=(10, 20)), 2: BackendUnavailable("gemini")})

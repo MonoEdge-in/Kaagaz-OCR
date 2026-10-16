@@ -269,7 +269,8 @@ class TwoReadingsTest(unittest.TestCase):
             with reader.document(dynamic_pages(memo, frozenset({1}))):
                 second_one = reader.read_page(page(), page_no=1)
                 second_two = reader.read_page(page(colour=(250, 250, 250)), page_no=2)
-        self.assertEqual(client.calls, [(STANDARD, "low"), (STANDARD, "low"), (CAREFUL, "low")])
+        # Changed on purpose (Tushar, 16 Oct 2026): Careful reads at OCR_RETRY_THINKING_LEVEL.
+        self.assertEqual(client.calls, [(STANDARD, "low"), (STANDARD, "low"), (CAREFUL, "high")])
         self.assertEqual(second_two, first_two)  # from the memo, no call
         self.assertEqual(second_one.read_by, CAREFUL)
         self.assertEqual([item.text for item in second_one.lines], ["Total 1,180.00"])
@@ -314,10 +315,10 @@ class TwoReadingsTest(unittest.TestCase):
 # C5 in the pipeline: the checker still reads an escalated page.
 
 
-def _reading_rig(answers: dict[str, Any], *, checker: FakeChecker | None) -> Any:
+def _reading_rig(answers: dict[str, Any], *, checker: FakeChecker | None, early: int = 2) -> Any:
     client = ModelClient(answers)
     finder = FakeFinder(FOUND)
-    reader = engine(client, finder=finder, ocr_engine="gemini")
+    reader = engine(client, finder=finder, ocr_engine="gemini", careful_early_max_pages=early)
     reading = Reading(
         "dynamic",
         Agent(STANDARD, "google-vertex", "Standard"),
@@ -342,7 +343,9 @@ class PipelineTest(unittest.TestCase):
     def test_c5_an_escalated_page_is_read_by_careful_and_checked_by_rapidocr(self) -> None:
         system, client = _reading_rig(self.ANSWERS, checker=FakeChecker("Total: 1,180.00"))
         job = system.run(make_pdf([SHARP]))
-        self.assertEqual([model for model, _level in client.calls], [STANDARD, CAREFUL])
+        # Changed on purpose (fast scan, council 16 Oct 2026): a 1-page document starts its
+        # Careful read with the first one, so the two calls may come in either order.
+        self.assertEqual(sorted(model for model, _level in client.calls), sorted([STANDARD, CAREFUL]))
         (page_record,) = system.pages(job)
         self.assertEqual(page_record.read_by, CAREFUL)
         values = system.store.values_for(JOB_CUSTOMER, job.document_id)
@@ -356,18 +359,18 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(config["escalated"], [{"page": 1, "reasons": ["quality_fair", "unsure_words"]}])
         self.assertEqual(config["cap_hit"], 0)
 
-    def test_the_careful_reading_is_its_own_step_with_a_time_left(self) -> None:
-        """Progress fix, 16 Oct 2026: the second reading wrote no progress, so the screen
-        froze on "Reading page 1 of 1…" while Careful read; now it says what it does."""
+    def test_careful_reads_inside_the_reading_step_and_ready_follows_understanding(self) -> None:
+        """Changed on purpose (fast scan, council 16 Oct 2026): a document of at most
+        DYNAMIC_MAX_PAGES pages is read once, Careful page by page, so there is no second
+        reading step ("rereading"), and the document is ready before its vectors, so there
+        is no "indexing" step either; each step still carries its time left."""
         system, _client = _reading_rig(self.ANSWERS, checker=FakeChecker("Total: 1,180.00"))
         system.run(make_pdf([SHARP]))
         steps = [progress.step for _, _, progress in system.progress.history]
         in_turn = [step for i, step in enumerate(steps) if i == 0 or steps[i - 1] != step]
-        self.assertEqual(in_turn[-4:], ["reading", "rereading", "understanding", "indexing"])
-        careful = [progress for _, _, progress in system.progress.history if progress.step == "rereading"]
-        self.assertTrue(careful)
-        self.assertEqual({(p.done, p.total) for p in careful}, {(0, 1)})  # one page read again
-        self.assertTrue(all(p.estimate is not None for p in careful))
+        self.assertEqual(in_turn, ["scanning", "preparing", "reading", "understanding"])
+        timed = [progress for _, _, progress in system.progress.history if progress.step != "scanning"]
+        self.assertTrue(all(p.estimate is not None for p in timed))
 
     def test_c5_without_the_checker_an_escalated_page_is_never_verified(self) -> None:
         system, _client = _reading_rig(self.ANSWERS, checker=None)
@@ -382,7 +385,8 @@ class PipelineTest(unittest.TestCase):
             STANDARD: reply(value(line("Total: 1,180.00", TOTAL_BOX))),
             CAREFUL: AssertionError("no careful read"),
         }
-        system, client = _reading_rig(answers, checker=FakeChecker("Total: 1,180.00"))
+        # The early Careful read off (CAREFUL_EARLY_MAX_PAGES=0): tests/test_fast_scan.py has it on.
+        system, client = _reading_rig(answers, checker=FakeChecker("Total: 1,180.00"), early=0)
         job = system.run(make_pdf([SHARP]))
         self.assertEqual([model for model, _level in client.calls], [STANDARD])
         self.assertEqual(system.totals(job).config["reading"]["escalated"], [])

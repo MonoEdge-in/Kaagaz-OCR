@@ -24,6 +24,7 @@ from typing import IO, Any
 from PIL import Image
 
 from kaagaz.chunking.piece import Piece
+from kaagaz.chunking.sections import MAP_SCHEMA
 from kaagaz.eta import HISTORY_RUNS, RunTiming
 from kaagaz.extraction.learned import LearnedCorrection
 from kaagaz.extraction.values import ExtractedValue
@@ -617,6 +618,8 @@ class ModelDown(Exception):
 class FakeChat:
     """A chat model (kaagaz.extraction.card.ChatModel): gives its preset replies in
     order, one per call; an exception in the list is raised at that call instead.
+    The map call (MAP_SCHEMA) takes the last reply: the pipeline asks it alongside
+    the card (fast scan), so a reading's replies are listed card, invoice windows, map.
     Records every call's system prompt, user message, schema and reply budget."""
 
     chat_model = "fake-chat"
@@ -624,6 +627,7 @@ class FakeChat:
     def __init__(self, *replies: dict[str, Any] | Exception) -> None:
         self.replies = list(replies)
         self.calls: list[dict[str, Any]] = []
+        self._lock = threading.Lock()
 
     def chat_json(
         self,
@@ -637,8 +641,9 @@ class FakeChat:
         provider: str | None = None,
         deadline: float | None = None,
     ) -> dict[str, Any]:
-        self.calls.append({"system": system, "user": user, "schema": schema, "max_tokens": max_tokens})
-        reply = self.replies.pop(0)
+        with self._lock:
+            self.calls.append({"system": system, "user": user, "schema": schema, "max_tokens": max_tokens})
+            reply = self.replies.pop(-1 if schema is MAP_SCHEMA else 0)
         if isinstance(reply, Exception):
             raise reply
         return reply

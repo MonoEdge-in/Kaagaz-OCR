@@ -62,7 +62,8 @@ def test_a_page_read_by_a_model_is_not_slow_at_25_s() -> None:
     """Progress fix, 16 Oct 2026: a High-thinking page call often passes 20 s, so a model
     read stalls only past 3 x its own seconds a call (90 s at least, PROVISIONAL)."""
     cold = reading(rates([], "gemini"), T0, 0, 1, NONE, NONE)
-    assert cold.slow_after_s == MODEL_SLOW_MIN_S == 90.0
+    # Changed on purpose (fast scan, council 16 Oct 2026): Gemini starts from 35 s a call.
+    assert cold.slow_after_s == 3 * 35.0 > MODEL_SLOW_MIN_S == 90.0
     stored_read = {"step": "reading", "done": 0, "total": 1, "started_at": T0.isoformat(), **cold.to_json()}
 
     def at(seconds: float) -> dict[str, Any]:
@@ -98,10 +99,22 @@ def test_only_this_engines_runs_and_the_last_20_count() -> None:
 
 
 def test_an_engine_with_no_figure_of_its_own_starts_from_the_default() -> None:
-    """A Gemini run, or an old run's reader the server no longer has, starts from
-    OCR_SECONDS_OTHER (PRD 5 Q6) until its own history replaces it."""
-    for engine in ("gemini", "an-old-reader"):
-        assert mean(rates([], engine).ocr) == pytest.approx(OCR_SECONDS_OTHER)
+    """An old run's reader the server no longer has starts from OCR_SECONDS_OTHER (PRD 5 Q6)
+    until its own history replaces it. Changed on purpose (fast scan, council 16 Oct 2026):
+    Gemini has its own figure, 35 s a call."""
+    assert mean(rates([], "an-old-reader").ocr) == pytest.approx(OCR_SECONDS_OTHER)
+    assert mean(rates([], "gemini").ocr) == pytest.approx(35.0)
+
+
+def test_a_model_readers_pages_are_read_ocr_page_concurrency_at_a_time() -> None:
+    """Fast scan (council 16 Oct 2026): a 1-page scan by Gemini starts at 35 s or more, and
+    20 pages read 6 at a time take ceil(20 / 6) = 4 calls of 35 s, not 20 x 35 s."""
+    one = reading(rates([], "gemini", pages_at_once=6, scanned=True), T0, 0, 1, NONE, NONE)
+    assert (one.finish_at - T0).total_seconds() - one.after_s >= 35.0
+    twenty = reading(rates([], "gemini", pages_at_once=6, scanned=True), T0, 0, 20, NONE, NONE)
+    assert (twenty.finish_at - T0).total_seconds() - twenty.after_s == pytest.approx(140.0)
+    # Another engine reads one page at a time, as before.
+    assert rates([], "rapidocr", pages_at_once=6).pages_at_once == 1
 
 
 def test_a_sheet_is_one_file_with_no_pages() -> None:

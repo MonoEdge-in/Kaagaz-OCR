@@ -953,17 +953,14 @@ def test_the_worker_chat_timeout_is_used_for_chat_only(fake: OpenRouterFake) -> 
 
 def test_embed_sends_one_text_a_request_at_the_dimensions_in_order(fake: OpenRouterFake) -> None:
     """Google Vertex embeds one text per request (a batch is served only by AI Studio, which
-    the provider block refuses), so each text is its own request, in order."""
-    fake.script(
-        "embeddings",
-        embed_reply([[0.0, 0.5, 0.25, 1.0]]),
-        embed_reply([[1.0, 0.5, 0.25, 1.0]]),
-        embed_reply([[2.0, 0.5, 0.25, 1.0]]),
-    )
+    the provider block refuses), so each text is its own request; the vectors in order.
+    Changed on purpose (fast scan, council 16 Oct 2026): the requests go at the same time,
+    so each is answered by its text, not by turn."""
+    fake.responder = lambda request: embed_reply([[float(request.body["input"][0][-1]), 0.5, 0.25, 1.0]])
     client = _client(fake.url, Clock())
     vectors = client.embed(["piece 0", "piece 1", "piece 2"])
     assert [vector[0] for vector in vectors] == [0.0, 1.0, 2.0]
-    bodies = fake.bodies("embeddings")
+    bodies = sorted(fake.bodies("embeddings"), key=lambda body: str(body["input"]))
     assert (fake.requests[0].method, fake.requests[0].path) == ("POST", "/api/v1/embeddings")
     assert [body["input"] for body in bodies] == [["piece 0"], ["piece 1"], ["piece 2"]]
     assert bodies[0] == {
@@ -1009,7 +1006,9 @@ def test_embeddings_are_checked(fake: OpenRouterFake, reply: Reply, code: str) -
 
 def test_two_vectors_with_the_same_index_are_refused(fake: OpenRouterFake) -> None:
     item = {"embedding": [0.1, 0.2, 0.3, 0.4], "index": 0}
-    fake.script("embeddings", _data(item, item))
+    # Changed on purpose (fast scan, council 16 Oct 2026): both requests go at once, so both
+    # get the bad reply (a script would answer whichever came first).
+    fake.responder = lambda request: _data(item, item)
     with pytest.raises(ModelOutputError) as caught:
         _client(fake.url, Clock()).embed(["one", "two"])
     assert caught.value.code == "embedding_count"

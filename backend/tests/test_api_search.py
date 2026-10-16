@@ -80,6 +80,18 @@ def test_with_the_model_off_or_down_words_and_typos_still_answer(db: Database) -
         assert [found["id"] for found in _search(signed, q="invioce patil")["documents"]] == [document]
 
 
+def test_a_ready_document_with_no_vectors_yet_is_found_by_its_words_with_its_spot(db: Database) -> None:
+    """Fast scan (council 16 Oct 2026): a document is ready before its vectors are made; with
+    the model on, its pieces are still found by their words, each with its page and spot."""
+    api, signed = _signed(db, FakeModel())
+    document = api.add_document(signed.customer_id)
+    add_pieces(
+        api.db, signed.customer_id, document, [(PIECE, None)], model=recipe_tag(api.settings.model_embed)
+    )
+    (found,) = _search(signed, q="INV-7001 Patil")["documents"]
+    assert (found["id"], found["best"]["page_from"], found["best"]["regions"]) == (document, 1, [REGION])
+
+
 def test_with_the_model_on_a_question_with_no_shared_word_finds_by_meaning(db: Database) -> None:
     model = FakeModel()
     api, signed = _signed(db, model)

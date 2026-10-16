@@ -262,24 +262,38 @@ def careful_pages(
     CROWDED_LINES lines. Worst first (most reasons, then page order), at most
     DYNAMIC_MAX_PAGES: the same reads give the same pages, whatever order the threads
     read them in. O(p log p + lines)."""
-    found = []
-    for page_no, read in reads.items():
-        if read.read_by != lead or page_no in read_again:
-            continue
-        reasons = sorted(CAREFUL_ISSUES.intersection(read.issues))
-        if read.handwritten:
-            reasons.append("handwritten")
-        if read.quality in ("fair", "poor"):
-            reasons.append(f"quality_{read.quality}")
-        if read.unsure_words:
-            reasons.append("unsure_words")
-        if len(read.lines) >= CROWDED_LINES:
-            reasons.append("crowded")
-        if reasons:
-            found.append((page_no, reasons))
-    found.sort(key=lambda page: (-len(page[1]), page[0]))
-    chosen = [{"page": page_no, "reasons": reasons} for page_no, reasons in found[:DYNAMIC_MAX_PAGES]]
-    return chosen, max(0, len(found) - DYNAMIC_MAX_PAGES)
+    found = {
+        page_no: reasons
+        for page_no, read in reads.items()
+        if (reasons := careful_reasons(read, lead=lead, again=page_no in read_again))
+    }
+    return worst_first(found)
+
+
+def careful_reasons(read: PageRead, *, lead: str, again: bool = False) -> list[str]:
+    """Why one page is worth a careful read (``careful_pages``' rule, also used page by page
+    while a Dynamic document is read, fast scan, council 16 Oct 2026); none when ``lead`` did
+    not read it or it was asked to be read again (``again``). O(issues)."""
+    if read.read_by != lead or again:
+        return []
+    reasons = sorted(CAREFUL_ISSUES.intersection(read.issues))
+    if read.handwritten:
+        reasons.append("handwritten")
+    if read.quality in ("fair", "poor"):
+        reasons.append(f"quality_{read.quality}")
+    if read.unsure_words:
+        reasons.append("unsure_words")
+    if len(read.lines) >= CROWDED_LINES:
+        reasons.append("crowded")
+    return reasons
+
+
+def worst_first(found: Mapping[int, list[str]]) -> tuple[list[dict[str, Any]], int]:
+    """([{"page", "reasons"}], how many past the cap): most reasons first, then page order,
+    at most DYNAMIC_MAX_PAGES (C5). O(p log p)."""
+    ordered = sorted(found.items(), key=lambda page: (-len(page[1]), page[0]))
+    chosen = [{"page": page_no, "reasons": reasons} for page_no, reasons in ordered[:DYNAMIC_MAX_PAGES]]
+    return chosen, max(0, len(ordered) - DYNAMIC_MAX_PAGES)
 
 
 def cache_prompt_version(thinking: str, env_thinking: str) -> str:
@@ -494,7 +508,12 @@ class DocumentPages:
     pairs, which read each page numbered up to ENSEMBLE_MAX_PAGES after the main model, in
     its page thread; ``careful`` Dynamic's Careful (model, provider), ``escalate`` the
     pages it reads again (``careful_pages``) and ``memo`` the first reading's pages by
-    (page, pixels), so the second reading of the document calls no model for the rest."""
+    (page, pixels), so the second reading of the document calls no model for the rest.
+
+    Fast scan (council 16 Oct 2026): with ``inline_careful`` (a Dynamic document of at most
+    DYNAMIC_MAX_PAGES pages, ``page_count``) there is no second reading: each page is read
+    with Careful on its own thread right after its first read when ``careful_reasons`` says
+    so, and its reasons are kept in ``escalated`` for run_config.reading."""
 
     customer_id: str
     document_id: str
@@ -507,6 +526,9 @@ class DocumentPages:
     careful: tuple[str, str] | None = None
     escalate: frozenset[int] = frozenset()
     memo: dict[tuple[int, str], PageRead] | None = None
+    inline_careful: bool = False
+    page_count: int = 0
+    escalated: dict[int, list[str]] | None = None
 
 
 @runtime_checkable

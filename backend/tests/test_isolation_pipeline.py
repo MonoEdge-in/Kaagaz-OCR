@@ -2,10 +2,12 @@
 
 import io
 import unittest
+from unittest import mock
 
 from kaagaz.eta import Estimate
 from kaagaz.extraction.learned import LearnedCorrection
 from kaagaz.ingestion.ports import Job
+from kaagaz.pipeline import DocumentContent
 from kaagaz.scanning.gate import DocumentStatus
 from tests.fakes import FakeEmbedder
 from tests.pdf_builder import Page, Text, make_pdf
@@ -79,8 +81,17 @@ class IsolationTimeLeftTest(unittest.TestCase):
     def test_another_customers_runs_never_change_the_time_left(self) -> None:
         """PRD 4 #13: B's ready runs (30 s after reading each) teach B's estimate, never A's."""
         fresh = rig()
-        busy = rig(embed=FakeEmbedder(batches=1, during_batch=lambda _: busy.timer.advance(30.0)))
-        for n in range(3):
-            _estimates(busy, B, f"B's page {n}")
+        busy = rig(embed=FakeEmbedder(batches=1))
+        save = busy.store.save
+
+        def slow_save(content: DocumentContent, *, run_id: str | None = None) -> None:
+            busy.timer.advance(30.0)
+            save(content, run_id=run_id)
+
+        # Changed on purpose (fast scan, council 16 Oct 2026): the run ends at Ready, before
+        # the vectors, so B's 30 s after reading are spent in the save, not the embeddings.
+        with mock.patch.object(busy.store, "save", slow_save):
+            for n in range(3):
+                _estimates(busy, B, f"B's page {n}")
         self.assertEqual(_estimates(busy, A, "A's page"), _estimates(fresh, A, "A's page"))
         self.assertEqual(_estimates(busy, B, "B's next page")[-1].after_s, 30.0)  # B's own runs count for B
