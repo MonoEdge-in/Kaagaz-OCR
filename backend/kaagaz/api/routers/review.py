@@ -17,7 +17,6 @@ from kaagaz.api.auth import Reviewer
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.views import review_item
-from kaagaz.db import audit
 from kaagaz.db import review as review_sql
 
 router = APIRouter()
@@ -69,10 +68,6 @@ def list_review(
 
 @router.post("/review/{value_id}")
 def resolve(value_id: uuid.UUID, body: ResolveBody, user: Reviewer, context: Context) -> dict[str, Any]:
-    # Imported here so the API can be built and tested before the pipeline's
-    # parsing module is (the same lazy wiring as create_app).
-    from kaagaz.extraction.parsing import parse_amount, parse_date
-
     typed = None
     if body.choice == "typed":
         typed = (body.value or "").strip()
@@ -98,44 +93,14 @@ def resolve(value_id: uuid.UUID, body: ResolveBody, user: Reviewer, context: Con
         else:
             new_text = str(typed)
 
-        review_sql.apply_correction(
+        review_sql.resolve_value(
             conn,
             customer_id,
-            value,
-            value_text=new_text,
-            value_number=parse_amount(new_text),
-            value_date=parse_date(new_text),
-        )
-        review_sql.add_correction(
-            conn,
-            customer_id,
-            value,
-            old_value=str(current["value_text"]),
-            new_value=new_text,
+            current,
+            new_text=new_text,
             choice=body.choice,
+            remember=body.remember,
             user_id=user.user_id,
-        )
-        if body.remember:
-            review_sql.remember_correction(
-                conn,
-                customer_id,
-                field=str(current["field"]),
-                raw_value=str(current["value_raw"]),
-                corrected_value=new_text,
-                user_id=user.user_id,
-            )
-        audit.record(
-            conn,
-            customer_id,
-            actor_user_id=user.user_id,
-            action="review.resolve",
-            target_type="extracted_value",
-            target_id=value,
-            details={
-                "choice": body.choice,
-                "remember": body.remember,
-                "document_id": str(current["document_id"]),
-            },
         )
         item = review_sql.get_item(conn, customer_id, value)
         if item is None:  # no page row: not reviewable, and raising here rolls back
