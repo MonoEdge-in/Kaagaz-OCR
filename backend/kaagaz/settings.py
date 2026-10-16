@@ -52,6 +52,9 @@ MODEL_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,127}/[A-Za-z0-9][A-Za-z0-9._-]{0,127
 PROVIDER_SLUG = re.compile(r"[a-z0-9-]{1,64}")
 # The provider every call used before model choice, and OPENROUTER_PROVIDERS when unset.
 DEFAULT_PROVIDER = "google-vertex"
+# OCR_MODEL and MODEL_CHAT when unset (Tushar, 16 Oct 2026): with no super admin setting,
+# Gemini 3.8 Flash scans and answers; embeddings keep MODEL_EMBED.
+DEFAULT_MODEL = "google/gemini-3.8-flash"
 # The model vendors (the part of a model id before "/") the operator may allow, a ceiling
 # apart from the providers (features 25-27, council 15 Oct 2026, S1). Tushar decided on 15
 # Oct 2026 that Sonnet 5.5 is allowed by default, so the default is google and anthropic.
@@ -424,7 +427,7 @@ class Settings:
             raise SettingsError("MODEL_TRANSLATE_TIMEOUT_SECONDS must be a number above 0")
         # PRD 5 CX and M: unset is the PRD's value. The whole documents (CX5) must fit the
         # context window with the answer's reply, its repair retry and the system prompt.
-        model_chat = env.text("MODEL_CHAT")
+        model_chat = env.optional("MODEL_CHAT") or DEFAULT_MODEL
         whole_doc_tokens = env.at_least("ANSWER_WHOLE_DOC_TOKENS", 0, default=120_000)
         prompt_tokens = MAX_SYSTEM_PROMPT_TOKENS + CHAT_OVERHEAD_TOKENS
         room = 2 * answer_max_tokens + prompt_tokens
@@ -436,7 +439,7 @@ class Settings:
         model_enabled = env.boolean("MODEL_ENABLED")
         model_embed = env.text("MODEL_EMBED")
         openrouter_api_key = env.optional("OPENROUTER_API_KEY")
-        ocr_model = env.text("OCR_MODEL")
+        ocr_model = env.optional("OCR_MODEL") or DEFAULT_MODEL
         if not valid_model_id(ocr_model):
             raise SettingsError(
                 "OCR_MODEL must be an OpenRouter model ID such as google/gemini-3.1-pro-preview (no :variant)"

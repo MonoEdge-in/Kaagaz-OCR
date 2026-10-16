@@ -19,6 +19,7 @@ listing, the key's limits, a redirect, a slow reply, an oversized body and a clo
 import json
 import socket
 import threading
+import time
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -34,12 +35,15 @@ SECRET = "SECRET-PAGE-TEXT Rs 98,765 do not log"
 @dataclass
 class Reply:
     """One scripted reply. ``body``: an object (sent as JSON) or raw bytes. ``delay``:
-    seconds to wait before answering (cut short when the fake shuts down)."""
+    seconds to wait before answering (cut short when the fake shuts down). ``trickle``: the
+    headers go at once, then a space every ``trickle`` seconds for ``delay`` seconds, then
+    the body (a reply kept alive while a model thinks)."""
 
     status: int = 200
     body: object = None
     headers: dict[str, str] = field(default_factory=dict)
     delay: float = 0.0
+    trickle: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -123,16 +127,22 @@ def _handler(fake: OpenRouterFake) -> type[BaseHTTPRequestHandler]:
                 with fake._lock:
                     fake.requests.append(request)
                 reply = fake._answer(request)
-                if reply.delay:
+                if reply.delay and not reply.trickle:
                     fake.release.wait(reply.delay)
                 payload = reply.body if isinstance(reply.body, bytes) else json.dumps(reply.body).encode()
                 try:
                     self.send_response(reply.status)
                     self.send_header("Content-Type", "application/json")
-                    self.send_header("Content-Length", str(len(payload)))
+                    if not reply.trickle:
+                        self.send_header("Content-Length", str(len(payload)))
                     for name, value in reply.headers.items():
                         self.send_header(name, value)
                     self.end_headers()
+                    if reply.trickle:  # no length: the body ends when the connection closes
+                        ends = time.monotonic() + reply.delay
+                        while time.monotonic() < ends and not fake.release.wait(reply.trickle):
+                            self.wfile.write(b" ")
+                            self.wfile.flush()
                     self.wfile.write(payload)
                 except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
                     pass  # the client gave up first (the deadline tests)
@@ -336,6 +346,11 @@ def redirect_to(url: str) -> Reply:
 
 def slow(reply: Reply, seconds: float) -> Reply:
     return Reply(reply.status, reply.body, reply.headers, seconds)
+
+
+def trickled(reply: Reply, seconds: float, every: float = 0.05) -> Reply:
+    """``reply`` after ``seconds`` of a space every ``every`` seconds (headers first)."""
+    return Reply(reply.status, reply.body, reply.headers, seconds, every)
 
 
 def oversized(size: int) -> Reply:

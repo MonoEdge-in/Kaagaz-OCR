@@ -9,7 +9,7 @@ starts without one.
 import pytest
 
 from kaagaz import settings as settings_module
-from kaagaz.settings import Settings, SettingsError, is_gemini_model, valid_model_id
+from kaagaz.settings import DEFAULT_MODEL, Settings, SettingsError, is_gemini_model, valid_model_id
 from tests.settings_factory import make_settings
 from tests.test_settings import shipped
 
@@ -35,7 +35,12 @@ def test_the_shipped_env_example_has_the_prds_starting_values_and_no_key() -> No
     settings = Settings.from_env(shipped())
     assert settings.ocr_engine == "rapidocr"  # laptops and CI
     assert settings.openrouter_api_key is None
-    assert (settings.ocr_model, settings.openrouter_base_url) == (PRO, "https://openrouter.ai/api/v1")
+    # Changed on purpose (16 Oct 2026, Tushar): Gemini 3.8 Flash scans and answers by default.
+    assert (settings.ocr_model, settings.openrouter_base_url) == (
+        DEFAULT_MODEL,
+        "https://openrouter.ai/api/v1",
+    )
+    assert settings.model_chat == DEFAULT_MODEL
     assert (
         settings.ocr_media_resolution,
         settings.ocr_thinking_level,
@@ -53,7 +58,9 @@ def test_the_shipped_env_example_has_the_prds_starting_values_and_no_key() -> No
 
 
 def test_the_test_settings_match_the_shipped_reader_values() -> None:
-    names = {name.lower() for name in READER_SETTINGS} | {"openrouter_api_key"}
+    # Changed on purpose (16 Oct 2026): the tests keep 3.1 Pro as their OCR_MODEL, a model id
+    # apart from the shipped default (3.8 Flash), which many tests use as "another model".
+    names = {name.lower() for name in READER_SETTINGS if name != "OCR_MODEL"} | {"openrouter_api_key"}
     shipped_settings = Settings.from_env(shipped())
     made = make_settings()
     assert {name: getattr(made, name) for name in names} == {
@@ -61,7 +68,16 @@ def test_the_test_settings_match_the_shipped_reader_values() -> None:
     }
 
 
-@pytest.mark.parametrize("name", READER_SETTINGS)
+@pytest.mark.parametrize("name", ["OCR_MODEL", "MODEL_CHAT"])
+def test_an_unset_scan_or_chat_model_is_gemini_flash(name: str) -> None:
+    """Tushar, 16 Oct 2026: with no super admin setting, 3.8 Flash scans and answers."""
+    for unset in (None, ""):
+        assert getattr(Settings.from_env(shipped(**{name: unset})), name.lower()) == DEFAULT_MODEL
+    assert DEFAULT_MODEL == "google/gemini-3.8-flash"
+
+
+# Changed on purpose (16 Oct 2026): OCR_MODEL has a default (test above).
+@pytest.mark.parametrize("name", [name for name in READER_SETTINGS if name != "OCR_MODEL"])
 def test_a_missing_reader_setting_stops_start_up_by_name(name: str) -> None:
     """No defaults in code: each is Vrushit's setting, so a missing one names itself."""
     with pytest.raises(SettingsError, match=name):

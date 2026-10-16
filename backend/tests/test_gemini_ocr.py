@@ -12,6 +12,7 @@ pixels as written and y pixels twice what is written.
 
 import copy
 import io
+import itertools
 import threading
 import time
 import unittest
@@ -711,15 +712,45 @@ class G6HalvesTest(Approx):
         self.assertEqual(cache.puts, [])
 
     def test_g6_tokens_from_earlier_calls_survive_an_unavailable_split_and_local_fallback(self) -> None:
+        # Changed on purpose (stuck reading, 16 Oct 2026): a timeout is the page's budget
+        # running out, read locally as reader_refused; server_error keeps the outage path here.
         built = build(
             ModelOutputError("output_truncated", input_tokens=50, output_tokens=500),
             reply(value(line("Top line")), 100, 1000),
-            ModelUnavailable("timeout"),
+            ModelUnavailable("server_error"),
             reader_outage_fallback_minutes=0,
         )
         read = built.engine.read_page(page(), page_no=1)
         self.assertEqual((read.read_by, read.issues[0]), ("rapidocr", READ_LOCALLY))
         self.assertEqual((read.input_tokens, read.output_tokens), (150, 1500))
+
+    def test_the_page_and_its_halves_share_one_budget(self) -> None:
+        """Stuck reading (16 Oct 2026): every call for one page ends by OCR_TIMEOUT_SECONDS
+        from the page's start, so a cut-off page costs one budget, not three."""
+        built = build(
+            ModelOutputError("output_truncated"),
+            reply(value(line("Top line"))),
+            reply(value(line("Bottom line"))),
+            ocr_timeout_seconds=120.0,
+        )
+        # The clock moves 10 s at every look.
+        with mock.patch.object(built.client, "now", side_effect=itertools.count(1000.0, 10.0)):
+            built.engine.read_page(page(), page_no=1)
+        deadlines = [call.deadline for call in built.client.calls]
+        self.assertEqual(len(deadlines), 3)
+        self.assertEqual(set(deadlines), {deadlines[0]})
+
+    def test_a_page_over_its_budget_is_read_locally_for_review_without_waiting(self) -> None:
+        """Stuck reading (16 Oct 2026): the budget ran out on a half (timeout): the page is
+        read locally as reader_refused, with the tokens spent, and the document never waits."""
+        built = build(
+            ModelOutputError("output_truncated", input_tokens=50, output_tokens=500),
+            ModelUnavailable("timeout", input_tokens=7, output_tokens=9),
+            reader_outage_fallback_minutes=15,
+        )
+        read = built.engine.read_page(page(), page_no=1)
+        self.assertEqual((read.read_by, read.issues[0]), ("rapidocr", READER_REFUSED))
+        self.assertEqual((read.input_tokens, read.output_tokens), (57, 509))
 
 
 # G6, Q7: the fallback ladder.
@@ -766,7 +797,9 @@ class Q7FallbackTest(unittest.TestCase):
         self.assertEqual(built.local_builds, 0)
 
     def test_q7_an_outage_waits_as_gemini_until_reader_outage_fallback_minutes(self) -> None:
-        for code in ("rate_limited", "server_error", "timeout", "unreachable", "circuit_open", "http_error"):
+        # Changed on purpose (stuck reading, 16 Oct 2026): timeout is the page's budget, read
+        # locally at once (test_a_page_over_its_budget_is_read_locally_for_review_without_waiting).
+        for code in ("rate_limited", "server_error", "unreachable", "circuit_open", "http_error"):
             with self.subTest(code):
                 built = build(*[ModelUnavailable(code)] * 3, reader_outage_fallback_minutes=15)
                 with self.assertRaises(BackendUnavailable) as raised:
@@ -815,7 +848,8 @@ class Q7FallbackTest(unittest.TestCase):
         """Review FX2: a document that waits is handed out again when its lease runs out
         (QUEUE_LEASE_SECONDS, 1200 at launch), so failures 20 minutes apart are still one
         outage, and the page is read locally once it has lasted 15 minutes."""
-        down = ModelUnavailable("timeout")
+        # Changed on purpose (stuck reading, 16 Oct 2026): a timeout no longer waits.
+        down = ModelUnavailable("server_error")
         built = build(
             down,
             down,

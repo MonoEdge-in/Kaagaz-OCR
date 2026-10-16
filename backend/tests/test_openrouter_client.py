@@ -64,6 +64,7 @@ from tests.openrouter_fake import (
     refused_403,
     running_fake,
     slow,
+    trickled,
     usage,
 )
 from tests.settings_factory import make_settings
@@ -632,6 +633,23 @@ def test_a_slow_reply_past_the_deadline_times_out(fake: OpenRouterFake) -> None:
         _read(client, deadline=client.now() + 0.3)
     assert caught.value.code == "timeout"
     assert time.monotonic() - started < 3
+
+
+def test_a_reply_that_keeps_trickling_in_still_times_out_at_the_deadline(fake: OpenRouterFake) -> None:
+    """Stuck reading (16 Oct 2026): a space every 0.05 s keeps each socket read short, so
+    only the whole reply's deadline can end it."""
+    fake.script("completions", trickled(json_reply(GOOD), 5))
+    client = _client(fake.url)
+    started = time.monotonic()
+    with pytest.raises(ModelUnavailable) as caught:
+        _read(client, deadline=client.now() + 0.5)
+    assert caught.value.code == "timeout"
+    assert time.monotonic() - started < 3
+
+
+def test_a_trickled_reply_inside_the_deadline_is_read(fake: OpenRouterFake) -> None:
+    fake.script("completions", trickled(json_reply(GOOD), 0.2))
+    assert _read(_client(fake.url)).value == GOOD
 
 
 class RealTimeClock(Clock):
