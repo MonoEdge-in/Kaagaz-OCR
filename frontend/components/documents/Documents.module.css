@@ -659,6 +659,20 @@ table.docs > tbody > tr:hover {
   min-width: 0;
 }
 
+/* One line per row (Tushar, 16 Oct 2026): a long name ends in an ellipsis; its
+   whole name is in the link's title. */
+.name {
+  max-width: 100%;
+}
+
+.name > span {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
+  line-clamp: 1;
+  overflow: hidden;
+}
+
 .fileIcon {
   flex: none;
   height: var(--name-line);
