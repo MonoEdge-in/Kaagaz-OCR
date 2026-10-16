@@ -378,6 +378,7 @@ const ACTION_WORDS: Record<string, string> = {
   "user_word.changed": "Changed a word in My words",
   "user_word.deleted": "Deleted a word from My words",
   "customer.create": "Organisation set up",
+  "org.self_signup": "Created the organisation at sign-up",
   "customer.enable": "Organisation turned on",
   "customer.disable": "Organisation turned off",
   "chat.ask": "Asked a question",

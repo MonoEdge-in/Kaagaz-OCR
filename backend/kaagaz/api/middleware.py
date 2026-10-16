@@ -53,20 +53,22 @@ class _Bucket:
 
 
 class RateLimiter:
-    """Token buckets keyed by caller. ``allow`` is O(1); when more than
+    """Token buckets keyed by caller: ``per_minute`` a minute, or that many every
+    ``window_seconds`` when given (sign-ups: 5 an hour). ``allow`` is O(1); when more than
     ``max_keys`` callers are held, full (idle) buckets are dropped in one O(n) pass."""
 
     def __init__(
         self,
         per_minute: int,
         *,
+        window_seconds: float = 60.0,
         clock: Callable[[], float] = time.monotonic,
         max_keys: int = 10_000,
     ) -> None:
         if per_minute < 1:
             raise ValueError("per_minute must be at least 1")
         self._capacity = float(per_minute)
-        self._refill_per_second = per_minute / 60.0
+        self._refill_per_second = per_minute / window_seconds
         self._clock = clock
         self._max_keys = max_keys
         self._buckets: dict[str, _Bucket] = {}

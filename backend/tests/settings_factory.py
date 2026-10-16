@@ -110,6 +110,7 @@ _BASE: dict[str, Any] = {
     "timezone": "Asia/Kolkata",
     "rate_limit_per_minute": 1000,
     "chat_questions_per_minute": 1000,
+    "self_signup_enabled": True,
     "log_level": "WARNING",
 }
 
