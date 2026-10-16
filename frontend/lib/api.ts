@@ -59,6 +59,7 @@ import type {
   Role,
   ScopeBody,
   SheetCells,
+  SourcePin,
   Stats,
   Tag,
   TwoStepSetup,
@@ -411,6 +412,9 @@ export const getConversation = (id: string) =>
 export const renameConversation = (id: string, title: string) =>
   request<ConversationSummary>("PATCH", `/conversations/${id}`, { title });
 export const deleteConversation = (id: string) => request<void>("DELETE", `/conversations/${id}`);
+/** "Most relevant" (ranked sources, 16 Oct 2026): this source on top of the answer, kept as relevance feedback. */
+export const pinSource = (messageId: string, pin: SourcePin, previousRank: number) =>
+  request<void>("POST", `/messages/${messageId}/pin`, { ...pin, previous_rank: previousRank });
 export const sendFeedback = (messageId: string, rating: "up" | "down", reason?: string) =>
   request<void>("POST", `/messages/${messageId}/feedback`, {
     rating,

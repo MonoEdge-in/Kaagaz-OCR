@@ -25,6 +25,9 @@
 // (A1, ConversationList.tsx), what happened shows in a toast; the newest "not found"
 // answer offers to search all documents (A4); the empty screen offers up to three
 // example questions about the newest ready documents, each asked about its own (A5).
+// A question out when Ask is left (another page of the app) is kept in askStore.ts;
+// back on Ask it shows as pending again, or answered, or failed with the question
+// back in the box (Tushar, 16 Oct 2026).
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -62,6 +65,7 @@ import {
 import type { ChatOptions, ConversationSummary, Message } from "@/lib/types";
 import { answerStatusText, ASKING_STATUS, LOADED_STATUS, questionsByAnswer } from "./answer";
 import { AnswerSettings } from "./AnswerSettings";
+import { askInFlight, resumable, resumedConversation, settleAsk, startAsk } from "./askStore";
 import { AnswerView } from "./AnswerView";
 import { ConversationList } from "./ConversationList";
 import { scrollBehavior } from "./hooks";
@@ -140,6 +144,9 @@ function tabStorage(): Storage | null {
   }
 }
 
+/** What to say when a question got no answer. */
+const errorText = (error: unknown) => askErrorText(error instanceof ApiError ? error : null);
+
 /** Keep the address bar on the open conversation, without a navigation. */
 function showInUrl(conversationId: string | null): void {
   window.history.replaceState(null, "", chatHref(conversationId));
@@ -150,9 +157,13 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
   const pathname = usePathname();
   const [conversations, setConversations] = useState<ConversationSummary[] | null>(null);
   const [listFailed, setListFailed] = useState(false);
-  // The conversation named in the URL, read once at mount: later changes are
-  // this screen's own replaceState.
-  const [restoreId] = useState(() => conversationFromSearch(initialSearch));
+  // A question sent before Ask was left (askStore.ts), picked up once at mount.
+  const [resumed] = useState(() => resumable(askInFlight(), initialSearch));
+  // The conversation named in the URL, or the picked-up question's, read once at
+  // mount: later changes are this screen's own replaceState.
+  const [restoreId] = useState(
+    () => conversationFromSearch(initialSearch) ?? (resumed ? resumedConversation(resumed) : null),
+  );
   const [activeId, setActiveId] = useState<string | null>(restoreId);
   // The documents the next question may use (scope.ts): one document when the
   // viewer's "Ask about this document" opened chat, else restored from the conversation.
@@ -163,8 +174,16 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
   const [threadState, setThreadState] = useState<"idle" | "loading" | "error">(
     restoreId ? "loading" : "idle",
   );
-  const [pending, setPending] = useState<string | null>(null);
-  const [askError, setAskError] = useState<string | null>(null);
+  // Still on its way at mount: pending until it settles (the effect below).
+  const [waiting] = useState(() => resumed !== null && !resumed.outcome);
+  const [pending, setPending] = useState<string | null>(() => (waiting ? resumed!.question : null));
+  const [askError, setAskError] = useState<string | null>(() =>
+    resumed?.outcome && "error" in resumed.outcome ? errorText(resumed.outcome.error) : null,
+  );
+  // A picked-up question that failed goes back into the box.
+  const [draft, setDraft] = useState<string | undefined>(() =>
+    resumed?.outcome && "error" in resumed.outcome ? resumed.question : undefined,
+  );
   const [noDocuments, setNoDocuments] = useState<boolean | null>(null);
   const [starters, setStarters] = useState<Starter[]>([]);
   const [notice, setNotice] = useState<Notice | null>(null);
@@ -197,6 +216,14 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
 
   // Only the latest conversation opened may fill the thread.
   const openRequest = useRef(0);
+  // False once the screen is gone: an answer then waits in askStore.ts for the next one.
+  const alive = useRef(false);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
   const threadRef = useRef<HTMLElement>(null);
   const logRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
@@ -262,31 +289,73 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
   }, []);
 
   // Reopen the conversation from the URL. One that is gone or not this person's
-  // (the server says 404) quietly becomes the empty chat.
+  // (the server says 404) quietly becomes the empty chat. A picked-up question
+  // still on its way stays pending; once answered (and saved), the conversation
+  // loads again with it. `loaded` runs when that load ends, whichever way.
   useEffect(() => {
-    if (!restoreId) return;
-    const request = ++openRequest.current;
-    getConversation(restoreId)
-      .then((conversation) => {
-        if (request !== openRequest.current) return;
-        jumpToEnd.current = true;
-        setMessages(conversation.messages);
-        setScope(restoredScope(conversation.messages));
-        setThreadState("idle");
-        setStatus(LOADED_STATUS);
-      })
-      .catch((error: unknown) => {
-        if (request !== openRequest.current) return;
-        if (error instanceof ApiError && error.status === 404) {
-          setActiveId(null);
-          setScope(startScope(null));
+    let cancelled = false;
+    const load = (id: string, loaded?: () => void) => {
+      const request = ++openRequest.current;
+      getConversation(id)
+        .then((conversation) => {
+          if (request !== openRequest.current) return;
+          jumpToEnd.current = true;
+          setMessages(conversation.messages);
+          setScope(restoredScope(conversation.messages));
           setThreadState("idle");
-          showInUrl(null);
-        } else {
-          setThreadState("error");
-        }
-      });
-  }, [restoreId]);
+          setStatus(LOADED_STATUS);
+        })
+        .catch((error: unknown) => {
+          if (request !== openRequest.current) return;
+          if (error instanceof ApiError && error.status === 404) {
+            setActiveId(null);
+            setScope(startScope(null));
+            setThreadState("idle");
+            showInUrl(null);
+          } else {
+            setThreadState("error");
+          }
+        })
+        .finally(() => {
+          if (!cancelled) loaded?.();
+        });
+    };
+    if (restoreId) load(restoreId);
+    if (resumed && !waiting) settleAsk(resumed);
+    else if (resumed) {
+      resumed.done.then(
+        (reply) => {
+          if (cancelled) return;
+          settleAsk(resumed);
+          if (!restoreId) {
+            // A new conversation: its answer made it.
+            setActiveId(reply.conversation_id);
+            showInUrl(reply.conversation_id);
+            setThreadState("loading");
+            listConversations()
+              .then((list) => {
+                if (!cancelled) setConversations(list.items);
+              })
+              .catch(() => undefined);
+          }
+          load(reply.conversation_id, () => {
+            setPending(null);
+            setStatus(answerStatusText(reply.answer.answer));
+          });
+        },
+        (error: unknown) => {
+          if (cancelled) return;
+          settleAsk(resumed);
+          setPending(null);
+          setAskError(errorText(error));
+          setDraft(resumed.question);
+        },
+      );
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [restoreId, resumed, waiting]);
 
   // One small call tells the empty screen whether there is anything to ask about.
   useEffect(() => {
@@ -458,8 +527,14 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
         }
       });
     }
+    // Kept outside this screen (askStore.ts), so leaving Ask never drops it.
+    const entry = startAsk(question, activeId, () =>
+      ask(question, activeId ?? undefined, sentScope(asked), choiceBody(chatOptions, answerPick)),
+    );
     try {
-      const reply = await ask(question, activeId ?? undefined, sentScope(asked), choiceBody(chatOptions, answerPick));
+      const reply = await entry.done;
+      if (!alive.current) return true; // the next chat screen shows it
+      settleAsk(entry);
       setMessages((current) => [...current, reply.question, reply.answer]);
       setScope((current) => answeredScope(current, reply.question));
       const answerStatus = answerStatusText(reply.answer.answer);
@@ -473,10 +548,12 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
       }
       return true;
     } catch (error) {
+      if (!alive.current) return false; // the next chat screen shows it
+      settleAsk(entry);
       // The error is its own alert; the story cards stay, at the end of the log.
       updateSlot({ type: "failed", token });
       setStatus("");
-      setAskError(askErrorText(error instanceof ApiError ? error : null));
+      setAskError(errorText(error));
       return false;
     } finally {
       setPending(null);
@@ -709,6 +786,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
               pending={busy || search.kind === "loading"}
               error={mode === "documents" ? askError : null}
               onAsk={onAsk}
+              draft={draft}
               inputRef={inputRef}
               texts={MODE_TEXTS[mode]}
               tools={
