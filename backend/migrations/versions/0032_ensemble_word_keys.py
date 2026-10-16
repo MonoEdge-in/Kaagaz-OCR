@@ -10,14 +10,13 @@ with a CHECK: the table is new and small, so the brief lock and scan are nothing
 downgrade drops the column.
 
 Revision ID: 0032
-Revises: 0030 (0031 is taken by another branch: whichever merges second points its
-down_revision at the other)
+Revises: 0031 (the super admin's two-step move)
 """
 
 from alembic import op
 
 revision = "0032"
-down_revision = "0030"
+down_revision = "0031"
 branch_labels = None
 depends_on = None
 
