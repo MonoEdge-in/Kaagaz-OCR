@@ -43,6 +43,17 @@ PAGES = b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"
 PAGE = b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>"
 
 
+def with_broken_object(data: bytes, number: int) -> bytes:
+    """``data`` with object ``number``'s cross-reference entry pointing where no object is.
+
+    pdfminer then raises PDFObjectNotFound for it (16 Oct 2026: two scanned uploads did
+    this and took a worker down on every delivery)."""
+    start = data.index(b"xref\n")
+    lines = data[start:].split(b"\n")
+    lines[2 + number] = b"%010d 00000 n " % 9  # inside the header line
+    return data[:start] + b"\n".join(lines)
+
+
 def png_bytes() -> bytes:
     buffer = io.BytesIO()
     Image.new("RGB", (40, 30), "white").save(buffer, "PNG")
@@ -143,6 +154,16 @@ class PdfActiveContentIsBlocked(unittest.TestCase):
 
     def test_an_unreadable_pdf_is_not_called_safe(self) -> None:
         self.assertIs(inspect(b"%PDF-1.7\n" + b"\x00garbage" * 50), Finding.UNSCANNABLE)
+
+    def test_a_pdf_with_an_object_that_is_not_there_is_left_to_the_readers(self) -> None:
+        catalog = b"<< /Type /Catalog /Pages 2 0 R >>"
+        broken = with_broken_object(pdf_with([catalog, PAGES, PAGE, b"<< /Foo 1 >>"]), 4)
+        self.assertIsNone(inspect(broken))
+
+    def test_active_content_after_an_object_that_is_not_there_is_still_blocked(self) -> None:
+        catalog = b"<< /Type /Catalog /Pages 2 0 R /OpenAction 5 0 R >>"
+        objects = [catalog, PAGES, PAGE, b"<< /Foo 1 >>", b"<< /S /JavaScript /JS (app.alert(1)) >>"]
+        self.assertIs(inspect(with_broken_object(pdf_with(objects), 4)), Finding.BLOCKED)
 
 
 class HiddenProgramsAndPolyglots(unittest.TestCase):

@@ -31,9 +31,10 @@ import re
 import zipfile
 from enum import Enum
 
-from pdfminer.pdfdocument import PDFDocument, PDFEncryptionError, PDFPasswordIncorrect
-from pdfminer.pdfparser import PDFParser, PDFSyntaxError
+from pdfminer.pdfdocument import PDFDocument
+from pdfminer.pdfparser import PDFParser
 from pdfminer.pdftypes import PDFObjRef, PDFStream
+from pdfminer.psexceptions import PSException
 from pdfminer.psparser import PSLiteral
 
 from kaagaz.ingestion.sniff import JPEG, PDF, PNG, TEXT, TIFF, ZIP, detect_type
@@ -79,18 +80,19 @@ _MAX_PDF_DEPTH = 64
 
 
 def _pdf_finding(data: bytes) -> Finding | None:
+    # PSException is the base of every pdfminer error (syntax, encryption, an object
+    # the cross-reference points to but that is not there: PDFObjectNotFound, which
+    # scanners write and which crashed workers, 16 Oct 2026). pdfminer also raises plain
+    # errors on badly broken files.
     try:
         document = PDFDocument(PDFParser(io.BytesIO(data)))
-    except (PDFSyntaxError, PDFEncryptionError, PDFPasswordIncorrect):
-        return Finding.UNSCANNABLE
-    except (ValueError, TypeError, KeyError, IndexError, AttributeError):
-        # pdfminer raises plain errors on badly broken files.
+    except (PSException, ValueError, TypeError, KeyError, IndexError, AttributeError):
         return Finding.UNSCANNABLE
     for xref in document.xrefs:
         for object_id in xref.get_objids():
             try:
                 obj = document.getobj(object_id)
-            except (PDFSyntaxError, ValueError, TypeError, KeyError, IndexError, AttributeError):
+            except (PSException, ValueError, TypeError, KeyError, IndexError, AttributeError):
                 continue  # one unreadable object; the reader will judge the file
             if _is_active(obj, 0):
                 return Finding.BLOCKED
