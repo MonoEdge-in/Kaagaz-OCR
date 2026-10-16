@@ -9,11 +9,41 @@ import { sameRegion } from "./selection";
 export const ZOOM_STEPS = [0.5, 0.75, 1, 1.25, 1.5, 2, 3] as const;
 
 /**
- * When the document screen's page column sticks beside the panels, and fits
- * the whole page in the window ("Fit page"). DocumentView.module.css uses this
- * same media query (tests/layout-guards.test.ts checks they match).
+ * When the document screen's page column sticks beside the panels, as tall as
+ * <main>, the page fitted to its width at first (UI audit DD5). DocumentView.module.css
+ * uses this same media query (tests/layout-guards.test.ts checks they match).
  */
 export const STICKY_VIEWER_QUERY = "(min-width: 1024px) and (min-height: 36rem)";
+
+/**
+ * The wheel over the page (UI audit DD1, 16 Oct 2026): with Ctrl or Cmd held (a trackpad
+ * pinch sends ctrlKey too) it zooms; otherwise null, and the wheel scrolls as usual, on
+ * into <main> once the page has nothing left to scroll.
+ */
+export function wheelZoom(event: Pick<WheelEvent, "ctrlKey" | "metaKey" | "deltaY">): "in" | "out" | null {
+  if (!(event.ctrlKey || event.metaKey) || event.deltaY === 0) return null;
+  return event.deltaY < 0 ? "in" : "out";
+}
+
+/** The page column's share of the document screen, in percent (DD5's split), and its key step. */
+export const SPLIT = { min: 30, max: 75, start: 60, step: 5 } as const;
+/** A press on the split's handle becomes a drag only past this many pixels (brief B: 4-5px). */
+export const DRAG_THRESHOLD_PX = 5;
+
+/** The page column's share after a drag of `dx` px across a layout `width` px wide, from `start`; in range. */
+export function splitAfterDrag(start: number, dx: number, width: number): number {
+  const moved = width > 0 ? (dx / width) * 100 : 0;
+  return Math.round(Math.min(SPLIT.max, Math.max(SPLIT.min, start + moved)));
+}
+
+/** The share after a key on the handle (Left/Right a step, Home/End the ends); null for other keys. */
+export function splitAfterKey(current: number, key: string): number | null {
+  if (key === "ArrowLeft") return Math.max(SPLIT.min, current - SPLIT.step);
+  if (key === "ArrowRight") return Math.min(SPLIT.max, current + SPLIT.step);
+  if (key === "Home") return SPLIT.min;
+  if (key === "End") return SPLIT.max;
+  return null;
+}
 
 /** The next zoom step in or out; stays put at either end. */
 export function stepZoom(current: number, direction: "in" | "out"): number {

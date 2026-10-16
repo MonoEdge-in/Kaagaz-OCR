@@ -174,7 +174,9 @@ describe("one calm, fixed-height status cell", () => {
     expect(readCell).toMatch(/data-tone="ready"[^>]*>Scan complete<\/span>/);
     expect(readCell).toContain("12 flagged for review");
     expect(readCell).toMatch(/<a [^>]*href="\/documents\/r"[^>]*>Open to review<span class="visually-hidden"> r.pdf<\/span><\/a>/);
-    expect(html(doc("n"))).toContain("Nothing flagged");
+    // Changed on purpose (UI audit, 16 Oct 2026): D4, a clean read is its badge alone; the second
+    // line stays laid out (two lines above), so the row keeps its height.
+    expect(html(doc("n"))).not.toContain("Nothing flagged");
     expect(html(doc("n"))).not.toContain("Open to review");
     expect(html(read, true)).not.toContain("Open to review"); // nothing to open for review in Trash
     expect(html(queued)).toMatch(/>Queued<\/span>.*Waiting to start\./);

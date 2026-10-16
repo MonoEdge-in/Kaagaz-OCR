@@ -6,7 +6,7 @@
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
-  min-height: 24px;
+  min-height: var(--control-min, 32px); /* G10 */
   font-size: var(--fs-sm);
   font-weight: 600;
   align-self: flex-start;
@@ -19,8 +19,41 @@
   min-width: 0;
 }
 
-/* The title, then Download original and Ask about this document at its end;
-   they wrap under a long title. */
+/* DD2: where it is filed, Documents / Folder / name; the name is cut to one line. */
+.crumbs ol {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 var(--space-1);
+  margin: 0;
+  padding: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+
+.crumbs li {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  min-height: var(--control-min, 32px);
+}
+
+.crumbs li + li::before {
+  content: "/";
+  content: "/" / "";
+  margin-inline-end: var(--space-1);
+}
+
+.crumbs li[aria-current] > span {
+  max-width: 24rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* DD2: one row. The title and its status chip; Download, Ask and the menu at its end.
+   They wrap under a long title. */
 .titleRow {
   display: flex;
   flex-wrap: wrap;
@@ -29,10 +62,18 @@
 }
 
 .title {
-  flex: 1 1 20rem;
+  flex: 0 1 auto;
   min-width: 0;
   margin: 0;
   overflow-wrap: anywhere;
+}
+
+.headActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-inline-start: auto;
 }
 
 /* One meta line (board 12 P4): status, type and pages, Read again, the folder
@@ -118,10 +159,6 @@
   color: var(--text-secondary);
 }
 
-.download {
-  margin-inline-start: auto;
-}
-
 /* A phone: the title has its own row; Download original is its icon alone
    (globals.css .narrow-hide) and shares the next row with Ask about this document. */
 @media (max-width: 639.98px) {
@@ -135,11 +172,6 @@
 
   .ask {
     flex: 1 1 auto;
-  }
-
-  /* The Scanned text button says "Text"; its whole name is still read out. */
-  .textWord {
-    text-transform: capitalize;
   }
 }
 
@@ -205,8 +237,8 @@
   height: 1lh;
 }
 
-/* Viewer 3fr, the panels (the values among them) 2fr from 1024 px; stacked
-   below that. Wider still: see below. */
+/* Viewer 3fr, the panels 2fr from 1024 px; stacked below that. With the column sticky
+   (below), the page takes --split (DD5, set by the handle) and the panels the rest. */
 .layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -220,10 +252,21 @@
   }
 }
 
-/* A window tall enough: the page column sticks, exactly the window's height,
-   and the page fits inside it ("Fit page", PageViewer). The same query is
-   STICKY_VIEWER_QUERY in components/viewer/viewer.ts. */
+/* The split's handle (SplitHandle): only beside the sticky column. */
+.handle {
+  display: none;
+}
+
+/* A window tall enough: the page column sticks, as tall as <main>, the page fitted to
+   its width inside it (DD5, PageViewer `fill`). The same query is STICKY_VIEWER_QUERY in
+   components/viewer/viewer.ts. The handle is the 24px gap between the columns: a 1px
+   line, the whole gap its target; hover and focus change its colour only. */
 @media (min-width: 1024px) and (min-height: 36rem) {
+  .layout {
+    grid-template-columns: minmax(0, var(--split, 60%)) var(--space-6) minmax(0, 1fr);
+    gap: 0;
+  }
+
   .viewer {
     position: sticky;
     top: var(--space-4);
@@ -232,30 +275,36 @@
     gap: var(--space-2);
     height: calc(var(--main-h) - 2 * var(--space-4)); /* <main> is the one scroller */
   }
-}
 
-/* A wide window (board 3): three columns. The page column is only as wide as
-   a page fitted to the window's height needs (an A4 page plus its frame; never
-   past 40%), and the panels take the rest as two equal columns: the page's own
-   panels with Attention and Values found, then the card, related documents,
-   the invoice and the story. Narrower, the two groups stack as one column. */
-@media (min-width: 90rem) and (min-height: 36rem) {
-  .layout {
-    grid-template-columns: minmax(0, min(calc((var(--main-h) - 3.5rem) * 0.8), 40%)) minmax(0, 1fr);
+  .handle {
+    position: sticky;
+    top: var(--space-4);
+    display: block;
+    height: calc(var(--main-h) - 2 * var(--space-4));
+    cursor: col-resize;
+    touch-action: none;
   }
 
-  .panels {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    gap: var(--space-6);
-    align-items: start;
+  .handle::before {
+    content: "";
+    position: absolute;
+    inset-block: 0;
+    inset-inline-start: calc(50% - 1px);
+    border-inline-start: 2px solid var(--border);
+  }
+
+  .handle:hover::before,
+  .handle:focus-visible::before {
+    border-inline-start-color: var(--accent);
+  }
+
+  .handle:focus-visible {
+    outline-offset: -2px;
   }
 }
 
 .viewer,
-.panels,
-.panelsMain,
-.panelsSide {
+.panels {
   min-width: 0;
 }
 
@@ -383,14 +432,65 @@
   }
 }
 
-/* The panels beside the page (DocumentPanels.tsx, PRD 3 Y1 to Y3), in two
-   groups that stack as one column until the wide layout puts them side by side. */
-.panels,
-.panelsMain,
-.panelsSide {
+/* The panels beside the page, as tabs (DD6; the global .tabs and .tab). Each tab's panel
+   keeps the same least height, so switching never moves the page. */
+.panels {
+  display: flex;
+  flex-direction: column;
+}
+
+.tabs {
+  margin-block-end: var(--space-4);
+}
+
+.tabCount[data-zero] {
+  color: var(--text-muted);
+}
+
+.tabPanel {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
+  min-width: 0;
+  min-height: 24rem;
+}
+
+/* DD7: the shown page's marks, short chips with the mark's own edge (never colour alone). */
+.markChips {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+}
+
+.markChip {
+  max-width: 100%;
+}
+
+.markChip[data-quality="unsure"] {
+  border-style: dashed;
+  border-color: var(--warning);
+}
+
+.markChip[data-quality="illegible"] {
+  border-color: var(--critical);
+}
+
+.markChip[data-quality="unpinned"] {
+  border-style: dotted;
+}
+
+.markChip[data-hot] {
+  background: var(--bg-selected);
+}
+
+.markWord {
+  min-width: 0;
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Attention with something to check: the same dashed edge as a Needs review value. */
@@ -413,12 +513,6 @@
   padding-block-end: var(--space-4);
   border-block-end: 1px solid var(--border);
   contain: layout style;
-}
-
-/* The card, related documents, the invoice and the story: painted only near the screen. */
-.panelsSide > * {
-  content-visibility: auto;
-  contain-intrinsic-size: auto 600px;
 }
 
 .panelHeading {
@@ -699,9 +793,16 @@
   min-width: 0;
 }
 
-.problemList {
+/* DD4: the alert's title, then its lines, then one row of like buttons. */
+.problemTitle {
   margin: 0;
-  padding-inline-start: var(--space-4);
+  font-weight: 700;
+}
+
+.problemActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
 }
 
 .problemSays {

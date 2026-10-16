@@ -141,6 +141,7 @@ export function useUploads(onUploaded: () => void) {
   const stopped = useRef<string | null>(null);
   const [queue, dispatch] = useReducer(queueReducer, EMPTY_QUEUE);
   const [limits, setLimits] = useState<UploadLimits>(FALLBACK_UPLOAD_LIMITS);
+  const [limitsLoaded, setLimitsLoaded] = useState(false); // D1: "Read with" holds its room until then
   const [reader, setReader] = useState<string | null>(sessionReader);
   const [ticked, setTicked] = useState<string[] | null>(sessionAgents);
   const agents = ticked ?? startAgents(limits.ensemble);
@@ -169,9 +170,13 @@ export function useUploads(onUploaded: () => void) {
     let cancelled = false;
     getUploadLimits().then(
       (loaded) => {
-        if (!cancelled) setLimits(loaded);
+        if (cancelled) return;
+        setLimits(loaded);
+        setLimitsLoaded(true);
       },
-      () => undefined,
+      () => {
+        if (!cancelled) setLimitsLoaded(true);
+      },
     );
     return () => {
       cancelled = true;
@@ -379,6 +384,7 @@ export function useUploads(onUploaded: () => void) {
     finished,
     settled,
     limits,
+    limitsLoaded,
     reader,
     views,
     stored,
@@ -510,7 +516,7 @@ export function ReaderSelect({
           </option>
         ))}
       </select>
-      <p id={`${id}-hint`} className={styles.readerHint}>
+      <p id={`${id}-hint`} className={styles.readerHint} title={several ? ENSEMBLE_HINT : current?.hint}>
         {several ? ENSEMBLE_HINT : current?.hint}
       </p>
       {several && (
@@ -546,42 +552,47 @@ export function ReaderSelect({
 
 /**
  * Where files can be dropped. With no documents yet it is a full dashed card
- * holding the empty state; once there are documents it is a slim strip.
+ * holding the empty state. Once there are documents (UI audit D10, 16 Oct 2026) it
+ * is the whole screen (`variant="page"`, while `enabled`): nothing is drawn until
+ * files are dragged over it, then an overlay says to drop them, with the limits.
+ * Only a drag carrying files counts, never a dragged link or text.
  */
 export function Dropzone({
   variant,
   limits,
   onFiles,
-  onChoose,
+  enabled = true,
+  className,
   children,
 }: {
-  variant: "full" | "slim";
+  variant: "full" | "page";
   limits: UploadLimits;
   onFiles: (files: File[]) => void;
-  onChoose: () => void;
+  enabled?: boolean;
+  className?: string;
   children?: ReactNode;
 }) {
   const [dragging, setDragging] = useState(false);
+  const takes = (event: DragEvent<HTMLDivElement>) => enabled && event.dataTransfer.types.includes("Files");
 
   function onDrop(event: DragEvent<HTMLDivElement>) {
+    if (!takes(event)) return;
     event.preventDefault();
     setDragging(false);
     const files = Array.from(event.dataTransfer.files);
     if (files.length > 0) onFiles(files);
   }
 
-  const classes = [
-    styles.drop,
-    variant === "slim" ? styles.dropSlim : styles.dropFull,
-    dragging ? styles.dropActive : "",
-  ]
-    .filter(Boolean)
-    .join(" ");
+  const classes =
+    variant === "page"
+      ? className
+      : [styles.drop, styles.dropFull, dragging ? styles.dropActive : "", className].filter(Boolean).join(" ");
 
   return (
     <div
       className={classes}
       onDragOver={(event) => {
+        if (!takes(event)) return;
         event.preventDefault();
         setDragging(true);
       }}
@@ -593,22 +604,14 @@ export function Dropzone({
       }}
       onDrop={onDrop}
     >
-      {variant === "full" ? (
-        <>
-          {children}
-          <p className={styles.dropHint}>Or drag files here. {uploadLimitsHint(limits)}</p>
-        </>
-      ) : (
-        <>
-          <Icon name="upload" className={styles.dropIcon} />
-          <p className={styles.dropText}>
-            {dragging ? "Drop the files to upload them." : "Drag files here to upload, or"}
-          </p>
-          <button type="button" className="btn" onClick={onChoose}>
-            Choose files
-          </button>
+      {children}
+      {variant === "full" && <p className={styles.dropHint}>Or drag files here. {uploadLimitsHint(limits)}</p>}
+      {variant === "page" && dragging && enabled && (
+        <div className={styles.dropOverlay} aria-hidden="true">
+          <Icon name="upload" size={20} className={styles.dropIcon} />
+          <p className={styles.dropText}>Drop the files to upload them.</p>
           <p className={styles.dropHint}>{uploadLimitsHint(limits)}</p>
-        </>
+        </div>
       )}
     </div>
   );

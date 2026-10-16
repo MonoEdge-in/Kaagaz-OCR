@@ -6,6 +6,8 @@
 // a taken name, a move into itself, more than 5 levels or a folder that is not
 // empty come back as 409 and are shown as it words them. The screen gives this
 // a new key for each folder, so an open form never outlives its folder.
+// UI audit D12 (16 Oct 2026): "+ New folder" in the folder column's header opens the same
+// New folder form here (`askNew` counts its presses).
 
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { FormEvent, MouseEvent } from "react";
@@ -24,10 +26,12 @@ export interface FolderActionsProps {
   current: FolderNode | null; // null: All documents
   /** A change was saved. `goTo` is the folder to show next (null: all documents), when it changes. */
   onChanged(message: string, goTo?: { folderId: string | null }): void;
+  askNew?: number;
 }
 
-export function FolderActions({ tree, current, onChanged }: FolderActionsProps) {
+export function FolderActions({ tree, current, onChanged, askNew = 0 }: FolderActionsProps) {
   const [mode, setMode] = useState<Mode | null>(null);
+  const [heardNew, setHeardNew] = useState(askNew);
   const [name, setName] = useState("");
   const [target, setTarget] = useState(""); // "" is the top level
   const [busy, setBusy] = useState(false);
@@ -50,6 +54,13 @@ export function FolderActions({ tree, current, onChanged }: FolderActionsProps) 
   }, [mode]);
 
   const parentId = current?.parent?.folder.id ?? "";
+  if (askNew !== heardNew) {
+    setHeardNew(askNew);
+    setMode("new");
+    setError(null);
+    setName("");
+    setTarget(parentId);
+  }
 
   function open(next: Mode, event: MouseEvent<HTMLButtonElement>) {
     opener.current = event.currentTarget;

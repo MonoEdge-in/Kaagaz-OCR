@@ -219,9 +219,9 @@
   background: var(--paper);
 }
 
-/* "Fit page" (DocumentView's sticky column): the viewer fills the column's
-   height, and the frame or sheet takes what the toolbar leaves, so the whole
-   page shows with no second scrollbar beside the window's. */
+/* The sticky column (DocumentView, `fill`): the viewer fills the column's height, and the
+   frame or sheet takes what the toolbar leaves. Fitted to the width (DD5), a tall page
+   scrolls in the frame; the wheel then runs on into <main> (no overscroll-behavior-y). */
 .fitPage {
   flex: 1 1 0;
   min-height: 20rem; /* never squeezed to nothing by what sits above it */
@@ -231,12 +231,6 @@
 .fitPage .sheetStack {
   flex: 1 1 0;
   min-height: 0;
-}
-
-/* Fitted to the column, the frame is the page's pan area: a scroll inside it, either way,
-   never runs on into the window. */
-.fitPage .frame {
-  overscroll-behavior: contain;
 }
 
 .fitPage .sheetFrame {
@@ -261,7 +255,7 @@
   border: 1px solid var(--border);
   border-radius: 2px;
   background: var(--bg-surface);
-  overscroll-behavior: contain; /* the sheet's pan area: its scroll never runs on into the window */
+  overscroll-behavior-x: contain; /* a sideways swipe pans the sheet, never goes back; the wheel runs on (DD1) */
 }
 
 .sheetCrop {
@@ -341,6 +335,12 @@
   box-shadow: 0 0 0 4px var(--paper);
 }
 
+/* DD7: the mark whose chip is pointed at in the Needs attention tab: the focus ring's look. */
+.problem[data-hot] {
+  outline: 2px solid var(--mine-on-paper);
+  outline-offset: 2px;
+}
+
 .problem[data-quality="unsure"],
 .swatch[data-quality="unsure"] {
   border: 2px dashed var(--hl-border);
@@ -359,25 +359,37 @@
   border: 2px dotted var(--border-strong);
 }
 
-.problemBar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2) var(--space-4);
-  font-size: var(--fs-sm);
-}
-
-.problemToggle {
+/* DD9: "Show reading problems" is a toolbar toggle; its legend is a tooltip under it, shown
+   on hover or focus, never over the button, never catching the pointer. */
+.problemTool {
+  position: relative;
   display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-height: var(--h-md);
 }
 
-@media (pointer: coarse) {
-  .problemToggle {
-    min-height: var(--h-lg);
-  }
+.problemTool [aria-pressed="true"] {
+  background: var(--bg-selected);
+  border-color: var(--border-strong);
+}
+
+.legendTip {
+  position: absolute;
+  inset-inline-end: 0;
+  top: calc(100% + var(--space-1));
+  z-index: var(--z-tooltip);
+  width: max-content;
+  max-width: 20rem;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: 2px;
+  background: var(--bg-surface);
+  font-size: var(--fs-sm);
+  pointer-events: none;
+  visibility: hidden;
+}
+
+.problemTool:hover .legendTip,
+.problemTool:focus-within .legendTip {
+  visibility: visible;
 }
 
 /* Kept in the row while it does nothing ("Fit page" at 100%), so the row never shifts. */
@@ -387,8 +399,8 @@
 
 .legend {
   display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-1) var(--space-4);
+  flex-direction: column;
+  gap: var(--space-1);
   margin: 0;
   padding: 0;
   list-style: none;
