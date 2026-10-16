@@ -437,17 +437,6 @@
   cursor: default;
 }
 
-/* The suggested folder's own place in the tree, when it holds folders: its name only (its
-   choice is first), lined up with the names beside the radio buttons. */
-.choiceParent {
-  display: flex;
-  align-items: center;
-  min-height: var(--control-h);
-  padding-inline-start: calc(1rem + var(--space-2));
-  color: var(--text-muted);
-  font-size: var(--fs-sm);
-}
-
 /* Suggested folder names: square chips (.chip) after their label, wrapping. */
 .nameChips {
   display: flex;

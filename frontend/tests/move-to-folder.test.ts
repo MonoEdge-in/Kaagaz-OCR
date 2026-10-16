@@ -112,11 +112,13 @@ describe("the Move dialog", () => {
     expect(radio(moveForm([doc({ doc_type: "other" })]), "All documents").disabled).toBe(true);
   });
 
-  it("puts the folder named for the document's kind first, marked Suggested and chosen", () => {
+  // Changed on purpose (Tushar, 16 Oct 2026): the suggested folder is tagged where it is in
+  // the tree, not copied to the top, so the column of choices stays even.
+  it("tags the folder named for the document's kind Suggested, in its place, and chooses it", () => {
     const html = moveForm([doc({ doc_type: "invoice" })]);
     const first = html.split("<li")[1] ?? "";
-    expect(first).toContain("Invoices");
-    expect(first).toContain("Suggested");
+    expect(first).toContain("All documents (no folder)");
+    expect(html).toMatch(/Invoices <span[^>]*>Suggested<\/span>/);
     expect(radio(html, "Suggested").checked).toBe(true);
     expect(html.match(/Invoices/g)).toHaveLength(1); // not listed twice
   });
@@ -129,7 +131,7 @@ describe("the Move dialog", () => {
     expect(radio(html, "New folder: Bank statements").checked).toBe(true);
   });
 
-  it("keeps a suggested folder that holds folders in the tree as a name, so its subfolders stay under it", () => {
+  it("keeps a suggested folder's subfolders under it, with one choice for it", () => {
     const tree = buildTree([...FOLDERS, folder("f-sep", "September", "f-inv")]);
     const html = moveForm([doc()], tree);
     expect(html.match(/type="radio"[^>]*value="f-inv"/g)).toHaveLength(1); // one choice, first

@@ -398,8 +398,9 @@ export function MoveForm({ items, tree, suggestions = [], onSaved, onFolderCreat
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const id = useId();
-  // The suggested folder is first; in the tree it stays only as a name above its subfolders.
-  const folders = inTreeOrder(tree).filter((node) => node.folder.id !== suggestedId || node.children.length > 0);
+  // Every folder once, in tree order; the suggested one is tagged where it is and chosen
+  // at first (Tushar, 16 Oct 2026: no second copy of it breaking the column).
+  const folders = inTreeOrder(tree);
   // Focus starts on the choice made, else on the first one that can be chosen.
   const focusValue = choice ?? (current === TOP ? (folders[0]?.folder.id ?? NEW) : TOP);
 
@@ -477,14 +478,6 @@ export function MoveForm({ items, tree, suggestions = [], onSaved, onFolderCreat
       <fieldset className={styles.fieldset} aria-describedby={error ? `${id}-error` : undefined}>
         <legend>Move to</legend>
         <ul className={styles.folderChoices}>
-          {suggestedId !== null &&
-            option(
-              suggestedId,
-              "suggested",
-              <>
-                {pathLabel(tree, suggestedId)} <span className={styles.tag}>Suggested</span>
-              </>,
-            )}
           {suggestedName !== null &&
             option(
               SUGGESTED_NEW,
@@ -495,15 +488,17 @@ export function MoveForm({ items, tree, suggestions = [], onSaved, onFolderCreat
             )}
           {option(TOP, "top", "All documents (no folder)")}
           {folders.map((node) =>
-            node.folder.id === suggestedId ? (
-              <li key={node.folder.id} style={{ paddingInlineStart: `calc(${node.depth} * var(--space-4))` }}>
-                <span className={styles.choiceParent}>
-                  {node.folder.name}
-                  <span className="visually-hidden"> (suggested, first in the list)</span>
-                </span>
-              </li>
-            ) : (
-              option(node.folder.id, node.folder.id, node.folder.name, node.depth)
+            option(
+              node.folder.id,
+              node.folder.id,
+              node.folder.id === suggestedId ? (
+                <>
+                  {node.folder.name} <span className={styles.tag}>Suggested</span>
+                </>
+              ) : (
+                node.folder.name
+              ),
+              node.depth,
             ),
           )}
           {option(NEW, "new", "New folder…")}
