@@ -940,8 +940,11 @@ class DocumentProcessor:
             raise
         finally:
             if not settled:
-                # Anything else is a bug: it is not caught (no blanket except) and goes on
-                # up to the worker, but its run ends failed rather than staying open.
+                # Anything else is a crash: it is not caught here and goes on up to the
+                # worker, which hands the job back counted (council 17 Oct 2026). Its run ends
+                # failed rather than staying open, and its progress is cleared first, as for a
+                # retryable JobFailed, so the row says it waits to try again, not "Starting…".
+                self._clear_progress(job, run, "internal_error")
                 self._close_run(job, run, "failed", "internal_error")
 
     def _process(self, job: Job, record: DocumentRecord, heartbeat: Heartbeat, run: _Run) -> None:

@@ -6,7 +6,12 @@ may contain, and refuses the rest, whether or not any signature matches:
 * **PDF:** no active content. JavaScript, launch actions, embedded files,
   rich media, XFA forms, and form submit or import actions are all refused.
   Every object is walked, including those inside compressed object streams,
-  so an obfuscated name (``/J#61vaScript``) is caught too.
+  so an obfuscated name (``/J#61vaScript``) is caught too. When the file's
+  index (cross-reference) is damaged, so some object could not be loaded
+  through it, every object header in the whole file is parsed as well, the way
+  a viewer rebuilds a broken index, so damage cannot hide active content from
+  the check while a viewer still runs it (council 17 Oct 2026). A damaged
+  encrypted PDF is ``unscannable``.
 * **Office files (zip):** no macros (vbaProject), no ActiveX, no embedded OLE
   objects, no external templates or links in the package relationships, no
   executables or nested archives inside, and no path traversal (``../``,
@@ -23,18 +28,25 @@ A file it cannot inspect is not called safe: that is ``unscannable``.
 PROVISIONAL: which content is refused is Vrushit's security decision. These
 rules follow the upload threat list Tushar raised on 28 Sep 2026.
 
-Time and memory are O(n) in the file size, plus O(objects) for a PDF.
+Time and memory are O(n) in the file size, plus O(objects) for a PDF: the
+index walk and the repair walk are each bounded by what the file can hold
+(_BYTES_PER_OBJECT, _READ_FACTOR), and past that a PDF is ``unscannable``.
+Decompressing a stream is not bounded here (pdfminer's own; see the ponytail
+note in kaagaz/jobs/worker.py).
 """
 
 import io
 import re
+import struct
 import zipfile
+import zlib
 from enum import Enum
 
-from pdfminer.pdfdocument import PDFDocument, PDFEncryptionError, PDFPasswordIncorrect
-from pdfminer.pdfparser import PDFParser, PDFSyntaxError
+from pdfminer.pdfdocument import LITERAL_OBJSTM, PDFDocument, PDFXRefFallback
+from pdfminer.pdfparser import PDFParser, PDFStreamParser
 from pdfminer.pdftypes import PDFObjRef, PDFStream
-from pdfminer.psparser import PSLiteral
+from pdfminer.psexceptions import PSException
+from pdfminer.psparser import PSKeyword, PSLiteral
 
 from kaagaz.ingestion.sniff import JPEG, PDF, PNG, TEXT, TIFF, ZIP, detect_type
 
@@ -75,26 +87,190 @@ _PDF_ACTIVE_KEYS = frozenset(
 _PDF_ACTIVE_ACTIONS = frozenset(
     {"JavaScript", "Launch", "GoToE", "SubmitForm", "ImportData", "RichMediaExecute"}
 )
+_ACTIVE_NAMES = _PDF_ACTIVE_KEYS | _PDF_ACTIVE_ACTIONS
 _MAX_PDF_DEPTH = 64
+
+# What pdfminer raises on a damaged file. PSException is the base of every pdfminer
+# error (syntax, encryption, an object the cross-reference points to but that is not
+# there: PDFObjectNotFound, which scanners write and which crashed workers, 16 Oct 2026).
+# pdfminer also fails with plain errors deep inside its parser: asserts (load_trailer),
+# a bad key, type or index, a truncated or corrupt compressed stream, a deep structure.
+_DAMAGED = (
+    PSException,
+    ValueError,
+    TypeError,
+    KeyError,
+    IndexError,
+    AttributeError,
+    AssertionError,
+    EOFError,
+    RecursionError,
+    struct.error,
+    zlib.error,
+)
+
+# An object's header, "12 0 obj", anywhere in the file (a viewer's index rebuild).
+_OBJECT_HEADER = re.compile(rb"(?<![0-9])\d+\s+\d+\s+obj\b")
+_ENDS_A_DICTIONARY_PART = frozenset({b"stream", b"endobj", b"obj"})
+
+# Work bounds, so a damaged index can never make the check hang (council 17 Oct 2026:
+# an xref stream declaring /Size 999999999 in a 404-byte file walked ~1e9 ids, ~3 hours).
+# PROVISIONAL, Vrushit may tune:
+# * an object needs at least ~8 bytes ("1 0 obj\n"), so an index listing more ids than
+#   len // _BYTES_PER_OBJECT + _SPARE_OBJECT_IDS is not walked past that: the repair walk
+#   (O(file size)) looks at every object the file can actually hold instead;
+# * pdfminer may read the file's bytes at most _READ_FACTOR times over, plus
+#   _READ_PER_OBJECT (two of its 4 KiB buffers) for each object it is asked for: past
+#   that, the index walk gives way to the repair walk, and the repair walk to unscannable.
+_BYTES_PER_OBJECT = 8
+_SPARE_OBJECT_IDS = 1000
+_READ_FACTOR = 4
+_READ_PER_OBJECT = 8192
+
+
+class _ReadBudgetSpent(Exception):
+    """pdfminer read past the file's budget: a damaged index sends it over the same bytes
+    again and again."""
+
+
+class _MeteredFile(io.BytesIO):
+    """The file, counting what pdfminer reads from it against ``left`` bytes."""
+
+    def __init__(self, data: bytes) -> None:
+        super().__init__(data)
+        self.left = _READ_FACTOR * len(data)
+
+    def read(self, size: int | None = -1, /) -> bytes:
+        chunk = super().read(size)
+        self.left -= len(chunk)
+        if self.left < 0:
+            raise _ReadBudgetSpent
+        return chunk
 
 
 def _pdf_finding(data: bytes) -> Finding | None:
+    file = _MeteredFile(data)
     try:
-        document = PDFDocument(PDFParser(io.BytesIO(data)))
-    except (PDFSyntaxError, PDFEncryptionError, PDFPasswordIncorrect):
+        document = PDFDocument(PDFParser(file))
+    except (*_DAMAGED, _ReadBudgetSpent):
         return Finding.UNSCANNABLE
-    except (ValueError, TypeError, KeyError, IndexError, AttributeError):
-        # pdfminer raises plain errors on badly broken files.
+    # pdfminer's own fallback index stops at the first trailer, so it is no proof of
+    # having seen every object.
+    damaged = any(isinstance(xref, PDFXRefFallback) for xref in document.xrefs)
+    most_ids = len(data) // _BYTES_PER_OBJECT + _SPARE_OBJECT_IDS
+    try:
+        for xref in document.xrefs:
+            for object_id in xref.get_objids():
+                most_ids -= 1
+                if most_ids < 0:
+                    raise _ReadBudgetSpent  # more ids than the file can hold objects
+                file.left += _READ_PER_OBJECT
+                try:
+                    obj = document.getobj(object_id)
+                except _DAMAGED:
+                    damaged = True  # one unreadable object: the repair walk below looks again
+                    continue
+                if _is_active(obj, 0):
+                    return Finding.BLOCKED
+    except _DAMAGED:
+        damaged = True  # the index itself broke part way
+    except _ReadBudgetSpent:
+        damaged = True
+    if not damaged:
+        return None
+    if document.encryption is not None:
+        return Finding.UNSCANNABLE  # objects outside the index cannot be decrypted here
+    file.left = _READ_FACTOR * len(data)  # for an object stream's indirect /Filter, say
+    try:
+        return _repair_walk(data, document)
+    except _ReadBudgetSpent:
         return Finding.UNSCANNABLE
-    for xref in document.xrefs:
-        for object_id in xref.get_objids():
-            try:
-                obj = document.getobj(object_id)
-            except (PDFSyntaxError, ValueError, TypeError, KeyError, IndexError, AttributeError):
-                continue  # one unreadable object; the reader will judge the file
-            if _is_active(obj, 0):
-                return Finding.BLOCKED
+
+
+def _repair_walk(data: bytes, document: PDFDocument) -> Finding | None:
+    """BLOCKED if any object in the whole file, found by its header as a viewer rebuilds
+    a broken index (pdfium, pdf.js and Acrobat all do), or inside an object stream, is
+    active; else None. Raises _ReadBudgetSpent past the read budget. Only for a damaged
+    index, so an ordinary file never pays for it. O(file size) reads, at most
+    _READ_FACTOR times over plus _READ_PER_OBJECT per header.
+
+    Each object is parsed on its own from its header. A parse that fails (an odd or
+    unclosed dictionary) has its dictionary part scanned for active names token by
+    token, and what an unfinished parse left on the parser's stacks (an object with no
+    "endobj") is checked too, so damage cannot hide a name a viewer would still read."""
+    file = _MeteredFile(data)
+    parser = PDFParser(file)
+    parser.set_document(document)
+    parser.fallback = True  # a stream runs to its "endstream", whatever its /Length says
+    for header in _OBJECT_HEADER.finditer(data):
+        file.left += _READ_PER_OBJECT
+        parser.seek(header.end())
+        try:
+            found = [parser.nextobject()[1], *_leftovers(parser)]
+        except _DAMAGED:
+            found = None
+        if found is None:
+            active = _loose_names_active(parser, header.end())
+        else:
+            active = any(_holds_active(value, document) for value in found)
+        if active:
+            return Finding.BLOCKED
     return None
+
+
+def _leftovers(parser: PDFParser) -> list[object]:
+    """What a parse left on the parser's stacks besides the object it gave: an object
+    with no "endobj" before the next one, or a dictionary never closed."""
+    values = [value for _, value in (*parser.results, *parser.curstack)]
+    for _, _, stack in parser.context:
+        values.extend(value for _, value in stack)
+    return values
+
+
+def _loose_names_active(parser: PDFParser, start: int) -> bool:
+    """Any active name among the tokens from ``start`` to the object's stream, its end,
+    or the next object's header: the dictionary part of an object that would not parse.
+    O(tokens), never past the next header."""
+    parser.seek(start)
+    while True:
+        try:
+            _, token = parser.nexttoken()
+        except _DAMAGED:
+            return False
+        if isinstance(token, PSKeyword) and token.name in _ENDS_A_DICTIONARY_PART:
+            return False
+        if isinstance(token, PSLiteral) and token.name in _ACTIVE_NAMES:
+            return True
+
+
+def _holds_active(obj: object, document: PDFDocument) -> bool:
+    """``_is_active``, plus a loose active name (a dictionary that never closed), plus
+    the objects inside an object stream."""
+    if isinstance(obj, PSLiteral):
+        return obj.name in _ACTIVE_NAMES
+    if _is_active(obj, 0):
+        return True
+    return (
+        isinstance(obj, PDFStream)
+        and obj.get("Type") is LITERAL_OBJSTM
+        and _object_stream_active(obj, document)
+    )
+
+
+def _object_stream_active(stream: PDFStream, document: PDFDocument) -> bool:
+    """Any active object inside an object stream, read to its end or its first damage."""
+    try:
+        parser = PDFStreamParser(stream.get_data())
+    except _DAMAGED:
+        return False  # it cannot be decoded: no viewer reads it either
+    parser.set_document(document)
+    while True:
+        try:
+            _, obj = parser.nextobject()
+        except _DAMAGED:  # PSEOF at the end
+            return any(_holds_active(value, document) for value in _leftovers(parser))
+        if _holds_active(obj, document):
+            return True
 
 
 def _is_active(obj: object, depth: int) -> bool:
@@ -102,9 +278,11 @@ def _is_active(obj: object, depth: int) -> bool:
 
     References to other objects are not followed: every object is visited on
     its own by the caller, so each is checked once. O(size of the object).
+    Deeper than _MAX_PDF_DEPTH is called active: an object nested that deep is
+    not a business document, and what lies below it was never checked.
     """
     if depth > _MAX_PDF_DEPTH:
-        return False
+        return True
     if isinstance(obj, PDFStream):
         obj = obj.attrs
     if isinstance(obj, dict):
@@ -155,7 +333,15 @@ def _zip_finding(data: bytes) -> Finding | None:
                     for match in _EXTERNAL_TARGET.finditer(archive.read(info)):
                         if not _HYPERLINK_TYPE.search(match.group(0)):
                             return Finding.BLOCKED  # a remote template or external link
-    except (zipfile.BadZipFile, zipfile.LargeZipFile, NotImplementedError, ValueError, OSError):
+    except (
+        zipfile.BadZipFile,
+        zipfile.LargeZipFile,
+        NotImplementedError,
+        ValueError,
+        OSError,
+        EOFError,
+        zlib.error,  # a damaged compressed part (xlsx_reader._DAMAGED lists the same)
+    ):
         return Finding.UNSCANNABLE
     return None
 

@@ -135,11 +135,12 @@ def configure_logging(level: str) -> None:
     uvicorn's own access log is switched off: its line holds the query string, and
     a search there can be a name. The access line comes from RequestMiddleware."""
     # Imported here, like the adapters below: the worker module brings them in.
-    from kaagaz.worker_main import JsonFormatter
+    from kaagaz.worker_main import JsonFormatter, quiet_parser_logs
 
     handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(JsonFormatter())
     logging.basicConfig(level=level.upper(), handlers=[handler], force=True)
+    quiet_parser_logs()  # the same libraries are imported here (the readers, the page count)
     uvicorn_errors = logging.getLogger("uvicorn.error")
     uvicorn_errors.handlers = [handler]
     uvicorn_errors.propagate = False
