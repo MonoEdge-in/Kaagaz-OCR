@@ -16,7 +16,7 @@ import { BOARD_MIN_DOCUMENTS, boardBest, boardRows, rateText } from "./insights"
 import type { BoardBest, BoardLine, InsightPeriod } from "./insights";
 import { LoadFailed } from "./LoadFailed";
 import { jobText, usd } from "./models";
-import { AI_OFF, PeriodSelect, Skeleton, useLoad } from "./OverviewView";
+import { AI_OFF, Freshness, PeriodSelect, Skeleton, useLoad } from "./OverviewView";
 import type { LoadState } from "./OverviewView";
 import admin from "@/components/admin/Admin.module.css";
 import styles from "./Operator.module.css";
@@ -31,6 +31,7 @@ export interface BoardData {
   reply: BoardReply;
   names: ReadonlyMap<string, string>; // model id to name, from the catalogue
   jobs?: ReadonlyMap<string, string>; // model id to its job in words (board 8); none without the catalogue
+  loadedAt?: number; // Date.now() when it arrived, for "Figures as of"
 }
 
 async function loadBoard(days: InsightPeriod): Promise<BoardData> {
@@ -45,6 +46,7 @@ async function loadBoard(days: InsightPeriod): Promise<BoardData> {
     reply,
     names: new Map(items.map((model) => [model.id, model.name])),
     jobs: new Map(items.map((model) => [model.id, jobText(model, platform)])),
+    loadedAt: Date.now(),
   };
 }
 
@@ -73,6 +75,11 @@ export function ModelBoardScreen(props: {
       <p className={styles.summary}>{OBSERVATIONAL}</p>
       <div className={styles.toolbar}>
         <PeriodSelect id="board-period" days={days} onDays={onDays} />
+        {data?.loadedAt !== undefined && (
+          <div className={css.toolEnd}>
+            <Freshness loadedAt={data.loadedAt} refreshing={state.kind === "ready" && state.refreshing === true} onRefresh={onRetry} />
+          </div>
+        )}
       </div>
       {state.kind === "loading" && <Skeleton />}
       {state.kind === "error" && (
@@ -114,8 +121,8 @@ function BoardTable({ data }: { data: BoardData }) {
   const lines = boardRows(data.reply.items);
   const best = boardBest(lines);
   return (
-    <div className={table.reflowWrap}>
-      <table className={`table ${table.reflow} ${styles.nameWide}`} role="table">
+    <div className={`${table.reflowWrap} ${admin.tableScroll}`}>
+      <table className={`table ${table.reflow} ${styles.nameWide} ${styles.compare}`} role="table">
         <caption className={admin.caption}>Compare models, observational</caption>
         <thead role="rowgroup">
           <tr role="row">

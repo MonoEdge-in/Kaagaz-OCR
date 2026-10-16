@@ -179,7 +179,7 @@ function DefaultsDialog(props: { reply: AiDefaults; catalogue: OperatorModel[]; 
           </button>
           <button
             type="submit"
-            className="btn btn-primary"
+            className={`btn btn-primary ${busy ? admin.busy : ""}`}
             disabled={busy}
             aria-busy={busy || undefined}
             aria-describedby="platform-defaults-impact"

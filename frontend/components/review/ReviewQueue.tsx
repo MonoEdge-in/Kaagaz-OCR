@@ -243,18 +243,13 @@ function Queue({ documentId }: { documentId?: string }) {
               <div>
                 <button
                   type="button"
-                  className="btn"
+                  className={`btn ${loadingMore ? styles.busy : ""}`}
                   disabled={loadingMore}
+                  aria-busy={loadingMore || undefined}
                   onClick={() => void loadMore()}
                 >
-                  {loadingMore ? (
-                    <>
-                      <span className="spinner" aria-hidden="true" />
-                      Loading…
-                    </>
-                  ) : (
-                    "Show more"
-                  )}
+                  {loadingMore && <span className="spinner" aria-hidden="true" />}
+                  Show more
                 </button>
               </div>
             ) : null}

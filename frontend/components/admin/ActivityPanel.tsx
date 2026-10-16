@@ -95,7 +95,7 @@ export function ActivityPanel() {
       )}
       {page && page.total === 0 && <p className={styles.emptyLine}>No activity yet.</p>}
       {page && page.items.length > 0 && (
-        <div className={table.reflowWrap}>
+        <div className={`${table.reflowWrap} ${styles.tableScroll}`}>
           <table className={`table ${table.reflow}`} role="table">
             <caption className="visually-hidden">Activity, newest first</caption>
             <thead role="rowgroup">

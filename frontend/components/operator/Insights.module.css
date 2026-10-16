@@ -1,24 +1,26 @@
 /* Operator insights: Overview, Quality and Compare models (council 11 Oct 2026).
-   Tokens only (app/globals.css). Tiles, captions and tables reuse Admin.module.css
+   MonoEdge tokens only (app/globals.css). Tiles, captions and tables reuse Admin.module.css
    and the shared reflow in components/documents/Table.module.css. */
 
-/* The console is wider than the other screens: its tables have many columns. */
+/* The console keeps the content's 1200px; its wide tables scroll sideways in their own box. */
 :global(.page).console {
-  max-width: 100rem;
+  max-width: 75rem;
 }
 
 /* --- Figures as of, Refresh, Download CSV, and the old-figures note ------------ */
 
+/* At the end of the toolbar row: the figures' time, then the actions. */
 .toolEnd {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2) var(--space-3);
+  margin-inline-start: auto;
 }
 
 .asOf {
   margin: 0;
-  color: var(--fg-muted);
+  color: var(--text-secondary);
   font-size: var(--fs-sm);
 }
 
@@ -28,10 +30,15 @@
   gap: var(--space-2);
   margin: 0;
   padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--review-solid);
-  border-radius: var(--r-md);
-  background: var(--review-bg);
-  color: var(--review-fg);
+  border: 1px solid var(--warning);
+  border-radius: 2px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+}
+
+.stale svg {
+  flex: none;
+  color: var(--warning);
 }
 
 /* --- Tiles: the value, its notes, and a line by day (decoration: the words say it) --- */
@@ -45,7 +52,7 @@
 }
 
 .note {
-  color: var(--fg-muted);
+  color: var(--text-secondary);
   font-size: var(--fs-sm);
 }
 
@@ -64,7 +71,7 @@
 
 .footnote {
   margin: 0;
-  color: var(--fg-muted);
+  color: var(--text-secondary);
   font-size: var(--fs-sm);
 }
 
@@ -86,8 +93,9 @@
   gap: var(--space-2) var(--space-3);
   padding: var(--space-2) var(--space-3);
   border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--surface);
+  border-radius: 2px;
+  background: var(--bg-surface);
+  contain: layout paint style;
 }
 
 .attentionText {
@@ -101,19 +109,30 @@
   align-items: center;
   gap: var(--space-1);
   padding: 1px var(--space-2);
-  border: 1px solid var(--review-solid);
-  border-radius: var(--r-sm);
-  background: var(--review-bg);
-  color: var(--review-fg);
-  font-size: var(--fs-sm);
-  font-weight: 600;
+  border: 1px dashed var(--warning);
+  border-radius: 2px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
   white-space: nowrap;
 }
 
+.severity svg {
+  flex: none;
+  color: var(--warning);
+}
+
+/* Act now: a solid edge and the critical colour, besides its own icon and words. */
 .severity[data-severity="act"] {
-  border-color: var(--danger-fg);
-  background: var(--danger-bg);
-  color: var(--danger-fg);
+  border-style: solid;
+  border-color: var(--critical);
+}
+
+.severity[data-severity="act"] svg {
+  color: var(--critical);
 }
 
 /* --- Lists inside a table cell (flags, page signals) and the budget meter -------- */
@@ -153,13 +172,17 @@
   min-width: 0;
   padding: var(--space-3) var(--space-4);
   border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--surface);
+  border-radius: 2px;
+  background: var(--bg-surface);
+  contain: layout paint style;
 }
 
 .fact dt {
-  color: var(--fg-muted);
-  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .fact dd {
@@ -179,8 +202,8 @@
   display: inline-block;
   padding: 0 var(--space-2);
   border: 1px solid var(--accent);
-  border-radius: var(--r-full);
-  background: var(--accent-soft);
+  border-radius: 2px;
+  background: var(--accent-subtle);
   color: var(--accent);
   font-size: var(--fs-sm);
   font-weight: 600;

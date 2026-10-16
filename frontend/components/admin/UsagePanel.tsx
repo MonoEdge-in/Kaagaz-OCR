@@ -16,7 +16,7 @@ import type { ReactNode } from "react";
 import table from "@/components/documents/Table.module.css";
 import { Icon } from "@/components/ui/Icon";
 import { ApiError, getAdminUsage, listUsers } from "@/lib/api";
-import { formatDate, formatNumber } from "@/lib/format";
+import { formatDate, formatDateTime, formatNumber } from "@/lib/format";
 import type { AdminUser, UsageReport, UsageTokens } from "@/lib/types";
 import {
   USAGE_PERIODS,
@@ -94,7 +94,7 @@ function UsageTable({
   const sorted = [...rows].sort((a, b) => usageTokens(b.totals) - usageTokens(a.totals));
   const all = rows.reduce((sum, row) => sum + usageTokens(row.totals), 0);
   return (
-    <div className={table.reflowWrap}>
+    <div className={`${table.reflowWrap} ${styles.tableScroll}`}>
       <table className={`table ${table.reflow}`} role="table">
         <caption className={styles.caption}>{caption}</caption>
         <thead role="rowgroup">
@@ -323,9 +323,12 @@ export function UsagePanel() {
   const [userId, setUserId] = useState("");
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [attempt, setAttempt] = useState(0);
-  const [result, setResult] = useState<{ key: string; report: UsageReport | null; error: string | null } | null>(
-    null,
-  );
+  const [result, setResult] = useState<{
+    key: string;
+    report: UsageReport | null;
+    error: string | null;
+    at: number; // when it arrived: "Figures as of", a real time
+  } | null>(null);
 
   const range = usageRange(period, custom, now);
   const from = range?.from;
@@ -351,13 +354,13 @@ export function UsagePanel() {
     let cancelled = false;
     getAdminUsage({ from, to, user_id: userId || undefined }).then(
       (report) => {
-        if (!cancelled) setResult({ key, report, error: null });
+        if (!cancelled) setResult({ key, report, error: null, at: Date.now() });
       },
       (caught: unknown) => {
         if (!cancelled) {
           const message =
             caught instanceof ApiError ? caught.message : "Check your internet connection, then try again.";
-          setResult({ key, report: null, error: message });
+          setResult({ key, report: null, error: message, at: Date.now() });
         }
       },
     );
@@ -435,6 +438,15 @@ export function UsagePanel() {
             ))}
           </select>
         </div>
+        {current?.report && (
+          <div className={styles.usageFresh}>
+            <p className={styles.asOf}>Figures as of {formatDateTime(new Date(current.at).toISOString())}</p>
+            <button type="button" className="btn" onClick={() => setAttempt((n) => n + 1)}>
+              <Icon name="refresh" />
+              Refresh
+            </button>
+          </div>
+        )}
       </div>
       {range ? (
         <UsageReportView state={state} onRetry={() => setAttempt((n) => n + 1)} />
