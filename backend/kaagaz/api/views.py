@@ -89,10 +89,8 @@ def status_message(
         split = "Split it into parts and upload each one."
         return f"{what} has {page_count} pages. The limit is {max_pages}. {split}"
     if status == "failed" and failure_code == "retries_exhausted":
-        tries = f"{max_attempts} times" if max_attempts else "several times"
-        return (
-            f"We tried {tries} and couldn't read this file. Read it again, or ask your admin to look at it."
-        )
+        tries = f"{max_attempts} tries" if max_attempts else "several tries"
+        return f"The scan stopped after {tries}. Read it again, or ask your admin to look at it."
     if status == "failed" and failure_code == "unreadable":
         # PRD 5 F4: every non-blank page was unreadable; a document with one readable page is ready.
         return "None of this file could be read. Upload a sharper scan."
