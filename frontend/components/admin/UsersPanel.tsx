@@ -70,11 +70,9 @@ interface Revealed {
 export function UsersPanel({
   currentUserId,
   adminTwoStep,
-  twoStepAllowed,
 }: {
   currentUserId: string;
   adminTwoStep: boolean;
-  twoStepAllowed: boolean;
 }) {
   const [attempt, setAttempt] = useState(0);
   const [users, setUsers] = useState<AdminUser[] | null>(null);
@@ -192,7 +190,6 @@ export function UsersPanel({
                     user={user}
                     isSelf={user.id === currentUserId}
                     adminTwoStep={adminTwoStep}
-                    twoStepAllowed={twoStepAllowed}
                     now={now}
                     onChanged={replace}
                     onPasswordReset={setRevealed}
@@ -204,9 +201,9 @@ export function UsersPanel({
           </div>
         )}
         {users && <MoreRows shown={Math.min(cap.limit, users.length)} total={users.length} what="users" onMore={cap.showMore} />}
-        {/* AD7: "2FA off" can't be required yet; a plain note says what there is. */}
+        {/* AD7: two-step is required for admins (0035); one without it sets it up at the next sign-in. */}
         {users?.some((user) => user.role === "admin" && !user.totp_enabled) && (
-          <p className="hint">{twoStepNote(twoStepAllowed)}</p>
+          <p className="hint">{twoStepNote()}</p>
         )}
       </section>
       {adding && (
@@ -234,7 +231,7 @@ const CONFIRM_TEXT: Record<Confirming, (name: string) => string> = {
     `Reset ${name}'s password? They are signed out everywhere and must choose a new one.`,
   "2fa": (name) =>
     `Reset ${name}'s 2FA? They are signed out and set up the app again at their next ` +
-    "admin sign-in.",
+    "sign-in.",
   forever: allowForeverQuestion,
 };
 
@@ -249,7 +246,6 @@ function UserRow({
   user,
   isSelf,
   adminTwoStep,
-  twoStepAllowed,
   now,
   onChanged,
   onPasswordReset,
@@ -258,7 +254,6 @@ function UserRow({
   user: AdminUser;
   isSelf: boolean;
   adminTwoStep: boolean;
-  twoStepAllowed: boolean;
   now: number;
   onChanged: (user: AdminUser) => void;
   onPasswordReset: (revealed: Revealed) => void;
@@ -300,8 +295,8 @@ function UserRow({
     }, "password reset.");
   };
 
-  const can = userActions(user, { isSelf, now, twoStepAllowed });
-  const forever = foreverControl(user, { isSelf, adminTwoStep, twoStepAllowed });
+  const can = userActions(user, { isSelf, now });
+  const forever = foreverControl(user, { isSelf, adminTwoStep });
   const reason = forever.kind === "allow" ? forever.disabledReason : null;
   const selectId = `role-${user.id}`;
   // AD2: one menu per row. Safe actions first; the one that takes something away last, apart.

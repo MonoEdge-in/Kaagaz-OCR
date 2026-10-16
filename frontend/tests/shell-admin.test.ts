@@ -103,8 +103,7 @@ describe("userStatus", () => {
 });
 
 describe("userActions", () => {
-  const actions = (u: AdminUser, isSelf = false, twoStepAllowed = true) =>
-    userActions(u, { isSelf, now: NOW, twoStepAllowed });
+  const actions = (u: AdminUser, isSelf = false) => userActions(u, { isSelf, now: NOW });
 
   it("offers disable and reset password for another user", () => {
     expect(actions(user())).toEqual({
@@ -125,10 +124,6 @@ describe("userActions", () => {
     expect(actions(user({ role: "admin" })).reset2fa).toBe(false);
   });
 
-  it("hides Reset 2FA until the super admin allows two-step sign-in for the organisation", () => {
-    expect(actions(user({ role: "admin", totp_enabled: true }), false, false).reset2fa).toBe(false);
-  });
-
   it("offers an admin nothing on their own row (the server refuses it too)", () => {
     expect(actions(user({ role: "admin", totp_enabled: true }), true)).toEqual({
       toggleDisabled: false,
@@ -140,8 +135,8 @@ describe("userActions", () => {
 });
 
 describe("Delete forever, granted (council 4 Oct 2026)", () => {
-  const control = (u: AdminUser, isSelf = false, adminTwoStep = true, twoStepAllowed = true) =>
-    foreverControl(u, { isSelf, adminTwoStep, twoStepAllowed });
+  const control = (u: AdminUser, isSelf = false, adminTwoStep = true) =>
+    foreverControl(u, { isSelf, adminTwoStep });
 
   it("offers Allow, or Stop once allowed, for a member or reviewer; nothing for an admin or yourself", () => {
     expect(control(user())).toEqual({ kind: "allow", disabledReason: null });
@@ -151,10 +146,6 @@ describe("Delete forever, granted (council 4 Oct 2026)", () => {
       kind: "allow",
       disabledReason: "Turn on your two-step sign-in in Settings to allow this.",
     });
-  });
-
-  it("lets an admin allow it without two-step while the organisation has no two-step sign-in", () => {
-    expect(control(user(), false, false, false)).toEqual({ kind: "allow", disabledReason: null });
   });
 
   it("asks first, says it covers all of Trash, and shows the chip and the audit words", () => {
@@ -181,7 +172,6 @@ describe("adminGate", () => {
       must_change_password: false,
       totp_enabled: false,
       can_delete_forever: false,
-      two_step_allowed: true,
     },
     customer: { id: "c1", name: "Sharma Traders" },
     session: { scope },
@@ -356,8 +346,8 @@ describe("settingsChanged (AD6) and twoStepNote (AD7)", () => {
   });
 
   it("says plainly where two-step sign-in stands", () => {
-    expect(twoStepNote(true)).toBe("Admins turn on two-step sign-in (2FA) for themselves in Settings.");
-    expect(twoStepNote(false)).toBe("Two-step sign-in (2FA) for admins comes in a later update.");
+    // Changed on purpose (MFA required, 16 Oct 2026): two-step is required for admins.
+    expect(twoStepNote()).toBe("Admins without two-step sign-in set it up at their next sign-in.");
   });
 });
 

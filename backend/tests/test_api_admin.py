@@ -251,14 +251,14 @@ def test_audit_log_is_newest_first_with_actor_names_and_paginated(db: Database) 
 
     body = admin.client.get("/api/admin/audit?limit=1").json()
 
-    assert body["total"] == 2  # auth.admin_login, settings.update
+    assert body["total"] == 2  # auth.login, settings.update
     entry = body["items"][0]
     assert set(entry) == {"id", "action", "actor_name", "target_type", "target_id", "details", "created_at"}
     assert entry["action"] == "settings.update"
     assert entry["actor_name"] == "Test admin"
     assert entry["details"] == {"max_upload_mb": 2}
     older = admin.client.get("/api/admin/audit?limit=1&offset=1").json()["items"]
-    assert [item["action"] for item in older] == ["auth.admin_login"]
+    assert [item["action"] for item in older] == ["auth.login"]
 
 
 @pytest.mark.db
@@ -522,7 +522,7 @@ def test_reset_password_gives_a_temporary_password_and_ends_sessions(db: Databas
 
 
 @pytest.mark.db
-def test_reset_2fa_clears_the_code_so_the_password_alone_signs_in(db: Database) -> None:
+def test_reset_2fa_clears_the_code_so_the_next_sign_in_sets_it_up_again(db: Database) -> None:
     api = Api(db)
     admin = api.new_admin()
     colleague = api.enrol_admin(admin.customer_id)
@@ -535,10 +535,9 @@ def test_reset_2fa_clears_the_code_so_the_password_alone_signs_in(db: Database) 
     state = api.user_state(admin.customer_id, colleague.user_id)
     assert (state["totp_secret_enc"], state["totp_enabled_at"], state["totp_last_step"]) == (None, None, None)
     assert api.audit_actions(admin.customer_id)[-1] == "user.reset_totp"
-    signed_in = api.admin_login(api.client(), colleague.email)
-    assert signed_in.status_code == 200, signed_in.text
-    assert signed_in.json()["user"]["totp_enabled"] is False
-    assert signed_in.json()["session"] == {"scope": "admin"}
+    signed_in = api.admin_login(api.client(), colleague.email)  # MFA required (0031): no session yet
+    assert (signed_in.status_code, signed_in.json()["error"]["code"]) == (403, "mfa_enrol_required")
+    assert "set-cookie" not in signed_in.headers
 
 
 @pytest.mark.db

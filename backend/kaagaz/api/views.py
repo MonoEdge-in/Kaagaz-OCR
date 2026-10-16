@@ -684,8 +684,8 @@ def conversation_summary(row: RowMapping) -> dict[str, Any]:
 
 
 def me_json(user: CurrentUser) -> dict[str, Any]:
-    """``Me``: who is signed in, their customer, and the session's scope ("app" from
-    /login, "admin" from /admin/login; the screen shows Admin only for "admin")."""
+    """``Me``: who is signed in, their customer, and the session's scope ("app" for a
+    member or reviewer, "admin" for an admin; the screen shows Admin only for "admin")."""
     return {
         "user": {
             "id": user.user_id,
@@ -695,7 +695,6 @@ def me_json(user: CurrentUser) -> dict[str, Any]:
             "must_change_password": user.must_change_password,
             "totp_enabled": user.totp_enabled,
             "can_delete_forever": user.delete_forever_allowed and user.role != "admin",  # the grant
-            "two_step_allowed": user.two_step_allowed,  # the operator's grant (0029)
         },
         "customer": {"id": user.customer_id, "name": user.customer_name},
         "session": {"scope": user.scope},

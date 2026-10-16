@@ -158,32 +158,22 @@ export const pageImageUrl = (documentId: string, pageNo: number) =>
 
 // --- auth ----------------------------------------------------------------------
 
-export const login = (email: string, password: string) =>
-  request<Me>("POST", "/auth/login", { email, password });
+/** The one sign-in (16 Oct 2026). An admin also sends the code once the server asks
+ * for it (401 code_required), or sets two-step up first (403 mfa_enrol_required). */
+export const login = (email: string, password: string, code?: string) =>
+  request<Me>("POST", "/auth/login", { email, password, ...(code === undefined ? {} : { code }) });
 export const logout = () => request<void>("POST", "/auth/logout");
 /** Whether anyone may create an organisation at /signup (SELF_SIGNUP_ENABLED). */
 export const signUpOpen = () => request<{ enabled: boolean }>("GET", "/auth/signup");
-/** A new organisation and its first admin; signs in as that admin (an admin session). */
+/** A new organisation and its first admin. The reply is the two-step set-up (admins must
+ * have it); the first code (adminEnrol) signs in as that admin. */
 export const signUp = (body: { organisation_name: string; name: string; email: string; password: string }) =>
-  request<Me>("POST", "/auth/signup", body);
+  request<TwoStepSetup>("POST", "/auth/signup", body);
 export const me = () => request<Me>("GET", "/auth/me");
 
-/** The admin screen's sign-in. The code is needed only once the admin has turned 2FA on. */
-export const adminLogin = (email: string, password: string, code?: string) =>
-  request<Me>("POST", "/auth/admin/login", {
-    email,
-    password,
-    ...(code === undefined ? {} : { code }),
-  });
-/** The signed-in admin's own two-step sign-in: with the current password, a new
- * key; then the first code turns it on. */
-export const startTwoStep = (password: string) =>
-  request<TwoStepSetup>("POST", "/auth/admin/2fa/start", { password });
+/** The first code from the set-up (sign-in or sign-up) turns two-step on and signs in. */
 export const adminEnrol = (enrolToken: string, code: string) =>
   request<Me>("POST", "/auth/admin/enrol", { enrol_token: enrolToken, code });
-/** Turns it off; the server re-signs this browser and signs out the others. */
-export const turnOffTwoStep = (password: string) =>
-  request<Me>("POST", "/auth/admin/2fa/off", { password });
 export const changePassword = (current: string, next: string) =>
   request<Me>("POST", "/auth/password", { current_password: current, new_password: next });
 export const logoutEverywhere = () => request<void>("POST", "/auth/logout-everywhere");
@@ -514,9 +504,6 @@ export const enableOrg = (id: string) => request<unknown>("POST", `/operator/org
 /** Feature 28: allow or stop auto-filing; stopping it also switches it off. */
 export const setOrgAutofile = (id: string, granted: boolean) =>
   request<unknown>("PUT", `/operator/orgs/${id}/autofile`, { granted });
-/** Allow or stop two-step sign-in for its admins; stopping it keeps each admin's code. */
-export const setOrgTwoStep = (id: string, granted: boolean) =>
-  request<unknown>("PUT", `/operator/orgs/${id}/two-step`, { granted });
 /** A disabled organisation, its name typed exactly (step-up); deleted after the grace period. */
 export const scheduleDelete = (id: string, name: string, code: string) =>
   request<unknown>("POST", `/operator/orgs/${id}/schedule-delete`, { name, code });

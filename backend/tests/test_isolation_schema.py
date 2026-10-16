@@ -16,7 +16,7 @@ refresh columns alone it may write, and the operator's five functions.
 Auto-filing (0025): the app may switch its own ``autofile_on``, never ``autofile_granted``,
 which only the operator's ``kaagaz_op_set_org_autofile`` writes.
 
-Two-step by grant (0029): only ``kaagaz_op_set_org_two_step`` writes ``two_step_granted``.
+Two-step by grant (0029) is gone (0031): no ``two_step_granted``, no ``kaagaz_op_set_org_two_step``.
 
 Features 25-27 (0026): an organisation's AI settings the app may only read, the platform
 defaults (no customer) every role that may reads, the catalogue's chat_eligible the refresh
@@ -158,13 +158,12 @@ OPERATOR_RIGHTS = {
     "kaagaz_op_session": ("TABLE(email text, display_name text, session_version integer)", EMPTY_PATH),
     "kaagaz_op_logout": ("void", EMPTY_PATH),
     # 0016: organisations with counts only, and the writes, each answering (outcome, result_id).
-    # 0025 added each one's auto-filing grant and switch, 0029 its two-step grant.
+    # 0025 added each one's auto-filing grant and switch (0029's two-step grant went in 0031).
     "kaagaz_op_customers": (
         "TABLE(customer_id uuid, name text, status text, disabled_at timestamp with time zone,"
         " delete_after timestamp with time zone, created_at timestamp with time zone, admins bigint,"
         " reviewers bigint, members bigint, documents bigint, pages bigint, size_bytes bigint,"
-        " last_activity_at timestamp with time zone, autofile_granted boolean, autofile_on boolean,"
-        " two_step_granted boolean)",
+        " last_activity_at timestamp with time zone, autofile_granted boolean, autofile_on boolean)",
         EMPTY_PATH,
     ),
     # 0017: one organisation's admins, and the changes to one of them.
@@ -251,7 +250,6 @@ OPERATOR_RIGHTS = {
     ),
     "kaagaz_op_set_ai_defaults": ("text", EMPTY_PATH),
     "kaagaz_op_set_org_autofile": ("record", EMPTY_PATH),  # 0025: allow or stop auto-filing
-    "kaagaz_op_set_org_two_step": ("record", EMPTY_PATH),  # 0029: allow or stop two-step sign-in
     "kaagaz_op_usage": (
         "TABLE(customer_id uuid, customer_name text, model text, calls bigint, cached_calls bigint,"
         " input_tokens numeric, output_tokens numeric, reasoning_tokens numeric, cost_usd numeric,"

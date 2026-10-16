@@ -481,8 +481,8 @@
   text-wrap: pretty;
 }
 
-/* "Account admin? Admin sign-in" under a hairline. The link is 44 px tall
-   without making the text any bigger. */
+/* "New to Kaagaz? Create an account" (SignUpLink) under a hairline. The link is
+   44 px tall without making the text any bigger. */
 .switch {
   margin: 0;
   padding-top: var(--space-4);
@@ -491,7 +491,7 @@
   color: var(--fg-muted);
 }
 
-/* "Create an account" right under it (SignUpLink): one hairline for both. */
+/* Two such lines in a row (sign-up): one hairline for both. */
 .switch + .switch {
   padding-top: 0;
   border-top: 0;

@@ -2,7 +2,7 @@
 // them: the sign-in form, an organisation's status and counts in words, the
 // search, the new-organisation form, and what to say when the server says no.
 
-import { codeError } from "@/app/admin/login/adminSignIn";
+import { codeError } from "@/app/login/twoStep";
 import { NETWORK_FAILURE, SIGN_IN_DOWN, TOO_MANY_ATTEMPTS, emailError, passwordError } from "@/app/login/signIn";
 import type { CloseWay } from "@/components/documents/ActionDialog";
 import { ApiError } from "@/lib/api";

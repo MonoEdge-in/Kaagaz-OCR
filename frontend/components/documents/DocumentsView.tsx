@@ -503,7 +503,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
               )}
               {library.trash && foreverNeeds(me) === "admin_sign_in" && (
                 <p className={libraryStyles.placeHint}>
-                  To delete forever, <Link href="/admin/login">sign in on the admin sign-in screen</Link>.
+                  To delete forever, <Link href="/login">sign in again</Link>.
                 </p>
               )}
               {library.trash && foreverNeeds(me) === "not_allowed" && (

@@ -9,8 +9,8 @@
 import { useState } from "react";
 import type { FormEvent } from "react";
 import { flushSync } from "react-dom";
-import { CodeField } from "@/app/admin/login/CodeField";
-import { normalizeCode } from "@/app/admin/login/adminSignIn";
+import { CodeField } from "@/app/login/CodeField";
+import { normalizeCode } from "@/app/login/twoStep";
 import { normalizeEmail } from "@/app/login/signIn";
 import { SignedOutNotice } from "@/app/login/SignedOutNotice";
 import { KEY_HELP, firstInvalidOperator, operatorSignInError, validateOperatorSignIn } from "@/components/operator/logic";
@@ -20,7 +20,7 @@ import { useHydrated } from "@/components/ui/useHydrated";
 import { operatorLogin } from "@/lib/api";
 import { leavePage } from "@/lib/sessionChannel";
 import login from "../../login/login.module.css";
-import styles from "../../admin/login/adminLogin.module.css";
+import styles from "@/app/login/twoStep.module.css";
 
 const FIELD_IDS: Record<OperatorField, string> = {
   email: "operator-login-email",

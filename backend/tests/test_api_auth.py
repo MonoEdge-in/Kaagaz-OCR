@@ -249,7 +249,6 @@ def test_login_sets_the_cookie_and_me_works(db: Database) -> None:
             "must_change_password": False,
             "totp_enabled": False,
             "can_delete_forever": False,
-            "two_step_allowed": True,
         },
         "customer": {"id": customer_id, "name": "Sharma Traders"},
         "session": {"scope": "app"},
@@ -371,8 +370,7 @@ def test_genuine_token_for_a_user_that_does_not_exist_is_refused(db: Database) -
         ("member", "/api/admin/users", 403, "admin_session_required"),
         ("reviewer", "/api/review", 200, None),
         ("reviewer", "/api/admin/stats", 403, "admin_session_required"),
-        ("admin", "/api/review", 200, None),
-        ("admin", "/api/admin/stats", 403, "admin_session_required"),
+        # An admin's app session no longer exists (one sign-in, 0031): test_auth_tokens.
         ("admin session", "/api/review", 200, None),
         ("admin session", "/api/admin/stats", 200, None),
     ],

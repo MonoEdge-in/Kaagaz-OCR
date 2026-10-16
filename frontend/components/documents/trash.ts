@@ -8,28 +8,26 @@ import { ApiError } from "@/lib/api";
 import type { DocumentSummary, Me } from "@/lib/types";
 
 /**
- * Who may delete for good: an admin session (from /admin/login) whose admin has
- * two-step sign-in on, or a member or reviewer an admin allowed
- * (can_delete_forever), who types their password first, as an admin does until
- * the super admin allows two-step sign-in for the organisation. The server says
- * 403 to anyone else. Move to Trash and Restore follow each document's can_delete.
+ * Who may delete for good: an admin session (every admin's, from /login) whose admin has
+ * two-step sign-in on (always, since 16 Oct 2026), or a member or reviewer an admin allowed
+ * (can_delete_forever), who types their password first. The server says 403 to
+ * anyone else. Move to Trash and Restore follow each document's can_delete.
  */
 export function canDeleteForever(me: Me): boolean {
   if (me.user.role !== "admin") return me.user.can_delete_forever;
-  return sessionScope(me) === "admin" && (me.user.totp_enabled || me.user.two_step_allowed !== true);
+  return sessionScope(me) === "admin" && me.user.totp_enabled;
 }
 
-/** A granted member or reviewer, or an admin without two-step sign-in allowed, types their password first. */
+/** A granted member or reviewer types their password before deleting for good. */
 export function foreverNeedsPassword(me: Me): boolean {
-  if (me.user.role === "admin") return me.user.two_step_allowed !== true;
-  return me.user.can_delete_forever;
+  return me.user.role !== "admin" && me.user.can_delete_forever;
 }
 
 /** What must happen first to delete forever, for the note in Trash; null if nothing. */
 export function foreverNeeds(me: Me): "admin_sign_in" | "two_step" | "not_allowed" | null {
   if (me.user.role !== "admin") return me.user.can_delete_forever ? null : "not_allowed";
   if (sessionScope(me) !== "admin") return "admin_sign_in";
-  return me.user.totp_enabled || me.user.two_step_allowed !== true ? null : "two_step";
+  return me.user.totp_enabled ? null : "two_step";
 }
 
 /** A row can be ticked: to move to Trash or restore, or in Trash to delete for good. */

@@ -30,7 +30,7 @@ export type LabelReason =
   | "box_unanchored" // PRD 5 G5: its spot on the page couldn't be confirmed
   | "local_reader"; // PRD 5 Q7: read by the backup reader while the main reader was down
 
-/** "admin" only for a session started at /admin/login (PRD A1). */
+/** "admin" only for an admin's session (from /login, always with two-step since 16 Oct 2026). */
 export type SessionScope = "app" | "admin";
 
 // must_change_password and session are always sent (backend api/views.py
@@ -43,9 +43,8 @@ export interface Me {
     display_name: string;
     role: Role;
     must_change_password: boolean;
-    totp_enabled: boolean; // two-step sign-in is on (each admin chooses)
+    totp_enabled: boolean; // two-step sign-in is on (required for an admin)
     can_delete_forever: boolean; // an admin allowed this member or reviewer (never an admin)
-    two_step_allowed: boolean; // the super admin allowed two-step sign-in for the organisation
   };
   customer: { id: string; name: string };
   session: { scope: SessionScope };
@@ -790,7 +789,6 @@ export interface Organisation {
   last_activity_at: string | null;
   autofile_granted: boolean; // feature 28: auto-filing allowed; its admin switches it on
   autofile_on: boolean;
-  two_step_granted: boolean; // two-step sign-in allowed for its admins; until then the password alone
 }
 
 /** POST /operator/orgs: the temporary password is in this one reply only. */

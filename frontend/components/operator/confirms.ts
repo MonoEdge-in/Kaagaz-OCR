@@ -11,7 +11,6 @@ import {
   scheduleDelete,
   setOperatorModelEnabled,
   setOrgAutofile,
-  setOrgTwoStep,
 } from "@/lib/api";
 import type { OperatorModel, OrgAdmin, Organisation } from "@/lib/types";
 import type { Confirm } from "./ConfirmDialog";
@@ -108,23 +107,6 @@ export function autofileConfirm(org: Organisation, allow: boolean): Confirm {
     danger: !allow,
     stepUp: false,
     run: () => setOrgAutofile(org.id, allow),
-    focusId: orgFocusId(org.id),
-  };
-}
-
-/** Allow or stop two-step sign-in for one organisation's admins: no fresh code, as auto-filing. */
-export function twoStepConfirm(org: Organisation, allow: boolean): Confirm {
-  const name = org.name;
-  return {
-    title: allow ? `Let ${name}'s admins use two-step sign-in?` : `Stop two-step sign-in for ${name}?`,
-    effect: allow
-      ? "Its admins can then turn on a 6-digit code from an authenticator app in Settings. Admins who turned it on before are asked for their code again."
-      : "Its admins then sign in with their e-mail and password only. Codes already set up are kept for later.",
-    action: allow ? "Allow two-step sign-in" : "Stop two-step sign-in",
-    done: allow ? `${name} can use two-step sign-in.` : `Two-step sign-in stopped for ${name}.`,
-    danger: !allow,
-    stepUp: false,
-    run: () => setOrgTwoStep(org.id, allow),
     focusId: orgFocusId(org.id),
   };
 }

@@ -126,18 +126,18 @@ describe("the sign-up calls", () => {
 });
 
 describe("the pages", () => {
-  it("links both sign-ins to /signup only while the server says it is on", () => {
+  it("links the sign-in to /signup only while the server says it is on", () => {
     expect(read("app/login/page.tsx")).toContain("<SignUpLink />");
-    expect(read("app/admin/login/page.tsx")).toContain("<SignUpLink />");
     const link = read("app/login/SignUpLink.tsx");
     expect(link).toContain('href="/signup"');
     expect(link).toContain("setOpen(reply.enabled)");
     expect(link).toContain("useState(false)"); // hidden until the server answers
   });
 
-  it("goes to the admin area once signed up, as the admin sign-in does", () => {
+  // Changed on purpose (MFA required, 16 Oct 2026): two-step set-up first, then /admin.
+  it("sets up two-step sign-in once signed up, then goes to the admin area", () => {
     const form = read("app/signup/SignUpForm.tsx");
-    expect(form).toContain('leavePage("/admin")');
+    expect(form).toContain('next="/admin"');
     expect(form).toContain('autoComplete="new-password"');
     expect(form).toContain("hint={PASSWORD_HINT}");
   });

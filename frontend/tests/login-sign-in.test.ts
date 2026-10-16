@@ -131,7 +131,7 @@ describe("sign-in form markup", () => {
     expect(field).toContain('autoCapitalize="none"');
     expect(field).not.toMatch(/maxLength/);
     expect(field).not.toMatch(/\.trim\(/);
-    expect(form).toContain("login(normalizeEmail(email), password)");
+    expect(form).toContain("login(normalizeEmail(email), password, askCode ? normalizeCode(code) : undefined)");
   });
 
   it("uses a plain Show/Hide button, not a pressed toggle", () => {

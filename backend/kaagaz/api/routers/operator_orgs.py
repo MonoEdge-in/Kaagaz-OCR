@@ -12,9 +12,6 @@ one ``kaagaz_op_*`` function, which writes its own ``platform_audit`` row.
 * ``PUT /operator/orgs/{id}/autofile`` {granted} (feature 28): allow or stop auto-filing;
   its admin then switches it on in Settings. Stopping it switches it off too. No step-up,
   as an organisation's models. The list says ``autofile_granted`` and ``autofile_on``.
-* ``PUT /operator/orgs/{id}/two-step`` {granted} (0029): allow or stop two-step sign-in for
-  its admins, the same way. Until allowed they sign in with the password alone; stopping
-  it keeps each admin's stored code. The list says ``two_step_granted``.
 * ``POST /operator/orgs/{id}/schedule-delete`` {name, code} (PR 4, step-up): a DISABLED
   organisation whose name is typed exactly is removed for good after a grace period
   (7 days, PROVISIONAL), by the worker; ``/cancel-delete`` {code} (step-up) during it
@@ -116,12 +113,6 @@ class AutofileBody(BaseModel):
     granted: bool
 
 
-class TwoStepBody(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    granted: bool
-
-
 class StepUpBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -182,19 +173,6 @@ def set_org_autofile(
     _check(db, operator, outcome)
     changed = outcome.code == "done"
     return {"organisation": {"id": str(customer_id), "autofile_granted": body.granted, "changed": changed}}
-
-
-@router.put("/{customer_id}/two-step")
-def set_org_two_step(
-    customer_id: uuid.UUID, body: TwoStepBody, operator: OperatorSession, db: OperatorDb
-) -> dict[str, Any]:
-    with db.operator() as conn:
-        outcome = orgs_sql.set_org_two_step(
-            conn, operator.operator_id, str(customer_id), granted=body.granted
-        )
-    _check(db, operator, outcome)
-    changed = outcome.code == "done"
-    return {"organisation": {"id": str(customer_id), "two_step_granted": body.granted, "changed": changed}}
 
 
 @router.post("/{customer_id}/schedule-delete")
@@ -407,7 +385,6 @@ def _org(row: RowMapping) -> dict[str, Any]:
         "last_activity_at": _when(row["last_activity_at"]),
         "autofile_granted": bool(row["autofile_granted"]),  # feature 28
         "autofile_on": bool(row["autofile_on"]),
-        "two_step_granted": bool(row["two_step_granted"]),  # 0029
     }
 
 
