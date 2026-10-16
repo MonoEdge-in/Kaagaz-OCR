@@ -29,7 +29,7 @@ const REASONS: Record<LabelReason, string> = {
   ocr_script: "Read from a scan in Hindi, Marathi or mixed script. Check it against the page.",
   check_failed: "A check on this invoice failed. Check the numbers.",
   unsure_text: "Part of this value was hard to read. Check it against the page.",
-  box_unanchored: "The exact spot of this value on the page couldn't be confirmed. Check it against the page.",
+  box_unanchored: "Check the exact spot of this value against the page.",
   local_reader: "Read by the backup reader while the main reader was down. It will be read again automatically.",
 };
 

@@ -161,7 +161,7 @@ def test_a_batch_counts_each_file_once_and_its_bar_is_pages_read_over_total() ->
 def test_a_ready_rows_message_counts_its_unreadable_pages() -> None:
     """Council 16 Oct 2026: document_summary passes the row's pages_unreadable on."""
     summary = document_summary(_row("ready", unreadable=2), max_pages=100, tags=[], user=USER, now=NOW)
-    assert summary["status_message"] == "Ready. 2 pages couldn't be read. Open it to check."
+    assert summary["status_message"] == "Ready. 2 pages to check."
 
 
 def test_a_batch_with_nothing_being_read_has_no_time_left() -> None:

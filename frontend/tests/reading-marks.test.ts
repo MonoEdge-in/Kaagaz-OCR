@@ -32,7 +32,7 @@ describe("the marks on a page", () => {
 
   it("names each mark for what it marks, as read, so a screen reader can tell them apart", () => {
     expect(markName(mark("unsure", "Shinde"), 0, 3)).toBe("Unsure word 'Shinde', mark 1 of 3");
-    expect(markName(mark("illegible", "[?]"), 1, 3)).toBe("Couldn't read '[?]', mark 2 of 3");
+    expect(markName(mark("illegible", "[?]"), 1, 3)).toBe("Hard to read '[?]', mark 2 of 3");
     expect(markName(mark("unpinned", "  "), 2, 3)).toBe("Spot not confirmed, mark 3 of 3");
     expect(markName(mark("unsure", "a\u202eb"), 0, 1)).toBe("Unsure word 'a⟦U+202E⟧b', mark 1 of 1");
   });
@@ -41,7 +41,7 @@ describe("the marks on a page", () => {
     expect(legend([mark("unpinned"), mark("unsure"), mark("unsure")])).toEqual(["unsure", "unpinned"]);
     expect(legend([])).toEqual([]);
     expect(MARK_WORDS.unsure.legend).toBe("Unsure word (dashed)");
-    expect(MARK_WORDS.illegible.legend).toBe("Couldn't read (hatched)");
+    expect(MARK_WORDS.illegible.legend).toBe("Hard to read (hatched)");
     expect(MARK_WORDS.unpinned.legend).toBe("Spot not confirmed (dotted)");
   });
 

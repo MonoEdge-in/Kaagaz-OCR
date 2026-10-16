@@ -280,7 +280,7 @@ describe("what the chat status line says", () => {
 });
 
 describe("pages that couldn't be read (PRD 5 F6, U7)", () => {
-  const NOTE = "Not found in the readable text. 2 pages couldn't be read: Invoice_12.pdf page 3, Register.jpg page 1.";
+  const NOTE = "Not found in the readable text. 2 pages to check: Invoice_12.pdf page 3, Register.jpg page 1.";
   const notFound: Answer = {
     status: "not_found",
     label: null,

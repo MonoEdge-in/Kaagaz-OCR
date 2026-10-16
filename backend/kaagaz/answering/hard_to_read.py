@@ -4,7 +4,7 @@ Two rules, applied by ``AnswerService`` (kaagaz/answering/service.py):
 
 * **Not found.** When the answer is not found and any document in the chat's scope
   has an unreadable or uncertain page (``pages.read_quality``, F1), the answer adds
-  the note "Not found in the readable text. 2 pages couldn't be read: Invoice_12.pdf
+  the note "Not found in the readable text. 2 pages to check: Invoice_12.pdf
   page 3, Register.jpg page 1." (``not_found_note``) and the pages themselves
   (``unreadable_pages``: document id, name, page number and quality), so the chat
   links each one. A page kept as is (F5) is still named: it stays flagged in
@@ -153,7 +153,7 @@ class PgReadingQuality:
 
 def not_found_note(pages: Sequence[FlaggedPage], total: int) -> str | None:
     """The note of a not-found answer (F6), or None when no page in scope is flagged:
-    "Not found in the readable text. 2 pages couldn't be read: Invoice_12.pdf page 3,
+    "Not found in the readable text. 2 pages to check: Invoice_12.pdf page 3,
     Register.jpg page 1." ``total`` counts every flagged page; ``pages`` are the ones
     named, and the rest are counted as ", and 7 more". O(pages)."""
     if total <= 0 or not pages:
@@ -162,8 +162,8 @@ def not_found_note(pages: Sequence[FlaggedPage], total: int) -> str | None:
     more = total - len(pages)
     if more > 0:
         named += f", and {more} more"
-    counted = "1 page couldn't" if total == 1 else f"{total} pages couldn't"
-    return f"{NOT_FOUND_NOTE} {counted} be read: {named}."
+    counted = "1 page to check" if total == 1 else f"{total} pages to check"
+    return f"{NOT_FOUND_NOTE} {counted}: {named}."
 
 
 def hard_to_read(document_id: str, regions: Iterable[dict[str, Any]], marks: Sequence[WordMark]) -> bool:

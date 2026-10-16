@@ -16,7 +16,7 @@ export const MIN_HIT_PX = 24;
 
 export const MARK_WORDS: Record<MarkQuality, { name: string; legend: string }> = {
   unsure: { name: "Unsure word", legend: "Unsure word (dashed)" },
-  illegible: { name: "Couldn't read", legend: "Couldn't read (hatched)" },
+  illegible: { name: "Hard to read", legend: "Hard to read (hatched)" },
   unpinned: { name: "Spot not confirmed", legend: "Spot not confirmed (dotted)" },
 };
 

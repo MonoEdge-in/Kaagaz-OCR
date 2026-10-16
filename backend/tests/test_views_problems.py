@@ -59,7 +59,7 @@ def test_u4_each_issue_says_what_happened_with_its_count_and_the_fix() -> None:
         },
         {
             "code": "illegible_words",
-            "says": "3 words couldn't be read.",
+            "says": "Hard to read: 3 words.",
             "fix": "Read this page again, or upload a better scan.",
         },
         {
@@ -69,7 +69,7 @@ def test_u4_each_issue_says_what_happened_with_its_count_and_the_fix() -> None:
         },
         {
             "code": "unpinned",
-            "says": "The exact spot of 2 lines couldn't be confirmed.",
+            "says": "The exact spot of 2 lines needs a check.",
             "fix": "Confirm the marked values.",
         },
     ]

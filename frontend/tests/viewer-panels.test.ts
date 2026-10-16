@@ -329,15 +329,15 @@ describe("the Attention panel (PRD 5 U5)", () => {
       { pageNo: 2, lines: ["This page is blurry."], kept: false },
       {
         pageNo: 3,
-        lines: ["14 words unsure", "The exact spot of 1 line couldn't be confirmed."],
+        lines: ["14 words unsure", "The exact spot of 1 line needs a check."],
         kept: true,
       },
     ]);
   });
 
-  it("says an unreadable page with no problems listed couldn't be read", () => {
+  it("says an unreadable page with no problems listed needs a closer look", () => {
     expect(attentionPages([page(4, { read_quality: "unreadable", illegible_words: 3 })])).toEqual([
-      { pageNo: 4, lines: ["This page couldn't be read.", "3 words couldn't be read."], kept: false },
+      { pageNo: 4, lines: ["This page needs a closer look.", "Hard to read: 3 words."], kept: false },
     ]);
   });
 
