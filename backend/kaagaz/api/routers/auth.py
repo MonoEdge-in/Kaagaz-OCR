@@ -110,9 +110,12 @@ Context = Annotated[AppContext, Depends(get_context)]
 
 MAX_CODE = 16  # 6 digits, plus room for the spaces people type
 NOT_ALLOWED = "Two-step sign-in is not turned on for your organisation."
-# Sign-ups a client address may start an hour (PROVISIONAL). Behind the Next.js proxy every
-# visitor shares the proxy's address (kaagaz/api/middleware.py), so this is site-wide there.
-SIGNUPS_PER_HOUR = 5
+# Sign-ups an hour (PROVISIONAL). Behind the Next.js proxy every visitor shares the proxy's
+# address (kaagaz/api/middleware.py), so in production this is one cap for the whole site,
+# sized for real sign-ups. ponytail: site-wide cap; per-visitor once X-Forwarded-For is trusted.
+# No e-mail is proven at sign-up (there is no mail service yet): the super admin can disable
+# an organisation, and SELF_SIGNUP_ENABLED=false turns sign-up off.
+SIGNUPS_PER_HOUR = 20
 signup_limits = RateLimiter(SIGNUPS_PER_HOUR, window_seconds=3600)
 TOO_MANY_SIGNUPS = "Too many sign-ups from here. Try again in an hour."
 # Trimmed, then the operator's limits (routers/operator_orgs.py NewOrgBody).

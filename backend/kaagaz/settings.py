@@ -577,8 +577,9 @@ class Settings:
             login_max_failures=env.positive("LOGIN_MAX_FAILURES"),
             login_lock_minutes=env.positive("LOGIN_LOCK_MINUTES"),
             admin_session_minutes=env.positive("ADMIN_SESSION_MINUTES"),
-            self_signup_enabled=env.optional("SELF_SIGNUP_ENABLED") is None
-            or env.boolean("SELF_SIGNUP_ENABLED"),
+            # Off unless set to true (security review, 16 Oct 2026): no e-mail is proven yet.
+            self_signup_enabled=env.optional("SELF_SIGNUP_ENABLED") is not None
+            and env.boolean("SELF_SIGNUP_ENABLED"),
             trash_days=env.integer("TRASH_DAYS"),
             reprocess_per_hour=env.positive("REPROCESS_PER_HOUR"),
             search_ef=env.between("SEARCH_EF", 1, 1000),
