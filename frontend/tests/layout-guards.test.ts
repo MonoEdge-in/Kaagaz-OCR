@@ -342,6 +342,8 @@ describe("layout guards", () => {
       "components/viewer/PageViewer.module.css: .sheetFrame: overscroll-behavior",
       "components/documents/Table.module.css: .reflowWrap: overscroll-behavior-x",
       "app/(app)/documents/[id]/DocumentView.module.css: .valuesWrap: overscroll-behavior-x",
+      // Changed on purpose (scan states, 16 Oct 2026): the uploads panel above the status bar.
+      "components/documents/Documents.module.css: .trayPanel: overscroll-behavior",
       // Changed on purpose (MonoEdge design system, 16 Oct 2026): sideways only, the tabs, the
       // tables and the usage chart scroll in their own box and never hand the swipe to the page.
       "components/admin/Admin.module.css: .tabs: overscroll-behavior-x",

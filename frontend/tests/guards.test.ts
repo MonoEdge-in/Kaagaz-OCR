@@ -82,9 +82,12 @@ describe("guards", () => {
   });
 
   // A8a: the uploads list is not a live region; the screen says each batch once, politely.
+  // Changed on purpose (scan states, 16 Oct 2026): the status bar's one line is said politely
+  // (brief: aria-live="polite" for progress); the tray's rows, lines and counts still are not.
   it("keeps the uploads list and its counts out of the live regions", () => {
     const source = readFileSync(join(ROOT, "components", "documents", "UploadArea.tsx"), "utf8");
-    expect(source).not.toMatch(/aria-live/);
+    expect(source.match(/aria-live/g)).toHaveLength(1);
+    expect(source).toMatch(/<p className=\{styles\.barLine\} aria-live="polite"/);
   });
 
   // One way out (lib/sessionChannel.ts), so the first page asked for wins.

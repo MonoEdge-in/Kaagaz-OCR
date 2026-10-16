@@ -3,9 +3,10 @@
 // The documents screen: the page header with "Upload files"; the folder tree
 // (beside the list from 1024 px, in a drawer below that); where you are, with
 // New folder, Rename, Move and Delete; the dropzone, which uploads into the
-// folder being viewed; uploads in progress; search and the filter chips; the
-// list and its pages. Search looks inside the documents (the default) or at
-// their names (PRD 3 Q3, insideSearch.ts). The folder and the filters live in
+// folder being viewed; search and the filter chips; the list and its pages.
+// Uploads in progress are in the status bar, with the tray in a panel above it
+// (UploadStatus), opened as files are added, so nothing pushes the list down.
+// Search looks inside the documents (the default) or at their names (PRD 3 Q3, insideSearch.ts). The folder and the filters live in
 // the page address (libraryQuery.ts), so a reload keeps them and Back returns to the folder
 // before. While any document is still being checked or read, the list is
 // asked for again (lib/poll.ts: every 3 s, then every 5 s, never while the
@@ -56,7 +57,8 @@ import {
   uploadsFinishedText,
 } from "./logic";
 import { foreverNeeds } from "./trash";
-import { BatchTray, Dropzone, ReaderSelect, useUploads } from "./UploadArea";
+import { Dropzone, ReaderSelect, UploadStatus, useUploads } from "./UploadArea";
+import { isBusy } from "./uploadQueue";
 import styles from "./Documents.module.css";
 import libraryStyles from "./Library.module.css";
 
@@ -113,6 +115,7 @@ export function DocumentsView({ library }: { library: LibraryState }) {
   const [tagsVersion, setTagsVersion] = useState(0);
   const [foldersOpen, setFoldersOpen] = useState(false);
   const uploads = useUploads(() => setReload((n) => n + 1));
+  const [trayOpen, setTrayOpen] = useState(false);
   const filtered = isFiltered(library);
 
   // Each batch of uploads is said once, when it settles; nothing is cleared.
@@ -235,7 +238,10 @@ export function DocumentsView({ library }: { library: LibraryState }) {
   const uploadInto = library.folderId ?? undefined;
 
   const openPicker = () => inputRef.current?.click();
-  const addFiles = (files: File[]) => void uploads.addFiles(files, uploadInto);
+  const addFiles = (files: File[]) => {
+    setTrayOpen(true);
+    void uploads.addFiles(files, uploadInto);
+  };
 
   function onChoose(event: ChangeEvent<HTMLInputElement>) {
     const files = Array.from(event.target.files ?? []);
@@ -256,7 +262,10 @@ export function DocumentsView({ library }: { library: LibraryState }) {
     const [file] = Array.from(event.target.files ?? []);
     event.target.value = "";
     const of = versionOf.current;
-    if (file && of) void uploads.addVersion(file, of);
+    if (file && of) {
+      setTrayOpen(true);
+      void uploads.addVersion(file, of);
+    }
   }
 
   function show(next: LibraryState) {
@@ -542,18 +551,6 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                 />
               )}
 
-              <BatchTray
-                entries={uploads.entries}
-                views={uploads.views}
-                stored={uploads.stored}
-                tooMany={uploads.tooMany}
-                onClearFinished={uploads.clearFinished}
-                onRestore={(key, documentId, name) => void uploads.restore(key, documentId, name)}
-                onRetry={(key) => void uploads.retry(key)}
-                tree={tree}
-                onUndone={() => setReload((n) => n + 1)}
-                canReread={canReview(me.user.role)}
-              />
               {!library.trash && <UploadWords entries={uploads.entries} settled={uploads.settled} />}
 
               {view !== "empty" && (
@@ -747,6 +744,28 @@ export function DocumentsView({ library }: { library: LibraryState }) {
       <Drawer id={DRAWER_ID} title="Folders" open={foldersOpen} onClose={() => setFoldersOpen(false)}>
         {nav}
       </Drawer>
+
+      <UploadStatus
+        open={trayOpen}
+        onOpenChange={setTrayOpen}
+        entries={uploads.entries}
+        views={uploads.views}
+        stored={uploads.stored}
+        tooMany={uploads.tooMany}
+        onClearFinished={() => {
+          uploads.clearFinished();
+          // Nothing left: the panel and its button go, so focus goes to the list's heading.
+          if (!uploads.entries.some(isBusy)) {
+            setTrayOpen(false);
+            headingRef.current?.focus();
+          }
+        }}
+        onRestore={(key, documentId, name) => void uploads.restore(key, documentId, name)}
+        onRetry={(key) => void uploads.retry(key)}
+        tree={tree}
+        onUndone={() => setReload((n) => n + 1)}
+        canReread={canReview(me.user.role)}
+      />
     </div>
   );
 }

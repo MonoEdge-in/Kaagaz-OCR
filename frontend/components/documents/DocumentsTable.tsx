@@ -16,15 +16,20 @@
 // or "Unknown" without the AI model's card: PRD 2, D6). Names wrap in full at
 // their _ . - and @ marks (WrapName.tsx). The By cell says "Uploaded by" in
 // words; the full table hides those words under its By header. A document with
-// reading problems gets chips in its status ("2 pages unreadable", PRD 5 U2), and
-// a reviewer or an admin can have ticked documents read again, one at a time,
-// after an inline question.
+// reading problems says so in its status ("Scan complete" then "12 flagged for
+// review · Open to review"), and a reviewer or an admin can have ticked documents
+// read again, one at a time, after an inline question.
+// Scan states (16 Oct 2026): the status cell is two fixed lines while a document
+// is queued, being read, or read, so a scan finishing never changes its row's height;
+// a row keeps its place (the list is newest first, which a state never changes), and
+// while the pointer is on the list a row not shown yet waits until it leaves
+// (rowsInPlace), so nothing is put in above the pointer.
 
 import Link from "next/link";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { PasswordField } from "@/components/ui/PasswordField";
-import { canReprocess } from "@/components/viewer/reprocess";
+import { beingRead, canReprocess } from "@/components/viewer/reprocess";
 import { newerVersionText } from "@/components/viewer/versions";
 import {
   ApiError,
@@ -40,9 +45,9 @@ import type { DocumentSummary, Me, Tag } from "@/lib/types";
 import { EditDialog, RowMenu } from "./DocumentActions";
 import type { FolderTree } from "./folderTree";
 import { BusyLabel } from "./BusyLabel";
-import { attentionWords } from "./library";
 import type { EditAction, RowAction } from "./library";
-import { deletedMessage, formatProgressPercent } from "./logic";
+import { rowsInPlace } from "./listMerge";
+import { deletedMessage, flaggedText, formatProgressPercent, scanWords, toReview } from "./logic";
 import { StatusChip } from "./StatusChip";
 import { TimeLeft } from "./TimeLeft";
 import { WrapName } from "./WrapName";
@@ -88,8 +93,11 @@ interface Props extends RowEvents {
   tags: Tag[] | null;
 }
 
-export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events }: Props) {
+export function DocumentsTable({ items: listed, inTrash, me, now, tree, tags, ...events }: Props) {
   const { onRemoved } = events;
+  // The rows shown when the pointer came onto the list; null while it is elsewhere.
+  const [pinned, setPinned] = useState<ReadonlySet<string> | null>(null);
+  const items = useMemo(() => rowsInPlace(listed, pinned), [listed, pinned]);
   const { refresh } = useSession();
   const canForever = canDeleteForever(me);
   const askPassword = foreverNeedsPassword(me);
@@ -340,7 +348,12 @@ export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events 
           {error && <p className={`error-text ${styles.selectionError}`} role="alert">{error}</p>}
         </div>
       )}
-      <table className={`table ${styles.docs}`} role="table">
+      <table
+        className={`table ${styles.docs}`}
+        role="table"
+        onPointerEnter={() => setPinned(new Set(listed.map((item) => item.id)))}
+        onPointerLeave={() => setPinned(null)}
+      >
         <caption className="visually-hidden">{inTrash ? "Documents in Trash" : "Your documents"}</caption>
         <thead role="rowgroup">
           <tr role="row">
@@ -616,18 +629,7 @@ const DocumentRow = memo(function DocumentRow({
         )}
       </td>
       <td role="cell" className={styles.statusCell}>
-        <span className={styles.statusContent}>
-          <StatusChip status={document.status} />
-          <span className={styles.statusMessage}>{document.status_message}</span>
-          <TimeLeft document={document} />
-          {!inTrash &&
-            attentionWords(document).map((words) => (
-              <span key={words} className={styles.attentionChip}>
-                <Icon name="eye-alert" size={16} />
-                {words}
-              </span>
-            ))}
-        </span>
+        <StatusCell document={document} inTrash={inTrash} />
       </td>
       <td role="cell" className={styles.meta}>
         {typeLabel(document.detected_type)}
@@ -734,3 +736,57 @@ const DocumentRow = memo(function DocumentRow({
     </tr>
   );
 });
+
+/**
+ * The status cell. Queued, being read, and read: two lines of fixed height (the chip and
+ * its words, then the bar and the time left, or what was flagged), keyed by phase so the
+ * new lines fade in (opacity only) and nothing else moves. Any other state: the chip and
+ * the server's words, which may wrap.
+ */
+export function StatusCell({ document, inTrash }: { document: DocumentSummary; inTrash: boolean }) {
+  if (beingRead(document.status) && document.deleted_at === null) {
+    const words = scanWords(document);
+    const detail = words ? words.detail : document.status_message;
+    return (
+      <span className={styles.statusContent} key="scanning">
+        <span className={styles.statusLine}>
+          <StatusChip status={document.status} text={words ? words.chip : "Queued"} />
+          <span className={styles.statusText} title={detail}>
+            {detail}
+          </span>
+        </span>
+        <span className={styles.statusLine}>
+          <TimeLeft document={document} />
+        </span>
+      </span>
+    );
+  }
+  if (document.status === "ready") {
+    const flagged = flaggedText(document);
+    return (
+      <span className={styles.statusContent} key="done">
+        <span className={styles.statusLine}>
+          <StatusChip status="ready" text="Scan complete" />
+        </span>
+        <span className={styles.statusLine}>
+          <span className={styles.statusText} title={flagged}>
+            {flagged}
+          </span>
+          {!inTrash && toReview(document) && (
+            <Link href={`/documents/${document.id}`} className={styles.statusAction} onClick={rememberListScroll}>
+              Open to review<span className="visually-hidden">{` ${document.display_name}`}</span>
+            </Link>
+          )}
+        </span>
+      </span>
+    );
+  }
+  return (
+    <span className={styles.statusContent}>
+      <span className={styles.statusLine}>
+        <StatusChip status={document.status} />
+      </span>
+      <span className={styles.statusMessage}>{document.status_message}</span>
+    </span>
+  );
+}

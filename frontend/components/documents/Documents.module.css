@@ -145,6 +145,12 @@
   gap: var(--space-2);
 }
 
+.uploadsActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
 .uploadsTitleWrap {
   display: flex;
   flex-wrap: wrap;
@@ -547,11 +553,67 @@ table.docs th {
   vertical-align: middle;
 }
 
+/* Scan states (16 Oct 2026): two lines of fixed height while a document is queued, being
+   read, or read (StatusCell in DocumentsTable.tsx), so a scan finishing never changes the
+   row's height; each line's text is cut to one line, its full words in a title. The second
+   line is 44px on touch, room for "Open to review" in every state. */
 .statusContent {
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
-  gap: var(--space-1);
+  min-width: 0;
+}
+
+.statusLine {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  height: var(--h-sm);
+}
+
+@media (pointer: coarse) {
+  .statusLine + .statusLine {
+    height: var(--h-lg);
+  }
+}
+
+.statusLine > * {
+  flex: none;
+}
+
+/* New words fade in as the phase changes (the cell is keyed by phase): opacity only. */
+@media (prefers-reduced-motion: no-preference) {
+  .statusLine > * {
+    animation: statusIn var(--t-fast) var(--ease);
+  }
+}
+
+@keyframes statusIn {
+  from {
+    opacity: 0;
+  }
+}
+
+.statusText {
+  flex: 0 1 auto;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
+  line-clamp: 1;
+  overflow: hidden;
+  min-width: 0;
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+/* The action that ends a read document's line: ink, not blue (blue is punctuation). */
+.statusAction {
+  display: inline-flex;
+  align-items: center;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text-primary);
 }
 
 .statusMessage {
@@ -794,10 +856,6 @@ table.docs th {
   }
 
   .statusContent {
-    flex-direction: row;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: var(--space-1) var(--space-2);
     padding-block-start: var(--space-2);
   }
 
@@ -893,33 +951,30 @@ table.docs th {
 
 .timeLeft {
   display: inline-block;
-  min-width: min(18ch, 100%); /* room for "Ready in about 55 s", so the row does not jump as it counts */
+  min-width: min(18ch, 100%); /* room for "About 55 s left", so the line does not jump as it counts */
   font-size: var(--fs-sm);
   font-variant-numeric: tabular-nums;
   color: var(--text-secondary);
 }
 
-/* The progress bar beside a document being read: the cell's width, at most 12rem. */
-.readBar {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  width: 100%;
-  max-width: 12rem;
-}
-
-/* The track's edge is --border-strong (3:1 or more on the page, WCAG 1.4.11); the
-   fill (--accent) stands well apart from the track inside it. */
+/* A thin progress bar. The track's edge is --border-strong; the fill is ink, not blue
+   (scan states, 16 Oct 2026: blue is punctuation), 7:1 on the track. In a status cell it
+   is 4rem, whatever the words beside it say, so it never resizes. */
 .readMeter {
   flex: 1 1 auto;
   min-width: 0;
-  height: 0.625rem;
+  height: 6px;
   appearance: none;
   border: 1px solid var(--border-strong);
   border-radius: 2px;
   background: var(--bg-subdued);
-  color: var(--accent);
+  color: var(--text-secondary);
   overflow: hidden;
+}
+
+.scanMeter {
+  flex: none;
+  width: 4rem;
 }
 
 .readMeter::-webkit-progress-bar {
@@ -927,20 +982,11 @@ table.docs th {
 }
 
 .readMeter::-webkit-progress-value {
-  background: var(--accent);
+  background: var(--text-secondary);
 }
 
 .readMeter::-moz-progress-bar {
-  background: var(--accent);
-}
-
-.readPercent {
-  flex: none;
-  min-width: 4ch;
-  text-align: end;
-  font-size: var(--fs-sm);
-  font-variant-numeric: tabular-nums;
-  color: var(--text-secondary);
+  background: var(--text-secondary);
 }
 
 /* PRD 5 U1: one drop of files in the tray: its line, its time left and its bar, then its files. */
@@ -986,17 +1032,77 @@ table.docs th {
   }
 }
 
-/* PRD 5 U2: a reading problem on a row, an icon and words on a neutral chip (never a label colour). */
-.attentionChip {
+/* --- Uploads in the status bar (UploadStatus) ---------------------------------- */
+
+/* The line: cut to the bar's width, its full words in a title. */
+.barLine {
+  flex: 0 1 auto;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+
+/* As tall as the 32px bar allows (28px), and at least 44px wide. */
+.barToggle {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-2);
-  padding: 0 var(--space-2);
-  border: 1px dashed var(--border-strong);
+  justify-content: center;
+  flex: none;
+  min-width: 44px;
+  height: var(--h-sm);
+  margin-inline-start: auto;
+  padding-inline: var(--space-2);
+  border: 1px solid var(--border-strong);
   border-radius: 2px;
-  background: var(--bg-subdued);
+  background: transparent;
   color: var(--text-primary);
-  font-size: var(--fs-sm);
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.barToggle:hover {
+  background: var(--bg-hover);
+}
+
+.barToggle[aria-expanded="true"] {
+  background: var(--bg-selected);
+}
+
+/* The tray, above the status bar in a fixed corner (360px, the detail panel's width), a
+   bottom sheet below 768px: it covers the list, never pushes it. It scrolls on its own and
+   keeps rows that grow above the eye in place (overflow-anchor). Not a modal. */
+.trayPanel {
+  position: fixed;
+  inset-inline-end: var(--margin);
+  bottom: calc(var(--statusbar-h) + var(--bottombar-h) + env(safe-area-inset-bottom) + var(--space-2));
+  z-index: var(--z-overlay);
+  width: min(360px, calc(100% - 2 * var(--margin)));
+  max-height: 60%; /* of the viewport: a fixed box's containing block */
+  overflow: auto;
+  overscroll-behavior: contain;
+  overflow-anchor: auto;
+  padding: var(--space-4);
+  border: 1px solid var(--border-strong);
+  border-radius: 2px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: var(--fs-base);
+  white-space: normal;
+}
+
+@media (max-width: 767.98px) {
+  .trayPanel {
+    inset-inline: 0;
+    bottom: calc(var(--statusbar-h) + var(--bottombar-h) + env(safe-area-inset-bottom));
+    width: auto;
+    border-inline: 0;
+    border-bottom: 0;
+  }
 }
 
 /* Upload rows and search results: layout, paint and style kept inside each one, so a row that

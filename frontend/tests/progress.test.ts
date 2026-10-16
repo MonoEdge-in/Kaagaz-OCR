@@ -106,23 +106,25 @@ const render = (more: Partial<DocumentSummary>) => renderToStaticMarkup(createEl
 const STALLED = { since_move_seconds: 1200, slow_after_seconds: 20, done_fraction: 0.36, elapsed_seconds: 1500 };
 
 describe("the bar on screen", () => {
-  // Changed on purpose (council of 5 Oct 2026): at 0 the percent text is empty, never a bare 0%.
-  it("names the bar for its document and hides the percent and the counting text", () => {
+  // Changed on purpose (scan states, 16 Oct 2026): no percent text beside the bar at all.
+  it("names the bar for its document and shows no percent", () => {
     const html = render({});
     expect(html).toContain('<progress');
     expect(html).toContain('aria-label="Progress: Invoice 7.pdf"');
     expect(html).toContain('value="0"');
-    expect(html).toMatch(/<span[^>]*aria-hidden="true"[^>]*><\/span>/);
-    expect(html).not.toContain("0%");
+    expect(html).not.toContain("%");
     expect(html).toContain(STARTING.text);
     expect(html).not.toMatch(/aria-live|role="(status|timer|alert)"/);
   });
 
-  it("shows a rough time with its percent from preparing on, and nothing in Trash", () => {
+  // Changed on purpose (scan states, 16 Oct 2026): the bar holds the 25%; no "(rough guess)".
+  it("shows the time left with the bar from preparing on, and nothing in Trash", () => {
     const preparing = doc({ progress: { step: "preparing", done: 1, total: 4 }, time_left: value() });
     const html = renderToStaticMarkup(createElement(TimeLeft, { document: preparing }));
-    expect(html).toContain("25%");
-    expect(html).toContain("About 2 min (rough guess)");
+    expect(html).toContain('value="25"');
+    expect(html).not.toContain("25%");
+    expect(html).toContain("About 2 min left");
+    expect(html).not.toContain("rough guess");
     expect(renderToStaticMarkup(createElement(TimeLeft, { document: doc({ deleted_at: "2026-10-04T10:00:00Z" }) }))).toBe("");
   });
 });
@@ -149,8 +151,9 @@ function answerAt(t: number): TimeLeftValue {
 describe("a refresh", () => {
   it("refresh while taking longer shows the server-derived percent, not 0", () => {
     const html = render({ progress: { step: "reading", done: 0, total: 1 }, time_left: value(STALLED) });
-    expect(html).toContain(">36%</span>");
-    expect(html).toContain("Taking longer than usual");
+    // Changed on purpose (scan states, 16 Oct 2026): the bar alone shows it, in 5% steps.
+    expect(html).not.toContain("36%");
+    expect(html).toContain("Taking longer than usual · About 2 min left");
     expect(html).toContain('value="35"'); // the bar in 5% steps
     expect(html).not.toMatch(/aria-live|role="(status|timer|alert)"/);
   });
@@ -159,16 +162,17 @@ describe("a refresh", () => {
     // Two answers from one stored progress at different ``now``, as kaagaz/eta.py gives them.
     const reading = { step: "reading", done: 0, total: 1 } as const;
     const [first, later] = [1300, 1700].map((t) => render({ progress: reading, time_left: answerAt(t) }));
-    expect(first).toContain(">75%<"); // held at 20 s after the move: 120 s in, 40 s left
+    // Changed on purpose (scan states, 16 Oct 2026): no percent text; the bar's value says it.
+    expect(first).toContain('value="75"'); // held at 20 s after the move: 120 s in, 40 s left
     expect(later).toBe(first);
     expect(fractionShown(answerAt(1700), "reading", 0, 0, false)).toBeGreaterThan(0.98); // live alone: 1700 / 1720
   });
 
   it("never shows less than done_fraction, and a new attempt shows its own run's value", () => {
     const behind = value({ seconds: 900, done_fraction: 0.42 }); // live: 30 / 930
-    expect(render({ progress: { step: "understanding", done: 0, total: 2 }, time_left: behind })).toContain(">42%<");
+    expect(render({ progress: { step: "understanding", done: 0, total: 2 }, time_left: behind })).toContain('value="40"'); // 42%, in 5% steps
     const retry = value({ ...STALLED, done_fraction: 0.12 });
-    expect(render({ attempts: 2, progress: { step: "reading", done: 0, total: 4 }, time_left: retry })).toContain(">12%<");
+    expect(render({ attempts: 2, progress: { step: "reading", done: 0, total: 4 }, time_left: retry })).toContain('value="10"'); // 12%
   });
 
   it("shows no stale bar while a try a backend stopped waits to come back", () => {

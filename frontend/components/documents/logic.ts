@@ -266,12 +266,13 @@ export function uploadStateText(state: UploadState): string {
   switch (state.kind) {
     case "waiting":
       return "Waiting to upload";
+    // Changed on purpose (scan states, 16 Oct 2026): the brief's words, Uploading then Scanning.
     case "sending":
-      return "Sending";
+      return "Uploading";
     case "saving":
-      return "Saving…";
+      return "Saving";
     case "reading":
-      return "Reading";
+      return "Scanning";
     case "done": {
       const { document } = state;
       if (!document) return "Uploaded";
@@ -343,4 +344,67 @@ export function listView(
 /** The polite announcement once a document is gone from the list: Delete moves it to Trash. */
 export function deletedMessage(name: string): string {
   return `Moved ${name} to Trash.`;
+}
+
+// --- Scan states (16 Oct 2026, scan-review UX rules section 3 and 6) ----------------------
+
+type Scanned = Pick<DocumentSummary, "progress" | "attempts" | "max_attempts">;
+
+export const counted = (n: number, one: string) => `${n} ${n === 1 ? one : `${one}s`}`;
+
+/**
+ * A document being checked or read, as a status chip word and the words after it, read
+ * together: "Scanning" "page 6 of 14". From its progress, so the words never depend on
+ * the server's status_message; null with no progress (queued: the status_message says
+ * what it waits for, "Waiting to start." and the like).
+ */
+export function scanWords(document: Scanned): { chip: string; detail: string } | null {
+  const { progress } = document;
+  if (!progress) return null;
+  const { step, done, total } = progress;
+  const pageOf = total > 0 ? `page ${Math.max(1, Math.min(done + 1, total))} of ${total}` : "the whole file";
+  let words: { chip: string; detail: string };
+  if (step === "scanning") words = { chip: "Checking", detail: "for viruses" };
+  else if (step === "preparing") words = { chip: "Preparing", detail: pageOf };
+  else if (step === "rereading") words = { chip: "Scanning", detail: `${counted(total, "page")} again, carefully` };
+  else if (step === "understanding") words = { chip: "Understanding", detail: "the document" };
+  else if (step === "indexing") words = { chip: "Indexing", detail: "for search" };
+  else words = { chip: "Scanning", detail: pageOf };
+  const { attempts, max_attempts: most } = document;
+  if (attempts >= 2 && most) words.detail += ` · Try ${Math.min(attempts, most)} of ${most}`;
+  return words;
+}
+
+/** The words as one line, "Scanning page 6 of 14"; the server's words while it is queued. */
+export function scanPhrase(document: Scanned & Pick<DocumentSummary, "status_message">): string {
+  const words = scanWords(document);
+  return words ? `${words.chip} ${words.detail}` : document.status_message;
+}
+
+type Finished = Pick<DocumentSummary, "pages_unreadable" | "pages_uncertain" | "words_unsure" | "values_to_review">;
+
+/**
+ * Flagged for review: the unsure words plus the values labelled needs review. Pages to
+ * check are counted on their own, as attentionWords (library.ts) counts them.
+ */
+export function flaggedCount(document: Finished): number {
+  return (document.words_unsure ?? 0) + document.values_to_review;
+}
+
+export function pagesToCheck(document: Finished): number {
+  return document.pages_unreadable + ((document.words_unsure ?? 0) === 0 ? document.pages_uncertain : 0);
+}
+
+/** Something to look at once it is read: the row then ends with "Open to review". */
+export const toReview = (document: Finished) => flaggedCount(document) > 0 || pagesToCheck(document) > 0;
+
+/** After "Scan complete": "12 flagged for review · 2 pages to check", or "Nothing flagged". */
+export function flaggedText(document: Finished): string {
+  return flaggedWords(flaggedCount(document), pagesToCheck(document));
+}
+
+/** flaggedText for counts, summed over several documents (the status bar). */
+export function flaggedWords(flagged: number, pages: number): string {
+  const parts = [flagged > 0 ? `${flagged} flagged for review` : "", pages > 0 ? `${counted(pages, "page")} to check` : ""];
+  return parts.filter(Boolean).join(" · ") || "Nothing flagged";
 }
