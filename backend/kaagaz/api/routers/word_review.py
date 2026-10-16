@@ -4,10 +4,13 @@ reviewer's Confirm and Edit, the history and Undo.
 
 * ``GET /documents/{id}/review-status``: pages, words, flagged (by band), reviewed,
   resolved, remaining and the last change time; the summary bar's sentence once the scan
-  is complete, the export status, and whether Ensemble may run (``run`` is null until the
-  Ensemble job exists).
+  is complete, the export status, and whether Ensemble may run, with its latest run
+  (``run``, kaagaz.api.views.run_json's ``Run``; null when there is none).
 * ``GET /documents/{id}/flags``: the flagged words, optionally of one page or one state.
-  Members see each flag with its band, reason and score but no other readings.
+  Members see each flag with its band, reason and score but no other readings. A word an
+  active Ensemble run will read is ``in_ensemble``, one with a change Ensemble proposes
+  ``proposed`` (while it is open); Ensemble's readings come first among the alternatives,
+  and reviewers see its latest reading (``ensemble``) to Keep or Revert.
 * ``POST /documents/{id}/flags/{word_key}/confirm`` and ``.../edit``: a reviewer or an admin
   (spec decision of 16 Oct 2026: the Reviewer check until the new roles ship). The body
   names the text the person saw (``expected_text``), so a word changed meanwhile is 409
@@ -21,7 +24,7 @@ kaagaz/db/word_review.py; here the JSON is shaped and the wording kept.
 """
 
 import uuid
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
@@ -33,9 +36,11 @@ from kaagaz.api.auth import CurrentUser, Reviewer, User
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.readers import usable
+from kaagaz.api.views import latest_run_json
+from kaagaz.db import ensemble as ensemble_sql
 from kaagaz.db import listing, word_review
 from kaagaz.db import models as models_sql
-from kaagaz.extraction.flags import REASONS, Flag
+from kaagaz.extraction.flags import REASONS, Flag, alternatives
 
 router = APIRouter()
 
@@ -57,6 +62,7 @@ ENSEMBLE_WAIT = "Ensemble is available when scanning finishes."
 ENSEMBLE_ROLE = "Only reviewers and admins can run Ensemble."
 ENSEMBLE_OFF = "Ensemble is not turned on for your organisation."
 GONE = "No longer on the page"
+IN_ENSEMBLE, PROPOSED = "in_ensemble", "proposed"
 
 
 class ConfirmBody(BaseModel):
@@ -107,23 +113,51 @@ def _at(moment: datetime | None) -> str | None:
     return None if moment is None else moment.isoformat()
 
 
-def flag_json(flag: Flag, latest: Mapping[str, RowMapping], user: CurrentUser) -> dict[str, Any]:
-    """``WordFlag``: one flagged word, its state and its latest change in force."""
+def flag_json(
+    flag: Flag,
+    latest: Mapping[str, RowMapping],
+    user: CurrentUser,
+    readings: Mapping[str, RowMapping] | None = None,
+    running: Collection[str] = (),
+) -> dict[str, Any]:
+    """``WordFlag``: one flagged word, its state and its latest change in force; with
+    ``readings`` (each word's latest Ensemble reading) and ``running`` (the words an active
+    run will read), its Ensemble state and readings."""
     change = latest.get(flag.key)
+    reading = (readings or {}).get(flag.key)
+    text = word_review.current_text(flag, latest)
+    state = word_review.state(flag, latest)
+    if state == word_review.OPEN and reading is not None and reading["outcome"] == "changed":
+        state = PROPOSED if reading["decision"] is None else state
+    if state == word_review.OPEN and flag.key in running:
+        state = IN_ENSEMBLE
+    others = flag.alternatives
+    if reading is not None:
+        others = alternatives(text, [*(read["text"] for read in reading["reads"]), *flag.alternatives])
+    reviewer = user.role in REVIEWERS
     return {
         "word_key": flag.key,
         "kind": flag.kind,
         "page_no": flag.page_no,
         "region": flag.region,
         "as_read": flag.as_read,
-        "text": word_review.current_text(flag, latest),
+        "text": text,
         "band": flag.band,
         "reason": flag.reason,
         "reason_text": REASONS[flag.reason],
         "score": flag.score,
-        "alternatives": list(flag.alternatives) if user.role in REVIEWERS else None,
+        "alternatives": list(others) if reviewer else None,
         "value_id": flag.value_id,
-        "state": word_review.state(flag, latest),
+        "state": state,
+        "ensemble": None
+        if reading is None or not reviewer
+        else {
+            "reading_id": str(reading["id"]),
+            "run_id": str(reading["run_id"]),
+            "outcome": reading["outcome"],
+            "proposal": reading["proposal"],
+            "decision": reading["decision"],
+        },
         "change": None
         if change is None
         else {
@@ -172,7 +206,8 @@ def _ensemble(conn: Connection, context: AppContext, user: CurrentUser, row: Row
         and models_sql.effective_settings(conn, user.customer_id)["ensemble"]
     ):
         reason = ENSEMBLE_OFF
-    return {"allowed": reason is None, "reason": reason, "run": None}
+    run = latest_run_json(conn, user.customer_id, str(row["id"]))
+    return {"allowed": reason is None, "reason": reason, "run": run}
 
 
 @router.get("/documents/{document_id}/review-status")
@@ -205,19 +240,28 @@ def list_flags(
     user: User,
     context: Context,
     page: Annotated[int | None, Query(ge=1)] = None,
-    state: Literal["open", "reviewed", "resolved"] | None = None,
+    state: Literal["open", "reviewed", "resolved", "in_ensemble", "proposed"] | None = None,
 ) -> dict[str, Any]:
-    customer_id = user.customer_id
+    customer_id, target = user.customer_id, str(document_id)
     with context.db.customer(customer_id) as conn:
         _document(conn, user, document_id)
-        review = word_review.load(conn, customer_id, str(document_id))
+        review = word_review.load(conn, customer_id, target)
+        readings = ensemble_sql.latest_readings(conn, customer_id, target)
+        run = ensemble_sql.latest_run(conn, customer_id, target)
+    running: set[str] = set()
+    if run is not None and run["status"] in ensemble_sql.ACTIVE:
+        left = set(run["pages"]) - set(run["pages_done"])
+        keys = None if run["word_keys"] is None else set(run["word_keys"])
+        running = {
+            flag.key for flag in review.flags if flag.page_no in left and (keys is None or flag.key in keys)
+        }
     latest = review.latest()
     items = [
-        flag_json(flag, latest, user)
+        flag_json(flag, latest, user, readings, running)
         for flag in review.flags
-        if (page is None or flag.page_no == page)
-        and (state is None or word_review.state(flag, latest) == state)
+        if page is None or flag.page_no == page
     ]
+    items = [item for item in items if state is None or item["state"] == state]
     return {"items": items, "total": len(items)}
 
 

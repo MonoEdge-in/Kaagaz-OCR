@@ -425,7 +425,7 @@ def reading_at(value: ExtractedValue, box: BoxLocation, spans: Sequence[Span]) -
     lines = []
     for span in spans:
         other = span.location
-        if not isinstance(other, BoxLocation) or other.page != box.page or _inside(other, box) < VOTE_INSIDE:
+        if not isinstance(other, BoxLocation) or other.page != box.page or inside(other, box) < VOTE_INSIDE:
             continue
         if is_word_mark(span):
             return None
@@ -451,6 +451,14 @@ def vote(value: ExtractedValue, box: BoxLocation, page: PageVotes) -> dict[str, 
     lead, others = page
     reads: list[tuple[str, str | None]] = [(lead, value.value_text)]
     reads += [(model, reading_at(value, box, spans)) for model, spans in others if spans is not None]
+    return majority(reads)
+
+
+def majority(reads: Sequence[tuple[str, str | None]]) -> dict[str, Any]:
+    """``vote``'s rule on (model, text or None) readings, the main reader first: the text
+    more than half of them read (compared as ``vote`` compares), the first one's spelling
+    among them; None with no majority. Ensemble after the scan uses it too (scan review UX
+    rules, 16 Oct 2026). The same JSON as ``vote``. O(readers)."""
     counts = Counter(_vote_key(text) for _model, text in reads if text is not None)
     key, agreed = counts.most_common(1)[0] if counts else (None, 0)
     winner = None
@@ -509,7 +517,7 @@ def settle_votes(
     return settled
 
 
-def _inside(line: BoxLocation, box: BoxLocation) -> float:
+def inside(line: BoxLocation, box: BoxLocation) -> float:
     """The share of ``line``'s box that is inside ``box`` (0 when apart or with no area)."""
     width = min(line.x1, box.x1) - max(line.x0, box.x0)
     height = min(line.y1, box.y1) - max(line.y0, box.y0)

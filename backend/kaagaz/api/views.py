@@ -10,10 +10,11 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, cast
 
-from sqlalchemy import RowMapping
+from sqlalchemy import Connection, RowMapping
 
 from kaagaz.answering.hard_to_read import FlaggedPage, not_found_note
 from kaagaz.api.auth import CurrentUser
+from kaagaz.db import ensemble as ensemble_sql
 from kaagaz.db.folders import FolderRow
 from kaagaz.db.listing import MAX_READING_LINES, MAX_READING_TEXT
 from kaagaz.db.tags import TagRow
@@ -737,3 +738,83 @@ def without_money(values: Mapping[str, Any]) -> dict[str, Any]:
     """``values`` without any key that names money (``usd``, ``price``, ``budget``,
     ``cost``): org admins and members never see money (Tushar, 15 Oct 2026)."""
     return {key: value for key, value in values.items() if not _MONEY_KEY.search(key)}
+
+
+# --- Ensemble after the scan (scan review UX rules, 16 Oct 2026; kaagaz/api/routers/ensemble.py) ---
+
+EN_DASH = "\u2013"  # between the first and last page of a run of pages
+
+# Why a run could not finish (Run.error.message: what happened, what it means).
+CAUSES = {
+    "timeout": "The connection timed out.",
+    "outage": "The reading service is not answering right now.",
+    "refused": "The reading service declined the request.",
+    "key_problem": "The reading service's key needs your admin's attention.",
+    "retries_exhausted": "The run stopped after its last try.",
+    "ensemble_not_allowed": "Ensemble is no longer turned on for your organisation.",
+    "document_changed": "The document changed while Ensemble was reading it.",
+}
+
+
+def page_ranges(pages: Sequence[int]) -> str:
+    """Runs of pages, each first and last joined by an en dash (EN_DASH): 9 to 14, "3 and 5 to 7",
+    "1, 3 and 5 to 7" with the dash in place of "to"."""
+    runs: list[list[int]] = []
+    for page in sorted(set(pages)):
+        if runs and page == runs[-1][1] + 1:
+            runs[-1][1] = page
+        else:
+            runs.append([page, page])
+    parts = [str(first) if first == last else f"{first}{EN_DASH}{last}" for first, last in runs]
+    return parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " and " + parts[-1]
+
+
+def pages_text(pages: Sequence[int]) -> str:
+    """ "page 9", or "pages " and ``page_ranges``."""
+    return ("page " if len(set(pages)) == 1 else "pages ") + page_ranges(pages)
+
+
+def error_message(code: str, failed: Sequence[int], done: Sequence[int]) -> str:
+    """ "Ensemble couldn't finish pages 9 to 14. The connection timed out. Pages 1 to 8 are done
+    and saved.", each "to" an en dash (spec section 5, the owner's wording); the button under it
+    says what to do."""
+    cause = CAUSES.get(code, CAUSES["refused"])
+    if done:
+        finished = pages_text(done)
+        kept = f"{finished[0].upper()}{finished[1:]} {'is' if len(set(done)) == 1 else 'are'} done and saved."
+    else:
+        kept = "Nothing was changed."
+    return f"Ensemble couldn't finish {pages_text(failed)}. {cause} {kept}"
+
+
+def run_json(conn: Connection, customer_id: str, run: RowMapping) -> dict[str, Any]:
+    """``Run``: one run's progress, counts and error. One statement more."""
+    counts = ensemble_sql.run_counts(conn, customer_id, str(run["id"]))
+    pages, done, failed = list(run["pages"]), list(run["pages_done"]), list(run["pages_failed"])
+    code = run["error_code"]
+    return {
+        "id": str(run["id"]),
+        "scope": run["scope"],
+        "status": run["status"],
+        "pages_total": len(pages),
+        "pages_done": len(done),
+        "page_now": len(done) + 1 if run["status"] == "running" and len(done) < len(pages) else None,
+        "words_total": len(run["word_keys"]) if run["word_keys"] else counts["total"],
+        "agreed": counts["agreed"],
+        "changed": counts["changed"],
+        "unresolved": counts["unresolved"],
+        "kept": counts["kept"],
+        "failed_pages": failed,
+        "started_at": _iso(run["started_at"]),
+        "finished_at": _iso(run["finished_at"]),
+        "error": None if code is None else {"code": code, "message": error_message(code, failed, done)},
+    }
+
+
+def latest_run_json(conn: Connection, customer_id: str, document_id: str) -> dict[str, Any] | None:
+    run = ensemble_sql.latest_run(conn, customer_id, document_id)
+    return None if run is None else run_json(conn, customer_id, run)
+
+
+def _iso(moment: datetime | None) -> str | None:
+    return None if moment is None else moment.isoformat()

@@ -33,6 +33,8 @@ image, a photo's from its short side. The pipeline stores them with the page.
 
 ``PreparedPages.picture`` draws one page again, with the same DPI, pixel
 check and EXIF handling, so the checker's crop (PRD 5 V1) has the pixels preparing drew.
+``page_picture`` draws one page the same way with no other page drawn first: Ensemble's
+crops after the scan (scan review UX rules, 16 Oct 2026).
 
 Time is O(total pixels) to draw; memory is one page's picture at a time, O(1)
 in the page count.
@@ -133,6 +135,15 @@ def prepare_pages(
             del image  # dropped before the next frame is decoded
         return prepared
     return PreparedPages([])
+
+
+def page_picture(
+    detected_type: str, data: bytes, page_no: int, *, dpi: int, max_image_pixels: int
+) -> Image.Image:
+    """Page ``page_no`` of a pdf or image file, drawn as ``prepare_pages`` draws it, losslessly
+    (``PreparedPages.picture``). O(one page's pixels)."""
+    limits = _Limits(dpi, 0, max_image_pixels, 0.0, 0)  # only the DPI and the pixel check are used
+    return PreparedPages([], {}, (detected_type, data, limits)).picture(page_no)
 
 
 def sheet_pages(spans: Iterable[Span]) -> list[PageInfo]:
