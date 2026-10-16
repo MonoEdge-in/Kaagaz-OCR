@@ -388,7 +388,9 @@ export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events 
 export const listScrollKey = () => `docs-y:${location.search}`;
 function rememberListScroll() {
   try {
-    sessionStorage.setItem(listScrollKey(), String(Math.round(scrollY)));
+    // The app shell's <main> is the one scroller (MonoEdge design system); the window on other pages.
+    const main = document.getElementById("main");
+    sessionStorage.setItem(listScrollKey(), String(Math.round(main ? main.scrollTop : scrollY)));
   } catch {
     // Storage blocked (private window): Back starts at the top, as before.
   }

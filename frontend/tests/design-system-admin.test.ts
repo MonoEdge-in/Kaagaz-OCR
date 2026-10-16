@@ -36,6 +36,7 @@ const SEVEN = [
 
 const tabs = (items: readonly { id: string; label: string; count?: number }[], active: string) =>
   renderToStaticMarkup(
+    // eslint-disable-next-line react/no-children-prop -- Tabs types children as a required prop
     createElement(Tabs<string>, { prefix: "t", label: "Sections", tabs: items, active, onChange: () => undefined, children: "Body" }),
   );
 

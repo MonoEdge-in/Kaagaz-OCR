@@ -298,7 +298,9 @@ describe("layout guards", () => {
     );
     expect(sticky.length).toBe(1);
     expect(sticky[0]?.body ?? "").not.toMatch(/dvh/);
-    expect(sticky[0]?.body).toMatch(/100svh/);
+    // Changed on purpose (MonoEdge design system, 16 Oct 2026): <main> is the one scroller, so the
+    // sticky column is sized by the main area's height, not the window's.
+    expect(sticky[0]?.body).toMatch(/var\(--main-h\)/);
     const fit = rulesFor("components/viewer/PageViewer.module.css", ".fitPage").find((rule) => rule.at === "");
     expect(Number(/min-height:\s*([\d.]+)rem/.exec(fit?.body ?? "")?.[1] ?? 0)).toBeGreaterThan(0);
   });
@@ -659,7 +661,7 @@ describe("the document screen (boards 2, 3 and 6)", () => {
   it("puts the panels in two groups, side by side from 90rem, beside a page column capped at 40%", () => {
     const wide = rules(read(VIEW_CSS)).filter((rule) => rule.at === "@media (min-width: 90rem) and (min-height: 36rem)");
     const layout = wide.find((rule) => rule.selector === ".layout")?.body ?? "";
-    expect(layout).toMatch(/min\(calc\(\(100svh - 7rem\) \* 0\.8\), 40%\)/);
+    expect(layout).toMatch(/min\(calc\(\(var\(--main-h\) - 3\.5rem\) \* 0\.8\), 40%\)/); // changed on purpose: <main>'s height
     expect(wide.find((rule) => rule.selector === ".panels")?.body).toMatch(
       /display:\s*grid;\s*grid-template-columns:\s*minmax\(0, 1fr\) minmax\(0, 1fr\);/,
     );

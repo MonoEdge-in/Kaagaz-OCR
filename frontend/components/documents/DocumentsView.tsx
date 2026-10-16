@@ -222,7 +222,7 @@ export function DocumentsView({ library }: { library: LibraryState }) {
     try {
       const y = Number(sessionStorage.getItem(listScrollKey()));
       sessionStorage.removeItem(listScrollKey());
-      if (y > 0) scrollTo(0, y);
+      if (y > 0) (document.getElementById("main") ?? window).scrollTo(0, y);
     } catch {
       // Storage blocked: nothing was kept.
     }

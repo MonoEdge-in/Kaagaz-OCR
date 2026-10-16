@@ -213,12 +213,16 @@ export function PageViewer({
       timer = setTimeout(measure, MEASURE_DELAY_MS);
     };
     later();
+    // <main> is the app shell's one scroller (MonoEdge design system); the window too, for other pages.
+    const main = window.document.getElementById("main");
     frame.addEventListener("scroll", later, { passive: true });
+    main?.addEventListener("scroll", later, { passive: true });
     window.addEventListener("scroll", later, { passive: true });
     window.addEventListener("resize", later, { passive: true });
     return () => {
       clearTimeout(timer);
       frame.removeEventListener("scroll", later);
+      main?.removeEventListener("scroll", later);
       window.removeEventListener("scroll", later);
       window.removeEventListener("resize", later);
     };
