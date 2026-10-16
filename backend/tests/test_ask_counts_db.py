@@ -1,0 +1,138 @@
+"""Every document holding a word, on PostgreSQL (Tushar, 16 Oct 2026; kaagaz/answering/
+exhaustive.py): whole words in any case, the scope, current ready documents out of Trash,
+one customer only; the answer end to end with no model; and the search's order on ties the
+same every run (steady answers)."""
+
+from datetime import UTC, datetime
+
+import pytest
+from sqlalchemy import text
+
+from kaagaz.answering.exhaustive import PgExhaustive
+from kaagaz.answering.service import AnswerService
+from kaagaz.db.engine import Database
+from kaagaz.search.hybrid import search
+from kaagaz.search.scope import EVERYTHING, Scope
+from tests.db_support import insert_document, new_customer
+from tests.settings_factory import make_settings
+from tests.test_search_db import EF_SEARCH, RECIPE, add_pieces, axis
+
+pytestmark = pytest.mark.db
+
+NOW = datetime(2026, 10, 16, 6, 30, tzinfo=UTC)
+
+
+def add(db: Database, customer_id: str, name: str, *texts: str, **columns: object) -> str:
+    with db.customer(customer_id) as conn:
+        document_id = insert_document(conn, customer_id, display_name=name, **columns)
+    add_pieces(db, customer_id, document_id, [(piece, axis(0)) for piece in texts])
+    return document_id
+
+
+def count(
+    db: Database, customer_id: str, term: str, scope: Scope = EVERYTHING, listed: int = 50
+) -> tuple[int, list[str]]:
+    total, documents = PgExhaustive(db).documents_with(customer_id, term, scope, listed)
+    return total, [hits[0].document_name for hits in documents]
+
+
+def test_every_document_with_the_word_counts_once_in_any_case_and_no_other(db: Database) -> None:
+    customer, _ = new_customer(db)
+    add(db, customer, "sale-deed.pdf", "Village Jalna, taluka Ambad", "Registered at JALNA.")
+    add(db, customer, "lease.pdf", "Shop on jalna road")
+    add(db, customer, "sweets.pdf", "Jalnawala sweets")  # another word
+    add(db, customer, "bill.pdf", "Sharma Traders, Pune")
+
+    assert count(db, customer, "Jalna") == (2, ["lease.pdf", "sale-deed.pdf"])
+    assert count(db, customer, "jalna road") == (1, ["lease.pdf"])  # a phrase, word by word
+    assert count(db, customer, "Nagpur") == (0, [])
+
+
+def test_trash_older_versions_and_unread_documents_are_never_counted(db: Database) -> None:
+    customer, _ = new_customer(db)
+    add(db, customer, "live.pdf", "Jalna")
+    add(db, customer, "trashed.pdf", "Jalna", deleted_at=NOW)
+    add(db, customer, "old.pdf", "Jalna", is_current=False)
+    add(db, customer, "reading.pdf", "Jalna", status="clean")
+
+    assert count(db, customer, "Jalna") == (1, ["live.pdf"])
+
+
+def test_another_customers_documents_are_never_counted(db: Database) -> None:
+    mine, _ = new_customer(db)
+    theirs, _ = new_customer(db)
+    add(db, mine, "mine.pdf", "Jalna")
+    for i in range(3):
+        add(db, theirs, f"theirs-{i}.pdf", "Jalna")
+
+    assert count(db, mine, "Jalna") == (1, ["mine.pdf"])
+    assert count(db, theirs, "Jalna")[0] == 3
+
+
+def test_the_scope_holds_and_the_total_counts_past_the_list(db: Database) -> None:
+    customer, _ = new_customer(db)
+    ids = [add(db, customer, f"file-{i}.pdf", f"Plot {i}, Jalna") for i in range(5)]
+
+    assert count(db, customer, "Jalna", listed=2) == (5, ["file-0.pdf", "file-1.pdf"])
+    assert count(db, customer, "Jalna", Scope(document_ids=tuple(ids[3:]))) == (
+        2,
+        ["file-3.pdf", "file-4.pdf"],
+    )
+
+
+def test_the_answer_counts_every_document_with_no_model(db: Database) -> None:
+    customer, _ = new_customer(db)
+    for i in range(12):  # more than ANSWER_MAX_EVIDENCE: top hits alone would under-count
+        add(db, customer, f"deed-{i:02}.pdf", f"Survey {i}, village Jalna")
+    add(db, customer, "bill.pdf", "Sharma Traders, Pune")
+    service = AnswerService(
+        db=db, model=None, settings=make_settings(answer_max_evidence=5), clock=lambda: NOW
+    )
+
+    answer = service.answer(customer, "How many documents mention Jalna?")
+    assert answer.sentences[0].text == '12 documents mention "Jalna".'
+    assert len(answer.citations) == 12 and answer.route == "fixed_query"
+    assert answer.sentences[0].citations == []  # the count sums up the lines, each citing one
+    assert [s.citations for s in answer.sentences[1:]] == [[n] for n in range(1, 13)]
+
+
+def test_the_search_order_on_tied_pieces_is_the_same_every_run(db: Database) -> None:
+    customer, _ = new_customer(db)
+    for name in ("b.pdf", "a.pdf", "c.pdf"):
+        add(db, customer, name, "Invoice INV-7001 from Patil Traders")
+
+    def once() -> list[tuple[str, int]]:
+        with db.customer(customer) as conn:
+            found = search(
+                conn,
+                customer_id=customer,
+                query_text="INV-7001 Patil",
+                embedding=axis(0),
+                limit=10,
+                recipe=RECIPE,
+                ef_search=EF_SEARCH,
+            )
+        return [(hit.document_id, hit.seq) for hit in found]
+
+    first = once()
+    assert len(first) == 3
+    assert all(once() == first for _ in range(3))
+
+
+def test_the_manual_count_query_matches(db: Database) -> None:
+    """The query in the report for Tushar, counting as the route does."""
+    customer, _ = new_customer(db)
+    add(db, customer, "a.pdf", "Jalna")
+    add(db, customer, "b.pdf", "JALNA road")
+    add(db, customer, "c.pdf", "Jalnawala")
+    with db.customer(customer) as conn:
+        manual: int = conn.execute(
+            text(
+                "SELECT count(DISTINCT p.document_id) FROM pieces p"
+                " JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
+                " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
+                " AND p.tsv_simple @@ phraseto_tsquery('simple', 'Jalna')"
+            ),
+            {"c": customer},
+        ).scalar_one()
+    assert manual == count(db, customer, "Jalna")[0] == 2

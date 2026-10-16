@@ -112,6 +112,7 @@ class Recorder(FakeModel):
         thinking: str | None = None,
         provider: str | None = None,
         deadline: float | None = None,
+        temperature: float | None = None,
     ) -> dict[str, Any]:
         self.prompts.extend((system, user))
         raise ModelOutputError("answer_shape")
