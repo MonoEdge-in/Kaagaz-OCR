@@ -1,28 +1,28 @@
 .wordmark {
-  position: relative;
   display: inline-flex;
   flex-direction: column;
   justify-content: center;
   gap: 2px;
+  min-width: 0;
   color: var(--fg);
   text-decoration: none;
 }
 
+/* 24px: the display face is for 24px and up only. */
 .name {
   font-family: var(--font-display);
-  font-size: var(--fs-xl);
+  font-size: 1.5rem;
   font-weight: 700;
-  line-height: 1.05;
-  letter-spacing: -0.02em;
+  line-height: 1;
 }
 
-/* "by MonoEdge": the MonoEdge site's small label, mono capitals spaced out. */
+/* "by MonoEdge": a label, 11px bold capitals. */
 .by {
   font-family: var(--font-mono);
-  font-size: 0.6875rem;
-  font-weight: 600;
+  font-size: var(--fs-label);
+  font-weight: 700;
   line-height: 1.2;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--fg-muted);
   white-space: nowrap;
@@ -45,164 +45,5 @@ a.wordmark {
 @media (pointer: coarse) {
   a.wordmark {
     min-height: 44px;
-  }
-}
-
-.reader {
-  position: absolute;
-  inset-inline-start: calc(100% + var(--space-2));
-  bottom: -2px;
-  width: 34px;
-  height: 38px;
-  color: var(--accent);
-  pointer-events: none;
-  opacity: 0;
-  transform: translateY(16px) scale(0.75);
-  transform-origin: bottom center;
-  animation: reader-cycle 5s var(--ease); /* once, then gone: its last frame is its start */
-}
-
-.robotHead,
-.robotBody {
-  position: absolute;
-  display: block;
-  border: 2px solid currentColor;
-  background: var(--surface);
-}
-
-.robotHead {
-  inset-inline-start: 7px;
-  top: 1px;
-  width: 20px;
-  height: 15px;
-  border-radius: 6px 6px 4px 4px;
-}
-
-.robotHead::before,
-.robotHead::after {
-  content: "";
-  position: absolute;
-  top: 5px;
-  width: 3px;
-  height: 3px;
-  border-radius: var(--r-full);
-  background: currentColor;
-}
-
-.robotHead::before {
-  inset-inline-start: 4px;
-}
-
-.robotHead::after {
-  inset-inline-end: 4px;
-}
-
-.robotEye {
-  position: absolute;
-  inset-inline-start: 8px;
-  top: -7px;
-  width: 2px;
-  height: 5px;
-  background: currentColor;
-}
-
-.robotEye::after {
-  content: "";
-  position: absolute;
-  top: -2px;
-  inset-inline-start: -2px;
-  width: 6px;
-  height: 2px;
-  border-radius: var(--r-full);
-  background: var(--brand-lal);
-}
-
-.robotBody {
-  inset-inline-start: 9px;
-  top: 17px;
-  width: 16px;
-  height: 15px;
-  border-radius: 4px 4px 3px 3px;
-}
-
-.robotBody::before,
-.robotBody::after {
-  content: "";
-  position: absolute;
-  bottom: -6px;
-  width: 3px;
-  height: 6px;
-  background: currentColor;
-}
-
-.robotBody::before {
-  inset-inline-start: 3px;
-}
-
-.robotBody::after {
-  inset-inline-end: 3px;
-}
-
-.robotArm {
-  position: absolute;
-  inset-inline-end: -8px;
-  top: 4px;
-  width: 9px;
-  height: 2px;
-  background: currentColor;
-  transform: rotate(22deg);
-  transform-origin: left center;
-}
-
-.document {
-  position: absolute;
-  inset-inline-end: -1px;
-  top: 19px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  width: 13px;
-  height: 16px;
-  padding: 4px 2px;
-  border: 1px solid var(--brand-lal);
-  background: var(--surface);
-  transform: rotate(8deg);
-}
-
-.document span {
-  display: block;
-  height: 1px;
-  background: var(--brand-lal);
-}
-
-@keyframes reader-cycle {
-  0%,
-  8% {
-    opacity: 0;
-    transform: translateY(16px) scale(0.75);
-  }
-
-  18%,
-  68% {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
-
-  38%,
-  56% {
-    transform: translateY(0) scale(1) rotate(-2deg);
-  }
-
-  78%,
-  100% {
-    opacity: 0;
-    transform: translateY(16px) scale(0.75);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .reader {
-    animation: none;
-    opacity: 0;
   }
 }

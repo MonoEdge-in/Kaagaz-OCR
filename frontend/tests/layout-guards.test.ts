@@ -194,10 +194,26 @@ describe("layout guards", () => {
     expect(badge.filter((rule) => NOWRAP.test(rule.body))).toEqual([]);
   });
 
-  it("stretches the sidebar down the page; only its inner part sticks", () => {
+  // Changed on purpose (MonoEdge design system, 16 Oct 2026): brief C's app shell. The page never scrolls;
+  // only <main> and the side nav do, each held in, and the zones are grid rows.
+  it("keeps the page still in the app shell; only main and the side nav scroll", () => {
     const shell = "components/shell/Shell.module.css";
     expect(rulesFor(shell, ".sidebar").filter((rule) => /position:\s*sticky/.test(rule.body))).toEqual([]);
-    expect(rulesFor(shell, ".sidebarInner").some((rule) => /position:\s*sticky/.test(rule.body))).toBe(true);
+    const side = rulesFor(shell, ".sidebar").find((rule) => rule.at === "@media (min-width: 1024px)")?.body ?? "";
+    expect(side).toMatch(/overflow-y:\s*auto;[\s\S]*overscroll-behavior:\s*contain;/);
+    const main = rulesFor(shell, ".main")[0]?.body ?? "";
+    expect(main).toMatch(/overflow:\s*auto;\s*overscroll-behavior:\s*contain;/);
+    expect(main).toMatch(/min-height:\s*0;/);
+    const app = rulesFor(shell, ".app").find((rule) => rule.at === "")?.body ?? "";
+    expect(app).toMatch(/grid-template-rows:\s*auto minmax\(0, 1fr\) auto auto;/);
+    expect(app).toMatch(/height:\s*100vh;\s*height:\s*100dvh;/);
+    // Header, status and bottom bars are rows, never fixed.
+    for (const zone of [".header", ".statusbar", ".bottombar"]) {
+      expect(rulesFor(shell, zone).filter((rule) => /position:\s*fixed/.test(rule.body)), zone).toEqual([]);
+    }
+    const page = rulesFor("app/globals.css", "html:has(.app-shell) body")[0]?.body ?? "";
+    expect(page).toMatch(/height:\s*100%;\s*overflow:\s*hidden;\s*overscroll-behavior:\s*none;/);
+    expect(read("components/shell/AppShell.tsx")).toContain('className={`app-shell ${styles.app}`}');
   });
 
   it("gives the page frame no height limit of its own (no second scrollbar)", () => {
@@ -287,10 +303,17 @@ describe("layout guards", () => {
     expect(Number(/min-height:\s*([\d.]+)rem/.exec(fit?.body ?? "")?.[1] ?? 0)).toBeGreaterThan(0);
   });
 
-  it("lets a button's label wrap inside it, everywhere", () => {
+  // Changed on purpose (MonoEdge design system, 16 Oct 2026): one line and one height per row (the
+  // .btn spec); below 480px, where buttons stack, a long label wraps inside its button.
+  it("keeps a button's label on one line, and lets it wrap below 480px, everywhere", () => {
     const btn = rulesFor("app/globals.css", ".btn");
-    expect(btn.some((rule) => /white-space:\s*normal/.test(rule.body) && /max-width:\s*100%/.test(rule.body))).toBe(true);
-    const nowrap = everyRule(NOWRAP).filter(({ rule }) => /\.btn\b/.test(rule.selector));
+    const base = btn.find((rule) => rule.at === "")?.body ?? "";
+    expect(base).toMatch(/white-space:\s*nowrap/);
+    expect(base).toMatch(/max-width:\s*100%/);
+    expect(base).toMatch(/height:\s*var\(--h-md\)/);
+    const narrow = btn.find((rule) => rule.at === "@media (max-width: 479.98px)")?.body ?? "";
+    expect(narrow).toMatch(/height:\s*auto;[\s\S]*white-space:\s*normal/);
+    const nowrap = everyRule(NOWRAP).filter(({ file, rule }) => file !== "app/globals.css" && /\.btn\b/.test(rule.selector));
     expect(nowrap.map((found) => found.name)).toEqual([]);
   });
 
@@ -300,6 +323,14 @@ describe("layout guards", () => {
       "components/documents/ActionDialog.module.css: .body: overscroll-behavior",
       "components/chat/Chat.module.css: .pane: overscroll-behavior",
       "components/chat/Chat.module.css: .thread: overscroll-behavior",
+      // Changed on purpose (MonoEdge design system, 16 Oct 2026): the composer's panel, the shell's two
+      // scrollers, the page (no rubber band) and a tab row's sideways scroll.
+      "components/chat/Chat.module.css: .menu: overscroll-behavior",
+      "components/shell/Shell.module.css: .sidebar: overscroll-behavior",
+      "components/shell/Shell.module.css: .main: overscroll-behavior",
+      "app/globals.css: html: overscroll-behavior-y",
+      "app/globals.css: html:has(.app-shell), html:has(.app-shell) body: overscroll-behavior",
+      "app/globals.css: .tabs: overscroll-behavior-x",
       "components/documents/Library.module.css: .treePane: overscroll-behavior",
       // Sideways only: a wide page scrolls without a swipe going back a screen.
       "components/viewer/PageViewer.module.css: .frame: overscroll-behavior-x",
@@ -311,8 +342,13 @@ describe("layout guards", () => {
     expect(found.filter((entry) => !allowed.includes(entry))).toEqual([]);
   });
 
+  // Changed on purpose (MonoEdge design system, 16 Oct 2026): a 100vh line is allowed only as the fallback
+  // right before the same property in dvh (brief C: "100dvh with a 100vh fallback").
   it("sizes by the window with dvh or svh, never bare vh (it ignores the phone's toolbars)", () => {
-    const found = CSS_FILES.filter((file) => /(?<![\w.-])[\d.]+vh\b/.test(read(file).replace(/\/\*[\s\S]*?\*\//g, "")));
+    const fallback = /([\w-]+):\s*100vh;\s*\1:\s*100dvh;/g;
+    const found = CSS_FILES.filter((file) =>
+      /(?<![\w.-])[\d.]+vh\b/.test(read(file).replace(/\/\*[\s\S]*?\*\//g, "").replace(fallback, "")),
+    );
     expect(found).toEqual([]);
   });
 
@@ -364,7 +400,8 @@ describe("layout guards", () => {
     const animated = all.filter((rule) => /(^|;)\s*animation(-[\w-]+)?:/.test(rule.body));
     for (const { at, body } of animated) {
       if (at.includes("prefers-reduced-motion")) expect(body).toMatch(/animation:\s*none/);
-      else expect(body).toMatch(/animation:\s*auth-cite 600ms var\(--ease\) 400ms both;/);
+      // Changed on purpose (MonoEdge design system, 16 Oct 2026): motion is 120 to 200ms.
+      else expect(body).toMatch(/animation:\s*auth-cite 200ms var\(--ease\) 400ms both;/);
     }
     expect(animated.map((rule) => rule.at)).toContain("@media (prefers-reduced-motion: reduce)");
     expect(read(css)).not.toMatch(/\binfinite\b/);
@@ -375,6 +412,8 @@ describe("layout guards", () => {
       'app/globals.css: .status-chip[data-tone="working"]::before',
       "app/globals.css: .spinner",
       "app/globals.css: .skeleton",
+      // Changed on purpose (MonoEdge design system, 16 Oct 2026): a busy button's spinner.
+      'app/globals.css: .btn[aria-busy="true"]::after',
       "components/documents/Documents.module.css: .readMeter:indeterminate",
     ];
     const found = everyRule(/animation(-iteration-count)?:[^;]*\binfinite\b/).map(({ name }) => name);

@@ -6,6 +6,7 @@
 
 import { useId } from "react";
 import { Icon } from "@/components/ui/Icon";
+import { IconButton } from "@/components/ui/IconButton";
 import type { ConversationSummary } from "@/lib/types";
 import { useMinuteNow } from "./hooks";
 import { conversationTime, groupConversations } from "./logic";
@@ -34,10 +35,16 @@ export function ConversationList({
 
   return (
     <nav className={styles.conversations} aria-label="Conversations">
-      <button type="button" className="btn btn-primary btn-block" disabled={disabled} onClick={onNew}>
-        <Icon name="plus" />
-        New conversation
-      </button>
+      {/* Secondary: Send in the question box is this screen's one primary. The
+          list can go stale (another tab, another device), and there is no
+          pull to refresh, so Refresh is always there. */}
+      <div className={styles.listActions}>
+        <button type="button" className="btn" disabled={disabled} onClick={onNew}>
+          <Icon name="plus" />
+          New conversation
+        </button>
+        <IconButton icon="refresh" label="Refresh conversations" className="btn-quiet" onClick={onRetry} />
+      </div>
 
       {failed ? (
         <div className={styles.listError}>

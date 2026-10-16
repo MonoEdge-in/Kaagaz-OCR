@@ -96,7 +96,9 @@ describe("how the marks look", () => {
   it("uses one paper-fixed red, the light theme's #9e2219, the same in dark (V8)", () => {
     const tokens = globals.match(/--illegible-on-paper: (#[0-9a-f]+)/g) ?? [];
     expect(tokens).toEqual(["--illegible-on-paper: #9e2219"]);
-    expect(globals).toMatch(/--danger-fg: #9e2219/);
+    // Changed on purpose (MonoEdge design system, 16 Oct 2026): --danger-fg is now --critical;
+    // the paper-fixed red keeps its own value.
+    expect(globals).toMatch(/--danger-fg: var\(--critical\)/);
   });
 });
 

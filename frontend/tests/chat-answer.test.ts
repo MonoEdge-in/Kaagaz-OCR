@@ -364,6 +364,7 @@ describe("a chip lights its source card", () => {
     }
     expect(view).toContain("hot={hot === citation.n}");
     const css = readFileSync(join(__dirname, "../components/chat/Chat.module.css"), "utf8");
-    expect(css).toMatch(/\.source\[data-hot\] \{\s*border-color: var\(--accent\);\s*box-shadow: 0 0 0 1px var\(--accent\);\s*\}/);
+    // Changed on purpose (MonoEdge design system, 16 Oct 2026): no shadows; the accent edge on the selected tint.
+    expect(css).toMatch(/\.source\[data-hot\] \{\s*border-color: var\(--accent\);\s*background: var\(--bg-selected\);\s*\}/);
   });
 });

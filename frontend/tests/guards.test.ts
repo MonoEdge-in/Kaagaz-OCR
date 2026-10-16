@@ -125,7 +125,12 @@ describe("guards", () => {
 
   it("keeps a focused element clear of the sticky top bar (WCAG 2.4.11)", () => {
     const css = readFileSync(join(ROOT, "app/globals.css"), "utf8");
-    expect(css).toMatch(/scroll-padding-top:\s*calc\(var\(--topbar-space\) \+ var\(--space-4\)\)/);
+    // Changed on purpose (MonoEdge design system, 16 Oct 2026): the header plus 8px, and the
+    // header is now a row above <main>, the one scroller, which keeps its own 8px.
+    expect(css).toMatch(/scroll-padding-top:\s*calc\(var\(--topbar-space\) \+ var\(--space-2\)\)/);
+    expect(readFileSync(join(ROOT, "components/shell/Shell.module.css"), "utf8")).toMatch(
+      /\.main \{[^}]*scroll-padding-top:\s*var\(--space-2\);/,
+    );
   });
 
   // PRD 4 #13: the countdown is never announced, and every countdown shares one timer.

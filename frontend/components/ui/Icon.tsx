@@ -9,7 +9,7 @@ export type { IconName } from "./icons";
 
 export function Icon({
   name,
-  size = 18,
+  size = 16,
   className,
 }: {
   name: IconName;

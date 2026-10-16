@@ -1,5 +1,8 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  closeAllowed,
   closesOnRoute,
   closesOnViewport,
   DESKTOP_QUERY,
@@ -63,5 +66,30 @@ describe("shouldReturnFocus", () => {
 
   it("leaves focus alone once the person moved it elsewhere", () => {
     expect(shouldReturnFocus(elsewhere, body, dialog)).toBe(false);
+  });
+});
+
+// MonoEdge design system (16 Oct 2026, brief B): the backdrop closes only when
+// the press and the click were both on it, and never over unsaved changes
+// without asking; Esc and the close button ask too.
+describe("closing with unsaved changes", () => {
+  it("closes at once when nothing is unsaved, without asking", () => {
+    let asked = false;
+    expect(closeAllowed(false, () => (asked = true))).toBe(true);
+    expect(asked).toBe(false);
+  });
+
+  it("asks first when something is unsaved, and keeps it open on No", () => {
+    expect(closeAllowed(true, () => true)).toBe(true);
+    expect(closeAllowed(true, () => false)).toBe(false);
+  });
+
+  it("routes Esc, the backdrop and the close button through the question", () => {
+    const drawer = readFileSync(join(__dirname, "../components/ui/Drawer.tsx"), "utf8");
+    expect(drawer).toMatch(/onPointerDown=\{\(event\) => \{\s*pressTarget\.current = event\.target;/);
+    expect(drawer).toContain("if (isBackdropClick(pressTarget.current, event.target, event.currentTarget)) askClose();");
+    expect(drawer).toContain("if (open) askClose();");
+    expect(drawer).toContain("onClick={askClose} />");
+    expect(drawer).toContain("closeAllowed(unsaved, () => window.confirm(UNSAVED_QUESTION))");
   });
 });

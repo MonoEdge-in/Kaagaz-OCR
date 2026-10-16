@@ -5,33 +5,12 @@
 import Link from "next/link";
 import styles from "./Wordmark.module.css";
 
-export function Wordmark({
-  href,
-  reader = true,
-}: {
-  href?: string;
-  reader?: boolean;
-}) {
+export function Wordmark({ href }: { href?: string }) {
   const className = `${styles.wordmark} ${styles.rule}`;
   const content = (
     <>
       <span className={styles.name}>Kaagaz</span>{" "}
       <span className={styles.by}>by MonoEdge</span>
-      {reader && (
-        <span className={styles.reader} aria-hidden="true">
-          <span className={styles.robotHead}>
-            <span className={styles.robotEye} />
-          </span>
-          <span className={styles.robotBody}>
-            <span className={styles.robotArm} />
-          </span>
-          <span className={styles.document}>
-            <span />
-            <span />
-            <span />
-          </span>
-        </span>
-      )}
     </>
   );
   if (href) {
