@@ -228,6 +228,9 @@ class ReplayTest(unittest.TestCase):
     def test_a_dynamic_document_with_careful_pages(self) -> None:
         # Careful reads at OCR_RETRY_THINKING_LEVEL (Tushar, 16 Oct 2026) and the old code at
         # the document's level: both are "high" here, so the requests are the same in both.
+        # Changed on purpose (Cost saving, 16 Oct 2026; recorded again): the reasons end with
+        # the path taken. Page 1 (1 hard line of 2, over HARD_SHARE) and page 3 (handwritten,
+        # page wide) are still read whole, so the calls and values are the same.
         reading = Reading(
             "dynamic",
             Agent(LEAD, VERTEX, "Standard"),

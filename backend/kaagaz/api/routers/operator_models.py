@@ -99,7 +99,7 @@ _REFUSALS = {
     "needs_two_models_scan": (
         409,
         "needs_two_models_scan",
-        "Dynamic and Ensemble need at least two scanning models. Allow another model or turn them off.",
+        "Cost saving and Ensemble need at least two scanning models. Allow another model or turn them off.",
     ),
     "needs_two_models_chat": (
         409,

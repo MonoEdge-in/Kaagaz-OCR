@@ -13,10 +13,11 @@ import { REASON_FILTERS } from "@/components/review/review";
 import { reasonText, voteText } from "@/components/viewer/labels";
 import type { UploadReader } from "@/lib/types";
 
+// Changed on purpose (Cost saving, 16 Oct 2026): the server names it "Automatic" for members.
 const dynamic: UploadReader = {
   id: "dynamic",
-  title: "Dynamic",
-  hint: "Picks the right reading for each page.",
+  title: "Automatic",
+  hint: "Reads clear pages quickly and takes extra care with hard-to-read words.",
   available: true,
   reason: null,
   default: true,
@@ -55,7 +56,7 @@ describe("Read with: Dynamic", () => {
 
 describe("Read with: no more than one reader at upload", () => {
   it("offers the server's readings only: one reading is no choice", () => {
-    expect(readerOptions(READERS).map((option) => option.label)).toEqual(["Dynamic", "Standard", "Careful"]);
+    expect(readerOptions(READERS).map((option) => option.label)).toEqual(["Automatic", "Standard", "Careful"]);
     expect(offersChoice([standard])).toBe(false);
   });
 
@@ -63,6 +64,13 @@ describe("Read with: no more than one reader at upload", () => {
     const html = renderToStaticMarkup(createElement(ReaderSelect, { readers: READERS, picked: null, onPick: () => undefined }));
     expect(html).not.toMatch(/More than one reader|<fieldset|type="checkbox"|Main reader/);
     expect(html).not.toMatch(/\$|₹|price|cost|budget|spend/i);
+  });
+
+  it("shows a member Automatic with its hint, never Cost saving (Cost saving, 16 Oct 2026)", () => {
+    const html = renderToStaticMarkup(createElement(ReaderSelect, { readers: READERS, picked: null, onPick: () => undefined }));
+    expect(html).toContain(">Automatic</option>");
+    expect(html).toContain("Reads clear pages quickly and takes extra care with hard-to-read words.");
+    expect(html).not.toMatch(/saving|>Dynamic</i); // its id "dynamic" is no word shown
   });
 });
 

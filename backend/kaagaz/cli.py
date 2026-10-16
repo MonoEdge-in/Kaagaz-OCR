@@ -134,7 +134,7 @@ from kaagaz.jobs import catalog
 from kaagaz.jobs.purge import CustomerStorage, purge_customer
 from kaagaz.preparing.page_checks import BlankMeasure, measure_blank
 from kaagaz.preparing.pages import PreparedPages, prepare_pages
-from kaagaz.reading.ocr import READER_PROMPT_VERSION, MeteredOcrEngine, PageRead
+from kaagaz.reading.ocr import PATH_WORDS, READER_PROMPT_VERSION, MeteredOcrEngine, PageRead
 from kaagaz.reading.route import RouteDecision
 from kaagaz.reading.socket import NoReader
 from kaagaz.reading.spans import ReadError, Span
@@ -558,7 +558,8 @@ _SCAN_TIMES = text(
 def scan_times_line(row: Mapping[Any, Any]) -> str:
     """One run's line: ids and seconds only (fast scan, council 16 Oct 2026). Upload to
     Ready counts from the upload (a read-again run from its first upload); careful is "inline"
-    when Careful read inside reading (the pages it read). O(1)."""
+    when Careful read inside reading (the pages it read), and careful_words how many of the
+    pages read again had only their hard words read (Cost saving). O(escalated pages)."""
     config = row["config"] or {}
 
     def seconds(key: str) -> str:
@@ -577,6 +578,9 @@ def scan_times_line(row: Mapping[Any, Any]) -> str:
 
     escalated = (config.get("reading") or {}).get("escalated") or []
     careful = seconds("seconds_careful") if "seconds_careful" in config else f"inline({len(escalated)} pages)"
+    # Cost saving (16 Oct 2026): of those pages, how many had only their hard words read again.
+    words = sum(PATH_WORDS in (page.get("reasons") or ()) for page in escalated)
+    careful = f"{careful} careful_words {words}"
     return (
         f"document {row['document_id']} ocr_pages {row['pages_ocr']}"
         f" upload_to_ready {between(row['uploaded_at'], ready)}"

@@ -3,7 +3,7 @@
 // One organisation's AI settings, for the operator (features 25-27, council 15 Oct 2026,
 // C10, C12; replaces the "AI models" dialog of model choice). Two areas, each following
 // the platform defaults until it is given its own: Scanning (the models its scans may be
-// read with, the default, the thinking level, Dynamic) and Answering (the models people may
+// read with, the default, the thinking level, Cost saving) and Answering (the models people may
 // ask, the default, the thinking levels people may choose and the default level). Then
 // Ensemble (the organisation's own switch, never a default) and the monthly budget in US
 // dollars: money is shown here, in the operator console, and nowhere an organisation sees.
@@ -27,6 +27,7 @@ import { ApiError, getOperatorInsights, getOperatorModels, getOrgAi, putOrgAi } 
 import type { AiEnv, AiLevel, AiValues, OperatorModel, Organisation, OrgAiReply } from "@/lib/types";
 import { canCloseDialog, countText, operatorErrorMessage } from "./logic";
 import {
+  COST_SAVING,
   DYNAMIC_HINT,
   LEVELS,
   LEVEL_WORDS,
@@ -383,11 +384,11 @@ export function AiFields(props: {
               aria-describedby="ai-dynamic-hint"
               onChange={(event) => onChange({ ...draft, dynamic: event.target.checked })}
             />
-            <span>Dynamic</span>
+            <span>{COST_SAVING}</span>
           </label>
         ) : (
           <div className="field">
-            <label htmlFor="ai-dynamic">Dynamic</label>
+            <label htmlFor="ai-dynamic">{COST_SAVING}</label>
             <select
               id="ai-dynamic"
               className="input"

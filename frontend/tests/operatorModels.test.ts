@@ -357,7 +357,8 @@ describe("the AI settings form's rules", () => {
     const draft = { ...toggled(saved, "scan", "m/one", true), ensemble: true, budget: "120" };
     expect(changesText(saved, draft, catalogue)).toEqual(["Scanning models: One (default)", "Ensemble: on", "Budget: $100.00 to $120.00"]);
     const levels = toggledLevel({ ...saved, dynamic: false, budget: "" }, "high", true);
-    expect(changesText(saved, levels, catalogue)).toEqual(["Dynamic: Off", "Answering levels: High; default High", "Budget: $100.00 to none"]);
+    // Changed on purpose (Cost saving, 16 Oct 2026): the super admin calls Dynamic "Cost saving".
+    expect(changesText(saved, levels, catalogue)).toEqual(["Cost saving: Off", "Answering levels: High; default High", "Budget: $100.00 to none"]);
     const own = draftOf(values({ chat_models: ["m/two"], chat_default: "m/two" }));
     expect(changesText(own, draftOf(values()), catalogue)).toEqual(["Answering models: platform defaults"]);
   });
@@ -403,17 +404,17 @@ describe("the AI settings form's rules", () => {
     const one = { scan_models: 1, chat_models: 1, scan_thinking: 1, chat_levels: 1, dynamic: 1 };
     expect(defaultsImpact(DEFAULTS, all, one)).toEqual({
       lead: "This save changes, for 1 organisation still on platform defaults:",
-      areas: ["Scanning models", "Scanning level", "Dynamic", "Answering models"],
+      areas: ["Scanning models", "Scanning level", "Cost saving", "Answering models"],
     });
     const next = { ...DEFAULTS, scan_models: ["m/two", "m/one"], dynamic: false, chat_levels: ["low" as const] };
     expect(defaultsImpact(DEFAULTS, next, COUNTS)).toEqual({
       lead: "This save changes, for the organisations still on platform defaults:",
-      areas: ["Dynamic: 5 organisations", "Answering levels: 7 organisations"],
+      areas: ["Cost saving: 5 organisations", "Answering levels: 7 organisations"],
     }); // the same models in another order change nothing; different reaches say their own
     const html = renderToStaticMarkup(createElement(DefaultsImpact, { id: "i", impact: defaultsImpact(DEFAULTS, all, one) }));
     expect(html.replace(/class="[^"]*"/, 'class="impact"')).toBe(
       '<div id="i" class="impact" aria-live="polite"><p>This save changes, for 1 organisation still on platform defaults:</p>' +
-        "<ul><li>Scanning models</li><li>Scanning level</li><li>Dynamic</li><li>Answering models</li></ul>" +
+        "<ul><li>Scanning models</li><li>Scanning level</li><li>Cost saving</li><li>Answering models</li></ul>" +
         "<p>Organisations with their own settings keep them.</p></div>",
     );
     const nothing = renderToStaticMarkup(createElement(DefaultsImpact, { id: "i", impact: defaultsImpact(DEFAULTS, DEFAULTS, COUNTS) }));
@@ -491,7 +492,11 @@ describe("the AI settings fields", () => {
     expect(html).toContain("None ticked: from platform defaults, Two (default), One.");
     expect(html).toContain("Platform default (the server&#x27;s level (low))");
     expect(html).toContain("Platform default (On)");
-    expect(html).toContain("Picks the right reading for each page.");
+    // Changed on purpose (Cost saving, 16 Oct 2026): the switch is "Cost saving", with its hint.
+    expect(html).toContain('<label for="ai-dynamic">Cost saving</label>');
+    expect(html).toContain("Reads clear pages quickly and spends extra effort only on hard-to-read words.");
+    expect(html).not.toMatch(/>Dynamic</);
+    expect(fields({ platform: true })).toContain("<span>Cost saving</span>");
     const own = fields({ own: values({ scan_models: ["m/one"], scan_default: "m/one", scan_thinking: "high", dynamic: false }) });
     expect([tag(own, "Scanning"), tag(own, "Answering")]).toEqual(["Changed from platform default", "Same as platform default"]);
     expect(own.match(/type="radio"/g)).toHaveLength(1); // the default among the ticked
@@ -603,6 +608,7 @@ describe("the AI settings dialogs", () => {
     expect(html).toContain("Two (default), One");
     expect(html).toContain("Followed by 1 organisation");
     expect(html).toContain("Followed by 7 organisations");
+    expect(html).toMatch(/<dt[^>]*>Cost saving<\/dt>/); // Cost saving, 16 Oct 2026: was Dynamic
     // Changed on purpose (Tushar, 16 Oct 2026): the long label clipped; the impact list says the rest.
     expect(read("components/operator/PlatformDefaults.tsx")).toContain('export const SAVE_LABEL = "Save and apply";');
   });
