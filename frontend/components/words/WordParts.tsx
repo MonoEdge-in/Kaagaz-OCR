@@ -58,14 +58,15 @@ export function DuplicateDialog(props: { draft: WordDraft; existing: Existing[];
   return (
     <ActionDialog title="This word already has a meaning" onClose={cancel}>
       <p>{duplicateQuestion(draft.word, draft.meaning, existing)}</p>
-      <div className="row">
-        <button type="button" className={`btn btn-primary ${styles.target}`} onClick={() => onChoose({ kind: "add_too" })}>Add too</button>
+      {/* [Replace ...] (it takes the old meaning away) ... [Cancel] [Add too]. */}
+      <div className={styles.dialogButtons}>
         {existing.map((row) => (
-          <button key={row.id} type="button" className={`btn ${styles.target}`} onClick={() => onChoose({ kind: "replace", id: row.id })}>
+          <button key={row.id} type="button" className={`btn ${styles.target} ${styles.destructive}`} onClick={() => onChoose({ kind: "replace", id: row.id })}>
             Replace &apos;{row.meaning}&apos;
           </button>
         ))}
         <button type="button" className={`btn ${styles.target}`} data-autofocus onClick={cancel}>Cancel</button>
+        <button type="button" className={`btn btn-primary ${styles.target}`} onClick={() => onChoose({ kind: "add_too" })}>Add too</button>
       </div>
     </ActionDialog>
   );

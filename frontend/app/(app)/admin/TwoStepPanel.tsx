@@ -128,18 +128,19 @@ export function TwoStepPanel() {
             masked={masked}
             onMaskedChange={setMasked}
           />
-          <div className="row">
+          {/* [Cancel] [Show my key / Yes, turn off]: the action last. */}
+          <div className={admin.formButtons}>
+            <button type="button" className="btn" onClick={() => show({ kind: "idle" })} disabled={busy}>
+              Cancel
+            </button>
             <button
               type="submit"
-              className={step.to === "on" ? "btn btn-primary" : "btn btn-danger"}
+              className={`${step.to === "on" ? "btn btn-primary" : "btn btn-danger"} ${busy ? admin.busy : ""}`}
               disabled={!hydrated || busy}
               aria-busy={busy || undefined}
             >
               {busy && <span className="spinner" aria-hidden="true" />}
-              {busy ? PASSWORD_STEP[step.to].busy : PASSWORD_STEP[step.to].button}
-            </button>
-            <button type="button" className="btn" onClick={() => show({ kind: "idle" })} disabled={busy}>
-              Cancel
+              {PASSWORD_STEP[step.to].button}
             </button>
           </div>
         </form>

@@ -83,14 +83,17 @@ export function AdminsDialog({ org, onClose }: { org: Organisation; onClose(): v
                   <span className={styles.orgName} id={adminFocusId(admin.id)} tabIndex={-1}>
                     {admin.name}
                   </span>
-                  <span className={styles.email}>{admin.email}</span>
+                  <span className={styles.email} title={admin.email}>
+                    {admin.email}
+                  </span>
                   <span className={styles.counts}>
                     {adminFacts(admin).map((fact) => (
                       <span key={fact}>{fact}</span>
                     ))}
                   </span>
                   <span className="muted">{lastSignInText(admin.last_sign_in_at, now)}</span>
-                  <span className={styles.rowActions}>
+                  {/* 16px between buttons: Disable and Reset two-step sit beside Enable and Unlock. */}
+                  <span className={`${styles.rowActions} ${styles.spaced}`}>
                     {adminActions(admin, org.status).map((action) => (
                       <button
                         key={action}

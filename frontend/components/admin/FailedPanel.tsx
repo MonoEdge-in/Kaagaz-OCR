@@ -95,7 +95,7 @@ export function FailedPanel() {
         <p className={styles.emptyLine}>No failed documents. Every document was read.</p>
       )}
       {page && page.items.length > 0 && (
-        <div className={table.reflowWrap}>
+        <div className={`${table.reflowWrap} ${styles.tableScroll}`}>
           <table className={`table ${table.reflow}`} role="table">
             <caption className="visually-hidden">Failed documents, newest first</caption>
             <thead role="rowgroup">
@@ -133,16 +133,14 @@ export function FailedPanel() {
                     <td role="cell" data-label="Retry">
                       <button
                         type="button"
-                        className="btn"
+                        className={`btn ${state?.busy ? styles.busy : ""}`}
                         disabled={state?.busy === true || (state && !state.busy && state.started)}
+                        aria-busy={state?.busy || undefined}
                         aria-describedby={state && !state.busy ? `retry-${item.id}` : undefined}
                         onClick={() => void retry(item.id)}
                       >
-                        {state?.busy ? (
-                          <span className="spinner" aria-hidden="true" />
-                        ) : (
-                          <Icon name="refresh" />
-                        )}
+                        {state?.busy && <span className="spinner" aria-hidden="true" />}
+                        <Icon name="refresh" />
                         Retry
                         <span className="visually-hidden">{` ${item.display_name}`}</span>
                       </button>

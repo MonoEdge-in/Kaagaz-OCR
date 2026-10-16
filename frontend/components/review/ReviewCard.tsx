@@ -42,6 +42,7 @@ export function ReviewCard({
   const confidence = confidenceText(value.confidence, routeOrigin(item.page.route));
 
   const resolve = async (choice: ReviewChoice) => {
+    if (busy) return; // Enter in the box while saving: never a second save
     const check = checkChoice(choice, typed, value.second_reading);
     if (!check.ok) {
       setError(check.message);
@@ -175,15 +176,15 @@ export function ReviewCard({
         </div>
       </form>
 
-      <div className={styles.remember}>
+      <label className={styles.remember}>
         <input
           id={`${idBase}-remember`}
           type="checkbox"
           checked={remember}
           onChange={(event) => setRemember(event.target.checked)}
         />
-        <label htmlFor={`${idBase}-remember`}>Remember this correction for future documents</label>
-      </div>
+        <span>Remember this correction for future documents</span>
+      </label>
 
       {busy ? (
         <p className={styles.saving} role="status">

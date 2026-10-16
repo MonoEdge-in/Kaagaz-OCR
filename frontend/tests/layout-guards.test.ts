@@ -304,6 +304,11 @@ describe("layout guards", () => {
       // Sideways only: a wide page scrolls without a swipe going back a screen.
       "components/viewer/PageViewer.module.css: .frame: overscroll-behavior-x",
       "components/viewer/PageViewer.module.css: .sheetFrame: overscroll-behavior-x",
+      // Changed on purpose (MonoEdge design system, 16 Oct 2026): sideways only, the tabs, the
+      // tables and the usage chart scroll in their own box and never hand the swipe to the page.
+      "components/admin/Admin.module.css: .tabs: overscroll-behavior-x",
+      "components/admin/Admin.module.css: .tableScroll: overscroll-behavior-x",
+      "components/admin/Admin.module.css: .chart: overscroll-behavior-x",
     ];
     const found = everyRule(/overscroll-behavior/).flatMap(({ rule, name }) =>
       [...rule.body.matchAll(/(overscroll-behavior[-\w]*):/g)].map((match) => `${name}: ${match[1]}`),
@@ -316,15 +321,15 @@ describe("layout guards", () => {
     expect(found).toEqual([]);
   });
 
-  it("wraps the admin and operator tabs at every width, with no hidden sideways scroll", () => {
+  // Changed on purpose (MonoEdge design system, 16 Oct 2026): the tabs spec. One line that
+  // scrolls sideways and never wraps (edge arrows with a mouse, a select for over six on a phone).
+  it("keeps the admin and operator tabs on one line that scrolls sideways, never wrapping", () => {
     const tabs = rulesFor(ADMIN_CSS, ".tabs").find((rule) => rule.at === "");
-    expect(tabs?.body).toMatch(/flex-wrap:\s*wrap/);
-    const scrolling = [ADMIN_CSS, "components/operator/Insights.module.css"].flatMap((file) =>
-      rules(read(file))
-        .filter((rule) => /tab/i.test(rule.selector) && /overflow-x|scroll-snap|scrollbar-width/.test(rule.body))
-        .map((rule) => `${file}: ${rule.selector}`),
-    );
-    expect(scrolling).toEqual([]);
+    expect(tabs?.body).not.toMatch(/flex-wrap:\s*wrap/);
+    expect(tabs?.body).toMatch(/overflow-x:\s*auto;[\s\S]*scrollbar-width:\s*none;[\s\S]*scroll-snap-type:\s*x proximity;/);
+    const tab = rulesFor(ADMIN_CSS, ".tab").find((rule) => rule.at === "");
+    expect(tab?.body).toMatch(/white-space:\s*nowrap/);
+    expect(tab?.body).toMatch(/height:\s*var\(--h-lg\)/);
   });
 
   it("keeps each side of a page clear of its own notch, at every width", () => {
@@ -481,8 +486,10 @@ describe("layout guards", () => {
     }
     // Changed on purpose (UI quality final review, 15 Oct 2026): `.page.console` so it beats the
     // global .page by specificity, not by stylesheet order.
+    // Changed on purpose (MonoEdge design system, 16 Oct 2026): content at most 1200px (75rem);
+    // the wide tables scroll sideways in their own box instead.
     expect(rulesFor("components/operator/Insights.module.css", ":global(.page).console")[0]?.body).toMatch(
-      /max-width:\s*100rem/,
+      /max-width:\s*75rem/,
     );
     expect(read("components/operator/OperatorConsole.tsx")).toContain("`page ${css.console}`");
   });

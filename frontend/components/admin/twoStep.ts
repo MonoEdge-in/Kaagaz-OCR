@@ -23,7 +23,6 @@ export const TWO_STEP_TEXT: Record<TwoStepState, { label: string; meaning: strin
 interface PasswordStep {
   question: string;
   button: string;
-  busy: string;
 }
 
 /** Turning it on or off asks for the current password first: the question and the button. */
@@ -31,14 +30,12 @@ export const PASSWORD_STEP: Record<TwoStepState, PasswordStep> = {
   on: {
     question: "Turn on two-step sign-in. Enter your current password to see your new key.",
     button: "Show my key",
-    busy: "Checking…",
   },
   off: {
     question:
       "Turn off two-step sign-in? Admin sign-in will ask for your password only, and your " +
       "other browsers will be signed out.",
     button: "Yes, turn off",
-    busy: "Turning off…",
   },
 };
 

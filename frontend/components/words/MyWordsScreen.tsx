@@ -130,6 +130,7 @@ export function MyWordsScreen() {
   const groups = items ? wordGroups(items, filter) : [];
   const note = items ? limitNote(items.length) : null;
   const spinner = busy && <span className="spinner" aria-hidden="true" />;
+  const busyClass = busy ? styles.busy : "";
   const alert = (text: string | null) => text && <p className="error-text" role="alert">{text}</p>;
 
   return (
@@ -145,7 +146,7 @@ export function MyWordsScreen() {
         <h2 id="add-word-heading" className={styles.subheading}>Add a word</h2>
         <div className={styles.fields}>
           <WordFields idPrefix="add" draft={draft} onChange={setDraft} checked={tried} />
-          <button type="submit" className={`btn btn-primary ${styles.target}`} aria-disabled={busy || undefined}>
+          <button type="submit" className={`btn btn-primary ${styles.target} ${busyClass}`} aria-disabled={busy || undefined}>
             {spinner}Add
           </button>
         </div>
@@ -220,11 +221,12 @@ export function MyWordsScreen() {
               <p>Delete &apos;{row.item.word}&apos; as &apos;{row.item.meaning}&apos;? Chat stops using it.</p>
             )}
             {alert(row.error)}
-            <div className="row">
-              <button type="submit" className={`btn ${row.mode === "change" ? "btn-primary" : "btn-danger"} ${styles.target}`} aria-disabled={busy || undefined}>
+            {/* [Cancel] [Save or Delete]: the action last; Delete starts on Cancel. */}
+            <div className={styles.dialogButtons}>
+              <button type="button" className={`btn ${styles.target}`} data-autofocus={row.mode === "delete" || undefined} onClick={() => setRow(null)}>Cancel</button>
+              <button type="submit" className={`btn ${row.mode === "change" ? "btn-primary" : "btn-danger"} ${styles.target} ${busyClass}`} aria-disabled={busy || undefined}>
                 {spinner}{row.mode === "change" ? "Save" : "Delete"}
               </button>
-              <button type="button" className={`btn ${styles.target}`} data-autofocus={row.mode === "delete" || undefined} onClick={() => setRow(null)}>Cancel</button>
             </div>
           </form>
         </ActionDialog>

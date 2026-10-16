@@ -1,4 +1,4 @@
-/* My words and "Words in these files". Tokens only (app/globals.css); the
+/* My words and "Words in these files". MonoEdge tokens only (app/globals.css); the
    global .stack and .row do the rest. Every button, field and summary here is
    at least 44 px tall (the touch size). */
 
@@ -16,7 +16,7 @@
 }
 
 .block {
-  margin-bottom: var(--space-5);
+  margin-bottom: var(--space-6);
 }
 
 .fields {
@@ -104,15 +104,15 @@
 .markerItem[aria-pressed="true"] {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
-  background: var(--accent-soft);
+  background: var(--accent-subtle);
   font-weight: 600;
 }
 
 .markerNumber {
   min-width: 1.5rem;
-  border-radius: var(--r-full);
+  border-radius: 2px;
   background: var(--accent);
-  color: var(--accent-fg);
+  color: var(--text-onaccent);
   font-weight: 700;
   text-align: center;
 }
@@ -129,4 +129,40 @@
 .picks legend {
   margin-bottom: var(--space-1);
   font-weight: 600;
+}
+
+/* A dialog's buttons: [Destructive] ... [Cancel] [Primary], the primary last (MonoEdge design
+   system). Below 480px they stack full width, the primary on top. */
+.dialogButtons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.dialogButtons > .destructive:has(+ :not(.destructive)) {
+  margin-inline-end: auto;
+}
+
+@media (max-width: 479.98px) {
+  .dialogButtons {
+    flex-direction: column-reverse;
+    align-items: stretch;
+  }
+
+  .dialogButtons > .destructive {
+    margin-inline-end: 0;
+  }
+}
+
+/* A busy button keeps its width: the label goes clear and the spinner sits over it. */
+.busy {
+  position: relative;
+  -webkit-text-fill-color: transparent;
+}
+
+.busy > :global(.spinner) {
+  position: absolute;
+  inset: 0;
+  margin: auto;
 }

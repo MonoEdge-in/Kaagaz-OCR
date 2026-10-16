@@ -99,9 +99,12 @@ describe("activity and health source guards", () => {
       "Activity",
       "Health",
     ]);
-    const console = read("components/operator/OperatorConsole.tsx");
+    // Changed on purpose (MonoEdge design system, 16 Oct 2026): the pattern lives in the shared
+    // Tabs component, which the admin screen and the console both use.
+    expect(read("components/operator/OperatorConsole.tsx")).toContain('<Tabs<TabId> prefix="operator"');
+    const tabs = read("components/admin/Tabs.tsx");
     for (const part of ['role="tablist"', 'role="tab"', 'role="tabpanel"', "aria-controls", "tabAfterKey(", "tabIndex="]) {
-      expect(console, part).toContain(part);
+      expect(tabs, part).toContain(part);
     }
     expect(read("app/operator/(console)/page.tsx")).toContain("<OperatorConsole />");
   });

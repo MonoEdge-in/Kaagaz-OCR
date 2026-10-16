@@ -47,7 +47,7 @@ export function SettingsPanel() {
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!settings) return;
+    if (!settings || busy) return; // never a second save while one runs
     setSaved(null);
     const parsed = parseUploadLimit(text, settings.platform_max_upload_mb);
     if (!parsed.ok) {
@@ -120,15 +120,14 @@ export function SettingsPanel() {
           </div>
           <AutofileSwitch granted={settings.autofile.granted} on={autofileOn} onChange={setAutofileOn} />
           <div className="row">
-            <button type="submit" className="btn btn-primary" disabled={busy}>
-              {busy ? (
-                <>
-                  <span className="spinner" aria-hidden="true" />
-                  Saving…
-                </>
-              ) : (
-                "Save"
-              )}
+            <button
+              type="submit"
+              className={`btn btn-primary ${busy ? styles.busy : ""}`}
+              disabled={busy}
+              aria-busy={busy || undefined}
+            >
+              {busy && <span className="spinner" aria-hidden="true" />}
+              Save
             </button>
             <span aria-live="polite" className={styles.saved}>
               {saved ?? ""}

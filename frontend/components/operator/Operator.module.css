@@ -1,5 +1,6 @@
-/* The operator (super admin) screens. Tokens only (app/globals.css). The table
-   uses the shared reflow in components/documents/Table.module.css. */
+/* The operator (super admin) screens. MonoEdge tokens only (app/globals.css): flat,
+   square (2px), hairline borders. The tables use the shared reflow in
+   components/documents/Table.module.css, inside Admin.module.css's .tableScroll. */
 
 /* --- The top bar: wraps onto two lines on a phone, never scrolls sideways --- */
 
@@ -8,25 +9,31 @@
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2) var(--space-3);
+  min-height: 56px;
   padding: max(var(--space-2), env(safe-area-inset-top)) max(var(--space-4), env(safe-area-inset-right))
     var(--space-2) max(var(--space-4), env(safe-area-inset-left));
-  background: var(--surface);
+  background: var(--bg-surface);
   border-bottom: 1px solid var(--border);
 }
 
 .brand {
   margin-inline-end: auto;
   padding-inline-start: var(--space-3);
-  border-inline-start: 2px solid var(--brand-lal);
-  font-family: var(--font-display);
-  font-size: var(--fs-xl);
+  border-inline-start: 2px solid var(--accent);
+  font-family: var(--font-display); /* 24px: the display face only at 24px and up */
+  font-size: 1.5rem;
   font-weight: 700;
 }
 
+/* A long e-mail is cut with an ellipsis; its title holds all of it. */
 .who {
+  flex: 0 1 auto;
   min-width: 0;
-  overflow-wrap: anywhere;
-  color: var(--fg-muted);
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--text-secondary);
   font-size: var(--fs-sm);
 }
 
@@ -56,7 +63,7 @@
 
 .summary {
   margin: 0;
-  color: var(--fg-muted);
+  color: var(--text-secondary);
   font-size: var(--fs-sm);
 }
 
@@ -68,7 +75,7 @@
 .extra {
   display: block;
   margin-top: var(--space-1);
-  color: var(--fg-muted);
+  color: var(--text-secondary);
   font-size: var(--fs-sm);
 }
 
@@ -83,6 +90,18 @@
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
+}
+
+.rowActions.spaced {
+  gap: var(--space-4);
+}
+
+/* The safe actions, then the ones that take something away on their own row, 16px below. */
+.actionGroups {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-4);
 }
 
 /* --- One organisation's admins ----------------------------------------------- */
@@ -100,12 +119,18 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
+  min-width: 0;
   padding-block-start: var(--space-3);
   border-top: 1px solid var(--border);
+  contain: layout paint style;
 }
 
+/* A long e-mail is cut with an ellipsis; its title holds all of it. */
 .email {
-  overflow-wrap: anywhere;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 /* Pages and size have their own columns from 64rem and on the cards; between
@@ -148,6 +173,20 @@
   .nameWide th:first-child {
     width: 10rem;
   }
+
+  /* Comparison tables (Compare models, Quality per organisation): room for every column,
+     scrolled sideways in .tableScroll, the name column staying in view. */
+  .compare {
+    min-width: 60rem;
+  }
+
+  .compare th:first-child,
+  .compare td:first-child {
+    position: sticky;
+    inset-inline-start: 0;
+    z-index: 1;
+    background: var(--bg-surface);
+  }
 }
 
 @container reflow (min-width: 48rem) and (max-width: 63.98rem) {
@@ -179,11 +218,28 @@
   margin: 0;
 }
 
+/* [Destructive] ... [Cancel] [Primary]: the primary last, a destructive one pushed to the start. */
 .buttons {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: var(--space-2);
+}
+
+.buttons > .destructive:has(+ :not(.destructive)) {
+  margin-inline-end: auto;
+}
+
+/* Below 480px the buttons stack full width, the primary on top. */
+@media (max-width: 479.98px) {
+  .buttons {
+    flex-direction: column-reverse;
+    align-items: stretch;
+  }
+
+  .buttons > .destructive {
+    margin-inline-end: 0;
+  }
 }
 
 .resultHeading {
@@ -217,7 +273,7 @@
   display: flex;
   align-items: flex-start;
   gap: var(--space-2);
-  min-height: var(--control-h);
+  min-height: var(--h-md);
   overflow-wrap: anywhere;
 }
 
@@ -237,7 +293,7 @@
   margin: 0;
   padding: var(--space-3);
   border: 1px solid var(--border);
-  border-radius: var(--r-sm);
+  border-radius: 2px;
   min-width: 0;
 }
 
@@ -252,11 +308,13 @@
   margin-inline-start: var(--space-2);
   padding: 0 var(--space-2);
   border: 1px solid var(--border);
-  border-radius: var(--r-full);
-  color: var(--fg-muted);
-  font-size: var(--fs-sm);
-  font-weight: 400;
-  line-height: 1.4;
+  border-radius: 2px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  line-height: 1.6;
 }
 
 .sectionTools {
@@ -278,7 +336,23 @@
   margin: 0 calc(-1 * var(--space-4)) calc(-1 * var(--space-4));
   padding: var(--space-3) var(--space-4);
   border-top: 1px solid var(--border);
-  background: var(--surface);
+  background: var(--bg-surface);
+}
+
+/* Closing with unsaved changes asks first: [Close without saving] ... [Keep editing]. */
+.leaveAsk {
+  flex: 1 1 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--warning);
+  border-radius: 2px;
+}
+
+.leaveAsk p {
+  margin: 0;
 }
 
 .changes {

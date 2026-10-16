@@ -105,6 +105,22 @@ export function PeriodSelect({ id, days, onDays }: { id: string; days: InsightPe
   );
 }
 
+/** "Figures as of 16 Oct, 14:05" (when they arrived: a real time, never made up) and Refresh. */
+export function Freshness({ loadedAt, refreshing, onRefresh }: { loadedAt: number; refreshing: boolean; onRefresh(): void }) {
+  return (
+    <>
+      <p className={css.asOf}>
+        Figures as of {formatDateTime(new Date(loadedAt).toISOString())}
+        {refreshing && ", refreshing\u2026"}
+      </p>
+      <button type="button" className="btn" onClick={onRefresh}>
+        <Icon name="refresh" />
+        Refresh
+      </button>
+    </>
+  );
+}
+
 export function Skeleton() {
   return (
     <div className={`delayed ${admin.tiles}`} aria-hidden="true">
@@ -187,14 +203,7 @@ export function OverviewScreen(
         <PeriodSelect id="overview-period" days={days} onDays={onDays} />
         {data && (
           <div className={css.toolEnd}>
-            <p className={css.asOf}>
-              Figures as of {formatDateTime(new Date(data.loadedAt).toISOString())}
-              {refreshing && ", refreshing\u2026"}
-            </p>
-            <button type="button" className="btn" onClick={onRefresh}>
-              <Icon name="refresh" />
-              Refresh
-            </button>
+            <Freshness loadedAt={data.loadedAt} refreshing={refreshing} onRefresh={onRefresh} />
             {!empty && (
               <button type="button" className="btn" onClick={() => downloadCsv(data)}>
                 Download CSV
@@ -452,7 +461,7 @@ function OrgTable({ data, names, announce }: { data: OverviewData; names: Readon
       {lines.length === 0 ? (
         <p className={admin.emptyLine}>No organisation was used in this period.</p>
       ) : (
-        <div className={table.reflowWrap}>
+        <div className={`${table.reflowWrap} ${admin.tableScroll}`}>
           <table className={`table ${table.reflow}`} role="table">
             <caption className="visually-hidden">Organisations at a glance, {sort.label.toLocaleLowerCase()}</caption>
             <thead role="rowgroup">

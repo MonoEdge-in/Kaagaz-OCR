@@ -11,7 +11,8 @@
 // Each section says "Same as platform default" or "Changed from platform default", with
 // "Reset section" (board 9). Answering shows what the organisation's people will see, and
 // the budget its rough rupees and this month's spend. A save bar at the foot lists the
-// unsaved changes, with Discard and Save (both off while nothing changed).
+// unsaved changes, with Discard and Save (both off while nothing changed). Closing it (Esc,
+// a backdrop click or Close) with unsaved changes asks first, in the save bar.
 // Saving asks for a fresh code (step-up); a refusal is said next to the field it is about.
 // Once the settings load, the focus moves to the first control, and it goes back to the
 // row's "AI settings" button when the dialog closes. AiFields is shared with the platform
@@ -50,6 +51,7 @@ import {
   toggledLevel,
 } from "./models";
 import type { AiDraft, AiErrors, AiField, Area, Section } from "./models";
+import admin from "@/components/admin/Admin.module.css";
 import styles from "./Operator.module.css";
 
 /** The row's "AI settings" button, where the focus goes back. */
@@ -83,6 +85,7 @@ export function OrgAiSettings({ org, onClose, onSaved }: { org: Organisation; on
   const [reset, setReset] = useState(false);
   const [busy, setBusy] = useState(false);
   const [attempt, setAttempt] = useState(0);
+  const [leaving, setLeaving] = useState(false); // asked to close with unsaved changes
   // The form appears once the data has loaded: its first control takes the focus then.
   const focusFirst = useCallback((form: HTMLFormElement | null) => {
     form?.querySelector<HTMLElement>("input, select, button")?.focus();
@@ -109,6 +112,9 @@ export function OrgAiSettings({ org, onClose, onSaved }: { org: Organisation; on
   const saved = loaded ? draftOf(loaded.reply.own, loaded.reply) : null;
   const changes = saved && draft ? changesText(saved, draft, loaded?.catalogue ?? []) : [];
   const unchanged = changes.length === 0;
+  const asking = leaving && !unchanged;
+  // Keep editing takes the focus when the question opens: never the button that loses the changes.
+  const focusKeep = useCallback((button: HTMLButtonElement | null) => button?.focus(), []);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -141,7 +147,7 @@ export function OrgAiSettings({ org, onClose, onSaved }: { org: Organisation; on
   return (
     <ActionDialog
       title={`AI settings of ${org.name}`}
-      onClose={onClose}
+      onClose={() => (unchanged ? onClose() : setLeaving(true))}
       canClose={(way) => canCloseDialog({ busy }, way)}
       onClosed={() => document.getElementById(orgAiFocusId(org.id))?.focus()}
     >
@@ -216,6 +222,19 @@ export function OrgAiSettings({ org, onClose, onSaved }: { org: Organisation; on
             </p>
           )}
           <div className={styles.saveBar}>
+            {asking && (
+              <div className={styles.leaveAsk} role="alert">
+                <p>Close without saving? Your {countText(changes.length, "unsaved change", "unsaved changes")} will be lost.</p>
+                <div className={styles.buttons}>
+                  <button type="button" className={`btn btn-danger ${styles.destructive}`} onClick={onClose}>
+                    Close without saving
+                  </button>
+                  <button ref={focusKeep} type="button" className="btn" onClick={() => setLeaving(false)}>
+                    Keep editing
+                  </button>
+                </div>
+              </div>
+            )}
             <p className={styles.changes}>
               <strong id="ai-changes-count" aria-live="polite">
                 {unchanged ? "No unsaved changes" : countText(changes.length, "unsaved change", "unsaved changes")}
@@ -239,7 +258,7 @@ export function OrgAiSettings({ org, onClose, onSaved }: { org: Organisation; on
               </button>
               <button
                 type="submit"
-                className="btn btn-primary"
+                className={`btn btn-primary ${busy ? admin.busy : ""}`}
                 disabled={busy || unchanged}
                 aria-busy={busy || undefined}
                 aria-describedby={unchanged ? "ai-changes-count" : "ai-changes-count ai-changes"}
@@ -469,6 +488,8 @@ export function AiFields(props: {
                 step="0.01"
                 value={draft.budget}
                 disabled={busy}
+                // The wheel scrolls the dialog, never the budget: the box lets go of the focus first.
+                onWheel={(event) => event.currentTarget.blur()}
                 onChange={(event) => onChange({ ...draft, budget: event.target.value })}
                 aria-invalid={errors.budget ? true : undefined}
                 aria-describedby={describedBy("budget", errors, rupees ? "ai-budget-hint ai-budget-inr" : "ai-budget-hint")}
