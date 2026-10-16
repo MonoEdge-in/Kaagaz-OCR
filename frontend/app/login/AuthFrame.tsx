@@ -97,7 +97,6 @@ export function AuthFrame({
 
       <main className={styles.main}>
         <div className={styles.formColumn}>{children}</div>
-        <p className={styles.footer}>&copy; 2026 MonoEdge · Pune &amp; Jalna</p>
       </main>
     </div>
   );

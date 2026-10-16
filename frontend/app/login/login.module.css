@@ -504,13 +504,3 @@
   font-weight: 600;
 }
 
-.footer {
-  margin: var(--space-12) 0 0;
-  font-family: var(--font-mono);
-  font-size: var(--fs-label);
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--fg-muted);
-  text-align: center;
-}
