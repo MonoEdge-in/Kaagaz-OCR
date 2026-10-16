@@ -9,6 +9,9 @@
 // "Being read again", the live status, or "kept as is"). Upload a better scan
 // sends a new version of the document (the existing upload), which is read in full.
 // The steps and the words are components/viewer/pageProblems.ts.
+// UI audit DD3/DD4 (16 Oct 2026): an alert, in the Needs attention tab: its icon, a title,
+// each problem as a line (no bullets), then one row of like buttons. This is the page's
+// own Read again; the whole document's is in the document's menu.
 
 import Link from "next/link";
 import { useCallback, useReducer, useRef, useState } from "react";
@@ -60,6 +63,7 @@ export function PageProblems({ documentId, page, userId, canFix, canUpload, onRe
   const kept = keptText(page);
   const readingAgain = page.read_again_requested_at !== null || askedAgain;
   const questionId = `page-${page.page_no}-question`;
+  const titleId = `page-${page.page_no}-problems`;
   // Set when the fix has just gone through, so the note mounts (or is kept) with focus.
   const focusIfDone = (fix: Fix) => (state.step === "done" && state.fix === fix ? focusOnMount : undefined);
 
@@ -113,16 +117,17 @@ export function PageProblems({ documentId, page, userId, canFix, canUpload, onRe
 
   const confirming = state.step === "confirming" || state.step === "sending" ? state : null;
   return (
-    <section className={styles.problemBanner} aria-label={`Reading problems on page ${page.page_no}`}>
+    <section className={styles.problemBanner} aria-labelledby={titleId}>
       <Icon name="alert" />
       <div className={styles.problemBody}>
-        <ul className={styles.problemList}>
-          {problems.map((problem) => (
-            <li key={problem.code}>
-              <span className={styles.problemSays}>{problem.says}</span> {problem.fix}
-            </li>
-          ))}
-        </ul>
+        <p id={titleId} className={styles.problemTitle}>
+          Page {page.page_no} is flagged for review
+        </p>
+        {problems.map((problem) => (
+          <p key={problem.code} className={styles.problemNote}>
+            <span className={styles.problemSays}>{problem.says}</span> {problem.fix}
+          </p>
+        ))}
         {kept && (
           <p ref={focusIfDone("keep")} className={styles.problemNote} tabIndex={-1}>
             {kept}
@@ -163,7 +168,7 @@ export function PageProblems({ documentId, page, userId, canFix, canUpload, onRe
             </div>
           </div>
         ) : (
-          <div className={styles.readAgainButtons}>
+          <div className={styles.problemActions}>
             {canFix && !readingAgain && (
               <button
                 ref={holdOpener("read")}
@@ -192,7 +197,7 @@ export function PageProblems({ documentId, page, userId, canFix, canUpload, onRe
                 ref={holdOpener("keep")}
                 data-fix="keep"
                 type="button"
-                className="btn btn-quiet"
+                className="btn"
                 onClick={(event) => open("keep", event.currentTarget)}
               >
                 Keep as is

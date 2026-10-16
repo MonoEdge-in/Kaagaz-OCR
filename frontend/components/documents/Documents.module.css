@@ -37,14 +37,6 @@
   text-align: center;
 }
 
-.dropSlim {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2) var(--space-3);
-  padding: var(--space-3) var(--space-4);
-}
-
 .dropActive {
   border-color: var(--accent);
   background: var(--accent-subtle);
@@ -64,18 +56,61 @@
   font-size: var(--fs-sm);
 }
 
-.dropSlim .dropHint {
-  flex: 1 1 16rem;
+/* D10: files dragged over the screen. A fixed overlay, so nothing in the page moves; it
+   never takes the drop itself (pointer-events: none), the screen under it does. */
+.dropOverlay {
+  position: fixed;
+  inset: var(--space-4);
+  z-index: var(--z-overlay);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  border: 1px dashed var(--accent);
+  border-radius: 2px;
+  background: var(--bg-selected);
+  text-align: center;
+  pointer-events: none;
+}
+
+.dropOverlay p {
+  margin: 0;
 }
 
 /* --- Scan with (the scan reader for the next uploads) --------------------------- */
 
+/* D1: the room "Read with" and its one-line hint need is kept from the first paint
+   (min-height), and a skeleton holds the select's place until the limits come, so the
+   header never grows under the pointer. */
 .uploadControls {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
+  align-items: flex-start;
+  justify-content: flex-end;
   gap: var(--space-2) var(--space-3);
   min-width: 0;
+  min-height: calc(var(--h-md) + var(--space-1) + 1.5em);
+}
+
+.readerSkeleton {
+  display: block;
+  width: 18rem;
+  max-width: 100%;
+  height: var(--h-md);
+}
+
+/* In the header the hint is one line, its full words in its title. */
+.uploadControls .readerHint {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
+  line-clamp: 1;
+  overflow: hidden;
+}
+
+.uploadControls .reader {
+  flex: 0 1 26rem;
 }
 
 .reader {
@@ -306,8 +341,31 @@
   pointer-events: none;
 }
 
+/* D6: the box is the Search button's height; the clear x sits inside its end. */
 .searchInput {
+  height: var(--h-md);
+  min-height: var(--h-md);
   padding-inline-start: calc(var(--space-3) + 16px + var(--space-2));
+  padding-inline-end: calc(var(--h-md) + var(--space-1));
+}
+
+.searchInput::-webkit-search-cancel-button {
+  display: none;
+}
+
+.searchClear {
+  position: absolute;
+  inset-inline-end: 0;
+  top: 0;
+  border-color: transparent;
+  background: transparent;
+}
+
+@media (pointer: coarse) {
+  .searchInput {
+    height: var(--h-lg);
+    min-height: var(--h-lg);
+  }
 }
 
 /* Always shown (every input has a label you can see), on its own line above the box. */
@@ -316,15 +374,27 @@
   font-weight: 600;
 }
 
+/* After the table, stuck to the bottom of the list's view while rows are ticked (D9), so
+   ticking a row never pushes the rows under the pointer. On cards it always shows, with
+   Select all; in the table that box heads the select column, and an idle bar is gone. */
 .selectionBar {
+  position: sticky;
+  bottom: 0;
+  z-index: var(--z-sticky);
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2) var(--space-3);
   padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   border-radius: 2px;
   background: var(--bg-subdued);
+}
+
+@container docs-list (min-width: 36rem) {
+  .selectionBar[data-idle] {
+    display: none;
+  }
 }
 
 /* The select cell stays a table cell (no display rule); the label inside is
@@ -345,9 +415,12 @@
   font-weight: 600;
 }
 
+/* D2: the box's row is as tall as the name's first line (--row-line, the 32px control
+   height), so the two sit on one line. */
 .selectHit {
   justify-content: center;
   min-width: 24px;
+  height: var(--row-line);
 }
 
 @media (pointer: coarse) {
@@ -361,10 +434,16 @@
   }
 }
 
+/* D2: its own column; the name cell's 12px start padding is the gap after the box. */
 .selectColumn,
 .selectCell {
   width: 3rem;
   text-align: start;
+}
+
+table.docs .selectColumn,
+table.docs .selectCell {
+  padding-inline-end: 0;
 }
 
 .selectAll input,
@@ -472,7 +551,7 @@ table.docs tbody tr[data-selected="true"] .selectHit input {
   border-radius: 2px;
 }
 
-@container docs-list (min-width: 48rem) {
+@container docs-list (min-width: 36rem) {
   .skeletonRow {
     height: 48px;
     border-radius: 2px;
@@ -490,10 +569,13 @@ table.docs tbody tr[data-selected="true"] .selectHit input {
 /* --- Rows: cards, a narrow table, or the full table -----------------------------
 
    The list's own width decides (a container query), since the folder tree
-   beside it takes room the window still has:
-   - below 48rem: cards;
-   - 48 to 64rem: a table without the Size and By columns; the size shows under
-     the type and "Uploaded by" under the time;
+   beside it takes room the window still has. UI audit D3 (16 Oct 2026): a table
+   from 36rem, so a laptop with the side nav and the folder tree (about 37rem of
+   list at 1140px) gets rows, not cards:
+   - below 36rem: cards;
+   - 36 to 48rem: no Type, Size or By columns; type and size show under the name,
+     "Uploaded by" under the time;
+   - 48 to 64rem: the Type column is back; the size shows under the type;
    - 64rem and up: all eight columns.
    The short columns have rem widths and Name and Status share the rest, so the
    columns never need more room than the table has (tests/layout-guards.test.ts
@@ -502,6 +584,7 @@ table.docs tbody tr[data-selected="true"] .selectHit input {
    keep the table's meaning. */
 
 table.docs {
+  --row-line: 32px; /* each cell's first line: the tick box, the name, the dates */
   width: 100%;
   border-collapse: separate;
   border-spacing: 0;
@@ -517,9 +600,60 @@ table.docs th {
   min-width: 0;
 }
 
+/* D11: the whole row opens the document. The name is a stretched link (its ::after covers
+   the row); the row's own controls sit above it. No underline; the file icon leads. */
+table.docs > tbody > tr {
+  position: relative;
+}
+
+table.docs > tbody > tr:hover {
+  background: var(--bg-hover);
+}
+
 .name {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  color: var(--text-primary);
   font-weight: 600;
+  line-height: var(--row-line);
+  text-decoration: none;
   overflow-wrap: break-word;
+}
+
+.name:hover {
+  color: var(--text-primary);
+}
+
+.name::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+
+.name > * {
+  min-width: 0;
+}
+
+.fileIcon {
+  flex: none;
+  height: var(--row-line);
+  color: var(--text-secondary);
+}
+
+.selectHit,
+.newerVersion,
+.statusAction,
+.actionsCell {
+  position: relative;
+  z-index: 1;
+}
+
+/* Type and size under the name, only in the narrowest table. */
+.bandType {
+  display: none;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
 }
 
 /* A newer version still being read, or one that failed, under the name. */
@@ -644,7 +778,7 @@ table.docs th {
   margin-inline-end: auto;
 }
 
-@container docs-list (min-width: 48rem) {
+@container docs-list (min-width: 36rem) {
   table.docs {
     table-layout: fixed;
   }
@@ -652,7 +786,7 @@ table.docs th {
   /* The header sticks under the top bar. No overflow wrapper (the MonoEdge rule for tables),
      on purpose: a row's Actions menu and its "are you sure" panel open past the row, and a
      scrolling wrapper would cut them off. The column budgets (tests/layout-guards.test.ts)
-     and the cards below 48rem keep the table inside its width instead. */
+     and the cards below 36rem keep the table inside its width instead. */
   table.docs thead th {
     position: sticky;
     top: var(--topbar-space);
@@ -674,11 +808,17 @@ table.docs th {
     scroll-margin-top: calc(var(--topbar-space) + 4rem);
   }
 
+  /* D2: every cell starts at the top, each first line 32px, so the box, the name, the
+     status chip and the dates share one line. */
   table.docs td {
     height: 48px;
     padding-block: var(--space-2);
-    vertical-align: middle;
+    vertical-align: top;
     border-bottom: 1px solid var(--border);
+  }
+
+  .statusCell .statusLine:first-child {
+    height: var(--row-line);
   }
 
   table.docs tbody tr:last-child td {
@@ -695,11 +835,17 @@ table.docs th {
   }
 
   .uploadedColumn {
-    width: 8.5rem;
+    width: 7.5rem;
   }
 
+  /* The menu's icon button (36px) and its padding. */
   .actionsColumn {
-    width: 7rem;
+    width: 3.5rem;
+  }
+
+  table.docs .actionsColumn,
+  table.docs .actionsCell {
+    padding-inline: var(--space-2);
   }
 
   /* Numbers line up at the end. */
@@ -710,22 +856,13 @@ table.docs th {
 
   .meta {
     font-size: var(--fs-sm);
+    line-height: var(--row-line);
   }
 
+  /* The question is wider than the menu's column, so it opens as a small panel over the
+     end of its row instead of running off the table. */
   .actionsCell {
     text-align: end;
-  }
-
-  /* The Actions menu opens towards the row, from the end of the table. */
-  .actionsCell ul {
-    inset-inline-start: auto;
-    inset-inline-end: 0;
-  }
-
-  /* The question is wider than the Actions column, so it opens as a small
-     panel over the end of its row instead of running off the table. */
-  .actionsCell {
-    position: relative;
   }
 
   .confirm {
@@ -746,8 +883,20 @@ table.docs th {
   }
 }
 
-/* The narrow table: Size and By leave their columns for lines in the row. */
-@container docs-list (min-width: 48rem) and (max-width: 63.98rem) {
+/* The narrowest table: Type leaves its column for a line under the name. */
+@container docs-list (min-width: 36rem) and (max-width: 47.98rem) {
+  .typeColumn,
+  .typeCell {
+    display: none;
+  }
+
+  .bandType {
+    display: block;
+  }
+}
+
+/* The narrow tables: Size and By leave their columns for lines in the row. */
+@container docs-list (min-width: 36rem) and (max-width: 63.98rem) {
   .sizeColumn,
   .sizeCell,
   .byColumn,
@@ -783,8 +932,8 @@ table.docs th {
   }
 }
 
-@container docs-list (max-width: 47.98rem) {
-  /* A card: the name and tags, the status, one meta line, then Actions. */
+@container docs-list (max-width: 35.98rem) {
+  /* A card: the name and tags, the status, one meta line, then the menu. */
   table.docs,
   table.docs tbody,
   table.docs td {
@@ -816,7 +965,7 @@ table.docs th {
   table.docs > tbody > tr {
     display: flex;
     flex-wrap: wrap;
-    align-items: baseline;
+    align-items: flex-start;
     background: var(--bg-surface);
     border: 1px solid var(--border);
     border-radius: 2px;
@@ -841,9 +990,9 @@ table.docs th {
     display: none;
   }
 
-  .selectCell {
+  table.docs .selectCell {
     flex: 0 0 auto;
-    padding-inline-end: var(--space-2);
+    padding-inline-end: var(--space-3); /* D2: 12px to the name */
   }
 
   .nameCell {
