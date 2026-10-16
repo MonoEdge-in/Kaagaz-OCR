@@ -344,7 +344,8 @@ def mark_for_upgrade(conn: Connection, customer_id: str, document_id: str) -> bo
         return False
     if conn.execute(text(_ENSEMBLE_RUNNING), {"c": customer_id, "d": document_id}).scalar_one():
         return False
-    params = {"c": customer_id, "d": document_id, "by": None, "model": None}
+    # Every bind of _REPROCESS (a missing one made the sweep fail on its first document).
+    params = {"c": customer_id, "d": document_id, "by": None, "m": None, "mode": None, "also": None}
     if conn.execute(text(_REPROCESS + " RETURNING id"), params).first() is None:
         return False
     audit.record(
