@@ -8,10 +8,14 @@ import io
 import struct
 import unittest
 import zipfile
+import zlib
+from unittest import mock
 
+from pdfminer import pdftypes
 from PIL import Image
 
 from kaagaz.adapters.scanner import LayeredScanner
+from kaagaz.scanning import content
 from kaagaz.scanning.content import Finding, inspect
 from kaagaz.scanning.gate import CUSTOMER_MESSAGES, REJECTION_CODES, Verdict
 from tests.pdf_builder import Page, Picture, Text, make_objstm_pdf, make_pdf
@@ -367,6 +371,53 @@ class TheLayers(unittest.TestCase):
     def test_blocked_is_a_rejection_with_a_customer_message(self) -> None:
         self.assertIn("blocked_content", REJECTION_CODES)
         self.assertIn("scripts, macros", CUSTOMER_MESSAGES["blocked_content"])
+
+
+class SecurityReviewBounds(unittest.TestCase):
+    """Security review of the incident fix (17 Oct 2026): a sound index cannot hide an
+    object a viewer finds, an object stream that cannot be decoded is not called safe,
+    and no PDF can grow the check's budget, fill memory or run past the deadline."""
+
+    def test_an_active_object_a_sound_index_leaves_out_is_blocked(self) -> None:
+        sound = pdf_with([CATALOG, PAGES, PAGE])
+        self.assertIsNone(inspect(sound))
+        self.assertIs(inspect(sound + b"4 0 obj\n" + JS + b"\nendobj\n"), Finding.BLOCKED)
+
+    def test_an_object_stream_that_cannot_be_decoded_is_unscannable(self) -> None:
+        packed = make_objstm_pdf([CATALOG], [PAGES, PAGE])
+        crypt = packed.replace(b"/Filter /FlateDecode", b"/Filter /Crypt      ")
+        self.assertEqual(len(crypt), len(packed))
+        self.assertIs(inspect(crypt), Finding.UNSCANNABLE)
+
+    def test_a_compressed_object_stream_bomb_is_unscannable(self) -> None:
+        bomb = make_objstm_pdf([CATALOG], [PAGES, PAGE, b"<< /A (" + b"0" * (2 << 20) + b") >>"])
+        self.assertLess(len(bomb), 64 << 10)  # 2 MiB of text, compressed
+        with mock.patch.object(content, "_MAX_DECODED_BYTES", 1 << 20):
+            self.assertIs(inspect(bomb), Finding.UNSCANNABLE)
+        self.assertIsNone(inspect(bomb))  # within the real bound it is an ordinary file
+
+    def test_object_grants_never_add_up_past_their_ceiling(self) -> None:
+        bounds = content._Bounds(100)
+        for _ in range(100_000):
+            bounds.grant(content._READ_PER_OBJECT)
+        self.assertEqual(bounds.reads, content._READ_FACTOR * 100 + content._MAX_GRANT_BYTES)
+
+    def test_a_file_of_tiny_headers_cannot_buy_itself_reads(self) -> None:
+        tiny = pdf_with([CATALOG, PAGES, PAGE]) + b"9 0 obj\n" * 40_000
+        with mock.patch.object(content, "_MAX_GRANT_BYTES", 1 << 20):
+            self.assertIn(inspect(tiny), (None, Finding.UNSCANNABLE))  # bounded, either way
+
+    def test_the_check_ends_at_its_deadline(self) -> None:
+        now = [0.0]
+        bounds = content._Bounds(1000, clock=lambda: now[0])
+        bounds.read(1)
+        now[0] = content._DEADLINE_SECONDS + 1
+        with self.assertRaises(content._ReadBudgetSpent):
+            bounds.read(1)
+
+    def test_the_readers_decompress_as_before_outside_a_check(self) -> None:
+        big = b"0" * (content._MAX_DECODED_BYTES + 1)
+        self.assertEqual(pdftypes.zlib.decompress(zlib.compress(big)), big)
 
 
 if __name__ == "__main__":
