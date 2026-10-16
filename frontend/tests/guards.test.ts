@@ -58,11 +58,11 @@ describe("guards", () => {
       /login|signInPath|endedPath|signedOutPath|pageAfterSessionChange/.test(m.to),
     );
     expect(toSignIn).toEqual([{ file: "lib/session.tsx", to: "signInPath(pathname" }]);
-    const fromSignIn = moves.filter((m) => m.file.startsWith("app/login/") || m.file.startsWith("app/admin/login/"));
+    const fromSignIn = moves.filter((m) => m.file.startsWith("app/login/"));
     expect(fromSignIn).toEqual([]);
     const leaving = [
       "app/login/SignInForm.tsx",
-      "app/admin/login/AdminSignInForm.tsx",
+      "app/login/EnrolStep.tsx", // one sign-in page (16 Oct 2026): the admin form went
       "app/signup/SignUpForm.tsx",
       "components/shell/AppShell.tsx",
       "components/shell/SetPasswordScreen.tsx",

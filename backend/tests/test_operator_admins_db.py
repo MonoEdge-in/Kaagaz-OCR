@@ -109,7 +109,8 @@ def test_an_operator_manages_one_admin_with_one_row_per_change(db: Database) -> 
     assert reset.json()["admin"]["two_step"] is False
     state = api.user_state(a, uid)
     assert (state["failed_logins"], state["totp_secret_enc"], state["totp_enabled_at"]) == (0, None, None)
-    assert api.admin_login(api.client(), admin.email, password=PASSWORD).status_code == 200  # password alone
+    again = api.admin_login(api.client(), admin.email, password=PASSWORD)  # sets two-step up again
+    assert (again.status_code, again.json()["error"]["code"]) == (403, "mfa_enrol_required")
 
     failed = ("operator.step_up_failed", None, "operator", operator.id)
     assert _platform(operator) == [

@@ -526,7 +526,9 @@ describe("the AI settings dialogs", () => {
     const dialog = read("components/operator/OrgAiSettings.tsx");
     expect(dialog).toContain("onClosed={() => document.getElementById(orgAiFocusId(org.id))?.focus()}");
     expect(dialog).toContain('form?.querySelector<HTMLElement>("input, select, button")?.focus()');
-    expect(read("components/operator/OrganisationsView.tsx")).toContain("id={orgAiFocusId(org.id)}");
+    // Changed on purpose (owner, 16 Oct 2026): AI settings is in the row's Manage menu, so
+    // the focus comes back to the Manage button.
+    expect(read("components/operator/OrganisationsView.tsx")).toContain("buttonId={orgAiFocusId(org.id)}");
     expect(read("components/operator/PlatformDefaults.tsx")).toContain("onClosed={() => document.getElementById(CHANGE_ID)?.focus()}");
   });
 

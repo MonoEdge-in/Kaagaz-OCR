@@ -186,7 +186,7 @@ describe("misclicks", () => {
     expect(inOrder(read("components/operator/ConfirmDialog.tsx"), "Cancel", 'type="submit"')).toBe(true);
     expect(inOrder(read("components/operator/CreateDialog.tsx"), ">\n              Cancel", 'type="submit"')).toBe(true);
     expect(inOrder(read("components/operator/PlatformDefaults.tsx"), "Cancel\n", 'type="submit"')).toBe(true);
-    expect(inOrder(read("app/(app)/admin/TwoStepPanel.tsx"), "Cancel\n", 'type="submit"')).toBe(true);
+    // Changed on purpose (MFA required, 16 Oct 2026): the Two-step panel has no buttons now.
     expect(inOrder(read("components/admin/UsersPanel.tsx"), "Cancel\n", '"Yes, allow" : "Yes, reset"')).toBe(true);
     expect(inOrder(read("components/words/MyWordsScreen.tsx"), ">Cancel</button>", 'type="submit" className={`btn ${row.mode')).toBe(true);
   });
@@ -198,10 +198,13 @@ describe("misclicks", () => {
 
   it("gives the actions that take something away their own row, 16px from the rest", () => {
     expect(read("components/admin/UsersPanel.tsx")).toContain("className={styles.actionGroups}");
-    expect(read("components/operator/OrganisationsView.tsx")).toContain("className={styles.actionGroups}");
-    for (const file of ["components/admin/Admin.module.css", "components/operator/Operator.module.css"]) {
-      expect(noComments(read(file)), file).toMatch(/\.actionGroups \{[^}]*gap: var\(--space-4\);/);
-    }
+    expect(noComments(read("components/admin/Admin.module.css"))).toMatch(/\.actionGroups \{[^}]*gap: var\(--space-4\);/);
+    // Changed on purpose (owner, 16 Oct 2026): the organisations' actions are one Manage menu,
+    // the status changes after a separator 16px from the rest (tests/operator-manage-menu.test.ts).
+    expect(read("components/operator/OrganisationsView.tsx")).toContain("<ManageMenu");
+    expect(noComments(read("components/operator/Operator.module.css"))).toMatch(
+      /\.menuSeparator \{[^}]*margin: var\(--space-2\) 0;/,
+    );
   });
 
   it("keeps a busy button's width: the same words, a spinner over them", () => {

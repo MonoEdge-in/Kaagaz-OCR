@@ -253,7 +253,7 @@ def test_the_failed_list_pages_by_limit_and_offset(db: Database) -> None:
     assert admin.client.get("/api/admin/failed", params={"limit": 101}).status_code == 400
 
 
-@pytest.mark.parametrize("role", ["member", "reviewer", "admin"])
+@pytest.mark.parametrize("role", ["member", "reviewer"])  # an admin has no app session (0031)
 def test_the_failed_list_refuses_every_app_session(db: Database, role: str) -> None:
     signed = Api(db).new_signed(role)
     reply = signed.client.get("/api/admin/failed")

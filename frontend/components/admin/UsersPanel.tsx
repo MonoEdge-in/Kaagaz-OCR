@@ -59,11 +59,9 @@ interface Revealed {
 export function UsersPanel({
   currentUserId,
   adminTwoStep,
-  twoStepAllowed,
 }: {
   currentUserId: string;
   adminTwoStep: boolean;
-  twoStepAllowed: boolean;
 }) {
   const [attempt, setAttempt] = useState(0);
   const [users, setUsers] = useState<AdminUser[] | null>(null);
@@ -166,7 +164,6 @@ export function UsersPanel({
                     user={user}
                     isSelf={user.id === currentUserId}
                     adminTwoStep={adminTwoStep}
-                    twoStepAllowed={twoStepAllowed}
                     now={now}
                     onChanged={replace}
                     onPasswordReset={setRevealed}
@@ -194,7 +191,7 @@ const CONFIRM_TEXT: Record<Confirming, (name: string) => string> = {
     `Reset ${name}'s password? They are signed out everywhere and must choose a new one.`,
   "2fa": (name) =>
     `Reset ${name}'s 2FA? They are signed out and set up the app again at their next ` +
-    "admin sign-in.",
+    "sign-in.",
   forever: allowForeverQuestion,
 };
 
@@ -202,7 +199,6 @@ function UserRow({
   user,
   isSelf,
   adminTwoStep,
-  twoStepAllowed,
   now,
   onChanged,
   onPasswordReset,
@@ -210,7 +206,6 @@ function UserRow({
   user: AdminUser;
   isSelf: boolean;
   adminTwoStep: boolean;
-  twoStepAllowed: boolean;
   now: number;
   onChanged: (user: AdminUser) => void;
   onPasswordReset: (revealed: Revealed) => void;
@@ -258,8 +253,8 @@ function UserRow({
           }, "Password reset.")
         : act(() => resetUser2fa(user.id), "2FA reset.");
 
-  const can = userActions(user, { isSelf, now, twoStepAllowed });
-  const forever = foreverControl(user, { isSelf, adminTwoStep, twoStepAllowed });
+  const can = userActions(user, { isSelf, now });
+  const forever = foreverControl(user, { isSelf, adminTwoStep });
   const reasonId = `forever-reason-${user.id}`;
   const reason = forever.kind === "allow" ? forever.disabledReason : null;
   const foreverWord = forever.kind === "stop" ? "Stop" : "Allow";

@@ -75,9 +75,6 @@ class AttemptRow:
     failed_logins: int
     # False while the customer is disabled or being deleted (0014): sign-in is refused.
     customer_active: bool
-    # The platform operator allowed two-step sign-in for this customer (0029). While false
-    # an admin signs in with the password alone, whatever code is stored.
-    two_step_granted: bool
 
 
 def login_lookup(conn: Connection, email: str) -> LoginRow | None:
@@ -144,7 +141,7 @@ def begin_attempt(
 
     ``customer_active`` comes in the same statement (0014), so the sign-in can
     refuse a disabled customer's user like a disabled user, before any reply
-    says the password was right. ``two_step_granted`` too (0029).
+    says the password was right.
 
     O(log n): one indexed row.
     """
@@ -161,9 +158,7 @@ def begin_attempt(
                 " RETURNING u.id, u.customer_id, u.password_hash, u.role, u.disabled, u.session_version,"
                 " u.must_change_password, u.totp_secret_enc, u.totp_enabled_at, u.totp_last_step,"
                 " u.failed_logins, EXISTS (SELECT 1 FROM customers c"
-                " WHERE c.id = u.customer_id AND c.status = 'active') AS customer_active,"
-                " EXISTS (SELECT 1 FROM customers c"
-                " WHERE c.id = u.customer_id AND c.two_step_granted) AS two_step_granted"
+                " WHERE c.id = u.customer_id AND c.status = 'active') AS customer_active"
             ),
             {
                 "c": customer_id,
@@ -192,7 +187,6 @@ def begin_attempt(
         totp_last_step=None if last_step is None else int(last_step),
         failed_logins=int(row["failed_logins"]),
         customer_active=bool(row["customer_active"]),
-        two_step_granted=bool(row["two_step_granted"]),
     )
 
 
@@ -369,7 +363,7 @@ def session_user(conn: Connection, customer_id: str, user_id: str) -> RowMapping
                 "SELECT u.id, u.email, u.display_name, u.role, u.disabled,"
                 " u.session_version, u.must_change_password, u.totp_enabled_at IS NOT NULL AS totp_enabled,"
                 " u.delete_forever_allowed_at IS NOT NULL AS delete_forever_allowed,"
-                " c.id AS customer_id, c.name AS customer_name, c.two_step_granted"
+                " c.id AS customer_id, c.name AS customer_name"
                 " FROM users u JOIN customers c ON c.id = u.customer_id"
                 " WHERE u.customer_id = :c AND u.id = :u AND c.status = 'active'"
             ),

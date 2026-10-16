@@ -90,13 +90,13 @@ def test_admins_are_never_targets_and_allowing_needs_two_step(db: Database) -> N
     assert _grant(admin, ANY_ID) == (404, "not_found")
 
     plain_id, email = api.add_user(admin.customer_id, "admin")
-    plain = api.client()
-    assert api.admin_login(plain, email).status_code == 200  # two-step is off
-    password_only = Signed(plain, admin.customer_id, plain_id, email, "admin")
+    # A password-only admin has no session at all since 0031 (MFA required), so has nothing
+    # to allow with; the gate itself: test_auth_tokens and test_api_admin_sign_in.
+    refused = api.admin_login(api.client(), email)
+    assert (refused.status_code, refused.json()["error"]["code"]) == (403, "mfa_enrol_required")
     member, _ = api.add_user(admin.customer_id, "member")
-    for target in (member, plain_id):  # an account they made, and themselves
-        assert _grant(password_only, target) == (403, "two_step_required")
-    assert _grant(password_only, member, allowed=False) == (200, False)  # stopping needs no two-step
+    assert _grant(admin, plain_id) == (400, "bad_request")
+    assert _grant(admin, member, allowed=False) == (200, False)
     assert api.audit_actions(admin.customer_id)[-1] == "user.delete_forever_off"
 
 

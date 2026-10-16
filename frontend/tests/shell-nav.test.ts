@@ -78,9 +78,8 @@ describe("the session gate", () => {
       display_name: "Asha",
       role: "admin",
       must_change_password,
-      totp_enabled: false,
+      totp_enabled: true, // every admin has two-step sign-in (16 Oct 2026; tests/admin-two-step.test.ts)
       can_delete_forever: false,
-      two_step_allowed: true,
     },
     customer: { id: "c1", name: "Sharma Traders" },
     session: { scope },
@@ -112,9 +111,10 @@ describe("the session gate", () => {
 });
 
 describe("where to sign in", () => {
-  it("sends the admin screens to the admin sign-in", () => {
-    expect(signInPath("/admin")).toBe("/admin/login");
-    expect(signInPath("/admin/users")).toBe("/admin/login");
+  // Changed on purpose (one sign-in page, 16 Oct 2026): /login, back to /admin after.
+  it("sends the admin screens to the one sign-in, which comes back to /admin", () => {
+    expect(signInPath("/admin")).toBe("/login?next=/admin");
+    expect(signInPath("/admin/users")).toBe("/login?next=/admin");
   });
 
   it("sends every other page to the normal sign-in", () => {
@@ -136,9 +136,9 @@ describe("where to sign in", () => {
   // so nothing of that person stays in the tab's memory.
   it("adds why, for the sign-in page's note", () => {
     expect(endedPath("/documents/d-1")).toBe("/login?ended=1");
-    expect(endedPath("/admin")).toBe("/admin/login?ended=1");
+    expect(endedPath("/admin")).toBe("/login?next=/admin&ended=1");
     expect(signedOutPath("/documents")).toBe("/login?signed_out=1");
-    expect(signedOutPath("/admin")).toBe("/admin/login?signed_out=1");
+    expect(signedOutPath("/admin")).toBe("/login?next=/admin&signed_out=1");
     expect(signedOutMessage({ signed_out: "1" })).toBe("You signed out.");
     expect(signedOutMessage({ ended: "1" })).toBe("Your session ended. Sign in again to continue.");
     expect(signedOutMessage({})).toBeNull();
@@ -174,19 +174,13 @@ describe("where to sign in", () => {
   // form does not move; the words come once the page runs, so screen readers
   // announce them.
   it("puts the sign-in note under the heading, in a box that is there from the start", () => {
-    for (const file of [
-      ["app", "login", "SignInForm.tsx"],
-      ["app", "admin", "login", "AdminSignInForm.tsx"],
-    ]) {
+    for (const file of [["app", "login", "SignInForm.tsx"]]) {
       const form = readFileSync(join(__dirname, "..", ...file), "utf8");
       const note = form.indexOf("<SignedOutNotice message={note} />");
       expect(note, file.join("/")).toBeGreaterThan(form.indexOf("</h1>"));
       expect(form.indexOf("</h1>"), file.join("/")).toBeGreaterThan(0);
     }
-    for (const file of [
-      ["app", "login", "page.tsx"],
-      ["app", "admin", "login", "page.tsx"],
-    ]) {
+    for (const file of [["app", "login", "page.tsx"]]) {
       expect(readFileSync(join(__dirname, "..", ...file), "utf8"), file.join("/")).not.toContain("<SignedOutNotice");
     }
     const notice = readFileSync(join(__dirname, "..", "app", "login", "SignedOutNotice.tsx"), "utf8");
@@ -206,7 +200,7 @@ describe("another tab signs out or in", () => {
   it("goes to sign in when nobody is signed in any more", () => {
     expect(pageAfterSessionChange("u1", null, here)).toBe("/login?signed_out=1");
     expect(pageAfterSessionChange("u1", null, { pathname: "/admin", href: "/admin" })).toBe(
-      "/admin/login?signed_out=1",
+      "/login?next=/admin&signed_out=1",
     );
   });
 
@@ -271,7 +265,6 @@ describe("the Review link's count", () => {
       must_change_password: false,
       totp_enabled: false,
       can_delete_forever: false,
-      two_step_allowed: false,
     },
     customer: { id: "c1", name: "Sharma Traders" },
     session: { scope: "admin" },

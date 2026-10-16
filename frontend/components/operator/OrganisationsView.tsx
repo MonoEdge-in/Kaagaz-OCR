@@ -4,7 +4,8 @@
 // status and counts only (never a document's or a person's name), a search by
 // name, and Create organisation. Admins opens one organisation's admins
 // (AdminsDialog); AI settings opens its scanning and answering settings, Ensemble and
-// budget (OrgAiSettings, features 25-27). Each change opens a dialog (ConfirmDialog): disable, enable,
+// budget (OrgAiSettings, features 25-27). They sit in one Manage menu per row (ManageMenu,
+// 16 Oct 2026). Each change opens a dialog (ConfirmDialog): disable, enable,
 // delete (only a disabled organisation) and cancel the deletion; a row being
 // deleted shows its date and the days left. Auto-filing (feature 28) is allowed or
 // stopped per organisation, also in a ConfirmDialog. The table is the shared reflow
@@ -22,9 +23,10 @@ import type { Organisation } from "@/lib/types";
 import { AdminsDialog } from "./AdminsDialog";
 import { ConfirmDialog } from "./ConfirmDialog";
 import type { Confirm } from "./ConfirmDialog";
-import { autofileConfirm, orgConfirm, orgFocusId, twoStepConfirm } from "./confirms";
+import { autofileConfirm, orgConfirm, orgFocusId } from "./confirms";
 import type { OrgChange } from "./confirms";
 import { CreateDialog } from "./CreateDialog";
+import { ManageMenu } from "./ManageMenu";
 import { OrgAiSettings, orgAiFocusId } from "./OrgAiSettings";
 import { afterDone, countText, deleteCountdown, filterOrgs, lastActivityText, operatorErrorMessage, orgStatus, searchSummary, userCounts } from "./logic";
 import { MoreRows, useRowCap } from "@/components/admin/RowCap";
@@ -194,7 +196,6 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
                       onModels={() => setModelsOf(org)}
                       onChange={(change) => setChanging(orgConfirm(org, change, Date.now()))}
                       onAutofile={() => setChanging(autofileConfirm(org, !org.autofile_granted))}
-                      onTwoStep={() => setChanging(twoStepConfirm(org, !org.two_step_granted))}
                     />
                   ))}
                 </tbody>
@@ -248,16 +249,15 @@ function OrgRow(props: {
   onModels(): void;
   onChange(change: OrgChange): void;
   onAutofile(): void;
-  onTwoStep(): void;
 }) {
-  const { org, now, onAdmins, onModels, onChange, onAutofile, onTwoStep } = props;
+  const { org, now, onAdmins, onModels, onChange, onAutofile } = props;
   const status = orgStatus(org);
   const countdown = org.status === "deleting" ? deleteCountdown(org.delete_after, now) : null;
   const size = formatBytes(org.storage_bytes);
   return (
     <tr role="row">
       <td role="cell" className={styles.orgName}>
-        <span id={orgFocusId(org.id)} tabIndex={-1}>
+        <span id={orgFocusId(org.id)} tabIndex={-1} className={styles.orgNameText} title={org.name}>
           {org.name}
         </span>
       </td>
@@ -269,7 +269,6 @@ function OrgRow(props: {
         {org.autofile_granted && (
           <span className={styles.statusNote}>{org.autofile_on ? "Auto-filing on" : "Auto-filing allowed, off"}</span>
         )}
-        {org.two_step_granted && <span className={styles.statusNote}>Two-step sign-in allowed</span>}
         {countdown && <span className={styles.statusNote}>{countdown}</span>}
       </td>
       <td role="cell" data-label="Users">
@@ -292,61 +291,30 @@ function OrgRow(props: {
         {size}
       </td>
       <td role="cell" data-label="Last activity">
-        {lastActivityText(org.last_activity_at, now)}
+        <span className={styles.when}>{lastActivityText(org.last_activity_at, now)}</span>
       </td>
       <td role="cell">
-        {/* The safe actions, then Disable, Delete or Cancel deletion on their own row. */}
-        <span className={styles.actionGroups}>
-        <span className={styles.rowActions}>
-          <button type="button" className="btn" onClick={onAdmins} aria-label={`Admins of ${org.name}`}>
-            Admins
-          </button>
-          {org.status !== "deleting" && (
-            <button
-              id={orgAiFocusId(org.id)}
-              type="button"
-              className="btn"
-              onClick={onModels}
-              aria-label={`AI settings of ${org.name}`}
-            >
-              AI settings
-            </button>
-          )}
-          {org.status !== "deleting" && (
-            <button
-              type="button"
-              className="btn"
-              onClick={onAutofile}
-              aria-label={`${org.autofile_granted ? "Stop" : "Allow"} auto-filing for ${org.name}`}
-            >
-              {org.autofile_granted ? "Stop auto-filing" : "Allow auto-filing"}
-            </button>
-          )}
-          {org.status !== "deleting" && (
-            <button
-              type="button"
-              className="btn"
-              onClick={onTwoStep}
-              aria-label={`${org.two_step_granted ? "Stop" : "Allow"} two-step sign-in for ${org.name}`}
-            >
-              {org.two_step_granted ? "Stop two-step" : "Allow two-step"}
-            </button>
-          )}
-        </span>
-        <span className={styles.rowActions}>
-          {CHANGES[org.status].map(({ change, label, danger }) => (
-            <button
-              key={change}
-              type="button"
-              className={danger ? "btn btn-danger" : "btn"}
-              onClick={() => onChange(change)}
-              aria-label={`${label} ${org.name}`}
-            >
-              {label}
-            </button>
-          ))}
-        </span>
-        </span>
+        {/* One menu (owner, 16 Oct 2026): the safe actions, then Disable, Enable, Delete
+            or Cancel deletion after a separator. Each change opens its confirm. The
+            button keeps orgAiFocusId, so closing AI settings comes back to it. */}
+        <ManageMenu
+          name={org.name}
+          buttonId={orgAiFocusId(org.id)}
+          safe={[
+            { label: "Admins", onSelect: onAdmins },
+            ...(org.status === "deleting"
+              ? []
+              : [
+                  { label: "AI settings", onSelect: onModels },
+                  { label: org.autofile_granted ? "Stop auto-filing" : "Allow auto-filing", onSelect: onAutofile },
+                ]),
+          ]}
+          changes={CHANGES[org.status].map(({ change, label, danger }) => ({
+            label,
+            danger,
+            onSelect: () => onChange(change),
+          }))}
+        />
       </td>
     </tr>
   );

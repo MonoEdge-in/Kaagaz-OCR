@@ -10,7 +10,7 @@ export const metadata = { title: "Create an account" };
 
 export default function SignUpPage() {
   return (
-    <AuthFrame variant="admin">
+    <AuthFrame>
       <SignUpForm />
     </AuthFrame>
   );

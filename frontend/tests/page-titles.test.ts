@@ -16,7 +16,6 @@ const TITLES: Record<string, string> = {
   "app/(app)/admin/page.tsx": "Admin",
   "app/operator/(console)/page.tsx": "Platform",
   "app/login/page.tsx": "Sign in",
-  "app/admin/login/page.tsx": "Sign in",
   "app/operator/login/page.tsx": "Sign in",
   "app/signup/page.tsx": "Create an account",
 };

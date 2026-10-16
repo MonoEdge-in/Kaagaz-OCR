@@ -1,18 +1,17 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   adminEnrol,
-  adminLogin,
   changePassword,
   confirmPassword,
   getUploadLimits,
+  login,
   logoutEverywhere,
   onSessionEnded,
   query,
   resetUser2fa,
   resetUserPassword,
   setDeleteForever,
-  startTwoStep,
-  turnOffTwoStep,
+  signUp,
   unlockUser,
 } from "@/lib/api";
 import type { AdminUser, Me } from "@/lib/types";
@@ -68,7 +67,6 @@ describe("sign-in and admin calls", () => {
       must_change_password: false,
       totp_enabled: false,
       can_delete_forever: false,
-      two_step_allowed: true,
     },
     customer: { id: "c1", name: "Sharma Traders" },
     session: { scope: "admin" },
@@ -115,12 +113,14 @@ describe("sign-in and admin calls", () => {
     calls.length = 0;
   });
 
-  it("signs an admin in, sending the code only when there is one", async () => {
+  // Changed on purpose (one sign-in page, 16 Oct 2026): /auth/admin/login and turning
+  // 2FA on or off in Admin, Settings went; admins sign in and set up at /auth/login.
+  it("signs in at the one sign-in, sending the code only when there is one", async () => {
     reply(200, ME);
-    expect(await adminLogin("asha@sharma.in", "a long password", "123456")).toEqual(ME);
-    await adminLogin("asha@sharma.in", "a long password");
+    expect(await login("asha@sharma.in", "a long password", "123456")).toEqual(ME);
+    await login("asha@sharma.in", "a long password");
     expect(sent(0)).toMatchObject({
-      url: "/api/auth/admin/login",
+      url: "/api/auth/login",
       method: "POST",
       headers: { "X-Requested-With": "kaagaz" },
       body: { email: "asha@sharma.in", password: "a long password", code: "123456" },
@@ -128,15 +128,21 @@ describe("sign-in and admin calls", () => {
     expect(sent(1).body).toEqual({ email: "asha@sharma.in", password: "a long password" });
   });
 
-  it("starts turning 2FA on with the current password and returns the set-up as it is", async () => {
+  it("returns sign-up's two-step set-up as it is", async () => {
     const setup = { enrol_token: "tok", secret: "JBSW Y3DP", otpauth_uri: "otpauth://totp/x" };
-    reply(200, setup);
-    expect(await startTwoStep("a long password")).toEqual(setup);
-    expect(sent(0)).toMatchObject({
-      url: "/api/auth/admin/2fa/start",
-      method: "POST",
-      headers: { "X-Requested-With": "kaagaz" },
-      body: { password: "a long password" },
+    reply(201, setup);
+    const body = { organisation_name: "Sharma", name: "Asha", email: "asha@sharma.in", password: "p" };
+    expect(await signUp(body)).toEqual(setup);
+    expect(sent(0)).toMatchObject({ url: "/api/auth/signup", method: "POST", body });
+  });
+
+  it("keeps a 403 mfa_enrol_required's set-up in details", async () => {
+    const setup = { enrol_token: "tok", secret: "JBSW Y3DP", otpauth_uri: "otpauth://totp/x" };
+    reply(403, { error: { code: "mfa_enrol_required", message: "Set up two-step.", details: setup } });
+    await expect(login("asha@sharma.in", "a long password")).rejects.toMatchObject({
+      status: 403,
+      code: "mfa_enrol_required",
+      details: setup,
     });
   });
 
@@ -150,17 +156,6 @@ describe("sign-in and admin calls", () => {
     await expect(confirmPassword("a long password")).resolves.toBeUndefined();
     const body = { password: "a long password" };
     expect(sent(1)).toMatchObject({ url: "/api/auth/confirm-password", method: "POST", body });
-  });
-
-  it("turns 2FA off with the current password", async () => {
-    reply(200, ME);
-    expect(await turnOffTwoStep("a long password")).toEqual(ME);
-    expect(sent(0)).toMatchObject({
-      url: "/api/auth/admin/2fa/off",
-      method: "POST",
-      headers: { "X-Requested-With": "kaagaz" },
-      body: { password: "a long password" },
-    });
   });
 
   it("finishes enrolment with the token and the code", async () => {
@@ -244,8 +239,8 @@ describe("upload limits and a session that ends", () => {
     const ended = vi.fn();
     onSessionEnded(ended);
     reply(401, { error: { code: "bad_credentials", message: "Wrong e-mail or password." } });
-    await expect(adminLogin("asha@sharma.in", "a long password")).rejects.toBeInstanceOf(Error);
-    reply(403, { error: { code: "admin_session_required", message: "Sign in on the admin screen." } });
+    await expect(login("asha@sharma.in", "a long password")).rejects.toBeInstanceOf(Error);
+    reply(403, { error: { code: "admin_session_required", message: "Only admins can use this." } });
     await expect(getUploadLimits()).rejects.toMatchObject({ status: 403 });
     expect(ended).not.toHaveBeenCalled();
   });

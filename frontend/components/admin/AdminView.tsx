@@ -4,11 +4,11 @@
 // Failed documents), one line that scrolls sideways (Tabs.tsx). The
 // models are the operator's only (UI quality council, 15 Oct 2026). Only the open tab is mounted, so each one loads its data when it is opened. Settings
 // also shows `twoStep`, the signed-in admin's own Two-step sign-in, which the
-// page passes in (it is built in app/ from the admin sign-in's set-up step).
+// page passes in (app/(app)/admin/TwoStepPanel.tsx).
 //
-// It opens only for an admin session (PRD A1): anyone else, including an admin
-// who signed in at /login, is sent to /admin/login. The link is shown to admin
-// sessions only, and the server refuses the data to anyone else.
+// It opens only for an admin session (PRD A1; every admin's sign-in at /login
+// gives one since 16 Oct 2026): anyone else is sent to sign in. The link is shown
+// to admin sessions only, and the server refuses the data to anyone else.
 
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
@@ -32,7 +32,7 @@ export function AdminView({ twoStep }: { twoStep: ReactNode }) {
 
   // A full page load: someone else may sign in there (critical #5).
   useEffect(() => {
-    if (gate === "admin_sign_in") leavePage("/admin/login");
+    if (gate === "admin_sign_in") leavePage("/login?next=/admin");
   }, [gate]);
 
   if (gate !== "allow") {
@@ -40,7 +40,7 @@ export function AdminView({ twoStep }: { twoStep: ReactNode }) {
       <div className="page">
         <p className={`delayed ${styles.redirect}`} role="status" aria-live="polite">
           <span className="spinner" aria-hidden="true" />
-          Taking you to admin sign-in…
+          Taking you to sign in…
         </p>
       </div>
     );
@@ -57,16 +57,12 @@ export function AdminView({ twoStep }: { twoStep: ReactNode }) {
       </header>
       <Tabs<TabId> prefix="admin" label="Admin sections" tabs={TABS} active={active} onChange={setActive}>
         {active === "users" && (
-          <UsersPanel
-            currentUserId={me.user.id}
-            adminTwoStep={me.user.totp_enabled}
-            twoStepAllowed={me.user.two_step_allowed === true}
-          />
+          <UsersPanel currentUserId={me.user.id} adminTwoStep={me.user.totp_enabled} />
         )}
         {active === "settings" && (
           <div className={styles.panelStack}>
             <SettingsPanel />
-            {me.user.two_step_allowed === true && twoStep}
+            {twoStep}
           </div>
         )}
         {active === "activity" && <ActivityPanel />}

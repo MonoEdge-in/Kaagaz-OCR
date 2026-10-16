@@ -1,4 +1,4 @@
-// The frame of the sign-in pages (/login, /admin/login, /operator/login) and
+// The frame of the sign-in pages (/login, /operator/login) and
 // /signup, in the MonoEdge look. From 900 px up it is two columns: a panel
 // that says what Kaagaz does (static text only: no API call, no customer names
 // or counts) and the form. Below 900 px the panel is a short band with the
@@ -14,7 +14,7 @@ export function AuthFrame({
   variant = "member",
   children,
 }: {
-  variant?: "member" | "admin" | "platform";
+  variant?: "member" | "platform";
   children: ReactNode;
 }) {
   const mark = (

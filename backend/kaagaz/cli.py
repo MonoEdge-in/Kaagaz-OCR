@@ -34,7 +34,7 @@
   ``platform_audit`` row with no operator.
 * ``reset-admin-2fa --email``: turn an admin's two-step code off (PRD 1 A6), for
   the last admin of a customer, who has no other admin to do it. Their sessions
-  end; they can turn it on again in Admin, Settings. It needs no password:
+  end; they set it up again at their next sign-in. It needs no password:
   whoever runs it already has the server.
 * ``measure --file PATH [--truth DIR] [--engine gemini|rapidocr]``: read one local
   file the way the worker does and print, per page, its route and why, the route
@@ -924,7 +924,7 @@ def main(
             stdout.write(_change_operator(db, key, args.command, args.email))
         elif args.command == "reset-admin-2fa":
             user_id = _reset_admin_2fa(db, args.email)
-            stdout.write(f"user {user_id}: 2FA is off; they can turn it on again in Admin, Settings\n")
+            stdout.write(f"user {user_id}: 2FA is off; they set it up again at their next sign-in\n")
         else:
             _seed_demo(db, _password(env, DEMO_ENV_VAR, None), stdout)
     except (CliError, SettingsError) as error:

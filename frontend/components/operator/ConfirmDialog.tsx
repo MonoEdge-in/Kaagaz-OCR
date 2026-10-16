@@ -11,8 +11,8 @@
 
 import { useRef, useState } from "react";
 import type { FormEvent } from "react";
-import { CodeField } from "@/app/admin/login/CodeField";
-import { codeError, normalizeCode } from "@/app/admin/login/adminSignIn";
+import { CodeField } from "@/app/login/CodeField";
+import { codeError, normalizeCode } from "@/app/login/twoStep";
 import { ActionDialog } from "@/components/documents/ActionDialog";
 import { canCloseDialog, nameError, operatorErrorMessage } from "./logic";
 import admin from "@/components/admin/Admin.module.css";

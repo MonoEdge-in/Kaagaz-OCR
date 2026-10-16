@@ -6,7 +6,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { getPathMatch } from "next/dist/shared/lib/router/utils/path-match";
 import { describe, expect, it } from "vitest";
-import { CODE_INVALID, CODE_MISSING } from "@/app/admin/login/adminSignIn";
+import { CODE_INVALID, CODE_MISSING } from "@/app/login/twoStep";
 import { EMAIL_INVALID, NETWORK_FAILURE, PASSWORD_MISSING, SIGN_IN_DOWN, TOO_MANY_ATTEMPTS } from "@/app/login/signIn";
 import {
   CHECK_INPUT,

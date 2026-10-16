@@ -20,8 +20,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
-import { CodeField } from "@/app/admin/login/CodeField";
-import { codeError, normalizeCode } from "@/app/admin/login/adminSignIn";
+import { CodeField } from "@/app/login/CodeField";
+import { codeError, normalizeCode } from "@/app/login/twoStep";
 import { ActionDialog } from "@/components/documents/ActionDialog";
 import { ApiError, getOperatorInsights, getOperatorModels, getOrgAi, putOrgAi } from "@/lib/api";
 import type { AiEnv, AiLevel, AiValues, OperatorModel, Organisation, OrgAiReply } from "@/lib/types";

@@ -4,8 +4,9 @@
 // keeps the sign-in forms' security details (app/login/SignInForm.tsx):
 // method="post" and no name attributes, the button disabled until the page has
 // hydrated and while busy, the password masked again on submit, and typed
-// values kept after an error. Signed up, the browser goes to /admin, as after
-// the admin sign-in.
+// values kept after an error. Signed up, the new admin sets up two-step sign-in
+// (every admin must have it, 16 Oct 2026: RequiredEnrol), then the browser goes
+// to /admin.
 
 import Link from "next/link";
 import { useState } from "react";
@@ -14,7 +15,9 @@ import { flushSync } from "react-dom";
 import { PasswordField } from "@/components/ui/PasswordField";
 import { useHydrated } from "@/components/ui/useHydrated";
 import { signUp } from "@/lib/api";
-import { announceSession, leavePage } from "@/lib/sessionChannel";
+import { leavePage } from "@/lib/sessionChannel";
+import type { TwoStepSetup } from "@/lib/types";
+import { RequiredEnrol } from "../login/EnrolStep";
 import login from "../login/login.module.css";
 import {
   MAX_EMAIL,
@@ -54,6 +57,8 @@ export function SignUpForm() {
   const [edited, setEdited] = useState(NOT_EDITED);
   const [failure, setFailure] = useState<SignUpError | null>(null);
   const [busy, setBusy] = useState(false);
+  // Signed up: the two-step set-up the server sent (no session before the first code).
+  const [enrol, setEnrol] = useState<TwoStepSetup | null>(null);
 
   function change(field: SignUpField, value: string) {
     setInput((was) => ({ ...was, [field]: value }));
@@ -82,14 +87,24 @@ export function SignUpForm() {
     setErrors(found);
     setBusy(true);
     try {
-      const signedIn = await signUp(signUpBody(input));
-      // As the sign-ins: a full page load, and the other tabs are told.
-      announceSession(signedIn.user.id);
-      leavePage("/admin");
+      setEnrol(await signUp(signUpBody(input)));
+      setBusy(false);
     } catch (caught) {
       setFailure(signUpError(caught));
       setBusy(false);
     }
+  }
+
+  if (enrol) {
+    // An expired set-up (10 minutes) starts again from the sign-in: the account exists now.
+    return (
+      <RequiredEnrol
+        enrol={enrol}
+        email={signUpBody(input).email}
+        next="/admin"
+        onRestart={() => leavePage("/login?next=/admin&two_step=1")}
+      />
+    );
   }
 
   function textField(
@@ -164,7 +179,7 @@ export function SignUpForm() {
           {failure.signInInstead && (
             <>
               {" "}
-              <Link href="/admin/login">Sign in</Link>
+              <Link href="/login">Sign in</Link>
             </>
           )}
         </div>

@@ -12,8 +12,8 @@
 
 import { useCallback, useState } from "react";
 import type { FormEvent } from "react";
-import { CodeField } from "@/app/admin/login/CodeField";
-import { normalizeCode } from "@/app/admin/login/adminSignIn";
+import { CodeField } from "@/app/login/CodeField";
+import { normalizeCode } from "@/app/login/twoStep";
 import { CopyButton } from "@/components/admin/CopyButton";
 import { ActionDialog } from "@/components/documents/ActionDialog";
 import { createAdmin, createOrg } from "@/lib/api";
