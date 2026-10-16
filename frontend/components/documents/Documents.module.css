@@ -19,9 +19,6 @@
   border: 1px dashed var(--border-strong);
   border-radius: 2px;
   background: var(--bg-surface);
-  transition:
-    border-color var(--t-fast) var(--ease),
-    background-color var(--t-fast) var(--ease);
 }
 
 .drop p {
@@ -215,7 +212,6 @@
   border: 1px solid var(--border);
   border-radius: 2px;
   background: var(--bg-surface);
-  transition: border-color var(--t-fast) var(--ease);
 }
 
 /* Hover changes colour only: nothing moves under the pointer. */
@@ -1244,8 +1240,13 @@ table.docs > tbody > tr:hover {
   white-space: normal;
 }
 
+.trayPanel {
+  --pop-y: 4px; /* it opens above its button (.motion-pop, globals.css) */
+}
+
 @media (max-width: 767.98px) {
   .trayPanel {
+    --pop-y: 100%; /* a bottom sheet: up from below */
     inset-inline: 0;
     bottom: calc(var(--statusbar-h) + var(--bottombar-h) + env(safe-area-inset-bottom));
     width: auto;

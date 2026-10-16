@@ -61,7 +61,7 @@ export function RowMenu({ name, items }: { name: string; items: RowMenuItem[] })
         popover="auto"
         role="menu"
         aria-label={`Actions for ${name}`}
-        className={styles.rowMenu}
+        className={`motion-pop ${styles.rowMenu}`}
         style={{ positionAnchor: anchor }}
         onKeyDown={moveFocus}
         onToggle={(event) => {

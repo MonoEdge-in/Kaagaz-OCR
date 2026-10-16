@@ -33,6 +33,7 @@ import { markerId } from "@/components/words/ViewerWords";
 import { markerRect } from "@/components/words/spots";
 import type { Marker } from "@/components/words/spots";
 import { pageImageUrl } from "@/lib/api";
+import { FADE_IN, MOTION_MS, play } from "@/lib/motion";
 import { boxToPixels, cropRect, framedCropView, pageAspect, regionsOnPage } from "@/lib/regions";
 import type { BoxRegion, CropView, FractionRect } from "@/lib/regions";
 import type { DocumentSummary, PageSummary, ReadingMark, Region } from "@/lib/types";
@@ -147,6 +148,10 @@ export function PageViewer({
   const drawnKey = `${pageKey}:${mode}`;
   const onDrawn = useCallback(() => setDrawnFor(drawnKey), [drawnKey]);
   const drawn = drawnFor === drawnKey;
+  // Motion pass (16 Oct 2026): a page fades in once drawn, as its placeholder goes.
+  useLayoutEffect(() => {
+    if (drawn) play(stageRef.current, FADE_IN, MOTION_MS.med);
+  }, [drawn]);
 
   const onThisPage = regionsOnPage(highlights, page.page_no);
   const cropHere = crop && crop.page === page.page_no ? crop : undefined;
@@ -167,6 +172,16 @@ export function PageViewer({
   }
   const zoom = zoomChoice && zoomChoice.key === spotKey ? zoomChoice.zoom : spotZoom;
   const setZoom = (next: number) => setZoomChoice({ key: spotKey, zoom: next });
+
+  // A zoom the user chose grows or shrinks the page from its old size (transform only;
+  // the new size is already laid out). A spot's own zoom just shows.
+  const shownZoom = useRef(zoom);
+  useLayoutEffect(() => {
+    const was = shownZoom.current;
+    shownZoom.current = zoom;
+    if (zoomChoice?.key !== spotKey || was === zoom) return;
+    play(stageRef.current, [{ transform: `scale(${was / zoom})` }, { transform: "none" }], MOTION_MS.med);
+  }, [zoom, zoomChoice, spotKey]);
 
   // A new spot or zoom: the spot to the middle of the frame (a size change alone
   // keeps the user's own scrolling); a new spot also into the window's view (a

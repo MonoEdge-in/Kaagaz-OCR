@@ -82,7 +82,7 @@ export function AccountMenu({ me }: { me: Me }) {
         </span>
       </button>
 
-      <div id={MENU_ID} popover="auto" className={styles.account}>
+      <div id={MENU_ID} popover="auto" className={`motion-pop ${styles.account}`}>
         <div className={styles.user}>
           <p className={styles.userName}>{name}</p>
           <p className={styles.userMeta}>Role: {roleName(me.user.role)}</p>

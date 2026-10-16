@@ -65,6 +65,7 @@
   bottom: 0;
   height: 2px;
   background: var(--accent);
+  transform-origin: left; /* it slides from the tab chosen before (lib/motion.ts) */
 }
 
 .tab:focus-visible {
@@ -495,7 +496,18 @@
   background: var(--bg-surface);
 }
 
-/* AD3: Add user's side panel, at the end of the window; flat, a hairline edge. */
+/* AD3: Add user's side panel, at the end of the window; flat, a hairline edge. It slides
+   in from that edge (motion pass, 16 Oct 2026); its backdrop fades (globals.css). */
+.sidePanel[open] {
+  animation: side-in var(--t-drawer) var(--ease);
+}
+
+@keyframes side-in {
+  from {
+    transform: translateX(100%);
+  }
+}
+
 .sidePanel {
   position: fixed;
   inset-block: 0;

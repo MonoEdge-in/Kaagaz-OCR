@@ -28,7 +28,7 @@
 }
 
 .dialog[open].start {
-  animation: slide-from-start var(--t-med) var(--ease);
+  animation: slide-from-start var(--t-drawer) var(--ease); /* its backdrop fades (globals.css) */
 }
 
 .panel {

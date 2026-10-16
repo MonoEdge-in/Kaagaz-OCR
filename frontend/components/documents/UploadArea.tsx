@@ -941,7 +941,7 @@ export function UploadStatus({
       {shown && (
         <div
           id={`${id}-uploads`}
-          className={styles.trayPanel}
+          className={`motion-pop ${styles.trayPanel}`}
           hidden={!open}
           onKeyDown={(event) => {
             if (event.key === "Escape") hide();

@@ -90,7 +90,7 @@ export function ReviewCard({
 
   return (
     <article
-      className={`card ${styles.item}`}
+      className={onSkip ? `card motion-next ${styles.item}` : `card ${styles.item}`}
       aria-labelledby={reviewTitleId(value.id)}
       onKeyDown={onSkip ? onKeyDown : undefined}
     >

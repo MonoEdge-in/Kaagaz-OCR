@@ -873,6 +873,7 @@
    when there is no room. On a phone it spans the screen, less the gutters. Where
    anchor positioning is missing, the browser centres it. */
 .menu {
+  --pop-y: 4px; /* it opens above its button (.motion-pop, globals.css) */
   position: fixed;
   min-width: 15rem;
   max-width: min(22rem, calc(100% - 2 * var(--space-4)));

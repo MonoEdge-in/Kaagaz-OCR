@@ -30,12 +30,13 @@
 // (rowsInPlace), so nothing is put in above the pointer.
 
 import Link from "next/link";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { RefCallback } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { PasswordField } from "@/components/ui/PasswordField";
 import { beingRead, canReprocess } from "@/components/viewer/reprocess";
 import { newerVersionText } from "@/components/viewer/versions";
+import { FADE_IN, MOTION_MS, play } from "@/lib/motion";
 import {
   ApiError,
   confirmPassword,
@@ -104,6 +105,17 @@ export function DocumentsTable({ items: listed, inTrash, me, now, tree, tags, ..
   // The rows shown when the pointer came onto the list; null while it is elsewhere.
   const [pinned, setPinned] = useState<ReadonlySet<string> | null>(null);
   const items = useMemo(() => rowsInPlace(listed, pinned), [listed, pinned]);
+  // A row that arrives (an upload, a poll) fades in where it sits; the first rows do not.
+  const body = useRef<HTMLTableSectionElement>(null);
+  const seenIds = useRef<ReadonlySet<string> | null>(null);
+  useLayoutEffect(() => {
+    const before = seenIds.current;
+    seenIds.current = new Set(items.map((item) => item.id));
+    if (before === null) return;
+    for (const row of body.current?.querySelectorAll<HTMLElement>("tr[data-id]") ?? []) {
+      if (!before.has(row.dataset.id ?? "")) play(row, FADE_IN, MOTION_MS.med);
+    }
+  }, [items]);
   const { refresh } = useSession();
   const canForever = canDeleteForever(me);
   const askPassword = foreverNeedsPassword(me);
@@ -285,7 +297,7 @@ export function DocumentsTable({ items: listed, inTrash, me, now, tree, tags, ..
             </th>
           </tr>
         </thead>
-        <tbody role="rowgroup">
+        <tbody ref={body} role="rowgroup">
           {items.map((document) => (
             <DocumentRow
               key={document.id}
@@ -612,7 +624,7 @@ const DocumentRow = memo(function DocumentRow({
   const when = whenOf(document, inTrash);
   const question = confirming === "forever" ? foreverQuestion(document) : trashQuestion(document);
   return (
-    <tr role="row" data-selected={selected ? "true" : undefined}>
+    <tr role="row" data-id={document.id} data-selected={selected ? "true" : undefined}>
       <td
         role="cell"
         className={styles.selectCell}

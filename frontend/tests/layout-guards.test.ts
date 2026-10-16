@@ -247,8 +247,9 @@ describe("layout guards", () => {
 
   it("pulses a new spot only where reduced motion can stop it", () => {
     const css = read("components/viewer/PageViewer.module.css");
-    expect(rulesFor("components/viewer/PageViewer.module.css", ".pulse")[0]?.body).toMatch(/animation:\s*spotPulse [\d.]+s ease-out 2;/);
-    expect(css).toContain("@keyframes spotPulse");
+    // Changed on purpose (motion pass, 16 Oct 2026): the spot fades and settles once (transform, opacity), no outline ring.
+    expect(rulesFor("components/viewer/PageViewer.module.css", ".pulse")[0]?.body).toMatch(/animation:\s*spotIn var\(--t-slow\) var\(--ease\);/);
+    expect(css).toContain("@keyframes spotIn");
     const reduced = rules(read("app/globals.css")).filter((rule) => rule.at === "@media (prefers-reduced-motion: reduce)");
     expect(reduced.some((rule) => /animation-iteration-count:\s*1 !important/.test(rule.body))).toBe(true);
   });
