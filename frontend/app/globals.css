@@ -1,28 +1,41 @@
-/* Kaagaz look: ledger paper. Warm paper, ink-indigo actions, and one
-   distinctive element, the red margin rule of a bahi-khata page.
+/* Kaagaz look: a MonoEdge product (16 Oct 2026, from monoedge.in). Warm
+   off-white page, black ink, the deep MonoEdge blue for actions; dark is the
+   site's night sections (#0a0a0f with light blue #7f9bdd). Inter for text,
+   Archivo for headings, JetBrains Mono for labels and figures.
 
    Every colour is a token. Light is the default; dark comes from the system
    (prefers-color-scheme) unless the person picked Light or Dark, which the
-   server writes as data-theme on <html> (lib/theme.ts). Contrast pairs are
-   measured for WCAG 2.2 AA in both themes (council 2026-09-27, ui-redesign).
-   Components use these tokens only; tests/guards.test.ts fails on any hex
-   colour outside this file. */
+   server writes as data-theme on <html> (lib/theme.ts). Components use these
+   tokens only; tests/guards.test.ts fails on any hex colour outside this file.
+
+   WCAG 2.2 AA contrast, measured (light / dark):
+     --fg on --bg, --surface, --surface-2         18.1 19.8 16.4 / 18.1 16.7 14.9
+     --fg-muted on --bg, --surface, --surface-2    6.8  7.4  6.1 /  8.1  7.5  6.6
+     --accent (links) on --bg, --surface, --s-2    8.3  9.1  7.5 /  7.2  6.6  5.9
+     --accent on --accent-soft                     7.4           /  5.5
+     --accent-fg on --accent                       9.1           /  7.2
+     --border-strong on --bg, --surface, --s-2     3.4  3.7  3.1 /  3.8  3.5  3.1
+     --focus on --bg, --surface                    8.3  9.1      /  7.2  6.6
+     --verified-fg on --verified-bg                6.8           /  8.2
+     --review-fg on --review-bg                    6.9           /  8.5
+     --danger-fg on --danger-bg                    6.4           /  7.9
+   Body text needs 4.5:1; large text, control edges and the focus ring 3:1. */
 
 :root {
   /* Surfaces and text */
-  --bg: #f6f2e9;
-  --surface: #fffdf8;
-  --surface-2: #ece6d9;
-  --fg: #1b1f2a;
-  --fg-muted: #595c66;
-  --border: #ddd5c6; /* decorative hairline only */
-  --border-strong: #8a8272; /* inputs and control edges, 3:1 or more */
+  --bg: #f6f5f2;
+  --surface: #ffffff;
+  --surface-2: #ebeae5;
+  --fg: #0a0a0f;
+  --fg-muted: #55555c;
+  --border: #dedcd6; /* decorative hairline only */
+  --border-strong: #86857e; /* inputs and control edges, 3:1 or more */
 
   /* Actions */
-  --accent: #233f8c;
+  --accent: #204494;
   --accent-fg: #ffffff;
-  --accent-hover: #1b3272;
-  --accent-soft: #e4e9f6;
+  --accent-hover: #18346f;
+  --accent-soft: #e3e8f4;
 
   /* Labels (value and answer labels only, never document status) */
   --verified-bg: #e2f0e4;
@@ -34,27 +47,32 @@
   --danger-bg: #fae3df;
   --danger-fg: #9e2219;
 
-  --focus: #233f8c;
-  --brand-lal: #9e2a2b; /* the wordmark and margin rule only, never buttons */
+  --focus: #204494;
+  --brand-lal: #204494; /* the wordmark and margin rule only: MonoEdge blue (the name is kept) */
 
   /* The page itself stays white paper in both themes */
   --paper: #ffffff;
-  --paper-frame: #ece6d9;
+  --paper-frame: #ebeae5;
   /* The sign-in figure's text bars and rule on the white page, kept in dark */
-  --paper-bar: #e6e0d3;
-  --paper-bar-strong: #cfc7b6;
-  --paper-rule: #d6cfbf;
+  --paper-bar: #e6e5e0;
+  --paper-bar-strong: #cdccc5;
+  --paper-rule: #d6d4ce;
   --hl-fill: rgba(255, 176, 0, 0.3);
   --hl-border: #b86e00;
   --hl-halo: #1f1a14; /* dark ink: the outer highlight ring, the same in both themes */
-  --mine-on-paper: #233f8c; /* my words markers: pages are paper white in both themes */
+  --mine-on-paper: #204494; /* my words markers: pages are paper white in both themes */
   --illegible-on-paper: #9e2219; /* PRD 5 U3 (V8): "couldn't read" marks; the light --danger-fg, kept in dark */
 
-  /* Type: rem plus vw, so text still grows at 200% zoom */
-  --font-sans: system-ui, "Segoe UI Variable Text", "Segoe UI", -apple-system, Roboto, "Noto Sans",
+  /* Type: rem plus vw, so text still grows at 200% zoom. The faces are the
+     MonoEdge site's, loaded by next/font in app/layout.tsx (it sets
+     --font-inter and the others on <html>); Hindi and Marathi fall back to
+     the system's Devanagari faces. */
+  --font-sans: var(--font-inter, "Inter"), system-ui, "Segoe UI", -apple-system, Roboto,
     "Nirmala UI", "Noto Sans Devanagari", sans-serif;
-  --font-display: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
-  --font-mono: ui-monospace, "Cascadia Mono", "Segoe UI Mono", Consolas, monospace;
+  --font-display: var(--font-archivo, "Archivo"), var(--font-inter, "Inter"), system-ui,
+    "Nirmala UI", "Noto Sans Devanagari", sans-serif;
+  --font-mono: var(--font-jetbrains-mono, "JetBrains Mono"), ui-monospace, "Cascadia Mono",
+    Consolas, "Nirmala UI", "Noto Sans Devanagari", monospace;
   --fs-sm: clamp(0.875rem, 0.85rem + 0.1vw, 0.9375rem);
   --fs-base: clamp(1rem, 0.96rem + 0.2vw, 1.0625rem);
   --fs-lg: clamp(1.125rem, 1.06rem + 0.3vw, 1.25rem);
@@ -72,7 +90,7 @@
   --space-8: 64px;
   --control-h: 40px;
   --r-sm: 6px;
-  --r-md: 10px;
+  --r-md: 8px;
   --r-full: 999px;
   --e-1: 0 1px 2px rgb(0 0 0 / 0.06);
   --e-2: 0 8px 24px rgb(0 0 0 / 0.18);
@@ -94,20 +112,20 @@
   color-scheme: light;
 }
 
-/* Dark: "ink at night". Warm near-black, paper-toned text; not an inversion. */
+/* Dark: MonoEdge at night. Near-black #0a0a0f, off-white text, light blue actions. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #14161b;
-    --surface: #1c1f26;
-    --surface-2: #262a33;
-    --fg: #ece6da;
-    --fg-muted: #a7a69e;
-    --border: #30343e;
-    --border-strong: #6e7482;
-    --accent: #a3b6f0;
-    --accent-fg: #101a33;
-    --accent-hover: #bccbf5;
-    --accent-soft: #1f2a47;
+    --bg: #0a0a0f;
+    --surface: #15151a;
+    --surface-2: #202027;
+    --fg: #f6f5f2;
+    --fg-muted: #a5a5ae;
+    --border: #2a2a33;
+    --border-strong: #6b6b78;
+    --accent: #7f9bdd;
+    --accent-fg: #0a0a0f;
+    --accent-hover: #a1b6e8;
+    --accent-soft: #1b2442;
     --verified-bg: #15301e;
     --verified-fg: #8fd3a3;
     --verified-solid: #4fae6f;
@@ -116,27 +134,27 @@
     --review-solid: #dc9c2e;
     --danger-bg: #3c1814;
     --danger-fg: #ff9e92;
-    --focus: #a3b6f0;
-    --brand-lal: #e57a6e;
-    --paper-frame: #0f1115;
-    --e-1: 0 0 0 1px #30343e;
+    --focus: #7f9bdd;
+    --brand-lal: #7f9bdd;
+    --paper-frame: #050507;
+    --e-1: 0 0 0 1px #2a2a33;
     --e-2: 0 8px 28px rgb(0 0 0 / 0.55);
     color-scheme: dark;
   }
 }
 
 :root[data-theme="dark"] {
-  --bg: #14161b;
-  --surface: #1c1f26;
-  --surface-2: #262a33;
-  --fg: #ece6da;
-  --fg-muted: #a7a69e;
-  --border: #30343e;
-  --border-strong: #6e7482;
-  --accent: #a3b6f0;
-  --accent-fg: #101a33;
-  --accent-hover: #bccbf5;
-  --accent-soft: #1f2a47;
+  --bg: #0a0a0f;
+  --surface: #15151a;
+  --surface-2: #202027;
+  --fg: #f6f5f2;
+  --fg-muted: #a5a5ae;
+  --border: #2a2a33;
+  --border-strong: #6b6b78;
+  --accent: #7f9bdd;
+  --accent-fg: #0a0a0f;
+  --accent-hover: #a1b6e8;
+  --accent-soft: #1b2442;
   --verified-bg: #15301e;
   --verified-fg: #8fd3a3;
   --verified-solid: #4fae6f;
@@ -145,10 +163,10 @@
   --review-solid: #dc9c2e;
   --danger-bg: #3c1814;
   --danger-fg: #ff9e92;
-  --focus: #a3b6f0;
-  --brand-lal: #e57a6e;
-  --paper-frame: #0f1115;
-  --e-1: 0 0 0 1px #30343e;
+  --focus: #7f9bdd;
+  --brand-lal: #7f9bdd;
+  --paper-frame: #050507;
+  --e-1: 0 0 0 1px #2a2a33;
   --e-2: 0 8px 28px rgb(0 0 0 / 0.55);
   color-scheme: dark;
 }
@@ -234,6 +252,7 @@ a:hover {
 h1,
 h2,
 h3 {
+  font-family: var(--font-display);
   line-height: 1.2;
   margin: 0 0 var(--space-2);
   color: var(--fg);
@@ -242,7 +261,7 @@ h3 {
 h1 {
   font-size: var(--fs-2xl);
   font-weight: 700;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.02em;
 }
 
 h2 {
