@@ -174,8 +174,9 @@ EMBED_PROVIDER: Mapping[str, Any] = {**PROVIDER, "require_parameters": False}
 # ever serves batches.
 EMBED_TEXTS_PER_REQUEST = 1
 # Fast scan (council 16 Oct 2026): at most this many embedding requests at once, through the
-# one limiter (never a gate of its own: OpenRouter's limit is the key's).
-EMBED_FAN_OUT = 8
+# one limiter (never a gate of its own: OpenRouter's limit is the key's); 16 since Ready first
+# (16 Oct 2026): their starts stay MODEL_RPM apart, so a higher MODEL_RPM is what speeds them.
+EMBED_FAN_OUT = 16
 
 # Structured output (G3): response_format json_schema with strict set to this. Whether
 # Google honours strict through OpenRouter is checked by verify-models (strict_schema).

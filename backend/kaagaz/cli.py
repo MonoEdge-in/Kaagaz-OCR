@@ -83,7 +83,9 @@
 * ``scan-times [--customer-id ID] [--last N]``: the last N ready runs (5), one line each,
   ids and seconds only: upload to Ready, queued, the run to Ready, and its steps (preparing,
   reading, Careful, card, map, checker, from the run's config), then how long after Ready
-  its vectors were made (the ``embed`` ledger row; fast scan, council 16 Oct 2026). Each
+  its vectors were made (the ``embed`` ledger row; fast scan, council 16 Oct 2026). Ready
+  first (16 Oct 2026): a run ready before its card ends after it, so Ready is its start plus
+  ``seconds_to_ready``, and ``understood_after_ready`` is ``seconds_after_ready``. Each
   customer is read in its own ``db.customer()``.
 
 Why passwords are never flags: a flag lands in the shell history and the
@@ -104,7 +106,7 @@ import unicodedata
 import uuid
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -566,16 +568,24 @@ def scan_times_line(row: Mapping[Any, Any]) -> str:
     def between(start: datetime | None, end: datetime | None) -> str:
         return "-" if start is None or end is None else f"{(end - start).total_seconds():.1f}"
 
+    to_ready = config.get("seconds_to_ready")
+    ready = (
+        row["started_at"] + timedelta(seconds=to_ready)
+        if isinstance(to_ready, int | float) and row["started_at"] is not None
+        else row["finished_at"]
+    )
+
     escalated = (config.get("reading") or {}).get("escalated") or []
     careful = seconds("seconds_careful") if "seconds_careful" in config else f"inline({len(escalated)} pages)"
     return (
         f"document {row['document_id']} ocr_pages {row['pages_ocr']}"
-        f" upload_to_ready {between(row['uploaded_at'], row['finished_at'])}"
+        f" upload_to_ready {between(row['uploaded_at'], ready)}"
         f" queued {between(row['uploaded_at'], row['started_at'])}"
-        f" run_to_ready {between(row['started_at'], row['finished_at'])}"
+        f" run_to_ready {between(row['started_at'], ready)}"
         f" preparing {seconds('seconds_preparing')} reading {seconds('seconds_reading')} careful {careful}"
         f" card {seconds('seconds_card')} map {seconds('seconds_map')} checker {seconds('seconds_checker')}"
-        f" index_after_ready {between(row['finished_at'], row['indexed_at'])}"
+        f" understood_after_ready {seconds('seconds_after_ready')}"
+        f" index_after_ready {between(ready, row['indexed_at'])}"
     )
 
 
