@@ -186,3 +186,9 @@
   font-weight: 600;
   line-height: 1.4;
 }
+
+/* Compare models: a model id in mono, so it reads exactly (board 8 P3). */
+.modelId {
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}

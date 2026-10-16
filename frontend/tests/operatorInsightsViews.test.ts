@@ -542,8 +542,27 @@ describe("Compare models", () => {
     expect(html).not.toContain("Too few to rate (450)");
     expect(html).toContain("slowest 5%: too few timed runs");
     expect(html).not.toContain("Too few to rate (45)");
-    expect(html).toContain('data-label="Cache saved" class="tabular">\u2014</td>');
+    // Changed on purpose (board 8 P2, 16 Oct 2026): figure columns are .num, lined up at the end.
+    expect(html).toContain('data-label="Cache saved" class="num">\u2014</td>');
     expect(html).not.toContain("None of scan calls");
+  });
+
+  it("lines figures and their headers up at the end, the words columns at the start (board 8 P2)", () => {
+    const html = boardHtml(ready(boardData()));
+    for (const label of ["Pages", "$ per 1,000 pages (est.)", "Cache saved", "Seconds per page", "Failed or without a card", "AI cost"]) {
+      expect(html, label).toContain(`class="num">${label}</th>`);
+      expect(html, label).toContain(`data-label="${label}" class="num">`);
+    }
+    expect(html).toContain('role="columnheader">Model</th>');
+    expect(html).toContain('role="columnheader">Page signals</th>');
+  });
+
+  it("shows a model id in mono, and its job under it when the catalogue gives one (board 8 P3)", () => {
+    const jobs = new Map([["google/gemini-3.1-pro-preview", "Scan default (High) · chat default (Medium)"]]);
+    const html = boardHtml(ready({ ...boardData(), jobs }));
+    expect(html).toMatch(/<span class="[^"]*statusNote[^"]* [^"]*modelId[^"]*">google\/gemini-3.1-pro-preview<\/span>/);
+    expect(html).toContain("Scan default (High) · chat default (Medium)</span>");
+    expect(boardHtml(ready(boardData()))).not.toContain("Scan default");
   });
 
   it("says when no model read anything", () => {
