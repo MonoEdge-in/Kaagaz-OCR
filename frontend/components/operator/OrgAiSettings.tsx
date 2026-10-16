@@ -41,8 +41,8 @@ import {
   monthSpentText,
   offered,
   parseBudget,
-  per1000Text,
   pickerText,
+  realCostText,
   refusalField,
   resetSection,
   sameAsDefault,
@@ -545,7 +545,7 @@ function ModelChoices(props: {
               />
               <span>
                 {model.name}
-                {area === "scan" && <span className={styles.statusNote}>{per1000Text(model)}</span>}
+                <span className={`${styles.statusNote} tabular`}>{realCostText(model, area)}</span>
                 {!model.vendor_allowed && <span className={styles.statusNote}>{VENDOR_NOT_ALLOWED}</span>}
               </span>
             </label>

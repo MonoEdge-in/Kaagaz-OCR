@@ -9,7 +9,6 @@ import { PART_NOT_KNOWN, formatUsd } from "@/lib/format";
 import type { AiDefaults, AiEnv, AiLevel, AiValues, OperatorModel, OperatorUsageRow, OrgInsight, UsageTotals } from "@/lib/types";
 import { countText } from "./logic";
 
-const TOKENS_PER_M = 1_000_000;
 // numeric(12,2): the largest budget the server's column holds.
 export const MAX_BUDGET = 9_999_999_999.99;
 
@@ -28,36 +27,27 @@ export function usd(value: number | null, estimated = false): string {
 /** A live price: "$2.00" (per million tokens). */
 export const priceText = (perM: number) => perMillion.format(perM);
 
+/** "List price $3.00 in · $15.00 out per million tokens". */
+export const listPriceText = (model: OperatorModel) =>
+  `List price ${priceText(model.price_in_usd_per_m)} in · ${priceText(model.price_out_usd_per_m)} out per million tokens`;
+
 /**
- * MC3: what one page costs at the live price: from the pages scanned in the last 30
- * days (ledger_tokens_*); else from verify-models' small test page, a rough estimate;
- * null with neither.
+ * Tushar, 16 Oct 2026: only the REAL cost, what OpenRouter charged in the last 30 days
+ * (0031), never tokens times the list price. Scanning: "$42.49 per 1,000 pages · from 312
+ * pages, last 30 days"; answering: "$0.12 per 1,000 questions · from 40 questions, last
+ * 30 days". Calls with no reported cost are said beside the number, never guessed; no
+ * real use says the list price and "not used yet".
  */
-export function pageCost(model: OperatorModel): { usd: number; rough: boolean } | null {
-  const rough = model.ledger_tokens_in === null || model.ledger_tokens_out === null;
-  const tokensIn = rough ? model.tokens_per_page_in : model.ledger_tokens_in;
-  const tokensOut = rough ? model.tokens_per_page_out : model.ledger_tokens_out;
-  if (tokensIn === null || tokensOut === null) return null;
-  return {
-    usd: (tokensIn * model.price_in_usd_per_m + tokensOut * model.price_out_usd_per_m) / TOKENS_PER_M,
-    rough,
-  };
-}
-
-/** The cost a page in words, as the upload's "Read with" says it. */
-export function pageCostText(model: OperatorModel): string {
-  const cost = pageCost(model);
-  if (cost === null) return "Cost not measured yet";
-  const text = cost.usd < 0.01 ? "under $0.01 a page" : `about ${usd(cost.usd)} a page`;
-  return cost.rough ? `${text} (rough estimate)` : text;
-}
-
-/** A scan model's cost in the AI settings (board 9): "$1.92 per 1,000 pages". */
-export function per1000Text(model: OperatorModel): string {
-  const cost = pageCost(model);
-  if (cost === null) return "Cost not measured yet";
-  const text = `${usd(cost.usd * 1000)} per 1,000 pages`;
-  return cost.rough ? `${text} (rough estimate)` : text;
+export function realCostText(model: OperatorModel, area: Area): string {
+  const [units, costed, cost, unknown, one, many] =
+    area === "scan"
+      ? [model.scan_pages, model.scan_pages_costed, model.scan_cost_usd, model.scan_cost_unknown_calls, "page", "pages"]
+      : [model.answer_questions, model.answer_questions_costed, model.answer_cost_usd, model.answer_cost_unknown_calls, "question", "questions"];
+  if (units === 0) return `${listPriceText(model)} · not used yet`;
+  const notKnown = unknown > 0 ? `cost not known for ${countText(unknown, "call", "calls")}` : "";
+  if (costed === 0 || cost === null) return `${listPriceText(model)} · ${notKnown || "cost not known"}, last 30 days`;
+  const real = `${usd((cost / costed) * 1000)} per 1,000 ${many} · from ${countText(costed, one, many)}, last 30 days`;
+  return notKnown ? `${real} · ${notKnown}` : real;
 }
 
 // ponytail: one rate set by hand (Oct 2026), so the rupees drift from the real rate; read a
@@ -394,14 +384,30 @@ export function changesText(saved: AiDraft, draft: AiDraft, catalogue: OperatorM
 
 const same = (a: string[], b: string[]) => [...a].sort().join("\n") === [...b].sort().join("\n");
 
-/** Before a platform defaults save (C12): which organisations still on the defaults it
- * changes, per area; "Nothing changes." when it changes no area. */
-export function defaultsImpact(saved: AiValues, next: AiValues, counts: AiDefaults["orgs_inheriting"]): string {
-  const parts = DEFAULT_AREAS.filter((each) => each.changed(saved, next)).map(
-    (each) => `the ${each.label} of ${countText(counts[each.area], "organisation", "organisations")}`,
-  );
-  if (parts.length === 0) return "Nothing changes.";
-  return `This save changes ${parts.join(", ")} still on the platform defaults. Organisations with their own settings keep them.`;
+export const KEEP_OWN = "Organisations with their own settings keep them.";
+
+/** Before a platform defaults save (C12), as a short list (Tushar, 16 Oct 2026): "This save
+ * changes, for 1 organisation still on platform defaults:" and the areas it changes; when
+ * the areas reach different numbers, each says its own. "Nothing changes." (no areas)
+ * when it changes no area. */
+export function defaultsImpact(
+  saved: AiValues,
+  next: AiValues,
+  counts: AiDefaults["orgs_inheriting"],
+): { lead: string; areas: string[] } {
+  const changed = DEFAULT_AREAS.filter((each) => each.changed(saved, next));
+  if (changed.length === 0) return { lead: "Nothing changes.", areas: [] };
+  const orgs = (count: number) => countText(count, "organisation", "organisations");
+  const reached = [...new Set(changed.map((each) => counts[each.area]))];
+  if (reached.length === 1)
+    return {
+      lead: `This save changes, for ${orgs(reached[0] ?? 0)} still on platform defaults:`,
+      areas: changed.map((each) => capital(each.label)),
+    };
+  return {
+    lead: "This save changes, for the organisations still on platform defaults:",
+    areas: changed.map((each) => `${capital(each.label)}: ${orgs(counts[each.area])}`),
+  };
 }
 
 /** A refusal of a save, next to the field it is about (C12): the server's code, its field. */

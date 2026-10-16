@@ -28,13 +28,11 @@ import {
   monthSpentText,
   notEnabledReason,
   offered,
-  pageCost,
-  pageCostText,
   parseBudget,
-  per1000Text,
   periodRange,
   pickerText,
   priceText,
+  realCostText,
   refusalField,
   resetSection,
   sameAsDefault,
@@ -47,7 +45,7 @@ import {
 } from "@/components/operator/models";
 import type { AiErrors } from "@/components/operator/models";
 import { AiFields, CODE_ID, fieldId, firstProblem, refusalOf } from "@/components/operator/OrgAiSettings";
-import { DefaultsSummary } from "@/components/operator/PlatformDefaults";
+import { DefaultsImpact, DefaultsSummary, SAVE_LABEL } from "@/components/operator/PlatformDefaults";
 import { SpendTable } from "@/components/operator/SpendView";
 import { ApiError } from "@/lib/api";
 import type { AiDefaults, AiValues, OperatorModel, OperatorUsageRow, OrgInsight } from "@/lib/types";
@@ -70,6 +68,14 @@ const model = (overrides: Partial<OperatorModel> = {}): OperatorModel => ({
   tokens_per_page_out: 800,
   ledger_tokens_in: null,
   ledger_tokens_out: null,
+  scan_pages: 0,
+  scan_pages_costed: 0,
+  scan_cost_usd: null,
+  scan_cost_unknown_calls: 0,
+  answer_questions: 0,
+  answer_questions_costed: 0,
+  answer_cost_usd: null,
+  answer_cost_unknown_calls: 0,
   enabled_at: null,
   chat_eligible: true,
   chat_verified: true,
@@ -110,18 +116,47 @@ describe("money and model words", () => {
     expect(source).not.toMatch(/style: "currency", currency: "USD" \}\)/);
   });
 
-  it("estimates a page from verify-models' tokens (MC3), a rough one, none before it ran", () => {
-    expect(pageCost(model())?.usd).toBeCloseTo((1300 * 2 + 800 * 12) / 1_000_000);
-    expect(pageCost(model())?.rough).toBe(true);
-    expect(pageCost(model({ tokens_per_page_in: null }))).toBeNull();
-    expect(pageCostText(model())).toBe("about $0.01 a page (rough estimate)");
-    expect(pageCostText(model({ tokens_per_page_in: null }))).toBe("Cost not measured yet");
+  // Changed on purpose (Tushar, 16 Oct 2026): only the REAL cost OpenRouter charged, never
+  // tokens times the list price, and no "(rough estimate)" from verify-models' test page.
+  it("says the real cost of scanning per 1,000 pages from the last 30 days", () => {
+    const scanned = model({ scan_pages: 312, scan_pages_costed: 312, scan_cost_usd: 13.25688 });
+    expect(realCostText(scanned, "scan")).toBe("$42.49 per 1,000 pages · from 312 pages, last 30 days");
+    expect(realCostText(model({ scan_pages: 1, scan_pages_costed: 1, scan_cost_usd: 0.02 }), "scan")).toBe(
+      "$20.00 per 1,000 pages · from 1 page, last 30 days",
+    );
   });
 
-  it("says a scan model's cost per 1,000 pages for the AI settings (board 9)", () => {
-    expect(per1000Text(model())).toBe("$12.20 per 1,000 pages (rough estimate)");
-    expect(per1000Text(model({ ledger_tokens_in: 10_000, ledger_tokens_out: 2_000 }))).toBe("$44.00 per 1,000 pages");
-    expect(per1000Text(model({ tokens_per_page_in: null }))).toBe("Cost not measured yet");
+  it("says the real cost of answering per 1,000 questions from the last 30 days", () => {
+    const answered = model({ answer_questions: 40, answer_questions_costed: 40, answer_cost_usd: 0.2 });
+    expect(realCostText(answered, "chat")).toBe("$5.00 per 1,000 questions · from 40 questions, last 30 days");
+    expect(realCostText(answered, "scan")).toContain("not used yet"); // the areas never mix
+  });
+
+  it("says the list price and not used yet when a model has no real use, never an estimate", () => {
+    const unused = model({ price_in_usd_per_m: 3, price_out_usd_per_m: 15 });
+    for (const area of ["scan", "chat"] as const) {
+      expect(realCostText(unused, area)).toBe("List price $3.00 in · $15.00 out per million tokens · not used yet");
+    }
+    // verify-models' test page and the ledger's tokens are never turned into a cost again.
+    const tokensOnly = model({ tokens_per_page_in: 1300, tokens_per_page_out: 800, ledger_tokens_in: 10_000, ledger_tokens_out: 2_000 });
+    expect(realCostText(tokensOnly, "scan")).toBe("List price $2.00 in · $12.00 out per million tokens · not used yet");
+  });
+
+  it("says beside the number when some calls' cost is not known, and never guesses it", () => {
+    const partly = model({ scan_pages: 312, scan_pages_costed: 300, scan_cost_usd: 12.747, scan_cost_unknown_calls: 12 });
+    expect(realCostText(partly, "scan")).toBe(
+      "$42.49 per 1,000 pages · from 300 pages, last 30 days · cost not known for 12 calls",
+    );
+    const none = model({ answer_questions: 3, answer_questions_costed: 0, answer_cost_usd: null, answer_cost_unknown_calls: 1 });
+    expect(realCostText(none, "chat")).toBe(
+      "List price $2.00 in · $12.00 out per million tokens · cost not known for 1 call, last 30 days",
+    );
+  });
+
+  it("has no rough estimate path left in the operator's money words", () => {
+    for (const file of ["components/operator/models.ts", "components/operator/OrgAiSettings.tsx", "components/operator/ModelsView.tsx"]) {
+      expect(read(file), file).not.toMatch(/rough estimate|pageCost|per1000Text|tokens_per_page_in \*/);
+    }
   });
 
   it("says a budget in rough rupees at the one fixed rate, and nothing without a budget", () => {
@@ -141,12 +176,6 @@ describe("money and model words", () => {
     expect(monthSpentText(undefined)).toBeNull();
   });
 
-  it("estimates a page from the last 30 days of scans first (R3)", () => {
-    const scanned = model({ ledger_tokens_in: 10_000, ledger_tokens_out: 2_000 });
-    expect(pageCost(scanned)).toEqual({ usd: (10_000 * 2 + 2_000 * 12) / 1_000_000, rough: false });
-    expect(pageCostText(scanned)).toBe("about $0.04 a page");
-    expect(pageCostText(model({ ledger_tokens_in: 100, ledger_tokens_out: 10 }))).toBe("under $0.01 a page");
-  });
 
   // Changed on purpose (features 25-27, 15 Oct 2026): a model verified for answering only
   // can be enabled too, as the server.
@@ -197,10 +226,14 @@ describe("the Models table", () => {
         onChange: () => undefined,
       }),
     );
-    for (const text of ["Gemini 3.1 Pro", "google-vertex", "$2.00 in, $12.00 out", "about $0.01 a page (rough estimate)"]) {
+    for (const text of ["Gemini 3.1 Pro", "google-vertex", "$2.00 in, $12.00 out"]) {
       expect(html).toContain(text);
     }
     expect(html).toContain("Scanning: Yes, answering: Yes");
+    // Changed on purpose (16 Oct 2026): the real cost for each area, no rough estimate.
+    expect(html).toContain("Scanning: List price $2.00 in · $12.00 out per million tokens · not used yet");
+    expect(html).toContain("Answering: List price $2.00 in · $12.00 out per million tokens · not used yet");
+    expect(html).not.toContain("rough estimate");
     expect(html).toContain("Scanning: No, answering: No");
     expect(html).toContain('aria-label="Enable Gemini 3.1 Pro"');
     // R13: every cell says its column when the table reflows into cards.
@@ -363,15 +396,45 @@ describe("the AI settings form's rules", () => {
     expect(inheritedText("dynamic", DEFAULTS, ENV, catalogue)).toBe("On");
   });
 
-  it("says which organisations still on the defaults a platform save changes, per area", () => {
-    expect(defaultsImpact(DEFAULTS, DEFAULTS, COUNTS)).toBe("Nothing changes.");
+  // Changed on purpose (Tushar, 16 Oct 2026): a short list in place of the run-on sentence.
+  it("says which organisations still on the defaults a platform save changes, as a short list", () => {
+    expect(defaultsImpact(DEFAULTS, DEFAULTS, COUNTS)).toEqual({ lead: "Nothing changes.", areas: [] });
+    const all = { ...DEFAULTS, scan_default: "m/one", scan_thinking: "high" as const, dynamic: false, chat_models: ["m/two"], chat_default: "m/two" };
+    const one = { scan_models: 1, chat_models: 1, scan_thinking: 1, chat_levels: 1, dynamic: 1 };
+    expect(defaultsImpact(DEFAULTS, all, one)).toEqual({
+      lead: "This save changes, for 1 organisation still on platform defaults:",
+      areas: ["Scanning models", "Scanning level", "Dynamic", "Answering models"],
+    });
     const next = { ...DEFAULTS, scan_models: ["m/two", "m/one"], dynamic: false, chat_levels: ["low" as const] };
-    expect(defaultsImpact(DEFAULTS, next, COUNTS)).toBe(
-      "This save changes the Dynamic of 5 organisations, the answering levels of 7 organisations still on the platform " +
-        "defaults. Organisations with their own settings keep them.",
-    ); // the same models in another order change nothing
-    expect(defaultsImpact(DEFAULTS, { ...DEFAULTS, scan_default: "m/one" }, { ...COUNTS, scan_models: 1 })).toMatch(
-      /the scanning models of 1 organisation still/,
+    expect(defaultsImpact(DEFAULTS, next, COUNTS)).toEqual({
+      lead: "This save changes, for the organisations still on platform defaults:",
+      areas: ["Dynamic: 5 organisations", "Answering levels: 7 organisations"],
+    }); // the same models in another order change nothing; different reaches say their own
+    const html = renderToStaticMarkup(createElement(DefaultsImpact, { id: "i", impact: defaultsImpact(DEFAULTS, all, one) }));
+    expect(html.replace(/class="[^"]*"/, 'class="impact"')).toBe(
+      '<div id="i" class="impact" aria-live="polite"><p>This save changes, for 1 organisation still on platform defaults:</p>' +
+        "<ul><li>Scanning models</li><li>Scanning level</li><li>Dynamic</li><li>Answering models</li></ul>" +
+        "<p>Organisations with their own settings keep them.</p></div>",
+    );
+    const nothing = renderToStaticMarkup(createElement(DefaultsImpact, { id: "i", impact: defaultsImpact(DEFAULTS, DEFAULTS, COUNTS) }));
+    expect(nothing).not.toContain("<ul>");
+  });
+
+  it("keeps the dialogs' button labels short, in [Cancel] [Primary] order, so none clips or wraps", () => {
+    expect(SAVE_LABEL).toBe("Save and apply");
+    const source = read("components/operator/PlatformDefaults.tsx");
+    expect(source).not.toContain("Save and apply to organisations");
+    expect(source.indexOf("Cancel\n")).toBeLessThan(source.indexOf("{SAVE_LABEL}"));
+    expect(source).toContain("aria-describedby={IMPACT_ID}"); // the full meaning sits in the list above the button
+    for (const file of ["components/operator/PlatformDefaults.tsx", "components/operator/OrgAiSettings.tsx"]) {
+      const labels = [...read(file).matchAll(/>\s*([A-Z][A-Za-z ]+?)\s*<\/button>/g)].map((m) => m[1] ?? "");
+      expect(labels.length, file).toBeGreaterThan(0);
+      for (const label of labels) expect(label.length, `${file}: ${label}`).toBeLessThanOrEqual(24);
+    }
+    // .btn never wraps above 480px, and the button rows stack full width below it (MonoEdge rules).
+    expect(read("app/globals.css")).toMatch(/\.btn \{[^}]*white-space: nowrap;/);
+    expect(read("components/operator/Operator.module.css")).toMatch(
+      /@media \(max-width: 479\.98px\) \{\s*\.buttons \{\s*flex-direction: column-reverse;\s*align-items: stretch;/,
     );
   });
 
@@ -475,12 +538,13 @@ describe("the AI settings fields", () => {
     expect(html).not.toContain('aria-label="Reset section: Scanning"');
   });
 
-  it("shows each scan model's cost per 1,000 pages, never an answering model's", () => {
+  // Changed on purpose (Tushar, 16 Oct 2026): the real cost for scanning AND answering.
+  it("shows each model's real cost in its own area, the list price when not used yet", () => {
     const html = fields();
     expect(html).toContain("<span>One<span");
-    expect(html).toContain("$12.20 per 1,000 pages (rough estimate)");
-    expect(html.match(/per 1,000 pages/g)).toHaveLength(3); // One, Two and Far for scanning
-    expect(html).toContain("<span>Two</span>"); // answering
+    expect(html).not.toContain("rough estimate");
+    expect(html.match(/not used yet/g)).toHaveLength(5); // One, Two and Far scanning; Two and Far answering
+    expect(html).toMatch(/class="[^"]*statusNote[^"]* tabular">List price \$2\.00 in/);
   });
 
   it("says what the organisation's people will see, its budget in rupees and this month's spend", () => {
@@ -537,7 +601,8 @@ describe("the AI settings dialogs", () => {
     expect(html).toContain("Two (default), One");
     expect(html).toContain("Followed by 1 organisation");
     expect(html).toContain("Followed by 7 organisations");
-    expect(read("components/operator/PlatformDefaults.tsx")).toContain("Save and apply to organisations still on defaults");
+    // Changed on purpose (Tushar, 16 Oct 2026): the long label clipped; the impact list says the rest.
+    expect(read("components/operator/PlatformDefaults.tsx")).toContain('export const SAVE_LABEL = "Save and apply";');
   });
 
   it("the old AI models dialog is gone", () => {

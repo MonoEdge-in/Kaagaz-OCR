@@ -4,7 +4,12 @@ council 15 Oct 2026, C10; 0023, 0026), on ``OperatorDatabase.operator()`` connec
 each call is one ``kaagaz_op_*`` function, which checks the operator and writes its own
 audit rows.
 
-* ``list_models``: the catalogue (``kaagaz_op_models``), with the answer columns.
+* ``list_models``: the catalogue (``kaagaz_op_models``), with the answer columns and the
+  real cost of the last 30 days (0031): per model, every organisation's ledger together,
+  pages read (non-cached calls of scan, upgrade, careful, ensemble_scan: one call a page)
+  and questions answered (ledger rows of chat, ensemble_chat: one row a question), the
+  cost OpenRouter reported for them, and the calls with no reported cost (a NULL or an
+  estimated ``cost_usd``), counted apart and never guessed.
 * ``set_model_enabled``: enable or disable one model on the platform, with the step of a
   fresh code (step-up). Outcomes: ``done``, ``unchanged``, ``missing``, ``not_eligible``,
   ``not_verified`` (verified neither for the reader's prompt nor for the answer prompt),
