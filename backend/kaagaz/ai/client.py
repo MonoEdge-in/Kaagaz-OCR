@@ -59,12 +59,15 @@ class ModelClient(Protocol):
         thinking: str | None = None,
         provider: str | None = None,
         deadline: float | None = None,
+        temperature: float | None = None,
     ) -> dict[str, Any]:
         """One JSON object that follows ``schema``, in at most ``max_tokens`` reply tokens.
         ``model``, ``thinking`` and ``provider`` (features 25-27, C7): the answer's chosen
         model, thinking level and provider; None, MODEL_CHAT at low on DEFAULT_PROVIDER.
         ``deadline``: when every try must be done, on ``time.monotonic()`` (an Ensemble
-        answer's one deadline); None, each call's own timeout."""
+        answer's one deadline); None, each call's own timeout. ``temperature``: the sampling
+        temperature where the model takes one (Ask's rewrite and translation); None, the
+        model's default."""
         ...
 
 

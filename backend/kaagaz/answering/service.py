@@ -77,9 +77,22 @@ The steps (docs/architecture.md):
     verified only when today's rules say so and every other model's checked sentences
     hold the lead's numbers from the same sources (``agreement``). Agreement only ever
     adds Needs review.
+13. Every document (Tushar, 16 Oct 2026, kaagaz/answering/exhaustive.py): a question that
+    asks how many or which documents hold a word or phrase is answered before the fixed
+    route from every document in scope, never the top hits: the exact count, the documents
+    by name with their pages, each citing its first matching piece (route ``fixed_query``,
+    no model). The count sentence cites nothing: it sums up the cited lines after it, so no
+    sentence carries more than one number. No document holds it: the steps above answer as
+    before.
+14. Steady answers (16 Oct 2026): the evidence, the prompt, the schema and verify are the
+    same whichever model drafts. The rewrite and aspects (which steer the search) and the
+    translation are asked for at REWRITE_TEMPERATURE (rewrite.py), so what is searched does
+    not change from one run to the next; the draft stays at the model's default (Google's
+    guidance for Gemini 3).
 
 No source, no answer: an answered result always has at least one sentence,
-every sentence cites at least one source, and every source has a region.
+every sentence cites at least one source (but step 13's count, which sums up its cited
+lines), and every source has a region.
 
 Nothing here logs the question or any document text: a model error is logged
 as its code, and each model answer as the model's tag and ANSWER_PROMPT_HASH.
@@ -156,6 +169,16 @@ from kaagaz.answering.evidence import (
     related_documents,
     valid_regions,
     word_text,
+)
+from kaagaz.answering.exhaustive import (
+    MAX_LISTED,
+    Exhaustive,
+    PgExhaustive,
+    count_sentence,
+    document_sentence,
+    exhaustive_term,
+    more_text,
+    pages_with,
 )
 from kaagaz.answering.expansion import NO_EXPANSION, Expansion, PgWords, WordSource, expand
 from kaagaz.answering.fixed_queries import MAX_CITED_VALUES, FixedQueries, FixedRow, PgFixedQueries, ValueRef
@@ -404,6 +427,7 @@ class AnswerService:
         translated_search: TranslatedSearch | None = None,
         reading: ReadingQuality | None = None,
         context: Context | None = None,
+        exhaustive: Exhaustive | None = None,
     ) -> None:
         self._model = model
         self._translator = translator if settings.answer_translate_question else None
@@ -434,6 +458,7 @@ class AnswerService:
         self._words = words if words is not None else PgWords(db)
         self._reading: ReadingQuality | None = PgReadingQuality(db) if retriever is None else reading
         self._context: Context | None = pg if retriever is None else context
+        self._exhaustive: Exhaustive | None = PgExhaustive(db) if retriever is None else exhaustive
 
     @_timed
     def answer(
@@ -546,6 +571,11 @@ class AnswerService:
         normalised = normalise(question)
         # "Hinglish understood as" is shown only when there was Hinglish to understand.
         shown = normalised.english if normalised.hinglish else question.strip()
+        term = exhaustive_term(question)
+        if term is not None and self._exhaustive is not None:
+            counted = self._exhaustive_answer(self._exhaustive, customer_id, term, shown, scope)
+            if counted is not None:
+                return counted
         found_range = date_range(normalised, self._today())
         fixed = self._fixed.scoped(scope)
         fields = partial(fixed.available_fields, customer_id)  # asked for only if a plan could follow
@@ -592,6 +622,50 @@ class AnswerService:
         )
 
     # --- fixed route --------------------------------------------------------
+
+    def _exhaustive_answer(
+        self, source: Exhaustive, customer_id: str, term: str, shown: str, scope: Scope
+    ) -> Answer | None:
+        """How many documents in ``scope`` hold ``term``, and which (kaagaz/answering/
+        exhaustive.py): the exact count first, then each listed document with its pages,
+        citing its first matching piece; past MAX_LISTED, how many more. None when no
+        document holds it: the search route answers as before. Two statements, and one for
+        the word marks (F6)."""
+        total, documents = source.documents_with(customer_id, term, scope, MAX_LISTED)
+        said = clean_text(term)
+        citations: list[Citation] = []
+        lines: dict[int, list[dict[str, Any]]] = {}
+        listed: list[AnswerSentence] = []
+        for hits in documents:
+            usable = number_evidence(hits)
+            if not usable:
+                continue  # counted, never shown without a place to open
+            n = len(citations) + 1
+            first = replace(usable[0], n=n)
+            citations.append(_piece_citation(n, first, [said]))
+            lines[n] = first.regions
+            name = clean_text(first.hit.document_name)[:_MAX_NAME].strip()
+            listed.append(AnswerSentence(document_sentence(name, pages_with(hits, term)), [n]))
+        if not total or not citations or not said:
+            return None
+        citations = self._marked(customer_id, citations, lines)
+        hard = any(c.hard_to_read for c in citations)
+        head = count_sentence(said, total)
+        if total > len(citations):
+            head += " " + more_text(len(citations), total - len(citations))
+        return Answer(
+            status="answered",
+            label="verified"
+            if all(c.label == "verified" for c in citations) and not hard
+            else "needs_review",
+            sentences=[AnswerSentence(head, []), *listed],  # the count sums up the lines below
+            citations=citations,
+            closest_documents=[],
+            route="fixed_query",
+            normalized_question=shown,
+            model_used=False,
+            reading_note=HARD_TO_READ_NOTE if hard else None,
+        )
 
     def _fixed_answer(self, customer_id: str, plan: FixedPlan, shown: str, fixed: FixedQueries) -> Answer:
         rows = self._run_plan(fixed, customer_id, plan)

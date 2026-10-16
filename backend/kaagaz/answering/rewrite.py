@@ -62,6 +62,14 @@ from kaagaz.answering.hinglish import _NOT_KEYWORDS, DATE_WORDS, normalise
 from kaagaz.answering.sanitize import clean_text
 from kaagaz.chunking.script import fold_digits, has_devanagari_letters
 
+# Steady search (Tushar, 16 Oct 2026): the rewrite and its aspects decide what is searched, so
+# they are asked for at temperature 0 (a short JSON reply, not reasoning), and so is the
+# question's translation (translate.py). The answer's draft stays at the model's default:
+# Google's guidance for Gemini 3 is to keep temperature at 1.0, as lower can loop or weaken
+# reasoning (totals, counts), and accuracy comes first. Sent to Google models only
+# (openrouter.TEMPERATURE_VENDORS), never to Anthropic's.
+REWRITE_TEMPERATURE = 0.0
+
 _log = logging.getLogger(__name__)
 
 MAX_QUESTION = 300  # the messages.rewritten_question CHECK (migration 0006)
@@ -132,7 +140,13 @@ def rewrite(
     message's tokens at most (None: no cut)."""
     user, past, kept = _message(question, history, memory, aspects_max, budget)
     try:
-        reply = model.chat_json(system=SYSTEM_PROMPT, user=user, schema=SCHEMA, max_tokens=MAX_REPLY_TOKENS)
+        reply = model.chat_json(
+            system=SYSTEM_PROMPT,
+            user=user,
+            schema=SCHEMA,
+            max_tokens=MAX_REPLY_TOKENS,
+            temperature=REWRITE_TEMPERATURE,
+        )
     except ModelUnavailable:
         return _fallback("rewrite_model_down")
     except ModelOutputError:

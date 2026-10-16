@@ -82,6 +82,7 @@ class MemoryModel:
         thinking: str | None = None,
         provider: str | None = None,
         deadline: float | None = None,
+        temperature: float | None = None,
     ) -> dict[str, Any]:
         assert system == memory_module.SYSTEM_PROMPT
         self.prompts.append(user)
@@ -213,6 +214,7 @@ class RewriteOnly(MemoryModel):
         thinking: str | None = None,
         provider: str | None = None,
         deadline: float | None = None,
+        temperature: float | None = None,
     ) -> dict[str, Any]:
         self.prompts.append(user)
         return {"question": REWRITTEN}

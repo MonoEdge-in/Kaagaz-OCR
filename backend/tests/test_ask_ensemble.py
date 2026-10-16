@@ -81,6 +81,7 @@ class TeamModel(FakeModel):
         thinking: str | None = None,
         provider: str | None = None,
         deadline: float | None = None,
+        temperature: float | None = None,
     ) -> dict[str, Any]:
         name = model or self.chat_model
         with self._lock:

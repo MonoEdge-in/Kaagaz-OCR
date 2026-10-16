@@ -419,6 +419,7 @@ class FakeModel:
         thinking: str | None = None,
         provider: str | None = None,
         deadline: float | None = None,
+        temperature: float | None = None,
     ) -> dict[str, Any]:
         self.prompts.append((system, user))
         self.max_tokens.append(max_tokens)
