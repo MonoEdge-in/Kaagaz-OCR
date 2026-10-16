@@ -101,13 +101,14 @@ describe("the words for Trash", () => {
     expect(documentsCount(3)).toBe("3 documents");
   });
 
-  it("asks before moving to Trash, and says the earlier versions go too", () => {
-    expect(trashQuestion({ version_no: 1 })).toBe("Move this document to Trash?");
-    expect(trashQuestion({ version_no: 2 })).toBe(
-      "Move this document and its earlier version to Trash?",
+  // Changed on purpose (MonoEdge design system, 16 Oct 2026): a destructive question names its document.
+  it("asks before moving to Trash, naming the document, and says the earlier versions go too", () => {
+    expect(trashQuestion({ version_no: 1, display_name: "Bill.pdf" })).toBe("Move “Bill.pdf” to Trash?");
+    expect(trashQuestion({ version_no: 2, display_name: "Bill.pdf" })).toBe(
+      "Move “Bill.pdf” and its earlier version to Trash?",
     );
-    expect(trashQuestion({ version_no: 4 })).toBe(
-      "Move this document and its 3 earlier versions to Trash?",
+    expect(trashQuestion({ version_no: 4, display_name: "Bill.pdf" })).toBe(
+      "Move “Bill.pdf” and its 3 earlier versions to Trash?",
     );
   });
 
@@ -117,11 +118,12 @@ describe("the words for Trash", () => {
   });
 
   it("says that deleting for good can't be undone", () => {
-    expect(foreverQuestion({ version_no: 1 })).toBe(
-      "Delete this document for good? It can't be brought back.",
+    // Changed on purpose (MonoEdge design system, 16 Oct 2026): the question names its document.
+    expect(foreverQuestion({ version_no: 1, display_name: "Bill.pdf" })).toBe(
+      "Delete “Bill.pdf” for good? It can't be brought back.",
     );
-    expect(foreverQuestion({ version_no: 3 })).toBe(
-      "Delete this document and its 2 earlier versions for good? They can't be brought back.",
+    expect(foreverQuestion({ version_no: 3, display_name: "Bill.pdf" })).toBe(
+      "Delete “Bill.pdf” and its 2 earlier versions for good? They can't be brought back.",
     );
   });
 

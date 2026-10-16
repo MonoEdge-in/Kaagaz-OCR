@@ -41,7 +41,8 @@ describe("the marks on a page", () => {
     expect(legend([mark("unpinned"), mark("unsure"), mark("unsure")])).toEqual(["unsure", "unpinned"]);
     expect(legend([])).toEqual([]);
     expect(MARK_WORDS.unsure.legend).toBe("Unsure word (dashed)");
-    expect(MARK_WORDS.illegible.legend).toBe("Hard to read (hatched)");
+    // Changed on purpose (MonoEdge design system, 16 Oct 2026): no gradients, so no hatch.
+    expect(MARK_WORDS.illegible.legend).toBe("Hard to read (double edge)");
     expect(MARK_WORDS.unpinned.legend).toBe("Spot not confirmed (dotted)");
   });
 
@@ -64,9 +65,12 @@ describe("how the marks look", () => {
   const css = readFileSync(join(process.cwd(), "components/viewer/PageViewer.module.css"), "utf8");
   const globals = readFileSync(join(process.cwd(), "app/globals.css"), "utf8");
 
-  it("gives each kind its own pattern: dashed, hatched, dotted", () => {
+  // Changed on purpose (MonoEdge design system, 16 Oct 2026): no gradients, so "couldn't read"
+  // is a double edge with a light fill instead of a hatch.
+  it("gives each kind its own pattern: dashed, double, dotted", () => {
     expect(css).toMatch(/\.problem\[data-quality="unsure"\][^}]*border: 2px dashed/);
-    expect(css).toMatch(/\.problem\[data-quality="illegible"\][^}]*repeating-linear-gradient/);
+    expect(css).toMatch(/\.problem\[data-quality="illegible"\][^}]*border: 4px double var\(--illegible-on-paper\)/);
+    expect(css.replace(/\/\*[\s\S]*?\*\//g, "")).not.toMatch(/gradient/);
     expect(css).toMatch(/\.problem\[data-quality="unpinned"\][^}]*border: 2px dotted/);
   });
 

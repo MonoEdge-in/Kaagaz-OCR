@@ -1,4 +1,6 @@
-/* The documents screen. Tokens only (app/globals.css). */
+/* The documents screen. Tokens only (app/globals.css). MonoEdge design system (16 Oct 2026):
+   flat and square (2px corners, 1px borders, no shadows or gradients), spacing from the
+   4-8-12-16-24-32 scale, rows laid out with flex and gap. */
 
 .small {
   font-size: var(--fs-sm);
@@ -14,9 +16,9 @@
 /* --- Dropzone ---------------------------------------------------------------- */
 
 .drop {
-  border: 2px dashed var(--border-strong);
-  border-radius: var(--r-md);
-  background: var(--surface);
+  border: 1px dashed var(--border-strong);
+  border-radius: 2px;
+  background: var(--bg-surface);
   transition:
     border-color var(--t-fast) var(--ease),
     background-color var(--t-fast) var(--ease);
@@ -31,7 +33,7 @@
   flex-direction: column;
   align-items: center;
   gap: var(--space-3);
-  padding: var(--space-6) var(--space-4);
+  padding: var(--space-8) var(--space-4);
   text-align: center;
 }
 
@@ -45,11 +47,11 @@
 
 .dropActive {
   border-color: var(--accent);
-  background: var(--accent-soft);
+  background: var(--accent-subtle);
 }
 
 .dropIcon {
-  color: var(--fg-muted);
+  color: var(--text-secondary);
   flex: none;
 }
 
@@ -58,7 +60,7 @@
 }
 
 .dropHint {
-  color: var(--fg-muted);
+  color: var(--text-secondary);
   font-size: var(--fs-sm);
 }
 
@@ -97,7 +99,7 @@
 .readerHint {
   flex: 1 1 100%;
   margin: 0;
-  color: var(--fg-muted);
+  color: var(--text-secondary);
   font-size: var(--fs-sm);
   overflow-wrap: break-word;
 }
@@ -116,12 +118,12 @@
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
-  min-height: 44px;
+  min-height: var(--h-lg);
   overflow-wrap: anywhere;
 }
 
 .readerMain {
-  color: var(--fg-muted);
+  color: var(--text-secondary);
   font-size: var(--fs-sm);
   font-weight: 600;
 }
@@ -152,7 +154,7 @@
 
 .queueSummary {
   font-size: var(--fs-sm);
-  color: var(--fg-muted);
+  color: var(--text-secondary);
 }
 
 .uploads {
@@ -170,40 +172,35 @@
   align-items: flex-start;
   padding: var(--space-3);
   border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: linear-gradient(180deg, rgba(255,255,255,0.015), rgba(255,255,255,0));
-  transition:
-    transform var(--t-fast) var(--ease),
-    border-color var(--t-fast) var(--ease);
+  border-radius: 2px;
+  background: var(--bg-surface);
+  transition: border-color var(--t-fast) var(--ease);
 }
 
+/* Hover changes colour only: nothing moves under the pointer. */
 .upload:hover {
-  transform: translateY(-1px);
   border-color: var(--border-strong);
-  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
 }
 
 .upload[data-state="error"] {
-  border-color: var(--danger-fg);
-  background: rgba(255, 87, 87, 0.04);
+  border-color: var(--critical);
 }
 
+/* As tall as the file name's line, so the icon sits on it. */
 .uploadIconWrap {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  width: 1.2rem;
   flex: none;
-  margin-top: 2px;
+  height: 1lh;
 }
 
 .uploadIcon {
   flex: none;
-  color: var(--fg-muted);
+  color: var(--text-secondary);
 }
 
 .upload[data-state="error"] .uploadIcon {
-  color: var(--danger-fg);
+  color: var(--critical);
 }
 
 .uploadBody {
@@ -230,15 +227,13 @@
 .badge {
   display: inline-flex;
   align-items: center;
-  padding: 0.15rem 0.5rem;
-  border-radius: 999px;
-  background: rgba(148, 163, 184, 0.12);
-  border: 1px solid rgba(148, 163, 184, 0.18);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 2px;
 }
 
 .upload[data-state="error"] .badge {
-  background: rgba(239, 68, 68, 0.07);
-  border-color: rgba(239, 68, 68, 0.2);
+  border-color: var(--critical);
 }
 
 .progressRow {
@@ -252,7 +247,6 @@
   align-items: center;
   width: fit-content;
   min-height: 24px;
-  margin-top: var(--space-1);
   font-weight: 600;
 }
 
@@ -302,12 +296,18 @@
   inset-inline-start: var(--space-3);
   top: 50%;
   transform: translateY(-50%);
-  color: var(--fg-muted);
+  color: var(--text-secondary);
   pointer-events: none;
 }
 
 .searchInput {
-  padding-inline-start: calc(var(--space-3) + 18px + var(--space-2));
+  padding-inline-start: calc(var(--space-3) + 16px + var(--space-2));
+}
+
+/* Always shown (every input has a label you can see), on its own line above the box. */
+.searchLabel {
+  flex: 1 1 100%;
+  font-weight: 600;
 }
 
 .selectionBar {
@@ -317,8 +317,8 @@
   gap: var(--space-2) var(--space-3);
   padding: var(--space-2) var(--space-3);
   border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--surface-2);
+  border-radius: 2px;
+  background: var(--bg-subdued);
 }
 
 /* The select cell stays a table cell (no display rule); the label inside is
@@ -332,8 +332,9 @@
 }
 
 .selectAll {
+  min-height: var(--h-md);
   gap: var(--space-2);
-  color: var(--fg);
+  color: var(--text-primary);
   font-size: var(--fs-sm);
   font-weight: 600;
 }
@@ -357,7 +358,7 @@
 .selectColumn,
 .selectCell {
   width: 3rem;
-  text-align: center;
+  text-align: start;
 }
 
 .selectAll input,
@@ -367,7 +368,7 @@
 }
 
 table.docs tbody tr[data-selected="true"] {
-  background: var(--accent-soft);
+  background: var(--accent-subtle);
 }
 
 table.docs tbody tr[data-selected="true"] .selectHit input {
@@ -385,8 +386,22 @@ table.docs tbody tr[data-selected="true"] .selectHit input {
   font-weight: 600;
 }
 
-.bulkConfirm span {
+/* The question, and the password field when asked, each take a line; the buttons share the next. */
+.bulkConfirm > :not(button) {
+  flex: 1 1 100%;
+  min-width: 0;
+}
+
+/* A destructive button stands apart from Cancel and the rest of its row. */
+.apart {
   margin-inline-end: auto;
+}
+
+/* The progress text keeps its width as it counts, so the bar beside it never jumps. */
+.barText {
+  flex: none;
+  min-width: 8ch;
+  text-align: end;
 }
 
 .selectionError {
@@ -415,15 +430,16 @@ table.docs tbody tr[data-selected="true"] .selectHit input {
   align-items: flex-start;
   gap: var(--space-3);
   padding: var(--space-3) var(--space-4);
-  border: 1px solid var(--danger-fg);
-  border-radius: var(--r-md);
-  background: var(--danger-bg);
-  color: var(--danger-fg);
+  border: 1px solid var(--critical);
+  border-radius: 2px;
+  background: var(--bg-surface);
+  color: var(--critical);
 }
 
+/* As tall as the first line of words, so the icon sits on it. */
 .errorIcon {
   flex: none;
-  margin-top: 3px;
+  height: 1lh;
 }
 
 .errorBody {
@@ -445,16 +461,15 @@ table.docs tbody tr[data-selected="true"] .selectHit input {
   gap: var(--space-2);
 }
 
-
 .skeletonRow {
   height: 104px;
-  border-radius: var(--r-md);
+  border-radius: 2px;
 }
 
 @container docs-list (min-width: 48rem) {
   .skeletonRow {
     height: 48px;
-    border-radius: var(--r-sm);
+    border-radius: 2px;
   }
 }
 
@@ -484,9 +499,9 @@ table.docs {
   width: 100%;
   border-collapse: separate;
   border-spacing: 0;
-  background: var(--surface);
+  background: var(--bg-surface);
   border: 1px solid var(--border);
-  border-radius: var(--r-md);
+  border-radius: 2px;
 }
 
 /* Long words break only when they cannot fit; names wrap at <wbr> (names.ts). */
@@ -506,7 +521,7 @@ table.docs th {
   display: flex;
   align-items: center;
   min-height: 24px;
-  margin-top: var(--space-1);
+  margin-block-start: var(--space-1);
   font-size: var(--fs-sm);
 }
 
@@ -525,7 +540,7 @@ table.docs th {
 /* What kind of document it is (PRD 2, D6), under its file type. */
 .docType {
   display: block;
-  color: var(--fg-muted);
+  color: var(--text-secondary);
 }
 
 .statusCell {
@@ -541,7 +556,7 @@ table.docs th {
 
 .statusMessage {
   font-size: var(--fs-sm);
-  color: var(--fg-muted);
+  color: var(--text-secondary);
 }
 
 .confirm {
@@ -562,27 +577,34 @@ table.docs th {
   margin: var(--space-1) 0 0;
 }
 
+/* Delete or Move to Trash, then Cancel: the destructive button stands apart. */
+.confirmButtons > :global(.btn-danger) {
+  margin-inline-end: auto;
+}
+
 @container docs-list (min-width: 48rem) {
   table.docs {
     table-layout: fixed;
   }
 
-  /* The header sticks under the top bar; no overflow wrapper, so nothing scrolls sideways. */
+  /* The header sticks under the top bar. No overflow wrapper (the MonoEdge rule for tables),
+     on purpose: a row's Actions menu and its "are you sure" panel open past the row, and a
+     scrolling wrapper would cut them off. The column budgets (tests/layout-guards.test.ts)
+     and the cards below 48rem keep the table inside its width instead. */
   table.docs thead th {
     position: sticky;
     top: var(--topbar-space);
     z-index: var(--z-sticky);
-    background: var(--surface);
-    border-bottom: 0;
-    box-shadow: inset 0 -1px 0 var(--border);
+    background: var(--bg-surface);
+    border-bottom: 1px solid var(--border);
   }
 
   table.docs thead th:first-child {
-    border-start-start-radius: var(--r-md);
+    border-start-start-radius: 2px;
   }
 
   table.docs thead th:last-child {
-    border-start-end-radius: var(--r-md);
+    border-start-end-radius: 2px;
   }
 
   /* A control focused from the keyboard scrolls clear of the sticky header row too (2.4.11). */
@@ -594,15 +616,11 @@ table.docs th {
     height: 48px;
     padding-block: var(--space-2);
     vertical-align: middle;
+    border-bottom: 1px solid var(--border);
+  }
+
+  table.docs tbody tr:last-child td {
     border-bottom: 0;
-  }
-
-  table.docs tbody tr {
-    box-shadow: inset 0 -1px 0 var(--border);
-  }
-
-  table.docs tbody tr:last-child {
-    box-shadow: none;
   }
 
   /* Name and Status have no width: they share what is left. */
@@ -620,6 +638,12 @@ table.docs th {
 
   .actionsColumn {
     width: 7rem;
+  }
+
+  /* Numbers line up at the end. */
+  .sizeColumn,
+  .sizeCell {
+    text-align: end;
   }
 
   .meta {
@@ -647,12 +671,11 @@ table.docs th {
     inset-inline-end: var(--space-2);
     top: var(--space-1);
     z-index: calc(var(--z-sticky) + 1);
-    width: min(20rem, 80vw);
+    width: min(20rem, 80cqi);
     padding: var(--space-3);
     border: 1px solid var(--border-strong);
-    border-radius: var(--r-md);
-    background: var(--surface);
-    box-shadow: var(--e-2);
+    border-radius: 2px;
+    background: var(--bg-surface);
     text-align: start;
   }
 
@@ -673,7 +696,7 @@ table.docs th {
   .bandSize,
   .bandBy {
     display: block;
-    color: var(--fg-muted);
+    color: var(--text-secondary);
   }
 }
 
@@ -732,9 +755,9 @@ table.docs th {
     display: flex;
     flex-wrap: wrap;
     align-items: baseline;
-    background: var(--surface);
+    background: var(--bg-surface);
     border: 1px solid var(--border);
-    border-radius: var(--r-md);
+    border-radius: 2px;
     padding: var(--space-3) var(--space-4);
   }
 
@@ -758,11 +781,12 @@ table.docs th {
 
   .selectCell {
     flex: 0 0 auto;
-    margin-inline-end: var(--space-2);
+    padding-inline-end: var(--space-2);
   }
 
   .nameCell {
     flex: 1 1 calc(100% - 3rem);
+    min-width: 0;
   }
 
   .statusCell {
@@ -774,15 +798,15 @@ table.docs th {
     flex-wrap: wrap;
     align-items: center;
     gap: var(--space-1) var(--space-2);
-    margin-top: var(--space-2);
+    padding-block-start: var(--space-2);
   }
 
   .meta {
     flex: 0 1 auto;
     min-width: 0;
-    margin-top: var(--space-2);
+    padding-block-start: var(--space-2);
     font-size: var(--fs-sm);
-    color: var(--fg-muted);
+    color: var(--text-secondary);
   }
 
   .meta + .meta::before,
@@ -812,7 +836,7 @@ table.docs th {
 
   .actionsCell {
     flex: 1 1 100%;
-    margin-top: var(--space-3);
+    padding-block-start: var(--space-3);
   }
 }
 
@@ -836,10 +860,14 @@ table.docs th {
 }
 
 .result {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
   padding: var(--space-3) var(--space-4);
   border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--surface);
+  border-radius: 2px;
+  background: var(--bg-surface);
 }
 
 .resultName {
@@ -848,19 +876,19 @@ table.docs th {
 }
 
 .resultMeta {
-  margin: var(--space-1) 0 0;
+  margin: 0;
   font-size: var(--fs-sm);
-  color: var(--fg-muted);
+  color: var(--text-secondary);
 }
 
 .resultSnippet {
-  margin: var(--space-2) 0 0;
+  margin: 0;
   overflow-wrap: anywhere;
 }
 
 /* "Add a story so you can find this later" under a finished upload: the touch size. */
 .storyLink {
-  min-height: 44px;
+  min-height: var(--h-lg);
 }
 
 .timeLeft {
@@ -868,7 +896,7 @@ table.docs th {
   min-width: min(18ch, 100%); /* room for "Ready in about 55 s", so the row does not jump as it counts */
   font-size: var(--fs-sm);
   font-variant-numeric: tabular-nums;
-  color: var(--fg-muted);
+  color: var(--text-secondary);
 }
 
 /* The progress bar beside a document being read: the cell's width, at most 12rem. */
@@ -888,14 +916,14 @@ table.docs th {
   height: 0.625rem;
   appearance: none;
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-full);
-  background: var(--surface-2);
+  border-radius: 2px;
+  background: var(--bg-subdued);
   color: var(--accent);
   overflow: hidden;
 }
 
 .readMeter::-webkit-progress-bar {
-  background: var(--surface-2);
+  background: var(--bg-subdued);
 }
 
 .readMeter::-webkit-progress-value {
@@ -907,11 +935,12 @@ table.docs th {
 }
 
 .readPercent {
+  flex: none;
   min-width: 4ch;
   text-align: end;
   font-size: var(--fs-sm);
   font-variant-numeric: tabular-nums;
-  color: var(--fg-muted);
+  color: var(--text-secondary);
 }
 
 /* PRD 5 U1: one drop of files in the tray: its line, its time left and its bar, then its files. */
@@ -934,11 +963,11 @@ table.docs th {
   font-weight: 600;
 }
 
-/* U10 Saving: an indeterminate bar, a moving stripe; still with reduced motion. */
+/* U10 Saving: an indeterminate bar, a flat fill that fades in and out (opacity only; MonoEdge
+   has no gradients, so no moving stripe); still with reduced motion. */
 .readMeter:indeterminate {
-  background: repeating-linear-gradient(-45deg, var(--surface-2) 0 8px, var(--accent-soft) 8px 16px);
-  background-size: 200% 100%;
-  animation: saving 1.2s linear infinite;
+  background: var(--accent-subtle);
+  animation: saving 1.2s ease-in-out infinite alternate;
 }
 
 .readMeter:indeterminate::-webkit-progress-bar {
@@ -947,7 +976,7 @@ table.docs th {
 
 @keyframes saving {
   to {
-    background-position: -45px 0;
+    opacity: 0.4;
   }
 }
 
@@ -961,11 +990,36 @@ table.docs th {
 .attentionChip {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-1);
-  padding: 2px 8px;
+  gap: var(--space-2);
+  padding: 0 var(--space-2);
   border: 1px dashed var(--border-strong);
-  border-radius: 4px;
-  background: var(--surface-2);
-  color: var(--fg);
+  border-radius: 2px;
+  background: var(--bg-subdued);
+  color: var(--text-primary);
   font-size: var(--fs-sm);
+}
+
+/* Upload rows and search results: layout, paint and style kept inside each one, so a row that
+   changes never lays out or repaints the others. */
+.upload,
+.result {
+  contain: layout paint style;
+}
+
+/* BusyLabel.tsx: a button's two labels in one grid cell, so it keeps its width while it works. */
+.busyLabel {
+  display: inline-grid;
+}
+
+.busyLabel > * {
+  grid-area: 1 / 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+}
+
+.busyLabel[data-busy="true"] > :first-child,
+.busyLabel[data-busy="false"] > :last-child {
+  visibility: hidden;
 }
