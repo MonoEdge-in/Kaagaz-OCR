@@ -63,6 +63,7 @@ describe("guards", () => {
     const leaving = [
       "app/login/SignInForm.tsx",
       "app/admin/login/AdminSignInForm.tsx",
+      "app/signup/SignUpForm.tsx",
       "components/shell/AppShell.tsx",
       "components/shell/SetPasswordScreen.tsx",
       "components/admin/AdminView.tsx",

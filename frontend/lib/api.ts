@@ -160,6 +160,11 @@ export const pageImageUrl = (documentId: string, pageNo: number) =>
 export const login = (email: string, password: string) =>
   request<Me>("POST", "/auth/login", { email, password });
 export const logout = () => request<void>("POST", "/auth/logout");
+/** Whether anyone may create an organisation at /signup (SELF_SIGNUP_ENABLED). */
+export const signUpOpen = () => request<{ enabled: boolean }>("GET", "/auth/signup");
+/** A new organisation and its first admin; signs in as that admin (an admin session). */
+export const signUp = (body: { organisation_name: string; name: string; email: string; password: string }) =>
+  request<Me>("POST", "/auth/signup", body);
 export const me = () => request<Me>("GET", "/auth/me");
 
 /** The admin screen's sign-in. The code is needed only once the admin has turned 2FA on. */

@@ -352,7 +352,8 @@ describe("layout guards", () => {
   // Board 11 of the UI mockups: one calm frame for all three sign-ins, and its
   // only motion is the citation fading in once (no robot, pages or title sweep).
   it("frames every sign-in with AuthFrame, whose one motion is a single fade", () => {
-    for (const page of ["app/login/page.tsx", "app/admin/login/page.tsx", "app/operator/login/page.tsx"]) {
+    const pages = ["app/login/page.tsx", "app/admin/login/page.tsx", "app/operator/login/page.tsx", "app/signup/page.tsx"];
+    for (const page of pages) {
       expect(read(page), page).toMatch(/<AuthFrame\b/);
     }
     const css = "app/login/login.module.css";

@@ -10,8 +10,9 @@ The exceptions have no customer yet:
 
 * ``login_lookup`` (``Database.system()``): signing in starts from an e-mail only.
   It calls the SECURITY DEFINER function ``kaagaz_login_lookup``, which returns one row.
-* ``create_customer``: calls ``kaagaz_create_customer`` (the CLI only, on its owner
-  connection ``cli._owner``, so its ``platform_audit`` row is in the same transaction).
+* ``create_customer``: calls ``kaagaz_create_customer``: the CLI, on its owner
+  connection ``cli._owner``, so its ``platform_audit`` row is in the same transaction;
+  self sign-up (``POST /auth/signup``), inside ``Database.system()``.
 
 E-mails are unique across all customers (the ``users.email`` constraint), so
 adding a taken e-mail raises ``EmailTaken`` even when another customer holds it.
@@ -99,7 +100,8 @@ def login_lookup(conn: Connection, email: str) -> LoginRow | None:
 def create_customer(
     conn: Connection, *, name: str, admin_email: str, admin_name: str, password_hash: str
 ) -> str:
-    """Create a customer and its first admin. ``conn`` is the CLI's owner connection.
+    """Create a customer and its first admin. ``conn``: the CLI's owner connection, or
+    ``Database.system()`` for self sign-up.
     Raises EmailTaken if the admin's e-mail is in use."""
     try:
         customer_id: object = conn.execute(
