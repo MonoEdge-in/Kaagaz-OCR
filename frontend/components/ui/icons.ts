@@ -37,6 +37,7 @@ export const ICON_NAMES = [
   "scan-text",
   "words",
   "to-top",
+  "more",
 ] as const;
 
 export type IconName = (typeof ICON_NAMES)[number];
@@ -193,4 +194,6 @@ export const ICONS: Record<IconName, readonly IconShape[]> = {
   ],
   // A bar with an arrow rising to it: put this source on top (ranked sources, 16 Oct 2026).
   "to-top": [path("M5 4h14"), path("M12 20V8"), path("M7 13l5-5 5 5")],
+  // Three dots in a row: more actions for this row (Ask screen polish, 17 Oct 2026).
+  more: [circle(5.5, 12, 1), circle(12, 12, 1), circle(18.5, 12, 1)],
 };

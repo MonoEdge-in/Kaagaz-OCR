@@ -76,16 +76,24 @@ export function ConversationList({
       </div>
 
       {items !== null && items.length > 0 ? (
-        <div className={`field ${styles.listSearch}`}>
+        <div className={styles.listSearch}>
           <label htmlFor={`${prefix}-search`}>Search conversations</label>
-          <input
-            id={`${prefix}-search`}
-            type="search"
-            className="input"
-            autoComplete="off"
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-          />
+          {/* The Documents search's pattern: a lens inside the box, an x to clear it. */}
+          <div className={styles.searchField}>
+            <Icon name="search" size={16} className={styles.searchIcon} />
+            <input
+              id={`${prefix}-search`}
+              type="search"
+              className={`input ${styles.searchInput}`}
+              autoComplete="off"
+              placeholder="Search conversations"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+            />
+            {search !== "" && (
+              <IconButton icon="close" label="Clear search" className={styles.searchClear} onClick={() => setSearch("")} />
+            )}
+          </div>
         </div>
       ) : null}
 
@@ -169,12 +177,15 @@ export function ConversationList({
                       disabled={disabled}
                       onClick={() => onOpen(item.id)}
                     >
-                      <span className={styles.itemTitle}>{item.title}</span>
+                      <span className={styles.itemTitle} title={item.title}>
+                        {item.title}
+                      </span>
                       <time className={styles.itemTime} dateTime={item.created_at}>
                         {conversationTime(item.created_at, group.key)}
                       </time>
                     </button>
                     <RowMenu
+                      compact
                       name={item.title}
                       items={[
                         { label: "Rename", onSelect: () => setRenaming({ id: item.id, title: item.title }) },

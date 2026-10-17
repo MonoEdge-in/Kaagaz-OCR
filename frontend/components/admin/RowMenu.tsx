@@ -10,6 +10,7 @@
 import { useId } from "react";
 import type { KeyboardEvent } from "react";
 import { Icon } from "@/components/ui/Icon";
+import { IconButton } from "@/components/ui/IconButton";
 import styles from "./Admin.module.css";
 
 export interface RowMenuItem {
@@ -38,24 +39,38 @@ function moveFocus(event: KeyboardEvent<HTMLDivElement>) {
   items[next]?.focus();
 }
 
-/** `name` says whose actions they are ("Ravi Sharma"), for screen readers. */
-export function RowMenu({ name, items }: { name: string; items: RowMenuItem[] }) {
+/**
+ * `name` says whose actions they are ("Ravi Sharma"), for screen readers. `compact`: an
+ * icon-only ⋯ button instead of "More" (a narrow list, Ask screen polish, 17 Oct 2026).
+ */
+export function RowMenu({ name, items, compact = false }: { name: string; items: RowMenuItem[]; compact?: boolean }) {
   const id = useId();
   const anchor = `--row-menu-${id.replace(/[^\w-]/g, "")}`;
   if (items.length === 0) return null;
   return (
     <>
-      <button
-        type="button"
-        className={`btn btn-quiet ${styles.rowMenuButton}`}
-        popoverTarget={id}
-        aria-haspopup="menu"
-        style={{ anchorName: anchor }}
-      >
-        More
-        <span className="visually-hidden"> actions for {name}</span>
-        <Icon name="chevron-right" size={14} className={styles.rowMenuCaret} />
-      </button>
+      {compact ? (
+        <IconButton
+          icon="more"
+          label={`More actions for ${name}`}
+          className="btn-quiet"
+          popoverTarget={id}
+          aria-haspopup="menu"
+          style={{ anchorName: anchor }}
+        />
+      ) : (
+        <button
+          type="button"
+          className={`btn btn-quiet ${styles.rowMenuButton}`}
+          popoverTarget={id}
+          aria-haspopup="menu"
+          style={{ anchorName: anchor }}
+        >
+          More
+          <span className="visually-hidden"> actions for {name}</span>
+          <Icon name="chevron-right" size={14} className={styles.rowMenuCaret} />
+        </button>
+      )}
       <div
         id={id}
         popover="auto"
