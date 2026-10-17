@@ -591,6 +591,7 @@ class DocumentPages:
     page_count: int = 0
     escalated: dict[int, list[str]] | None = None
     careful_read: bool = False  # Careful's own read: a timeout is not read again at low
+    local: bool = False  # AI settings None (0038): every page by the local reader, no model call
 
 
 @runtime_checkable

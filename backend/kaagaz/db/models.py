@@ -35,6 +35,11 @@ The ledger columns (``ledger_tokens_in``/``_out``) are the average tokens a scan
 took in the organisation's own ledger of the last LEDGER_DAYS days (MC3); prices never
 leave the server (Tushar, 15 Oct 2026: org admins and members never see cost).
 
+The platform test model (Tushar, 17 Oct 2026; 0038): while ``platform_model_override`` names
+an area's model, that model alone is every organisation's list for the area (its default),
+under the same usable rules; the levels, task settings and switches still apply on top.
+Undo deletes the row, and every organisation's own list is back.
+
 Time: one statement for the area's list (a few rows, each with one range read of its
 ledger rows, the model_usage_period index) and one for the settings.
 """
@@ -47,6 +52,7 @@ from typing import Any
 from sqlalchemy import Connection, RowMapping, text
 
 from kaagaz.answering.draft import ANSWER_PROMPT_HASH
+from kaagaz.db import ai_settings
 from kaagaz.reading.ocr import GEMINI, READER_PROMPT_VERSION
 from kaagaz.settings import DEFAULT_PROVIDER, Settings
 
@@ -65,14 +71,19 @@ DYNAMIC_FIRST_THINKING = "low"  # Dynamic's quick first read (Tushar, 16 Oct 202
 # area's rules (eligible, enabled, verified) are in SQL; the provider and the vendor in
 # Python (``_provider``). The default first, then by name.
 _AREA = """
-    WITH own AS (
+    WITH test AS (
+        SELECT t.{area}_model AS model, true AS is_default FROM platform_model_override t
+        WHERE t.{area}_model IS NOT NULL
+    ), own AS (
         SELECT m.model, m.is_default_{area} AS is_default FROM customer_models m
-        WHERE m.customer_id = :customer AND m.{area}
+        WHERE m.customer_id = :customer AND m.{area} AND NOT EXISTS (SELECT 1 FROM test)
     ), area AS (
+        SELECT test.model, test.is_default FROM test
+        UNION ALL
         SELECT own.model, own.is_default FROM own
         UNION ALL
         SELECT p.model, p.is_default_{area} FROM platform_models p
-        WHERE p.{area} AND NOT EXISTS (SELECT 1 FROM own)
+        WHERE p.{area} AND NOT EXISTS (SELECT 1 FROM own) AND NOT EXISTS (SELECT 1 FROM test)
     )
     SELECT c.id, c.name, c.price_in_usd_per_m, c.price_out_usd_per_m, c.tokens_per_page_in,
            c.tokens_per_page_out, a.is_default AS is_default_{area}, c.providers, c.efforts,
@@ -98,13 +109,23 @@ _SETTINGS = text(
     "SELECT COALESCE(s.scan_thinking, p.scan_thinking) AS scan_thinking,"
     " COALESCE(s.chat_levels, p.chat_levels) AS chat_levels,"
     " COALESCE(s.chat_default_level, p.chat_default_level) AS chat_default_level,"
-    " COALESCE(s.dynamic, p.dynamic, true) AS dynamic, COALESCE(s.ensemble, false) AS ensemble"
+    " COALESCE(s.dynamic, p.dynamic, true) AND COALESCE(w.cost_saving, true) AS dynamic,"
+    " COALESCE(s.ensemble, false) AND COALESCE(w.ensemble, true) AS ensemble"
     " FROM (SELECT 1) one"
     " LEFT JOIN platform_ai_settings p ON true"
     " LEFT JOIN customer_ai_settings s ON s.customer_id = :customer"
+    " LEFT JOIN (SELECT bool_and(f.enabled) FILTER (WHERE f.feature = 'cost_saving') AS cost_saving,"
+    " bool_and(f.enabled) FILTER (WHERE f.feature = 'ensemble') AS ensemble"
+    " FROM feature_switches f) w ON true"
 )
+# With the scan task settings of the organisation and of who asked for the reading (0038), as
+# [organisation?, level, locked] triples: no extra statement for a job (at most two rows).
 _DOCUMENT = text(
-    "SELECT read_model, read_mode FROM documents WHERE customer_id = :customer AND id = :document"
+    "SELECT read_model, read_mode,"
+    " (SELECT jsonb_agg(jsonb_build_array(s.user_id IS NULL, s.level, s.locked)) FROM ai_task_settings s"
+    " WHERE s.customer_id = documents.customer_id AND s.task = 'scan'"
+    " AND (s.user_id IS NULL OR s.user_id = documents.read_requested_by)) AS scan_settings"
+    " FROM documents WHERE customer_id = :customer AND id = :document"
 )
 
 
@@ -121,7 +142,8 @@ class Agent:
 @dataclass(frozen=True, slots=True)
 class Reading:
     """How one document's scans are read (C3), checked at job time: ``mode`` single,
-    dynamic or ensemble (after the permission check); ``lead`` reads every page;
+    dynamic, ensemble (after the permission check) or local (AI settings None: the local
+    reader only, 0038); ``lead`` reads every page;
     ``others`` (ensemble only, at most two) read them again for the vote; ``careful``
     (dynamic only) re-reads the unclear pages; ``thinking`` the level sent; ``notes``
     why something fell back (``mode_revoked``, ``ensemble_after_scan``,
@@ -157,6 +179,20 @@ class ChatChoice:
 
     agents: list[Agent]
     thinking: str
+
+
+NO_MODEL = ChatChoice([], "none")  # Ask set to None (AI settings, 0038): quoting only, no model
+
+
+def strongest_chat(rows: Sequence[Mapping[Any, Any]], level: str) -> list[str] | None:
+    """Ask at Max (0038): the usable answer model that takes ``level`` and is dearest a token
+    on the server's own scale (never shown), as ``resolve_chat``'s ``agents``; None with none.
+    ponytail: list price as "strongest", a measured answer-quality score is the upgrade. O(n)."""
+    fit = [row for row in rows if level in row["efforts"]]
+    if not fit:
+        return None
+    best = max(fit, key=lambda row: float(row["price_in_usd_per_m"]) + float(row["price_out_usd_per_m"]))
+    return [best["id"]]
 
 
 class AiNotAllowed(Exception):
@@ -264,7 +300,13 @@ def resolve_scan(conn: Connection, customer_id: str, document_id: str, *, settin
     switch, and reads first at DYNAMIC_FIRST_THINKING when the lead takes it (else at its
     level, ``thinking_fallback``), with the Careful tier, else the lead, as Careful; a mode
     no longer allowed is single (``mode_revoked``). A document the connection cannot see (another
-    customer's, or none) reads single with OCR_MODEL, as before."""
+    customer's, or none) reads single with OCR_MODEL, as before.
+
+    AI settings (0038, ``ai_settings``): with a scan level saved for the organisation or for
+    who asked for the reading (``read_requested_by``), None reads with the local reader only
+    (mode ``local``, an explicit "Read with" too); with no explicit "Read with", Low is
+    dynamic, High single at high thinking, Max high thinking with Careful (mode dynamic).
+    Nothing saved: as before."""
     document = conn.execute(_DOCUMENT, {"customer": customer_id, "document": document_id}).mappings().first()
     rows = [] if document is None else usable_models(conn, customer_id, settings=settings)
     by_id = {row["id"]: row for row in rows}
@@ -280,13 +322,29 @@ def resolve_scan(conn: Connection, customer_id: str, document_id: str, *, settin
     allowed = effective_settings(conn, customer_id)
     thinking, notes = _thinking(allowed["scan_thinking"], lead_row, settings)
 
+    # AI settings (0038): the scan level of who asked for the reading, when one was saved.
+    level = None
+    if document is not None:
+        saved = ai_settings.from_json("scan", document.get("scan_settings"))
+        task = ai_settings.resolve("scan", saved, *ai_settings.scan_ceiling(allowed, settings))
+        level = task.effective if task.chosen else None
+    if level == "none":  # the local reader only, even for an explicit "Read with"
+        return Reading("local", lead, thinking=thinking, notes=notes)
+    if level is not None and read_model is None:  # no explicit "Read with": the level decides
+        mode = "dynamic" if level == "low" else "single"
+        if level in ("high", "max"):
+            thinking, notes = _thinking("high", lead_row, settings)
+        if level == "max":
+            return Reading(
+                "dynamic", lead, careful=_careful(rows, lead, settings), thinking=thinking, notes=notes
+            )
+
     if mode == "ensemble":
         return Reading("single", lead, thinking=thinking, notes=(*notes, "ensemble_after_scan"))
     if mode == "dynamic":
         if not allowed["dynamic"]:
             return Reading("single", lead, thinking=thinking, notes=(*notes, "mode_revoked"))
-        tier = pick_tiers(rows)[1] if rows else None
-        careful = lead if tier is None or tier["id"] == lead.model else _agent(tier, settings)
+        careful = _careful(rows, lead, settings)
         if lead_row is None or DYNAMIC_FIRST_THINKING in lead_row["efforts"]:
             thinking, notes = (
                 DYNAMIC_FIRST_THINKING,
@@ -296,6 +354,12 @@ def resolve_scan(conn: Connection, customer_id: str, document_id: str, *, settin
             notes += ("thinking_fallback",)
         return Reading("dynamic", lead, careful=careful, thinking=thinking, notes=notes)
     return Reading("single", lead, thinking=thinking, notes=notes)
+
+
+def _careful(rows: Sequence[RowMapping], lead: Agent, settings: Settings) -> Agent:
+    """Careful: the Careful tier, else the lead itself (one allowed model)."""
+    tier = pick_tiers(rows)[1] if rows else None
+    return lead if tier is None or tier["id"] == lead.model else _agent(tier, settings)
 
 
 def resolve_ensemble(conn: Connection, customer_id: str, document_id: str, *, settings: Settings) -> Reading:

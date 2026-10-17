@@ -29,6 +29,7 @@ from kaagaz.api.middleware import ErrorMiddleware, RateLimiter, RequestMiddlewar
 from kaagaz.api.ports import Answers, ApiQueue, ApiStorage
 from kaagaz.api.routers import (
     admin,
+    ai_settings,
     auth,
     batches,
     chat,
@@ -107,6 +108,7 @@ def create_app(
         folders.router,
         tags.router,
         chat.router,
+        ai_settings.router,
         search.router,
         review.router,
         admin.router,

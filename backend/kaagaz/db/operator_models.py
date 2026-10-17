@@ -24,6 +24,9 @@ audit rows.
 * ``ai_defaults`` and ``set_ai_defaults``: the platform defaults and how many
   organisations inherit each area; the same outcomes but missing and deleting.
 * ``usage``: tokens and dollars per organisation and model. No user, no document.
+* ``feature_switches`` and ``set_feature_switch`` (0038): the platform feature switches.
+* ``current_test_model``, ``set_test_model`` and ``clear_test_model`` (0038): the platform
+  test model, one model for every organisation's scanning and answering, and its undo.
 
 ``record_verified`` and ``record_chat_verified`` are the exception: ``verify-models
 --record`` writes a model's pass on the OWNER's connection (``cli._owner``), since no app or
@@ -183,6 +186,69 @@ def set_ai_defaults(
     params = {"o": operator_id, **choice.params(), "scan": scan_prompt, "chat": chat_prompt, "step": step}
     row = conn.execute(_SET_AI_DEFAULTS, params).one()
     return str(row[0])
+
+
+def feature_switches(conn: Connection, operator_id: str) -> Sequence[RowMapping]:
+    """Every product feature (0038): feature, enabled, organisations_using, changed_at.
+    Empty for an operator who is not enabled."""
+    return (
+        conn.execute(text("SELECT * FROM kaagaz_op_feature_switches(:o)"), {"o": operator_id})
+        .mappings()
+        .all()
+    )
+
+
+def set_feature_switch(conn: Connection, operator_id: str, feature: str, *, enabled: bool, step: int) -> str:
+    """Turn ``feature`` on or off for every organisation (``step`` of a fresh code
+    required; audited). ``done``, ``unchanged``, ``step_up`` or ``signed_out``."""
+    params = {"o": operator_id, "f": feature, "on": enabled, "step": step}
+    return str(
+        conn.execute(text("SELECT kaagaz_op_set_feature_switch(:o, :f, :on, :step)"), params).scalar_one()
+    )
+
+
+def current_test_model(conn: Connection, operator_id: str) -> RowMapping | None:
+    """The platform test model (0038) with what ran on it since it started: scan_model,
+    chat_model, note, started_at, pages, questions, cost_usd (reported only), seconds_per_page.
+    None when none is set (or the operator is not enabled)."""
+    return conn.execute(text("SELECT * FROM kaagaz_op_test_model(:o)"), {"o": operator_id}).mappings().first()
+
+
+def set_test_model(
+    conn: Connection,
+    operator_id: str,
+    *,
+    scan_model: str | None,
+    chat_model: str | None,
+    note: str | None,
+    scan_prompt: str,
+    chat_prompt: str,
+    step: int,
+) -> str:
+    """Start or replace the test model (``step`` of a fresh code required; audited).
+    ``done``, ``unavailable``, ``not_verified``, ``chat_not_verified``, ``step_up`` or
+    ``signed_out``."""
+    params = {
+        "o": operator_id,
+        "s": scan_model,
+        "c": chat_model,
+        "n": note,
+        "sp": scan_prompt,
+        "cp": chat_prompt,
+        "step": step,
+    }
+    statement = text(
+        "SELECT kaagaz_op_set_test_model(:o, CAST(:s AS text), CAST(:c AS text), CAST(:n AS text),"
+        " :sp, :cp, :step)"
+    )
+    return str(conn.execute(statement, params).scalar_one())
+
+
+def clear_test_model(conn: Connection, operator_id: str, *, step: int) -> str:
+    """Undo the test model (``step`` of a fresh code required; audited): ``done``,
+    ``unchanged``, ``step_up`` or ``signed_out``."""
+    params = {"o": operator_id, "step": step}
+    return str(conn.execute(text("SELECT kaagaz_op_clear_test_model(:o, :step)"), params).scalar_one())
 
 
 def usage(conn: Connection, operator_id: str, start: datetime, end: datetime) -> Sequence[RowMapping]:

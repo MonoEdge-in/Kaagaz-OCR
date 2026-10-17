@@ -32,17 +32,17 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import Connection, RowMapping
 
-from kaagaz.api.auth import CurrentUser, Reviewer, User
+from kaagaz.api.auth import CurrentUser, Reviewer, User, require_feature
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.readers import usable
 from kaagaz.api.views import latest_run_json
+from kaagaz.db import ai_settings, listing, word_review
 from kaagaz.db import ensemble as ensemble_sql
-from kaagaz.db import listing, word_review
 from kaagaz.db import models as models_sql
 from kaagaz.extraction.flags import REASONS, Flag, alternatives
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_feature("review"))])  # 0038: 403 feature_off
 
 Context = Annotated[AppContext, Depends(get_context)]
 MAX_TEXT = 5000  # characters a person may type or send back for one word or line
@@ -201,11 +201,12 @@ def _ensemble(conn: Connection, context: AppContext, user: CurrentUser, row: Row
         reason = ENSEMBLE_WAIT
     elif user.role not in REVIEWERS:
         reason = ENSEMBLE_ROLE
-    elif not (
-        len(usable(conn, user.customer_id, context.settings)) >= 2
-        and models_sql.effective_settings(conn, user.customer_id)["ensemble"]
-    ):
+    elif len(usable(conn, user.customer_id, context.settings)) < 2:
         reason = ENSEMBLE_OFF
+    else:
+        granted = bool(models_sql.effective_settings(conn, user.customer_id)["ensemble"])
+        if not ai_settings.task_on(conn, user.customer_id, user.user_id, "ensemble", granted, granted):
+            reason = ENSEMBLE_OFF  # AI settings (0038): this person's Ensemble too
     run = latest_run_json(conn, user.customer_id, str(row["id"]))
     return {"allowed": reason is None, "reason": reason, "run": run}
 

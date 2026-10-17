@@ -27,6 +27,11 @@ or writes again (applied), Ensemble runs whose progress columns alone change, re
 decision alone is set; none is ever deleted by the app (they go with their document).
 
 Ranked sources (0036): a source a person put on top of an answer, added only.
+
+AI settings by task (0038, for Vrushit's later review): the organisation's and members' task
+levels the app reads and writes; the feature switches and the platform test model (no
+customer) every role that may reads, two columns each, written only by the operator's
+functions (step-up).
 """
 
 import re
@@ -93,6 +98,8 @@ FROM_0030 = {
 }
 # Ranked sources (0036): a pick is added, never changed or deleted by the app.
 FROM_0036 = {"source_pins": (True, True, False, False)}
+# AI settings by task (0038): a person's or the organisation's level is saved, changed and removed.
+FROM_0038 = {"ai_task_settings": (True, True, True, True)}
 UPDATES_0030 = {
     "word_changes": {"applied", "undone_at", "undone_by"},
     "ensemble_runs": {
@@ -114,6 +121,9 @@ CATALOG_POLICIES = {
     # 0026: the platform defaults, read by every role that may (the app's grant is SELECT only).
     ("platform_models", "read_all"): ("SELECT", "PERMISSIVE", ["public"], "true", None),
     ("platform_ai_settings", "read_all"): ("SELECT", "PERMISSIVE", ["public"], "true", None),
+    # 0038: the feature switches and the platform test model (the app's grant: two columns each).
+    ("feature_switches", "read_all"): ("SELECT", "PERMISSIVE", ["public"], "true", None),
+    ("platform_model_override", "read_all"): ("SELECT", "PERMISSIVE", ["public"], "true", None),
 }
 PAGE_READ_UPDATES = {"result", "input_tokens", "output_tokens", "created_at"}
 SECTION_UPDATES = {"embedding", "embed_recipe"}
@@ -299,12 +309,28 @@ OPERATOR_RIGHTS = {
         " pages_refused bigint, pages_fell_back bigint, pages_unpinned bigint)",
         EMPTY_PATH,
     ),
+    # 0038: the feature switches (counts only) and the platform test model (numbers only),
+    # and their writes (step-up), each answering its outcome.
+    "kaagaz_op_feature_switches": (
+        "TABLE(feature text, enabled boolean, organisations_using bigint,"
+        " changed_at timestamp with time zone)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_op_test_model": (
+        "TABLE(scan_model text, chat_model text, note text, started_at timestamp with time zone,"
+        " pages bigint, questions bigint, cost_usd numeric, seconds_per_page double precision)",
+        EMPTY_PATH,
+    ),
+    **dict.fromkeys(
+        ("kaagaz_op_set_feature_switch", "kaagaz_op_set_test_model", "kaagaz_op_clear_test_model"),
+        ("text", EMPTY_PATH),
+    ),
 }
 # The only tables without customer_id: the customers themselves, alembic's own, the
 # platform operator's (0015), the workers' reader status (0022) and the model catalogue
 # (0023) and the platform AI defaults (0026), which belong to no customer.
 OPERATOR_TABLES = {"operators", "platform_audit"}
-PLATFORM_DEFAULTS = {"platform_models", "platform_ai_settings"}
+PLATFORM_DEFAULTS = {"platform_models", "platform_ai_settings", "feature_switches", "platform_model_override"}
 NO_CUSTOMER_ID = (
     {"customers", "alembic_version", "reader_status", "model_catalog"} | PLATFORM_DEFAULTS | OPERATOR_TABLES
 )
@@ -336,6 +362,7 @@ def test_every_customer_table_has_row_level_security_and_the_customer_only_polic
         | set(FROM_0026)
         | set(FROM_0030)
         | set(FROM_0036)
+        | set(FROM_0038)
     )
 
     with db.system() as conn:
@@ -384,7 +411,15 @@ def test_every_customer_table_is_granted_to_the_app_role(db: Database) -> None:
     for table in FROM_0002:
         assert granted[table] == (True, True, True, True), table
     for table, expected in (
-        FROM_0004 | FROM_0008 | FROM_0009 | FROM_0021 | FROM_0023 | FROM_0026 | FROM_0030 | FROM_0036
+        FROM_0004
+        | FROM_0008
+        | FROM_0009
+        | FROM_0021
+        | FROM_0023
+        | FROM_0026
+        | FROM_0030
+        | FROM_0036
+        | FROM_0038
     ).items():
         assert granted[table] == expected, table
 
@@ -511,7 +546,12 @@ def test_every_foreign_key_between_customer_tables_matches_the_customer_on_both_
     between = [key for key in keys if key[1] in tables and key[2] in tables]
 
     assert {key[1] for key in between} >= (
-        set(FROM_0004) | set(FROM_0021) | set(FROM_0030) | set(FROM_0036) | {"pages", "model_usage"}
+        set(FROM_0004)
+        | set(FROM_0021)
+        | set(FROM_0030)
+        | set(FROM_0036)
+        | set(FROM_0038)
+        | {"pages", "model_usage"}
     )
     for name, _table, _parent, columns, parent_columns in between:
         assert ("customer_id", "customer_id") in zip(columns, parent_columns, strict=True), name
