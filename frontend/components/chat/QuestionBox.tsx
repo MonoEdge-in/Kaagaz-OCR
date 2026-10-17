@@ -173,6 +173,11 @@ export function QuestionBox({
           Type a question first.
         </p>
       ) : null}
+      {text.length >= MAX_QUESTION_LENGTH ? (
+        <p className={styles.composerNote} role="status">
+          Questions can be up to 1,000 characters. The rest was left out.
+        </p>
+      ) : null}
       {texts.help ? (
         <p id={HELP_ID} className={styles.composerNote}>
           {texts.help}

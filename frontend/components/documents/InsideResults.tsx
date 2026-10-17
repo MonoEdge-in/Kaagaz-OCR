@@ -89,7 +89,7 @@ export function InsideSearchResults({
   return (
     <>
       {note}
-      <p className="visually-hidden" role="status">
+      <p className="muted" role="status">
         {found.documents.length === 1 ? "1 document found." : `${found.documents.length} documents found.`}
         {stories.length > 0 ? ` ${storyStatusText(stories.length)}` : null}
       </p>

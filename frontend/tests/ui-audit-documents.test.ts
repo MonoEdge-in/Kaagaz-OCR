@@ -314,3 +314,12 @@ describe("the document screen (DD6, DD7, DD9)", () => {
     expect(viewer).toMatch(/\.legendTip \{[^}]*pointer-events:\s*none;[^}]*visibility:\s*hidden;/);
   });
 });
+
+// QA 17 Oct (a11y): the bulk confirm group names its question, and "Review N flagged" fills its line.
+describe("the bulk confirm and the status action", () => {
+  it("describes the group by its question, and stretches the status action", () => {
+    const table = read("components/documents/DocumentsTable.tsx");
+    expect(table).toMatch(/role="group"[^>]*aria-describedby="bulk-confirm-question"\s*>\s*<span id="bulk-confirm-question">/);
+    expect(css("components/documents/Documents.module.css")).toMatch(/\.statusAction \{[^}]*align-self: stretch;/);
+  });
+});

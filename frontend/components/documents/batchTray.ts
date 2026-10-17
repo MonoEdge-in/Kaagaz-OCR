@@ -214,7 +214,7 @@ const PAGES_DONE_AFTER_READING = new Set(["rereading", "understanding", "indexin
 /**
  * The status bar's one line for this tab's uploads (scan states, 16 Oct 2026; brief C: progress
  * in the status bar, never a modal): "Uploading invoice_march.pdf · 14 pages", "Scanning 2
- * documents · page 3 of 14 · About 1 min left", and once nothing is left "Scan complete · 3
+ * documents · page 3 of 14 · About 1 min left", "2 documents waiting to be read", and once nothing is left "Scan complete · 3
  * documents · 12 flagged for review" (flagged: flaggedCount, logic.ts). "" with no uploads.
  * "page 3 of 14" counts the pages of the documents being read together.
  */
@@ -228,7 +228,10 @@ export function statusBarText(
   const [one] = sending;
   if (sending.length === 1 && one) parts.push(`Uploading ${one.name}${one.pages ? ` · ${counted(one.pages, "page")}` : ""}`);
   else if (sending.length > 1) parts.push(`Uploading ${sending.length} files`);
-  const reading = entries.flatMap((entry) => (entry.state.kind === "reading" ? [entry] : []));
+  // U7 (QA 17 Oct): a document with no progress is waiting for the reader, counted on its own.
+  const followed = entries.flatMap((entry) => (entry.state.kind === "reading" ? [entry.state.document] : []));
+  const waiting = followed.filter((document) => !document.progress).length;
+  const reading = entries.filter((entry) => entry.state.kind === "reading" && entry.state.document.progress);
   if (reading.length > 0) {
     parts.push(`Scanning ${counted(reading.length, "document")}`);
     let done = 0;
@@ -254,6 +257,7 @@ export function statusBarText(
       parts.push(lefts.some((left) => left.longer) ? `Taking longer than usual · ${about}` : about);
     }
   }
+  if (waiting > 0) parts.push(`${counted(waiting, "document")} waiting to be read`);
   return parts.length > 0 ? parts.join(" · ") : finishedText(entries);
 }
 

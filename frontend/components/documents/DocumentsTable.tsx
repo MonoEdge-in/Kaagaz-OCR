@@ -419,8 +419,9 @@ export function DocumentsTable({ items: listed, inTrash, me, now, tree, tags, su
               className={styles.bulkConfirm}
               role="group"
               aria-label={CONFIRM_LABEL[confirming]}
+              aria-describedby="bulk-confirm-question"
             >
-              <span>
+              <span id="bulk-confirm-question">
                 {confirming === "forever"
                   ? bulkForeverQuestion(selectedCount)
                   : confirming === "read"

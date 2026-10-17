@@ -169,7 +169,9 @@ export function DocumentView({
   const [exporting, setExporting] = useState(false);
   const reviewButton = useRef<HTMLButtonElement | null>(null);
   const reviewHeading = useRef<HTMLHeadingElement | null>(null);
-  const review = useWordReview(documentId, reloads);
+  // KZ-007: a rejected file has no words to review, so nothing is asked for it.
+  const loadedStatus = loaded && "detail" in loaded ? loaded.detail.status : null;
+  const review = useWordReview(documentId, reloads, loadedStatus !== null && loadedStatus !== "rejected");
   const ensemble = useEnsembleStart(documentId, review, setAnnouncement);
 
   // While it is read: merge each summary; once it settles, ask for the detail once.
@@ -624,20 +626,22 @@ export function DocumentView({
           </p>
         )}
       </header>
-      <SummaryBar
-        documentId={detail.id}
-        review={review}
-        scanning={detail.status_message}
-        reviewing={reviewing}
-        reviewRef={reviewButton}
-        onReview={() => startReview()}
-        onEnsemble={(scope) => void ensemble.ask(scope)}
-        ensembleBusy={ensemble.busy}
-        ensembleError={ensemble.error}
-        onExport={() => setExporting(true)}
-        download={download}
-        say={setAnnouncement}
-      />
+      {detail.status !== "rejected" && (
+        <SummaryBar
+          documentId={detail.id}
+          review={review}
+          scanning={detail.status_message}
+          reviewing={reviewing}
+          reviewRef={reviewButton}
+          onReview={() => startReview()}
+          onEnsemble={(scope) => void ensemble.ask(scope)}
+          ensembleBusy={ensemble.busy}
+          ensembleError={ensemble.error}
+          onExport={() => setExporting(true)}
+          download={download}
+          say={setAnnouncement}
+        />
+      )}
       <p className="visually-hidden" aria-live="polite">
         {announcement}
       </p>

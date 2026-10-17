@@ -806,6 +806,7 @@ table.docs > tbody > tr:hover {
 .statusAction {
   display: inline-flex;
   align-items: center;
+  align-self: stretch; /* QA 17 Oct: the link fills its 28px line, so all of it is a target */
   font-size: var(--fs-sm);
   font-weight: 600;
   color: var(--text-primary);
