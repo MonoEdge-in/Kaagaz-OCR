@@ -124,8 +124,10 @@
   contain: layout paint style;
 }
 
-.item:hover:not(:disabled) {
-  background: var(--surface-2);
+@media (hover: hover) and (pointer: fine) {
+  .item:hover:not(:disabled) {
+    background: var(--surface-2);
+  }
 }
 
 .item[aria-current="true"] {
@@ -586,8 +588,10 @@
   text-decoration: none;
 }
 
-.documentRow:hover {
-  background: var(--bg-hover);
+@media (hover: hover) and (pointer: fine) {
+  .documentRow:hover {
+    background: var(--bg-hover);
+  }
 }
 
 /* "Most relevant": quiet, its pressed state the accent edge on the selected tint. */
@@ -764,6 +768,7 @@
   margin: 0;
   padding: var(--space-3) var(--space-4) var(--space-1);
   overflow-y: auto;
+  overscroll-behavior: contain; /* at its end, the wheel stops here, not in the thread */
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -1130,8 +1135,10 @@
   cursor: pointer;
 }
 
-.starter:hover:not(:disabled) {
-  background: var(--bg-hover);
+@media (hover: hover) and (pointer: fine) {
+  .starter:hover:not(:disabled) {
+    background: var(--bg-hover);
+  }
 }
 
 .starter:disabled {

@@ -100,9 +100,11 @@
   outline-offset: -2px;
 }
 
-.treeLink:hover {
-  background: var(--bg-subdued);
-  color: var(--text-primary);
+@media (hover: hover) and (pointer: fine) {
+  .treeLink:hover {
+    background: var(--bg-subdued);
+    color: var(--text-primary);
+  }
 }
 
 /* D12: a document dragged over a folder: the folder says it will take it. */
@@ -339,8 +341,10 @@
   cursor: pointer;
 }
 
-.chip:hover {
-  background-color: var(--bg-subdued);
+@media (hover: hover) and (pointer: fine) {
+  .chip:hover {
+    background-color: var(--bg-subdued);
+  }
 }
 
 /* Set to something (D7): filled and edged, bold; the words say what. */

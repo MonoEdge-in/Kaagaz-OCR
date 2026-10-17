@@ -366,6 +366,10 @@ describe("layout guards", () => {
       "components/admin/Admin.module.css: .tabs: overscroll-behavior-x",
       "components/admin/Admin.module.css: .tableScroll: overscroll-behavior-x",
       "components/admin/Admin.module.css: .chart: overscroll-behavior-x",
+      // Changed on purpose (Tushar, 17 Oct 2026, smoothness pass): the last two inner scrollers
+      // without it, the Ask question box and the operator's Manage menu (smoothness-guards.test.ts).
+      "components/chat/Chat.module.css: .composerInput: overscroll-behavior",
+      "components/operator/Operator.module.css: .menu: overscroll-behavior",
     ];
     const found = everyRule(/overscroll-behavior/).flatMap(({ rule, name }) =>
       [...rule.body.matchAll(/(overscroll-behavior[-\w]*):/g)].map((match) => `${name}: ${match[1]}`),
