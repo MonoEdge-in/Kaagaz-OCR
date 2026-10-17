@@ -625,6 +625,7 @@ table.docs th {
    the row); the row's own controls sit above it. No underline; the file icon leads. */
 table.docs > tbody > tr {
   position: relative;
+  cursor: pointer;
 }
 
 table.docs > tbody > tr:hover {
@@ -647,12 +648,6 @@ table.docs > tbody > tr:hover {
 
 .name:hover {
   color: var(--text-primary);
-}
-
-.name::after {
-  content: "";
-  position: absolute;
-  inset: 0;
 }
 
 .name > * {

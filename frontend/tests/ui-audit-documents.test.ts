@@ -209,7 +209,13 @@ describe("the documents list (D1, D2, D3, D6, D9, D10, D11)", () => {
   });
 
   it("D11: opens a document from anywhere on its row, the name not underlined, a file icon first", () => {
-    expect(docs).toMatch(/\.name::after \{\s*content: "";\s*position: absolute;\s*inset: 0;/);
+    // Changed on purpose (QA video, 17 Oct 2026): no stretched ::after link, which covered the
+    // whole page in browsers that do not make a <tr> its containing block (Safari); the row
+    // itself opens the document, and controls inside it keep their own clicks.
+    expect(docs).not.toMatch(/\.name::after/);
+    expect(table).toContain("onClick={openRow}");
+    expect(table).toMatch(/closest\("a, button, input, label, select, textarea/);
+    expect(table).toContain("querySelector<HTMLAnchorElement>(`.${styles.name}`)?.click()");
     expect(docs).toMatch(/\.name \{[^}]*text-decoration:\s*none;/);
     expect(table).toContain('<Icon name="file" className={styles.fileIcon} />');
   });

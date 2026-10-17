@@ -33,7 +33,7 @@
 
 import Link from "next/link";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { RefCallback } from "react";
+import type { MouseEvent as ReactMouseEvent, RefCallback } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { PasswordField } from "@/components/ui/PasswordField";
 import { beingRead, canReprocess } from "@/components/viewer/reprocess";
@@ -685,9 +685,22 @@ const DocumentRow = memo(function DocumentRow({
 
   const by = document.uploaded_by_name;
   const when = whenOf(document, inTrash);
+  // D11: the whole row opens the document. A click handler, not a stretched link: an
+  // absolutely placed ::after stays in its row only where the browser makes a <tr> its
+  // containing block, and some (Safari) do not, so it covered the page and any click
+  // opened one file (QA video, 17 Oct 2026). Controls, modifier clicks and text
+  // selection keep their own behaviour; the name stays a real link for keys and new tabs.
+  function openRow(event: ReactMouseEvent<HTMLTableRowElement>) {
+    if (event.defaultPrevented || event.button !== 0) return;
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    if ((event.target as Element).closest("a, button, input, label, select, textarea, [role='menu'], [role='dialog']")) return;
+    if (window.getSelection()?.toString()) return;
+    // The name's own link: its navigation and its scroll memory, nothing new.
+    event.currentTarget.querySelector<HTMLAnchorElement>(`.${styles.name}`)?.click();
+  }
   const question = confirming === "forever" ? foreverQuestion(document) : trashQuestion(document);
   return (
-    <tr role="row" data-id={document.id} data-selected={selected ? "true" : undefined}>
+    <tr role="row" data-id={document.id} data-selected={selected ? "true" : undefined} onClick={openRow}>
       <td
         role="cell"
         className={styles.selectCell}
