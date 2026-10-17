@@ -93,6 +93,7 @@ import {
 } from "./logic";
 import type { UploadState } from "./logic";
 import { checkPages } from "./pageCount";
+import { capReaders, effectiveOf, startReader, useAiSettings } from "@/lib/aiSettings";
 import { DUPLICATE_READER_NOTE, offersChoice, pickedReader, readerOptions, readingToSend } from "./readers";
 import { EMPTY_QUEUE, UPLOADS_AT_ONCE, followed, isBusy, queueReducer, runLimited } from "./uploadQueue";
 import type { UploadEntry } from "./uploadQueue";
@@ -124,9 +125,16 @@ export function useUploads(onUploaded: () => void) {
   // The server's words once another account has signed in here; then nothing more is sent.
   const stopped = useRef<string | null>(null);
   const [queue, dispatch] = useReducer(queueReducer, EMPTY_QUEUE);
-  const [limits, setLimits] = useState<UploadLimits>(FALLBACK_UPLOAD_LIMITS);
+  const [loadedLimits, setLimits] = useState<UploadLimits>(FALLBACK_UPLOAD_LIMITS);
   const [limitsLoaded, setLimitsLoaded] = useState(false); // D1: "Read with" holds its room until then
   const [reader, setReader] = useState<string | null>(sessionReader);
+  // AI settings (spec 17 Oct 2026): "Read with" offers nothing above the effective scan
+  // level and starts from it; nothing picked sends nothing, so the server reads at it.
+  const scanLevel = effectiveOf(useAiSettings(), "scan");
+  const limits = useMemo(
+    () => ({ ...loadedLimits, readers: capReaders(loadedLimits.readers, scanLevel) }),
+    [loadedLimits, scanLevel],
+  );
   // The files this tab still holds, so a file not sent can be sent again (Retry).
   const kept = useRef(new Map<string, Start>());
   // The drops of the last 24 hours (batchTray.ts), and the batch API's latest view of each.
@@ -362,7 +370,7 @@ export function useUploads(onUploaded: () => void) {
     settled,
     limits,
     limitsLoaded,
-    reader,
+    reader: reader ?? startReader(limits.readers, scanLevel),
     views,
     stored,
     tooMany,

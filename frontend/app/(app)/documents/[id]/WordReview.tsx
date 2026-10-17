@@ -54,6 +54,7 @@ import {
 } from "@/components/review/wordReview";
 import { InStatusBar } from "@/components/shell/StatusBar";
 import { Icon } from "@/components/ui/Icon";
+import { effectiveOf, gateEnsemble, useAiSettings } from "@/lib/aiSettings";
 import { getEnsembleEstimate, getReviewStatus, listFlags } from "@/lib/api";
 import type { EnsembleEstimate, EnsembleRun, EnsembleScope, ReviewStatus, WordFlag } from "@/lib/types";
 import { usePoll } from "@/lib/usePoll";
@@ -118,8 +119,10 @@ export function useWordReview(documentId: string, version: number, enabled = tru
     };
   }, [load, poll, version, asks, enabled]);
 
+  // AI settings (spec 17 Oct 2026): Ensemble off for this person hides its controls.
+  const ensembleLevel = effectiveOf(useAiSettings(), "ensemble");
   return {
-    status: loaded?.status ?? null,
+    status: loaded ? gateEnsemble(loaded.status, ensembleLevel) : null,
     flags: loaded?.flags ?? [],
     failed,
     reload: () => setAsks((n) => n + 1),

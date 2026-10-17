@@ -37,6 +37,7 @@ export function adminGate(me: Me): AdminGate {
 export const TABS = [
   { id: "users", label: "Users" },
   { id: "settings", label: "Settings" },
+  { id: "ai", label: "AI settings" },
   { id: "activity", label: "Activity" },
   { id: "numbers", label: "Numbers" },
   { id: "usage", label: "Usage" },

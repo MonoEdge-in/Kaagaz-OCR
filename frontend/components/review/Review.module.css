@@ -293,6 +293,13 @@
   cursor: pointer;
 }
 
+/* A choice that can't be made (AI settings: above the organisation's limit), said in words too. */
+.segment:has(input:disabled),
+.segment input:disabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
 /* R3, focus mode: the keys, then Skip at the end of the row. */
 .focusBar {
   display: flex;

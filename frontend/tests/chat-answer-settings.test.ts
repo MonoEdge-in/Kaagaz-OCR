@@ -44,7 +44,9 @@ describe("answer settings", () => {
     expect(pick).toEqual({ agents: [FLASH.id], level: "medium" });
     expect(choiceBody(allowed, pick)).toBeUndefined();
     expect(choiceBody(null, null)).toBeUndefined();
-    expect(pickSummary(allowed, pick)).toBe("Gemini 3.8 Flash · Medium");
+    // Changed on purpose (spec 17 Oct 2026): org users never see a model's name.
+    expect(pickSummary(allowed, pick)).toBe("Standard · Medium");
+    expect(pickSummary(options({ agents: [FLASH] }), pick)).toBe("Thinking · Medium");
   });
 
   it("send the model by id and the level once changed", () => {
@@ -68,7 +70,7 @@ describe("answer settings", () => {
       agents: [FLASH.id],
       thinking: "low",
     });
-    expect(pickSummary(allowed, pick)).toBe("Gemini 3.1 Pro · High");
+    expect(pickSummary(allowed, pick)).toBe("Careful 2 · High"); // spec 17 Oct 2026: tiers, never names
   });
 
   // Changed on purpose (chat composer, 16 Oct 2026): a quiet button beside Send opens a popover
@@ -84,10 +86,12 @@ describe("answer settings", () => {
     const target = /popoverTarget="([^"]+)"/.exec(html)?.[1];
     expect(html).toContain(`<div id="${target}" popover="auto" role="dialog" aria-label="Answer settings"`);
     expect(html).toContain('<span class="visually-hidden">Answer settings: </span>');
-    expect(html).toContain(">Gemini 3.8 Flash · Low<"); // the button names the pick
+    // Changed on purpose (spec 17 Oct 2026): the models are tiers, never their names.
+    expect(html).toContain(">Standard · Low<"); // the button names the pick
     expect(html.match(/<input type="radio" name="[^"]+-model"/g)).toHaveLength(2);
-    expect(html).toContain("/>Gemini 3.8 Flash</label>");
-    expect(html).toContain("/>Claude Sonnet 5.5</label>");
+    expect(html).toContain("/>Standard</label>");
+    expect(html).toContain("/>Careful</label>");
+    expect(html).not.toMatch(/Gemini|Claude|Sonnet|Flash/);
     expect(html).toContain(">High<");
     expect(html).not.toContain('type="checkbox"');
     expect(html).not.toMatch(MONEY);

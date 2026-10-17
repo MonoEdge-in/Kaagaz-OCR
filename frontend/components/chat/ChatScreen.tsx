@@ -41,8 +41,10 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { Icon } from "@/components/ui/Icon";
 import { IconButton } from "@/components/ui/IconButton";
 import { useHydrated } from "@/components/ui/useHydrated";
+import { capChatOptions, effectiveOf, taskOf, useAiSettings } from "@/lib/aiSettings";
 import {
   ApiError,
+  FEATURE_OFF,
   ask,
   deleteConversation,
   getChatOptions,
@@ -211,8 +213,14 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
   const listOpen = listOpenOn !== null && listOpenOn === pathname;
   // Answer settings (features 25-27): what the organisation allows, and this tab's pick.
   // Not loaded or failed: no chip, and the organisation's defaults answer.
-  const [chatOptions, setChatOptions] = useState<ChatOptions | null>(null);
-  const [answerPick, setAnswerPick] = useState<AnswerPick | null>(null);
+  const [loadedOptions, setChatOptions] = useState<ChatOptions | null>(null);
+  const [picked, setAnswerPick] = useState<AnswerPick | null>(null); // null: nothing picked in this tab
+  // AI settings (spec 17 Oct 2026): the levels stop at the effective Ask level, and start from it.
+  const aiSettings = useAiSettings();
+  const chatOptions = loadedOptions && capChatOptions(loadedOptions, effectiveOf(aiSettings, "ask"));
+  const answerPick =
+    chatOptions && (picked && chatOptions.levels.includes(picked.level) ? picked : defaultPick(chatOptions));
+  const askOff = taskOf(aiSettings, "ask")?.available === false;
 
   // Only the latest conversation opened may fill the thread.
   const openRequest = useRef(0);
@@ -278,9 +286,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
       });
     getChatOptions()
       .then((options) => {
-        if (cancelled) return;
-        setChatOptions(options);
-        setAnswerPick(defaultPick(options));
+        if (!cancelled) setChatOptions(options);
       })
       .catch(() => undefined); // no chip: the organisation's defaults answer
     return () => {
@@ -782,6 +788,10 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
             </div>
           </div>
           <div ref={composerRef} className={styles.composer}>
+            {/* Ask switched off for the whole product: a calm note where the composer was. */}
+            {askOff || askError === FEATURE_OFF ? (
+              <p className={styles.composerNote}>{FEATURE_OFF}</p>
+            ) : (
             <QuestionBox
               pending={busy || search.kind === "loading"}
               error={mode === "documents" ? askError : null}
@@ -805,6 +815,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
                 ) : null
               }
             />
+            )}
           </div>
         </div>
       </section>

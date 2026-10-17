@@ -12,6 +12,8 @@ import type {
   AdminCreated,
   AdminUser,
   AiDefaults,
+  AiSettings,
+  AiTask,
   AiValues,
   AnswerChoice,
   AuditEntry,
@@ -30,6 +32,7 @@ import type {
   EnsembleRun,
   EnsembleScope,
   FailedDocument,
+  FeatureSwitch,
   FlagState,
   Folder,
   InsightsReply,
@@ -62,6 +65,8 @@ import type {
   SourcePin,
   Stats,
   Tag,
+  TaskLevel,
+  TestModel,
   TwoStepSetup,
   UploadLimits,
   UploadReading,
@@ -100,13 +105,21 @@ function noticeSessionEnd(error: ApiError): ApiError {
 // which a cross-site form cannot add (CSRF).
 const CSRF_HEADER = { "X-Requested-With": "kaagaz" };
 
+/** What every screen says where a feature switched off for the whole product was (403 feature_off). */
+export const FEATURE_OFF = "This is turned off for now.";
+
+/** A refusal because the super admin switched the feature off for everyone. */
+export const isFeatureOff = (caught: unknown) => caught instanceof ApiError && caught.code === "feature_off";
+
 async function errorFrom(response: Response): Promise<ApiError> {
   try {
     const body = (await response.json()) as { error?: { code?: string; message?: string; details?: unknown } };
+    const code = body.error?.code ?? "error";
     return new ApiError(
       response.status,
-      body.error?.code ?? "error",
-      body.error?.message ?? "Something went wrong.",
+      code,
+      // One calm sentence wherever the message is shown, whatever the server's words.
+      code === "feature_off" ? FEATURE_OFF : (body.error?.message ?? "Something went wrong."),
       body.error?.details,
     );
   } catch {
@@ -603,3 +616,27 @@ export const keepReading = (id: string, readingId: string) =>
   request<{ id: string; decision: "kept"; change_id: string }>("POST", `${reading(id, readingId)}/keep`);
 export const revertReading = (id: string, readingId: string) =>
   request<{ id: string; decision: "reverted" }>("POST", `${reading(id, readingId)}/revert`);
+
+// --- AI settings by task (spec 17 Oct 2026) ------------------------------------------
+
+export const getAiSettings = () => request<AiSettings>("GET", "/ai-settings");
+/** A member's own choices; null: use the organisation's setting. */
+export const putMyAiSettings = (tasks: Partial<Record<AiTask, TaskLevel | null>>) =>
+  request<AiSettings>("PUT", "/ai-settings/me", { tasks });
+/** Admins only: the organisation's defaults and locks. */
+export const putOrgAiSettings = (tasks: Partial<Record<AiTask, { level: TaskLevel; locked: boolean }>>) =>
+  request<AiSettings>("PUT", "/ai-settings/organisation", { tasks });
+
+/** Operator: every product feature's platform switch. */
+export const getFeatureSwitches = () => request<FeatureSwitch[]>("GET", "/operator/feature-switches");
+/** Flip one, with a fresh code (step-up, as every operator change that takes something away). */
+export const setFeatureSwitch = (feature: string, enabled: boolean, code: string) =>
+  request<FeatureSwitch[]>("PUT", `/operator/feature-switches/${encodeURIComponent(feature)}`, { enabled, code });
+
+/** Operator: the platform-wide test model. */
+export const getTestModel = () => request<TestModel>("GET", "/operator/test-model");
+/** Start or replace it, with a fresh code (step-up). */
+export const startTestModel = (body: { scan_model: string | null; chat_model: string | null; note: string }, code: string) =>
+  request<TestModel>("POST", "/operator/test-model", { ...body, code });
+/** Undo it: every organisation back on its own settings, with a fresh code (step-up). */
+export const stopTestModel = (code: string) => request<TestModel>("DELETE", "/operator/test-model", { code });
