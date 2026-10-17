@@ -410,7 +410,9 @@ def test_an_answer_lists_the_other_documents_with_its_key_terms_not_the_cited_on
     answer = mentioned("Where is the shop on Jalna road?", port)
     assert answer.status in ("answered", "not_found")
     cited = sorted(
-        {c.document_id for c in answer.citations} | {d["document_id"] for d in answer.related_documents}
+        {c.document_id for c in answer.citations}
+        | {d["document_id"] for d in answer.related_documents}
+        | {d["id"] for d in answer.closest_documents}
     )
     assert port.calls == [(A, ["shop", "Jalna", "road"], cited)]  # all in the cited text
     assert answer.mentions is not None
@@ -419,6 +421,29 @@ def test_an_answer_lists_the_other_documents_with_its_key_terms_not_the_cited_on
         "total": 3,
         "documents": answer.mentions["documents"],
     }
+
+
+def test_a_not_found_answers_closest_documents_are_not_mentioned_again() -> None:
+    # CodeRabbit (17 Oct): a not-found answer's "Closest documents" are already shown.
+    port = FakeMentions()
+    answer = mentioned("Where is the shop on Jalna road?", port)
+    closest = dataclasses.replace(
+        answer, status="not_found", closest_documents=[{"id": "c9", "display_name": "c9.pdf"}]
+    )
+    service = AnswerService(
+        db=UNUSED_DB,
+        model=None,
+        settings=SETTINGS,
+        clock=lambda: NOW,
+        retriever=FakeRetriever({A: jalna_store()}),
+        fixed_queries=FakeFixedQueries({A: []}),
+        unchecked=FakeUnchecked(),
+        exhaustive=FakeExhaustive({A: jalna_store()}),
+        mentions=port,
+    )
+    port.calls.clear()
+    service._mentioned(A, "Where is the shop on Jalna road?", closest, Scope())
+    assert "c9" in port.calls[0][2]
 
 
 def test_no_mentions_for_a_count_no_key_term_or_none_found() -> None:

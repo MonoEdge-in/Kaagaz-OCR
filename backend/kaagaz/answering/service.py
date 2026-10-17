@@ -552,9 +552,11 @@ class AnswerService:
         terms = key_terms(question, [c.snippet for c in answer.citations])
         if not terms:
             return answer
-        shown = {c.document_id for c in answer.citations} | {
-            d["document_id"] for d in answer.related_documents
-        }
+        shown = (
+            {c.document_id for c in answer.citations}
+            | {d["document_id"] for d in answer.related_documents}
+            | {d["id"] for d in answer.closest_documents}  # a not-found answer's list (CodeRabbit)
+        )
         total, documents = self._mentions.mentions(customer_id, terms, scope, sorted(shown), MAX_MENTIONED)
         if not total:
             return answer
