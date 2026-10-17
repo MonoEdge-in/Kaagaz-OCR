@@ -204,9 +204,13 @@ describe("one calm, fixed-height status cell", () => {
     expect(html(queued)).toMatch(/>Queued<\/span>.*Waiting to start\./);
   });
 
-  it("keeps the server's words, which may wrap, for a failed document", () => {
-    const failed = doc("f", { status: "failed", status_message: "None of this file could be read. Upload a sharper scan." });
-    expect(html(failed)).toContain("statusMessage");
+  // Changed on purpose (Tushar, 17 Oct 2026): the words wrapped and made a Rejected or Failed row
+  // taller than the rest; now one line like "7 flagged", cut with "…", the whole sentence in its title.
+  it("keeps the server's words on one line, whole in the title, for a failed document", () => {
+    const words = "None of this file could be read. Upload a sharper scan.";
+    const failed = doc("f", { status: "failed", status_message: words });
+    expect(html(failed)).toContain(`title="${words}">${words}</span>`);
+    expect(html(failed)).not.toContain("statusMessage");
     expect(html(failed)).toContain(">Failed</span>");
   });
 
