@@ -11,13 +11,16 @@ it), and gives the ``PageSignals`` that ``text_quality.text_layer_ok`` needs:
 * From one pass over PDFium's text page, for the characters the file holds
   (PDFium's made-up spaces and line breaks, and whitespace, are left out):
 
-  * ``hidden_share``: characters that can't be seen (``is_hidden_char``): text
-    render mode 3 (invisible) or 7 (clip only), through ``FPDFText_GetTextObject``
-    then ``FPDFTextObj_GetTextRenderMode``; a fill with no alpha or near white
-    (``FPDFText_GetFillColor``); or a font size under 1 pt
-    (``FPDFText_GetFontSize``) (the council's PR 3 review, high 1). Their loose
-    boxes, merged along each run, become ``hidden_boxes`` as page fractions, and
-    both PDF readers drop the words under them, whatever the share.
+  * ``hidden_share``: characters that can't be seen (``hidden_chars``, which the
+    second reader uses too): text render mode 3 (invisible) or 7 (clip only),
+    through ``FPDFText_GetTextObject`` then ``FPDFTextObj_GetTextRenderMode``; a
+    colour with no alpha (``FPDFText_GetFillColor``, or ``GetStrokeColor`` for
+    stroked text); a font size under 1 pt (``FPDFText_GetFontSize``) (the
+    council's PR 3 review, high 1); a box off the crop box or too small; or a
+    light colour that does not stand out where the page draws it (council
+    17 Oct 2026: white text on a dark band is seen, white on white is not).
+    Their loose boxes, merged along each run, become ``hidden_boxes`` as page
+    fractions, and both PDF readers drop the words under them, whatever the share.
   * ``legacy_font_share``: in a font whose ``/BaseFont`` name, without a
     subset tag (``ABCDEF+``) and casefolded, matches ``LEGACY_FONT_PATTERN``:
     ``FPDFTextObj_GetFont`` then ``FPDFFont_GetBaseFontName``.
@@ -43,12 +46,15 @@ import ctypes
 import itertools
 import math
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Any
 
 import pypdfium2.raw as pdfium_c
 
+from kaagaz.preparing.pages import render_pdf_page
 from kaagaz.reading.lines import PageFrame, WordBox
+from kaagaz.reading.spans import ReadError
 from kaagaz.reading.text_quality import PageSignals
 
 # ML 3, verbatim: old Hindi and Marathi fonts that store Devanagari on Latin codes.
@@ -57,11 +63,32 @@ LEGACY_FONT_PATTERN = re.compile(
 )
 _SUBSET_TAG = re.compile(r"[A-Z]{6}\+")
 _HIDDEN_MODES = frozenset({pdfium_c.FPDF_TEXTRENDERMODE_INVISIBLE, pdfium_c.FPDF_TEXTRENDERMODE_CLIP})
-# PROVISIONAL (council PR 3 review, high 1): a fill at or above this on every
-# channel (0 to 255) is near white, and a size under MIN_FONT_POINTS is too small
-# to read, so both are hidden.
-NEAR_WHITE = 240
+_STROKE_ONLY = frozenset({pdfium_c.FPDF_TEXTRENDERMODE_STROKE, pdfium_c.FPDF_TEXTRENDERMODE_STROKE_CLIP})
+_STROKED = _STROKE_ONLY | {
+    pdfium_c.FPDF_TEXTRENDERMODE_FILL_STROKE,
+    pdfium_c.FPDF_TEXTRENDERMODE_FILL_STROKE_CLIP,
+}
+_NO_WIDTH = frozenset({"Mn", "Mc", "Cf", "Cs"})  # combining marks, joiners, surrogate halves
+_HIDDEN = (-1, -1, -1)  # _look's answer for a character that can't be seen
+_LINEAR = tuple(c / 255 / 12.92 if c <= 10 else ((c / 255 + 0.055) / 1.055) ** 2.4 for c in range(256))
+# PROVISIONAL (council PR 3 review, high 1): a size under MIN_FONT_POINTS is too
+# small to read, so it is hidden.
 MIN_FONT_POINTS = 1.0
+# PROVISIONAL (council 17 Oct 2026, white text), not measured on real files yet:
+# a loose box (the font's height, the advance's width) smaller than this, in points, is hidden.
+MIN_BOX_HEIGHT = 2.5
+MIN_BOX_WIDTH = 0.3
+# A colour whose WCAG contrast with white is under this is light: seen only on a
+# darker background, which is checked on the drawn page. Also the contrast a
+# light glyph's background needs.
+LIGHT_CONTRAST = 3.0
+MAX_LIGHT_GLYPHS = 5000  # more light characters on a page: all hidden, nothing drawn
+RENDER_DPI = 150  # the page is drawn at this, or lower to stay near RENDER_PIXELS
+RENDER_PIXELS = 4_000_000  # about 12 MB as RGB
+HALO = 0.15  # of the font size, added round the tight box to find the background
+INK_DISTANCE = 48  # a pixel this close (on every channel, 0 to 255) to the glyph's colour is its ink
+INK_SHARE = 0.05  # of the box's pixels must be ink
+CONTRAST_SHARE = 0.20  # of the box's pixels must have LIGHT_CONTRAST with the glyph's colour
 # At most this many images are measured for the coverage, the largest first, so
 # a crafted page of thousands of images costs O(k^2) with k this, not more.
 _MAX_COVERAGE_IMAGES = 500
@@ -167,19 +194,144 @@ class ViewerFrame:
         return x - self.left, self.top - y
 
 
-def is_hidden_char(textpage: Any, index: int) -> bool:
-    """Whether the character at ``index`` can't be seen: render mode 3 or 7, a fill
-    with no alpha or near white, or a font size under MIN_FONT_POINTS. O(1)."""
+def relative_luminance(rgb: tuple[int, int, int]) -> float:
+    """WCAG 2 relative luminance of an sRGB colour (0 to 255 per channel): 0.0 black, 1.0 white."""
+    red, green, blue = rgb
+    return 0.2126 * _LINEAR[red] + 0.7152 * _LINEAR[green] + 0.0722 * _LINEAR[blue]
+
+
+def contrast_ratio(one: float, two: float) -> float:
+    """WCAG 2 contrast ratio of two relative luminances: 1.0 (the same) to 21.0 (black on white)."""
+    return (max(one, two) + 0.05) / (min(one, two) + 0.05)
+
+
+def hidden_chars(page: Any, textpage: Any) -> frozenset[int]:
+    """The indices of ``textpage``'s own characters (not PDFium's made-up ones,
+    nor whitespace) that can't be seen on ``page``. The one decision both PDF
+    readers use, so they always agree on what is hidden.
+
+    Each character is, by ``_look``: hidden (render mode 3 or 7, no alpha, a font
+    size under MIN_FONT_POINTS, its loose box's centre outside the crop box, or a
+    loose box under MIN_BOX_HEIGHT high or MIN_BOX_WIDTH wide); visible (its
+    colour has a contrast of LIGHT_CONTRAST or more with white, as before); or
+    light. Light characters can be seen only on a darker background, so the page
+    is drawn once and each one is checked where it is drawn (``_unseen``).
+
+    O(characters + the pixels of the light characters' boxes) time; space
+    O(drawn pixels), at most about RENDER_PIXELS, drawn only for a light character.
+    """
+    crop = tuple(float(value) for value in page.get_cropbox())
+    hidden: set[int] = set()
+    light: list[tuple[int, tuple[int, int, int]]] = []
+    for index in range(textpage.count_chars()):
+        code = int(pdfium_c.FPDFText_GetUnicode(textpage, index))
+        if (
+            not 0 < code < 0x110000
+            or chr(code).isspace()
+            or pdfium_c.FPDFText_IsGenerated(textpage, index) == 1
+        ):
+            continue
+        look = _look(textpage, index, chr(code), crop)
+        if look == _HIDDEN:
+            hidden.add(index)
+        elif look is not None:
+            light.append((index, look))
+    if light:
+        hidden.update(_unseen(page, textpage, light))
+    return frozenset(hidden)
+
+
+def _look(textpage: Any, index: int, char: str, crop: tuple[float, ...]) -> tuple[int, int, int] | None:
+    """``_HIDDEN``, None for visible, or a light character's colour (r, g, b). O(1)."""
     text_object = pdfium_c.FPDFText_GetTextObject(textpage, index)
-    if ctypes.cast(text_object, ctypes.c_void_p).value is not None and (
-        int(pdfium_c.FPDFTextObj_GetTextRenderMode(text_object)) in _HIDDEN_MODES
+    mode = pdfium_c.FPDF_TEXTRENDERMODE_FILL
+    if ctypes.cast(text_object, ctypes.c_void_p).value is not None:
+        mode = int(pdfium_c.FPDFTextObj_GetTextRenderMode(text_object))
+    if mode in _HIDDEN_MODES or float(pdfium_c.FPDFText_GetFontSize(textpage, index)) < MIN_FONT_POINTS:
+        return _HIDDEN
+    left, bottom, right, top = textpage.get_charbox(index, loose=True)
+    if not (crop[0] <= (left + right) / 2 <= crop[2] and crop[1] <= (bottom + top) / 2 <= crop[3]):
+        return _HIDDEN
+    # A combining mark, a joiner or half a surrogate pair has no width of its own.
+    if unicodedata.category(char) not in _NO_WIDTH and (
+        top - bottom < MIN_BOX_HEIGHT or right - left < MIN_BOX_WIDTH
     ):
-        return True
-    if float(pdfium_c.FPDFText_GetFontSize(textpage, index)) < MIN_FONT_POINTS:
-        return True
-    red, green, blue, alpha = (ctypes.c_uint() for _ in range(4))
-    filled = bool(pdfium_c.FPDFText_GetFillColor(textpage, index, red, green, blue, alpha))
-    return filled and (alpha.value == 0 or min(red.value, green.value, blue.value) >= NEAR_WHITE)
+        return _HIDDEN
+    getters = []
+    if mode not in _STROKE_ONLY:
+        getters.append(pdfium_c.FPDFText_GetFillColor)
+    if mode in _STROKED:
+        getters.append(pdfium_c.FPDFText_GetStrokeColor)
+    colours = []
+    for getter in getters:
+        red, green, blue, alpha = (ctypes.c_uint() for _ in range(4))
+        if getter(textpage, index, red, green, blue, alpha):
+            colours.append(((red.value, green.value, blue.value), alpha.value))
+    if not colours:
+        return None  # a pattern or shading: not read, so visible, as before
+    if all(alpha == 0 for _, alpha in colours):
+        return _HIDDEN
+    darkest = min((rgb for rgb, alpha in colours if alpha), key=relative_luminance)  # fill or stroke
+    return None if contrast_ratio(relative_luminance(darkest), 1.0) >= LIGHT_CONTRAST else darkest
+
+
+def _unseen(page: Any, textpage: Any, light: list[tuple[int, tuple[int, int, int]]]) -> set[int]:
+    """The light characters that can't be seen where the page draws them. Above
+    MAX_LIGHT_GLYPHS of them, or if the page cannot be drawn, all of them (the
+    rule before light text was checked)."""
+    every = {index for index, _ in light}
+    if len(light) > MAX_LIGHT_GLYPHS:
+        return every
+    width, height = page.get_size()
+    dpi = min(RENDER_DPI, int(72 * math.sqrt(RENDER_PIXELS / max(width * height, 1e-9))))
+    try:
+        image = render_pdf_page(page, dpi=max(1, dpi), max_image_pixels=2 * RENDER_PIXELS)
+    except ReadError:
+        return every
+    try:
+        frame = ViewerFrame.of(page)
+        scale = (image.width / max(frame.width, 1e-9), image.height / max(frame.height, 1e-9))
+        unseen = set()
+        for index, colour in light:
+            tight = textpage.get_charbox(index)
+            halo = float(pdfium_c.FPDFText_GetFontSize(textpage, index)) * HALO
+            grown = (tight[0] - halo, tight[1] - halo, tight[2] + halo, tight[3] + halo)
+            if not _shows(image, frame.word("", *tight), frame.word("", *grown), scale, colour):
+                unseen.add(index)
+        return unseen
+    finally:
+        image.close()
+
+
+def _shows(
+    image: Any, tight: WordBox, grown: WordBox, scale: tuple[float, float], colour: tuple[int, int, int]
+) -> bool:
+    """Whether a glyph of ``colour`` is seen in ``image``: INK_SHARE of the pixels
+    of its ``tight`` box are close to its colour (it reached the page: not
+    covered, clipped or see-through), and CONTRAST_SHARE of those of its
+    ``grown`` box (the tight box with a margin, so a thin "I" has background
+    too) stand out from it. O(the boxes' pixels), by their distinct colours."""
+    own = relative_luminance(colour)
+    ink = _share(
+        image,
+        tight,
+        scale,
+        lambda px: max(abs(a - b) for a, b in zip(px, colour, strict=True)) <= INK_DISTANCE,
+    )
+    seen = _share(
+        image, grown, scale, lambda px: contrast_ratio(relative_luminance(px), own) >= LIGHT_CONTRAST
+    )
+    return ink >= INK_SHARE and seen >= CONTRAST_SHARE
+
+
+def _share(image: Any, box: WordBox, scale: tuple[float, float], test: Any) -> float:
+    """The share of ``box``'s pixels (at least one, rounded outwards) that pass ``test``."""
+    x0, x1 = max(0, math.floor(box.x0 * scale[0])), min(image.width, math.ceil(box.x1 * scale[0]))
+    y0, y1 = max(0, math.floor(box.top * scale[1])), min(image.height, math.ceil(box.bottom * scale[1]))
+    if x1 <= x0 or y1 <= y0:
+        return 0.0
+    total = (x1 - x0) * (y1 - y0)
+    return sum(count for count, pixel in image.crop((x0, y0, x1, y1)).getcolors(total) if test(pixel)) / total
 
 
 def words_left_visible(
@@ -234,6 +386,7 @@ def _character_shares(page: Any) -> tuple[float, float, float, tuple[tuple[float
     run: list[float] | None = None  # the hidden run being built: left, bottom, right, top in PDF units
     textpage = page.get_textpage()
     try:
+        unseen = hidden_chars(page, textpage)
         for index in range(textpage.count_chars()):
             if pdfium_c.FPDFText_IsGenerated(textpage, index) == 1:
                 _flush(run, boxes, frame)
@@ -245,7 +398,7 @@ def _character_shares(page: Any) -> tuple[float, float, float, tuple[tuple[float
             counted += 1
             if pdfium_c.FPDFText_HasUnicodeMapError(textpage, index) == 1:
                 map_errors += 1
-            if is_hidden_char(textpage, index):
+            if index in unseen:
                 hidden += 1
                 left, bottom, right, top = textpage.get_charbox(index, loose=True)
                 if run is None:
