@@ -39,9 +39,9 @@ own a new folder, the type folder is used. Undo still moves the family to the to
 import unicodedata
 from collections.abc import Sequence
 
-from sqlalchemy import Connection, text
+from sqlalchemy import Connection, RowMapping, text
 
-from kaagaz.db import audit
+from kaagaz.db import ai_settings, audit
 from kaagaz.db.folders import _DEPTH, _MAX_DEPTH, _lock_tree
 from kaagaz.db.trash import InTrash, lock_live_family
 from kaagaz.extraction.checks import gstin_valid
@@ -70,7 +70,7 @@ _PRE_CHECK = (
 # Everything decided under the locks, in one statement.
 _STATE = (
     "SELECT r.autofile, d.family_id, d.status, d.is_current, d.doc_type, d.uploaded_by,"
-    " c.status AS org_status, c.autofile_on FROM documents d"
+    " c.status AS org_status, c.autofile_on, c.autofile_granted FROM documents d"
     " JOIN documents r ON r.customer_id = d.customer_id AND r.id = d.family_id"
     " JOIN customers c ON c.id = d.customer_id"
     " WHERE d.customer_id = :c AND d.id = :d"
@@ -136,7 +136,7 @@ def file_document(conn: Connection, customer_id: str, document_id: str) -> str |
     if state["autofile"] != PENDING:
         return None  # a person moved it while it was read (R3)
     family = str(state["family_id"])
-    if in_trash or state["org_status"] != "active" or not state["autofile_on"]:  # R14: quietly not filed
+    if in_trash or state["org_status"] != "active" or not _filing_on(conn, customer_id, state):  # R14
         _set(conn, customer_id, family, None)
         return "trash" if in_trash else "inactive" if state["org_status"] != "active" else "off"
     if state["status"] != "ready" or not state["is_current"]:
@@ -164,6 +164,15 @@ def file_document(conn: Connection, customer_id: str, document_id: str) -> str |
         details={"folder_id": folder},
     )
     return FILED
+
+
+def _filing_on(conn: Connection, customer_id: str, state: RowMapping) -> bool:
+    """Auto-filing is on for the uploader (AI settings, 0038): the grant and the platform
+    switch, the organisation's default or lock and the uploader's own choice; with none
+    saved, the admin's switch (``autofile_on``), as before. Two statements."""
+    granted = bool(state["autofile_granted"]) and ai_settings.switch_on(conn, "autofile")
+    uploader = None if state["uploaded_by"] is None else str(state["uploaded_by"])
+    return ai_settings.task_on(conn, customer_id, uploader, "autofile", granted, bool(state["autofile_on"]))
 
 
 def _folder(conn: Connection, customer_id: str, key: str, name: str, owner: object) -> str:

@@ -58,20 +58,23 @@ from kaagaz.ai.usage import usage_scope
 from kaagaz.answering.memory import NO_MEMORY, Memory, from_row, live
 from kaagaz.answering.pins import Pin
 from kaagaz.answering.rewrite import Turn
-from kaagaz.api.auth import User
+from kaagaz.api.auth import FEATURE_OFF, CurrentUser, User
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.middleware import RateLimiter
 from kaagaz.api.names import clean_name
 from kaagaz.api.views import answer_with_source_states, cited_document_ids, conversation_summary, message
-from kaagaz.db import audit
+from kaagaz.db import ai_settings, audit
 from kaagaz.db import chat as chat_sql
 from kaagaz.db.models import (
     LEVELS,
     MAX_AGENTS,
+    NO_MODEL,
     AiNotAllowed,
+    ChatChoice,
     effective_settings,
     resolve_chat,
+    strongest_chat,
     usable_chat_models,
 )
 from kaagaz.ingestion.errors import BackendUnavailable
@@ -205,9 +208,11 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
             Pin(row["document_id"], int(row["page_no"]), bool(row["same"]), str(row["question"]))
             for row in chat_sql.pins_for(conn, user.customer_id, user.user_id, conversation_id)
         ]
+        if not ai_settings.switch_on(conn, "ask"):  # the super admin switched Ask off (0038)
+            raise ApiError(403, "feature_off", FEATURE_OFF)
         try:
             agents = _first_allowed(conn, user.customer_id, body.agents, context)
-            choice = resolve_chat(conn, user.customer_id, agents, body.thinking, settings=context.settings)
+            choice = _choice(conn, user, agents, body.thinking, context)
         except AiNotAllowed as refused:
             raise ApiError(403, refused.code, NOT_ALLOWED[refused.code]) from None
     saved = None if chosen is None else chosen.model_dump(mode="json")
@@ -309,6 +314,27 @@ def chat_options(user: User, context: Context) -> dict[str, Any]:
         "ensemble": bool(allowed["ensemble"]) and len(rows) >= 2,
         "max_agents": MAX_AGENTS,
     }
+
+
+def _choice(
+    conn: Connection, user: CurrentUser, agents: list[str] | None, thinking: str | None, context: AppContext
+) -> ChatChoice:
+    """Who drafts the answer under the asker's Ask setting (AI settings, 0038): nothing
+    saved, ``resolve_chat`` as before; None, no model (``NO_MODEL``); Low and High those
+    thinking levels, the request's own level capped at it; Max high on the strongest
+    usable answer model unless the request names one. One statement more than before."""
+    ceiling = effective_settings(conn, user.customer_id)
+    saved = ai_settings.rows(conn, user.customer_id, user.user_id)
+    task = ai_settings.resolve("ask", saved, *ai_settings.ask_ceiling(ceiling))
+    if task.chosen and task.effective == "none":
+        return NO_MODEL
+    if task.chosen:
+        thinking = ai_settings.ask_thinking(task.effective, ceiling["chat_levels"] or ["low"], thinking)
+        if task.effective == "max" and agents is None:
+            agents = strongest_chat(
+                usable_chat_models(conn, user.customer_id, settings=context.settings), thinking
+            )
+    return resolve_chat(conn, user.customer_id, agents, thinking, settings=context.settings)
 
 
 def _first_allowed(

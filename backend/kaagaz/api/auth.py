@@ -57,8 +57,9 @@ from typing import Annotated, Any
 
 from fastapi import Depends, Request, Response
 
-from kaagaz.api.context import get_context, get_operator_db
+from kaagaz.api.context import AppContext, get_context, get_operator_db
 from kaagaz.api.errors import ApiError
+from kaagaz.db import ai_settings
 from kaagaz.db import operators as operators_sql
 from kaagaz.db import users as users_sql
 from kaagaz.db.engine import Database
@@ -639,6 +640,25 @@ def require_role(*roles: str) -> Callable[[CurrentUser], CurrentUser]:
 
 Reviewer = Annotated[CurrentUser, Depends(require_role("reviewer", "admin"))]
 Admin = Annotated[CurrentUser, Depends(require_role("admin"))]
+
+FEATURE_OFF = "This is turned off for now."
+
+
+def feature_on(context: AppContext, feature: str) -> bool:
+    """The super admin's switch for ``feature`` (0038; no row: on). One statement."""
+    with context.db.system() as conn:
+        return ai_settings.switch_on(conn, feature)
+
+
+def require_feature(feature: str) -> Callable[[Request], None]:
+    """A dependency: 403 ``feature_off`` while the super admin switched ``feature`` off for
+    every organisation (0038)."""
+
+    def dependency(request: Request) -> None:
+        if not feature_on(get_context(request), feature):
+            raise ApiError(403, "feature_off", FEATURE_OFF)
+
+    return dependency
 
 
 @dataclass(frozen=True, slots=True)

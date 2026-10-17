@@ -14,7 +14,7 @@ import { useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Icon } from "@/components/ui/Icon";
-import { ApiError, listReview } from "@/lib/api";
+import { ApiError, FEATURE_OFF, listReview } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import type { ReviewItem, ReviewList, ReviewReason } from "@/lib/types";
 import type { QueueView } from "./review";
@@ -168,6 +168,16 @@ function Queue({ documentId }: { documentId?: string }) {
     setSaved(current.total === 1 ? "This is the only value left." : "");
     showAt(current, index + 1);
   };
+
+  // Review switched off for the whole product: a calm note in its place.
+  if (failed === FEATURE_OFF) {
+    return (
+      <div className="page">
+        <Header />
+        <EmptyState icon="review" title={FEATURE_OFF} />
+      </div>
+    );
+  }
 
   return (
     <div className="page">

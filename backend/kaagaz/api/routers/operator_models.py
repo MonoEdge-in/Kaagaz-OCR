@@ -26,6 +26,16 @@ writes its own audit rows.
   TIMEZONE with both ends included (this month so far when left out), at most
   ``MAX_DAYS``. Never a user or a document: the function has no column for either.
 
+* ``GET /operator/feature-switches``: every product feature, on or off for the whole
+  product, and how many organisations use it now. ``PUT .../{feature}`` {enabled, code}
+  (step-up): flip it for every organisation; the list comes back (0038).
+* ``GET``, ``POST`` {scan_model, chat_model, note, code} and ``DELETE`` {code}
+  ``/operator/test-model`` (POST and DELETE with a fresh code): the platform test model, one
+  allowed model for every organisation's scanning and answering, and its undo (every
+  organisation back as it was), with what ran on it since it started (pages, questions, the
+  cost OpenRouter reported, reading seconds a page). A model must be enabled, eligible and
+  verified for its use, and its maker and one provider inside the server's lists (0038).
+
 A refused change is said in plain words; an unknown organisation or model gets 404.
 """
 
@@ -45,7 +55,7 @@ from kaagaz.api.context import AppContext, get_context, get_operator_db
 from kaagaz.api.errors import ApiError
 from kaagaz.api.routers.auth import MAX_CODE
 from kaagaz.api.routers.documents import day_start
-from kaagaz.api.routers.operator_orgs import StepUp, _check, _step_up
+from kaagaz.api.routers.operator_orgs import StepUp, StepUpBody, _check, _step_up
 from kaagaz.api.views import iso
 from kaagaz.db import operator_models as models_sql
 from kaagaz.db.engine import OperatorDatabase
@@ -129,6 +139,27 @@ class OrgAiBody(BaseModel):
     dynamic: bool | None
     ensemble: bool
     ai_budget_usd: Decimal | None = Field(gt=0, le=MAX_BUDGET, decimal_places=2)
+    code: str = Field(min_length=1, max_length=MAX_CODE)
+
+
+Feature = Literal[
+    "scan_ai", "ask", "ensemble", "autofile", "cost_saving", "review", "my_words", "self_signup"
+]
+
+
+class SwitchBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool
+    code: str = Field(min_length=1, max_length=MAX_CODE)
+
+
+class TestModelBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    scan_model: ModelId | None = None
+    chat_model: ModelId | None = None
+    note: str | None = Field(default=None, max_length=500)
     code: str = Field(min_length=1, max_length=MAX_CODE)
 
 
@@ -260,6 +291,115 @@ def set_org_ai(
     saved = get_org_ai(customer_id, operator, db, context)
     # Ensemble with fewer than two scanning models in effect is saved off, not refused (0037).
     return {**saved, "ensemble_off": body.ensemble and not saved["ensemble"]}
+
+
+@router.get("/feature-switches")
+def get_feature_switches(operator: OperatorSession, db: OperatorDb) -> list[dict[str, Any]]:
+    """Every product feature, on or off for every organisation, and how many use it now."""
+    with db.operator() as conn:
+        rows = models_sql.feature_switches(conn, operator.operator_id)
+    return [
+        {
+            "feature": row["feature"],
+            "enabled": bool(row["enabled"]),
+            "organisations_using": int(row["organisations_using"]),
+        }
+        for row in rows
+    ]
+
+
+@router.put("/feature-switches/{feature}")
+def set_feature_switch(
+    feature: Feature, body: SwitchBody, operator: OperatorSession, db: OperatorDb, context: Context
+) -> list[dict[str, Any]]:
+    """Flip one feature for every organisation (a fresh code first); the list comes back."""
+    step_up = _step_up(db, context, operator, body.code)
+    with db.operator() as conn:
+        outcome = models_sql.set_feature_switch(
+            conn, operator.operator_id, feature, enabled=body.enabled, step=step_up.step
+        )
+    _refuse(db, operator, outcome, step_up)
+    return get_feature_switches(operator, db)
+
+
+@router.get("/test-model")
+def get_test_model(operator: OperatorSession, db: OperatorDb) -> dict[str, Any]:
+    """The platform test model, and what ran on it since it started (real spend rows only)."""
+    with db.operator() as conn:
+        row = models_sql.current_test_model(conn, operator.operator_id)
+    if row is None:
+        return {
+            "active": False,
+            "scan_model": None,
+            "chat_model": None,
+            "note": None,
+            "started_at": None,
+            "since": None,
+        }
+    return {
+        "active": True,
+        "scan_model": row["scan_model"],
+        "chat_model": row["chat_model"],
+        "note": row["note"],
+        "started_at": iso(row["started_at"]),
+        "since": {
+            "pages": int(row["pages"]),
+            "questions": int(row["questions"]),
+            "cost_usd": _number(row["cost_usd"]),  # what OpenRouter reported; null: none reported
+            "avg_seconds_per_page": row["seconds_per_page"],
+        },
+    }
+
+
+@router.post("/test-model")
+def start_test_model(
+    body: TestModelBody, operator: OperatorSession, db: OperatorDb, context: Context
+) -> dict[str, Any]:
+    """Every organisation scans with ``scan_model`` and answers with ``chat_model`` (either
+    may be null: that area stays each organisation's own) until the undo."""
+    named = [model for model in (body.scan_model, body.chat_model) if model is not None]
+    if not named or not all(valid_model_id(model) for model in named):
+        raise ApiError(400, "bad_request", "Choose a scanning model, an answering model or both.")
+    with db.operator() as conn:
+        catalogue = {row["id"]: row for row in models_sql.list_models(conn, operator.operator_id)}
+    if not all(_callable(catalogue.get(model), context.settings) for model in named):
+        raise ApiError(*_REFUSALS["unavailable"])
+    step_up = _step_up(db, context, operator, body.code)
+    with db.operator() as conn:
+        outcome = models_sql.set_test_model(
+            conn,
+            operator.operator_id,
+            scan_model=body.scan_model,
+            chat_model=body.chat_model,
+            note=body.note,
+            scan_prompt=READER_PROMPT_VERSION,
+            chat_prompt=ANSWER_PROMPT_HASH,
+            step=step_up.step,
+        )
+    _refuse(db, operator, outcome, step_up)
+    return get_test_model(operator, db)
+
+
+@router.delete("/test-model")
+def undo_test_model(
+    body: StepUpBody, operator: OperatorSession, db: OperatorDb, context: Context
+) -> dict[str, Any]:
+    """Every organisation back to its own models, exactly as before (a fresh code first)."""
+    step_up = _step_up(db, context, operator, body.code)
+    with db.operator() as conn:
+        outcome = models_sql.clear_test_model(conn, operator.operator_id, step=step_up.step)
+    _refuse(db, operator, outcome, step_up)
+    return get_test_model(operator, db)
+
+
+def _callable(row: RowMapping | None, settings: Settings) -> bool:
+    """The model is in the catalogue, its maker in OPENROUTER_MODEL_VENDORS and one of its
+    providers in OPENROUTER_PROVIDERS (S1), so the app can call it."""
+    return (
+        row is not None
+        and vendor(row["id"]) in settings.openrouter_model_vendors
+        and any(slug in settings.openrouter_providers for slug in row["providers"])
+    )
 
 
 @router.get("/usage")

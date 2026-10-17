@@ -120,6 +120,7 @@ O(e * t) over e pieces of evidence of t characters. e is at most
 ANSWER_MAX_EVIDENCE hits plus 2 * ANSWER_NEIGHBOURS neighbours per hit.
 """
 
+import copy
 import logging
 import re
 import time
@@ -505,7 +506,27 @@ class AnswerService:
         (``kaagaz.db.models.resolve_chat``, features 25-27; None: MODEL_CHAT at low, as
         before). Only the draft uses it: the rewrite, translation and memory stay on
         MODEL_CHAT. ``pins``: the asker's Most relevant picks that may move a hit up
-        (answering/pins.py; ``kaagaz.db.chat.pins_for``)."""
+        (answering/pins.py; ``kaagaz.db.chat.pins_for``). A ``choice`` with no agent
+        (``models.NO_MODEL``: the asker's Ask setting is None, 0038) answers as with the model
+        off: no model call at all, the lines found quoted."""
+        if choice is not None and not choice.agents:
+            keyless = copy.copy(self)  # shallow: the same ports, without the model clients
+            keyless._model = keyless._translator = None
+            return keyless._respond(customer_id, question, scope, history, user_id, memory, None, pins)
+        return self._respond(customer_id, question, scope, history, user_id, memory, choice, pins)
+
+    def _respond(
+        self,
+        customer_id: str,
+        question: str,
+        scope: Scope,
+        history: Sequence[Turn],
+        user_id: str | None,
+        memory: Memory,
+        choice: ChatChoice | None,
+        pins: Sequence[Pin],
+    ) -> Answer:
+        """``answer``'s work, timed by it."""
         if scope.matches_nothing:
             return _not_found("search", question.strip(), [], model_used=False, reason="notfound_empty_scope")
         whole = self._whole(customer_id, scope)

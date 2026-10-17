@@ -698,7 +698,10 @@ class PgDocuments:
                         " detected_type, uploaded_by, read_requested_by, folder_id, family_id, version_no,"
                         " ocr_choice, batch_id, autofile) VALUES (:d, :c, :name, :h, :size, :type, :by, :by,"
                         " :folder, :family, :version, :ocr, :batch, (SELECT 'pending' FROM customers"
-                        " WHERE id = :c AND autofile_on AND CAST(:folder AS uuid) IS NULL))"
+                        " WHERE id = :c AND CAST(:folder AS uuid) IS NULL AND (autofile_on"
+                        " OR (autofile_granted AND EXISTS (SELECT 1 FROM ai_task_settings s"
+                        " WHERE s.customer_id = :c AND s.task = 'autofile' AND s.level = 'on'"
+                        " AND (s.user_id IS NULL OR s.user_id = :by))))))"
                         " ON CONFLICT (customer_id, sha256) DO NOTHING RETURNING id"
                     ),
                     params,

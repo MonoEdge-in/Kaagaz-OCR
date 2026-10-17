@@ -1296,3 +1296,40 @@ export interface EnsembleEstimate {
   words: number;
   seconds: number;
 }
+
+/** AI settings by task (spec 17 Oct 2026): levels, never model names. */
+export type AiTask = "scan" | "ask" | "ensemble" | "autofile";
+export type TaskLevel = "none" | "low" | "high" | "max" | "off" | "on";
+
+export interface AiTaskSetting {
+  task: AiTask;
+  effective: TaskLevel;
+  mine: TaskLevel | null; // null: the organisation's setting
+  organisation: TaskLevel | null;
+  locked: boolean;
+  allowed: TaskLevel[];
+  available: boolean; // false: switched off for the whole product
+}
+
+/** GET /ai-settings, and both PUTs' reply. */
+export interface AiSettings {
+  tasks: AiTaskSetting[];
+  can_edit_organisation: boolean;
+}
+
+/** GET /operator/feature-switches: one row per product feature. */
+export interface FeatureSwitch {
+  feature: string;
+  enabled: boolean;
+  organisations_using: number;
+}
+
+/** GET /operator/test-model: the whole platform on one model for a test, or not. */
+export interface TestModel {
+  active: boolean;
+  scan_model: string | null;
+  chat_model: string | null;
+  started_at: string | null;
+  since: { pages: number; questions: number; cost_usd: number; avg_seconds_per_page: number } | null; // null when none runs
+  note: string | null;
+}

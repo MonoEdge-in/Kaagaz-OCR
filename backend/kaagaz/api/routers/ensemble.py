@@ -33,8 +33,8 @@ from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.routers import word_review as review_router
 from kaagaz.api.views import latest_run_json, run_json
+from kaagaz.db import ai_settings, listing
 from kaagaz.db import ensemble as ensemble_sql
-from kaagaz.db import listing
 from kaagaz.db import models as models_sql
 from kaagaz.db.word_review import Refused
 from kaagaz.ingestion.ports import Job
@@ -90,6 +90,7 @@ def _refused(error: Refused) -> ApiError:
 
 def _others(conn: Connection, context: AppContext, user: CurrentUser, document_id: uuid.UUID) -> list[str]:
     """The models that read again (``models.resolve_ensemble``), or 403."""
+    _granted(conn, user)  # AI settings (0038): this person's Ensemble too
     try:
         reading = models_sql.resolve_ensemble(
             conn, user.customer_id, str(document_id), settings=context.settings
@@ -100,7 +101,9 @@ def _others(conn: Connection, context: AppContext, user: CurrentUser, document_i
 
 
 def _granted(conn: Connection, user: CurrentUser) -> None:
-    if not models_sql.effective_settings(conn, user.customer_id)["ensemble"]:
+    """The grant with its platform switch, then this person's Ensemble setting (0038)."""
+    granted = bool(models_sql.effective_settings(conn, user.customer_id)["ensemble"])
+    if not ai_settings.task_on(conn, user.customer_id, user.user_id, "ensemble", granted, granted):
         raise ApiError(403, "ensemble_not_allowed", review_router.ENSEMBLE_OFF)
 
 

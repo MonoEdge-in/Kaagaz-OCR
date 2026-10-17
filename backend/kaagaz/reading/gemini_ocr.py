@@ -553,6 +553,10 @@ class GeminiEngine:
         pages = self._pages
         if pages is None:
             return self._read(image, page_no=page_no, pages=None)
+        if pages.local:  # AI settings None (0038): the local reader, no issue, never upgraded
+            return dataclasses.replace(
+                self._local_reader().read_page(image, page_no=page_no), page_no=page_no
+            )
         sha = pixels_sha256(image)
         first = None if pages.memo is None or pages.inline_careful else pages.memo.get((page_no, sha))
         if first is not None and (page_no not in pages.escalate or pages.careful is None):

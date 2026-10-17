@@ -71,7 +71,8 @@ def _offline_client(**settings: object) -> TestClient:
 
 
 def test_the_switch_says_whether_sign_up_is_open() -> None:
-    assert _offline_client().get(URL).json() == {"enabled": True}
+    # Changed on purpose (0038): on also asks the super admin's switch, so "open" is a db test
+    # (test_ai_settings_db); off by the setting never reaches the database.
     assert _offline_client(self_signup_enabled=False).get(URL).json() == {"enabled": False}
 
 

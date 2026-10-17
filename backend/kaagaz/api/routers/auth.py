@@ -32,7 +32,8 @@
   ``kaagaz_create_customer`` (the CLI's function) makes both in one statement, with an
   operator-made organisation's defaults (models, permissions and features off).
   A taken e-mail is the admin screens' 409. At most ``SIGNUPS_PER_HOUR`` a client
-  address (429). Off (``SELF_SIGNUP_ENABLED=false``): 404; ``GET /auth/signup`` says
+  address (429). Off (``SELF_SIGNUP_ENABLED=false``, or the super admin's Self sign-up
+  switch, 0038): 404; ``GET /auth/signup`` says
   ``{enabled}`` for the sign-in pages' link. Audited ``org.self_signup`` in the new
   organisation's log, the new admin as actor. No e-mail check: whoever types an address
   owns that account (PROVISIONAL). A name too short or
@@ -83,6 +84,7 @@ from kaagaz.api.auth import (
     User,
     UserAllowPasswordChange,
     clear_session_cookie,
+    feature_on,
     hash_password,
     load_user,
     new_enrol,
@@ -274,7 +276,12 @@ def admin_enrol(body: EnrolBody, context: Context) -> JSONResponse:
 
 @router.get("/auth/signup")
 def signup_open(context: Context) -> dict[str, bool]:
-    return {"enabled": context.settings.self_signup_enabled}
+    return {"enabled": _signup_on(context)}
+
+
+def _signup_on(context: AppContext) -> bool:
+    """SELF_SIGNUP_ENABLED and the super admin's Self sign-up switch (0038)."""
+    return context.settings.self_signup_enabled and feature_on(context, "self_signup")
 
 
 @router.post("/auth/signup", status_code=201)
@@ -286,6 +293,8 @@ def signup(body: SignupBody, request: Request, context: Context) -> JSONResponse
     email = valid_email(body.email)
     if not org_name_ok(body.organisation_name):
         raise ApiError(400, "bad_request", ORG_NAME_PROBLEM)
+    if not _signup_on(context):  # the super admin's switch (0038), the first database read
+        raise ApiError(404, "not_found")
     password_hash = hash_password(body.password)  # before the transaction, never during it
     try:
         with context.db.system() as conn:

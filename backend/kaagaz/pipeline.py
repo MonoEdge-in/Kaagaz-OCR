@@ -1512,6 +1512,7 @@ class DocumentProcessor:
             inline_careful=inline,
             page_count=page_count,
             escalated=run.escalated if inline else None,
+            local=reading is not None and reading.mode == "local",
         )
         return meter.document(pages)
 
