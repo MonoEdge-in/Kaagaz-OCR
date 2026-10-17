@@ -380,6 +380,26 @@ class LightTextTest(unittest.TestCase):
         data = with_font(font, b"BT /F1 16 Tf 72 700 Td <0915093F> Tj ET", parts)  # "ki": ka + vowel sign i
         self.assertEqual(signals_of(data).hidden_share, 0.0)
 
+    def test_see_through_dark_text_is_checked_on_the_page(self) -> None:
+        """CodeRabbit: black text at 5% alpha shows as near white, so it is hidden; at 80% it is seen."""
+
+        def faded(alpha: bytes) -> bytes:
+            return _assemble(
+                [
+                    b"<< /Type /Catalog /Pages 2 0 R >>",
+                    b"<< /Type /Pages /Kids [4 0 R] /Count 1 >>",
+                    HELVETICA,
+                    b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 6 0 R "
+                    b"/Resources << /Font << /F1 3 0 R >> /ExtGState << /G1 5 0 R >> >> >>",
+                    b"<< /Type /ExtGState /ca " + alpha + b" >>",
+                    _stream(b"", b"q /G1 gs " + white(look=b"0 0 0 rg") + b"Q"),
+                ],
+                b"",
+            )
+
+        self.assert_hidden(faded(b"0.05"))
+        self.assertEqual(both_readers(faded(b"0.8")), (["TAX INVOICE"], ["TAX INVOICE"]))
+
     def test_light_text_drawn_too_coarse_to_judge_is_hidden(self) -> None:
         band = b"q 0.08 0.12 0.35 rg 0 600 612 192 re f Q\n"
         data = drawn_page(band + b"q 1 1 1 rg BT /F1 60 Tf 72 680 Td (IIII) Tj ET Q\n")

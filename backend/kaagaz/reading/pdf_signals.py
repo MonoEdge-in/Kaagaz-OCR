@@ -271,8 +271,11 @@ def _look(textpage: Any, index: int, char: str, crop: tuple[float, ...]) -> tupl
         return None  # a pattern or shading: not read, so visible, as before
     if all(alpha == 0 for _, alpha in colours):
         return _HIDDEN
-    darkest = min((rgb for rgb, alpha in colours if alpha), key=relative_luminance)  # fill or stroke
-    return None if contrast_ratio(relative_luminance(darkest), 1.0) >= LIGHT_CONTRAST else darkest
+    # Fill or stroke, each as it shows on white paper; a see-through one is always checked on the page.
+    shown = [tuple(255 - (255 - c) * alpha // 255 for c in rgb) for rgb, alpha in colours if alpha]
+    darkest: tuple[int, int, int] = min(shown, key=relative_luminance)  # type: ignore[arg-type]
+    opaque = all(alpha == 255 for _, alpha in colours if alpha)
+    return None if opaque and contrast_ratio(relative_luminance(darkest), 1.0) >= LIGHT_CONTRAST else darkest
 
 
 def _unseen(page: Any, textpage: Any, light: list[tuple[int, tuple[int, int, int]]]) -> set[int]:
