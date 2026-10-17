@@ -190,8 +190,10 @@ export function undoConfirm(): Confirm {
 /** "Test model running since …: X · 120 pages · 30 questions · $1.20 · 4.1 s/page". */
 export function bannerText(model: TestModel): string {
   const { since } = model;
+  const head = `Test model running since ${model.started_at ? formatDateTime(model.started_at) : "now"}: ${modelsText(model.scan_model, model.chat_model)}`;
+  if (since === null) return head;
   return [
-    `Test model running since ${model.started_at ? formatDateTime(model.started_at) : "now"}: ${modelsText(model.scan_model, model.chat_model)}`,
+    head,
     countText(since.pages, "page", "pages"),
     countText(since.questions, "question", "questions"),
     formatUsd(since.cost_usd),

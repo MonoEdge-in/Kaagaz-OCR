@@ -334,7 +334,7 @@ def resolve_scan(conn: Connection, customer_id: str, document_id: str, *, settin
         mode = "dynamic" if level == "low" else "single"
         if level in ("high", "max"):
             thinking, notes = _thinking("high", lead_row, settings)
-        if level == "max":
+        if level == "max" and allowed["dynamic"]:  # Max never turns on a Dynamic the super admin took away
             return Reading(
                 "dynamic", lead, careful=_careful(rows, lead, settings), thinking=thinking, notes=notes
             )

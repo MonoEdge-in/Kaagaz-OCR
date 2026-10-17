@@ -262,7 +262,12 @@ describe("the operator's test model", () => {
     chat_model: null,
     started_at: "2026-10-17T13:30:00Z",
     since: { pages: 120, questions: 30, cost_usd: 1.2, avg_seconds_per_page: 4.06 },
+    note: null,
   };
+
+  it("shows only who runs and since when while no numbers came back", () => {
+    expect(bannerText({ ...RUNNING, since: null })).not.toContain("pages");
+  });
 
   it("asks before starting, saying who it reaches and that their settings are kept", () => {
     const confirm = startConfirm({ scan_model: "google/gemini-3.1-pro-preview", chat_model: null, note: "" }, 12);

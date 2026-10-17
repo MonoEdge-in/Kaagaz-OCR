@@ -152,6 +152,18 @@ def test_scan_levels_map_to_todays_readings() -> None:
     assert (top.mode, top.thinking, top.careful and top.careful.model) == ("dynamic", "high", PRO)
 
 
+def test_max_never_turns_on_a_dynamic_the_super_admin_took_away() -> None:
+    top = scan(
+        FakeConn(
+            scan=TWO_TIERS,
+            settings={**DYNAMIC_ON, "dynamic": False},
+            document=_document((True, "max", False)),
+        ),
+        GEMINI,
+    )
+    assert (top.mode, top.thinking) == ("single", "high")
+
+
 def test_an_explicit_read_with_wins_over_a_level_above_none() -> None:
     reading = scan(
         FakeConn(
