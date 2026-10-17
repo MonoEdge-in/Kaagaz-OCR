@@ -566,7 +566,9 @@ _SCAN_TIMES = text(
     "SELECT r.document_id, d.created_at AS uploaded_at, r.started_at, r.finished_at, r.pages_ocr,"
     " r.config, (SELECT max(u.created_at) FROM model_usage u WHERE u.customer_id = r.customer_id"
     " AND u.document_id = r.document_id AND u.kind = 'embed' AND u.created_at >= r.finished_at)"
-    " AS indexed_at"
+    " AS indexed_at, r.error_code, (SELECT count(*) FROM pieces p WHERE r.model_embed IS NOT NULL"
+    " AND p.customer_id = r.customer_id AND p.document_id = r.document_id AND p.embedding IS NULL)"
+    " AS vectors_pending"
     " FROM processing_runs r JOIN documents d ON d.customer_id = r.customer_id AND d.id = r.document_id"
     " WHERE r.customer_id = :c AND r.status = 'ready' ORDER BY r.finished_at DESC LIMIT :n"
 )
@@ -607,7 +609,16 @@ def scan_times_line(row: Mapping[Any, Any]) -> str:
         f" card {seconds('seconds_card')} map {seconds('seconds_map')} checker {seconds('seconds_checker')}"
         f" understood_after_ready {seconds('seconds_after_ready')}"
         f" index_after_ready {between(ready, row['indexed_at'])}"
+        f" pending {_pending(row)}"
     )
+
+
+def _pending(row: Mapping[Any, Any]) -> str:
+    """The post-Ready steps still to come (never stuck, 17 Oct 2026): ``vectors`` while pieces
+    have none (EmbedMissing fills them), ``card`` when the model failed it; ``-`` for none."""
+    steps = ["vectors"] if (row.get("vectors_pending") or 0) > 0 else []
+    steps += ["card"] if str(row.get("error_code") or "").startswith("model_") else []
+    return ",".join(steps) or "-"
 
 
 def cost_saving_report(rows: Sequence[Mapping[Any, Any]]) -> str:

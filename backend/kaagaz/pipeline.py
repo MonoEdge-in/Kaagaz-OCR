@@ -75,7 +75,9 @@ The steps, in order, for one (customer, document):
    batch is written (a 20k-row sheet is about 626 batches, longer than one lease) and a
    check that the document is still ready (a newer run stops it). Nothing that fails
    here moves the document off ready: word and typo search work without vectors, and the
-   worker's EmbedMissing fills them in later.
+   worker's EmbedMissing fills them in later. The job indexes for MODEL_TIMEOUT_SECONDS at
+   most (``index_seconds``, never stuck, 17 Oct 2026), then leaves the rest to EmbedMissing;
+   understanding, filing and indexing each log one line with their outcome (``_step``).
 
 A failure a retry cannot fix marks the document failed with its short code.
 A rejected document stays rejected and keeps the reason it was rejected for,
@@ -698,6 +700,10 @@ class ProcessorStorage(BlobStorage, Quarantine, PageImageStore, Protocol):
 # --- the processor ------------------------------------------------------------
 
 
+class _IndexLater(Exception):
+    """The job's indexing ran past ``index_seconds``: the vectors left are EmbedMissing's."""
+
+
 @dataclass(frozen=True, slots=True)
 class _Read:
     """What a run read, kept for both saves of Ready first (``DocumentProcessor._content``):
@@ -814,6 +820,7 @@ class DocumentProcessor:
         usage: UsageScopes | None = None,
         ocr_page_concurrency: int = 1,
         cost_saving: tuple[int, float] = (HARD_LINES_MAX, HARD_SHARE),
+        index_seconds: float | None = None,
     ) -> None:
         """``embed(customer_id, document_id, on_batch=...)`` gives the saved pieces their vectors;
         failing with one of ``model_errors`` is logged and skipped, never a failed document.
@@ -849,7 +856,10 @@ class DocumentProcessor:
         with no user, and card, invoice, map and embed for those stages.
         ``ocr_page_concurrency`` (OCR_PAGE_CONCURRENCY): the pages read at once, for the time
         left (fast scan, council 16 Oct 2026). ``cost_saving``: Cost saving's hard-lines limits
-        (COST_SAVING_HARD_LINES_MAX, COST_SAVING_HARD_SHARE) for ``careful_pages``."""
+        (COST_SAVING_HARD_LINES_MAX, COST_SAVING_HARD_SHARE) for ``careful_pages``.
+        ``index_seconds`` (MODEL_TIMEOUT_SECONDS): how long the job's own indexing may go on
+        before it hands the vectors left to the worker's EmbedMissing (never stuck, 17 Oct
+        2026); None, until done."""
         if runs is not None and (clock is None or timer is None):
             raise ValueError("runs need a clock and a timer")
         if max_check_crops < 0:
@@ -890,6 +900,7 @@ class DocumentProcessor:
         self._usage = usage
         self._ocr_page_concurrency = ocr_page_concurrency
         self._cost_saving = cost_saving
+        self._index_seconds = index_seconds
 
     def __call__(self, job: Job, heartbeat: Heartbeat) -> None:
         record = self._documents.get(job.customer_id, job.document_id)
@@ -1094,7 +1105,7 @@ class DocumentProcessor:
         # ends here, so the embeddings' tokens are in the usage ledger only.
         finished = self._finished(run, "ready", run.model_error)
         self._documents.mark_ready(customer_id, document_id, len(content.pages), run=finished)
-        self._file(customer_id, document_id)  # reads the card's type, never a vector
+        self._file(job)  # reads the card's type, never a vector
         self._index(job, run, heartbeat)
 
     def _understand_after_ready(
@@ -1142,6 +1153,28 @@ class DocumentProcessor:
         )
         self._store.save(content, run_id=run.run_id)
         heartbeat()
+        failed = run.model_error is not None  # saved with the rule values; a read again asks again
+        self._step(job, "understanding", run.ready_at, "failed" if failed else "done", run.model_error)
+
+    def _step(
+        self,
+        job: Job,
+        step: str,
+        started: float | None,
+        outcome: str,
+        code: str | None = None,
+        message: str = "",
+        sqlstate: str | None = None,
+    ) -> None:
+        """One log line per post-Ready step outcome (never stuck, 17 Oct 2026, rule 7): the
+        step, ``outcome`` (done, pending_retry or failed), its seconds since ``started`` on the
+        timer and its code; ids only. Done is INFO, the others WARNING."""
+        seconds = None if started is None else round(max(0.0, self._timer() - started), 3)
+        extra = {"customer_id": job.customer_id, "document_id": job.document_id, "step": step}
+        extra |= {"outcome": outcome, "seconds": seconds, "code": code, "sqlstate": sqlstate}
+        _log.log(
+            logging.INFO if outcome == "done" else logging.WARNING, message or f"step {outcome}", extra=extra
+        )
 
     def _content(
         self,
@@ -1201,22 +1234,18 @@ class DocumentProcessor:
             topics=document_map.topics,
         )
 
-    def _file(self, customer_id: str, document_id: str) -> None:
+    def _file(self, job: Job) -> None:
         """Auto-filing (feature 28, R4), after the document is ready. It never fails the
         reading: an error is logged with its class, its SQLSTATE and the ids, never its
         message, and the family keeps its state."""
+        started = self._timer()
         try:
-            self._documents.file_document(customer_id, document_id)
+            self._documents.file_document(job.customer_id, job.document_id)
         except Exception as error:  # noqa: BLE001 - R4: the document is read; filing is extra
-            _log.warning(
-                "autofile failed",
-                extra={
-                    "customer_id": customer_id,
-                    "document_id": document_id,
-                    "code": type(error).__name__,
-                    "sqlstate": getattr(getattr(error, "orig", None), "sqlstate", None),
-                },
-            )
+            sqlstate = getattr(getattr(error, "orig", None), "sqlstate", None)
+            self._step(job, "filing", started, "failed", type(error).__name__, "autofile failed", sqlstate)
+        else:
+            self._step(job, "filing", started, "done")
 
     def _invoice(
         self,
@@ -1351,14 +1380,24 @@ class DocumentProcessor:
         here quietly, within one batch. It never writes a status or progress: any other
         failure is logged with its class (or the model's code) and the ids, never a message,
         and the document stays ready; the worker's EmbedMissing fills the vectors left. A
-        lost lease goes on up, as before (the run already ended ready)."""
+        lost lease goes on up, as before (the run already ended ready).
+        Never stuck (17 Oct 2026): past ``index_seconds`` it stops after the batch in hand
+        (pending_retry), so a long document never holds the worker; EmbedMissing does the rest.
+        ponytail: checked between batches, so it can run one batch (32 one-text requests) over."""
         if self._embed is None:
             return
+        started = self._timer()
 
         def on_batch(done: int, total: int) -> None:
             heartbeat()
             if self._statuses.get_status(job.customer_id, job.document_id) is not DocumentStatus.READY:
                 raise Superseded(run.run_id)
+            if (
+                self._index_seconds is not None
+                and done < total
+                and self._timer() - started >= self._index_seconds
+            ):
+                raise _IndexLater
 
         try:
             with self._billed(job, run, "embed"):
@@ -1367,12 +1406,17 @@ class DocumentProcessor:
             return
         except LeaseLost:
             raise
-        except Exception as error:  # noqa: BLE001 - the document is ready; vectors come later
-            code = _code(error) if isinstance(error, self._model_errors) else type(error).__name__
-            _log.warning(
-                "pieces saved without meaning vectors",
-                extra={"customer_id": job.customer_id, "document_id": job.document_id, "code": code},
+        except _IndexLater:
+            self._step(
+                job, "indexing", started, "pending_retry", "deadline", "pieces saved without meaning vectors"
             )
+        except Exception as error:  # noqa: BLE001 - the document is ready; vectors come later
+            model = isinstance(error, self._model_errors)
+            code = _code(error) if model else type(error).__name__
+            outcome = "pending_retry" if model else "failed"  # EmbedMissing tries both again
+            self._step(job, "indexing", started, outcome, code, "pieces saved without meaning vectors")
+        else:
+            self._step(job, "indexing", started, "done")
 
     def _second_readings(
         self,
@@ -2155,6 +2199,7 @@ def build_processor(
         usage=None if job_reading is None else functools.partial(usage_scope, db),
         ocr_page_concurrency=settings.ocr_page_concurrency,
         cost_saving=(settings.cost_saving_hard_lines_max, settings.cost_saving_hard_share),
+        index_seconds=settings.model_timeout_seconds,
     )
 
 

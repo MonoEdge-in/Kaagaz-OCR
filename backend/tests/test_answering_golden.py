@@ -1035,6 +1035,18 @@ def test_not_found_while_the_model_is_down_is_unavailable() -> None:
         assert (answer.status, answer.unavailable) == ("not_found", False)
 
 
+def test_a_missing_question_vector_is_no_outage_when_words_found_pieces() -> None:
+    """Never stuck (17 Oct 2026): the word and typo search found pieces, so a model that could
+    not embed the question is not "busy"; the draft's own not found stands."""
+
+    def not_found(system: str, user: str) -> dict[str, Any]:
+        return {"status": "not_found", "sentences": []}
+
+    model = FakeModel(not_found, embed_error=ModelUnavailable("key_rejected"))
+    answer = service(pieces=[INVOICE], model=model)[0].answer(A, "What is the GST number of INV-1042?")
+    assert (answer.status, answer.unavailable) == ("not_found", False)
+
+
 def test_each_model_answer_logs_the_model_and_the_prompt_hash(caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level(logging.INFO, logger="kaagaz.answering.service")
     service(model=FakeModel())[0].answer(A, QUESTION)
