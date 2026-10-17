@@ -503,6 +503,21 @@ export interface RelatedDocument {
   snippet: string; // plain text, never markup
 }
 
+/** "Also mentions" (Tushar, 17 Oct 2026): another document holding the question's key terms. */
+export interface MentionedDocument {
+  document_id: string;
+  document_name: string;
+  page_no: number; // its first matching piece's page
+  pages: number[]; // every page a term is on, in order
+  snippet: string; // two lines around the first match, plain text, never markup
+}
+
+export interface Mentions {
+  terms: string[]; // the question's key terms, as typed
+  total: number; // every such document; more than the ones listed when there are many
+  documents: MentionedDocument[];
+}
+
 /** The source a person put on top of an answer ("Most relevant"). */
 export interface SourcePin {
   document_id: string;
@@ -543,6 +558,7 @@ export interface Answer {
   unreadable_pages?: UnreadablePage[];
   unreadable_page_count?: number;
   related_documents?: RelatedDocument[]; // "Also in"; missing before 16 Oct 2026
+  mentions?: Mentions; // "Also mentions"; only when there is one (17 Oct 2026)
   // Features 25-27 (C7), only on an answer drafted with the asker's answer settings: the
   // names (and ids) of the models that replied, the one used first; how many were asked;
   // whether the others confirmed it (null with one model); the thinking level.

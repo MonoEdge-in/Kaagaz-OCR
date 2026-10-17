@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   markParts,
   matchTerms,
+  mentionPages,
   rankedRelated,
   rankedSources,
   snippetAround,
@@ -173,6 +174,41 @@ describe("Also in", () => {
       message({ status: "not_found", label: null, sentences: [], citations: [], closest_documents: [{ id: "d9", display_name: "Bill 9.pdf" }] }),
     );
     expect(html).toMatch(/<a class="[^"]*source[^"]* [^"]*documentRow[^"]*" title="Bill 9.pdf" href="\/documents\/d9">/);
+  });
+});
+
+describe("Also mentions (Tushar, 17 Oct 2026)", () => {
+  const mentions = {
+    terms: ["Jalna", "जालना"],
+    total: 14,
+    documents: [
+      { document_id: "deed", document_name: "deed.pdf", page_no: 3, pages: [3], snippet: "Village Jalna\nTaluka Ambad" },
+      { document_id: "satbara", document_name: "7-12.pdf", page_no: 2, pages: [2, 5], snippet: "जिल्हा : जालना\nend" },
+    ],
+  };
+
+  it("lists the other documents with the terms, their pages and marked lines, last in the bar", () => {
+    const html = render(message({ related_documents: [related("ledger")], mentions }));
+    expect(html).toContain("Also mentions “Jalna” · “जालना”");
+    expect(html).toContain("· 14</span>");
+    expect(html.indexOf("deed.pdf")).toBeGreaterThan(html.indexOf("ledger.pdf"));
+    expect(html).toContain(">Page 3<");
+    expect(html).toContain(">Pages 2, 5<");
+    expect(html).toContain("Village <mark>Jalna</mark>");
+    expect(html).toContain("<mark>जालना</mark>");
+    expect(html).toContain('href="/documents/satbara?page=2"');
+    expect(html).toContain("and 12 more");
+    expect(html).toContain(">2 · Also in 1 document · Mentioned in 14 more documents<");
+    expect(html).not.toMatch(/Needs review|Review|₹|cost|price/i);
+  });
+
+  it("shows under a not found answer too, and nothing when there is none", () => {
+    const notFound = { status: "not_found" as const, label: null, sentences: [], citations: [] };
+    expect(render(message({ ...notFound, mentions }))).toContain("Also mentions");
+    expect(render(message({}))).not.toContain("Also mentions");
+    expect(render(message({ mentions: { ...mentions, documents: [] } }))).not.toContain("Also mentions");
+    expect(mentionPages([1, 2, 3, 4, 5, 6, 7], 1)).toBe("Pages 1, 2, 3, 4, 5 and 2 more");
+    expect(sourcesCount(1, 0, 0, 1)).toBe("1 · Mentioned in 1 more document");
   });
 });
 

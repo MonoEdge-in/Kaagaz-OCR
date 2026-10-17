@@ -155,3 +155,75 @@ def test_the_manual_count_query_matches(db: Database) -> None:
             {"c": customer},
         ).scalar_one()
     assert manual == count(db, customer, "Jalna")[0] == 2
+
+
+def test_a_type_before_documents_of_counts_only_that_type(db: Database) -> None:
+    # Tushar, 17 Oct 2026: "how many land document of jalna i have" went to the model and got 503.
+    customer, _ = new_customer(db)
+    add(db, customer, "7-12.pdf", "Village Jalna", doc_type="land_record")
+    add(db, customer, "8a.pdf", "Taluka Jalna", doc_type="land_record")
+    add(db, customer, "bill.pdf", "Jalna depot", doc_type="invoice")
+    service = AnswerService(
+        db=db, model=None, settings=make_settings(answer_max_evidence=5), clock=lambda: NOW
+    )
+
+    answer = service.answer(customer, "how many land document of jalna i have")
+    assert answer.sentences[0].text == '2 land records mention "jalna".'
+    assert {c.document_name for c in answer.citations} == {"7-12.pdf", "8a.pdf"}
+    assert (
+        service.answer(customer, "how many documents of jalna").sentences[0].text
+        == '3 documents mention "jalna".'
+    )
+
+
+def mentioned(
+    db: Database, customer_id: str, terms: list[str], exclude: tuple[str, ...] = (), scope: Scope = EVERYTHING
+) -> tuple[int, list[str]]:
+    total, rows = PgExhaustive(db).mentions(customer_id, terms, scope, exclude, 50)
+    return total, [row["document_name"] for row in rows]
+
+
+def test_also_mentions_unions_the_terms_most_matching_first_and_leaves_out_the_cited(db: Database) -> None:
+    customer, _ = new_customer(db)
+    cited = add(db, customer, "cited.pdf", "Jalna")
+    add(db, customer, "deed.pdf", "Village Jalna", "Registered at JALNA", "District Jalna")
+    add(db, customer, "satbara.pdf", "गाव दरेगांव\nजिल्हा जालना")
+    add(db, customer, "lease.pdf", "Shop at Jalna road")
+    add(db, customer, "sweets.pdf", "Jalnawala sweets")  # another word
+    add(db, customer, "trashed.pdf", "Jalna", deleted_at=NOW)
+
+    total, names = mentioned(db, customer, ["Jalna", "जालना"], (cited,))
+    assert (total, names) == (3, ["deed.pdf", "lease.pdf", "satbara.pdf"])  # 3 pieces first, then by name
+    _, rows = PgExhaustive(db).mentions(customer, ["जालना"], EVERYTHING, [], 50)
+    assert rows[0]["page_no"] == 1 and rows[0]["pages"] == [1]
+    assert rows[0]["snippet"] == "जिल्हा जालना"
+    assert mentioned(db, customer, ["Jalna"], (), Scope(document_ids=(cited,))) == (1, ["cited.pdf"])
+    assert mentioned(db, customer, ["Nagpur"]) == (0, [])
+
+
+def test_also_mentions_never_lists_another_customers_documents(db: Database) -> None:
+    mine, _ = new_customer(db)
+    theirs, _ = new_customer(db)
+    add(db, mine, "mine.pdf", "Jalna")
+    for i in range(3):
+        add(db, theirs, f"theirs-{i}.pdf", "Jalna")
+
+    assert mentioned(db, mine, ["Jalna"]) == (1, ["mine.pdf"])
+    assert mentioned(db, theirs, ["Jalna"])[0] == 3
+
+
+def test_an_answer_carries_also_mentions_past_its_sources(db: Database) -> None:
+    customer, _ = new_customer(db)
+    for i in range(8):  # more than ANSWER_MAX_EVIDENCE: the search alone shows a few
+        add(db, customer, f"deed-{i}.pdf", f"Survey {i}, owner Patil, village Jalna")
+    service = AnswerService(
+        db=db, model=None, settings=make_settings(answer_max_evidence=3), clock=lambda: NOW
+    )
+
+    data = service.answer(customer, "Who is the owner in Jalna?").to_json()
+    shown = {c["document_id"] for c in data["citations"]} | {
+        d["document_id"] for d in data["related_documents"]
+    }
+    assert data["mentions"]["terms"] == ["Jalna"]
+    assert data["mentions"]["total"] == 8 - len(shown)
+    assert not shown & {d["document_id"] for d in data["mentions"]["documents"]}

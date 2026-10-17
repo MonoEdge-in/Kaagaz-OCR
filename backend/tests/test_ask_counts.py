@@ -13,8 +13,12 @@ import pytest
 from kaagaz.answering.evidence import Hit, has_word, word_text
 from kaagaz.answering.exhaustive import (
     MAX_LISTED,
+    count_sentence,
     document_sentence,
+    exhaustive_query,
     exhaustive_term,
+    key_terms,
+    mention_row,
     pages_with,
 )
 from kaagaz.answering.service import Answer, AnswerService
@@ -42,11 +46,13 @@ class FakeExhaustive:
     def __init__(self, pieces: dict[str, list[FakeHit]]) -> None:
         self.pieces = pieces
         self.calls: list[tuple[str, str, int]] = []
+        self.scopes: list[Scope] = []
 
     def documents_with(
         self, customer_id: str, term: str, scope: Scope, listed: int
     ) -> tuple[int, list[list[Hit]]]:
         self.calls.append((customer_id, term, listed))
+        self.scopes.append(scope)
         found: dict[str, list[Hit]] = {}
         for hit in self.pieces.get(customer_id, []):
             if has_word(term.casefold(), word_text(hit.text)):
@@ -316,3 +322,110 @@ def test_a_devanagari_question_answers_in_the_same_calm_english() -> None:
         "सातबारा.pdf: page 2.",
     ]
     assert_count_shape(answer)
+
+
+# --- a document type before "documents of" (Tushar, 17 Oct 2026) ----------------------------
+
+
+def test_type_words_before_documents_of_filter_by_type_and_route_with_no_model() -> None:
+    assert exhaustive_query("how many land document of jalna i have") == ("jalna", ("land_record",))
+    assert exhaustive_query("how many documents of jalna") == ("jalna", ())
+    assert exhaustive_query("which bill documents of Patil") == ("Patil", ("invoice",))
+    assert exhaustive_query("how many xyz documents of jalna") == ("jalna", ())  # unknown: no filter
+    assert exhaustive_query("How many documents mention Jalna?") == ("Jalna", ())
+    for question in ("Who is the owner of the land in Jalna?", "Which documents have invoice number 1042?"):
+        assert exhaustive_query(question) is None
+
+
+def test_the_type_narrows_the_scope_and_names_the_count() -> None:
+    answer, store = ask("how many land document of jalna i have", jalna_store())
+    assert store.calls == [(A, "jalna", MAX_LISTED)]
+    assert store.scopes[0].doc_types == ("land_record",)
+    assert answer.sentences[0].text == '2 land records mention "jalna".'
+    assert count_sentence("Jalna", 1, ("land_record",)) == '1 land record mentions "Jalna".'
+    assert count_sentence("Jalna", 3, ("land_record", "invoice")) == '3 documents mention "Jalna".'
+
+
+# --- Also mentions (Tushar, 17 Oct 2026) ---------------------------------------------------
+
+
+def test_key_terms_keep_names_and_places_and_drop_the_rest() -> None:
+    assert key_terms("Who is the owner of the land in Jalna?") == ["Jalna"]
+    assert key_terms("गाव दरेगांव जालना जिल्हा कोणता आहे?") == ["दरेगांव", "जालना"]
+    assert key_terms("Jalna ka malak kaun hai") == ["Jalna"]  # malak is the glossary's owner
+    assert key_terms("show me the 7/12 of Patil in Jalna district last month") == ["Patil", "Jalna"]
+    # Words the cited text holds first; never more than three.
+    assert key_terms("Patil Shinde Jadhav Jalna", ["Village Jalna"]) == ["Jalna", "Patil", "Shinde"]
+    assert key_terms("How many invoices last month?") == []
+
+
+def test_a_mentioned_row_is_two_clean_lines_from_the_first_match() -> None:
+    row = mention_row(
+        "d1", "<b>7-12.pdf</b>", [2, 5], 2, "Header\nगाव : दरेगांव\nजिल्हा : जालना\nend", ["जालना"]
+    )
+    assert row == {
+        "document_id": "d1",
+        "document_name": "7-12.pdf",
+        "page_no": 2,
+        "pages": [2, 5],
+        "snippet": "जिल्हा : जालना\nend",
+    }
+    assert mention_row("d1", "a", [1], 1, "one\ntwo\nthree", ["Nagpur"])["snippet"] == "one\ntwo"
+
+
+class FakeMentions:
+    """``Mentions``: records each call and gives back what it was set up with."""
+
+    def __init__(self, total: int = 3) -> None:
+        self.total = total
+        self.calls: list[tuple[str, list[str], list[str]]] = []
+
+    def mentions(
+        self, customer_id: str, terms: Sequence[str], scope: Scope, exclude: Sequence[str], listed: int
+    ) -> tuple[int, list[dict[str, object]]]:
+        self.calls.append((customer_id, list(terms), list(exclude)))
+        rows = [
+            {"document_id": "m1", "document_name": "m1.pdf", "page_no": 1, "pages": [1], "snippet": "Jalna"}
+        ]
+        return self.total, rows if self.total else []
+
+
+def mentioned(question: str, port: FakeMentions, store: FakeExhaustive | None = None) -> Answer:
+    pieces = jalna_store()
+    return AnswerService(
+        db=UNUSED_DB,
+        model=None,
+        settings=SETTINGS,
+        clock=lambda: NOW,
+        retriever=FakeRetriever({A: pieces}),
+        fixed_queries=FakeFixedQueries({A: []}),
+        unchecked=FakeUnchecked(),
+        exhaustive=store or FakeExhaustive({A: pieces}),
+        mentions=port,
+    ).answer(A, question)
+
+
+def test_an_answer_lists_the_other_documents_with_its_key_terms_not_the_cited_ones() -> None:
+    port = FakeMentions()
+    answer = mentioned("Where is the shop on Jalna road?", port)
+    assert answer.status in ("answered", "not_found")
+    cited = sorted(
+        {c.document_id for c in answer.citations} | {d["document_id"] for d in answer.related_documents}
+    )
+    assert port.calls == [(A, ["shop", "Jalna", "road"], cited)]  # all in the cited text
+    assert answer.mentions is not None
+    assert answer.to_json()["mentions"] == {
+        "terms": ["shop", "Jalna", "road"],
+        "total": 3,
+        "documents": answer.mentions["documents"],
+    }
+
+
+def test_no_mentions_for_a_count_no_key_term_or_none_found() -> None:
+    port = FakeMentions()
+    assert mentioned("How many documents mention Jalna?", port).mentions is None  # it lists them itself
+    assert mentioned("What is the total?", port).mentions is None  # no key term
+    assert port.calls == []
+    empty = FakeMentions(total=0)
+    answer = mentioned("Where is the shop on Jalna road?", empty)
+    assert empty.calls and answer.mentions is None and "mentions" not in answer.to_json()

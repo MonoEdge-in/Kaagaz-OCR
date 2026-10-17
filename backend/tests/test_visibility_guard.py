@@ -55,6 +55,9 @@ FILTERED: dict[tuple[ModuleType, str], str] = {
     # Every document holding a word, and its matching pieces (16 Oct 2026): the same.
     (exhaustive, "_DOCUMENTS"): LIVE_CURRENT,
     (exhaustive, "_PIECES"): LIVE_CURRENT,
+    # Their shared scope clause, and "Also mentions" (17 Oct 2026): the same.
+    (exhaustive, "_IN_SCOPE"): LIVE_CURRENT,
+    (exhaustive, "_MENTIONS"): LIVE_CURRENT,
     # Story matches (S3): the family's current version of a story, read and out of Trash.
     (story_search, "_STORIES"): LIVE_CURRENT,
     # The numbers in answers: the same, in every CTE.

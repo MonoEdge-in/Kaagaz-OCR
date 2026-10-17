@@ -34,6 +34,14 @@ the fuzzy sound keys (``tsv_sound``) join the two, which merge other words (Jala
 exact count never uses them. Nor is a Latin phrase spelled in Devanagari: no helper does
 that. So जालना and Jalna count the documents written each way.
 
+**A type** (17 Oct 2026, ``exhaustive_query``): "how many land documents of Jalna i have":
+the words before a document word followed by of, from, in, for or about name the document
+type (``doc_types``: land is land_record), counted inside it; a word no type knows is left
+out. "How many documents of Jalna" routes with no holding word.
+
+**Also mentions** (17 Oct 2026, ``key_terms``, ``PgExhaustive.mentions``): under any other
+answer, the documents not shown that hold the question's key terms, by the same word index.
+
 Time: two statements over the word index; then O(p * t) for the p matching pieces of the
 listed documents, of t characters.
 """
@@ -42,7 +50,7 @@ import re
 import unicodedata
 from collections.abc import Sequence
 from itertools import pairwise
-from typing import Protocol
+from typing import Any, Protocol, get_args
 
 from sqlalchemy import text
 
@@ -50,10 +58,11 @@ from kaagaz.answering import glossary
 from kaagaz.answering.dates import mentions_date
 from kaagaz.answering.evidence import Hit
 from kaagaz.answering.format import indian_number
-from kaagaz.answering.hinglish import STOP_WORDS, normalise
+from kaagaz.answering.hinglish import DATE_WORDS, STOP_WORDS, normalise
+from kaagaz.answering.sanitize import clean_text
 from kaagaz.chunking.script import fold_digits, has_devanagari_letters, latin_spelling, spaced_words
 from kaagaz.db.engine import Database
-from kaagaz.search.scope import Scope
+from kaagaz.search.scope import DocType, Scope
 
 MAX_LISTED = 50  # documents named in one answer; the rest are counted
 MAX_TERM_WORDS = 4
@@ -118,7 +127,7 @@ _NOT_ROUTED = _words(
     {"नहीं", "नही", "बिना", "बगैर", "नाही", "शिवाय", "नसलेले", "नसलेल्या", "क्या", "काय"},
 )
 _FILLER = _words(
-    {"how", "many", "the", "a", "an", "of", "do", "does", "are", "is", "there"},
+    {"how", "many", "the", "a", "an", "of", "do", "does", "are", "is", "there", "about"},
     {"का", "की", "के", "को", "से", "ने", "पर", "और", "या", "कि", "जो", "जिन", "था", "थी", "थे"},
     {"बताओ", "बताइए", "बताइये", "दिखाओ", "दिखाइए", "हुआ", "हुई", "हुए"},
     {"चा", "ची", "चे", "च्या", "ला", "ना", "वर", "आणि", "कोण", "सांगा", "दाखवा", "असा", "असे"},
@@ -134,26 +143,66 @@ _QUOTED = re.compile(
 def exhaustive_term(question: str) -> str | None:
     """The word or phrase a how-many or which-documents question asks for, as typed; None
     for any other question (the module docstring). O(n)."""
+    asked = exhaustive_query(question)
+    return None if asked is None else asked[0]
+
+
+# "how many land documents of Jalna": a document word then one of these holds the phrase
+# after it, and the words before the document word name its type (Tushar, 17 Oct 2026).
+_PREPS = _words({"of", "from", "in", "for", "about"})
+_MAX_TYPE_WORDS = 3
+_DOC_TYPES = [kind for kind in get_args(DocType) if kind != "other"]
+
+
+def doc_types(words: Sequence[str]) -> tuple[str, ...]:
+    """The ``documents.doc_type`` values the words name: a word (as ``normalise`` reads it,
+    so "bill" is invoice; without a plural "s") that is part of a type's name (land is
+    land_record, statement is bank_statement). None known: empty. O(w)."""
+    found: list[str] = []
+    for word in words:
+        for english in (normalise(word).english or _fold(word)).split():
+            stem = english.removesuffix("s")
+            found += [kind for kind in _DOC_TYPES if stem in kind.split("_") and kind not in found]
+    return tuple(found)
+
+
+def _thing_of(folded: Sequence[str]) -> int | None:
+    """Where a document word stands just before "of", "from", "in", "for" or "about". O(n)."""
+    return next((i for i in range(len(folded) - 1) if folded[i] in _THINGS and folded[i + 1] in _PREPS), None)
+
+
+def exhaustive_query(question: str) -> tuple[str, tuple[str, ...]] | None:
+    """``exhaustive_term``'s phrase and the document types the question names before a
+    document word followed by "of" ("how many land documents of Jalna i have": land_record,
+    ``doc_types``; a type word known to none is left out and the phrase counted alone), or
+    no type; None for any other question. With that "documents of" shape no holding word
+    is needed ("how many documents of Jalna"). O(n)."""
     question = fold_digits(question)
     quoted = _QUOTED.search(question)
     outside = question if quoted is None else question[: quoted.start()] + " " + question[quoted.end() :]
     words = spaced_words(outside)
     folded = [_fold(word) for word in words]
     asked = bool(_ASK.intersection(folded)) or ("how", "many") in pairwise(folded)
-    if not asked or not _THINGS.intersection(folded) or not _HOLDS.intersection(folded):
+    at = _thing_of(folded)
+    if not asked or not _THINGS.intersection(folded) or not (_HOLDS.intersection(folded) or at is not None):
         return None
     if _NOT_ROUTED.intersection(folded):
         return None
     left = [i for i, word in enumerate(folded) if word not in _FRAME]
     if quoted is not None:
         term = " ".join(spaced_words(quoted[1]))
-        return term if term and not left and len(term) <= MAX_TERM_CHARS else None
+        return (term, ()) if term and not left and len(term) <= MAX_TERM_CHARS else None
+    kinds: tuple[str, ...] = ()
+    if at is not None:
+        before = [i for i in left if i < at]
+        if before and len(before) <= _MAX_TYPE_WORDS and before == list(range(at - len(before), at)):
+            kinds, left = doc_types([words[i] for i in before]), [i for i in left if i > at]
     if not left or left != list(range(left[0], left[-1] + 1)) or len(left) > MAX_TERM_WORDS:
         return None
     if mentions_date(normalise(" ".join(folded))):
         return None
     term = " ".join(words[i] for i in left)
-    return term if len(term) <= MAX_TERM_CHARS else None
+    return (term, kinds) if len(term) <= MAX_TERM_CHARS else None
 
 
 def latin_term(term: str) -> str:
@@ -173,13 +222,19 @@ class Exhaustive(Protocol):
         ...
 
 
-# Of the scope's documents that hold the phrase, the first :n by name (then id), and how many
-# in all: the window counts the groups before LIMIT.
-_DOCUMENTS = text(
-    "SELECT p.document_id, count(*) OVER () AS total"
-    " FROM pieces p"
-    " JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
-    " CROSS JOIN (SELECT phraseto_tsquery('simple', :w) || phraseto_tsquery('simple', :l)) AS w (q)"
+class Mentions(Protocol):
+    def mentions(
+        self, customer_id: str, terms: Sequence[str], scope: Scope, exclude: Sequence[str], listed: int
+    ) -> tuple[int, list[dict[str, Any]]]:
+        """How many documents in ``scope``, but ``exclude``, hold any of ``terms`` as whole
+        words, and the first ``listed`` of them, most matching pieces first, then by name:
+        ``mention_row``'s shape."""
+        ...
+
+
+# The pieces of the scope's current, ready documents out of Trash (hybrid.py's scope predicates).
+_IN_SCOPE = (
+    " FROM pieces p JOIN documents d ON d.customer_id = p.customer_id AND d.id = p.document_id"
     " WHERE p.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
     " AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))"
     " AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt"
@@ -191,9 +246,33 @@ _DOCUMENTS = text(
     " AND (CAST(:s_from AS date) IS NULL AND CAST(:s_to AS date) IS NULL"
     " OR coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)"
     " BETWEEN coalesce(CAST(:s_from AS date), '-infinity') AND coalesce(CAST(:s_to AS date), 'infinity'))"
-    " AND p.tsv_simple @@ w.q"
+)
+# Of the scope's documents that hold the phrase, the first :n by name (then id), and how many
+# in all: the window counts the groups before LIMIT.
+_DOCUMENTS = text(
+    "SELECT p.document_id, count(*) OVER () AS total"
+    + _IN_SCOPE
+    + " AND p.tsv_simple @@ (phraseto_tsquery('simple', :w) || phraseto_tsquery('simple', :l))"
     " GROUP BY p.document_id, d.display_name"
     " ORDER BY lower(d.display_name), p.document_id LIMIT :n"
+)
+# "Also mentions" (Tushar, 17 Oct 2026): the scope's documents but :exclude holding any of up
+# to three phrases (each also by its Latin spelling), most matching pieces first, then by
+# name; each with its pages and its first matching piece's page and text; and how many in all.
+_MENTIONS = text(
+    "SELECT g.document_id, g.display_name, g.pages, f.page_from, f.text, g.total FROM ("  # noqa: S608 - constants
+    "SELECT p.document_id, d.display_name, count(*) AS hits, min(p.seq) AS first_seq,"
+    " array_agg(DISTINCT p.page_from ORDER BY p.page_from) AS pages, count(*) OVER () AS total"
+    + _IN_SCOPE
+    + " AND p.tsv_simple @@ (phraseto_tsquery('simple', :w1) || phraseto_tsquery('simple', :l1)"
+    " || phraseto_tsquery('simple', :w2) || phraseto_tsquery('simple', :l2)"
+    " || phraseto_tsquery('simple', :w3) || phraseto_tsquery('simple', :l3))"
+    " AND NOT p.document_id = ANY(CAST(:exclude AS uuid[]))"
+    " GROUP BY p.document_id, d.display_name"
+    " ORDER BY count(*) DESC, lower(d.display_name), p.document_id LIMIT :n) g"
+    " CROSS JOIN LATERAL (SELECT q.page_from, q.text FROM pieces q WHERE q.customer_id = :c"
+    " AND q.document_id = g.document_id AND q.seq = g.first_seq LIMIT 1) f"
+    " ORDER BY g.hits DESC, lower(g.display_name), g.document_id"
 )
 
 # The listed documents' matching pieces, in hybrid._DETAILS's columns, in reading order. The
@@ -236,6 +315,78 @@ class PgExhaustive:
                 found[str(row[1])].append(_hit(row, FusedPiece(str(row[0]), 0.0, None, None, None)))
         return int(rows[0][1]), [found[document] for document in shown]
 
+    def mentions(
+        self, customer_id: str, terms: Sequence[str], scope: Scope, exclude: Sequence[str], listed: int
+    ) -> tuple[int, list[dict[str, Any]]]:
+        """``Mentions`` over PostgreSQL, inside ``db.customer``: one statement."""
+        if not terms:
+            return 0, []
+        three = [*terms[:3], *[terms[0]] * (3 - len(terms[:3]))]  # an unused slot repeats the first
+        params: dict[str, Any] = {"c": customer_id, "exclude": list(exclude), "n": max(1, listed)}
+        for i, term in enumerate(three, start=1):
+            params |= {f"w{i}": term, f"l{i}": latin_term(term)}
+        with self._db.customer(customer_id) as conn:
+            rows = conn.execute(_MENTIONS, params | scope.params()).all()
+        if not rows:
+            return 0, []
+        return int(rows[0][5]), [
+            mention_row(str(r[0]), r[1], list(r[2]), int(r[3]), r[4], terms) for r in rows
+        ]
+
+
+MAX_MENTION_TERMS = 3
+MAX_MENTIONED = 50
+# Never a key term: the question's frame and fillers, highest/total/not, date words, and the
+# glossary's document words in every script (village, जिल्हा, malak): on most forms.
+_NOT_TERMS = (
+    _FRAME
+    | _NOT_ROUTED
+    | _words(
+        set(DATE_WORDS), set(glossary.EQUIVALENTS), {w for ws in glossary.EQUIVALENTS.values() for w in ws}
+    )
+)
+
+
+def key_terms(question: str, evidence: Sequence[str] = ()) -> list[str]:
+    """Up to MAX_MENTION_TERMS words of the question, as typed, that name what it is about
+    (a name or a place: Jalna, जालना, Patil): letters only, three or more, not a frame or
+    glossary word nor a Romanised one (``glossary.concept``); words the cited ``evidence``
+    holds first. ponytail: a plain English word (deed, road) passes too; a stop list grows
+    when one proves noisy. O(n + e)."""
+    seen: set[str] = set()
+    found: list[str] = []
+    for word in spaced_words(fold_digits(question)):
+        folded = _fold(word)
+        if len(folded) < 3 or folded in seen or folded in _NOT_TERMS:
+            continue
+        if not all(unicodedata.category(ch)[0] in "LM" for ch in folded):
+            continue
+        if not has_devanagari_letters(folded) and glossary.concept(folded) is not None:
+            continue
+        seen.add(folded)
+        found.append(word)
+    held = _fold(" ".join(evidence))
+    found.sort(key=lambda word: _fold(word) not in held)  # stable: the question's order otherwise
+    return found[:MAX_MENTION_TERMS]
+
+
+def mention_row(
+    document_id: str, name: str, pages: list[int], page: int, first: str, terms: Sequence[str]
+) -> dict[str, Any]:
+    """One "Also mentions" document: its first matching piece's page, the pages that hold a
+    term, and two lines of that piece from the first that holds one (any case; else its
+    first two), each ``clean_text``. O(t)."""
+    lines = [line for line in first.splitlines() if line.strip()]
+    wanted = [_fold(term) for term in terms] + [_fold(latin_term(term)) for term in terms]
+    at = next((i for i, line in enumerate(lines) if any(w in _fold(line) for w in wanted)), 0)
+    return {
+        "document_id": document_id,
+        "document_name": clean_text(name),
+        "page_no": page,
+        "pages": pages,
+        "snippet": "\n".join(clean_text(line).strip() for line in lines[at : at + 2])[:300],
+    }
+
 
 def pages_with(hits: Sequence[Hit], term: str) -> list[int]:
     """The pages of ``hits`` the phrase is on: a one-page piece's page; for a piece across
@@ -258,11 +409,13 @@ def pages_with(hits: Sequence[Hit], term: str) -> list[int]:
     return sorted(pages)
 
 
-def count_sentence(term: str, total: int) -> str:
-    """'3 documents mention "Jalna".' (``indian_number`` for the count)."""
+def count_sentence(term: str, total: int, kinds: Sequence[str] = ()) -> str:
+    """'3 documents mention "Jalna".', or with one type asked for, '3 land records mention
+    "Jalna".' (``indian_number`` for the count)."""
+    kind = kinds[0].replace("_", " ") if len(kinds) == 1 else "document"
     if total == 1:
-        return f'1 document mentions "{term}".'
-    return f'{indian_number(total)} documents mention "{term}".'
+        return f'1 {kind} mentions "{term}".'
+    return f'{indian_number(total)} {kind}s mention "{term}".'
 
 
 def document_sentence(name: str, pages: Sequence[int]) -> str:

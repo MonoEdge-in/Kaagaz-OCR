@@ -5,7 +5,16 @@
 // document, and what the question box sends or gets back.
 
 import { pageLink } from "@/lib/regions";
-import type { Answer, AnswerSentence, Citation, Message, Region, RelatedDocument, SourcePin } from "@/lib/types";
+import type {
+  Answer,
+  AnswerSentence,
+  Citation,
+  Mentions,
+  Message,
+  Region,
+  RelatedDocument,
+  SourcePin,
+} from "@/lib/types";
 
 // Calm, no "couldn't" (UI audit A4, 16 Oct 2026); the card's next steps follow it.
 export const NOT_FOUND_TEXT = "Not found in the documents searched.";
@@ -330,13 +339,29 @@ export function rankedRelated(related: readonly RelatedDocument[], pin?: SourceP
   return [...pinned, ...related.filter((doc) => !pinned.includes(doc))];
 }
 
-/** The Sources bar's summary after "Sources": "4 · Also in 3 documents · 2 pages to check". */
-export function sourcesCount(cited: number, related: number, pagesToCheck = 0): string {
+/** The Sources bar's summary after "Sources": "4 · Also in 3 documents · 2 pages to check
+ * · Mentioned in 12 more documents". */
+export function sourcesCount(cited: number, related: number, pagesToCheck = 0, mentioned = 0): string {
   return [
     cited > 0 ? String(cited) : "",
     related > 0 ? `Also in ${related} ${related === 1 ? "document" : "documents"}` : "",
     pagesToCheck > 0 ? `${pagesToCheck} ${pagesToCheck === 1 ? "page" : "pages"} to check` : "",
+    mentioned > 0 ? `Mentioned in ${mentioned} more ${mentioned === 1 ? "document" : "documents"}` : "",
   ]
     .filter(Boolean)
     .join(" · ");
+}
+
+/** "Also mentions" (Tushar, 17 Oct 2026): the answer's list, or null when it has none. */
+export function mentionsOf(answer: Pick<Answer, "mentions">): Mentions | null {
+  const mentions = answer.mentions;
+  return mentions && mentions.documents.length > 0 ? mentions : null;
+}
+
+/** "Page 3", "Pages 2, 5", or "Pages 2, 5, 7, 9, 11 and 4 more" for a mentioned document. */
+export function mentionPages(pages: readonly number[], page: number, shown = 5): string {
+  const all = pages.length > 0 ? pages : [page];
+  if (all.length === 1) return `Page ${all[0]}`;
+  const more = all.length - shown;
+  return `Pages ${all.slice(0, shown).join(", ")}${more > 0 ? ` and ${more} more` : ""}`;
 }
