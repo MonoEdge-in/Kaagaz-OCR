@@ -1314,6 +1314,6 @@ export interface TestModel {
   scan_model: string | null;
   chat_model: string | null;
   started_at: string | null;
-  since: { pages: number; questions: number; cost_usd: number; avg_seconds_per_page: number } | null; // null when none runs
+  since: { pages: number; questions: number; cost_usd: number | null; avg_seconds_per_page: number | null } | null; // null when none runs
   note: string | null;
 }
