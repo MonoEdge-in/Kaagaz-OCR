@@ -89,7 +89,8 @@ describe("health in words", () => {
 });
 
 describe("activity and health source guards", () => {
-  it("uses the admin screen's tablist pattern for seven tabs", () => {
+  // Changed on purpose (spec 17 Oct 2026): Feature switches is the eighth tab.
+  it("uses the admin screen's tablist pattern for eight tabs", () => {
     expect(OPERATOR_TABS.map((tab) => tab.label)).toEqual([
       "Overview",
       "Quality",
@@ -98,6 +99,7 @@ describe("activity and health source guards", () => {
       "AI spend",
       "Activity",
       "Health",
+      "Feature switches",
     ]);
     // Changed on purpose (MonoEdge design system, 16 Oct 2026): the pattern lives in the shared
     // Tabs component, which the admin screen and the console both use.

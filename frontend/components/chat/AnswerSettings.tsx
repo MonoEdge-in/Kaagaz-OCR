@@ -1,18 +1,18 @@
 "use client";
 
 // Answer settings (features 25-27), at the right of the composer's toolbar beside
-// Send: a quiet button naming the pick ("Gemini 3.8 Flash · High") that opens a
-// small panel (ComposerMenu.tsx) with which model answers, by name, and how hard
-// it thinks (High, Medium, Low), from what the organisation allows. Hidden when
-// there is only one choice. One model answers (Tushar, 16 Oct 2026, one model in
-// Ask): "Answered by" is one choice of radio buttons, so every level is open to it.
-// No price or cost here.
+// Send: a quiet button naming the pick ("Thinking · High") that opens a small panel
+// (ComposerMenu.tsx) with which model answers and how hard it thinks (High, Medium,
+// Low), from what the organisation allows, capped by the effective Ask level (AI
+// settings, spec 17 Oct 2026). Hidden when there is only one choice. One model answers
+// (Tushar, 16 Oct 2026, one model in Ask): "Answered by" is one choice of radio buttons.
+// Changed on purpose (spec 17 Oct 2026): org users never see a model's name, so the
+// models are "Standard" and "Careful" (agentTier). No price or cost here.
 
 import { useId } from "react";
 import type { ChatOptions, ThinkingLevel } from "@/lib/types";
-import { modelName } from "./answer";
 import { ComposerMenu } from "./ComposerMenu";
-import { chooseAgent, LEVEL_NAMES, pickSummary } from "./logic";
+import { agentTier, chooseAgent, LEVEL_NAMES, pickSummary } from "./logic";
 import type { AnswerPick } from "./logic";
 import styles from "./Chat.module.css";
 
@@ -46,7 +46,7 @@ export function AnswerSettings({
         {options.agents.length > 1 ? (
           <fieldset className={styles.menuGroup}>
             <legend>Answered by</legend>
-            {options.agents.map((agent) => (
+            {options.agents.map((agent, index) => (
               <label key={agent.id} className={styles.menuOption}>
                 <input
                   type="radio"
@@ -54,7 +54,7 @@ export function AnswerSettings({
                   checked={pick.agents[0] === agent.id}
                   onChange={() => onPick(chooseAgent(pick, agent.id))}
                 />
-                {modelName(agent.name)}
+                {agentTier(options, index)}
               </label>
             ))}
           </fieldset>

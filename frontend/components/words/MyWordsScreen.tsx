@@ -12,7 +12,7 @@ import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { ActionDialog } from "@/components/documents/ActionDialog";
 import { EmptyState } from "@/components/ui/EmptyState";
-import { addMyWord, changeMyWord, deleteMyWord, listMyWords } from "@/lib/api";
+import { FEATURE_OFF, addMyWord, changeMyWord, deleteMyWord, isFeatureOff, listMyWords } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import type { MyWord } from "@/lib/types";
 import { DuplicateDialog, WordFields } from "./WordParts";
@@ -61,6 +61,7 @@ export function MyWordsScreen() {
   const [attempt, setAttempt] = useState(0);
   const [items, setItems] = useState<MyWord[] | null>(null);
   const [loadError, setLoadError] = useState(false);
+  const [off, setOff] = useState(false); // My words switched off for the whole product
   const [filter, setFilter] = useState("");
   const [draft, setDraft] = useState(EMPTY);
   const [tried, setTried] = useState(false);
@@ -74,7 +75,7 @@ export function MyWordsScreen() {
     let cancelled = false;
     listMyWords().then(
       (result) => !cancelled && setItems(result.items),
-      () => !cancelled && setLoadError(true),
+      (caught: unknown) => !cancelled && (isFeatureOff(caught) ? setOff(true) : setLoadError(true)),
     );
     return () => {
       cancelled = true;
@@ -159,6 +160,15 @@ export function MyWordsScreen() {
   const spinner = busy && <span className="spinner" aria-hidden="true" />;
   const busyClass = busy ? styles.busy : "";
   const alert = (text: string | null) => text && <p className="error-text" role="alert">{text}</p>;
+
+  if (off) {
+    return (
+      <div className="page">
+        <header className="page-header"><h1>My words</h1></header>
+        <EmptyState icon="words" title={FEATURE_OFF} />
+      </div>
+    );
+  }
 
   return (
     <div className="page">

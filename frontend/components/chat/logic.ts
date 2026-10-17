@@ -17,7 +17,7 @@ import type {
   Region,
   ThinkingLevel,
 } from "@/lib/types";
-import { citationRegion, modelName } from "./answer";
+import { citationRegion } from "./answer";
 
 // --- Grouping the conversation list by day ------------------------------------
 
@@ -280,10 +280,20 @@ export function chooseAgent(pick: AnswerPick, id: string): AnswerPick {
   return { ...pick, agents: [id] };
 }
 
-/** The chip: the model by name and the level, "Gemini 3.8 Flash · Medium". */
+/** The chip: "Standard · High". Changed on purpose (spec 17 Oct 2026): org users never see a
+ * model's name, so the model is its tier (shown only when there is more than one), then the level. */
 export function pickSummary(options: ChatOptions, pick: AnswerPick): string {
-  const name = options.agents.find((agent) => agent.id === pick.agents[0])?.name;
-  return [name ? modelName(name) : "", LEVEL_NAMES[pick.level]].filter(Boolean).join(" · ");
+  const index = options.agents.findIndex((agent) => agent.id === pick.agents[0]);
+  const tier = options.agents.length > 1 && index >= 0 ? agentTier(options, index) : "Thinking";
+  return `${tier} · ${LEVEL_NAMES[pick.level]}`;
+}
+
+/** A model's neutral name for org users: the default is "Standard", the others "Careful" (then "Careful 2"…). */
+export function agentTier(options: ChatOptions, index: number): string {
+  const agent = options.agents[index];
+  if (!agent || agent.default) return "Standard";
+  const place = options.agents.filter((each, at) => !each.default && at <= index).length;
+  return place === 1 ? "Careful" : `Careful ${place}`;
 }
 
 /** What POST /chat sends: nothing when the pick is the organisation's default. */

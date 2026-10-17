@@ -7,6 +7,7 @@
 // everywhere is destructive, in its own row, and asks first in a dialog that
 // gives Cancel the focus.
 
+import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useRef, useState } from "react";
 import { clearStored } from "@/components/documents/batchTray";
@@ -90,6 +91,16 @@ export function AccountMenu({ me }: { me: Me }) {
         </div>
 
         <ThemeToggle />
+
+        {/* Spec 17 Oct 2026: the member's own AI settings, within what the admin left open. */}
+        <Link
+          href="/settings/ai"
+          className={`btn btn-quiet btn-block ${styles.signOut}`}
+          onClick={() => document.getElementById(MENU_ID)?.hidePopover()}
+        >
+          <Icon name="admin" />
+          <span>AI settings</span>
+        </Link>
 
         <div className={styles.signOuts}>
           <button
