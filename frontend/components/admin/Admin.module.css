@@ -46,10 +46,13 @@
   cursor: pointer;
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
+  user-select: none;
 }
 
-.tab:hover {
-  color: var(--text-primary);
+@media (hover: hover) and (pointer: fine) {
+  .tab:hover {
+    color: var(--text-primary);
+  }
 }
 
 .tab[aria-selected="true"] {

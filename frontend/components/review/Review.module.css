@@ -12,6 +12,10 @@
   gap: var(--space-4);
   min-width: 0;
   contain: layout paint style;
+  /* A long queue: cards out of view are not laid out or painted until near it (find in
+     page still reaches them); "auto" keeps each card's real height once it was shown. */
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto 520px;
 }
 
 .head {

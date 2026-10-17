@@ -71,7 +71,7 @@ export function Tip({ text, className, children }: { text: string; className?: s
       if (hidesTip(event.key)) close();
     };
     window.addEventListener("keydown", onKey);
-    window.addEventListener("scroll", close, true);
+    window.addEventListener("scroll", close, { capture: true, passive: true });
     return () => {
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("scroll", close, true);

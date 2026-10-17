@@ -72,6 +72,9 @@
   display: flex;
   flex: none;
   flex-wrap: wrap;
+  /* At 320px its one line (312px) was wider than the room (288px) and <main> scrolled
+     sideways; capped, the menu button wraps under the other two instead. */
+  max-width: 100%;
   align-items: center;
   gap: var(--space-2);
   margin-inline-start: auto;

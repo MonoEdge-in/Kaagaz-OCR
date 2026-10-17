@@ -658,7 +658,8 @@ td.num {
 
 /* --- Buttons ---------------------------------------------------------------
    One height per row; hover, focus and press change colour only, at once
-   (nothing but transform and opacity is ever animated); a busy
+   (nothing but transform and opacity is ever animated); hover only with a
+   mouse (a tapped button on a phone kept its hover colour); a busy
    button keeps its width (its words go clear under a spinner); a disabled one
    keeps its size. The plain .btn is the secondary button. */
 
@@ -711,9 +712,11 @@ td.num {
   }
 }
 
-.btn:hover {
-  background: var(--bg-hover);
-  color: var(--btn-fg);
+@media (hover: hover) and (pointer: fine) {
+  .btn:hover {
+    background: var(--bg-hover);
+    color: var(--btn-fg);
+  }
 }
 
 .btn:active {
@@ -758,9 +761,11 @@ td.num {
   border-color: var(--accent);
 }
 
-.btn-primary:hover {
-  background: var(--accent-hover);
-  border-color: var(--accent-hover);
+@media (hover: hover) and (pointer: fine) {
+  .btn-primary:hover {
+    background: var(--accent-hover);
+    border-color: var(--accent-hover);
+  }
 }
 
 .btn-primary:active {
@@ -774,10 +779,12 @@ td.num {
   border-color: var(--critical);
 }
 
-.btn-destructive:hover,
-.btn-danger:hover {
-  --btn-fg: var(--text-onaccent);
-  background: var(--critical);
+@media (hover: hover) and (pointer: fine) {
+  .btn-destructive:hover,
+  .btn-danger:hover {
+    --btn-fg: var(--text-onaccent);
+    background: var(--critical);
+  }
 }
 
 .btn-quiet {
@@ -785,8 +792,10 @@ td.num {
   background: transparent;
 }
 
-.btn-quiet:hover {
-  background: var(--bg-hover);
+@media (hover: hover) and (pointer: fine) {
+  .btn-quiet:hover {
+    background: var(--bg-hover);
+  }
 }
 
 .btn-block {
@@ -847,10 +856,15 @@ td.num {
   white-space: nowrap;
   scroll-snap-align: start;
   cursor: pointer;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
 }
 
-.tab:hover {
-  color: var(--text-primary);
+@media (hover: hover) and (pointer: fine) {
+  .tab:hover {
+    color: var(--text-primary);
+  }
 }
 
 .tab[aria-selected="true"] {
@@ -915,8 +929,10 @@ textarea.input {
   line-height: 1.5;
 }
 
-.input:hover {
-  border-color: var(--fg);
+@media (hover: hover) and (pointer: fine) {
+  .input:hover {
+    border-color: var(--fg);
+  }
 }
 
 .input:focus-visible {
@@ -1044,7 +1060,7 @@ td.num {
   left: 0;
   z-index: var(--z-tooltip);
   width: max-content;
-  max-width: min(20rem, calc(100vw - 16px));
+  max-width: min(20rem, calc(100% - 16px)); /* fixed: 100% is the window, never 100vw */
   padding: var(--space-1) var(--space-2);
   border: 1px solid var(--border-strong);
   border-radius: 2px;

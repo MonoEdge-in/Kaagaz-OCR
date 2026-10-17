@@ -103,8 +103,8 @@ export function ManageMenu({
     };
     const onMove = () => setOpen(false);
     document.addEventListener("pointerdown", onPress, true);
-    window.addEventListener("resize", onMove);
-    window.addEventListener("scroll", onMove, true);
+    window.addEventListener("resize", onMove, { passive: true });
+    window.addEventListener("scroll", onMove, { capture: true, passive: true });
     return () => {
       document.removeEventListener("pointerdown", onPress, true);
       window.removeEventListener("resize", onMove);

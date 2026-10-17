@@ -628,8 +628,10 @@ table.docs > tbody > tr {
   cursor: pointer;
 }
 
-table.docs > tbody > tr:hover {
-  background: var(--bg-hover);
+@media (hover: hover) and (pointer: fine) {
+  table.docs > tbody > tr:hover {
+    background: var(--bg-hover);
+  }
 }
 
 /* The first line is centred in --row-line (the padding); a long name's next lines sit close. */

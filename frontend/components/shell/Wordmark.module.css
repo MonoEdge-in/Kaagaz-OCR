@@ -3,7 +3,9 @@
   flex-direction: column;
   justify-content: center;
   gap: 2px;
-  min-width: 0;
+  /* Never squeezed: at 320px the header shrank it and "Kaagaz" broke as "Kaaga|z";
+     the page name beside it (ellipsis) gives way instead. */
+  flex: none;
   color: var(--fg);
   text-decoration: none;
 }
@@ -14,6 +16,7 @@
   font-size: 1.5rem;
   font-weight: 700;
   line-height: 1;
+  white-space: nowrap;
 }
 
 /* "by MonoEdge": a label, 11px bold capitals. */
