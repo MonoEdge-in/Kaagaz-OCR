@@ -29,6 +29,10 @@ writes its own audit rows.
 * ``GET /operator/feature-switches``: every product feature, on or off for the whole
   product, and how many organisations use it now. ``PUT .../{feature}`` {enabled, code}
   (step-up): flip it for every organisation; the list comes back (0038).
+* ``GET /operator/orgs/{id}/feature-switches``: one organisation's switches, each
+  ``{feature, enabled, platform_enabled}`` (no self sign-up). ``PUT .../{feature}``
+  {enabled, code} (step-up): flip it for that organisation only; the list comes back. A
+  feature runs there only while both switches are on (0039).
 * ``GET``, ``POST`` {scan_model, chat_model, note, code} and ``DELETE`` {code}
   ``/operator/test-model`` (POST and DELETE with a fresh code): the platform test model, one
   allowed model for every organisation's scanning and answering, and its undo (every
@@ -145,6 +149,8 @@ class OrgAiBody(BaseModel):
 Feature = Literal[
     "scan_ai", "ask", "ensemble", "autofile", "cost_saving", "review", "my_words", "self_signup"
 ]
+# Sign-up makes a new organisation: one has no switch of its own for it (0039).
+OrgFeature = Literal["scan_ai", "ask", "ensemble", "autofile", "cost_saving", "review", "my_words"]
 
 
 class SwitchBody(BaseModel):
@@ -320,6 +326,44 @@ def set_feature_switch(
         )
     _refuse(db, operator, outcome, step_up)
     return get_feature_switches(operator, db)
+
+
+@router.get("/orgs/{customer_id}/feature-switches")
+def get_org_feature_switches(
+    customer_id: uuid.UUID, operator: OperatorSession, db: OperatorDb
+) -> list[dict[str, Any]]:
+    """One organisation's switches, each with the platform's (off there wins)."""
+    with db.operator() as conn:
+        rows = models_sql.org_feature_switches(conn, operator.operator_id, str(customer_id))
+    if not rows:
+        raise ApiError(404, "not_found")
+    return [
+        {
+            "feature": row["feature"],
+            "enabled": bool(row["enabled"]),
+            "platform_enabled": bool(row["platform_enabled"]),
+        }
+        for row in rows
+    ]
+
+
+@router.put("/orgs/{customer_id}/feature-switches/{feature}")
+def set_org_feature_switch(
+    customer_id: uuid.UUID,
+    feature: OrgFeature,
+    body: SwitchBody,
+    operator: OperatorSession,
+    db: OperatorDb,
+    context: Context,
+) -> list[dict[str, Any]]:
+    """Flip one feature for one organisation (a fresh code first); its list comes back."""
+    step_up = _step_up(db, context, operator, body.code)
+    with db.operator() as conn:
+        outcome = models_sql.set_org_feature_switch(
+            conn, operator.operator_id, str(customer_id), feature, enabled=body.enabled, step=step_up.step
+        )
+    _refuse(db, operator, outcome, step_up)
+    return get_org_feature_switches(customer_id, operator, db)
 
 
 @router.get("/test-model")

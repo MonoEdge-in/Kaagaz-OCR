@@ -12,9 +12,11 @@ import { TABS } from "@/components/admin/logic";
 import { AnswerSettings } from "@/components/chat/AnswerSettings";
 import { defaultPick } from "@/components/chat/logic";
 import {
+  OrgFeatureSwitchesDialog,
   SwitchList,
   TestModelBanner,
   bannerText,
+  orgSwitchConfirm,
   startConfirm,
   switchConfirm,
   undoConfirm,
@@ -25,14 +27,16 @@ import {
   FEATURE_OFF,
   getAiSettings,
   getFeatureSwitches,
+  getOrgFeatureSwitches,
   isFeatureOff,
   putMyAiSettings,
   putOrgAiSettings,
   setFeatureSwitch,
+  setOrgFeatureSwitch,
   startTestModel,
   stopTestModel,
 } from "@/lib/api";
-import type { AiSettings, AiTaskSetting, ChatOptions, ReviewStatus, TestModel, UploadReader } from "@/lib/types";
+import type { AiSettings, AiTaskSetting, ChatOptions, OrgFeatureSwitch, Organisation, ReviewStatus, TestModel, UploadReader } from "@/lib/types";
 
 const ROOT = join(__dirname, "..");
 const read = (path: string) => readFileSync(join(ROOT, path), "utf8");
@@ -255,6 +259,49 @@ describe("the operator's feature switches", () => {
   });
 });
 
+describe("one organisation's feature switches (0039)", () => {
+  const ORG = { id: "org-1", name: "Sharma Traders" } as Organisation;
+  const ASK_ON: OrgFeatureSwitch = { feature: "ask", enabled: true, platform_enabled: true };
+  const REVIEW_OFF: OrgFeatureSwitch = { feature: "review", enabled: false, platform_enabled: true };
+  const ROWS = [ASK_ON, REVIEW_OFF, { feature: "my_words", enabled: true, platform_enabled: false }];
+
+  it("reads and flips one organisation's switches in the agreed shapes", async () => {
+    const sent = capture([]);
+    await getOrgFeatureSwitches("org-1");
+    await setOrgFeatureSwitch("org-1", "ask", false, "123456");
+    expect(sent).toEqual([
+      { url: "/api/operator/orgs/org-1/feature-switches", method: "GET", body: undefined },
+      { url: "/api/operator/orgs/org-1/feature-switches/ask", method: "PUT", body: { enabled: false, code: "123456" } },
+    ]);
+  });
+
+  it("opens from the organisation's Manage menu, saying it is for this organisation only", () => {
+    expect(read("components/operator/OrganisationsView.tsx")).toContain('{ label: "Feature switches", onSelect: onSwitches }');
+    const html = renderToStaticMarkup(createElement(OrgFeatureSwitchesDialog, { org: ORG, onClose: () => {} }));
+    expect(html).toContain("Feature switches for Sharma Traders");
+    expect(html).toContain("Each switch turns a feature on or off for this organisation only.");
+  });
+
+  it("shows a feature off for every organisation as off and disabled, with no count", () => {
+    const html = renderToStaticMarkup(createElement(SwitchList<OrgFeatureSwitch>, { switches: ROWS, onFlip: () => {} }));
+    expect(html).toMatch(/<input id="feature-switch-ask" type="checkbox" role="switch" checked=""\/>Ask<\/label>/);
+    expect(html).toMatch(/<input id="feature-switch-review" type="checkbox" role="switch"\/>Review<\/label>/);
+    expect(html).toMatch(/<input id="feature-switch-my_words" type="checkbox" role="switch" disabled="" aria-describedby="[^"]+"\/>My words<\/label>/);
+    expect(html).toContain("Off for every organisation");
+    expect(html).not.toMatch(/organisations? uses?/);
+  });
+
+  it("asks before turning one off for this organisation, with a fresh code", () => {
+    expect(orgSwitchConfirm(ORG, ASK_ON)).toMatchObject({
+      title: "Turn off Ask for Sharma Traders?",
+      done: "Ask is off for Sharma Traders.",
+      stepUp: true,
+      danger: true,
+    });
+    expect(orgSwitchConfirm(ORG, REVIEW_OFF)).toMatchObject({ title: "Turn on Review for Sharma Traders?", danger: false });
+  });
+});
+
 describe("the operator's test model", () => {
   const RUNNING: TestModel = {
     active: true,
@@ -267,6 +314,8 @@ describe("the operator's test model", () => {
 
   it("shows only who runs and since when while no numbers came back", () => {
     expect(bannerText({ ...RUNNING, since: null })).not.toContain("pages");
+    const fresh = bannerText({ ...RUNNING, since: { pages: 0, questions: 0, cost_usd: null, avg_seconds_per_page: null } });
+    expect(fresh).toMatch(/0 pages · 0 questions$/);
   });
 
   it("asks before starting, saying who it reaches and that their settings are kept", () => {

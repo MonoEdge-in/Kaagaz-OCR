@@ -6,20 +6,26 @@
 // (step-up). Below it, the test model (Tushar, 17 Oct 2026): the whole platform scans and
 // answers with one model until undone; while it runs, TestModelBanner sits at the top of
 // the console with its figures. Super admin only: model names and real cost are fine here.
+// One organisation's switches (0039) open from its Manage menu (OrgFeatureSwitchesDialog): a
+// feature runs there only while the platform switch and its own are on, so a row whose
+// platform switch is off shows off and disabled.
 
 import { useEffect, useState } from "react";
+import { ActionDialog } from "@/components/documents/ActionDialog";
 import libraryStyles from "@/components/documents/Library.module.css";
 import { Toast } from "@/components/ui/Toast";
 import {
   getFeatureSwitches,
   getOperatorModels,
+  getOrgFeatureSwitches,
   listOrgs,
   setFeatureSwitch,
+  setOrgFeatureSwitch,
   startTestModel,
   stopTestModel,
 } from "@/lib/api";
 import { formatDateTime, formatNumber, formatUsd } from "@/lib/format";
-import type { FeatureSwitch, OperatorModel, TestModel } from "@/lib/types";
+import type { FeatureSwitch, OperatorModel, OrgFeatureSwitch, Organisation, TestModel } from "@/lib/types";
 import { ConfirmDialog } from "./ConfirmDialog";
 import type { Confirm } from "./ConfirmDialog";
 import { LoadFailed } from "./LoadFailed";
@@ -122,30 +128,112 @@ export function FeatureSwitchesView({ testModel, onTestModel }: { testModel: Tes
   );
 }
 
-/** One row per feature: a real checkbox with the switch role and its name as the label. */
-export function SwitchList({ switches, onFlip }: { switches: FeatureSwitch[]; onFlip(each: FeatureSwitch): void }) {
+/** Platform rows carry how many use it; one organisation's rows (0039) the platform's switch. */
+type SwitchRow = { feature: string; enabled: boolean; organisations_using?: number; platform_enabled?: boolean };
+
+/** One row per feature: a real checkbox with the switch role and its name as the label. An
+ * organisation's row whose platform switch is off shows off and can't be flipped. */
+export function SwitchList<T extends SwitchRow>({ switches, onFlip }: { switches: T[]; onFlip(each: T): void }) {
   return (
     <ul className="stack" role="list">
-      {switches.map((each) => (
-        <li key={each.feature}>
-          <label className={libraryStyles.check}>
-            <input
-              id={switchId(each.feature)}
-              type="checkbox"
-              role="switch"
-              checked={each.enabled}
-              aria-describedby={`${switchId(each.feature)}-count`}
-              // Controlled: nothing changes until the question is answered (and the code is right).
-              onChange={() => onFlip(each)}
-            />
-            {featureName(each.feature)}
-          </label>
-          <span id={`${switchId(each.feature)}-count`} className={styles.statusNote}>
-            {countText(each.organisations_using, "organisation uses", "organisations use")} this
-          </span>
-        </li>
-      ))}
+      {switches.map((each) => {
+        const platformOff = each.platform_enabled === false;
+        const note = platformOff
+          ? "Off for every organisation"
+          : each.organisations_using === undefined
+            ? null
+            : `${countText(each.organisations_using, "organisation uses", "organisations use")} this`;
+        return (
+          <li key={each.feature}>
+            <label className={libraryStyles.check}>
+              <input
+                id={switchId(each.feature)}
+                type="checkbox"
+                role="switch"
+                checked={each.enabled && !platformOff}
+                disabled={platformOff}
+                aria-describedby={note ? `${switchId(each.feature)}-count` : undefined}
+                // Controlled: nothing changes until the question is answered (and the code is right).
+                onChange={() => onFlip(each)}
+              />
+              {featureName(each.feature)}
+            </label>
+            {note && (
+              <span id={`${switchId(each.feature)}-count`} className={styles.statusNote}>
+                {note}
+              </span>
+            )}
+          </li>
+        );
+      })}
     </ul>
+  );
+}
+
+// --- One organisation's switches (0039) --------------------------------------------------------
+
+/** Flipping one switch for one organisation: always asked first, always with a fresh code. */
+export function orgSwitchConfirm(org: Organisation, each: OrgFeatureSwitch): Confirm {
+  const name = featureName(each.feature);
+  const on = !each.enabled;
+  return {
+    title: `Turn ${on ? "on" : "off"} ${name} for ${org.name}?`,
+    effect: on
+      ? `${name} comes back for ${org.name}, within its own settings.`
+      : `${name} disappears from ${org.name}'s screens. They see "This is turned off for now." Work already queued waits and is not lost.`,
+    action: on ? "Turn on" : "Turn off",
+    done: `${name} is ${on ? "on" : "off"} for ${org.name}.`,
+    danger: !on,
+    stepUp: true,
+    focusId: switchId(each.feature),
+    run: (code) => setOrgFeatureSwitch(org.id, each.feature, on, code),
+  };
+}
+
+/** The Manage menu's "Feature switches" for one organisation: super admin only. */
+export function OrgFeatureSwitchesDialog({ org, onClose }: { org: Organisation; onClose(): void }) {
+  const [attempt, setAttempt] = useState(0);
+  const [switches, setSwitches] = useState<OrgFeatureSwitch[] | null>(null);
+  const [error, setError] = useState<{ attempt: number; message: string } | null>(null);
+  const [changing, setChanging] = useState<Confirm | null>(null);
+  const [done, setDone] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    getOrgFeatureSwitches(org.id).then(
+      (result) => !cancelled && setSwitches(result),
+      (caught: unknown) => !cancelled && setError({ attempt, message: operatorErrorMessage(caught) }),
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [org.id, attempt]);
+
+  const failed = error?.attempt === attempt ? error.message : null;
+  return (
+    <>
+      <ActionDialog title={`Feature switches for ${org.name}`} onClose={onClose}>
+        <div className={styles.dialogForm}>
+          <p className={styles.summary}>Each switch turns a feature on or off for this organisation only.</p>
+          <p className="visually-hidden" role="status">
+            {done || (!switches && !failed ? "Loading the feature switches…" : "")}
+          </p>
+          {failed && !switches && <LoadFailed what="the feature switches" message={failed} onRetry={() => setAttempt((n) => n + 1)} />}
+          {switches && <SwitchList switches={switches} onFlip={(each) => setChanging(orgSwitchConfirm(org, each))} />}
+        </div>
+      </ActionDialog>
+      {changing && (
+        <ConfirmDialog
+          confirm={changing}
+          onClose={() => setChanging(null)}
+          onDone={(message) => {
+            setChanging((open) => afterDone(open, changing));
+            setDone(message);
+            setAttempt((n) => n + 1);
+          }}
+        />
+      )}
+    </>
   );
 }
 
@@ -196,9 +284,11 @@ export function bannerText(model: TestModel): string {
     head,
     countText(since.pages, "page", "pages"),
     countText(since.questions, "question", "questions"),
-    formatUsd(since.cost_usd),
-    `${formatNumber(Math.round(since.avg_seconds_per_page * 10) / 10)} s/page`,
-  ].join(" · ");
+    since.cost_usd === null ? null : formatUsd(since.cost_usd), // null: nothing reported yet
+    since.avg_seconds_per_page === null ? null : `${formatNumber(Math.round(since.avg_seconds_per_page * 10) / 10)} s/page`,
+  ]
+    .filter((part) => part !== null)
+    .join(" · ");
 }
 
 /** At the top of the console while the test model runs, with Undo (asked first). */

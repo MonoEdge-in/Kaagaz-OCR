@@ -28,7 +28,7 @@ from tests.test_answering_golden import (
 )
 from tests.test_answering_golden import SETTINGS as ANSWER_SETTINGS
 from tests.test_gemini_ocr import CUSTOMER, DOCUMENT, FakeCache, build
-from tests.test_worker_defer import A1, MemoryLocks, Run, fair_share, working
+from tests.test_worker_defer import A1, B1, MemoryLocks, Run, fair_share, working
 
 GEMINI = make_settings(ocr_engine="gemini", ocr_thinking_level="high")
 STEPS = ai_settings.STEPS
@@ -237,7 +237,7 @@ def test_scanning_switched_off_hands_every_job_back_uncounted_and_asks_again_eac
     asked: list[bool] = []
     state = {"on": False}
 
-    def scanning_on() -> bool:
+    def scanning_on(_customer: str) -> bool:  # Changed on purpose (0039): asked for the job's customer
         asked.append(state["on"])
         return state["on"]
 
@@ -249,6 +249,59 @@ def test_scanning_switched_off_hands_every_job_back_uncounted_and_asks_again_eac
     run.clock.advance(FEATURE_OFF_DEFER_SECONDS)
     assert run.worker.run_once()
     assert (run.ran, run.tries, asked) == ([A1], [(A1, 1)], [False, True])
+
+
+def test_scanning_switched_off_for_one_organisation_hands_back_only_its_jobs() -> None:
+    """0039: the switch is asked for each job's own customer; another organisation's job runs."""
+    locks = MemoryLocks()
+    off_for_a = admission(
+        working, fair_share(locks).slot, scanning_on=lambda customer: customer != A1.customer_id
+    )
+    run = Run(A1, B1, admit=off_for_a, locks=locks)
+    assert run.worker.run_once() and run.worker.run_once()
+    assert (run.ran, run.tries, run.queue.deferred) == ([B1], [(B1, 1)], [(A1, FEATURE_OFF_DEFER_SECONDS)])
+
+
+# --- the platform and organisation switches (0039) -------------------------------------------------
+
+
+class _SwitchConn:
+    """Answers ``ai_settings``' two switch statements with fixed rows."""
+
+    def __init__(
+        self, rows: list[tuple[str, bool]], pair: tuple[bool | None, bool | None] = (None, None)
+    ) -> None:
+        self.rows, self.pair = rows, pair
+
+    def execute(self, statement: object, params: Any) -> Any:
+        return self.rows if statement is ai_settings._SWITCHES else self
+
+    def one(self) -> tuple[bool | None, bool | None]:
+        return self.pair
+
+
+@pytest.mark.parametrize(
+    ("platform", "organisation", "on"),
+    [
+        (None, None, True),  # no row anywhere: on
+        (True, None, True),
+        (None, True, True),
+        (True, True, True),
+        (None, False, False),  # the organisation's off
+        (True, False, False),
+        (False, None, False),  # the platform's off always wins
+        (False, True, False),
+        (False, False, False),
+    ],
+)
+def test_a_feature_is_on_only_while_the_platform_and_the_organisation_switch_are_on(
+    platform: bool | None, organisation: bool | None, on: bool
+) -> None:
+    one: Any = _SwitchConn([], (platform, organisation))
+    assert ai_settings.switch_on(one, "ask", CUSTOMER) is on
+    every: Any = _SwitchConn([("ask", value) for value in (platform, organisation) if value is not None])
+    found = ai_settings.switches(every, CUSTOMER)
+    assert (found["ask"], found["review"]) == (on, True)  # another feature untouched
 
 
 # --- the local reader for a scan at None -----------------------------------------------------------

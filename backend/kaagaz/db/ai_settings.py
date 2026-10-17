@@ -13,6 +13,8 @@ caller keeps today's behaviour exactly; ``effective`` then says what today's is.
 The cost-saving and Ensemble switches live inside ``effective_settings`` (so every caller of
 the ceiling sees them); scan_ai is the worker's (``worker_main.admission``), ask the chat
 route's, and review, my_words and self_signup their routers' (``api.auth.require_feature``).
+Each also reads the organisation's own switch (0039) in the same statement: on only while both
+are on.
 
 Time and space O(1): one indexed statement for a customer's organisation rows and one user's
 rows (at most 8), one for the switches (at most 8).
@@ -52,8 +54,15 @@ _CLEAR = text(
     "DELETE FROM ai_task_settings WHERE customer_id = :c AND task = :t"
     " AND user_id IS NOT DISTINCT FROM CAST(:u AS uuid)"
 )
-_SWITCHES = text("SELECT feature, enabled FROM feature_switches")
-_SWITCH = text("SELECT enabled FROM feature_switches WHERE feature = :f")
+# The platform's switches and the organisation's own (0039) in one statement each.
+_SWITCHES = text(
+    "SELECT feature, enabled FROM feature_switches"
+    " UNION ALL SELECT feature, enabled FROM org_feature_switches WHERE customer_id = CAST(:c AS uuid)"
+)
+_SWITCH = text(
+    "SELECT (SELECT enabled FROM feature_switches WHERE feature = :f),"
+    " (SELECT enabled FROM org_feature_switches WHERE customer_id = CAST(:c AS uuid) AND feature = :f)"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,15 +144,23 @@ def save(
     )
 
 
-def switches(conn: Connection) -> dict[str, bool]:
-    """Every feature's switch (no row: on). One statement."""
-    found = {str(row[0]): bool(row[1]) for row in conn.execute(_SWITCHES)}
-    return {feature: found.get(feature, True) for feature in FEATURES}
+def switches(conn: Connection, customer_id: str) -> dict[str, bool]:
+    """Every feature for ``customer_id``: on only while the platform's switch and the
+    organisation's own (0039) are on (no row: on). On a ``Database.customer()`` connection.
+    One statement."""
+    found = dict.fromkeys(FEATURES, True)
+    for feature, enabled in conn.execute(_SWITCHES, {"c": customer_id}):
+        found[str(feature)] &= bool(enabled)
+    return found
 
 
-def switch_on(conn: Connection, feature: str) -> bool:
-    """One feature's switch (no row: on). One statement."""
-    return conn.execute(_SWITCH, {"f": feature}).scalar() is not False
+def switch_on(conn: Connection, feature: str, customer_id: str | None) -> bool:
+    """``feature`` for ``customer_id``: on only while the platform's switch and the
+    organisation's own (0039) are on; no row is on, and the platform's off always wins.
+    None (self sign-up, no organisation yet): the platform's alone. On a
+    ``Database.customer()`` connection of ``customer_id``. One statement."""
+    platform, organisation = conn.execute(_SWITCH, {"f": feature, "c": customer_id}).one()
+    return platform is not False and organisation is not False
 
 
 def resolve(task: str, saved: Saved, allowed: Sequence[str], default: str, *, available: bool = True) -> Task:

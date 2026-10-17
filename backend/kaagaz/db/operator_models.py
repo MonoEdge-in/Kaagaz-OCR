@@ -24,7 +24,8 @@ audit rows.
 * ``ai_defaults`` and ``set_ai_defaults``: the platform defaults and how many
   organisations inherit each area; the same outcomes but missing and deleting.
 * ``usage``: tokens and dollars per organisation and model. No user, no document.
-* ``feature_switches`` and ``set_feature_switch`` (0038): the platform feature switches.
+* ``feature_switches`` and ``set_feature_switch`` (0038): the platform feature switches;
+  ``org_feature_switches`` and ``set_org_feature_switch`` (0039): one organisation's.
 * ``current_test_model``, ``set_test_model`` and ``clear_test_model`` (0038): the platform
   test model, one model for every organisation's scanning and answering, and its undo.
 
@@ -205,6 +206,23 @@ def set_feature_switch(conn: Connection, operator_id: str, feature: str, *, enab
     return str(
         conn.execute(text("SELECT kaagaz_op_set_feature_switch(:o, :f, :on, :step)"), params).scalar_one()
     )
+
+
+def org_feature_switches(conn: Connection, operator_id: str, customer_id: str) -> Sequence[RowMapping]:
+    """One organisation's switches (0039): feature, enabled, platform_enabled. Empty for an
+    unknown organisation or an operator who is not enabled."""
+    params = {"o": operator_id, "c": customer_id}
+    return conn.execute(text("SELECT * FROM kaagaz_op_org_feature_switches(:o, :c)"), params).mappings().all()
+
+
+def set_org_feature_switch(
+    conn: Connection, operator_id: str, customer_id: str, feature: str, *, enabled: bool, step: int
+) -> str:
+    """Turn ``feature`` on or off for one organisation (``step`` of a fresh code required;
+    audited). ``done``, ``unchanged``, ``missing``, ``deleting``, ``step_up`` or ``signed_out``."""
+    params = {"o": operator_id, "c": customer_id, "f": feature, "on": enabled, "step": step}
+    statement = text("SELECT kaagaz_op_set_org_feature_switch(:o, :c, :f, :on, :step)")
+    return str(conn.execute(statement, params).scalar_one())
 
 
 def current_test_model(conn: Connection, operator_id: str) -> RowMapping | None:

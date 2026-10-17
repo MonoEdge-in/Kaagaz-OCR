@@ -1324,12 +1324,19 @@ export interface FeatureSwitch {
   organisations_using: number;
 }
 
+/** GET /operator/orgs/{id}/feature-switches (0039): one organisation's own switch, with the platform's. */
+export interface OrgFeatureSwitch {
+  feature: string;
+  enabled: boolean;
+  platform_enabled: boolean; // false: off for every organisation, whatever this one says
+}
+
 /** GET /operator/test-model: the whole platform on one model for a test, or not. */
 export interface TestModel {
   active: boolean;
   scan_model: string | null;
   chat_model: string | null;
   started_at: string | null;
-  since: { pages: number; questions: number; cost_usd: number; avg_seconds_per_page: number } | null; // null when none runs
+  since: { pages: number; questions: number; cost_usd: number | null; avg_seconds_per_page: number | null } | null; // null when none runs
   note: string | null;
 }

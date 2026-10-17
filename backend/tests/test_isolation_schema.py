@@ -32,6 +32,9 @@ AI settings by task (0038, for Vrushit's later review): the organisation's and m
 levels the app reads and writes; the feature switches and the platform test model (no
 customer) every role that may reads, two columns each, written only by the operator's
 functions (step-up).
+
+Per-organisation feature switches (0039): the app reads three columns of its own rows, never
+who flipped one; only the operator's functions write (step-up).
 """
 
 import re
@@ -100,6 +103,8 @@ FROM_0030 = {
 FROM_0036 = {"source_pins": (True, True, False, False)}
 # AI settings by task (0038): a person's or the organisation's level is saved, changed and removed.
 FROM_0038 = {"ai_task_settings": (True, True, True, True)}
+# Per-organisation feature switches (0039): a column grant only (no table right), the operator writes.
+FROM_0039 = {"org_feature_switches": (False, False, False, False)}
 UPDATES_0030 = {
     "word_changes": {"applied", "undone_at", "undone_by"},
     "ensemble_runs": {
@@ -325,6 +330,12 @@ OPERATOR_RIGHTS = {
         ("kaagaz_op_set_feature_switch", "kaagaz_op_set_test_model", "kaagaz_op_clear_test_model"),
         ("text", EMPTY_PATH),
     ),
+    # 0039: one organisation's feature switches, and their write (step-up).
+    "kaagaz_op_org_feature_switches": (
+        "TABLE(feature text, enabled boolean, platform_enabled boolean)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_op_set_org_feature_switch": ("text", EMPTY_PATH),
 }
 # The only tables without customer_id: the customers themselves, alembic's own, the
 # platform operator's (0015), the workers' reader status (0022) and the model catalogue
@@ -363,6 +374,7 @@ def test_every_customer_table_has_row_level_security_and_the_customer_only_polic
         | set(FROM_0030)
         | set(FROM_0036)
         | set(FROM_0038)
+        | set(FROM_0039)
     )
 
     with db.system() as conn:
@@ -406,7 +418,9 @@ def test_every_customer_table_is_granted_to_the_app_role(db: Database) -> None:
 
     assert set(granted) == set(tables)
     for table, (select, insert, _update, _delete) in granted.items():
-        if table not in FROM_0023 | FROM_0026:  # an organisation's models and settings are the operator's
+        # An organisation's models and settings are the operator's. Changed on purpose (0039):
+        # its feature switches too.
+        if table not in FROM_0023 | FROM_0026 | FROM_0039:
             assert (select, insert) == (True, True), table
     for table in FROM_0002:
         assert granted[table] == (True, True, True, True), table
@@ -420,6 +434,7 @@ def test_every_customer_table_is_granted_to_the_app_role(db: Database) -> None:
         | FROM_0030
         | FROM_0036
         | FROM_0038
+        | FROM_0039
     ).items():
         assert granted[table] == expected, table
 

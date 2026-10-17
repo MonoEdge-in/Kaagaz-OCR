@@ -208,7 +208,7 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
             Pin(row["document_id"], int(row["page_no"]), bool(row["same"]), str(row["question"]))
             for row in chat_sql.pins_for(conn, user.customer_id, user.user_id, conversation_id)
         ]
-        if not ai_settings.switch_on(conn, "ask"):  # the super admin switched Ask off (0038)
+        if not ai_settings.switch_on(conn, "ask", user.customer_id):  # switched off (0038, 0039)
             raise ApiError(403, "feature_off", FEATURE_OFF)
         try:
             agents = _first_allowed(conn, user.customer_id, body.agents, context)
