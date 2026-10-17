@@ -930,7 +930,11 @@ export function StatusCell({ document, inTrash }: { document: DocumentSummary; i
       <span className={styles.statusLine}>
         <StatusChip status={document.status} />
       </span>
-      <span className={styles.statusMessage}>{document.status_message}</span>
+      <span className={styles.statusLine}>
+        <span className={styles.statusText} title={document.status_message}>
+          {document.status_message}
+        </span>
+      </span>
     </span>
   );
 }

@@ -820,11 +820,6 @@ table.docs > tbody > tr {
   color: var(--text-primary);
 }
 
-.statusMessage {
-  font-size: var(--fs-sm);
-  color: var(--text-secondary);
-}
-
 .confirm {
   display: flex;
   flex-direction: column;
