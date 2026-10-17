@@ -1,5 +1,5 @@
-// The shared poller (lib/poll.ts) under fake timers: no request while the tab
-// is hidden, the 3 → 5 s steps, back to 3 s on a change, one
+// The shared poller (lib/poll.ts) under fake timers: no planned request while
+// the tab is hidden, the 3 → 5 s steps, back to 3 s on a change, one
 // request at a time, and retrying after a failure.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -110,27 +110,43 @@ describe("createPoller", () => {
     expect(seen.at(-1)).toBe("Ready");
   });
 
-  it("sends nothing while the tab is hidden, and asks once when it is shown", async () => {
+  // N1 (QA 17 Oct): the first load in a background tab used to wait until the tab was shown.
+  it("sends an explicit refresh even while hidden, but no planned poll until the tab is shown", async () => {
     const { poller, world, calls } = harness();
     world.hidden = true;
     poller.refresh();
     await vi.advanceTimersByTimeAsync(120_000);
-    expect(calls).toEqual([]);
+    expect(calls).toHaveLength(1);
 
     world.hidden = false;
     poller.wake();
     await vi.advanceTimersByTimeAsync(0);
-    expect(calls).toHaveLength(1);
+    expect(calls).toHaveLength(2);
 
     // Hidden again while it polls: the planned poll comes due, but waits.
     world.hidden = true;
     await vi.advanceTimersByTimeAsync(120_000);
-    expect(calls).toHaveLength(1);
+    expect(calls).toHaveLength(2);
     world.hidden = false;
     poller.wake();
     poller.wake(); // visible and online together: still one request
     await vi.advanceTimersByTimeAsync(0);
+    expect(calls).toHaveLength(3);
+    poller.stop();
+  });
+
+  // CodeRabbit (17 Oct): a refresh queued behind a request in flight keeps its force.
+  it("runs a refresh queued behind a request even while hidden", async () => {
+    const { poller, world, calls } = harness();
+    world.hold = true;
+    poller.refresh();
+    await vi.advanceTimersByTimeAsync(0);
+    world.hidden = true;
+    poller.refresh(); // queued behind the first
+    world.held.shift()?.();
+    await vi.advanceTimersByTimeAsync(0);
     expect(calls).toHaveLength(2);
+    world.held.shift()?.();
     poller.stop();
   });
 

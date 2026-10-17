@@ -182,6 +182,7 @@ export function ReviewPanel(props: ReviewPanelProps) {
           </button>
         </div>
       </div>
+      {!canReview && <p className={`muted ${styles.line}`}>Only a reviewer or an admin can confirm or edit these words.</p>}
 
       {view === "history" ? (
         <HistoryPanel

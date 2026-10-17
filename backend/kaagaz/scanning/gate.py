@@ -87,7 +87,10 @@ REJECTION_CODES = frozenset({"virus_found", "blocked_content", "unscannable", "r
 # What the customer sees for each rejection. No scanner names or details.
 CUSTOMER_MESSAGES = {
     "virus_found": "This file failed the virus check and was not processed.",
-    "unscannable": "This file could not be checked for viruses, so it was not processed.",
+    "unscannable": (
+        "This file could not be checked for viruses, so it was not processed."
+        " It may be damaged. Save it again and upload that copy."
+    ),
     "blocked_content": (
         "This file contains scripts, macros or a hidden program, so it was not processed."
         " Save it again as a plain PDF, photo or spreadsheet and upload that."

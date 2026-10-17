@@ -272,6 +272,9 @@ describe("confirm, edit and undo", () => {
     const html = panel(status({ can_review: false }), [flag({ alternatives: null })], false);
     expect(html).toContain("smudged print");
     for (const label of [">Confirm<", ">Edit<", ">Send to Ensemble<", "type=\"checkbox\""]) expect(html).not.toContain(label);
+    // QA 17 Oct: it says why, instead of going silent.
+    expect(html).toContain(">Only a reviewer or an admin can confirm or edit these words.<");
+    expect(panel(status(), [flag()])).not.toContain("Only a reviewer or an admin");
   });
 
   it("a reviewed word says who and when, with Undo; all reviewed says the document is ready", () => {
@@ -456,5 +459,17 @@ describe("wording (section 6)", () => {
     expect(words.ENSEMBLE_INFO).toBe(
       "Ensemble reads the same text with several recognition models and compares their readings. When they agree, the word is resolved. When they don't, it stays flagged for you, with each reading shown.",
     );
+  });
+});
+
+// KZ-007 (QA 17 Oct): a rejected file showed "The flagged words could not be loaded"
+// with a Try again that did nothing. It has no words, so nothing is asked or shown.
+describe("a rejected file", () => {
+  it("asks for no flagged words and shows no summary bar", () => {
+    const view = css("app/(app)/documents/[id]/DocumentView.tsx");
+    expect(view).toMatch(/useWordReview\(documentId, reloads, loadedStatus !== null && loadedStatus !== "rejected"\)/);
+    expect(view).toMatch(/\{detail\.status !== "rejected" && \(\s*<SummaryBar/);
+    const hook = css("app/(app)/documents/[id]/WordReview.tsx");
+    expect(hook).toMatch(/useEffect\(\(\) => \{\s*if \(!enabled\) return;\s*let cancelled = false;\s*load\(\)/);
   });
 });

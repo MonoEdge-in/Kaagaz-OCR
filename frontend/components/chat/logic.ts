@@ -211,6 +211,7 @@ export function askErrorText(error: { status: number; message: string } | null):
     return "Could not reach Kaagaz. Check your internet connection, then try again.";
   }
   if (error.status === 429) return "Too many questions at once. Wait a minute, then try again.";
+  if (error.status === 503) return "Kaagaz is busy right now. Try again in a minute."; // the AI service is down
   const message = error.message.trim();
   if (error.status >= 400 && error.status < 500 && message && message !== GENERIC_MESSAGE) {
     return message;

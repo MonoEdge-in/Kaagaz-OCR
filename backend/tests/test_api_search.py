@@ -92,12 +92,13 @@ def test_a_ready_document_with_no_vectors_yet_is_found_by_its_words_with_its_spo
     assert (found["id"], found["best"]["page_from"], found["best"]["regions"]) == (document, 1, [REGION])
 
 
-def test_with_the_model_on_a_question_with_no_shared_word_finds_by_meaning(db: Database) -> None:
+def test_with_the_model_on_a_question_with_no_shared_word_finds_nothing(db: Database) -> None:
+    """KZ-003: meaning alone always has a nearest piece, so it only re-ranks word or typo matches."""
     model = FakeModel()
     api, signed = _signed(db, model)
-    document = _document(api, signed, [PIECE])
+    _document(api, signed, [PIECE])
 
-    assert [found["id"] for found in _search(signed, q="xyzzy plugh")["documents"]] == [document]
+    assert _search(signed, q="xyzzy plugh")["documents"] == []
     assert len(model.calls) == 1
     assert model.calls[0][0].endswith("\nQuery:xyzzy plugh")
 

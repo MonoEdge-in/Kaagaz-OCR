@@ -125,6 +125,25 @@ describe("the words for each state (wording table)", () => {
     expect(uploadStateText(reading(scanning("a", { step: "reading", done: 0, total: 1 })))).toBe("Scanning");
   });
 
+  // U7 (QA 17 Oct): the tray said "Scanning" while the reader had not started.
+  it("says Waiting for a document the reader has not started, and counts it on its own", () => {
+    const queued = doc("q", { status: "clean", status_message: "Reading is paused for now. It will continue on its own.", progress: null });
+    expect(uploadStateText(reading(queued))).toBe("Waiting");
+    const two = [entry("q", reading(queued)), entry("w", reading({ ...queued, id: "w" }))];
+    expect(statusBarText(two, {}, 0)).toBe("2 documents waiting to be read");
+    const a = scanning("a", { step: "reading", done: 2, total: 4 });
+    expect(statusBarText([entry("a", reading(a)), two[0]!], {}, 0)).toBe(
+      "Scanning 1 document · page 3 of 4 · 1 document waiting to be read",
+    );
+  });
+
+  // CodeRabbit (17 Oct): a "waiting" step (held for the reader) is waiting, never "Scanning page 1".
+  it("treats a document held at the waiting step as waiting, in the row and the status bar", () => {
+    const held = scanning("h", { step: "waiting", done: 0, total: 3 });
+    expect(uploadStateText(reading(held))).toBe("Waiting");
+    expect(statusBarText([entry("h", reading(held))], {}, 0)).toBe("1 document waiting to be read");
+  });
+
   it("says every estimate with About, Taking longer only with the time beside it", () => {
     const low = hold(null, left(65), "understanding", 0);
     expect(describeTime(low, 0, false).text).toBe("About 1 min left");

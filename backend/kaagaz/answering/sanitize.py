@@ -8,7 +8,8 @@ it came from a template, the model or a quoted line.
 Removed: markdown images, markdown links (their visible text stays, the
 target goes), HTML tags, URLs (http, https, ftp, www., javascript:, data:,
 vbscript:), control characters and the invisible direction marks that can
-reorder text on screen. Runs of spaces become one space.
+reorder text on screen. Runs of four or more dots, underscores, middle dots or
+ellipses (dot leaders, blanks) and runs of spaces become one space.
 
 ``strip_ignorable`` drops every Default_Ignorable_Code_Point (Unicode's list:
 the format characters, category Cf, plus the combining grapheme joiner, the
@@ -33,6 +34,8 @@ _SCHEME = re.compile(r"\b(?:javascript|data|vbscript):\S*", re.IGNORECASE)
 # bidirectional overrides and isolates (U+202A to U+202E, U+2066 to U+2069).
 _CONTROL = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f‪-‮⁦-⁩]")
 _SPACES = re.compile(r"\s+")
+# Dot leaders and fill-in blanks ("Total ........ 500", "Name ______"): a run of four or more.
+_LEADERS = re.compile("[._·…]{4,}")
 # The Default_Ignorable_Code_Points that are not category Cf.
 _IGNORABLE = re.compile(
     "[\u034f\u115f\u1160\u17b4\u17b5\u180b-\u180f\u3164\ufe00-\ufe0f\uffa0\U000e0100-\U000e01ef]"
@@ -47,6 +50,7 @@ def clean_text(text: str) -> str:
     text = _HTML_TAG.sub("", text)
     text = _URL.sub("", text)
     text = _SCHEME.sub("", text)
+    text = _LEADERS.sub(" ", text)
     return _SPACES.sub(" ", text).strip()
 
 

@@ -7,11 +7,14 @@
 // page passes in (app/(app)/admin/TwoStepPanel.tsx).
 //
 // It opens only for an admin session (PRD A1; every admin's sign-in at /login
-// gives one since 16 Oct 2026): anyone else is sent to sign in. The link is shown
+// gives one since 16 Oct 2026): an admin with an app session is sent to sign in,
+// anyone else is told it is for admins. The link is shown
 // to admin sessions only, and the server refuses the data to anyone else.
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
+import { EmptyState } from "@/components/ui/EmptyState";
 import { useSession } from "@/lib/session";
 import { leavePage } from "@/lib/sessionChannel";
 import { ActivityPanel } from "./ActivityPanel";
@@ -34,6 +37,23 @@ export function AdminView({ twoStep }: { twoStep: ReactNode }) {
   useEffect(() => {
     if (gate === "admin_sign_in") leavePage("/login?next=/admin");
   }, [gate]);
+
+  if (gate === "no_access") {
+    return (
+      <div className="page">
+        <EmptyState
+          icon="admin"
+          title="Admin is for your organisation's admins."
+          headingLevel={1}
+          action={
+            <Link href="/documents" className="btn">
+              Go to Documents
+            </Link>
+          }
+        />
+      </div>
+    );
+  }
 
   if (gate !== "allow") {
     return (

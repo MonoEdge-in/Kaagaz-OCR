@@ -43,7 +43,7 @@ _PAGE_STEPS = {"preparing": "Preparing", "reading": "Reading"}
 _WAITING_AGAIN = "Waiting to try again."
 # PRD 5 Q6: the worker cleared the progress to {"step": "waiting"} because the reader is
 # down (pipeline _clear_progress); or the files before it in the uploader's own batch.
-READER_WAITING = "Waiting for the reader to come back. This continues on its own."
+READER_WAITING = "Reading is paused for now. It will continue on its own."
 _WAITING_STEP = "waiting"
 
 

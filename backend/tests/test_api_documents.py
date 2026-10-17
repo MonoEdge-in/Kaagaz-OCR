@@ -1148,9 +1148,33 @@ def test_file_is_served_as_a_download_and_sandboxed(db: Database) -> None:
     assert reply.status_code == 200
     assert reply.content == PDF_BYTES
     assert reply.headers["content-type"] == "application/pdf"
-    assert reply.headers["content-disposition"] == 'attachment; filename="document.pdf"'
+    assert reply.headers["content-disposition"] == (
+        "attachment; filename=\"document.pdf\"; filename*=UTF-8''PAN%20ABCDE1234F.pdf"
+    )
     assert reply.headers["content-security-policy"] == "sandbox"
     assert reply.headers["x-content-type-options"] == "nosniff"
+
+
+@pytest.mark.db
+@pytest.mark.parametrize(
+    ("name", "detected_type", "encoded"),
+    [
+        ("सातबारा उतारा.pdf", "pdf", "%E0%A4%B8%E0%A4%BE%E0%A4%A4%E0%A4%AC%E0%A4%BE%E0%A4%B0%E0%A4%BE%20"),
+        ('a"b\r\nSet-Cookie: x=1.png', "png", "a%22b%0D%0ASet-Cookie%3A%20x%3D1.png"),
+        ("stock list", "zip", "stock%20list.xlsx"),
+    ],
+)
+def test_the_download_keeps_the_users_name_with_the_true_extension(
+    db: Database, name: str, detected_type: str, encoded: str
+) -> None:
+    """The name is percent-encoded, so no quote or line break reaches the header."""
+    api = Api(db)
+    signed = api.new_signed()
+    document_id = api.add_document(signed.customer_id, name=name, detected_type=detected_type)
+    disposition = signed.client.get(f"/api/documents/{document_id}/file").headers["content-disposition"]
+    fallback, star = disposition.split("; filename*=UTF-8''")
+    assert fallback.startswith('attachment; filename="document.') and encoded in star
+    assert "\r" not in disposition and "\n" not in disposition and '"' not in star
 
 
 @pytest.mark.db

@@ -51,3 +51,26 @@ def test_needs_attention_lists_only_documents_with_a_problem_left(db: Database) 
         "kept": 0,  # kept as is: off the list, so no chip
     }
     assert signed.client.get("/api/documents", params={"attention": "maybe"}).status_code == 400
+
+
+def test_values_to_review_counts_only_the_values_the_review_screen_flags(db: Database) -> None:
+    """KZ-004: a card value the model chose is not flagged, so it is not counted; the chip
+    sums unsure and illegible words."""
+    api = Api(db)
+    signed = api.new_signed("reviewer")
+    c = signed.customer_id
+    card = api.add_document(c, name="card.pdf")
+    words = {"unsure_words": 2, "illegible_words": 3}
+    read_page(api, c, card, read_quality="uncertain", read_issues=["faint"], **words)
+    api.add_value(c, card, reason="model_chosen")
+    api.add_value(c, card, field_name="gstin", reason="readers_disagree")
+    only_card = api.add_document(c, name="only-card.pdf", created_at=api.clock() + timedelta(minutes=1))
+    read_page(api, c, only_card)
+    api.add_value(c, only_card, reason="model_chosen")
+
+    by_id = {item["id"]: item for item in signed.client.get("/api/documents").json()["items"]}
+    attention = signed.client.get("/api/documents", params={"attention": "true"}).json()
+
+    assert (by_id[card]["values_to_review"], by_id[card]["words_unsure"]) == (1, 5)
+    assert by_id[only_card]["values_to_review"] == 0
+    assert [item["id"] for item in attention["items"]] == [card]

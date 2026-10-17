@@ -186,9 +186,10 @@ describe("adminGate", () => {
     expect(adminGate(me("admin", "app"))).toBe("admin_sign_in");
   });
 
-  it("sends anyone else to admin sign-in too", () => {
-    expect(adminGate(me("member", "app"))).toBe("admin_sign_in");
-    expect(adminGate(me("reviewer", "admin"))).toBe("admin_sign_in");
+  // N4 (QA 17 Oct): a member was sent to sign in, which could never help; it says Admin is for admins.
+  it("tells anyone else it is for admins, never sends them to sign in", () => {
+    expect(adminGate(me("member", "app"))).toBe("no_access");
+    expect(adminGate(me("reviewer", "admin"))).toBe("no_access");
   });
 });
 

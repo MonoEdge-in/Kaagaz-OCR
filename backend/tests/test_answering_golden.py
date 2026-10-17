@@ -1008,6 +1008,31 @@ def test_a_model_error_is_logged_as_its_code_only(caplog: pytest.LogCaptureFixtu
         ("kaagaz.answering.service", "answer drafted without the model", "timeout"),
     ]
     assert canary.casefold() not in caplog.text.casefold()
+    assert answer.unavailable is False  # KZ-006: an answer quoted without the model stays answered
+
+
+def test_a_sentence_the_model_repeats_is_shown_once() -> None:
+    def twice(system: str, user: str) -> dict[str, Any]:
+        said = {"text": "The grand total of INV-1042 is Rs. 1,20,000.", "evidence": [1]}
+        return {"status": "answered", "sentences": [said, {**said, "text": f" {said['text']}  "}]}
+
+    answer = service(pieces=[INVOICE], model=FakeModel(twice))[0].answer(A, QUESTION)
+    assert [s.text for s in answer.sentences] == ["The grand total of INV-1042 is Rs. 1,20,000."]
+
+
+def test_not_found_while_the_model_is_down_is_unavailable() -> None:
+    """KZ-006: "not found" is never shown for an outage; a genuine not found stays one."""
+    question = "What is the GST number of INV-1042?"
+    down = ModelUnavailable("unreachable")
+
+    def ask(pieces: list[FakeHit], model: FakeModel) -> Answer:
+        return service(pieces=pieces, model=model)[0].answer(A, question)
+
+    for answer in (ask([INVOICE], FakeModel(chat_error=down)), ask([], FakeModel(embed_error=down))):
+        assert (answer.status, answer.unavailable) == ("not_found", True)
+        assert "unavailable" not in answer.to_json()
+    for answer in (ask([], FakeModel()), ask([], FakeModel(embed_error=ModelOutputError("embedding_dim")))):
+        assert (answer.status, answer.unavailable) == ("not_found", False)
 
 
 def test_each_model_answer_logs_the_model_and_the_prompt_hash(caplog: pytest.LogCaptureFixture) -> None:

@@ -9,12 +9,12 @@
 // to /admin.
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { flushSync } from "react-dom";
 import { PasswordField } from "@/components/ui/PasswordField";
 import { useHydrated } from "@/components/ui/useHydrated";
-import { signUp } from "@/lib/api";
+import { signUp, signUpOpen } from "@/lib/api";
 import { leavePage } from "@/lib/sessionChannel";
 import type { TwoStepSetup } from "@/lib/types";
 import { RequiredEnrol } from "../login/EnrolStep";
@@ -24,6 +24,7 @@ import {
   MAX_NAME,
   MAX_ORGANISATION,
   PASSWORD_HINT,
+  SIGN_UP_OFF,
   firstInvalidSignUp,
   signUpBody,
   signUpError,
@@ -59,6 +60,23 @@ export function SignUpForm() {
   const [busy, setBusy] = useState(false);
   // Signed up: the two-step set-up the server sent (no session before the first code).
   const [enrol, setEnrol] = useState<TwoStepSetup | null>(null);
+  // N3 (QA 17 Oct): asked as SignUpLink does; switched off, no form is shown. No answer: the form stays.
+  // null while asking, so the form never flashes before an "off" reply (CodeRabbit).
+  const [off, setOff] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    signUpOpen()
+      .then((reply) => {
+        if (live) setOff(!reply.enabled);
+      })
+      .catch(() => {
+        if (live) setOff(false);
+      });
+    return () => {
+      live = false;
+    };
+  }, []);
 
   function change(field: SignUpField, value: string) {
     setInput((was) => ({ ...was, [field]: value }));
@@ -104,6 +122,20 @@ export function SignUpForm() {
         next="/admin"
         onRestart={() => leavePage("/login?next=/admin&two_step=1")}
       />
+    );
+  }
+
+  if (off !== false) {
+    return (
+      <div className={login.form}>
+        <div className={login.intro}>
+          <h1 className={login.title}>Create an account</h1>
+          {off && <p className={login.lead}>{SIGN_UP_OFF}</p>}
+        </div>
+        <p className={login.switch}>
+          Already have an account? <Link href="/login">Sign in</Link>
+        </p>
+      </div>
     );
   }
 

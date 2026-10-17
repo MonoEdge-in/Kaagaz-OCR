@@ -1,4 +1,7 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { InsideSearchResults } from "@/components/documents/InsideResults";
 import {
   DEFAULT_SEARCH_MODE,
   SEARCH_MODES,
@@ -136,5 +139,23 @@ describe("a result", () => {
     expect(noResultsText(ALL_DOCUMENTS)).toBe("No document holds these words.");
     expect(noResultsText({ ...ALL_DOCUMENTS, tagIds: [GST] })).toBe("No document here holds these words.");
     expect(noResultsText({ ...ALL_DOCUMENTS, from: "2026-09-01" })).toBe("No document holds these words.");
+  });
+});
+
+// QA 17 Oct: the count was for screen readers only; everyone sees it now.
+describe("the results", () => {
+  it("say how many documents were found, visibly", () => {
+    const html = renderToStaticMarkup(
+      createElement(InsideSearchResults, {
+        found: { documents: [found(), found({ id: GST })] },
+        error: null,
+        q: "total",
+        noResults: "",
+        datesIgnored: false,
+        onRetry: () => undefined,
+        onClear: () => undefined,
+      }),
+    );
+    expect(html).toContain('<p class="muted" role="status">2 documents found.</p>');
   });
 });

@@ -74,7 +74,8 @@ export interface WordReview {
 
 const following = (loaded: Loaded) => runActive(loaded.status.ensemble.run);
 
-export function useWordReview(documentId: string, version: number): WordReview {
+/** enabled: false asks nothing (a rejected file has no words to review). */
+export function useWordReview(documentId: string, version: number, enabled = true): WordReview {
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [failed, setFailed] = useState(false);
   const [asks, setAsks] = useState(0);
@@ -98,6 +99,7 @@ export function useWordReview(documentId: string, version: number): WordReview {
   });
 
   useEffect(() => {
+    if (!enabled) return;
     let cancelled = false;
     load().then(
       (next) => {
@@ -114,7 +116,7 @@ export function useWordReview(documentId: string, version: number): WordReview {
       cancelled = true;
       poll.stop();
     };
-  }, [load, poll, version, asks]);
+  }, [load, poll, version, asks, enabled]);
 
   return {
     status: loaded?.status ?? null,
