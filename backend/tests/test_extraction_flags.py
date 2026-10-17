@@ -11,7 +11,9 @@ from typing import Any
 
 import pytest
 
+from kaagaz.db import listing
 from kaagaz.db.review import EVERY_REASON
+from kaagaz.db.word_review import FLAGGED_VALUE
 from kaagaz.extraction.flags import (
     LINE,
     MARK,
@@ -138,6 +140,15 @@ def test_lines_are_flagged_only_when_unpinned_backup_read_or_on_an_unreadable_pa
 
 def test_every_label_reason_has_a_row() -> None:
     assert set(VALUE_TABLE) == set(EVERY_REASON)
+
+
+def test_the_file_list_counts_the_values_the_review_screen_flags() -> None:
+    """KZ-004: one "flagged" definition. The SQL picks the reasons value_flag flags (a fixed
+    value aside), and the list's count and attention filter use the same fragment."""
+    picked = set(re.findall(r"'(\w+)'", FLAGGED_VALUE.split(" IN ")[1].split(")")[0]))
+    assert picked == {reason for reason, flag in VALUE_TABLE.items() if flag and reason != "corrected"}
+    assert FLAGGED_VALUE in listing._COLUMNS and FLAGGED_VALUE in listing._NEEDS_ATTENTION
+    assert "ev.label = 'needs_review'" not in listing._COLUMNS
 
 
 @pytest.mark.parametrize("reason", sorted(VALUE_TABLE))

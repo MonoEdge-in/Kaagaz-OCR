@@ -343,7 +343,7 @@ CHECK_MARGIN = 0.04
 # G6: BackendUnavailable's name for a wrong key or a spent cap (a person's fix, logged at error).
 _KEY_PROBLEM = "gemini_key"
 # PRD 5 Q6: the run codes of a reader that is down (Gemini, or the OCR server) or has a key
-# problem: the document shows "Waiting for the reader to come back" until its job returns.
+# problem: the document shows "Reading is paused for now" until its job returns.
 _READER_WAITS = frozenset({"gemini_unavailable", "gemini_key_unavailable", "ocr_unavailable"})
 # V1: a line with any Devanagari character is read by the Devanagari recogniser.
 _DEVANAGARI = re.compile("[ऀ-ॿ]")

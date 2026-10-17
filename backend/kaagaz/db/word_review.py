@@ -96,16 +96,21 @@ _FLAG_SPANS = text(
     " OR p.read_issues && CAST(ARRAY['read_locally', 'reader_refused'] AS text[]) OR u.ensemble)"
     " ORDER BY p.page_no, e.ord"
 )
+# A value (alias ``v``) flags.value_flag flags while open: one definition of "flagged" for this
+# screen and the file list's ``values_to_review`` (kaagaz/db/listing.py).
+FLAGGED_VALUE = (
+    "(v.label = 'needs_review'"
+    " AND (v.label_reason IN ('readers_disagree', 'low_confidence', 'ocr_script')"
+    " OR (v.votes IS NOT NULL AND v.votes ->> 'value' IS NULL)))"
+)
 # The values that may be flagged (flags.value_flag decides), with their page's issues.
 _FLAG_VALUES = text(
-    "SELECT v.id, v.page_no, v.region, v.value_text, v.value_raw, v.second_reading, v.confidence,"
+    "SELECT v.id, v.page_no, v.region, v.value_text, v.value_raw, v.second_reading, v.confidence,"  # noqa: S608 - a fixed fragment
     " v.label, v.label_reason, v.votes, p.read_issues"
     " FROM extracted_values v JOIN pages p ON p.customer_id = v.customer_id"
     " AND p.document_id = v.document_id AND p.page_no = v.page_no"
     " WHERE v.customer_id = :c AND v.document_id = :d AND (v.label_reason = 'corrected'"
-    " OR (v.label = 'needs_review'"
-    " AND (v.label_reason IN ('readers_disagree', 'low_confidence', 'ocr_script')"
-    " OR (v.votes IS NOT NULL AND v.votes ->> 'value' IS NULL))))"
+    f" OR {FLAGGED_VALUE})"
     " ORDER BY v.page_no, v.id"
 )
 # The words of the first reader's text, word marks left out (they repeat a line's words).

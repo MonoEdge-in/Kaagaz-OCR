@@ -313,6 +313,9 @@ class Answer:
     # "Also in" (Tushar, 16 Oct 2026): documents the search found but the answer does not
     # cite (evidence.related_documents).
     related_documents: list[dict[str, Any]] = field(default_factory=list)
+    # KZ-006: not found while the model was down, so "not found" may be wrong; the route
+    # answers 503 instead. Never in to_json.
+    unavailable: bool = False
 
     def to_json(self) -> dict[str, Any]:
         """The ``Answer`` of frontend/lib/types.ts, exactly; ``agents``, ``agent_ids``,
@@ -361,6 +364,7 @@ class _Timing:
     aspects: int = 0
     reason: str | None = None  # the not-found reason code
     pinned: int = 0  # hits a Most relevant pick moved up (answering/pins.py)
+    degraded: bool = False  # the model was down for the question's vector or its draft (KZ-006)
 
     def lap(self, stage: str) -> None:
         now = time.monotonic()
@@ -514,7 +518,10 @@ class AnswerService:
         timing.whole, timing.aspects = whole is not None, len(aspects)
         asked = rewritten or question
         answer = self._answer(customer_id, asked, scope, user_id, whole, aspects, choice, pins)
-        return replace(self._unreadable(customer_id, answer, scope), rewritten_question=rewritten)
+        # KZ-006: an answer found without the model stays answered; a not found may be the outage.
+        unavailable = answer.status == "not_found" and _timing().degraded
+        answer = self._unreadable(customer_id, answer, scope)
+        return replace(answer, rewritten_question=rewritten, unavailable=unavailable)
 
     def remember(self, turns: Sequence[Turn], memory: Memory, cited: Sequence[str]) -> Memory | None:
         """M3: the conversation's new summary and memory from ``memory`` and the ``turns``
@@ -987,6 +994,8 @@ class AnswerService:
             vectors = self._model.embed(wanted)
         except (ModelUnavailable, ModelOutputError) as error:
             _log.warning("question searched without its meaning vector", extra={"code": error.code})
+            if isinstance(error, ModelUnavailable):
+                _timing().degraded = True
             return [None] * len(texts)
         if len(vectors) != len(wanted):
             return [None] * len(texts)
@@ -1043,6 +1052,8 @@ class AnswerService:
                     return drafted, True, seen, "notfound_model", team
             # Quoting the evidence needs no model.
             _log.warning("answer drafted without the model", extra={"code": code})
+            if code != "evidence_too_large":
+                _timing().degraded = True
         why = "notfound_no_model" if self._model is None else f"notfound_model_error:{code}"
         if mentions_date(normalised):
             # A quoted line cannot be checked against a date.
@@ -1172,7 +1183,10 @@ def _kept(draft: Draft, texts: dict[int, str]) -> list[DraftSentence]:
     if draft.status != "answered":
         return []
     cleaned = [DraftSentence(clean_text(s.text), s.evidence) for s in draft.sentences]
-    return verify([s for s in cleaned if s.text], texts)
+    kept: dict[str, DraftSentence] = {}
+    for sentence in verify([s for s in cleaned if s.text], texts):
+        kept.setdefault(sentence.text, sentence)  # a repeated sentence once, the first kept
+    return list(kept.values())
 
 
 def agreement(

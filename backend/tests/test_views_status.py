@@ -35,7 +35,7 @@ def _message(status: str = "received", **kwargs: Any) -> str:
 def test_q6_the_waiting_texts_are_the_prds_words() -> None:
     assert files_ahead_message(12) == "Waiting: 12 files ahead in your batch"
     assert files_ahead_message(1) == "Waiting: 1 file ahead in your batch"
-    assert READER_WAITING == "Waiting for the reader to come back. This continues on its own."
+    assert READER_WAITING == "Reading is paused for now. It will continue on its own."
 
 
 @pytest.mark.parametrize("status", ["received", "clean"])

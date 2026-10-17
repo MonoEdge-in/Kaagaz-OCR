@@ -223,7 +223,7 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
         kind="chat",
         conversation_id=conversation_id,
     ) as spend:
-        answer = context.answers.answer(
+        reply = context.answers.answer(
             user.customer_id,
             question,
             scope=scope,
@@ -232,7 +232,10 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
             memory=memory,
             choice=choice,
             pins=pins,
-        ).to_json()
+        )
+        if reply.unavailable:  # KZ-006: an outage is never "not found"; nothing is stored
+            raise ApiError(503, "backend_unavailable", headers={"Retry-After": "60"})
+        answer = reply.to_json()
 
         with context.db.customer(user.customer_id) as conn:
             if conversation_id is None:

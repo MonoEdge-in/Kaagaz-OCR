@@ -130,7 +130,8 @@ def test_library_search_is_never_translated(db: Database) -> None:
     reply = client.get("/api/search", params={"q": QUESTION})
     assert reply.status_code == 200, reply.text
     assert model.translated == 0
-    assert reply.json()["documents"][0]["best"]["snippet"].endswith(A_NAME)
+    # Its translation (A_WORD) would find A's piece by its words; meaning alone finds nothing (KZ-003).
+    assert reply.json()["documents"] == []
 
 
 def test_whole_document_mode_answers_the_english_question_from_marathi_text_alone(db: Database) -> None:

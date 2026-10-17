@@ -14,7 +14,9 @@ command, using only the standard library ``socket``:
      read the whole file, so it cannot be called clean;
    * ``stream: Heuristics.Limits.Exceeded... FOUND`` and
      ``stream: Heuristics.Encrypted... FOUND`` are UNSCANNABLE too: clamd could
-     not look inside. clamd only says so with ``AlertExceedsMax yes`` and
+     not look inside. So is ``stream: Heuristics.Broken... FOUND``
+     (``AlertBrokenMedia``): a damaged file, not a virus; still refused.
+     clamd only says so with ``AlertExceedsMax yes`` and
      ``AlertEncrypted yes`` in clamd.conf; without them an over-limit file comes
      back ``OK``. PROVISIONAL: clamd's configuration is Vrushit's.
    * cannot connect, a timeout, a closed connection, any other ERROR or a
@@ -109,7 +111,9 @@ def _verdict(reply: bytes, *, sent_all: bool) -> Verdict:
     text = reply.decode("ascii", errors="replace").strip()
     if text.endswith("size limit exceeded. ERROR"):
         return Verdict.UNSCANNABLE
-    if text.startswith(("stream: Heuristics.Limits.Exceeded", "stream: Heuristics.Encrypted")):
+    if text.startswith(
+        ("stream: Heuristics.Limits.Exceeded", "stream: Heuristics.Encrypted", "stream: Heuristics.Broken.")
+    ):
         return Verdict.UNSCANNABLE
     if sent_all and text == "stream: OK":
         return Verdict.CLEAN

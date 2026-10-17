@@ -227,6 +227,22 @@ def test_ask_keeps_the_question_as_asked_stores_both_messages_and_audits(db: Dat
 
 
 @pytest.mark.db
+def test_a_not_found_while_the_model_is_down_is_503_and_nothing_is_stored(db: Database) -> None:
+    """KZ-006: an outage is never shown as "not found", and leaves no empty conversation."""
+    api = Api(db)
+    signed = api.new_signed()
+    api.answers.reply, api.answers.unavailable = answer_json(status="not_found"), True
+
+    reply = signed.client.post("/api/chat", json={"question": "total?"}, headers=CSRF)
+
+    assert (reply.status_code, reply.headers["retry-after"]) == (503, "60")
+    assert reply.json()["error"]["code"] == "backend_unavailable"
+    with db.customer(signed.customer_id) as conn:
+        for table in ("conversations", "messages"):
+            assert conn.execute(text(f"SELECT count(*) FROM {table}")).scalar_one() == 0, table  # noqa: S608 - fixed name
+
+
+@pytest.mark.db
 def test_follow_up_goes_into_the_same_conversation_in_order(db: Database) -> None:
     api = Api(db)
     signed = api.new_signed()

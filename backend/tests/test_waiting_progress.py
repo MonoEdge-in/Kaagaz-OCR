@@ -2,7 +2,7 @@
 
 When the reader stops a try (Gemini down, a key problem, or the OCR server gone), the
 run's progress becomes ``{"step": "waiting"}`` (``clear_progress(..., waiting="reader")``)
-instead of none, so the list can say "Waiting for the reader to come back". Any other
+instead of none, so the list can say "Reading is paused for now". Any other
 backend (storage, the database) clears it as before. The database side is in
 tests/test_waiting_progress_db.py.
 """

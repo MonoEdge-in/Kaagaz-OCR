@@ -111,7 +111,9 @@ import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, time
+from os.path import splitext
 from typing import Annotated, Any, Literal
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Query, Request, Response
@@ -182,7 +184,7 @@ _CONTENT_TYPES = {
     "png": ("image/png", "png"),
     "jpeg": ("image/jpeg", "jpg"),
     "tiff": ("image/tiff", "tif"),
-    "zip": ("application/octet-stream", "zip"),
+    "zip": ("application/octet-stream", "xlsx"),  # only a spreadsheet passes the read
     "ole2": ("application/octet-stream", "bin"),
     "text": ("text/plain; charset=utf-8", "csv"),
 }
@@ -916,12 +918,15 @@ def get_file(document_id: uuid.UUID, user: User, context: Context) -> Response:
     except BlobNotFound:
         raise ApiError(404, "not_found") from None
     content_type, extension = _CONTENT_TYPES.get(row["detected_type"], ("application/octet-stream", "bin"))
+    # The user's own name with the file's true extension, percent-encoded (RFC 6266), so no
+    # quote or line break reaches the header; "document.<ext>" for browsers without filename*.
+    name = quote(f"{splitext(row['display_name'] or '')[0] or 'document'}.{extension}", safe="")
     return Response(
         content=data,
         media_type=content_type,
         headers={
             # A download, never opened in a tab (the viewer fetches it with pdf.js).
-            "Content-Disposition": f'attachment; filename="document.{extension}"',
+            "Content-Disposition": f"attachment; filename=\"document.{extension}\"; filename*=UTF-8''{name}",
             "Content-Security-Policy": "sandbox",
             "X-Content-Type-Options": "nosniff",
             "Cache-Control": "private, no-store",

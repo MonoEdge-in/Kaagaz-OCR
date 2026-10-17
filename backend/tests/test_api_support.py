@@ -134,6 +134,7 @@ def answer_json(*, status: str = "answered", label: str | None = "verified") -> 
 @dataclass(frozen=True)
 class _FixedAnswer:
     data: dict[str, Any]
+    unavailable: bool = False
 
     def to_json(self) -> dict[str, Any]:
         return dict(self.data)
@@ -149,6 +150,7 @@ class FakeAnswers:
     summarised: list[tuple[list[Turn], Memory, list[str]]] = field(default_factory=list)
     choices: list[ChatChoice | None] = field(default_factory=list)  # features 25-27: who drafts each
     pins: list[list[Pin]] = field(default_factory=list)  # the Most relevant picks each question got
+    unavailable: bool = False  # KZ-006: not found while the model was down
 
     def answer(
         self,
@@ -167,7 +169,7 @@ class FakeAnswers:
         self.choices.append(choice)
         self.scopes.append(scope)
         self.memories.append(memory)
-        return _FixedAnswer(self.reply)
+        return _FixedAnswer(self.reply, self.unavailable)
 
     def remember(self, turns: Sequence[Turn], memory: Memory, cited: Sequence[str]) -> Memory | None:
         self.summarised.append((list(turns), memory, list(cited)))
