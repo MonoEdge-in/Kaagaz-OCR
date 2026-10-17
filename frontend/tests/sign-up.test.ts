@@ -142,3 +142,15 @@ describe("the pages", () => {
     expect(form).toContain("hint={PASSWORD_HINT}");
   });
 });
+
+// N3 (QA 17 Oct): /signup showed the form while sign-up was switched off.
+describe("the sign-up page while sign-up is off", () => {
+  it("asks the server first, and shows the off words with a way back to sign in instead of the form", () => {
+    const form = read("app/signup/SignUpForm.tsx");
+    expect(form).toMatch(/signUpOpen\(\)\s*\.then\(\(reply\) => \{\s*if \(live\) setOff\(!reply\.enabled\);/);
+    const off = form.slice(form.indexOf("if (off) {"), form.indexOf("function textField("));
+    expect(off).toContain("{SIGN_UP_OFF}");
+    expect(off).toContain('<Link href="/login">Sign in</Link>');
+    expect(off).not.toContain("<form");
+  });
+});

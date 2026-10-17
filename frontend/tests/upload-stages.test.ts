@@ -182,9 +182,11 @@ describe("the stages, in words", () => {
     expect(stageOf({ kind: "done", documentId: "d1" })).toBeNull();
     // Changed on purpose (scan states, 16 Oct 2026): Uploading, Scanning; no stage text beside the
     // bar any more (stageText gone), the percent only in the bar's aria-valuetext.
-    expect(valueText("sending", 42)).toBe("Uploading, 42%");
-    expect(valueText("saving", 30)).toBe("Saving");
-    expect(valueText("reading", 63)).toBe("Scanning, 63%");
+    expect(valueText({ kind: "sending", fraction: 0.42 }, 42)).toBe("Uploading, 42%");
+    expect(valueText({ kind: "saving" }, 30)).toBe("Saving");
+    expect(valueText({ kind: "reading", documentId: "d1", document: doc() }, 63)).toBe("Scanning, 63%");
+    // U7 (QA 17 Oct): waiting for the reader is never "Scanning, 0%".
+    expect(valueText({ kind: "reading", documentId: "d1", document: doc({ progress: null }) }, 0)).toBe("Waiting");
   });
 });
 

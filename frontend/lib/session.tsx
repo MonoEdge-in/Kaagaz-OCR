@@ -185,6 +185,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
 /** What to say when the app cannot ask the server who is signed in. */
 export function sessionErrorMessage(error: unknown): string {
+  if (error instanceof ApiError && error.status === 429) {
+    return "Kaagaz is busy right now. Wait a minute, then try again.";
+  }
   if (error instanceof ApiError && error.status !== 0) {
     return "Kaagaz is not answering right now. Try again in a minute.";
   }

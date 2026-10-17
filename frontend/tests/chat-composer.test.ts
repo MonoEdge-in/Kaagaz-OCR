@@ -43,6 +43,24 @@ describe("the composer card", () => {
     expect(html).toContain("Enter to send, Shift+Enter for a new line");
   });
 
+  // QA 17 Oct: the 1,000 character limit cut a pasted question silently.
+  it("says so when a question reaches the 1,000 character limit", () => {
+    const box = (draft: string) =>
+      renderToStaticMarkup(
+        createElement(QuestionBox, {
+          pending: false,
+          error: null,
+          onAsk: async () => true,
+          inputRef: createRef<HTMLTextAreaElement>(),
+          texts: MODE_TEXTS.documents,
+          draft,
+        }),
+      );
+    const note = "Questions can be up to 1,000 characters. The rest was left out.";
+    expect(box("a".repeat(1000))).toContain(`role="status">${note}</p>`);
+    expect(box("a".repeat(999))).not.toContain(note);
+  });
+
   it("lets the question grow to about eight lines, then scroll", () => {
     const css = read("components/chat/Chat.module.css");
     expect(css).toMatch(/\.composerInput \{[^}]*max-height: min\(40dvh, calc\(8 \* 1\.55em/);

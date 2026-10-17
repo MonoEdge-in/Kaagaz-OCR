@@ -281,8 +281,9 @@ export function uploadStateText(state: UploadState): string {
       return "Uploading";
     case "saving":
       return "Saving";
+    // U7 (QA 17 Oct): a document waiting for the reader says so, never "Scanning".
     case "reading":
-      return "Scanning";
+      return scanWords(state.document)?.chip ?? "Waiting";
     case "done": {
       const { document } = state;
       if (!document) return "Uploaded";

@@ -3,8 +3,9 @@
 // lib/usePoll.ts. Unit tested under fake timers (tests/poll.test.ts).
 //
 // - One request at a time. A refresh asked for while one is out runs once after it.
-// - Nothing is sent while the tab is hidden. When it is shown again, or the
-//   browser is back online, a planned poll is sent at once.
+// - No planned poll is sent while the tab is hidden (an explicit refresh, like
+//   the first load, still is). When it is shown again, or the browser is back
+//   online, a planned poll is sent at once.
 // - It waits 3 s, then 5 s while nothing changes, and goes back to 3 s when
 //   something does (the signature: status, status_message, progress). Never more
 //   than 5 s, so Ready shows within 5 s (council 16 Oct 2026).
@@ -57,12 +58,13 @@ export function createPoller<T>(task: () => PollTask<T>, hidden: () => boolean):
     }, POLL_STEPS_MS[step]);
   }
 
-  function run() {
+  /** force: an explicit refresh (the first load too) is sent even in a hidden tab. */
+  function run(force = false) {
     if (out) {
       queued = true;
       return;
     }
-    if (hidden()) {
+    if (!force && hidden()) {
       due = true;
       return;
     }
@@ -102,7 +104,7 @@ export function createPoller<T>(task: () => PollTask<T>, hidden: () => boolean):
       cancel();
       step = 0;
       signature = null;
-      run();
+      run(true);
     },
     later() {
       if (out || timer !== null || due) return;

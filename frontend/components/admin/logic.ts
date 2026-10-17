@@ -22,14 +22,16 @@ import type {
 } from "@/lib/types";
 
 /**
- * "allow" only for an admin with an admin session (PRD A1); anyone else is
- * sent to sign in (/login?next=/admin). The server refuses every /api/admin call
- * to an app session anyway (403 admin_session_required).
+ * "allow" only for an admin with an admin session (PRD A1); an admin with an app
+ * session is sent to sign in (/login?next=/admin); anyone else is told it is for
+ * admins (N4, QA 17 Oct: signing in again would not help). The server refuses
+ * every /api/admin call to an app session anyway (403 admin_session_required).
  */
-export type AdminGate = "allow" | "admin_sign_in";
+export type AdminGate = "allow" | "admin_sign_in" | "no_access";
 
 export function adminGate(me: Me): AdminGate {
-  return me.user.role === "admin" && sessionScope(me) === "admin" ? "allow" : "admin_sign_in";
+  if (me.user.role !== "admin") return "no_access";
+  return sessionScope(me) === "admin" ? "allow" : "admin_sign_in";
 }
 
 export const TABS = [

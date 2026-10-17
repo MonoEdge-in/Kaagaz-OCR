@@ -205,7 +205,9 @@ describe("a question that could not be sent", () => {
     expect(askErrorText({ status: 400, message: "Something went wrong." })).toBe(
       "Could not get an answer right now. Try again in a minute.",
     );
-    expect(askErrorText({ status: 503, message: "Upstream down" })).toBe(
+    // QA 17 Oct: 503 backend_unavailable (the AI service is down) says busy; the question goes back in the box.
+    expect(askErrorText({ status: 503, message: "Upstream down" })).toBe("Kaagaz is busy right now. Try again in a minute.");
+    expect(askErrorText({ status: 502, message: "Bad gateway" })).toBe(
       "Could not get an answer right now. Try again in a minute.",
     );
   });

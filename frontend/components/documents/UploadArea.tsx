@@ -698,7 +698,7 @@ function RowBar({ entry, stage }: { entry: UploadEntry; stage: Stage }) {
         max={100}
         value={saving ? undefined : next.percent}
         aria-label={`Upload of ${entry.name}`}
-        aria-valuetext={valueText(stage, next.percent)}
+        aria-valuetext={valueText(entry.state, next.percent)}
       />
     </div>
   );
