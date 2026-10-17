@@ -6,7 +6,7 @@
 // UI audit A1 (16 Oct 2026): a search over the titles, and each conversation's
 // menu: Rename (in place; Enter saves, Esc cancels) and Delete (asked first).
 
-import { useCallback, useId, useState } from "react";
+import { useCallback, useId, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { RowMenu } from "@/components/admin/RowMenu";
 import { ActionDialog } from "@/components/documents/ActionDialog";
@@ -44,6 +44,7 @@ export function ConversationList({
   const now = useMinuteNow();
   const prefix = useId();
   const [search, setSearch] = useState("");
+  const searchBox = useRef<HTMLInputElement>(null);
   const [renaming, setRenaming] = useState<{ id: string; title: string } | null>(null);
   const [deleting, setDeleting] = useState<ConversationSummary | null>(null);
   const [busy, setBusy] = useState(false);
@@ -83,6 +84,7 @@ export function ConversationList({
             <Icon name="search" size={16} className={styles.searchIcon} />
             <input
               id={`${prefix}-search`}
+              ref={searchBox}
               type="search"
               className={`input ${styles.searchInput}`}
               autoComplete="off"
@@ -91,7 +93,11 @@ export function ConversationList({
               onChange={(event) => setSearch(event.target.value)}
             />
             {search !== "" && (
-              <IconButton icon="close" label="Clear search" className={styles.searchClear} onClick={() => setSearch("")} />
+              <IconButton icon="close" label="Clear search" className={styles.searchClear} onClick={() => {
+                  setSearch("");
+                  searchBox.current?.focus();
+                }}
+              />
             )}
           </div>
         </div>
