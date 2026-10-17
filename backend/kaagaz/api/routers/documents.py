@@ -920,7 +920,8 @@ def get_file(document_id: uuid.UUID, user: User, context: Context) -> Response:
         content=data,
         media_type=content_type,
         headers={
-            "Content-Disposition": f'inline; filename="document.{extension}"',
+            # A download, never opened in a tab (the viewer fetches it with pdf.js).
+            "Content-Disposition": f'attachment; filename="document.{extension}"',
             "Content-Security-Policy": "sandbox",
             "X-Content-Type-Options": "nosniff",
             "Cache-Control": "private, no-store",

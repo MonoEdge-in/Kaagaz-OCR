@@ -1140,7 +1140,7 @@ def test_unknown_or_malformed_document_id(db: Database) -> None:
 
 
 @pytest.mark.db
-def test_file_is_served_inline_and_sandboxed(db: Database) -> None:
+def test_file_is_served_as_a_download_and_sandboxed(db: Database) -> None:
     api = Api(db)
     signed = api.new_signed()
     document_id = api.add_document(signed.customer_id, status="ready", name="PAN ABCDE1234F.pdf")
@@ -1148,7 +1148,7 @@ def test_file_is_served_inline_and_sandboxed(db: Database) -> None:
     assert reply.status_code == 200
     assert reply.content == PDF_BYTES
     assert reply.headers["content-type"] == "application/pdf"
-    assert reply.headers["content-disposition"] == 'inline; filename="document.pdf"'
+    assert reply.headers["content-disposition"] == 'attachment; filename="document.pdf"'
     assert reply.headers["content-security-policy"] == "sandbox"
     assert reply.headers["x-content-type-options"] == "nosniff"
 

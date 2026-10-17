@@ -420,5 +420,78 @@ class SecurityReviewBounds(unittest.TestCase):
         self.assertEqual(pdftypes.zlib.decompress(zlib.compress(big)), big)
 
 
+def lying_zip(name: str, data: bytes, declared: int) -> bytes:
+    """A one-part zip whose headers declare ``declared`` bytes for a part of ``len(data)``."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(name, data)
+    raw = bytearray(buffer.getvalue())
+    struct.pack_into("<I", raw, raw.find(b"PK\x03\x04") + 22, declared)
+    struct.pack_into("<I", raw, raw.find(b"PK\x01\x02") + 24, declared)
+    return bytes(raw)
+
+
+TEMPLATE = b"http://schemas.openxmlformats.org/officeDocument/2006/relationships/attachedTemplate"
+RELS = b'<Relationships><Relationship Type="%s" TargetMode="External"/></Relationships>'
+
+
+class SecurityReviewFailClosed(unittest.TestCase):
+    """Security review, 17 Oct 2026: fail-open paths, and a second PDF reader."""
+
+    def test_pdfium_blocks_what_pdfminer_missed(self) -> None:
+        catalogs = (
+            b"<< /Type /Catalog /Pages 2 0 R /Names << /JavaScript << /Names [(a) 4 0 R] >> >> >>",
+            b"<< /Type /Catalog /Pages 2 0 R /Names << /EmbeddedFiles << /Names [(a) 4 0 R] >> >> >>",
+            b"<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [] /XFA 4 0 R >> >>",
+        )
+        with mock.patch.object(content, "_pdf_finding", return_value=None):  # pdfminer saw nothing
+            for catalog in catalogs:
+                with self.subTest(catalog=catalog):
+                    pdf = pdf_with([catalog, PAGES, PAGE, b"<< /Type /Filespec /F (a.txt) >>"])
+                    self.assertIs(inspect(pdf), Finding.BLOCKED)
+            self.assertIsNone(inspect(pdf_with([CATALOG, PAGES, PAGE])))  # an ordinary file passes
+
+    def test_a_pdf_pdfium_cannot_open_keeps_pdfminers_verdict(self) -> None:
+        self.assertIs(inspect(b"%PDF-1.7\n" + b"\x00garbage" * 50), Finding.UNSCANNABLE)
+
+    def test_an_external_template_in_a_part_over_the_bound_is_unscannable(self) -> None:
+        rels = RELS % TEMPLATE
+        with mock.patch.object(content, "_MAX_RELS_BYTES", len(rels) - 1):  # was skipped: None
+            self.assertIs(
+                inspect(with_member(spreadsheet(), "xl/_rels/a.xml.rels", rels)), Finding.UNSCANNABLE
+            )
+
+    def test_a_part_bigger_than_it_declares_is_unscannable(self) -> None:
+        self.assertIs(inspect(lying_zip("_rels/.rels", b" " * (3 << 20), 10)), Finding.UNSCANNABLE)
+
+    def test_an_external_template_written_another_valid_way_is_blocked(self) -> None:
+        single = b"<Relationships><Relationship Type='%s' TargetMode='External'/></Relationships>"
+        escaped = b'<Relationships><Relationship Type="%s" TargetMode="&#69;xternal"/></Relationships>'
+        for name, rels in (
+            ("xl/_rels/a.xml.rels", single),
+            ("xl/_rels/a.xml.rels", escaped),
+            ("xl/_rels/A.XML.RELS", RELS),
+        ):
+            with self.subTest(name=name, rels=rels):
+                self.assertIs(inspect(with_member(spreadsheet(), name, rels % TEMPLATE)), Finding.BLOCKED)
+
+    def test_relationships_with_a_dtd_or_bad_xml_are_unscannable(self) -> None:
+        for rels in (b'<!DOCTYPE r [<!ENTITY e "External">]><Relationships/>', b"<Relationships"):
+            with self.subTest(rels=rels):
+                self.assertIs(
+                    inspect(with_member(spreadsheet(), "xl/_rels/a.xml.rels", rels)), Finding.UNSCANNABLE
+                )
+
+    def test_a_pdf_header_hidden_in_another_type_is_blocked(self) -> None:
+        png = png_bytes()
+        for data in (b"Name,Amount\n%PDF-1.7\n", png[:33] + b"%PDF-1.7\n" + png[33:]):
+            with self.subTest(data=data[:12]):
+                self.assertIs(inspect(data), Finding.BLOCKED)
+
+    def test_a_type_with_no_check_is_blocked(self) -> None:
+        old_xls = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 504
+        self.assertIs(inspect(old_xls), Finding.BLOCKED)
+
+
 if __name__ == "__main__":
     unittest.main()

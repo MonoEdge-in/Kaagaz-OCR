@@ -242,8 +242,9 @@ class Worker:
         is the process's, so the job is handed back and the error goes on up.
 
         ponytail: a native crash (a segfault, or the OOM killer's SIGKILL) never reaches
-        Python, so it bypasses this. The upgrade path is running content.inspect and the
-        parsers in a subprocess with time and memory limits."""
+        Python, so it bypasses this. The content check already runs in a child process with
+        time and memory limits (kaagaz/scanning/isolated.py); the upgrade path is the same for
+        the parsers."""
         if job != self._last_crash:
             self._crashes, self._last_crash = self._crashes + 1, job
         with contextlib.suppress(LeaseLost):  # another delivery owns it: nothing to hand back
