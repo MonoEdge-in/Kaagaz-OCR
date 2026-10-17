@@ -766,6 +766,10 @@ table.docs > tbody > tr {
   .statusLine + .statusLine {
     height: var(--h-lg);
   }
+
+  table.docs .docType {
+    line-height: var(--h-lg);
+  }
 }
 
 .statusLine > * {
@@ -798,8 +802,15 @@ table.docs > tbody > tr {
   color: var(--text-secondary);
 }
 
+/* "7 flagged" and "3 pages to check" take the same width, so every row's "Review" starts at
+   the same spot (Tushar, 17 Oct 2026: it moved with the text). Longer text ends in "…", its
+   full words in the title; in a tight column the text gives way first. */
+.statusText:has(+ .statusAction) {
+  flex: 0 1 9rem;
+}
+
 /* The action that ends a read document's line: ink, not blue (blue is punctuation). "Review",
-   after "7 flagged" in full, on the line under the chip, starting at its left edge. */
+   after "7 flagged" in full, on the line under the chip. */
 .statusAction {
   display: inline-flex;
   align-items: center;
@@ -890,8 +901,16 @@ table.docs > tbody > tr {
     width: 3rem;
   }
 
+  /* Room for "Image (JPEG)" and "Bank statement" on one line, with a gap before the size
+     (Tushar, 17 Oct 2026: "Image (JPEG)" wrapped and made its row taller). */
   .typeColumn {
-    width: 7.5rem;
+    width: 8.5rem;
+  }
+
+  table.docs .docType {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
   }
 
   .uploadedColumn {
@@ -930,6 +949,11 @@ table.docs > tbody > tr {
   .meta {
     font-size: var(--fs-sm);
     line-height: var(--row-line);
+  }
+
+  /* "Land record" sits on the same line as the status's "7 flagged" (Tushar, 17 Oct 2026). */
+  .docType {
+    line-height: var(--h-sm);
   }
 
   /* The question is wider than the menu's column, so it opens as a small panel over the
