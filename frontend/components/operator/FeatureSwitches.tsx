@@ -196,9 +196,11 @@ export function bannerText(model: TestModel): string {
     head,
     countText(since.pages, "page", "pages"),
     countText(since.questions, "question", "questions"),
-    formatUsd(since.cost_usd),
-    `${formatNumber(Math.round(since.avg_seconds_per_page * 10) / 10)} s/page`,
-  ].join(" · ");
+    since.cost_usd === null ? null : formatUsd(since.cost_usd), // null: nothing reported yet
+    since.avg_seconds_per_page === null ? null : `${formatNumber(Math.round(since.avg_seconds_per_page * 10) / 10)} s/page`,
+  ]
+    .filter((part) => part !== null)
+    .join(" · ");
 }
 
 /** At the top of the console while the test model runs, with Undo (asked first). */

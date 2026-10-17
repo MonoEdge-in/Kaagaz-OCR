@@ -267,6 +267,8 @@ describe("the operator's test model", () => {
 
   it("shows only who runs and since when while no numbers came back", () => {
     expect(bannerText({ ...RUNNING, since: null })).not.toContain("pages");
+    const fresh = bannerText({ ...RUNNING, since: { pages: 0, questions: 0, cost_usd: null, avg_seconds_per_page: null } });
+    expect(fresh).toMatch(/0 pages · 0 questions$/);
   });
 
   it("asks before starting, saying who it reaches and that their settings are kept", () => {
