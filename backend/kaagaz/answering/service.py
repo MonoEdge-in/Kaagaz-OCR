@@ -93,6 +93,10 @@ The steps (docs/architecture.md):
     the gate, a hit on a page the asker picked earlier (this conversation, or another on the
     same words) moves up a few places, only when it passes the gate by itself. It never adds
     a piece or changes whether there is an answer; the timing line counts the hits moved.
+16. Also mentions (17 Oct 2026, ``_mentioned``): after an answered or not-found answer (not
+    a count, not while the model is down), the other documents in scope holding the
+    question's key terms (Jalna, जालना) as whole words, from one word-index statement; the
+    answer's text, label and verify never see them.
 
 No source, no answer: an answered result always has at least one sentence,
 every sentence cites at least one source (but step 13's count, which sums up its cited
@@ -176,11 +180,14 @@ from kaagaz.answering.evidence import (
 )
 from kaagaz.answering.exhaustive import (
     MAX_LISTED,
+    MAX_MENTIONED,
     Exhaustive,
+    Mentions,
     PgExhaustive,
     count_sentence,
     document_sentence,
-    exhaustive_term,
+    exhaustive_query,
+    key_terms,
     more_text,
     pages_with,
 )
@@ -313,6 +320,10 @@ class Answer:
     # "Also in" (Tushar, 16 Oct 2026): documents the search found but the answer does not
     # cite (evidence.related_documents).
     related_documents: list[dict[str, Any]] = field(default_factory=list)
+    # "Also mentions" (Tushar, 17 Oct 2026): {"terms", "total", "documents"}, other documents in
+    # scope holding the question's key terms (``AnswerService._mentioned``); in to_json only
+    # when there is one, so answers without it keep their shape.
+    mentions: dict[str, Any] | None = None
     # KZ-006: not found while the model was down, so "not found" may be wrong; the route
     # answers 503 instead. Never in to_json.
     unavailable: bool = False
@@ -349,6 +360,7 @@ class Answer:
             "unreadable_page_count": self.unreadable_page_count,
             "related_documents": [dict(doc) for doc in self.related_documents],
             **team,
+            **({} if self.mentions is None else {"mentions": self.mentions}),
         }
 
 
@@ -439,6 +451,7 @@ class AnswerService:
         reading: ReadingQuality | None = None,
         context: Context | None = None,
         exhaustive: Exhaustive | None = None,
+        mentions: Mentions | None = None,
     ) -> None:
         self._model = model
         self._translator = translator if settings.answer_translate_question else None
@@ -470,6 +483,7 @@ class AnswerService:
         self._reading: ReadingQuality | None = PgReadingQuality(db) if retriever is None else reading
         self._context: Context | None = pg if retriever is None else context
         self._exhaustive: Exhaustive | None = PgExhaustive(db) if retriever is None else exhaustive
+        self._mentions: Mentions | None = PgExhaustive(db) if retriever is None else mentions
 
     @_timed
     def answer(
@@ -521,7 +535,32 @@ class AnswerService:
         # KZ-006: an answer found without the model stays answered; a not found may be the outage.
         unavailable = answer.status == "not_found" and _timing().degraded
         answer = self._unreadable(customer_id, answer, scope)
+        if not unavailable:
+            answer = self._mentioned(customer_id, asked, answer, scope)
         return replace(answer, rewritten_question=rewritten, unavailable=unavailable)
+
+    def _mentioned(self, customer_id: str, question: str, answer: Answer, scope: Scope) -> Answer:
+        """ "Also mentions" (Tushar, 17 Oct 2026): every other document in ``scope`` that holds
+        one of the question's key terms (``key_terms``, the cited text's first) as whole words,
+        not cited nor in "Also in", most matching pieces first, at most MAX_MENTIONED, and how
+        many in all. Only for an answered or not-found answer, never a count (it lists its
+        documents already); none without a key term. One statement over the word index."""
+        if self._mentions is None or answer.status not in ("answered", "not_found"):
+            return answer
+        if exhaustive_query(question) is not None:
+            return answer
+        terms = key_terms(question, [c.snippet for c in answer.citations])
+        if not terms:
+            return answer
+        shown = (
+            {c.document_id for c in answer.citations}
+            | {d["document_id"] for d in answer.related_documents}
+            | {d["id"] for d in answer.closest_documents}  # a not-found answer's list (CodeRabbit)
+        )
+        total, documents = self._mentions.mentions(customer_id, terms, scope, sorted(shown), MAX_MENTIONED)
+        if not total:
+            return answer
+        return replace(answer, mentions={"terms": terms, "total": total, "documents": documents})
 
     def remember(self, turns: Sequence[Turn], memory: Memory, cited: Sequence[str]) -> Memory | None:
         """M3: the conversation's new summary and memory from ``memory`` and the ``turns``
@@ -589,9 +628,9 @@ class AnswerService:
         normalised = normalise(question)
         # "Hinglish understood as" is shown only when there was Hinglish to understand.
         shown = normalised.english if normalised.hinglish else question.strip()
-        term = exhaustive_term(question)
-        if term is not None and self._exhaustive is not None:
-            counted = self._exhaustive_answer(self._exhaustive, customer_id, term, shown, scope)
+        query = exhaustive_query(question)
+        if query is not None and self._exhaustive is not None:
+            counted = self._exhaustive_answer(self._exhaustive, customer_id, *query, shown, scope)
             if counted is not None:
                 return counted
         found_range = date_range(normalised, self._today())
@@ -642,13 +681,23 @@ class AnswerService:
     # --- fixed route --------------------------------------------------------
 
     def _exhaustive_answer(
-        self, source: Exhaustive, customer_id: str, term: str, shown: str, scope: Scope
+        self,
+        source: Exhaustive,
+        customer_id: str,
+        term: str,
+        kinds: tuple[str, ...],
+        shown: str,
+        scope: Scope,
     ) -> Answer | None:
         """How many documents in ``scope`` hold ``term``, and which (kaagaz/answering/
         exhaustive.py): the exact count first, then each listed document with its pages,
         citing its first matching piece; past MAX_LISTED, how many more. None when no
         document holds it: the search route answers as before. Two statements, and one for
-        the word marks (F6)."""
+        the word marks (F6). ``kinds``: the document types asked for ("land documents of
+        Jalna"), inside the chat's own (none left: None, the search answers)."""
+        if kinds:
+            within = kinds if scope.doc_types is None else tuple(k for k in scope.doc_types if k in kinds)
+            scope = replace(scope, doc_types=within)
         total, documents = source.documents_with(customer_id, term, scope, MAX_LISTED)
         said = clean_text(term)
         citations: list[Citation] = []
@@ -668,7 +717,7 @@ class AnswerService:
             return None
         citations = self._marked(customer_id, citations, lines)
         hard = any(c.hard_to_read for c in citations)
-        head = count_sentence(said, total)
+        head = count_sentence(said, total, kinds)
         if total > len(citations):
             head += " " + more_text(len(citations), total - len(citations))
         return Answer(

@@ -16,6 +16,8 @@
 // cite. "Most relevant" on a row puts it on top at once, and it is kept for this answer
 // (pinSource; the server's newest pick comes back in message.pin). One model answers
 // in Ask (Tushar, 16 Oct 2026): no line on who answered or whether models agreed.
+// "Also mentions “Jalna”" (Tushar, 17 Oct 2026; MentionsSection): last in the bar, every
+// other document holding the question's key terms, and "Mentioned in N more documents".
 // UI audit A4 (16 Oct 2026): "not found" ends with calm next steps, never a dead end:
 // search all documents (the newest answer only, when it searched fewer: onAskAll),
 // ask with the words the document uses, teach chat a word, or upload the document.
@@ -32,6 +34,7 @@ import {
   citationMap,
   isPinned,
   matchTerms,
+  mentionsOf,
   NOT_FOUND_TEXT,
   questionReading,
   rankedRelated,
@@ -43,7 +46,7 @@ import {
 } from "./answer";
 import { FeedbackControls } from "./FeedbackControls";
 import { scrollBehavior } from "./hooks";
-import { DocumentRow, RelatedRow, SourceCard } from "./SourceCard";
+import { DocumentRow, MentionsSection, RelatedRow, SourceCard } from "./SourceCard";
 import styles from "./Chat.module.css";
 
 /** Bring the source card into view (only as far as needed) and move focus to it,
@@ -114,6 +117,8 @@ export const AnswerView = memo(function AnswerView({
   }
 
   const reading = questionReading(question, answer);
+  const mentions = mentionsOf(answer);
+  const mentioned = mentions ? <MentionsSection mentions={mentions} /> : null;
   const note = readingNote(answer);
   const noteText = note ? <p className={styles.plain}>{note.text}</p> : null;
   const pageCount = note ? note.pages.length + note.more : 0;
@@ -183,19 +188,21 @@ export const AnswerView = memo(function AnswerView({
         </div>
         {noteText}
         {understood}
-        {notePages || answer.closest_documents.length > 0 ? (
+        {notePages || answer.closest_documents.length > 0 || mentions ? (
           <SourcesBar
             count={[
               pageCount > 0 ? counted(pageCount, "page to check", "pages to check") : "",
               answer.closest_documents.length > 0
                 ? counted(answer.closest_documents.length, "document", "documents")
                 : "",
+              mentions ? `Mentioned in ${counted(mentions.total, "document", "documents")}` : "",
             ]
               .filter(Boolean)
               .join(" · ")}
           >
             {notePages}
             {documentRows("Closest documents")}
+            {mentioned}
           </SourcesBar>
         ) : null}
         <div>
@@ -281,8 +288,8 @@ export const AnswerView = memo(function AnswerView({
         ))}
       </p>
       {noteText}
-      {sources.length > 0 || related.length > 0 || notePages ? (
-        <SourcesBar count={sourcesCount(sources.length, related.length, pageCount)}>
+      {sources.length > 0 || related.length > 0 || notePages || mentions ? (
+        <SourcesBar count={sourcesCount(sources.length, related.length, pageCount, mentions?.total ?? 0)}>
           {sources.length > 0 ? (
             <ul className={styles.sources} aria-label="Sources, most relevant first">
               {sources.map((citation, index) => {
@@ -324,6 +331,7 @@ export const AnswerView = memo(function AnswerView({
               </ul>
             </div>
           ) : null}
+          {mentioned}
           {pinFailed ? (
             <p className={styles.sourceMeta} role="status">
               Not saved. Check your connection, then try again.

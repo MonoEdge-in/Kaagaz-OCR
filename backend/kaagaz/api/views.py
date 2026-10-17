@@ -649,6 +649,11 @@ def cited_document_ids(answer: Mapping[str, Any] | None) -> list[str]:
     ids += [
         str(each["document_id"]) for each in answer.get("unreadable_pages", []) if each.get("document_id")
     ]
+    ids += [
+        str(each["document_id"])
+        for each in (answer.get("mentions") or {}).get("documents", [])
+        if each.get("document_id")
+    ]
     return ids
 
 
@@ -660,7 +665,7 @@ def answer_with_source_states(answer: Mapping[str, Any], states: Mapping[str, st
       deleted loses its snippet and its highlight regions: Trash means deleted,
       so its words and its place on the page must not show any more.
     * A sentence whose every citation is gone is replaced by ``GONE_SENTENCE``.
-    * Closest and related documents that are gone are left out.
+    * Closest, related and "Also mentions" documents that are gone are left out.
     * PRD 5 F6: a page that couldn't be read, of a document that is gone, is left out
       of ``unreadable_pages``, its count and the note, so a deleted document's name
       never shows again (the note is written again from the pages left).
@@ -697,6 +702,12 @@ def answer_with_source_states(answer: Mapping[str, Any], states: Mapping[str, st
     shown = {**answer, "citations": citations, "sentences": sentences, "closest_documents": closest}
     if "related_documents" in answer:
         shown["related_documents"] = related
+    if answer.get("mentions"):
+        # "Also mentions": a gone document leaves the list and the count.
+        listed = answer["mentions"].get("documents", [])
+        live = [each for each in listed if states.get(str(each.get("document_id"))) not in (None, *_GONE)]
+        total = int(answer["mentions"].get("total") or 0) - (len(listed) - len(live))
+        shown["mentions"] = {**answer["mentions"], "documents": live, "total": total}
     pages = answer.get("unreadable_pages") or []
     kept = [page for page in pages if states.get(str(page.get("document_id"))) not in (None, *_GONE)]
     if len(kept) != len(pages):

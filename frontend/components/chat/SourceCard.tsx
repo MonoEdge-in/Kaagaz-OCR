@@ -22,7 +22,7 @@ import { memo } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { IconButton } from "@/components/ui/IconButton";
 import { pageLink } from "@/lib/regions";
-import type { Citation, RelatedDocument } from "@/lib/types";
+import type { Citation, Mentions, RelatedDocument } from "@/lib/types";
 import {
   DELETED_SOURCE_TEXT,
   HARD_TO_READ_TEXT,
@@ -31,6 +31,8 @@ import {
   citationLink,
   citationSource,
   markParts,
+  matchTerms,
+  mentionPages,
   snippetAround,
 } from "./answer";
 import { labelPlace, openText, pageJumps, sourceMeta } from "./logic";
@@ -180,6 +182,45 @@ export function RelatedRow({
       </div>
       <PinButton name={doc.document_name} pinned={pinned} onPin={onPin} />
     </article>
+  );
+}
+
+/**
+ * "Also mentions “Jalna”" (Tushar, 17 Oct 2026): every other document holding the
+ * question's key terms, as the same compact rows as "Also in": the name, its pages and two
+ * lines with the terms marked, opening at the page. "and N more" past the list.
+ */
+export function MentionsSection({ mentions }: { mentions: Mentions }) {
+  const terms = matchTerms(...mentions.terms);
+  const heading = `Also mentions ${mentions.terms.map((term) => `“${term}”`).join(" · ")}`;
+  const more = mentions.total - mentions.documents.length;
+  return (
+    <div>
+      <h3 className={styles.subheading}>
+        {heading} <span className={styles.sourceMeta}>· {mentions.total}</span>
+      </h3>
+      <ul className={styles.sources} aria-label={heading}>
+        {mentions.documents.map((doc) => (
+          <li key={doc.document_id}>
+            <article className={styles.source}>
+              <div className={styles.sourceBody}>
+                <Title id={`mention-${doc.document_id}`} prefix="Also mentions: " name={doc.document_name} />
+                <p className={styles.sourceMeta}>{mentionPages(doc.pages, doc.page_no)}</p>
+                <Marked text={doc.snippet} terms={terms} short />
+                <div className={styles.sourceAction}>
+                  <Link href={pageLink(doc.document_id, doc.page_no)} className={styles.openLink}>
+                    <Icon name="open" size={16} />
+                    Open page {doc.page_no}
+                    <span className="visually-hidden">{` of ${doc.document_name}`}</span>
+                  </Link>
+                </div>
+              </div>
+            </article>
+          </li>
+        ))}
+      </ul>
+      {more > 0 ? <p className={styles.sourceMeta}>and {more} more</p> : null}
+    </div>
   );
 }
 

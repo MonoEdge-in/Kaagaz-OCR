@@ -98,6 +98,22 @@ def test_cited_document_ids_are_the_citations_and_the_closest_documents() -> Non
     assert cited_document_ids(answer_json(status="not_found")) == []
 
 
+def test_also_mentions_documents_are_checked_and_a_gone_one_leaves_the_list_and_the_count() -> None:
+    row = {"page_no": 1, "pages": [1], "snippet": "Jalna"}
+    mentions = {
+        "terms": ["Jalna"],
+        "total": 9,
+        "documents": [{**row, "document_id": d, "document_name": f"{d}.pdf"} for d in ("m1", "m2", "m3")],
+    }
+    answer = {**_cited_answer("d1"), "mentions": mentions}
+    assert cited_document_ids(answer) == ["d1", "m1", "m2", "m3"]
+    shown = answer_with_source_states(answer, {"d1": "live", "m1": "live", "m2": "in_trash"})
+    assert [d["document_id"] for d in shown["mentions"]["documents"]] == ["m1"]
+    assert shown["mentions"]["total"] == 7
+    assert answer["mentions"] is mentions and len(mentions["documents"]) == 3  # stored answer unchanged
+    assert "mentions" not in answer_with_source_states(_cited_answer("d1"), {"d1": "live"})
+
+
 def test_a_saved_answer_shows_each_source_as_it_is_now() -> None:
     answer = _cited_answer("live", "older", "binned", "gone", closest=("live", "binned", "gone"))
     states = {"live": "live", "older": "older_version", "binned": "in_trash"}  # "gone": deleted forever
