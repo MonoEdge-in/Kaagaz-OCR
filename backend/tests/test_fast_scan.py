@@ -317,6 +317,37 @@ class ReadyBeforeIndexTest(unittest.TestCase):
                 code = getattr(record, "code", "")
                 self.assertIn(code, {"model_down", "OperationalError", "BackendUnavailable"})
                 self.assertNotIn("gone", code)
+                # Never stuck (17 Oct 2026): the model down is pending (EmbedMissing retries it).
+                outcome = "pending_retry" if code == "model_down" else "failed"
+                self.assertEqual((record.__dict__["step"], record.__dict__["outcome"]), ("indexing", outcome))
+
+    def test_indexing_past_its_deadline_frees_the_worker_and_leaves_the_rest_pending(self) -> None:
+        """Never stuck (17 Oct 2026): a long document's vectors (one request a piece through
+        the limiter) held the worker until every one was made; past ``index_seconds`` the job
+        ends after the batch in hand, ready, and EmbedMissing makes the rest."""
+        embedded: list[int] = []
+
+        def during(batch: int) -> None:
+            embedded.append(batch)
+            system.timer.advance(20.0)
+
+        system = runs_rig(embed=FakeEmbedder(batches=3, during_batch=during))
+        processor = system.make()
+        processor._index_seconds = 30.0  # build_processor: MODEL_TIMEOUT_SECONDS
+        job = system.job(CSV)
+        with self.assertLogs("kaagaz.pipeline", level="INFO") as logs:
+            processor(job, lambda: None)  # returns: the job is acked, the worker takes the next
+        self.assertEqual(embedded, [1, 2])  # batch 3 is the sweep's
+        self.assertIs(system.statuses.get_status(job.customer_id, job.document_id), DocumentStatus.READY)
+        steps = [
+            (r.__dict__["step"], r.__dict__["outcome"], r.__dict__["code"])
+            for r in logs.records
+            if "step" in r.__dict__
+        ]
+        self.assertEqual(steps, [("filing", "done", None), ("indexing", "pending_retry", "deadline")])
+        self.assertEqual(
+            [r.__dict__["seconds"] for r in logs.records if r.__dict__.get("step") == "indexing"], [40.0]
+        )
 
     def test_embeddings_go_16_at_once_through_the_one_gate_in_order(self) -> None:
         """EMBED_FAN_OUT 16 (16 Oct 2026): 16 requests in flight, their starts still spaced by
@@ -409,7 +440,7 @@ class SettingsAndCliTest(unittest.TestCase):
             cli.scan_times_line(row),
             "document d-1 ocr_pages 7 upload_to_ready 9.5 queued 1.0 run_to_ready 8.5 preparing 1.2"
             " reading 5.0 careful inline(1 pages) careful_words 0 card 1.5 map - checker -"
-            " understood_after_ready - index_after_ready 4.5",
+            " understood_after_ready - index_after_ready 4.5 pending -",  # pending: changed on purpose
         )
         # Ready first: ready 4 s into the run, understood 4.5 s more, the run's end after that.
         ready_first = {**row, "config": {**config, "seconds_to_ready": 4.0, "seconds_after_ready": 4.5}}
@@ -417,8 +448,11 @@ class SettingsAndCliTest(unittest.TestCase):
             cli.scan_times_line(ready_first),
             "document d-1 ocr_pages 7 upload_to_ready 5.0 queued 1.0 run_to_ready 4.0 preparing 1.2"
             " reading 5.0 careful inline(1 pages) careful_words 0 card 1.5 map - checker -"
-            " understood_after_ready 4.5 index_after_ready 9.0",
+            " understood_after_ready 4.5 index_after_ready 9.0 pending -",
         )
+        # Never stuck (17 Oct 2026): the post-Ready steps still to come.
+        later = {**row, "vectors_pending": 12, "error_code": "model_key_rejected"}
+        self.assertTrue(cli.scan_times_line(later).endswith(" pending vectors,card"))
         words = [
             {"page": 1, "reasons": ["unsure_words", "path_words"]},
             {"page": 2, "reasons": ["blurry", "path_page"]},

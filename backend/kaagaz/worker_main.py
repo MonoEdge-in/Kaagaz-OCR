@@ -36,13 +36,14 @@ until it is told to stop:
   is due (super admin PR 4, ``purge_deleted_customers``), a batch of families
   at a time, and sweeps their storage once more a day after each purge.
 * With the model on, pieces left without a meaning vector (the model was down
-  while their document was read) get one later: at most 64 pieces every 10
-  minutes, between jobs (``EmbedMissing``, kaagaz/search/indexing.py). A model
-  that is down waits 10 minutes, then twice as long each time, up to an hour.
+  while their document was read, or the job's indexing ran out of time) get one later: at
+  most 32 pieces a minute, only on a turn the queue had nothing for, so never before an
+  upload (``EmbedMissing``, kaagaz/search/indexing.py; never stuck, 17 Oct 2026). A model
+  that is down waits 1, 2, 4, 8, then 15 minutes (``retry_delay``).
   Like the purge, it never stops the jobs or crashes the worker.
 * With the model on, stories left without a meaning vector (the model was off
-  or down when they were saved) get one later: at most 32 every 10 minutes,
-  between jobs, waiting longer while the model is down (``StoryVectors``,
+  or down when they were saved) get one later: at most 32 a minute, on an idle
+  turn, waiting the same way while the model is down (``StoryVectors``,
   kaagaz/search/story_vectors.py). Like the purge, it never stops the jobs or
   crashes the worker.
 * WORKER_REPLICAS copies of this process run at once (PRD 5 Q3). Each sweep
@@ -124,6 +125,7 @@ from kaagaz.jobs.worker import (
     RunsJobs,
     Worker,
     database_unreachable,
+    retry_delay,
 )
 from kaagaz.search.indexing import MissingPass, embed_missing
 from kaagaz.search.story_vectors import StoryKey, StoryPass, embed_missing_stories
@@ -136,21 +138,20 @@ logger = logging.getLogger("kaagaz.worker")
 
 # How often the trash purge runs, at most (PRD 1 F5).
 PURGE_EVERY = timedelta(hours=1)
-# The missing-vector pass (council 2 Oct 2026, PROVISIONAL): how often, at most;
-# the longest wait while the model is down; how many pieces a pass may embed.
-EMBED_EVERY = timedelta(minutes=10)
-EMBED_BACKOFF_MOST = timedelta(hours=1)
-EMBED_PASS_PIECES = 64
-# The story vector sweep (council 3 Oct 2026, PROVISIONAL): how often, at most, and
-# how many stories one pass may embed.
-STORY_EVERY = timedelta(minutes=10)
-STORY_BACKOFF_MOST = timedelta(hours=1)
+# The missing-vector pass (council 2 Oct 2026, PROVISIONAL): how often, at most, and how many
+# pieces a pass may embed. Never stuck (17 Oct 2026): a pass runs only on a turn the queue had
+# nothing for, so it is short (32 pieces, one batch: about 2 minutes at MODEL_RPM 60 over 4
+# processes), and a model that is down waits retry_delay (1, 2, 4, 8, then 15 minutes).
+EMBED_EVERY = timedelta(minutes=1)
+EMBED_PASS_PIECES = 32
+# The story vector sweep (council 3 Oct 2026, PROVISIONAL): the same, for stories.
+STORY_EVERY = timedelta(minutes=1)
 STORY_PASS_STORIES = 32
 
 # The only extra fields a log line may carry. Anything else passed in
 # ``extra`` is dropped, so a careless call cannot log document data.
 _PACKAGE = os.path.dirname(os.path.abspath(__file__)) + os.sep  # kaagaz/, for crash_site
-_SAFE_FIELDS = ("customer_id", "document_id", "code", "retryable", "outcome", "where")
+_SAFE_FIELDS = ("customer_id", "document_id", "code", "retryable", "outcome", "where", "step", "seconds")
 
 
 class JsonFormatter(logging.Formatter):
@@ -401,15 +402,16 @@ class PurgeHourly:
 
 
 class EmbedMissing:
-    """Wraps the worker: before a turn, runs ``embed`` (``embed_missing`` bound to
-    the database, the model and EMBED_PASS_PIECES) with its cursor, at most every
-    EMBED_EVERY on ``clock``. The first turn runs it. ``embed`` None (the model is
-    off) does nothing.
+    """Wraps the worker: after a turn the queue had nothing for (never stuck, 17 Oct 2026:
+    never before an upload), runs ``embed`` (``embed_missing`` bound to the database, the
+    model and EMBED_PASS_PIECES) with its cursor, at most every EMBED_EVERY on ``clock``.
+    A turn that ran a pass counts as busy, so the next sweep waits for the next idle turn.
+    ``embed`` None (the model is off) does nothing.
 
     The cursor is kept here between passes (a restart starts from the first
-    customer again). A pass the model was down for waits EMBED_EVERY, then twice
-    as long each time it is down again, up to EMBED_BACKOFF_MOST; a pass it
-    answers sets the wait back. A database error (SQLAlchemyError, or
+    customer again). A pass the model was down for waits ``retry_delay`` of the passes
+    down in a row (1, 2, 4, 8, then 15 minutes); a pass it answers sets it back. A
+    database error (SQLAlchemyError, or
     BackendUnavailable when the database cannot be reached) is logged by its
     type and swallowed, as in PurgeHourly: the jobs go on, and the next pass is
     EMBED_EVERY later. Logs hold ids, codes and counts only. The pass runs under
@@ -430,22 +432,26 @@ class EmbedMissing:
         self._clock = clock
         self._lock = lock
         self._next: datetime | None = None
-        self._backoff = EMBED_EVERY
+        self._downs = 0  # passes the model was down for, in a row
         self._after: tuple[str, str] | None = None
 
     def run_once(self) -> bool:
+        if self._worker.run_once():
+            return True
         now = self._clock()
-        if self._embed is not None and (self._next is None or now >= self._next):
-            self._next = now + EMBED_EVERY  # noted first: a pass that fails waits too
-            try:
-                with self._lock("embed_missing") as mine:
-                    done = self._embed(self._after) if mine else None
-            except (SQLAlchemyError, BackendUnavailable) as error:
-                logger.error("missing vectors failed", extra={"code": type(error).__name__})
-            else:
-                if done is not None:
-                    self._note(done, now)
-        return self._worker.run_once()
+        if self._embed is None or (self._next is not None and now < self._next):
+            return False
+        self._next = now + EMBED_EVERY  # noted first: a pass that fails waits too
+        done = None
+        try:
+            with self._lock("embed_missing") as mine:
+                done = self._embed(self._after) if mine else None
+        except (SQLAlchemyError, BackendUnavailable) as error:
+            logger.error("missing vectors failed", extra={"code": type(error).__name__})
+            return True
+        if done is not None:
+            self._note(done, now)
+        return done is not None
 
     def _note(self, done: MissingPass, now: datetime) -> None:
         """Keep the pass's cursor and wait, and log it."""
@@ -457,29 +463,29 @@ class EmbedMissing:
                 extra={"customer_id": customer, "document_id": document, "code": code},
             )
         if done.down is None:
-            self._backoff = EMBED_EVERY
+            self._downs = 0
             if done.written >= EMBED_PASS_PIECES:
                 # A full pass: more are waiting (Ready comes before vectors, fast scan), so the
-                # next turn runs again rather than in EMBED_EVERY (council 16 Oct 2026).
+                # next idle turn runs again rather than in EMBED_EVERY (council 16 Oct 2026).
                 self._next = now
         else:
+            self._downs += 1
             logger.warning("model unavailable, vectors wait", extra={"code": done.down})
-            self._next = now + self._backoff
-            self._backoff = min(self._backoff * 2, EMBED_BACKOFF_MOST)
+            self._next = now + timedelta(seconds=retry_delay(self._downs))
         logger.info("missing vectors: %d pieces", done.written)
 
 
 class StoryVectors:
-    """Wraps the worker: before a turn, runs ``embed`` (``embed_missing_stories`` bound
-    to the database, the model and STORY_PASS_STORIES) with its cursor, at most every
-    STORY_EVERY on ``clock``. The first turn runs it. ``embed`` None (the model is
-    off) does nothing.
+    """Wraps the worker: after a turn the queue had nothing for (as EmbedMissing), runs
+    ``embed`` (``embed_missing_stories`` bound to the database, the model and
+    STORY_PASS_STORIES) with its cursor, at most every STORY_EVERY on ``clock``. A turn
+    that ran a pass counts as busy. ``embed`` None (the model is off) does nothing.
 
     The cursor is kept here between passes (a restart starts from the first story
     again). The time is noted first, so a pass that fails waits STORY_EVERY too. A
-    pass the model failed (ModelUnavailable, ModelOutputError) waits STORY_EVERY,
-    then twice as long each time it fails again, up to STORY_BACKOFF_MOST; a pass
-    it answers sets the wait back. A database error (SQLAlchemyError, or
+    pass the model failed (ModelUnavailable, ModelOutputError) waits ``retry_delay`` of
+    the passes failed in a row (1, 2, 4, 8, then 15 minutes); a pass it answers sets it
+    back. A database error (SQLAlchemyError, or
     BackendUnavailable when the database cannot be reached) or a ValueError is
     logged by its type and swallowed, as in PurgeHourly: the jobs go on. Logs hold
     codes and counts only, never a story. The pass runs under ``lock("story_vectors")``
@@ -500,28 +506,32 @@ class StoryVectors:
         self._clock = clock
         self._lock = lock
         self._next: datetime | None = None
-        self._backoff = STORY_EVERY
+        self._downs = 0  # passes the model failed, in a row
         self._after: StoryKey | None = None
 
     def run_once(self) -> bool:
+        if self._worker.run_once():
+            return True
         now = self._clock()
-        if self._embed is not None and (self._next is None or now >= self._next):
-            self._next = now + STORY_EVERY
-            try:
-                with self._lock("story_vectors") as mine:
-                    done = self._embed(self._after) if mine else None
-            except (SQLAlchemyError, BackendUnavailable, ValueError) as error:
-                logger.error("story vectors failed", extra={"code": type(error).__name__})
-            except (ModelUnavailable, ModelOutputError) as error:
-                logger.warning("model unavailable, story vectors wait", extra={"code": error.code})
-                self._next = now + self._backoff
-                self._backoff = min(self._backoff * 2, STORY_BACKOFF_MOST)
-            else:
-                if done is not None:
-                    self._after = done.after
-                    self._backoff = STORY_EVERY
-                    logger.info("story vectors: %d of %d stories", done.written, done.found)
-        return self._worker.run_once()
+        if self._embed is None or (self._next is not None and now < self._next):
+            return False
+        self._next = now + STORY_EVERY
+        try:
+            with self._lock("story_vectors") as mine:
+                done = self._embed(self._after) if mine else None
+        except (SQLAlchemyError, BackendUnavailable, ValueError) as error:
+            logger.error("story vectors failed", extra={"code": type(error).__name__})
+        except (ModelUnavailable, ModelOutputError) as error:
+            self._downs += 1
+            logger.warning("model unavailable, story vectors wait", extra={"code": error.code})
+            self._next = now + timedelta(seconds=retry_delay(self._downs))
+        else:
+            if done is None:
+                return False
+            self._after = done.after
+            self._downs = 0
+            logger.info("story vectors: %d of %d stories", done.written, done.found)
+        return True
 
 
 def _purge(db: Database, storage: CustomerStorage, trash_days: int) -> int:

@@ -788,6 +788,8 @@ class AnswerService:
             _timing().lap("embed")
             extra = [(_search_text(text), meaning) for text, meaning in zip(aspects, meanings, strict=True)]
             hits = self._hits(customer_id, query_text, vector, extra, scope, expansion)
+            if hits:  # never stuck (17 Oct 2026): found by words and typos, a missing vector is no outage
+                _timing().degraded = False
             translated = self._translated_search(
                 customer_id, question, query_text, vector, hits, scope, expansion, extra
             )
