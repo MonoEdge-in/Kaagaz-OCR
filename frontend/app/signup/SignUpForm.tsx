@@ -61,7 +61,8 @@ export function SignUpForm() {
   // Signed up: the two-step set-up the server sent (no session before the first code).
   const [enrol, setEnrol] = useState<TwoStepSetup | null>(null);
   // N3 (QA 17 Oct): asked as SignUpLink does; switched off, no form is shown. No answer: the form stays.
-  const [off, setOff] = useState(false);
+  // null while asking, so the form never flashes before an "off" reply (CodeRabbit).
+  const [off, setOff] = useState<boolean | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -69,7 +70,9 @@ export function SignUpForm() {
       .then((reply) => {
         if (live) setOff(!reply.enabled);
       })
-      .catch(() => {});
+      .catch(() => {
+        if (live) setOff(false);
+      });
     return () => {
       live = false;
     };
@@ -122,12 +125,12 @@ export function SignUpForm() {
     );
   }
 
-  if (off) {
+  if (off !== false) {
     return (
       <div className={login.form}>
         <div className={login.intro}>
           <h1 className={login.title}>Create an account</h1>
-          <p className={login.lead}>{SIGN_UP_OFF}</p>
+          {off && <p className={login.lead}>{SIGN_UP_OFF}</p>}
         </div>
         <p className={login.switch}>
           Already have an account? <Link href="/login">Sign in</Link>

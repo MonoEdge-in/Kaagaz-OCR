@@ -230,8 +230,9 @@ export function statusBarText(
   else if (sending.length > 1) parts.push(`Uploading ${sending.length} files`);
   // U7 (QA 17 Oct): a document with no progress is waiting for the reader, counted on its own.
   const followed = entries.flatMap((entry) => (entry.state.kind === "reading" ? [entry.state.document] : []));
-  const waiting = followed.filter((document) => !document.progress).length;
-  const reading = entries.filter((entry) => entry.state.kind === "reading" && entry.state.document.progress);
+  const held = (document: { progress?: { step: string } | null }) => !document.progress || document.progress.step === "waiting";
+  const waiting = followed.filter(held).length;
+  const reading = entries.filter((entry) => entry.state.kind === "reading" && !held(entry.state.document));
   if (reading.length > 0) {
     parts.push(`Scanning ${counted(reading.length, "document")}`);
     let done = 0;

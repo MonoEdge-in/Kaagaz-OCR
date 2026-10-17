@@ -137,6 +137,13 @@ describe("the words for each state (wording table)", () => {
     );
   });
 
+  // CodeRabbit (17 Oct): a "waiting" step (held for the reader) is waiting, never "Scanning page 1".
+  it("treats a document held at the waiting step as waiting, in the row and the status bar", () => {
+    const held = scanning("h", { step: "waiting", done: 0, total: 3 });
+    expect(uploadStateText(reading(held))).toBe("Waiting");
+    expect(statusBarText([entry("h", reading(held))], {}, 0)).toBe("1 document waiting to be read");
+  });
+
   it("says every estimate with About, Taking longer only with the time beside it", () => {
     const low = hold(null, left(65), "understanding", 0);
     expect(describeTime(low, 0, false).text).toBe("About 1 min left");

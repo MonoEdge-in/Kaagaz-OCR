@@ -371,7 +371,9 @@ export const counted = (n: number, one: string) => `${n} ${n === 1 ? one : `${on
  */
 export function scanWords(document: Scanned): { chip: string; detail: string } | null {
   const { progress } = document;
-  if (!progress) return null;
+  // A "waiting" step (held for the reader) is not being read: no chip words, so callers
+  // say Waiting and the server's message says why (CodeRabbit, QA 17 Oct).
+  if (!progress || progress.step === "waiting") return null;
   const { step, done, total } = progress;
   const pageOf = total > 0 ? `page ${Math.max(1, Math.min(done + 1, total))} of ${total}` : "the whole file";
   let words: { chip: string; detail: string };

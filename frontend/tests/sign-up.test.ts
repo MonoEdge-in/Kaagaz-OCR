@@ -148,8 +148,10 @@ describe("the sign-up page while sign-up is off", () => {
   it("asks the server first, and shows the off words with a way back to sign in instead of the form", () => {
     const form = read("app/signup/SignUpForm.tsx");
     expect(form).toMatch(/signUpOpen\(\)\s*\.then\(\(reply\) => \{\s*if \(live\) setOff\(!reply\.enabled\);/);
-    const off = form.slice(form.indexOf("if (off) {"), form.indexOf("function textField("));
-    expect(off).toContain("{SIGN_UP_OFF}");
+    // CodeRabbit (17 Oct): null while asking, so the form never flashes before an "off" reply.
+    expect(form).toContain("useState<boolean | null>(null)");
+    const off = form.slice(form.indexOf("if (off !== false) {"), form.indexOf("function textField("));
+    expect(off).toContain("{off && <p className={login.lead}>{SIGN_UP_OFF}</p>}");
     expect(off).toContain('<Link href="/login">Sign in</Link>');
     expect(off).not.toContain("<form");
   });

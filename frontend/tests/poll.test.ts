@@ -135,6 +135,21 @@ describe("createPoller", () => {
     poller.stop();
   });
 
+  // CodeRabbit (17 Oct): a refresh queued behind a request in flight keeps its force.
+  it("runs a refresh queued behind a request even while hidden", async () => {
+    const { poller, world, calls } = harness();
+    world.hold = true;
+    poller.refresh();
+    await vi.advanceTimersByTimeAsync(0);
+    world.hidden = true;
+    poller.refresh(); // queued behind the first
+    world.held.shift()?.();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls).toHaveLength(2);
+    world.held.shift()?.();
+    poller.stop();
+  });
+
   // #35 regression: the list must still be asked for after the last upload of
   // a batch settles, even when it settles while a request is already out.
   it("sends one request at a time, and a refresh asked for meanwhile runs once after it", async () => {

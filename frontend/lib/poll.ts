@@ -39,7 +39,8 @@ export function createPoller<T>(task: () => PollTask<T>, hidden: () => boolean):
   const lastStep = POLL_STEPS_MS.length - 1;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let out = false; // a request is out
-  let queued = false; // asked for again while it was
+  let queued = false;
+  let queuedForce = false; // asked for again while it was
   let due = false; // a poll came due while the tab was hidden
   let step = 0;
   let signature: string | null = null;
@@ -62,6 +63,7 @@ export function createPoller<T>(task: () => PollTask<T>, hidden: () => boolean):
   function run(force = false) {
     if (out) {
       queued = true;
+      queuedForce ||= force; // a refresh queued behind a request keeps its force
       return;
     }
     if (!force && hidden()) {
@@ -93,8 +95,10 @@ export function createPoller<T>(task: () => PollTask<T>, hidden: () => boolean):
       .finally(() => {
         out = false;
         if (queued) {
+          const again = queuedForce;
           queued = false;
-          run();
+          queuedForce = false;
+          run(again);
         } else if (mine === generation && more) plan();
       });
   }
