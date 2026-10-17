@@ -310,7 +310,13 @@ const STARTERS: Partial<Record<DocType, string>> = {
   contract: "Who are the parties, and when does it end?",
   register: "Which entry has the largest amount?",
 };
-const STARTER_DEFAULT = "What is this document about?";
+// Any document: the first not yet suggested, so no question shows twice (17 Oct 2026).
+const STARTERS_ANY = [
+  "What is this document about?",
+  "Who are the parties named in it?",
+  "What amounts does it mention?",
+  "When is it dated?",
+];
 export const MAX_STARTERS = 3;
 
 export interface Starter {
@@ -322,15 +328,20 @@ export interface Starter {
 /**
  * A5: up to three example questions about the newest ready documents, one each, by the
  * document's type. Each is asked about its own document only. Plain, fixed questions: no
- * AI call makes them.
+ * AI call makes them. Never the same question twice (Ask screen polish, 17 Oct 2026): a
+ * type's question already used, or a document with no type, takes the next unused one.
  */
 export function starterQuestions(documents: readonly DocumentSummary[]): Starter[] {
-  return documents
-    .filter((doc) => doc.status === "ready" && doc.deleted_at === null)
-    .slice(0, MAX_STARTERS)
-    .map((doc) => ({
-      documentId: doc.id,
-      documentName: doc.display_name,
-      question: (doc.doc_type && STARTERS[doc.doc_type]) || STARTER_DEFAULT,
-    }));
+  const used = new Set<string>();
+  const starters: Starter[] = [];
+  for (const doc of documents) {
+    if (starters.length === MAX_STARTERS) break;
+    if (doc.status !== "ready" || doc.deleted_at !== null) continue;
+    const typed = doc.doc_type ? STARTERS[doc.doc_type] : undefined;
+    const question = [typed, ...STARTERS_ANY].find((text) => text !== undefined && !used.has(text));
+    if (!question) continue;
+    used.add(question);
+    starters.push({ documentId: doc.id, documentName: doc.display_name, question });
+  }
+  return starters;
 }

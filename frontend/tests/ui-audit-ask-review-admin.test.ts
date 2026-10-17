@@ -120,10 +120,42 @@ describe("Ask (A1 to A6)", () => {
         onDelete: async () => true,
       }),
     );
-    expect(html).toMatch(/<label for="[^"]+-search">Search conversations<\/label><input id="[^"]+-search" type="search"/);
+    // Changed on purpose (Tushar, 17 Oct 2026, Ask screen polish): a lens and a placeholder in the box.
+    expect(html).toMatch(
+      /<label for="[^"]+-search">Search conversations<\/label><div[^>]*><svg class="[^"]*searchIcon[^"]*"[\s\S]*?<\/svg><input id="[^"]+-search" type="search"[^>]*placeholder="Search conversations"/,
+    );
+    expect(html).not.toContain('class="field'); // the global field label is all caps
     expect(html).toContain('aria-label="Actions for GST bills"');
     expect(html).toMatch(/role="menuitem"[^>]*>Rename<\/button><button[^>]*role="menuitem"[^>]*>Delete<\/button>/);
     expect(html).toMatch(/aria-label="Refresh conversations" title="Refresh conversations"/);
+  });
+
+  it("Ask screen polish: one line per conversation, its time beside the title, an icon-only menu", () => {
+    const html = renderToStaticMarkup(
+      createElement(ConversationList, {
+        items: [conversation("a", "GST bills")],
+        failed: false,
+        activeId: "a",
+        disabled: false,
+        onOpen: () => undefined,
+        onNew: () => undefined,
+        onRetry: () => undefined,
+        onRename: async () => true,
+        onDelete: async () => true,
+      }),
+    );
+    expect(html).toMatch(
+      /<button type="button" class="[^"]*item[^"]*" aria-current="true"><span class="[^"]*itemTitle[^"]*" title="GST bills">GST bills<\/span><time class="[^"]*itemTime[^"]*"/,
+    );
+    expect(html).toMatch(/<button popoverTarget="[^"]+" aria-haspopup="menu"[^>]*aria-label="More actions for GST bills"[^>]*><svg[\s\S]*?<\/svg><\/button>/);
+    expect(html).not.toMatch(/>More</);
+    const css = read("components/chat/Chat.module.css");
+    expect(css).toMatch(/\.itemTitle \{[^}]*text-overflow: ellipsis;[^}]*white-space: nowrap;/);
+    expect(css).toMatch(/\.itemTime \{[^}]*font-variant-numeric: tabular-nums;/);
+    expect(css).toMatch(/\.itemRow > \[aria-haspopup="menu"\] \{[^}]*opacity: 0;/);
+    expect(css).toMatch(/\.itemRow:focus-within > \[aria-haspopup="menu"\]/);
+    expect(css).toMatch(/@media \(pointer: coarse\) \{\s*\.itemRow > \[aria-haspopup="menu"\] \{\s*position: static;\s*opacity: 1;/);
+    expect(css).toMatch(/\.pane \{[^}]*overscroll-behavior: contain;[^}]*scrollbar-width: thin;/);
   });
 
   it("A2 and A3: one toolbar row, and Send dimmed while the box is empty", () => {
@@ -189,6 +221,27 @@ describe("Ask (A1 to A6)", () => {
       { documentId: "bank", documentName: "bank.pdf", question: "What is the closing balance?" },
       { documentId: "note", documentName: "note.pdf", question: "What is this document about?" },
     ]);
+  });
+
+  it("Ask screen polish: never suggests the same question twice, and varies them", () => {
+    const doc = (id: string, changes: Partial<DocumentSummary> = {}) =>
+      ({ id, display_name: id, status: "ready", deleted_at: null, doc_type: null, ...changes }) as DocumentSummary;
+    const untyped = starterQuestions([doc("JCS-051.pdf"), doc("IMG_0204.jpeg"), doc("scan.pdf", { doc_type: "other" })]);
+    expect(untyped.map((starter) => starter.question)).toEqual([
+      "What is this document about?",
+      "Who are the parties named in it?",
+      "What amounts does it mention?",
+    ]);
+    const bills = starterQuestions([doc("a", { doc_type: "invoice" }), doc("b", { doc_type: "invoice" }), doc("c")]);
+    expect(bills.map((starter) => starter.question)).toEqual([
+      "What is the total amount on this invoice?",
+      "What is this document about?",
+      "Who are the parties named in it?",
+    ]);
+    expect(starterQuestions(Array.from({ length: 6 }, (_, i) => doc(`d${i}`)))).toHaveLength(3);
+    const css = read("components/chat/Chat.module.css");
+    expect(css).toMatch(/\.starterList \{[^}]*grid-template-columns: repeat\(auto-fit, minmax\(min\(100%, 240px\), 1fr\)\);/);
+    expect(css).toMatch(/\.empty > :first-child \{\s*padding-block: 0;/); // one block, no dead gap
   });
 });
 
