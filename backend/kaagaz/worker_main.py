@@ -290,7 +290,7 @@ class MarkExhausted:
 
 
 STOPPING = "stopping"  # a job handed back by a worker that is stopping
-FEATURE_OFF = "feature_off"  # Scanning with AI switched off by the super admin (0038)
+FEATURE_OFF = "feature_off"  # Scanning with AI switched off by the super admin (0038, 0039)
 FEATURE_OFF_DEFER_SECONDS = 60
 
 
@@ -298,14 +298,15 @@ def admission(
     reader_state: Callable[[], str],
     slot: Admit,
     stopping: Callable[[], bool] = lambda: False,
-    scanning_on: Callable[[], bool] = lambda: True,
+    scanning_on: Callable[[str], bool] = lambda _customer: True,
 ) -> Admit:
     """The worker's ``admit`` (PRD 5 Q5): once ``stopping()`` (SIGTERM came while the queue
     was polled), the job is handed straight back for another worker (council 16 Oct 2026),
     never started and then cut off by Docker; while ``reader_state()`` (the gate's state) is
     ``key_problem``, every job is handed back for KEY_PROBLEM_DEFER_SECONDS; while
-    ``scanning_on()`` is false (the super admin switched Scanning with AI off, 0038, asked
-    again for every job), every job waits FEATURE_OFF_DEFER_SECONDS, uncounted; otherwise
+    ``scanning_on(job.customer_id)`` is false (the super admin switched Scanning with AI off
+    for every organisation, 0038, or for the job's own, 0039; asked again for every job),
+    the job waits FEATURE_OFF_DEFER_SECONDS, uncounted; otherwise
     ``slot(job)`` (FairShare.slot) holds the customer's slot for the try, or hands the
     job back. Each hand-back is logged at debug with the job's ids and a fixed code,
     never another customer's count. O(1) besides the slot."""
@@ -319,7 +320,7 @@ def admission(
                     raise Deferred(0, STOPPING)
                 if reader_state() == READER_KEY_PROBLEM:
                     raise Deferred(KEY_PROBLEM_DEFER_SECONDS, READER_KEY_PROBLEM)
-                if not scanning_on():
+                if not scanning_on(job.customer_id):
                     raise Deferred(FEATURE_OFF_DEFER_SECONDS, FEATURE_OFF)
                 held.enter_context(slot(job))
             except Deferred as deferred:
@@ -641,10 +642,11 @@ def run_until_stopped(worker: RunsJobs, stop: threading.Event, *, pause_seconds:
             stop.wait(pause_seconds)
 
 
-def _scanning_on(db: Database) -> bool:
-    """The Scanning with AI switch (0038), read for each job: one statement."""
-    with db.system() as conn:
-        return ai_settings.switch_on(conn, "scan_ai")
+def _scanning_on(db: Database, customer_id: str) -> bool:
+    """The Scanning with AI switch (0038) and the job's organisation's own (0039), read for
+    each job: one statement."""
+    with db.customer(customer_id) as conn:
+        return ai_settings.switch_on(conn, "scan_ai", customer_id)
 
 
 def worker_model(settings: Settings) -> "ModelClient | None":
@@ -724,7 +726,7 @@ def _serve(settings: Settings) -> None:
             lambda: gate.status()[0],
             fair_share.slot,
             stop.is_set,
-            functools.partial(_scanning_on, db) if settings.ocr_engine == GEMINI else lambda: True,
+            functools.partial(_scanning_on, db) if settings.ocr_engine == GEMINI else lambda _customer: True,
         ),
         mark_run_exhausted=ensemble.exhausted,
         record_run_attempt=ensemble.record_attempt,

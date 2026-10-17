@@ -644,18 +644,19 @@ Admin = Annotated[CurrentUser, Depends(require_role("admin"))]
 FEATURE_OFF = "This is turned off for now."
 
 
-def feature_on(context: AppContext, feature: str) -> bool:
-    """The super admin's switch for ``feature`` (0038; no row: on). One statement."""
-    with context.db.system() as conn:
-        return ai_settings.switch_on(conn, feature)
+def feature_on(context: AppContext, feature: str, customer_id: str | None = None) -> bool:
+    """The super admin's switch for ``feature`` (0038) and ``customer_id``'s own (0039; None:
+    the platform's alone); no row: on. One statement."""
+    with context.db.system() if customer_id is None else context.db.customer(customer_id) as conn:
+        return ai_settings.switch_on(conn, feature, customer_id)
 
 
-def require_feature(feature: str) -> Callable[[Request], None]:
+def require_feature(feature: str) -> Callable[[Request, CurrentUser], None]:
     """A dependency: 403 ``feature_off`` while the super admin switched ``feature`` off for
-    every organisation (0038)."""
+    every organisation (0038) or for the user's own (0039)."""
 
-    def dependency(request: Request) -> None:
-        if not feature_on(get_context(request), feature):
+    def dependency(request: Request, user: User) -> None:
+        if not feature_on(get_context(request), feature, user.customer_id):
             raise ApiError(403, "feature_off", FEATURE_OFF)
 
     return dependency

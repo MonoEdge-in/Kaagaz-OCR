@@ -54,6 +54,9 @@ ORG_ROUTES = {
     ("GET", f"{ORGS}/{ANY_ID}/ai"),
     ("PUT", f"{ORGS}/{ANY_ID}/ai"),
     ("PUT", f"{ORGS}/{ANY_ID}/autofile"),  # feature 28: allow or stop auto-filing
+    # Changed on purpose (0039): one organisation's feature switches.
+    ("GET", f"{ORGS}/{ANY_ID}/feature-switches"),
+    ("PUT", f"{ORGS}/{ANY_ID}/feature-switches/{ANY_ID}"),
 }
 ORG_ROW = {
     "customer_id": CID,

@@ -120,7 +120,7 @@ def _check(task: Task, level: str | None) -> None:
 def _tasks(conn: Connection, user: CurrentUser, settings: Settings) -> dict[str, Task]:
     """Every task for ``user``: the ceiling the organisation has now (with the platform
     switches), the saved rows, the rule. Five statements."""
-    on = ai_settings.switches(conn)
+    on = ai_settings.switches(conn, user.customer_id)
     ceiling = models_sql.effective_settings(conn, user.customer_id)
     org = admin_sql.get_settings(conn, user.customer_id)
     saved = ai_settings.rows(conn, user.customer_id, user.user_id)

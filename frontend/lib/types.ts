@@ -1324,6 +1324,13 @@ export interface FeatureSwitch {
   organisations_using: number;
 }
 
+/** GET /operator/orgs/{id}/feature-switches (0039): one organisation's own switch, with the platform's. */
+export interface OrgFeatureSwitch {
+  feature: string;
+  enabled: boolean;
+  platform_enabled: boolean; // false: off for every organisation, whatever this one says
+}
+
 /** GET /operator/test-model: the whole platform on one model for a test, or not. */
 export interface TestModel {
   active: boolean;

@@ -105,6 +105,8 @@ _CHAT = text(_AREA.format(area="chat", usable="c.chat_eligible AND c.chat_verifi
 
 # The effective settings (C2): the organisation's field, else the platform's. Ensemble is
 # the organisation's alone. One row (0026 seeds the platform row; no row, the env only).
+# Cost saving and Ensemble are off while the platform's switch (0038) or the organisation's
+# own (0039) is off.
 _SETTINGS = text(
     "SELECT COALESCE(s.scan_thinking, p.scan_thinking) AS scan_thinking,"
     " COALESCE(s.chat_levels, p.chat_levels) AS chat_levels,"
@@ -116,7 +118,8 @@ _SETTINGS = text(
     " LEFT JOIN customer_ai_settings s ON s.customer_id = :customer"
     " LEFT JOIN (SELECT bool_and(f.enabled) FILTER (WHERE f.feature = 'cost_saving') AS cost_saving,"
     " bool_and(f.enabled) FILTER (WHERE f.feature = 'ensemble') AS ensemble"
-    " FROM feature_switches f) w ON true"
+    " FROM (SELECT feature, enabled FROM feature_switches UNION ALL SELECT feature, enabled"
+    " FROM org_feature_switches WHERE customer_id = :customer) f) w ON true"
 )
 # With the scan task settings of the organisation and of who asked for the reading (0038), as
 # [organisation?, level, locked] triples: no extra statement for a job (at most two rows).

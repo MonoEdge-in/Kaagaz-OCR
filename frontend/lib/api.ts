@@ -46,6 +46,7 @@ import type {
   OperatorUsageRow,
   OrgAdmin,
   OrgAiReply,
+  OrgFeatureSwitch,
   Organisation,
   OrganisationCreated,
   PageReadings,
@@ -632,6 +633,12 @@ export const getFeatureSwitches = () => request<FeatureSwitch[]>("GET", "/operat
 /** Flip one, with a fresh code (step-up, as every operator change that takes something away). */
 export const setFeatureSwitch = (feature: string, enabled: boolean, code: string) =>
   request<FeatureSwitch[]>("PUT", `/operator/feature-switches/${encodeURIComponent(feature)}`, { enabled, code });
+const orgSwitches = (orgId: string) => `/operator/orgs/${encodeURIComponent(orgId)}/feature-switches`;
+/** Operator: one organisation's own switches (0039), each with the platform's. */
+export const getOrgFeatureSwitches = (orgId: string) => request<OrgFeatureSwitch[]>("GET", orgSwitches(orgId));
+/** Flip one for that organisation only, with a fresh code (step-up). */
+export const setOrgFeatureSwitch = (orgId: string, feature: string, enabled: boolean, code: string) =>
+  request<OrgFeatureSwitch[]>("PUT", `${orgSwitches(orgId)}/${encodeURIComponent(feature)}`, { enabled, code });
 
 /** Operator: the platform-wide test model. */
 export const getTestModel = () => request<TestModel>("GET", "/operator/test-model");

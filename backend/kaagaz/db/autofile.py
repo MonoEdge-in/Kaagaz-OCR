@@ -170,7 +170,7 @@ def _filing_on(conn: Connection, customer_id: str, state: RowMapping) -> bool:
     """Auto-filing is on for the uploader (AI settings, 0038): the grant and the platform
     switch, the organisation's default or lock and the uploader's own choice; with none
     saved, the admin's switch (``autofile_on``), as before. Two statements."""
-    granted = bool(state["autofile_granted"]) and ai_settings.switch_on(conn, "autofile")
+    granted = bool(state["autofile_granted"]) and ai_settings.switch_on(conn, "autofile", customer_id)
     uploader = None if state["uploaded_by"] is None else str(state["uploaded_by"])
     return ai_settings.task_on(conn, customer_id, uploader, "autofile", granted, bool(state["autofile_on"]))
 
