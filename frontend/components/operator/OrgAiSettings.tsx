@@ -32,12 +32,14 @@ import {
   ENSEMBLE_OFF,
   LEVELS,
   LEVEL_WORDS,
+  NO_LEVELS,
   VENDOR_NOT_ALLOWED,
   aiBody,
   aiErrors,
   changesText,
   draftOf,
   followDefaults,
+  hasNoLevels,
   inheritedText,
   inrText,
   monthSpentText,
@@ -367,6 +369,8 @@ export function AiFields(props: {
   const from = (field: Parameters<typeof inheritedText>[0]) => inheritedText(field, defaults, env, catalogue);
   const section = { platform, draft, busy, onChange };
   const rupees = inrText(parseBudget(draft.budget));
+  const scanTicked = catalogue.filter((model) => draft.scan_models.includes(model.id));
+  const scanNoLevels = scanTicked.length > 0 && scanTicked.every(hasNoLevels);
   return (
     <>
       <SectionBox title="Scanning" section="scan" {...section}>
@@ -379,6 +383,13 @@ export function AiFields(props: {
           errors={errors}
           onChange={onChange}
         />
+        {scanNoLevels ? (
+          // Every ticked scan model has no thinking levels: nothing to choose (Tushar, 18 Oct 2026).
+          <div className="field">
+            <span className="label">Thinking level</span>
+            <p className="hint">{NO_LEVELS}: the ticked models have one mode.</p>
+          </div>
+        ) : (
         <div className="field">
           <label htmlFor="ai-scan-thinking">Thinking level</label>
           <select
@@ -395,6 +406,7 @@ export function AiFields(props: {
             ))}
           </select>
         </div>
+        )}
         {platform ? (
           <label className={styles.choice}>
             <input
@@ -567,6 +579,7 @@ function ModelChoices(props: {
                 {model.name}
                 <span className={`${styles.statusNote} tabular`}>{realCostText(model, area)}</span>
                 {!model.vendor_allowed && <span className={styles.statusNote}>{VENDOR_NOT_ALLOWED}</span>}
+                {hasNoLevels(model) && <span className={styles.statusNote}>{NO_LEVELS}</span>}
               </span>
             </label>
           ))

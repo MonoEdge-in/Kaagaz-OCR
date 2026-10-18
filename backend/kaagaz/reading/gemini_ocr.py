@@ -197,7 +197,7 @@ from kaagaz.reading.page_quality import (
 )
 from kaagaz.reading.rapid_pool import PixelBox, RapidOcrPool
 from kaagaz.reading.spans import TABLE_ID, Span
-from kaagaz.settings import Settings
+from kaagaz.settings import NO_THINKING, Settings
 
 # G1, G7: the prompt version, kept in kaagaz.reading.ocr (READER_PROMPT_VERSION) so the
 # pipeline and the API can name it without loading this module.
@@ -245,7 +245,8 @@ MIN_CALL_SECONDS = 20.0
 # deadline; the high reply is used when it comes in time, else the low one.
 LOW_ALONGSIDE_SHARE = 0.5
 DOCUMENT_BUDGET = "document_budget"  # the code of a page read locally when the budget ran out
-QUICKEST_THINKING = frozenset({"minimal", LOW_THINKING})  # a timeout here is not read again
+# A timeout here is not read again (NO_THINKING: a model with no thinking levels has one mode).
+QUICKEST_THINKING = frozenset({"minimal", LOW_THINKING, NO_THINKING})
 # G3: the kinds the model may give a line (all in spans.BLOCK_KINDS).
 LINE_KINDS: tuple[str, ...] = (
     "title",
@@ -679,7 +680,7 @@ class GeminiEngine:
                     instruction=crops_instruction(counts),
                     schema=CROPS_SCHEMA,
                     media_resolution=self._normal[0],
-                    thinking_level=self._harder[1],
+                    thinking_level=self._sent(model, self._harder[1]),
                     deadline=self._page_deadline(),
                     model=model,
                     provider=provider,
@@ -972,12 +973,19 @@ class GeminiEngine:
             instruction=INSTRUCTION,
             schema=PAGE_SCHEMA,
             media_resolution=resolution,
-            thinking_level=thinking,
+            thinking_level=self._sent(model, thinking),
             deadline=deadline,
             model=model,
             provider=provider,
             validate=repair_problem,
         )
+
+    def _sent(self, model: str, thinking: str) -> str:
+        """The level sent to ``model``: NO_THINKING for one of the open document's models with
+        no thinking levels (``DocumentPages.plain``: every scan path, the first read, Careful,
+        a read again, Ensemble's), else ``thinking``. O(1)."""
+        pages = self._pages
+        return NO_THINKING if pages is not None and model in pages.plain else thinking
 
     def _page(
         self,

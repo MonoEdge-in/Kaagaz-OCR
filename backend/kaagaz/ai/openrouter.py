@@ -136,6 +136,7 @@ from kaagaz.settings import (
     DEFAULT_PROVIDER,
     MEDIA_RESOLUTION_SHAPE,
     MEDIA_RESOLUTIONS,
+    NO_THINKING,
     PROVIDER_SLUG,
     SENDABLE_MEDIA_RESOLUTIONS,
     THINKING_LEVELS,
@@ -402,14 +403,16 @@ def chat_request(
     provider_slug: str = DEFAULT_PROVIDER,
 ) -> dict[str, Any]:
     """A /chat/completions body: the model, the messages, the thinking effort, the output
-    cap, the schema and ``provider(provider_slug)``."""
+    cap, the schema and ``provider(provider_slug)``. ``thinking`` NO_THINKING (a model with
+    no thinking levels, Tushar 18 Oct 2026) sends no ``reasoning`` field at all."""
     body: dict[str, Any] = {
         "model": model,
         "messages": messages,
         "stream": False,
-        "reasoning": reasoning(thinking),
         "provider": provider(provider_slug),
     }
+    if thinking != NO_THINKING:
+        body["reasoning"] = reasoning(thinking)
     if max_output_tokens is not None:
         body["max_completion_tokens"] = max_output_tokens
     if schema is not None:
@@ -921,7 +924,7 @@ class OpenRouterClient:
         slug = DEFAULT_PROVIDER if provider is None else provider
         self._check_provider(slug)
         level = CHAT_THINKING_LEVEL if thinking is None else thinking
-        if level not in CHAT_THINKING_TOKENS:
+        if level not in CHAT_THINKING_TOKENS and level != NO_THINKING:
             raise ValueError("unknown thinking level")
         ends = None if deadline is None else self.now() + (deadline - time.monotonic())
         messages: list[dict[str, Any]] = [
@@ -935,7 +938,7 @@ class OpenRouterClient:
             messages=messages,
             thinking=level,
             schema=schema,
-            max_output_tokens=output_limit + CHAT_THINKING_TOKENS[level],
+            max_output_tokens=output_limit + CHAT_THINKING_TOKENS.get(level, 0),
             provider_slug=slug,
         )
         if temperature is not None and chosen.split("/", 1)[0] in TEMPERATURE_VENDORS:

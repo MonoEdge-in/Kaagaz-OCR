@@ -592,6 +592,9 @@ class DocumentPages:
     escalated: dict[int, list[str]] | None = None
     careful_read: bool = False  # Careful's own read: a timeout is not read again at low
     local: bool = False  # AI settings None (0038): every page by the local reader, no model call
+    # The models among these with no thinking levels (Tushar, 18 Oct 2026): every call to one
+    # is sent with no reasoning field, whatever level the read asks for.
+    plain: frozenset[str] = frozenset()
 
 
 @runtime_checkable

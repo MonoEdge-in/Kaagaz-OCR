@@ -275,6 +275,41 @@ const catalogue = [
   model({ id: "x/far", name: "Far", enabled_at: "2026-10-11T00:00:00Z", vendor_allowed: false }),
 ];
 
+describe("a model with no thinking levels (Tushar, 18 Oct 2026)", () => {
+  const plain = model({ id: "qwen/qwen-2.5-vl-72b-instruct", name: "Qwen VL", efforts: [], enabled_at: "2026-10-11T00:00:00Z" });
+
+  it("says No thinking levels in the Models table, and only for it", () => {
+    const html = renderToStaticMarkup(createElement(ModelsTable, { models: [plain, model()], onChange: () => undefined }));
+    expect(html.match(/No thinking levels/g)?.length).toBe(1);
+  });
+
+  it("offers no scan thinking level when every ticked scan model has none", () => {
+    const render = (scan_models: string[]) => {
+      const own = values({ scan_models, scan_default: scan_models[0] ?? null });
+      return renderToStaticMarkup(
+        createElement(AiFields, {
+          platform: false,
+          catalogue: [...catalogue, plain],
+          saved: own,
+          defaults: DEFAULTS,
+          env: ENV,
+          maxAgents: 3,
+          draft: draftOf(own, { ensemble: false, ai_budget_usd: 25 }),
+          errors: {},
+          busy: false,
+          onChange: () => undefined,
+        }),
+      );
+    };
+    const only = render([plain.id]);
+    expect(only).toContain("No thinking levels: the ticked models have one mode.");
+    expect(only).not.toContain('id="ai-scan-thinking"');
+    const mixed = render([plain.id, "m/two"]);
+    expect(mixed).toContain('id="ai-scan-thinking"'); // the other model still takes the level
+    expect(mixed).toContain("No thinking levels"); // the tag next to the model's name
+  });
+});
+
 describe("the AI settings form's rules", () => {
   it("offers each area the enabled models that can do its work, and any already in it", () => {
     expect(offered(catalogue, "scan", []).map((m) => m.id)).toEqual(["m/one", "m/two", "x/far"]);

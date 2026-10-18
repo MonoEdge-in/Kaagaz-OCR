@@ -20,7 +20,7 @@ import type { Confirm } from "./ConfirmDialog";
 import { modelConfirm, modelFocusId } from "./confirms";
 import { LoadFailed } from "./LoadFailed";
 import { afterDone, operatorErrorMessage } from "./logic";
-import { VENDOR_NOT_ALLOWED, modelAction, notEnabledReason, priceText, realCostText, yesNo } from "./models";
+import { NO_LEVELS, VENDOR_NOT_ALLOWED, hasNoLevels, modelAction, notEnabledReason, priceText, realCostText, yesNo } from "./models";
 import { PlatformDefaults } from "./PlatformDefaults";
 import admin from "@/components/admin/Admin.module.css";
 import styles from "./Operator.module.css";
@@ -130,7 +130,8 @@ function ModelRow({ model, onChange }: { model: OperatorModel; onChange(enable: 
       </td>
       <td role="cell" data-label="Eligible">
         Scanning: {yesNo(model.eligible)}, answering: {yesNo(model.chat_eligible)}
-        {model.expires_on && <span className={styles.statusNote}>Ends {formatDate(model.expires_on)}</span>}
+        {hasNoLevels(model) && <span className={styles.statusNote}>{NO_LEVELS}</span>}
+        {model.expires_on &&<span className={styles.statusNote}>Ends {formatDate(model.expires_on)}</span>}
       </td>
       <td role="cell" data-label="Verified">
         Scanning: {yesNo(model.verified)}, answering: {yesNo(model.chat_verified)}

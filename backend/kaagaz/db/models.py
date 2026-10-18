@@ -54,7 +54,7 @@ from sqlalchemy import Connection, RowMapping, text
 from kaagaz.answering.draft import ANSWER_PROMPT_HASH
 from kaagaz.db import ai_settings
 from kaagaz.reading.ocr import GEMINI, READER_PROMPT_VERSION
-from kaagaz.settings import DEFAULT_PROVIDER, Settings
+from kaagaz.settings import DEFAULT_PROVIDER, NO_THINKING, Settings
 
 # MC3: the days of ledger a page's estimate averages over.
 LEDGER_DAYS = 30
@@ -135,11 +135,18 @@ _DOCUMENT = text(
 @dataclass(frozen=True, slots=True)
 class Agent:
     """One model that reads or answers: its OpenRouter id, the provider it is called
-    through and its catalogue name (the id when it has none)."""
+    through and its catalogue name (the id when it has none). ``thinks`` False: its
+    catalogue row lists no thinking levels (Tushar, 18 Oct 2026), so it is always called
+    with NO_THINKING (no reasoning field), whatever level the reading or answer is at."""
 
     model: str
     provider: str
     name: str
+    thinks: bool = True
+
+    def level(self, thinking: str) -> str:
+        """The level this model is called at for ``thinking``: NO_THINKING when it has none."""
+        return thinking if self.thinks else NO_THINKING
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,7 +198,7 @@ def strongest_chat(rows: Sequence[Mapping[Any, Any]], level: str) -> list[str] |
     """Ask at Max (0038): the usable answer model that takes ``level`` and is dearest a token
     on the server's own scale (never shown), as ``resolve_chat``'s ``agents``; None with none.
     ponytail: list price as "strongest", a measured answer-quality score is the upgrade. O(n)."""
-    fit = [row for row in rows if level in row["efforts"]]
+    fit = [row for row in rows if _takes(row, level)]
     if not fit:
         return None
     best = max(fit, key=lambda row: float(row["price_in_usd_per_m"]) + float(row["price_out_usd_per_m"]))
@@ -222,7 +229,12 @@ def _provider(row: RowMapping, settings: Settings) -> str | None:
 
 
 def _agent(row: RowMapping, settings: Settings) -> Agent:
-    return Agent(row["id"], str(_provider(row, settings)), row["name"] or row["id"])
+    return Agent(row["id"], str(_provider(row, settings)), row["name"] or row["id"], bool(row["efforts"]))
+
+
+def _takes(row: Mapping[Any, Any], level: str) -> bool:
+    """The model takes ``level``: one of its efforts, or it has none (it has one mode only)."""
+    return not row["efforts"] or level in row["efforts"]
 
 
 def _usable(rows: Sequence[RowMapping], settings: Settings) -> list[RowMapping]:
@@ -285,7 +297,11 @@ def pick_tiers[R: Mapping[Any, Any]](rows: Sequence[R]) -> tuple[R, R | None]:
 
 
 def _thinking(level: str | None, lead: RowMapping | None, settings: Settings) -> tuple[str, tuple[str, ...]]:
-    """The scan level: the effective one when the lead accepts it, else the env's."""
+    """The scan level: the effective one when the lead accepts it, else the env's; NO_THINKING
+    (note ``no_thinking_levels``, never ``thinking_fallback``) for a lead with no thinking
+    levels: any level means its one mode (Tushar, 18 Oct 2026)."""
+    if lead is not None and not lead["efforts"]:
+        return NO_THINKING, ("no_thinking_levels",)
     env = settings.ocr_thinking_level
     if level is None or level == env:
         return env, ()
@@ -353,7 +369,7 @@ def resolve_scan(conn: Connection, customer_id: str, document_id: str, *, settin
                 DYNAMIC_FIRST_THINKING,
                 tuple(note for note in notes if note != "thinking_fallback"),
             )
-        elif "thinking_fallback" not in notes:
+        elif lead_row["efforts"] and "thinking_fallback" not in notes:  # none: its one mode
             notes += ("thinking_fallback",)
         return Reading("dynamic", lead, careful=careful, thinking=thinking, notes=notes)
     return Reading("single", lead, thinking=thinking, notes=notes)
@@ -429,7 +445,7 @@ def resolve_chat(
         raise AiNotAllowed("ensemble_not_allowed")
     levels = allowed["chat_levels"] or ["low"]
     level = thinking or allowed["chat_default_level"] or "low"
-    accepted = all(level in by_id[agent.model]["efforts"] for agent in chosen if agent.model in by_id)
+    accepted = all(_takes(by_id[agent.model], level) for agent in chosen if agent.model in by_id)
     if level not in levels or not accepted or (len(chosen) > 1 and level == "high"):
         raise AiNotAllowed("thinking_not_allowed")
     chosen.sort(key=lambda agent: agent.model != default)  # stable: the rest keep their order

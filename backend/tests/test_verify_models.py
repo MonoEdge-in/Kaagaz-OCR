@@ -12,7 +12,7 @@ import io
 import json
 import math
 from collections.abc import Iterator
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -45,7 +45,10 @@ from tests.settings_factory import make_settings
 PRO = "google/gemini-3.1-pro-preview"
 FLASH = "google/gemini-3.8-flash"
 OTHER = "openai/gpt-6-luna"  # a model that is not Gemini
-KNOWN = {PRO, FLASH, "google/gemini-embedding-2"}
+# Tushar, 18 Oct 2026: a model GET /models lists with no thinking levels; its endpoint lists no
+# reasoning, so a request with a reasoning field is routed nowhere (require_parameters).
+PLAIN = "qwen/qwen-2.5-vl-72b-instruct"
+KNOWN = {PRO, FLASH, PLAIN, "google/gemini-embedding-2"}
 ITEMS = [
     "endpoints",
     "model_calls",
@@ -87,7 +90,7 @@ PROVIDER_BLOCK = {
 }
 EMBED_PROVIDER_BLOCK = {**PROVIDER_BLOCK, "require_parameters": False}
 _PROMPT = {None: 1290, "low": 300, "high": 1120}
-_REASONING = {"low": 50, "medium": 200, "high": 800}
+_REASONING = {"none": 0, "low": 50, "medium": 200, "high": 800}
 
 
 def _detail(body: dict[str, Any]) -> tuple[bool, str | None]:
@@ -132,8 +135,17 @@ def openrouter_like(request: Recorded) -> Reply:
         return zdr_reply(*((model, "google-vertex") for model in sorted(KNOWN)))
     if request.action.startswith("generation?id="):
         return Reply(200, {"data": {"id": "gen-made-up", "provider_name": "Google", "total_cost": 0.0012}})
+    if request.action == "models":
+        listed = [
+            {"id": model, "reasoning": {"supported_efforts": ["low", "medium", "high"]}} for model in KNOWN
+        ]
+        return Reply(200, {"data": [item if item["id"] != PLAIN else {"id": PLAIN} for item in listed]})
     if request.action == "endpoints":
         model = request.path.removeprefix(API_PATH + "/models/").removesuffix("/endpoints")
+        if model == PLAIN:
+            return endpoints_reply(
+                model, zdr=True, parameters=("response_format", "max_tokens", "structured_outputs")
+            )
         return endpoints_reply(model, zdr=True) if model in KNOWN else error_reply(404)
     body = request.body
     if body.get("provider") != (EMBED_PROVIDER_BLOCK if request.action == "embeddings" else PROVIDER_BLOCK):
@@ -143,13 +155,15 @@ def openrouter_like(request: Recorded) -> Reply:
     if request.action == "embeddings":
         side = 1 / math.sqrt(body["dimensions"])
         return embed_reply([[side] * body["dimensions"] for _ in body["input"]])
-    effort = body["reasoning"]["effort"]
+    if (body["model"] == PLAIN) == ("reasoning" in body):
+        return error_reply(404)  # a reasoning field it can't take, or none for a model that thinks
+    effort = body.get("reasoning", {}).get("effort", "none")
     if effort == "minimal":
         return error_reply(400, error_type="bad_request")
     picture, detail = _detail(body)
     thought = _REASONING[effort]
     counts = usage((_PROMPT[detail] if picture else 0) + 40, 30 + thought, thought, cost=0.0012)
-    if body.get("max_completion_tokens") == verify_models.TINY_OUTPUT_TOKENS:
+    if body.get("max_completion_tokens", body.get("max_tokens")) == verify_models.TINY_OUTPUT_TOKENS:
         return chat_reply('{"lin', finish="length", native="MAX_TOKENS", counts=usage(1160, 16, 12))
     if body.get("response_format", {}).get("json_schema", {}).get("schema") == PAGE_SCHEMA:
         return json_reply(page_value(), counts=counts)
@@ -346,10 +360,24 @@ def test_a_detail_that_changes_nothing_is_info_for_a_person(fake: OpenRouterFake
     assert evidence.endswith("detail is not passed on (MEDIA_RESOLUTION_SHAPE)")
 
 
+def _split_endpoints() -> Reply:
+    """Two Vertex endpoints that each lack one parameter: together they list everything."""
+    first = endpoints_reply(PRO, tags=("google-vertex",), parameters=("reasoning", "max_completion_tokens"))
+    second = endpoints_reply(
+        PRO, tags=("google-vertex/global",), parameters=("response_format", "max_completion_tokens")
+    )
+    body = cast(dict[str, Any], first.body)
+    body["data"]["endpoints"] += cast(dict[str, Any], second.body)["data"]["endpoints"]
+    return first
+
+
 @pytest.mark.parametrize(
     ("listing", "said"),
     [
         (endpoints_reply(PRO, tags=("google-ai-studio",)), "1 endpoints, google-vertex not listed"),
+        # CodeRabbit (18 Oct 2026): one endpoint must take the whole request; parameters
+        # are never added up across endpoints.
+        (_split_endpoints(), "google-vertex listed; parameters lack response_format; no zdr field"),
         (
             endpoints_reply(PRO, parameters=("reasoning", "max_completion_tokens")),
             "google-vertex listed; parameters lack response_format; no zdr field",
@@ -517,6 +545,36 @@ def test_record_writes_the_pass_and_the_page_tokens_when_every_required_item_pas
     assert f"RECORDED {FLASH} prompt {READER_PROMPT_VERSION} tokens per page in {tokens_in}" in text
 
 
+def test_a_model_with_no_thinking_levels_passes_with_no_reasoning_field_and_is_recorded(
+    fake: OpenRouterFake,
+) -> None:
+    """Tushar, 18 Oct 2026: model_efforts is n/a and PASSes; nothing to it carries reasoning."""
+    recorded: list[tuple[str, int, int]] = []
+    code, text, lines = _model_run(fake, PLAIN, record=lambda *row: recorded.append(row))
+    assert code == 0, text
+    assert lines["model_efforts"] == (
+        "PASS",
+        f"{PLAIN}: n/a, no thinking levels: read with no reasoning field 200 json",
+    )
+    assert lines["reasoning_levels"][0] == "PASS"  # OCR_MODEL's levels; the --model is never asked them
+    assert [row[0] for row in recorded] == [PLAIN]
+    to_plain = [body for body in fake.bodies() if body["model"] == PLAIN]
+    assert to_plain and all("reasoning" not in body for body in to_plain)
+    # CodeRabbit (18 Oct 2026): its endpoint lists max_tokens only, so every capped --model
+    # request sends max_tokens (what model_endpoint checked), never max_completion_tokens.
+    capped = [body for body in to_plain if "max_tokens" in body or "max_completion_tokens" in body]
+    assert capped and all("max_completion_tokens" not in body for body in capped)
+    out = io.StringIO()
+    chat: list[str] = []
+    fake.responder = _answers([1])
+    code = verify_models.run(
+        _settings(fake), out, models=[PLAIN], sleep=lambda seconds: None, chat=True, record_chat=chat.append
+    )
+    assert (code, chat) == (0, [PLAIN]), out.getvalue()
+    assert f"VERIFY chat_levels PASS {PLAIN}: n/a, no thinking levels" in out.getvalue()
+    assert all("reasoning" not in body for body in fake.bodies() if body["model"] == PLAIN)
+
+
 def _without_cost(request: Recorded) -> Reply:
     reply = openrouter_like(request)
     if isinstance(reply.body, dict) and isinstance(reply.body.get("usage"), dict):
@@ -629,8 +687,13 @@ def test_an_azure_endpoint_counts_once_azure_is_an_approved_provider(fake: OpenR
     _, _, lines = _model_run(fake, FLASH, openrouter_providers=allowed)
     assert lines["model_endpoint"] == ("PASS", f"{FLASH}: ZDR endpoints azure; reads through azure")
     assert lines["model_page_schema"][0] == "PASS"
+    # Tushar, 18 Oct 2026: the endpoints item takes any approved provider, not Vertex alone.
+    assert lines["endpoints"][1].endswith(f"{FLASH}: azure listed; parameters all supported; no zdr field")
     pages = [body for body in fake.bodies() if body["model"] == FLASH and "response_format" in body]
     assert pages and all(body["provider"] == azure for body in pages)
+    # CodeRabbit (18 Oct 2026): model_calls' probe goes through azure too, never google-vertex.
+    assert lines["model_calls"][0] == "PASS"
+    assert all(body["provider"] == azure for body in fake.bodies() if body["model"] == FLASH)
 
 
 def test_max_tokens_stands_for_max_completion_tokens_in_an_endpoint_listing(fake: OpenRouterFake) -> None:

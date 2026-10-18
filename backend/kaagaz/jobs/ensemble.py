@@ -282,6 +282,7 @@ class EnsembleRuns:
             cache=self._cache,
             model=agent.model,
             provider=agent.provider,
+            plain=frozenset() if agent.thinks else frozenset({agent.model}),  # no reasoning field
         )
         read_by: dict[str, list[Span] | None] = dict.fromkeys(images)
         code = None

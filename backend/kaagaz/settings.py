@@ -35,6 +35,9 @@ _GEMINI_PAGE_CALLS = 3
 # PRD 5 G2 and F5: the media_resolution and thinking_level a page is read with.
 MEDIA_RESOLUTIONS = frozenset({"low", "medium", "high", "ultra_high"})
 THINKING_LEVELS = frozenset({"minimal", "low", "medium", "high"})
+# A model with no thinking levels (catalogue ``efforts`` empty; Tushar, 18 Oct 2026) is read
+# and asked at this "level": the request carries no ``reasoning`` field at all.
+NO_THINKING = "none"
 # How a page's media resolution reaches the model through OpenRouter (council 8 Oct 2026).
 # "detail": the image part's image_url.detail, which takes low or high only, so only those
 # two levels can be sent: OCR_MEDIA_RESOLUTION and OCR_RETRY_MEDIA_RESOLUTION refuse medium
@@ -57,8 +60,10 @@ DEFAULT_PROVIDER = "google-vertex"
 DEFAULT_MODEL = "google/gemini-3.8-flash"
 # The model vendors (the part of a model id before "/") the operator may allow, a ceiling
 # apart from the providers (features 25-27, council 15 Oct 2026, S1). Tushar decided on 15
-# Oct 2026 that Sonnet 5.5 is allowed by default, so the default is google and anthropic.
-DEFAULT_MODEL_VENDORS = frozenset({"google", "anthropic"})
+# Oct 2026 that Sonnet 5.5 is allowed by default, so the default is google and anthropic;
+# Tushar, 18 Oct 2026: qwen and meta-llama too (Qwen VL and Llama models for organisations).
+# A server with OPENROUTER_MODEL_VENDORS set keeps its own list.
+DEFAULT_MODEL_VENDORS = frozenset({"google", "anthropic", "qwen", "meta-llama"})
 MODEL_VENDOR = re.compile(r"[a-z0-9][a-z0-9-]{0,127}")  # MODEL_ID's part before "/"
 # OPENROUTER_BASE_URL may be plain http only on these hosts (a fake server in tests, or the
 # exit test's closed port); anywhere else the key would cross the network in the clear.

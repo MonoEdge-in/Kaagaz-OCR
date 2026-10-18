@@ -38,7 +38,7 @@ from kaagaz.ai.openrouter import (
     page_request,
     process_gate,
 )
-from kaagaz.settings import Settings
+from kaagaz.settings import NO_THINKING, Settings
 from kaagaz.worker_main import worker_model
 from tests import openrouter_fake
 from tests.openrouter_fake import (
@@ -300,6 +300,24 @@ def test_a_page_request_may_leave_the_detail_out_for_verify() -> None:
     assert body["messages"][0]["content"][1] == {"type": "image_url", "image_url": {"url": DATA_URL}}
     assert body["response_format"]["json_schema"]["strict"] is False
     assert body["max_completion_tokens"] == 16
+
+
+def test_a_model_with_no_thinking_levels_gets_no_reasoning_field_and_others_still_do() -> None:
+    """Tushar, 18 Oct 2026: NO_THINKING sends no reasoning at all; any other level sends it."""
+    options: dict[str, Any] = {"model": PRO, "png": PNG, "instruction": "x", "schema": SCHEMA}
+    options |= {"media_resolution": "high", "max_output_tokens": 16}
+    assert "reasoning" not in page_request(**options, thinking=NO_THINKING)
+    assert page_request(**options, thinking="high")["reasoning"] == {"effort": "high", "exclude": True}
+
+
+def test_chat_json_with_no_thinking_levels_sends_no_reasoning_and_no_room_to_think(
+    fake: OpenRouterFake,
+) -> None:
+    fake.script("completions", json_reply(GOOD))
+    client = _client(fake.url, Clock())
+    assert client.chat_json(system="s", user="u", schema=SCHEMA, max_tokens=512, thinking=NO_THINKING) == GOOD
+    (body,) = fake.bodies()
+    assert "reasoning" not in body and body["max_completion_tokens"] == 512
 
 
 def test_usage_counts_prompt_and_completion_tokens_and_sums_the_cost(fake: OpenRouterFake) -> None:

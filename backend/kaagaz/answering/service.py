@@ -1160,7 +1160,7 @@ class AnswerService:
             call = partial(
                 draft_with,
                 chat_model=agent.model,
-                thinking=choice.thinking,
+                thinking=agent.level(choice.thinking),  # no reasoning field for a model with no levels
                 provider=agent.provider,
                 deadline=deadline,
             )
@@ -1221,7 +1221,9 @@ def _single(
         if choice is None or agent is None:
             draft = draft_with()
         else:
-            draft = draft_with(chat_model=agent.model, thinking=choice.thinking, provider=agent.provider)
+            draft = draft_with(
+                chat_model=agent.model, thinking=agent.level(choice.thinking), provider=agent.provider
+            )
     except (ModelUnavailable, ModelOutputError) as error:
         return None, None, error.code
     _log.info(

@@ -8,7 +8,7 @@ import dataclasses
 import os
 from typing import Any
 
-from kaagaz.settings import Settings
+from kaagaz.settings import DEFAULT_MODEL_VENDORS, Settings
 
 TEST_DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
@@ -51,7 +51,8 @@ _BASE: dict[str, Any] = {
     "openrouter_api_key": None,  # laptops and CI call no model through OpenRouter
     "openrouter_base_url": "https://openrouter.ai/api/v1",
     "openrouter_providers": frozenset({"google-vertex"}),
-    "openrouter_model_vendors": frozenset({"google", "anthropic"}),  # DEFAULT_MODEL_VENDORS
+    # Changed on purpose (Tushar 18 Oct: models without thinking levels): + qwen, meta-llama.
+    "openrouter_model_vendors": DEFAULT_MODEL_VENDORS,
     "ocr_media_resolution": "high",
     "ocr_thinking_level": "low",
     "ocr_retry_media_resolution": "high",  # the "detail" shape sends low or high only

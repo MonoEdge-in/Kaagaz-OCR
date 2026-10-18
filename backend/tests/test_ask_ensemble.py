@@ -153,6 +153,17 @@ def test_one_chosen_model_drafts_at_its_level_through_its_provider() -> None:
     assert (data["agreement"], data["thinking"]) == (None, "high")
 
 
+def test_a_model_with_no_thinking_levels_is_asked_with_none_alone_and_in_a_team() -> None:
+    """Tushar, 18 Oct 2026: no reasoning field for it; the others keep the chosen level."""
+    plain = Agent("meta-llama/llama-3.3-70b-instruct", "google-vertex", "Llama 3.3 70B", thinks=False)
+    model = TeamModel({plain.model: honest, LEAD.model: honest})
+    ask(model, plain, thinking="high")
+    ask(model, LEAD, plain, thinking="medium")
+    levels = [(call["model"], call["thinking"]) for call in model.calls]
+    assert levels[0] == (plain.model, "none")
+    assert sorted(levels[1:]) == sorted([(LEAD.model, "medium"), (plain.model, "none")])
+
+
 def test_with_no_choice_the_answer_is_as_before() -> None:
     model = TeamModel({"fake-chat": honest})
     answer = ask(model)
