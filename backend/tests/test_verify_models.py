@@ -12,7 +12,7 @@ import io
 import json
 import math
 from collections.abc import Iterator
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -360,10 +360,24 @@ def test_a_detail_that_changes_nothing_is_info_for_a_person(fake: OpenRouterFake
     assert evidence.endswith("detail is not passed on (MEDIA_RESOLUTION_SHAPE)")
 
 
+def _split_endpoints() -> Reply:
+    """Two Vertex endpoints that each lack one parameter: together they list everything."""
+    first = endpoints_reply(PRO, tags=("google-vertex",), parameters=("reasoning", "max_completion_tokens"))
+    second = endpoints_reply(
+        PRO, tags=("google-vertex/global",), parameters=("response_format", "max_completion_tokens")
+    )
+    body = cast(dict[str, Any], first.body)
+    body["data"]["endpoints"] += cast(dict[str, Any], second.body)["data"]["endpoints"]
+    return first
+
+
 @pytest.mark.parametrize(
     ("listing", "said"),
     [
         (endpoints_reply(PRO, tags=("google-ai-studio",)), "1 endpoints, google-vertex not listed"),
+        # CodeRabbit (18 Oct 2026): one endpoint must take the whole request; parameters
+        # are never added up across endpoints.
+        (_split_endpoints(), "google-vertex listed; parameters lack response_format; no zdr field"),
         (
             endpoints_reply(PRO, parameters=("reasoning", "max_completion_tokens")),
             "google-vertex listed; parameters lack response_format; no zdr field",

@@ -276,6 +276,11 @@ def _lacking(parameters: Iterable[str], *, thinks: bool = True) -> list[str]:
     return lacking if MAX_TOKEN_PARAMETERS & listed else [*lacking, "max_completion_tokens"]
 
 
+def _listed(value: object) -> list[Any]:
+    """A listing's value when it is a list, else nothing (OpenRouter's reply is untrusted)."""
+    return value if isinstance(value, list) else []
+
+
 def _usage(probe: Probe | None) -> dict[str, Any]:
     usage = probe.reply.get("usage") if probe is not None and probe.reply is not None else None
     return usage if isinstance(usage, dict) else {}
@@ -427,15 +432,20 @@ class Verifier:
         if not vertex:
             return False, f"{len(endpoints)} endpoints, {'/'.join(sorted(allowed))} not listed"
         listed = "/".join(sorted({endpoint["tag"].partition("/")[0] for endpoint in vertex}))
-        self.served[model] = vertex[0]["tag"].partition("/")[0]  # OpenRouter's order, as the catalogue
-        parameters = {
-            name
+        # Each endpoint must take the whole request on its own (CodeRabbit): the first that does,
+        # in OpenRouter's order as the catalogue, is the one probed; else the one lacking least.
+        each = [
+            (
+                endpoint,
+                _lacking(
+                    {name for name in _listed(endpoint.get("supported_parameters")) if isinstance(name, str)},
+                    thinks=thinks,
+                ),
+            )
             for endpoint in vertex
-            if isinstance(endpoint.get("supported_parameters"), list)
-            for name in endpoint["supported_parameters"]
-            if isinstance(name, str)
-        }
-        lacking = _lacking(parameters, thinks=thinks)
+        ]
+        chosen, lacking = min(each, key=lambda pair: len(pair[1]))  # min keeps the first of a tie
+        self.served[model] = chosen["tag"].partition("/")[0]
         zdr = sorted(
             {f"{key}={value}" for endpoint in vertex for key, value in endpoint.items() if "zdr" in key}
         )
