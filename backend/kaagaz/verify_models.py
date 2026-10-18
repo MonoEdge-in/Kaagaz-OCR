@@ -76,6 +76,13 @@ rule found, with the reader's own ``INSTRUCTION`` and ``PAGE_SCHEMA`` where a pa
 * ``model_refusal``: local, no call: a refusal in each shape (``message.refusal``,
   ``content_filter``, a native ``refusal``) is ``blocked`` for the client.
 
+A ``--model`` with no thinking levels (Tushar, 18 Oct 2026: ``GET /models`` lists no
+``reasoning.supported_efforts`` for it, ``catalog.offered_efforts``; read once, only when
+there is a ``--model``) is checked the way it is called: every request to it has no
+``reasoning`` field, its endpoint need not list ``reasoning``, and ``model_efforts`` and
+``chat_levels`` PASS as "n/a" after one read with no reasoning gives JSON. A model whose
+efforts can't be read is checked as one with levels (the strict way).
+
 ``--record`` (exactly one ``--model``): when every one of these but the INFO passes and
 no item of the whole run FAILs, the command writes the pass for ``READER_PROMPT_VERSION``
 and the page read's tokens in and out (``record``, as the owner, with a ``platform_audit``
@@ -131,7 +138,7 @@ from kaagaz.answering import draft
 from kaagaz.jobs import catalog
 from kaagaz.reading.ocr import READER_PROMPT_VERSION
 from kaagaz.reading.wiring import gemini_reader_module
-from kaagaz.settings import DEFAULT_PROVIDER, EMBEDDING_DIM, Settings, valid_model_id
+from kaagaz.settings import DEFAULT_PROVIDER, EMBEDDING_DIM, NO_THINKING, Settings, valid_model_id
 
 PASS, FAIL, INFO = "PASS", "FAIL", "INFO"
 # A model ID no provider serves (made up, with no model's name in it).
@@ -144,7 +151,6 @@ EFFORTS = ("minimal", "low", "medium", "high")
 # output caps (Vertex lists max_tokens; OpenRouter takes either name).
 NEEDED_PARAMETERS = frozenset({"response_format", "reasoning"})
 MAX_TOKEN_PARAMETERS = frozenset({"max_completion_tokens", "max_tokens"})
-VERTEX = "google-vertex"
 GENERATION_PATH = "/generation"
 # /generation may lag the reply by a moment: asked this many times, a second apart.
 GENERATION_TRIES = 3
@@ -261,11 +267,12 @@ def _parsed(probe: Probe, schema: Mapping[str, Any]) -> tuple[dict[str, Any] | N
     return value, f"{probe.status} json" if value is not None else f"{probe.status} {problem}"
 
 
-def _lacking(parameters: Iterable[str]) -> list[str]:
-    """The page reader's parameters an endpoint does not list: NEEDED_PARAMETERS, and one of
-    MAX_TOKEN_PARAMETERS (named max_completion_tokens when neither is there)."""
+def _lacking(parameters: Iterable[str], *, thinks: bool = True) -> list[str]:
+    """The page reader's parameters an endpoint does not list: NEEDED_PARAMETERS (reasoning
+    only for a model that ``thinks``), and one of MAX_TOKEN_PARAMETERS (named
+    max_completion_tokens when neither is there)."""
     listed = set(parameters)
-    lacking = sorted(NEEDED_PARAMETERS - listed)
+    lacking = sorted(NEEDED_PARAMETERS - listed - (set() if thinks else {"reasoning"}))
     return lacking if MAX_TOKEN_PARAMETERS & listed else [*lacking, "max_completion_tokens"]
 
 
@@ -319,6 +326,26 @@ class Verifier:
         self.first: Probe | None = None  # the STRICT_SCHEMA reply
         self.high: Probe | None = None  # the high effort reply, for usage_fields
         self.one_read_seconds: float | None = None
+        self._efforts: dict[str, tuple[str, ...] | None] | None = None  # GET /models, read once
+
+    def thinks(self, model: str) -> bool:
+        """False only for a ``--model`` that ``GET /models`` lists with no thinking levels
+        (read once, on the first ask); True for any other, or when the list can't be read."""
+        if model not in {check.model for check in self.checks} or not self.key_set:
+            return True
+        if self._efforts is None:
+            listing = self._probe(catalog.MODELS_PATH, None).reply
+            data = listing.get("data") if listing is not None else None
+            self._efforts = {
+                item["id"]: catalog.offered_efforts(item)
+                for item in (data if isinstance(data, list) else [])
+                if isinstance(item, dict) and isinstance(item.get("id"), str)
+            }
+        return self._efforts.get(model) != ()
+
+    def _level(self, model: str, thinking: str = CHAT_THINKING_LEVEL) -> str:
+        """``thinking``, or NO_THINKING (no reasoning field) for a model with no levels."""
+        return thinking if self.thinks(model) else NO_THINKING
 
     def items(self) -> list[tuple[str, Callable[[], Finding]]]:
         return [
@@ -374,25 +401,30 @@ class Verifier:
             return missing
         said, ok = self._bad_models(), not self.bad_models
         for model in self.models:
-            good, evidence = self._listing(self._probe(f"/models/{model}/endpoints", None))
+            listing = self._probe(f"/models/{model}/endpoints", None)
+            good, evidence = self._listing(listing, thinks=self.thinks(model))
             said.append(f"{model}: {evidence}")
             ok = ok and good
         return Finding("endpoints", PASS if ok else FAIL, "; ".join(said))
 
-    def _listing(self, probe: Probe) -> tuple[bool, str]:
+    def _listing(self, probe: Probe, *, thinks: bool = True) -> tuple[bool, str]:
         data = probe.reply.get("data") if probe.reply is not None else None
         endpoints = data.get("endpoints") if isinstance(data, dict) else None
         if not isinstance(endpoints, list):
             return False, f"status {_said(probe)}, no endpoints list"
+        # Any approved processor (OPENROUTER_PROVIDERS, google-vertex by default), not Vertex
+        # alone: a Qwen or Llama model is served elsewhere (Tushar, 18 Oct 2026).
+        allowed = self.settings.openrouter_providers
         vertex = [
             endpoint
             for endpoint in endpoints
             if isinstance(endpoint, dict)
             and isinstance(endpoint.get("tag"), str)
-            and (endpoint["tag"] == VERTEX or endpoint["tag"].startswith(VERTEX + "/"))
+            and endpoint["tag"].partition("/")[0] in allowed
         ]
         if not vertex:
-            return False, f"{len(endpoints)} endpoints, {VERTEX} not listed"
+            return False, f"{len(endpoints)} endpoints, {'/'.join(sorted(allowed))} not listed"
+        listed = "/".join(sorted({endpoint["tag"].partition("/")[0] for endpoint in vertex}))
         parameters = {
             name
             for endpoint in vertex
@@ -400,12 +432,12 @@ class Verifier:
             for name in endpoint["supported_parameters"]
             if isinstance(name, str)
         }
-        lacking = _lacking(parameters)
+        lacking = _lacking(parameters, thinks=thinks)
         zdr = sorted(
             {f"{key}={value}" for endpoint in vertex for key, value in endpoint.items() if "zdr" in key}
         )
         evidence = (
-            f"{VERTEX} listed; parameters {'all supported' if not lacking else 'lack ' + ','.join(lacking)};"
+            f"{listed} listed; parameters {'all supported' if not lacking else 'lack ' + ','.join(lacking)};"
             f" {' '.join(zdr) if zdr else 'no zdr field'}"
         )
         return not lacking, evidence
@@ -415,7 +447,7 @@ class Verifier:
             return missing
         said, ok = self._bad_models(), not self.bad_models
         for model in self.models:
-            probe = self._probe(CHAT_PATH, _text_only(model))
+            probe = self._probe(CHAT_PATH, _text_only(model, thinking=self._level(model)))
             said.append(f"{model}={_said(probe)}")
             ok = ok and probe.status == 200
         return Finding("model_calls", PASS if ok else FAIL, " ".join(said) + "; with the provider block")
@@ -756,7 +788,9 @@ class ModelCheck:
             "max_output_tokens": openrouter.PAGE_MAX_OUTPUT_TOKENS,
             "provider_slug": self.provider,
         }
-        return self.verifier._probe(CHAT_PATH, page_request(**{**values, **options}))
+        values = {**values, **options}
+        values["thinking"] = self.verifier._level(self.model, values["thinking"])
+        return self.verifier._probe(CHAT_PATH, page_request(**values))
 
     def endpoint(self) -> Finding:
         if (cannot := self._cannot("model_endpoint")) is not None:
@@ -772,7 +806,9 @@ class ModelCheck:
         usable = [
             slug
             for slug, parameters in endpoints
-            if slug in allowed and catalog.STRUCTURED in parameters and not _lacking(parameters)
+            if slug in allowed
+            and catalog.STRUCTURED in parameters
+            and not _lacking(parameters, thinks=self.verifier.thinks(self.model))
         ]
         said = f"ZDR endpoints {','.join(slug for slug, _ in endpoints) or 'none'}"
         if not usable:
@@ -784,7 +820,10 @@ class ModelCheck:
     def reply(self) -> Finding:
         if (cannot := self._cannot("model_reply")) is not None:
             return cannot
-        probe = self.verifier._probe(CHAT_PATH, _text_only(self.model, self.provider or DEFAULT_PROVIDER))
+        body = _text_only(
+            self.model, self.provider or DEFAULT_PROVIDER, thinking=self.verifier._level(self.model)
+        )
+        probe = self.verifier._probe(CHAT_PATH, body)
         reply_id = probe.reply.get("id") if probe.reply is not None else None
         named = probe.reply.get("provider") if probe.reply is not None else None
         name = named if isinstance(named, str) and _PROVIDER_NAME.fullmatch(named) else None
@@ -857,6 +896,10 @@ class ModelCheck:
         if (cannot := self._cannot("model_efforts")) is not None:
             return cannot
         settings = self.verifier.settings
+        if not self.verifier.thinks(self.model):  # one mode: read once with no reasoning field
+            good, description = _outcome(self._page(SCHEMA, INSTRUCTION, max_output_tokens=None))
+            evidence = f"n/a, no thinking levels: read with no reasoning field {description}"
+            return self._found("model_efforts", PASS if good else FAIL, evidence)
         ok, said = True, []
         for level in sorted({settings.ocr_thinking_level, settings.ocr_retry_thinking_level}):
             probe = self._page(SCHEMA, INSTRUCTION, thinking=level, max_output_tokens=None)
@@ -908,12 +951,14 @@ class ModelCheck:
             f'<evidence id="{n}">\n{text}\n</evidence>' for n, text in enumerate(CHAT_EVIDENCE, 1)
         )
         user = f"Question:\n<question>\n{CHAT_QUESTION}\n</question>\n\nEvidence:\n{blocks}"
+        thinking = self.verifier._level(self.model, thinking)
         body = chat_request(
             model=self.model,
             messages=[{"role": "system", "content": draft.SYSTEM_PROMPT}, {"role": "user", "content": user}],
             thinking=thinking,
             schema=draft.ANSWER_SCHEMA,
-            max_output_tokens=self.verifier.settings.model_answer_max_tokens + CHAT_THINKING_TOKENS[thinking],
+            max_output_tokens=self.verifier.settings.model_answer_max_tokens
+            + CHAT_THINKING_TOKENS.get(thinking, 0),
             provider_slug=self.provider or DEFAULT_PROVIDER,
         )
         return self.verifier._probe(CHAT_PATH, body)
@@ -933,6 +978,10 @@ class ModelCheck:
     def chat_levels(self) -> Finding:
         if (cannot := self._cannot("chat_levels")) is not None:
             return cannot
+        if not self.verifier.thinks(self.model):  # one mode: asked once with no reasoning field
+            value, description = _parsed(self._answer(NO_THINKING), draft.ANSWER_SCHEMA)
+            evidence = f"n/a, no thinking levels: asked with no reasoning field {description}"
+            return self._found("chat_levels", PASS if value is not None else FAIL, evidence)
         ok, said = True, []
         for level in CHAT_LEVELS:
             value, description = _parsed(self._answer(level), draft.ANSWER_SCHEMA)
@@ -987,12 +1036,14 @@ def _iou(a: tuple[float, float, float, float], b: tuple[float, float, float, flo
     return width * height / (union - width * height)
 
 
-def _text_only(model: str, provider: str = DEFAULT_PROVIDER) -> dict[str, Any]:
+def _text_only(
+    model: str, provider: str = DEFAULT_PROVIDER, *, thinking: str = CHAT_THINKING_LEVEL
+) -> dict[str, Any]:
     """A one-line chat request to ``model``, with the provider block for ``provider``."""
     return chat_request(
         model=model,
         messages=[{"role": "user", "content": "Reply with the word OK."}],
-        thinking=CHAT_THINKING_LEVEL,
+        thinking=thinking,
         schema=None,
         max_output_tokens=None,
         provider_slug=provider,

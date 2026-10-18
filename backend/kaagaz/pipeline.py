@@ -1513,6 +1513,13 @@ class DocumentProcessor:
             page_count=page_count,
             escalated=run.escalated if inline else None,
             local=reading is not None and reading.mode == "local",
+            plain=frozenset()
+            if reading is None
+            else frozenset(
+                agent.model
+                for agent in (reading.lead, reading.careful, *reading.others)
+                if agent is not None and not agent.thinks
+            ),
         )
         return meter.document(pages)
 

@@ -7,8 +7,10 @@ import subprocess
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
+# Changed on purpose (Tushar 18 Oct: models without thinking levels): "qwen" is an allowed
+# OpenRouter vendor now, so only the removed self-hosted reader's names (Qwen3, qwen2.5vl) count.
 REMOVED = re.compile(
-    r"(?i:paddle|ollama|qwen|\bgpu\b)|OCR_URL|MODEL_BASE_URL|MODEL_VISION|MODEL_NUM_CTX"
+    r"(?i:paddle|ollama|qwen\d|\bgpu\b)|OCR_URL|MODEL_BASE_URL|MODEL_VISION|MODEL_NUM_CTX"
     r"|MODEL_WINDOW_MAX_TOKENS|kaagaz\.ai\.gemini"
 )
 ALLOWED_PREFIXES = (
@@ -46,5 +48,6 @@ def test_the_pattern_finds_each_removed_name_and_spares_the_kept_ones() -> None:
     removed = ["PaddleOCR-VL", "ollama", "Qwen3", "the GPU server", "OCR_URL", "MODEL_BASE_URL"]
     removed += ["MODEL_VISION", "MODEL_NUM_CTX", "MODEL_WINDOW_MAX_TOKENS", "from kaagaz.ai.gemini import"]
     kept = ["kaagaz.ai.openrouter", "processing_runs.model_vision", "gemini_ocr", "gpus=all"]
+    kept += ['"qwen"', "qwen/qwen-2.5-vl-72b-instruct"]  # the OpenRouter vendor (18 Oct 2026)
     assert [name for name in removed if not REMOVED.search(name)] == []
     assert [name for name in kept if REMOVED.search(name)] == []

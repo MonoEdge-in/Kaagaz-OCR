@@ -119,14 +119,13 @@ PLATFORM = Agent(SETTINGS.ocr_model, "google-vertex", SETTINGS.ocr_model)
 # --- the vendor allow-list (S1) -----------------------------------------------------------
 
 
-def test_the_vendor_allow_list_is_google_and_anthropic_unless_set() -> None:
-    """Tushar, 15 Oct 2026: Sonnet 5.5 is allowed by default, so anthropic is in it."""
-    assert {"google", "anthropic"} == DEFAULT_MODEL_VENDORS
-    assert Settings.from_env(shipped()).openrouter_model_vendors == {"google", "anthropic"}
-    assert Settings.from_env(shipped(OPENROUTER_MODEL_VENDORS="")).openrouter_model_vendors == {
-        "google",
-        "anthropic",
-    }
+def test_the_vendor_allow_list_is_google_anthropic_qwen_and_meta_llama_unless_set() -> None:
+    """Tushar, 15 Oct 2026: Sonnet 5.5 is allowed by default, so anthropic is in it.
+    Changed on purpose (Tushar 18 Oct: models without thinking levels): qwen and meta-llama too."""
+    four = {"google", "anthropic", "qwen", "meta-llama"}
+    assert four == DEFAULT_MODEL_VENDORS
+    assert Settings.from_env(shipped()).openrouter_model_vendors == four
+    assert Settings.from_env(shipped(OPENROUTER_MODEL_VENDORS="")).openrouter_model_vendors == four
     assert Settings.from_env(shipped(OPENROUTER_MODEL_VENDORS="google")).openrouter_model_vendors == {
         "google"
     }

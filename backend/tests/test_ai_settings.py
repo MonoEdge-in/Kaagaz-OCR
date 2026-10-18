@@ -152,6 +152,31 @@ def test_scan_levels_map_to_todays_readings() -> None:
     assert (top.mode, top.thinking, top.careful and top.careful.model) == ("dynamic", "high", PRO)
 
 
+PLAIN_TIERS = [row(FLASH, default=True, efforts=[]), row(PRO, price=(10, 40))]
+
+
+@pytest.mark.parametrize(("level", "mode"), [("low", "dynamic"), ("high", "single"), ("max", "dynamic")])
+def test_a_lead_with_no_thinking_levels_reads_with_none_at_every_scan_level(level: str, mode: str) -> None:
+    """Tushar, 18 Oct 2026: any level means the model's one mode, a note, never a fallback."""
+    reading = scan(
+        FakeConn(scan=PLAIN_TIERS, settings=DYNAMIC_ON, document=_document((True, level, False))), GEMINI
+    )
+    assert (reading.mode, reading.thinking, reading.notes) == (mode, "none", ("no_thinking_levels",))
+    assert reading.lead.thinks is False and reading.lead.level("high") == "none"
+    if reading.careful is not None:
+        assert reading.careful.model == PRO and reading.careful.thinks  # Careful keeps its levels
+
+
+def test_an_answer_model_with_no_thinking_levels_takes_any_level_and_is_asked_with_none() -> None:
+    rows = [row("google/plain", default=True, efforts=[], area="chat")]
+    levels = {"chat_levels": ["low", "high"], "chat_default_level": "high"}
+    choice = models.resolve_chat(
+        FakeConn(chat=rows, settings=levels).conn(), CUSTOMER, None, None, settings=GEMINI
+    )
+    assert choice.thinking == "high" and [a.level(choice.thinking) for a in choice.agents] == ["none"]
+    assert models.strongest_chat(rows, "high") == ["google/plain"]
+
+
 def test_max_never_turns_on_a_dynamic_the_super_admin_took_away() -> None:
     top = scan(
         FakeConn(

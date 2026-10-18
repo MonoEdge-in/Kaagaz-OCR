@@ -125,6 +125,11 @@ export function usesText(model: OperatorModel): string {
 /** S1: a model whose maker is not allowed is never used, even when enabled. */
 export const VENDOR_NOT_ALLOWED = "Never used: its maker is not on the allowed list (OPENROUTER_MODEL_VENDORS).";
 
+/** Tushar, 18 Oct 2026: a model that lists no thinking levels is always called with none;
+ * any level set for it means its one mode. Super admin only (it names the model). */
+export const NO_LEVELS = "No thinking levels";
+export const hasNoLevels = (model: Pick<OperatorModel, "efforts">) => (model.efforts ?? []).length === 0;
+
 // --- AI settings: one organisation's, or the platform defaults (features 25-27) ----------
 
 export const LEVELS: AiLevel[] = ["low", "medium", "high"];

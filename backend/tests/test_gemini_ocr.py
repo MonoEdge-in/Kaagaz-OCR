@@ -1189,3 +1189,23 @@ class G8ThreadsTest(unittest.TestCase):
         for key in cache.puts:
             self.assertEqual(key.image_sha256, pixels_sha256(images[key.page_no]))
         self.assertEqual(len(built.client.calls), 40)
+
+
+# Tushar, 18 Oct 2026: a model with no thinking levels is always sent "none" (no reasoning field).
+
+
+def test_a_model_with_no_thinking_levels_is_sent_none_on_every_read_and_others_keep_their_level() -> None:
+    plain = "qwen/qwen-2.5-vl-72b-instruct"
+    built = build(*(reply(value(line("INVOICE 1042"))) for _ in range(3)), ocr_thinking_level="high")
+    document = dataclasses.replace(
+        pages(FakeCache(), read_again=frozenset({2})),
+        model=plain,
+        provider="google-vertex",
+        plain=frozenset({plain}),
+    )
+    with built.engine.document(document):
+        built.engine.read_page(page(), page_no=1)
+        built.engine.read_page(page(colour=(250, 250, 250)), page_no=2)  # read again: the harder level
+    with built.engine.document(dataclasses.replace(document, plain=frozenset())):
+        built.engine.read_page(page(colour=(240, 240, 240)), page_no=3)
+    assert [call.thinking_level for call in built.client.calls] == ["none", "none", "high"]
