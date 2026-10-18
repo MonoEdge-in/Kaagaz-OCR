@@ -163,7 +163,7 @@ def openrouter_like(request: Recorded) -> Reply:
     picture, detail = _detail(body)
     thought = _REASONING[effort]
     counts = usage((_PROMPT[detail] if picture else 0) + 40, 30 + thought, thought, cost=0.0012)
-    if body.get("max_completion_tokens") == verify_models.TINY_OUTPUT_TOKENS:
+    if body.get("max_completion_tokens", body.get("max_tokens")) == verify_models.TINY_OUTPUT_TOKENS:
         return chat_reply('{"lin', finish="length", native="MAX_TOKENS", counts=usage(1160, 16, 12))
     if body.get("response_format", {}).get("json_schema", {}).get("schema") == PAGE_SCHEMA:
         return json_reply(page_value(), counts=counts)
@@ -546,6 +546,10 @@ def test_a_model_with_no_thinking_levels_passes_with_no_reasoning_field_and_is_r
     assert [row[0] for row in recorded] == [PLAIN]
     to_plain = [body for body in fake.bodies() if body["model"] == PLAIN]
     assert to_plain and all("reasoning" not in body for body in to_plain)
+    # CodeRabbit (18 Oct 2026): its endpoint lists max_tokens only, so every capped --model
+    # request sends max_tokens (what model_endpoint checked), never max_completion_tokens.
+    capped = [body for body in to_plain if "max_tokens" in body or "max_completion_tokens" in body]
+    assert capped and all("max_completion_tokens" not in body for body in capped)
     out = io.StringIO()
     chat: list[str] = []
     fake.responder = _answers([1])
@@ -673,6 +677,9 @@ def test_an_azure_endpoint_counts_once_azure_is_an_approved_provider(fake: OpenR
     assert lines["endpoints"][1].endswith(f"{FLASH}: azure listed; parameters all supported; no zdr field")
     pages = [body for body in fake.bodies() if body["model"] == FLASH and "response_format" in body]
     assert pages and all(body["provider"] == azure for body in pages)
+    # CodeRabbit (18 Oct 2026): model_calls' probe goes through azure too, never google-vertex.
+    assert lines["model_calls"][0] == "PASS"
+    assert all(body["provider"] == azure for body in fake.bodies() if body["model"] == FLASH)
 
 
 def test_max_tokens_stands_for_max_completion_tokens_in_an_endpoint_listing(fake: OpenRouterFake) -> None:

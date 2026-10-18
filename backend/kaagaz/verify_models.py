@@ -326,6 +326,8 @@ class Verifier:
         self.first: Probe | None = None  # the STRICT_SCHEMA reply
         self.high: Probe | None = None  # the high effort reply, for usage_fields
         self.one_read_seconds: float | None = None
+        # Each model's first approved provider ``endpoints`` found, for ``model_calls``.
+        self.served: dict[str, str] = {}
         self._efforts: dict[str, tuple[str, ...] | None] | None = None  # GET /models, read once
 
     def thinks(self, model: str) -> bool:
@@ -402,12 +404,12 @@ class Verifier:
         said, ok = self._bad_models(), not self.bad_models
         for model in self.models:
             listing = self._probe(f"/models/{model}/endpoints", None)
-            good, evidence = self._listing(listing, thinks=self.thinks(model))
+            good, evidence = self._listing(listing, model, thinks=self.thinks(model))
             said.append(f"{model}: {evidence}")
             ok = ok and good
         return Finding("endpoints", PASS if ok else FAIL, "; ".join(said))
 
-    def _listing(self, probe: Probe, *, thinks: bool = True) -> tuple[bool, str]:
+    def _listing(self, probe: Probe, model: str, *, thinks: bool = True) -> tuple[bool, str]:
         data = probe.reply.get("data") if probe.reply is not None else None
         endpoints = data.get("endpoints") if isinstance(data, dict) else None
         if not isinstance(endpoints, list):
@@ -425,6 +427,7 @@ class Verifier:
         if not vertex:
             return False, f"{len(endpoints)} endpoints, {'/'.join(sorted(allowed))} not listed"
         listed = "/".join(sorted({endpoint["tag"].partition("/")[0] for endpoint in vertex}))
+        self.served[model] = vertex[0]["tag"].partition("/")[0]  # OpenRouter's order, as the catalogue
         parameters = {
             name
             for endpoint in vertex
@@ -447,7 +450,10 @@ class Verifier:
             return missing
         said, ok = self._bad_models(), not self.bad_models
         for model in self.models:
-            probe = self._probe(CHAT_PATH, _text_only(model, thinking=self._level(model)))
+            # Through the approved provider ``endpoints`` found for it (an azure-only model
+            # through azure), else DEFAULT_PROVIDER.
+            provider = self.served.get(model, DEFAULT_PROVIDER)
+            probe = self._probe(CHAT_PATH, _text_only(model, provider, thinking=self._level(model)))
             said.append(f"{model}={_said(probe)}")
             ok = ok and probe.status == 200
         return Finding("model_calls", PASS if ok else FAIL, " ".join(said) + "; with the provider block")
@@ -732,6 +738,8 @@ class ModelCheck:
         self.model = model
         self.chat = chat
         self.provider: str | None = None
+        # The output cap's name the chosen endpoint lists (``_cap``): every request to it uses it.
+        self.cap = "max_completion_tokens"
         self.read: Probe | None = None  # the PAGE_SCHEMA read
         self.value: dict[str, Any] | None = None
         self.capped: Probe | None = None  # the tiny output cap's reply
@@ -790,7 +798,7 @@ class ModelCheck:
         }
         values = {**values, **options}
         values["thinking"] = self.verifier._level(self.model, values["thinking"])
-        return self.verifier._probe(CHAT_PATH, page_request(**values))
+        return self.verifier._probe(CHAT_PATH, _cap(page_request(**values), self.cap))
 
     def endpoint(self) -> Finding:
         if (cannot := self._cannot("model_endpoint")) is not None:
@@ -804,7 +812,7 @@ class ModelCheck:
             return self._found("model_endpoint", FAIL, evidence)
         allowed = self.verifier.settings.openrouter_providers
         usable = [
-            slug
+            (slug, parameters)
             for slug, parameters in endpoints
             if slug in allowed
             and catalog.STRUCTURED in parameters
@@ -814,7 +822,9 @@ class ModelCheck:
         if not usable:
             evidence = f"{said}; none of OPENROUTER_PROVIDERS with structured output and the parameters"
             return self._found("model_endpoint", FAIL, evidence)
-        self.provider = usable[0]
+        self.provider, parameters = usable[0]
+        # The cap _lacking accepted: max_completion_tokens when listed, else max_tokens.
+        self.cap = "max_completion_tokens" if "max_completion_tokens" in parameters else "max_tokens"
         return self._found("model_endpoint", PASS, f"{said}; reads through {self.provider}")
 
     def reply(self) -> Finding:
@@ -961,7 +971,7 @@ class ModelCheck:
             + CHAT_THINKING_TOKENS.get(thinking, 0),
             provider_slug=self.provider or DEFAULT_PROVIDER,
         )
-        return self.verifier._probe(CHAT_PATH, body)
+        return self.verifier._probe(CHAT_PATH, _cap(body, self.cap))
 
     def chat_schema(self) -> Finding:
         if (cannot := self._cannot("chat_schema")) is not None:
@@ -1034,6 +1044,14 @@ def _iou(a: tuple[float, float, float, float], b: tuple[float, float, float, flo
     if width <= 0 or height <= 0 or union <= 0:
         return 0.0
     return width * height / (union - width * height)
+
+
+def _cap(body: dict[str, Any], name: str) -> dict[str, Any]:
+    """``body`` with its output cap sent as ``name`` (max_tokens when that is the one the
+    endpoint lists, so the request sends what ``_lacking`` checked)."""
+    if name != "max_completion_tokens" and "max_completion_tokens" in body:
+        body[name] = body.pop("max_completion_tokens")
+    return body
 
 
 def _text_only(
