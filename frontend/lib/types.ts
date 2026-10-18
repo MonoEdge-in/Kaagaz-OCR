@@ -1331,6 +1331,15 @@ export interface OrgFeatureSwitch {
   platform_enabled: boolean; // false: off for every organisation, whatever this one says
 }
 
+/** GET /operator/session-timeout and /operator/orgs/{id}/session-timeout (0040): hours with no
+ * activity before signing in again, 1 to 24. null: the default (the platform's) or follow the
+ * platform (an organisation's); platform_hours only on an organisation's. */
+export interface SessionTimeout {
+  hours: number | null;
+  platform_hours?: number | null;
+  default_hours: number;
+}
+
 /** GET /operator/test-model: the whole platform on one model for a test, or not. */
 export interface TestModel {
   active: boolean;

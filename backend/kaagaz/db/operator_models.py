@@ -26,6 +26,8 @@ audit rows.
 * ``usage``: tokens and dollars per organisation and model. No user, no document.
 * ``feature_switches`` and ``set_feature_switch`` (0038): the platform feature switches;
   ``org_feature_switches`` and ``set_org_feature_switch`` (0039): one organisation's.
+* ``session_timeout`` and ``set_session_timeout`` (0040): the sign-in idle timeout, the
+  platform's and one organisation's.
 * ``current_test_model``, ``set_test_model`` and ``clear_test_model`` (0038): the platform
   test model, one model for every organisation's scanning and answering, and its undo.
 
@@ -222,6 +224,24 @@ def set_org_feature_switch(
     audited). ``done``, ``unchanged``, ``missing``, ``deleting``, ``step_up`` or ``signed_out``."""
     params = {"o": operator_id, "c": customer_id, "f": feature, "on": enabled, "step": step}
     statement = text("SELECT kaagaz_op_set_org_feature_switch(:o, :c, :f, :on, :step)")
+    return str(conn.execute(statement, params).scalar_one())
+
+
+def session_timeout(conn: Connection, operator_id: str, customer_id: str | None) -> RowMapping | None:
+    """The sign-in idle timeout (0040): org_hours (None without a customer) and platform_hours.
+    None for an unknown organisation or an operator who is not enabled."""
+    params = {"o": operator_id, "c": customer_id}
+    return conn.execute(text("SELECT * FROM kaagaz_op_session_timeout(:o, :c)"), params).mappings().first()
+
+
+def set_session_timeout(
+    conn: Connection, operator_id: str, customer_id: str | None, hours: int | None, *, step: int
+) -> str:
+    """Set the platform's idle timeout (no customer) or one organisation's (None: follow the
+    platform), ``step`` of a fresh code required; audited. ``done``, ``unchanged``,
+    ``missing``, ``deleting``, ``step_up`` or ``signed_out``."""
+    params = {"o": operator_id, "c": customer_id, "h": hours, "step": step}
+    statement = text("SELECT kaagaz_op_set_session_timeout(:o, :c, :h, :step)")
     return str(conn.execute(statement, params).scalar_one())
 
 

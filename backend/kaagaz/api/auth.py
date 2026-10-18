@@ -15,6 +15,11 @@ Why each piece (FULL-BUILD-SPEC section 3, PRD 1 A1 to A7):
   that session version. Raising the version (a new password, "sign out
   everywhere", disabling, a 2FA reset) ends every other session at its next
   request.
+* **The idle timeout** (0040): the same query reads the hours the super admin set (the
+  organisation's, else the platform's; none saved: no idle limit) and the user's last use
+  or sign-in. Unused for longer ends the session (401 ``not_signed_in``); a use writes
+  ``last_seen_at`` at most once a minute. ``exp`` stays the outer cap: 24 hours for a sign-in
+  while hours are set (member and admin alike), else SESSION_HOURS or ADMIN_SESSION_MINUTES.
 * **The enrol token** carries a pending TOTP secret between an admin's right
   password at /auth/login (403 ``mfa_enrol_required``) and their first code:
   ``{"uid","cid","ver","sec","exp"}``, MAC over
@@ -52,6 +57,7 @@ import secrets
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from functools import cache
 from typing import Annotated, Any
 
@@ -77,6 +83,9 @@ CONFIRM_PATH = "/api/documents"  # the browser calls the API on its own origin, 
 OPERATOR_COOKIE = "kaagaz_operator"
 OPERATOR_PATH = "/api/operator"
 OPERATOR_SESSION_SECONDS = 30 * 60  # absolute, PROVISIONAL (change plan question 4)
+# A session's end while an idle timeout is set (0040): the idle timeout, 1 to 24 hours, ends it.
+# Cookies issued before keep the end they were given.
+CAPPED_SECONDS = 24 * 3600
 
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _SCRYPT_N, _SCRYPT_R, _SCRYPT_P, _SCRYPT_LEN = 2**14, 8, 1, 32
@@ -172,8 +181,13 @@ _MOVE_PURPOSE = b"operator_move"
 _MOVE_FIELDS = frozenset({"oid", "ver", "sec", "exp"})
 
 
-def session_seconds(scope: str, settings: Settings) -> int:
-    """How long a session of this scope lasts: ADMIN_SESSION_MINUTES or SESSION_HOURS."""
+def session_seconds(scope: str, settings: Settings, idle_hours: int | None = None) -> int:
+    """How long a session of this scope lasts: ADMIN_SESSION_MINUTES or SESSION_HOURS; with an
+    idle timeout set (0040, Tushar 18 Oct 2026) CAPPED_SECONDS for both, as the idle timeout ends it."""
+    if scope not in SCOPES:
+        raise ValueError("unknown session scope")
+    if idle_hours is not None:
+        return CAPPED_SECONDS
     if scope == "admin":
         return settings.admin_session_minutes * 60
     if scope == "app":
@@ -190,6 +204,7 @@ def new_session(
     session_version: int,
     settings: Settings,
     now: int,
+    idle_hours: int | None = None,
 ) -> SessionClaims:
     """Claims for a new session that ends one scope lifetime after ``now``."""
     return SessionClaims(
@@ -198,7 +213,7 @@ def new_session(
         role=role,
         scope=scope,
         session_version=session_version,
-        expires_at=now + session_seconds(scope, settings),
+        expires_at=now + session_seconds(scope, settings, idle_hours),
     )
 
 
@@ -494,6 +509,23 @@ class CurrentUser:
     must_change_password: bool
     totp_enabled: bool  # two-step sign-in is on (required for an admin)
     delete_forever_allowed: bool  # an admin allowed Delete forever (ignored for an admin)
+    idle_hours: int | None = None  # the idle timeout in effect (0040); None: no idle limit
+    seen_at: datetime | None = None  # the session's last use or sign-in, the idle clock
+
+
+# The idle timeout (0040): the last use is written at most this often, so a request is not a write.
+TOUCH_EVERY = timedelta(minutes=1)
+
+
+def idle_over(seen_at: datetime | None, idle_hours: int | None, now: datetime) -> bool:
+    """Unused for longer than the idle timeout. No timeout: never. Every sign-in stamps
+    ``last_login_at``, so a live session always has a ``seen_at``; with none, never too."""
+    return idle_hours is not None and seen_at is not None and now - seen_at > timedelta(hours=idle_hours)
+
+
+def touch_due(seen_at: datetime | None, now: datetime) -> bool:
+    """The last use or sign-in on record is a minute old or more."""
+    return seen_at is not None and now - seen_at >= TOUCH_EVERY
 
 
 def set_confirm_cookie(response: Response, user: CurrentUser, settings: Settings, *, now: int) -> None:
@@ -538,8 +570,8 @@ def current_user_allow_password_change(request: Request) -> CurrentUser:
 
 def _signed_in(request: Request) -> CurrentUser:
     context = get_context(request)
-    now = int(context.clock().timestamp())
-    claims = session_claims(request, context.settings, now)
+    now = context.clock()
+    claims = session_claims(request, context.settings, int(now.timestamp()))
     if claims is None:
         raise ApiError(401, "not_signed_in")
     user = load_user(context.db, claims.customer_id, claims.user_id, scope=claims.scope)
@@ -548,6 +580,13 @@ def _signed_in(request: Request) -> CurrentUser:
     if user.role == "admin" and claims.scope != "admin":
         # An admin's app session from before 16 Oct 2026 rested on the password alone.
         raise ApiError(401, "not_signed_in")
+    if idle_over(user.seen_at, user.idle_hours, now):  # the super admin's idle timeout (0040)
+        raise ApiError(401, "not_signed_in")
+    if touch_due(user.seen_at, now):
+        # ponytail: one last use per user, not per browser; a use or a sign-in anywhere keeps
+        # every session of that user alive. Per session needs a server-side session row.
+        with context.db.customer(user.customer_id) as conn:
+            users_sql.touch_seen(conn, user.customer_id, user.user_id, now=now)
     return user
 
 
@@ -571,6 +610,8 @@ def load_user(db: Database, customer_id: str, user_id: str, *, scope: str) -> Cu
         must_change_password=bool(row["must_change_password"]),
         totp_enabled=bool(row["totp_enabled"]),
         delete_forever_allowed=bool(row["delete_forever_allowed"]),
+        idle_hours=row["idle_hours"],
+        seen_at=row["seen_at"],
     )
 
 

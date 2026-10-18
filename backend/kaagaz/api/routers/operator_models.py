@@ -33,6 +33,11 @@ writes its own audit rows.
   ``{feature, enabled, platform_enabled}`` (no self sign-up). ``PUT .../{feature}``
   {enabled, code} (step-up): flip it for that organisation only; the list comes back. A
   feature runs there only while both switches are on (0039).
+* ``GET`` and ``PUT`` {hours, code} ``/operator/session-timeout`` and
+  ``/operator/orgs/{id}/session-timeout`` (PUT with a fresh code): how long an
+  organisation's admins and members stay signed in with no activity, 1 to 24 hours; the
+  organisation's, else the platform's, else none (``default_hours``: SESSION_HOURS, the
+  session's own end, which stays the cap) (0040).
 * ``GET``, ``POST`` {scan_model, chat_model, note, code} and ``DELETE`` {code}
   ``/operator/test-model`` (POST and DELETE with a fresh code): the platform test model, one
   allowed model for every organisation's scanning and answering, and its undo (every
@@ -151,6 +156,16 @@ Feature = Literal[
 ]
 # Sign-up makes a new organisation: one has no switch of its own for it (0039).
 OrgFeature = Literal["scan_ai", "ask", "ensemble", "autofile", "cost_saving", "review", "my_words"]
+
+
+class TimeoutBody(BaseModel):
+    """The sign-in idle timeout in whole hours, 1 to 24 (0040); null: the default (the platform's)
+    or follow the platform (an organisation's). Strict: 1.5, "3" and true are refused."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    hours: Annotated[int, Field(strict=True, ge=1, le=24)] | None
+    code: str = Field(min_length=1, max_length=MAX_CODE)
 
 
 class SwitchBody(BaseModel):
@@ -369,6 +384,62 @@ def set_org_feature_switch(
         )
     _refuse(db, operator, outcome, step_up)
     return get_org_feature_switches(customer_id, operator, db)
+
+
+@router.get("/session-timeout")
+def get_session_timeout(operator: OperatorSession, db: OperatorDb, context: Context) -> dict[str, Any]:
+    """The platform's sign-in idle timeout in hours (null: the default, SESSION_HOURS)."""
+    row = _timeout(db, operator, None)
+    return {"hours": row["platform_hours"], "default_hours": context.settings.session_hours}
+
+
+@router.put("/session-timeout")
+def set_session_timeout(
+    body: TimeoutBody, operator: OperatorSession, db: OperatorDb, context: Context
+) -> dict[str, Any]:
+    """Set it (a fresh code first); every organisation without its own follows at its next request."""
+    step_up = _step_up(db, context, operator, body.code)
+    with db.operator() as conn:
+        outcome = models_sql.set_session_timeout(
+            conn, operator.operator_id, None, body.hours, step=step_up.step
+        )
+    _refuse(db, operator, outcome, step_up)
+    return get_session_timeout(operator, db, context)
+
+
+@router.get("/orgs/{customer_id}/session-timeout")
+def get_org_session_timeout(
+    customer_id: uuid.UUID, operator: OperatorSession, db: OperatorDb, context: Context
+) -> dict[str, Any]:
+    """One organisation's own idle timeout (null: follow the platform), with the platform's."""
+    row = _timeout(db, operator, str(customer_id))
+    return {
+        "hours": row["org_hours"],
+        "platform_hours": row["platform_hours"],
+        "default_hours": context.settings.session_hours,
+    }
+
+
+@router.put("/orgs/{customer_id}/session-timeout")
+def set_org_session_timeout(
+    customer_id: uuid.UUID, body: TimeoutBody, operator: OperatorSession, db: OperatorDb, context: Context
+) -> dict[str, Any]:
+    """Set one organisation's (null: follow the platform), a fresh code first."""
+    step_up = _step_up(db, context, operator, body.code)
+    with db.operator() as conn:
+        outcome = models_sql.set_session_timeout(
+            conn, operator.operator_id, str(customer_id), body.hours, step=step_up.step
+        )
+    _refuse(db, operator, outcome, step_up)
+    return get_org_session_timeout(customer_id, operator, db, context)
+
+
+def _timeout(db: OperatorDatabase, operator: CurrentOperator, customer_id: str | None) -> RowMapping:
+    with db.operator() as conn:
+        row = models_sql.session_timeout(conn, operator.operator_id, customer_id)
+    if row is None:  # an unknown organisation, or the operator was disabled meanwhile
+        raise ApiError(404, "not_found") if customer_id else ApiError(401, "not_signed_in")
+    return row
 
 
 @router.get("/test-model")

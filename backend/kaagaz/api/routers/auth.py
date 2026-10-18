@@ -506,6 +506,7 @@ def _start_session(
         session_version=user.session_version,
         settings=context.settings,
         now=_unix(now),
+        idle_hours=user.idle_hours,  # set: 24 hours, the idle timeout ends it (0040)
     )
     response = JSONResponse(me_json(user))
     set_session_cookie(response, claims, context.settings, now=_unix(now))
