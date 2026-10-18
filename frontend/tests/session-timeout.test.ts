@@ -1,5 +1,5 @@
 // The sign-in idle timeout (0040): the Timeout setup tab and one organisation's dialog, the 24
-// hour choices plus the default, the confirm with a fresh code, and the API call shapes.
+// hour choices plus no idle limit (or follow the platform), the confirm with a fresh code, and the API call shapes.
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -7,7 +7,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { OPERATOR_TABS } from "@/components/operator/OperatorConsole";
-import { OrgSessionTimeoutDialog, SessionTimeoutView, TimeoutForm, timeoutConfirm } from "@/components/operator/SessionTimeout";
+import { OrgSessionTimeoutDialog, SessionTimeoutView, TimeoutForm, noneLabel, timeoutConfirm } from "@/components/operator/SessionTimeout";
 import { getSessionTimeout, setSessionTimeout } from "@/lib/api";
 import type { Organisation } from "@/lib/types";
 
@@ -22,14 +22,16 @@ describe("Timeout setup", () => {
     expect(OPERATOR_TABS.map((tab) => tab.label).slice(-2)).toEqual(["Feature switches", "Timeout setup"]);
   });
 
-  it("explains itself and offers 1 to 24 hours plus the default", () => {
+  it("explains itself and offers 1 to 24 hours plus no idle limit", () => {
     expect(renderToStaticMarkup(createElement(SessionTimeoutView))).toContain(
       "How long organisation admins and members stay signed in with no activity (up to 24 hours).",
     );
-    const html = renderToStaticMarkup(createElement(TimeoutForm, { saved: 3, none: "Default (12 hours)", onSave: () => {} }));
+    const none = noneLabel({ hours: 3, default_hours: 12 }, false);
+    expect(none).toBe("No idle limit (sign-in lasts 12 hours)"); // the session's length, not an idle timeout
+    const html = renderToStaticMarkup(createElement(TimeoutForm, { saved: 3, none, onSave: () => {} }));
     const options = [...html.matchAll(/<option value="([^"]*)"[^>]*>([^<]*)<\/option>/g)].map((m) => [m[1], m[2]]);
     expect(options).toHaveLength(25);
-    expect(options[0]).toEqual(["", "Default (12 hours)"]);
+    expect(options[0]).toEqual(["", "No idle limit (sign-in lasts 12 hours)"]);
     expect(options[1]).toEqual(["1", "1 hour"]);
     expect(options[2]).toEqual(["2", "2 hours"]);
     expect(options[24]).toEqual(["24", "24 hours"]);
@@ -39,14 +41,21 @@ describe("Timeout setup", () => {
   });
 
   it("asks first with a fresh code", () => {
-    expect(timeoutConfirm(2, "Default (12 hours)")).toMatchObject({
+    const none = "No idle limit (sign-in lasts 12 hours)";
+    expect(timeoutConfirm(2, none)).toMatchObject({
       title: "Set the sign-in timeout to 2 hours?",
+      effect: expect.stringContaining("sign in again after 2 hours with no activity"),
       stepUp: true,
     });
-    expect(timeoutConfirm(null, "Follow the platform (8 hours)", ORG)).toMatchObject({
+    const off = timeoutConfirm(null, none);
+    expect(off.effect).toBe("Organisation admins and members are not signed out for being inactive. Each sign-in lasts its usual length.");
+    const follow = timeoutConfirm(null, "Follow the platform (8 hours)", ORG);
+    expect(follow).toMatchObject({
       title: "Set the sign-in timeout for Sharma Traders to Follow the platform (8 hours)?",
+      effect: "Sharma Traders's admins and members follow the platform's setting from now on.",
       stepUp: true,
     });
+    for (const each of [off, follow]) expect(each.effect).not.toMatch(/sign in again after/);
   });
 });
 
@@ -60,8 +69,10 @@ describe("one organisation's session timeout", () => {
     expect(html).toContain("Session timeout for Sharma Traders");
   });
 
-  it("offers Follow the platform in place of the default", () => {
-    const html = renderToStaticMarkup(createElement(TimeoutForm, { saved: null, none: "Follow the platform (8 hours)", onSave: () => {} }));
+  it("offers Follow the platform with the platform's real value, or no idle limit", () => {
+    expect(noneLabel({ hours: null, platform_hours: null, default_hours: 12 }, true)).toBe("Follow the platform (no idle limit)");
+    const none = noneLabel({ hours: null, platform_hours: 8, default_hours: 12 }, true);
+    const html = renderToStaticMarkup(createElement(TimeoutForm, { saved: null, none, onSave: () => {} }));
     expect(html).toMatch(/<option value="" selected="">Follow the platform \(8 hours\)<\/option>/);
   });
 });

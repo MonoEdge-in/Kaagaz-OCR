@@ -150,6 +150,7 @@ class SessionClaims:
     scope: str  # "app" or "admin"
     session_version: int
     expires_at: int  # seconds since the epoch
+    capped: bool = False  # given the 24-hour cap while idle hours were set (0040): "cap": true
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -214,6 +215,7 @@ def new_session(
         scope=scope,
         session_version=session_version,
         expires_at=now + session_seconds(scope, settings, idle_hours),
+        capped=idle_hours is not None,
     )
 
 
@@ -226,6 +228,7 @@ def sign_session(claims: SessionClaims, secret: str) -> str:
             "scope": claims.scope,
             "ver": claims.session_version,
             "exp": claims.expires_at,
+            **({"cap": True} if claims.capped else {}),  # left out otherwise: older cookies stay valid
         },
         _SESSION_PURPOSE,
         secret,
@@ -398,8 +401,13 @@ def _verified(token: str, purpose: bytes, secret: str) -> Any:
 
 
 def _claims(data: Any, now: int) -> SessionClaims | None:
-    """Strict: exactly the six fields, each of its type; scope "admin" needs role "admin"."""
-    if not isinstance(data, dict) or set(data) != _SESSION_FIELDS:
+    """Strict: exactly the six fields, each of its type, and "cap" (only ever true, 0040);
+    scope "admin" needs role "admin"."""
+    if (
+        not isinstance(data, dict)
+        or set(data) - {"cap"} != _SESSION_FIELDS
+        or data.get("cap", True) is not True
+    ):
         return None
     uid, cid, role, scope = data["uid"], data["cid"], data["role"], data["scope"]
     ver, exp = data["ver"], data["exp"]
@@ -414,7 +422,13 @@ def _claims(data: Any, now: int) -> SessionClaims | None:
     if not (_is_uuid(uid) and _is_uuid(cid)):
         return None
     return SessionClaims(
-        user_id=uid, customer_id=cid, role=role, scope=scope, session_version=ver, expires_at=exp
+        user_id=uid,
+        customer_id=cid,
+        role=role,
+        scope=scope,
+        session_version=ver,
+        expires_at=exp,
+        capped="cap" in data,
     )
 
 
@@ -523,6 +537,14 @@ def idle_over(seen_at: datetime | None, idle_hours: int | None, now: datetime) -
     return idle_hours is not None and seen_at is not None and now - seen_at > timedelta(hours=idle_hours)
 
 
+def cap_outlived(claims: SessionClaims, idle_hours: int | None, settings: Settings, now: int) -> bool:
+    """A cookie given the 24-hour cap while hours were set ("cap"), once the hours are removed:
+    it may not outlive the normal length. It began CAPPED_SECONDS before its end, and ends one
+    normal length after that."""
+    normal = session_seconds(claims.scope, settings)
+    return idle_hours is None and claims.capped and now >= claims.expires_at - CAPPED_SECONDS + normal
+
+
 def touch_due(seen_at: datetime | None, now: datetime) -> bool:
     """The last use or sign-in on record is a minute old or more."""
     return seen_at is not None and now - seen_at >= TOUCH_EVERY
@@ -579,6 +601,8 @@ def _signed_in(request: Request) -> CurrentUser:
         raise ApiError(401, "not_signed_in")
     if user.role == "admin" and claims.scope != "admin":
         # An admin's app session from before 16 Oct 2026 rested on the password alone.
+        raise ApiError(401, "not_signed_in")
+    if cap_outlived(claims, user.idle_hours, context.settings, int(now.timestamp())):
         raise ApiError(401, "not_signed_in")
     if idle_over(user.seen_at, user.idle_hours, now):  # the super admin's idle timeout (0040)
         raise ApiError(401, "not_signed_in")

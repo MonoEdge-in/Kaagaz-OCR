@@ -2,12 +2,23 @@
 touch, and the operator routes' body checks and shape. The rule (the organisation's, else
 the platform's, else none) is one COALESCE in the session query: test_session_timeout_db."""
 
+import json
 from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from kaagaz.api.auth import idle_over, new_session, session_seconds, touch_due
+from kaagaz.api import auth
+from kaagaz.api.auth import (
+    CAPPED_SECONDS,
+    cap_outlived,
+    idle_over,
+    new_session,
+    read_session,
+    session_seconds,
+    sign_session,
+    touch_due,
+)
 from kaagaz.db import operator_models as models_sql
 from kaagaz.db import users as users_sql
 from kaagaz.db.engine import Database
@@ -41,6 +52,55 @@ def test_with_hours_set_a_sign_in_lasts_24_hours_for_both_roles_else_as_before()
         idle_hours=5,
     )
     assert claims.expires_at == 24 * 3600
+
+
+@pytest.mark.parametrize(("scope", "normal"), [("app", 12 * 3600), ("admin", 60 * 60)])
+def test_a_capped_cookie_outlives_the_normal_length_no_longer_once_the_hours_are_removed(
+    scope: str, normal: int
+) -> None:
+    settings = make_settings(session_hours=12, admin_session_minutes=60)
+    capped = new_session(
+        user_id="u", customer_id="c", role="admin", scope=scope, session_version=1, settings=settings,
+        now=0, idle_hours=5,
+    )  # fmt: skip
+    assert not cap_outlived(capped, None, settings, normal - 1)  # inside the normal length
+    assert cap_outlived(capped, None, settings, normal)  # past it: ended
+    assert not cap_outlived(capped, 5, settings, normal)  # hours still set: the idle timeout rules
+    plain = new_session(
+        user_id="u", customer_id="c", role="admin", scope=scope, session_version=1, settings=settings, now=0
+    )
+    assert not any(cap_outlived(plain, None, settings, at) for at in (0, normal - 1))
+
+
+def test_the_current_user_ends_a_capped_cookie_past_the_normal_length(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for scope, role, normal in (("app", "member", 12 * 3600), ("admin", "admin", 60 * 60)):
+        client = tokens._client(monkeypatch, tokens._user(role=role, idle_hours=None))
+        issued = tokens.NOW - normal  # one normal length ago, with the 24-hour cap
+        for capped, expected in ((True, 401), (False, 200)):  # an older cookie without "cap": as before
+            claims = tokens._session(
+                role=role, scope=scope, expires_at=issued + CAPPED_SECONDS, capped=capped
+            )
+            tokens._cookie(client, claims)
+            assert client.get("/any").status_code == expected, (scope, capped)
+
+
+def test_cap_is_signed_and_only_ever_true() -> None:
+    secret = make_settings().session_secret
+    claims = tokens._session(capped=True, expires_at=tokens.NOW + 60)
+    assert read_session(sign_session(claims, secret), secret, tokens.NOW) == claims
+    plain = sign_session(tokens._session(expires_at=tokens.NOW + 60), secret)
+    assert "cap" not in json.loads(auth._unb64url(plain.split(".")[0]))  # older cookies keep their shape
+    body = {
+        "uid": tokens.UID,
+        "cid": tokens.CID,
+        "role": "admin",
+        "scope": "app",
+        "ver": 3,
+        "exp": tokens.NOW + 60,
+    }
+    assert read_session(auth._sign({**body, "cap": False}, b"session", secret), secret, tokens.NOW) is None
 
 
 def test_the_last_use_is_written_at_most_once_a_minute() -> None:

@@ -24,13 +24,26 @@ export const hoursText = (hours: number) => `${hours} ${hours === 1 ? "hour" : "
 const EXPLAIN = "How long organisation admins and members stay signed in with no activity (up to 24 hours).";
 const SAVE_ID = "session-timeout-save";
 
-/** Saving a value: asked first, with a fresh code. ``none`` names what null means here. */
+/** The null choice: the platform has no idle limit (sign-ins last their usual length, SESSION_HOURS
+ * for members); an organisation follows the platform, whose value is said. */
+export const noneLabel = (value: SessionTimeout, org: boolean) =>
+  !org
+    ? `No idle limit (sign-in lasts ${hoursText(value.default_hours)})`
+    : `Follow the platform (${value.platform_hours ? hoursText(value.platform_hours) : "no idle limit"})`;
+
+/** Saving a value: asked first, with a fresh code. ``none`` is the null choice's label. */
 export function timeoutConfirm(hours: number | null, none: string, org?: Organisation): Confirm {
   const who = org ? `${org.name}'s admins and members` : "Organisation admins and members";
   const limit = hours === null ? none : hoursText(hours);
+  const effect =
+    hours !== null
+      ? `${who} sign in again after ${limit} with no activity. Anyone already idle that long is signed out at their next step.`
+      : org
+        ? `${who} follow the platform's setting from now on.`
+        : `${who} are not signed out for being inactive. Each sign-in lasts its usual length.`;
   return {
     title: `Set the sign-in timeout${org ? ` for ${org.name}` : ""} to ${limit}?`,
-    effect: `${who} sign in again after ${limit} with no activity. Anyone already idle that long is signed out at their next step.`,
+    effect,
     action: "Save",
     done: `The sign-in timeout${org ? ` for ${org.name}` : ""} is ${limit}.`,
     danger: false,
@@ -90,7 +103,7 @@ export function SessionTimeoutView() {
   const { value, failed, reload } = useTimeout();
   const [changing, setChanging] = useState<Confirm | null>(null);
   const [toast, setToast] = useState<string | null>(null);
-  const none = value ? `Default (${hoursText(value.default_hours)})` : "Default";
+  const none = value ? noneLabel(value, false) : "No idle limit";
   return (
     <section className={admin.section} aria-labelledby="session-timeout-heading">
       <h2 id="session-timeout-heading" className={admin.sectionHeading}>
@@ -127,8 +140,7 @@ export function OrgSessionTimeoutDialog({ org, onClose }: { org: Organisation; o
   const { value, failed, reload } = useTimeout(org.id);
   const [changing, setChanging] = useState<Confirm | null>(null);
   const [done, setDone] = useState("");
-  const platform = value?.platform_hours ?? value?.default_hours;
-  const none = platform === undefined ? "Follow the platform" : `Follow the platform (${hoursText(platform)})`;
+  const none = value ? noneLabel(value, true) : "Follow the platform";
   return (
     <>
       <ActionDialog title={`Session timeout for ${org.name}`} onClose={onClose}>
