@@ -188,9 +188,14 @@ class DefaultsBody(BaseModel):
 
 @router.get("/models")
 def list_models(operator: OperatorSession, db: OperatorDb, context: Context) -> dict[str, Any]:
+    """Only the models Kaagaz can use (Tushar, 18 Oct 2026: "remove the models not feasible
+    for this product"): eligible to scan or to answer, or still enabled, so it can be
+    turned off. A model failing a rule (no zero-data-retention provider, no image input...)
+    stays in model_catalog but is not listed."""
     with db.operator() as conn:
         rows = models_sql.list_models(conn, operator.operator_id)
-    return {"items": [_model(row, context.settings) for row in rows]}
+    usable = (row for row in rows if row["eligible"] or row["chat_eligible"] or row["enabled_at"] is not None)
+    return {"items": [_model(row, context.settings) for row in usable]}
 
 
 @router.put("/models/{model:path}")
