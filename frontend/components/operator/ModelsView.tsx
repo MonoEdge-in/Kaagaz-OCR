@@ -51,8 +51,8 @@ export function ModelsView() {
           Models
         </h2>
         <p className={styles.summary}>
-          From OpenRouter&apos;s live list, refreshed daily. A model can be enabled once it passes the rules and
-          verify-models; then organisations can be given it.
+          From OpenRouter&apos;s live list, refreshed daily. Only models Kaagaz can use are listed. A model can be
+          enabled once it passes verify-models; then organisations can be given it.
         </p>
         <p className="visually-hidden" role="status">
           {done || (!models && !failed ? "Loading the models…" : "")}

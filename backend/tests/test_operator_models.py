@@ -313,6 +313,22 @@ def test_the_catalogue_says_verified_for_the_current_prompts_only(
     assert model["vendor_allowed"] is False  # example is not in OPENROUTER_MODEL_VENDORS
 
 
+def test_only_models_kaagaz_can_use_are_listed(offline: _Offline, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Tushar, 18 Oct 2026: a model failing the rules (no zero-data-retention provider...) is
+    # not listed; one still enabled is, so it can be turned off.
+    unusable = {**CATALOGUE_ROW, "eligible": False, "chat_eligible": False}
+    rows = [
+        {**unusable, "id": "anthropic/not-usable"},
+        {**unusable, "id": "anthropic/still-on", "enabled_at": datetime(2026, 10, 1, tzinfo=UTC)},
+        {**CATALOGUE_ROW, "id": "google/answers-only", "eligible": False},
+        {**CATALOGUE_ROW, "id": "google/scans-only", "chat_eligible": False},
+    ]
+    monkeypatch.setattr(models_sql, "list_models", lambda conn, oid: rows)
+    items = offline.client.get("/api/operator/models", headers=offline.headers).json()["items"]
+    listed = [item["id"] for item in items]
+    assert listed == ["anthropic/still-on", "google/answers-only", "google/scans-only"]
+
+
 def test_enabling_a_model_needs_a_fresh_code_and_names_both_current_prompts(offline: _Offline) -> None:
     path = f"/api/operator/models/{MODEL}"
     assert offline.client.put(path, json={"enabled": True}, headers=offline.headers).status_code == 400
