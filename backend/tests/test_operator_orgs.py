@@ -57,6 +57,9 @@ ORG_ROUTES = {
     # Changed on purpose (0039): one organisation's feature switches.
     ("GET", f"{ORGS}/{ANY_ID}/feature-switches"),
     ("PUT", f"{ORGS}/{ANY_ID}/feature-switches/{ANY_ID}"),
+    # Changed on purpose (0040): one organisation's sign-in idle timeout.
+    ("GET", f"{ORGS}/{ANY_ID}/session-timeout"),
+    ("PUT", f"{ORGS}/{ANY_ID}/session-timeout"),
 }
 ORG_ROW = {
     "customer_id": CID,

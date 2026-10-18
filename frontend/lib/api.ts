@@ -62,6 +62,7 @@ import type {
   ReviewStatus,
   Role,
   ScopeBody,
+  SessionTimeout,
   SheetCells,
   SourcePin,
   Stats,
@@ -639,6 +640,14 @@ export const getOrgFeatureSwitches = (orgId: string) => request<OrgFeatureSwitch
 /** Flip one for that organisation only, with a fresh code (step-up). */
 export const setOrgFeatureSwitch = (orgId: string, feature: string, enabled: boolean, code: string) =>
   request<OrgFeatureSwitch[]>("PUT", `${orgSwitches(orgId)}/${encodeURIComponent(feature)}`, { enabled, code });
+
+/** Operator: the sign-in idle timeout (0040), the platform's (no orgId) or one organisation's. */
+const timeoutPath = (orgId?: string) =>
+  orgId ? `/operator/orgs/${encodeURIComponent(orgId)}/session-timeout` : "/operator/session-timeout";
+export const getSessionTimeout = (orgId?: string) => request<SessionTimeout>("GET", timeoutPath(orgId));
+/** Set it, with a fresh code (step-up); null: the default, or follow the platform. */
+export const setSessionTimeout = (hours: number | null, code: string, orgId?: string) =>
+  request<SessionTimeout>("PUT", timeoutPath(orgId), { hours, code });
 
 /** Operator: the platform-wide test model. */
 export const getTestModel = () => request<TestModel>("GET", "/operator/test-model");

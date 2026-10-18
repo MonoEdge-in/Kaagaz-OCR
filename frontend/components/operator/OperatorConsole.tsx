@@ -1,6 +1,6 @@
 "use client";
 
-// /operator: eight tabs, Overview (the default) and Quality (operator insights,
+// /operator: nine tabs, Overview (the default) and Quality (operator insights,
 // council 11 Oct 2026), Organisations, Models (with Compare models under the
 // catalogue), AI spend (model choice), Activity and Health, as the admin
 // screen's tabs (Tabs.tsx): one line that scrolls sideways, arrow keys, Home and End
@@ -8,7 +8,8 @@
 // so each loads when opened. Needs attention opens an organisation in
 // Organisations (searched by its name, the search focused), or Health or Models.
 // Feature switches (spec 17 Oct 2026) holds the platform switches and the test model;
-// while a test model runs, its banner sits above the tabs on every tab.
+// while a test model runs, its banner sits above the tabs on every tab. Timeout setup (0040)
+// holds the sign-in idle timeout.
 
 import { useEffect, useState } from "react";
 import { Tabs, tabId, tabSelectId } from "@/components/admin/Tabs";
@@ -22,6 +23,7 @@ import { ModelsView } from "./ModelsView";
 import { OrganisationsView } from "./OrganisationsView";
 import { OverviewView } from "./OverviewView";
 import { QualityView } from "./QualityView";
+import { SessionTimeoutView } from "./SessionTimeout";
 import { SpendView } from "./SpendView";
 import css from "./Insights.module.css";
 
@@ -34,6 +36,7 @@ export const OPERATOR_TABS = [
   { id: "activity", label: "Activity" },
   { id: "health", label: "Health" },
   { id: "features", label: "Feature switches" },
+  { id: "timeout", label: "Timeout setup" },
 ] as const;
 
 type TabId = (typeof OPERATOR_TABS)[number]["id"];
@@ -93,6 +96,7 @@ export function OperatorConsole() {
         {active === "activity" && <ActivityView />}
         {active === "health" && <HealthView />}
         {active === "features" && <FeatureSwitchesView testModel={testModel} onTestModel={reloadTestModel} />}
+        {active === "timeout" && <SessionTimeoutView />}
       </Tabs>
     </div>
   );

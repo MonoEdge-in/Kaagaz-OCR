@@ -356,21 +356,37 @@ def session_user(conn: Connection, customer_id: str, user_id: str) -> RowMapping
 
     None too while the customer is not active (0014): every sign-in starts its
     session through here (``api.auth.load_user``) and every request checks it,
-    so a disabled customer's sessions end at their next request."""
+    so a disabled customer's sessions end at their next request.
+
+    With the idle timeout (0040) in the same query: ``idle_hours``, the organisation's else
+    the platform's (None: no idle limit), and ``seen_at``, the later of ``last_seen_at`` and
+    ``last_login_at``."""
     return (
         conn.execute(
             text(
                 "SELECT u.id, u.email, u.display_name, u.role, u.disabled,"
                 " u.session_version, u.must_change_password, u.totp_enabled_at IS NOT NULL AS totp_enabled,"
                 " u.delete_forever_allowed_at IS NOT NULL AS delete_forever_allowed,"
-                " c.id AS customer_id, c.name AS customer_name"
+                " c.id AS customer_id, c.name AS customer_name,"
+                " GREATEST(u.last_seen_at, u.last_login_at) AS seen_at,"
+                " COALESCE(s.idle_hours, p.session_idle_hours) AS idle_hours"
                 " FROM users u JOIN customers c ON c.id = u.customer_id"
+                " LEFT JOIN org_session_settings s ON s.customer_id = c.id"
+                " LEFT JOIN platform_ai_settings p ON true"
                 " WHERE u.customer_id = :c AND u.id = :u AND c.status = 'active'"
             ),
             {"c": customer_id, "u": user_id},
         )
         .mappings()
         .first()
+    )
+
+
+def touch_seen(conn: Connection, customer_id: str, user_id: str, *, now: datetime) -> None:
+    """The session was used now (0040; the caller keeps it to once a minute). O(log n)."""
+    conn.execute(
+        text("UPDATE users AS u SET last_seen_at = :now WHERE u.customer_id = :c AND u.id = :u"),
+        {"c": customer_id, "u": user_id, "now": now},
     )
 
 
