@@ -13,6 +13,8 @@
   (V1, filled later by the worker's sweep), with a trigram index on the name key and a GIN
   index on the bands.
 * ``version_suggestions`` (V5): customer-only, the app reads, adds and decides them.
+  ``previous_folder_id`` is the new document's folder before it was linked, where Undo puts
+  it back (V7); no foreign key, so a folder deleted since means the top level.
 * ``audit_log.folder_id`` and ``family_id`` (A3), with three indexes for the timelines.
 * ``version_spotting`` (V8) joins the platform (0038) and organisation (0039) switch lists:
   both CHECKs and the operator's four functions that name the features.
@@ -151,6 +153,7 @@ UPGRADE = [
         status text NOT NULL CHECK (status IN ('pending', 'accepted', 'rejected', 'undone')),
         decided_by uuid NULL,
         decided_at timestamptz NULL,
+        previous_folder_id uuid NULL,
         created_at timestamptz NOT NULL DEFAULT now(),
         UNIQUE (document_id, candidate_family_id),
         FOREIGN KEY (customer_id, document_id) REFERENCES documents (customer_id, id) ON DELETE CASCADE

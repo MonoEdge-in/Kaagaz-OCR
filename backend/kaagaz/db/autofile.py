@@ -33,7 +33,8 @@ other party as printed (``party_name``); a sibling of that name already there ge
 " (<GSTIN>)" added, and when that is taken too, or there is no room (depth 5) or nobody to
 own a new folder, the type folder is used. Undo still moves the family to the top level.
 
-``undo`` moves a filed family back to the top level; the folder stays.
+``undo`` moves a filed family back to the top level, or to its department when it was filed
+inside one; the folder stays.
 
 The department template (File management F3, 0041): a file uploaded into a department (a
 top-level folder of kind department, F2) is filed inside it: Category (the type folder,
@@ -119,6 +120,19 @@ _FILE_FAMILY = (
     " WHERE customer_id = :c AND family_id = :f"
 )
 _FILED_IN = "SELECT autofile, folder_id FROM documents WHERE customer_id = :c AND id = :f"
+# Undo's way back (File management F3): the department above the filed folder (the top-level
+# folder at most 5 levels up, when it is of kind department), where a file uploaded into a
+# department was before filing; NULL (the top level) otherwise.
+# ponytail: a type folder a person moved into a department sends Undo there; remember the
+# upload's folder if that matters.
+_DEPARTMENT_ABOVE = (
+    "WITH RECURSIVE up (id, parent_id, depth) AS ("
+    " SELECT f.id, f.parent_id, 1 FROM folders f WHERE f.customer_id = :c AND f.id = :folder"
+    " UNION ALL SELECT f.id, f.parent_id, up.depth + 1 FROM up JOIN folders f ON f.id = up.parent_id"
+    " WHERE f.customer_id = :c AND up.depth < 6)"
+    " SELECT dep.id FROM up JOIN folders dep ON dep.customer_id = :c AND dep.id = up.id"
+    " WHERE up.parent_id IS NULL AND dep.kind = 'department'"
+)
 
 # --- party folders (28b) ---
 PARTY_NAME_MAX = 80
@@ -407,12 +421,14 @@ def _set(conn: Connection, customer_id: str, family_id: str, state: str | None) 
 
 
 def undo(conn: Connection, customer_id: str, family_id: str) -> str | None:
-    """Move a family Kaagaz filed back to the top level (R16), keeping the folder. Returns
-    the folder it was in; None when it is not filed now (a person moved it since, or its
-    folder was deleted), and nothing changes. The caller holds the family lock
-    (``trash.lock_live_family``). O(v log D)."""
+    """Move a family Kaagaz filed back where it was before filing (R16): its department when
+    it was filed inside one (F3), else the top level; the folder stays. Returns the folder it
+    was in; None when it is not filed now (a person moved it since, or its folder was
+    deleted), and nothing changes. The caller holds the family lock
+    (``trash.lock_live_family``). O(v log D + depth)."""
     row = conn.execute(text(_FILED_IN), {"c": customer_id, "f": family_id}).first()
     if row is None or row[0] != FILED or row[1] is None:
         return None
-    conn.execute(text(_FILE_FAMILY), {"c": customer_id, "f": family_id, "folder": None, "state": None})
+    back = conn.execute(text(_DEPARTMENT_ABOVE), {"c": customer_id, "folder": row[1]}).scalar()
+    conn.execute(text(_FILE_FAMILY), {"c": customer_id, "f": family_id, "folder": back, "state": None})
     return str(row[1])

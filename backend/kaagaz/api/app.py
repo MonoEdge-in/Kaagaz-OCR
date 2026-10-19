@@ -47,6 +47,7 @@ from kaagaz.api.routers import (
     search,
     stories,
     tags,
+    versions,
     word_review,
     words,
 )
@@ -105,6 +106,7 @@ def create_app(
         health.router,
         auth.router,
         documents.router,
+        versions.router,
         batches.router,
         dashboard.router,
         folders.router,
