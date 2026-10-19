@@ -8,13 +8,14 @@
 // Translate follows Ask: with `canTranslate` off (Ask switched off or at None) it is not
 // shown; a translation sits under its page with its own label, never mixed into the text.
 
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ApiError, getClearCopy, translatePage } from "@/lib/api";
 import type { ClearCopy, PageTranslation, ReadLine, Region, TranslateLanguage } from "@/lib/types";
 import {
   BUSY,
   LANGUAGES,
+  LEFT_OUT,
   MAX_TRANSLATE_PAGES,
   NOT_SURE_TIP,
   TRANSLATE_AT_ONCE,
@@ -28,7 +29,7 @@ import {
 } from "./clearCopy";
 import type { Part } from "./clearCopy";
 import type { Spot } from "./panels";
-import { truncatedText, visibleText } from "./scanned";
+import { visibleText } from "./scanned";
 import { sameRegion } from "./selection";
 import styles from "./ReadClearly.module.css";
 
@@ -66,11 +67,18 @@ export function ReadClearlyPanel({ documentId, pageNo, active, canTranslate, onS
   const current = loaded && loaded.key === key ? loaded : null;
   const pages = current && "copy" in current ? current.copy.pages : [];
   const doneKey = (lang: TranslateLanguage, page: number) => `${documentId}:${lang}:${page}`;
+  const inFlight = useRef(new Set<string>());
 
   async function translate(lang: TranslateLanguage, wanted: number[]) {
-    const queue = wanted.filter((page) => [undefined, "busy"].includes(done[doneKey(lang, page)]?.status));
+    // In flight is tracked at once (a ref, not state), so a double press never sends a page twice.
+    const queue = wanted.filter(
+      (page) => !inFlight.current.has(doneKey(lang, page)) && done[doneKey(lang, page)]?.status !== "done",
+    );
     const set = (page: number, value: Done) => setDone((now) => ({ ...now, [doneKey(lang, page)]: value }));
-    queue.forEach((page) => set(page, { status: "loading" }));
+    queue.forEach((page) => {
+      inFlight.current.add(doneKey(lang, page));
+      set(page, { status: "loading" });
+    });
     let next = 0;
     const worker = async () => {
       for (let page = queue[next++]; page !== undefined; page = queue[next++]) {
@@ -79,6 +87,8 @@ export function ReadClearlyPanel({ documentId, pageNo, active, canTranslate, onS
         } catch (error: unknown) {
           if (error instanceof ApiError && error.code === "feature_off") setSwitchedOff(true);
           set(page, { status: "busy" });
+        } finally {
+          inFlight.current.delete(doneKey(lang, page));
         }
       }
     };
@@ -156,7 +166,6 @@ export function ReadClearlyPanel({ documentId, pageNo, active, canTranslate, onS
             </div>
           );
         })}
-        {truncatedText(page) && <p className={styles.note}>{truncatedText(page)}</p>}
         {language && canTranslate && !switchedOff && !tr && page.lines.length > 0 && (
           <button type="button" className="btn btn-quiet" onClick={() => void translate(language, [page.page_no])}>
             Translate {pageOf(page.page_no, pages.length).toLowerCase()}
@@ -248,6 +257,7 @@ export function ReadClearlyPanel({ documentId, pageNo, active, canTranslate, onS
       ) : (
         <div className={styles.copy}>{copy}</div>
       )}
+      {current && "copy" in current && current.copy.truncated && <p className={styles.note}>{LEFT_OUT}</p>}
       {current && "copy" in current && typeof document !== "undefined" &&
         createPortal(<div className={`print-copy ${styles.copy}`}>{copy}</div>, document.body)}
     </section>

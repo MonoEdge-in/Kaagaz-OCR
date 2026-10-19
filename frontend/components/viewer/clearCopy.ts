@@ -10,6 +10,7 @@ export const NOT_SURE_TIP = "Not read for sure — check the original";
 export const TRANSLATION_LABEL = "Translation — the original text is above";
 export const TRANSLATING = "Translating…";
 export const BUSY = "The translation service is busy right now. The exact text is still here; try again in a minute.";
+export const LEFT_OUT = "This document is long, so the clean copy stops here. The rest is on the page images.";
 export const MAX_TRANSLATE_PAGES = 20; // "Translate all pages" asks for at most this many
 export const TRANSLATE_AT_ONCE = 3; // requests in flight at a time
 

@@ -53,7 +53,7 @@ def test_the_clear_copy_has_every_page_in_order_with_table_places(db: Database) 
         ("Item", "table_cell", {"id": "t1", "row": 0, "col": 0, "header": True}),
     ]
     assert pages[1]["lines"][0]["text"] == "sharma line two"
-    assert (pages[0]["truncated"], pages[0]["marks"]) == (False, [])
+    assert (reply.json()["truncated"], pages[0]["marks"]) == (False, [])
 
 
 def test_b_gets_404_and_none_of_a_s_text_from_either_route(db: Database) -> None:

@@ -561,6 +561,61 @@ def page_marks(conn: Connection, customer_id: str, document_id: str, page_no: in
     return conn.execute(_PAGE_MARKS, params).mappings().all()
 
 
+# Read clearly (19 Oct 2026): the whole document's main reader lines (its first role) in one
+# unpacking, page by page in stored order, under a document-wide cap: at most
+# CLEAR_COPY_LINES lines and about CLEAR_COPY_TEXT characters (one line over leaves the
+# database, as in _PAGE_READINGS; views.clear_copy drops it and says ``truncated``).
+CLEAR_COPY_LINES = 20_000
+CLEAR_COPY_TEXT = 1_000_000
+_CLEAR_COPY = text(
+    "SELECT * FROM (SELECT (e.span -> 'region' ->> 'page')::int AS page_no, e.ord,"
+    " left(e.span ->> 'raw', :max_chars) AS text, length(e.span ->> 'raw') > :max_chars AS cut,"
+    " CAST(e.span ->> 'confidence' AS double precision) AS confidence,"
+    " e.span ->> 'origin' AS origin, e.span ->> 'kind' AS kind, e.span -> 'region' AS region,"
+    " e.span ->> 'table_id' AS table_id, CAST(e.span ->> 'row' AS integer) AS table_row,"
+    " CAST(e.span ->> 'col' AS integer) AS table_col, CAST(e.span ->> 'header' AS boolean) AS table_header,"
+    " sum(length(left(e.span ->> 'raw', :max_chars)))"
+    " OVER (ORDER BY (e.span -> 'region' ->> 'page')::int, e.ord) AS upto"
+    " FROM reader_outputs ro"
+    " CROSS JOIN LATERAL jsonb_array_elements(ro.output) WITH ORDINALITY AS e(span, ord)"
+    " WHERE ro.customer_id = :c AND ro.document_id = :d AND ro.role = (SELECT min(role) FROM reader_outputs"
+    " WHERE customer_id = :c AND document_id = :d)"
+    " AND NOT (coalesce(e.span ->> 'origin', '') = 'ocr' AND e.span ->> 'kind' IS NULL"
+    " AND coalesce(e.span ->> 'quality', '') IN ('unsure', 'illegible'))"
+    " ORDER BY (e.span -> 'region' ->> 'page')::int, e.ord LIMIT :max_lines + 1) AS s"
+    " WHERE s.upto - length(s.text) <= :max_text ORDER BY s.page_no, s.ord"
+)
+# Its marks, as _PAGE_MARKS for every page in one unpacking, at most CLEAR_COPY_LINES.
+_CLEAR_COPY_MARKS = text(
+    "SELECT (e.span -> 'region' ->> 'page')::int AS page_no,"
+    " CASE WHEN e.span ->> 'kind' IS NULL THEN e.span ->> 'quality' ELSE 'unpinned' END AS quality,"
+    " e.span -> 'region' AS region, left(e.span ->> 'text', :max_chars) AS text"
+    " FROM reader_outputs ro"
+    " CROSS JOIN LATERAL jsonb_array_elements(ro.output) WITH ORDINALITY AS e(span, ord)"
+    " WHERE ro.customer_id = :c AND ro.document_id = :d AND e.span ->> 'origin' = 'ocr'"
+    " AND ((e.span ->> 'kind' IS NULL AND e.span ->> 'quality' IN ('unsure', 'illegible'))"
+    " OR (e.span ->> 'kind' IS NOT NULL AND e.span ->> 'box_source' = 'model'))"
+    " ORDER BY ro.role, e.ord LIMIT :max_lines"
+)
+
+
+def clear_copy(
+    conn: Connection, customer_id: str, document_id: str
+) -> tuple[Sequence[RowMapping], Sequence[RowMapping]]:
+    """The document's lines and marks for Read clearly: two statements, each unpacking the
+    stored output once, under the readings' timeout. O(spans of the document)."""
+    conn.execute(_SET_READINGS_TIMEOUT, {"ms": str(READINGS_TIMEOUT_MS)})
+    params = {
+        "c": customer_id,
+        "d": document_id,
+        "max_lines": CLEAR_COPY_LINES,
+        "max_chars": MAX_READING_CHARS,
+        "max_text": CLEAR_COPY_TEXT,
+    }
+    lines = conn.execute(_CLEAR_COPY, params).mappings().all()
+    return lines, conn.execute(_CLEAR_COPY_MARKS, params).mappings().all()
+
+
 def rename_document(conn: Connection, customer_id: str, document_id: str, *, name: str) -> None:
     """Give this one version a new display name, already cleaned by the caller, and
     put it in its pieces' context headers too, so search never shows the old name.

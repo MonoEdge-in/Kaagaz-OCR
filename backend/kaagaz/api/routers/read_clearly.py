@@ -3,7 +3,8 @@ in English, Hindi or Marathi.
 
 * ``GET /documents/{id}/clear-copy``: every page's lines as read, in order, with each
   line's kind, table place and region, and the page's reading marks: the main reader's
-  lines of the Scanned text panel (``views.page_readings``, its caps and ``truncated``).
+  lines of the Scanned text panel, capped for the whole document (``views.clear_copy``,
+  a top-level ``truncated``).
   Who may see it is who may see the scanned text. No model call. Never logged.
 * ``POST /documents/{id}/pages/{n}/translate`` ``{language}``: that page's lines in the
   language (kaagaz.answering.page_translate), ``cached`` when a second view made no model
@@ -22,6 +23,7 @@ from sqlalchemy import Connection, RowMapping
 
 from kaagaz.ai.usage import usage_scope
 from kaagaz.answering.page_translate import translate_page
+from kaagaz.api import views
 from kaagaz.api.auth import FEATURE_OFF, User, require_feature
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
@@ -59,27 +61,14 @@ def _main_reader(readings: dict[str, Any]) -> dict[str, Any]:
 
 @router.get("/documents/{document_id}/clear-copy")
 def clear_copy(document_id: uuid.UUID, user: User, context: Context) -> dict[str, Any]:
-    """Two statements a page (lines and marks), each under the readings' caps and timeout.
-    ponytail: one query a page, as the Scanned text panel; one query for all pages is the
-    upgrade if long documents get slow."""
+    """Three statements for the whole document: its pages, then its lines and its marks, each
+    unpacking the stored output once, under a document-wide cap (``truncated``)."""
     customer_id, target = user.customer_id, str(document_id)
-    pages = []
     with context.db.customer(customer_id) as conn:
         _readable(conn, customer_id, document_id)
-        for page in listing.list_pages(conn, customer_id, target):
-            n = page["page_no"]
-            rows = listing.page_readings(conn, customer_id, target, n)
-            readings = page_readings(n, rows, listing.page_marks(conn, customer_id, target, n))
-            reader = _main_reader(readings)
-            pages.append(
-                {
-                    "page_no": n,
-                    "lines": reader["lines"],
-                    "truncated": reader["truncated"],
-                    "marks": readings["marks"],
-                }
-            )
-    return {"pages": pages}
+        pages = [page["page_no"] for page in listing.list_pages(conn, customer_id, target)]
+        lines, marks = listing.clear_copy(conn, customer_id, target)
+    return views.clear_copy(pages, lines, marks)
 
 
 @router.post(

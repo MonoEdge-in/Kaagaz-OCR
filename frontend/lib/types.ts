@@ -470,7 +470,8 @@ export interface ReadLine {
 
 /** GET /documents/{id}/clear-copy (Read clearly): every page's main reader lines, in order. */
 export interface ClearCopy {
-  pages: { page_no: number; lines: ReadLine[]; truncated: boolean; marks: ReadingMark[] }[];
+  pages: { page_no: number; lines: ReadLine[]; marks: ReadingMark[] }[];
+  truncated: boolean; // the document-wide cap was reached: the rest was left out
 }
 
 export type TranslateLanguage = "en" | "hi" | "mr";

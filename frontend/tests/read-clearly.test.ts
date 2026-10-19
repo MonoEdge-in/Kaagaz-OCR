@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import {
   BUSY,
   LANGUAGES,
+  LEFT_OUT,
   NOT_SURE_TIP,
   TRANSLATING,
   TRANSLATION_LABEL,
@@ -119,5 +120,17 @@ describe("Read clearly: the screen", () => {
     const css = read("components/viewer/ReadClearly.module.css");
     expect(css).toMatch(/\.copy \{[^}]*overflow-wrap: anywhere/);
     expect(css).toMatch(/\.tableBox \{[^}]*overflow-x: auto/);
+  });
+
+  it("says calmly when a long document's copy was cut (CodeRabbit, 19 Oct 2026)", () => {
+    expect(panel).toMatch(/current\.copy\.truncated && <p className=\{styles\.note\}>\{LEFT_OUT\}<\/p>/);
+    expect(LEFT_OUT).not.toMatch(/couldn't|sorry|unfortunately/i);
+  });
+
+  it("never sends the same page twice: in-flight pages are held in a ref until they finish", () => {
+    expect(panel).toContain("const inFlight = useRef(new Set<string>());");
+    expect(panel).toMatch(/!inFlight\.current\.has\(doneKey\(lang, page\)\)/);
+    expect(panel).toMatch(/inFlight\.current\.add\(doneKey\(lang, page\)\)/);
+    expect(panel).toMatch(/finally \{\s*inFlight\.current\.delete\(doneKey\(lang, page\)\);/);
   });
 });
