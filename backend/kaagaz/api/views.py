@@ -16,7 +16,7 @@ from kaagaz.answering.hard_to_read import FlaggedPage, not_found_note
 from kaagaz.api.auth import CurrentUser
 from kaagaz.db import ensemble as ensemble_sql
 from kaagaz.db.folders import FolderRow
-from kaagaz.db.listing import MAX_READING_LINES, MAX_READING_TEXT
+from kaagaz.db.listing import CLEAR_COPY_LINES, CLEAR_COPY_TEXT, MAX_READING_LINES, MAX_READING_TEXT
 from kaagaz.db.tags import TagRow
 from kaagaz.eta import time_left
 from kaagaz.reading.page_quality import ILLEGIBLE_WORDS, READERS_DISAGREE, UNPINNED, fix, says
@@ -560,18 +560,59 @@ def page_readings(
             reader["truncated"] = True
             continue
         used += len(line)
-        reader["lines"].append(
-            {
-                "text": line,
-                "confidence": row["confidence"],
-                "origin": row["origin"],
-                "kind": row["kind"],
-                "region": row["region"],
-            }
-        )
+        reader["lines"].append(_line(row))
         reader["truncated"] = bool(row["cut"])
     shown = [{"quality": mark["quality"], "region": mark["region"], "text": mark["text"]} for mark in marks]
     return {"page_no": page_no, "readers": readers, "marks": shown}
+
+
+def clear_copy(
+    page_numbers: Sequence[int], rows: Sequence[RowMapping], marks: Sequence[RowMapping]
+) -> dict[str, Any]:
+    """``ClearCopy`` (Read clearly, 19 Oct 2026): every page with its lines and marks, from
+    ``listing.clear_copy``. The lines stop at CLEAR_COPY_LINES or CLEAR_COPY_TEXT for the
+    whole document, or after a line cut in SQL; then ``truncated``. O(lines + marks)."""
+    pages = {n: {"page_no": n, "lines": [], "marks": []} for n in page_numbers}
+    truncated, used, count = False, 0, 0
+    for row in rows:
+        if count == CLEAR_COPY_LINES or used + len(row["text"]) > CLEAR_COPY_TEXT:
+            truncated = True
+            break
+        used, count = used + len(row["text"]), count + 1
+        truncated = truncated or bool(row["cut"])
+        if row["page_no"] in pages:
+            pages[row["page_no"]]["lines"].append(_line(row))
+    for mark in marks:
+        if mark["page_no"] in pages:
+            pages[mark["page_no"]]["marks"].append(
+                {"quality": mark["quality"], "region": mark["region"], "text": mark["text"]}
+            )
+    return {"pages": list(pages.values()), "truncated": truncated}
+
+
+def _line(row: RowMapping) -> dict[str, Any]:
+    """``ReadLine``: one line as read (``text`` is the stored ``raw``), with its table place."""
+    return {
+        "text": row["text"],
+        "confidence": row["confidence"],
+        "origin": row["origin"],
+        "kind": row["kind"],
+        "region": row["region"],
+        "table": _table(row),  # Read clearly (19 Oct 2026)
+    }
+
+
+def _table(row: RowMapping) -> dict[str, Any] | None:
+    """A table cell's place, as stored (PRD 2 P4): its table, row and column from 0, and
+    whether it is a header; None for any other line."""
+    if row["table_id"] is None:
+        return None
+    return {
+        "id": row["table_id"],
+        "row": row["table_row"],
+        "col": row["table_col"],
+        "header": bool(row["table_header"]),
+    }
 
 
 def review_item(row: RowMapping) -> dict[str, Any]:

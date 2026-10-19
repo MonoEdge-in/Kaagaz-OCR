@@ -370,6 +370,8 @@ describe("layout guards", () => {
       // without it, the Ask question box and the operator's Manage menu (smoothness-guards.test.ts).
       "components/chat/Chat.module.css: .composerInput: overscroll-behavior",
       "components/operator/Operator.module.css: .menu: overscroll-behavior",
+      // Changed on purpose (Read clearly, 19 Oct 2026): a wide table in the clean copy, sideways only.
+      "components/viewer/ReadClearly.module.css: .tableBox: overscroll-behavior-x",
     ];
     const found = everyRule(/overscroll-behavior/).flatMap(({ rule, name }) =>
       [...rule.body.matchAll(/(overscroll-behavior[-\w]*):/g)].map((match) => `${name}: ${match[1]}`),
