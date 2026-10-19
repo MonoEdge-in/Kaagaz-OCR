@@ -144,6 +144,7 @@ from kaagaz.db import admin as admin_sql
 from kaagaz.db import audit, autofile, listing, trash
 from kaagaz.db import folders as folders_sql
 from kaagaz.db import tags as tags_sql
+from kaagaz.db import versions as versions_sql
 from kaagaz.db.documents import (
     EnsembleRunning,
     NotInTrash,
@@ -595,6 +596,7 @@ def _accept_version(
     policy: UploadPolicy,
     of_document_id: str,
     asked: _Asked,
+    note: str | None = None,
 ) -> dict[str, Any]:
     customer_id = user.customer_id
     reading = ReadingChoice(SINGLE)
@@ -620,6 +622,9 @@ def _accept_version(
         raise ApiError(_REJECT_STATUS[rejected.code], rejected.code.value, message) from None
     except UnknownFamily:  # gone or moved to Trash since the check; the service removed the stored file
         raise ApiError(404, "not_found") from None
+    if note is not None and not result.duplicate:  # V9: this version's note
+        with context.db.customer(customer_id) as conn:
+            listing.set_details(conn, customer_id, result.document_id, by=user.user_id, version_note=note)
     details = {"family_id": str(target["family_id"]), **reading.details()}
     return _upload_reply(context, user, result, action="document.version", details=details)
 
@@ -628,7 +633,8 @@ def _accept_version(
 async def upload_version(
     document_id: uuid.UUID, request: Request, user: User, context: Context
 ) -> JSONResponse:
-    """A new version of the document's family (PRD 1 F6). Any user of the customer."""
+    """A new version of the document's family (PRD 1 F6), with an optional ``version_note``
+    form field (File management V9). Any user of the customer."""
     policy = await run_in_threadpool(_upload_policy, context, user)
     check_upload_request(request, policy)
     async with request.form(max_files=1, max_fields=10) as form:
@@ -637,8 +643,10 @@ async def upload_version(
             raise ApiError(400, "bad_request", "Choose a file to upload.")
         _same_user(form.get("user_id"), user)  # ocr_choice: accepted and ignored (RT3)
         asked = _form_reading(form)
+        written = form.get("version_note")  # V9: optional, checked before anything is stored
+        note = clean_note(written if isinstance(written, str) else None)
         body = await run_in_threadpool(
-            _accept_version, context, user, upload, policy, str(document_id), asked
+            _accept_version, context, user, upload, policy, str(document_id), asked, note
         )
     return JSONResponse(body, status_code=200 if body["duplicate"] else 201)
 
@@ -674,6 +682,7 @@ def get_document(document_id: uuid.UUID, user: User, context: Context) -> dict[s
         facts = listing.document_facts(conn, customer_id, target)
         typed = listing.invoice_for(conn, customer_id, target)
         links = listing.document_links(conn, customer_id, target)
+        suggestion = versions_sql.for_document(conn, customer_id, target, str(row["family_id"]))
     document_date = None if facts is None else facts["document_date"]
     return {
         **document_summary(
@@ -698,6 +707,8 @@ def get_document(document_id: uuid.UUID, user: User, context: Context) -> dict[s
         # MS5: the model the document asked to be read with (null: the organisation's
         # default), so Read again starts from it and sends a model only when one is changed.
         "read_model": row["read_model"],
+        # File management V6: the pending suggestion with the banner's reasons in plain words.
+        "version_suggestion": suggestion,
     }
 
 
@@ -875,6 +886,15 @@ def keep_page_as_is(document_id: uuid.UUID, page_no: int, user: Reviewer, contex
 VERSION_NOTE_MAX = 200
 
 
+def clean_note(value: str | None) -> str | None:
+    """V9: a version note with its spaces collapsed, None when empty; 400 over
+    VERSION_NOTE_MAX characters or with a control character."""
+    note = " ".join((value or "").split()) or None
+    if note is not None and (len(note) > VERSION_NOTE_MAX or CONTROL_CHARACTERS.search(note)):
+        raise ApiError(400, "bad_request", f"Write a note of at most {VERSION_NOTE_MAX} characters.")
+    return note
+
+
 class DocumentChangesBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -902,10 +922,7 @@ def _details(conn: Connection, user: CurrentUser, body: DocumentChangesBody, old
             raise ApiError(400, "bad_request", "Choose a label.")
         changes["sensitivity"] = body.sensitivity
     if "version_note" in given:
-        note = " ".join((body.version_note or "").split()) or None
-        if note is not None and (len(note) > VERSION_NOTE_MAX or CONTROL_CHARACTERS.search(note)):
-            raise ApiError(400, "bad_request", f"Write a note of at most {VERSION_NOTE_MAX} characters.")
-        changes["version_note"] = note
+        changes["version_note"] = clean_note(body.version_note)
     listing.set_details(conn, customer_id, target, by=user.user_id, **changes)
     for field, action in (("owner_id", "document.owner_change"), ("sensitivity", "document.label_change")):
         old_value = None if old[field] is None else str(old[field])
@@ -976,7 +993,8 @@ def update_document(
 
 @router.post("/documents/{document_id}/autofile/undo")
 def undo_autofile(document_id: uuid.UUID, user: User, context: Context) -> dict[str, Any]:
-    """Move a family Kaagaz filed back to "Not in a folder" (R16), and return its summary."""
+    """Move a family Kaagaz filed back where it was (R16): its department when it was filed
+    inside one (File management F3), else "Not in a folder"; and return its summary."""
     customer_id, target = user.customer_id, str(document_id)
     try:
         with context.db.customer(customer_id) as conn:

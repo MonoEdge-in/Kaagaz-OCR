@@ -41,7 +41,9 @@ from sqlalchemy.exc import IntegrityError
 from kaagaz.chunking.context import document_part
 from kaagaz.db.documents import folder_missing
 from kaagaz.db.folders import FolderNotFound
+from kaagaz.db.visibility import LIVE_SUGGESTION
 from kaagaz.db.word_review import FLAGGED_VALUE
+from kaagaz.versions import name_key
 
 # File management (Q3, Q4, F5, O1 to O3): the owner and label, the version count, the
 # document date, the last change (the newest upload or the details stamp, whichever is
@@ -76,8 +78,8 @@ _FILE_COLUMNS = (
     " WHERE up.parent_id IS NULL AND dep.kind = 'department') AS department,"
     " (SELECT json_build_object('id', s.id,"
     " 'role', CASE WHEN s.document_id = d.id THEN 'new' ELSE 'candidate' END)"
-    " FROM version_suggestions s WHERE s.customer_id = d.customer_id AND s.status = 'pending'"
-    " AND s.outcome = 'suggested' AND (s.document_id = d.id OR s.candidate_family_id = d.family_id)"
+    f" FROM version_suggestions s WHERE s.customer_id = d.customer_id AND {LIVE_SUGGESTION}"
+    " AND (s.document_id = d.id OR s.candidate_family_id = d.family_id)"
     " ORDER BY (s.document_id = d.id) DESC, s.created_at DESC LIMIT 1) AS pending_suggestion"
 )
 
@@ -153,8 +155,14 @@ _TRASH_LIST = (
     " WHERE d.customer_id = :c AND d.deleted_at IS NOT NULL AND d.is_current"
 )
 
+# V12: each version's note, uploader and how it joined: linked from a suggestion (by a person
+# or on its own, ``auto``) or uploaded.
 _VERSIONS = (
-    "SELECT d.id, d.version_no, d.status, d.is_current, d.created_at FROM documents d"
+    "SELECT d.id, d.version_no, d.status, d.is_current, d.created_at, d.display_name, d.version_note,"
+    " d.uploaded_by, u.display_name AS uploaded_by_name,"
+    " (SELECT s.outcome FROM version_suggestions s WHERE s.customer_id = d.customer_id"
+    " AND s.document_id = d.id AND s.candidate_family_id = d.family_id AND s.status = 'accepted') AS linked"
+    " FROM documents d LEFT JOIN users u ON u.customer_id = d.customer_id AND u.id = d.uploaded_by"
     " WHERE d.customer_id = :c AND d.family_id = :f ORDER BY d.version_no"
 )
 
@@ -202,8 +210,8 @@ _WITH_PROPERTY = (
 _DATED_FROM = " AND d.document_date >= :doc_date_from"
 _DATED_TO = " AND d.document_date <= :doc_date_to"
 _HAS_NEWER = (
-    " AND EXISTS (SELECT 1 FROM version_suggestions s WHERE s.customer_id = :c"
-    " AND s.candidate_family_id = d.family_id AND s.status = 'pending' AND s.outcome = 'suggested')"
+    " AND EXISTS (SELECT 1 FROM version_suggestions s WHERE s.customer_id = :c"  # noqa: S608 - visibility.LIVE_SUGGESTION
+    f" AND s.candidate_family_id = d.family_id AND {LIVE_SUGGESTION})"
 )
 # Q4: the sort keys; the label by its strength. Output-column names (owner_name,
 # last_updated_at) are allowed alone in ORDER BY.
@@ -218,7 +226,7 @@ SORTS = {
     "created_at": "d.created_at",
 }
 
-_RENAME = "UPDATE documents SET display_name = :name WHERE customer_id = :c AND id = :d"
+_RENAME = "UPDATE documents SET display_name = :name, name_key = :key WHERE customer_id = :c AND id = :d"
 _NAME_OF = "SELECT display_name FROM documents WHERE customer_id = :c AND id = :d"
 # The context header's first part is "Document: {name}" (PRD 2 C4), followed by
 # " | " or nothing; a rename swaps it for the new name in each of the document's pieces.
@@ -675,7 +683,7 @@ def rename_document(conn: Connection, customer_id: str, document_id: str, *, nam
     O(log D + P) for the document's P pieces."""
     params = {"c": customer_id, "d": document_id}
     old = conn.execute(text(_NAME_OF), params).scalar_one_or_none()
-    conn.execute(text(_RENAME), {**params, "name": name})
+    conn.execute(text(_RENAME), {**params, "name": name, "key": name_key(name)})  # V2
     if old is not None:
         headers = {"old": document_part(old), "new": document_part(name)}
         conn.execute(text(_RENAME_HEADERS), {**params, **headers})
@@ -685,7 +693,7 @@ def rename_document(conn: Connection, customer_id: str, document_id: str, *, nam
 # Plain counts over the current, untrashed documents (the documents_current index), with the
 # documents_listing index for the week and month and the recent list.
 _DASHBOARD_TILES = text(
-    "SELECT (SELECT count(*) FROM documents d WHERE d.customer_id = :c"
+    "SELECT (SELECT count(*) FROM documents d WHERE d.customer_id = :c"  # noqa: S608 - visibility.LIVE_SUGGESTION
     " AND d.deleted_at IS NULL AND d.is_current) AS documents,"
     " (SELECT count(*) FROM documents d"
     " JOIN documents r ON r.customer_id = d.customer_id AND r.id = d.family_id"
@@ -693,9 +701,8 @@ _DASHBOARD_TILES = text(
     " AND r.created_at >= :week) AS this_week,"
     " (SELECT count(*) FROM documents d WHERE d.customer_id = :c AND d.deleted_at IS NULL"
     " AND d.version_no > 1 AND d.created_at >= :month) AS new_versions,"
-    " (SELECT count(*) FROM version_suggestions s JOIN documents d ON d.customer_id = s.customer_id"
-    " AND d.id = s.document_id WHERE s.customer_id = :c AND s.status = 'pending' AND s.outcome = 'suggested'"
-    " AND d.deleted_at IS NULL) AS to_confirm"
+    f" (SELECT count(*) FROM version_suggestions s WHERE s.customer_id = :c AND {LIVE_SUGGESTION})"
+    " AS to_confirm"
 )
 _DASHBOARD_TYPES = text(
     "SELECT doc_type, count(*) AS n FROM documents"

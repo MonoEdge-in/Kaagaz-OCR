@@ -97,6 +97,12 @@ _DOCUMENT_COLUMNS = frozenset(
         "sensitivity",
         "sensitivity_set_by_person",
         "document_date",
+        # Changed on purpose (PRD 1, versions): the batch, the note and the fingerprint.
+        "batch_id",
+        "version_note",
+        "name_key",
+        "text_minhash",
+        "text_bands",
     }
 )
 

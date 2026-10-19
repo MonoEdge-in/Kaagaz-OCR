@@ -73,7 +73,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import Connection, text
 from sqlalchemy.exc import IntegrityError
 
-from kaagaz.db import audit, autofile, customers
+from kaagaz.db import audit, autofile, customers, versions
 from kaagaz.db.engine import Database, unavailable
 from kaagaz.db.runs import close_running, finish_run, is_run_open
 from kaagaz.db.sqlstate import FOREIGN_KEY_VIOLATION, retry_on_deadlock, sqlstate
@@ -106,6 +106,14 @@ _READY_STATE = (
     " FROM documents d WHERE d.customer_id = :c AND d.id = :d"
 )
 
+# Versions V10 (verify): a run ready before this one means a read again, which never changes
+# which version is current (a version made current by hand stays so). The run fence's own run
+# is still running here, so only an earlier one counts.
+_READ_BEFORE = (
+    "SELECT EXISTS (SELECT 1 FROM processing_runs r WHERE r.customer_id = :c AND r.document_id = :d"
+    " AND r.status = 'ready' AND r.id IS DISTINCT FROM CAST(:fence AS uuid))"
+)
+
 # The others first, then this one: the unique index documents_current allows
 # one current row per family at every moment.
 _OTHERS_NOT_CURRENT = (
@@ -116,7 +124,8 @@ _OTHERS_NOT_CURRENT = (
 # Ready first (16 Oct 2026): the progress is kept while the run goes on understanding the
 # ready document (``open_run``), else cleared: a ready document shows none.
 _READY = (
-    "UPDATE documents SET status = 'ready', failure_code = NULL, page_count = :pages, is_current = :current,"
+    "UPDATE documents SET status = 'ready', failure_code = NULL, page_count = :pages,"
+    " is_current = CASE WHEN CAST(:again AS boolean) THEN is_current ELSE :current END,"
     " progress = CASE WHEN CAST(:keep AS boolean) THEN progress ELSE NULL END"
     " WHERE customer_id = :c AND id = :d"
 )
@@ -133,6 +142,8 @@ def mark_ready(
 ) -> None:
     """The document is read: set it ready with its page count and, unless a newer
     version of its family is ready already, make it the family's one current version.
+    A read again (a run of it was ready before, ``_READ_BEFORE``) keeps ``is_current`` as it
+    is, so it never changes which version is current (File management V10).
     With ``run``, finish that run in the same transaction, so a ready document and
     its finished run commit together. With ``open_run`` instead (Ready first, 16 Oct
     2026), the run fence on that run id, which stays open while the run goes on
@@ -147,7 +158,8 @@ def mark_ready(
     is still finished: failed with ``document_missing``, or rejected (AR11,
     PROVISIONAL). Raises Superseded, and writes nothing, when ``run`` is no longer
     open (the run fence, read under the family lock).
-    3 to 6 statements; O(v log D) time and O(v) space for the family's v versions.
+    3 to 7 statements; O(v log D + r) time and O(v) space for the family's v versions and the
+    document's r runs.
     """
     family_id = lock_family(conn, customer_id, document_id)
     if family_id is None:
@@ -167,12 +179,12 @@ def mark_ready(
             closed = dataclasses.replace(run.totals, status="rejected")
             finish_run(conn, customer_id, dataclasses.replace(run, totals=closed))
         return
+    again = bool(conn.execute(text(_READ_BEFORE), {**params, "fence": fence}).scalar_one())
     current = not state.newer_ready
-    if current:
+    if current and not again:
         conn.execute(text(_OTHERS_NOT_CURRENT), params)
-    conn.execute(
-        text(_READY), {**params, "pages": page_count, "current": current, "keep": open_run is not None}
-    )
+    ready = {"pages": page_count, "current": current, "again": again, "keep": open_run is not None}
+    conn.execute(text(_READY), {**params, **ready})
     if run is not None:
         finish_run(conn, customer_id, run)
 
@@ -821,17 +833,26 @@ class PgDocuments:
 
     def file_document(self, customer_id: str, document_id: str) -> None:
         """Auto-filing (feature 28) in its own transaction, run again on a deadlock, right
-        after ``mark_ready``. What was decided is logged as a code with the ids only."""
+        after ``mark_ready``; then version spotting (``versions.spot``) in another. What was
+        decided is logged as a code with the ids only."""
 
         def transaction() -> str | None:
             with self._db.customer(customer_id) as conn:
                 return autofile.file_document(conn, customer_id, document_id)
 
+        def spotting() -> str | None:
+            with self._db.customer(customer_id) as conn:
+                return versions.spot(conn, customer_id, document_id)
+
+        ids = {"customer_id": customer_id, "document_id": document_id}
         with unavailable():
-            code = retry_on_deadlock(transaction, customer_id=customer_id, document_id=document_id)
+            code = retry_on_deadlock(transaction, **ids)
+            if code is not None:
+                _log.info("autofile", extra={**ids, "code": code})
+            # Versions V1 to V5, after filing: an automatic link checks the folder filing chose.
+            code = retry_on_deadlock(spotting, **ids)
         if code is not None:
-            ids = {"customer_id": customer_id, "document_id": document_id}
-            _log.info("autofile", extra={**ids, "code": code})
+            _log.info("version_spotting", extra={**ids, "code": code})
 
     def set_progress(
         self, customer_id: str, document_id: str, progress: "Progress", *, run_id: str | None = None

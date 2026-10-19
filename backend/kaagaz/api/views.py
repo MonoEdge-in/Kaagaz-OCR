@@ -355,13 +355,20 @@ def _batch_time_left(
 
 
 def document_version(row: RowMapping) -> dict[str, Any]:
-    """``DocumentVersion``: one version in the detail's ``versions`` (``listing.family_versions``)."""
+    """``DocumentVersion``: one version in the detail's ``versions`` (``listing.family_versions``),
+    with V12's name, note, uploader and how it joined: ``uploaded``, ``linked`` (a person
+    accepted Kaagaz's suggestion) or ``auto`` (linked on its own)."""
+    uploader = row["uploaded_by"]
     return {
         "id": str(row["id"]),
         "version_no": int(row["version_no"]),
         "status": row["status"],
         "is_current": bool(row["is_current"]),
         "created_at": iso(row["created_at"]),
+        "display_name": row["display_name"],
+        "version_note": row["version_note"],
+        "uploaded_by": None if uploader is None else {"id": str(uploader), "name": row["uploaded_by_name"]},
+        "joined": {None: "uploaded", "suggested": "linked", "auto": "auto"}[row["linked"]],
     }
 
 

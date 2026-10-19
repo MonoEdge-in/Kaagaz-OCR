@@ -22,6 +22,10 @@ always ``d``.
 
 Lookups by id get no filter: a trashed document can still be opened, restored
 or deleted forever.
+
+``LIVE_SUGGESTION`` (File management V5, section 10; alias ``s``): a version suggestion still
+to answer, with its new document and its candidate family both out of Trash, so one whose
+side was trashed or deleted disappears. Its statement binds the customer as ``:c``.
 """
 
 LIVE = " AND d.deleted_at IS NULL"
@@ -29,3 +33,10 @@ LISTED = " AND d.deleted_at IS NULL AND d.is_current"
 LIVE_CURRENT = " AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
 TRASHED = " AND d.deleted_at IS NOT NULL"
 TRASHED_LISTED = " AND d.deleted_at IS NOT NULL AND d.is_current"
+LIVE_SUGGESTION = (
+    "s.status = 'pending' AND s.outcome = 'suggested'"
+    " AND EXISTS (SELECT 1 FROM documents sn WHERE sn.customer_id = :c AND sn.id = s.document_id"
+    " AND sn.deleted_at IS NULL)"
+    " AND EXISTS (SELECT 1 FROM documents sc WHERE sc.customer_id = :c"
+    " AND sc.family_id = s.candidate_family_id AND sc.deleted_at IS NULL)"
+)

@@ -46,6 +46,9 @@ until it is told to stop:
   turn, waiting the same way while the model is down (``StoryVectors``,
   kaagaz/search/story_vectors.py). Like the purge, it never stops the jobs or
   crashes the worker.
+* Documents read before version spotting get their text fingerprint once, a pass of 50 a
+  minute on idle turns, never making a suggestion (``FingerprintOld``, File management
+  section 7); it stops for good once a pass finds none.
 * WORKER_REPLICAS copies of this process run at once (PRD 5 Q3). Each sweep
   between jobs (the purge, EmbedMissing, StoryVectors, UpgradeLocalReads) takes
   its Postgres advisory lock ``kaagaz.sweep:<name>`` first (``sweep_lock``), on a
@@ -103,7 +106,7 @@ from kaagaz.adapters.storage import S3Storage
 from kaagaz.ai.client import ModelOutputError, ModelUnavailable
 from kaagaz.ai.openrouter import KEY_PROBLEM as READER_KEY_PROBLEM
 from kaagaz.ai.openrouter import OpenRouterClient, process_gate
-from kaagaz.db import ai_settings, reader_status
+from kaagaz.db import ai_settings, reader_status, versions
 from kaagaz.db.documents import PgDocuments
 from kaagaz.db.engine import Database, make_engine
 from kaagaz.ingestion.errors import BackendUnavailable
@@ -127,7 +130,7 @@ from kaagaz.jobs.worker import (
     database_unreachable,
     retry_delay,
 )
-from kaagaz.search.indexing import MissingPass, embed_missing
+from kaagaz.search.indexing import MissingPass, customer_ids, embed_missing
 from kaagaz.search.story_vectors import StoryKey, StoryPass, embed_missing_stories
 from kaagaz.settings import Settings
 
@@ -147,6 +150,9 @@ EMBED_PASS_PIECES = 32
 # The story vector sweep (council 3 Oct 2026, PROVISIONAL): the same, for stories.
 STORY_EVERY = timedelta(minutes=1)
 STORY_PASS_STORIES = 32
+# File management section 7: the one-time fingerprint sweep, a pass a minute on idle turns.
+FINGERPRINT_EVERY = timedelta(minutes=1)
+FINGERPRINT_PASS = 50
 
 # The only extra fields a log line may carry. Anything else passed in
 # ``extra`` is dropped, so a careless call cannot log document data.
@@ -544,6 +550,71 @@ class StoryVectors:
         return True
 
 
+class FingerprintOld:
+    """Wraps the worker: the one-time fingerprint sweep (File management section 7, the
+    EmbedMissing pattern). After a turn the queue had nothing for, at most every
+    FINGERPRINT_EVERY, runs ``sweep`` (``fingerprint_missing``: how many it found) under
+    ``lock("fingerprints")``; a full pass runs again on the next idle turn, and the first
+    pass that finds none ends the sweep for this process (new documents get theirs when they
+    are read). It never makes a suggestion. A database error is logged by its type and
+    swallowed, as in EmbedMissing. O(1) per turn, plus one pass at most every minute."""
+
+    def __init__(
+        self,
+        worker: RunsJobs,
+        sweep: Callable[[], int],
+        clock: Callable[[], datetime],
+        *,
+        lock: SweepLock = no_lock,
+    ) -> None:
+        self._worker = worker
+        self._sweep = sweep
+        self._clock = clock
+        self._lock = lock
+        self._next: datetime | None = None
+        self._done = False
+
+    def run_once(self) -> bool:
+        if self._worker.run_once():
+            return True
+        now = self._clock()
+        if self._done or (self._next is not None and now < self._next):
+            return False
+        self._next = now + FINGERPRINT_EVERY  # noted first: a pass that fails waits too
+        try:
+            with self._lock("fingerprints") as mine:
+                found = self._sweep() if mine else None
+        except (SQLAlchemyError, BackendUnavailable) as error:
+            logger.error("fingerprint sweep failed", extra={"code": type(error).__name__})
+            return True
+        if found is None:
+            return False
+        self._done = found == 0
+        if found >= FINGERPRINT_PASS:
+            self._next = now  # more are waiting
+        logger.info("fingerprints: %d documents", found)
+        return True
+
+
+def fingerprint_missing(db: Database, limit: int = FINGERPRINT_PASS) -> int:
+    """One pass of the sweep: at most ``limit`` ready documents never fingerprinted, across
+    the customers in id order, each in its own transaction (``versions.fill``); how many it
+    found. Database errors propagate (FingerprintOld logs them)."""
+    with db.system() as conn:
+        customers = customer_ids(conn)
+    found = 0
+    for customer in customers:
+        with db.customer(customer) as conn:
+            documents = versions.missing(conn, customer, limit - found)
+        for document in documents:
+            with db.customer(customer) as conn:
+                versions.fill(conn, customer, document)
+        found += len(documents)
+        if found >= limit:
+            break
+    return found
+
+
 def _purge(db: Database, storage: CustomerStorage, trash_days: int) -> int:
     """The hourly turn: old Trash (its count is returned and logged by PurgeHourly), then
     the organisations whose deletion is due, and their second sweep a day later (logged here)."""
@@ -738,7 +809,8 @@ def _serve(settings: Settings) -> None:
         stories = functools.partial(_story_pass, db, model)
     lock = sweep_lock(db.engine)
     pieces = EmbedMissing(PurgeHourly(jobs, purge, _utc_now, lock=lock), embed, _utc_now, lock=lock)
-    vectors = StoryVectors(pieces, stories, _utc_now, lock=lock)
+    stories_done = StoryVectors(pieces, stories, _utc_now, lock=lock)
+    vectors = FingerprintOld(stories_done, functools.partial(fingerprint_missing, db), _utc_now, lock=lock)
     # Q7: only Gemini's pages are ever read locally (its outage fallback).
     upgrade = functools.partial(upgrade_oldest, db, queue) if settings.ocr_engine == "gemini" else None
     upgrades = UpgradeLocalReads(

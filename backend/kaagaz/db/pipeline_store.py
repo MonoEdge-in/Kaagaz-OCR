@@ -125,13 +125,14 @@ _UPDATE_FACTS = text(
 )
 # File management O2: the type rule sets the family's starting label once the card is read;
 # a label a person set is never changed, and nothing is audited.
-# ponytail: a read-again of an older version applies its own type; newest-only if that matters.
+# Versions (stage 2): only the family's current version sets it, so a read again of an older
+# version never relabels the family by its own type; it never touches is_current either.
 CONFIDENTIAL_TYPES = ("land_record", "contract", "bank_statement")
 _TYPE_LABEL = text(
     "UPDATE documents SET sensitivity = CASE WHEN CAST(:doc_type AS text) = ANY(CAST(:secret AS text[]))"
     " THEN 'confidential' ELSE 'internal' END"
     " WHERE customer_id = :c AND NOT sensitivity_set_by_person AND CAST(:doc_type AS text) IS NOT NULL"
-    " AND family_id = (SELECT family_id FROM documents WHERE customer_id = :c AND id = :d)"
+    " AND family_id = (SELECT family_id FROM documents WHERE customer_id = :c AND id = :d AND is_current)"
 )
 # Ready first (16 Oct 2026): a run's second save comes after Ready, when a read again may
 # have set the document back to received (its job not started yet): that save is refused.

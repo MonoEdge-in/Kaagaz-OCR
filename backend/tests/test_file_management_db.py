@@ -366,8 +366,11 @@ def test_d2_each_customer_sees_only_its_own_counts(db: Database) -> None:
             text("UPDATE documents SET folder_id = :f, doc_type = 'land_record' WHERE customer_id = :c"),
             {"f": department, "c": mine.customer_id},
         )
-        conn.execute(text(_SUGGEST), {"c": mine.customer_id, "d": second, "f": str(uuid.uuid4())})
-    api.add_document(mine.customer_id, uploaded_by=mine.user_id, name="loose.pdf")
+    loose = api.add_document(mine.customer_id, uploaded_by=mine.user_id, name="loose.pdf")
+    # Changed on purpose (PRD 1, versions): a suggestion counts only while its candidate
+    # family is there (section 10), so it names a real one.
+    with db.customer(mine.customer_id) as conn:
+        conn.execute(text(_SUGGEST), {"c": mine.customer_id, "d": second, "f": loose})
     for _ in range(3):
         api.add_document(theirs.customer_id, uploaded_by=theirs.user_id)
     _department(db, theirs.customer_id, theirs.user_id, "Theirs")
