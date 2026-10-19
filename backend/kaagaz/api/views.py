@@ -567,11 +567,25 @@ def page_readings(
                 "origin": row["origin"],
                 "kind": row["kind"],
                 "region": row["region"],
+                "table": _table(row),  # Read clearly (19 Oct 2026)
             }
         )
         reader["truncated"] = bool(row["cut"])
     shown = [{"quality": mark["quality"], "region": mark["region"], "text": mark["text"]} for mark in marks]
     return {"page_no": page_no, "readers": readers, "marks": shown}
+
+
+def _table(row: RowMapping) -> dict[str, Any] | None:
+    """A table cell's place, as stored (PRD 2 P4): its table, row and column from 0, and
+    whether it is a header; None for any other line."""
+    if row["table_id"] is None:
+        return None
+    return {
+        "id": row["table_id"],
+        "row": row["table_row"],
+        "col": row["table_col"],
+        "header": bool(row["table_header"]),
+    }
 
 
 def review_item(row: RowMapping) -> dict[str, Any]:

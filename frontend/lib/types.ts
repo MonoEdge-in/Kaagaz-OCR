@@ -465,6 +465,23 @@ export interface ReadLine {
   origin: "cell" | "text_layer" | "ocr" | null;
   kind: string | null; // a layout block kind, when the reader gives one
   region: Region;
+  table?: { id: string; row: number; col: number; header: boolean } | null; // a table cell's place
+}
+
+/** GET /documents/{id}/clear-copy (Read clearly): every page's main reader lines, in order. */
+export interface ClearCopy {
+  pages: { page_no: number; lines: ReadLine[]; truncated: boolean; marks: ReadingMark[] }[];
+}
+
+export type TranslateLanguage = "en" | "hi" | "mr";
+
+/** POST /documents/{id}/pages/{n}/translate: one translation for each line, in order. */
+export interface PageTranslation {
+  page_no: number;
+  language: TranslateLanguage;
+  lines: string[]; // plain text only, through visibleText
+  truncated: boolean; // only the first lines of a long page were translated
+  cached: boolean;
 }
 
 /** What became of a cited document since the answer was given. Missing means "live". */

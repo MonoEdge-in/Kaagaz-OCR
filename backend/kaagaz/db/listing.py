@@ -488,9 +488,11 @@ _SET_READINGS_TIMEOUT = text("SELECT set_config('statement_timeout', :ms, true)"
 # one and says ``truncated`` (views.page_readings).
 _PAGE_READINGS = text(
     "SELECT ro.role, ro.reader, ro.reader_version, l.ord, l.text, l.cut, l.confidence, l.origin,"
-    " l.kind, l.region"
+    " l.kind, l.region, l.table_id, l.table_row, l.table_col, l.table_header"
     " FROM reader_outputs ro"
     " LEFT JOIN LATERAL (SELECT * FROM (SELECT e.ord, left(e.span ->> 'raw', :max_chars) AS text,"
+    " e.span ->> 'table_id' AS table_id, CAST(e.span ->> 'row' AS integer) AS table_row,"
+    " CAST(e.span ->> 'col' AS integer) AS table_col, CAST(e.span ->> 'header' AS boolean) AS table_header,"
     " length(e.span ->> 'raw') > :max_chars AS cut,"
     " CAST(e.span ->> 'confidence' AS double precision) AS confidence,"
     " e.span ->> 'origin' AS origin, e.span ->> 'kind' AS kind, e.span -> 'region' AS region,"
