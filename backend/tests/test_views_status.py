@@ -108,6 +108,17 @@ def _row(
         "newer": None,
         "first_unreadable": None,
         "values_found": counts.get("values", 0),
+        # Changed on purpose (PRD 1, 0041): listing._FILE_COLUMNS.
+        "owner_id": USER.user_id,
+        "owner_name": "Member",
+        "sensitivity": "internal",
+        "versions": 1,
+        "version_note": None,
+        "document_date": None,
+        "last_updated_at": NOW,
+        "last_updated_by_name": "Member",
+        "department": None,
+        "pending_suggestion": None,
     }
     return cast(RowMapping, row)
 

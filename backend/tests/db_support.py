@@ -92,6 +92,11 @@ _DOCUMENT_COLUMNS = frozenset(
         "created_at",
         "doc_type",  # the card's type (0004)
         "autofile",  # feature 28 (0025)
+        # Changed on purpose (PRD 1, 0041): file management's columns, and the card's date.
+        "owner_id",
+        "sensitivity",
+        "sensitivity_set_by_person",
+        "document_date",
     }
 )
 

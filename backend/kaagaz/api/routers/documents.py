@@ -177,6 +177,10 @@ MAX_TAG_FILTERS = tags_sql.MAX_TAG_FILTERS
 DocumentStatusParam = Literal["received", "clean", "rejected", "needs_reader", "ready", "failed"]
 DetectedTypeParam = Literal["pdf", "png", "jpeg", "tiff", "zip", "ole2", "text"]
 IsoDay = Annotated[str | None, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")]
+SortParam = Literal[
+    "name", "doc_type", "owner", "sensitivity", "version", "document_date", "updated_at", "created_at"
+]
+Sensitivity = Literal["public", "internal", "confidential", "restricted"]
 
 _SERVABLE = frozenset({"clean", "ready", "needs_reader"})
 _CONTENT_TYPES = {
@@ -252,20 +256,35 @@ def list_documents(
     uploaded_to: IsoDay = None,
     trashed: bool = False,
     attention: bool = False,
+    department_id: uuid.UUID | None = None,
+    owner_id: uuid.UUID | None = None,
+    sensitivity: Annotated[list[Sensitivity] | None, Query(max_length=4)] = None,
+    party: Annotated[str | None, Query(max_length=200)] = None,
+    property: Annotated[str | None, Query(max_length=64)] = None,
+    doc_date_from: IsoDay = None,
+    doc_date_to: IsoDay = None,
+    has_newer_version: bool = False,
+    sort: SortParam = "created_at",
+    order: Literal["asc", "desc"] = "desc",
 ) -> dict[str, Any]:
     """One page and its total. The top level with its subfolders is everything,
-    so it filters nothing. At most four data queries, whatever the page size:
-    the folder's subtree, the page, the count and the page's tags (one batch)."""
+    so it filters nothing. At most five data queries, whatever the page size:
+    the folder's and the department's subtrees, the page, the count and the page's
+    tags (one batch). File management Q3 and Q4: the new filters and the sort."""
     zone = context.settings.timezone
     try:
         start = None if uploaded_from is None else day_start(uploaded_from, zone)
         end = None if uploaded_to is None else day_start(uploaded_to, zone)
+        dated_from = None if doc_date_from is None else date.fromisoformat(doc_date_from)
+        dated_to = None if doc_date_to is None else date.fromisoformat(doc_date_to)
     except ValueError:
         raise ApiError(400, "bad_request", "Use real dates, written YYYY-MM-DD.") from None
     customer_id = user.customer_id
     tag_ids = [str(tag) for tag in tag_id or []]
+    number = None if property is None else autofile.survey_digits(property)
     with context.db.customer(customer_id) as conn:
         folder_ids = _folder_scope(conn, customer_id, folder_id, include_subfolders)
+        department = None if department_id is None else _folder_scope(conn, customer_id, department_id, True)
         if tag_ids and tags_sql.count_existing(conn, customer_id, tag_ids) != len(set(tag_ids)):
             raise ApiError(404, "not_found")  # a tag this customer does not have
         rows, total = listing.list_documents(
@@ -283,6 +302,16 @@ def list_documents(
             uploaded_to=end,
             trashed=trashed,
             attention=attention,
+            department_folders=department,
+            owner_id=None if owner_id is None else str(owner_id),
+            sensitivities=sensitivity or (),
+            party=party.strip() if party else None,
+            property_number=number,
+            doc_date_from=dated_from,
+            doc_date_to=dated_to,
+            has_newer_version=has_newer_version,
+            sort=sort,
+            descending=order == "desc",
         )
         tags = tags_sql.tags_for_documents(conn, customer_id, [str(row["id"]) for row in rows])
     max_pages, now = context.settings.max_pages, context.clock()
@@ -445,6 +474,17 @@ def _uuid_or_none(value: str | UploadFile) -> uuid.UUID | None:
         return None
 
 
+def _department(context: AppContext, user: CurrentUser, department_id: str) -> str:
+    """F2: the upload's department, a top-level department folder of this customer (404
+    otherwise, before anything is stored). The file goes in it, and auto-filing files it
+    further (``db/autofile.py``)."""
+    with context.db.customer(user.customer_id) as conn:
+        path = folders_sql.folder_path(conn, user.customer_id, department_id)
+    if len(path) != 1 or path[0].kind != "department":
+        raise ApiError(404, "not_found")
+    return department_id
+
+
 def _accept(
     context: AppContext,
     user: CurrentUser,
@@ -538,7 +578,11 @@ async def upload_document(request: Request, user: User, context: Context) -> JSO
             raise ApiError(400, "bad_request", "Choose a file to upload.")
         _same_user(form.get("user_id"), user)
         folder_id = _form_uuid(form.get("folder_id"))  # ocr_choice: accepted and ignored (RT3)
+        # File management F2: the department, used when no folder is named (a folder wins).
+        department_id = _form_uuid(form.get("department_id"))
         batch_id = _form_uuid(form.get("batch_id"))
+        if folder_id is None and department_id is not None:
+            folder_id = await run_in_threadpool(_department, context, user, department_id)
         asked = _form_reading(form)
         body = await run_in_threadpool(_accept, context, user, upload, policy, folder_id, batch_id, asked)
     return JSONResponse(body, status_code=200 if body["duplicate"] else 201)
@@ -603,6 +647,15 @@ def _document_or_404(conn: Connection, user: CurrentUser, document_id: uuid.UUID
     row = listing.get_document(conn, user.customer_id, str(document_id))
     if row is None:
         raise ApiError(404, "not_found")
+    return row
+
+
+def _readable_or_409(conn: Connection, user: CurrentUser, document_id: uuid.UUID) -> RowMapping:
+    """File management T1: the file, page images, readings and cells of a family in Trash
+    are not served (409 ``in_trash``); Trash moves every version, so the row says it."""
+    row = _document_or_404(conn, user, document_id)
+    if row["deleted_at"] is not None:
+        raise ApiError(409, "in_trash", "This document is in the Trash. Restore it first.")
     return row
 
 
@@ -819,18 +872,61 @@ def keep_page_as_is(document_id: uuid.UUID, page_no: int, user: Reviewer, contex
     return page_summary(page)
 
 
+VERSION_NOTE_MAX = 200
+
+
 class DocumentChangesBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     display_name: str | None = None
     folder_id: uuid.UUID | None = None  # an explicit null: the top level; left out: don't move
+    # File management O1, O2 (the whole family) and V9 (this version; null clears it).
+    owner_id: uuid.UUID | None = None
+    sensitivity: Sensitivity | None = None
+    version_note: str | None = None
+
+
+def _details(conn: Connection, user: CurrentUser, body: DocumentChangesBody, old: RowMapping) -> None:
+    """O1 to O4 and V9: the owner (an active user of this customer, else 400), the label
+    and the note in one statement with the family's stamp; owner and label changes audited
+    with the old and new values (ids and labels only)."""
+    given, customer_id, target = body.model_fields_set, user.customer_id, str(old["id"])
+    changes: dict[str, Any] = {}
+    if "owner_id" in given:
+        owner = None if body.owner_id is None else str(body.owner_id)
+        if owner is None or not listing.active_user(conn, customer_id, owner):
+            raise ApiError(400, "bad_request", "Choose an active person in your company as the owner.")
+        changes["owner_id"] = owner
+    if "sensitivity" in given:
+        if body.sensitivity is None:
+            raise ApiError(400, "bad_request", "Choose a label.")
+        changes["sensitivity"] = body.sensitivity
+    if "version_note" in given:
+        note = " ".join((body.version_note or "").split()) or None
+        if note is not None and (len(note) > VERSION_NOTE_MAX or CONTROL_CHARACTERS.search(note)):
+            raise ApiError(400, "bad_request", f"Write a note of at most {VERSION_NOTE_MAX} characters.")
+        changes["version_note"] = note
+    listing.set_details(conn, customer_id, target, by=user.user_id, **changes)
+    for field, action in (("owner_id", "document.owner_change"), ("sensitivity", "document.label_change")):
+        old_value = None if old[field] is None else str(old[field])
+        if field in changes and changes[field] != old_value:
+            audit.record(
+                conn,
+                customer_id,
+                actor_user_id=user.user_id,
+                action=action,
+                target_type="document",
+                target_id=target,
+                details={"from": old_value, "to": changes[field]},
+            )
 
 
 @router.patch("/documents/{document_id}")
 def update_document(
     document_id: uuid.UUID, body: DocumentChangesBody, user: User, context: Context
 ) -> dict[str, Any]:
-    """Rename this version and/or move the whole family. Any user of the customer (PRD 1 F3)."""
+    """Rename this version and/or move the whole family, set its owner and label, and this
+    version's note. Any user of the customer (PRD 1 F3; File management O1 to O3, V9)."""
     given = body.model_fields_set
     if not given:
         raise ApiError(400, "bad_request", "Say what to change: the name, the folder, or both.")
@@ -845,6 +941,7 @@ def update_document(
         with context.db.customer(customer_id) as conn:
             if trash.lock_live_family(conn, customer_id, target) is None:
                 raise ApiError(404, "not_found")
+            _details(conn, user, body, _document_or_404(conn, user, document_id))
             if "folder_id" in given:
                 listing.move_family(conn, customer_id, target, folder_id=folder_id)
                 audit.record(
@@ -910,7 +1007,7 @@ def undo_autofile(document_id: uuid.UUID, user: User, context: Context) -> dict[
 @router.get("/documents/{document_id}/file")
 def get_file(document_id: uuid.UUID, user: User, context: Context) -> Response:
     with context.db.customer(user.customer_id) as conn:
-        row = _document_or_404(conn, user, document_id)
+        row = _readable_or_409(conn, user, document_id)
     if row["status"] not in _SERVABLE:
         raise ApiError(404, "not_found")
     try:
@@ -937,7 +1034,7 @@ def get_file(document_id: uuid.UUID, user: User, context: Context) -> Response:
 @router.get("/documents/{document_id}/pages/{page_no}/image")
 def get_page_image(document_id: uuid.UUID, page_no: int, user: User, context: Context) -> Response:
     with context.db.customer(user.customer_id) as conn:
-        row = _document_or_404(conn, user, document_id)
+        row = _readable_or_409(conn, user, document_id)
     if row["status"] == "rejected" or page_no < 1:
         raise ApiError(404, "not_found")
     try:
@@ -954,11 +1051,11 @@ def get_page_image(document_id: uuid.UUID, page_no: int, user: User, context: Co
 @router.get("/documents/{document_id}/pages/{page_no}/readings")
 def get_page_readings(document_id: uuid.UUID, page_no: int, user: User, context: Context) -> dict[str, Any]:
     """Scanned text: every line each reader read on this page, as read. Who may see it
-    is exactly who may see the page image (above): any version, in Trash or not
-    (PROVISIONAL), never a rejected one; and the page must exist. Never logged."""
+    is exactly who may see the page image (above): any version out of Trash (T1: 409
+    ``in_trash``), never a rejected one; and the page must exist. Never logged."""
     customer_id, target = user.customer_id, str(document_id)
     with context.db.customer(customer_id) as conn:
-        row = _document_or_404(conn, user, document_id)
+        row = _readable_or_409(conn, user, document_id)
         if row["status"] == "rejected" or page_no < 1:
             raise ApiError(404, "not_found")
         if listing.get_page(conn, customer_id, target, page_no) is None:
@@ -981,7 +1078,7 @@ def get_sheet_cells(
         raise ApiError(400, "bad_request")
     row_to = min(row_to, row_from + MAX_SHEET_ROWS - 1)
     with context.db.customer(user.customer_id) as conn:
-        _document_or_404(conn, user, document_id)
+        _readable_or_409(conn, user, document_id)
         page = listing.get_page(conn, user.customer_id, str(document_id), page_no)
         if page is None or page["unit"] != "cells":
             raise ApiError(404, "not_found")

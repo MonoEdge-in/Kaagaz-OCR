@@ -254,6 +254,16 @@ def document_summary(
         "values_to_review": int(row["values_to_review"]),
         "words_unsure": int(row["words_unsure"]),  # PRD 5 U2: on the same pages
         "autofile": row["autofile"],  # feature 28: filed, not_filed or null (db/listing.py's _COLUMNS)
+        # File management (Q3, O1 to O3, F5): db/listing.py's _FILE_COLUMNS.
+        "owner": None if row["owner_id"] is None else {"id": str(row["owner_id"]), "name": row["owner_name"]},
+        "sensitivity": row["sensitivity"],
+        "versions": int(row["versions"]),
+        "version_note": row["version_note"],
+        "document_date": None if row["document_date"] is None else row["document_date"].isoformat(),
+        "updated_at": None if row["last_updated_at"] is None else iso(row["last_updated_at"]),
+        "updated_by": row["last_updated_by_name"],
+        "department": row["department"],
+        "pending_suggestion": row["pending_suggestion"],
     }
 
 
@@ -366,7 +376,14 @@ def document_folder(path: Sequence[FolderRow]) -> dict[str, Any] | None:
 
 def folder(row: FolderRow) -> dict[str, Any]:
     """``Folder``."""
-    return {"id": row.id, "name": row.name, "parent_id": row.parent_id, "created_at": iso(row.created_at)}
+    return {
+        "id": row.id,
+        "name": row.name,
+        "parent_id": row.parent_id,
+        "created_at": iso(row.created_at),
+        "kind": row.kind,  # File management F1
+        "sort_order": row.sort_order,
+    }
 
 
 def tag(row: TagRow) -> dict[str, Any]:

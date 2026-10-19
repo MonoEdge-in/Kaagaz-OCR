@@ -32,7 +32,7 @@ admin, or a user who uploaded every version, may do it (``can_delete``).
 """
 
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy import Connection, RowMapping, text
@@ -42,6 +42,44 @@ from kaagaz.chunking.context import document_part
 from kaagaz.db.documents import folder_missing
 from kaagaz.db.folders import FolderNotFound
 from kaagaz.db.word_review import FLAGGED_VALUE
+
+# File management (Q3, Q4, F5, O1 to O3): the owner and label, the version count, the
+# document date, the last change (the newest upload or the details stamp, whichever is
+# newer) and who made it, the department (the top-level folder above the document, when it
+# is a department; at most 5 levels up) and a pending version suggestion naming this
+# document as the new one (``new``) or its family as the candidate (``candidate``).
+# ponytail: the candidate probe has no index of its own; suggestions are few per customer.
+_LAST_UPLOAD = (
+    "(SELECT lu.created_at FROM documents lu WHERE lu.customer_id = d.customer_id"
+    " AND lu.family_id = d.family_id ORDER BY lu.created_at DESC LIMIT 1)"
+)
+_LAST_UPLOADER = (
+    "(SELECT lu.uploaded_by FROM documents lu WHERE lu.customer_id = d.customer_id"
+    " AND lu.family_id = d.family_id ORDER BY lu.created_at DESC LIMIT 1)"
+)
+_FILE_COLUMNS = (
+    " d.owner_id, d.sensitivity, d.document_date, d.version_note,"  # noqa: S608 - fixed fragments only
+    " (SELECT ow.display_name FROM users ow WHERE ow.customer_id = d.customer_id AND ow.id = d.owner_id)"
+    " AS owner_name,"
+    " (SELECT count(*) FROM documents vc WHERE vc.customer_id = d.customer_id AND vc.family_id = d.family_id)"
+    " AS versions,"
+    f" GREATEST(d.details_updated_at, {_LAST_UPLOAD}) AS last_updated_at,"
+    " (SELECT ub.display_name FROM users ub WHERE ub.customer_id = d.customer_id AND ub.id ="
+    f" CASE WHEN d.details_updated_at >= {_LAST_UPLOAD} THEN d.details_updated_by ELSE {_LAST_UPLOADER} END)"
+    " AS last_updated_by_name,"
+    " (WITH RECURSIVE up (id, parent_id, depth) AS ("
+    " SELECT f.id, f.parent_id, 1 FROM folders f WHERE f.customer_id = d.customer_id AND f.id = d.folder_id"
+    " UNION ALL SELECT f.id, f.parent_id, up.depth + 1 FROM up JOIN folders f ON f.id = up.parent_id"
+    " WHERE f.customer_id = d.customer_id AND up.depth < 6)"
+    " SELECT json_build_object('id', dep.id, 'name', dep.name) FROM up"
+    " JOIN folders dep ON dep.customer_id = d.customer_id AND dep.id = up.id"
+    " WHERE up.parent_id IS NULL AND dep.kind = 'department') AS department,"
+    " (SELECT json_build_object('id', s.id,"
+    " 'role', CASE WHEN s.document_id = d.id THEN 'new' ELSE 'candidate' END)"
+    " FROM version_suggestions s WHERE s.customer_id = d.customer_id AND s.status = 'pending'"
+    " AND s.outcome = 'suggested' AND (s.document_id = d.id OR s.candidate_family_id = d.family_id)"
+    " ORDER BY (s.document_id = d.id) DESC, s.created_at DESC LIMIT 1) AS pending_suggestion"
+)
 
 # A DocumentSummary row: the document, its uploader's name, who uploaded each
 # version of its family, and the newest version after it that is not in Trash
@@ -88,7 +126,7 @@ _COLUMNS = (
     " 'attempts', n.attempts, 'max_attempts', n.max_attempts, 'progress', n.progress)"
     " FROM documents n WHERE n.customer_id = d.customer_id AND n.family_id = d.family_id"
     " AND n.version_no > d.version_no AND n.deleted_at IS NULL"
-    " ORDER BY n.version_no DESC LIMIT 1) AS newer"
+    " ORDER BY n.version_no DESC LIMIT 1) AS newer," + _FILE_COLUMNS
 )
 
 _COUNT = "SELECT count(*)"
@@ -144,6 +182,41 @@ _NEEDS_ATTENTION = (
 )
 _UPLOADED_FROM = " AND d.created_at >= :uploaded_from"
 _UPLOADED_TO = " AND d.created_at < :uploaded_to"
+# File management Q3: the department (its whole subtree), owner, labels, a party on the card
+# (its name as written or in Latin letters, contained, any letter case), a survey number on
+# the card (as autofile.survey_digits reads it), the document date and a newer version
+# waiting to be confirmed.
+_IN_DEPARTMENT = " AND d.folder_id = ANY(CAST(:department_folders AS uuid[]))"
+_OF_OWNER = " AND d.owner_id = :owner_id"
+_LABELLED = " AND d.sensitivity = ANY(CAST(:sensitivities AS text[]))"
+_WITH_PARTY = (
+    " AND EXISTS (SELECT 1 FROM jsonb_array_elements(coalesce(d.card -> 'parties', '[]'::jsonb)) p"
+    " WHERE p ->> 'name' ILIKE :party ESCAPE '\\' OR p ->> 'name_latin' ILIKE :party ESCAPE '\\')"
+)
+_WITH_PROPERTY = (
+    " AND EXISTS (SELECT 1 FROM jsonb_array_elements(coalesce(d.card -> 'identifiers', '[]'::jsonb)) i"
+    " WHERE i ->> 'kind' = 'survey_number'"
+    " AND substring(translate(regexp_replace(i ->> 'value', '\\s', '', 'g'),"
+    " '०१२३४५६७८९', '0123456789') from '[0-9]+(?:/[0-9]+)*') = :property)"
+)
+_DATED_FROM = " AND d.document_date >= :doc_date_from"
+_DATED_TO = " AND d.document_date <= :doc_date_to"
+_HAS_NEWER = (
+    " AND EXISTS (SELECT 1 FROM version_suggestions s WHERE s.customer_id = :c"
+    " AND s.candidate_family_id = d.family_id AND s.status = 'pending' AND s.outcome = 'suggested')"
+)
+# Q4: the sort keys; the label by its strength. Output-column names (owner_name,
+# last_updated_at) are allowed alone in ORDER BY.
+SORTS = {
+    "name": "lower(d.display_name)",
+    "doc_type": "d.doc_type",
+    "owner": "owner_name",
+    "sensitivity": "array_position(ARRAY['public', 'internal', 'confidential', 'restricted'], d.sensitivity)",
+    "version": "d.version_no",
+    "document_date": "d.document_date",
+    "updated_at": "last_updated_at",
+    "created_at": "d.created_at",
+}
 
 _RENAME = "UPDATE documents SET display_name = :name WHERE customer_id = :c AND id = :d"
 _NAME_OF = "SELECT display_name FROM documents WHERE customer_id = :c AND id = :d"
@@ -189,8 +262,19 @@ def list_documents(
     uploaded_to: datetime | None = None,
     trashed: bool = False,
     attention: bool = False,
+    department_folders: Sequence[str] | None = None,
+    owner_id: str | None = None,
+    sensitivities: Sequence[str] = (),
+    party: str | None = None,
+    property_number: str | None = None,
+    doc_date_from: date | None = None,
+    doc_date_to: date | None = None,
+    has_newer_version: bool = False,
+    sort: str = "created_at",
+    descending: bool = True,
 ) -> tuple[Sequence[RowMapping], int]:
-    """One page of this customer's documents, newest first, and the total that match.
+    """One page of this customer's documents, newest first unless ``sort`` (Q4: a SORTS key)
+    and ``descending`` say otherwise, and the total that match.
 
     One row per family: its current version, out of Trash, or with ``trashed``
     only what is in Trash.
@@ -199,7 +283,11 @@ def list_documents(
     folder), ``folder_ids`` (in one of these folders), ``tag_ids`` (holding every
     one of these tags), ``detected_type``, and ``uploaded_from`` (inclusive) to
     ``uploaded_to`` (exclusive), ``attention`` (PRD 5 U2: a page or a value needs
-    attention). All of them apply in both queries, before LIMIT.
+    attention); File management Q3: ``department_folders`` (a department's subtree),
+    ``owner_id``, ``sensitivities`` (any of), ``party``, ``property_number`` (normalised),
+    ``doc_date_from`` to ``doc_date_to`` (both inclusive) and ``has_newer_version``. All of
+    them apply in both queries, before LIMIT. A sort other than ``created_at`` reads every
+    match before the page.
 
     Two queries (the page and the count). Cost for this customer's D documents:
     no filter, O(limit + offset) rows on the (customer_id, created_at) index; a
@@ -238,10 +326,32 @@ def list_documents(
         params["uploaded_to"] = uploaded_to
     if attention:
         chosen.append(_NEEDS_ATTENTION)
+    optional = (
+        (
+            department_folders is not None,
+            _IN_DEPARTMENT,
+            "department_folders",
+            list(department_folders or ()),
+        ),
+        (owner_id is not None, _OF_OWNER, "owner_id", owner_id),
+        (bool(sensitivities), _LABELLED, "sensitivities", list(dict.fromkeys(sensitivities))),
+        (bool(party), _WITH_PARTY, "party", _like_pattern(party)),
+        (bool(property_number), _WITH_PROPERTY, "property", property_number),
+        (doc_date_from is not None, _DATED_FROM, "doc_date_from", doc_date_from),
+        (doc_date_to is not None, _DATED_TO, "doc_date_to", doc_date_to),
+        (has_newer_version, _HAS_NEWER, "has_newer", None),
+    )
+    for wanted, fragment, name, value in optional:
+        if wanted:
+            chosen.append(fragment)
+            params[name] = value
     where = (_TRASH_LIST if trashed else _LIST) + _FILTERS + "".join(chosen)
+    way = "DESC" if descending else "ASC"
+    nulls = "" if sort == "created_at" else " NULLS LAST"  # created_at: the listing index, as before
+    order = f" ORDER BY {SORTS[sort]} {way}{nulls}, d.id {way}"
     rows = (
         conn.execute(
-            text(_COLUMNS + where + " ORDER BY d.created_at DESC, d.id DESC LIMIT :limit OFFSET :offset"),
+            text(_COLUMNS + where + order + " LIMIT :limit OFFSET :offset"),
             params,
         )
         .mappings()
@@ -569,6 +679,119 @@ def rename_document(conn: Connection, customer_id: str, document_id: str, *, nam
     if old is not None:
         headers = {"old": document_part(old), "new": document_part(name)}
         conn.execute(text(_RENAME_HEADERS), {**params, **headers})
+
+
+# --- the dashboard (File management D2) ----------------------------------------------
+# Plain counts over the current, untrashed documents (the documents_current index), with the
+# documents_listing index for the week and month and the recent list.
+_DASHBOARD_TILES = text(
+    "SELECT (SELECT count(*) FROM documents d WHERE d.customer_id = :c"
+    " AND d.deleted_at IS NULL AND d.is_current) AS documents,"
+    " (SELECT count(*) FROM documents d"
+    " JOIN documents r ON r.customer_id = d.customer_id AND r.id = d.family_id"
+    " WHERE d.customer_id = :c AND d.deleted_at IS NULL AND d.is_current"
+    " AND r.created_at >= :week) AS this_week,"
+    " (SELECT count(*) FROM documents d WHERE d.customer_id = :c AND d.deleted_at IS NULL"
+    " AND d.version_no > 1 AND d.created_at >= :month) AS new_versions,"
+    " (SELECT count(*) FROM version_suggestions s JOIN documents d ON d.customer_id = s.customer_id"
+    " AND d.id = s.document_id WHERE s.customer_id = :c AND s.status = 'pending' AND s.outcome = 'suggested'"
+    " AND d.deleted_at IS NULL) AS to_confirm"
+)
+_DASHBOARD_TYPES = text(
+    "SELECT doc_type, count(*) AS n FROM documents"
+    " WHERE customer_id = :c AND is_current AND deleted_at IS NULL"
+    " GROUP BY doc_type ORDER BY n DESC, doc_type NULLS LAST"
+)
+# Each department with the current, untrashed documents anywhere below it (5 levels at most).
+_DASHBOARD_DEPARTMENTS = text(
+    "WITH RECURSIVE tree (id, root, depth) AS ("
+    " SELECT id, id, 1 FROM folders WHERE customer_id = :c AND parent_id IS NULL AND kind = 'department'"
+    " UNION ALL SELECT f.id, t.root, t.depth + 1 FROM tree t JOIN folders f ON f.parent_id = t.id"
+    " WHERE f.customer_id = :c AND t.depth < 6)"
+    " SELECT dep.id, dep.name, dep.sort_order, count(d.id) AS files FROM folders dep"
+    " JOIN tree t ON t.root = dep.id"
+    " LEFT JOIN documents d ON d.customer_id = :c AND d.folder_id = t.id"
+    " AND d.deleted_at IS NULL AND d.is_current WHERE dep.customer_id = :c"
+    " GROUP BY dep.id ORDER BY dep.sort_order NULLS LAST, lower(dep.name), dep.id"
+)
+_DASHBOARD_RECENT = text(
+    "SELECT id, display_name, doc_type, sensitivity, version_no, status, created_at FROM documents"
+    " WHERE customer_id = :c AND is_current AND deleted_at IS NULL ORDER BY created_at DESC, id DESC LIMIT 10"
+)
+# ponytail: the last 20 rows as the admin log shows them; stage 3 swaps in A5's timeline query.
+_DASHBOARD_ACTIVITY = text(
+    "SELECT a.id, a.action, a.actor_user_id, u.display_name AS actor_name, a.target_type, a.target_id,"
+    " a.details, a.created_at FROM audit_log a"
+    " LEFT JOIN users u ON u.customer_id = a.customer_id AND u.id = a.actor_user_id"
+    " WHERE a.customer_id = :c ORDER BY a.created_at DESC, a.id DESC LIMIT 20"
+)
+
+
+def dashboard(conn: Connection, customer_id: str, *, week: datetime, month: datetime) -> dict[str, Any]:
+    """D2: the tiles (documents, those added since ``week``, versions added since ``month``,
+    suggestions to confirm), documents by type, each department's files and the files in
+    none, the 10 newest documents and the last 20 activities. Five statements, each on an
+    index or a count over this customer's current documents: O(D) for D documents."""
+    params = {"c": customer_id, "week": week, "month": month}
+    tiles = conn.execute(_DASHBOARD_TILES, params).mappings().one()
+    departments = conn.execute(_DASHBOARD_DEPARTMENTS, params).mappings().all()
+    return {
+        "tiles": dict(tiles),
+        "by_type": conn.execute(_DASHBOARD_TYPES, params).mappings().all(),
+        "departments": departments,
+        "not_in_department": int(tiles["documents"]) - sum(int(row["files"]) for row in departments),
+        "recent": conn.execute(_DASHBOARD_RECENT, params).mappings().all(),
+        "activity": conn.execute(_DASHBOARD_ACTIVITY, params).mappings().all(),
+    }
+
+
+# File management O1 to O3, V9: the owner and label of the whole family, this version's note,
+# and the family's details stamp, in one statement; a field not given keeps its value.
+_SET_DETAILS = (
+    "UPDATE documents SET"
+    " owner_id = CASE WHEN :set_owner THEN CAST(:owner AS uuid) ELSE owner_id END,"
+    " sensitivity = CASE WHEN :set_label THEN CAST(:label AS text) ELSE sensitivity END,"
+    " sensitivity_set_by_person = sensitivity_set_by_person OR :set_label,"
+    " version_note = CASE WHEN :set_note AND id = :d THEN CAST(:note AS text) ELSE version_note END,"
+    " details_updated_by = :u, details_updated_at = now()"
+    " WHERE customer_id = :c"
+    " AND family_id = (SELECT family_id FROM documents WHERE customer_id = :c AND id = :d)"
+)
+_ACTIVE_USER = "SELECT 1 FROM users WHERE customer_id = :c AND id = :u AND NOT disabled"
+_UNSET: Any = object()
+
+
+def active_user(conn: Connection, customer_id: str, user_id: str) -> bool:
+    """O1: an owner is an active user of this customer. One lookup by key."""
+    return conn.execute(text(_ACTIVE_USER), {"c": customer_id, "u": user_id}).first() is not None
+
+
+def set_details(
+    conn: Connection,
+    customer_id: str,
+    document_id: str,
+    *,
+    by: str,
+    owner_id: str | None = _UNSET,
+    sensitivity: str | None = _UNSET,
+    version_note: str | None = _UNSET,
+) -> None:
+    """Set what is given (O1 owner and O2 label on every version of the family, V9 this
+    version's note) and stamp the family's details as changed by ``by`` now (O3); with
+    nothing given, the stamp alone (a rename, a move, a tag change). The caller holds the
+    family lock. One statement: O(v log D) for the family's v versions."""
+    params = {
+        "c": customer_id,
+        "d": document_id,
+        "u": by,
+        "set_owner": owner_id is not _UNSET,
+        "owner": None if owner_id is _UNSET else owner_id,
+        "set_label": sensitivity is not _UNSET,
+        "label": None if sensitivity is _UNSET else sensitivity,
+        "set_note": version_note is not _UNSET,
+        "note": None if version_note is _UNSET else version_note,
+    }
+    conn.execute(text(_SET_DETAILS), params)
 
 
 def move_family(conn: Connection, customer_id: str, document_id: str, *, folder_id: str | None) -> None:

@@ -152,10 +152,20 @@ class OrgAiBody(BaseModel):
 
 
 Feature = Literal[
-    "scan_ai", "ask", "ensemble", "autofile", "cost_saving", "review", "my_words", "self_signup"
+    "scan_ai",
+    "ask",
+    "ensemble",
+    "autofile",
+    "cost_saving",
+    "review",
+    "my_words",
+    "self_signup",
+    "version_spotting",
 ]
 # Sign-up makes a new organisation: one has no switch of its own for it (0039).
-OrgFeature = Literal["scan_ai", "ask", "ensemble", "autofile", "cost_saving", "review", "my_words"]
+OrgFeature = Literal[
+    "scan_ai", "ask", "ensemble", "autofile", "cost_saving", "review", "my_words", "version_spotting"
+]
 
 
 class TimeoutBody(BaseModel):

@@ -585,10 +585,15 @@ _NEXT_VERSION = (
     " FROM documents d WHERE d.customer_id = :c AND d.id = :of AND d.deleted_at IS NULL"
 )
 
+# File management O1, O2: a new version takes the family's owner and label.
 _INSERT_VERSION = (
     "INSERT INTO documents (id, customer_id, display_name, sha256, size_bytes, detected_type,"
-    " uploaded_by, read_requested_by, folder_id, family_id, version_no, is_current, ocr_choice)"
-    " VALUES (:d, :c, :name, :h, :size, :type, :by, :by, :folder, :f, :version, false, :ocr)"
+    " uploaded_by, read_requested_by, folder_id, family_id, version_no, is_current, ocr_choice,"
+    " owner_id, sensitivity, sensitivity_set_by_person)"
+    " VALUES (:d, :c, :name, :h, :size, :type, :by, :by, :folder, :f, :version, false, :ocr,"
+    " (SELECT o.owner_id FROM documents o WHERE o.customer_id = :c AND o.id = :of),"
+    " (SELECT o.sensitivity FROM documents o WHERE o.customer_id = :c AND o.id = :of),"
+    " (SELECT o.sensitivity_set_by_person FROM documents o WHERE o.customer_id = :c AND o.id = :of))"
     " ON CONFLICT (customer_id, sha256) DO NOTHING RETURNING id"
 )
 
@@ -696,9 +701,13 @@ class PgDocuments:
                     text(
                         "INSERT INTO documents (id, customer_id, display_name, sha256, size_bytes,"
                         " detected_type, uploaded_by, read_requested_by, folder_id, family_id, version_no,"
-                        " ocr_choice, batch_id, autofile) VALUES (:d, :c, :name, :h, :size, :type, :by, :by,"
-                        " :folder, :family, :version, :ocr, :batch, (SELECT 'pending' FROM customers"
-                        " WHERE id = :c AND CAST(:folder AS uuid) IS NULL AND (autofile_on"
+                        " ocr_choice, batch_id, owner_id, autofile) VALUES (:d, :c, :name, :h, :size, :type,"
+                        " :by, :by, :folder, :family, :version, :ocr, :batch, :by,"
+                        # File management F2: no folder, or a department (filed inside it, F3).
+                        " (SELECT 'pending' FROM customers WHERE id = :c"
+                        " AND (CAST(:folder AS uuid) IS NULL OR EXISTS (SELECT 1 FROM folders"
+                        " WHERE customer_id = :c AND id = CAST(:folder AS uuid) AND kind = 'department'))"
+                        " AND (autofile_on"
                         " OR (autofile_granted AND EXISTS (SELECT 1 FROM ai_task_settings s"
                         " WHERE s.customer_id = :c AND s.task = 'autofile' AND s.level = 'on'"
                         " AND (s.user_id IS NULL OR s.user_id = :by))))))"
