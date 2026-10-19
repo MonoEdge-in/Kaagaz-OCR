@@ -253,7 +253,12 @@ def test_audit_log_is_newest_first_with_actor_names_and_paginated(db: Database) 
 
     assert body["total"] == 2  # auth.login, settings.update
     entry = body["items"][0]
-    assert set(entry) == {"id", "action", "actor_name", "target_type", "target_id", "details", "created_at"}
+    # Changed on purpose (PRD 1, activity/search): A5's entry and the cursor.
+    assert set(entry) == {
+        "id", "action", "actor_id", "actor_name", "target_type", "target_id", "family_id",
+        "document", "folder", "details", "created_at",
+    }  # fmt: skip
+    assert body["next_cursor"] is not None
     assert entry["action"] == "settings.update"
     assert entry["actor_name"] == "Test admin"
     assert entry["details"] == {"max_upload_mb": 2}
@@ -309,20 +314,24 @@ def money_in(value: object, path: str = "") -> list[str]:
 def test_an_old_org_models_set_audit_row_shows_no_budget() -> None:
     """Rows 0023 wrote before 15 Oct 2026 hold the operator's budget_usd; the org never sees it."""
     details = {"by": "operator", "models": ["google/a"], "default": "google/a", "budget_usd": 12.5}
+    # Changed on purpose (PRD 1, activity/search): the row has the A3 and A5 columns, and
+    # the admin's log is the full one.
     row = {
         "id": 7,
         "action": "org.models_set",
-        "actor_name": None,
+        "actor_user_id": None,
         "target_type": "customer",
         "target_id": "c",
         "details": details,
         "created_at": datetime(2026, 10, 12, tzinfo=UTC),
+        "folder_id": None,
+        "family_id": None,
     }
-    entry = audit_entry(cast(RowMapping, row))
+    entry = audit_entry(cast(RowMapping, row), full=True)
     assert entry["details"] == {"by": "operator", "models": ["google/a"], "default": "google/a"}
     assert money_in(entry) == []
     plain = {**row, "action": "settings.update", "details": None}
-    assert audit_entry(cast(RowMapping, plain))["details"] is None
+    assert audit_entry(cast(RowMapping, plain), full=True)["details"] is None
 
 
 @pytest.mark.db

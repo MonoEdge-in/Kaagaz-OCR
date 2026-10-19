@@ -10,13 +10,10 @@ from datetime import UTC, datetime
 from typing import Any
 
 import pytest
-from sqlalchemy.exc import OperationalError
 
 from kaagaz.ai.client import ModelOutputError
 from kaagaz.answering.service import AnswerService
-from kaagaz.api.routers import search
 from kaagaz.db.engine import Database
-from kaagaz.ingestion.errors import BackendUnavailable
 from tests.settings_factory import make_settings
 from tests.test_api_my_story import put
 from tests.test_api_support import CSRF, Api, Signed
@@ -37,40 +34,21 @@ def matches(signed: Signed, q: str, **query: Any) -> Any:
     return reply.json()["story_matches"]
 
 
-def test_search_lists_story_matches_beside_the_documents_with_a_band_only(db: Database) -> None:
+def test_search_inside_documents_lists_no_story_matches(db: Database) -> None:
+    """Changed on purpose (PRD 1, activity/search): File management Q1, story matches need
+    the embedding, so GET /api/search leaves them out; the chat's route still finds them."""
     model = FakeModel()
     api = Api(db, model=model)
     signed = api.new_signed()
     document = api.add_document(signed.customer_id, name="7-12 extract.pdf")
     assert put(signed, document, STORY).status_code == 201
-
-    reply = signed.client.get("/api/search", params={"q": QUESTION})
-    body = reply.json()
-    assert body["documents"] == []  # the document has no pieces: only the story found it
-    assert body["story_matches"] == [
-        {"document_id": document, "display_name": "7-12 extract.pdf", "doc_type": None, "band": "match"}
-    ]
-    assert MARK not in reply.text and "score" not in json.dumps(body["story_matches"])
-
-
-@pytest.mark.parametrize("error", [OperationalError("SELECT", {}, OSError()), BackendUnavailable("database")])
-def test_a_story_failure_never_fails_the_search(
-    db: Database, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, error: Exception
-) -> None:
-    api = Api(db, model=FakeModel())
-    signed = api.new_signed()
-    document = api.add_document(signed.customer_id)
     add_pieces(db, signed.customer_id, document, [("Daregaon 7/12 extract", None)])
 
-    def fails(*_: object, **__: object) -> None:
-        raise error
-
-    monkeypatch.setattr(search, "find_story_matches", fails)
-    body = signed.client.get("/api/search", params={"q": "Daregaon"}).json()
-
+    reply = signed.client.get("/api/search", params={"q": "Daregaon"})
+    body = reply.json()
     assert ([d["id"] for d in body["documents"]], body["story_matches"]) == ([document], [])
-    (record,) = [r for r in caplog.records if r.getMessage() == "story matches left out"]
-    assert record.__dict__["code"] == type(error).__name__ and "Daregaon" not in str(record.__dict__)
+    assert MARK not in reply.text and model.calls == []
+    assert [m["document_id"] for m in matches(signed, QUESTION)] == [document]
 
 
 def test_the_chat_route_finds_my_story_with_no_model_call_and_checks_its_input(db: Database) -> None:

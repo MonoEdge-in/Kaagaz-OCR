@@ -6,7 +6,7 @@ named after the type it builds, so a reviewer can hold the two side by side.
 
 import re
 from collections.abc import Mapping, Sequence
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, cast
 
@@ -14,6 +14,7 @@ from sqlalchemy import Connection, RowMapping
 
 from kaagaz.answering.hard_to_read import FlaggedPage, not_found_note
 from kaagaz.api.auth import CurrentUser
+from kaagaz.db import audit
 from kaagaz.db import ensemble as ensemble_sql
 from kaagaz.db.folders import FolderRow
 from kaagaz.db.listing import MAX_READING_LINES, MAX_READING_TEXT
@@ -785,16 +786,81 @@ def admin_user(row: RowMapping, *, now: datetime) -> dict[str, Any]:
     }
 
 
-def audit_entry(row: RowMapping) -> dict[str, Any]:
-    """``AuditEntry``."""
+DELETED_DOCUMENT = "a deleted document"
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+_MICROSECOND = timedelta(microseconds=1)
+CURSOR = r"^\d{1,16}-\d{1,18}$"  # the last row's created_at in microseconds, then its id
+
+
+def timeline(
+    conn: Connection,
+    customer_id: str,
+    filters: audit.Filters,
+    *,
+    limit: int,
+    cursor: str | None = None,
+    offset: int = 0,
+    full: bool = False,
+) -> dict[str, Any]:
+    """A5's ``{items, next_cursor}``: one page of ``audit.entries`` with its names (three
+    queries); ``next_cursor`` is null on the last page. ``cursor`` matches CURSOR."""
+    after = None
+    if cursor is not None:
+        moment, row_id = cursor.split("-")
+        after = (_EPOCH + int(moment) * _MICROSECOND, int(row_id))
+    rows = audit.entries(conn, customer_id, filters, limit=limit + 1, cursor=after, offset=offset)
+    page = rows[:limit]
+    found = audit.names(conn, customer_id, page)
+    last = page[-1] if len(rows) > limit else None
+    return {
+        "items": [audit_entry(row, found, full=full) for row in page],
+        "next_cursor": None
+        if last is None
+        else f"{(last['created_at'] - _EPOCH) // _MICROSECOND}-{int(last['id'])}",
+    }
+
+
+def audit_entry(row: RowMapping, names: audit.Names = audit.NO_NAMES, *, full: bool) -> dict[str, Any]:
+    """``AuditEntry`` (File management A5): names read now, a deleted document by
+    DELETED_DOCUMENT. ``full`` (the admin's log): every detail but money; otherwise only
+    ``audit.SHOWN_DETAILS``. The ids in details come with their names: ``folder_path``,
+    ``parent_path``, and ``from_name`` and ``to_name`` for an owner change."""
+    raw = row["details"] if isinstance(row["details"], dict) else {}
+    # Older org.models_set rows hold the operator's budget_usd: never shown to the org.
+    if full:
+        details = without_money(raw) if isinstance(row["details"], dict) else row["details"]
+    else:
+        details = {key: raw[key] for key in audit.SHOWN_DETAILS.get(row["action"], ()) if key in raw}
+    if isinstance(details, dict):
+        for key, named in (("folder_id", "folder_path"), ("parent_id", "parent_path")):
+            if details.get(key) is not None:
+                details[named] = names.folders.get(str(details[key]))
+        if row["action"] == "document.owner_change":
+            for key in ("from", "to"):
+                details[f"{key}_name"] = names.users.get(str(details.get(key)))
+    actor, folder_id = row["actor_user_id"], row["folder_id"]
+    document = None
+    if row["target_type"] == "document":
+        exists = bool(row["document_exists"])
+        document = {
+            "id": row["target_id"],
+            "name": row["document_name"] if exists else DELETED_DOCUMENT,
+            "version_no": row["document_version_no"],
+            "deleted": not exists,
+        }
     return {
         "id": int(row["id"]),
         "action": row["action"],
-        "actor_name": row["actor_name"],
+        "actor_id": None if actor is None else str(actor),
+        "actor_name": None if actor is None else names.users.get(str(actor)),
         "target_type": row["target_type"],
         "target_id": row["target_id"],
-        # Older org.models_set rows hold the operator's budget_usd: never shown to the org.
-        "details": without_money(row["details"]) if isinstance(row["details"], dict) else row["details"],
+        "family_id": None if row["family_id"] is None else str(row["family_id"]),
+        "document": document,
+        "folder": None
+        if folder_id is None
+        else {"id": str(folder_id), "path": names.folders.get(str(folder_id))},
+        "details": details,
         "created_at": iso(row["created_at"]),
     }
 

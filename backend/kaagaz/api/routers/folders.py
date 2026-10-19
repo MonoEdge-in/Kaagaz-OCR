@@ -29,7 +29,8 @@ from kaagaz.api.auth import CurrentUser, User
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.names import FOLDER_NAME_MAX, clean_name
-from kaagaz.api.views import folder
+from kaagaz.api.routers.documents import ActivityCursor, ActivityLimit
+from kaagaz.api.views import folder, timeline
 from kaagaz.db import audit
 from kaagaz.db import folders as folders_sql
 
@@ -171,3 +172,22 @@ def delete_folder(folder_id: uuid.UUID, user: User, context: Context) -> Respons
         folders_sql.delete_folder(conn, user.customer_id, target)
         _audit(conn, user, "folder.delete", target)
     return Response(status_code=204)
+
+
+@router.get("/folders/{folder_id}/activity")
+def get_folder_activity(
+    folder_id: uuid.UUID,
+    user: User,
+    context: Context,
+    limit: ActivityLimit = 50,
+    cursor: ActivityCursor = None,
+) -> dict[str, Any]:
+    """File management A5: ``{items: [AuditEntry], next_cursor}``, what happened in the folder
+    and every folder below it, newest first (document, version and folder actions only).
+    Another customer's folder, or none, is 404."""
+    with context.db.customer(user.customer_id) as conn:
+        subtree = folders_sql.descendant_ids(conn, user.customer_id, str(folder_id))
+        if not subtree:
+            raise ApiError(404, "not_found")
+        filters = audit.Filters(folder_ids=tuple(subtree))
+        return timeline(conn, user.customer_id, filters, limit=limit, cursor=cursor)

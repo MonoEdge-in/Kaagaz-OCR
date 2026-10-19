@@ -22,6 +22,7 @@ from sqlalchemy import text
 
 from kaagaz.ai import usage
 from kaagaz.ai.usage import record_call
+from kaagaz.answering.expansion import PgWords
 from kaagaz.answering.memory import Memory
 from kaagaz.answering.rewrite import Turn
 from kaagaz.api.auth import CurrentUser
@@ -158,15 +159,20 @@ def _billed(saved: Sequence[UsageRow]) -> list[tuple[object, ...]]:
     ]
 
 
-def test_sp1_a_search_is_billed_to_the_user_who_searched(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_sp1_a_search_calls_no_model_and_bills_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Changed on purpose (PRD 1, activity/search): File management Q1, keyword only."""
     ledger, user = _Ledger(monkeypatch), _user()
     monkeypatch.setattr(search, "resolve", lambda *args, **kwargs: EVERYTHING)
+    monkeypatch.setattr(search, "narrow", lambda conn, customer, scope, asked: scope)
     monkeypatch.setattr(search, "search_documents", lambda *args, **kwargs: [])
-    monkeypatch.setattr(search, "find_story_matches", lambda *args, **kwargs: [])
+    monkeypatch.setattr(PgWords, "words", lambda *args: [])
 
-    search.search_inside_documents(search.SearchParams(q="total"), user, _context(ledger, _BillingEmbedder()))
+    reply = search.search_inside_documents(
+        search.SearchParams(q="total"), user, _context(ledger, _BillingEmbedder())
+    )
 
-    assert _billed(ledger.saved) == [(user.customer_id, user.user_id, "search", None, EMBED, 1)]
+    assert reply == {"documents": [], "story_matches": [], "understood_words": []}
+    assert ledger.saved == []
 
 
 def test_sp1_a_storys_embedding_is_billed_to_its_user_even_in_its_own_thread(
@@ -426,11 +432,12 @@ def test_sp1_a_chat_answer_and_its_memory_are_billed_to_the_asker_with_the_conve
 
 
 @pytest.mark.db
-def test_sp1_a_search_is_billed_to_the_searcher(db: Database) -> None:
+def test_sp1_a_search_bills_nothing(db: Database) -> None:
+    """Changed on purpose (PRD 1, activity/search): File management Q1, keyword only."""
     api = Api(db, model=cast(Any, _BillingEmbedder()))
     searcher = api.new_signed("member")
     assert searcher.client.get("/api/search?q=total").status_code == 200
-    assert _ledger(db, searcher.customer_id) == [(searcher.user_id, "search", None, EMBED, 1)]
+    assert _ledger(db, searcher.customer_id) == []
 
 
 @pytest.mark.db

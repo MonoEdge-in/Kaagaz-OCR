@@ -11,10 +11,11 @@ from fastapi import APIRouter, Depends
 
 from kaagaz.api.auth import User
 from kaagaz.api.context import AppContext, get_context
-from kaagaz.api.views import iso
-from kaagaz.db import listing
+from kaagaz.api.views import iso, timeline
+from kaagaz.db import audit, listing
 
 router = APIRouter()
+DASHBOARD_ACTIVITY = 20  # the last 20 activities, A5's member timeline (document, version, folder)
 
 Context = Annotated[AppContext, Depends(get_context)]
 
@@ -26,6 +27,7 @@ def get_dashboard(user: User, context: Context) -> dict[str, Any]:
     month = local.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     with context.db.customer(user.customer_id) as conn:
         found = listing.dashboard(conn, user.customer_id, week=now - timedelta(days=7), month=month)
+        activity = timeline(conn, user.customer_id, audit.Filters(), limit=DASHBOARD_ACTIVITY)["items"]
     tiles, departments = found["tiles"], found["departments"]
     return {
         "tiles": {
@@ -58,17 +60,5 @@ def get_dashboard(user: User, context: Context) -> dict[str, Any]:
             }
             for row in found["recent"]
         ],
-        "activity": [
-            {
-                "id": int(row["id"]),
-                "action": row["action"],
-                "actor_user_id": None if row["actor_user_id"] is None else str(row["actor_user_id"]),
-                "actor_name": row["actor_name"],
-                "target_type": row["target_type"],
-                "target_id": row["target_id"],
-                "details": row["details"],
-                "created_at": iso(row["created_at"]),
-            }
-            for row in found["activity"]
-        ],
+        "activity": activity,
     }

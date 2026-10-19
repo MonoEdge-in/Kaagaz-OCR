@@ -130,6 +130,7 @@ from kaagaz.api.names import CONTROL_CHARACTERS, DOCUMENT_NAME_MAX, clean_docume
 from kaagaz.api.readers import SINGLE, ReadingChoice, check_reading, check_shape, offer
 from kaagaz.api.upload_guard import check_upload_request
 from kaagaz.api.views import (
+    CURSOR,
     can_delete,
     document_folder,
     document_link,
@@ -137,11 +138,14 @@ from kaagaz.api.views import (
     document_version,
     extracted_value,
     invoice,
+    iso,
     page_readings,
     page_summary,
+    timeline,
 )
 from kaagaz.db import admin as admin_sql
 from kaagaz.db import audit, autofile, listing, trash
+from kaagaz.db import chat as chat_sql
 from kaagaz.db import folders as folders_sql
 from kaagaz.db import tags as tags_sql
 from kaagaz.db.documents import (
@@ -674,6 +678,7 @@ def get_document(document_id: uuid.UUID, user: User, context: Context) -> dict[s
         facts = listing.document_facts(conn, customer_id, target)
         typed = listing.invoice_for(conn, customer_id, target)
         links = listing.document_links(conn, customer_id, target)
+        audit.record_view(conn, customer_id, actor_user_id=user.user_id, document_id=target)  # A1
     document_date = None if facts is None else facts["document_date"]
     return {
         **document_summary(
@@ -721,6 +726,47 @@ class ReadAgainBody(BaseModel):
     # Features 26 and 27: left out or null, the document keeps its reading (readers.check_reading).
     read_mode: str | None = None
     read_agents: list[str] | None = None  # ignored: Ensemble runs only after the scan (16 Oct 2026)
+
+
+ActivityLimit = Annotated[int, Query(ge=1, le=100)]
+ActivityCursor = Annotated[str | None, Query(pattern=CURSOR)]
+
+
+@router.get("/documents/{document_id}/activity")
+def get_document_activity(
+    document_id: uuid.UUID,
+    user: User,
+    context: Context,
+    limit: ActivityLimit = 50,
+    cursor: ActivityCursor = None,
+) -> dict[str, Any]:
+    """File management A5: ``{items: [AuditEntry], next_cursor}``, what happened to every
+    version of the family, newest first (document, version and folder actions only)."""
+    with context.db.customer(user.customer_id) as conn:
+        family = str(_document_or_404(conn, user, document_id)["family_id"])
+        return timeline(conn, user.customer_id, audit.Filters(family_id=family), limit=limit, cursor=cursor)
+
+
+@router.get("/documents/{document_id}/questions")
+def get_document_questions(document_id: uuid.UUID, user: User, context: Context) -> dict[str, Any]:
+    """File management P2: ``{items: [{id, conversation_id, question, asked_at, answer}]}``,
+    this person's questions asked about any version of the family or answered from one,
+    newest first, at most chat_sql.QUESTIONS_SHOWN."""
+    with context.db.customer(user.customer_id) as conn:
+        family = str(_document_or_404(conn, user, document_id)["family_id"])
+        rows = chat_sql.document_questions(conn, user.customer_id, user.user_id, family)
+    return {
+        "items": [
+            {
+                "id": str(row["id"]),
+                "conversation_id": str(row["conversation_id"]),
+                "question": row["question"],
+                "asked_at": iso(row["created_at"]),
+                "answer": row["answer"],
+            }
+            for row in rows
+        ]
+    }
 
 
 @router.post("/documents/{document_id}/reprocess")
@@ -1005,7 +1051,9 @@ def undo_autofile(document_id: uuid.UUID, user: User, context: Context) -> dict[
 
 
 @router.get("/documents/{document_id}/file")
-def get_file(document_id: uuid.UUID, user: User, context: Context) -> Response:
+def get_file(document_id: uuid.UUID, user: User, context: Context, download: bool = False) -> Response:
+    """The original file. File management A2: the Download button asks ``download=1``, which
+    logs ``document.download`` once the file is found; the viewer's own fetch is not logged."""
     with context.db.customer(user.customer_id) as conn:
         row = _readable_or_409(conn, user, document_id)
     if row["status"] not in _SERVABLE:
@@ -1014,6 +1062,16 @@ def get_file(document_id: uuid.UUID, user: User, context: Context) -> Response:
         data = context.storage.get(user.customer_id, str(document_id))
     except BlobNotFound:
         raise ApiError(404, "not_found") from None
+    if download:
+        with context.db.customer(user.customer_id) as conn:
+            audit.record(
+                conn,
+                user.customer_id,
+                actor_user_id=user.user_id,
+                action="document.download",
+                target_type="document",
+                target_id=str(document_id),
+            )
     content_type, extension = _CONTENT_TYPES.get(row["detected_type"], ("application/octet-stream", "bin"))
     # The user's own name with the file's true extension, percent-encoded (RFC 6266), so no
     # quote or line break reaches the header; "document.<ext>" for browsers without filename*.

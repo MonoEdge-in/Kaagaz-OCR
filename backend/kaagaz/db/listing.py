@@ -326,6 +326,49 @@ def list_documents(
         params["uploaded_to"] = uploaded_to
     if attention:
         chosen.append(_NEEDS_ATTENTION)
+    chosen.append(
+        file_filters(
+            params,
+            department_folders=department_folders,
+            owner_id=owner_id,
+            sensitivities=sensitivities,
+            party=party,
+            property_number=property_number,
+            doc_date_from=doc_date_from,
+            doc_date_to=doc_date_to,
+            has_newer_version=has_newer_version,
+        )
+    )
+    where = (_TRASH_LIST if trashed else _LIST) + _FILTERS + "".join(chosen)
+    way = "DESC" if descending else "ASC"
+    nulls = "" if sort == "created_at" else " NULLS LAST"  # created_at: the listing index, as before
+    order = f" ORDER BY {SORTS[sort]} {way}{nulls}, d.id {way}"
+    rows = (
+        conn.execute(
+            text(_COLUMNS + where + order + " LIMIT :limit OFFSET :offset"),
+            params,
+        )
+        .mappings()
+        .all()
+    )
+    total: int = conn.execute(text(_COUNT + where), params).scalar_one()
+    return rows, int(total)
+
+
+def file_filters(
+    params: dict[str, Any],
+    *,
+    department_folders: Sequence[str] | None = None,
+    owner_id: str | None = None,
+    sensitivities: Sequence[str] = (),
+    party: str | None = None,
+    property_number: str | None = None,
+    doc_date_from: date | None = None,
+    doc_date_to: date | None = None,
+    has_newer_version: bool = False,
+) -> str:
+    """Q3's fixed fragments for the filters given, their values added to ``params``; the list
+    and search (``matching_ids``) share them. O(1)."""
     optional = (
         (
             department_folders is not None,
@@ -341,24 +384,21 @@ def list_documents(
         (doc_date_to is not None, _DATED_TO, "doc_date_to", doc_date_to),
         (has_newer_version, _HAS_NEWER, "has_newer", None),
     )
+    chosen = []
     for wanted, fragment, name, value in optional:
         if wanted:
             chosen.append(fragment)
             params[name] = value
-    where = (_TRASH_LIST if trashed else _LIST) + _FILTERS + "".join(chosen)
-    way = "DESC" if descending else "ASC"
-    nulls = "" if sort == "created_at" else " NULLS LAST"  # created_at: the listing index, as before
-    order = f" ORDER BY {SORTS[sort]} {way}{nulls}, d.id {way}"
-    rows = (
-        conn.execute(
-            text(_COLUMNS + where + order + " LIMIT :limit OFFSET :offset"),
-            params,
-        )
-        .mappings()
-        .all()
-    )
-    total: int = conn.execute(text(_COUNT + where), params).scalar_one()
-    return rows, int(total)
+    return "".join(chosen)
+
+
+def matching_ids(conn: Connection, customer_id: str, **filters: Any) -> list[str]:
+    """Q3 on search: the current, untrashed documents ``file_filters`` keeps. One query over
+    this customer's current documents: O(D)."""
+    params: dict[str, Any] = {"c": customer_id}
+    where = _LIST + file_filters(params, **filters)
+    found: Sequence[object] = conn.execute(text("SELECT d.id" + where), params).scalars().all()
+    return [str(document) for document in found]
 
 
 def get_document(conn: Connection, customer_id: str, document_id: str) -> RowMapping | None:
@@ -718,20 +758,13 @@ _DASHBOARD_RECENT = text(
     "SELECT id, display_name, doc_type, sensitivity, version_no, status, created_at FROM documents"
     " WHERE customer_id = :c AND is_current AND deleted_at IS NULL ORDER BY created_at DESC, id DESC LIMIT 10"
 )
-# ponytail: the last 20 rows as the admin log shows them; stage 3 swaps in A5's timeline query.
-_DASHBOARD_ACTIVITY = text(
-    "SELECT a.id, a.action, a.actor_user_id, u.display_name AS actor_name, a.target_type, a.target_id,"
-    " a.details, a.created_at FROM audit_log a"
-    " LEFT JOIN users u ON u.customer_id = a.customer_id AND u.id = a.actor_user_id"
-    " WHERE a.customer_id = :c ORDER BY a.created_at DESC, a.id DESC LIMIT 20"
-)
 
 
 def dashboard(conn: Connection, customer_id: str, *, week: datetime, month: datetime) -> dict[str, Any]:
     """D2: the tiles (documents, those added since ``week``, versions added since ``month``,
     suggestions to confirm), documents by type, each department's files and the files in
-    none, the 10 newest documents and the last 20 activities. Five statements, each on an
-    index or a count over this customer's current documents: O(D) for D documents."""
+    none and the 10 newest documents (the last 20 activities: ``audit.entries``, A5). Four
+    statements, each on an index or a count over this customer's current documents: O(D)."""
     params = {"c": customer_id, "week": week, "month": month}
     tiles = conn.execute(_DASHBOARD_TILES, params).mappings().one()
     departments = conn.execute(_DASHBOARD_DEPARTMENTS, params).mappings().all()
@@ -741,7 +774,6 @@ def dashboard(conn: Connection, customer_id: str, *, week: datetime, month: date
         "departments": departments,
         "not_in_department": int(tiles["documents"]) - sum(int(row["files"]) for row in departments),
         "recent": conn.execute(_DASHBOARD_RECENT, params).mappings().all(),
-        "activity": conn.execute(_DASHBOARD_ACTIVITY, params).mappings().all(),
     }
 
 
