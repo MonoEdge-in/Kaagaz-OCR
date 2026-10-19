@@ -113,7 +113,9 @@ def record_view(conn: Connection, customer_id: str, *, actor_user_id: str, docum
 
 # What a member's timeline may say about each action: the fields the A4 words need, never
 # raw details. ``views.audit_entry`` adds the names these ids resolve to.
-_VERSION_DETAILS = ("version_no", "candidate_family", "outcome")
+# Stage 2 writes these on version.* rows (db/versions.py); ids and counts only. folder_id and
+# from_folder_id let A4 say "moved to …" when accepting moves the document.
+_VERSION_DETAILS = ("version_no", "candidate_family", "outcome", "family_id", "folder_id", "from_folder_id")
 SHOWN_DETAILS: dict[str, tuple[str, ...]] = {
     "document.move": ("folder_id",),
     "document.autofile": ("folder_id",),
