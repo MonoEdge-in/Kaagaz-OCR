@@ -131,7 +131,9 @@ from kaagaz.api.readers import SINGLE, ReadingChoice, check_reading, check_shape
 from kaagaz.api.upload_guard import check_upload_request
 from kaagaz.api.views import (
     CURSOR,
+    answer_with_source_states,
     can_delete,
+    cited_document_ids,
     document_folder,
     document_link,
     document_summary,
@@ -766,6 +768,9 @@ def get_document_questions(document_id: uuid.UUID, user: User, context: Context)
     with context.db.customer(user.customer_id) as conn:
         family = str(_document_or_404(conn, user, document_id)["family_id"])
         rows = chat_sql.document_questions(conn, user.customer_id, user.user_id, family)
+        # As the chat view: sources in Trash, deleted or replaced since (views.answer_with_source_states).
+        cited = [each for row in rows if row["answer"] for each in cited_document_ids(row["answer"])]
+        states = chat_sql.document_states(conn, user.customer_id, cited)
     return {
         "items": [
             {
@@ -773,7 +778,7 @@ def get_document_questions(document_id: uuid.UUID, user: User, context: Context)
                 "conversation_id": str(row["conversation_id"]),
                 "question": row["question"],
                 "asked_at": iso(row["created_at"]),
-                "answer": row["answer"],
+                "answer": answer_with_source_states(row["answer"], states) if row["answer"] else row["answer"],
             }
             for row in rows
         ]
