@@ -6,13 +6,18 @@ test_file_management_db.py.
 
 import importlib.util
 import re
-from datetime import UTC, datetime
+from collections.abc import Iterator
+from contextlib import contextmanager
+from datetime import UTC, date, datetime
 from pathlib import Path
 from types import ModuleType
 
+import pytest
+
 from kaagaz.api.views import folder
-from kaagaz.db import ai_settings
-from kaagaz.db.autofile import FOLDERS, property_folder, survey_digits, survey_number, village
+from kaagaz.db import ai_settings, autofile, versions
+from kaagaz.db.autofile import FOLDERS, filing_year, property_folder, survey_digits, survey_number, village
+from kaagaz.db.documents import PgDocuments
 from kaagaz.db.folders import FolderRow
 from kaagaz.db.pipeline_store import CONFIDENTIAL_TYPES
 
@@ -52,10 +57,39 @@ def test_f3_the_village_is_a_key_fact_in_latin_letters() -> None:
 
 
 def test_f3_section_10_44_slash_2_is_its_own_property_and_never_merges_with_44() -> None:
-    assert property_folder("44", "Wakad") == ("property:wakad:44", "Survey 44, Wakad")
-    assert property_folder("44/2", "Wakad") == ("property:wakad:44/2", "Survey 44/2, Wakad")
+    assert property_folder("44", "Wakad") == ("property:vkd:44", "Survey 44, Wakad")
+    assert property_folder("44/2", "Wakad") == ("property:vkd:44/2", "Survey 44/2, Wakad")
     assert property_folder("44", None) == ("property::44", "Survey 44")  # no village: "Survey 44"
-    assert property_folder("7", "Pimpri Chinchwad")[0] == "property:pimpri-chinchwad:7"
+    assert property_folder("7", "Pimpri Chinchwad")[0] == "property:pimpri-cincvd:7"
+
+
+def test_f3_a_misread_year_files_by_the_upload_year() -> None:
+    uploaded = datetime(2026, 10, 20, tzinfo=UTC)
+    assert filing_year(date(24, 1, 1), uploaded) == "2026"  # "24" or "0024" is not a year
+    assert filing_year(date(2025, 6, 12), uploaded) == "2025"
+    assert filing_year(None, uploaded) == "2026"
+
+
+def test_a_failed_filing_still_runs_version_spotting(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Db:
+        @contextmanager
+        def customer(self, _customer_id: str) -> Iterator[None]:
+            yield None
+
+    def broken(*_args: object) -> str:
+        raise ValueError("year 24 is out of range")
+
+    spotted: list[str] = []
+    monkeypatch.setattr(autofile, "file_document", broken)
+    monkeypatch.setattr(versions, "spot", lambda _conn, _c, d: spotted.append(d) or "none")
+    PgDocuments(_Db()).file_document("c1", "d1")  # type: ignore[arg-type]
+    assert spotted == ["d1"]
+
+
+def test_f3_a_devanagari_village_and_a_latin_wakad_deed_share_one_property_key() -> None:
+    devanagari = village(_card(place="वाकड"))
+    assert property_folder("44", devanagari)[0] == property_folder("44", "Wakad")[0]
+    assert property_folder("44/2", "Wakad")[0] != property_folder("44", devanagari)[0]
 
 
 def test_f3_every_key_the_template_makes_fits_0041s_check() -> None:

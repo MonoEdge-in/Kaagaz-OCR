@@ -332,6 +332,11 @@ def test_v4_an_almost_exact_copy_is_linked_on_its_own_and_v7_undo_puts_it_back(d
         "version.accepted",
         "version.undone",
     ]
+    # A5: the family's timeline keeps the linked version's whole story, undo included.
+    timeline = signed.client.get(f"/api/documents/{old}/activity").json()["items"]
+    shown = {(item["action"], item["target_id"]) for item in timeline}
+    for action in ("version.suggested", "version.accepted", "version.undone"):
+        assert (action, new) in shown, action
     twice = signed.client.post(f"/api/documents/{new}/version-undo", headers=CSRF)
     assert (twice.status_code, twice.json()["error"]["code"]) == (409, "not_linked")
 

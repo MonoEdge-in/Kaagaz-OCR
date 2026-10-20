@@ -7,6 +7,7 @@ dashboard's activity, search's new filters and My words, and the questions.
 from typing import Any
 
 import pytest
+from sqlalchemy import text
 
 from kaagaz.db.engine import Database
 from tests.test_api_support import Api
@@ -73,3 +74,18 @@ def test_questions_stay_with_their_customer(db: Database) -> None:
     ask(db, a, "A's question?", scope=[a_document], cited=[])
     items = a.client.get(f"/api/documents/{a_document}/questions").json()["items"]
     assert [item["question"] for item in items] == ["A's question?"]
+
+
+def test_people_lists_only_this_customers_active_users_by_name(db: Database) -> None:
+    api = Api(db)
+    a, b = api.new_admin(), api.new_admin()
+    member = api.sign_in(a.customer_id)
+    gone = api.sign_in(a.customer_id)
+    with db.system() as conn:
+        conn.execute(text("UPDATE users SET disabled = true WHERE id = :u"), {"u": gone.user_id})
+    reply = member.client.get("/api/people")
+    assert reply.status_code == 200, reply.text
+    items = reply.json()["items"]
+    assert {item["id"] for item in items} == {a.user_id, member.user_id}  # not B's, not the disabled one
+    assert all(set(item) == {"id", "name"} for item in items)  # names only: no email or role
+    assert [item["id"] for item in b.client.get("/api/people").json()["items"]] == [b.user_id]

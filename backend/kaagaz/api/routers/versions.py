@@ -25,6 +25,7 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import Connection
 
+from kaagaz import versions
 from kaagaz.api.auth import CurrentUser, User
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
@@ -141,5 +142,7 @@ def compare(
             raise ApiError(404, "not_found")
         if any(row is not None and row["deleted_at"] is not None for row in rows):
             raise ApiError(409, "in_trash", _IN_TRASH)
-        found = versions_sql.compare(conn, customer_id, left, right, max_pages=context.settings.max_pages)
+        texts = [versions_sql.page_texts(conn, customer_id, each) for each in (left, right)]
+    # The diff runs after the transaction, so no pooled connection waits on it.
+    found = versions.compare(*texts, max_pages=context.settings.max_pages)
     return {"left_id": left, "right_id": right, **found}

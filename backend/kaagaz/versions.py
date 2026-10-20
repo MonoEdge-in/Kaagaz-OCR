@@ -38,8 +38,10 @@ AUTO_NAME, AUTO_TEXT = 0.8, 0.95
 TEXT_SIGNAL, NAME_SIGNAL, TEXT_ALONE = 0.8, 0.6, 0.9
 AUTO, SUGGESTED = "auto", "suggested"
 
-# V11: a page longer than this is compared on its first words only.
-MAX_COMPARE_WORDS = 20_000
+# V11: a page longer than this is compared on its first words only, and the pages together on
+# at most MAX_COMPARE_TOTAL words (later pages then truncated), so one request stays bounded.
+MAX_COMPARE_WORDS = 5_000
+MAX_COMPARE_TOTAL = 30_000
 
 
 def words(text: str) -> list[str]:
@@ -147,10 +149,13 @@ def compare(left: Mapping[int, str], right: Mapping[int, str], *, max_pages: int
     changes, and a summary ("2 changes on page 2"). O(w^2) worst case per page of w words."""
     last = min(max([*left, *right], default=0), max_pages)
     pages = []
+    budget = MAX_COMPARE_TOTAL
     for page_no in range(1, last + 1):
         a, b = left.get(page_no, "").split(), right.get(page_no, "").split()
-        cut = len(a) > MAX_COMPARE_WORDS or len(b) > MAX_COMPARE_WORDS
-        a, b = a[:MAX_COMPARE_WORDS], b[:MAX_COMPARE_WORDS]
+        cap = min(MAX_COMPARE_WORDS, budget)
+        cut = len(a) > cap or len(b) > cap
+        a, b = a[:cap], b[:cap]
+        budget -= max(len(a), len(b))
         runs: list[dict[str, str]] = []
         changes = 0
         for op, i1, i2, j1, j2 in SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
@@ -163,7 +168,8 @@ def compare(left: Mapping[int, str], right: Mapping[int, str], *, max_pages: int
             if j2 > j1:
                 runs.append({"kind": "added", "text": " ".join(b[j1:j2])})
         pages.append({"page_no": page_no, "changes": changes, "truncated": cut, "runs": runs})
-    return {"pages": pages, "summary": summary(pages)}
+    truncated = any(page["truncated"] for page in pages)
+    return {"pages": pages, "summary": summary(pages), "truncated": truncated}
 
 
 def summary(pages: list[dict[str, Any]]) -> str:

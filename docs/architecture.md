@@ -83,6 +83,26 @@ Every value keeps its raw reading, the second reading if there is one, its page,
 
 The review queue shows only values of each family's current, ready version, out of Trash: an older version's values no longer reach any answer. A reviewer picks the first reading, the second, or types the value. The fix is logged in `corrections`. If they choose to remember it, it goes into `learned_corrections` and is applied to this customer's later documents. The original file never changes.
 
+## Version spotting
+
+A new upload that looks like a new version of a file already there (Phase 2 PRD 1, V1 to V8; `kaagaz/versions.py`, `kaagaz/db/versions.py`). It runs in the worker right after filing, once, on the document's first ready, while it is alone in its family, and only with the `version_spotting` switch on for the platform and the organisation.
+
+Signals, for each candidate (this customer's current, ready documents out of Trash in other families, at most 20 scored):
+
+* **Text overlap**: MinHash of the first reader's text (5-word shingles, 64 hashes, LSH in 16 bands of 4); no fingerprint under 20 words.
+* **Name similarity**: pg_trgm similarity of the name keys (lower case, no extension, dates, version markers or punctuation).
+* **Shared identifier**: a related-documents link of the same type (survey number, agreement number and so on). Never enough on its own.
+
+Starting values (V4; to be tuned on the bulk test, then recorded here again):
+
+| Outcome | Rule |
+|---|---|
+| auto (linked at once, with Undo) | name 0.8 or more, text 0.95 or more, same type and same folder |
+| suggested (a banner a person answers) | text 0.9 or more alone, or two of: text 0.8 or more, name 0.6 or more, a shared identifier |
+| nothing | anything less |
+
+The best candidate wins (auto over suggested, then text, then name, then the newest). Accept makes the upload the family's next, current version; Keep separate means the pair is never suggested again; Undo puts it back alone in its old folder.
+
 ## Data and customer separation
 
 Tables: `customers`, `users`, `documents`, `pages`, `reader_outputs`, `pieces`, `extracted_values`, `corrections`, `learned_corrections`, `conversations`, `messages`, `feedback`, `audit_log`, `folders`, `tags`, `document_tags`, `invoices`, `invoice_lines`, `document_links`, `processing_runs`, `user_words`, `user_word_spots`, `customer_models`, `model_usage`, `customer_ai_settings`. Every one of them except `customers` carries the customer; `model_catalog` (0023), `platform_models` and `platform_ai_settings` (0026) are platform data with no customer. A document's invoice, lines and links are rebuilt by each run of the pipeline; `processing_runs` keeps one row per run, deleted with its document (0005).

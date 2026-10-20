@@ -425,3 +425,24 @@ def test_p2_this_persons_questions_scoped_to_or_citing_any_version_newest_first(
     assert [
         i["question"] for i in colleague.client.get(f"/api/documents/{first}/questions").json()["items"]
     ] == ["Mine?"]
+
+
+def test_p2_a_cited_document_in_trash_shows_no_snippet(db: Database) -> None:
+    api = Api(db)
+    signed = api.new_signed()
+    first, _second = family(api, signed)
+    other = api.add_document(signed.customer_id)
+    ask(db, signed, "What is the area?", scope=[first], cited=[other])
+    with db.customer(signed.customer_id) as conn:  # the citation's words, as the chat saves them
+        conn.execute(
+            text(
+                "UPDATE messages SET answer = jsonb_set(answer, '{citations,0,snippet}', '\"2 acres\"')"
+                " WHERE customer_id = :c AND answer IS NOT NULL"
+            ),
+            {"c": signed.customer_id},
+        )
+    assert signed.client.delete(f"/api/documents/{other}", headers=CSRF).status_code == 204
+    cited = signed.client.get(f"/api/documents/{first}/questions").json()["items"][0]["answer"]["citations"][
+        0
+    ]
+    assert cited["snippet"] is None and cited["source_state"] == "in_trash"

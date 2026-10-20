@@ -251,7 +251,7 @@ _DECIDE = text(
 # Accepted, with the folder the document leaves (Undo's way back, V7).
 _ACCEPT = text(
     "UPDATE version_suggestions SET status = 'accepted', decided_by = :by, decided_at = now(),"
-    " previous_folder_id = :previous WHERE customer_id = :c AND id = :s"
+    " previous_folder_id = :previous WHERE customer_id = :c AND id = :s AND status = 'pending' RETURNING id"
 )
 
 
@@ -278,12 +278,15 @@ def link(conn: Connection, customer_id: str, suggestion_id: str, *, by: str | No
         raise Refused("already_decided")
     if state["status"] != "ready":
         raise Refused("not_ready")
+    # First, and only while still pending: a reject (no family locks) racing this one wins or loses
+    # here, before anything else is written.
+    if conn.execute(_ACCEPT, {**params, "by": by, "previous": state["from_folder"]}).first() is None:
+        raise Refused("already_decided")
     ids = {**params, "n": new, "f": family, "cur": str(state["current_id"]), "v": int(state["version_no"])}
     conn.execute(_FAMILY_NOT_CURRENT, ids)
     conn.execute(_JOIN, ids)
     conn.execute(_DROP_TAGS, ids)
     conn.execute(_FAMILY_TAGS, ids)
-    conn.execute(_ACCEPT, {**params, "by": by, "previous": state["from_folder"]})
     folder = None if state["folder_id"] is None else str(state["folder_id"])
     audit.record(
         conn,
@@ -379,12 +382,8 @@ def undo(conn: Connection, customer_id: str, document_id: str, *, by: str) -> No
     if state["version_no"] < state["newest"]:
         raise Refused("not_newest")
     folder = None if state["folder_id"] is None else str(state["folder_id"])
-    conn.execute(_ALONE_AGAIN, {**params, "folder": folder})
-    conn.execute(_HIGHEST_READY_CURRENT, params)
     suggestion = str(state["suggestion_id"])
-    conn.execute(
-        _DECIDE, {"c": customer_id, "s": suggestion, "status": "undone", "by": by, "was": "accepted"}
-    )
+    # Before the split, so the row carries the family and shows on its timeline (A5).
     audit.record(
         conn,
         customer_id,
@@ -393,6 +392,11 @@ def undo(conn: Connection, customer_id: str, document_id: str, *, by: str) -> No
         target_type="document",
         target_id=document_id,
         details={"suggestion_id": suggestion, "family_id": family, "folder_id": folder},
+    )
+    conn.execute(_ALONE_AGAIN, {**params, "folder": folder})
+    conn.execute(_HIGHEST_READY_CURRENT, params)
+    conn.execute(
+        _DECIDE, {"c": customer_id, "s": suggestion, "status": "undone", "by": by, "was": "accepted"}
     )
 
 
@@ -514,13 +518,6 @@ def may_compare(conn: Connection, customer_id: str, first: str, second: str) -> 
     either is not this customer's. One statement."""
     allowed = conn.execute(_ALLOWED, {"c": customer_id, "a": first, "b": second}).scalar()
     return None if allowed is None else bool(allowed)
-
-
-def compare(conn: Connection, customer_id: str, left: str, right: str, *, max_pages: int) -> dict[str, Any]:
-    """V11's comparison of ``left`` (removed words) against ``right`` (added words)."""
-    return versions.compare(
-        page_texts(conn, customer_id, left), page_texts(conn, customer_id, right), max_pages=max_pages
-    )
 
 
 # --- the one-time sweep (section 7) ------------------------------------------------------

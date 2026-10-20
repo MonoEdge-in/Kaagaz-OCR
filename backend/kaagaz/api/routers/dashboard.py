@@ -8,6 +8,7 @@ from typing import Annotated, Any
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends
+from sqlalchemy import text
 
 from kaagaz.api.auth import User
 from kaagaz.api.context import AppContext, get_context
@@ -18,6 +19,20 @@ router = APIRouter()
 DASHBOARD_ACTIVITY = 20  # the last 20 activities, A5's member timeline (document, version, folder)
 
 Context = Annotated[AppContext, Depends(get_context)]
+
+# The owner picker and the Owner filter (O1): names only, never an email or a role.
+_PEOPLE = text(
+    "SELECT id, display_name FROM users WHERE customer_id = :c AND NOT disabled"
+    " ORDER BY lower(display_name), id"
+)
+
+
+@router.get("/people")
+def list_people(user: User, context: Context) -> dict[str, Any]:
+    """``{items: [{id, name}]}``: the company's active users. Any signed-in user."""
+    with context.db.customer(user.customer_id) as conn:
+        rows = conn.execute(_PEOPLE, {"c": user.customer_id}).all()
+    return {"items": [{"id": str(row[0]), "name": row[1]} for row in rows]}
 
 
 @router.get("/dashboard")

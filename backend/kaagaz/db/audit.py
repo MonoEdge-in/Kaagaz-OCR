@@ -165,7 +165,14 @@ _ENTRIES = (
 )
 _COUNT = "SELECT count(*) FROM audit_log a WHERE a.customer_id = :c"
 _SHOWN = " AND split_part(a.action, '.', 1) = ANY(CAST(:kinds AS text[]))"
-_OF_FAMILY = " AND a.family_id = CAST(:family AS uuid)"
+# A5: rows written while in the family, and every row of its versions and of a document linked
+# into it (accepted, or undone since), so a linked version's upload and suggestion show too.
+_OF_FAMILY = (
+    " AND (a.family_id = CAST(:family AS uuid) OR (a.target_type = 'document' AND a.target_id IN ("
+    "SELECT v.id::text FROM documents v WHERE v.customer_id = :c AND v.family_id = CAST(:family AS uuid)"
+    " UNION SELECT s.document_id::text FROM version_suggestions s WHERE s.customer_id = :c"
+    " AND s.candidate_family_id = CAST(:family AS uuid) AND s.status IN ('accepted', 'undone'))))"
+)
 _IN_FOLDERS = " AND a.folder_id = ANY(CAST(:folders AS uuid[]))"
 _BY = " AND a.actor_user_id = CAST(:actor AS uuid)"
 _ON_DOCUMENT = " AND a.target_type = 'document' AND a.target_id = :document"

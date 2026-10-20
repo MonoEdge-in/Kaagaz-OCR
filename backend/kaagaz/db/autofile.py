@@ -50,11 +50,12 @@ file with no department is filed as before.
 import re
 import unicodedata
 from collections.abc import Mapping, Sequence
+from datetime import UTC, date, datetime
 from typing import Any
 
 from sqlalchemy import Connection, RowMapping, text
 
-from kaagaz.chunking.script import fold_digits, is_devanagari, latin_spelling
+from kaagaz.chunking.script import fold_digits, is_devanagari, latin_spelling, sound_key
 from kaagaz.db import ai_settings, audit
 from kaagaz.db.folders import _DEPTH, _MAX_DEPTH, _lock_tree
 from kaagaz.db.trash import InTrash, lock_live_family
@@ -271,9 +272,12 @@ def village(card: Mapping[str, Any] | None) -> str | None:
 
 
 def property_folder(number: str, place: str | None) -> tuple[str, str]:
-    """The property folder's key and name: ``property:wakad:44`` and "Survey 44, Wakad", or
-    ``property::44`` and "Survey 44" with no village. O(n)."""
-    slug = re.sub(r"[^a-z0-9]+", "-", (place or "").lower()).strip("-")[:VILLAGE_MAX]
+    """The property folder's key and name: ``property:vkd:44`` and "Survey 44, Wakad", or
+    ``property::44`` and "Survey 44" with no village. The key's village is each word's sound
+    key (``script.sound_key``: v/w, aspirates, doubled letters and inner "a" folded), so
+    "Wakad" and वाकड's "Vakad" share one folder, named as the first one made. O(n)."""
+    slug = "-".join(filter(None, map(sound_key, re.split(r"[^a-z]+", (place or "").lower()))))
+    slug = slug[:VILLAGE_MAX].strip("-")
     name = f"Survey {number}" if place is None else f"Survey {number}, {place}"
     return f"property:{slug}:{number}", name
 
@@ -305,8 +309,17 @@ def _in_department(
         return _child(conn, customer_id, category, key, name, "property", owner)
     if kind == "invoice":
         return _party_folder(conn, customer_id, document_id, category, owner)
-    year = str((state["document_date"] or state["created_at"]).year)
+    year = filing_year(state["document_date"], state["created_at"])
     return _child(conn, customer_id, category, f"year:{year}:{category}", year, "year", owner)
+
+
+def filing_year(document_date: date | None, created_at: datetime) -> str:
+    """The Year folder's name: the document date's year when it is 1900 to next year, else
+    the upload's (a misread "24" or "0024" is not a year), as 4 digits. O(1)."""
+    y = document_date.year if document_date is not None else created_at.year
+    if not 1900 <= y <= datetime.now(UTC).year + 1:
+        y = created_at.year
+    return f"{y:04d}"
 
 
 def _child(

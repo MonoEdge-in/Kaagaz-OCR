@@ -50,7 +50,7 @@ def test_0041_up_down_up(fresh: tuple[str, Database]) -> None:
     migrate(url, "0040")
     at_0040 = m0002._schema(database)
     migrate(url, "head")
-    assert _current(url) == _head() == "0041"
+    assert _current(url) == _head() == "0042"  # Changed on purpose: 0042 adds the council's indexes
     at_head = m0002._schema(database)
     assert "version_suggestions" in m0002._names(at_head, "relations")
     m0002._downgrade(url, "0040")
@@ -191,14 +191,14 @@ def test_f2_f3_land_and_its_deed_file_by_property_and_44_slash_2_stays_apart(db:
     assert _read(db, customer, satbara, "land_record", _land("४४")) == "filed"
     place = _place(db, customer, satbara)
     assert place[:2] == ("Survey 44, Wakad", "property")
-    assert place[2] == "property:wakad:44"
+    assert place[2] == "property:vkd:44"
     assert place[3:] == ("Land records", "Land & Legal")
     deed = upload(db, customer, admin, folder=department)
     assert _read(db, customer, deed, "contract", _land("44", None)) == "filed"
     assert _place(db, customer, deed)[0] == "Survey 44, Wakad"  # found again by its key
     split = upload(db, customer, admin, folder=department)
     _read(db, customer, split, "land_record", _land("स.नं. ४४/२"))
-    assert _place(db, customer, split)[:3] == ("Survey 44/2, Wakad", "property", "property:wakad:44/2")
+    assert _place(db, customer, split)[:3] == ("Survey 44/2, Wakad", "property", "property:vkd:44/2")
     nameless = upload(db, customer, admin, folder=department)
     _read(db, customer, nameless, "land_record", _land("12", None))
     assert _place(db, customer, nameless)[0] == "Survey 12"  # no village

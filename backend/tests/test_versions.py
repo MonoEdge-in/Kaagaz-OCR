@@ -8,8 +8,11 @@ import random
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import pytest
+
 from kaagaz import versions
 from kaagaz.api.views import document_version
+from kaagaz.db import versions as versions_sql
 from kaagaz.db.versions import view
 from kaagaz.search.story_match import trigrams
 from kaagaz.worker_main import FINGERPRINT_PASS, FingerprintOld
@@ -275,6 +278,19 @@ def test_v11_compare_gives_runs_of_same_added_and_removed_page_by_page() -> None
     assert versions.compare(left, right, max_pages=2)["summary"] == "2 changes on page 2"  # MAX_PAGES
     assert versions.compare(left, left, max_pages=10)["summary"] == "No changes"
     assert versions.compare({1: "a b"}, {1: "a c"}, max_pages=10)["summary"] == "1 change on page 1"
+    assert versions.compare(left, right, max_pages=10)["truncated"] is False
+
+
+def test_v11_compare_caps_words_per_page_and_across_pages(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(versions, "MAX_COMPARE_WORDS", 50)
+    monkeypatch.setattr(versions, "MAX_COMPARE_TOTAL", 100)
+    page = " ".join(["word"] * versions.MAX_COMPARE_WORDS)
+    big = dict.fromkeys(range(1, versions.MAX_COMPARE_TOTAL // versions.MAX_COMPARE_WORDS + 2), page)
+    found = versions.compare(big, big, max_pages=100)
+    assert [p["truncated"] for p in found["pages"]][-2:] == [False, True]  # the total ran out
+    assert found["pages"][-1]["runs"] == [] and found["truncated"] is True
+    long_page = versions.compare({1: page + " more"}, {1: page}, max_pages=10)
+    assert long_page["pages"][0]["truncated"] and long_page["truncated"]
 
 
 # --- V12: the version list ----------------------------------------------------------------
@@ -324,3 +340,41 @@ def test_the_fingerprint_sweep_runs_on_idle_turns_until_a_pass_finds_none() -> N
     assert wrapper.run_once()  # none found: done for good
     now[0] += timedelta(hours=1)
     assert not wrapper.run_once() and len(calls) == 3
+
+
+def test_v6_accept_losing_a_race_to_reject_is_already_decided_and_writes_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The suggestion still read pending, but a reject (no family locks) decided it first: the
+    accept's guarded UPDATE finds no row, so Refused rolls the link back before any write."""
+    suggestion = {"id": "s1", "document_id": "n1", "candidate_family_id": "f1", "status": "pending"}
+    state = {"in_trash": False, "current_id": "c1", "alone": True, "status": "ready", "from_folder": None}
+    replies = {
+        versions_sql._SUGGESTION: suggestion,
+        versions_sql._LINK_STATE: state,
+        versions_sql._ACCEPT: None,
+    }
+    ran: list[Any] = []
+
+    class _Result:
+        def __init__(self, row: Any) -> None:
+            self.row = row
+
+        def mappings(self) -> "_Result":
+            return self
+
+        def first(self) -> Any:
+            return self.row
+
+        one = first
+
+    class _Conn:
+        def execute(self, statement: Any, _params: Any) -> _Result:
+            ran.append(statement)
+            return _Result(replies[statement])
+
+    monkeypatch.setattr(versions_sql, "lock_family", lambda *_args: "locked")
+    with pytest.raises(versions_sql.Refused) as refused:
+        versions_sql.link(_Conn(), "c", "s1", by="u")  # type: ignore[arg-type]
+    assert refused.value.code == "already_decided"
+    assert ran[-1] is versions_sql._ACCEPT  # nothing written after the lost race
