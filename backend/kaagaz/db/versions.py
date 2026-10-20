@@ -251,7 +251,7 @@ _DECIDE = text(
 # Accepted, with the folder the document leaves (Undo's way back, V7).
 _ACCEPT = text(
     "UPDATE version_suggestions SET status = 'accepted', decided_by = :by, decided_at = now(),"
-    " previous_folder_id = :previous WHERE customer_id = :c AND id = :s"
+    " previous_folder_id = :previous WHERE customer_id = :c AND id = :s AND status = 'pending' RETURNING id"
 )
 
 
@@ -278,12 +278,15 @@ def link(conn: Connection, customer_id: str, suggestion_id: str, *, by: str | No
         raise Refused("already_decided")
     if state["status"] != "ready":
         raise Refused("not_ready")
+    # First, and only while still pending: a reject (no family locks) racing this one wins or loses
+    # here, before anything else is written.
+    if conn.execute(_ACCEPT, {**params, "by": by, "previous": state["from_folder"]}).first() is None:
+        raise Refused("already_decided")
     ids = {**params, "n": new, "f": family, "cur": str(state["current_id"]), "v": int(state["version_no"])}
     conn.execute(_FAMILY_NOT_CURRENT, ids)
     conn.execute(_JOIN, ids)
     conn.execute(_DROP_TAGS, ids)
     conn.execute(_FAMILY_TAGS, ids)
-    conn.execute(_ACCEPT, {**params, "by": by, "previous": state["from_folder"]})
     folder = None if state["folder_id"] is None else str(state["folder_id"])
     audit.record(
         conn,
