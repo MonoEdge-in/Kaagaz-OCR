@@ -191,14 +191,14 @@ def test_f2_f3_land_and_its_deed_file_by_property_and_44_slash_2_stays_apart(db:
     assert _read(db, customer, satbara, "land_record", _land("४४")) == "filed"
     place = _place(db, customer, satbara)
     assert place[:2] == ("Survey 44, Wakad", "property")
-    assert place[2] == "property:wakad:44"
+    assert place[2] == "property:vkd:44"
     assert place[3:] == ("Land records", "Land & Legal")
     deed = upload(db, customer, admin, folder=department)
     assert _read(db, customer, deed, "contract", _land("44", None)) == "filed"
     assert _place(db, customer, deed)[0] == "Survey 44, Wakad"  # found again by its key
     split = upload(db, customer, admin, folder=department)
     _read(db, customer, split, "land_record", _land("स.नं. ४४/२"))
-    assert _place(db, customer, split)[:3] == ("Survey 44/2, Wakad", "property", "property:wakad:44/2")
+    assert _place(db, customer, split)[:3] == ("Survey 44/2, Wakad", "property", "property:vkd:44/2")
     nameless = upload(db, customer, admin, folder=department)
     _read(db, customer, nameless, "land_record", _land("12", None))
     assert _place(db, customer, nameless)[0] == "Survey 12"  # no village

@@ -52,10 +52,16 @@ def test_f3_the_village_is_a_key_fact_in_latin_letters() -> None:
 
 
 def test_f3_section_10_44_slash_2_is_its_own_property_and_never_merges_with_44() -> None:
-    assert property_folder("44", "Wakad") == ("property:wakad:44", "Survey 44, Wakad")
-    assert property_folder("44/2", "Wakad") == ("property:wakad:44/2", "Survey 44/2, Wakad")
+    assert property_folder("44", "Wakad") == ("property:vkd:44", "Survey 44, Wakad")
+    assert property_folder("44/2", "Wakad") == ("property:vkd:44/2", "Survey 44/2, Wakad")
     assert property_folder("44", None) == ("property::44", "Survey 44")  # no village: "Survey 44"
-    assert property_folder("7", "Pimpri Chinchwad")[0] == "property:pimpri-chinchwad:7"
+    assert property_folder("7", "Pimpri Chinchwad")[0] == "property:pimpri-cincvd:7"
+
+
+def test_f3_a_devanagari_village_and_a_latin_wakad_deed_share_one_property_key() -> None:
+    devanagari = village(_card(place="वाकड"))
+    assert property_folder("44", devanagari)[0] == property_folder("44", "Wakad")[0]
+    assert property_folder("44/2", "Wakad")[0] != property_folder("44", devanagari)[0]
 
 
 def test_f3_every_key_the_template_makes_fits_0041s_check() -> None:

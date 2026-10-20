@@ -54,7 +54,7 @@ from typing import Any
 
 from sqlalchemy import Connection, RowMapping, text
 
-from kaagaz.chunking.script import fold_digits, is_devanagari, latin_spelling
+from kaagaz.chunking.script import fold_digits, is_devanagari, latin_spelling, sound_key
 from kaagaz.db import ai_settings, audit
 from kaagaz.db.folders import _DEPTH, _MAX_DEPTH, _lock_tree
 from kaagaz.db.trash import InTrash, lock_live_family
@@ -271,9 +271,12 @@ def village(card: Mapping[str, Any] | None) -> str | None:
 
 
 def property_folder(number: str, place: str | None) -> tuple[str, str]:
-    """The property folder's key and name: ``property:wakad:44`` and "Survey 44, Wakad", or
-    ``property::44`` and "Survey 44" with no village. O(n)."""
-    slug = re.sub(r"[^a-z0-9]+", "-", (place or "").lower()).strip("-")[:VILLAGE_MAX]
+    """The property folder's key and name: ``property:vkd:44`` and "Survey 44, Wakad", or
+    ``property::44`` and "Survey 44" with no village. The key's village is each word's sound
+    key (``script.sound_key``: v/w, aspirates, doubled letters and inner "a" folded), so
+    "Wakad" and वाकड's "Vakad" share one folder, named as the first one made. O(n)."""
+    slug = "-".join(filter(None, map(sound_key, re.split(r"[^a-z]+", (place or "").lower()))))
+    slug = slug[:VILLAGE_MAX].strip("-")
     name = f"Survey {number}" if place is None else f"Survey {number}, {place}"
     return f"property:{slug}:{number}", name
 
