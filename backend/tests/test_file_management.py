@@ -134,3 +134,10 @@ def test_f1_a_folder_says_its_kind_and_order() -> None:
         "kind": "department",
         "sort_order": 2,
     }
+
+
+def test_0041_indexes_the_suggestion_lookups_and_the_owner_filter() -> None:
+    upgrade = " ".join(_migration().UPGRADE)
+    assert "ON version_suggestions (customer_id, candidate_family_id) WHERE status = 'pending'" in upgrade
+    assert "ON version_suggestions (customer_id, document_id)" in upgrade
+    assert "ON documents (customer_id, owner_id)" in upgrade

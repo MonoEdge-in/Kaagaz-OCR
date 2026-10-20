@@ -166,6 +166,11 @@ UPGRADE = [
     USING (customer_id = kaagaz_current_customer())
     WITH CHECK (customer_id = kaagaz_current_customer())
     """,
+    # Spotting's "never suggested twice" and the banner read these; the owner filter reads the last.
+    "CREATE INDEX version_suggestions_pending_family ON version_suggestions (customer_id, candidate_family_id)"
+    " WHERE status = 'pending'",
+    "CREATE INDEX version_suggestions_document ON version_suggestions (customer_id, document_id)",
+    "CREATE INDEX documents_owner_id ON documents (customer_id, owner_id)",
     # The activity log: A3.
     "ALTER TABLE audit_log ADD COLUMN folder_id uuid NULL, ADD COLUMN family_id uuid NULL",
     "CREATE INDEX audit_log_family ON audit_log (customer_id, family_id, created_at DESC)",
@@ -195,6 +200,7 @@ DOWNGRADE = [
     "DROP INDEX IF EXISTS audit_log_family",
     "ALTER TABLE audit_log DROP COLUMN IF EXISTS family_id, DROP COLUMN IF EXISTS folder_id",
     "DROP TABLE IF EXISTS version_suggestions",
+    "DROP INDEX IF EXISTS documents_owner_id",
     "DROP INDEX IF EXISTS documents_text_bands",
     "DROP INDEX IF EXISTS documents_name_key",
     "ALTER TABLE documents DROP CONSTRAINT IF EXISTS documents_owner,"
