@@ -123,6 +123,17 @@ _UPDATE_FACTS = text(
     " summary = :summary, document_date = :document_date, card = CAST(:card AS jsonb)"
     " WHERE customer_id = :c AND id = :d"
 )
+# File management O2: the type rule sets the family's starting label once the card is read;
+# a label a person set is never changed, and nothing is audited.
+# Versions (stage 2): only the family's current version sets it, so a read again of an older
+# version never relabels the family by its own type; it never touches is_current either.
+CONFIDENTIAL_TYPES = ("land_record", "contract", "bank_statement")
+_TYPE_LABEL = text(
+    "UPDATE documents SET sensitivity = CASE WHEN CAST(:doc_type AS text) = ANY(CAST(:secret AS text[]))"
+    " THEN 'confidential' ELSE 'internal' END"
+    " WHERE customer_id = :c AND NOT sensitivity_set_by_person AND CAST(:doc_type AS text) IS NOT NULL"
+    " AND family_id = (SELECT family_id FROM documents WHERE customer_id = :c AND id = :d AND is_current)"
+)
 # Ready first (16 Oct 2026): a run's second save comes after Ready, when a read again may
 # have set the document back to received (its job not started yet): that save is refused.
 _READ_AGAIN_SET = text("SELECT status = 'received' FROM documents WHERE customer_id = :c AND id = :d")
@@ -397,7 +408,7 @@ def _accepted(conn: Connection, ids: dict[str, str]) -> dict[int, tuple[object, 
 
 def _replace_facts_and_delete(conn: Connection, ids: dict[str, str], facts: DocumentFacts) -> None:
     """Write the card columns (always, so no older card stays), then delete the rows
-    an earlier run saved. 8 statements."""
+    an earlier run saved, after the type rule sets the family's label (O2). 9 statements."""
     conn.execute(
         _UPDATE_FACTS,
         {
@@ -409,6 +420,7 @@ def _replace_facts_and_delete(conn: Connection, ids: dict[str, str], facts: Docu
             "card": None if facts.card is None else json.dumps(facts.card),
         },
     )
+    conn.execute(_TYPE_LABEL, {**ids, "doc_type": facts.doc_type, "secret": list(CONFIDENTIAL_TYPES)})
     for statement in _DELETES:
         conn.execute(statement, ids)
 

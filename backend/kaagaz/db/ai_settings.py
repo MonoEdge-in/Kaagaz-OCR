@@ -30,7 +30,10 @@ from kaagaz.db import audit
 from kaagaz.settings import Settings
 
 TASKS = ("scan", "ask", "ensemble", "autofile")
-FEATURES = ("scan_ai", "ask", "ensemble", "autofile", "cost_saving", "review", "my_words", "self_signup")
+FEATURES = (
+    "scan_ai", "ask", "ensemble", "autofile", "cost_saving", "review", "my_words", "self_signup",
+    "version_spotting",
+)  # fmt: skip
 STEPS = ("none", "low", "high", "max")  # scan and ask
 SWITCH = ("off", "on")  # ensemble and autofile
 _ORDER = {level: n for levels in (STEPS, SWITCH) for n, level in enumerate(levels)}

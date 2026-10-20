@@ -37,6 +37,9 @@ Per-organisation feature switches (0039): the app reads three columns of its own
 who flipped one; only the operator's functions write (step-up).
 
 The sign-in idle timeout (0040): the same for one organisation's hours (two columns).
+
+File management (0041): version suggestions the app reads, adds and decides, never deletes
+(they go with their document).
 """
 
 import re
@@ -109,6 +112,8 @@ FROM_0038 = {"ai_task_settings": (True, True, True, True)}
 FROM_0039 = {"org_feature_switches": (False, False, False, False)}
 # The sign-in idle timeout (0040): the same, two columns.
 FROM_0040 = {"org_session_settings": (False, False, False, False)}
+# Changed on purpose (PRD 1, 0041): version suggestions are read, added and decided, never deleted.
+FROM_0041 = {"version_suggestions": (True, True, True, False)}
 UPDATES_0030 = {
     "word_changes": {"applied", "undone_at", "undone_by"},
     "ensemble_runs": {
@@ -383,6 +388,7 @@ def test_every_customer_table_has_row_level_security_and_the_customer_only_polic
         | set(FROM_0038)
         | set(FROM_0039)
         | set(FROM_0040)
+        | set(FROM_0041)  # Changed on purpose (PRD 1, 0041)
     )
 
     with db.system() as conn:
@@ -445,6 +451,7 @@ def test_every_customer_table_is_granted_to_the_app_role(db: Database) -> None:
         | FROM_0038
         | FROM_0039
         | FROM_0040
+        | FROM_0041  # Changed on purpose (PRD 1, 0041)
     ).items():
         assert granted[table] == expected, table
 
@@ -576,7 +583,8 @@ def test_every_foreign_key_between_customer_tables_matches_the_customer_on_both_
         | set(FROM_0030)
         | set(FROM_0036)
         | set(FROM_0038)
-        | {"pages", "model_usage"}
+        | set(FROM_0041)  # Changed on purpose (PRD 1, 0041)
+        | {"pages", "model_usage", "documents"}  # documents.owner_id (0041)
     )
     for name, _table, _parent, columns, parent_columns in between:
         assert ("customer_id", "customer_id") in zip(columns, parent_columns, strict=True), name

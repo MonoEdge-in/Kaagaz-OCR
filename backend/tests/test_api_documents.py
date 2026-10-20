@@ -392,6 +392,16 @@ def test_upload_stores_queues_and_returns_the_summary(db: Database) -> None:
         "values_to_review",
         "words_unsure",  # PRD 5 U2
         "autofile",  # feature 28: null, nothing was filed
+        # Changed on purpose (PRD 1, 0041): owner, label, versions, dates, department, suggestion.
+        "owner",
+        "sensitivity",
+        "versions",
+        "version_note",
+        "document_date",
+        "updated_at",
+        "updated_by",
+        "department",
+        "pending_suggestion",
     }
     assert (document["folder_id"], document["tags"]) == (None, [])
     assert (document["pages_unreadable"], document["pages_uncertain"], document["values_to_review"]) == (

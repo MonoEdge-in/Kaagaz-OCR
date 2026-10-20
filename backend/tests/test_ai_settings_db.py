@@ -216,6 +216,7 @@ def test_a_feature_switch_takes_a_fresh_code_and_is_audited(db: Database) -> Non
     listed = client.get("/api/operator/feature-switches").json()
     assert [item["feature"] for item in listed] == [
         "scan_ai", "ask", "ensemble", "autofile", "cost_saving", "review", "my_words", "self_signup",
+        "version_spotting",  # Changed on purpose (PRD 1, 0041)
     ]  # fmt: skip
     assert all(item["enabled"] and item["organisations_using"] >= 0 for item in listed)
     wrong = client.put(
@@ -252,7 +253,17 @@ def test_a_feature_switch_takes_a_fresh_code_and_is_audited(db: Database) -> Non
 
 # --- per-organisation feature switches (0039) -------------------------------------------------------
 
-ORG_FEATURES = ["scan_ai", "ask", "ensemble", "autofile", "cost_saving", "review", "my_words"]
+# Changed on purpose (PRD 1, 0041): version_spotting.
+ORG_FEATURES = [
+    "scan_ai",
+    "ask",
+    "ensemble",
+    "autofile",
+    "cost_saving",
+    "review",
+    "my_words",
+    "version_spotting",
+]
 
 
 def _org_switch(

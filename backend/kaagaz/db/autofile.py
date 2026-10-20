@@ -33,14 +33,28 @@ other party as printed (``party_name``); a sibling of that name already there ge
 " (<GSTIN>)" added, and when that is taken too, or there is no room (depth 5) or nobody to
 own a new folder, the type folder is used. Undo still moves the family to the top level.
 
-``undo`` moves a filed family back to the top level; the folder stays.
+``undo`` moves a filed family back to the top level, or to its department when it was filed
+inside one; the folder stays.
+
+The department template (File management F3, 0041): a file uploaded into a department (a
+top-level folder of kind department, F2) is filed inside it: Category (the type folder,
+key ``type:<type>:<department id>``), then Property for land records and deeds with a
+survey number (``property:<village>:<number>``, "Survey 44, Wakad"; the village is a key
+fact whose field names a village, in Latin letters, else "Survey 44"; a deed with no village
+joins the one property folder of its number when there is just one), Party for verified
+invoices (``party:<GSTIN>``, as above) or Year (``year:<yyyy>:<category id>``). A land record
+with no survey number is filed by year. Folders Kaagaz makes carry the matching kind. A
+file with no department is filed as before.
 """
 
+import re
 import unicodedata
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 from sqlalchemy import Connection, RowMapping, text
 
+from kaagaz.chunking.script import fold_digits, is_devanagari, latin_spelling
 from kaagaz.db import ai_settings, audit
 from kaagaz.db.folders import _DEPTH, _MAX_DEPTH, _lock_tree
 from kaagaz.db.trash import InTrash, lock_live_family
@@ -70,9 +84,11 @@ _PRE_CHECK = (
 # Everything decided under the locks, in one statement.
 _STATE = (
     "SELECT r.autofile, d.family_id, d.status, d.is_current, d.doc_type, d.uploaded_by,"
-    " c.status AS org_status, c.autofile_on, c.autofile_granted FROM documents d"
+    " c.status AS org_status, c.autofile_on, c.autofile_granted,"
+    " d.folder_id, fo.kind AS folder_kind, d.card, d.document_date, d.created_at FROM documents d"
     " JOIN documents r ON r.customer_id = d.customer_id AND r.id = d.family_id"
     " JOIN customers c ON c.id = d.customer_id"
+    " LEFT JOIN folders fo ON fo.customer_id = d.customer_id AND fo.id = d.folder_id"
     " WHERE d.customer_id = :c AND d.id = :d"
 )
 _SET_STATE = "UPDATE documents SET autofile = :state WHERE customer_id = :c AND id = :f"
@@ -84,8 +100,18 @@ _BY_NAME = (
 )
 _ADOPT = "UPDATE folders SET autofile_key = :k WHERE customer_id = :c AND id = :f"
 _CREATE = (
-    "INSERT INTO folders (customer_id, parent_id, name, created_by, autofile_key)"
-    " VALUES (:c, :p, :name, :u, :k) RETURNING id"
+    "INSERT INTO folders (customer_id, parent_id, name, created_by, autofile_key, kind)"
+    " VALUES (:c, :p, :name, :u, :k, :kind) RETURNING id"
+)
+# File management F3: the property folders of one survey number, whatever their village (at
+# most 2 read: one is used only when it is the only one).
+_SAME_NUMBER = (
+    "SELECT autofile_key FROM folders WHERE customer_id = :c AND autofile_key LIKE :k ORDER BY id LIMIT 2"
+)
+# File management F3: a folder of this name inside the parent (at most one: folders_sibling_name).
+_CHILD = (
+    "SELECT id, autofile_key FROM folders"
+    " WHERE customer_id = :c AND parent_id = :p AND lower(name) = lower(:name)"
 )
 # The family into a folder (filed) or back to the top level (undone), its state with it.
 _FILE_FAMILY = (
@@ -94,6 +120,19 @@ _FILE_FAMILY = (
     " WHERE customer_id = :c AND family_id = :f"
 )
 _FILED_IN = "SELECT autofile, folder_id FROM documents WHERE customer_id = :c AND id = :f"
+# Undo's way back (File management F3): the department above the filed folder (the top-level
+# folder at most 5 levels up, when it is of kind department), where a file uploaded into a
+# department was before filing; NULL (the top level) otherwise.
+# ponytail: a type folder a person moved into a department sends Undo there; remember the
+# upload's folder if that matters.
+_DEPARTMENT_ABOVE = (
+    "WITH RECURSIVE up (id, parent_id, depth) AS ("
+    " SELECT f.id, f.parent_id, 1 FROM folders f WHERE f.customer_id = :c AND f.id = :folder"
+    " UNION ALL SELECT f.id, f.parent_id, up.depth + 1 FROM up JOIN folders f ON f.id = up.parent_id"
+    " WHERE f.customer_id = :c AND up.depth < 6)"
+    " SELECT dep.id FROM up JOIN folders dep ON dep.customer_id = :c AND dep.id = up.id"
+    " WHERE up.parent_id IS NULL AND dep.kind = 'department'"
+)
 
 # --- party folders (28b) ---
 PARTY_NAME_MAX = 80
@@ -147,12 +186,15 @@ def file_document(conn: Connection, customer_id: str, document_id: str) -> str |
     if name is None:
         _set(conn, customer_id, family, SKIPPED)
         return "other"
-    folder = _folder(conn, customer_id, f"type:{state['doc_type']}", name, state["uploaded_by"])
-    if folder in ("clash", "no_owner"):
-        _set(conn, customer_id, family, SKIPPED)
-        return folder
-    if state["doc_type"] == "invoice":
-        folder = _party_folder(conn, customer_id, document_id, folder, state["uploaded_by"])
+    if state["folder_kind"] == "department":
+        folder = _in_department(conn, customer_id, document_id, str(state["folder_id"]), state)
+    else:
+        folder = _folder(conn, customer_id, f"type:{state['doc_type']}", name, state["uploaded_by"])
+        if folder in ("clash", "no_owner"):
+            _set(conn, customer_id, family, SKIPPED)
+            return folder
+        if state["doc_type"] == "invoice":
+            folder = _party_folder(conn, customer_id, document_id, folder, state["uploaded_by"])
     conn.execute(text(_FILE_FAMILY), {"c": customer_id, "f": family, "folder": folder, "state": FILED})
     audit.record(
         conn,
@@ -191,14 +233,109 @@ def _folder(conn: Connection, customer_id: str, key: str, name: str, owner: obje
         return str(same[0])
     if owner is None:
         return "no_owner"
-    return _create(conn, customer_id, None, name, owner, key)
+    return _create(conn, customer_id, None, name, owner, key, "category")
+
+
+# --- the department template (File management F3) ---
+_SURVEY = re.compile(r"[0-9]+(?:/[0-9]+)*")
+VILLAGE_MAX = 40
+
+
+def survey_digits(value: str) -> str | None:
+    """A survey or gat number as digits and slashes, spaces removed and Devanagari digits as
+    ASCII ("स.नं. ४४/२" is "44/2", never "44"); None with no digit. The list filter's SQL
+    (``listing._WITH_PROPERTY``) reads a card the same way. O(n)."""
+    found = _SURVEY.search("".join(fold_digits(value).split()))
+    return None if found is None else found[0][:32]
+
+
+def survey_number(card: Mapping[str, Any] | None) -> str | None:
+    """The card's first survey number (``survey_digits``); None when there is none. O(n)."""
+    for identifier in (card or {}).get("identifiers") or ():
+        if identifier.get("kind") == "survey_number":
+            number = survey_digits(str(identifier.get("value") or ""))
+            if number is not None:
+                return number
+    return None
+
+
+def village(card: Mapping[str, Any] | None) -> str | None:
+    """The village as the card has it: a key fact whose field names a village (the card has
+    no village field of its own), in Latin letters; None when there is none. O(n)."""
+    for fact in (card or {}).get("key_facts") or ():
+        value = " ".join(str(fact.get("value") or "").split())
+        if "village" in str(fact.get("field") or "") and value:
+            latin = latin_spelling(value) if is_devanagari(value) else value
+            return latin.title()[:VILLAGE_MAX].strip() or None
+    return None
+
+
+def property_folder(number: str, place: str | None) -> tuple[str, str]:
+    """The property folder's key and name: ``property:wakad:44`` and "Survey 44, Wakad", or
+    ``property::44`` and "Survey 44" with no village. O(n)."""
+    slug = re.sub(r"[^a-z0-9]+", "-", (place or "").lower()).strip("-")[:VILLAGE_MAX]
+    name = f"Survey {number}" if place is None else f"Survey {number}, {place}"
+    return f"property:{slug}:{number}", name
+
+
+def _in_department(
+    conn: Connection, customer_id: str, document_id: str, department: str, state: RowMapping
+) -> str:
+    """The folder for a file uploaded into a department: Department, then Category (the
+    type folder), then Property (land records and deeds with a survey number), Party
+    (verified invoices, 28b) or Year (the document date, else the upload's). A level that
+    can't be made (no owner, no room, a name taken) leaves the file one level up. The
+    caller holds the tree lock. A few indexed statements."""
+    owner, card = state["uploaded_by"], state["card"]
+    number = survey_number(card)
+    kind = state["doc_type"]
+    if kind == "land_record" or (kind == "contract" and number is not None):
+        kind = "land_record"  # a deed with a survey number goes next to its land
+    category = _child(
+        conn, customer_id, department, f"type:{kind}:{department}", FOLDERS[kind], "category", owner
+    )
+    if category == department:
+        return department
+    if kind == "land_record" and number is not None:
+        place = village(card)
+        key, name = property_folder(number, place)
+        if place is None:  # a deed with no village joins the one property of that number
+            same = conn.execute(text(_SAME_NUMBER), {"c": customer_id, "k": f"property:%:{number}"}).all()
+            key = str(same[0][0]) if len(same) == 1 else key
+        return _child(conn, customer_id, category, key, name, "property", owner)
+    if kind == "invoice":
+        return _party_folder(conn, customer_id, document_id, category, owner)
+    year = str((state["document_date"] or state["created_at"]).year)
+    return _child(conn, customer_id, category, f"year:{year}:{category}", year, "year", owner)
+
+
+def _child(
+    conn: Connection, customer_id: str, parent: str, key: str, name: str, kind: str, owner: object
+) -> str:
+    """The folder holding ``key`` wherever it now is; else ``parent``'s child of that name
+    with no key, adopted; else a new child. ``parent`` itself when the name is taken by a
+    keyed folder, there is no room (depth 5) or no owner."""
+    params = {"c": customer_id, "k": key, "p": parent, "name": name}
+    keyed = conn.execute(text(_BY_KEY), params).scalar()
+    if keyed is not None:
+        return str(keyed)
+    same = conn.execute(text(_CHILD), params).first()
+    if same is not None:
+        if same[1] is not None:
+            return parent
+        conn.execute(text(_ADOPT), {**params, "f": same[0]})
+        return str(same[0])
+    depth: int | None = conn.execute(text(_DEPTH), {"c": customer_id, "f": parent}).scalar_one()
+    if owner is None or depth is None or depth >= _MAX_DEPTH:
+        return parent
+    return _create(conn, customer_id, parent, name, owner, key, kind)
 
 
 def _create(
-    conn: Connection, customer_id: str, parent: str | None, name: str, owner: object, key: str
+    conn: Connection, customer_id: str, parent: str | None, name: str, owner: object, key: str, kind: str
 ) -> str:
-    """A new folder Kaagaz made, with its key, audited (no actor)."""
-    params = {"c": customer_id, "p": parent, "name": name, "u": owner, "k": key}
+    """A new folder Kaagaz made, with its key and kind, audited (no actor)."""
+    params = {"c": customer_id, "p": parent, "name": name, "u": owner, "k": key, "kind": kind}
     made = str(conn.execute(text(_CREATE), params).scalar_one())
     audit.record(
         conn,
@@ -275,7 +412,7 @@ def _party_folder(
     for candidate in (name, f"{name} ({gstin})"):
         taken = conn.execute(text(_CHILD_NAMED), {"c": customer_id, "p": type_folder, "name": candidate})
         if taken.first() is None:
-            return _create(conn, customer_id, type_folder, candidate, owner, key)
+            return _create(conn, customer_id, type_folder, candidate, owner, key, "party")
     return type_folder
 
 
@@ -284,12 +421,14 @@ def _set(conn: Connection, customer_id: str, family_id: str, state: str | None) 
 
 
 def undo(conn: Connection, customer_id: str, family_id: str) -> str | None:
-    """Move a family Kaagaz filed back to the top level (R16), keeping the folder. Returns
-    the folder it was in; None when it is not filed now (a person moved it since, or its
-    folder was deleted), and nothing changes. The caller holds the family lock
-    (``trash.lock_live_family``). O(v log D)."""
+    """Move a family Kaagaz filed back where it was before filing (R16): its department when
+    it was filed inside one (F3), else the top level; the folder stays. Returns the folder it
+    was in; None when it is not filed now (a person moved it since, or its folder was
+    deleted), and nothing changes. The caller holds the family lock
+    (``trash.lock_live_family``). O(v log D + depth)."""
     row = conn.execute(text(_FILED_IN), {"c": customer_id, "f": family_id}).first()
     if row is None or row[0] != FILED or row[1] is None:
         return None
-    conn.execute(text(_FILE_FAMILY), {"c": customer_id, "f": family_id, "folder": None, "state": None})
+    back = conn.execute(text(_DEPARTMENT_ABOVE), {"c": customer_id, "folder": row[1]}).scalar()
+    conn.execute(text(_FILE_FAMILY), {"c": customer_id, "f": family_id, "folder": back, "state": None})
     return str(row[1])

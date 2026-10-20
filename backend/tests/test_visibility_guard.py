@@ -99,11 +99,15 @@ FILTERED: dict[tuple[ModuleType, str], str] = {
     (pipeline_store, "_LIVE_TARGETS"): LIVE_CURRENT,
     # The worker's missing vectors: only pieces search can find, never Trash or an older version.
     (indexing, "_MISSING"): LIVE_CURRENT,
+    # Changed on purpose (PRD 1, 0041): the dashboard's department counts, each family once.
+    (listing, "_DASHBOARD_DEPARTMENTS"): LISTED,
 }
 
 # Statements that count every version on purpose, and why.
 ALL_VERSIONS: dict[tuple[ModuleType, str], str] = {
     (admin, "_KEPT"): "the admin numbers show how many older versions and Trash families are kept",
+    # Changed on purpose (PRD 1, 0041).
+    (listing, "_DASHBOARD_TILES"): "the dashboard counts current families, and new versions as versions",
 }
 
 # Statements that may see a document in Trash, and why.

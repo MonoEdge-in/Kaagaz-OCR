@@ -284,7 +284,10 @@ def test_detail_lists_every_version_and_an_older_or_trashed_one_still_opens(db: 
 
     for document in (first, second):
         versions = signed.client.get(f"/api/documents/{document}").json()["versions"]
-        assert [set(v) for v in versions] == [{"id", "version_no", "status", "is_current", "created_at"}] * 2
+        # Changed on purpose (PRD 1, versions): V12's name, note, uploader and how it joined.
+        keys = {"id", "version_no", "status", "is_current", "created_at", "display_name", "version_note"}
+        assert [set(v) for v in versions] == [keys | {"uploaded_by", "joined"}] * 2
+        assert {v["joined"] for v in versions} == {"uploaded"}
         assert [(v["id"], v["version_no"], v["status"], v["is_current"]) for v in versions] == [
             (first, 1, "ready", True),
             (second, 2, "received", False),

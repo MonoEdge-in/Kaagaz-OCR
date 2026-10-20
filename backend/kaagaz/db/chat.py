@@ -22,6 +22,35 @@ from typing import Any
 from sqlalchemy import Connection, RowMapping, text
 
 CONVERSATION_LIST_LIMIT = 50
+QUESTIONS_SHOWN = 50
+
+# File management P2: this user's questions (the user message, which holds the scope) with
+# their answers (the assistant message written in the same transaction, so the same
+# created_at), where the scope's document_ids or the answer's citations[].document_id name
+# a version of the family. Read through conversations_user and messages_conversation: only
+# this person's messages are looked at, never the table.
+_DOCUMENT_QUESTIONS = text(
+    "SELECT q.id, q.conversation_id, q.text AS question, q.created_at, a.answer FROM conversations c"
+    " JOIN messages q ON q.customer_id = c.customer_id AND q.conversation_id = c.id AND q.role = 'user'"
+    " JOIN messages a ON a.customer_id = q.customer_id AND a.conversation_id = q.conversation_id"
+    " AND a.role = 'assistant' AND a.created_at = q.created_at"
+    " WHERE c.customer_id = :c AND c.user_id = :u AND EXISTS (SELECT 1 FROM documents v"
+    " WHERE v.customer_id = :c AND v.family_id = CAST(:f AS uuid)"
+    " AND (q.scope -> 'document_ids' @> jsonb_build_array(v.id::text)"
+    " OR a.answer -> 'citations' @> jsonb_build_array(jsonb_build_object('document_id', v.id::text))))"
+    " ORDER BY q.created_at DESC, q.id DESC LIMIT :n"
+)
+
+
+def document_questions(
+    conn: Connection, customer_id: str, user_id: str, family_id: str
+) -> Sequence[RowMapping]:
+    """P2, newest first, at most QUESTIONS_SHOWN. O(M log v) for this user's M messages and
+    the family's v versions (documents_family_version).
+    ponytail: reads every message of this person; a GIN index on the citations if one
+    person's history ever makes it slow."""
+    params = {"c": customer_id, "u": user_id, "f": family_id, "n": QUESTIONS_SHOWN}
+    return conn.execute(_DOCUMENT_QUESTIONS, params).mappings().all()
 
 
 def create_conversation(conn: Connection, customer_id: str, user_id: str, title: str) -> str:

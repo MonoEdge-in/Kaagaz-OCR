@@ -50,6 +50,16 @@ SUMMARY_KEYS = {
     "values_to_review",
     "words_unsure",
     "autofile",  # feature 28: the tray's "Filed into ..." note
+    # Changed on purpose (PRD 1, 0041): owner, label, versions, dates, department, suggestion.
+    "owner",
+    "sensitivity",
+    "versions",
+    "version_note",
+    "document_date",
+    "updated_at",
+    "updated_by",
+    "department",
+    "pending_suggestion",
 }
 BATCH_KEYS = {"id", "documents", "counts", "pages_read", "pages_total", "time_left"}
 

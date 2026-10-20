@@ -681,16 +681,18 @@ def search_documents(
     recipe: str,
     ef_search: int,
     scope: Scope = EVERYTHING,
+    expansion: Expansion = NO_EXPANSION,
 ) -> list[DocumentResult]:
     """The best ``max_documents`` documents, best first (Q2). ``fuse`` ranks best first, so
     one pass groups the c candidates in an insertion-ordered dict, opening no document
     after ``max_documents``: O(c) time and space. Details are fetched for the best pieces only.
+    ``expansion``: the searcher's own words, as ``search`` takes them (File management Q2).
     """
     if not 1 <= max_documents <= MAX_LIMIT:
         raise ValueError("max_documents must be between 1 and 100")
     if scope.matches_nothing:
         return []
-    fused, owners = _candidates(conn, customer_id, query_text, embedding, recipe, ef_search, scope)
+    fused, owners = _candidates(conn, customer_id, query_text, embedding, recipe, ef_search, scope, expansion)
     best: dict[str, FusedPiece] = {}
     more: dict[str, int] = {}
     for piece in fused:
