@@ -519,13 +519,6 @@ def may_compare(conn: Connection, customer_id: str, first: str, second: str) -> 
     return None if allowed is None else bool(allowed)
 
 
-def compare(conn: Connection, customer_id: str, left: str, right: str, *, max_pages: int) -> dict[str, Any]:
-    """V11's comparison of ``left`` (removed words) against ``right`` (added words)."""
-    return versions.compare(
-        page_texts(conn, customer_id, left), page_texts(conn, customer_id, right), max_pages=max_pages
-    )
-
-
 # --- the one-time sweep (section 7) ------------------------------------------------------
 _MISSING = text(
     "SELECT id FROM documents WHERE customer_id = :c AND status = 'ready' AND text_minhash IS NULL"

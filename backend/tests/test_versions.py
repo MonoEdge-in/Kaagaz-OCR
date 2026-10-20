@@ -278,6 +278,19 @@ def test_v11_compare_gives_runs_of_same_added_and_removed_page_by_page() -> None
     assert versions.compare(left, right, max_pages=2)["summary"] == "2 changes on page 2"  # MAX_PAGES
     assert versions.compare(left, left, max_pages=10)["summary"] == "No changes"
     assert versions.compare({1: "a b"}, {1: "a c"}, max_pages=10)["summary"] == "1 change on page 1"
+    assert versions.compare(left, right, max_pages=10)["truncated"] is False
+
+
+def test_v11_compare_caps_words_per_page_and_across_pages(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(versions, "MAX_COMPARE_WORDS", 50)
+    monkeypatch.setattr(versions, "MAX_COMPARE_TOTAL", 120)
+    page = " ".join(["word"] * versions.MAX_COMPARE_WORDS)
+    big = {n: page for n in range(1, versions.MAX_COMPARE_TOTAL // versions.MAX_COMPARE_WORDS + 2)}
+    found = versions.compare(big, big, max_pages=100)
+    assert [p["truncated"] for p in found["pages"]][-2:] == [False, True]  # the total ran out
+    assert found["pages"][-1]["runs"] == [] and found["truncated"] is True
+    long_page = versions.compare({1: page + " more"}, {1: page}, max_pages=10)
+    assert long_page["pages"][0]["truncated"] and long_page["truncated"]
 
 
 # --- V12: the version list ----------------------------------------------------------------
