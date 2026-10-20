@@ -285,7 +285,7 @@ def test_v11_compare_caps_words_per_page_and_across_pages(monkeypatch: pytest.Mo
     monkeypatch.setattr(versions, "MAX_COMPARE_WORDS", 50)
     monkeypatch.setattr(versions, "MAX_COMPARE_TOTAL", 100)
     page = " ".join(["word"] * versions.MAX_COMPARE_WORDS)
-    big = {n: page for n in range(1, versions.MAX_COMPARE_TOTAL // versions.MAX_COMPARE_WORDS + 2)}
+    big = dict.fromkeys(range(1, versions.MAX_COMPARE_TOTAL // versions.MAX_COMPARE_WORDS + 2), page)
     found = versions.compare(big, big, max_pages=100)
     assert [p["truncated"] for p in found["pages"]][-2:] == [False, True]  # the total ran out
     assert found["pages"][-1]["runs"] == [] and found["truncated"] is True

@@ -778,7 +778,9 @@ def get_document_questions(document_id: uuid.UUID, user: User, context: Context)
                 "conversation_id": str(row["conversation_id"]),
                 "question": row["question"],
                 "asked_at": iso(row["created_at"]),
-                "answer": answer_with_source_states(row["answer"], states) if row["answer"] else row["answer"],
+                "answer": answer_with_source_states(row["answer"], states)
+                if row["answer"]
+                else row["answer"],
             }
             for row in rows
         ]

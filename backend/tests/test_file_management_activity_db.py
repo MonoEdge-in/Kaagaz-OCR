@@ -442,5 +442,7 @@ def test_p2_a_cited_document_in_trash_shows_no_snippet(db: Database) -> None:
             {"c": signed.customer_id},
         )
     assert signed.client.delete(f"/api/documents/{other}", headers=CSRF).status_code == 204
-    cited = signed.client.get(f"/api/documents/{first}/questions").json()["items"][0]["answer"]["citations"][0]
+    cited = signed.client.get(f"/api/documents/{first}/questions").json()["items"][0]["answer"]["citations"][
+        0
+    ]
     assert cited["snippet"] is None and cited["source_state"] == "in_trash"

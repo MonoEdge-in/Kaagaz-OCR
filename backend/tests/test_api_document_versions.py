@@ -260,9 +260,7 @@ def test_a_newer_version_still_reading_or_failed_is_shown_beside_the_current_one
         "version_no": 3,
         "status": "failed",
         "failure_code": "retries_exhausted",
-        "status_message": (
-            "The scan stopped after 5 tries. Read it again, or ask your admin to look at it."
-        ),
+        "status_message": ("The scan stopped after 5 tries. Read it again, or ask your admin to look at it."),
     }
     assert listed[single]["newer_version"] is None
     # The current version's own tries: a ready one names none.
