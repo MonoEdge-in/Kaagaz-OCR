@@ -1334,3 +1334,29 @@ dialog[open]::backdrop {
     scroll-behavior: auto !important;
   }
 }
+
+/* Read clearly (19 Oct 2026): its copy is also put at the end of <body> (a portal), shown
+   only when printing, with everything else hidden, so a print is the clean copy alone. */
+.print-copy {
+  display: none;
+}
+
+@media print {
+  body:has(> .print-copy) > :not(.print-copy) {
+    display: none !important;
+  }
+
+  html:has(.print-copy),
+  body:has(> .print-copy) {
+    height: auto !important;
+    overflow: visible !important;
+  }
+
+  .print-copy {
+    display: block;
+  }
+
+  .print-copy .btn {
+    display: none;
+  }
+}

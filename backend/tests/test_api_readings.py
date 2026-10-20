@@ -56,6 +56,7 @@ def test_only_the_asked_page_comes_back_as_read_in_stored_order(db: Database) ->
 
     body = _readings(signed, document_id)
 
+    # Changed on purpose (Read clearly, 19 Oct 2026): each line has its "table" (None here).
     assert body == {
         "page_no": 1,
         "readers": [
@@ -71,6 +72,7 @@ def test_only_the_asked_page_comes_back_as_read_in_stored_order(db: Database) ->
                         "origin": "ocr",
                         "kind": "paragraph",
                         "region": {"kind": "box", "page": 1, "box": [0.1, 0.8, 0.9, 0.84]},
+                        "table": None,
                     },
                     {
                         "text": "Sharma\u200dTraders <b>",
@@ -78,6 +80,7 @@ def test_only_the_asked_page_comes_back_as_read_in_stored_order(db: Database) ->
                         "origin": "ocr",
                         "kind": None,
                         "region": {"kind": "box", "page": 1, "box": [0.1, 0.4, 0.9, 0.44]},
+                        "table": None,
                     },
                     {
                         "text": "Invoice",
@@ -85,6 +88,7 @@ def test_only_the_asked_page_comes_back_as_read_in_stored_order(db: Database) ->
                         "origin": "ocr",
                         "kind": None,
                         "region": {"kind": "box", "page": 1, "box": [0.1, 0.1, 0.9, 0.14]},
+                        "table": None,
                     },
                 ],
             }
