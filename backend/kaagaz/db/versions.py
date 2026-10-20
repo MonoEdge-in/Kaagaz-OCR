@@ -382,12 +382,8 @@ def undo(conn: Connection, customer_id: str, document_id: str, *, by: str) -> No
     if state["version_no"] < state["newest"]:
         raise Refused("not_newest")
     folder = None if state["folder_id"] is None else str(state["folder_id"])
-    conn.execute(_ALONE_AGAIN, {**params, "folder": folder})
-    conn.execute(_HIGHEST_READY_CURRENT, params)
     suggestion = str(state["suggestion_id"])
-    conn.execute(
-        _DECIDE, {"c": customer_id, "s": suggestion, "status": "undone", "by": by, "was": "accepted"}
-    )
+    # Before the split, so the row carries the family and shows on its timeline (A5).
     audit.record(
         conn,
         customer_id,
@@ -396,6 +392,11 @@ def undo(conn: Connection, customer_id: str, document_id: str, *, by: str) -> No
         target_type="document",
         target_id=document_id,
         details={"suggestion_id": suggestion, "family_id": family, "folder_id": folder},
+    )
+    conn.execute(_ALONE_AGAIN, {**params, "folder": folder})
+    conn.execute(_HIGHEST_READY_CURRENT, params)
+    conn.execute(
+        _DECIDE, {"c": customer_id, "s": suggestion, "status": "undone", "by": by, "was": "accepted"}
     )
 
 
