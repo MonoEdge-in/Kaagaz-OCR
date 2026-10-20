@@ -21,6 +21,7 @@ import type {
   BoardReply,
   ChatOptions,
   ChatResponse,
+  ClearCopy,
   Conversation,
   ConversationSummary,
   CustomerSettings,
@@ -51,6 +52,7 @@ import type {
   OrganisationCreated,
   PageReadings,
   PageSummary,
+  PageTranslation,
   PasswordReset,
   PlatformEvent,
   PlatformHealth,
@@ -69,6 +71,7 @@ import type {
   Tag,
   TaskLevel,
   TestModel,
+  TranslateLanguage,
   TwoStepSetup,
   UploadLimits,
   UploadReading,
@@ -271,6 +274,11 @@ export const acceptPage = (id: string, pageNo: number) =>
 /** What each reader read on one page, as read (the viewer's Scanned text panel only). */
 export const getPageReadings = (id: string, pageNo: number) =>
   request<PageReadings>("GET", `/documents/${id}/pages/${pageNo}/readings`);
+/** Read clearly: every page's lines in one request (no AI). */
+export const getClearCopy = (id: string) => request<ClearCopy>("GET", `/documents/${id}/clear-copy`);
+/** Read clearly: one page in English, Hindi or Marathi (follows Ask: 403 feature_off when off). */
+export const translatePage = (id: string, pageNo: number, language: TranslateLanguage) =>
+  request<PageTranslation>("POST", `/documents/${id}/pages/${pageNo}/translate`, { language });
 
 /** This user's story of the document (any version: it belongs to the family); story is null when there is none. */
 export const getMyStory = (id: string) =>

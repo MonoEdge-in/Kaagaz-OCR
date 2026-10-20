@@ -56,10 +56,12 @@ import {
   splitAfterDrag,
   splitAfterKey,
 } from "@/components/viewer/viewer";
+import { ReadClearlyPanel } from "@/components/viewer/ReadClearlyPanel";
 import { ScannedTextPanel } from "@/components/viewer/ScannedTextPanel";
 import { valueAt } from "@/components/viewer/scanned";
 import { WhatWasRead } from "@/components/viewer/WhatWasRead";
 import { useTabMotion } from "@/lib/motion";
+import { effectiveOf, useAiSettings } from "@/lib/aiSettings";
 import { AddMeaningDialog, PageWordsList, useViewerWords } from "@/components/words/ViewerWords";
 import wordStyles from "@/components/words/Words.module.css";
 import {
@@ -137,6 +139,7 @@ export function DocumentView({
   scannedParam,
 }: DocumentViewProps) {
   const { me } = useSession();
+  const aiSettings = useAiSettings();
   const [attempt, setAttempt] = useState(0);
   // Asks again but keeps showing what is loaded until the answer comes (once reading settles).
   const [reloads, setReloads] = useState(0);
@@ -322,8 +325,15 @@ export function DocumentView({
     { id: "overview", label: "Overview" },
     { id: "attention", label: "Needs attention", count: attentionCount(detail.pages) },
     ...(hasScannedText ? [{ id: "scanned" as const, label: "Scanned text" }] : []),
+    ...(hasScannedText ? [{ id: "clear" as const, label: "Read clearly" }] : []),
     { id: "words", label: "My words" },
   ];
+  // Read clearly's Translate uses AI, so it follows Ask: hidden while Ask is off, at None or unknown.
+  const askLevel = effectiveOf(aiSettings, "ask");
+  const openClear = () => {
+    setTab("clear");
+    document.getElementById(tabId("clear"))?.scrollIntoView({ block: "nearest" });
+  };
   const chosenTab = tabChoice && tabChoice.linkKey === linkKey ? tabChoice.tab : scannedParam === "1" ? "scanned" : "overview";
   const tab = tabs.some((each) => each.id === chosenTab) ? chosenTab : "overview";
   const setTab = (next: TabId) => setTabChoice({ linkKey, tab: next });
@@ -519,6 +529,12 @@ export function DocumentView({
                 <Icon name="download" />
                 <span className="narrow-hide">Download original</span>
               </a>
+            )}
+            {hasScannedText && (
+              <button type="button" className="btn" onClick={openClear}>
+                <Icon name="scan-text" />
+                Read clearly
+              </button>
             )}
             {usedInChat(detail) && (
               <Link className={`btn btn-primary ${styles.ask}`} href={askAboutHref(detail.id)}>
@@ -743,6 +759,14 @@ export function DocumentView({
                     flags={pageFlags}
                   />
                 )
+              ) : shownTab === "clear" ? (
+                <ReadClearlyPanel
+                  documentId={detail.id}
+                  pageNo={page?.page_no ?? null}
+                  active={selection?.region ?? null}
+                  canTranslate={askLevel !== undefined && askLevel !== "none"}
+                  onShow={showLine}
+                />
               ) : (
                 page && <PageWordsList words={words} />
               )
@@ -781,7 +805,7 @@ export function DocumentView({
   );
 }
 
-type TabId = "overview" | "attention" | "scanned" | "words";
+type TabId = "overview" | "attention" | "scanned" | "clear" | "words";
 type TabItem = { id: TabId; label: string; count?: number };
 const tabId = (id: TabId) => `document-tab-${id}`;
 const tabPanelId = (id: TabId) => `document-panel-${id}`;
