@@ -33,6 +33,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useId, useMemo, useReducer, useRef, useState } from "react";
 import type { DragEvent, ReactNode } from "react";
 import { InStatusBar } from "@/components/shell/StatusBar";
+import { VERSION_TEXT, suggestionsText } from "@/components/versions/words";
 import { Icon } from "@/components/ui/Icon";
 import { beingRead } from "@/components/viewer/reprocess";
 import { storyHref, storyTarget } from "@/components/viewer/story";
@@ -283,8 +284,9 @@ export function useUploads(onUploaded: () => void) {
   /**
    * Queue one drop of files for upload into folderId (undefined: the top level): one
    * batch of at most MAX_FILES_PER_BATCH files; the rest are refused and the tray says so.
+   * departmentId (File management F2): the department picked, used when no folder is named.
    */
-  async function addFiles(files: File[], folderId?: string) {
+  async function addFiles(files: File[], folderId?: string, departmentId?: string) {
     const userId = me.user.id;
     const reading = readingToSend(limits.readers, reader);
     const batchId = newBatchId();
@@ -301,7 +303,7 @@ export function useUploads(onUploaded: () => void) {
         state: problem ? { kind: "error", message: problem } : { kind: "waiting" },
       };
       const start: Start = (onProgress, onSent) =>
-        uploadDocument(file, userId, onProgress, folderId, reading, batchId, onSent);
+        uploadDocument(file, userId, onProgress, folderId, reading, batchId, onSent, departmentId);
       return { entry, file, start };
     });
     dispatch({ type: "add", entries: added.map((item) => item.entry) });
@@ -312,8 +314,9 @@ export function useUploads(onUploaded: () => void) {
     await runLimited(sending, UPLOADS_AT_ONCE, ({ entry, file, start }) => checkThenSend(entry.key, file, start, true));
   }
 
-  /** Queue one file as the next version of a document. It has no batch: its row ends at the reply. */
-  async function addVersion(file: File, of: { id: string; display_name: string }) {
+  /** Queue one file as the next version of a document, with its note (V9, optional). It has
+   * no batch: its row ends at the reply. */
+  async function addVersion(file: File, of: { id: string; display_name: string }, note?: string) {
     const userId = me.user.id;
     const reading = readingToSend(limits.readers, reader);
     nextKey.current += 1;
@@ -333,7 +336,8 @@ export function useUploads(onUploaded: () => void) {
       ],
     });
     if (!problem) {
-      const start: Start = (onProgress, onSent) => uploadVersion(of.id, file, userId, onProgress, reading, onSent);
+      const start: Start = (onProgress, onSent) =>
+        uploadVersion(of.id, file, userId, onProgress, reading, onSent, note);
       kept.current.set(key, start);
       await checkThenSend(key, file, start, false);
     }
@@ -645,6 +649,10 @@ export function BatchTray({
         const view = views[id] ?? null;
         const busy = rows.some(isBusy);
         const left = busy ? leftText(view) : null;
+        // File management V5: the files of this drop that look like new versions, and Review.
+        const versions = suggestionsText(view?.version_suggestion_count ?? view?.version_suggestions?.length ?? 0);
+        const found = view?.version_suggestions?.[0];
+        const first = found ? { document_id: found.document.id, display_name: found.document.name } : undefined;
         return (
           <div key={id} className={styles.batch}>
             <div className={styles.batchHead}>
@@ -653,6 +661,15 @@ export function BatchTray({
               </p>
               {left && <span className={`muted ${styles.small} ${styles.timeLeft}`}>{left}</span>}
             </div>
+            {versions && first && (
+              <p className={styles.small}>
+                {versions} ·{" "}
+                <Link href={`/documents/${first.document_id}`}>
+                  {VERSION_TEXT.review}
+                  <span className="visually-hidden">{` ${first.display_name}`}</span>
+                </Link>
+              </p>
+            )}
             {busy && <BatchBar view={view} rows={rows} />}
             <ul className={styles.uploads}>{rows.map(row)}</ul>
           </div>

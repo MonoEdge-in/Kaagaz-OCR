@@ -954,3 +954,18 @@
     background: CanvasText;
   }
 }
+
+/* File management F1: Move up and Move down, the chevrons turned to point that way. */
+.upButton svg,
+.downButton svg {
+  transform: rotate(90deg);
+}
+
+/* File management A5, A6: the Activity tab's filter row, then the table, then the pager. */
+.activityHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}

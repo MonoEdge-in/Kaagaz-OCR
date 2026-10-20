@@ -12,6 +12,8 @@
 import Link from "next/link";
 import { useState } from "react";
 import type { DragEvent } from "react";
+import { departmentsOf, isDepartment } from "@/components/files/departments";
+import { FILES_TEXT } from "@/components/files/words";
 import { Icon } from "@/components/ui/Icon";
 import type { FolderNode, FolderTree } from "./folderTree";
 import { libraryHref } from "./libraryQuery";
@@ -60,6 +62,14 @@ function useDropTarget(folderId: string | null, placeName: string, onDrop: Folde
 
 export function FolderNav({ tree, library, loading, error, onRetry, onNavigate, onDropDocument }: FolderNavProps) {
   const top = useDropTarget(null, "the top level", onDropDocument);
+  // File management F5: the departments first, in the admin's order, then Other: the
+  // folders in no department, and Trash.
+  const order = departmentsOf(tree.roots.map((node) => node.folder)).map((folder) => folder.id);
+  const departments = order.flatMap((id) => tree.roots.filter((node) => node.folder.id === id));
+  const others = tree.roots.filter((node) => !isDepartment(node.folder));
+  const item = (node: FolderNode) => (
+    <FolderItem key={node.folder.id} node={node} library={library} onNavigate={onNavigate} onDrop={onDropDocument} />
+  );
   return (
     <div className={styles.treeWrap}>
       <ul className={styles.tree}>
@@ -76,9 +86,35 @@ export function FolderNav({ tree, library, loading, error, onRetry, onNavigate, 
             All documents
           </Link>
         </li>
-        {tree.roots.map((node) => (
-          <FolderItem key={node.folder.id} node={node} library={library} onNavigate={onNavigate} onDrop={onDropDocument} />
-        ))}
+        {departments.length > 0 && (
+          <li className={styles.treeGroup}>
+            <span id="tree-departments" className={styles.groupHeading}>
+              {FILES_TEXT.departments}
+            </span>
+            <ul className={styles.tree} aria-labelledby="tree-departments">
+              {departments.map(item)}
+            </ul>
+          </li>
+        )}
+        {departments.length === 0 ? (
+          others.map(item)
+        ) : (
+          <li className={styles.treeGroup}>
+            <span id="tree-other" className={styles.groupHeading}>
+              {FILES_TEXT.other}
+            </span>
+            {others.length > 0 && (
+              <>
+                <span id="tree-outside" className={styles.groupSub}>
+                  {FILES_TEXT.notInDepartment}
+                </span>
+                <ul className={styles.tree} aria-labelledby="tree-outside">
+                  {others.map(item)}
+                </ul>
+              </>
+            )}
+          </li>
+        )}
         <li className={styles.trashItem}>
           <Link
             href={libraryHref({ ...library, folderId: null, subfolders: false, trash: true })}

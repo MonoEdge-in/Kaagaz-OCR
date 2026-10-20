@@ -1,0 +1,204 @@
+/* The folder screen's tiles, Grid view and List/Grid switch, the document page's Details,
+   and the admin Departments tab (File management F1, F5, P1). Tokens only; flat, square. */
+
+.tiles,
+.grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 12rem), 1fr));
+  gap: var(--space-3);
+}
+
+.tile {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  height: 100%;
+  padding: var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: 2px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  text-decoration: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .tile:hover,
+  .card:hover {
+    background: var(--bg-hover);
+  }
+}
+
+.tileIcon {
+  color: var(--text-secondary);
+}
+
+.tileName {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.tileCount {
+  grid-column: 2;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: var(--bg-surface);
+}
+
+.cardName {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.cardFacts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  font-size: var(--fs-sm);
+}
+
+.cardMeta {
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+/* List or Grid: a two-button segmented control, the pressed one filled. */
+.switch {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.switch > span {
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+
+.switchButtons {
+  display: inline-flex;
+}
+
+.switchButtons > :global(.btn) {
+  border-radius: 0;
+}
+
+.switchButtons > :global(.btn) + :global(.btn) {
+  margin-inline-start: -1px;
+}
+
+.switchButtons > :global(.btn)[aria-pressed="true"] {
+  background: var(--accent-subtle);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 700;
+}
+
+/* The document page's Details tab: one term and its value a row, pickers inline. */
+.details {
+  display: grid;
+  grid-template-columns: minmax(0, 9rem) minmax(0, 1fr);
+  gap: var(--space-2) var(--space-4);
+  margin: 0;
+  align-items: center;
+}
+
+.details dt {
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+
+.details dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 479.98px) {
+  .details {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-1);
+  }
+
+  .details dd {
+    margin-block-end: var(--space-2);
+  }
+}
+
+.picker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.picker select {
+  max-width: 100%;
+}
+
+.labelHelp {
+  flex: 1 1 100%;
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+
+/* The admin Departments tab. */
+.departments {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: var(--bg-surface);
+}
+
+.department {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border);
+}
+
+.department:last-child {
+  border-bottom: 0;
+}
+
+.departmentName {
+  flex: 1 1 10rem;
+  min-width: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.departmentForm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-2);
+}
+
+.departmentForm > :global(.field) {
+  flex: 1 1 14rem;
+}

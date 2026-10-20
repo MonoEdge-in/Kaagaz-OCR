@@ -13,7 +13,8 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { Icon } from "@/components/ui/Icon";
 import { STORY_NOTE_SEARCH, storyMatchesFrom, storyStatusText } from "@/lib/storyMatches";
 import type { DocumentSearch } from "@/lib/types";
-import { resultView } from "./insideSearch";
+import { LabelChip } from "@/components/files/LabelChip";
+import { alsoSearchedText, highlightParts, resultView } from "./insideSearch";
 import styles from "./Documents.module.css";
 import libraryStyles from "./Library.module.css";
 
@@ -62,6 +63,9 @@ export function InsideSearchResults({
     );
   }
   const stories = storyMatchesFrom(found.story_matches);
+  // Q2, Q5: the person's own words the search used, and every word searched for, marked.
+  const also = alsoSearchedText(found);
+  const marked = [q, ...(found.understood_words ?? []).map((word) => word.meaning)];
   const storyBox = <StoryMatches matches={stories} note={STORY_NOTE_SEARCH} headingLevel={3} />;
   if (found.documents.length === 0) {
     return (
@@ -94,6 +98,7 @@ export function InsideSearchResults({
         {stories.length > 0 ? ` ${storyStatusText(stories.length)}` : null}
       </p>
       {storyBox}
+      {also && <p className={libraryStyles.placeHint}>{also}</p>}
       <ol className={styles.results} aria-label={`Documents with “${q}”`}>
         {found.documents.map((document) => {
           const view = resultView(document);
@@ -102,10 +107,18 @@ export function InsideSearchResults({
               <Link href={view.href} className={styles.resultName}>
                 {view.name}
               </Link>
-              <p className={styles.resultMeta}>
-                {view.type} · {view.pages}
+              <p className={`${styles.resultMeta} ${styles.resultFacts}`}>
+                {view.version && <span className="mono">{view.version}</span>}
+                {view.label && <LabelChip label={view.label} />}
+                <span>
+                  {view.type} · {view.place}
+                </span>
               </p>
-              <p className={styles.resultSnippet}>{view.snippet}</p>
+              <p className={styles.resultSnippet}>
+                {highlightParts(view.snippet, marked).map((part, index) =>
+                  part.hit ? <mark key={index}>{part.text}</mark> : part.text,
+                )}
+              </p>
             </li>
           );
         })}

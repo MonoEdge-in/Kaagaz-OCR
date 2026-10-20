@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 
-// There is no home page of its own: the documents list is where people start.
+// There is no page of its own here: the dashboard is where people start (File management D1).
 export default function Home() {
-  redirect("/documents");
+  redirect("/dashboard");
 }

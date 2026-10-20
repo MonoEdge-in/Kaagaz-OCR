@@ -68,6 +68,17 @@
   --danger-bg: #fbeceb;
   --danger-fg: var(--critical);
 
+  /* The four sensitivity labels (File management O2): a tint and its text, 4.5:1 or more
+     in both themes (tests/file-management.test.ts measures them). They inform; they restrict nothing. */
+  --label-public-bg: #f4f5f7;
+  --label-public-fg: #4e545c;
+  --label-internal-bg: #e9f0fa;
+  --label-internal-fg: #204494;
+  --label-confidential-bg: #fbf3e6;
+  --label-confidential-fg: #8a5a12;
+  --label-restricted-bg: #fbeceb;
+  --label-restricted-fg: #b3261e;
+
   /* The names the screens use, kept as aliases */
   --bg: var(--bg-page);
   --surface: var(--bg-surface);
@@ -223,6 +234,14 @@
     --review-fg: var(--warning);
     --review-on-solid: var(--bg-page);
     --danger-bg: #2e1715;
+    --label-public-bg: #1a1c1f;
+    --label-public-fg: #b3b8c0;
+    --label-internal-bg: #172f65;
+    --label-internal-fg: #a3bee7;
+    --label-confidential-bg: #2a2112;
+    --label-confidential-fg: #e0a93a;
+    --label-restricted-bg: #2e1715;
+    --label-restricted-fg: #ef6e63;
     --paper-frame: var(--bg-page);
     --select-caret: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2 4l4 4 4-4' fill='none' stroke='%239AA0A8' stroke-width='1.5'/%3E%3C/svg%3E");
     color-scheme: dark;
@@ -253,6 +272,14 @@
   --review-fg: var(--warning);
   --review-on-solid: var(--bg-page);
   --danger-bg: #2e1715;
+  --label-public-bg: #1a1c1f;
+  --label-public-fg: #b3b8c0;
+  --label-internal-bg: #172f65;
+  --label-internal-fg: #a3bee7;
+  --label-confidential-bg: #2a2112;
+  --label-confidential-fg: #e0a93a;
+  --label-restricted-bg: #2e1715;
+  --label-restricted-fg: #ef6e63;
   --paper-frame: var(--bg-page);
   --select-caret: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2 4l4 4 4-4' fill='none' stroke='%239AA0A8' stroke-width='1.5'/%3E%3C/svg%3E");
   color-scheme: dark;
@@ -1051,6 +1078,43 @@ td.num {
   background: var(--review-bg);
   color: var(--review-fg);
   border: 1px dashed var(--review-solid);
+}
+
+/* A sensitivity label (File management O2): its name in its own tint, edged in its text
+   colour, so the words carry it and the colour only repeats them. */
+.label-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--badge-h);
+  padding: 0 var(--space-2);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  line-height: 1.25;
+  vertical-align: middle;
+  max-width: 100%;
+  white-space: normal;
+  border: 1px solid currentColor;
+  border-radius: 2px;
+}
+
+.label-chip[data-label="public"] {
+  background: var(--label-public-bg);
+  color: var(--label-public-fg);
+}
+
+.label-chip[data-label="internal"] {
+  background: var(--label-internal-bg);
+  color: var(--label-internal-fg);
+}
+
+.label-chip[data-label="confidential"] {
+  background: var(--label-confidential-bg);
+  color: var(--label-confidential-fg);
+}
+
+.label-chip[data-label="restricted"] {
+  background: var(--label-restricted-bg);
+  color: var(--label-restricted-fg);
 }
 
 /* A tooltip (components/ui/Tip.tsx): fixed, placed by script inside the screen. */
