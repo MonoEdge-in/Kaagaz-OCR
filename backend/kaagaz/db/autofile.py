@@ -50,6 +50,7 @@ file with no department is filed as before.
 import re
 import unicodedata
 from collections.abc import Mapping, Sequence
+from datetime import UTC, date, datetime
 from typing import Any
 
 from sqlalchemy import Connection, RowMapping, text
@@ -308,8 +309,17 @@ def _in_department(
         return _child(conn, customer_id, category, key, name, "property", owner)
     if kind == "invoice":
         return _party_folder(conn, customer_id, document_id, category, owner)
-    year = str((state["document_date"] or state["created_at"]).year)
+    year = filing_year(state["document_date"], state["created_at"])
     return _child(conn, customer_id, category, f"year:{year}:{category}", year, "year", owner)
+
+
+def filing_year(document_date: date | None, created_at: datetime) -> str:
+    """The Year folder's name: the document date's year when it is 1900 to next year, else
+    the upload's (a misread "24" or "0024" is not a year), as 4 digits. O(1)."""
+    y = document_date.year if document_date is not None else created_at.year
+    if not 1900 <= y <= datetime.now(UTC).year + 1:
+        y = created_at.year
+    return f"{y:04d}"
 
 
 def _child(

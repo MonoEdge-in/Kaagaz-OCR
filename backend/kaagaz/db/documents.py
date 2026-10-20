@@ -845,11 +845,16 @@ class PgDocuments:
                 return versions.spot(conn, customer_id, document_id)
 
         ids = {"customer_id": customer_id, "document_id": document_id}
+        try:
+            with unavailable():
+                code = retry_on_deadlock(transaction, **ids)
+        except Exception as failed:  # noqa: BLE001 - a filing bug must never skip spotting
+            code = None
+            _log.warning("autofile_failed", extra={**ids, "code": type(failed).__name__})
+        if code is not None:
+            _log.info("autofile", extra={**ids, "code": code})
+        # Versions V1 to V5, after filing: an automatic link checks the folder filing chose.
         with unavailable():
-            code = retry_on_deadlock(transaction, **ids)
-            if code is not None:
-                _log.info("autofile", extra={**ids, "code": code})
-            # Versions V1 to V5, after filing: an automatic link checks the folder filing chose.
             code = retry_on_deadlock(spotting, **ids)
         if code is not None:
             _log.info("version_spotting", extra={**ids, "code": code})
