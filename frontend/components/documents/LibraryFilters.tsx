@@ -5,10 +5,13 @@
 // that keeps only documents with reading problems. Each chip says what it is set to and opens its panel just
 // below the row, one panel at a time. A change goes into the page address at
 // once, and the list follows it. In a folder with subfolders, a checkbox also
-// takes in what is inside them.
+// takes in what is inside them. UI audit D7 (16 Oct 2026): a chip that opens a panel
+// has a chevron; a set chip is filled, says what it is set to, and has its own x to
+// remove it; "Clear all (N)" counts the filters set.
 
 import { useId, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
+import { IconButton } from "@/components/ui/IconButton";
 import { typeLabel } from "@/lib/format";
 import type { Tag } from "@/lib/types";
 import { dateChipText, tagsChipText, typeChipText } from "./library";
@@ -44,18 +47,36 @@ export function LibraryFilters({
     tags === null ? "…" : (tags.find((tag) => tag.id === tagId)?.name ?? "a tag no longer there"),
   );
 
-  const chip = (panel: Panel, words: string, active: boolean) => (
-    <button
-      type="button"
-      className={styles.chip}
-      data-active={active ? "true" : undefined}
-      aria-expanded={open === panel}
-      aria-controls={open === panel ? panelId : undefined}
-      onClick={() => setOpen(open === panel ? null : panel)}
-    >
-      {words}
-    </button>
+  const chip = (panel: Panel, words: string, active: boolean, remove: Partial<LibraryState>) => (
+    <span className={styles.chipGroup} data-active={active ? "true" : undefined}>
+      <button
+        type="button"
+        className={`${styles.chip} ${styles.chipOpens}`}
+        data-active={active ? "true" : undefined}
+        aria-expanded={open === panel}
+        aria-controls={open === panel ? panelId : undefined}
+        onClick={() => setOpen(open === panel ? null : panel)}
+      >
+        {words}
+      </button>
+      {active && (
+        <IconButton
+          icon="close"
+          label={`Remove filter: ${words}`}
+          className={styles.chipRemove}
+          onClick={() => {
+            if (open === panel) setOpen(null);
+            onChange({ ...library, ...remove });
+          }}
+        />
+      )}
+    </span>
   );
+  const setCount =
+    Number(library.tagIds.length > 0) +
+    Number(library.type !== null) +
+    Number(library.from !== null || library.to !== null) +
+    Number(library.attention);
 
   function toggleTag(tagId: string) {
     const tagIds = library.tagIds.includes(tagId)
@@ -79,9 +100,12 @@ export function LibraryFilters({
   return (
     <div className={styles.filters} onKeyDown={closeOnEscape}>
       <div ref={rowRef} className={styles.filterRow} role="group" aria-label="Filters">
-        {chip("tags", tagsChipText(tagNames), library.tagIds.length > 0)}
-        {chip("type", typeChipText(library.type), library.type !== null)}
-        {chip("date", dateChipText(library.from, library.to), library.from !== null || library.to !== null)}
+        {chip("tags", tagsChipText(tagNames), library.tagIds.length > 0, { tagIds: [] })}
+        {chip("type", typeChipText(library.type), library.type !== null, { type: null })}
+        {chip("date", dateChipText(library.from, library.to), library.from !== null || library.to !== null, {
+          from: null,
+          to: null,
+        })}
         {!library.trash && (
           <button
             type="button"
@@ -105,13 +129,13 @@ export function LibraryFilters({
         )}
         {filtered && (
           <button type="button" className="btn btn-quiet" onClick={clear}>
-            Clear filters
+            Clear all <span className="tabular">({setCount})</span>
           </button>
         )}
       </div>
 
       {open === "tags" && (
-        <div id={panelId} className={styles.filterPanel}>
+        <div id={panelId} className={`motion-fade ${styles.filterPanel}`}>
           <fieldset>
             <legend>Show documents with all of these tags</legend>
             {tags === null && tagsError !== null ? (
@@ -150,7 +174,7 @@ export function LibraryFilters({
       )}
 
       {open === "type" && (
-        <div id={panelId} className={styles.filterPanel}>
+        <div id={panelId} className={`motion-fade ${styles.filterPanel}`}>
           <fieldset>
             <legend>Show documents of this type</legend>
             <ul className={styles.choices}>
@@ -184,7 +208,7 @@ export function LibraryFilters({
       )}
 
       {open === "date" && (
-        <div id={panelId} className={styles.filterPanel}>
+        <div id={panelId} className={`motion-fade ${styles.filterPanel}`}>
           <DateRange library={library} onChange={onChange} />
         </div>
       )}

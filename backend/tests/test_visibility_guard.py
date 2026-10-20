@@ -16,7 +16,7 @@ from types import ModuleType
 
 from sqlalchemy import TextClause
 
-from kaagaz.answering import fixed_queries, hard_to_read, unchecked
+from kaagaz.answering import exhaustive, fixed_queries, hard_to_read, unchecked
 from kaagaz.db import admin, listing, models, pipeline_store, review, usage
 from kaagaz.db.visibility import LISTED, LIVE, LIVE_CURRENT, TRASHED_LISTED
 from kaagaz.search import hybrid, indexing, story_search
@@ -24,6 +24,7 @@ from kaagaz.search import hybrid, indexing, story_search
 MODULES: tuple[ModuleType, ...] = (
     hybrid,
     story_search,
+    exhaustive,
     fixed_queries,
     unchecked,
     hard_to_read,
@@ -51,6 +52,12 @@ FILTERED: dict[tuple[ModuleType, str], str] = {
     (hybrid, "_TOPIC_PIECES"): LIVE_CURRENT,
     (hybrid, "_SECTION_PIECES"): LIVE_CURRENT,  # in the sections' step and the pieces' step
     (hybrid, "_CARDS"): LIVE_CURRENT,
+    # Every document holding a word, and its matching pieces (16 Oct 2026): the same.
+    (exhaustive, "_DOCUMENTS"): LIVE_CURRENT,
+    (exhaustive, "_PIECES"): LIVE_CURRENT,
+    # Their shared scope clause, and "Also mentions" (17 Oct 2026): the same.
+    (exhaustive, "_IN_SCOPE"): LIVE_CURRENT,
+    (exhaustive, "_MENTIONS"): LIVE_CURRENT,
     # Story matches (S3): the family's current version of a story, read and out of Trash.
     (story_search, "_STORIES"): LIVE_CURRENT,
     # The numbers in answers: the same, in every CTE.
@@ -92,11 +99,15 @@ FILTERED: dict[tuple[ModuleType, str], str] = {
     (pipeline_store, "_LIVE_TARGETS"): LIVE_CURRENT,
     # The worker's missing vectors: only pieces search can find, never Trash or an older version.
     (indexing, "_MISSING"): LIVE_CURRENT,
+    # Changed on purpose (PRD 1, 0041): the dashboard's department counts, each family once.
+    (listing, "_DASHBOARD_DEPARTMENTS"): LISTED,
 }
 
 # Statements that count every version on purpose, and why.
 ALL_VERSIONS: dict[tuple[ModuleType, str], str] = {
     (admin, "_KEPT"): "the admin numbers show how many older versions and Trash families are kept",
+    # Changed on purpose (PRD 1, 0041).
+    (listing, "_DASHBOARD_TILES"): "the dashboard counts current families, and new versions as versions",
 }
 
 # Statements that may see a document in Trash, and why.

@@ -46,6 +46,7 @@ vi.mock("@/lib/api", () => ({
   ApiError: class ApiError extends Error {
     status = 0;
   },
+  getAiSettings: () => new Promise(() => undefined), // AI settings unknown: nothing capped
   getBatch: api.getBatch,
   getUploadLimits: () => new Promise(() => undefined), // the platform's limits apply
   restoreDocument: vi.fn(),

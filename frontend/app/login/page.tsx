@@ -1,14 +1,14 @@
-// The sign-in page, in the shared sign-in frame (AuthFrame). The backend gives
-// the same short message for an unknown e-mail, a wrong password or a disabled
-// account, and the form shows it as is. A small link under the form goes to
-// the separate admin sign-in (PRD A1). After signing out, or a session
-// ending, a note under the form's heading says so (SignedOutNotice).
+// The sign-in page, the one sign-in for everyone (16 Oct 2026), in the shared
+// sign-in frame (AuthFrame). The backend gives the same short message for an
+// unknown e-mail, a wrong password or a disabled account, and the form shows it
+// as is; an admin also gives the 6-digit code, or sets two-step sign-in up first.
+// A link to /signup while sign-up is on (SignUpLink). After signing out, or a
+// session ending, a note under the form's heading says so (SignedOutNotice).
 
-import Link from "next/link";
-import { signedOutMessage } from "@/components/shell/gate";
+import { pathAfterSignIn, signedOutMessage } from "@/components/shell/gate";
 import { AuthFrame } from "./AuthFrame";
 import { SignInForm } from "./SignInForm";
-import styles from "./login.module.css";
+import { SignUpLink } from "./SignUpLink";
 
 export const metadata = { title: "Sign in" };
 
@@ -17,13 +17,11 @@ export default async function LoginPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  const note = signedOutMessage(await searchParams);
+  const query = await searchParams;
   return (
     <AuthFrame>
-      <SignInForm note={note} />
-      <p className={styles.switch}>
-        Account admin? <Link href="/admin/login">Admin sign-in</Link>
-      </p>
+      <SignInForm note={signedOutMessage(query)} next={pathAfterSignIn(query)} />
+      <SignUpLink />
     </AuthFrame>
   );
 }

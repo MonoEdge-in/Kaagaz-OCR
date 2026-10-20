@@ -107,7 +107,7 @@ export function HealthView() {
           <h2 id="health-orgs-heading" className={admin.sectionHeading}>
             Per organisation
           </h2>
-          <div className={table.reflowWrap}>
+          <div className={`${table.reflowWrap} ${admin.tableScroll}`}>
             <table className={`table ${table.reflow}`} role="table">
               <caption className="visually-hidden">Health per organisation, counts only</caption>
               <thead role="rowgroup">

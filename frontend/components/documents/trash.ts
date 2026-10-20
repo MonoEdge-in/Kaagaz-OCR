@@ -8,8 +8,8 @@ import { ApiError } from "@/lib/api";
 import type { DocumentSummary, Me } from "@/lib/types";
 
 /**
- * Who may delete for good: an admin session (from /admin/login) whose admin has
- * two-step sign-in on, or a member or reviewer an admin allowed
+ * Who may delete for good: an admin session (every admin's, from /login) whose admin has
+ * two-step sign-in on (always, since 16 Oct 2026), or a member or reviewer an admin allowed
  * (can_delete_forever), who types their password first. The server says 403 to
  * anyone else. Move to Trash and Restore follow each document's can_delete.
  */
@@ -66,16 +66,16 @@ export function documentsCount(count: number): string {
   return `${count} ${count === 1 ? "document" : "documents"}`;
 }
 
-/** "the document", or "the document and its 2 earlier versions": what one action takes with it. */
-function withVersions(document: Pick<DocumentSummary, "version_no">): string {
+/** The document by name, with what one action takes with it: “Bill.pdf”, or “Bill.pdf” and its 2
+ * earlier versions. The name is said, so a question about a destructive step names its document. */
+function withVersions(document: Pick<DocumentSummary, "version_no" | "display_name">): string {
+  const name = `“${document.display_name}”`;
   const earlier = document.version_no - 1;
-  if (earlier <= 0) return "this document";
-  return earlier === 1
-    ? "this document and its earlier version"
-    : `this document and its ${earlier} earlier versions`;
+  if (earlier <= 0) return name;
+  return earlier === 1 ? `${name} and its earlier version` : `${name} and its ${earlier} earlier versions`;
 }
 
-export function trashQuestion(document: Pick<DocumentSummary, "version_no">): string {
+export function trashQuestion(document: Pick<DocumentSummary, "version_no" | "display_name">): string {
   return `Move ${withVersions(document)} to Trash?`;
 }
 
@@ -83,7 +83,7 @@ export function bulkTrashQuestion(count: number): string {
   return `Move ${count} selected ${count === 1 ? "document" : "documents"} to Trash?`;
 }
 
-export function foreverQuestion(document: Pick<DocumentSummary, "version_no">): string {
+export function foreverQuestion(document: Pick<DocumentSummary, "version_no" | "display_name">): string {
   const gone = document.version_no > 1 ? "They can't be brought back." : "It can't be brought back.";
   return `Delete ${withVersions(document)} for good? ${gone}`;
 }

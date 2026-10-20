@@ -281,7 +281,7 @@ Lambda's `INSTANCE_ID` and `WAKE_TOKEN` live only in the Lambda console.
 7. The first customer and admin:
    `dc exec api python -m kaagaz.cli create-customer --name "<Company>" --admin-email <email> --admin-name "<Name>"`
    (it asks for the admin's password at a hidden prompt). The admin signs in at
-   `https://<DOMAIN>/admin/login` and turns on 2FA (needed to delete forever).
+   `https://<DOMAIN>/login` and sets up two-step sign-in there (every admin must have it).
 
 **What runs by itself.** `kaagaz-deploy.timer` runs `infra/ec2/deploy.sh` 2
 minutes after boot and every 5 minutes: when `origin/production` has a new
@@ -428,7 +428,7 @@ Every feature the product has, in the order a document and a user meet them. Eac
 ```bash
 docker compose exec -T -e KAAGAZ_DEMO_PASSWORD=demo-pass-2026 api python -m kaagaz.cli seed-demo
 API=http://localhost:8000/api; H='X-Requested-With: kaagaz'; J='Content-Type: application/json'
-login() { curl -s -c "$1.jar" -H "$H" -H "$J" -d "{\"email\":\"$1\",\"password\":\"demo-pass-2026\"}" $API/auth/login; echo; }
+login() { curl -s -c "$1.jar" -H "$H" -H "$J" -d "{\"email\":\"$1\",\"password\":\"demo-pass-2026\"${2:+,\"code\":\"$2\"}}" $API/auth/login; echo; }
 up() { curl -s -b admin@sharma-traders.example.jar -H "$H" -F "file=@$1" -w ' HTTP %{http_code}\n' $API/documents; }
 SQL() { docker compose exec -T postgres psql -U kaagaz -d kaagaz -c "$1"; }
 printf 'Party Name,Profit,Date\nVerma Traders,50000,15/08/2026\nGupta Traders,72000,20/08/2026\nVerma Traders,30000,25/08/2026\n' > p.csv
@@ -436,7 +436,7 @@ requeue() { docker compose exec -T worker python -c 'import sys; from kaagaz.set
 login admin@sharma-traders.example
 ```
 
-The demo users are `admin@`, `reviewer@` and `member@` on `sharma-traders.example`, and the same three on `mehta-textiles.example`, all with the password above. Each `login` saves a cookie jar named after the e-mail. Every POST, PATCH and DELETE needs the `X-Requested-With: kaagaz` header, or the API answers `403 csrf`. `SQL` runs as the table owner, so it sees every customer's rows; the app only ever sees one customer's.
+The demo users are `admin@`, `reviewer@` and `member@` on `sharma-traders.example`, and the same three on `mehta-textiles.example`, all with the password above. Each `login` saves a cookie jar named after the e-mail. Admins must have two-step sign-in (0031): sign each demo admin in once at `http://localhost:3000/login` to set it up with an authenticator app, then `login admin@sharma-traders.example <6-digit code>`. Every POST, PATCH and DELETE needs the `X-Requested-With: kaagaz` header, or the API answers `403 csrf`. `SQL` runs as the table owner, so it sees every customer's rows; the app only ever sees one customer's.
 
 ### Signing in and staying safe
 
@@ -678,7 +678,7 @@ The made-up golden documents in `backend/tests/golden/docs/` serve these checks 
 - Tests: `test_api_review.py`; `frontend/tests/review-queue.test.ts`.
 
 **42. Admin: Failed jobs and Retry**
-- Check: `up bad.csv` (feature 10). Open an admin session, `curl -s -c adm.jar -H "$H" -H "$J" -d '{"email":"admin@sharma-traders.example","password":"demo-pass-2026"}' $API/auth/admin/login`, then `curl -b adm.jar $API/admin/failed`, and the same with `admin@sharma-traders.example.jar`. On screen: Admin, Failed jobs, Retry, then Retry again from the same list.
+- Check: `up bad.csv` (feature 10). Open an admin session, `login admin@sharma-traders.example <6-digit code>`, then `curl -b admin@sharma-traders.example.jar $API/admin/failed`. On screen: Admin, Failed jobs, Retry, then Retry again from the same list.
 - Expect: `{"items":[{id, display_name, status, failure_code, message, last_run_at, …}], "total": n}`; the app session gets `403 admin_session_required`. Retry says "Sent to be read again."; the second Retry shows the server's own words on that row (409 while it is being read, 429 within 10 minutes).
 - Tests: `test_api_viewer_panels.py`, `test_isolation_viewer_panels.py`; `frontend/tests/shell-admin.test.ts`.
 

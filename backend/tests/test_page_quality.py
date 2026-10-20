@@ -42,14 +42,14 @@ F1_TABLE = [
     ),
     (
         "handwriting_hard",
-        "Some handwriting couldn't be read with certainty.",
+        "Some handwriting is hard to read.",
         "Check the marked words, or type the correct value.",
     ),
-    ("illegible_words", "12 words couldn't be read.", "Read this page again, or upload a better scan."),
+    ("illegible_words", "Hard to read: 12 words.", "Read this page again, or upload a better scan."),
     ("readers_disagree", "Two readers read 3 values differently.", "Confirm the marked values."),
-    ("unpinned", "The exact spot of 4 lines couldn't be confirmed.", "Confirm the marked values."),
+    ("unpinned", "The exact spot of 4 lines needs a check.", "Confirm the marked values."),
     # Changed on purpose (UI quality council, 15 Oct 2026): plain words, not "declined".
-    ("reader_refused", "This page couldn't be read.", "Read it again, or upload a better scan."),
+    ("reader_refused", "This page needs a closer look.", "Read it again, or upload a better scan."),
     (
         "read_locally",
         "Read by the backup reader while the main reader was down. It will be read again automatically.",
@@ -73,9 +73,9 @@ def test_each_issue_says_the_prds_sentence_and_fix(code: str, text: str, suggest
 
 
 def test_a_count_of_one_is_singular() -> None:
-    assert says("illegible_words", count=1) == "1 word couldn't be read."
+    assert says("illegible_words", count=1) == "Hard to read: 1 word."
     assert says("readers_disagree", count=1) == "Two readers read 1 value differently."
-    assert says("unpinned", count=1) == "The exact spot of 1 line couldn't be confirmed."
+    assert says("unpinned", count=1) == "The exact spot of 1 line needs a check."
 
 
 def test_a_sentence_is_never_shown_with_a_made_up_number() -> None:

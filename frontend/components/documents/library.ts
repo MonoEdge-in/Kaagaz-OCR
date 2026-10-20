@@ -3,14 +3,18 @@
 // (tests/shell-documents.test.ts). The server checks everything again.
 
 import { ApiError, fileUrl } from "@/lib/api";
-import { formatDate, typeLabel } from "@/lib/format";
+import { docTypeLabel, formatDate, typeLabel } from "@/lib/format";
 import type {
   DetectedType,
+  DocType,
   DocumentFolder,
   DocumentStatus,
   DocumentSummary,
+  Folder,
   Tag,
 } from "@/lib/types";
+import type { FolderTree } from "./folderTree";
+import { documentsCount } from "./trash";
 
 // The original is served only once the virus check has passed
 // (backend/kaagaz/api/routers/documents.py, _SERVABLE).
@@ -22,7 +26,7 @@ export function downloadHref(document: Pick<DocumentSummary, "id" | "status">): 
 }
 
 export type EditAction = "rename" | "move" | "tags";
-export type RowAction = EditAction | "version" | "trash" | "restore" | "forever";
+export type RowAction = EditAction | "version" | "trash" | "restore" | "forever" | "read";
 
 export type MenuEntry =
   | { kind: "action"; action: RowAction; words: string; danger: boolean }
@@ -34,10 +38,15 @@ export type MenuEntry =
  * renamed, moved, tagged or given a new version (the server says 409
  * in_trash): it offers Restore when can_delete, and Delete forever in an
  * admin session (canForever). Out of Trash, Move to Trash needs can_delete.
+ * On the document screen (UI audit DD2, 16 Oct 2026) the menu starts with Read again
+ * (`readAgain`: canReprocess) and leaves out Download original (a button beside it) and
+ * Upload new version (the reading problems' Upload a better scan).
  */
 export function menuEntries(
   item: Pick<DocumentSummary, "id" | "status" | "deleted_at" | "can_delete">,
   canForever: boolean,
+  place: "list" | "document" = "list",
+  readAgain = false,
 ): MenuEntry[] {
   const act = (action: RowAction, words: string, danger = false): MenuEntry => ({
     kind: "action",
@@ -56,12 +65,48 @@ export function menuEntries(
         act("tags", "Tags"),
         act("version", "Upload new version"),
       ];
+  if (place === "document") {
+    const kept = entries.filter((entry) => entry.kind === "action" && entry.action !== "version");
+    if (readAgain && !trashed) kept.unshift(act("read", "Read again"));
+    if (!trashed && item.can_delete) kept.push(act("trash", "Move to Trash", true));
+    return kept;
+  }
   // Trash means deleted: a document there can only be restored or deleted forever.
   const download = trashed ? null : downloadHref(item);
   if (download) entries.push({ kind: "download", href: download });
   if (trashed && canForever) entries.push(act("forever", "Delete forever", true));
   if (!trashed && item.can_delete) entries.push(act("trash", "Move to Trash", true));
   return entries;
+}
+
+/**
+ * Where an open menu goes (D5): under its button, or above it when there is not room
+ * below and more above; its end edge lined up with the button's, kept 8px inside the
+ * window. Fixed coordinates (the menu is in a portal, so <main> never cuts it).
+ */
+export function menuPlace(
+  button: { top: number; bottom: number; right: number },
+  menu: { width: number; height: number },
+  view: { width: number; height: number },
+): { top: number; left: number; up: boolean } {
+  const gap = 4;
+  const edge = 8;
+  const below = view.height - button.bottom - gap - edge;
+  const above = button.top - gap - edge;
+  const up = menu.height > below && above > below;
+  const top = up ? Math.max(edge, button.top - gap - menu.height) : button.bottom + gap;
+  const left = Math.min(Math.max(edge, button.right - menu.width), Math.max(edge, view.width - menu.width - edge));
+  return { top, left, up };
+}
+
+/** The menu item focused after a key (Up/Down wrap, Home/End the ends); null for other keys. */
+export function menuItemAfterKey(index: number, key: string, count: number): number | null {
+  if (count === 0) return null;
+  if (key === "ArrowDown") return (index + 1) % count;
+  if (key === "ArrowUp") return (index - 1 + count) % count;
+  if (key === "Home") return 0;
+  if (key === "End") return count - 1;
+  return null;
 }
 
 /** The folders from the top down to the document's own, whether or not `path` already ends with it. */
@@ -85,6 +130,79 @@ export const folderNameProblem = (name: string) => nameProblem(name, "folder", 1
 export const tagNameProblem = (name: string) => nameProblem(name, "tag", 40);
 /** Document names are 1 to 255 characters; "GST 2026/27" keeps its slash. */
 export const documentNameProblem = (name: string) => nameProblem(name, "document", 255);
+
+// Folder names from document types (Tushar, 16 Oct 2026: "suggest folder name also").
+
+/**
+ * The folder name for a kind of document: "Invoices", "Bank statements", "Land records",
+ * the same names auto-filing uses (backend kaagaz/db/autofile.py, FOLDERS); null for none or Other.
+ */
+export function typeFolderName(type: DocType | null): string | null {
+  return type === null || type === "other" ? null : `${docTypeLabel(type)}s`;
+}
+
+const folderKey = (name: string) => name.trim().toLowerCase();
+
+/**
+ * Up to `max` names for a new folder, from the kinds of these documents that have no folder of
+ * that name yet (any letter case, anywhere in the tree): the most common kind first. O(n + F).
+ */
+export function folderNameSuggestions(
+  documents: readonly Pick<DocumentSummary, "doc_type">[],
+  folders: readonly Pick<Folder, "name">[],
+  max = 4,
+): string[] {
+  const taken = new Set(folders.map((folder) => folderKey(folder.name)));
+  const counts = new Map<string, number>();
+  for (const document of documents) {
+    const name = typeFolderName(document.doc_type);
+    if (name !== null && !taken.has(folderKey(name))) counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
+  return [...counts]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, max)
+    .map(([name]) => name);
+}
+
+export type MoveSuggestion = { folderId: string } | { newName: string };
+
+/**
+ * What the Move dialog puts first, marked Suggested, for documents all of one kind: the folder
+ * named for that kind (the one nearest the top), or a new folder of that name when there is none.
+ * null when the kinds differ, are not known, or every document is in that folder already. O(F).
+ */
+export function moveSuggestion(
+  items: readonly Pick<DocumentSummary, "doc_type" | "folder_id">[],
+  tree: FolderTree,
+): MoveSuggestion | null {
+  const names = new Set(items.map((item) => typeFolderName(item.doc_type)));
+  const [name] = names;
+  if (names.size !== 1 || !name) return null;
+  let match: { id: string; depth: number } | null = null;
+  for (const node of tree.byId.values()) {
+    if (folderKey(node.folder.name) === folderKey(name) && (match === null || node.depth < match.depth)) {
+      match = { id: node.folder.id, depth: node.depth };
+    }
+  }
+  if (match === null) return { newName: name };
+  const folderId = match.id;
+  return items.every((item) => item.folder_id === folderId) ? null : { folderId };
+}
+
+/** The ticked documents a bulk Move to folder takes: never one in Trash. */
+export function movableItems<T extends Pick<DocumentSummary, "id" | "deleted_at">>(
+  items: readonly T[],
+  ticked: ReadonlySet<string>,
+): T[] {
+  return items.filter((item) => item.deleted_at === null && ticked.has(item.id));
+}
+
+/** "Moved to Invoices.", "Moved 3 documents to Invoices.", with how many stayed and why. */
+export function movedMessage(moved: number, total: number, where: string, reason = ""): string {
+  const said = total === 1 ? `Moved to ${where}.` : `Moved ${documentsCount(moved)} to ${where}.`;
+  const left = total - moved;
+  return left > 0 ? `${said} Not moved: ${documentsCount(left)}. ${reason}`.trim() : said;
+}
 
 /** The tag already called this, whatever the letter case, or null. Tag names are unique that way. */
 export function findTagByName(tags: readonly Tag[], name: string): Tag | null {
@@ -139,20 +257,19 @@ export function noMatchTitle(q: string, filtered: boolean, attentionOnly = false
 const counted = (n: number, one: string, many: string) => `${n.toLocaleString("en-IN")} ${n === 1 ? one : many}`;
 
 /**
- * The chips on a document with reading problems (PRD 5 U2): "2 pages unreadable",
- * "14 words unsure", "3 values to check"; [] when it has none. A page that is only
- * uncertain, with no word marked unsure (a spot not confirmed, say), is "1 page to check".
+ * The chips on a document with reading problems (PRD 5 U2): "2 pages to check",
+ * "14 words unsure", "3 values to check"; [] when it has none. Calm words, never "unreadable"
+ * (Tushar, 16 Oct 2026): unreadable pages, and uncertain ones with no word marked unsure,
+ * are counted together as pages to check.
  */
 export function attentionWords(
   document: Pick<DocumentSummary, "pages_unreadable" | "pages_uncertain" | "values_to_review" | "words_unsure">,
 ): string[] {
   const unsure = document.words_unsure ?? 0;
+  const pages = document.pages_unreadable + (unsure === 0 ? document.pages_uncertain : 0);
   return [
-    document.pages_unreadable > 0 ? counted(document.pages_unreadable, "page unreadable", "pages unreadable") : "",
+    pages > 0 ? counted(pages, "page to check", "pages to check") : "",
     unsure > 0 ? counted(unsure, "word unsure", "words unsure") : "",
-    unsure === 0 && document.pages_uncertain > 0
-      ? counted(document.pages_uncertain, "page to check", "pages to check")
-      : "",
     document.values_to_review > 0 ? counted(document.values_to_review, "value to check", "values to check") : "",
   ].filter(Boolean);
 }

@@ -10,6 +10,7 @@ import type { StatusTone } from "@/lib/format";
 import type {
   AdminUser,
   AuditEntry,
+  CustomerSettings,
   DocumentStatus,
   Me,
   PageRoute,
@@ -21,19 +22,22 @@ import type {
 } from "@/lib/types";
 
 /**
- * "allow" only for an admin with an admin session (PRD A1); anyone else is
- * sent to /admin/login. The server refuses every /api/admin call to an app
- * session anyway (403 admin_session_required).
+ * "allow" only for an admin with an admin session (PRD A1); an admin with an app
+ * session is sent to sign in (/login?next=/admin); anyone else is told it is for
+ * admins (N4, QA 17 Oct: signing in again would not help). The server refuses
+ * every /api/admin call to an app session anyway (403 admin_session_required).
  */
-export type AdminGate = "allow" | "admin_sign_in";
+export type AdminGate = "allow" | "admin_sign_in" | "no_access";
 
 export function adminGate(me: Me): AdminGate {
-  return me.user.role === "admin" && sessionScope(me) === "admin" ? "allow" : "admin_sign_in";
+  if (me.user.role !== "admin") return "no_access";
+  return sessionScope(me) === "admin" ? "allow" : "admin_sign_in";
 }
 
 export const TABS = [
   { id: "users", label: "Users" },
   { id: "settings", label: "Settings" },
+  { id: "ai", label: "AI settings" },
   { id: "activity", label: "Activity" },
   { id: "numbers", label: "Numbers" },
   { id: "usage", label: "Usage" },
@@ -191,6 +195,30 @@ export function foreverControl(
   };
 }
 
+/**
+ * A temporary password for a new user (UI audit AD3): `length` characters from letters
+ * and digits that cannot be mistaken for each other (no 0/O, 1/l/I), drawn with the
+ * browser's crypto. Rejection sampling, so every character is equally likely.
+ */
+const PASSWORD_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
+
+export function generatePassword(length = 16, random: (bytes: Uint8Array) => Uint8Array = (b) => crypto.getRandomValues(b)): string {
+  const size = PASSWORD_ALPHABET.length;
+  const limit = 256 - (256 % size); // bytes at or over this would favour the first characters
+  let out = "";
+  while (out.length < length) {
+    for (const byte of random(new Uint8Array(length * 2))) {
+      if (byte < limit && out.length < length) out += PASSWORD_ALPHABET[byte % size];
+    }
+  }
+  return out;
+}
+
+/** AD7 (UI audit, 16 Oct 2026), with two-step required for admins (0035): what an admin without it sees. */
+export function twoStepNote(): string {
+  return "Admins without two-step sign-in set it up at their next sign-in.";
+}
+
 export function allowForeverQuestion(name: string): string {
   return (
     `Let ${name} delete documents in Trash forever? This covers every document in Trash, ` +
@@ -224,6 +252,16 @@ export const AUTOFILE_HELP =
   "If a file lands in the wrong folder, press Undo or move it.";
 export const AUTOFILE_NOT_AVAILABLE = "Auto-filing isn't available for your organisation yet.";
 
+/** AD6: the form differs from what is saved (the Save bar shows only then). */
+export function settingsChanged(
+  saved: Pick<CustomerSettings, "max_upload_mb" | "autofile">,
+  text: string,
+  autofileOn: boolean,
+): boolean {
+  const savedText = saved.max_upload_mb === null ? "" : String(saved.max_upload_mb);
+  return text.trim() !== savedText || (saved.autofile.granted && autofileOn !== saved.autofile.on);
+}
+
 /** What a Save that did not work says: the plain words for a switch not allowed yet, else the server's. */
 export function settingsErrorText(caught: unknown): string {
   if (caught instanceof ApiError && caught.code === "not_granted") return AUTOFILE_NOT_AVAILABLE;
@@ -235,16 +273,14 @@ export function settingsErrorText(caught: unknown): string {
 export interface Tile {
   label: string;
   value: string;
+  note?: string;
+  tip?: string; // a tooltip on the label, shown on hover and focus
 }
 
-const STATUS_WORDS: Record<DocumentStatus, string> = {
-  received: "Documents waiting for the virus check",
-  clean: "Documents being read",
-  ready: "Documents ready",
-  needs_reader: "Documents stored, not readable yet",
-  rejected: "Documents rejected",
-  failed: "Documents that failed",
-};
+/** The Ready to verify tile's tooltip. Which values are labelled so is many rules
+ *  (backend/kaagaz/extraction/labels.py), not one number, so it names none. */
+export const TO_VERIFY_TIP =
+  "Values a second reading did not confirm, such as a word that was hard to read or two readings that differ. Open Review to verify them.";
 
 const STATUS_ORDER: readonly DocumentStatus[] = [
   "ready",
@@ -256,56 +292,87 @@ const STATUS_ORDER: readonly DocumentStatus[] = [
 ];
 
 /**
- * The Numbers tab, in a fixed order, with Indian digit grouping. Documents by
- * status count only current versions out of Trash; the versions kept behind
- * them and what is in Trash have tiles of their own.
+ * AD4 (UI audit, 16 Oct 2026): the Numbers tab's four headline numbers, large, with Indian
+ * digit grouping. Documents count only current versions out of Trash.
  */
-export function statTiles(stats: Stats): Tile[] {
-  const documents = STATUS_ORDER.reduce(
-    (sum, status) => sum + (stats.documents_by_status[status] ?? 0),
-    0,
-  );
-  const tiles: Tile[] = [{ label: "Documents", value: formatNumber(documents) }];
-  for (const status of STATUS_ORDER) {
-    tiles.push({
-      label: STATUS_WORDS[status],
-      value: formatNumber(stats.documents_by_status[status] ?? 0),
-    });
-  }
-  tiles.push(
-    { label: "Other versions kept", value: formatNumber(stats.older_versions) },
-    { label: "In Trash", value: formatNumber(stats.in_trash) },
-    { label: "Questions asked", value: formatNumber(stats.questions_total) },
-    { label: "Answered", value: formatNumber(stats.answered) },
-    { label: "Not found in the documents", value: formatNumber(stats.not_found) },
-    { label: "Answers labelled Verified", value: formatNumber(stats.verified_answers) },
-    { label: "Answers labelled Needs review", value: formatNumber(stats.needs_review_answers) },
-    { label: "Thumbs up", value: formatNumber(stats.feedback_up) },
-    { label: "Thumbs down", value: formatNumber(stats.feedback_down) },
-    { label: "Values waiting for review", value: formatNumber(stats.open_review_items) },
-  );
-  return tiles;
+export function kpiTiles(stats: Stats): Tile[] {
+  const by = stats.documents_by_status;
+  const documents = STATUS_ORDER.reduce((sum, status) => sum + (by[status] ?? 0), 0);
+  return [
+    { label: "Total documents", value: formatNumber(documents) },
+    { label: "Ready", value: formatNumber(by.ready ?? 0) },
+    {
+      label: "Ready to verify",
+      value: formatNumber(stats.open_review_items),
+      note: "Values to verify in Review",
+      tip: TO_VERIFY_TIP,
+    },
+    { label: "Failed", value: formatNumber(by.failed ?? 0) },
+  ];
 }
 
 const ROUTE_ORDER: readonly PageRoute[] = ["cells", "text_layer", "ocr", "blank"];
 
-const ROUTE_TILE_WORDS: Record<PageRoute, string> = {
+const ROUTE_WORDS: Record<PageRoute, string> = {
   cells: "From spreadsheets",
   text_layer: "From PDF text",
   ocr: "Scanned pages",
   blank: "Blank pages",
 };
 
+/** A small list under the headline numbers; `none` is said when every row is 0. */
+export interface Breakdown {
+  title: string;
+  rows: Tile[];
+  none: string;
+}
+
 /**
- * The Numbers tab's row "Pages read this month" (PRD 2, R6): the usage meter
- * for pricing later. Always the same 4 tiles in the same order, with 0 for a
- * route that read nothing.
+ * AD4: everything else, in small lists with plain labels, in a fixed order. A row that is 0
+ * is left out, so the tab is not a wall of zeros; a list with nothing in it says so.
  */
-export function pageRouteTiles(stats: Pick<Stats, "pages_this_month">): Tile[] {
-  return ROUTE_ORDER.map((route) => ({
-    label: ROUTE_TILE_WORDS[route],
-    value: formatNumber(stats.pages_this_month[route] ?? 0),
-  }));
+export function breakdowns(stats: Stats): Breakdown[] {
+  const by = stats.documents_by_status;
+  const kept = (rows: [string, number][]): Tile[] =>
+    rows.filter(([, n]) => n > 0).map(([label, n]) => ({ label, value: formatNumber(n) }));
+  return [
+    {
+      title: "Pipeline",
+      none: "Nothing is waiting or being read.",
+      rows: kept([
+        ["Waiting for the virus check", by.received ?? 0],
+        ["Being read", by.clean ?? 0],
+        ["Stored, not readable yet", by.needs_reader ?? 0],
+        ["Rejected", by.rejected ?? 0],
+      ]),
+    },
+    {
+      title: "Questions",
+      none: "No questions asked yet.",
+      rows: kept([
+        ["Questions asked", stats.questions_total],
+        ["Answered", stats.answered],
+        ["Not found in the documents", stats.not_found],
+        ["Answers labelled Verified", stats.verified_answers],
+        ["Answers labelled Ready to verify", stats.needs_review_answers],
+        ["Thumbs up", stats.feedback_up],
+        ["Thumbs down", stats.feedback_down],
+      ]),
+    },
+    {
+      title: "Pages read this month",
+      none: "No pages read this month.",
+      rows: kept(ROUTE_ORDER.map((route) => [ROUTE_WORDS[route], stats.pages_this_month[route] ?? 0])),
+    },
+    {
+      title: "Kept",
+      none: "No older versions and nothing in Trash.",
+      rows: kept([
+        ["Other versions kept", stats.older_versions],
+        ["In Trash", stats.in_trash],
+      ]),
+    },
+  ];
 }
 
 // The audit details the Activity tab shows, in words; any other key (an id, the model a
@@ -344,6 +411,7 @@ const TARGET_WORDS: Record<string, string> = {
   user: "User",
   user_word: "Word",
   message: "Chat",
+  conversation: "Chat",
   customer: "Settings",
 };
 
@@ -378,9 +446,12 @@ const ACTION_WORDS: Record<string, string> = {
   "user_word.changed": "Changed a word in My words",
   "user_word.deleted": "Deleted a word from My words",
   "customer.create": "Organisation set up",
+  "org.self_signup": "Created the organisation at sign-up",
   "customer.enable": "Organisation turned on",
   "customer.disable": "Organisation turned off",
   "chat.ask": "Asked a question",
+  "chat.rename": "Renamed a conversation",
+  "chat.delete": "Deleted a conversation",
   "review.resolve": "Corrected a value",
   "user.create": "Added a user",
   "user.update": "Changed a user",

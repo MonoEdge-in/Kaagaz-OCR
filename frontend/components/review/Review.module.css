@@ -1,9 +1,9 @@
-/* The review queue. Tokens only (app/globals.css). */
+/* The review queue. MonoEdge tokens only (app/globals.css): flat, square (2px), hairline. */
 
 .cards {
   display: flex;
   flex-direction: column;
-  gap: var(--space-5);
+  gap: var(--space-6);
 }
 
 .item {
@@ -11,6 +11,11 @@
   flex-direction: column;
   gap: var(--space-4);
   min-width: 0;
+  contain: layout paint style;
+  /* A long queue: cards out of view are not laid out or painted until near it (find in
+     page still reaches them); "auto" keeps each card's real height once it was shown. */
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto 520px;
 }
 
 .head {
@@ -41,7 +46,7 @@
   gap: var(--space-1) var(--space-2);
   margin: 0;
   font-size: var(--fs-sm);
-  color: var(--fg-muted);
+  color: var(--text-secondary);
 }
 
 .docLink {
@@ -52,17 +57,17 @@
 .reason {
   margin: 0;
   font-size: var(--fs-sm);
-  color: var(--fg-muted);
+  color: var(--text-secondary);
 }
 
-/* The two readings: side by side from 640 px, stacked below. */
+/* The two readings: side by side from 720 px, stacked below. */
 .readings {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: var(--space-3);
 }
 
-@media (min-width: 640px) {
+@media (min-width: 720px) {
   .readings {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -75,16 +80,18 @@
   gap: var(--space-2);
   padding: var(--space-3) var(--space-4);
   border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--surface-2);
+  border-radius: 2px;
+  background: var(--bg-subdued);
   min-width: 0;
 }
 
 .readingHeading {
   margin: 0;
-  font-size: var(--fs-sm);
-  font-weight: 600;
-  color: var(--fg-muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
 }
 
 .readingText {
@@ -94,12 +101,12 @@
   font-variant-numeric: tabular-nums;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  color: var(--fg);
+  color: var(--text-primary);
 }
 
 .noReading {
   margin: 0;
-  color: var(--fg-muted);
+  color: var(--text-secondary);
   font-size: var(--fs-sm);
 }
 
@@ -112,6 +119,7 @@
 .typedRow {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: var(--space-2);
 }
 
@@ -127,11 +135,13 @@
   display: flex;
   align-items: flex-start;
   gap: var(--space-2);
+  min-width: 0;
 }
 
+/* Its words may wrap, so the box sits on the middle of their first line. */
 .remember input {
   flex: none;
-  margin-top: 3px;
+  margin-block: calc((1lh - 18px) / 2) 0;
 }
 
 .saving,
@@ -143,7 +153,7 @@
 }
 
 .saving {
-  color: var(--fg-muted);
+  color: var(--text-secondary);
   font-size: var(--fs-sm);
 }
 
@@ -154,8 +164,8 @@
   margin: 0;
   padding: var(--space-2) var(--space-3);
   border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--surface);
+  border-radius: 2px;
+  background: var(--bg-surface);
   font-size: var(--fs-sm);
 }
 
@@ -166,18 +176,18 @@
 
 .count {
   margin: 0;
-  color: var(--fg-muted);
+  color: var(--text-secondary);
 }
 
 .skeletons {
   display: flex;
   flex-direction: column;
-  gap: var(--space-5);
+  gap: var(--space-6);
 }
 
 .skeletonCard {
   height: 26rem;
-  border-radius: var(--r-md);
+  border-radius: 2px;
 }
 
 .errorBanner {
@@ -186,15 +196,23 @@
   align-items: flex-start;
   gap: var(--space-3);
   padding: var(--space-3) var(--space-4);
-  border: 1px solid var(--danger-fg);
-  border-radius: var(--r-md);
-  background: var(--danger-bg);
-  color: var(--danger-fg);
+  border: 1px solid var(--critical);
+  border-radius: 2px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
 }
 
+/* Icon, words and Try again: the icon and the first line of words sit on the
+   button's middle line; a longer message runs on below it. */
 .errorIcon {
   flex: none;
-  margin-top: 3px;
+  height: 1lh;
+  color: var(--critical);
+}
+
+.errorIcon,
+.errorBody {
+  margin-block-start: max(0px, (var(--control-h) - 1lh) / 2);
 }
 
 .errorBody {
@@ -210,12 +228,108 @@
   font-weight: 600;
 }
 
-/* PRD 5 U6: "Group by document": the cards under their document's name. */
-.groupToggle {
+/* A busy button keeps its width: the label goes clear and the spinner sits over it. */
+.busy {
+  position: relative;
+  -webkit-text-fill-color: transparent;
+}
+
+.busy > :global(.spinner) {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+}
+
+/* R6 (UI audit, 16 Oct 2026): One at a time / All items / By document as one
+   segmented track; the chosen one outlined in it, never colour alone. The native
+   radio covers its segment, invisible, for the keyboard and screen readers. */
+.segments {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-self: flex-start;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border-strong);
+  border-radius: 2px;
+  background: var(--bg-subdued);
+}
+
+/* The track (2px padding and a 1px edge each side) is one control tall. On
+   touch each segment is a full 44px target, so the track is taller. */
+.segment {
+  position: relative;
   display: inline-flex;
   align-items: center;
-  gap: var(--space-2);
-  min-height: var(--control-h);
+  height: calc(var(--control-h) - 6px);
+  line-height: 1.25;
+  padding-inline: var(--space-4);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+@media (pointer: coarse) {
+  .segment {
+    height: var(--h-lg);
+  }
+}
+
+.segment:has(input:checked) {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  outline: 1px solid var(--border-strong);
+  outline-offset: -1px;
+}
+
+.segment:has(input:focus-visible) {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.segment input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+/* A choice that can't be made (AI settings: above the organisation's limit), said in words too. */
+.segment:has(input:disabled),
+.segment input:disabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+/* R3, focus mode: the keys, then Skip at the end of the row. */
+.focusBar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+
+.keys {
+  flex: 1 1 16rem;
+  min-width: 0;
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+.keys kbd {
+  display: inline-block;
+  min-width: 1.5em;
+  padding: 0 var(--space-1);
+  border: 1px solid var(--border-strong);
+  border-radius: 2px;
+  font-family: var(--font-mono);
+  text-align: center;
+  color: var(--text-primary);
 }
 
 .group {
@@ -228,4 +342,46 @@
   margin: 0;
   font-size: var(--fs-base);
   overflow-wrap: anywhere;
+}
+
+/* --- A flagged word in text (FlagText.tsx; scan review UX rules, section 2) ---------
+   Check: dotted underline, "?". Review: solid underline, "!". Decoration and a fixed-width
+   glyph only, so a marked word never changes size, line height or spacing. */
+
+.flagText {
+  text-decoration-line: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+}
+
+.flagText[data-band="check"] {
+  text-decoration-style: dotted;
+  text-decoration-color: var(--warning);
+}
+
+.flagText[data-band="review"] {
+  text-decoration-style: solid;
+  text-decoration-color: var(--critical);
+}
+
+.flagText::after {
+  display: inline-block;
+  inline-size: 1.25em;
+  font-size: 0.75em;
+  font-weight: 700;
+  line-height: 1;
+  text-align: center;
+  text-decoration: none;
+}
+
+.flagText[data-band="check"]::after {
+  content: "?";
+  content: "?" / ""; /* the words are in the visually hidden label */
+  color: var(--warning);
+}
+
+.flagText[data-band="review"]::after {
+  content: "!";
+  content: "!" / "";
+  color: var(--critical);
 }

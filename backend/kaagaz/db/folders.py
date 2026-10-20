@@ -33,7 +33,7 @@ from typing import Any
 from sqlalchemy import Connection, CursorResult, text
 from sqlalchemy.exc import IntegrityError
 
-from kaagaz.db.sqlstate import FOREIGN_KEY_VIOLATION, UNIQUE_VIOLATION, sqlstate
+from kaagaz.db.sqlstate import CHECK_VIOLATION, FOREIGN_KEY_VIOLATION, UNIQUE_VIOLATION, sqlstate
 
 _MAX_DEPTH = 5
 
@@ -44,6 +44,8 @@ class FolderRow:
     parent_id: str | None
     name: str
     created_at: datetime
+    kind: str = "custom"  # File management F1 (0041)
+    sort_order: int | None = None
 
 
 class FolderError(Exception):
@@ -89,37 +91,54 @@ class FolderNotEmpty(FolderError):
         super().__init__("folder_not_empty")
 
 
+class DepartmentNotTopLevel(FolderError):
+    """A department is a top-level folder only (0041's CHECK)."""
+
+    def __init__(self) -> None:
+        super().__init__("department_top_level")
+
+
 _LOCK_TREE = "SELECT 1 FROM customers WHERE id = :c FOR NO KEY UPDATE"
 
-_LIST = "SELECT id, parent_id, name, created_at FROM folders WHERE customer_id = :c ORDER BY lower(name), id"
+_LIST = (
+    "SELECT id, parent_id, name, created_at, kind, sort_order FROM folders WHERE customer_id = :c"
+    " ORDER BY lower(name), id"
+)
 
 _INSERT = (
-    "INSERT INTO folders (customer_id, parent_id, name, created_by)"
-    " VALUES (:c, :p, :name, :u)"
-    " RETURNING id, parent_id, name, created_at"
+    "INSERT INTO folders (customer_id, parent_id, name, created_by, kind, sort_order)"
+    " VALUES (:c, :p, :name, :u, :kind, :sort)"
+    " RETURNING id, parent_id, name, created_at, kind, sort_order"
+)
+
+# File management F1: a folder's kind and the department order, each only when given.
+_SET_KIND = (
+    "UPDATE folders SET kind = CASE WHEN :set_kind THEN :kind ELSE kind END,"
+    " sort_order = CASE WHEN :set_sort THEN CAST(:sort AS integer) ELSE sort_order END"
+    " WHERE customer_id = :c AND id = :f RETURNING id, parent_id, name, created_at, kind, sort_order"
 )
 
 _RENAME = (
-    "UPDATE folders SET name = :name WHERE customer_id = :c AND id = :f"
-    " RETURNING id, parent_id, name, created_at"
+    "UPDATE folders SET name = :name WHERE customer_id = :c AND id = :f RETURNING "
+    "id, parent_id, name, created_at, kind, sort_order"
 )
 
 _MOVE = (
-    "UPDATE folders SET parent_id = :p WHERE customer_id = :c AND id = :f"
-    " RETURNING id, parent_id, name, created_at"
+    "UPDATE folders SET parent_id = :p WHERE customer_id = :c AND id = :f RETURNING "
+    "id, parent_id, name, created_at, kind, sort_order"
 )
 
 # The folder and its ancestors; depth 1 is the folder itself, so the largest
 # depth is the folder's own depth in the tree, and the root comes last.
 _PATH = (
-    "WITH RECURSIVE up (id, parent_id, name, created_at, depth) AS ("
-    " SELECT f.id, f.parent_id, f.name, f.created_at, 1 FROM folders f"
+    "WITH RECURSIVE up (id, parent_id, name, created_at, kind, sort_order, depth) AS ("
+    " SELECT f.id, f.parent_id, f.name, f.created_at, f.kind, f.sort_order, 1 FROM folders f"
     " WHERE f.customer_id = :c AND f.id = :f"
     " UNION ALL"
-    " SELECT f.id, f.parent_id, f.name, f.created_at, up.depth + 1 FROM up"
+    " SELECT f.id, f.parent_id, f.name, f.created_at, f.kind, f.sort_order, up.depth + 1 FROM up"
     " JOIN folders f ON f.id = up.parent_id"
     " WHERE f.customer_id = :c AND up.depth < 6)"
-    " SELECT id, parent_id, name, created_at FROM up ORDER BY depth DESC"
+    " SELECT id, parent_id, name, created_at, kind, sort_order FROM up ORDER BY depth DESC"
 )
 
 _DEPTH = (
@@ -193,14 +212,23 @@ def list_folders(conn: Connection, customer_id: str) -> list[FolderRow]:
 
 
 def create_folder(
-    conn: Connection, customer_id: str, *, name: str, parent_id: str | None, created_by: str
+    conn: Connection,
+    customer_id: str,
+    *,
+    name: str,
+    parent_id: str | None,
+    created_by: str,
+    kind: str = "custom",
+    sort_order: int | None = None,
 ) -> FolderRow:
     """Add a folder at the top level (``parent_id`` None) or inside ``parent_id``.
 
     Raises FolderNotFound (no such parent), FolderTooDeep (the parent is at
-    depth 5) or FolderNameTaken. O(d log F) time for the parent's depth d <= 5,
-    O(1) space.
+    depth 5), DepartmentNotTopLevel or FolderNameTaken. O(d log F) time for the
+    parent's depth d <= 5, O(1) space.
     """
+    if kind == "department" and parent_id is not None:
+        raise DepartmentNotTopLevel()
     _lock_tree(conn, customer_id)
     if parent_id is not None:
         parent_depth: int | None = conn.execute(text(_DEPTH), {"c": customer_id, "f": parent_id}).scalar_one()
@@ -208,8 +236,40 @@ def create_folder(
             raise FolderNotFound()
         if parent_depth >= _MAX_DEPTH:
             raise FolderTooDeep()
-    params = {"c": customer_id, "p": parent_id, "name": name, "u": created_by}
+    params = {
+        "c": customer_id,
+        "p": parent_id,
+        "name": name,
+        "u": created_by,
+        "kind": kind,
+        "sort": sort_order,
+    }
     return _folder(_write_named(conn, _INSERT, params).one())
+
+
+def set_kind(
+    conn: Connection,
+    customer_id: str,
+    folder_id: str,
+    *,
+    kind: str | None,
+    sort_order: int | None,
+    order: bool,
+) -> FolderRow:
+    """Set the folder's kind (None: keep it) and, with ``order``, its ``sort_order``.
+    Raises FolderNotFound or DepartmentNotTopLevel. One statement, O(log F)."""
+    params = {
+        "c": customer_id,
+        "f": folder_id,
+        "set_kind": kind is not None,
+        "kind": kind,
+        "set_sort": order,
+        "sort": sort_order,
+    }
+    row = _write_named(conn, _SET_KIND, params).first()
+    if row is None:
+        raise FolderNotFound()
+    return _folder(row)
 
 
 def rename_folder(conn: Connection, customer_id: str, folder_id: str, *, name: str) -> FolderRow:
@@ -285,12 +345,15 @@ def descendant_ids(conn: Connection, customer_id: str, folder_id: str) -> list[s
 
 
 def _write_named(conn: Connection, statement: str, params: dict[str, Any]) -> CursorResult[Any]:
-    """Run an insert or update that can clash with a sibling's name."""
+    """Run an insert or update that can clash with a sibling's name, or put a department
+    below the top level (0041's CHECK)."""
     try:
         return conn.execute(text(statement), params)
     except IntegrityError as error:
         if sqlstate(error) == UNIQUE_VIOLATION:
             raise FolderNameTaken() from None
+        if sqlstate(error) == CHECK_VIOLATION:
+            raise DepartmentNotTopLevel() from None
         raise
 
 
@@ -300,4 +363,6 @@ def _folder(row: Sequence[Any]) -> FolderRow:
         parent_id=None if row[1] is None else str(row[1]),
         name=str(row[2]),
         created_at=row[3],
+        kind=str(row[4]),
+        sort_order=row[5],
     )

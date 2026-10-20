@@ -21,6 +21,7 @@ from kaagaz.api.auth import (
     sign_session,
     verify_password,
 )
+from kaagaz.api.names import ORG_NAME_PROBLEM
 from kaagaz.api.secret_box import SecretBox
 from kaagaz.db import operator_orgs as orgs_sql
 from kaagaz.db import operators as operators_sql
@@ -53,6 +54,12 @@ ORG_ROUTES = {
     ("GET", f"{ORGS}/{ANY_ID}/ai"),
     ("PUT", f"{ORGS}/{ANY_ID}/ai"),
     ("PUT", f"{ORGS}/{ANY_ID}/autofile"),  # feature 28: allow or stop auto-filing
+    # Changed on purpose (0039): one organisation's feature switches.
+    ("GET", f"{ORGS}/{ANY_ID}/feature-switches"),
+    ("PUT", f"{ORGS}/{ANY_ID}/feature-switches/{ANY_ID}"),
+    # Changed on purpose (0040): one organisation's sign-in idle timeout.
+    ("GET", f"{ORGS}/{ANY_ID}/session-timeout"),
+    ("PUT", f"{ORGS}/{ANY_ID}/session-timeout"),
 }
 ORG_ROW = {
     "customer_id": CID,
@@ -220,6 +227,13 @@ def test_the_first_admins_temporary_password_is_shown_once_and_only_its_hash_is_
     assert offline.post(path, {**body, "extra": "x"}).status_code == 400
 
 
+def test_a_placeholder_organisation_name_is_refused_before_anything_is_made(offline: _Offline) -> None:
+    reply = offline.post("", {"name": " Test ", "admin_email": "boss@mehta.example", "admin_name": "Boss"})
+    assert reply.status_code == 400
+    assert reply.json()["error"]["message"] == ORG_NAME_PROBLEM
+    assert offline.calls == []
+
+
 def test_the_organisation_list_holds_counts_only(offline: _Offline) -> None:
     [org] = offline.client.get(ORGS, headers=offline.headers).json()["items"]
     assert org["users"] == {"admins": 1, "reviewers": 2, "members": 3}
@@ -257,3 +271,10 @@ def test_auto_filing_is_allowed_or_stopped_without_a_code_and_each_outcome_gets_
         assert reply.json() == {"organisation": {"id": CID, "autofile_granted": False, "changed": changed}}
     bad = offline.client.put(path, json={"granted": True, "on": True}, headers=offline.headers)
     assert bad.status_code == 400  # the operator never sets the organisation's own switch
+
+
+def test_the_two_step_grant_route_is_gone(offline: _Offline) -> None:
+    """0035: two-step sign-in is required for every admin, so there is nothing to allow."""
+    reply = offline.client.put(f"{ORGS}/{CID}/two-step", json={"granted": True}, headers=offline.headers)
+    assert reply.status_code in (404, 405)
+    assert offline.calls == []

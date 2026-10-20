@@ -141,7 +141,7 @@ class DeferTest(unittest.TestCase):
 
     def test_a_deferral_whose_lease_was_lost_is_left_alone(self) -> None:
         class LostQueue(LeaseQueue):
-            def defer(self, receipt: str, seconds: int) -> None:
+            def defer(self, receipt: str, seconds: int, *, counted: bool = False) -> None:
                 raise LeaseLost(receipt)
 
         queue = LostQueue(FakeClock(), lease_seconds=60.0, max_attempts=6)
@@ -167,6 +167,14 @@ class FairShareTest(unittest.TestCase):
         self.assertEqual((run.ran, run.queue.deferred), ([B1], [(A1, 30)]))
         self.assertEqual(run.tries, [(B1, 1)])
         self.assertIn(f"kaagaz.fair:{CUSTOMER_B}:0", run.held_during[0])
+
+    def test_a_worker_that_is_stopping_hands_a_new_job_straight_back(self) -> None:
+        """Council 16 Oct 2026: a job received after SIGTERM is never started (Docker would cut
+        it off, and it would wait out its lease); it goes back at once for another worker."""
+        locks = MemoryLocks()
+        run = Run(A1, admit=admission(working, fair_share(locks).slot, lambda: True), locks=locks)
+        self.assertTrue(run.worker.run_once())
+        self.assertEqual((run.ran, run.queue.deferred, run.tries), ([], [(A1, 0)], []))
 
     def test_the_slot_is_held_for_the_try_and_let_go_after_it_however_it_ends(self) -> None:
         for error in (None, BackendUnavailable("storage")):

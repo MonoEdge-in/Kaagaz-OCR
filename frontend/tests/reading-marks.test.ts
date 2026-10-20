@@ -32,7 +32,7 @@ describe("the marks on a page", () => {
 
   it("names each mark for what it marks, as read, so a screen reader can tell them apart", () => {
     expect(markName(mark("unsure", "Shinde"), 0, 3)).toBe("Unsure word 'Shinde', mark 1 of 3");
-    expect(markName(mark("illegible", "[?]"), 1, 3)).toBe("Couldn't read '[?]', mark 2 of 3");
+    expect(markName(mark("illegible", "[?]"), 1, 3)).toBe("Hard to read '[?]', mark 2 of 3");
     expect(markName(mark("unpinned", "  "), 2, 3)).toBe("Spot not confirmed, mark 3 of 3");
     expect(markName(mark("unsure", "a\u202eb"), 0, 1)).toBe("Unsure word 'a⟦U+202E⟧b', mark 1 of 1");
   });
@@ -41,7 +41,8 @@ describe("the marks on a page", () => {
     expect(legend([mark("unpinned"), mark("unsure"), mark("unsure")])).toEqual(["unsure", "unpinned"]);
     expect(legend([])).toEqual([]);
     expect(MARK_WORDS.unsure.legend).toBe("Unsure word (dashed)");
-    expect(MARK_WORDS.illegible.legend).toBe("Couldn't read (hatched)");
+    // Changed on purpose (MonoEdge design system, 16 Oct 2026): no gradients, so no hatch.
+    expect(MARK_WORDS.illegible.legend).toBe("Hard to read (double edge)");
     expect(MARK_WORDS.unpinned.legend).toBe("Spot not confirmed (dotted)");
   });
 
@@ -64,9 +65,12 @@ describe("how the marks look", () => {
   const css = readFileSync(join(process.cwd(), "components/viewer/PageViewer.module.css"), "utf8");
   const globals = readFileSync(join(process.cwd(), "app/globals.css"), "utf8");
 
-  it("gives each kind its own pattern: dashed, hatched, dotted", () => {
+  // Changed on purpose (MonoEdge design system, 16 Oct 2026): no gradients, so "couldn't read"
+  // is a double edge with a light fill instead of a hatch.
+  it("gives each kind its own pattern: dashed, double, dotted", () => {
     expect(css).toMatch(/\.problem\[data-quality="unsure"\][^}]*border: 2px dashed/);
-    expect(css).toMatch(/\.problem\[data-quality="illegible"\][^}]*repeating-linear-gradient/);
+    expect(css).toMatch(/\.problem\[data-quality="illegible"\][^}]*border: 4px double var\(--illegible-on-paper\)/);
+    expect(css.replace(/\/\*[\s\S]*?\*\//g, "")).not.toMatch(/gradient/);
     expect(css).toMatch(/\.problem\[data-quality="unpinned"\][^}]*border: 2px dotted/);
   });
 
@@ -82,20 +86,23 @@ describe("how the marks look", () => {
     // After .problem and .problem:hover at no lower specificity, so their box-shadow never replaces it.
     expect(css.indexOf(".problem:focus-visible {")).toBeGreaterThan(css.indexOf(".problem:hover {"));
     // Both tokens are set once, so the dark theme keeps them: pages are paper white in both.
-    expect(globals.match(/--mine-on-paper: #[0-9a-f]+/g)).toEqual(["--mine-on-paper: #233f8c"]);
+    // Changed on purpose (MonoEdge theme, 16 Oct 2026): the MonoEdge blue #204494.
+    expect(globals.match(/--mine-on-paper: #[0-9a-f]+/g)).toEqual(["--mine-on-paper: #204494"]);
     expect(globals.match(/--paper: #[0-9a-f]+/g)).toEqual(["--paper: #ffffff"]);
     const channel = (hex: string) => {
       const value = parseInt(hex, 16) / 255;
       return value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
     };
-    const ink = 0.2126 * channel("23") + 0.7152 * channel("3f") + 0.0722 * channel("8c");
+    const ink = 0.2126 * channel("20") + 0.7152 * channel("44") + 0.0722 * channel("94");
     expect((1 + 0.05) / (ink + 0.05)).toBeGreaterThanOrEqual(3); // WCAG 1.4.11 against white
   });
 
   it("uses one paper-fixed red, the light theme's #9e2219, the same in dark (V8)", () => {
     const tokens = globals.match(/--illegible-on-paper: (#[0-9a-f]+)/g) ?? [];
     expect(tokens).toEqual(["--illegible-on-paper: #9e2219"]);
-    expect(globals).toMatch(/--danger-fg: #9e2219/);
+    // Changed on purpose (MonoEdge design system, 16 Oct 2026): --danger-fg is now --critical;
+    // the paper-fixed red keeps its own value.
+    expect(globals).toMatch(/--danger-fg: var\(--critical\)/);
   });
 });
 
@@ -130,7 +137,10 @@ describe("the marks layer (PageViewer)", () => {
       }),
     );
     expect(html).toContain("Show reading problems");
-    expect(html).toContain('type="checkbox" checked=""');
+    // Changed on purpose (UI audit, 16 Oct 2026): DD9, a toolbar toggle (on at first for this
+    // uncertain page), its legend a tooltip tied to it.
+    expect(html).toMatch(/<button [^>]*aria-pressed="true" aria-label="Show reading problems" aria-describedby="([^"]+)"/);
+    expect(html).toMatch(/<span id="[^"]+" role="tooltip"[^>]*><ul [^>]*aria-label="What the marks mean"/);
     expect(html).toContain("Unsure word (dashed)");
     // Each mark is drawn on the page as a button, named for what it marks, with its pattern.
     const buttons = html.match(/<button [^>]*data-quality="[a-z]+"[^>]*><\/button>/g) ?? [];

@@ -1,172 +1,280 @@
-/* Kaagaz look: ledger paper. Warm paper, ink-indigo actions, and one
-   distinctive element, the red margin rule of a bahi-khata page.
+/* Kaagaz in the MonoEdge design system (16 Oct 2026, the owner's rules file
+   monoedge-design-system-rules.md). Flat, square, hairline: radius 2px, 1px
+   borders, no shadows, glows or gradients. Inter for text and UI, JetBrains
+   Mono for data only (.mono), Archivo for headings (UI audit G4, 16 Oct 2026:
+   the owner's decision over "mono everywhere"). Blue is punctuation: one
+   primary action per view.
 
    Every colour is a token. Light is the default; dark comes from the system
    (prefers-color-scheme) unless the person picked Light or Dark, which the
-   server writes as data-theme on <html> (lib/theme.ts). Contrast pairs are
-   measured for WCAG 2.2 AA in both themes (council 2026-09-27, ui-redesign).
-   Components use these tokens only; tests/guards.test.ts fails on any hex
-   colour outside this file. */
+   server writes as data-theme on <html> (lib/theme.ts). Components use these
+   tokens only; tests/guards.test.ts fails on any hex colour outside this file.
+   The names the screens already use (--bg, --fg, --surface, --r-sm, ...) are
+   kept as aliases of the MonoEdge tokens.
+
+   WCAG 2.2 AA contrast, measured (light / dark), on page, surface, subdued:
+     --text-primary (--fg)                  18.2 18.9 17.3 / 19.9 18.9 17.1
+     --text-secondary (--fg-muted)           7.4  7.7  7.0 / 10.0  9.5  8.6
+     --text-muted (--control-edge)           5.2  5.4  4.9 /  7.6  7.2  6.5
+     --accent (links)                        8.8  9.1  8.3 /  8.3  7.8  7.1
+   --text-muted is a step darker (light) and lighter (dark) than the MonoEdge
+   file (UI audit, 16 Oct 2026), so muted text stays 4.5:1 on a hovered or
+   selected row too: 4.7 (light, on --accent-subtle) and 4.9 (dark, on
+   --bg-selected).
+   Pairs:
+     --accent on --accent-subtle             7.9 / 5.3
+     --text-onaccent on --accent             9.1 / 8.7
+     --verified-fg on --verified-bg          4.8 / 6.3
+     --review-fg on --review-bg              5.4 / 7.5
+     --danger-fg on --danger-bg              5.7 / 5.7
+     --text-onaccent on --critical           6.5 / 7.1 (a destructive button, pressed or hovered)
+     --review-solid (dashed edge) on surface 3.6 / 8.9
+     --review-on-solid on --review-solid     5.2 / 9.4 (the Review link's count)
+   Body text needs 4.5:1; large text, control edges and the focus ring 3:1.
+   --warning (#B7791F) is 3.6:1 on white: enough for an edge, not for text, so
+   light Needs review text is a darker amber (#8a5a12). --border-strong
+   (#D5D8DD, 1.4:1) is a hairline, so inputs take --control-edge instead. */
 
 :root {
-  /* Surfaces and text */
-  --bg: #f6f2e9;
-  --surface: #fffdf8;
-  --surface-2: #ece6d9;
-  --fg: #1b1f2a;
-  --fg-muted: #595c66;
-  --border: #ddd5c6; /* decorative hairline only */
-  --border-strong: #8a8272; /* inputs and control edges, 3:1 or more */
+  /* MonoEdge tokens, light */
+  --bg-page: #fafbfc;
+  --bg-surface: #ffffff;
+  --bg-subdued: #f4f5f7;
+  --bg-hover: #f4f5f7;
+  --bg-selected: #f4f7fd;
+  --text-primary: #101114;
+  --text-secondary: #4e545c;
+  --text-muted: #646b74;
+  --text-onaccent: #ffffff;
+  --accent: #204494;
+  --accent-hover: #264e9f;
+  --accent-subtle: #e9f0fa;
+  --border: #e8eaed; /* decorative hairline only */
+  --border-strong: #d5d8dd;
+  --focus: #204494;
+  --success: #1e7a3c;
+  --warning: #b7791f;
+  --critical: #b3261e;
 
-  /* Actions */
-  --accent: #233f8c;
-  --accent-fg: #ffffff;
-  --accent-hover: #1b3272;
-  --accent-soft: #e4e9f6;
+  /* Labels (value and answer labels only, never document status): tints of
+     --success, --warning and --critical, the text pairs measured above. */
+  --verified-bg: #edf5ef;
+  --verified-fg: var(--success);
+  --verified-solid: var(--success);
+  --review-bg: #fbf3e6;
+  --review-fg: #8a5a12;
+  --review-solid: var(--warning);
+  --review-on-solid: var(--text-primary); /* text on a filled amber count */
+  --danger-bg: #fbeceb;
+  --danger-fg: var(--critical);
 
-  /* Labels (value and answer labels only, never document status) */
-  --verified-bg: #e2f0e4;
-  --verified-fg: #1a5c31;
-  --verified-solid: #2f7a47;
-  --review-bg: #fbebcb;
-  --review-fg: #774300;
-  --review-solid: #a86200;
-  --danger-bg: #fae3df;
-  --danger-fg: #9e2219;
-
-  --focus: #233f8c;
-  --brand-lal: #9e2a2b; /* the wordmark and margin rule only, never buttons */
+  /* The names the screens use, kept as aliases */
+  --bg: var(--bg-page);
+  --surface: var(--bg-surface);
+  --surface-2: var(--bg-subdued);
+  --fg: var(--text-primary);
+  --fg-muted: var(--text-secondary);
+  --accent-fg: var(--text-onaccent);
+  --accent-soft: var(--accent-subtle);
+  --control-edge: var(--text-muted); /* input and checkbox edges, 3:1 or more (WCAG 1.4.11) */
+  --brand-lal: var(--accent); /* the wordmark and margin rule only (the name is kept) */
 
   /* The page itself stays white paper in both themes */
   --paper: #ffffff;
-  --paper-frame: #ece6d9;
+  --paper-frame: var(--bg-subdued);
   /* The sign-in figure's text bars and rule on the white page, kept in dark */
-  --paper-bar: #e6e0d3;
-  --paper-bar-strong: #cfc7b6;
-  --paper-rule: #d6cfbf;
+  --paper-bar: #e8eaed;
+  --paper-bar-strong: #d5d8dd;
+  --paper-rule: #d5d8dd;
+  /* The amber page highlight stays: it marks a place, it is not decoration. */
   --hl-fill: rgba(255, 176, 0, 0.3);
   --hl-border: #b86e00;
   --hl-halo: #1f1a14; /* dark ink: the outer highlight ring, the same in both themes */
-  --mine-on-paper: #233f8c; /* my words markers: pages are paper white in both themes */
-  --illegible-on-paper: #9e2219; /* PRD 5 U3 (V8): "couldn't read" marks; the light --danger-fg, kept in dark */
+  --mine-on-paper: #204494; /* my words markers: pages are paper white in both themes */
+  --illegible-on-paper: #9e2219; /* PRD 5 U3 (V8): "couldn't read" marks, the same in dark */
 
-  /* Type: rem plus vw, so text still grows at 200% zoom */
-  --font-sans: system-ui, "Segoe UI Variable Text", "Segoe UI", -apple-system, Roboto, "Noto Sans",
-    "Nirmala UI", "Noto Sans Devanagari", sans-serif;
-  --font-display: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
-  --font-mono: ui-monospace, "Cascadia Mono", "Segoe UI Mono", Consolas, monospace;
+  /* The select's caret in --text-muted (an image cannot read a token). */
+  --select-caret: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2 4l4 4 4-4' fill='none' stroke='%23646B74' stroke-width='1.5'/%3E%3C/svg%3E");
+
+  /* Type (UI audit G3/G4, 16 Oct 2026). next/font in app/layout.tsx sets
+     --font-inter, --font-jetbrains-mono and --font-archivo, each with its
+     size-adjusted fallback. Inter for text and UI; JetBrains Mono for data
+     only (values, IDs, numbers, scanned text: .mono, .readText); Archivo for
+     headings. None of them has Devanagari: Hindi and Marathi fall back to the
+     system faces after them. */
+  --font-sans: var(--font-inter, "Inter"), system-ui, -apple-system, "Segoe UI", Roboto, Arial,
+    "Noto Sans Devanagari", "Nirmala UI", sans-serif;
+  --font-mono: var(--font-jetbrains-mono, "JetBrains Mono"), ui-monospace, "SF Mono", Menlo, Consolas,
+    "Noto Sans Devanagari", "Nirmala UI", monospace;
+  --font-display: var(--font-archivo, "Archivo"), "Helvetica Neue", Arial, "Noto Sans Devanagari",
+    "Nirmala UI", sans-serif;
+  /* rem plus vw, so text still grows at 200% zoom. */
+  --fs-label: 0.6875rem; /* 11px: bold capitals */
   --fs-sm: clamp(0.875rem, 0.85rem + 0.1vw, 0.9375rem);
   --fs-base: clamp(1rem, 0.96rem + 0.2vw, 1.0625rem);
   --fs-lg: clamp(1.125rem, 1.06rem + 0.3vw, 1.25rem);
   --fs-xl: clamp(1.25rem, 1.15rem + 0.5vw, 1.5625rem);
   --fs-2xl: clamp(1.5rem, 1.3rem + 1vw, 1.9375rem);
 
-  /* Spacing (4/8 scale), sizes, radius, elevation, motion, layers */
+  /* Spacing: 4, 8, 12, 16, 24, 32, 48, 64 only. --space-5 and --space-7 are
+     the old names for 24 and 48. */
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
   --space-4: 16px;
-  --space-5: 24px;
-  --space-6: 32px;
-  --space-7: 48px;
-  --space-8: 64px;
-  --control-h: 40px;
-  --r-sm: 6px;
-  --r-md: 10px;
-  --r-full: 999px;
-  --e-1: 0 1px 2px rgb(0 0 0 / 0.06);
-  --e-2: 0 8px 24px rgb(0 0 0 / 0.18);
-  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+  --space-16: 64px;
+  --space-5: var(--space-6);
+  --space-7: var(--space-12);
+
+  /* Control heights: every control in one row shares one. */
+  --h-sm: 28px;
+  --h-md: 36px;
+  --h-lg: 44px;
+  /* THE control height (one control height, 16 Oct 2026): every single-line
+     control (.btn, IconButton, input, select, the header search, a segmented
+     control, a chip that acts as a button) is exactly this tall, 36px, 44px on
+     touch, so a button beside a field lines up with it. Only a textarea grows. */
+  --control-h: var(--h-md);
+  /* The least any control may be (UI audit G10): 32px, 44px on touch. */
+  --control-min: 32px;
+  /* A badge, status chip or count (not a control): one height, 24px. */
+  --badge-h: 24px;
+
+  /* Square and flat: one radius, no elevation. */
+  --r-sm: 2px;
+  --r-md: 2px;
+  --r-full: 2px;
+  --e-1: none;
+  --e-2: none;
+
+  /* Motion: transform and opacity only, 120 to 200ms (220ms for a drawer or sheet). */
+  --ease: cubic-bezier(0.2, 0, 0.2, 1);
   --t-fast: 120ms;
   --t-med: 160ms;
+  --t-slow: 200ms;
+  --t-drawer: 220ms;
+
+  /* Layers: this scale only. */
+  --z-base: 0;
   --z-sticky: 10;
-  --z-header: 20;
-  --z-drawer: 40;
-  --z-skip: 60;
+  --z-dropdown: 20;
+  --z-overlay: 30;
+  --z-modal: 40;
+  --z-toast: 50;
+  --z-tooltip: 60;
+  --z-header: var(--z-dropdown);
+  --z-drawer: var(--z-modal);
+  --z-skip: var(--z-tooltip);
+
+  /* The grid: 12 columns; gutter and outer margin 24 and 32px, 16 below 768px. */
+  --grid-columns: 12;
+  --gutter: 24px;
+  --margin: 32px;
+  --content-max: 1200px;
+
+  /* The shell's zones (components/shell/Shell.module.css), fixed heights. */
   --sidebar-w: 240px;
-  --content-max: 1120px;
-  --topbar-h: 56px; /* the phone and tablet top bar; 0 once the sidebar shows */
-  /* The space the top bar really takes, the phone notch included. Use this for
-     sticky offsets and full-height screens. */
-  --topbar-space: calc(var(--topbar-h) + env(safe-area-inset-top));
+  --header-h: 56px;
+  --toolbar-h: 48px;
+  --statusbar-h: 32px;
+  --bottombar-h: 0px; /* 56px below 768px */
+  /* The height <main> has, the one scroller: use it for full-height screens
+     and sticky columns instead of 100dvh or 100svh. */
+  --main-h: calc(
+    100dvh - var(--header-h) - env(safe-area-inset-top) - var(--statusbar-h) - var(--bottombar-h) -
+      env(safe-area-inset-bottom)
+  );
+  /* The header is a grid row above <main>, never over it, so a sticky part of
+     a screen sticks at the top of <main>: these old offsets are 0. */
+  --topbar-h: 0px;
+  --topbar-space: 0px;
   --backdrop: rgb(0 0 0 / 0.45);
 
   color-scheme: light;
 }
 
-/* Dark: "ink at night". Warm near-black, paper-toned text; not an inversion. */
+/* Dark: the system's dark, unless Light was picked. The same values as the
+   picked Dark below (tests/theme.test.ts holds them equal). */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #14161b;
-    --surface: #1c1f26;
-    --surface-2: #262a33;
-    --fg: #ece6da;
-    --fg-muted: #a7a69e;
-    --border: #30343e;
-    --border-strong: #6e7482;
-    --accent: #a3b6f0;
-    --accent-fg: #101a33;
-    --accent-hover: #bccbf5;
-    --accent-soft: #1f2a47;
-    --verified-bg: #15301e;
-    --verified-fg: #8fd3a3;
-    --verified-solid: #4fae6f;
-    --review-bg: #3a2a0d;
-    --review-fg: #f3c46a;
-    --review-solid: #dc9c2e;
-    --danger-bg: #3c1814;
-    --danger-fg: #ff9e92;
-    --focus: #a3b6f0;
-    --brand-lal: #e57a6e;
-    --paper-frame: #0f1115;
-    --e-1: 0 0 0 1px #30343e;
-    --e-2: 0 8px 28px rgb(0 0 0 / 0.55);
+    --bg-page: #08090a;
+    --bg-surface: #101114;
+    --bg-subdued: #1a1c1f;
+    --bg-hover: #24272b;
+    --bg-selected: #172f65;
+    --text-primary: #ffffff;
+    --text-secondary: #b3b8c0;
+    --text-muted: #9aa0a8;
+    --text-onaccent: #000000;
+    --accent: #85a9dd;
+    --accent-hover: #a3bee7;
+    --accent-subtle: #172f65;
+    --border: #24272b;
+    --border-strong: #33383e;
+    --focus: #85a9dd;
+    --success: #4fb570;
+    --warning: #e0a93a;
+    --critical: #ef6e63;
+    --verified-bg: #12241a;
+    --review-bg: #2a2112;
+    --review-fg: var(--warning);
+    --review-on-solid: var(--bg-page);
+    --danger-bg: #2e1715;
+    --paper-frame: var(--bg-page);
+    --select-caret: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2 4l4 4 4-4' fill='none' stroke='%239AA0A8' stroke-width='1.5'/%3E%3C/svg%3E");
     color-scheme: dark;
   }
 }
 
 :root[data-theme="dark"] {
-  --bg: #14161b;
-  --surface: #1c1f26;
-  --surface-2: #262a33;
-  --fg: #ece6da;
-  --fg-muted: #a7a69e;
-  --border: #30343e;
-  --border-strong: #6e7482;
-  --accent: #a3b6f0;
-  --accent-fg: #101a33;
-  --accent-hover: #bccbf5;
-  --accent-soft: #1f2a47;
-  --verified-bg: #15301e;
-  --verified-fg: #8fd3a3;
-  --verified-solid: #4fae6f;
-  --review-bg: #3a2a0d;
-  --review-fg: #f3c46a;
-  --review-solid: #dc9c2e;
-  --danger-bg: #3c1814;
-  --danger-fg: #ff9e92;
-  --focus: #a3b6f0;
-  --brand-lal: #e57a6e;
-  --paper-frame: #0f1115;
-  --e-1: 0 0 0 1px #30343e;
-  --e-2: 0 8px 28px rgb(0 0 0 / 0.55);
+  --bg-page: #08090a;
+  --bg-surface: #101114;
+  --bg-subdued: #1a1c1f;
+  --bg-hover: #24272b;
+  --bg-selected: #172f65;
+  --text-primary: #ffffff;
+  --text-secondary: #b3b8c0;
+  --text-muted: #9aa0a8;
+  --text-onaccent: #000000;
+  --accent: #85a9dd;
+  --accent-hover: #a3bee7;
+  --accent-subtle: #172f65;
+  --border: #24272b;
+  --border-strong: #33383e;
+  --focus: #85a9dd;
+  --success: #4fb570;
+  --warning: #e0a93a;
+  --critical: #ef6e63;
+  --verified-bg: #12241a;
+  --review-bg: #2a2112;
+  --review-fg: var(--warning);
+  --review-on-solid: var(--bg-page);
+  --danger-bg: #2e1715;
+  --paper-frame: var(--bg-page);
+  --select-caret: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2 4l4 4 4-4' fill='none' stroke='%239AA0A8' stroke-width='1.5'/%3E%3C/svg%3E");
   color-scheme: dark;
 }
 
 @media (pointer: coarse) {
   :root {
-    --control-h: 44px;
+    --control-h: var(--h-lg);
+    --control-min: var(--h-lg);
   }
 }
 
-@media (min-width: 1024px) {
+@media (max-width: 767.98px) {
   :root {
-    --topbar-h: 0px;
-    --topbar-space: 0px;
+    --gutter: 16px;
+    --margin: 16px;
+    --header-h: 48px;
+    --bottombar-h: 56px;
   }
 }
 
-/* --- Base ------------------------------------------------------------------ */
+/* --- Base: nothing bleeds ---------------------------------------------------- */
 
 *,
 *::before,
@@ -174,20 +282,41 @@
   box-sizing: border-box;
 }
 
-html,
-body {
-  margin: 0;
-  padding: 0;
-}
-
+/* A content page (sign-in, sign-up): the page scrolls, but never rubber-bands
+   past its ends; what shows there is the page colour. */
 html {
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
-  /* A focused element scrolled into view stays clear of the sticky top bar
-     (WCAG 2.4.11). The token is 0 once the sidebar shows. */
-  scroll-padding-top: calc(var(--topbar-space) + var(--space-4));
-  /* The scrollbar's space is kept, so locking the page under a dialog doesn't shift it. */
-  scrollbar-gutter: stable;
+  background: var(--bg-page);
+  overscroll-behavior-y: none;
+  /* A focused element scrolled into view stays 8px clear of the top edge (the
+     app's header is a row above its scroller, WCAG 2.4.11). */
+  scroll-padding-top: calc(var(--topbar-space) + var(--space-2));
+  /* No scrollbar-gutter here (UI audit G2): in the app shell the page never
+     scrolls, so a kept gutter was a dead 15px strip on the right. */
+  overflow-anchor: auto;
+}
+
+/* An app screen (AppShell): the page never scrolls, only <main> and the side
+   nav inside it, so pulling past an end shows no gap and no bar comes loose. */
+html:has(.app-shell),
+html:has(.app-shell) body {
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+/* The status bar takes its 32px row only while a screen has a line in it
+   (UI audit G1): with nothing in it the row, and the height <main> loses to
+   it, are 0. Its live region stays in the page, so a line arriving is read. */
+:root:has(.app-shell):not(:has(.app-statusbar > :not(:empty))) {
+  --statusbar-h: 0px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
+  }
 }
 
 /* An open dialog or drawer: the page behind it stays still. */
@@ -196,14 +325,54 @@ html:has(dialog:modal) {
 }
 
 body {
+  margin: 0;
+  padding: 0;
+  min-width: 320px;
+  min-height: 100vh;
   min-height: 100dvh;
-  background: var(--bg);
+  overflow-wrap: break-word;
+  /* No background of its own: <html> paints the page colour, so a sign-in
+     page's band colour behind it (login.module.css) can show when pulled. */
   color: var(--fg);
   font-family: var(--font-sans);
   font-size: var(--fs-base);
   line-height: 1.55;
+  font-variant-numeric: tabular-nums;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+}
+
+img,
+svg,
+video,
+canvas,
+iframe {
+  max-width: 100%;
+  height: auto;
+  display: block;
+}
+
+/* An icon beside words stays in their line, centred on the words (one
+   control height / centred icons, 16 Oct 2026): it sits an eighth of the font
+   size under the baseline, which puts a 16px icon's middle on the middle of
+   14-17px text. In a flex row (a button, a nav link, a chip) align-items:
+   center does it instead and vertical-align is ignored. */
+:where(button, a, label, span, p, li, legend, summary, td, th, dt, dd, h1, h2, h3, h4, strong, em, small, b) > svg {
+  display: inline-block;
+  vertical-align: -0.125em;
+}
+
+:where(p, h1, h2, h3, h4, li, td, th, dd, a, span, label) {
+  overflow-wrap: anywhere;
+}
+
+input,
+select,
+textarea,
+button {
+  font: inherit;
+  color: inherit;
+  max-width: 100%;
 }
 
 a {
@@ -218,22 +387,23 @@ a:hover {
 :focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
-  box-shadow: 0 0 0 4px var(--bg);
 }
 
 ::selection {
-  background: var(--accent-soft);
+  background: var(--accent-subtle);
   color: var(--fg);
 }
 
 ::placeholder {
-  color: var(--fg-muted);
+  color: var(--text-muted);
   opacity: 1;
 }
 
+/* Headings use the loaded display face, Archivo (UI audit G3). */
 h1,
 h2,
 h3 {
+  font-family: var(--font-display);
   line-height: 1.2;
   margin: 0 0 var(--space-2);
   color: var(--fg);
@@ -242,35 +412,20 @@ h3 {
 h1 {
   font-size: var(--fs-2xl);
   font-weight: 700;
-  letter-spacing: -0.01em;
 }
 
 h2 {
   font-size: var(--fs-xl);
-  font-weight: 600;
+  font-weight: 700;
 }
 
 h3 {
   font-size: var(--fs-lg);
-  font-weight: 600;
+  font-weight: 700;
 }
 
 p {
   margin: 0 0 var(--space-3);
-}
-
-img,
-svg,
-canvas {
-  max-width: 100%;
-}
-
-input,
-select,
-textarea,
-button {
-  font: inherit;
-  color: inherit;
 }
 
 input[type="checkbox"],
@@ -280,13 +435,53 @@ input[type="radio"] {
   height: 18px;
 }
 
-/* Browser autofill must not turn fields bright yellow or white in dark mode. */
+/* A tick or a chosen radio settles in (scale only: some radios are see-through). */
+input[type="checkbox"]:checked,
+input[type="radio"]:checked {
+  animation: check-in var(--t-fast) var(--ease);
+}
+
+/* A checkbox or radio is clicked through its label (UI audit G10): the label
+   is at least one control tall (32px, 44px on touch), the box and its words
+   one target. :where() keeps it weaker than any screen's own layout. */
+:where(label:has(> input[type="checkbox"], > input[type="radio"])) {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--control-min);
+  cursor: pointer;
+}
+
+/* Browser autofill must not turn fields bright yellow or white in dark mode:
+   its background change is held off for good. */
 input:-webkit-autofill,
 input:-webkit-autofill:hover,
 input:-webkit-autofill:focus {
   -webkit-text-fill-color: var(--fg);
-  box-shadow: 0 0 0 1000px var(--surface) inset;
   transition: background-color 600000s 0s;
+}
+
+/* Touch: targets 44px. Phones: inputs at 16px, so the page never zooms in. */
+@media (pointer: coarse) {
+  .btn,
+  a,
+  input,
+  select {
+    min-height: var(--h-lg);
+  }
+}
+
+@media (max-width: 767.98px) {
+  input,
+  select,
+  textarea {
+    font-size: max(1rem, 16px);
+  }
+}
+
+/* A tooltip never catches the pointer. */
+[role="tooltip"] {
+  pointer-events: none;
 }
 
 .muted {
@@ -306,14 +501,33 @@ input:-webkit-autofill:focus {
   flex-wrap: wrap;
 }
 
+.row > *,
+.stack > * {
+  min-width: 0;
+}
+
 .tabular {
   font-variant-numeric: tabular-nums;
 }
 
+/* A small label: 11px bold capitals. */
+.caps {
+  font-size: var(--fs-label);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* Data in JetBrains Mono (UI audit G4): values, IDs, numbers and scanned text.
+   Any screen puts it on the element that holds the value. */
+.mono,
+td.num {
+  font-family: var(--font-mono);
+}
+
 /* Text as a reader read it: Devanagari-capable mono, spaces kept, direction isolated. */
 .readText {
-  font-family: ui-monospace, "Cascadia Mono", "Segoe UI Mono", Consolas, "Nirmala UI",
-    "Noto Sans Devanagari", monospace;
+  font-family: var(--font-mono);
   line-height: 1.6;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -328,23 +542,47 @@ input:-webkit-autofill:focus {
   width: 100%;
   max-width: var(--content-max);
   margin-inline: auto;
-  min-height: 0;
-  flex: 1 1 auto;
-  padding: var(--space-5) var(--space-4) var(--space-7);
+  min-width: 0;
+  /* In <main>'s column: at least its height, taller as the content needs. */
+  flex: 1 0 auto;
+  padding: var(--space-6) var(--margin) var(--space-12);
   /* Each side keeps clear of its own notch or rounded corner, at every width. */
-  padding-left: max(var(--space-4), env(safe-area-inset-left));
-  padding-right: max(var(--space-4), env(safe-area-inset-right));
+  padding-left: max(var(--margin), env(safe-area-inset-left));
+  padding-right: max(var(--margin), env(safe-area-inset-right));
   display: flex;
   flex-direction: column;
-  gap: var(--space-5);
+  gap: var(--space-6);
 }
 
 @media (min-width: 640px) {
   .page {
-    padding-block: var(--space-6) var(--space-8);
-    padding-left: max(var(--space-6), env(safe-area-inset-left));
-    padding-right: max(var(--space-6), env(safe-area-inset-right));
+    padding-block: var(--space-8) var(--space-16);
+    padding-left: max(var(--margin), env(safe-area-inset-left));
+    padding-right: max(var(--margin), env(safe-area-inset-right));
   }
+}
+
+/* The grid's container: the same edges as the header and toolbar. */
+.container {
+  width: 100%;
+  max-width: var(--content-max);
+  margin-inline: auto;
+  padding-inline: var(--margin);
+}
+
+/* A screen's toolbar zone, 48px: its title and view tabs first, at most three
+   actions, the one primary at the end. */
+.app-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--toolbar-h);
+  min-width: 0;
+}
+
+.app-toolbar > :first-child {
+  min-width: 0;
+  margin-inline-end: auto;
 }
 
 /* The document screen: the page and its panels use a big screen's width. */
@@ -352,12 +590,19 @@ input:-webkit-autofill:focus {
   max-width: 120rem;
 }
 
+/* The title block and the controls at its end share one middle line (one
+   control height / centred icons, 16 Oct 2026; it was flex-end, so a button
+   hung from the subtitle's baseline). */
 .page-header {
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-end;
+  align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
+}
+
+.page-header > * {
+  min-width: 0;
 }
 
 .page-header h1 {
@@ -372,6 +617,7 @@ input:-webkit-autofill:focus {
 /* --- Surfaces -------------------------------------------------------------- */
 
 .card {
+  min-width: 0;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
@@ -380,77 +626,165 @@ input:-webkit-autofill:focus {
 
 @media (min-width: 640px) {
   .card {
-    padding: var(--space-5);
+    padding: var(--space-6);
   }
 }
 
-/* --- Buttons --------------------------------------------------------------- */
+/* A row of feature cards: icon, title, text and action line up across the
+   cards (subgrid); without subgrid each card is a column, its action at the foot. */
+.features {
+  display: grid;
+  gap: var(--space-6);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+}
+
+.features > .card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.features > .card > :last-child {
+  margin-top: auto;
+}
+
+@supports (grid-template-rows: subgrid) {
+  .features > .card {
+    display: grid;
+    grid-template-rows: subgrid;
+    grid-row: span 4;
+  }
+}
+
+/* --- Buttons ---------------------------------------------------------------
+   One height per row; hover, focus and press change colour only, at once
+   (nothing but transform and opacity is ever animated); hover only with a
+   mouse (a tapped button on a phone kept its hover colour); a busy
+   button keeps its width (its words go clear under a spinner); a disabled one
+   keeps its size. The plain .btn is the secondary button. */
 
 .btn {
+  --btn-fg: var(--text-primary);
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: var(--space-2);
-  min-height: var(--control-h);
-  /* A long label wraps inside the button rather than push it out of its box. */
+  /* One control height (16 Oct 2026): the same as the fields beside it. Its
+     words are centred by the flex row and a fixed line-height, no padding. */
+  height: var(--control-h);
+  min-height: var(--control-min);
   max-width: 100%;
-  padding: var(--space-1) var(--space-4);
+  min-width: 0;
+  padding-block: 0;
+  padding-inline: var(--space-4);
+  /* Inline in a line of words (a value, a sentence), it sits on the line's middle. */
+  vertical-align: middle;
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-sm);
+  border-radius: 2px;
   background: var(--surface);
-  color: var(--fg);
-  font-weight: 600;
+  color: var(--btn-fg);
   font-size: var(--fs-sm);
+  font-weight: 500;
   line-height: 1.2;
   text-align: center;
-  white-space: normal;
-  overflow-wrap: break-word;
-  cursor: pointer;
   text-decoration: none;
-  transition:
-    background-color var(--t-fast) var(--ease),
-    border-color var(--t-fast) var(--ease),
-    color var(--t-fast) var(--ease);
+  white-space: nowrap;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+  cursor: pointer;
 }
 
-.btn:hover {
-  background: var(--surface-2);
-  color: var(--fg);
+.btn svg {
+  flex: none;
+}
+
+/* Below 480px a long label wraps inside its button, so it never pushes the
+   page sideways; the button grows taller instead. A one-line label is still
+   exactly --control-h tall and centred (the flex row centres it). */
+@media (max-width: 479.98px) {
+  .btn {
+    height: auto;
+    min-height: var(--control-h);
+    padding-block: var(--space-1);
+    white-space: normal;
+  }
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .btn:hover {
+    background: var(--bg-hover);
+    color: var(--btn-fg);
+  }
 }
 
 .btn:active {
-  transform: translateY(1px);
+  border-color: var(--control-edge);
 }
 
 .btn:disabled,
 .btn[aria-disabled="true"] {
   opacity: 0.55;
   cursor: not-allowed;
-  transform: none;
+}
+
+.btn[aria-busy="true"] {
+  color: transparent;
+}
+
+.btn[aria-busy="true"] > * {
+  visibility: hidden;
+}
+
+.btn[aria-busy="true"]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 1em;
+  height: 1em;
+  margin: auto;
+  border: 2px solid var(--btn-fg);
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin 800ms linear infinite;
+}
+
+.btn-secondary {
+  background: var(--surface);
+  border-color: var(--border-strong);
 }
 
 .btn-primary {
+  --btn-fg: var(--text-onaccent);
   background: var(--accent);
   border-color: var(--accent);
-  color: var(--accent-fg);
 }
 
-.btn-primary:hover {
-  background: var(--accent-hover);
-  border-color: var(--accent-hover);
-  color: var(--accent-fg);
+@media (hover: hover) and (pointer: fine) {
+  .btn-primary:hover {
+    background: var(--accent-hover);
+    border-color: var(--accent-hover);
+  }
 }
 
+.btn-primary:active {
+  border-color: var(--text-primary);
+}
+
+.btn-destructive,
 .btn-danger {
+  --btn-fg: var(--danger-fg);
   background: var(--danger-bg);
-  border-color: var(--danger-fg);
-  color: var(--danger-fg);
+  border-color: var(--critical);
 }
 
-.btn-danger:hover {
-  background: var(--danger-bg);
-  color: var(--danger-fg);
-  filter: brightness(0.97);
+@media (hover: hover) and (pointer: fine) {
+  .btn-destructive:hover,
+  .btn-danger:hover {
+    --btn-fg: var(--text-onaccent);
+    background: var(--critical);
+  }
 }
 
 .btn-quiet {
@@ -458,34 +792,147 @@ input:-webkit-autofill:focus {
   background: transparent;
 }
 
-.btn-quiet:hover {
-  background: var(--surface-2);
+@media (hover: hover) and (pointer: fine) {
+  .btn-quiet:hover {
+    background: var(--bg-hover);
+  }
 }
 
 .btn-block {
   width: 100%;
 }
 
-/* --- Form fields ----------------------------------------------------------- */
+/* A dialog's or form's buttons: [Destructive] ... [Cancel] [Primary]. Below
+   480px they stack full width, the primary (last) on top. */
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.actions > .btn-destructive,
+.actions > .btn-danger {
+  margin-inline-end: auto;
+}
+
+@media (max-width: 479.98px) {
+  .actions {
+    flex-direction: column-reverse;
+  }
+
+  .actions > .btn {
+    width: 100%;
+    margin-inline-end: 0;
+  }
+}
+
+/* --- Tabs ---------------------------------------------------------------------
+   role="tablist" > button role="tab" (roving tabindex, Left/Right, Home/End).
+   The selected tab's bar sits over the hairline; a tab's words in a
+   <span data-label="..."> reserve their bold width, so switching moves nothing.
+   Too many tabs scroll sideways, never wrap. */
+
+.tabs {
+  display: flex;
+  gap: var(--space-6);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  scrollbar-width: none;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x proximity;
+}
+
+.tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: var(--h-lg);
+  padding-inline: 0;
+  background: none;
+  border: 0;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  scroll-snap-align: start;
+  cursor: pointer;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .tab:hover {
+    color: var(--text-primary);
+  }
+}
+
+.tab[aria-selected="true"] {
+  color: var(--text-primary);
+  font-weight: 700;
+}
+
+.tab[aria-selected="true"]::after {
+  content: "";
+  position: absolute;
+  inset-inline: 0;
+  bottom: -1px;
+  height: 2px;
+  background: var(--accent);
+  transform-origin: left; /* it slides from the tab chosen before (lib/motion.ts, useTabMotion) */
+}
+
+.tab [data-label] {
+  display: inline-flex;
+  flex-direction: column;
+}
+
+.tab [data-label]::after {
+  content: attr(data-label);
+  height: 0;
+  font-weight: 700;
+  visibility: hidden;
+  overflow: hidden;
+  user-select: none;
+}
+
+.tab-count {
+  min-width: 2ch;
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- Form fields: every input has a visible <label> ------------------------- */
 
 .input,
 select.input,
 textarea.input {
   width: 100%;
-  min-height: var(--control-h);
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border-strong);
+  /* One control height (16 Oct 2026): a field is exactly as tall as the
+     buttons beside it (it was 43-44px from padding and the body's 1.55
+     line-height, next to 36px buttons). The words are centred by a fixed
+     line-height and no block padding. */
+  height: var(--control-h);
+  padding: 0 var(--space-3);
+  border: 1px solid var(--control-edge);
   border-radius: var(--r-sm);
   background: var(--surface);
   color: var(--fg);
   font-size: var(--fs-base);
-  transition:
-    border-color var(--t-fast) var(--ease),
-    box-shadow var(--t-fast) var(--ease);
+  line-height: 1.25;
 }
 
-.input:hover {
-  border-color: var(--fg-muted);
+/* A textarea is the one field that grows: at least one control tall. */
+textarea.input {
+  height: auto;
+  min-height: var(--control-h);
+  padding-block: var(--space-2);
+  line-height: 1.5;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .input:hover {
+    border-color: var(--fg);
+  }
 }
 
 .input:focus-visible {
@@ -498,14 +945,12 @@ textarea.input {
 
 select.input {
   appearance: none;
-  padding-inline-end: var(--space-7);
-  background-image:
-    linear-gradient(45deg, transparent 50%, var(--fg-muted) 50%),
-    linear-gradient(135deg, var(--fg-muted) 50%, transparent 50%);
-  background-position:
-    calc(100% - 20px) 50%,
-    calc(100% - 14px) 50%;
-  background-size: 6px 6px;
+  /* Room for the 12px caret and 12px either side of it, no more, so a short
+     choice ("Reviewer") is never cut in a narrow column. */
+  padding-inline-end: calc(2 * var(--space-3) + 12px);
+  background-image: var(--select-caret);
+  background-position: calc(100% - var(--space-3)) 50%;
+  background-size: 12px 12px;
   background-repeat: no-repeat;
 }
 
@@ -513,12 +958,16 @@ select.input {
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
+  min-width: 0;
 }
 
 .field > label,
 .label {
-  font-weight: 600;
-  font-size: var(--fs-sm);
+  font-size: var(--fs-label);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
 }
 
 .hint {
@@ -544,13 +993,16 @@ select.input {
   text-align: start;
   padding: var(--space-3);
   border-bottom: 1px solid var(--border);
-  vertical-align: top;
+  /* A row's words, badges and controls share its middle line (16 Oct 2026). */
+  vertical-align: middle;
 }
 
 .table th {
-  font-weight: 600;
-  color: var(--fg-muted);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-label);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
   background: var(--surface);
 }
 
@@ -562,23 +1014,27 @@ td.num {
   font-variant-numeric: tabular-nums;
 }
 
-/* --- Labels: Verified and Needs review --------------------------------------
-   These two differ by shape, border style, icon and word, not colour alone:
-   Verified is a rounded pill with a solid edge, Needs review a squarer chip
-   with a dashed edge. Document status uses .status-chip, never these. */
+/* --- Labels: Verified and Ready to verify -----------------------------------
+   Square, never pills. The two differ by icon, word and edge style, never by
+   colour or shape alone: Verified has a solid edge, Ready to verify a dashed one.
+   Document status uses .status-chip, never these. */
 
 .badge {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 2px 10px;
+  gap: var(--space-1);
+  /* One height (24px) and centred words, wherever it sits (16 Oct 2026). */
+  min-height: var(--badge-h);
+  padding: 0 var(--space-2);
   font-size: var(--fs-sm);
-  font-weight: 600;
-  line-height: 1.4;
+  font-weight: 700;
+  line-height: 1.25;
+  vertical-align: middle;
   max-width: 100%;
   white-space: normal;
   overflow-wrap: break-word;
   border: 1px solid transparent;
+  border-radius: 2px;
 }
 
 .badge svg {
@@ -589,27 +1045,52 @@ td.num {
   background: var(--verified-bg);
   color: var(--verified-fg);
   border: 1px solid var(--verified-solid);
-  border-radius: var(--r-full);
 }
 
 .badge-review {
   background: var(--review-bg);
   color: var(--review-fg);
-  border: 2px dashed var(--review-solid);
-  border-radius: 4px;
-  padding: 1px 9px;
+  border: 1px dashed var(--review-solid);
 }
 
-/* Document status: square corners, outlined, a dot, ink or neutral colours. */
+/* A tooltip (components/ui/Tip.tsx): fixed, placed by script inside the screen. */
+.tip {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: var(--z-tooltip);
+  width: max-content;
+  max-width: min(20rem, calc(100% - 16px)); /* fixed: 100% is the window, never 100vw */
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 2px;
+  background: var(--surface);
+  color: var(--fg);
+  font-size: var(--fs-sm);
+  font-weight: 400;
+  line-height: 1.4;
+  text-transform: none;
+  letter-spacing: normal;
+  white-space: normal;
+}
+
+.tip[hidden] {
+  display: none;
+}
+
+/* Document status: square, outlined, a square dot, ink or neutral colours. */
 .status-chip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 2px 8px;
+  gap: var(--space-2);
+  min-height: var(--badge-h);
+  padding: 0 var(--space-2);
+  line-height: 1.25;
+  vertical-align: middle;
   border: 1px solid var(--border-strong);
-  border-radius: 4px;
+  border-radius: 2px;
   font-size: var(--fs-sm);
-  font-weight: 600;
+  font-weight: 700;
   color: var(--fg);
   background: var(--surface);
   max-width: 100%;
@@ -620,7 +1101,7 @@ td.num {
   content: "";
   width: 8px;
   height: 8px;
-  border-radius: 50%;
+  border-radius: 1px;
   background: var(--fg-muted);
   flex: none;
 }
@@ -633,6 +1114,7 @@ td.num {
   background: transparent;
   border: 2px solid var(--accent);
   border-right-color: transparent;
+  border-radius: 50%;
   animation: spin 900ms linear infinite;
 }
 
@@ -643,6 +1125,42 @@ td.num {
 
 .status-chip[data-tone="danger"]::before {
   background: var(--danger-fg);
+}
+
+/* --- Toasts: a fixed corner, so news never pushes the page under the pointer
+   (components/ui/Toast.tsx). It sits above the status and bottom bars. */
+
+.toast {
+  position: fixed;
+  z-index: var(--z-toast);
+  inset-block-end: calc(
+    var(--statusbar-h) + var(--bottombar-h) + max(var(--space-4), env(safe-area-inset-bottom))
+  );
+  inset-inline-end: max(var(--space-4), env(safe-area-inset-right));
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  max-width: min(24rem, calc(100% - 2 * var(--space-4)));
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border-strong);
+  border-radius: 2px;
+  background: var(--surface);
+  color: var(--fg);
+  /* In from its corner, out with a fade (components/ui/Toast.tsx keeps it while it goes). */
+  --motion-y: 8px;
+  animation: motion-in var(--t-med) var(--ease);
+  transition: opacity var(--t-fast) var(--ease);
+}
+
+.toast[data-leaving] {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.toast > p {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
 }
 
 /* --- Loading ----------------------------------------------------------------- */
@@ -670,6 +1188,85 @@ td.num {
 /* Shown only after a short wait, so a quick load never flickers. */
 .delayed {
   animation: appear 0s linear 300ms both;
+}
+
+/* --- Motion (motion pass, 16 Oct 2026) ------------------------------------------
+   Motion answers an action or shows a state change; nothing idles and nothing moves on
+   scroll. Transform and opacity only, the --ease curve, time-based (so a 120Hz screen is
+   not faster). The JS side is lib/motion.ts. Reduced motion: the rule at the end of this
+   file makes every one of these instant. */
+
+/* Menus, popovers, dropdowns: in from the edge they open from (-4px under their button;
+   one that opens above it sets --pop-y: 4px), and out quicker. */
+.motion-pop {
+  --motion-y: var(--pop-y, -4px);
+  animation: motion-in var(--t-med) var(--ease);
+}
+
+/* A native popover also fades out: the browser keeps it shown (display, overlay) until
+   its 120ms fade has run. */
+.motion-pop[popover] {
+  transition:
+    opacity var(--t-fast) var(--ease),
+    transform var(--t-fast) var(--ease),
+    display var(--t-fast) allow-discrete,
+    overlay var(--t-fast) allow-discrete;
+}
+
+.motion-pop[popover]:not(:popover-open) {
+  opacity: 0;
+  transform: translateY(var(--motion-y));
+}
+
+/* New content in place (a tab's panel, a filter panel): a fade, nothing moves. */
+.motion-fade {
+  animation: fade-in var(--t-med) var(--ease);
+}
+
+/* A new answer, the next card: up (or in from the side) a few pixels, with a fade. */
+.motion-rise {
+  --motion-y: 4px;
+  animation: motion-in var(--t-slow) var(--ease);
+}
+
+.motion-next {
+  animation: next-in var(--t-slow) var(--ease);
+}
+
+/* Dialogs: the page behind fades; a centred dialog rises 4px (drawers slide, in their own CSS). */
+dialog[open] {
+  --motion-y: 4px;
+  animation: motion-in var(--t-med) var(--ease);
+}
+
+dialog[open]::backdrop {
+  animation: fade-in var(--t-slow) var(--ease);
+}
+
+@keyframes motion-in {
+  from {
+    opacity: 0;
+    transform: translateY(var(--motion-y, 4px));
+  }
+}
+
+@keyframes next-in {
+  from {
+    opacity: 0;
+    transform: translateX(8px);
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes check-in {
+  from {
+    transform: scale(0.8);
+  }
 }
 
 @keyframes spin {
@@ -729,10 +1326,37 @@ td.num {
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
-  *::after {
+  *::after,
+  ::backdrop {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
+  }
+}
+
+/* Read clearly (19 Oct 2026): its copy is also put at the end of <body> (a portal), shown
+   only when printing, with everything else hidden, so a print is the clean copy alone. */
+.print-copy {
+  display: none;
+}
+
+@media print {
+  body:has(> .print-copy) > :not(.print-copy) {
+    display: none !important;
+  }
+
+  html:has(.print-copy),
+  body:has(> .print-copy) {
+    height: auto !important;
+    overflow: visible !important;
+  }
+
+  .print-copy {
+    display: block;
+  }
+
+  .print-copy .btn {
+    display: none;
   }
 }

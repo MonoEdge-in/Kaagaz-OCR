@@ -136,6 +136,32 @@ export function fitCropView(
   return cropView(crop, safeAspect, Math.min(width, byHeight), maxPageWidth);
 }
 
+/**
+ * A crop preview's frame (UI audit R1, 16 Oct 2026): fitCropView inside a box
+ * `boxWidth` wide and at most `maxHeight` tall, less `margin` on every side,
+ * which then shows `margin` more pixels of the page all round. So the highlight
+ * and its ring never touch the frame's edge, even for a spot at the page's edge
+ * (past it the frame shows plain paper). The box takes the frame's height: no
+ * empty band above or below it.
+ */
+export function framedCropView(
+  crop: FractionRect,
+  aspect: number,
+  boxWidth: number,
+  maxHeight: number,
+  maxPageWidth: number,
+  margin: number,
+): CropView {
+  const inner = fitCropView(crop, aspect, boxWidth - 2 * margin, maxHeight - 2 * margin, maxPageWidth);
+  return {
+    ...inner,
+    offsetX: inner.offsetX - margin,
+    offsetY: inner.offsetY - margin,
+    frameWidth: inner.frameWidth + 2 * margin,
+    frameHeight: inner.frameHeight + 2 * margin,
+  };
+}
+
 /** The regions that belong on one page (or sheet). */
 export function regionsOnPage(regions: readonly Region[], pageNo: number): Region[] {
   return regions.filter((region) => region.page === pageNo);

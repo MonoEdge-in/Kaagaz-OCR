@@ -1,4 +1,4 @@
-/* Icon only: a square target of --control-h (40 px, 44 px on touch). */
+/* Icon only: a square target of --control-h (36 px, 44 px on touch). */
 .iconOnly {
   min-width: var(--control-h);
   padding: 0;

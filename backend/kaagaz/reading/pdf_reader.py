@@ -76,6 +76,7 @@ engine has read it; with a pool, up to its size of pictures plus the one being
 drawn.
 """
 
+import contextlib
 import io
 import math
 import statistics
@@ -86,6 +87,7 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 import pdfplumber
+import pypdfium2 as pdfium
 from pdfminer.pdfdocument import PDFEncryptionError
 from pdfminer.pdfexceptions import PDFException
 from pdfminer.psexceptions import PSException
@@ -94,7 +96,7 @@ from PIL import Image
 
 from kaagaz.ingestion import sniff
 from kaagaz.preparing.page_checks import is_blank, largest_image_dpi
-from kaagaz.preparing.pages import check_page_count, open_pdf, render_pdf_page
+from kaagaz.preparing.pages import check_page_count, open_pdf, pdf_page, render_pdf_page
 from kaagaz.reading.lines import PageFrame, WordBox, line_spans
 from kaagaz.reading.ocr import MAX_OCR_PIXELS, OcrEngine, PageEngine, PageRead, as_page_engine, ocr_spans
 from kaagaz.reading.ocr_dpi import (
@@ -145,6 +147,7 @@ _DAMAGED = (
     RecursionError,
     struct.error,
     zlib.error,
+    pdfium.PdfiumError,  # a text page PDFium cannot load (pdf_signals, inside _parsed)
 )
 
 # One page's spans and how it was read (its route), or None when it gave nothing unread.
@@ -244,7 +247,7 @@ class PdfReader:
         """One page's spans, by the rules in the module notes, and how it was read
         (its route and the check's reason), or None when it gave nothing unread; or,
         for a page the engine must read, the page drawn for it (``_read_scan``)."""
-        pdfium_page = document[number - 1]
+        pdfium_page = pdf_page(document, number - 1)
         try:
             rules = self._rules
             text_spans, decision, signals = _parsed(lambda: _text_layer(pdf, pdfium_page, number, rules))
@@ -323,7 +326,7 @@ class PdfReader:
 def _read_again(reads: PageEngine, document: Any, number: int, dpi: int, max_pixels: int) -> list[Span]:
     """Page ``number`` drawn again at ``dpi`` and read by ``reads``, on this thread.
     O(pixels) plus the engine."""
-    pdfium_page = document[number - 1]
+    pdfium_page = pdf_page(document, number - 1)
     try:
         image = render_pdf_page(pdfium_page, dpi=dpi, max_image_pixels=max_pixels)
     finally:
@@ -345,7 +348,7 @@ def text_layer_checks(
     checks: list[tuple[RouteDecision, PageSignals]] = []
 
     def visit(pdf: Any, document: Any, number: int) -> None:
-        pdfium_page = document[number - 1]
+        pdfium_page = pdf_page(document, number - 1)
         try:
             _spans, decision, signals = _parsed(lambda: _text_layer(pdf, pdfium_page, number, rules))
         finally:
@@ -381,7 +384,10 @@ def _for_each_page(
         finally:
             document.close()
     finally:
-        pdf.close()
+        # pdfplumber's close() can parse the file again and fail on a damaged one; that
+        # must never replace the ReadError (or the result) already on its way out.
+        with contextlib.suppress(PdfminerException, *_DAMAGED):
+            pdf.close()
 
 
 def _text_layer(

@@ -47,6 +47,6 @@ def test_b_never_sees_as_unreadable_pages_or_word_marks(db: Database) -> None:
 
     a_answer = service.answer(a, QUESTION)
     assert a_answer.reading_note == (
-        "Not found in the readable text. 1 page couldn't be read: Sharma Register.jpg page 1."
+        "Not found in the readable text. 1 page to check: Sharma Register.jpg page 1."
     )
     assert [mark.document_id for mark in reading.word_marks(a, [a_doc])] == [a_doc]

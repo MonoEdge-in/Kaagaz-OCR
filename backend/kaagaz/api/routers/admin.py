@@ -2,10 +2,10 @@
 the failed jobs (PRD 3 Z1; Retry is the documents router's reprocess route), and the
 organisation's AI models and use in tokens (model choice, council 11 Oct 2026).
 
-Why the admin session: every route here needs a session started on the admin
-screen (/admin/login, with the two-step code when it is on). The check sits on the router
-itself (``require_admin_session``), so a route added later cannot forget it;
-an admin's own app session from /login gets 403 ``admin_session_required``.
+Why the admin session: every route here needs an admin's session (scope "admin": an
+admin's sign-in at /login, always with the two-step code since 0035). The check sits on
+the router itself (``require_admin_session``), so a route added later cannot forget it;
+anyone else gets 403 ``admin_session_required``.
 
 Why the self-protection rules: an admin cannot disable themselves, take away
 their own admin role or reset their own two-step code, so a customer can never
@@ -47,16 +47,18 @@ the grant is 409 ``not_granted`` and changes nothing; a real change is audited a
 
 import csv
 import io
+import json
 import re
 import secrets
 import uuid
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Iterator, Sequence
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Annotated, Any, Literal
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Query, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import Connection, RowMapping
 
@@ -65,9 +67,10 @@ from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.readers import usable
 from kaagaz.api.routers.documents import day_start
-from kaagaz.api.views import admin_user, audit_entry, failed_document, without_money
+from kaagaz.api.views import CURSOR, admin_user, failed_document, timeline, without_money
 from kaagaz.db import admin as admin_sql
 from kaagaz.db import audit, listing
+from kaagaz.db import folders as folders_sql
 from kaagaz.db import runs as runs_sql
 from kaagaz.db import usage as usage_sql
 from kaagaz.db import users as users_sql
@@ -91,6 +94,11 @@ USAGE_CSV_COLUMNS = ("day", "user", "model", "kind", "calls", "tokens")
 _FORMULA_STARTS = ("=", "+", "-", "@", "\t", "\r")
 UsageFrom = Annotated[str | None, Query(alias="from", pattern=r"^\d{4}-\d{2}-\d{2}$")]
 UsageTo = Annotated[str | None, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")]
+# File management A5, A6: the admin log's filters and its CSV export.
+MAX_AUDIT_ACTIONS = 20
+_AUDIT_ACTION = re.compile(r"^[a-z_.]{1,64}$")  # the audit_log CHECK
+AUDIT_EXPORT_PAGE = 1000
+AUDIT_CSV_COLUMNS = ("When", "Who", "Action", "Document", "Folder", "Details")
 
 
 def valid_email(email: str) -> str:
@@ -350,16 +358,137 @@ def _audit_settings(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class AuditAsked:
+    """File management A5's filter chips: a person, a folder (with its subfolders), a file
+    (every version of its family), actions, and days in TIMEZONE, both ends included."""
+
+    user_id: uuid.UUID | None = None
+    folder_id: uuid.UUID | None = None
+    document_id: uuid.UUID | None = None
+    action: Annotated[list[str] | None, Query(max_length=MAX_AUDIT_ACTIONS)] = None
+    first: UsageFrom = None
+    to: UsageTo = None
+
+
+def _audit_filters(
+    conn: Connection, context: AppContext, user: CurrentUser, asked: AuditAsked
+) -> audit.Filters:
+    """The whole log (never ``shown_only``) narrowed by ``asked``. Another customer's folder
+    or file matches nothing (row level security): 0 rows, never 404. Bad actions or days: 400."""
+    actions = tuple(dict.fromkeys(asked.action or ()))
+    if not all(_AUDIT_ACTION.match(action) for action in actions):
+        raise ApiError(400, "bad_request", "Choose actions from the list.")
+    zone = context.settings.timezone
+    try:
+        start = None if asked.first is None else day_start(asked.first, zone)
+        end = None if asked.to is None else day_start(asked.to, zone) + timedelta(days=1)
+    except ValueError:
+        raise ApiError(400, "bad_request", "Use real dates, written YYYY-MM-DD.") from None
+    folders = None
+    if asked.folder_id is not None:
+        folders = tuple(folders_sql.descendant_ids(conn, user.customer_id, str(asked.folder_id)))
+    family = document = None
+    if asked.document_id is not None:
+        row = listing.get_document(conn, user.customer_id, str(asked.document_id))
+        family, document = (None, str(asked.document_id)) if row is None else (str(row["family_id"]), None)
+    return audit.Filters(
+        shown_only=False,
+        family_id=family,
+        folder_ids=folders,
+        actor_user_id=None if asked.user_id is None else str(asked.user_id),
+        document_id=document,
+        actions=actions,
+        start=start,
+        end=end,
+    )
+
+
 @router.get("/admin/audit")
 def list_audit(
     user: AdminSession,
     context: Context,
+    asked: Annotated[AuditAsked, Depends()],
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
+    cursor: Annotated[str | None, Query(pattern=CURSOR)] = None,
 ) -> dict[str, Any]:
+    """``{items: [AuditEntry], next_cursor, total}``, newest first: the next page is
+    ``cursor=next_cursor`` (``offset`` still pages as before). Every action, every detail
+    but money: the admin's alone."""
     with context.db.customer(user.customer_id) as conn:
-        rows, total = audit.list_entries(conn, user.customer_id, limit=limit, offset=offset)
-    return {"items": [audit_entry(row) for row in rows], "total": total}
+        filters = _audit_filters(conn, context, user, asked)
+        page = timeline(conn, user.customer_id, filters, limit=limit, cursor=cursor, offset=offset, full=True)
+        return {**page, "total": audit.count(conn, user.customer_id, filters)}
+
+
+@router.get("/admin/audit/export")
+def export_audit(
+    user: AdminSession, context: Context, asked: Annotated[AuditAsked, Depends()]
+) -> StreamingResponse:
+    """File management A6: the filtered rows as CSV (AUDIT_CSV_COLUMNS), newest first,
+    streamed AUDIT_EXPORT_PAGE rows at a time, each page its own short transaction. The
+    export itself is logged first as ``audit.export``, with the filters' ids."""
+    customer_id = user.customer_id
+    with context.db.customer(customer_id) as conn:
+        filters = _audit_filters(conn, context, user, asked)
+        details: dict[str, audit.DetailValue] = {
+            "user_id": None if asked.user_id is None else str(asked.user_id),
+            "folder_id": None if asked.folder_id is None else str(asked.folder_id),
+            "document_id": None if asked.document_id is None else str(asked.document_id),
+            "actions": len(filters.actions),
+            "from": asked.first,
+            "to": asked.to,
+        }
+        audit.record(
+            conn,
+            customer_id,
+            actor_user_id=user.user_id,
+            action="audit.export",
+            target_type="customer",
+            target_id=customer_id,
+            details=details,
+        )
+
+    def pages() -> Iterator[str]:
+        yield _csv_text([AUDIT_CSV_COLUMNS])
+        cursor = None
+        while True:
+            with context.db.customer(customer_id) as conn:
+                page = timeline(conn, customer_id, filters, limit=AUDIT_EXPORT_PAGE, cursor=cursor, full=True)
+            yield _csv_text(_audit_line(entry) for entry in page["items"])
+            cursor = page["next_cursor"]
+            if cursor is None:
+                return
+
+    return StreamingResponse(
+        pages(),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": 'attachment; filename="activity.csv"',
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, no-store",
+        },
+    )
+
+
+def _audit_line(entry: dict[str, Any]) -> list[object]:
+    document, folder, details = entry["document"], entry["folder"], entry["details"]
+    return [
+        entry["created_at"],
+        entry["actor_name"] or "",
+        entry["action"],
+        "" if document is None else document["name"],
+        "" if folder is None else folder["path"] or "",
+        json.dumps(details, ensure_ascii=False, sort_keys=True) if details else "",
+    ]
+
+
+def _csv_text(lines: Iterable[Iterable[object]]) -> str:
+    """``lines`` as CSV, each cell made safe (``csv_cell``). O(cells)."""
+    out = io.StringIO()
+    csv.writer(out).writerows([csv_cell(value) for value in line] for line in lines)
+    return out.getvalue()
 
 
 def month_window(now: datetime, timezone: str) -> tuple[datetime, datetime]:
@@ -534,11 +663,7 @@ def get_usage_csv(
 
 def usage_csv(lines: Iterable[Iterable[object]]) -> str:
     """USAGE_CSV_COLUMNS then ``lines``, each cell made safe (``csv_cell``). O(cells)."""
-    out = io.StringIO()
-    writer = csv.writer(out)
-    writer.writerow(USAGE_CSV_COLUMNS)
-    writer.writerows([csv_cell(value) for value in line] for line in lines)
-    return out.getvalue()
+    return _csv_text([USAGE_CSV_COLUMNS, *lines])
 
 
 def csv_cell(value: object) -> str:

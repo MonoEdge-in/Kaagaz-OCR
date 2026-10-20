@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ACCEPT_ATTRIBUTE,
@@ -218,6 +220,11 @@ describe("shouldPoll", () => {
     expect(shouldPoll([withNewer("failed")])).toBe(false);
     expect(shouldPoll([{ status: "ready", newer_version: null }])).toBe(false);
   });
+
+  it("keeps polling while a ready document is still being understood (Ready first)", () => {
+    expect(shouldPoll([{ status: "ready", understanding: true }])).toBe(true);
+    expect(shouldPoll([{ status: "ready", understanding: false }])).toBe(false);
+  });
 });
 
 describe("menuEntries", () => {
@@ -299,7 +306,8 @@ describe("sessionChangedMessage", () => {
 describe("uploadStateText", () => {
   it("has words for every state and leaves the percentage to the bar", () => {
     expect(uploadStateText({ kind: "waiting" })).toBe("Waiting to upload");
-    expect(uploadStateText({ kind: "sending", fraction: 0.42 })).toBe("Sending");
+    // Changed on purpose (scan states, 16 Oct 2026): the brief's words, Uploading then Scanning.
+    expect(uploadStateText({ kind: "sending", fraction: 0.42 })).toBe("Uploading");
     expect(uploadStateText({ kind: "done", documentId: "d" })).toBe("Uploaded");
     expect(
       uploadStateText({ kind: "duplicate", documentId: "d", existingName: "x.pdf", inTrash: false }),
@@ -530,7 +538,7 @@ describe("uploadDocument into a folder", () => {
 
   // Model choice MS4, FINAL DECISIONS 6: read_model, never ocr_choice (accepted and ignored).
   // Changed on purpose (features 25-27, 15 Oct 2026): the reading chosen is sent whole
-  // (read_mode, read_model, read_agents once per reader), not a model alone.
+  // (read_mode or read_model), not a model alone.
   it("sends the model chosen as read_model on both routes, and nothing for the default", () => {
     vi.stubGlobal("XMLHttpRequest", FakeXhr);
     const model = "anthropic/claude-sonnet-5.5";
@@ -547,14 +555,15 @@ describe("uploadDocument into a folder", () => {
     expect(lastForm().has("read_model")).toBe(false);
   });
 
-  it("sends Dynamic and more than one reader as read_mode with read_agents once each", () => {
+  // Changed on purpose (Ensemble after the scan, 16 Oct 2026): no read_agents is ever sent.
+  it("sends Dynamic as read_mode on both routes, and never read_agents", () => {
     vi.stubGlobal("XMLHttpRequest", FakeXhr);
     void uploadDocument(new File(["a,b"], "rates.csv"), "u1", () => {}, undefined, { read_mode: "dynamic" });
     expect(lastForm().get("read_mode")).toBe("dynamic");
-    const reading = { read_mode: "ensemble" as const, read_agents: ["google/a", "google/b"] };
-    void uploadVersion("d1", new File(["%PDF-1.7"], "bill v2.pdf"), "u1", () => {}, reading);
-    expect(lastForm().get("read_mode")).toBe("ensemble");
-    expect(lastForm().getAll("read_agents")).toEqual(["google/a", "google/b"]);
+    expect(lastForm().has("read_agents")).toBe(false);
+    void uploadVersion("d1", new File(["%PDF-1.7"], "bill v2.pdf"), "u1", () => {}, { read_mode: "dynamic" });
+    expect(lastForm().get("read_mode")).toBe("dynamic");
+    expect(lastForm().has("read_agents")).toBe(false);
     expect(lastForm().has("read_model")).toBe(false);
   });
 
@@ -678,5 +687,26 @@ describe("filter chip words", () => {
     expect(dateChipText("2026-09-01", "2026-09-30")).toBe("Uploaded 1 Sept 2026 to 30 Sept 2026");
     expect(dateChipText("2026-09-01", null)).toBe("Uploaded from 1 Sept 2026");
     expect(dateChipText(null, "2026-09-30")).toBe("Uploaded until 30 Sept 2026");
+  });
+});
+
+// UI mockups board 6 (16 Oct 2026): a phone's header button says Upload, and the search box says what it is for.
+describe("the documents header and search on a phone", () => {
+  const view = readFileSync(join(__dirname, "..", "components", "documents", "DocumentsView.tsx"), "utf8");
+
+  it("says Upload on a phone, still read out as Upload files", () => {
+    expect(view).toContain('Upload<span className="narrow-hide"> files</span>');
+  });
+
+  // Changed on purpose (MonoEdge design system, 16 Oct 2026): a label you can always see says
+  // what the box is for, and the placeholder is an example.
+  it("labels the search box in words you can see, with an example inside it", () => {
+    expect(view).toContain('<label htmlFor="documents-q" className={styles.searchLabel}>');
+    // Changed on purpose (Tushar, 16 Oct 2026): the example follows the mode, words inside the
+    // documents or a name.
+    expect(view).toMatch(
+      /id="documents-q"[\s\S]{0,400}placeholder=\{mode === "inside" \? "e\.g\. rent paid in September" : "e\.g\. Sharma Industries invoice"\}/,
+    );
+    expect(view).toContain('{mode === "inside" ? "Search inside documents" : "Search documents by name"}');
   });
 });

@@ -1,5 +1,5 @@
 // The batch tray (PRD 5 U1): one line and one bar for the whole drop, then the files
-// worst first; it comes back after a reload for drops of the last 24 hours, from
+// in the order they were dropped (scan states, 16 Oct 2026); it comes back after a reload for drops of the last 24 hours, from
 // localStorage that holds only batch ids and counts, never a file name.
 
 import { readFileSync } from "node:fs";
@@ -10,7 +10,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { BatchTray } from "@/components/documents/UploadArea";
 import {
   KEEP_MS,
-  announcement,
   MAX_FILES_PER_BATCH,
   STORE_KEY,
   TOO_MANY_FILES,
@@ -24,7 +23,6 @@ import {
   trayCounts,
   unreadableWords,
   verifiedWords,
-  worstFirst,
   writeStored,
 } from "@/components/documents/batchTray";
 import type { StoredBatch } from "@/components/documents/batchTray";
@@ -81,6 +79,18 @@ const row = (key: string, state: UploadState, more: Partial<UploadEntry> = {}): 
 });
 
 const done = (document: DocumentSummary): UploadState => ({ kind: "done", documentId: document.id, document });
+const TRAY = {
+  entries: [] as UploadEntry[],
+  views: {},
+  stored: [],
+  tooMany: false,
+  onClearFinished: () => undefined,
+  onRestore: () => undefined,
+  onRetry: () => undefined,
+  tree: buildTree([]),
+  onUndone: () => undefined,
+  canReread: true,
+};
 const reading = (document: DocumentSummary): UploadState => ({ kind: "reading", documentId: document.id, document });
 
 class MemoryStore {
@@ -141,18 +151,13 @@ describe("each file's place in the tray", () => {
     expect(rowKind(row("scan", reading(scanning)))).toBe("reading");
   });
 
-  it("lists the files worst first, keeping upload order within each kind", () => {
-    expect(worstFirst(rows).map((item) => item.key)).toEqual([
-      "failed",
-      "notsent",
-      "attention",
-      "waiting",
-      "sending",
-      "saving",
-      "reading",
-      "dup",
-      "ready",
-    ]);
+  // Changed on purpose (scan states, 16 Oct 2026): not worst first any more, which moved a
+  // file under the pointer each time one changed state; the drop's order, whatever the state.
+  it("lists the files in the order they were dropped, whatever their state", () => {
+    const html = renderToStaticMarkup(createElement(BatchTray, { ...TRAY, entries: rows }));
+    const at = rows.map((item) => html.indexOf(`>${item.key}.pdf<`));
+    expect(at.every((place) => place > -1)).toBe(true);
+    expect([...at].sort((a, b) => a - b)).toEqual(at);
   });
 
   it("sums the drop up in one line", () => {
@@ -205,15 +210,29 @@ describe("each file's place in the tray", () => {
   it("names an unreadable file's first page, with the reason and the fix (U1)", () => {
     const page = { page_no: 1, says: "Glare or a shadow covers part of the page.", fix: "Take the photo again." };
     const unreadable = done(doc("u", { pages_unreadable: 1, first_unreadable: page }));
-    expect(uploadStateText(unreadable)).toBe("Couldn't read page 1");
-    expect(unreadableWords(doc("u", { pages_unreadable: 1, first_unreadable: page }))).toEqual({
-      title: "Couldn't read page 1",
+    expect(uploadStateText(unreadable)).toBe("Page 1 to check");
+    expect(unreadableWords(doc("u", { pages_unreadable: 1, first_unreadable: page }), true)).toEqual({
+      title: "Page 1 to check",
       detail: "Glare or a shadow covers part of the page. Take the photo again.",
     });
     const unsaid = doc("v", { pages_unreadable: 1, first_unreadable: { page_no: 3, says: null, fix: null } });
-    expect(unreadableWords(unsaid)).toEqual({ title: "Couldn't read page 3", detail: null });
-    expect(unreadableWords(doc("w"))).toBeNull(); // none, or a listing without the field
+    expect(unreadableWords(unsaid, true)).toEqual({ title: "Page 3 to check", detail: null });
+    expect(unreadableWords(doc("w"), true)).toBeNull(); // none, or a listing without the field
     expect(uploadStateText(done(doc("w")))).toBe("Ready");
+  });
+
+  // Council 16 Oct 2026: a member can't Read again (canReprocess), so is never told to.
+  it("tells a member to upload a better scan, not to read the page again", () => {
+    const page = { page_no: 2, says: "This page needs a closer look.", fix: "Read it again, or upload a better scan." };
+    const unreadable = doc("u", { pages_unreadable: 1, first_unreadable: page });
+    expect(unreadableWords(unreadable, false)?.detail).toBe("This page needs a closer look. Upload a better scan.");
+    expect(unreadableWords(unreadable, true)?.detail).toBe(
+      "This page needs a closer look. Read it again, or upload a better scan.",
+    );
+    const photo = { page_no: 1, says: "Glare or a shadow covers part of the page.", fix: "Take the photo again." };
+    expect(unreadableWords(doc("p", { pages_unreadable: 1, first_unreadable: photo }), false)?.detail).toBe(
+      "Glare or a shadow covers part of the page. Take the photo again.",
+    );
   });
 
   it("says All values verified only for a ready file with values and nothing to check", () => {
@@ -231,38 +250,21 @@ describe("each file's place in the tray", () => {
 });
 
 describe("what the tray says out loud", () => {
-  it("changes only when the ready, attention or failed totals change, never as files move on", () => {
-    const sending = [row("a", { kind: "sending", fraction: 0.2 }), row("b", done(doc("b")))];
-    const moved = [row("a", reading(doc("a", { status: "clean", progress: null }))), row("b", done(doc("b")))];
-    expect(announcement([sending])).toBe(announcement([moved])); // a stage change says nothing
-    expect(announcement([sending])).toBe("Uploads: 1 ready");
-    const more = [row("a", done(doc("a", { pages_unreadable: 1 }))), row("b", done(doc("b")))];
-    const other = [row("c", done(doc("c", { status: "failed" }))), row("d", { kind: "error", message: "No." })];
-    expect(announcement([more, other])).toBe("Uploads: 1 ready · 1 needs attention · 2 failed");
-    expect(announcement([[row("w", { kind: "waiting" })]])).toBe("");
-  });
-
-  it("has one live region for the whole tray; the batch lines are not live", () => {
+  // Changed on purpose (scan states, 16 Oct 2026): the status bar's one polite line speaks for
+  // the uploads (statusBarText, tests/scan-states.test.ts), so the tray has no live region.
+  it("has no live region of its own; the batch lines are shown, not announced", () => {
     const html = renderToStaticMarkup(
       createElement(BatchTray, {
+        ...TRAY,
         entries: [
           row("a", done(doc("a"))),
           row("b", { kind: "waiting" }),
           row("c", done(doc("c")), { batchId: "6f1c2d3e-4a5b-4c6d-8e7f-901a2b3c4d5f" }),
         ],
-        views: {},
-        stored: [],
-        tooMany: false,
-        onClearFinished: () => undefined,
-        onRestore: () => undefined,
-        onRetry: () => undefined,
-        tree: buildTree([]),
-        onUndone: () => undefined,
       }),
     );
-    expect(html.match(/role="status"/g)).toHaveLength(1);
-    expect(html).toMatch(/<p [^>]*role="status"[^>]*>Uploads: 2 ready<\/p>/);
-    expect(html).toContain("Batch of 2 files · 1 ready · 1 sending"); // still shown, not announced
+    expect(html).not.toMatch(/role="status"|aria-live/);
+    expect(html).toContain("Batch of 2 files · 1 ready · 1 sending");
   });
 });
 
@@ -338,8 +340,9 @@ describe("the drop's bar and time", () => {
     const stuck = readingDoc({ time_left: timeLeft({ seconds: 20, since_move_seconds: 90 }) });
     markReceived([stuck], 0);
     const drop = { time_left: stuck.time_left, documents: [stuck] };
-    expect(leftText(drop, 5_000)).toBe("under a minute left"); // 95 s since a move: not yet
-    expect(leftText(drop, 11_000)).toBe("Taking longer than usual"); // 101 s, past 100
+    // Changed on purpose (scan states, 16 Oct 2026): "About", whole minutes, and the time with Taking longer.
+    expect(leftText(drop, 5_000)).toBe("About 1 min left"); // 95 s since a move: not yet
+    expect(leftText(drop, 11_000)).toBe("Taking longer than usual · About 1 min left"); // 101 s, past 100
     expect(longerThanUsual(stuck.time_left!, "reading", 11_000)).toBe(true); // the row says it too
   });
 
@@ -358,8 +361,9 @@ describe("the drop's bar and time", () => {
       },
       documents: [],
     });
-    expect(leftText(timeLeft(330))).toBe("about 6 min left");
-    expect(leftText(timeLeft(20))).toBe("under a minute left");
+    // Changed on purpose (scan states, 16 Oct 2026): every estimate says "About", in whole minutes.
+    expect(leftText(timeLeft(330))).toBe("About 6 min left");
+    expect(leftText(timeLeft(20))).toBe("About 1 min left");
     expect(leftText({ time_left: null, documents: [] })).toBeNull();
     expect(leftText(null)).toBeNull();
   });
@@ -434,8 +438,9 @@ describe("remembered in this browser", () => {
     expect(() => clearStored(throwing)).not.toThrow();
   });
 
-  it("is forgotten when signing out (AppShell)", () => {
-    const shell = readFileSync(join(process.cwd(), "components/shell/AppShell.tsx"), "utf8");
+  // Changed on purpose (UI audit G6, 16 Oct 2026): the sign-outs moved to the header's account menu.
+  it("is forgotten when signing out (AccountMenu)", () => {
+    const shell = readFileSync(join(process.cwd(), "components/shell/AccountMenu.tsx"), "utf8");
     expect(shell).toMatch(/clearStored\(\)/);
   });
 });

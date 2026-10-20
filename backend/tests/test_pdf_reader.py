@@ -1,10 +1,13 @@
 import math
+import re
 import unittest
+from unittest import mock
 
 import pdfplumber
 from PIL import Image
 
 from kaagaz.ingestion import sniff
+from kaagaz.preparing.pages import prepare_pages
 from kaagaz.reading.ocr import OcrLine
 from kaagaz.reading.pdf_reader import PdfReader
 from kaagaz.reading.route import RouteDecision
@@ -449,6 +452,44 @@ class RefusalsTest(unittest.TestCase):
                     rules=RULES,
                     blank_stddev=blank,
                 )
+
+
+class DamagedPagesTest(unittest.TestCase):
+    """Council 17 Oct 2026: errors from damaged pages are the readers' own codes."""
+
+    # A page tree whose /Kids points back at the catalog: both libraries count one page,
+    # and PDFium cannot load it (PdfiumError, which crashed the worker).
+    KIDS_TO_CATALOG = re.sub(
+        rb"/Kids \[[^\]]*\]", b"/Kids [1 0 R]", make_pdf([Page(texts=[Text(72, 700, "Total 500")])])
+    )
+
+    def test_a_page_pdfium_cannot_load_is_corrupt_file(self) -> None:
+        for ocr in (None, FakeOcr()):
+            with self.subTest(ocr=ocr), self.assertRaises(ReadError) as refused:
+                read(self.KIDS_TO_CATALOG, ocr)
+            self.assertEqual(refused.exception.code, "corrupt_file")
+        with self.assertRaises(ReadError) as refused:
+            prepare_pages(
+                sniff.PDF,
+                self.KIDS_TO_CATALOG,
+                lambda number, count, image: None,
+                dpi=72,
+                max_pages=10,
+                max_image_pixels=10_000_000,
+                blank_stddev=BLANK_PAGE_STDDEV,
+                low_res_dpi=150,
+            )
+        self.assertEqual(refused.exception.code, "corrupt_file")
+
+    def test_a_close_that_fails_never_replaces_the_outcome(self) -> None:
+        """pdfplumber's close() parses the file's pages again and can fail on a damaged one."""
+        with mock.patch.object(pdfplumber.pdf.PDF, "close", side_effect=TypeError("in close")):
+            self.assertEqual(
+                [span.text for span in read(make_pdf([Page(texts=[Text(72, 700, "Total 500")])]))],
+                ["Total 500"],
+            )
+            with self.assertRaises(ReadError):
+                read(self.KIDS_TO_CATALOG)
 
 
 class NameTest(unittest.TestCase):

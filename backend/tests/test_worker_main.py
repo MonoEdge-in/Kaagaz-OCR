@@ -23,7 +23,7 @@ from sqlalchemy.exc import ProgrammingError
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import Job
 from kaagaz.jobs.ports import QueueSetupError
-from kaagaz.jobs.worker import Handler, Heartbeat, JobFailed, Worker
+from kaagaz.jobs.worker import RETRY_MOST_SECONDS, Handler, Heartbeat, JobFailed, Worker
 from kaagaz.search.indexing import MissingPass
 from kaagaz.settings import Settings, SettingsError
 from kaagaz.worker_main import (
@@ -203,7 +203,7 @@ class MarkExhaustedTest(unittest.TestCase):
         with self.assertLogs("kaagaz.worker", "WARNING"):
             for _ in range(MAX_ATTEMPTS + 1):
                 worker.run_once()
-                clock.advance(30.0)
+                clock.advance(RETRY_MOST_SECONDS)  # changed on purpose (council 16 Oct): retry_delay
         self.assertEqual(marked, [(FIRST.customer_id, FIRST.document_id)])
         self.assertEqual([failed.code for failed in queue.failed.values()], ["retries_exhausted"])
 
@@ -221,14 +221,15 @@ class _Clock:
 
 
 class _Jobs:
-    """A worker that only counts its turns."""
+    """A worker that only counts its turns: each one a job (``busy``), or an empty queue."""
 
-    def __init__(self) -> None:
+    def __init__(self, busy: bool = True) -> None:
         self.calls = 0
+        self.busy = busy
 
     def run_once(self) -> bool:
         self.calls += 1
-        return True
+        return self.busy
 
 
 class _Purge:
@@ -321,39 +322,64 @@ class _Embed:
 
 
 class EmbedMissingTest(unittest.TestCase):
-    def _turns(self, worker: EmbedMissing, clock: _Clock, minutes: range) -> None:
-        for minute in minutes:
-            clock.now = START + timedelta(minutes=minute)
-            self.assertTrue(worker.run_once())
+    def _turns(self, worker: EmbedMissing, clock: _Clock, seconds: range) -> None:
+        for second in seconds:
+            clock.now = START + timedelta(seconds=second)
+            worker.run_once()
 
-    def test_a_pass_runs_on_the_first_turn_then_at_most_every_10_minutes(self) -> None:
-        clock, jobs = _Clock(), _Jobs()
+    def test_a_pass_runs_on_an_idle_turn_at_most_every_minute(self) -> None:
+        clock, jobs = _Clock(), _Jobs(busy=False)
         embed = _Embed(clock, MissingPass(3, CURSOR))
         worker = EmbedMissing(jobs, embed, clock)
         with self.assertLogs("kaagaz.worker", "INFO") as logs:
-            self._turns(worker, clock, range(31))
-        self.assertEqual(embed.minutes, [0, 10, 20, 30])
-        self.assertEqual(jobs.calls, 31)  # every turn still runs a job
+            self._turns(worker, clock, range(0, 181, 20))
+        self.assertEqual(embed.minutes, [0, 1, 2, 3])
+        self.assertEqual(jobs.calls, 10)  # every turn still asks the queue first
         self.assertEqual(logs.records[0].getMessage(), "missing vectors: 3 pieces")
+
+    def test_a_pass_never_runs_while_the_queue_has_jobs(self) -> None:
+        """Never stuck (17 Oct 2026): the sweep ran before every turn, so a backlog of vectors
+        made each upload wait a whole pass (64 one-text requests through the limiter)."""
+        clock, jobs = _Clock(), _Jobs()
+        embed = _Embed(clock, MissingPass(64, CURSOR))
+        worker = EmbedMissing(jobs, embed, clock)
+        for _ in range(3):
+            self.assertTrue(worker.run_once())
+        self.assertEqual((embed.minutes, jobs.calls), ([], 3))
+        jobs.busy = False
+        with self.assertLogs("kaagaz.worker", "INFO"):
+            self.assertTrue(worker.run_once())  # an idle turn that ran a pass is not idle
+        self.assertEqual(embed.minutes, [0])
 
     def test_each_pass_starts_from_the_cursor_the_last_one_returned(self) -> None:
         clock = _Clock()
-        embed = _Embed(clock, MissingPass(64, CURSOR), MissingPass(1, None))
-        worker = EmbedMissing(_Jobs(), embed, clock)
+        embed = _Embed(clock, MissingPass(32, CURSOR), MissingPass(1, None))
+        worker = EmbedMissing(_Jobs(busy=False), embed, clock)
         with self.assertLogs("kaagaz.worker", "INFO"):
-            self._turns(worker, clock, range(0, 21, 10))
+            self._turns(worker, clock, range(0, 121, 60))
         self.assertEqual(embed.cursors, [None, CURSOR, None])
-        self.assertEqual(EMBED_PASS_PIECES, 64)  # what main binds as the pass's limit
+        self.assertEqual(EMBED_PASS_PIECES, 32)  # changed on purpose (17 Oct): one batch a pass
 
-    def test_a_model_that_is_down_waits_twice_as_long_each_time_up_to_an_hour(self) -> None:
+    def test_a_full_pass_runs_again_on_the_next_idle_turn_until_the_backlog_is_done(self) -> None:
+        """Council 16 Oct 2026: a pass that wrote EMBED_PASS_PIECES has more waiting (Ready
+        comes before vectors), so it runs again at once, then back to every minute."""
+        clock = _Clock()
+        embed = _Embed(clock, MissingPass(32, CURSOR), MissingPass(32, CURSOR), MissingPass(5, None))
+        worker = EmbedMissing(_Jobs(busy=False), embed, clock)
+        with self.assertLogs("kaagaz.worker", "INFO"):
+            self._turns(worker, clock, range(0, 81, 10))
+        self.assertEqual(len(embed.cursors), 4)  # at 0, 10 and 20 s, then a minute after 20 s
+
+    def test_a_model_that_is_down_waits_1_2_4_8_then_15_minutes(self) -> None:
+        """Changed on purpose (never stuck, 17 Oct 2026): ``retry_delay``, not 10 to 60 minutes."""
         clock = _Clock()
         down = MissingPass(0, None, down="unreachable")
         embed = _Embed(clock, down, down, down, down, down, MissingPass(2, None), MissingPass(0, None))
-        worker = EmbedMissing(_Jobs(), embed, clock)
+        worker = EmbedMissing(_Jobs(busy=False), embed, clock)
         with self.assertLogs("kaagaz.worker", "INFO") as logs:
-            self._turns(worker, clock, range(211))
-        # Waits of 10, 20, 40, 60 and 60 minutes; the pass that works sets it back to 10.
-        self.assertEqual(embed.minutes, [0, 10, 30, 70, 130, 190, 200, 210])
+            self._turns(worker, clock, range(0, 33 * 60, 60))
+        # Waits of 1, 2, 4, 8 and 15 minutes; the pass that works sets it back to a minute.
+        self.assertEqual(embed.minutes, [0, 1, 3, 7, 15, 30, 31, 32])
         warning = next(record for record in logs.records if record.levelname == "WARNING")
         self.assertEqual(
             (warning.getMessage(), warning.__dict__["code"]),
@@ -363,7 +389,7 @@ class EmbedMissingTest(unittest.TestCase):
     def test_a_skipped_document_is_logged_by_its_ids_and_code(self) -> None:
         clock = _Clock()
         skipped = MissingPass(0, CURSOR, (FIRST.customer_id, FIRST.document_id, "embedding_count"))
-        worker = EmbedMissing(_Jobs(), _Embed(clock, skipped), clock)
+        worker = EmbedMissing(_Jobs(busy=False), _Embed(clock, skipped), clock)
         with self.assertLogs("kaagaz.worker", "WARNING") as logs:
             worker.run_once()
         (record,) = logs.records
@@ -374,12 +400,12 @@ class EmbedMissingTest(unittest.TestCase):
         )
 
     def test_a_database_bug_in_the_pass_is_logged_and_the_jobs_go_on(self) -> None:
-        clock, jobs = _Clock(), _Jobs()
+        clock, jobs = _Clock(), _Jobs(busy=False)
         embed = _Embed(clock, error=ProgrammingError("UPDATE ...", {}, Exception("secret piece text")))
         worker = EmbedMissing(jobs, embed, clock)
         with self.assertLogs("kaagaz.worker", "ERROR") as logs:
             self._turns(worker, clock, range(10))
-        self.assertEqual((embed.minutes, jobs.calls), ([0], 10))  # not tried again within 10 minutes
+        self.assertEqual((embed.minutes, jobs.calls), ([0], 10))  # not tried again within the minute
         (record,) = logs.records
         self.assertEqual(
             (record.getMessage(), record.__dict__["code"]), ("missing vectors failed", "ProgrammingError")
@@ -387,19 +413,19 @@ class EmbedMissingTest(unittest.TestCase):
         self.assertNotIn("secret piece text", JsonFormatter().format(record))
 
     def test_a_database_that_cannot_be_reached_is_logged_and_the_jobs_go_on(self) -> None:
-        clock, jobs = _Clock(), _Jobs()
+        clock, jobs = _Clock(), _Jobs(busy=False)
         embed = _Embed(clock, error=BackendUnavailable("database"))
         worker = EmbedMissing(jobs, embed, clock)
         with self.assertLogs("kaagaz.worker", "ERROR") as logs:
             self._turns(worker, clock, range(10))
-        self.assertEqual((embed.minutes, jobs.calls), ([0], 10))  # not tried again within 10 minutes
+        self.assertEqual((embed.minutes, jobs.calls), ([0], 10))  # not tried again within the minute
         (record,) = logs.records
         self.assertEqual(
             (record.getMessage(), record.__dict__["code"]), ("missing vectors failed", "BackendUnavailable")
         )
 
     def test_with_the_model_off_nothing_is_embedded_and_nothing_is_logged(self) -> None:
-        clock, jobs = _Clock(), _Jobs()
+        clock, jobs = _Clock(), _Jobs(busy=False)
         worker = EmbedMissing(jobs, None, clock)
         with self.assertNoLogs("kaagaz.worker"):
             self._turns(worker, clock, range(0, 30, 10))

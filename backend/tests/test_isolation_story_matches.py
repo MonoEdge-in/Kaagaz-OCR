@@ -47,7 +47,8 @@ def test_only_the_author_gets_a_match_from_their_story(db: Database) -> None:
         assert found == []
         assert MARK not in reply
     found, _ = _every_route(a1)  # the control
-    assert [(m["document_id"], m["band"]) for m in found] == [(document, "match")] * 3
+    # Changed on purpose (PRD 1, activity/search): GET /api/search lists no story matches (Q1).
+    assert [(m["document_id"], m["band"]) for m in found] == [(document, "match")] * 2
 
 
 def test_each_lock_holds_without_the_other(db: Database) -> None:

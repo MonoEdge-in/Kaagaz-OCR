@@ -1219,6 +1219,7 @@ class Truncating:
         thinking: str | None = None,
         provider: str | None = None,
         deadline: float | None = None,
+        temperature: float | None = None,
     ) -> dict[str, Any]:
         text = window_text(user)
         self.calls.append(text)

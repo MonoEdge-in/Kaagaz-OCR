@@ -1,7 +1,8 @@
 "use client";
 
-// Turning on two-step sign-in (PRD A2), in Admin, Settings
-// (app/(app)/admin/TwoStepPanel.tsx). The server has sent a set-up key and a
+// Setting up two-step sign-in (PRD A2), which every admin must have (16 Oct 2026):
+// on the sign-in (app/login/SignInForm.tsx) after a right password, and right after
+// sign-up (app/signup/SignUpForm.tsx). The server has sent a set-up key and a
 // token that lasts 10 minutes; nothing is stored yet. This step shows the key
 // as a QR code to scan, and in groups of 4 with a Copy button, the issuer and the
 // account to type into the app, 3 short steps, then the code field. The key and the token live only
@@ -14,9 +15,11 @@ import { CopyButton } from "@/components/admin/CopyButton";
 import { QrCode } from "@/components/admin/QrCode";
 import { useHydrated } from "@/components/ui/useHydrated";
 import { adminEnrol } from "@/lib/api";
+import { announceSession, leavePage } from "@/lib/sessionChannel";
 import type { Me, TwoStepSetup } from "@/lib/types";
-import login from "../../login/login.module.css";
+import login from "./login.module.css";
 import {
+  ENROL_REQUIRED,
   ENROL_STEPS,
   codeError,
   enrolDetails,
@@ -24,11 +27,46 @@ import {
   groupSecret,
   normalizeCode,
   secretForCopy,
-} from "./adminSignIn";
+} from "./twoStep";
 import { CodeField } from "./CodeField";
-import styles from "./adminLogin.module.css";
+import styles from "./twoStep.module.css";
 
 const CODE_ID = "enrol-code";
+
+/**
+ * The page an admin without two-step sign-in sees in place of the sign-in or sign-up
+ * form: why, then the set-up. The first right code starts the session; as after any
+ * sign-in, a full page load to `next`, and the other tabs are told.
+ */
+export function RequiredEnrol({
+  enrol,
+  email,
+  next,
+  onRestart,
+}: {
+  enrol: TwoStepSetup;
+  email: string;
+  next: string;
+  onRestart(): void;
+}) {
+  return (
+    <div className={login.form}>
+      <div className={styles.intro}>
+        <h1 className={styles.title}>Set up two-step sign-in</h1>
+        <p className={styles.lead}>{ENROL_REQUIRED}</p>
+      </div>
+      <EnrolStep
+        enrol={enrol}
+        email={email}
+        onTurnedOn={(me) => {
+          announceSession(me.user.id);
+          leavePage(next);
+        }}
+        onRestart={onRestart}
+      />
+    </div>
+  );
+}
 
 export function EnrolStep({
   enrol,
@@ -86,7 +124,7 @@ export function EnrolStep({
           Set up your authenticator app
         </h3>
         <p className={styles.lead}>
-          Once it is on, admin sign-in asks for your password and a 6-digit code from an app on
+          Once it is set up, sign-in asks for your password and a 6-digit code from an app on
           your phone.
         </p>
       </div>

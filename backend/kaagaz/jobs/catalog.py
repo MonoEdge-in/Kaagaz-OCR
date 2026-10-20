@@ -17,12 +17,15 @@ requests, no 429 storm). A model is **eligible** when it passes every rule (fact
    ``status`` 0 that lists ``structured_outputs``, whose base slug (the tag before any
    ``/``) is in OPENROUTER_PROVIDERS, the processors Vrushit approved;
 6. its ``reasoning.supported_efforts`` include OCR_THINKING_LEVEL and
-   OCR_RETRY_THINKING_LEVEL;
+   OCR_RETRY_THINKING_LEVEL, or it lists no efforts at all (Tushar, 18 Oct 2026: "no
+   thinking levels", saved as an empty list and always called with no reasoning parameter);
 7. its vendor, the part of its id before "/", is in OPENROUTER_MODEL_VENDORS (features
-   25-27, S1; default google and anthropic, Tushar's decision of 15 Oct 2026).
+   25-27, S1; default google, anthropic, qwen and meta-llama, Tushar's decisions of 15 and
+   18 Oct 2026).
 
 A model is **chat eligible** (features 25-27, C11), may draft answers, by rules 1, 3, 4,
-5 and 7 and, for 2 and 6, text in and text out only and CHAT_EFFORT among its efforts.
+5 and 7 and, for 2 and 6, text in and text out only and CHAT_EFFORT among its efforts (or
+no efforts at all).
 
 A ``verify-models --record`` pass is kept apart (``verified_*`` for scans,
 ``chat_verified_*`` for answers, written by the owner): the operator can enable only an
@@ -215,13 +218,12 @@ def candidate(item: object, *, efforts: frozenset[str], today: date) -> CatalogM
     fresh, expires_on = _expires(item.get("expiration_date"), today)
     if not fresh:
         return None  # rule 4
-    reasoning = item.get("reasoning")
-    offered = _strings(reasoning.get("supported_efforts")) if isinstance(reasoning, dict) else None
-    shown = None if offered is None else _valid_list(offered, _effort)
+    shown = offered_efforts(item)
     if shown is None:
         return None
-    scan = "image" in inputs and efforts <= set(shown)  # rules 2 and 6
-    chat = "text" in inputs and CHAT_EFFORT in shown  # features 25-27, C11
+    # Rule 6 (Tushar, 18 Oct 2026): a model with no thinking levels is called with none.
+    scan = "image" in inputs and (not shown or efforts <= set(shown))  # rules 2 and 6
+    chat = "text" in inputs and (not shown or CHAT_EFFORT in shown)  # features 25-27, C11
     if not (scan or chat):
         return None
     pricing = item.get("pricing")
@@ -240,6 +242,22 @@ def candidate(item: object, *, efforts: frozenset[str], today: date) -> CatalogM
         eligible=scan,
         chat_eligible=chat,
     )
+
+
+def offered_efforts(item: Mapping[str, Any]) -> tuple[str, ...] | None:
+    """A ``/models`` item's ``reasoning.supported_efforts``, once each: () when it lists none
+    (no ``reasoning``, or no efforts in it: no thinking levels, called with no reasoning
+    parameter); None when they have the wrong shape (the model is left out)."""
+    reasoning = item.get("reasoning")
+    if reasoning is None:
+        return ()
+    if not isinstance(reasoning, dict):
+        return None
+    listed = reasoning.get("supported_efforts")
+    if listed is None:
+        return ()
+    offered = _strings(listed)
+    return None if offered is None else _valid_list(offered, _effort)
 
 
 def _effort(value: str) -> bool:

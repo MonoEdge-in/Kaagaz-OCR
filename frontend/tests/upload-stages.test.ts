@@ -2,7 +2,7 @@
 // straight to 100%. Reproduced here as the browser does it with throttling on a
 // 20 MB PDF: XHR reports bytes in coarse steps (20%, then 100%), then the server
 // still saves the file before it replies, then the file is read. The row moves
-// through Sending, Saving and Reading, never jumps more than 15 points, and never
+// through Uploading, Saving and Scanning, never jumps more than 15 points, and never
 // shows 100% until the document is ready (components/documents/uploadStages.ts).
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -12,10 +12,10 @@ import {
   jobFraction,
   nextShown,
   stageOf,
-  stageText,
   valueText,
 } from "@/components/documents/uploadStages";
 import type { Shown, StageTimes } from "@/components/documents/uploadStages";
+import { estimateIngestSeconds } from "@/components/documents/logic";
 import type { UploadState } from "@/components/documents/logic";
 import { uploadDocument } from "@/lib/api";
 import { documentFraction } from "@/lib/progress";
@@ -126,6 +126,14 @@ describe("the upload bar (U10)", () => {
     expect(saved).toBeLessThan(0.5);
   });
 
+  // Council 16 Oct 2026: Gemini reads a photo in 30 to 130 s, so its 2 MB of bytes (4 s at the
+  // assumed speed) are a small part of the job, not 30% of it as with 7 s a page.
+  it("weights reading a photo at 35 s: after its last byte a 2 MB image is under 15%", () => {
+    const size = 2 * MB;
+    const sent = jobFraction({ kind: "sending", fraction: 1 }, size, estimateIngestSeconds("image", size), times(0), 4000);
+    expect(sent).toBeLessThan(0.15);
+  });
+
   it("weights sending by the measured speed: a fast upload is a small part of the bar", () => {
     const fast = jobFraction({ kind: "sending", fraction: 0.5 }, SIZE, READ_SECONDS, times(0), 500);
     const slow = jobFraction({ kind: "sending", fraction: 0.5 }, SIZE, READ_SECONDS, times(0), 30_000);
@@ -172,12 +180,13 @@ describe("the stages, in words", () => {
     expect(stageOf({ kind: "saving" })).toBe("saving");
     expect(stageOf({ kind: "reading", documentId: "d1", document: doc() })).toBe("reading");
     expect(stageOf({ kind: "done", documentId: "d1" })).toBeNull();
-    expect(stageText("sending")).toBe("Sending");
-    expect(stageText("saving")).toBe("Saving…");
-    expect(stageText("reading")).toBe("Reading");
-    expect(valueText("sending", 42)).toBe("Sending, 42%");
-    expect(valueText("saving", 30)).toBe("Saving");
-    expect(valueText("reading", 63)).toBe("Reading, 63%");
+    // Changed on purpose (scan states, 16 Oct 2026): Uploading, Scanning; no stage text beside the
+    // bar any more (stageText gone), the percent only in the bar's aria-valuetext.
+    expect(valueText({ kind: "sending", fraction: 0.42 }, 42)).toBe("Uploading, 42%");
+    expect(valueText({ kind: "saving" }, 30)).toBe("Saving");
+    expect(valueText({ kind: "reading", documentId: "d1", document: doc() }, 63)).toBe("Scanning, 63%");
+    // U7 (QA 17 Oct): waiting for the reader is never "Scanning, 0%".
+    expect(valueText({ kind: "reading", documentId: "d1", document: doc({ progress: null }) }, 0)).toBe("Waiting");
   });
 });
 

@@ -99,11 +99,12 @@ class LeaseQueue:
         self.failed[job_id] = FailedJob(entry.job, entry.attempts, code)
         del self._entries[job_id]
 
-    def defer(self, receipt: str, seconds: int) -> None:
+    def defer(self, receipt: str, seconds: int, *, counted: bool = False) -> None:
         """As SqsQueue.defer (PRD 5 V1): handed out again after ``seconds``, and this
-        delivery is not counted as an attempt."""
+        delivery is not counted as an attempt unless ``counted``."""
         job_id, entry = self._check(receipt)
-        entry.attempts -= 1
+        if not counted:
+            entry.attempts -= 1
         self.deferred.append((entry.job, seconds))
         self._lease(job_id, entry, seconds)
 

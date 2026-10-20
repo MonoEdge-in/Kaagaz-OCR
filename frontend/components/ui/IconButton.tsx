@@ -1,6 +1,6 @@
 // A button that shows an icon, with its words either visible beside it
 // (showLabel) or given to screen readers and the tooltip. It is a .btn, at
-// least --control-h square (40 px, 44 px on touch), and never submits a form
+// least --control-h square (36 px, 44 px on touch), and never submits a form
 // unless the caller says type="submit".
 
 import type { ButtonHTMLAttributes } from "react";

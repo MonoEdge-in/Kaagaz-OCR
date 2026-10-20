@@ -125,7 +125,7 @@ def test_an_organisations_ai_settings_and_budget(db: Database) -> None:
     assert saved.status_code == 200, saved.text
     assert saved.json()["own"]["scan_models"] == sorted([first, second])
     assert (saved.json()["own"]["scan_default"], saved.json()["ai_budget_usd"]) == (second, 25.5)
-    assert client.get(path).json() == saved.json()
+    assert {**client.get(path).json(), "ensemble_off": False} == saved.json()
     assert operator.sql(_PLATFORM, a="org.ai_settings_set") == [("org.ai_settings_set", customer)]
     [row] = [row for row in api.audit_rows(customer) if row[0] == "org.ai_settings_set"]
     assert row[3]["by"] == "operator" and row[3]["scan_default"] == second
@@ -135,12 +135,21 @@ def test_an_organisations_ai_settings_and_budget(db: Database) -> None:
         ({**body, "scan_models": [first, off], "scan_default": first}, "unavailable"),  # off: not enabled
         ({**body, "scan_default": off}, "default_not_allowed"),
         ({**body, "scan_default": None}, "default_not_allowed"),
-        ({**body, "scan_models": [first], "scan_default": first, "ensemble": True}, "needs_two_models_scan"),
     ]
     for refused, code in refusals:
         reply = _save(api, operator, client, path, refused)
         assert (reply.status_code, reply.json()["error"]["code"]) == (409, code), reply.text
-    assert client.get(path).json() == saved.json()  # nothing changed
+    assert {**client.get(path).json(), "ensemble_off": False} == saved.json()  # nothing changed
+    # Changed on purpose (Tushar, 16 Oct 2026: any number of models): one scanning model with
+    # Cost saving and Ensemble saves, Ensemble off and said so.
+    one = {**body, "scan_models": [first], "scan_default": first, "dynamic": True, "ensemble": True}
+    alone = _save(api, operator, client, path, one)
+    assert alone.status_code == 200, alone.text
+    assert (alone.json()["own"]["dynamic"], alone.json()["ensemble"], alone.json()["ensemble_off"]) == (
+        True,
+        False,
+        True,
+    )
     assert client.get(f"/api/operator/orgs/{uuid.uuid4()}/ai").status_code == 404
     assert _save(api, operator, client, f"/api/operator/orgs/{uuid.uuid4()}/ai", body).status_code == 404
 
@@ -170,9 +179,14 @@ def test_the_platform_defaults_through_the_api(db: Database) -> None:
         assert saved.status_code == 200, saved.text
         assert saved.json()["defaults"]["scan_models"] == sorted([first, second])
         assert saved.json()["defaults"]["dynamic"] is True
+        # Changed on purpose (Tushar, 16 Oct 2026: any number of models): Cost saving with one.
         one = {**body, "scan_models": [first]}
-        refused = _save(api, operator, client, "/api/operator/ai-defaults", one)
-        assert (refused.status_code, refused.json()["error"]["code"]) == (409, "needs_two_models_scan")
+        alone = _save(api, operator, client, "/api/operator/ai-defaults", one)
+        assert alone.status_code == 200, alone.text
+        assert (alone.json()["defaults"]["scan_models"], alone.json()["defaults"]["dynamic"]) == (
+            [first],
+            True,
+        )
     finally:
         assert _save(api, operator, client, "/api/operator/ai-defaults", put_back).status_code == 200
 
@@ -220,3 +234,68 @@ def test_the_catalogue_averages_a_scanned_page_over_every_organisations_ledger(d
     items = {item["id"]: item for item in client.get("/api/operator/models").json()["items"]}
     assert (items[measured]["ledger_tokens_in"], items[measured]["ledger_tokens_out"]) == (3000.0, 2000.0)
     assert (items[unmeasured]["ledger_tokens_in"], items[unmeasured]["ledger_tokens_out"]) == (None, None)
+
+
+_SPEND = (
+    "INSERT INTO model_usage (customer_id, kind, model, cached, calls, input_tokens, output_tokens,"
+    " reasoning_tokens, cost_usd, cost_estimated, created_at)"
+    " VALUES (:c, :kind, :m, :cached, :calls, 1000, 200, 0, CAST(:cost AS numeric), :estimated,"
+    " now() - make_interval(days => :ago))"
+)
+
+
+def test_the_catalogue_says_the_real_cost_of_scanning_and_answering_and_never_guesses(db: Database) -> None:
+    """0033: per model, every organisation's ledger of the last 30 days together: the cost
+    OpenRouter reported for pages read (scan, upgrade, careful, ensemble_scan; a cached
+    page is none) and questions answered (chat, ensemble_chat); a NULL or an estimated cost
+    is counted as unknown calls, never added; other kinds and older rows are left out; and
+    the reply names no organisation."""
+    api = Api(db)
+    _, client = _signed_in(api)
+    model, unused = _model(db), _model(db)
+    first, _ = api.customer("Real cost one")
+    second, _ = api.customer("Real cost two")
+    rows = [  # (customer, kind, cached, calls, cost, estimated, days ago)
+        (first, "scan", False, 10, "0.30", False, 0),
+        (first, "careful", False, 2, "0.10", False, 0),
+        (first, "ensemble_scan", False, 3, None, False, 0),  # no cost reported: unknown
+        (first, "upgrade", False, 1, "0.05", True, 0),  # the list price's guess: unknown
+        (first, "scan", True, 5, "0", False, 0),  # cached pages: no call, not a page
+        (first, "scan", False, 7, "9.99", False, 31),  # outside the 30 days
+        (second, "scan", False, 4, "0.20", False, 0),
+        (second, "chat", False, 3, "0.06", False, 0),
+        (second, "chat", False, 2, "0.04", False, 0),
+        (second, "ensemble_chat", False, 1, None, False, 0),
+        (second, "embed", False, 50, "1.00", False, 0),  # neither scanning nor answering
+        (second, "card", False, 1, "0.50", False, 0),
+    ]
+    for customer, kind, cached, calls, cost, estimated, ago in rows:
+        _owner(
+            db,
+            _SPEND,
+            {
+                "c": customer,
+                "kind": kind,
+                "m": model,
+                "cached": cached,
+                "calls": calls,
+                "cost": cost,
+                "estimated": estimated,
+                "ago": ago,
+            },
+        )
+    reply = client.get("/api/operator/models")
+    items = {item["id"]: item for item in reply.json()["items"]}
+    keys = (
+        "scan_pages",
+        "scan_pages_costed",
+        "scan_cost_usd",
+        "scan_cost_unknown_calls",
+        "answer_questions",
+        "answer_questions_costed",
+        "answer_cost_usd",
+        "answer_cost_unknown_calls",
+    )
+    assert tuple(items[model][key] for key in keys) == (20, 16, 0.6, 4, 3, 2, 0.1, 1)
+    assert tuple(items[unused][key] for key in keys) == (0, 0, None, 0, 0, 0, None, 0)
+    assert "Real cost one" not in reply.text and "Real cost two" not in reply.text

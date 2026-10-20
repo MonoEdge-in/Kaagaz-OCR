@@ -1,6 +1,9 @@
 /* The page viewer. The page itself is white paper (--paper) in both themes, on
    a frame (--paper-frame); highlights use the fixed paper colours plus a halo
-   ring, so they read the same on the page whatever the theme. */
+   ring, so they read the same on the page whatever the theme. MonoEdge design system
+   (16 Oct 2026): no shadows or gradients; the only box-shadows left are the 0-blur rings
+   round marks on the page (the amber highlight, my words, reading problems), which mark a
+   place and keep 3:1 against the paper and the print (1.4.11). */
 
 .viewer {
   display: flex;
@@ -23,11 +26,14 @@
   gap: var(--space-2);
 }
 
+/* Wide enough for "Fit width" and "250%", so the buttons beside it never move as it
+   changes; "Page N of M" is given its own width from M (PageViewer.tsx). */
 .readout {
-  min-width: 5.5em;
+  flex: none;
+  min-width: 9ch;
   text-align: center;
   font-size: var(--fs-sm);
-  color: var(--fg-muted);
+  color: var(--text-secondary);
 }
 
 /* The page buttons, and "Blank page" beside them for a blank page. */
@@ -40,7 +46,7 @@
 
 .route {
   font-size: var(--fs-sm);
-  color: var(--fg-muted);
+  color: var(--text-secondary);
 }
 
 /* The full page: fits the frame's content width (measured), zooms from there.
@@ -52,8 +58,8 @@
   overflow: auto;
   padding: var(--space-3);
   border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--paper-frame);
+  border-radius: 2px;
+  background: var(--bg-subdued);
   scrollbar-gutter: stable both-edges;
   overscroll-behavior-x: contain; /* a sideways swipe pans the page, never goes back */
 }
@@ -71,7 +77,8 @@
 .stage {
   position: relative;
   background: var(--paper);
-  box-shadow: var(--e-1);
+  outline: 1px solid var(--border);
+  transform-origin: 50% 0; /* a zoom grows from the top middle (lib/motion.ts) */
 }
 
 /* The highlight: amber, then a paper ring and an ink ring, so it stands out
@@ -85,20 +92,17 @@
   pointer-events: none;
 }
 
-/* On the full page, a new spot pulses twice: an amber ring closing in on it.
+/* On the full page, a new spot settles onto its value: a fade and a slight shrink, once
+   (motion pass, 16 Oct 2026: transform and opacity only, no ring).
    The global prefers-reduced-motion rule (globals.css) cuts it to nothing. */
 .pulse {
-  animation: spotPulse 0.7s ease-out 2;
+  animation: spotIn var(--t-slow) var(--ease);
 }
 
-@keyframes spotPulse {
+@keyframes spotIn {
   from {
-    outline: 2px solid var(--hl-border);
-    outline-offset: 10px;
-  }
-  to {
-    outline: 2px solid transparent;
-    outline-offset: 2px;
+    opacity: 0;
+    transform: scale(1.15);
   }
 }
 
@@ -122,7 +126,7 @@
   display: inline-block;
   min-width: 1.25rem;
   padding: 0 0.25rem;
-  border-radius: var(--r-full);
+  border-radius: 2px;
   font-size: 0.75rem;
   font-weight: 700;
   line-height: 1.25rem;
@@ -150,7 +154,7 @@
 .cellMineNumber {
   margin-inline-start: var(--space-1);
   background: var(--accent);
-  color: var(--accent-fg);
+  color: var(--text-onaccent);
 }
 
 .fill {
@@ -174,15 +178,17 @@
   height: 100%;
   padding: var(--space-4);
   text-align: center;
-  color: var(--fg);
+  color: var(--text-primary);
 }
 
 .failed p {
   margin: 0;
 }
 
-/* A crop preview: the space is reserved before anything loads, so the page
-   below never jumps; the spot is fitted inside, never clipped. */
+/* A crop preview: the box takes its frame's height (UI audit R1, 16 Oct 2026: no
+   empty band), which is known from the page's size before anything is drawn, so
+   the page below never jumps; the spot is fitted inside with a margin, never
+   clipped. Until the box is measured it holds one control's height. */
 .cropFigure {
   margin: 0;
   min-width: 0;
@@ -193,12 +199,11 @@
   display: grid;
   place-items: center;
   width: 100%;
-  aspect-ratio: 16 / 9;
-  max-height: 11rem;
+  min-height: var(--h-lg);
   overflow: hidden;
   border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--paper-frame);
+  border-radius: 2px;
+  background: var(--bg-subdued);
 }
 
 .cropSheetBox {
@@ -213,9 +218,9 @@
   background: var(--paper);
 }
 
-/* "Fit page" (DocumentView's sticky column): the viewer fills the column's
-   height, and the frame or sheet takes what the toolbar leaves, so the whole
-   page shows with no second scrollbar beside the window's. */
+/* The sticky column (DocumentView, `fill`): the viewer fills the column's height, and the
+   frame or sheet takes what the toolbar leaves. Fitted to the width (DD5), a tall page
+   scrolls in the frame; the wheel then runs on into <main> (no overscroll-behavior-y). */
 .fitPage {
   flex: 1 1 0;
   min-height: 20rem; /* never squeezed to nothing by what sits above it */
@@ -247,9 +252,9 @@
   max-height: 70dvh;
   overflow: auto;
   border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--surface);
-  overscroll-behavior-x: contain;
+  border-radius: 2px;
+  background: var(--bg-surface);
+  overscroll-behavior-x: contain; /* a sideways swipe pans the sheet, never goes back; the wheel runs on (DD1) */
 }
 
 .sheetCrop {
@@ -270,7 +275,7 @@
 .sheet th,
 .sheet td {
   white-space: nowrap;
-  border-right: 1px solid var(--border);
+  border-inline-end: 1px solid var(--border);
   padding: var(--space-1) var(--space-3);
 }
 
@@ -278,14 +283,14 @@
   position: sticky;
   top: 0;
   z-index: 1;
-  background: var(--surface-2);
+  background: var(--bg-subdued);
 }
 
 .sheet tbody th {
-  color: var(--fg-muted);
+  color: var(--text-secondary);
   font-weight: 600;
   font-size: var(--fs-sm);
-  background: var(--surface-2);
+  background: var(--bg-subdued);
 }
 
 .cellHit {
@@ -329,19 +334,23 @@
   box-shadow: 0 0 0 4px var(--paper);
 }
 
+/* DD7: the mark whose chip is pointed at in the Needs attention tab: the focus ring's look. */
+.problem[data-hot] {
+  outline: 2px solid var(--mine-on-paper);
+  outline-offset: 2px;
+}
+
 .problem[data-quality="unsure"],
 .swatch[data-quality="unsure"] {
   border: 2px dashed var(--hl-border);
 }
 
+/* A double edge and a light fill (no hatch: MonoEdge has no gradients), still unlike the
+   dashed "unsure" and the dotted "unpinned" marks. */
 .problem[data-quality="illegible"],
 .swatch[data-quality="illegible"] {
-  border: 2px solid var(--illegible-on-paper);
-  background: repeating-linear-gradient(
-    45deg,
-    color-mix(in srgb, var(--illegible-on-paper) 45%, transparent) 0 2px,
-    transparent 2px 6px
-  );
+  border: 4px double var(--illegible-on-paper);
+  background: color-mix(in srgb, var(--illegible-on-paper) 18%, transparent);
 }
 
 .problem[data-quality="unpinned"],
@@ -349,25 +358,44 @@
   border: 2px dotted var(--border-strong);
 }
 
-.problemBar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2) var(--space-4);
-  font-size: var(--fs-sm);
-}
-
-.problemToggle {
+/* DD9: "Show reading problems" is a toolbar toggle; its legend is a tooltip under it, shown
+   on hover or focus, never over the button, never catching the pointer. */
+.problemTool {
+  position: relative;
   display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-height: var(--control-h);
 }
 
+.problemTool [aria-pressed="true"] {
+  background: var(--bg-selected);
+  border-color: var(--border-strong);
+}
+
+.legendTip {
+  position: absolute;
+  inset-inline-end: 0;
+  top: calc(100% + var(--space-1));
+  z-index: var(--z-tooltip);
+  width: max-content;
+  max-width: 20rem;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: 2px;
+  background: var(--bg-surface);
+  font-size: var(--fs-sm);
+  pointer-events: none;
+  visibility: hidden;
+}
+
+.problemTool:hover .legendTip,
+.problemTool:focus-within .legendTip {
+  visibility: visible;
+}
+
+/* Kept in the row while it does nothing ("Fit page" at 100%), so the row never shifts. */
 .legend {
   display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-1) var(--space-4);
+  flex-direction: column;
+  gap: var(--space-1);
   margin: 0;
   padding: 0;
   list-style: none;
@@ -386,7 +414,78 @@
   border-radius: 2px;
 }
 
-/* After the patterns: a swatch sits on paper, like the marks it explains. */
-.legend .swatch {
+/* After the patterns: a swatch sits on paper, like the marks it explains (the "couldn't read"
+   swatch keeps its own light fill). */
+.legend .swatch:not([data-quality="illegible"]) {
   background-color: var(--paper);
+}
+
+/* Words flagged for review (scan review UX rules, section 2): Check a dotted underline and
+   "?", Review a solid underline and "!". The page is paper white in both themes, so the
+   paper-fixed amber and red are used. Drawn over the page: nothing on it moves. */
+.flag {
+  position: absolute;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.flag::before {
+  content: "";
+  position: absolute;
+  top: min(0px, calc(50% - 12px));
+  bottom: min(0px, calc(50% - 12px));
+  left: min(0px, calc(50% - 12px));
+  right: min(0px, calc(50% - 12px));
+}
+
+.flag[data-band="check"] {
+  border-bottom: 2px dotted var(--hl-border);
+}
+
+.flag[data-band="review"] {
+  border-bottom: 2px solid var(--illegible-on-paper);
+}
+
+.flag::after {
+  position: absolute;
+  inset-block-start: -8px;
+  inset-inline-end: -8px;
+  display: grid;
+  place-items: center;
+  inline-size: 14px;
+  block-size: 14px;
+  border-radius: 2px;
+  background: var(--paper);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.flag[data-band="check"]::after {
+  content: "?";
+  content: "?" / "";
+  color: var(--hl-border);
+  border: 1px dotted var(--hl-border);
+}
+
+.flag[data-band="review"]::after {
+  content: "!";
+  content: "!" / "";
+  color: var(--illegible-on-paper);
+  border: 1px solid var(--illegible-on-paper);
+}
+
+/* In Ensemble now: a hairline dashed outline, subtle; the word stays pressable. */
+.flag[data-state="in_ensemble"] {
+  outline: 1px dashed var(--mine-on-paper);
+  outline-offset: 1px;
+}
+
+.flag[aria-current="true"],
+.flag:focus-visible {
+  outline: 2px solid var(--mine-on-paper);
+  outline-offset: 2px;
 }

@@ -170,15 +170,12 @@ describe("reprocessDocument", () => {
       return new Response(JSON.stringify({ id: "d1", status: "received" }), { status: 200 });
     });
     await reprocessDocument("d1");
-    // Changed on purpose (features 25-27, 15 Oct 2026): the reading is sent whole (a model,
-    // Dynamic, or more than one reader), as the body.
+    // Changed on purpose (features 25-27, 15 Oct 2026): the reading is sent whole (a model
+    // or Dynamic), as the body. Changed on purpose (Ensemble after the scan, 16 Oct 2026):
+    // never more than one reader.
     await reprocessDocument("d1", { read_model: "anthropic/claude-sonnet-5.5" });
-    await reprocessDocument("d1", { read_mode: "ensemble", read_agents: ["google/a", "google/b"] });
-    expect(bodies).toEqual([
-      undefined,
-      { read_model: "anthropic/claude-sonnet-5.5" },
-      { read_mode: "ensemble", read_agents: ["google/a", "google/b"] },
-    ]);
+    await reprocessDocument("d1", { read_mode: "dynamic" });
+    expect(bodies).toEqual([undefined, { read_model: "anthropic/claude-sonnet-5.5" }, { read_mode: "dynamic" }]);
   });
 });
 
@@ -194,9 +191,10 @@ describe("Read again settles", () => {
     const values = (labels: Label[]) => labels.map((label) => ({ label }));
     const ready = { status: "ready" as const, status_message: "Ready" };
     const many = values([...Array<Label>(36).fill("verified"), ...Array<Label>(6).fill("needs_review")]);
-    expect(settledText({ ...ready, values: many }, true)).toBe("Read again. 42 values found, 6 need review.");
+    // Changed on purpose (Tushar, 16 Oct 2026: Ready to verify).
+    expect(settledText({ ...ready, values: many }, true)).toBe("Read again. 42 values found, 6 ready to verify.");
     expect(settledText({ ...ready, values: values(["needs_review"]) }, false)).toBe(
-      "Reading finished. 1 value found, 1 needs review.",
+      "Reading finished. 1 value found, 1 ready to verify.",
     );
     const failed = { status: "failed" as const, status_message: "This file could not be read.", values: [] };
     expect(settledText(failed, true)).toBe("Reading failed. This file could not be read.");

@@ -3,7 +3,12 @@
 // The panels beside the page (PRD 3 Y1 to Y3): the document card, the related
 // documents and the invoice; and first, the Attention panel (PRD 5 U5): every
 // reading problem in the document, by page, each page a jump link, with the
-// shown page's marks as a list of the same buttons as on the page. Each item with a spot is a button that shows it
+// shown page's marks as a list of the same buttons as on the page. While a page not kept as is
+// has problems, it carries the Ready to verify dashed edge, "N to check" and a lead line (board 2).
+// UI audit DD7 (16 Oct 2026): each mark is a short chip, the word, "1/3" and a jump icon
+// (its full name for screen readers); pointing at one lights its mark on the page, and
+// pointing at a mark on the page lights its chip (`hot`).
+// Each item with a spot is a button that shows it
 // on its page, with its label's spot too. Every text came from the document or
 // the AI model, so it is shown as plain text; the AI's own words sit under a
 // heading that says so.
@@ -30,7 +35,8 @@ import {
 import type { Spot } from "@/components/viewer/panels";
 import { fieldText } from "@/components/viewer/labels";
 import { ALL_CLEAR, attentionPages } from "@/components/viewer/pageProblems";
-import { markName, marksOnPage } from "@/components/viewer/readingMarks";
+import type { AttentionPage } from "@/components/viewer/pageProblems";
+import { markChipText, markName, marksOnPage } from "@/components/viewer/readingMarks";
 import { valueAt } from "@/components/viewer/scanned";
 import { sameRegion } from "@/components/viewer/selection";
 import { WhatWasRead } from "@/components/viewer/WhatWasRead";
@@ -181,7 +187,7 @@ export function InvoicePanel({ detail, active, onShow }: PanelProps) {
         </span>
       </p>
       {chip.reasons.length > 0 && (
-        <ul className={styles.checkReasons} aria-label="Why it needs review">
+        <ul className={styles.checkReasons} aria-label="Why to verify it">
           {chip.reasons.map((reason) => (
             <li key={reason}>{reason}</li>
           ))}
@@ -248,6 +254,8 @@ export function AttentionPanel({
   marks,
   onPage,
   onMark,
+  hot = null,
+  onHot = () => undefined,
 }: {
   status: DocumentStatus;
   pages: PageSummary[];
@@ -255,14 +263,27 @@ export function AttentionPanel({
   marks: ReadingMark[]; // the shown page's marks
   onPage: (pageNo: number) => void;
   onMark: (mark: ReadingMark, name: string) => void;
+  hot?: number | null; // the mark pointed at, here or on the page (its index on the page)
+  onHot?: (index: number | null) => void;
 }) {
   const problemPages = attentionPages(pages);
   const shownMarks = current === null ? [] : marksOnPage(marks, current); // as numbered on the page
+  const lead = toCheck(problemPages);
   return (
-    <section className={styles.panel} aria-labelledby="attention-heading">
+    <section
+      className={lead ? `${styles.panel} ${styles.attentionToCheck}` : styles.panel}
+      aria-labelledby="attention-heading"
+    >
       <h2 id="attention-heading" className={styles.valuesHeading}>
         Attention
+        {lead && (
+          <span className={`${labelBadgeClass("needs_review")} tabular`}>
+            <Icon name={labelIcon("needs_review")} size={16} />
+            {lead.count.toLocaleString("en-IN")} to check
+          </span>
+        )}
       </h2>
+      {lead && <p className={styles.attentionLead}>{lead.text}</p>}
       {problemPages.length === 0 ? (
         <p className="muted">{untilRead(status, ALL_CLEAR)}</p>
       ) : (
@@ -285,13 +306,29 @@ export function AttentionPanel({
                 ))}
               </ul>
               {item.pageNo === current && shownMarks.length > 0 && (
-                <ul className={styles.panelList} aria-label={`Marks on page ${item.pageNo}`}>
+                <ul className={styles.markChips} aria-label={`Marks on page ${item.pageNo}`}>
                   {shownMarks.map((mark, index) => {
                     const name = markName(mark, index, shownMarks.length);
                     return (
                       <li key={index}>
-                        <button type="button" className={styles.valueButton} onClick={() => onMark(mark, name)}>
-                          {name}
+                        <button
+                          type="button"
+                          className={`btn ${styles.markChip}`}
+                          data-quality={mark.quality}
+                          data-hot={hot === index ? "true" : undefined}
+                          aria-label={name}
+                          title={name}
+                          onClick={() => onMark(mark, name)}
+                          onPointerEnter={() => onHot(index)}
+                          onPointerLeave={() => onHot(null)}
+                          onFocus={() => onHot(index)}
+                          onBlur={() => onHot(null)}
+                        >
+                          <bdi className={`mono ${styles.markWord}`}>{markChipText(mark)}</bdi>
+                          <span className="tabular">
+                            {index + 1}/{shownMarks.length}
+                          </span>
+                          <Icon name="open" size={16} />
                         </button>
                       </li>
                     );
@@ -304,4 +341,24 @@ export function AttentionPanel({
       )}
     </section>
   );
+}
+
+/** The Needs attention tab's count (DD6): the reading problems still to check, as "N to check" says. */
+export const attentionCount = (pages: PageSummary[]) => toCheck(attentionPages(pages))?.count ?? 0;
+
+/**
+ * The Attention panel's "N to check" and its lead line: the problems on pages not kept as
+ * is (kept ones are off the list); null when there are none.
+ */
+function toCheck(problemPages: AttentionPage[]): { count: number; text: string } | null {
+  const open = problemPages.filter((item) => !item.kept);
+  const count = open.reduce((sum, item) => sum + item.lines.length, 0);
+  if (count === 0) return null;
+  const where = open.length === 1 ? `page ${open[0]?.pageNo}` : `${open.length.toLocaleString("en-IN")} pages`;
+  const them = count === 1 ? "it" : "them";
+  const problems = count === 1 ? "1 reading problem" : `${count.toLocaleString("en-IN")} reading problems`;
+  return {
+    count,
+    text: `${problems} on ${where}. Check ${them} on the ${open.length === 1 ? "page" : "pages"} before you rely on ${them}.`,
+  };
 }

@@ -103,7 +103,7 @@ export function SetPasswordScreen({ me, onChanged }: { me: Me; onChanged(): void
   return (
     <main className={styles.centered}>
       <div className={`card ${styles.centeredBox} ${styles.gate}`}>
-        <Wordmark reader={false} />
+        <Wordmark />
         <form
           method="post"
           noValidate

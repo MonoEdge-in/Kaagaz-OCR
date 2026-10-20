@@ -1,44 +1,26 @@
 "use client";
 
-// What the sidebar (1024 px and up) and the menu drawer (below) both hold, in
-// order: the links for this person's role and session, a spacer, the theme
-// switch, who is signed in and for which customer, then the two ways to sign
-// out: this browser only, or every browser and phone at once (PRD A4). One
-// component, so the two places always show the same things.
+// What the sidebar (1024 px and up) and the menu drawer (below) both hold: the
+// links for this person's role and session. One component, so the two places
+// always show the same links. Who is signed in, the theme switch and the two
+// sign-outs are in the header's account menu (AccountMenu, UI audit G6). The Review
+// link carries no count (Tushar, 16 Oct 2026: a big number there makes people uneasy;
+// the Review page itself has the list).
 
 import Link from "next/link";
 import { Icon } from "@/components/ui/Icon";
-import { ThemeToggle } from "@/components/ui/ThemeToggle";
-import type { Me } from "@/lib/types";
-import { isCurrent, roleName } from "./nav";
+import { isCurrent } from "./nav";
 import type { NavLink } from "./nav";
 import styles from "./Shell.module.css";
-
-/** Which sign-out is running: this browser ("here") or all of them. */
-export type SignOutKind = "here" | "everywhere";
 
 export interface ShellMenuProps {
   links: readonly NavLink[];
   pathname: string;
-  me: Me;
-  signingOut: SignOutKind | null;
-  signOutError: string | null;
-  onSignOut(): void;
-  onSignOutEverywhere(): void;
   /** Called when a link is followed, so the drawer also closes on its own page's link. */
   onLinkClick?(): void;
 }
 
-export function ShellMenu({
-  links,
-  pathname,
-  me,
-  signingOut,
-  signOutError,
-  onSignOut,
-  onSignOutEverywhere,
-  onLinkClick,
-}: ShellMenuProps) {
+export function ShellMenu({ links, pathname, onLinkClick }: ShellMenuProps) {
   return (
     <div className={styles.menu}>
       <nav aria-label="Main">
@@ -53,7 +35,7 @@ export function ShellMenu({
                   aria-current={current ? "page" : undefined}
                   onClick={onLinkClick}
                 >
-                  <Icon name={link.icon} size={20} />
+                  <Icon name={link.icon} />
                   <span>{link.label}</span>
                 </Link>
               </li>
@@ -61,47 +43,6 @@ export function ShellMenu({
           })}
         </ul>
       </nav>
-
-      <div className={styles.spacer} />
-
-      <ThemeToggle />
-
-      <div className={styles.user}>
-        <p className={styles.userName}>{me.user.display_name}</p>
-        <p className={styles.userMeta}>
-          {roleName(me.user.role)} · {me.customer.name}
-        </p>
-      </div>
-
-      <div className={styles.signOuts}>
-        <button
-          type="button"
-          className={`btn btn-quiet btn-block ${styles.signOut}`}
-          onClick={onSignOut}
-          disabled={signingOut !== null}
-          aria-busy={signingOut === "here" || undefined}
-        >
-          <Icon name="logout" />
-          <span>{signingOut === "here" ? "Signing out…" : "Sign out"}</span>
-        </button>
-        <button
-          type="button"
-          className={`btn btn-quiet btn-block ${styles.signOut}`}
-          onClick={onSignOutEverywhere}
-          disabled={signingOut !== null}
-          aria-busy={signingOut === "everywhere" || undefined}
-        >
-          <Icon name="logout" />
-          <span>
-            {signingOut === "everywhere" ? "Signing out everywhere…" : "Sign out everywhere"}
-          </span>
-        </button>
-      </div>
-      {signOutError && (
-        <p className="error-text" role="alert">
-          {signOutError}
-        </p>
-      )}
     </div>
   );
 }

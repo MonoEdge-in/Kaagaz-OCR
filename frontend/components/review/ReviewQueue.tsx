@@ -4,22 +4,28 @@
 // those of one reason (PRD 3 Y5). Each one leaves the list once it is
 // resolved, the page says so politely in one message, and focus moves to the
 // next card so it is never lost. Members see a short note instead; the server
-// refuses them anyway. "Group by document" (PRD 5 U6) puts the cards shown under
-// their document's name.
+// refuses them anyway. "By document" (PRD 5 U6) puts the cards shown under
+// their document's name. UI audit (16 Oct 2026): a segmented control picks the view
+// (R6); "One at a time" (R3, the default) shows one card with "3 of 15", takes the
+// keys 1, 2, E, S and Enter, and moves on by itself after a save or a skip.
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Icon } from "@/components/ui/Icon";
-import { ApiError, listReview } from "@/lib/api";
+import { ApiError, FEATURE_OFF, listReview } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import type { ReviewItem, ReviewList, ReviewReason } from "@/lib/types";
+import type { QueueView } from "./review";
 import {
   REASON_FILTERS,
+  QUEUE_VIEWS,
   appendItems,
   canReview,
   focusAfterResolve,
+  focusIndexAfter,
+  focusProgress,
   groupByDocument,
   leftToReview,
   parseReason,
@@ -57,7 +63,10 @@ function Queue({ documentId }: { documentId?: string }) {
   const [loadingMore, setLoadingMore] = useState(false);
   const [saved, setSaved] = useState("");
   const [reason, setReason] = useState<ReviewReason | null>(null);
-  const [grouped, setGrouped] = useState(false);
+  const [view, setView] = useState<QueueView>("focus");
+  // Focus mode: the card shown (its place in the list) and how many were settled in this visit.
+  const [index, setIndex] = useState(0);
+  const [done, setDone] = useState(0);
   // The latest list, kept in step with every setList, so a resolve that lands
   // after another one works on the current queue.
   const latest = useRef<ReviewList | null>(null);
@@ -96,9 +105,12 @@ function Queue({ documentId }: { documentId?: string }) {
   const loaded = first !== null && first.attempt === attempt ? list : null;
   const failed = loadError !== null && loadError.attempt === attempt ? loadError.message : null;
   const announcement = saved && loaded ? `${saved} ${leftToReview(loaded.total)}` : "";
+  // Focus mode's one card: the one at `index`, or the last when a load to fill it failed.
+  const at = loaded ? Math.min(index, loaded.items.length - 1) : 0;
+  const shown = loaded?.items[at];
 
-  /** Loads the next page; with focusFirst, focus then goes to its first card (or the empty heading). */
-  const loadMore = async (focusFirst = false) => {
+  /** Loads the next page; with focusAt, focus then goes to the card there (or the first, or the empty heading). */
+  const loadMore = async (focusAt: number | null = null) => {
     const shown = latest.current;
     if (!shown) return;
     setLoadingMore(true);
@@ -107,8 +119,9 @@ function Queue({ documentId }: { documentId?: string }) {
       // Resolved values have left the queue, so the next page starts after what is shown.
       const more = await listReview(queueParams(shown.items.length, PAGE_SIZE, documentId, reason));
       const next = latest.current ? appendItems(latest.current, more) : more;
-      if (focusFirst) {
-        const top = next.items[0];
+      if (focusAt !== null) {
+        const top = next.items[focusAt] ?? next.items[0];
+        if (!next.items[focusAt]) setIndex(0);
         focusNext.current = top ? reviewTitleId(top.value.id) : EMPTY_HEADING_ID;
       }
       commit(next);
@@ -119,17 +132,52 @@ function Queue({ documentId }: { documentId?: string }) {
     }
   };
 
+  /** Focus mode: show the card at `at` of `list`, loading more there when the server has them. */
+  const showAt = (list: ReviewList, at: number) => {
+    const place = focusIndexAfter(list, at);
+    if (place === "more") {
+      setIndex(at);
+      void loadMore(at);
+    } else {
+      const item = place === null ? undefined : list.items[place];
+      setIndex(place ?? 0);
+      focusNext.current = item ? reviewTitleId(item.value.id) : EMPTY_HEADING_ID;
+    }
+  };
+
   const onResolved = (before: ReviewItem, after: ReviewItem) => {
     const current = latest.current;
     if (!current) return;
+    const next = withoutItem(current, before.value.id);
     // Decide where focus goes before the card leaves.
     const target = focusAfterResolve(current, before.value.id);
-    commit(withoutItem(current, before.value.id));
+    commit(next);
     setSaved(resolvedMessage(after));
-    if (target.kind === "card") focusNext.current = reviewTitleId(target.valueId);
+    if (view === "focus") {
+      setDone((n) => n + 1);
+      showAt(next, current.items.findIndex((item) => item.value.id === before.value.id));
+    } else if (target.kind === "card") focusNext.current = reviewTitleId(target.valueId);
     else if (target.kind === "empty") focusNext.current = EMPTY_HEADING_ID;
-    else void loadMore(true);
+    else void loadMore(0);
   };
+
+  const skip = () => {
+    const current = latest.current;
+    if (!current) return;
+    // The only value left comes back: the line says why nothing moved.
+    setSaved(current.total === 1 ? "This is the only value left." : "");
+    showAt(current, index + 1);
+  };
+
+  // Review switched off for the whole product: a calm note in its place.
+  if (failed === FEATURE_OFF) {
+    return (
+      <div className="page">
+        <Header />
+        <EmptyState icon="review" title={FEATURE_OFF} />
+      </div>
+    );
+  }
 
   return (
     <div className="page">
@@ -145,6 +193,8 @@ function Queue({ documentId }: { documentId?: string }) {
           onChange={(event) => {
             setMoreError(null);
             setReason(parseReason(event.target.value));
+            setIndex(0);
+            setDone(0);
             setAttempt((n) => n + 1); // the loading state until the filtered list comes
           }}
         >
@@ -156,10 +206,21 @@ function Queue({ documentId }: { documentId?: string }) {
           ))}
         </select>
       </div>
-      <label className={styles.groupToggle}>
-        <input type="checkbox" checked={grouped} onChange={() => setGrouped(!grouped)} />
-        Group by document
-      </label>
+      {/* Native radios: arrow keys move between them, and Tab stops once (R6). */}
+      <div className={styles.segments} role="radiogroup" aria-label="Show">
+        {QUEUE_VIEWS.map((choice) => (
+          <label key={choice.value} className={styles.segment}>
+            <input
+              type="radio"
+              name="review-view"
+              value={choice.value}
+              checked={view === choice.value}
+              onChange={() => setView(choice.value)}
+            />
+            {choice.text}
+          </label>
+        ))}
+      </div>
       <p className={announcement ? styles.saved : "visually-hidden"} aria-live="polite">
         {announcement ? <Icon name="check-seal" size={16} /> : null}
         {announcement}
@@ -211,9 +272,17 @@ function Queue({ documentId }: { documentId?: string }) {
         ) : (
           <>
             <p className={`${styles.count} tabular`}>
-              {`${loaded.total} value${loaded.total === 1 ? "" : "s"} to review.`}
+              {view === "focus" && shown
+                ? `Value ${focusProgress(done, at, loaded.total)}`
+                : `${loaded.total} value${loaded.total === 1 ? "" : "s"} to review.`}
             </p>
-            {grouped ? (
+            {view === "focus" ? (
+              shown ? (
+                <ReviewCard key={shown.value.id} item={shown} onResolved={onResolved} onSkip={skip} />
+              ) : (
+                <p className="muted">Loading the next value…</p>
+              )
+            ) : view === "document" ? (
               groupByDocument(loaded.items).map((group) => (
                 <section key={group.id} className={styles.group} aria-labelledby={`review-group-${group.id}`}>
                   <h2 id={`review-group-${group.id}`} className={styles.groupHeading}>
@@ -239,22 +308,17 @@ function Queue({ documentId }: { documentId?: string }) {
                 {`Could not load more values. ${moreError}`}
               </p>
             ) : null}
-            {loaded.items.length < loaded.total ? (
+            {view !== "focus" && loaded.items.length < loaded.total ? (
               <div>
                 <button
                   type="button"
-                  className="btn"
+                  className={`btn ${loadingMore ? styles.busy : ""}`}
                   disabled={loadingMore}
+                  aria-busy={loadingMore || undefined}
                   onClick={() => void loadMore()}
                 >
-                  {loadingMore ? (
-                    <>
-                      <span className="spinner" aria-hidden="true" />
-                      Loading…
-                    </>
-                  ) : (
-                    "Show more"
-                  )}
+                  {loadingMore && <span className="spinner" aria-hidden="true" />}
+                  Show more
                 </button>
               </div>
             ) : null}

@@ -1,178 +1,235 @@
 "use client";
 
-// One source behind an answer: its number (matching the chip in the answer),
-// the document and page, its label, a zoomed-in preview of the spot (loaded
-// only when the card comes near view), the cited text (plain text, it came
-// from the document), and a link that opens the page with the spot highlighted,
-// with "See scanned text" beside it (the page's Scanned text open).
-// A source over several pages says "Pages 15 to 16" and gets a chip for each
-// later page's spot; a value whose label is on another page says so and gets
-// a chip for the label (PRD 3 H4).
-// A source from an older version says so; one whose document is in Trash or
-// deleted shows only "From a deleted document" and its label (citationSource).
-// Cited text with an unsure or illegible word says "Part of this text was hard
-// to read." (PRD 5 F6, U7). Its chip pointed at or focused lights the card (data-hot).
+// The sources of an answer, compact (Tushar, 16 Oct 2026): no page image and no boxes
+// in Ask, only where the source is. A cited source (SourceCard) is one row: its number
+// (matching the chip in the answer), the file icon, the document's name on one line,
+// "Page 3 · PDF", up to four lines of the cited text around the question's words, those
+// words marked (a tint and bold, never colour alone), "Open page" (the page opens at the
+// spot) and "Most relevant", which puts it on top of the list (aria-pressed once it is).
+// A document the search found but the answer does not cite (RelatedRow, "Also in")
+// is the same row with two lines and no number. Not found's closest documents are the
+// same row with only the name (DocumentRow).
+// A source over several pages says "Pages 15 to 16" and gets a chip for each later
+// page's spot; a value whose label is on another page says so and gets a chip for the
+// label (PRD 3 H4). A source from an older version says so; one whose document is in
+// Trash or deleted shows only "From a deleted document" (citationSource). No label
+// badge: no Needs review in Ask; that is the Review screen's. Cited text with an unsure
+// or illegible word says "Part of this text was hard to read." (PRD 5 F6, U7). Its chip
+// pointed at or focused lights the card (data-hot). All text is plain text.
 
 import Link from "next/link";
-import { memo, useRef } from "react";
+import { memo } from "react";
 import { Icon } from "@/components/ui/Icon";
-import { useDocumentDetail } from "@/components/viewer/documentCache";
-import { LabelBadge } from "@/components/viewer/LabelBadge";
-import { PageViewer } from "@/components/viewer/PageViewer";
-import type { Citation } from "@/lib/types";
+import { IconButton } from "@/components/ui/IconButton";
+import { pageLink } from "@/lib/regions";
+import type { Citation, Mentions, RelatedDocument } from "@/lib/types";
 import {
   DELETED_SOURCE_TEXT,
   HARD_TO_READ_TEXT,
   OLDER_VERSION_TEXT,
   cardId,
-  citationHighlights,
   citationLink,
-  citationRegion,
   citationSource,
-  scannedLink,
+  markParts,
+  matchTerms,
+  mentionPages,
+  snippetAround,
 } from "./answer";
-import { useNearView } from "./hooks";
-import { labelPlace, pageJumps, sourceAction, sourceMeta } from "./logic";
+import { labelPlace, openText, pageJumps, sourceMeta } from "./logic";
 import styles from "./Chat.module.css";
 
-function PreviewSkeleton() {
-  return <span className={`skeleton ${styles.previewSkeleton}`} aria-hidden="true" />;
+export const PIN_LABEL = "Most relevant";
+
+/** The text with the question's words marked; plain text only. */
+function Marked({ text, terms, short = false }: { text: string; terms: readonly string[]; short?: boolean }) {
+  return (
+    <p className={short ? `${styles.snippet} ${styles.snippetShort}` : styles.snippet}>
+      {markParts(snippetAround(text, terms), terms).map((part, index) =>
+        part.mark ? <mark key={index}>{part.text}</mark> : part.text,
+      )}
+    </p>
+  );
 }
 
-function SourcePreview({ citation }: { citation: Citation }) {
-  const state = useDocumentDetail(citation.document_id);
-  if (state.status === "loading") return <PreviewSkeleton />;
-  const page =
-    state.status === "ready"
-      ? state.document.pages.find((p) => p.page_no === citation.page_no)
-      : undefined;
-  const region = citationRegion(citation);
-  if (state.status === "error" || !page || !region) {
-    return <p className={styles.previewNote}>The preview is not available. Open the page to see the spot.</p>;
-  }
+/** "Most relevant": puts this source on top; pressed once it is. */
+function PinButton({ name, pinned, onPin }: { name: string; pinned: boolean; onPin?: () => void }) {
+  if (!onPin) return null;
   return (
-    <PageViewer
-      document={state.document}
-      page={page}
-      highlights={citationHighlights(citation)}
-      crop={region}
+    <IconButton
+      icon="to-top"
+      label={pinned ? `${PIN_LABEL}: ${name}` : `${PIN_LABEL}: put ${name} on top`}
+      title={PIN_LABEL}
+      className={`btn-quiet ${styles.pin}`}
+      aria-pressed={pinned}
+      onClick={pinned ? undefined : onPin}
     />
   );
 }
 
-function LazySourcePreview({ citation }: { citation: Citation }) {
-  const holder = useRef<HTMLDivElement>(null);
-  const near = useNearView(holder);
+function Title({ id, prefix, name }: { id: string; prefix: string; name: string }) {
   return (
-    <div ref={holder} className={styles.preview}>
-      {near ? <SourcePreview citation={citation} /> : <PreviewSkeleton />}
-    </div>
+    <h4 id={id} className={styles.sourceTitle} title={name}>
+      <Icon name="file" size={16} />
+      <span className="visually-hidden">{prefix}</span>
+      <span className={styles.sourceName}>{name}</span>
+    </h4>
   );
 }
 
-// Memo: a chip pointed at or focused re-renders only the two cards whose `hot`
-// changed, not every card and preview of the answer.
+// Memo: a chip pointed at or focused re-renders only the two cards whose `hot` changed.
 export const SourceCard = memo(function SourceCard({
   citation,
   messageId,
   hot = false,
+  terms = [],
+  pinned = false,
+  onPin,
 }: {
   citation: Citation;
   messageId: string;
   /** Its chip in the answer is pointed at or focused: the card lights up. */
   hot?: boolean;
+  /** The question's words, marked in the text (matchTerms). */
+  terms?: readonly string[];
+  /** It is the source put on top of this answer. */
+  pinned?: boolean;
+  onPin?: () => void;
 }) {
   const id = cardId(messageId, citation.n);
   const headingId = `${id}-title`;
-  const source = citationSource(citation);
-  if (source === "gone") {
+  const prefix = `Source ${citation.n}: `;
+  const number = (
+    <span className={styles.numberMark} aria-hidden="true">
+      {citation.n}
+    </span>
+  );
+  if (citationSource(citation) === "gone") {
     return (
       <article id={id} className={styles.source} tabIndex={-1} aria-labelledby={headingId} data-hot={hot || undefined}>
-        <div className={styles.sourceHeader}>
-          <span className={styles.numberMark} aria-hidden="true">
-            {citation.n}
-          </span>
-          <div className={styles.sourceHeading}>
-            <h4 id={headingId} className={styles.sourceTitle}>
-              <span className="visually-hidden">{`Source ${citation.n}: `}</span>
-              {DELETED_SOURCE_TEXT}
-            </h4>
-            <LabelBadge label={citation.label} />
-          </div>
+        {number}
+        <div className={styles.sourceBody}>
+          <h4 id={headingId} className={styles.sourceTitle}>
+            <span className="visually-hidden">{prefix}</span>
+            {DELETED_SOURCE_TEXT}
+          </h4>
         </div>
       </article>
     );
   }
-  const action = sourceAction(citation);
   const labelText = labelPlace(citation);
   const jumps = pageJumps(citation);
-  const scanned = scannedLink(citation);
   return (
     <article id={id} className={styles.source} tabIndex={-1} aria-labelledby={headingId} data-hot={hot || undefined}>
-      <div className={styles.sourceHeader}>
-        <span className={styles.numberMark} aria-hidden="true">
-          {citation.n}
-        </span>
-        <div className={styles.sourceHeading}>
-          <h4 id={headingId} className={styles.sourceTitle}>
-            <span className="visually-hidden">{`Source ${citation.n}: `}</span>
-            {citation.document_name}
-          </h4>
-          <p className={styles.sourceMeta}>{sourceMeta(citation)}</p>
-          {labelText && <p className={styles.sourceMeta}>{labelText}</p>}
-          {source === "older" && <p className={styles.sourceMeta}>{OLDER_VERSION_TEXT}</p>}
-          {citation.label === "needs_review" ? (
-            <Link
-              href={`/review?document_id=${encodeURIComponent(citation.document_id)}`}
-              className={styles.reviewLink}
-              aria-label={`Review values from ${citation.document_name}`}
-            >
-              <LabelBadge label={citation.label} />
-            </Link>
-          ) : (
-            <LabelBadge label={citation.label} />
-          )}
-        </div>
-      </div>
-      <LazySourcePreview citation={citation} />
-      {citation.snippet !== null && (
-        <blockquote className={styles.snippet}>{citation.snippet}</blockquote>
-      )}
-      {citation.hard_to_read && (
+      {number}
+      <div className={styles.sourceBody}>
+        <Title id={headingId} prefix={prefix} name={citation.document_name} />
         <p className={styles.sourceMeta}>
-          <Icon name="eye-alert" size={16} /> {HARD_TO_READ_TEXT}
+          {sourceMeta(citation)}
+          {labelText ? ` · ${labelText}` : null}
+          {citationSource(citation) === "older" ? ` · ${OLDER_VERSION_TEXT}` : null}
         </p>
-      )}
-      <div className={styles.sourceAction}>
-        {action.reason ? <p className={styles.sourceReason}>{action.reason}</p> : null}
-        <Link
-          href={citationLink(citation)}
-          className={action.check ? `btn ${styles.checkLink}` : styles.openLink}
-        >
-          <Icon name="open" size={16} />
-          {action.text}
-          <span className="visually-hidden">{` of ${citation.document_name}`}</span>
-        </Link>
-        {scanned && (
-          <Link href={scanned} className={styles.openLink}>
-            <Icon name="scan-text" size={16} />
-            See scanned text
+        {citation.snippet !== null && <Marked text={citation.snippet} terms={terms} />}
+        {citation.hard_to_read && (
+          <p className={styles.sourceMeta}>
+            <Icon name="eye-alert" size={16} /> {HARD_TO_READ_TEXT}
+          </p>
+        )}
+        <div className={styles.sourceAction}>
+          <Link href={citationLink(citation)} className={styles.openLink}>
+            <Icon name="open" size={16} />
+            {openText(citation)}
             <span className="visually-hidden">{` of ${citation.document_name}`}</span>
           </Link>
-        )}
-        {jumps.length > 0 && (
-          <ul className={styles.docChips} aria-label={`More spots in ${citation.document_name}`}>
-            {jumps.map((jump) => (
-              <li key={jump.text}>
-                <Link className={styles.docChip} href={jump.href}>
-                  <Icon name="open" size={16} />
-                  {jump.text}
-                </Link>
-              </li>
-            ))}
-          </ul>
-        )}
+          {jumps.map((jump) => (
+            <Link key={jump.text} className={styles.openLink} href={jump.href}>
+              {jump.text}
+              <span className="visually-hidden">{` of ${citation.document_name}`}</span>
+            </Link>
+          ))}
+        </div>
       </div>
+      <PinButton name={citation.document_name} pinned={pinned} onPin={onPin} />
     </article>
   );
 });
+
+/** "Also in": a document the search found that the answer does not cite. */
+export function RelatedRow({
+  doc,
+  terms,
+  pinned = false,
+  onPin,
+}: {
+  doc: RelatedDocument;
+  terms: readonly string[];
+  pinned?: boolean;
+  onPin?: () => void;
+}) {
+  const href = pageLink(doc.document_id, doc.page_no, doc.regions[0]);
+  return (
+    <article className={styles.source}>
+      <div className={styles.sourceBody}>
+        <Title id={`related-${doc.document_id}`} prefix="Also in: " name={doc.document_name} />
+        <p className={styles.sourceMeta}>{sourceMeta(doc)}</p>
+        <Marked text={doc.snippet} terms={terms} short />
+        <div className={styles.sourceAction}>
+          <Link href={href} className={styles.openLink}>
+            <Icon name="open" size={16} />
+            {openText(doc)}
+            <span className="visually-hidden">{` of ${doc.document_name}`}</span>
+          </Link>
+        </div>
+      </div>
+      <PinButton name={doc.document_name} pinned={pinned} onPin={onPin} />
+    </article>
+  );
+}
+
+/**
+ * "Also mentions “Jalna”" (Tushar, 17 Oct 2026): every other document holding the
+ * question's key terms, as the same compact rows as "Also in": the name, its pages and two
+ * lines with the terms marked, opening at the page. "and N more" past the list.
+ */
+export function MentionsSection({ mentions }: { mentions: Mentions }) {
+  const terms = matchTerms(...mentions.terms);
+  const heading = `Also mentions ${mentions.terms.map((term) => `“${term}”`).join(" · ")}`;
+  const more = mentions.total - mentions.documents.length;
+  return (
+    <div>
+      <h3 className={styles.subheading}>
+        {heading} <span className={styles.sourceMeta}>· {mentions.total}</span>
+      </h3>
+      <ul className={styles.sources} aria-label={heading}>
+        {mentions.documents.map((doc) => (
+          <li key={doc.document_id}>
+            <article className={styles.source}>
+              <div className={styles.sourceBody}>
+                <Title id={`mention-${doc.document_id}`} prefix="Also mentions: " name={doc.document_name} />
+                <p className={styles.sourceMeta}>{mentionPages(doc.pages, doc.page_no)}</p>
+                <Marked text={doc.snippet} terms={terms} short />
+                <div className={styles.sourceAction}>
+                  <Link href={pageLink(doc.document_id, doc.page_no)} className={styles.openLink}>
+                    <Icon name="open" size={16} />
+                    Open page {doc.page_no}
+                    <span className="visually-hidden">{` of ${doc.document_name}`}</span>
+                  </Link>
+                </div>
+              </div>
+            </article>
+          </li>
+        ))}
+      </ul>
+      {more > 0 ? <p className={styles.sourceMeta}>and {more} more</p> : null}
+    </div>
+  );
+}
+
+/** Not found's closest documents and an unchecked answer's: the same row, the name only. */
+export function DocumentRow({ id, name }: { id: string; name: string }) {
+  return (
+    <Link className={`${styles.source} ${styles.documentRow}`} href={`/documents/${encodeURIComponent(id)}`} title={name}>
+      <Icon name="file" size={16} />
+      <span className={styles.sourceName}>{name}</span>
+    </Link>
+  );
+}

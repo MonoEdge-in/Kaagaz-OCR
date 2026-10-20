@@ -214,7 +214,7 @@ def test_reset_admin_2fa_clears_the_code_and_ends_the_sessions(db: Database) -> 
 
     assert code == 0
     assert _two_step(db, customer_id, user_id) == (None, None, None, 2)
-    assert out.getvalue() == f"user {user_id}: 2FA is off; they can turn it on again in Admin, Settings\n"
+    assert out.getvalue() == f"user {user_id}: 2FA is off; they set it up again at their next sign-in\n"
     with db.customer(customer_id) as conn:
         rows = conn.execute(text("SELECT action, actor_user_id, target_id, details FROM audit_log")).all()
     assert [tuple(row) for row in rows] == [("user.reset_totp", None, user_id, {"by": "cli"})]

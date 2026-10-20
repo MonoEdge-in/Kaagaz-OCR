@@ -14,7 +14,9 @@ command, using only the standard library ``socket``:
      read the whole file, so it cannot be called clean;
    * ``stream: Heuristics.Limits.Exceeded... FOUND`` and
      ``stream: Heuristics.Encrypted... FOUND`` are UNSCANNABLE too: clamd could
-     not look inside. clamd only says so with ``AlertExceedsMax yes`` and
+     not look inside. So is ``stream: Heuristics.Broken... FOUND``
+     (``AlertBrokenMedia``): a damaged file, not a virus; still refused.
+     clamd only says so with ``AlertExceedsMax yes`` and
      ``AlertEncrypted yes`` in clamd.conf; without them an over-limit file comes
      back ``OK``. PROVISIONAL: clamd's configuration is Vrushit's.
    * cannot connect, a timeout, a closed connection, any other ERROR or a
@@ -35,8 +37,9 @@ import logging
 import socket
 import struct
 
-from kaagaz.scanning.content import Finding, inspect
+from kaagaz.scanning.content import Finding
 from kaagaz.scanning.gate import Scanner, ScannerError, Verdict
+from kaagaz.scanning.isolated import inspect_isolated
 from kaagaz.settings import Settings, SettingsError
 
 logger = logging.getLogger(__name__)
@@ -108,7 +111,9 @@ def _verdict(reply: bytes, *, sent_all: bool) -> Verdict:
     text = reply.decode("ascii", errors="replace").strip()
     if text.endswith("size limit exceeded. ERROR"):
         return Verdict.UNSCANNABLE
-    if text.startswith(("stream: Heuristics.Limits.Exceeded", "stream: Heuristics.Encrypted")):
+    if text.startswith(
+        ("stream: Heuristics.Limits.Exceeded", "stream: Heuristics.Encrypted", "stream: Heuristics.Broken.")
+    ):
         return Verdict.UNSCANNABLE
     if sent_all and text == "stream: OK":
         return Verdict.CLEAN
@@ -135,14 +140,15 @@ class LayeredScanner:
     The content check (kaagaz/scanning/content.py) refuses scripts, macros,
     hidden programs and other active content that no signature may cover yet.
     Only a file both layers pass is CLEAN. The content check runs first: it is
-    local and cheap, and a file it refuses never needs the scanner at all.
+    local and cheap, and a file it refuses never needs the scanner at all. It runs in
+    a child process with memory and CPU limits (kaagaz/scanning/isolated.py).
     """
 
     def __init__(self, scanner: Scanner) -> None:
         self.scanner = scanner
 
     def scan(self, data: bytes) -> Verdict:
-        finding = inspect(data)
+        finding = inspect_isolated(data)  # in a child process with OS limits
         if finding is Finding.BLOCKED:
             return Verdict.BLOCKED
         if finding is Finding.UNSCANNABLE:

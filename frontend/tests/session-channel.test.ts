@@ -4,7 +4,19 @@
 // `other` stands in for another tab.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@/lib/api";
+import { sessionErrorMessage } from "@/lib/session";
 import { SESSION_CHANNEL, announceSession, leavePage, watchSession } from "@/lib/sessionChannel";
+
+// QA 17 Oct: a 429 while asking who is signed in said "not answering"; it is only busy.
+describe("the words when the session cannot be loaded", () => {
+  it("says busy for too many requests, not answering for other server errors", () => {
+    expect(sessionErrorMessage(new ApiError(429, "rate_limited", "Slow down"))).toBe(
+      "Kaagaz is busy right now. Wait a minute, then try again.",
+    );
+    expect(sessionErrorMessage(new ApiError(500, "error", "x"))).toBe("Kaagaz is not answering right now. Try again in a minute.");
+  });
+});
 
 describe("the session channel between tabs", () => {
   const stops: (() => void)[] = [];

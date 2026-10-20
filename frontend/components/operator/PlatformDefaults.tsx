@@ -2,7 +2,7 @@
 
 // Platform defaults, in the Models tab (features 25-27, council 15 Oct 2026, C10, C12): what
 // every organisation that has not been given its own settings uses, per area (scanning:
-// models, default, thinking level, Dynamic; answering: models, default, levels people may
+// models, default, thinking level, Cost saving; answering: models, default, levels people may
 // choose, default level), with how many organisations follow each area now. "Change
 // platform defaults" opens the same fields as an organisation's (AiFields), without
 // Ensemble and budget; before saving it says which organisations the change reaches, and
@@ -11,20 +11,24 @@
 
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
-import { CodeField } from "@/app/admin/login/CodeField";
-import { codeError, normalizeCode } from "@/app/admin/login/adminSignIn";
+import { CodeField } from "@/app/login/CodeField";
+import { codeError, normalizeCode } from "@/app/login/twoStep";
 import { ActionDialog } from "@/components/documents/ActionDialog";
 import { getAiDefaults, putAiDefaults } from "@/lib/api";
 import type { AiDefaults, OperatorModel } from "@/lib/types";
 import { LoadFailed } from "./LoadFailed";
 import { canCloseDialog, countText, operatorErrorMessage } from "./logic";
-import { aiBody, aiErrors, defaultsImpact, draftOf, inheritedText } from "./models";
+import { COST_SAVING, KEEP_OWN, aiBody, aiErrors, defaultsImpact, draftOf, inheritedText } from "./models";
 import type { AiDraft, AiErrors } from "./models";
 import { AiFields, CODE_ID, fieldId, firstProblem, refusalOf } from "./OrgAiSettings";
 import admin from "@/components/admin/Admin.module.css";
 import styles from "./Operator.module.css";
 
 const CHANGE_ID = "platform-defaults-change";
+const IMPACT_ID = "platform-defaults-impact";
+// Short, so it never clips or wraps on a narrow screen (MonoEdge buttons: nowrap labels
+// that fit); the impact list above it says what it applies to.
+export const SAVE_LABEL = "Save and apply";
 
 export function PlatformDefaults({ catalogue, onSaved }: { catalogue: OperatorModel[]; onSaved(message: string): void }) {
   const [attempt, setAttempt] = useState(0);
@@ -85,7 +89,7 @@ export function DefaultsSummary({ reply, catalogue }: { reply: AiDefaults; catal
   const rows: { label: string; value: string; count: number }[] = [
     { label: "Scanning models", value: inheritedText("scan_models", defaults, env, catalogue), count: counts.scan_models },
     { label: "Scanning thinking level", value: inheritedText("scan_thinking", defaults, env, catalogue), count: counts.scan_thinking },
-    { label: "Dynamic", value: inheritedText("dynamic", defaults, env, catalogue), count: counts.dynamic },
+    { label: COST_SAVING, value: inheritedText("dynamic", defaults, env, catalogue), count: counts.dynamic },
     { label: "Answering models", value: inheritedText("chat_models", defaults, env, catalogue), count: counts.chat_models },
     { label: "Answering levels", value: inheritedText("chat_levels", defaults, env, catalogue), count: counts.chat_levels },
   ];
@@ -157,9 +161,7 @@ function DefaultsDialog(props: { reply: AiDefaults; catalogue: OperatorModel[]; 
           busy={busy}
           onChange={setDraft}
         />
-        <p id="platform-defaults-impact" aria-live="polite">
-          {defaultsImpact(reply.defaults, aiBody(draft), reply.orgs_inheriting)}
-        </p>
+        <DefaultsImpact id={IMPACT_ID} impact={defaultsImpact(reply.defaults, aiBody(draft), reply.orgs_inheriting)} />
         <CodeField
           id={CODE_ID}
           label="A new 6-digit code from your app"
@@ -179,16 +181,35 @@ function DefaultsDialog(props: { reply: AiDefaults; catalogue: OperatorModel[]; 
           </button>
           <button
             type="submit"
-            className="btn btn-primary"
+            className={`btn btn-primary ${busy ? admin.busy : ""}`}
             disabled={busy}
             aria-busy={busy || undefined}
-            aria-describedby="platform-defaults-impact"
+            aria-describedby={IMPACT_ID}
           >
             {busy && <span className="spinner" aria-hidden="true" />}
-            Save and apply to organisations still on defaults
+            {SAVE_LABEL}
           </button>
         </div>
       </form>
     </ActionDialog>
+  );
+}
+
+/** What a defaults save changes, as a short list the save button points at. */
+export function DefaultsImpact({ id, impact }: { id: string; impact: ReturnType<typeof defaultsImpact> }) {
+  return (
+    <div id={id} className={styles.impact} aria-live="polite">
+      <p>{impact.lead}</p>
+      {impact.areas.length > 0 && (
+        <>
+          <ul>
+            {impact.areas.map((area) => (
+              <li key={area}>{area}</li>
+            ))}
+          </ul>
+          <p>{KEEP_OWN}</p>
+        </>
+      )}
+    </div>
   );
 }

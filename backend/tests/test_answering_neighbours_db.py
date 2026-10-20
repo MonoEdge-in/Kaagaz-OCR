@@ -78,6 +78,7 @@ class DraftModel:
         thinking: str | None = None,
         provider: str | None = None,
         deadline: float | None = None,
+        temperature: float | None = None,
     ) -> dict[str, Any]:
         assert system == SYSTEM_PROMPT
         self.prompts.append(user)

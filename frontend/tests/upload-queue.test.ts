@@ -94,9 +94,10 @@ describe("3 at a time (Q2)", () => {
 describe("each state in words", () => {
   it("says every step of a file", () => {
     expect(uploadStateText({ kind: "waiting" })).toBe("Waiting to upload");
-    expect(uploadStateText({ kind: "sending", fraction: 0.4 })).toBe("Sending");
-    expect(uploadStateText({ kind: "saving" })).toBe("Saving…");
-    expect(uploadStateText({ kind: "reading", documentId: "d1", document: doc("d1") })).toBe("Reading");
+    // Changed on purpose (scan states, 16 Oct 2026): the brief's words, Uploading then Scanning.
+    expect(uploadStateText({ kind: "sending", fraction: 0.4 })).toBe("Uploading");
+    expect(uploadStateText({ kind: "saving" })).toBe("Saving");
+    expect(uploadStateText({ kind: "reading", documentId: "d1", document: doc("d1") })).toBe("Scanning");
     expect(uploadStateText({ kind: "done", documentId: "d1" })).toBe("Uploaded");
     expect(uploadStateText({ kind: "done", documentId: "d1", document: doc("d1", { status: "ready" }) })).toBe(
       "Ready",

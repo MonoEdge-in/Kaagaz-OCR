@@ -1,5 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { ICON_NAMES } from "@/components/ui/icons";
 import {
@@ -13,6 +15,7 @@ import {
   signInPath,
 } from "@/components/shell/gate";
 import { currentPageName, isCurrent, navLinks, roleName } from "@/components/shell/nav";
+import { ShellMenu } from "@/components/shell/ShellMenu";
 import type { Me, Role, SessionScope } from "@/lib/types";
 
 describe("navLinks", () => {
@@ -72,7 +75,7 @@ describe("the session gate", () => {
       display_name: "Asha",
       role: "admin",
       must_change_password,
-      totp_enabled: false,
+      totp_enabled: true, // every admin has two-step sign-in (16 Oct 2026; tests/admin-two-step.test.ts)
       can_delete_forever: false,
     },
     customer: { id: "c1", name: "Sharma Traders" },
@@ -105,9 +108,10 @@ describe("the session gate", () => {
 });
 
 describe("where to sign in", () => {
-  it("sends the admin screens to the admin sign-in", () => {
-    expect(signInPath("/admin")).toBe("/admin/login");
-    expect(signInPath("/admin/users")).toBe("/admin/login");
+  // Changed on purpose (one sign-in page, 16 Oct 2026): /login, back to /admin after.
+  it("sends the admin screens to the one sign-in, which comes back to /admin", () => {
+    expect(signInPath("/admin")).toBe("/login?next=/admin");
+    expect(signInPath("/admin/users")).toBe("/login?next=/admin");
   });
 
   it("sends every other page to the normal sign-in", () => {
@@ -129,9 +133,9 @@ describe("where to sign in", () => {
   // so nothing of that person stays in the tab's memory.
   it("adds why, for the sign-in page's note", () => {
     expect(endedPath("/documents/d-1")).toBe("/login?ended=1");
-    expect(endedPath("/admin")).toBe("/admin/login?ended=1");
+    expect(endedPath("/admin")).toBe("/login?next=/admin&ended=1");
     expect(signedOutPath("/documents")).toBe("/login?signed_out=1");
-    expect(signedOutPath("/admin")).toBe("/admin/login?signed_out=1");
+    expect(signedOutPath("/admin")).toBe("/login?next=/admin&signed_out=1");
     expect(signedOutMessage({ signed_out: "1" })).toBe("You signed out.");
     expect(signedOutMessage({ ended: "1" })).toBe("Your session ended. Sign in again to continue.");
     expect(signedOutMessage({})).toBeNull();
@@ -145,8 +149,9 @@ describe("where to sign in", () => {
     // Put away for the back button: blank, so it never shows before the reload.
     expect(session).toMatch(/if \(event\.persisted\) document\.documentElement\.style\.visibility = "hidden"/);
     // Admins sign out to the admin sign-in.
+    // Changed on purpose (UI audit G6, 16 Oct 2026): the sign-outs moved to the account menu.
     for (const file of [
-      ["components", "shell", "AppShell.tsx"],
+      ["components", "shell", "AccountMenu.tsx"],
       ["components", "shell", "SetPasswordScreen.tsx"],
     ]) {
       const text = readFileSync(join(__dirname, "..", ...file), "utf8");
@@ -167,19 +172,13 @@ describe("where to sign in", () => {
   // form does not move; the words come once the page runs, so screen readers
   // announce them.
   it("puts the sign-in note under the heading, in a box that is there from the start", () => {
-    for (const file of [
-      ["app", "login", "SignInForm.tsx"],
-      ["app", "admin", "login", "AdminSignInForm.tsx"],
-    ]) {
+    for (const file of [["app", "login", "SignInForm.tsx"]]) {
       const form = readFileSync(join(__dirname, "..", ...file), "utf8");
       const note = form.indexOf("<SignedOutNotice message={note} />");
       expect(note, file.join("/")).toBeGreaterThan(form.indexOf("</h1>"));
       expect(form.indexOf("</h1>"), file.join("/")).toBeGreaterThan(0);
     }
-    for (const file of [
-      ["app", "login", "page.tsx"],
-      ["app", "admin", "login", "page.tsx"],
-    ]) {
+    for (const file of [["app", "login", "page.tsx"]]) {
       expect(readFileSync(join(__dirname, "..", ...file), "utf8"), file.join("/")).not.toContain("<SignedOutNotice");
     }
     const notice = readFileSync(join(__dirname, "..", "app", "login", "SignedOutNotice.tsx"), "utf8");
@@ -199,7 +198,7 @@ describe("another tab signs out or in", () => {
   it("goes to sign in when nobody is signed in any more", () => {
     expect(pageAfterSessionChange("u1", null, here)).toBe("/login?signed_out=1");
     expect(pageAfterSessionChange("u1", null, { pathname: "/admin", href: "/admin" })).toBe(
-      "/admin/login?signed_out=1",
+      "/login?next=/admin&signed_out=1",
     );
   });
 
@@ -241,15 +240,37 @@ describe("one nav list for the sidebar and the drawer", () => {
     expect(shell).toContain("navLinks(me.user.role, sessionScope(me))");
   });
 
-  // PRD 7: "Sign out everywhere" in the account menu. It sits in ShellMenu, so
-  // the sidebar and the drawer both have it.
-  it("offers Sign out everywhere in the one menu, next to Sign out", () => {
+  // PRD 7: "Sign out everywhere" in the account menu.
+  // Changed on purpose (UI audit G6, 16 Oct 2026): it moved from ShellMenu (the sidebar) to the
+  // header's account menu, under Sign out in its own row, styled destructive, and asks first in a
+  // dialog instead of window.confirm.
+  it("offers Sign out everywhere in the account menu, under Sign out, destructive and asked first", () => {
+    const account = sources.find((s) => s.name === "AccountMenu.tsx")?.text ?? "";
     const menu = sources.find((s) => s.name === "ShellMenu.tsx")?.text ?? "";
-    expect(menu).toContain("Sign out everywhere");
-    expect(menu).toContain("onClick={onSignOutEverywhere}");
-    expect(menu.indexOf("Sign out everywhere")).toBeGreaterThan(menu.indexOf("onClick={onSignOut}"));
-    expect(shell).toContain("logoutEverywhere()");
-    expect(shell).toContain("onSignOutEverywhere={signOutEverywhere}");
+    expect(menu).not.toMatch(/Sign out|ThemeToggle/);
+    expect(account.indexOf("<span>Sign out everywhere</span>")).toBeGreaterThan(account.indexOf('endSession("here")'));
+    expect(account).toMatch(/className=\{`btn btn-destructive btn-block \$\{styles\.signOut\}`\}\s*onClick=\{\(\) => setConfirming\(true\)\}/);
+    expect(account).toMatch(/<ConfirmDialog[\s\S]*open=\{confirming\}[\s\S]*onConfirm=\{\(\) => void endSession\("everywhere"\)\}/);
+    expect(account).toContain("logoutEverywhere()");
+    expect(account).not.toContain("window.confirm");
+    expect(shell).toContain("<AccountMenu me={me} />");
+  });
+});
+
+// UI mockups board 5 (16 Oct 2026): the Review link counts the values waiting to be checked.
+// Changed on purpose (Tushar, 16 Oct 2026): the Review link carries no count; a big
+// number there made people uneasy. The Review page itself has the list.
+describe("the Review link", () => {
+  const menu = (role: Role) =>
+    renderToStaticMarkup(createElement(ShellMenu, { links: navLinks(role, "admin"), pathname: "/documents" }));
+
+  it("shows no count, and the shell never asks the server for one", () => {
+    const html = menu("admin");
+    expect(html).toContain('href="/review"');
+    expect(html).not.toContain("to check");
+    const shell = readFileSync(join(__dirname, "..", "components", "shell", "AppShell.tsx"), "utf8");
+    expect(shell).not.toContain("listReview");
+    expect(readFileSync(join(__dirname, "..", "components", "shell", "Shell.module.css"), "utf8")).not.toMatch(/^\.badge \{/m);
   });
 });
 

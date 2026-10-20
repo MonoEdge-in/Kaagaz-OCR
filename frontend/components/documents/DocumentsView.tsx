@@ -1,26 +1,36 @@
 "use client";
 
-// The documents screen: the page header with "Upload files"; the folder tree
-// (beside the list from 1024 px, in a drawer below that); where you are, with
-// New folder, Rename, Move and Delete; the dropzone, which uploads into the
-// folder being viewed; uploads in progress; search and the filter chips; the
-// list and its pages. Search looks inside the documents (the default) or at
-// their names (PRD 3 Q3, insideSearch.ts). The folder and the filters live in
+// The documents screen: the page header (the app header's Upload is the one upload action,
+// 16 Oct 2026; an empty list's empty state has "Upload files"); the folder tree (beside the
+// list from 1024 px, stacked above it below that), its "+" the one New folder; where you
+// are, with Rename, Move and Delete, and "Read with" at the list's right edge (it sets how
+// the next uploads are read, from either Upload button or a drop); search inside the
+// documents and the filter chips; the list and its pages. UI audit (16 Oct 2026): "Read
+// with" has its room kept from the first paint, a skeleton until the limits come (D1); with documents listed, the whole
+// screen is the drop target, an overlay saying so while files are dragged over it
+// (D10); an empty list keeps its big dropzone. Files go into the folder being viewed.
+// Uploads in progress are in the status bar, with the tray in a panel above it
+// (UploadStatus), opened as files are added, so nothing pushes the list down.
+// Search looks inside the documents (the default) or at their names (PRD 3 Q3, insideSearch.ts);
+// the app header's search (?q=) finds a document by its name. The folder and the filters live in
 // the page address (libraryQuery.ts), so a reload keeps them and Back returns to the folder
 // before. While any document is still being checked or read, the list is
-// asked for again (lib/poll.ts: from every 3 s to every 15 s, never while the
+// asked for again (lib/poll.ts: every 3 s, then every 5 s, never while the
 // tab is hidden); once all have settled, it stops. Each finished upload asks
 // for it at once; the screen is never reloaded.
+// A move to a folder (a row's menu, the selection bar or a drop on a folder) says so in a toast, with Undo; the New
+// folder forms offer names from the kinds of documents listed (folderNameSuggestions).
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, FormEvent } from "react";
-import { Drawer } from "@/components/ui/Drawer";
+import { canReview } from "@/components/review/review";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Icon } from "@/components/ui/Icon";
 import { IconButton } from "@/components/ui/IconButton";
+import { Toast } from "@/components/ui/Toast";
 import { UploadWords } from "@/components/words/UploadWords";
-import { ApiError, listDocuments, listFolders, listTags, searchDocuments } from "@/lib/api";
+import { ApiError, listDocuments, listFolders, listTags, searchDocuments, updateDocument } from "@/lib/api";
 import { progressSignature } from "@/lib/poll";
 import { markReceived } from "@/lib/timeLeft";
 import { useSession } from "@/lib/session";
@@ -40,7 +50,7 @@ import {
   searchParams,
 } from "./insideSearch";
 import type { SearchMode } from "./insideSearch";
-import { noMatchTitle } from "./library";
+import { folderNameSuggestions, libraryErrorText, noMatchTitle } from "./library";
 import { mergeList } from "./listMerge";
 import { LibraryFilters } from "./LibraryFilters";
 import { includeSubfoldersHref, isFiltered, libraryHref, listParams } from "./libraryQuery";
@@ -55,7 +65,8 @@ import {
   uploadsFinishedText,
 } from "./logic";
 import { foreverNeeds } from "./trash";
-import { BatchTray, Dropzone, ReaderSelect, useUploads } from "./UploadArea";
+import { Dropzone, ReaderSelect, UploadStatus, useUploads } from "./UploadArea";
+import { isBusy } from "./uploadQueue";
 import styles from "./Documents.module.css";
 import libraryStyles from "./Library.module.css";
 
@@ -73,12 +84,11 @@ const back = { pending: false };
 if (typeof window !== "undefined") {
   window.addEventListener("popstate", () => (back.pending = location.pathname === "/documents"));
 }
-const DRAWER_ID = "documents-folders";
 
 const errorText = (caught: unknown) =>
   caught instanceof ApiError ? caught.message : "Check your internet connection, then try again.";
 
-export function DocumentsView({ library }: { library: LibraryState }) {
+export function DocumentsView({ library, startQ = "" }: { library: LibraryState; startQ?: string }) {
   const { me } = useSession();
   const inputRef = useRef<HTMLInputElement>(null);
   // "Upload new version": its own file input, and the document it is for.
@@ -89,10 +99,20 @@ export function DocumentsView({ library }: { library: LibraryState }) {
   // The search box keeps what is typed itself: a key press never re-renders the list.
   const searchRef = useRef<HTMLInputElement>(null);
   // The page belongs to the view it was turned in: a new folder or filter starts at page 1.
-  const [search, setSearch] = useState({ view: viewKey, q: "", offset: 0 });
+  const [search, setSearch] = useState({ view: viewKey, q: startQ, offset: 0 });
+  // The header's search (G5) sends ?q=…: a new one starts that search here, its words in the box.
+  // The header finds a document by its name, so its words search the names (Tushar, 16 Oct 2026).
+  const [heardQ, setHeardQ] = useState(startQ);
+  const [modeChoice, setModeChoice] = useState<SearchMode>(startQ === "" ? DEFAULT_SEARCH_MODE : "names");
+  if (startQ !== heardQ) {
+    setHeardQ(startQ);
+    if (startQ !== "") {
+      setSearch({ view: viewKey, q: startQ, offset: 0 });
+      setModeChoice("names");
+    }
+  }
   const q = search.q;
   const offset = search.view === viewKey ? search.offset : 0;
-  const [modeChoice, setModeChoice] = useState<SearchMode>(DEFAULT_SEARCH_MODE);
   const mode = searchModeFor(modeChoice, library);
   // Inside documents, the question goes to the search; the list below it is not narrowed by name.
   const listQ = mode === "inside" ? "" : q;
@@ -110,8 +130,11 @@ export function DocumentsView({ library }: { library: LibraryState }) {
   const [tags, setTags] = useState<Tag[] | null>(null);
   const [tagsError, setTagsError] = useState<string | null>(null);
   const [tagsVersion, setTagsVersion] = useState(0);
-  const [foldersOpen, setFoldersOpen] = useState(false);
+  const [newFolderAsk, setNewFolderAsk] = useState(0); // D12: the folder column's "+", the one New folder
+  const [dropError, setDropError] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ message: string; undo: () => Promise<void> } | null>(null);
   const uploads = useUploads(() => setReload((n) => n + 1));
+  const [trayOpen, setTrayOpen] = useState(false);
   const filtered = isFiltered(library);
 
   // Each batch of uploads is said once, when it settles; nothing is cleared.
@@ -221,20 +244,28 @@ export function DocumentsView({ library }: { library: LibraryState }) {
     try {
       const y = Number(sessionStorage.getItem(listScrollKey()));
       sessionStorage.removeItem(listScrollKey());
-      if (y > 0) scrollTo(0, y);
+      if (y > 0) (document.getElementById("main") ?? window).scrollTo(0, y);
     } catch {
       // Storage blocked: nothing was kept.
     }
   }, [shown]);
 
   const tree = useMemo(() => buildTree(folders ?? []), [folders]);
+  const shownItems = shown?.list.items;
+  const nameSuggestions = useMemo(
+    () => folderNameSuggestions(shownItems ?? [], folders ?? []),
+    [shownItems, folders],
+  );
   const current = library.folderId === null ? null : (tree.byId.get(library.folderId) ?? null);
   const folderGone = folders !== null && library.folderId !== null && current === null;
   // The folder in the address, even before the folder list has loaded.
   const uploadInto = library.folderId ?? undefined;
 
   const openPicker = () => inputRef.current?.click();
-  const addFiles = (files: File[]) => void uploads.addFiles(files, uploadInto);
+  const addFiles = (files: File[]) => {
+    setTrayOpen(true);
+    void uploads.addFiles(files, uploadInto);
+  };
 
   function onChoose(event: ChangeEvent<HTMLInputElement>) {
     const files = Array.from(event.target.files ?? []);
@@ -255,7 +286,10 @@ export function DocumentsView({ library }: { library: LibraryState }) {
     const [file] = Array.from(event.target.files ?? []);
     event.target.value = "";
     const of = versionOf.current;
-    if (file && of) void uploads.addVersion(file, of);
+    if (file && of) {
+      setTrayOpen(true);
+      void uploads.addVersion(file, of);
+    }
   }
 
   function show(next: LibraryState) {
@@ -290,9 +324,22 @@ export function DocumentsView({ library }: { library: LibraryState }) {
     else setReload((n) => n + 1);
   }
 
-  function afterSave(message: string) {
-    setAnnouncement(message);
+  // A move shows in the toast (its own live region), with Undo; anything else is announced.
+  function afterSave(message: string, undo?: () => Promise<void>) {
+    if (undo) setToast({ message, undo });
+    else setAnnouncement(message);
     setReload((n) => n + 1);
+  }
+
+  function undoMove(undo: () => Promise<void>) {
+    setDropError(null);
+    undo().then(
+      () => afterSave("Moved back."),
+      (caught: unknown) => {
+        setDropError(libraryErrorText(caught, "document"));
+        setReload((n) => n + 1);
+      },
+    );
   }
 
   function afterFolderChange(message: string, goTo?: { folderId: string | null }) {
@@ -304,8 +351,28 @@ export function DocumentsView({ library }: { library: LibraryState }) {
     }
   }
 
+  // D12: a document's name dropped on a folder in the tree moves it there.
+  // Said in the toast, with Undo, like the Move dialog: in All documents the row stays where it
+  // is, so a message only for screen readers looked like nothing happened (16 Oct 2026).
+  function dropDocument(documentId: string, folderId: string | null, placeName: string) {
+    const item = shown?.list.items.find((each) => each.id === documentId);
+    const name = item?.display_name ?? "The document";
+    setDropError(null);
+    updateDocument(documentId, { folder_id: folderId }).then(
+      () =>
+        afterSave(
+          `Moved ${name} to ${placeName}.`,
+          item
+            ? async () => {
+                await updateDocument(documentId, { folder_id: item.folder_id });
+              }
+            : undefined,
+        ),
+      (caught: unknown) => setDropError(libraryErrorText(caught, "document")),
+    );
+  }
+
   function navigated(placeName: string) {
-    setFoldersOpen(false);
     setAnnouncement(`Showing ${placeName}.`);
   }
 
@@ -322,48 +389,44 @@ export function DocumentsView({ library }: { library: LibraryState }) {
   const above = current ? folderPath(tree, current.folder.id).slice(0, -1) : [];
   const withSubfolders = includeSubfoldersHref(library, current?.children.length ?? 0);
 
-  const nav = (
-    <FolderNav
-      tree={tree}
-      library={library}
-      loading={folders === null && foldersError === null}
-      error={foldersError}
-      onRetry={() => setFoldersVersion((n) => n + 1)}
-      onNavigate={navigated}
-    />
-  );
-
-  // An empty list shows this button in its empty state, and the header leaves it out.
+  // Only an empty list shows this button, in its empty state; the page header never does
+  // (Tushar, 16 Oct 2026: two upload buttons): the app header's Upload is the screen's one
+  // primary (G5), and opens #upload-input too.
+  // The words are one span: "Upload" and " files" as two flex items got the gap and the space.
   const uploadButton = (
-    <button type="button" className="btn btn-primary" onClick={openPicker}>
+    <button type="button" className="btn" onClick={openPicker}>
       <Icon name="upload" />
-      Upload files
+      <span>
+        Upload<span className="narrow-hide"> files</span>
+      </span>
     </button>
   );
-  const readerSelect = (
+  // D1: until the limits come, a skeleton the select's size holds its place. It sits in the
+  // list's head row, at the content's right edge (Tushar, 16 Oct 2026: not above the folders),
+  // and its choice goes with every upload: the app header's Upload, this screen's, a drop.
+  const readerSelect = uploads.limitsLoaded ? (
     <ReaderSelect
       readers={uploads.limits.readers}
       picked={uploads.reader}
       onPick={uploads.chooseReader}
-      ensemble={uploads.limits.ensemble ?? null}
-      agents={uploads.agents}
-      onAgents={uploads.chooseAgents}
     />
+  ) : (
+    <span className={`skeleton ${styles.readerSkeleton}`} aria-hidden="true" />
   );
 
   return (
-    <div className={`page ${libraryStyles.libraryPage}`}>
+    <Dropzone
+      variant="page"
+      limits={uploads.limits}
+      onFiles={addFiles}
+      enabled={canUpload && view !== "empty"}
+      className={`page ${libraryStyles.libraryPage}`}
+    >
       <header className="page-header">
         <div>
           <h1>Documents</h1>
           <p>Upload documents, file them in folders, then ask about them.</p>
         </div>
-        {canUpload && (
-          <div className={styles.uploadControls}>
-            {readerSelect}
-            {view !== "empty" && uploadButton}
-          </div>
-        )}
       </header>
 
       <label htmlFor="upload-input" className="visually-hidden">
@@ -398,24 +461,27 @@ export function DocumentsView({ library }: { library: LibraryState }) {
 
       <div className={libraryStyles.library}>
         <nav className={libraryStyles.treePane} aria-labelledby="folders-heading">
-          <h2 id="folders-heading" className={libraryStyles.paneHeading}>
-            Folders
-          </h2>
-          {nav}
+          <div className={libraryStyles.paneHead}>
+            <h2 id="folders-heading" className={libraryStyles.paneHeading}>
+              Folders
+            </h2>
+            {folders !== null && canUpload && (
+              <IconButton icon="plus" label="New folder" onClick={() => setNewFolderAsk((n) => n + 1)} />
+            )}
+          </div>
+          <FolderNav
+            tree={tree}
+            library={library}
+            loading={folders === null && foldersError === null}
+            error={foldersError}
+            onRetry={() => setFoldersVersion((n) => n + 1)}
+            onNavigate={navigated}
+            onDropDocument={canUpload ? dropDocument : undefined}
+          />
         </nav>
 
         <section className={libraryStyles.main} aria-labelledby="place-heading">
           <div className={libraryStyles.placeHead}>
-            <IconButton
-              icon="documents"
-              label="Folders"
-              showLabel
-              className={libraryStyles.foldersButton}
-              aria-haspopup="dialog"
-              aria-expanded={foldersOpen}
-              aria-controls={DRAWER_ID}
-              onClick={() => setFoldersOpen(true)}
-            />
             <div className={libraryStyles.place}>
               {current && (
                 <nav aria-label="Folder path" className={libraryStyles.crumbs}>
@@ -456,7 +522,7 @@ export function DocumentsView({ library }: { library: LibraryState }) {
               )}
               {library.trash && foreverNeeds(me) === "admin_sign_in" && (
                 <p className={libraryStyles.placeHint}>
-                  To delete forever, <Link href="/admin/login">sign in on the admin sign-in screen</Link>.
+                  To delete forever, <Link href="/login">sign in again</Link>.
                 </p>
               )}
               {library.trash && foreverNeeds(me) === "not_allowed" && (
@@ -470,12 +536,15 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                 </p>
               )}
             </div>
+            {canUpload && <div className={styles.uploadControls}>{readerSelect}</div>}
             {folders !== null && canUpload && (
               <FolderActions
                 key={current?.folder.id ?? "all"}
                 tree={tree}
                 current={current}
                 onChanged={afterFolderChange}
+                askNew={newFolderAsk}
+                suggestions={nameSuggestions}
               />
             )}
           </div>
@@ -510,7 +579,6 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                   variant="full"
                   limits={uploads.limits}
                   onFiles={addFiles}
-                  onChoose={openPicker}
                 >
                   <EmptyState
                     icon="file"
@@ -528,30 +596,12 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                     }
                   >
                     {current
-                      ? "Upload files here, or move documents in with their Actions button."
+                      ? "Upload files here, or move documents in from their menu."
                       : "Upload invoices, registers or bank statements, as PDF, photo or spreadsheet."}
                   </EmptyState>
                 </Dropzone>
-              ) : (
-                <Dropzone
-                  variant="slim"
-                  limits={uploads.limits}
-                  onFiles={addFiles}
-                  onChoose={openPicker}
-                />
-              )}
+              ) : null}
 
-              <BatchTray
-                entries={uploads.entries}
-                views={uploads.views}
-                stored={uploads.stored}
-                tooMany={uploads.tooMany}
-                onClearFinished={uploads.clearFinished}
-                onRestore={(key, documentId, name) => void uploads.restore(key, documentId, name)}
-                onRetry={(key) => void uploads.retry(key)}
-                tree={tree}
-                onUndone={() => setReload((n) => n + 1)}
-              />
               {!library.trash && <UploadWords entries={uploads.entries} settled={uploads.settled} />}
 
               {view !== "empty" && (
@@ -559,11 +609,11 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                   {showControls && (
                     <div className={styles.listHead}>
                       <form className={styles.search} role="search" onSubmit={submitSearch}>
-                        <label htmlFor="documents-q" className="visually-hidden">
+                        <label htmlFor="documents-q" className={styles.searchLabel}>
                           {mode === "inside" ? "Search inside documents" : "Search documents by name"}
                         </label>
                         <div className={styles.searchField}>
-                          <Icon name="search" className={styles.searchIcon} />
+                          <Icon name="search" size={16} className={styles.searchIcon} />
                           <input
                             id="documents-q"
                             className={`input ${styles.searchInput}`}
@@ -571,18 +621,19 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                             enterKeyHint="search"
                             autoComplete="off"
                             maxLength={MAX_SEARCH_LENGTH}
+                            placeholder={mode === "inside" ? "e.g. rent paid in September" : "e.g. Sharma Industries invoice"}
                             ref={searchRef}
+                            key={heardQ}
                             defaultValue={q}
                           />
+                          {/* D6: clearing is an x inside the box; the box and Search share one height. */}
+                          {q !== "" && (
+                            <IconButton icon="close" label="Clear search" className={styles.searchClear} onClick={clearSearch} />
+                          )}
                         </div>
                         <button type="submit" className="btn">
                           Search
                         </button>
-                        {q !== "" && (
-                          <button type="button" className="btn btn-quiet" onClick={clearSearch}>
-                            Clear search
-                          </button>
-                        )}
                         {!library.trash && (
                           <fieldset className={styles.searchMode}>
                             <legend className="visually-hidden">Search in</legend>
@@ -614,10 +665,16 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                     />
                   )}
 
+                  {dropError && (
+                    <p className="error-text" role="alert">
+                      {dropError}
+                    </p>
+                  )}
+
                   {error && shown && (
                     <div className={styles.errorBanner} role="status">
                       <Icon name="alert" className={styles.errorIcon} />
-                      <p className={styles.errorBody}>Couldn&apos;t update the list. It may be out of date.</p>
+                      <p className={styles.errorBody}>The list did not refresh, so it may be out of date.</p>
                       <button type="button" className="btn" onClick={() => setReload((n) => n + 1)}>
                         <Icon name="refresh" />
                         Try again
@@ -697,6 +754,9 @@ export function DocumentsView({ library }: { library: LibraryState }) {
                       tree={tree}
                       tags={tags}
                       inTrash={library.trash}
+                      suggestions={nameSuggestions}
+                      movedLeaves={library.folderId !== null}
+                      onFolderCreated={() => setFoldersVersion((n) => n + 1)}
                       onRemoved={afterRemoved}
                       onSaved={afterSave}
                       onFocusList={() => headingRef.current?.focus()}
@@ -741,9 +801,32 @@ export function DocumentsView({ library }: { library: LibraryState }) {
         </section>
       </div>
 
-      <Drawer id={DRAWER_ID} title="Folders" open={foldersOpen} onClose={() => setFoldersOpen(false)}>
-        {nav}
-      </Drawer>
-    </div>
+      <UploadStatus
+        open={trayOpen}
+        onOpenChange={setTrayOpen}
+        entries={uploads.entries}
+        views={uploads.views}
+        stored={uploads.stored}
+        tooMany={uploads.tooMany}
+        onClearFinished={() => {
+          uploads.clearFinished();
+          // Nothing left: the panel and its button go, so focus goes to the list's heading.
+          if (!uploads.entries.some(isBusy)) {
+            setTrayOpen(false);
+            headingRef.current?.focus();
+          }
+        }}
+        onRestore={(key, documentId, name) => void uploads.restore(key, documentId, name)}
+        onRetry={(key) => void uploads.retry(key)}
+        tree={tree}
+        onUndone={() => setReload((n) => n + 1)}
+        canReread={canReview(me.user.role)}
+      />
+      <Toast
+        message={toast?.message ?? null}
+        onUndo={toast ? () => undoMove(toast.undo) : undefined}
+        onClose={() => setToast(null)}
+      />
+    </Dropzone>
   );
 }

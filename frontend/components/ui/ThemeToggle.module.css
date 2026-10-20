@@ -9,11 +9,12 @@
   padding: 0;
   margin-bottom: var(--space-2);
   font-size: var(--fs-sm);
-  font-weight: 600;
+  font-weight: 700;
   color: var(--fg-muted);
 }
 
-/* The segmented track: one hairline box, the chosen segment raised in it. */
+/* The segmented track: one hairline box, the chosen segment outlined in it
+   (an edge and a colour, never colour alone). */
 .options {
   display: flex;
   gap: 2px;
@@ -27,13 +28,6 @@
   width: 100%;
 }
 
-.hint {
-  margin: var(--space-2) 0 0;
-  color: var(--fg-muted);
-  font-size: var(--fs-sm);
-  line-height: 1.35;
-}
-
 .compact .options {
   display: inline-flex;
 }
@@ -44,26 +38,25 @@
   align-items: center;
   justify-content: center;
   gap: 2px;
-  border-radius: calc(var(--r-sm) - 2px);
+  border-radius: 1px;
   color: var(--fg-muted);
   font-size: var(--fs-sm);
-  font-weight: 600;
+  font-weight: 700;
   line-height: 1.2;
   cursor: pointer;
-  transition:
-    background-color var(--t-fast) var(--ease),
-    color var(--t-fast) var(--ease);
 }
 
 /* Full: icon above the word, so three segments fit a 240 px sidebar. */
 .full .option {
   flex: 1 1 0;
   flex-direction: column;
-  min-height: 48px;
+  min-height: calc(var(--h-lg) + var(--space-1));
   padding: var(--space-1) var(--space-1);
 }
 
-/* Compact: icons only (the words stay for screen readers), square targets. */
+/* Compact: icons only (the words stay for screen readers), square targets;
+   the track (2px padding and a 1px edge each side) is one control tall. On
+   touch each segment is a full 44px target instead, so the track is taller. */
 .compact .option {
   width: calc(var(--control-h) - 6px);
   height: calc(var(--control-h) - 6px);
@@ -71,8 +64,8 @@
 
 @media (pointer: coarse) {
   .compact .option {
-    width: 44px;
-    height: 44px;
+    width: var(--h-lg);
+    height: var(--h-lg);
   }
 }
 
@@ -83,7 +76,20 @@
 .option:has(.radio:checked) {
   background: var(--surface);
   color: var(--fg);
-  box-shadow: 0 0 0 1px var(--border-strong);
+  outline: 1px solid var(--control-edge);
+  outline-offset: -1px;
+}
+
+/* The chosen segment's icon settles in (motion pass, 16 Oct 2026); reduced motion: still. */
+.option:has(.radio:checked) svg {
+  animation: chosen var(--t-fast) var(--ease);
+}
+
+@keyframes chosen {
+  from {
+    opacity: 0.4;
+    transform: scale(0.8);
+  }
 }
 
 .option:has(.radio:focus-visible) {
@@ -105,5 +111,4 @@
 
 .radio:focus-visible {
   outline: none;
-  box-shadow: none;
 }

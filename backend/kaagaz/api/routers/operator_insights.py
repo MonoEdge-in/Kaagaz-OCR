@@ -6,7 +6,9 @@ each read is one read-only ``kaagaz_op_*`` function (``kaagaz.db.operator_insigh
 
 * ``GET /operator/insights?days=``: ``INSIGHTS_KEYS``. ``month`` is {from, today,
   days_in_month}; ``organisations`` are F2 rows (``ORG_HEALTH_KEYS``); ``daily`` are F1
-  rows (``DAILY_KEYS``) from ``previous_from`` to ``to`` (twice ``days``).
+  rows (``DAILY_KEYS``) from ``previous_from`` (twice ``days``), or the month's first day
+  when that is earlier, to ``to``: this month's real spend and its forecast are summed
+  from them (Tushar, 16 Oct 2026).
 * ``GET /operator/quality?days=``: ``QUALITY_REPLY_KEYS``; ``platform`` and each of
   ``organisations`` are F3 rows (``QUALITY_KEYS``; the platform's ``organisation_id`` is null).
 * ``GET /operator/model-board?days=``: ``BOARD_REPLY_KEYS``; ``items`` are F4 rows
@@ -84,6 +86,17 @@ DAILY_KEYS = frozenset(
         "cost_questions_usd",
         "cost_estimated",
         "cost_part_unknown",
+        # 0034: pages models read and read again (the ledger), and the cost OpenRouter
+        # reported, with the calls whose cost is not known counted apart.
+        "pages_read",
+        "pages_reread",
+        "pages_read_costed",
+        "cost_real_usd",
+        "cost_scan_real_usd",
+        "cost_answer_real_usd",
+        "cost_unknown_calls",
+        "scan_unknown_calls",
+        "answer_unknown_calls",
     }
 )
 QUALITY_REPLY_KEYS = frozenset({"from", "to", "ai_enabled", "platform", "organisations"})
@@ -161,9 +174,10 @@ def get_insights(
     zone = context.settings.timezone
     start, end = _period(context, days)
     previous_from = start - timedelta(days=days)
+    month_from = end.replace(day=1)
     with db.operator() as conn:
         organisations = insights_sql.org_health(conn, operator.operator_id, end, zone)
-        daily = insights_sql.daily(conn, operator.operator_id, previous_from, end, zone)
+        daily = insights_sql.daily(conn, operator.operator_id, min(previous_from, month_from), end, zone)
         _check_signed_in(conn, operator.operator_id, [*organisations, *daily])
     return {
         "from": start.isoformat(),
@@ -171,7 +185,7 @@ def get_insights(
         "previous_from": previous_from.isoformat(),
         "ai_enabled": ai_enabled(context.settings),
         "month": {
-            "from": end.replace(day=1).isoformat(),
+            "from": month_from.isoformat(),
             "today": end.isoformat(),
             "days_in_month": calendar.monthrange(end.year, end.month)[1],
         },

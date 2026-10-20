@@ -1,14 +1,15 @@
 "use client";
 
-// "Words in these files" on the upload screen (optional, collapsed). When a batch
+// "Words in these files" on the upload screen (optional, collapsed until opened; one line
+// says what it is for, Tushar, 16 Oct 2026). When a batch
 // of uploads settles, the pairs still to save go to My words, one POST each, linked
 // to that batch's files: a separate call after the upload (the council's choice),
 // so the upload never waits or fails for them. Each pair says what became of it;
 // one whose word has another meaning asks the My words question.
 
-import Link from "next/link";
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 import type { UploadEntry } from "@/components/documents/uploadQueue";
+import { Icon } from "@/components/ui/Icon";
 import { addMyWord } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import { DuplicateDialog, WordFields } from "./WordParts";
@@ -17,6 +18,14 @@ import type { Choice, NewWordBody, SaveState, UploadPair } from "./words";
 import styles from "./Words.module.css";
 
 const blank = (key: string): UploadPair => ({ key, word: "", meaning: "", state: { kind: "draft" } });
+
+/** The card's one line: what the words are for, and that they are kept private. */
+export const WORDS_HINT =
+  "Add their meaning in English (malak → owner), so chat reads them right. Only you see them.";
+
+/** One row, still empty: nothing to remove (Remove is not shown). */
+export const lone = (pairs: readonly UploadPair[]) =>
+  pairs.length === 1 && pairs[0]?.word === "" && pairs[0]?.meaning === "";
 
 export function UploadWords({ entries, settled }: { entries: UploadEntry[]; settled: number }) {
   const { me } = useSession();
@@ -68,14 +77,16 @@ export function UploadWords({ entries, settled }: { entries: UploadEntry[]; sett
   return (
     <>
       <p className="visually-hidden" role="status" aria-live="polite">{status}</p>
-      <details className={`card ${styles.block} ${styles.uploadWords}`}>
-        <summary>Words in these files (optional)</summary>
+      <details className={`card ${styles.uploadWords}`}>
+        {/* D8 (UI audit, 16 Oct 2026): a chevron and a one-line hint show it opens. */}
+        <summary>
+          <Icon name="chevron-right" size={16} className={styles.chevron} />
+          <span className={styles.summaryText}>
+            <span>Words in these files (optional)</span>
+            <span className={styles.summaryHint}>{WORDS_HINT}</span>
+          </span>
+        </summary>
         <div className="stack">
-          <p className="hint">
-            Words the way they are written in these files, and what they mean in English (malak → owner). They are
-            saved to <Link href="/words">My words</Link> once the files upload, and help chat with every question. Only
-            you see them.
-          </p>
           {pairs.map((pair, index) => (
             <div key={pair.key} className={styles.fields}>
               <WordFields
@@ -85,15 +96,17 @@ export function UploadWords({ entries, settled }: { entries: UploadEntry[]; sett
                 checked={false}
                 onChange={(draft) => setPairs((now) => now.map((p) => (p.key === pair.key ? { ...p, ...draft, state: { kind: "draft" } } : p)))}
               />
-              <button type="button" className={`btn btn-quiet ${styles.target}`} onClick={() => setPairs((now) => now.filter((p) => p.key !== pair.key))}>
-                Remove<span className="visually-hidden">{` word ${index + 1}`}</span>
-              </button>
+              {!lone(pairs) && (
+                <button type="button" className={`btn btn-quiet ${styles.target}`} onClick={() => setPairs((now) => now.filter((p) => p.key !== pair.key))}>
+                  Remove<span className="visually-hidden">{` word ${index + 1}`}</span>
+                </button>
+              )}
               <PairState pair={pair} onChoose={() => setAsking(pair.key)} />
             </div>
           ))}
           <button
             type="button"
-            className={`btn ${styles.target}`}
+            className={`btn ${styles.target} ${styles.addWord}`}
             onClick={() => {
               const key = `pair-${nextKey.current++}`; // outside the updater, which React may run twice
               setPairs((now) => [...now, blank(key)]);

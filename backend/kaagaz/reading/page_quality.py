@@ -105,13 +105,15 @@ ISSUES: Mapping[str, Issue] = MappingProxyType(
             Issue(OVERWRITTEN, _COVERED, "Check the marked words against the original."),
             Issue(
                 HANDWRITING_HARD,
-                "Some handwriting couldn't be read with certainty.",
+                "Some handwriting is hard to read.",
                 "Check the marked words, or type the correct value.",
             ),
-            Issue(ILLEGIBLE_WORDS, "{n} couldn't be read.", _REREAD_OR_RESCAN, counts="word"),
+            Issue(ILLEGIBLE_WORDS, "Hard to read: {n}.", _REREAD_OR_RESCAN, counts="word"),
             Issue(READERS_DISAGREE, "Two readers read {n} differently.", _CONFIRM_VALUES, counts="value"),
-            Issue(UNPINNED, "The exact spot of {n} couldn't be confirmed.", _CONFIRM_VALUES, counts="line"),
-            Issue(READER_REFUSED, "This page couldn't be read.", "Read it again, or upload a better scan."),
+            Issue(UNPINNED, "The exact spot of {n} needs a check.", _CONFIRM_VALUES, counts="line"),
+            Issue(
+                READER_REFUSED, "This page needs a closer look.", "Read it again, or upload a better scan."
+            ),
             Issue(
                 READ_LOCALLY,
                 "Read by the backup reader while the main reader was down. It will be read again"

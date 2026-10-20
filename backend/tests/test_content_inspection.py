@@ -5,15 +5,21 @@ Every attack sample here is made up and harmless: the scripts only call
 """
 
 import io
+import struct
 import unittest
 import zipfile
+import zlib
+from unittest import mock
 
+from pdfminer import pdftypes
 from PIL import Image
 
 from kaagaz.adapters.scanner import LayeredScanner
+from kaagaz.scanning import content
 from kaagaz.scanning.content import Finding, inspect
 from kaagaz.scanning.gate import CUSTOMER_MESSAGES, REJECTION_CODES, Verdict
-from tests.pdf_builder import Page, Text, make_pdf
+from tests.pdf_builder import Page, Picture, Text, make_objstm_pdf, make_pdf
+from tests.picture_support import text_like_picture
 from tests.xlsx_builder import make_xlsx, sheet_xml
 
 WINDOWS_PROGRAM = b"MZ" + b"\x90" * 62 + b"This program cannot be run in DOS mode.\r\r\n$" + b"\x00" * 64
@@ -41,6 +47,17 @@ def pdf_with(objects: list[bytes]) -> bytes:
 
 PAGES = b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"
 PAGE = b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>"
+
+
+def with_broken_object(data: bytes, number: int) -> bytes:
+    """``data`` with object ``number``'s cross-reference entry pointing where no object is.
+
+    pdfminer then raises PDFObjectNotFound for it (16 Oct 2026: two scanned uploads did
+    this and took a worker down on every delivery)."""
+    start = data.index(b"xref\n")
+    lines = data[start:].split(b"\n")
+    lines[2 + number] = b"%010d 00000 n " % 9  # inside the header line
+    return data[:start] + b"\n".join(lines)
 
 
 def png_bytes() -> bytes:
@@ -143,6 +160,103 @@ class PdfActiveContentIsBlocked(unittest.TestCase):
 
     def test_an_unreadable_pdf_is_not_called_safe(self) -> None:
         self.assertIs(inspect(b"%PDF-1.7\n" + b"\x00garbage" * 50), Finding.UNSCANNABLE)
+
+    def test_a_pdf_with_an_object_that_is_not_there_is_left_to_the_readers(self) -> None:
+        catalog = b"<< /Type /Catalog /Pages 2 0 R >>"
+        broken = with_broken_object(pdf_with([catalog, PAGES, PAGE, b"<< /Foo 1 >>"]), 4)
+        self.assertIsNone(inspect(broken))
+
+    def test_active_content_after_an_object_that_is_not_there_is_still_blocked(self) -> None:
+        catalog = b"<< /Type /Catalog /Pages 2 0 R /OpenAction 5 0 R >>"
+        objects = [catalog, PAGES, PAGE, b"<< /Foo 1 >>", b"<< /S /JavaScript /JS (app.alert(1)) >>"]
+        self.assertIs(inspect(with_broken_object(pdf_with(objects), 4)), Finding.BLOCKED)
+
+
+CATALOG_JS = b"<< /Type /Catalog /Pages 2 0 R /OpenAction 4 0 R >>"
+JS = b"<< /S /JavaScript /JS (app.alert(1)) >>"
+
+
+class DamagedPdfsCannotHideActiveContent(unittest.TestCase):
+    """Council 17 Oct 2026 (security): an object pdfminer cannot load is skipped, so damage
+    must not hide active content that a viewer, which rebuilds a broken index, still
+    runs. When anything was skipped, every object header in the file is parsed too."""
+
+    def test_the_javascript_object_itself_broken(self) -> None:
+        broken = with_broken_object(pdf_with([CATALOG_JS, PAGES, PAGE, JS]), 4)
+        self.assertIs(inspect(broken), Finding.BLOCKED)
+
+    def test_every_entry_broken(self) -> None:
+        broken = pdf_with([CATALOG_JS, PAGES, PAGE, JS])
+        for number in range(1, 5):
+            broken = with_broken_object(broken, number)
+        self.assertIn(inspect(broken), (Finding.BLOCKED, Finding.UNSCANNABLE))  # never None
+        # With the catalog still found (the trailer names it), the rest broken: blocked.
+        broken = pdf_with([CATALOG_JS, PAGES, PAGE, JS])
+        for number in range(2, 5):
+            broken = with_broken_object(broken, number)
+        self.assertIs(inspect(broken), Finding.BLOCKED)
+
+    def test_javascript_after_the_trailer_that_the_index_does_not_list(self) -> None:
+        catalog = b"<< /Type /Catalog /Pages 2 0 R /OpenAction 5 0 R >>"
+        broken = with_broken_object(pdf_with([catalog, PAGES, PAGE, b"<< /Foo 1 >>"]), 4)
+        self.assertIs(inspect(broken + b"5 0 obj\n" + JS + b"\nendobj\n"), Finding.BLOCKED)
+
+    def test_javascript_inside_an_object_stream_with_a_broken_index(self) -> None:
+        broken = make_objstm_pdf([CATALOG_JS], [PAGES, PAGE, JS], objstm_offset=9)
+        self.assertIs(inspect(broken), Finding.BLOCKED)
+        self.assertIsNone(inspect(make_objstm_pdf([CATALOG], [PAGES, PAGE], objstm_offset=9)))
+
+    def test_javascript_in_a_dictionary_that_will_not_parse(self) -> None:
+        """An odd dictionary (a key with no value) fails pdfminer's parse, but pdf.js
+        still reads the keys before it; one with no "endobj" runs into the next object."""
+        for bad in (b"<< /S /JavaScript /JS (app.alert(1)) /Odd >>", JS[:-3]):
+            with self.subTest(bad=bad):
+                broken = with_broken_object(pdf_with([CATALOG_JS, PAGES, PAGE, bad, b"<< /Foo 1 >>"]), 4)
+                self.assertIs(inspect(broken), Finding.BLOCKED)
+
+    def test_an_ordinary_scan_with_a_broken_entry_is_left_to_the_readers(self) -> None:
+        scan = make_pdf([Page(picture=Picture(text_like_picture(60, 80), 0, 0, 612, 792))])
+        self.assertIsNone(inspect(with_broken_object(scan, 3)))
+
+    def test_a_damaged_encrypted_pdf_is_unscannable(self) -> None:
+        locked = make_pdf([Page(texts=[Text(72, 700, "Total 500")])], password_protected=True)
+        self.assertIs(inspect(with_broken_object(locked, 3)), Finding.UNSCANNABLE)
+
+    def test_javascript_nested_deeper_than_the_walk_is_blocked(self) -> None:
+        """A 70-deep /Next chain ending in JavaScript used to be called safe."""
+        action = JS
+        for _ in range(70):
+            action = b"<< /S /GoTo /Next " + action + b" >>"
+        self.assertIs(
+            inspect(
+                pdf_with([b"<< /Type /Catalog /Pages 2 0 R /OpenAction " + action + b" >>", PAGES, PAGE])
+            ),
+            Finding.BLOCKED,
+        )
+
+    def test_a_trailer_pdfminer_asserts_on_is_unscannable_not_a_crash(self) -> None:
+        broken = pdf_with([CATALOG, PAGES, PAGE]).replace(b"trailer\n", b"trailerX\n")
+        self.assertIs(inspect(broken), Finding.UNSCANNABLE)
+
+    def test_a_spreadsheet_with_a_damaged_compressed_part_is_a_finding_not_a_crash(self) -> None:
+        self.assertIs(
+            inspect(with_damaged_member(spreadsheet(), "xl/_rels/workbook.xml.rels")), Finding.UNSCANNABLE
+        )
+
+
+CATALOG = b"<< /Type /Catalog /Pages 2 0 R >>"
+
+
+def with_damaged_member(archive: bytes, name: str) -> bytes:
+    """``archive`` with member ``name``'s compressed bytes overwritten (its headers kept), so
+    inflating it raises zlib.error."""
+    with zipfile.ZipFile(io.BytesIO(archive)) as opened:
+        info = opened.getinfo(name)
+    raw = bytearray(archive)
+    name_len, extra_len = struct.unpack("<HH", raw[info.header_offset + 26 : info.header_offset + 30])
+    start = info.header_offset + 30 + name_len + extra_len
+    raw[start : start + info.compress_size] = b"\xff" * info.compress_size
+    return bytes(raw)
 
 
 class HiddenProgramsAndPolyglots(unittest.TestCase):
@@ -257,6 +371,126 @@ class TheLayers(unittest.TestCase):
     def test_blocked_is_a_rejection_with_a_customer_message(self) -> None:
         self.assertIn("blocked_content", REJECTION_CODES)
         self.assertIn("scripts, macros", CUSTOMER_MESSAGES["blocked_content"])
+
+
+class SecurityReviewBounds(unittest.TestCase):
+    """Security review of the incident fix (17 Oct 2026): a sound index cannot hide an
+    object a viewer finds, an object stream that cannot be decoded is not called safe,
+    and no PDF can grow the check's budget, fill memory or run past the deadline."""
+
+    def test_an_active_object_a_sound_index_leaves_out_is_blocked(self) -> None:
+        sound = pdf_with([CATALOG, PAGES, PAGE])
+        self.assertIsNone(inspect(sound))
+        self.assertIs(inspect(sound + b"4 0 obj\n" + JS + b"\nendobj\n"), Finding.BLOCKED)
+
+    def test_an_object_stream_that_cannot_be_decoded_is_unscannable(self) -> None:
+        packed = make_objstm_pdf([CATALOG], [PAGES, PAGE])
+        crypt = packed.replace(b"/Filter /FlateDecode", b"/Filter /Crypt      ")
+        self.assertEqual(len(crypt), len(packed))
+        self.assertIs(inspect(crypt), Finding.UNSCANNABLE)
+
+    def test_a_compressed_object_stream_bomb_is_unscannable(self) -> None:
+        bomb = make_objstm_pdf([CATALOG], [PAGES, PAGE, b"<< /A (" + b"0" * (2 << 20) + b") >>"])
+        self.assertLess(len(bomb), 64 << 10)  # 2 MiB of text, compressed
+        with mock.patch.object(content, "_MAX_DECODED_BYTES", 1 << 20):
+            self.assertIs(inspect(bomb), Finding.UNSCANNABLE)
+        self.assertIsNone(inspect(bomb))  # within the real bound it is an ordinary file
+
+    def test_object_grants_never_add_up_past_their_ceiling(self) -> None:
+        bounds = content._Bounds(100)
+        for _ in range(100_000):
+            bounds.grant(content._READ_PER_OBJECT)
+        self.assertEqual(bounds.reads, content._READ_FACTOR * 100 + content._MAX_GRANT_BYTES)
+
+    def test_a_file_of_tiny_headers_cannot_buy_itself_reads(self) -> None:
+        tiny = pdf_with([CATALOG, PAGES, PAGE]) + b"9 0 obj\n" * 40_000
+        with mock.patch.object(content, "_MAX_GRANT_BYTES", 1 << 20):
+            self.assertIn(inspect(tiny), (None, Finding.UNSCANNABLE))  # bounded, either way
+
+    def test_the_check_ends_at_its_deadline(self) -> None:
+        now = [0.0]
+        bounds = content._Bounds(1000, clock=lambda: now[0])
+        bounds.read(1)
+        now[0] = content._DEADLINE_SECONDS + 1
+        with self.assertRaises(content._ReadBudgetSpent):
+            bounds.read(1)
+
+    def test_the_readers_decompress_as_before_outside_a_check(self) -> None:
+        big = b"0" * (content._MAX_DECODED_BYTES + 1)
+        self.assertEqual(pdftypes.zlib.decompress(zlib.compress(big)), big)
+
+
+def lying_zip(name: str, data: bytes, declared: int) -> bytes:
+    """A one-part zip whose headers declare ``declared`` bytes for a part of ``len(data)``."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(name, data)
+    raw = bytearray(buffer.getvalue())
+    struct.pack_into("<I", raw, raw.find(b"PK\x03\x04") + 22, declared)
+    struct.pack_into("<I", raw, raw.find(b"PK\x01\x02") + 24, declared)
+    return bytes(raw)
+
+
+TEMPLATE = b"http://schemas.openxmlformats.org/officeDocument/2006/relationships/attachedTemplate"
+RELS = b'<Relationships><Relationship Type="%s" TargetMode="External"/></Relationships>'
+
+
+class SecurityReviewFailClosed(unittest.TestCase):
+    """Security review, 17 Oct 2026: fail-open paths, and a second PDF reader."""
+
+    def test_pdfium_blocks_what_pdfminer_missed(self) -> None:
+        catalogs = (
+            b"<< /Type /Catalog /Pages 2 0 R /Names << /JavaScript << /Names [(a) 4 0 R] >> >> >>",
+            b"<< /Type /Catalog /Pages 2 0 R /Names << /EmbeddedFiles << /Names [(a) 4 0 R] >> >> >>",
+            b"<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [] /XFA 4 0 R >> >>",
+        )
+        with mock.patch.object(content, "_pdf_finding", return_value=None):  # pdfminer saw nothing
+            for catalog in catalogs:
+                with self.subTest(catalog=catalog):
+                    pdf = pdf_with([catalog, PAGES, PAGE, b"<< /Type /Filespec /F (a.txt) >>"])
+                    self.assertIs(inspect(pdf), Finding.BLOCKED)
+            self.assertIsNone(inspect(pdf_with([CATALOG, PAGES, PAGE])))  # an ordinary file passes
+
+    def test_a_pdf_pdfium_cannot_open_keeps_pdfminers_verdict(self) -> None:
+        self.assertIs(inspect(b"%PDF-1.7\n" + b"\x00garbage" * 50), Finding.UNSCANNABLE)
+
+    def test_an_external_template_in_a_part_over_the_bound_is_unscannable(self) -> None:
+        rels = RELS % TEMPLATE
+        with mock.patch.object(content, "_MAX_RELS_BYTES", len(rels) - 1):  # was skipped: None
+            self.assertIs(
+                inspect(with_member(spreadsheet(), "xl/_rels/a.xml.rels", rels)), Finding.UNSCANNABLE
+            )
+
+    def test_a_part_bigger_than_it_declares_is_unscannable(self) -> None:
+        self.assertIs(inspect(lying_zip("_rels/.rels", b" " * (3 << 20), 10)), Finding.UNSCANNABLE)
+
+    def test_an_external_template_written_another_valid_way_is_blocked(self) -> None:
+        single = b"<Relationships><Relationship Type='%s' TargetMode='External'/></Relationships>"
+        escaped = b'<Relationships><Relationship Type="%s" TargetMode="&#69;xternal"/></Relationships>'
+        for name, rels in (
+            ("xl/_rels/a.xml.rels", single),
+            ("xl/_rels/a.xml.rels", escaped),
+            ("xl/_rels/A.XML.RELS", RELS),
+        ):
+            with self.subTest(name=name, rels=rels):
+                self.assertIs(inspect(with_member(spreadsheet(), name, rels % TEMPLATE)), Finding.BLOCKED)
+
+    def test_relationships_with_a_dtd_or_bad_xml_are_unscannable(self) -> None:
+        for rels in (b'<!DOCTYPE r [<!ENTITY e "External">]><Relationships/>', b"<Relationships"):
+            with self.subTest(rels=rels):
+                self.assertIs(
+                    inspect(with_member(spreadsheet(), "xl/_rels/a.xml.rels", rels)), Finding.UNSCANNABLE
+                )
+
+    def test_a_pdf_header_hidden_in_another_type_is_blocked(self) -> None:
+        png = png_bytes()
+        for data in (b"Name,Amount\n%PDF-1.7\n", png[:33] + b"%PDF-1.7\n" + png[33:]):
+            with self.subTest(data=data[:12]):
+                self.assertIs(inspect(data), Finding.BLOCKED)
+
+    def test_a_type_with_no_check_is_blocked(self) -> None:
+        old_xls = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 504
+        self.assertIs(inspect(old_xls), Finding.BLOCKED)
 
 
 if __name__ == "__main__":

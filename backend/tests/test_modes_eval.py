@@ -78,9 +78,11 @@ class ProblemsTest(unittest.TestCase):
 @pytest.mark.eval
 class FakeRunTest(unittest.TestCase):
     """The fixture through the real reading code. The table is pinned: a change in how a
-    mode labels values shows here. The stamp case (the checker and both other models
-    misread the same digit the main model read right) is why Ensemble has one more wrong
-    value Verified than Single: the 2-of-3 vote plus the checker's agreement verifies it."""
+    mode labels values shows here. Changed on purpose (Ensemble after the scan, 16 Oct
+    2026): a scan no longer votes (labels.settle_votes is gone), so Ensemble labels as
+    Single does, at more tokens, and the stamp case (the checker and both other models
+    misread the same digit the main model read right) stays Needs review: the vote had
+    Verified the wrong digit."""
 
     def test_the_per_mode_table(self) -> None:
         runs, truth = fake_run()
@@ -94,14 +96,14 @@ class FakeRunTest(unittest.TestCase):
             {
                 "single": (7, 3, 1, 4, 1, 0),
                 "dynamic": (8, 7, 2, 1, 0, 0),
-                "ensemble": (7, 6, 2, 1, 1, 0),
+                "ensemble": (7, 3, 1, 4, 1, 0),
             },
         )
         self.assertLess(tallies["single"].tokens, tallies["dynamic"].tokens)
         self.assertLess(tallies["dynamic"].tokens, tallies["ensemble"].tokens)
-        self.assertEqual(problems(tallies), ["Ensemble shows 2 wrong values as Verified, Single 1"])
+        self.assertEqual(problems(tallies), [])
 
-    def test_the_stamp_case_is_the_ensemble_break(self) -> None:
+    def test_the_stamp_case_is_no_longer_the_ensemble_break(self) -> None:
         runs, truth = fake_run()
         stamp = "stamp over digits misleads the checker and the other models"
         labels = {
@@ -109,7 +111,7 @@ class FakeRunTest(unittest.TestCase):
             for mode, (reads, _t) in runs.items()
         }
         self.assertEqual(labels["single"], [("1,180.00", "needs_review")])
-        self.assertEqual(labels["ensemble"], [("1,130.00", "verified")])
+        self.assertEqual(labels["ensemble"], [("1,180.00", "needs_review")])
         self.assertEqual(truth[(stamp, "total_amount")], "1,180.00")
 
 
@@ -129,9 +131,10 @@ class MainTest(unittest.TestCase):
             self.assertEqual(stopped.exception.code, 2)
 
     @pytest.mark.eval
-    def test_fake_prints_the_table_and_exits_1_on_a_broken_invariant(self) -> None:
+    def test_fake_prints_the_table_and_exits_0_with_no_broken_invariant(self) -> None:
+        # Changed on purpose (Ensemble after the scan, 16 Oct 2026): see FakeRunTest.
         out = io.StringIO()
-        self.assertEqual(main(["--fake"], out), 1)
+        self.assertEqual(main(["--fake"], out), 0)
         lines = out.getvalue().splitlines()
         self.assertEqual([line.split()[0] for line in lines[:4]], ["mode", *MODES])
-        self.assertEqual(lines[4:], ["BROKEN: Ensemble shows 2 wrong values as Verified, Single 1"])
+        self.assertEqual(lines[4:], [])

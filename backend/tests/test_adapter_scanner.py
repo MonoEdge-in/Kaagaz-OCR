@@ -120,6 +120,7 @@ class ClamdScannerTest(unittest.TestCase):
         for reply in (
             b"stream: Heuristics.Limits.Exceeded.MaxFileSize FOUND\0",
             b"stream: Heuristics.Encrypted.PDF FOUND\0",
+            b"stream: Heuristics.Broken.Media.PNG.EOFReadingChunk FOUND\0",  # AlertBrokenMedia: damaged
         ):
             with self.subTest(reply=reply):
                 self.server.reply = reply

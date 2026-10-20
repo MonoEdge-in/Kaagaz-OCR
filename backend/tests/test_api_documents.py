@@ -101,16 +101,20 @@ def test_status_messages() -> None:
     def message(status: str, failure_code: str | None = None, detected_type: str = "pdf") -> str:
         return status_message(status, failure_code, detected_type=detected_type, max_pages=100)
 
-    assert message("received") == "Waiting for the virus check."
+    # Changed on purpose (council 16 Oct 2026): it waits in the queue; the virus check runs
+    # later, in the worker.
+    assert message("received") == "Waiting to start."
     assert message("clean") == "Reading the document…"
     assert message("ready") == "Ready. You can ask about it."
     assert message("needs_reader") == "Stored safely. This kind of file can't be read yet."
     assert message("rejected", "virus_found") == CUSTOMER_MESSAGES["virus_found"]
     assert message("rejected") == "This file was not processed."
     # Changed on purpose (UI quality council, 15 Oct 2026): no failure code on screen.
+    # Changed on purpose (council 16 Oct 2026): the same file uploaded again is a duplicate
+    # and is never read again.
     assert (
         message("failed", "corrupt_file")
-        == "This file could not be read. Upload it again, or try another copy of it."
+        == "This file needs another read. Read it again, or try another copy of it."
     )
     # PROVISIONAL: the PRD quotes the real page count, which is not stored when a PDF fails.
     assert message("failed", "too_many_pages") == (
@@ -120,6 +124,21 @@ def test_status_messages() -> None:
     assert message("failed", "too_many_pages", "tiff") == (
         "This file has more than 100 pages. The limit is 100. Split it into parts."
     )
+
+
+def test_a_ready_document_with_unreadable_pages_says_how_many() -> None:
+    """Council 16 Oct 2026: since e01b937d a document with pages that can't be read is
+    ready with those pages flagged, so its message must say so, not only "Ready"."""
+
+    def message(status: str, pages_unreadable: int) -> str:
+        return status_message(
+            status, None, detected_type="pdf", max_pages=100, pages_unreadable=pages_unreadable
+        )
+
+    assert message("ready", 0) == "Ready. You can ask about it."
+    assert message("ready", 1) == "Ready. 1 page to check."
+    assert message("ready", 3) == "Ready. 3 pages to check."
+    assert message("clean", 3) == "Reading the document…"  # only once it is ready
 
 
 # Every failure code the reading code raises (ReadError("...") in kaagaz/), plus the ones
@@ -180,13 +199,13 @@ def test_status_messages_name_the_tries_and_the_real_page_count() -> None:
     assert message("clean", attempts=7, max_attempts=5) == "Waiting to try again. Try 5 of 5."
     assert message("clean", attempts=3, max_attempts=None) == "Waiting to try again."
     assert message("ready", attempts=3, max_attempts=5) == "Ready. You can ask about it."
-    # The tries ran out.
+    # The tries ran out. Changed on purpose (council 16 Oct 2026): a re-upload is a
+    # duplicate, never read again.
     assert message("failed", "retries_exhausted", attempts=5, max_attempts=5) == (
-        "We tried 5 times and couldn't read this file. Upload it again, or ask your admin to look at it."
+        "The scan stopped after 5 tries. Read it again, or ask your admin to look at it."
     )
     assert message("failed", "retries_exhausted") == (
-        "We tried several times and couldn't read this file."
-        " Upload it again, or ask your admin to look at it."
+        "The scan stopped after several tries. Read it again, or ask your admin to look at it."
     )
     # The worker stored the real page count before the file failed.
     assert message("failed", "too_many_pages", page_count=180) == (
@@ -280,7 +299,8 @@ def test_a_try_a_backend_stopped_says_waiting_to_try_again() -> None:
         )
 
     assert message("received", 1) == message("clean", 1) == "Waiting to try again."
-    assert message("received", 0) == "Waiting for the virus check."  # no try yet
+    # No try yet. Changed on purpose (council 16 Oct 2026): it waits in the queue.
+    assert message("received", 0) == "Waiting to start."
     assert message("clean", 1, {"step": "reading", "done": 0, "total": 4}) == "Reading page 1 of 4\u2026"
     assert message("ready", 1) == "Ready. You can ask about it."
     assert document_time_left({"status": "clean", "progress": None, "deleted_at": None}, now=NOW) is None
@@ -294,9 +314,11 @@ def test_old_progress_is_ignored_once_a_document_is_ready_or_failed() -> None:
 
     assert message("ready") == "Ready. You can ask about it."
     # Changed on purpose (UI quality council, 15 Oct 2026): no failure code on screen.
+    # Changed on purpose (council 16 Oct 2026): the same file uploaded again is a duplicate
+    # and is never read again.
     assert (
         message("failed", "corrupt_file")
-        == "This file could not be read. Upload it again, or try another copy of it."
+        == "This file needs another read. Read it again, or try another copy of it."
     )
     assert in_progress("ready", progress) is None
     assert in_progress("failed", progress) is None
@@ -370,6 +392,16 @@ def test_upload_stores_queues_and_returns_the_summary(db: Database) -> None:
         "values_to_review",
         "words_unsure",  # PRD 5 U2
         "autofile",  # feature 28: null, nothing was filed
+        # Changed on purpose (PRD 1, 0041): owner, label, versions, dates, department, suggestion.
+        "owner",
+        "sensitivity",
+        "versions",
+        "version_note",
+        "document_date",
+        "updated_at",
+        "updated_by",
+        "department",
+        "pending_suggestion",
     }
     assert (document["folder_id"], document["tags"]) == (None, [])
     assert (document["pages_unreadable"], document["pages_uncertain"], document["values_to_review"]) == (
@@ -388,7 +420,7 @@ def test_upload_stores_queues_and_returns_the_summary(db: Database) -> None:
     assert document["detected_type"] == "pdf"
     assert document["size_bytes"] == len(PDF_BYTES)
     assert document["status"] == "received"
-    assert document["status_message"] == "Waiting for the virus check."
+    assert document["status_message"] == "Waiting to start."  # Changed on purpose (council 16 Oct 2026)
     assert document["uploaded_by_name"] == "Test member"
     assert api.storage.has(signed.customer_id, document["id"])
     assert [(job.customer_id, job.document_id) for job in api.queue.jobs] == [
@@ -1118,7 +1150,7 @@ def test_unknown_or_malformed_document_id(db: Database) -> None:
 
 
 @pytest.mark.db
-def test_file_is_served_inline_and_sandboxed(db: Database) -> None:
+def test_file_is_served_as_a_download_and_sandboxed(db: Database) -> None:
     api = Api(db)
     signed = api.new_signed()
     document_id = api.add_document(signed.customer_id, status="ready", name="PAN ABCDE1234F.pdf")
@@ -1126,9 +1158,33 @@ def test_file_is_served_inline_and_sandboxed(db: Database) -> None:
     assert reply.status_code == 200
     assert reply.content == PDF_BYTES
     assert reply.headers["content-type"] == "application/pdf"
-    assert reply.headers["content-disposition"] == 'inline; filename="document.pdf"'
+    assert reply.headers["content-disposition"] == (
+        "attachment; filename=\"document.pdf\"; filename*=UTF-8''PAN%20ABCDE1234F.pdf"
+    )
     assert reply.headers["content-security-policy"] == "sandbox"
     assert reply.headers["x-content-type-options"] == "nosniff"
+
+
+@pytest.mark.db
+@pytest.mark.parametrize(
+    ("name", "detected_type", "encoded"),
+    [
+        ("सातबारा उतारा.pdf", "pdf", "%E0%A4%B8%E0%A4%BE%E0%A4%A4%E0%A4%AC%E0%A4%BE%E0%A4%B0%E0%A4%BE%20"),
+        ('a"b\r\nSet-Cookie: x=1.png', "png", "a%22b%0D%0ASet-Cookie%3A%20x%3D1.png"),
+        ("stock list", "zip", "stock%20list.xlsx"),
+    ],
+)
+def test_the_download_keeps_the_users_name_with_the_true_extension(
+    db: Database, name: str, detected_type: str, encoded: str
+) -> None:
+    """The name is percent-encoded, so no quote or line break reaches the header."""
+    api = Api(db)
+    signed = api.new_signed()
+    document_id = api.add_document(signed.customer_id, name=name, detected_type=detected_type)
+    disposition = signed.client.get(f"/api/documents/{document_id}/file").headers["content-disposition"]
+    fallback, star = disposition.split("; filename*=UTF-8''")
+    assert fallback.startswith('attachment; filename="document.') and encoded in star
+    assert "\r" not in disposition and "\n" not in disposition and '"' not in star
 
 
 @pytest.mark.db
@@ -1665,10 +1721,7 @@ def test_the_detail_shows_the_invoice_row_and_its_lines_in_order(db: Database) -
 
 def test_a_page_the_scan_reader_failed_on_has_its_own_words() -> None:
     message = status_message("failed", "ocr_failed", detected_type="pdf", max_pages=100)
-    assert (
-        message
-        == "The scan reader couldn't read a page of this file. Upload a clearer scan, or read it again."
-    )
+    assert message == "A page of this file needs another read. Read it again, or upload a clearer scan."
 
 
 def test_f4_a_file_none_of_which_could_be_read_says_so_with_the_fix() -> None:

@@ -184,8 +184,15 @@ describe("layout guards", () => {
 
   it("leaves Name and Status room at each width the documents table starts at", () => {
     const found = budgets(DOCS_CSS, "docs-list", NAME_AND_STATUS_REM);
-    expect(found.map((b) => b.start)).toEqual([48, 64]);
+    // Changed on purpose (UI audit, 16 Oct 2026): D3, a table from 36rem (a laptop's list with the
+    // side nav and the folder tree), Type back at 48rem, every column from 64rem.
+    expect(found.map((b) => b.start)).toEqual([36, 64]);
     for (const { start, needs } of found) expect(needs, `at ${start}rem`).toBeLessThanOrEqual(start);
+    const css = read(DOCS_CSS);
+    expect(columnsAt(css, "docs-list", 36).has("typeColumn")).toBe(false);
+    expect(columnsAt(css, "docs-list", 48).has("typeColumn")).toBe(true);
+    const at48 = [...columnsAt(css, "docs-list", 48).values()].reduce((sum, rem) => sum + rem, NAME_AND_STATUS_REM);
+    expect(at48).toBeLessThanOrEqual(48);
   });
 
   it("lets a badge wrap, so a long label never pushes the page sideways", () => {
@@ -194,10 +201,26 @@ describe("layout guards", () => {
     expect(badge.filter((rule) => NOWRAP.test(rule.body))).toEqual([]);
   });
 
-  it("stretches the sidebar down the page; only its inner part sticks", () => {
+  // Changed on purpose (MonoEdge design system, 16 Oct 2026): brief C's app shell. The page never scrolls;
+  // only <main> and the side nav do, each held in, and the zones are grid rows.
+  it("keeps the page still in the app shell; only main and the side nav scroll", () => {
     const shell = "components/shell/Shell.module.css";
     expect(rulesFor(shell, ".sidebar").filter((rule) => /position:\s*sticky/.test(rule.body))).toEqual([]);
-    expect(rulesFor(shell, ".sidebarInner").some((rule) => /position:\s*sticky/.test(rule.body))).toBe(true);
+    const side = rulesFor(shell, ".sidebar").find((rule) => rule.at === "@media (min-width: 1024px)")?.body ?? "";
+    expect(side).toMatch(/overflow-y:\s*auto;[\s\S]*overscroll-behavior:\s*contain;/);
+    const main = rulesFor(shell, ".main")[0]?.body ?? "";
+    expect(main).toMatch(/overflow:\s*auto;\s*overscroll-behavior:\s*contain;/);
+    expect(main).toMatch(/min-height:\s*0;/);
+    const app = rulesFor(shell, ".app").find((rule) => rule.at === "")?.body ?? "";
+    expect(app).toMatch(/grid-template-rows:\s*auto minmax\(0, 1fr\) auto auto;/);
+    expect(app).toMatch(/height:\s*100vh;\s*height:\s*100dvh;/);
+    // Header, status and bottom bars are rows, never fixed.
+    for (const zone of [".header", ".statusbar", ".bottombar"]) {
+      expect(rulesFor(shell, zone).filter((rule) => /position:\s*fixed/.test(rule.body)), zone).toEqual([]);
+    }
+    const page = rulesFor("app/globals.css", "html:has(.app-shell) body")[0]?.body ?? "";
+    expect(page).toMatch(/height:\s*100%;\s*overflow:\s*hidden;\s*overscroll-behavior:\s*none;/);
+    expect(read("components/shell/AppShell.tsx")).toContain('className={`app-shell ${styles.app}`}');
   });
 
   it("gives the page frame no height limit of its own (no second scrollbar)", () => {
@@ -224,8 +247,9 @@ describe("layout guards", () => {
 
   it("pulses a new spot only where reduced motion can stop it", () => {
     const css = read("components/viewer/PageViewer.module.css");
-    expect(rulesFor("components/viewer/PageViewer.module.css", ".pulse")[0]?.body).toMatch(/animation:\s*spotPulse [\d.]+s ease-out 2;/);
-    expect(css).toContain("@keyframes spotPulse");
+    // Changed on purpose (motion pass, 16 Oct 2026): the spot fades and settles once (transform, opacity), no outline ring.
+    expect(rulesFor("components/viewer/PageViewer.module.css", ".pulse")[0]?.body).toMatch(/animation:\s*spotIn var\(--t-slow\) var\(--ease\);/);
+    expect(css).toContain("@keyframes spotIn");
     const reduced = rules(read("app/globals.css")).filter((rule) => rule.at === "@media (prefers-reduced-motion: reduce)");
     expect(reduced.some((rule) => /animation-iteration-count:\s*1 !important/.test(rule.body))).toBe(true);
   });
@@ -239,8 +263,8 @@ describe("layout guards", () => {
 
   it("leaves the admin Users table's User column room where it becomes a table", () => {
     const found = budgets(ADMIN_CSS, "reflow", USER_REM);
-    // Changed on purpose (UI touch-up council, 15 Oct 2026): from 64rem the actions sit side by side.
-    expect(found.map((b) => b.start)).toEqual([48, 64]);
+    // Changed on purpose (UI audit, 16 Oct 2026): AD2, the actions are in one menu, so no wider column from 64rem.
+    expect(found.map((b) => b.start)).toEqual([48]);
     for (const { start, needs } of found) expect(needs, `at ${start}rem`).toBeLessThanOrEqual(start);
   });
 
@@ -282,15 +306,26 @@ describe("layout guards", () => {
     );
     expect(sticky.length).toBe(1);
     expect(sticky[0]?.body ?? "").not.toMatch(/dvh/);
-    expect(sticky[0]?.body).toMatch(/100svh/);
+    // Changed on purpose (MonoEdge design system, 16 Oct 2026): <main> is the one scroller, so the
+    // sticky column is sized by the main area's height, not the window's.
+    expect(sticky[0]?.body).toMatch(/var\(--main-h\)/);
     const fit = rulesFor("components/viewer/PageViewer.module.css", ".fitPage").find((rule) => rule.at === "");
     expect(Number(/min-height:\s*([\d.]+)rem/.exec(fit?.body ?? "")?.[1] ?? 0)).toBeGreaterThan(0);
   });
 
-  it("lets a button's label wrap inside it, everywhere", () => {
+  // Changed on purpose (MonoEdge design system, 16 Oct 2026): one line and one height per row (the
+  // .btn spec); below 480px, where buttons stack, a long label wraps inside its button.
+  it("keeps a button's label on one line, and lets it wrap below 480px, everywhere", () => {
     const btn = rulesFor("app/globals.css", ".btn");
-    expect(btn.some((rule) => /white-space:\s*normal/.test(rule.body) && /max-width:\s*100%/.test(rule.body))).toBe(true);
-    const nowrap = everyRule(NOWRAP).filter(({ rule }) => /\.btn\b/.test(rule.selector));
+    const base = btn.find((rule) => rule.at === "")?.body ?? "";
+    expect(base).toMatch(/white-space:\s*nowrap/);
+    expect(base).toMatch(/max-width:\s*100%/);
+    // Changed on purpose (Tushar, 16 Oct 2026, one control height / centred icons): --control-h,
+    // the height fields share (36px, 44px on touch).
+    expect(base).toMatch(/height:\s*var\(--control-h\)/);
+    const narrow = btn.find((rule) => rule.at === "@media (max-width: 479.98px)")?.body ?? "";
+    expect(narrow).toMatch(/height:\s*auto;[\s\S]*white-space:\s*normal/);
+    const nowrap = everyRule(NOWRAP).filter(({ file, rule }) => file !== "app/globals.css" && /\.btn\b/.test(rule.selector));
     expect(nowrap.map((found) => found.name)).toEqual([]);
   });
 
@@ -300,10 +335,43 @@ describe("layout guards", () => {
       "components/documents/ActionDialog.module.css: .body: overscroll-behavior",
       "components/chat/Chat.module.css: .pane: overscroll-behavior",
       "components/chat/Chat.module.css: .thread: overscroll-behavior",
+      // Changed on purpose (MonoEdge design system, 16 Oct 2026): the composer's panel, the shell's two
+      // scrollers, the page (no rubber band) and a tab row's sideways scroll.
+      "components/chat/Chat.module.css: .menu: overscroll-behavior",
+      // Changed on purpose (UI audit, 16 Oct 2026): AD3, Add user's side panel, a modal dialog.
+      "components/admin/Admin.module.css: .sidePanelBody: overscroll-behavior",
+      "components/shell/Shell.module.css: .sidebar: overscroll-behavior",
+      "components/shell/Shell.module.css: .main: overscroll-behavior",
+      // Changed on purpose (UI audit G6, 16 Oct 2026): the account menu scrolls in itself on a short screen.
+      "components/shell/Shell.module.css: .account: overscroll-behavior",
+      "app/globals.css: html: overscroll-behavior-y",
+      "app/globals.css: html:has(.app-shell), html:has(.app-shell) body: overscroll-behavior",
+      "app/globals.css: .tabs: overscroll-behavior-x",
       "components/documents/Library.module.css: .treePane: overscroll-behavior",
       // Sideways only: a wide page scrolls without a swipe going back a screen.
       "components/viewer/PageViewer.module.css: .frame: overscroll-behavior-x",
+      // Changed on purpose (UI audit, 16 Oct 2026): DD1, the sheet's pan area holds only a sideways
+      // swipe, like the page's frame (a wheel up or down runs on into <main>); the tables'
+      // sideways wrappers keep theirs.
       "components/viewer/PageViewer.module.css: .sheetFrame: overscroll-behavior-x",
+      "components/documents/Table.module.css: .reflowWrap: overscroll-behavior-x",
+      "app/(app)/documents/[id]/DocumentView.module.css: .valuesWrap: overscroll-behavior-x",
+      // Changed on purpose (scan states, 16 Oct 2026): the uploads panel above the status bar.
+      "components/documents/Documents.module.css: .trayPanel: overscroll-behavior",
+      // Changed on purpose (scan review UX rules, 16 Oct 2026): the review panel is a bottom
+      // sheet on a phone, above the bottom bar; its own scroll never runs on into the page.
+      "app/(app)/documents/[id]/WordReview.module.css: .review: overscroll-behavior",
+      // Changed on purpose (MonoEdge design system, 16 Oct 2026): sideways only, the tabs, the
+      // tables and the usage chart scroll in their own box and never hand the swipe to the page.
+      "components/admin/Admin.module.css: .tabs: overscroll-behavior-x",
+      "components/admin/Admin.module.css: .tableScroll: overscroll-behavior-x",
+      "components/admin/Admin.module.css: .chart: overscroll-behavior-x",
+      // Changed on purpose (Tushar, 17 Oct 2026, smoothness pass): the last two inner scrollers
+      // without it, the Ask question box and the operator's Manage menu (smoothness-guards.test.ts).
+      "components/chat/Chat.module.css: .composerInput: overscroll-behavior",
+      "components/operator/Operator.module.css: .menu: overscroll-behavior",
+      // Changed on purpose (Read clearly, 19 Oct 2026): a wide table in the clean copy, sideways only.
+      "components/viewer/ReadClearly.module.css: .tableBox: overscroll-behavior-x",
     ];
     const found = everyRule(/overscroll-behavior/).flatMap(({ rule, name }) =>
       [...rule.body.matchAll(/(overscroll-behavior[-\w]*):/g)].map((match) => `${name}: ${match[1]}`),
@@ -311,20 +379,25 @@ describe("layout guards", () => {
     expect(found.filter((entry) => !allowed.includes(entry))).toEqual([]);
   });
 
+  // Changed on purpose (MonoEdge design system, 16 Oct 2026): a 100vh line is allowed only as the fallback
+  // right before the same property in dvh (brief C: "100dvh with a 100vh fallback").
   it("sizes by the window with dvh or svh, never bare vh (it ignores the phone's toolbars)", () => {
-    const found = CSS_FILES.filter((file) => /(?<![\w.-])[\d.]+vh\b/.test(read(file).replace(/\/\*[\s\S]*?\*\//g, "")));
+    const fallback = /([\w-]+):\s*100vh;\s*\1:\s*100dvh;/g;
+    const found = CSS_FILES.filter((file) =>
+      /(?<![\w.-])[\d.]+vh\b/.test(read(file).replace(/\/\*[\s\S]*?\*\//g, "").replace(fallback, "")),
+    );
     expect(found).toEqual([]);
   });
 
-  it("wraps the admin and operator tabs at every width, with no hidden sideways scroll", () => {
+  // Changed on purpose (MonoEdge design system, 16 Oct 2026): the tabs spec. One line that
+  // scrolls sideways and never wraps (edge arrows with a mouse, a select for over six on a phone).
+  it("keeps the admin and operator tabs on one line that scrolls sideways, never wrapping", () => {
     const tabs = rulesFor(ADMIN_CSS, ".tabs").find((rule) => rule.at === "");
-    expect(tabs?.body).toMatch(/flex-wrap:\s*wrap/);
-    const scrolling = [ADMIN_CSS, "components/operator/Insights.module.css"].flatMap((file) =>
-      rules(read(file))
-        .filter((rule) => /tab/i.test(rule.selector) && /overflow-x|scroll-snap|scrollbar-width/.test(rule.body))
-        .map((rule) => `${file}: ${rule.selector}`),
-    );
-    expect(scrolling).toEqual([]);
+    expect(tabs?.body).not.toMatch(/flex-wrap:\s*wrap/);
+    expect(tabs?.body).toMatch(/overflow-x:\s*auto;[\s\S]*scrollbar-width:\s*none;[\s\S]*scroll-snap-type:\s*x proximity;/);
+    const tab = rulesFor(ADMIN_CSS, ".tab").find((rule) => rule.at === "");
+    expect(tab?.body).toMatch(/white-space:\s*nowrap/);
+    expect(tab?.body).toMatch(/height:\s*var\(--h-lg\)/);
   });
 
   it("keeps each side of a page clear of its own notch, at every width", () => {
@@ -340,9 +413,9 @@ describe("layout guards", () => {
   });
 
   it("animates opacity and transform, not background-position (a repaint every frame)", () => {
-    // The saving bar's moving stripe (PRD 5 U10).
     // Changed on purpose (sign-in redesign, 15 Oct 2026): the sign-in title's sweep is gone.
-    const allowed = ["components/documents/Documents.module.css: @keyframes saving"];
+    // Changed on purpose (MonoEdge design system, 16 Oct 2026): the saving bar fades (opacity), no stripe.
+    const allowed: string[] = [];
     const found = everyRule(/background-position/)
       .filter(({ rule }) => rule.at.startsWith("@keyframes"))
       .map(({ file, rule }) => `${file}: ${rule.at}`);
@@ -352,7 +425,9 @@ describe("layout guards", () => {
   // Board 11 of the UI mockups: one calm frame for all three sign-ins, and its
   // only motion is the citation fading in once (no robot, pages or title sweep).
   it("frames every sign-in with AuthFrame, whose one motion is a single fade", () => {
-    for (const page of ["app/login/page.tsx", "app/admin/login/page.tsx", "app/operator/login/page.tsx"]) {
+    // One sign-in page (16 Oct 2026): /admin/login only redirects to /login now.
+    const pages = ["app/login/page.tsx", "app/operator/login/page.tsx", "app/signup/page.tsx"];
+    for (const page of pages) {
       expect(read(page), page).toMatch(/<AuthFrame\b/);
     }
     const css = "app/login/login.module.css";
@@ -363,7 +438,8 @@ describe("layout guards", () => {
     const animated = all.filter((rule) => /(^|;)\s*animation(-[\w-]+)?:/.test(rule.body));
     for (const { at, body } of animated) {
       if (at.includes("prefers-reduced-motion")) expect(body).toMatch(/animation:\s*none/);
-      else expect(body).toMatch(/animation:\s*auth-cite 600ms var\(--ease\) 400ms both;/);
+      // Changed on purpose (MonoEdge design system, 16 Oct 2026): motion is 120 to 200ms.
+      else expect(body).toMatch(/animation:\s*auth-cite 200ms var\(--ease\) 400ms both;/);
     }
     expect(animated.map((rule) => rule.at)).toContain("@media (prefers-reduced-motion: reduce)");
     expect(read(css)).not.toMatch(/\binfinite\b/);
@@ -374,6 +450,8 @@ describe("layout guards", () => {
       'app/globals.css: .status-chip[data-tone="working"]::before',
       "app/globals.css: .spinner",
       "app/globals.css: .skeleton",
+      // Changed on purpose (MonoEdge design system, 16 Oct 2026): a busy button's spinner.
+      'app/globals.css: .btn[aria-busy="true"]::after',
       "components/documents/Documents.module.css: .readMeter:indeterminate",
     ];
     const found = everyRule(/animation(-iteration-count)?:[^;]*\binfinite\b/).map(({ name }) => name);
@@ -383,7 +461,9 @@ describe("layout guards", () => {
   it("gives the chat's small links a 44px tap area on touch, without moving the text", () => {
     const coarse = rules(read("components/chat/Chat.module.css")).filter((rule) => rule.at === "@media (pointer: coarse)");
     const body = (selector: string) => coarse.find((rule) => selectors(rule).includes(selector))?.body ?? "";
-    expect(body(".docChip")).toMatch(/min-height:\s*44px/);
+    // Changed on purpose (Tushar, 16 Oct 2026, one control height / centred icons): a document chip
+    // is one control tall, --control-h, which is 44px on touch by itself.
+    expect(rulesFor("components/chat/Chat.module.css", ".docChip")[0]?.body).toMatch(/min-height:\s*var\(--control-h\)/);
     expect(body(".cite")).toMatch(/position:\s*relative/);
     expect(body(".cite::after")).toMatch(/inset:\s*-9px/); // the 26px chip plus 9px each side
   });
@@ -480,28 +560,39 @@ describe("layout guards", () => {
     }
     // Changed on purpose (UI quality final review, 15 Oct 2026): `.page.console` so it beats the
     // global .page by specificity, not by stylesheet order.
+    // Changed on purpose (MonoEdge design system, 16 Oct 2026): content at most 1200px (75rem);
+    // the wide tables scroll sideways in their own box instead.
     expect(rulesFor("components/operator/Insights.module.css", ":global(.page).console")[0]?.body).toMatch(
-      /max-width:\s*100rem/,
+      /max-width:\s*75rem/,
     );
     expect(read("components/operator/OperatorConsole.tsx")).toContain("`page ${css.console}`");
   });
 
   it("keeps the chat's loading line in a page, one Upload button on an empty list, and old answers still", () => {
     expect(read("app/(app)/chat/page.tsx")).toMatch(/fallback=\{\s*<div className="page">/);
-    expect(read("components/documents/DocumentsView.tsx")).toContain('{view !== "empty" && uploadButton}');
+    // Changed on purpose (Tushar, 16 Oct 2026): the page header has no Upload files at all, so the
+    // empty state's is still the only one on an empty list (the app header's Upload aside).
+    expect(read("components/documents/DocumentsView.tsx").match(/\{uploadButton\}/g)).toHaveLength(1);
     expect(read("components/chat/AnswerView.tsx")).toContain("export const AnswerView = memo(function AnswerView(");
   });
 
-  it("hatches the edge of a Needs review value row, as a table and as a card, and keeps it when selected", () => {
+  // Changed on purpose (MonoEdge design system, 16 Oct 2026): no gradients, so the hatch is a 1px
+  // dashed edge for Needs review beside a solid one for Verified (the badge keeps its icon and word).
+  it("edges a value row solid for Verified and dashed for Needs review, as a table and as a card, and keeps it when selected", () => {
     const css = "app/(app)/documents/[id]/DocumentView.module.css";
-    const HATCH = /background-image:\s*repeating-linear-gradient\(45deg, var\(--review-solid\) 0 4px, transparent 4px 8px\);/;
-    const table = rulesFor(css, '.valuesTable tr[data-label="needs_review"] td:first-child').filter((rule) => HATCH.test(rule.body));
-    expect(table.map((rule) => rule.at)).toEqual(["@container (min-width: 36rem)"]);
-    const card = rulesFor(css, '.valuesTable tr[data-label="needs_review"]').filter((rule) => HATCH.test(rule.body));
+    const solid = rulesFor(css, ".valuesTable tr[data-label] td:first-child::before");
+    expect(solid.map((rule) => rule.at)).toEqual(["@container (min-width: 36rem)"]);
+    expect(solid[0]?.body).toMatch(/border-inline-start:\s*1px solid var\(--success\);/);
+    const dashed = rulesFor(css, '.valuesTable tr[data-label="needs_review"] td:first-child::before');
+    expect(dashed.map((rule) => rule.at)).toEqual(["@container (min-width: 36rem)"]);
+    expect(dashed[0]?.body).toMatch(/border-inline-start-style:\s*dashed;/);
+    const card = rulesFor(css, '.valuesTable tr[data-label="needs_review"]');
     expect(card.map((rule) => rule.at)).toEqual(["@container (max-width: 35.99rem)"]);
-    // Selection sets only the colour, so the hatch stays.
+    expect(card[0]?.body).toMatch(/border-style:\s*dashed;/);
+    expect(read(css).replace(/\/\*[\s\S]*?\*\//g, "")).not.toMatch(/gradient/);
+    // Selection sets only the colour, so the edge stays.
     const selected = [...rulesFor(css, ".activeRow td"), ...rulesFor(css, ".valuesTable tbody tr.activeRow")];
-    expect(selected.filter((rule) => /background-color:\s*var\(--accent-soft\)/.test(rule.body))).toHaveLength(2);
+    expect(selected.filter((rule) => /background-color:\s*var\(--accent-subtle\)/.test(rule.body))).toHaveLength(2);
     expect(read("app/(app)/documents/[id]/DocumentView.tsx")).toContain("data-label={value.label}");
   });
 
@@ -512,25 +603,33 @@ describe("layout guards", () => {
     const declarations = (body = "") => body.split(";").map((part) => part.trim()).filter(Boolean);
     expect(declarations(narrow[0]?.body)).toEqual(declarations(hidden));
     const view = read("app/(app)/documents/[id]/DocumentView.tsx");
-    expect(view).toContain('<Icon name="download" />\n              <span className="narrow-hide">Download original</span>');
-    expect(view).toContain('Scanned<span className="narrow-hide"> text</span>');
+    expect(view).toMatch(/<Icon name="download" \/>\s*<span className="narrow-hide">Download original<\/span>/);
+    // Changed on purpose (UI audit, 16 Oct 2026): DD6, Scanned text is a tab beside the page, so
+    // the viewer's toolbar has no Scanned text button (nor its phone-only "Text") any more.
+    expect(view).not.toContain("styles.textWord");
     expect(read("components/viewer/PageViewer.tsx")).toContain('Fit<span className="narrow-hide">{fit === "page" ? " page" : " width"}</span>');
     const phone = rules(read("app/(app)/documents/[id]/DocumentView.module.css")).filter((rule) => rule.at === "@media (max-width: 639.98px)");
     expect(phone.find((rule) => rule.selector === ".download")?.body).toMatch(/margin-inline-start:\s*0;/);
     expect(phone.find((rule) => rule.selector === ".ask")?.body).toMatch(/flex:\s*1 1 auto;/);
   });
 
-  it("puts the document's status, folder, tags and versions on one meta line under the title (board 12 P4)", () => {
+  // Changed on purpose (UI audit, 16 Oct 2026): DD2, a breadcrumb, then one row (the title and
+  // its status, then Download, Ask and the menu with Read again), then one meta line.
+  it("puts the document's place in a breadcrumb, its title row in one line, and the rest on one meta line", () => {
     const view = read("app/(app)/documents/[id]/DocumentView.tsx");
     const between = (from: string, to: string) => view.slice(view.indexOf(from), view.indexOf(to, view.indexOf(from)));
-    // The title row: the title, then Download original and Ask about this document, the one primary.
+    const crumbs = between('<nav aria-label="Breadcrumb"', "</nav>");
+    expect(crumbs).toContain("trail.map((folder)");
+    expect(crumbs).toContain('aria-current="page"');
     const title = between("<div className={styles.titleRow}>", "<div className={styles.status}>");
-    expect(title).toContain("<h1 className={styles.title}>");
-    expect(title).toContain("Download original");
-    expect(title).toMatch(/btn btn-primary \$\{styles\.ask\}[\s\S]*Ask about this document/);
+    const row = ["<h1 className={styles.title}>", "<StatusChip", "Download original", "btn btn-primary ${styles.ask}", "<DocumentMenu"];
+    const inRow = row.map((part) => title.indexOf(part));
+    expect(inRow.every((i) => i >= 0)).toBe(true);
+    expect([...inRow].sort((a, b) => a - b)).toEqual(inRow);
+    expect(title).not.toContain("<ReadAgain"); // the whole document's Read again is in the menu (DD3)
     // The meta line holds everything else, in reading order; no second "place" row.
     const meta = between("<div className={styles.status}>", "{note && ");
-    const order = ["<StatusChip", "pagesText", "<ReadAgain", 'aria-label="Folder"', 'id="document-tags-label"', 'aria-label="Versions"'];
+    const order = ["pagesText", "<AutofileNote", 'id="document-tags-label"', 'aria-label="Versions"', "<ReadAgain"];
     const at = order.map((part) => meta.indexOf(part));
     expect(at.every((i) => i >= 0)).toBe(true);
     expect([...at].sort((a, b) => a - b)).toEqual(at);
@@ -557,7 +656,8 @@ describe("layout guards", () => {
     // "auto": an answer seen once keeps its real height while off screen.
     expect(lazy[0]?.body).toMatch(/contain-intrinsic-block-size:\s*auto \d+px;/);
     const chat = read("components/chat/ChatScreen.tsx");
-    expect(chat).toMatch(/<div className=\{styles\.answerWrap\}>\s*<AnswerView /);
+    // Changed on purpose (UI audit, 16 Oct 2026): A4, AnswerView takes onAskAll, so its props wrap.
+    expect(chat).toMatch(/<div className=\{styles\.answerWrap\}>\s*<AnswerView\s/);
     // Opening a conversation pins its end again after the first paint, when real heights are in.
     expect(chat).toContain("frame = requestAnimationFrame(pin);");
     // A chip pointed at re-renders two source cards, and typing a search never re-renders the list.
@@ -587,5 +687,74 @@ describe("layout guards", () => {
     expect(overview).toContain('className={column.id === "spend" ? "num" : undefined}');
     expect(overview).toContain('data-label="AI spend this month" className="num"');
     expect(read("app/(app)/documents/[id]/DocumentPanels.tsx").match(/className=\{MONEY_LINE_FIELDS\.has\(field\) \? "num" : undefined\}/g)).toHaveLength(2);
+  });
+});
+
+// Board 2, 3 and 6 gaps on the document screen (16 Oct 2026).
+const VIEW = "app/(app)/documents/[id]/DocumentView.tsx";
+const VIEW_CSS = "app/(app)/documents/[id]/DocumentView.module.css";
+
+describe("the document screen (boards 2, 3 and 6)", () => {
+  // Changed on purpose (UI audit, 16 Oct 2026): DD5 and DD6. No 90rem three columns: beside the
+  // sticky page, a handle sets the split (--split), and the panels are four tabs, always in the
+  // same order (DD8), each panel the same least height.
+  it("splits the page and the tabbed panels with a handle, the tabs always in the same order", () => {
+    expect(rules(read(VIEW_CSS)).filter((rule) => rule.at.includes("90rem"))).toEqual([]);
+    const sticky = rules(read(VIEW_CSS)).filter((rule) => rule.at === `@media ${STICKY_VIEWER_QUERY}`);
+    expect(sticky.find((rule) => rule.selector === ".layout")?.body).toMatch(
+      // Changed on purpose (Tushar, 16 Oct 2026): the split starts at 55%.
+      /grid-template-columns:\s*minmax\(0, var\(--split, 55%\)\) var\(--space-6\) minmax\(0, 1fr\);/,
+    );
+    expect(sticky.find((rule) => rule.selector === ".handle")?.body).toMatch(/cursor:\s*col-resize;[\s\S]*touch-action:\s*none;/);
+    expect(rulesFor(VIEW_CSS, ".tabPanel")[0]?.body).toMatch(/min-height:\s*24rem;/);
+    const view = read(VIEW);
+    expect(view).toContain('role="separator"');
+    expect(view).toMatch(/Math\.abs\(event\.clientX - press\.x\) < DRAG_THRESHOLD_PX/);
+    const tabs = view.slice(view.indexOf("const tabs: TabItem[] = ["), view.indexOf("];", view.indexOf("const tabs: TabItem[] = [")));
+    const order = ['"overview"', '"attention"', '"scanned"', '"words"'].map((id) => tabs.indexOf(id));
+    expect(order.every((i) => i >= 0)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    const panels = view.slice(view.indexOf("<PanelTabs"), view.indexOf("</PanelTabs>"));
+    const overview = panels.slice(panels.indexOf('shownTab === "overview"'), panels.indexOf('shownTab === "attention"'));
+    for (const part of ["<CardPanel", "{values}", "<InvoicePanel", "<RelatedPanel", "<StoryPanel"]) expect(overview).toContain(part);
+    const attention = panels.slice(panels.indexOf('shownTab === "attention"'), panels.indexOf('shownTab === "scanned"'));
+    for (const part of ["<PageProblems", "<AttentionPanel"]) expect(attention).toContain(part);
+    expect(panels).toContain("<ScannedTextPanel");
+    expect(panels).toContain("<PageWordsList");
+    expect(view).toContain('id="values-heading"');
+  });
+
+  it("shows the values in three columns, the reason under its badge, and only the badge on one line", () => {
+    const view = read(VIEW);
+    const head = view.slice(view.indexOf("<thead"), view.indexOf("</thead>"));
+    expect(head.match(/role="columnheader"/g)).toHaveLength(3);
+    expect(head).toContain("Label and reason");
+    // Changed on purpose (Tushar, 16 Oct 2026: Ready to verify): the badge gets the value's confidence for its tooltip.
+    expect(view).toMatch(
+      /<td role="cell" className=\{styles\.labelCell\}>\s*<LabelBadge label=\{value\.label\} confidence=\{value\.confidence \?\? null\} \/>\s*<div className=\{styles\.reason\}>/,
+    );
+    const nowrap = rules(read(VIEW_CSS)).filter((rule) => NOWRAP.test(rule.body) && /label|reason/i.test(rule.selector));
+    expect(nowrap.map((rule) => rule.selector)).toEqual([".labelCell :global(.badge)"]);
+  });
+
+  it("shows about six values, then a quiet Show all N, never hiding a Needs review value", () => {
+    const view = read(VIEW);
+    expect(view).toContain("const FIRST_VALUES = 6;");
+    expect(view).toContain('value.label === "needs_review"');
+    expect(view).toContain("{shownValues.map((value) => {");
+    expect(view).toContain("className={`btn btn-quiet ${styles.showAll}`}");
+    expect(view).toContain('`Show all ${detail.values.length.toLocaleString("en-IN")}`');
+  });
+
+  // Changed on purpose (MonoEdge design system, 16 Oct 2026): a dashed edge, not a hatch.
+  it("edges the Attention card dashed, like a Needs review value", () => {
+    const edge = rulesFor(VIEW_CSS, ".attentionToCheck").find((rule) => rule.at === "");
+    expect(edge?.body).toMatch(/border-inline-start:\s*1px dashed var\(--warning\);/);
+  });
+
+  it("names the highlighted value under the page", () => {
+    const view = read(VIEW);
+    expect(view).toContain("highlightNote={highlightNote}");
+    expect(view).toContain('`Highlighted: ${fieldText(highlighted.field)}${fromLink ? FROM_LINK : ""}`');
   });
 });

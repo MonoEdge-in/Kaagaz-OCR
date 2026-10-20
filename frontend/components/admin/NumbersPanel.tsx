@@ -1,34 +1,21 @@
 "use client";
 
-// The headline numbers for this customer: documents by status, questions and
-// how they were answered, feedback, and values waiting for review, then the
-// pages read this month by how they were read (PRD 2, R6). Which reader or
-// model read them is the operator's only (UI quality council, 15 Oct 2026);
-// the AI spend is on the Usage tab. Tiles in a grid that fits the width; 0
-// shows as 0.
+// The headline numbers for this customer (UI audit AD4, 16 Oct 2026): four large
+// ones (Total documents, Ready, Ready to verify, Failed), then small lists in plain
+// words: the pipeline, questions and how they were answered, the pages read this
+// month by how they were read (PRD 2, R6), and what is kept. A row that is 0 is
+// left out; a list with nothing says so. Which reader or model read them is the
+// operator's only (UI quality council, 15 Oct 2026); AI use is on the Usage tab.
 
 import { useEffect, useState } from "react";
 import { Icon } from "@/components/ui/Icon";
+import { Tip } from "@/components/ui/Tip";
 import { ApiError, getStats } from "@/lib/api";
 import type { Stats } from "@/lib/types";
-import { pageRouteTiles, statTiles } from "./logic";
-import type { Tile } from "./logic";
+import { breakdowns, kpiTiles } from "./logic";
 import styles from "./Admin.module.css";
 
-const SKELETON_TILES = [0, 1, 2, 3, 4, 5];
-
-function Tiles({ tiles, labelledBy }: { tiles: Tile[]; labelledBy?: string }) {
-  return (
-    <dl className={styles.tiles} aria-labelledby={labelledBy}>
-      {tiles.map((tile) => (
-        <div key={tile.label} className={styles.tile}>
-          <dt className={styles.tileLabel}>{tile.label}</dt>
-          <dd className={`${styles.tileValue} tabular`}>{tile.value}</dd>
-        </div>
-      ))}
-    </dl>
-  );
-}
+const SKELETON_TILES = [0, 1, 2, 3];
 
 export function NumbersPanel() {
   const [attempt, setAttempt] = useState(0);
@@ -92,11 +79,36 @@ export function NumbersPanel() {
       )}
       {stats && (
         <>
-          <Tiles tiles={statTiles(stats)} />
-          <h3 id="pages-by-route-heading" className={styles.tilesHeading}>
-            Pages read this month
-          </h3>
-          <Tiles tiles={pageRouteTiles(stats)} labelledBy="pages-by-route-heading" />
+          <dl className={styles.tiles}>
+            {kpiTiles(stats).map((tile) => (
+              <div key={tile.label} className={`${styles.tile} ${styles.kpi}`}>
+                <dt className={styles.tileLabel}>{tile.tip ? <Tip text={tile.tip}>{tile.label}</Tip> : tile.label}</dt>
+                <dd className={`${styles.tileValue} tabular`}>{tile.value}</dd>
+                {tile.note && <dd className={styles.tileNote}>{tile.note}</dd>}
+              </div>
+            ))}
+          </dl>
+          <div className={styles.breakdowns}>
+            {breakdowns(stats).map((group, index) => (
+              <section key={group.title} className={styles.breakdown} aria-labelledby={`numbers-group-${index}`}>
+                <h3 id={`numbers-group-${index}`} className={styles.tilesHeading}>
+                  {group.title}
+                </h3>
+                {group.rows.length > 0 ? (
+                  <dl className={styles.breakdownList}>
+                    {group.rows.map((row) => (
+                      <div key={row.label} className={styles.breakdownRow}>
+                        <dt>{row.label}</dt>
+                        <dd className="tabular">{row.value}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                ) : (
+                  <p className="muted">{group.none}</p>
+                )}
+              </section>
+            ))}
+          </div>
         </>
       )}
     </section>

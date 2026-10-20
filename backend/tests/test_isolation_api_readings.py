@@ -54,11 +54,11 @@ def test_b_cannot_see_a_reading_counts_or_review_page_fields(db: Database) -> No
         unsure_words=2,
         unpinned_lines=1,
     )
-    a_value = api.add_value(a.customer_id, a_document, page_no=2, reason="unsure_text")
+    a_value = api.add_value(a.customer_id, a_document, page_no=2, reason="low_confidence")
 
     b_document = api.add_document(b.customer_id, name="b-private.pdf")
     read_page(api, b.customer_id, b_document)
-    b_value = api.add_value(b.customer_id, b_document, reason="single_reader")
+    b_value = api.add_value(b.customer_id, b_document, reason="ocr_script")
 
     a_listing = {item["id"]: item for item in a.client.get("/api/documents").json()["items"]}
     b_listing = {item["id"]: item for item in b.client.get("/api/documents").json()["items"]}

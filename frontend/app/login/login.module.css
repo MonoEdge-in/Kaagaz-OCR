@@ -1,15 +1,28 @@
-/* The sign-in frame (AuthFrame.tsx) and the sign-in form. Below 900 px a short
-   ledger band (wordmark and value line) sits above the form; from 900 px the
-   ledger brand panel (5fr) sits beside the form (7fr). */
+/* The sign-in frame (AuthFrame.tsx) and the sign-in form, in the MonoEdge
+   design system: flat panels, hairlines, 2px corners, mono text, the display
+   face for the big lines, 11px capitals for labels. Below 900 px a short band
+   (lockup and value line) sits above the form; from 900 px the brand panel
+   (5fr) sits beside the form (7fr). A content page: it scrolls as a page. */
 
 .page {
   position: relative;
+  min-height: 100vh;
   min-height: 100dvh;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto 1fr;
   background: var(--bg);
   overflow-x: clip;
+}
+
+/* Pulled past the top on a phone, the gap shows the band's colour (the
+   bottom half is the page colour, on <html>). */
+.page::before {
+  content: "";
+  position: fixed;
+  inset: 0 0 50%;
+  z-index: -1;
+  background: var(--surface);
 }
 
 @media (min-width: 900px) {
@@ -26,7 +39,7 @@
   inset-inline-end: max(var(--space-4), env(safe-area-inset-right));
 }
 
-/* --- The brand panel: ruled like a ledger page, with the lal margin rule. --- */
+/* --- The brand panel: a plain panel with the brand rule down its margin. --- */
 
 .brand {
   display: none;
@@ -34,11 +47,6 @@
   container: brand-panel / inline-size;
   overflow: clip;
   background-color: var(--surface-2);
-  background-image: repeating-linear-gradient(
-    to bottom,
-    transparent 0 27px,
-    color-mix(in srgb, var(--border) 40%, transparent) 27px 28px
-  );
   border-inline-end: 1px solid var(--border);
 }
 
@@ -46,7 +54,7 @@
   content: "";
   position: absolute;
   inset-block: 0;
-  inset-inline-start: var(--space-7);
+  inset-inline-start: var(--space-12);
   width: 2px;
   background: var(--brand-lal);
 }
@@ -63,21 +71,22 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto 1fr auto;
+  min-height: 100vh;
   min-height: 100dvh;
   width: 100%;
   max-width: 40rem;
   margin-inline-start: auto; /* a very wide screen: beside the form, not far from it */
-  padding: max(var(--space-7), env(safe-area-inset-top)) var(--space-7)
-    max(var(--space-7), env(safe-area-inset-bottom)) calc(var(--space-7) * 2);
+  padding: max(var(--space-12), env(safe-area-inset-top)) var(--space-12)
+    max(var(--space-12), env(safe-area-inset-bottom)) calc(var(--space-12) * 2);
 }
 
+/* 24px: the display face is for 24px and up only. */
 .mark {
   margin: 0;
   font-family: var(--font-display);
   font-weight: 700;
-  font-size: var(--fs-xl);
+  font-size: 1.5rem;
   line-height: 1;
-  letter-spacing: 0.01em;
   color: var(--fg);
 }
 
@@ -86,22 +95,34 @@
   color: var(--fg-muted);
 }
 
+/* "by MonoEdge": a label, 11px bold capitals. */
+.by {
+  display: block;
+  margin-top: var(--space-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
 .mid {
   align-self: center;
   display: flex;
   flex-direction: column;
-  gap: var(--space-7);
+  gap: var(--space-12);
 }
 
 .value {
   margin: 0;
   font-family: var(--font-display);
-  font-weight: 600;
+  font-weight: 700;
   font-size: clamp(1.75rem, 1.1rem + 1.4vw, 2.75rem);
   line-height: 1.18;
-  letter-spacing: -0.005em;
   text-wrap: balance;
-  max-width: 16em;
+  max-width: 18em;
   color: var(--fg);
 }
 
@@ -138,17 +159,15 @@
   flex-direction: column;
   gap: 9px;
   background: var(--paper);
-  border-radius: 3px;
-  box-shadow:
-    0 1px 2px rgb(0 0 0 / 0.08),
-    0 14px 34px rgb(0 0 0 / 0.09);
+  border: 1px solid var(--border);
+  border-radius: 2px;
 }
 
 .sheet i {
   display: block;
   flex: none;
   height: 5px;
-  border-radius: 3px;
+  border-radius: 1px;
   background: var(--paper-bar);
 }
 
@@ -193,16 +212,13 @@
   background: var(--paper-rule);
 }
 
-/* The cited line, ringed like a highlight in the viewer. */
+/* The cited line, in the amber page highlight (it marks a place). */
 .sheet .hl {
   height: 9px;
   margin: 2px 0;
-  border-radius: 2px;
+  border-radius: 1px;
   background: var(--hl-fill);
   outline: 2px solid var(--hl-border);
-  box-shadow:
-    0 0 0 4px var(--paper),
-    0 0 0 6px var(--hl-halo);
 }
 
 .card {
@@ -213,27 +229,17 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 12px 14px 12px 18px;
+  padding: 12px 16px;
   background: var(--surface);
-  border: 1px solid var(--border);
+  /* Verified: a solid edge (Needs review would be dashed). */
+  border: 1px solid var(--verified-solid);
   border-radius: var(--r-md);
-  box-shadow: 0 10px 28px rgb(0 0 0 / 0.12);
-}
-
-.card::before {
-  content: "";
-  position: absolute;
-  inset-block: -1px;
-  inset-inline-start: -1px;
-  width: 4px;
-  border-radius: var(--r-md) 0 0 var(--r-md);
-  background: var(--verified-solid);
 }
 
 .card i {
   display: block;
   height: 5px;
-  border-radius: 3px;
+  border-radius: 1px;
   background: var(--border);
 }
 
@@ -264,7 +270,7 @@
   justify-content: center;
   min-width: 22px;
   height: 22px;
-  border: 1.5px solid var(--accent);
+  border: 1px solid var(--accent);
   border-radius: var(--r-sm);
   background: var(--surface);
   color: var(--accent);
@@ -297,7 +303,7 @@
 .sheet .hl,
 .chip,
 .link {
-  animation: auth-cite 600ms var(--ease) 400ms both;
+  animation: auth-cite 200ms var(--ease) 400ms both;
 }
 
 @keyframes auth-cite {
@@ -331,29 +337,24 @@
 
 .points li {
   display: flex;
-  gap: var(--space-3);
+  gap: var(--space-2);
   align-items: center;
 }
 
 .points svg {
   flex: none;
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   color: var(--accent);
 }
 
-/* --- Below 900 px: a short ledger band with the wordmark and value line. --- */
+/* --- Below 900 px: a short band with the lockup and value line. --- */
 
 .band {
   position: relative;
-  padding: max(var(--space-5), env(safe-area-inset-top)) var(--space-5) var(--space-5)
-    calc(var(--space-5) * 2 - 4px);
-  background-color: var(--surface-2);
-  background-image: repeating-linear-gradient(
-    to bottom,
-    transparent 0 27px,
-    color-mix(in srgb, var(--border) 40%, transparent) 27px 28px
-  );
+  padding: max(var(--space-6), env(safe-area-inset-top)) var(--space-6) var(--space-6)
+    calc(var(--space-6) * 2 - 4px);
+  background-color: var(--surface);
   border-bottom: 1px solid var(--border);
 }
 
@@ -361,13 +362,13 @@
   content: "";
   position: absolute;
   inset-block: 0;
-  inset-inline-start: var(--space-5);
+  inset-inline-start: var(--space-6);
   width: 2px;
   background: var(--brand-lal);
 }
 
 .band .value {
-  font-size: var(--fs-xl);
+  font-size: 1.5rem;
   margin-top: var(--space-3);
   max-width: 15em;
 }
@@ -385,14 +386,15 @@
   flex-direction: column;
   align-items: center;
   min-width: 0;
-  padding: var(--space-6) max(var(--space-4), env(safe-area-inset-right))
-    max(var(--space-5), env(safe-area-inset-bottom)) max(var(--space-4), env(safe-area-inset-left));
+  padding: var(--space-8) max(var(--space-4), env(safe-area-inset-right))
+    max(var(--space-6), env(safe-area-inset-bottom)) max(var(--space-4), env(safe-area-inset-left));
 }
 
 @media (min-width: 900px) {
   .main {
+    min-height: 100vh;
     min-height: 100dvh;
-    padding-block: var(--space-8) var(--space-5);
+    padding-block: var(--space-16) var(--space-6);
   }
 }
 
@@ -402,13 +404,13 @@
   margin-block: auto;
   display: flex;
   flex-direction: column;
-  gap: var(--space-5);
+  gap: var(--space-6);
 }
 
 .form {
   display: flex;
   flex-direction: column;
-  gap: var(--space-5);
+  gap: var(--space-6);
 }
 
 .intro {
@@ -435,11 +437,10 @@
 .banner {
   padding: var(--space-3) var(--space-4);
   border: 1px solid var(--danger-fg);
-  border-inline-start-width: 4px;
   border-radius: var(--r-sm);
   background: var(--danger-bg);
   color: var(--danger-fg);
-  font-weight: 600;
+  font-weight: 700;
   font-size: var(--fs-sm);
   line-height: 1.45;
 }
@@ -452,9 +453,10 @@
   align-items: flex-start;
 }
 
+/* As tall as the first line of words, so the icon sits on its middle. */
 .banner svg {
   flex: none;
-  margin-top: 1px;
+  height: 1lh;
 }
 
 /* After signing out (SignedOutNotice): calm, not an error. One line high
@@ -464,13 +466,12 @@
   min-height: calc(1lh + 2 * var(--space-3) + 2px);
   padding: var(--space-3) var(--space-4);
   border: 1px solid var(--border-strong);
-  border-inline-start-width: 4px;
   border-radius: var(--r-sm);
   background: var(--surface-2);
 }
 
+/* One control tall, like the fields above it (one control height, 16 Oct 2026). */
 .submit {
-  min-height: calc(var(--control-h) + 4px);
   font-size: var(--fs-base);
 }
 
@@ -481,8 +482,8 @@
   text-wrap: pretty;
 }
 
-/* "Account admin? Admin sign-in" under a hairline. The link is 44 px tall
-   without making the text any bigger. */
+/* "New to Kaagaz? Create an account" (SignUpLink) under a hairline. The link is
+   44 px tall without making the text any bigger. */
 .switch {
   margin: 0;
   padding-top: var(--space-4);
@@ -491,16 +492,16 @@
   color: var(--fg-muted);
 }
 
+/* Two such lines in a row (sign-up): one hairline for both. */
+.switch + .switch {
+  padding-top: 0;
+  border-top: 0;
+}
+
 .switch a {
   display: inline-flex;
   align-items: center;
-  min-height: 44px;
+  min-height: var(--h-lg);
   font-weight: 600;
 }
 
-.footer {
-  margin: var(--space-7) 0 0;
-  font-size: var(--fs-sm);
-  color: var(--fg-muted);
-  text-align: center;
-}

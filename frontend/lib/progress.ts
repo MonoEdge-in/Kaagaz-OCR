@@ -38,10 +38,19 @@ export function fractionDone(elapsedSeconds: number, leftSeconds: number): numbe
   return total > 0 ? elapsed / total : 0;
 }
 
-/** The fraction done at ``now``: the run's elapsed time counts up from when the answer arrived. */
+/**
+ * The fraction done at ``now``: the run's elapsed time counts up from when the answer arrived.
+ * While preparing or reading it stops at the step's expected end (or when the answer arrived,
+ * if later), as kaagaz/eta.py fraction_at, so it never climbs with no work done (council 16 Oct 2026).
+ */
 export function fractionAt(held: Held, now: number): number {
-  const elapsed = held.value.elapsed_seconds + Math.max(0, now - held.valueAt) / 1000;
-  return fractionDone(elapsed, secondsLeft(held, now));
+  let at = now;
+  if (held.step === "preparing" || held.step === "reading") {
+    const end = held.anchor + Math.max(0, held.seconds - held.value.after_seconds) * 1000;
+    at = Math.min(now, Math.max(end, held.valueAt));
+  }
+  const elapsed = held.value.elapsed_seconds + Math.max(0, at - held.valueAt) / 1000;
+  return fractionDone(elapsed, secondsLeft(held, at));
 }
 
 /**

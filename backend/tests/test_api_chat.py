@@ -4,6 +4,7 @@ Pure helpers (the answer text, and a saved answer's sources as they are now)
 are tested first, without a database.
 """
 
+import inspect
 import json
 import re
 import uuid
@@ -12,9 +13,11 @@ from typing import Any
 import pytest
 from sqlalchemy import text
 
+from kaagaz.answering.unchecked import unchecked_sentence
 from kaagaz.api.app import create_app
 from kaagaz.api.auth import CurrentUser, current_user
-from kaagaz.api.routers.chat import NOT_FOUND_TEXT, TOO_MANY_QUESTIONS, answer_text
+from kaagaz.api.routers import chat as chat_router
+from kaagaz.api.routers.chat import NOT_FOUND_TEXT, SHORT_TITLE, TOO_MANY_QUESTIONS, answer_text, short_title
 from kaagaz.api.views import GONE_SENTENCE, answer_with_source_states, cited_document_ids
 from kaagaz.db.engine import Database, make_engine
 from kaagaz.search.scope import ScopeBody
@@ -74,11 +77,41 @@ def test_answer_text_joins_sentences_or_says_not_found() -> None:
     assert answer_text({"status": "answered", "sentences": "junk"}) == NOT_FOUND_TEXT
 
 
+def test_ask_is_a_plain_def_so_the_answer_is_saved_after_the_asker_leaves() -> None:
+    # Tushar, 16 Oct 2026: a question must be answered even when the page that asked is
+    # gone. A plain def runs on a worker thread that a client going away never stops, so
+    # both messages are still written; an async def could be cancelled at an await.
+    assert not inspect.iscoroutinefunction(chat_router.ask)
+
+
+def test_the_unchecked_answer_never_mentions_review() -> None:
+    # Changed on purpose (Tushar, 16 Oct 2026: no Needs review in Ask). Still no number.
+    sentence = unchecked_sentence("profit")
+    assert sentence == "A profit figure is in these documents. Open them to see it."
+    assert not re.search(r"review|check|won't|couldn't|sorry|\d", sentence, re.IGNORECASE)
+
+
 def test_cited_document_ids_are_the_citations_and_the_closest_documents() -> None:
     answer = _cited_answer("d1", "d2", closest=("d3",))
     assert cited_document_ids(answer) == ["d1", "d2", "d3"]
     assert cited_document_ids(None) == []
     assert cited_document_ids(answer_json(status="not_found")) == []
+
+
+def test_also_mentions_documents_are_checked_and_a_gone_one_leaves_the_list_and_the_count() -> None:
+    row = {"page_no": 1, "pages": [1], "snippet": "Jalna"}
+    mentions = {
+        "terms": ["Jalna"],
+        "total": 9,
+        "documents": [{**row, "document_id": d, "document_name": f"{d}.pdf"} for d in ("m1", "m2", "m3")],
+    }
+    answer = {**_cited_answer("d1"), "mentions": mentions}
+    assert cited_document_ids(answer) == ["d1", "m1", "m2", "m3"]
+    shown = answer_with_source_states(answer, {"d1": "live", "m1": "live", "m2": "in_trash"})
+    assert [d["document_id"] for d in shown["mentions"]["documents"]] == ["m1"]
+    assert shown["mentions"]["total"] == 7
+    assert answer["mentions"] is mentions and len(mentions["documents"]) == 3  # stored answer unchanged
+    assert "mentions" not in answer_with_source_states(_cited_answer("d1"), {"d1": "live"})
 
 
 def test_a_saved_answer_shows_each_source_as_it_is_now() -> None:
@@ -210,6 +243,22 @@ def test_ask_keeps_the_question_as_asked_stores_both_messages_and_audits(db: Dat
 
 
 @pytest.mark.db
+def test_a_not_found_while_the_model_is_down_is_503_and_nothing_is_stored(db: Database) -> None:
+    """KZ-006: an outage is never shown as "not found", and leaves no empty conversation."""
+    api = Api(db)
+    signed = api.new_signed()
+    api.answers.reply, api.answers.unavailable = answer_json(status="not_found"), True
+
+    reply = signed.client.post("/api/chat", json={"question": "total?"}, headers=CSRF)
+
+    assert (reply.status_code, reply.headers["retry-after"]) == (503, "60")
+    assert reply.json()["error"]["code"] == "backend_unavailable"
+    with db.customer(signed.customer_id) as conn:
+        for table in ("conversations", "messages"):
+            assert conn.execute(text(f"SELECT count(*) FROM {table}")).scalar_one() == 0, table  # noqa: S608 - fixed name
+
+
+@pytest.mark.db
 def test_follow_up_goes_into_the_same_conversation_in_order(db: Database) -> None:
     api = Api(db)
     signed = api.new_signed()
@@ -231,13 +280,52 @@ def test_follow_up_goes_into_the_same_conversation_in_order(db: Database) -> Non
     ]
 
 
+def test_a_new_conversations_title_is_its_first_question_made_short() -> None:
+    assert short_title("  What is the   total\non bill 12?  ") == "What is the total on bill 12?"
+    long = "Which supplier sent the most invoices in September and what was the total amount of them all"
+    title = short_title(long)
+    assert len(title) <= SHORT_TITLE and title.endswith("…") and long.startswith(title[:-1])
+    assert not title[:-1].endswith(" ")
+    assert short_title("q" * 1000) == "q" * (SHORT_TITLE - 1) + "…"  # one long word: cut inside it
+
+
+# Changed on purpose (UI audit, 16 Oct 2026): A1, the title is the first question made short.
 @pytest.mark.db
-def test_title_is_cut_to_200(db: Database) -> None:
+def test_title_is_the_question_made_short(db: Database) -> None:
     signed = Api(db).new_signed()
     body = signed.client.post("/api/chat", json={"question": "q" * 1000}, headers=CSRF).json()
     summary = signed.client.get("/api/conversations").json()["items"][0]
     assert summary["id"] == body["conversation_id"]
-    assert len(summary["title"]) == 200
+    assert summary["title"] == short_title("q" * 1000)
+
+
+@pytest.mark.db
+def test_the_owner_renames_and_deletes_a_conversation_and_each_is_audited(db: Database) -> None:
+    signed = Api(db).new_signed()
+    body = signed.client.post("/api/chat", json={"question": "mine"}, headers=CSRF).json()
+    path = f"/api/conversations/{body['conversation_id']}"
+
+    renamed = signed.client.patch(path, json={"title": "  GST bills\x07 "}, headers=CSRF)
+    assert renamed.status_code == 200
+    assert renamed.json()["title"] == "GST bills"  # trimmed, control characters gone
+    assert signed.client.get(path).json()["title"] == "GST bills"
+    assert signed.client.patch(path, json={"title": "   "}, headers=CSRF).status_code == 400
+    assert signed.client.patch(path, json={"title": "x" * 201}, headers=CSRF).status_code == 400
+
+    assert signed.client.delete(path, headers=CSRF).status_code == 204
+    assert signed.client.get(path).status_code == 404
+    assert signed.client.get("/api/conversations").json()["items"] == []
+    assert signed.client.delete(path, headers=CSRF).status_code == 404
+    with db.customer(signed.customer_id) as conn:
+        left = conn.execute(
+            text("SELECT count(*) FROM messages WHERE conversation_id = :id"), {"id": body["conversation_id"]}
+        ).scalar_one()
+        actions = conn.execute(
+            text("SELECT action FROM audit_log WHERE target_id = :id ORDER BY created_at"),
+            {"id": body["conversation_id"]},
+        ).scalars()
+        assert left == 0
+        assert list(actions) == ["chat.rename", "chat.delete"]
 
 
 @pytest.mark.db
@@ -286,6 +374,10 @@ def test_a_colleague_cannot_open_or_rate_my_conversation(db: Database) -> None:
     body = signed.client.post("/api/chat", json={"question": "mine"}, headers=CSRF).json()
 
     assert colleague.client.get(f"/api/conversations/{body['conversation_id']}").status_code == 404
+    path = f"/api/conversations/{body['conversation_id']}"
+    assert colleague.client.patch(path, json={"title": "theirs now"}, headers=CSRF).status_code == 404
+    assert colleague.client.delete(path, headers=CSRF).status_code == 404
+    assert signed.client.get(path).json()["title"] == "mine"
     reply = colleague.client.post(
         f"/api/messages/{body['answer']['id']}/feedback", json={"rating": "up"}, headers=CSRF
     )
@@ -500,3 +592,107 @@ def test_ask_sends_the_checked_choice_to_the_answer(db: Database) -> None:
     [choice] = api.answers.choices
     assert choice is not None
     assert ([agent.model for agent in choice.agents], choice.thinking) == ([api.settings.model_chat], "low")
+
+
+@pytest.mark.db
+def test_ask_naming_several_models_answers_with_the_first_allowed_one_only(db: Database) -> None:
+    # Changed on purpose (Tushar, 16 Oct 2026, one model in Ask): an older screen sending
+    # several is answered by one, never refused for naming more.
+    api = Api(db)
+    signed = api.new_signed()
+    chosen = {"agents": ["google/not-allowed-1", api.settings.model_chat], "thinking": "low"}
+    reply = signed.client.post("/api/chat", json={"question": "total?", **chosen}, headers=CSRF)
+    assert reply.status_code == 200, reply.text
+    [choice] = api.answers.choices
+    assert choice is not None and [agent.model for agent in choice.agents] == [api.settings.model_chat]
+
+
+def test_first_allowed_keeps_one_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Changed on purpose (Tushar, 16 Oct 2026, one model in Ask).
+    usable = [{"id": "google/b-1"}, {"id": "google/c-1"}]
+    monkeypatch.setattr(chat_router, "usable_chat_models", lambda *_args, **_kw: usable)
+    context: Any = type("Context", (), {"settings": None})()
+    conn: Any = None
+
+    def first(agents: list[str] | None) -> list[str] | None:
+        return chat_router._first_allowed(conn, "c", agents, context)
+
+    assert first(None) is None  # the organisation's default
+    assert first(["google/a-1"]) == ["google/a-1"]  # one: resolve_chat decides
+    assert first(["google/a-1", "google/c-1", "google/b-1"]) == ["google/c-1"]
+    assert first(["google/x-1", "google/y-1"]) == ["google/x-1"]  # refused as before
+
+
+@pytest.mark.db
+def test_a_pinned_source_shows_on_top_after_a_reload_and_every_pick_is_kept(db: Database) -> None:
+    # Ranked sources (Tushar, 16 Oct 2026, 0036): "Most relevant" puts one source on top.
+    api = Api(db)
+    signed = api.new_signed()
+    first = api.add_document(signed.customer_id, name="bill 1.pdf", uploaded_by=signed.user_id)
+    second = api.add_document(signed.customer_id, name="bill 2.pdf", uploaded_by=signed.user_id)
+    api.answers.reply = _cited_answer(first, second)
+    body = signed.client.post("/api/chat", json={"question": "totals?"}, headers=CSRF).json()
+    path = f"/api/messages/{body['answer']['id']}/pin"
+    conversation = f"/api/conversations/{body['conversation_id']}"
+    assert [m["pin"] for m in signed.client.get(conversation).json()["messages"]] == [None, None]
+
+    picks = [(second, 2, None, 2), (first, 1, "p1", 2)]
+    for document_id, page_no, ref_id, previous_rank in picks:
+        pick = {
+            "document_id": document_id,
+            "page_no": page_no,
+            "ref_id": ref_id,
+            "previous_rank": previous_rank,
+        }
+        assert signed.client.post(path, json=pick, headers=CSRF).status_code == 204
+
+    messages = signed.client.get(conversation).json()["messages"]
+    assert messages[1]["pin"] == {"document_id": first, "page_no": 1, "ref_id": "p1"}  # the newest pick
+    assert messages[1]["answer"]["sentences"] == api.answers.reply["sentences"]  # the text never changes
+    with db.customer(signed.customer_id) as conn:
+        rows = conn.execute(
+            text(
+                "SELECT document_id::text, page_no, source_ref, previous_rank FROM source_pins"
+                " ORDER BY created_at"
+            )
+        ).all()
+    assert [tuple(row) for row in rows] == picks
+
+
+@pytest.mark.db
+@pytest.mark.parametrize(
+    "pick",
+    [
+        {"page_no": 1, "previous_rank": 1},
+        {"document_id": "not-a-uuid", "page_no": 1, "previous_rank": 1},
+        {"document_id": str(uuid.uuid4()), "page_no": 0, "previous_rank": 1},
+        {"document_id": str(uuid.uuid4()), "page_no": 1, "previous_rank": 0},
+        {"document_id": str(uuid.uuid4()), "page_no": 1, "previous_rank": 1, "extra": True},
+        {"document_id": str(uuid.uuid4()), "page_no": 1, "previous_rank": 1, "ref_id": ""},
+    ],
+)
+def test_a_bad_pick_is_400(db: Database, pick: dict[str, Any]) -> None:
+    api = Api(db)
+    signed = api.new_signed()
+    body = signed.client.post("/api/chat", json={"question": "q"}, headers=CSRF).json()
+    reply = signed.client.post(f"/api/messages/{body['answer']['id']}/pin", json=pick, headers=CSRF)
+    assert reply.status_code == 400
+
+
+@pytest.mark.db
+def test_a_pick_on_a_question_a_colleagues_answer_or_an_unknown_document_is_404(db: Database) -> None:
+    api = Api(db)
+    signed = api.new_signed()
+    colleague = api.sign_in(signed.customer_id, "admin")
+    document = api.add_document(signed.customer_id, name="bill.pdf", uploaded_by=signed.user_id)
+    body = signed.client.post("/api/chat", json={"question": "mine"}, headers=CSRF).json()
+    pick = {"document_id": document, "page_no": 1, "previous_rank": 1}
+
+    def pin(client: TestClient, message_id: str, chosen: dict[str, Any]) -> int:
+        return client.post(f"/api/messages/{message_id}/pin", json=chosen, headers=CSRF).status_code
+
+    assert pin(colleague.client, body["answer"]["id"], pick) == 404
+    assert pin(signed.client, body["question"]["id"], pick) == 404
+    assert pin(signed.client, body["answer"]["id"], {**pick, "document_id": str(uuid.uuid4())}) == 404
+    with db.customer(signed.customer_id) as conn:
+        assert conn.execute(text("SELECT count(*) FROM source_pins")).scalar_one() == 0

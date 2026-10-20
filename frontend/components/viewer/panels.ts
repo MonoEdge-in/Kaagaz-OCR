@@ -159,21 +159,21 @@ export function checkReasonText(reason: string): string {
 const sentence = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
 
 /**
- * The invoice check's short badge, "Checks passed" or "Needs review", and why
- * it needs review, one reason per line (shown as a list under the badge, so a
+ * The invoice check's short badge, "Checks passed" or "Ready to verify", and why
+ * to verify it, one reason per line (shown as a list under the badge, so a
  * long reason never makes one wide badge). `label` gives its look (LabelBadge's).
  */
 export function checkChip(invoice: Pick<Invoice, "check_status" | "check_reasons">): {
-  text: "Checks passed" | "Needs review";
+  text: "Checks passed" | "Ready to verify";
   label: Label;
   reasons: string[];
 } {
   if (invoice.check_status === "passed") return { text: "Checks passed", label: "verified", reasons: [] };
   const reasons =
     invoice.check_status === "not_checked"
-      ? ["The amounts couldn't be checked"]
+      ? ["The amounts are not checked yet"]
       : invoice.check_reasons.map((reason) => sentence(checkReasonText(reason)));
-  return { text: "Needs review", label: "needs_review", reasons };
+  return { text: "Ready to verify", label: "needs_review", reasons };
 }
 
 /** The invoice fields in screen order, with the field their value is stored under (E4 names). */
