@@ -283,7 +283,7 @@ def test_v11_compare_gives_runs_of_same_added_and_removed_page_by_page() -> None
 
 def test_v11_compare_caps_words_per_page_and_across_pages(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(versions, "MAX_COMPARE_WORDS", 50)
-    monkeypatch.setattr(versions, "MAX_COMPARE_TOTAL", 120)
+    monkeypatch.setattr(versions, "MAX_COMPARE_TOTAL", 100)
     page = " ".join(["word"] * versions.MAX_COMPARE_WORDS)
     big = {n: page for n in range(1, versions.MAX_COMPARE_TOTAL // versions.MAX_COMPARE_WORDS + 2)}
     found = versions.compare(big, big, max_pages=100)
