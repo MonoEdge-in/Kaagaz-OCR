@@ -684,6 +684,48 @@ table.docs > tbody > tr {
   z-index: 1;
 }
 
+/* File management F5: the label, version, owner and document date under the name while
+   their columns have no room (each hidden once its column shows), and the sort buttons. */
+.facts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  margin-block-start: var(--space-1);
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+
+.newer {
+  color: var(--label-confidential-fg);
+  font-weight: 600;
+}
+
+.sortButton {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: var(--control-min);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.sortButton:hover {
+  color: var(--accent);
+}
+
+.sortMark {
+  color: var(--accent);
+}
+
 /* Type and size under the name, only in the narrowest table. */
 /* "In Suppliers / 2026": the folder a row is filed in. */
 .inFolder {
@@ -935,12 +977,6 @@ table.docs > tbody > tr {
     padding-inline: var(--space-2);
   }
 
-  /* Numbers line up at the end. */
-  .sizeColumn,
-  .sizeCell {
-    text-align: end;
-  }
-
   .meta {
     font-size: var(--fs-sm);
     line-height: var(--row-line);
@@ -987,30 +1023,95 @@ table.docs > tbody > tr {
   }
 }
 
-/* The narrow tables: Size and By leave their columns for lines in the row. */
+/* The narrow tables: the size is a line under the type. */
 @container docs-list (min-width: 36rem) and (max-width: 63.98rem) {
-  .sizeColumn,
-  .sizeCell,
+  .bandSize {
+    display: block;
+    color: var(--text-secondary);
+  }
+}
+
+/* File management F5 (Changed on purpose, PRD 1 screens): the columns Owner, Label, Version,
+   Document date and Updated by each take their column once the table has room for it (the
+   budgets in tests/layout-guards.test.ts); until then their facts sit on a line under the
+   name (.facts), and "Updated by" under Last updated (.bandBy). */
+@container docs-list (min-width: 36rem) and (max-width: 55.98rem) {
+  .labelColumn,
+  .labelCell {
+    display: none;
+  }
+}
+
+@container docs-list (min-width: 36rem) and (max-width: 63.98rem) {
+  .ownerColumn,
+  .ownerCell {
+    display: none;
+  }
+}
+
+@container docs-list (min-width: 36rem) and (max-width: 71.98rem) {
+  .versionColumn,
+  .versionCell,
   .byColumn,
   .byCell {
     display: none;
   }
 
-  .bandSize,
   .bandBy {
     display: block;
     color: var(--text-secondary);
   }
 }
 
-/* The full table: "By" heads its column, so the cell's own words are hidden. */
+@container docs-list (min-width: 36rem) and (max-width: 79.98rem) {
+  .docDateColumn,
+  .docDateCell {
+    display: none;
+  }
+}
+
+@container docs-list (min-width: 56rem) {
+  .labelColumn {
+    width: 7.5rem;
+  }
+
+  .factLabel {
+    display: none;
+  }
+}
+
 @container docs-list (min-width: 64rem) {
-  .sizeColumn {
-    width: 6.5rem;
+  .ownerColumn {
+    width: 7rem;
+  }
+
+  .factOwner {
+    display: none;
+  }
+}
+
+@container docs-list (min-width: 80rem) {
+  .docDateColumn {
+    width: 7rem;
+  }
+
+  .factDate {
+    display: none;
+  }
+}
+
+/* The full table: "Updated by" heads its column, so the cell's own words are hidden. */
+@container docs-list (min-width: 72rem) {
+  .versionColumn {
+    width: 4.5rem;
+  }
+
+  .factVersion {
+    display: none;
   }
 
   .byColumn {
-    width: 9rem;
+    width: 8rem;
   }
 
   .byName {
@@ -1128,9 +1229,17 @@ table.docs > tbody > tr {
     display: none;
   }
 
-  /* "Uploaded by ..." starts its own line on a card. */
+  /* "Updated by ..." starts its own line on a card. */
   .byCell {
     flex-basis: 100%;
+  }
+
+  /* File management F5: on a card the owner, label, version and date are the facts line. */
+  .ownerCell,
+  .labelCell,
+  .versionCell,
+  .docDateCell {
+    display: none;
   }
 
   .meta.byCell::before {
@@ -1187,6 +1296,20 @@ table.docs > tbody > tr {
 .resultSnippet {
   margin: 0;
   overflow-wrap: anywhere;
+}
+
+/* File management Q5: the version, label chip and place on one wrapping line, and the words
+   searched for marked in the passage with the page highlight's own fill. */
+.resultFacts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+}
+
+.resultSnippet mark {
+  background: var(--hl-fill);
+  color: inherit;
 }
 
 /* "Add a story so you can find this later" under a finished upload: the touch size. */

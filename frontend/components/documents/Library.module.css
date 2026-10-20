@@ -136,6 +136,31 @@
   }
 }
 
+/* File management F5: the tree's groups, Departments then Other, each under a small label. */
+.treeGroup {
+  display: flex;
+  flex-direction: column;
+  margin-block-start: var(--space-2);
+}
+
+.groupHeading,
+.groupSub {
+  padding: var(--space-2) var(--space-3) var(--space-1);
+  font-size: var(--fs-label);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.groupSub {
+  padding-block-start: 0;
+  letter-spacing: 0.04em;
+  text-transform: none;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
 /* Trash sits apart, after every folder. */
 .trashItem {
   margin-block-start: var(--space-2);
@@ -472,6 +497,12 @@
 
 .dates > * {
   flex: 1 1 11rem;
+}
+
+/* File management Q5: Apply sits at the end of its field's line, never stretched. */
+.dates > .applyButton {
+  flex: 0 0 auto;
+  align-self: flex-end;
 }
 
 /* --- Tags on a row and in the viewer: plain words, not a label or a status ---- */

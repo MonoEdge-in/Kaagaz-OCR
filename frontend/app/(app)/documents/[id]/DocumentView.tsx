@@ -33,7 +33,7 @@
 // on the word on the page.
 
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { CSSProperties, KeyboardEvent, ReactNode, RefObject } from "react";
 import { tabAfterKey } from "@/components/admin/logic";
 import { useMediaQuery } from "@/components/chat/hooks";
@@ -80,7 +80,16 @@ import { selectSpot, selectValue } from "@/components/viewer/selection";
 import type { Selection } from "@/components/viewer/selection";
 import { canReview } from "@/components/review/review";
 import { flagDomId, trustText } from "@/components/review/wordReview";
-import { getDocument, getDocumentSummary, getPageReadings } from "@/lib/api";
+import { Timeline } from "@/components/activity/Timeline";
+import { ACTIVITY_TEXT } from "@/components/activity/words";
+import { DetailsPanel } from "@/components/files/DetailsPanel";
+import { LabelChip } from "@/components/files/LabelChip";
+import { QUESTIONS_TEXT, QuestionsPanel } from "@/components/files/QuestionsPanel";
+import { FILES_TEXT } from "@/components/files/words";
+import { VersionBanner } from "@/components/versions/VersionBanner";
+import { VersionsPanel } from "@/components/versions/VersionsPanel";
+import { VERSION_TEXT } from "@/components/versions/words";
+import { documentActivity, getDocument, getDocumentSummary, getPageReadings } from "@/lib/api";
 import { formatDate, formatDateTime, typeLabel } from "@/lib/format";
 import { progressSignature } from "@/lib/poll";
 import { markReceived } from "@/lib/timeLeft";
@@ -173,6 +182,13 @@ export function DocumentView({
   const loadedStatus = loaded && "detail" in loaded ? loaded.detail.status : null;
   const review = useWordReview(documentId, reloads, loadedStatus !== null && loadedStatus !== "rejected");
   const ensemble = useEnsembleStart(documentId, review, setAnnouncement);
+  // File management A5: the Activity tab's timeline, every version of the family; asked
+  // again after each reload (a label or owner change shows at once).
+  const loadActivity = useCallback(
+    (cursor?: string) => documentActivity(documentId, cursor),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reloads: ask again after a change
+    [documentId, reloads],
+  );
 
   // While it is read: merge each summary; once it settles, ask for the detail once.
   const merge = (summary: DocumentSummary) =>
@@ -318,10 +334,15 @@ export function DocumentView({
     setAdding({ text, region });
   };
   const hasScannedText = page !== undefined && page.unit !== "cells";
+  // File management P1 (Changed on purpose, PRD 1 screens): Details (was Overview), Text (was
+  // Scanned text), and Questions, Versions and Activity; Needs attention and My words stay.
   const tabs: TabItem[] = [
-    { id: "overview", label: "Overview" },
+    { id: "overview", label: FILES_TEXT.details },
     { id: "attention", label: "Needs attention", count: attentionCount(detail.pages) },
-    ...(hasScannedText ? [{ id: "scanned" as const, label: "Scanned text" }] : []),
+    ...(hasScannedText ? [{ id: "scanned" as const, label: "Text" }] : []),
+    { id: "questions", label: QUESTIONS_TEXT.heading },
+    { id: "versions", label: VERSION_TEXT.versions, count: detail.versions.length },
+    { id: "activity", label: ACTIVITY_TEXT.heading },
     { id: "words", label: "My words" },
   ];
   const chosenTab = tabChoice && tabChoice.linkKey === linkKey ? tabChoice.tab : scannedParam === "1" ? "scanned" : "overview";
@@ -513,6 +534,11 @@ export function DocumentView({
         <div className={styles.titleRow}>
           <h1 className={styles.title}>{detail.display_name}</h1>
           <StatusChip status={detail.status} />
+          {/* File management P1: the label chip and "Version N of M" beside the name. */}
+          {detail.sensitivity && <LabelChip label={detail.sensitivity} />}
+          <span className={styles.meta}>
+            {versionText({ number: detail.version_no, total: Math.max(detail.versions.length, 1) })}
+          </span>
           <div className={styles.headActions}>
             {download && (
               <a className={`btn ${styles.download}`} href={download} download>
@@ -569,7 +595,7 @@ export function DocumentView({
           )}
           {position && (
             <nav aria-label="Versions" className={styles.placeItem}>
-              <span className={styles.placeLabel}>{versionText(position)}</span>
+              <span className={styles.placeLabel}>{VERSION_TEXT.versions}</span>
               <ol className={styles.versions}>
                 {sortedVersions(detail.versions).map((version) => {
                   const here = version.id === detail.id;
@@ -626,6 +652,8 @@ export function DocumentView({
           </p>
         )}
       </header>
+      {/* File management V6, V7: a suggestion that this is a new version of another document. */}
+      <VersionBanner detail={detail} onChanged={reloadWith} />
       {detail.status !== "rejected" && (
         <SummaryBar
           documentId={detail.id}
@@ -682,6 +710,7 @@ export function DocumentView({
             {(shownTab) =>
               shownTab === "overview" ? (
                 <>
+                  <DetailsPanel detail={detail} onSaved={reloadWith} />
                   <CardPanel {...panel} />
                   {values}
                   <InvoicePanel {...panel} />
@@ -743,6 +772,12 @@ export function DocumentView({
                     flags={pageFlags}
                   />
                 )
+              ) : shownTab === "questions" ? (
+                <QuestionsPanel documentId={detail.id} />
+              ) : shownTab === "versions" ? (
+                <VersionsPanel detail={detail} onChanged={reloadWith} />
+              ) : shownTab === "activity" ? (
+                <Timeline load={loadActivity} label={ACTIVITY_TEXT.heading} />
               ) : (
                 page && <PageWordsList words={words} />
               )
@@ -781,7 +816,7 @@ export function DocumentView({
   );
 }
 
-type TabId = "overview" | "attention" | "scanned" | "words";
+type TabId = "overview" | "attention" | "scanned" | "questions" | "versions" | "activity" | "words";
 type TabItem = { id: TabId; label: string; count?: number };
 const tabId = (id: TabId) => `document-tab-${id}`;
 const tabPanelId = (id: TabId) => `document-panel-${id}`;

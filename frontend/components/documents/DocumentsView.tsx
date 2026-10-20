@@ -24,18 +24,35 @@
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, FormEvent } from "react";
+import { DepartmentPicker } from "@/components/files/DepartmentPicker";
+import { departmentsOf, lastDepartment, rememberDepartment } from "@/components/files/departments";
+import { DocumentsGrid } from "@/components/files/DocumentsGrid";
+import { FolderTiles } from "@/components/files/FolderTiles";
+import fileStyles from "@/components/files/Files.module.css";
+import { readViewMode, saveViewMode } from "@/components/files/viewMode";
+import type { ViewMode } from "@/components/files/viewMode";
+import { FILES_TEXT } from "@/components/files/words";
 import { canReview } from "@/components/review/review";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Icon } from "@/components/ui/Icon";
 import { IconButton } from "@/components/ui/IconButton";
 import { Toast } from "@/components/ui/Toast";
+import { VersionNoteDialog } from "@/components/versions/VersionNoteDialog";
 import { UploadWords } from "@/components/words/UploadWords";
-import { ApiError, listDocuments, listFolders, listTags, searchDocuments, updateDocument } from "@/lib/api";
+import {
+  ApiError,
+  listDocuments,
+  listFolders,
+  listPeople,
+  listTags,
+  searchDocuments,
+  updateDocument,
+} from "@/lib/api";
 import { progressSignature } from "@/lib/poll";
 import { markReceived } from "@/lib/timeLeft";
 import { useSession } from "@/lib/session";
 import { usePoll } from "@/lib/usePoll";
-import type { DocumentList, DocumentSearch, DocumentSummary, Folder, Tag } from "@/lib/types";
+import type { DocumentList, DocumentSearch, DocumentSummary, Folder, Person, Tag } from "@/lib/types";
 import { DocumentsTable, listScrollKey } from "./DocumentsTable";
 import { FolderActions } from "./FolderActions";
 import { FolderNav } from "./FolderNav";
@@ -53,8 +70,8 @@ import type { SearchMode } from "./insideSearch";
 import { folderNameSuggestions, libraryErrorText, noMatchTitle } from "./library";
 import { mergeList } from "./listMerge";
 import { LibraryFilters } from "./LibraryFilters";
-import { includeSubfoldersHref, isFiltered, libraryHref, listParams } from "./libraryQuery";
-import type { LibraryState } from "./libraryQuery";
+import { NO_FILTERS, includeSubfoldersHref, isFiltered, libraryHref, listParams, nextSort } from "./libraryQuery";
+import type { LibraryState, SortKey } from "./libraryQuery";
 import {
   ACCEPT_ATTRIBUTE,
   PAGE_SIZE,
@@ -136,6 +153,27 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
   const uploads = useUploads(() => setReload((n) => n + 1));
   const [trayOpen, setTrayOpen] = useState(false);
   const filtered = isFiltered(library);
+  // File management: the people for the Owner filter, List or Grid (per person, F5), the
+  // department picked for uploads outside any folder (F2), and the file waiting for its note (V9).
+  const [people, setPeople] = useState<Person[] | null>(null);
+  const [viewMode, setViewMode] = useState<ViewMode>(() => readViewMode(me.user.id));
+  const [departmentChoice, setDepartmentChoice] = useState<string | null | undefined>(undefined);
+  const [versionFile, setVersionFile] = useState<{ file: File; of: DocumentSummary } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    listPeople().then(
+      (reply) => {
+        if (!cancelled) setPeople(reply.items);
+      },
+      () => {
+        if (!cancelled) setPeople([]); // the Owner filter offers Anyone only
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Each batch of uploads is said once, when it settles; nothing is cleared.
   const [heardBatches, setHeardBatches] = useState(0);
@@ -260,12 +298,30 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
   const folderGone = folders !== null && library.folderId !== null && current === null;
   // The folder in the address, even before the folder list has loaded.
   const uploadInto = library.folderId ?? undefined;
+  // F2: outside any folder, the files go into the department picked (the last one used).
+  const departments = useMemo(() => departmentsOf(folders ?? []), [folders]);
+  const department = departmentChoice === undefined ? lastDepartment(departments) : departmentChoice;
 
   const openPicker = () => inputRef.current?.click();
   const addFiles = (files: File[]) => {
     setTrayOpen(true);
-    void uploads.addFiles(files, uploadInto);
+    void uploads.addFiles(files, uploadInto, uploadInto === undefined ? (department ?? undefined) : undefined);
   };
+
+  function pickDepartment(id: string | null) {
+    setDepartmentChoice(id);
+    rememberDepartment(id);
+  }
+
+  function chooseView(mode: ViewMode) {
+    setViewMode(mode);
+    saveViewMode(me.user.id, mode);
+  }
+
+  // Q4: a header pressed sorts the list by it, or flips the order.
+  function sortBy(key: SortKey) {
+    show({ ...library, ...nextSort(library, key) });
+  }
 
   function onChoose(event: ChangeEvent<HTMLInputElement>) {
     const files = Array.from(event.target.files ?? []);
@@ -286,10 +342,14 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
     const [file] = Array.from(event.target.files ?? []);
     event.target.value = "";
     const of = versionOf.current;
-    if (file && of) {
-      setTrayOpen(true);
-      void uploads.addVersion(file, of);
-    }
+    if (file && of) setVersionFile({ file, of }); // V9: its note first, then it goes
+  }
+
+  function uploadVersionWith(note: string | undefined) {
+    if (!versionFile) return;
+    setVersionFile(null);
+    setTrayOpen(true);
+    void uploads.addVersion(versionFile.file, versionFile.of, note);
   }
 
   function show(next: LibraryState) {
@@ -297,7 +357,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
   }
 
   function clearFilters() {
-    show({ ...library, tagIds: [], type: null, from: null, to: null, attention: false });
+    show({ ...library, ...NO_FILTERS });
   }
 
   function submitSearch(event: FormEvent<HTMLFormElement>) {
@@ -536,7 +596,15 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
                 </p>
               )}
             </div>
-            {canUpload && <div className={styles.uploadControls}>{readerSelect}</div>}
+            {canUpload && (
+              <div className={styles.uploadControls}>
+                {/* F2: a folder being viewed decides where files go; outside one, the department. */}
+                {library.folderId === null && (
+                  <DepartmentPicker departments={departments} value={department} onChange={pickDepartment} />
+                )}
+                {readerSelect}
+              </div>
+            )}
             {folders !== null && canUpload && (
               <FolderActions
                 key={current?.folder.id ?? "all"}
@@ -604,6 +672,9 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
 
               {!library.trash && <UploadWords entries={uploads.entries} settled={uploads.settled} />}
 
+              {/* F5: inside a folder, its subfolders first, as tiles with their file counts. */}
+              {current && !library.trash && <FolderTiles folders={current.children} library={library} />}
+
               {view !== "empty" && (
                 <div className={styles.list}>
                   {showControls && (
@@ -651,6 +722,23 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
                           </fieldset>
                         )}
                       </form>
+                      {/* F5: List or Grid, remembered per person. */}
+                      <div className={fileStyles.switch} role="group" aria-labelledby="view-switch-label">
+                        <span id="view-switch-label">{FILES_TEXT.showAs}</span>
+                        <span className={fileStyles.switchButtons}>
+                          {(["list", "grid"] as const).map((mode) => (
+                            <button
+                              key={mode}
+                              type="button"
+                              className="btn"
+                              aria-pressed={viewMode === mode}
+                              onClick={() => chooseView(mode)}
+                            >
+                              {mode === "list" ? FILES_TEXT.list : FILES_TEXT.grid}
+                            </button>
+                          ))}
+                        </span>
+                      </div>
                     </div>
                   )}
 
@@ -662,6 +750,8 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
                       onRetryTags={() => setTagsVersion((n) => n + 1)}
                       showSubfolders={current !== null && current.children.length > 0}
                       onChange={show}
+                      departments={departments}
+                      people={people}
                     />
                   )}
 
@@ -746,8 +836,13 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
                     />
                   )}
 
-                  {searchKey === null && shown && view === "list" && shown.list.items.length > 0 && (
+                  {searchKey === null && shown && view === "list" && shown.list.items.length > 0 && viewMode === "grid" && (
+                    <DocumentsGrid items={shown.list.items} label={library.trash ? "Documents in Trash" : "Your documents"} />
+                  )}
+
+                  {searchKey === null && shown && view === "list" && shown.list.items.length > 0 && viewMode === "list" && (
                     <DocumentsTable
+                      sorting={{ sort: library.sort, order: library.order, onSort: sortBy }}
                       items={shown.list.items}
                       me={me}
                       now={shown.now}
@@ -827,6 +922,14 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
         onUndo={toast ? () => undoMove(toast.undo) : undefined}
         onClose={() => setToast(null)}
       />
+      {versionFile && (
+        <VersionNoteDialog
+          documentName={versionFile.of.display_name}
+          fileName={versionFile.file.name}
+          onUpload={uploadVersionWith}
+          onClose={() => setVersionFile(null)}
+        />
+      )}
     </Dropzone>
   );
 }

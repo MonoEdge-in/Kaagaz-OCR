@@ -32,7 +32,7 @@ import styles from "./Shell.module.css";
 
 const MENU_ID = "app-menu";
 
-/** The documents screen's file input (components/documents/DocumentsView.tsx). */
+/** The documents screen's and the dashboard's file input (DocumentsView.tsx, Dashboard.tsx). */
 const UPLOAD_INPUT_ID = "upload-input";
 
 export function AppShell({ children }: { children: ReactNode }) {
@@ -89,7 +89,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             aria-expanded={menuOpen}
             onClick={() => setMenuOpen(true)}
           />
-          <Wordmark href="/documents" />
+          <Wordmark href="/dashboard" />
           {pageName && (
             <span className={styles.pageName}>
               <span className="visually-hidden">, </span>

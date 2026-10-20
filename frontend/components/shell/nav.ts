@@ -13,6 +13,8 @@ export interface NavLink {
 }
 
 const LINKS: { link: NavLink; roles: readonly Role[]; scope?: SessionScope }[] = [
+  // File management D1: the dashboard is the home screen, first after sign-in.
+  { link: { href: "/dashboard", label: "Home", icon: "home" }, roles: ["member", "reviewer", "admin"] },
   {
     link: { href: "/documents", label: "Documents", icon: "documents" },
     roles: ["member", "reviewer", "admin"],

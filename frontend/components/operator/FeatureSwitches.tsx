@@ -43,6 +43,7 @@ export const FEATURE_NAMES: Record<string, string> = {
   review: "Review",
   my_words: "My words",
   self_signup: "Self sign-up",
+  version_spotting: "Version spotting", // File management V8
 };
 
 export const featureName = (feature: string) => FEATURE_NAMES[feature] ?? feature;

@@ -8,6 +8,7 @@ import type { DocumentSearchParams } from "@/components/documents/insideSearch";
 import type { DocumentListParams } from "@/components/documents/libraryQuery";
 import type { StoryMatchBody } from "./storyMatches";
 import type {
+  ActivityPage,
   AdminChange,
   AdminCreated,
   AdminUser,
@@ -16,8 +17,12 @@ import type {
   AiTask,
   AiValues,
   AnswerChoice,
-  AuditEntry,
   BatchView,
+  Dashboard,
+  DocumentCompare,
+  DocumentQuestion,
+  Person,
+  Sensitivity,
   BoardReply,
   ChatOptions,
   ChatResponse,
@@ -176,6 +181,8 @@ export function query(params: Record<string, QueryValue>): string {
 // --- files the browser loads directly (img src, PDF.js) ----------------------
 
 export const fileUrl = (documentId: string) => `/api/documents/${documentId}/file`;
+/** The Download button's address (A2): only it is logged, and it saves under the document's name. */
+export const downloadUrl = (documentId: string) => `${fileUrl(documentId)}?download=1`;
 export const pageImageUrl = (documentId: string, pageNo: number) =>
   `/api/documents/${documentId}/pages/${pageNo}/image`;
 
@@ -243,8 +250,47 @@ export const deleteDocumentForever = (id: string) =>
  */
 export const updateDocument = (
   id: string,
-  changes: { display_name?: string; folder_id?: string | null },
+  changes: {
+    display_name?: string;
+    folder_id?: string | null;
+    owner_id?: string; // O1: the whole family; an active person of the company
+    sensitivity?: Sensitivity; // O2: the whole family
+    version_note?: string | null; // V9: this version; null clears it
+  },
 ) => request<DocumentSummary>("PATCH", `/documents/${id}`, changes);
+
+// --- file management (PRD 1, Phase 2) -----------------------------------------------
+
+/** D1, D2: the home screen in one request. */
+export const getDashboard = () => request<Dashboard>("GET", "/dashboard");
+/** The company's active people, for the owner picker and the Owner filter. */
+export const listPeople = () => request<{ items: Person[] }>("GET", "/people");
+/** V6 Make it version N: the document joins the candidate's family, with an optional note (V9). */
+export const acceptSuggestion = (id: string, versionNote?: string) =>
+  request<DocumentSummary>(
+    "POST",
+    `/version-suggestions/${encodeURIComponent(id)}/accept`,
+    versionNote ? { version_note: versionNote } : undefined,
+  );
+/** V6 Keep separate: the pair is never suggested again. */
+export const rejectSuggestion = (id: string) =>
+  request<void>("POST", `/version-suggestions/${encodeURIComponent(id)}/reject`);
+/** V7: the link undone while it is still the newest version; 409 not_newest after that. */
+export const undoVersionLink = (id: string) => request<DocumentSummary>("POST", `${doc(id)}/version-undo`);
+/** V10: this ready version becomes the one search and chat use. */
+export const makeCurrent = (id: string) => request<DocumentSummary>("POST", `${doc(id)}/make-current`);
+/** V11: the reader text of `withId` (left) against `id` (right), page by page. */
+export const compareDocuments = (id: string, withId: string) =>
+  request<DocumentCompare>("GET", `${doc(id)}/compare${query({ with: withId })}`);
+/** A5: every version of the family, newest first. */
+export const documentActivity = (id: string, cursor?: string) =>
+  request<ActivityPage>("GET", `${doc(id)}/activity${query({ cursor })}`);
+/** A5: the folder and everything below it. */
+export const folderActivity = (id: string, cursor?: string) =>
+  request<ActivityPage>("GET", `/folders/${encodeURIComponent(id)}/activity${query({ cursor })}`);
+/** P2: this person's questions about the document, newest first. */
+export const documentQuestions = (id: string) =>
+  request<{ items: DocumentQuestion[] }>("GET", `${doc(id)}/questions`);
 /**
  * Feature 28: move a family Kaagaz filed back to "Not in a folder"; the folder stays.
  * 409 already_moved when someone moved it since, 409 in_trash in Trash.
@@ -300,9 +346,11 @@ export function uploadDocument(
   reading?: UploadReading,
   batchId?: string,
   onSent?: () => void,
+  departmentId?: string, // F2: used by the server when no folder is named
 ): Promise<UploadResult> {
   const form = new FormData();
   if (folderId) form.append("folder_id", folderId);
+  else if (departmentId) form.append("department_id", departmentId);
   appendReading(form, reading);
   if (batchId) form.append("batch_id", batchId);
   form.append("user_id", userId);
@@ -322,9 +370,11 @@ export function uploadVersion(
   onProgress: (fraction: number) => void,
   reading?: UploadReading,
   onSent?: () => void,
+  versionNote?: string, // V9: optional, at most 200 characters
 ): Promise<UploadResult> {
   const form = new FormData();
   appendReading(form, reading);
+  if (versionNote) form.append("version_note", versionNote);
   form.append("user_id", userId);
   form.append("file", file);
   return sendForm(`/api/documents/${documentId}/versions`, form, onProgress, onSent);
@@ -387,12 +437,22 @@ function sendForm(
 // --- folders and tags ------------------------------------------------------------
 
 export const listFolders = () => request<{ items: Folder[] }>("GET", "/folders");
-/** A new folder inside parentId, or at the top level for null. */
-export const createFolder = (name: string, parentId: string | null) =>
-  request<Folder>("POST", "/folders", { name, ...(parentId ? { parent_id: parentId } : {}) });
-/** Rename or move. An explicit parent_id: null moves the folder to the top level. */
-export const updateFolder = (id: string, changes: { name?: string; parent_id?: string | null }) =>
-  request<Folder>("PATCH", `/folders/${id}`, changes);
+/** A new folder inside parentId, or at the top level for null. F1: a department is an admin's, top level only. */
+export const createFolder = (
+  name: string,
+  parentId: string | null,
+  department?: { sort_order: number },
+) =>
+  request<Folder>("POST", "/folders", {
+    name,
+    ...(parentId ? { parent_id: parentId } : {}),
+    ...(department ? { kind: "department", sort_order: department.sort_order } : {}),
+  });
+/** Rename, move or order. An explicit parent_id: null moves the folder to the top level. */
+export const updateFolder = (
+  id: string,
+  changes: { name?: string; parent_id?: string | null; sort_order?: number | null },
+) => request<Folder>("PATCH", `/folders/${id}`, changes);
 export const deleteFolder = (id: string) => request<void>("DELETE", `/folders/${id}`);
 export const listTags = () => request<{ items: Tag[] }>("GET", "/tags");
 export const createTag = (name: string) => request<Tag>("POST", "/tags", { name });
@@ -495,8 +555,23 @@ export const updateSettings = (maxUploadMb: number | null, autofileOn?: boolean)
     max_upload_mb: maxUploadMb,
     ...(autofileOn === undefined ? {} : { autofile_on: autofileOn }),
   });
-export const listAudit = (params: { limit?: number; offset?: number } = {}) =>
-  request<{ items: AuditEntry[]; total: number }>("GET", `/admin/audit${query(params)}`);
+/** A5: the admin log, filtered (stage 3); `cursor` is the reply's `next`. The older reply pages by offset. */
+export type AuditParams = {
+  limit?: number;
+  offset?: number;
+  cursor?: string;
+  user_id?: string; // who did it
+  folder_id?: string; // with its subfolders
+  document_id?: string;
+  action?: readonly string[];
+  from?: string; // YYYY-MM-DD, both days included
+  to?: string;
+};
+export const listAudit = (params: AuditParams = {}) =>
+  request<ActivityPage>("GET", `/admin/audit${query(params)}`);
+/** A6 Export to Excel: the filtered rows as CSV, streamed; logged as audit.export. */
+export const auditExportUrl = (params: AuditParams) =>
+  `/api/admin/audit/export${query({ ...params, limit: undefined, offset: undefined, cursor: undefined })}`;
 export const getStats = () => request<Stats>("GET", "/admin/stats");
 /** Documents that failed or can't be read (PRD 3 Z1); Retry is reprocessDocument. */
 export const listFailed = (params: { limit?: number; offset?: number } = {}) =>

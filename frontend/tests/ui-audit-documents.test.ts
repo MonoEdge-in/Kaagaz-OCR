@@ -144,7 +144,9 @@ describe("D7: the filter chips", () => {
 
   it("gives a panel's chip a chevron, and nothing to clear while none is set", () => {
     const html = render();
-    expect(html.match(/_chipOpens_/g)).toHaveLength(3);
+    // Changed on purpose (PRD 1, screens): File management Q5 adds Owner, Label, Party, Property
+    // and Document date (Department too, once there are departments) to Type, Tags and Date uploaded.
+    expect(html.match(/_chipOpens_/g)).toHaveLength(8);
     expect(html).not.toContain("Remove filter");
     expect(html).not.toContain("Clear all");
     expect(css("components/documents/Library.module.css")).toMatch(/\.chipOpens \{[^}]*background-image:\s*var\(--select-caret\);/);
@@ -239,7 +241,9 @@ describe("the documents list (D1, D2, D3, D6, D9, D10, D11)", () => {
     const header = view.slice(view.indexOf('<header className="page-header">'), view.indexOf("</header>"));
     expect(header).not.toContain("readerSelect");
     const place = view.slice(view.indexOf("className={libraryStyles.placeHead}"), view.indexOf("{folderGone ?"));
-    expect(place).toContain("<div className={styles.uploadControls}>{readerSelect}</div>");
+    // Changed on purpose (PRD 1, screens): File management F2, the Department picker sits just
+    // before Read with, in the same controls, where no folder decides where files go.
+    expect(place).toMatch(/<div className=\{styles\.uploadControls\}>[\s\S]*<DepartmentPicker[\s\S]*\{readerSelect\}\s*<\/div>/);
   });
 
   it("writes Upload files with one space: its words are one span, not two flex items", () => {
