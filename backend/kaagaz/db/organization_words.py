@@ -80,18 +80,28 @@ def submit(
     ).scalar_one()
     if active >= MAX_ORGANIZATION_WORDS:
         return "too_many_words"
-    row = conn.execute(
-        text(
-            "INSERT INTO organization_word_suggestions (customer_id, submitted_by, word, word_fold,"
-            " meaning, meaning_fold, document_id, page_no)"
-            " VALUES (:c, :u, :w, :wf, :m, :mf, CAST(:doc AS uuid), :page) ON CONFLICT DO NOTHING"
-            " RETURNING id, word, meaning, status, submitted_by, created_at, document_id, page_no"
-        ),
-        {
-            "c": customer_id, "u": user_id, "w": word, "wf": word_fold, "m": meaning, "mf": meaning_fold,
-            "doc": document_id, "page": page_no,
-        },
-    ).mappings().first()
+    row = (
+        conn.execute(
+            text(
+                "INSERT INTO organization_word_suggestions (customer_id, submitted_by, word, word_fold,"
+                " meaning, meaning_fold, document_id, page_no)"
+                " VALUES (:c, :u, :w, :wf, :m, :mf, CAST(:doc AS uuid), :page) ON CONFLICT DO NOTHING"
+                " RETURNING id, word, meaning, status, submitted_by, created_at, document_id, page_no"
+            ),
+            {
+                "c": customer_id,
+                "u": user_id,
+                "w": word,
+                "wf": word_fold,
+                "m": meaning,
+                "mf": meaning_fold,
+                "doc": document_id,
+                "page": page_no,
+            },
+        )
+        .mappings()
+        .first()
+    )
     return None if row is None else _suggestion(row)
 
 
@@ -103,14 +113,19 @@ def decide(
     *,
     status: Literal["approved", "rejected"],
 ) -> Suggestion | None:
-    row = conn.execute(
-        text(
-            "UPDATE organization_word_suggestions SET status = :status, decided_by = :u, decided_at = now()"
-            " WHERE customer_id = :c AND id = :id AND status = 'pending' AND submitted_by <> :u"
-            " RETURNING id, word, meaning, status, submitted_by, created_at, document_id, page_no"
-        ),
-        {"c": customer_id, "id": suggestion_id, "u": reviewer_id, "status": status},
-    ).mappings().first()
+    row = (
+        conn.execute(
+            text(
+                "UPDATE organization_word_suggestions SET status = :status,"
+                " decided_by = :u, decided_at = now()"
+                " WHERE customer_id = :c AND id = :id AND status = 'pending' AND submitted_by <> :u"
+                " RETURNING id, word, meaning, status, submitted_by, created_at, document_id, page_no"
+            ),
+            {"c": customer_id, "id": suggestion_id, "u": reviewer_id, "status": status},
+        )
+        .mappings()
+        .first()
+    )
     return None if row is None else _suggestion(row)
 
 
