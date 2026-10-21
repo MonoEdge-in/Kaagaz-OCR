@@ -90,7 +90,10 @@ def search_inside_documents(
     return {
         "documents": [_document(result) for result in found],
         "story_matches": [],
-        "understood_words": [{"word": w, "meaning": m} for w, m in expansion.understood()],
+        "understood_words": [
+            {"word": w, "meaning": m, **({"origin": origin} if origin != "personal" else {})}
+            for w, m, origin in expansion.understood()
+        ],
     }
 
 

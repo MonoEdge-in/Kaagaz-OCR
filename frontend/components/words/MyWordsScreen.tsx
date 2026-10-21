@@ -12,9 +12,12 @@ import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { ActionDialog } from "@/components/documents/ActionDialog";
 import { EmptyState } from "@/components/ui/EmptyState";
-import { FEATURE_OFF, addMyWord, changeMyWord, deleteMyWord, isFeatureOff, listMyWords } from "@/lib/api";
+import {
+  FEATURE_OFF, addMyWord, changeMyWord, decideOrganizationWord, deleteMyWord, isFeatureOff,
+  listMyWords, listOrganizationWords, suggestOrganizationWord,
+} from "@/lib/api";
 import { useSession } from "@/lib/session";
-import type { MyWord } from "@/lib/types";
+import type { MyWord, OrganizationWord } from "@/lib/types";
 import { DuplicateDialog, WordFields } from "./WordParts";
 import {
   addBody,
@@ -60,6 +63,9 @@ export function MyWordsScreen() {
   const deleted = useRef(false); // then focus goes to the heading, as the row is gone
   const [attempt, setAttempt] = useState(0);
   const [items, setItems] = useState<MyWord[] | null>(null);
+  const [organizationItems, setOrganizationItems] = useState<OrganizationWord[]>([]);
+  const [organizationDraft, setOrganizationDraft] = useState(EMPTY);
+  const [organizationBusy, setOrganizationBusy] = useState(false);
   const [loadError, setLoadError] = useState(false);
   const [off, setOff] = useState(false); // My words switched off for the whole product
   const [filter, setFilter] = useState("");
@@ -76,6 +82,10 @@ export function MyWordsScreen() {
     listMyWords().then(
       (result) => !cancelled && setItems(result.items),
       (caught: unknown) => !cancelled && (isFeatureOff(caught) ? setOff(true) : setLoadError(true)),
+    );
+    listOrganizationWords().then(
+      (result) => !cancelled && setOrganizationItems(result.items),
+      () => !cancelled && setOrganizationItems([]),
     );
     return () => {
       cancelled = true;
@@ -120,6 +130,32 @@ export function MyWordsScreen() {
     const body = addBody(draft, userId);
     if (!draftOk(draft)) focusProblem("add", draft);
     else if (!busy) void save({ body, draft: body }, setProblem);
+  }
+
+  async function submitOrganizationWord(event: FormEvent) {
+    event.preventDefault();
+    if (!draftOk(organizationDraft) || organizationBusy) return;
+    setOrganizationBusy(true);
+    try {
+      const { item } = await suggestOrganizationWord(organizationDraft.word, organizationDraft.meaning, userId);
+      setOrganizationItems((current) => [...current, item]);
+      setOrganizationDraft(EMPTY);
+      setStatus("Suggestion sent to your organization for review.");
+    } catch {
+      setStatus("This suggestion could not be saved. It may already be pending or approved.");
+    } finally {
+      setOrganizationBusy(false);
+    }
+  }
+
+  async function decideOrganization(item: OrganizationWord, decision: "approve" | "reject") {
+    try {
+      const { item: decided } = await decideOrganizationWord(item.id, decision, userId);
+      setOrganizationItems((current) => current.map((row) => row.id === item.id ? decided : row));
+      setStatus(`Suggestion ${decision === "approve" ? "approved" : "rejected"}.`);
+    } catch {
+      setStatus("This suggestion could not be updated. Reload and try again.");
+    }
   }
 
   function choose(choice: Choice) {
@@ -174,7 +210,7 @@ export function MyWordsScreen() {
     <div className="page">
       <header className="page-header"><div>
         <h1 ref={headingRef} tabIndex={-1}>My words</h1>
-        <p>Words the way you write them, and what they mean. Chat uses them for your questions. Only you see them.</p>
+        <p>Your words stay private. You can also suggest words for your organization; a reviewer or admin must approve them before everyone can use them.</p>
       </div></header>
       <p className="visually-hidden" role="status" aria-live="polite">{status}</p>
       {alert(problem)}
@@ -200,6 +236,37 @@ export function MyWordsScreen() {
         )}
         {note && <p className="hint">{note}</p>}
       </form>
+
+      <form className={`card stack ${styles.block}`} onSubmit={submitOrganizationWord} noValidate aria-labelledby="suggest-word-heading">
+        <h2 id="suggest-word-heading" className={styles.subheading}>Suggest an organization word</h2>
+        <div className={styles.fields}>
+          <WordFields idPrefix="organization" draft={organizationDraft} onChange={setOrganizationDraft} checked={false} />
+          <button type="submit" className={`btn ${styles.target}`} disabled={!draftFilled(organizationDraft) || organizationBusy}>
+            {organizationBusy ? <span className="spinner" aria-hidden="true" /> : null}Suggest
+          </button>
+        </div>
+        <p className="hint">Approved words are shared with everyone in your organization.</p>
+      </form>
+
+      {organizationItems.length > 0 && (
+        <section aria-labelledby="organization-words-heading" className={`stack ${styles.block}`}>
+          <h2 id="organization-words-heading" className={styles.subheading}>Organization words and suggestions</h2>
+          <ul className={styles.list}>
+            {organizationItems.map((item) => (
+              <li key={item.id} className={styles.group}>
+                <span className={styles.word}>{item.word}</span><span className={styles.text}>→ {item.meaning}</span>
+                <span className="muted">{item.status === "pending" ? "Awaiting review" : item.status}</span>
+                {item.status === "pending" && (me.user.role === "reviewer" || me.user.role === "admin") && item.submitted_by !== userId && (
+                  <>
+                    <button type="button" className="btn btn-quiet" onClick={() => void decideOrganization(item, "approve")}>Approve</button>
+                    <button type="button" className="btn btn-quiet" onClick={() => void decideOrganization(item, "reject")}>Reject</button>
+                  </>
+                )}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       {items === null && !loadError && <p className="muted">Loading your words…</p>}
       {loadError && (
