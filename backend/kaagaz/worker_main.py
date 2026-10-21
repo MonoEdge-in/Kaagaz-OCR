@@ -713,7 +713,6 @@ def run_until_stopped(worker: RunsJobs, stop: threading.Event, *, pause_seconds:
             stop.wait(pause_seconds)
 
 
-def worker_model(settings: Settings, db: Database | None = None) -> "ModelClient | None":
 def _scanning_on(db: Database, customer_id: str) -> bool:
     """The Scanning with AI switch (0038) and the job's organisation's own (0039), read for
     each job: one statement."""
@@ -721,10 +720,11 @@ def _scanning_on(db: Database, customer_id: str) -> bool:
         return ai_settings.switch_on(conn, "scan_ai", customer_id)
 
 
-def worker_model(settings: Settings) -> "ModelClient | None":
+def worker_model(settings: Settings, db: Database | None = None) -> "ModelClient | None":
     """The worker's model client, or None with the model off. Its chat calls (the card
     and the invoice windows) time out after MODEL_EXTRACT_TIMEOUT_SECONDS, which the
-    lease allows twice over (settings, AR1); the rest after MODEL_TIMEOUT_SECONDS."""
+    lease allows twice over (settings, AR1); the rest after MODEL_TIMEOUT_SECONDS. Its
+    requests use the shared database RPM scheduler when one is available."""
     from kaagaz.ai.client import build_model_client
 
     return build_model_client(settings, chat_timeout_seconds=settings.model_extract_timeout_seconds, db=db)

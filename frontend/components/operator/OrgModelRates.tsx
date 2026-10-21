@@ -1,8 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { CodeField } from "@/app/admin/login/CodeField";
-import { normalizeCode } from "@/app/admin/login/adminSignIn";
+import { CodeField } from "@/app/login/CodeField";
+import { normalizeCode } from "@/app/login/twoStep";
 import { ActionDialog } from "@/components/documents/ActionDialog";
 import { ApiError, getOrgModelRates, putOrgModelRate, putUserModelRate } from "@/lib/api";
 import type { OrgModelRates, Organisation } from "@/lib/types";
