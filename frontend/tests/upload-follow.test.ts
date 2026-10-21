@@ -89,6 +89,7 @@ describe("following an upload until it is ready", () => {
     const page = { visibilityState: "visible", activeElement: null, ...target() };
     vi.stubGlobal("document", page);
     vi.stubGlobal("window", { document: page, HTMLIFrameElement: class {}, ...target() });
+    vi.stubGlobal("navigator", { onLine: true });
     api.getBatch.mockImplementation(
       async (id: string): Promise<BatchView> => ({
         id,
