@@ -116,7 +116,8 @@ _STATE = (
 _SET_STATE = "UPDATE documents SET autofile = :state WHERE customer_id = :c AND id = :f"
 _BY_KEY = "SELECT id FROM folders WHERE customer_id = :c AND autofile_key = :k"
 # At most one: the unique index folders_sibling_name.
-_BY_NAME = "SELECT id FROM folders WHERE customer_id = :c AND parent_id IS NULL AND lower(name) = lower(:name)"
+_BY_NAME = """SELECT id FROM folders
+WHERE customer_id = :c AND parent_id IS NULL AND lower(name) = lower(:name)"""
 _ADOPT = "UPDATE folders SET autofile_key = :k WHERE customer_id = :c AND id = :f"
 _CREATE = (
     "INSERT INTO folders (customer_id, parent_id, name, created_by, autofile_key, kind)"
@@ -367,7 +368,13 @@ def _child(
 
 
 def _create(
-    conn: Connection, customer_id: str, parent: str | None, name: str, owner: object, key: str, kind: str
+    conn: Connection,
+    customer_id: str,
+    parent: str | None,
+    name: str,
+    owner: object,
+    key: str | None,
+    kind: str,
 ) -> str:
     """A new folder Kaagaz made, with its key and kind, audited (no actor)."""
     params = {"c": customer_id, "p": parent, "name": name, "u": owner, "k": key, "kind": kind}
