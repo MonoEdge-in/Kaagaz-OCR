@@ -378,9 +378,7 @@ def list_organization_words(user: User, context: Context) -> dict[str, Any]:
 
 
 @router.post("/organization/words", status_code=201)
-def suggest_organization_word(
-    body: OrganizationWordBody, user: User, context: Context
-) -> dict[str, Any]:
+def suggest_organization_word(body: OrganizationWordBody, user: User, context: Context) -> dict[str, Any]:
     _same_user(body.user_id, user, SESSION_CHANGED)
     word, built_in = _word_text(body.word)
     meaning = _meaning_text(body.meaning)

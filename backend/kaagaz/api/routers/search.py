@@ -74,9 +74,7 @@ def search_inside_documents(
         return _nothing()
     # My words: read once, for this search and this user only, never cached (as Ask does).
     document_id = (
-        scope.document_ids[0]
-        if scope.document_ids is not None and len(scope.document_ids) == 1
-        else None
+        scope.document_ids[0] if scope.document_ids is not None and len(scope.document_ids) == 1 else None
     )
     words = PgWords(context.db).words(customer_id, user.user_id, document_id=document_id)
     expansion = expand(question, words) if words else NO_EXPANSION

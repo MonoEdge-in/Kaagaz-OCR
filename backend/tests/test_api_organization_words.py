@@ -44,12 +44,9 @@ def test_member_suggestion_is_private_until_other_reviewer_approves(db: Database
     approved = member.client.get("/api/organization/words").json()["items"]
     assert approved[0]["status"] == "approved"
     expanded = [
-        (word.word, word.meaning, word.origin)
-        for word in PgWords(db).words(customer_id, member.user_id)
+        (word.word, word.meaning, word.origin) for word in PgWords(db).words(customer_id, member.user_id)
     ]
-    assert expanded == [
-        ("Jalna", "district", "organization")
-    ]
+    assert expanded == [("Jalna", "district", "organization")]
     actions = [row[0] for row in api.audit_actions(customer_id)]
     assert "organization_word.suggested" in actions
     assert "organization_word.approved" in actions

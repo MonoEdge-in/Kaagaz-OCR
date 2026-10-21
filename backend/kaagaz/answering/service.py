@@ -668,9 +668,7 @@ class AnswerService:
             return unchecked
         # My words: read once, for this question and this user only, never cached.
         document_id = (
-            scope.document_ids[0]
-            if scope.document_ids is not None and len(scope.document_ids) == 1
-            else None
+            scope.document_ids[0] if scope.document_ids is not None and len(scope.document_ids) == 1 else None
         )
         words = () if user_id is None else self._words.words(customer_id, user_id, document_id=document_id)
         expansion = expand(question, words) if words else NO_EXPANSION
