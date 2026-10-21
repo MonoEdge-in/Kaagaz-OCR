@@ -31,6 +31,16 @@ describe("Ready to verify", () => {
     expect(labelText("verified")).toBe("Verified");
   });
 
+  it("offers single and bulk verification only for pending values on the current ready document", () => {
+    const view = read("app/(app)/documents/[id]/DocumentView.tsx");
+    expect(view).toContain('detail.versions.some((version) => version.id === detail.id && version.is_current)');
+    expect(view).toContain('detail.values.filter((value) => value.label === "needs_review")');
+    expect(view).toContain('value.label === "needs_review" && (');
+    expect(view.match(/await resolveReview\(value.id, "typed", false, value.value\);/g)).toHaveLength(2);
+    expect(view).toContain('`Verify all ${pendingValues.length}`');
+    expect(view).toContain('`Verified ${completed} of ${total}. ${reason}`');
+  });
+
   it("is never shown to people as Needs review (internal ids like needs_review stay)", () => {
     const files = [...sources("components"), ...sources("app"), ...sources("lib")];
     // "Needs a check" was the same label on answers; "the exact spot ... needs a check" is a page's problem, not a label.
