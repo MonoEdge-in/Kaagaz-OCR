@@ -89,9 +89,14 @@ UPGRADE = [
     "ALTER TABLE user_model_rate_overrides ENABLE ROW LEVEL SECURITY",
     "ALTER TABLE model_rate_state ENABLE ROW LEVEL SECURITY",
     "ALTER TABLE model_rate_waiters ENABLE ROW LEVEL SECURITY",
+    "ALTER TABLE model_rate_customer_turns ENABLE ROW LEVEL SECURITY",
+    "ALTER TABLE model_rate_user_turns ENABLE ROW LEVEL SECURITY",
     "CREATE POLICY customer_only ON model_rate_overrides USING (customer_id = current_setting('kaagaz.customer_id', true)::uuid)",
     "CREATE POLICY customer_only ON user_model_rate_overrides USING (customer_id = current_setting('kaagaz.customer_id', true)::uuid)",
     "CREATE POLICY customer_only ON model_rate_state USING (customer_id = current_setting('kaagaz.customer_id', true)::uuid)",
+    "CREATE POLICY customer_only ON model_rate_waiters USING (customer_id = current_setting('kaagaz.customer_id', true)::uuid)",
+    "CREATE POLICY customer_only ON model_rate_customer_turns USING (customer_id = current_setting('kaagaz.customer_id', true)::uuid)",
+    "CREATE POLICY customer_only ON model_rate_user_turns USING (customer_id = current_setting('kaagaz.customer_id', true)::uuid)",
     """
     CREATE FUNCTION kaagaz_model_rate_slot(
         p_request uuid, p_customer uuid, p_user uuid, p_wait_budget double precision, p_platform_rpm integer
