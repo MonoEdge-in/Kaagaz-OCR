@@ -311,43 +311,6 @@ function OrgRow(props: {
         <span className={styles.when}>{lastActivityText(org.last_activity_at, now)}</span>
       </td>
       <td role="cell">
-        <span className={styles.rowActions}>
-          <button type="button" className="btn" onClick={onAdmins} aria-label={`Admins of ${org.name}`}>
-            Admins
-          </button>
-          {org.status !== "deleting" && (
-            <button
-              id={orgAiFocusId(org.id)}
-              type="button"
-              className="btn"
-              onClick={onModels}
-              aria-label={`AI settings of ${org.name}`}
-            >
-              AI settings
-            </button>
-          )}
-          {org.status !== "deleting" && (
-            <button
-              type="button"
-              className="btn"
-              onClick={onAutofile}
-              aria-label={`${org.autofile_granted ? "Stop" : "Allow"} auto-filing for ${org.name}`}
-            >
-              {org.autofile_granted ? "Stop auto-filing" : "Allow auto-filing"}
-            </button>
-          )}
-          {CHANGES[org.status].map(({ change, label, danger }) => (
-            <button
-              key={change}
-              type="button"
-              className={danger ? "btn btn-danger" : "btn"}
-              onClick={() => onChange(change)}
-              aria-label={`${label} ${org.name}`}
-            >
-              {label}
-            </button>
-          ))}
-        </span>
         {/* One menu (owner, 16 Oct 2026): the safe actions, then Disable, Enable, Delete
             or Cancel deletion after a separator. Each change opens its confirm. The
             button keeps orgAiFocusId, so closing AI settings comes back to it. */}
