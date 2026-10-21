@@ -40,6 +40,10 @@ The sign-in idle timeout (0040): the same for one organisation's hours (two colu
 
 File management (0041): version suggestions the app reads, adds and decides, never deletes
 (they go with their document).
+
+Shared OpenRouter scheduling and limits (0043): request tickets, fair-turn state and RPM
+overrides are customer scoped, RLS protected, and only reachable through the narrow app or
+operator functions.
 """
 
 import re
@@ -114,6 +118,16 @@ FROM_0039 = {"org_feature_switches": (False, False, False, False)}
 FROM_0040 = {"org_session_settings": (False, False, False, False)}
 # Changed on purpose (PRD 1, 0041): version suggestions are read, added and decided, never deleted.
 FROM_0041 = {"version_suggestions": (True, True, True, False)}
+# Shared OpenRouter RPM (0043): these rows are only accessed by the scheduler and operator
+# functions, never with direct table rights from the app.
+FROM_0043 = {
+    "model_rate_waiters": (False, False, False, False),
+    "model_rate_customer_turns": (False, False, False, False),
+    "model_rate_user_turns": (False, False, False, False),
+    "model_rate_overrides": (False, False, False, False),
+    "user_model_rate_overrides": (False, False, False, False),
+    "model_rate_state": (False, False, False, False),
+}
 UPDATES_0030 = {
     "word_changes": {"applied", "undone_at", "undone_by"},
     "ensemble_runs": {
@@ -172,6 +186,8 @@ OWNER_RIGHTS = {
     # 0019, the second sweep a day after a purge: ids only, and its org.swept row.
     "kaagaz_purged_ids_to_sweep": ("SETOF uuid", EMPTY_PATH),
     "kaagaz_customer_swept": ("boolean", EMPTY_PATH),
+    # 0043, the shared scheduler's single admission function.
+    "kaagaz_model_rate_slot": ("double precision", EMPTY_PATH),
 }
 # The platform operator's (0015): only kaagaz_operator may run these, never the app.
 OPERATOR = "kaagaz_operator"
@@ -348,6 +364,12 @@ OPERATOR_RIGHTS = {
     # Changed on purpose (0040): the sign-in idle timeout, and its write (step-up).
     "kaagaz_op_session_timeout": ("TABLE(org_hours integer, platform_hours integer)", EMPTY_PATH),
     "kaagaz_op_set_session_timeout": ("text", EMPTY_PATH),
+    # 0043: operator-only read/write for customer and user RPM overrides.
+    "kaagaz_op_model_rates": (
+        "TABLE(org_rpm integer, user_id uuid, email text, user_rpm integer)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_op_set_model_rate": ("text", EMPTY_PATH),
 }
 # The only tables without customer_id: the customers themselves, alembic's own, the
 # platform operator's (0015), the workers' reader status (0022) and the model catalogue
@@ -355,7 +377,9 @@ OPERATOR_RIGHTS = {
 OPERATOR_TABLES = {"operators", "platform_audit"}
 PLATFORM_DEFAULTS = {"platform_models", "platform_ai_settings", "feature_switches", "platform_model_override"}
 NO_CUSTOMER_ID = (
-    {"customers", "alembic_version", "reader_status", "model_catalog"} | PLATFORM_DEFAULTS | OPERATOR_TABLES
+    {"customers", "alembic_version", "reader_status", "model_catalog", "model_rate_scheduler"}
+    | PLATFORM_DEFAULTS
+    | OPERATOR_TABLES
 )
 
 _CUSTOMER_TABLES = text(
@@ -389,6 +413,7 @@ def test_every_customer_table_has_row_level_security_and_the_customer_only_polic
         | set(FROM_0039)
         | set(FROM_0040)
         | set(FROM_0041)  # Changed on purpose (PRD 1, 0041)
+        | set(FROM_0043)
     )
 
     with db.system() as conn:
@@ -435,7 +460,7 @@ def test_every_customer_table_is_granted_to_the_app_role(db: Database) -> None:
         # An organisation's models and settings are the operator's. Changed on purpose (0039):
         # its feature switches too.
         # Changed on purpose (0040): and its sign-in idle timeout.
-        if table not in FROM_0023 | FROM_0026 | FROM_0039 | FROM_0040:
+        if table not in FROM_0023 | FROM_0026 | FROM_0039 | FROM_0040 | FROM_0043:
             assert (select, insert) == (True, True), table
     for table in FROM_0002:
         assert granted[table] == (True, True, True, True), table
@@ -452,6 +477,7 @@ def test_every_customer_table_is_granted_to_the_app_role(db: Database) -> None:
         | FROM_0039
         | FROM_0040
         | FROM_0041  # Changed on purpose (PRD 1, 0041)
+        | FROM_0043
     ).items():
         assert granted[table] == expected, table
 

@@ -26,6 +26,7 @@ socket"). Adding a reader means one new module and one entry here.
 import importlib
 from typing import Any
 
+from kaagaz.db.engine import Database
 from kaagaz.ingestion import sniff
 from kaagaz.preparing import page_checks
 from kaagaz.reading import ocr_dpi, text_quality
@@ -93,12 +94,12 @@ def pdf_text_layer_checks(settings: Settings, data: bytes) -> list[PdfPageCheck]
     return text_layer_checks(data, rules=text_layer_rules(settings), max_pages=settings.max_pages)
 
 
-def build_gemini_engine(settings: Settings, *, pool: RapidOcrPool) -> PageEngine:
+def build_gemini_engine(settings: Settings, *, pool: RapidOcrPool, db: Database | None = None) -> PageEngine:
     """The Gemini reader for OCR_ENGINE=gemini (PRD 5 G1): ``GeminiEngine.from_settings``
     in ``GEMINI_OCR_MODULE``, imported here, on first need, and nowhere else.
     ``kaagaz.reading.ocr.GeminiEngineFactory`` in the product."""
     module = importlib.import_module(GEMINI_OCR_MODULE)
-    engine: PageEngine = module.GeminiEngine.from_settings(settings, pool=pool)
+    engine: PageEngine = module.GeminiEngine.from_settings(settings, pool=pool, db=db)
     return engine
 
 
@@ -109,10 +110,12 @@ def gemini_reader_module() -> Any:
     return importlib.import_module(GEMINI_OCR_MODULE)
 
 
-def build_ocr_engine(settings: Settings) -> OcrEngine | None:
+def build_ocr_engine(settings: Settings, *, db: Database | None = None) -> OcrEngine | None:
     """The engine for OCR_ENGINE (``ocr.build_ocr_engine``), the Gemini reader from
     ``build_gemini_engine``; None for "none". For the worker and ``cli measure``."""
-    return _ocr_engine(settings, gemini=build_gemini_engine)
+    return _ocr_engine(
+        settings, gemini=lambda configured, pool: build_gemini_engine(configured, pool=pool, db=db)
+    )
 
 
 def page_pool(settings: Settings, engine: OcrEngine | None) -> PagePool | None:

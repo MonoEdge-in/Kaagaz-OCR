@@ -118,6 +118,43 @@ class Database:
         with self._begin() as conn:
             yield conn
 
+    def model_rate_slot(
+        self,
+        request_id: str,
+        customer_id: str | None,
+        user_id: str | None,
+        wait_budget: float,
+        platform_rpm: int = 1200,
+    ) -> float:
+        """Wait for and reserve a shared OpenRouter slot; return a delay or -1 past deadline.
+
+        The security-definer function checks the supplied customer/user pair and updates the
+        one platform scheduler atomically, across API and worker processes.
+        """
+        import uuid
+
+        if customer_id is not None:
+            uuid.UUID(customer_id)
+        if user_id is not None:
+            uuid.UUID(user_id)
+        uuid.UUID(request_id)
+        params = {
+            "request": request_id,
+            "customer": customer_id,
+            "user": user_id,
+            "budget": wait_budget,
+            "platform_rpm": platform_rpm,
+        }
+        statement = text("SELECT kaagaz_model_rate_slot(:request, :customer, :user, :budget, :platform_rpm)")
+        if customer_id is not None and user_id is not None:
+            with self.user(customer_id, user_id) as conn:
+                return float(conn.execute(statement, params).scalar_one())
+        if customer_id is not None:
+            with self.customer(customer_id) as conn:
+                return float(conn.execute(statement, params).scalar_one())
+        with self.system() as conn:
+            return float(conn.execute(statement, params).scalar_one())
+
     def ping(self) -> None:
         """Raise BackendUnavailable unless the database answers. No free pooled connection
         counts as no answer."""

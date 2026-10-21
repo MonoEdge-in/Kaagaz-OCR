@@ -129,6 +129,12 @@ _CURRENT: contextvars.ContextVar[UsageScope | None] = contextvars.ContextVar("us
 _BILLED_AS: contextvars.ContextVar[str | None] = contextvars.ContextVar("billed_as", default=None)
 
 
+def current_rate_scope() -> tuple[str | None, str | None]:
+    """The organisation and user of the model call currently being billed, if any."""
+    scope = _CURRENT.get()
+    return (None, None) if scope is None else (scope.customer_id, scope.user_id)
+
+
 @contextmanager
 def usage_scope(
     db: Database,

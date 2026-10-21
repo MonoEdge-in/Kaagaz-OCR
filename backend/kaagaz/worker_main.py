@@ -720,13 +720,14 @@ def _scanning_on(db: Database, customer_id: str) -> bool:
         return ai_settings.switch_on(conn, "scan_ai", customer_id)
 
 
-def worker_model(settings: Settings) -> "ModelClient | None":
+def worker_model(settings: Settings, db: Database | None = None) -> "ModelClient | None":
     """The worker's model client, or None with the model off. Its chat calls (the card
     and the invoice windows) time out after MODEL_EXTRACT_TIMEOUT_SECONDS, which the
-    lease allows twice over (settings, AR1); the rest after MODEL_TIMEOUT_SECONDS."""
+    lease allows twice over (settings, AR1); the rest after MODEL_TIMEOUT_SECONDS. Its
+    requests use the shared database RPM scheduler when one is available."""
     from kaagaz.ai.client import build_model_client
 
-    return build_model_client(settings, chat_timeout_seconds=settings.model_extract_timeout_seconds)
+    return build_model_client(settings, chat_timeout_seconds=settings.model_extract_timeout_seconds, db=db)
 
 
 def catalog_refresh(settings: Settings, db: Database) -> Callable[[], Refreshed] | None:
@@ -734,7 +735,7 @@ def catalog_refresh(settings: Settings, db: Database) -> Callable[[], Refreshed]
     model (OCR_ENGINE=gemini, which needs OPENROUTER_API_KEY): keyless mode never runs it."""
     if settings.ocr_engine != "gemini":
         return None
-    client = OpenRouterClient(settings)
+    client = OpenRouterClient(settings, gate=process_gate(settings, database=db))
     return lambda: refresh(db, client, settings, today=_utc_now().date())
 
 
@@ -770,10 +771,10 @@ def _serve(settings: Settings) -> None:
     max_receives = queue.max_receives()  # once; no redrive policy stops the worker here
     check_queue_redrive(max_receives, settings.job_max_attempts)
     scanner = build_scanner(settings)
-    model = worker_model(settings)
+    model = worker_model(settings, db)
     processor = build_processor(settings=settings, db=db, storage=storage, scanner=scanner, model=model)
     # Ensemble after the scan reads with a scan reader of its own (the same gate and pool).
-    reader = build_ocr_engine(settings) if settings.ocr_engine == GEMINI else None
+    reader = build_ocr_engine(settings, db=db) if settings.ocr_engine == GEMINI else None
     ensemble = EnsembleRuns(db, storage, reader, settings=settings, clock=_utc_now)
 
     stop = threading.Event()
@@ -781,7 +782,7 @@ def _serve(settings: Settings) -> None:
     storage.ensure_bucket()  # the laptop's first start; in AWS it only checks
     logger.info("worker started")
     documents = PgDocuments(db)
-    gate = process_gate(settings)  # the one every model client of this process shares
+    gate = process_gate(settings, database=db)  # the one every model client of this process shares
     reports = start_reader_reports(stop, db, gate.status, socket.gethostname())
     fair_share = FairShare(functools.partial(first_free_lock, db.engine), settings.max_active_per_customer)
     jobs = job_worker(

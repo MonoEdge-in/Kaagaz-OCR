@@ -61,7 +61,7 @@ _BASE: dict[str, Any] = {
     "careful_early_max_pages": 2,
     "cpu_workers": 2,
     "max_check_crops": 200,
-    "model_rpm": 60,
+    "model_rpm": 1200,
     "reader_outage_fallback_minutes": 15,
     "worker_replicas": 3,
     "max_active_per_customer": 2,
