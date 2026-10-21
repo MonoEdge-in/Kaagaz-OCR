@@ -213,8 +213,10 @@ class Settings:
     # resolutions are limited to what MEDIA_RESOLUTION_SHAPE can send. ocr_page_concurrency
     # pages of a document are read at a time and RapidOCR work runs on cpu_workers threads
     # (G8). At most max_check_crops values of a document are read again by the CPU checker
-    # (V1). model_rpm is the key's calls a minute, shared by the workers (G9). Pages are
-    # read locally once the reader has been down for reader_outage_fallback_minutes (Q7).
+    # (V1). Production RPM admission is shared by API and worker processes in PostgreSQL
+    # (migration 0027); model_rpm is its 1,200 RPM ceiling and the isolated-tool fallback.
+    # Pages are read locally once the reader has been down for
+    # reader_outage_fallback_minutes (Q7).
     # Fast scan (council 16 Oct 2026): a Dynamic document of at most careful_early_max_pages
     # pages starts each page's Careful read with its first read (0: never); optional, 2.
     ocr_model: str
@@ -536,7 +538,7 @@ class Settings:
             careful_early_max_pages=env.at_least("CAREFUL_EARLY_MAX_PAGES", 0, default=2),
             cpu_workers=env.positive("CPU_WORKERS"),
             max_check_crops=env.positive("MAX_CHECK_CROPS"),
-            model_rpm=env.positive("MODEL_RPM"),
+            model_rpm=env.between("MODEL_RPM", 1, 1200),
             reader_outage_fallback_minutes=env.positive("READER_OUTAGE_FALLBACK_MINUTES"),
             worker_replicas=env.positive_or("WORKER_REPLICAS", 3),
             max_active_per_customer=env.positive_or("MAX_ACTIVE_PER_CUSTOMER", 2),

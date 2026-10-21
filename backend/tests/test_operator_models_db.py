@@ -153,6 +153,64 @@ def test_an_organisations_ai_settings_and_budget(db: Database) -> None:
     assert _enable(api, operator, client, first, enabled=False).json()["model"]["changed"] is True
 
 
+def test_operator_rate_limits_are_validated_dynamic_and_audited(db: Database) -> None:
+    api = Api(db)
+    operator, client = _signed_in(api)
+    customer, admin_id = api.customer("RPM settings")
+    member_id, _ = api.add_user(customer, "member")
+    path = f"/api/operator/orgs/{customer}/model-rates"
+
+    initial = client.get(path)
+    assert initial.status_code == 200
+    assert initial.json()["organisation_rpm"] is None
+    assert {row["id"] for row in initial.json()["users"]} == {admin_id, member_id}
+
+    api.clock.advance(totp.STEP_SECONDS)
+    org_saved = client.put(path, json={"rpm": 600, "code": api.code(operator.secret)}, headers=CSRF)
+    assert org_saved.status_code == 200, org_saved.text
+    assert org_saved.json()["organisation_rpm"] == 600
+
+    user_path = f"/api/operator/orgs/{customer}/users/{member_id}/model-rate"
+    api.clock.advance(totp.STEP_SECONDS)
+    user_saved = client.put(user_path, json={"rpm": 120, "code": api.code(operator.secret)}, headers=CSRF)
+    assert user_saved.status_code == 200, user_saved.text
+    assert next(row["rpm"] for row in user_saved.json()["users"] if row["id"] == member_id) == 120
+
+    api.clock.advance(totp.STEP_SECONDS)
+    inherited = client.put(user_path, json={"rpm": None, "code": api.code(operator.secret)}, headers=CSRF)
+    assert inherited.status_code == 200, inherited.text
+    assert next(row["rpm"] for row in inherited.json()["users"] if row["id"] == member_id) is None
+
+    api.clock.advance(totp.STEP_SECONDS)
+    org_inherited = client.put(path, json={"rpm": None, "code": api.code(operator.secret)}, headers=CSRF)
+    assert org_inherited.status_code == 200, org_inherited.text
+    assert org_inherited.json()["organisation_rpm"] is None
+
+    assert client.put(path, json={"rpm": 601, "code": "000000"}, headers=CSRF).status_code == 422
+    assert client.put(user_path, json={"rpm": 121, "code": "000000"}, headers=CSRF).status_code == 422
+    assert (
+        client.put(
+            user_path, json={"rpm": 60, "code": wrong_code(api, operator.secret)}, headers=CSRF
+        ).status_code
+        == 403
+    )
+    assert operator.sql(_PLATFORM, a="model.rpm_set") == [
+        ("model.rpm_set", customer),
+        ("model.rpm_set", member_id),
+        ("model.rpm_set", member_id),
+        ("model.rpm_set", customer),
+    ]
+
+
+def test_operator_rate_limit_settings_default_existing_organisations(db: Database) -> None:
+    api = Api(db)
+    _, client = _signed_in(api)
+    customer, _ = api.customer("Existing RPM default")
+    row = client.get(f"/api/operator/orgs/{customer}/model-rates")
+    assert row.status_code == 200
+    assert row.json()["organisation_rpm"] is None
+
+
 def test_the_platform_defaults_through_the_api(db: Database) -> None:
     """C10, D8: every organisation still on the defaults follows a save; put back after."""
     api = Api(db)

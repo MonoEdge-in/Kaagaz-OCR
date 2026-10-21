@@ -26,6 +26,7 @@ import { autofileConfirm, orgConfirm, orgFocusId } from "./confirms";
 import type { OrgChange } from "./confirms";
 import { CreateDialog } from "./CreateDialog";
 import { OrgAiSettings, orgAiFocusId } from "./OrgAiSettings";
+import { OrgModelRates, orgModelRateFocusId } from "./OrgModelRates";
 import { afterDone, countText, deleteCountdown, filterOrgs, lastActivityText, operatorErrorMessage, orgStatus, searchSummary, userCounts } from "./logic";
 import admin from "@/components/admin/Admin.module.css";
 import styles from "./Operator.module.css";
@@ -55,6 +56,7 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
   const [changing, setChanging] = useState<Confirm | null>(null);
   const [adminsOf, setAdminsOf] = useState<Organisation | null>(null);
   const [modelsOf, setModelsOf] = useState<Organisation | null>(null);
+  const [ratesOf, setRatesOf] = useState<Organisation | null>(null);
   const [done, setDone] = useState("");
   const now = useMinuteNow();
 
@@ -183,6 +185,7 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
                       now={now}
                       onAdmins={() => setAdminsOf(org)}
                       onModels={() => setModelsOf(org)}
+                      onModelRates={() => setRatesOf(org)}
                       onChange={(change) => setChanging(orgConfirm(org, change, Date.now()))}
                       onAutofile={() => setChanging(autofileConfirm(org, !org.autofile_granted))}
                     />
@@ -205,6 +208,7 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
       )}
       {adminsOf && <AdminsDialog org={adminsOf} onClose={() => setAdminsOf(null)} />}
       {modelsOf && <OrgAiSettings org={modelsOf} onClose={() => setModelsOf(null)} onSaved={setDone} />}
+      {ratesOf && <OrgModelRates org={ratesOf} onClose={() => setRatesOf(null)} onSaved={setDone} />}
       {changing && (
         <ConfirmDialog
           confirm={changing}
@@ -235,10 +239,11 @@ function OrgRow(props: {
   now: number;
   onAdmins(): void;
   onModels(): void;
+  onModelRates(): void;
   onChange(change: OrgChange): void;
   onAutofile(): void;
 }) {
-  const { org, now, onAdmins, onModels, onChange, onAutofile } = props;
+  const { org, now, onAdmins, onModels, onModelRates, onChange, onAutofile } = props;
   const status = orgStatus(org);
   const countdown = org.status === "deleting" ? deleteCountdown(org.delete_after, now) : null;
   const size = formatBytes(org.storage_bytes);
@@ -295,6 +300,11 @@ function OrgRow(props: {
               aria-label={`AI settings of ${org.name}`}
             >
               AI settings
+            </button>
+          )}
+          {org.status !== "deleting" && (
+            <button id={orgModelRateFocusId(org.id)} type="button" className="btn" onClick={onModelRates} aria-label={`OpenRouter request limits of ${org.name}`}>
+              Request limits
             </button>
           )}
           {org.status !== "deleting" && (

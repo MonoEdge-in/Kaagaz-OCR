@@ -149,6 +149,7 @@ from PIL import Image
 from kaagaz.ai.openrouter import OpenRouterClient, PageReply, ProviderNotAllowed, process_gate
 from kaagaz.ai.replies import ModelOutputError, ModelUnavailable, billed, schema_problem
 from kaagaz.ai.usage import billed_as, record_call
+from kaagaz.db.engine import Database
 from kaagaz.db.page_reads import PageKey
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.reading.ocr import (
@@ -418,10 +419,13 @@ class GeminiEngine:
         self._read_with = self._model  # the last document's model, for ``version``
 
     @classmethod
-    def from_settings(cls, settings: Settings, *, pool: RapidOcrPool) -> "GeminiEngine":
+    def from_settings(
+        cls, settings: Settings, *, pool: RapidOcrPool, db: Database | None = None
+    ) -> "GeminiEngine":
         """The product's reader: the model client on this process's one gate (G9), and the
         process's ``RapidOcrPool`` (``wiring.build_gemini_engine`` gives it)."""
-        return cls(settings, client=OpenRouterClient(settings, gate=process_gate(settings)), pool=pool)
+        gate = process_gate(settings) if db is None else process_gate(settings, database=db)
+        return cls(settings, client=OpenRouterClient(settings, gate=gate), pool=pool)
 
     @property
     def version(self) -> str:

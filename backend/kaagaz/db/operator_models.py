@@ -55,6 +55,8 @@ _SET_AI_DEFAULTS = text(
     " CAST(:cd AS text), CAST(:st AS text), CAST(:cl AS text[]), CAST(:cdl AS text), CAST(:dyn AS boolean),"
     " :scan, :chat, :step)"
 )
+_MODEL_RATES = text("SELECT * FROM kaagaz_op_model_rates(:o, :c)")
+_SET_MODEL_RATE = text("SELECT kaagaz_op_set_model_rate(:o, :c, :u, :rpm, :step)")
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,6 +192,28 @@ def usage(conn: Connection, operator_id: str, start: datetime, end: datetime) ->
         )
         .mappings()
         .all()
+    )
+
+
+def model_rates(conn: Connection, operator_id: str, customer_id: str) -> Sequence[RowMapping]:
+    """One organisation's effective RPM setting and its users' optional overrides."""
+    return conn.execute(_MODEL_RATES, {"o": operator_id, "c": customer_id}).mappings().all()
+
+
+def set_model_rate(
+    conn: Connection,
+    operator_id: str,
+    customer_id: str,
+    user_id: str | None,
+    rpm: int | None,
+    step: int,
+) -> str:
+    """Set an organisation/user RPM override; None removes a user override."""
+    return str(
+        conn.execute(
+            _SET_MODEL_RATE,
+            {"o": operator_id, "c": customer_id, "u": user_id, "rpm": rpm, "step": step},
+        ).scalar_one()
     )
 
 

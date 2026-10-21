@@ -80,10 +80,15 @@ thinking tokens and cost.
 
 **Rate limit and circuit breaker** (G9) live in a ``ModelGate``, one per process
 (``process_gate``), shared by every client the process builds: the reader's, the chat
-client and the translator. Its limiter spaces calls ``60 * workers / MODEL_RPM`` seconds
-apart, so the workers together stay under ``MODEL_RPM``. ``workers`` is the number of
-processes that share the key: WORKER_REPLICAS copies of the worker plus the API (PRD 5 Q3,
-V7), which ``process_gate`` uses unless told otherwise. Each model has its own breaker
+client and the translator. Production requests queue in PostgreSQL and receive round-robin
+admission by organisation, then user, through the platform's 1,200 RPM schedule. There is
+no burst allowance. Organisation RPM caps are optional (1-600); user caps are optional
+(1-120) and remain inside the organisation's cap. Missing overrides use fair sharing, so a
+single active organisation can use the platform allowance while concurrent organisations
+take turns. A short lease removes tickets from crashed processes. The database connection
+is required for production model calls. Gates without one retain the local ``MODEL_RPM``
+limiter for isolated tooling and unit tests; no worker-count division provides distributed
+enforcement. Each model has its own breaker
 (council 11 Oct 2026, FINAL 2): after ``BREAKER_FAILURES`` failed requests in a row to it
 (408, 429, 5xx, a mid-reply error or no connection) it opens: for ``BREAKER_OPEN_SECONDS``
 every call to that model fails at once with ``circuit_open``, then one call is let through
@@ -120,6 +125,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -130,6 +136,7 @@ from typing import IO, Any
 
 from kaagaz.ai import replies, usage
 from kaagaz.ai.replies import REPAIR, ModelOutputError, ModelUnavailable, parse_reply
+from kaagaz.db.engine import Database
 from kaagaz.settings import (
     DEFAULT_PROVIDER,
     MEDIA_RESOLUTION_SHAPE,
@@ -669,11 +676,13 @@ class ModelGate:
         sleep: Callable[[float], None] = time.sleep,
         random: Callable[[], float] = random_module.random,
         wall_clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        database: Database | None = None,
     ) -> None:
-        """``workers``: the processes sharing MODEL_RPM (see the module docstring)."""
+        """``workers``: only used by the local fallback limiter when no database is set."""
         if workers < 1:
             raise ValueError("workers must be at least 1")
         self.clock, self.sleep, self.random, self.wall_clock = clock, sleep, random, wall_clock
+        self.database = database
         self._lock = threading.Lock()
         # The limiter: calls start at least this many seconds apart.
         self.interval = 60.0 * workers / settings.model_rpm
@@ -718,6 +727,33 @@ class ModelGate:
         """When this request may start under the limiter; the slot is booked only when it
         starts before ``deadline`` (``ModelUnavailable("rate_limited")`` if not, and
         ``model``'s probe, if this was it, is released)."""
+        if self.database is not None:
+            customer_id, user_id = usage.current_rate_scope()
+            request_id = str(uuid.uuid4())
+            waited = 0.0
+            while True:
+                wait = self.database.model_rate_slot(
+                    request_id,
+                    customer_id,
+                    user_id,
+                    max(0.0, deadline - self.clock()),
+                )
+                if wait < 0:
+                    with self._lock:
+                        self._breakers.setdefault(model, _Breaker()).probing = False
+                    raise ModelUnavailable("rate_limited")
+                if wait == 0:
+                    counter = LIMITER_WAIT.get()
+                    if counter is not None:
+                        counter[0] += waited
+                    return self.clock()
+                if self.clock() + wait >= deadline:
+                    self.database.model_rate_slot(request_id, customer_id, user_id, 0.0)
+                    with self._lock:
+                        self._breakers.setdefault(model, _Breaker()).probing = False
+                    raise ModelUnavailable("rate_limited")
+                self.sleep(wait)
+                waited += wait
         with self._lock:
             start = max(self.clock(), self._next_start)
             if start >= deadline:
@@ -767,21 +803,28 @@ class ModelGate:
             _log.error("openrouter key rejected", extra={"code": code})
 
 
-_PROCESS_GATES: dict[tuple[str, int, int], ModelGate] = {}
+_PROCESS_GATES: dict[tuple[str, int, int, int], ModelGate] = {}
 _PROCESS_GATES_LOCK = threading.Lock()
 
 
-def process_gate(settings: Settings, *, workers: int | None = None) -> ModelGate:
+def process_gate(
+    settings: Settings, *, workers: int | None = None, database: Database | None = None
+) -> ModelGate:
     """This process's one gate for OPENROUTER_BASE_URL at MODEL_RPM over ``workers``, on the
     real clock: every client built for the product shares it. ``workers`` None is
     WORKER_REPLICAS + 1, the worker copies and the API (PRD 5 V7)."""
     if workers is None:
         workers = settings.worker_replicas + 1
-    key = (settings.openrouter_base_url, settings.model_rpm, workers)
+    key = (
+        settings.openrouter_base_url,
+        settings.model_rpm,
+        workers,
+        0 if database is None else id(database.engine),
+    )
     with _PROCESS_GATES_LOCK:
         gate = _PROCESS_GATES.get(key)
         if gate is None:
-            gate = _PROCESS_GATES[key] = ModelGate(settings, workers=workers)
+            gate = _PROCESS_GATES[key] = ModelGate(settings, workers=workers, database=database)
         return gate
 
 

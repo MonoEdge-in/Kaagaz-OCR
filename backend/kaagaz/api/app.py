@@ -74,7 +74,7 @@ def create_app(
         queue=queue if queue is not None else _default_queue(settings),
         answers=answers if answers is not None else _default_answers(settings, database, now),
         clock=now,
-        model=model if model is not None else _default_model(settings),
+        model=model if model is not None else _default_model(settings, database),
     )
 
     @asynccontextmanager
@@ -154,10 +154,10 @@ def _default_queue(settings: Settings) -> ApiQueue:
     return SqsQueue(settings)
 
 
-def _default_model(settings: Settings) -> ModelClient | None:
+def _default_model(settings: Settings, db: Database) -> ModelClient | None:
     from kaagaz.ai.client import build_model_client
 
-    return build_model_client(settings)
+    return build_model_client(settings, db=db)
 
 
 def _default_answers(settings: Settings, db: Database, clock: Callable[[], datetime]) -> Answers:
@@ -166,6 +166,8 @@ def _default_answers(settings: Settings, db: Database, clock: Callable[[], datet
 
     # The question translation (council 4 Oct 2026) waits at most its own timeout; the service
     # uses it only with ANSWER_TRANSLATE_QUESTION on.
-    translator = build_model_client(settings, chat_timeout_seconds=settings.model_translate_timeout_seconds)
-    model = build_model_client(settings)
+    translator = build_model_client(
+        settings, chat_timeout_seconds=settings.model_translate_timeout_seconds, db=db
+    )
+    model = build_model_client(settings, db=db)
     return AnswerService(db=db, model=model, settings=settings, clock=clock, translator=translator)
