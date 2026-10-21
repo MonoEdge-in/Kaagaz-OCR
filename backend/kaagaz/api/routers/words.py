@@ -285,6 +285,31 @@ def add_my_word(body: NewWordBody, user: User, context: Context, response: Respo
                 page_no=spot.page_no,
                 region=spot.region.model_dump(),
             )
+            suggestion = organization_words_sql.submit(
+                conn,
+                customer_id,
+                me,
+                word=word.text,
+                word_fold=word.fold,
+                meaning=meaning.text,
+                meaning_fold=meaning.fold,
+                document_id=str(spot.document_id),
+                page_no=spot.page_no,
+            )
+            if suggestion == "too_many_words":
+                raise ApiError(
+                    409, "too_many_words", "Your organization has reached its 500 shared word limit."
+                )
+            if suggestion is not None:
+                audit.record(
+                    conn,
+                    customer_id,
+                    actor_user_id=me,
+                    action="organization_word.suggested",
+                    target_type="organization_word_suggestion",
+                    target_id=suggestion.id,
+                    details={"status": "pending", "document_scoped": True},
+                )
         if result.outcome != "already" or documents or body.spot is not None:
             action = "user_word.changed" if result.outcome == "replaced" else "user_word.added"
             _audit(
@@ -353,9 +378,7 @@ def list_organization_words(user: User, context: Context) -> dict[str, Any]:
 
 
 @router.post("/organization/words", status_code=201)
-def suggest_organization_word(
-    body: OrganizationWordBody, user: User, context: Context
-) -> dict[str, Any]:
+def suggest_organization_word(body: OrganizationWordBody, user: User, context: Context) -> dict[str, Any]:
     _same_user(body.user_id, user, SESSION_CHANGED)
     word, built_in = _word_text(body.word)
     meaning = _meaning_text(body.meaning)

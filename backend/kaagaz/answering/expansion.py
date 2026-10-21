@@ -120,7 +120,9 @@ NO_EXPANSION = Expansion()
 
 
 class WordSource(Protocol):
-    def words(self, customer_id: str, user_id: str) -> Sequence[PersonalWord]:
+    def words(
+        self, customer_id: str, user_id: str, *, document_id: str | None = None
+    ) -> Sequence[PersonalWord]:
         """Private words plus approved organization words."""
         ...
 
@@ -131,17 +133,19 @@ class PgWords:
     def __init__(self, db: Database) -> None:
         self._db = db
 
-    def words(self, customer_id: str, user_id: str) -> list[PersonalWord]:
+    def words(self, customer_id: str, user_id: str, *, document_id: str | None = None) -> list[PersonalWord]:
         with self._db.user(customer_id, user_id) as conn:
             rows = user_words.list_words(conn, customer_id, user_id)
-            shared = organization_words.approved(conn, customer_id)
+            shared = organization_words.approved(conn, customer_id, document_id=document_id)
         personal = [PersonalWord(row.word, row.meaning) for row in rows]
         seen = {(fold(row.word), fold(row.meaning)) for row in personal}
-        return personal + [
-            PersonalWord(row.word, row.meaning, "organization")
-            for row in shared
-            if (fold(row.word), fold(row.meaning)) not in seen
-        ]
+        words = personal.copy()
+        for row in shared:
+            key = (fold(row.word), fold(row.meaning))
+            if key not in seen:
+                words.append(PersonalWord(row.word, row.meaning, "organization"))
+                seen.add(key)
+        return words
 
 
 def expand(question: str, words: Sequence[PersonalWord]) -> Expansion:
