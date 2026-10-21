@@ -34,6 +34,8 @@
 import Link from "next/link";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent, RefCallback } from "react";
+import { LabelChip } from "@/components/files/LabelChip";
+import { FILES_TEXT, NEWER_SPOKEN, versionCell } from "@/components/files/words";
 import { Icon } from "@/components/ui/Icon";
 import { PasswordField } from "@/components/ui/PasswordField";
 import { beingRead, canReprocess } from "@/components/viewer/reprocess";
@@ -57,6 +59,7 @@ import type { FolderTree } from "./folderTree";
 import { BusyLabel } from "./BusyLabel";
 import { movableItems } from "./library";
 import type { EditAction, RowAction } from "./library";
+import type { SortKey, SortOrder } from "./libraryQuery";
 import { rowsInPlace } from "./listMerge";
 import {
   UNDERSTANDING_TEXT,
@@ -116,9 +119,71 @@ interface Props extends RowEvents {
   suggestions: readonly string[];
   /** A moved document leaves this list (a folder is shown), so focus goes to the list. */
   movedLeaves: boolean;
+  /** Q4: the list's sort and what a header press does; left out, the headers are words only. */
+  sorting?: Sorting;
 }
 
-export function DocumentsTable({ items: listed, inTrash, me, now, tree, tags, suggestions, movedLeaves, ...events }: Props) {
+/** The list's sort (Q4) and the header press that changes it. */
+export interface Sorting {
+  sort: SortKey;
+  order: SortOrder;
+  onSort(key: SortKey): void;
+}
+
+/** A column header that sorts (Q4): a button, with aria-sort on the header while it is the sort. */
+function SortHeader({
+  className,
+  column,
+  label,
+  sorting,
+}: {
+  className: string | undefined;
+  column: SortKey;
+  label: string;
+  sorting: Sorting | undefined;
+}) {
+  const active = sorting?.sort === column;
+  const ascending = sorting?.order === "asc";
+  return (
+    <th
+      scope="col"
+      role="columnheader"
+      className={className}
+      aria-sort={active ? (ascending ? "ascending" : "descending") : undefined}
+    >
+      {sorting ? (
+        <button
+          type="button"
+          className={styles.sortButton}
+          title={FILES_TEXT.sortBy(label)}
+          onClick={() => sorting.onSort(column)}
+        >
+          {label}
+          {active && (
+            <span className={styles.sortMark} aria-hidden="true">
+              {ascending ? "↑" : "↓"}
+            </span>
+          )}
+        </button>
+      ) : (
+        label
+      )}
+    </th>
+  );
+}
+
+export function DocumentsTable({
+  items: listed,
+  inTrash,
+  me,
+  now,
+  tree,
+  tags,
+  suggestions,
+  movedLeaves,
+  sorting,
+  ...events
+}: Props) {
   const { onRemoved } = events;
   // The rows shown when the pointer came onto the list; null while it is elsewhere.
   const [pinned, setPinned] = useState<ReadonlySet<string> | null>(null);
@@ -308,14 +373,26 @@ export function DocumentsTable({ items: listed, inTrash, me, now, tree, tags, su
                 <span className="visually-hidden">Select</span>
               )}
             </th>
-            <th scope="col" role="columnheader" className={styles.nameColumn}>Name</th>
+            {/* File management F5, Q4 (Changed on purpose, PRD 1 screens): every column with a sort key sorts. */}
+            <SortHeader className={styles.nameColumn} column="name" label={FILES_TEXT.columns.name} sorting={sorting} />
             <th scope="col" role="columnheader" className={styles.statusColumn}>Status</th>
-            <th scope="col" role="columnheader" className={styles.typeColumn}>Type</th>
-            <th scope="col" role="columnheader" className={styles.sizeColumn}>Size</th>
-            <th scope="col" role="columnheader" className={styles.uploadedColumn}>
-              {inTrash ? "Trashed" : "Uploaded"}
-            </th>
-            <th scope="col" role="columnheader" className={styles.byColumn}>By</th>
+            <SortHeader className={styles.typeColumn} column="doc_type" label={FILES_TEXT.columns.type} sorting={sorting} />
+            <SortHeader className={styles.ownerColumn} column="owner" label={FILES_TEXT.columns.owner} sorting={sorting} />
+            <SortHeader className={styles.labelColumn} column="sensitivity" label={FILES_TEXT.columns.label} sorting={sorting} />
+            <SortHeader className={styles.versionColumn} column="version" label={FILES_TEXT.columns.version} sorting={sorting} />
+            <SortHeader
+              className={styles.docDateColumn}
+              column="document_date"
+              label={FILES_TEXT.columns.documentDate}
+              sorting={sorting}
+            />
+            <SortHeader
+              className={styles.uploadedColumn}
+              column="updated_at"
+              label={inTrash ? "Trashed" : FILES_TEXT.columns.updatedAt}
+              sorting={inTrash ? undefined : sorting}
+            />
+            <th scope="col" role="columnheader" className={styles.byColumn}>{FILES_TEXT.columns.updatedBy}</th>
             <th scope="col" role="columnheader" className={styles.actionsColumn}>
               <span className="visually-hidden">Actions</span>
             </th>
@@ -542,9 +619,10 @@ const PROGRESS_LABEL: Record<BulkAction, string> = {
 
 type Confirming = "trash" | "forever" | null;
 
-// In Trash the time column is when it was trashed; elsewhere, when it was uploaded.
+// In Trash the time column is when it was trashed; elsewhere, its last change (File management
+// O3: the newest upload or details change), or when it was uploaded on an older reply.
 const whenOf = (document: DocumentSummary, inTrash: boolean) =>
-  inTrash && document.deleted_at !== null ? document.deleted_at : document.created_at;
+  inTrash && document.deleted_at !== null ? document.deleted_at : (document.updated_at ?? document.created_at);
 
 // Worked out here, so a row renders again only when its own words change, not on every poll.
 // Shown "2h ago" (shortWhen); read out "2 hours ago, 16 Oct 2026, 2:05 pm".
@@ -683,8 +761,29 @@ const DocumentRow = memo(function DocumentRow({
     setConfirming(null);
   }
 
-  const by = document.uploaded_by_name;
+  // O3: who changed it last (the newest upload or details change); the uploader on an older reply.
+  const by = document.updated_by ?? document.uploaded_by_name;
   const when = whenOf(document, inTrash);
+  // F5: "v1 · newer?" while a newer version of this family waits to be confirmed.
+  const newer = document.pending_suggestion?.role === "candidate";
+  const owner = document.owner?.name ?? null;
+  const version = (
+    <>
+      {versionCell(document.version_no, false)}
+      {newer && (
+        <span className={styles.newer}>
+          <span aria-hidden="true"> · newer?</span>
+          <span className="visually-hidden">{`, ${NEWER_SPOKEN}`}</span>
+        </span>
+      )}
+    </>
+  );
+  const dash = (
+    <>
+      <span aria-hidden="true">—</span>
+      <span className="visually-hidden">Not known</span>
+    </>
+  );
   // D11: the whole row opens the document. A click handler, not a stretched link: an
   // absolutely placed ::after stays in its row only where the browser makes a <tr> its
   // containing block, and some (Safari) do not, so it covered the page and any click
@@ -738,6 +837,23 @@ const DocumentRow = memo(function DocumentRow({
         <span className={styles.bandType}>
           {typeLabel(document.detected_type)} · {docTypeLabel(document.doc_type)} · {formatBytes(document.size_bytes)}
         </span>
+        {/* F5: the label, version, owner and date, each here until its own column has room. */}
+        <span className={styles.facts}>
+          {document.sensitivity && (
+            <span className={styles.factLabel}>
+              <LabelChip label={document.sensitivity} />
+            </span>
+          )}
+          <span className={styles.factVersion}>{version}</span>
+          {owner && (
+            <span className={styles.factOwner}>
+              {FILES_TEXT.columns.owner}: {owner}
+            </span>
+          )}
+          {document.document_date && (
+            <span className={styles.factDate}>{FILES_TEXT.dated(formatDate(document.document_date))}</span>
+          )}
+        </span>
         {/* Where it is filed, so a move shows in All documents too (16 Oct 2026). */}
         {!inTrash && document.folder_id && tree.byId.has(document.folder_id) && (
           <span className={styles.inFolder}>In {pathLabel(tree, document.folder_id)}</span>
@@ -765,8 +881,17 @@ const DocumentRow = memo(function DocumentRow({
         <span className={styles.docType}>{docTypeLabel(document.doc_type)}</span>
         <span className={`${styles.bandSize} tabular`}>{formatBytes(document.size_bytes)}</span>
       </td>
-      <td role="cell" className={`${styles.meta} ${styles.sizeCell} tabular`}>
-        {formatBytes(document.size_bytes)}
+      <td role="cell" className={`${styles.meta} ${styles.ownerCell}`}>
+        {owner ? <WrapName name={owner} /> : dash}
+      </td>
+      <td role="cell" className={`${styles.meta} ${styles.labelCell}`}>
+        {document.sensitivity ? <LabelChip label={document.sensitivity} /> : dash}
+      </td>
+      <td role="cell" className={`${styles.meta} ${styles.versionCell} tabular`}>
+        {version}
+      </td>
+      <td role="cell" className={`${styles.meta} ${styles.docDateCell} tabular`}>
+        {document.document_date ? formatDate(document.document_date) : dash}
       </td>
       <td role="cell" className={`${styles.meta} ${styles.uploadedCell}`}>
         {inTrash && <span className="visually-hidden">Trashed </span>}
@@ -777,14 +902,14 @@ const DocumentRow = memo(function DocumentRow({
         <span className="visually-hidden">{whenSpoken}</span>
         {by && (
           <span className={styles.bandBy} title={by}>
-            <span className="visually-hidden">Uploaded </span>by {by}
+            <span className="visually-hidden">Updated </span>by {by}
           </span>
         )}
       </td>
       <td role="cell" className={`${styles.meta} ${styles.byCell}`} data-empty={by ? undefined : "true"}>
         {by ? (
           <>
-            <span className={styles.byLabel}>Uploaded by </span>
+            <span className={styles.byLabel}>Updated by </span>
             <span className={styles.byName} title={by}>
               <WrapName name={by} />
             </span>

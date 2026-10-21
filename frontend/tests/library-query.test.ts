@@ -68,7 +68,9 @@ describe("dates", () => {
 });
 
 describe("the library in the page address", () => {
+  // Changed on purpose (PRD 1, screens): File management's filters and sort are in the state too.
   const everything: LibraryState = {
+    ...ALL_DOCUMENTS,
     folderId: FOLDER,
     subfolders: true,
     trash: false,

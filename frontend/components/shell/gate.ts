@@ -63,10 +63,11 @@ export function signedOutMessage(query: Record<string, string | string[] | undef
   return null;
 }
 
-/** Where a sign-in goes: /admin when it came from there (?next=/admin), else /documents.
- * Only these two, so the address can never send anyone to another site. */
+/** Where a sign-in goes: /admin when it came from there (?next=/admin), else the dashboard,
+ * the home screen (File management D1). Only these two, so the address can never send anyone
+ * to another site. */
 export function pathAfterSignIn(query: Record<string, string | string[] | undefined>): string {
-  return query.next === "/admin" ? "/admin" : "/documents";
+  return query.next === "/admin" ? "/admin" : "/dashboard";
 }
 
 /**

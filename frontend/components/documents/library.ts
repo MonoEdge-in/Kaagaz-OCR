@@ -2,7 +2,7 @@
 // documents screen and the viewer header. Pure functions, unit tested in node
 // (tests/shell-documents.test.ts). The server checks everything again.
 
-import { ApiError, fileUrl } from "@/lib/api";
+import { ApiError, downloadUrl } from "@/lib/api";
 import { docTypeLabel, formatDate, typeLabel } from "@/lib/format";
 import type {
   DetectedType,
@@ -20,9 +20,10 @@ import { documentsCount } from "./trash";
 // (backend/kaagaz/api/routers/documents.py, _SERVABLE).
 const SERVABLE: readonly DocumentStatus[] = ["clean", "ready", "needs_reader"];
 
-/** Where "Download original" points: always through the API. null when the server would refuse. */
+/** Where "Download original" points: always through the API, with ?download=1 so the
+ * download is logged (File management A2). null when the server would refuse. */
 export function downloadHref(document: Pick<DocumentSummary, "id" | "status">): string | null {
-  return SERVABLE.includes(document.status) ? fileUrl(document.id) : null;
+  return SERVABLE.includes(document.status) ? downloadUrl(document.id) : null;
 }
 
 export type EditAction = "rename" | "move" | "tags";

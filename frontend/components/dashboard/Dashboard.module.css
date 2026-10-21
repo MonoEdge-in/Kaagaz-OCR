@@ -1,0 +1,206 @@
+/* The dashboard (File management D1). Tokens only; flat, square, hairline. The bars are CSS
+   widths on one scale; nothing animates its size. */
+
+.uploadRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-3);
+}
+
+.note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 9.5rem), 1fr));
+  gap: var(--space-3);
+}
+
+.tile {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  padding: var(--space-4);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  color: var(--text-primary);
+  text-decoration: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .tileLink:hover {
+    border-color: var(--border-strong);
+    background: var(--bg-hover);
+  }
+}
+
+.tileLabel {
+  font-size: var(--fs-label);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.tileValue {
+  font-family: var(--font-display);
+  font-size: var(--fs-2xl);
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.tileExtra {
+  font-size: var(--fs-sm);
+  color: var(--accent);
+}
+
+.columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-4);
+}
+
+@media (min-width: 900px) {
+  .columns {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: var(--space-4);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+}
+
+.heading {
+  margin: 0;
+  font-size: var(--fs-base);
+}
+
+.bars,
+.departments,
+.recent,
+.activity {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.bar {
+  display: grid;
+  grid-template-columns: minmax(0, 8rem) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: var(--fs-sm);
+}
+
+.barName {
+  overflow-wrap: anywhere;
+}
+
+.barTrack {
+  display: block;
+  height: 12px;
+  background: var(--bg-subdued);
+  border-radius: 2px;
+}
+
+.barFill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+}
+
+/* High contrast: the system's text colour, so the bars stay visible. */
+@media (forced-colors: active) {
+  .barFill {
+    background: CanvasText;
+  }
+}
+
+.barCount {
+  min-width: 3ch;
+  text-align: end;
+}
+
+.departments {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 11rem), 1fr));
+  gap: var(--space-2);
+}
+
+.department {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  height: 100%;
+  min-width: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: 2px;
+  color: var(--text-primary);
+  text-decoration: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .department:hover {
+    background: var(--bg-hover);
+  }
+}
+
+.outside {
+  border-style: dashed;
+  border-color: var(--control-edge);
+}
+
+.departmentName {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.hint {
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+
+.recentRow {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding-block: var(--space-1);
+  border-bottom: 1px solid var(--border);
+  min-width: 0;
+}
+
+.recentRow:last-child {
+  border-bottom: 0;
+}
+
+.recentName {
+  overflow-wrap: anywhere;
+}
+
+.recentMeta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}

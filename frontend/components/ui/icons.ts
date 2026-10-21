@@ -38,6 +38,7 @@ export const ICON_NAMES = [
   "words",
   "to-top",
   "more",
+  "home",
 ] as const;
 
 export type IconName = (typeof ICON_NAMES)[number];
@@ -78,6 +79,8 @@ const LENS = [circle(11, 11, 6.5), path("M16 16l4.5 4.5")];
 const EYE = path("M2.5 12C4.5 8 8 5.5 12 5.5s7.5 2.5 9.5 6.5c-2 4-5.5 6.5-9.5 6.5S4.5 16 2.5 12Z");
 
 export const ICONS: Record<IconName, readonly IconShape[]> = {
+  // A house: the roof and the walls with a door (the dashboard, File management D1).
+  home: [path("M3.5 11L12 4l8.5 7"), path("M6 9.5V20h12V9.5"), path("M10 20v-5h4v5")],
   documents: [
     path("M8 3h7l4 4v11a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z"),
     path("M15 3v4h4"),

@@ -100,6 +100,106 @@ export interface DocumentSummary {
   // Feature 28: Kaagaz filed it into its folder by type ("filed", Undo offered), or could not
   // tell where it belongs ("not_filed"); null when auto-filing had nothing to do with it.
   autofile?: "filed" | "not_filed" | null;
+  // File management (PRD 1, Phase 2: O1 to O3, F5, Q3): the family's owner and label, this
+  // version's note, the card's date, the last change and who made it, its department, and a
+  // version suggestion waiting for a person (V5). Optional: older replies lack them. (The
+  // list's count of versions is left out: the detail's `versions` is the list itself.)
+  owner?: { id: string; name: string | null } | null;
+  sensitivity?: Sensitivity;
+  version_note?: string | null;
+  document_date?: string | null; // YYYY-MM-DD
+  updated_at?: string | null;
+  updated_by?: string | null;
+  department?: { id: string; name: string } | null;
+  // "new": this document may be a new version of another; "candidate": a newer one waits on this family.
+  pending_suggestion?: { id: string; role: "new" | "candidate" } | null;
+}
+
+/** The four sensitivity labels (O2). They inform; they restrict nothing. */
+export type Sensitivity = "public" | "internal" | "confidential" | "restricted";
+
+/** What a folder is (F1): a department is a top-level folder an admin made. */
+export type FolderKind = "department" | "category" | "party" | "property" | "year" | "custom";
+
+/**
+ * A suggestion that an upload is a new version of another family (V5, V6): GET
+ * /documents/{id}'s `version_suggestion`, and GET /batches/{id}'s `version_suggestions`. The
+ * scores are 0 to 1, or null when that signal did not count; `reasons` are the server's plain words.
+ */
+export interface VersionSuggestion {
+  id: string;
+  role: "new" | "candidate"; // this document is the new upload, or its family is the candidate
+  outcome: "suggested" | "auto";
+  status: "pending" | "accepted" | "rejected" | "undone";
+  document: { id: string; name: string }; // the new upload
+  candidate: { family_id: string; id: string; name: string }; // id: the family's current version
+  next_version_no: number; // "Make it version N"
+  text_overlap: number | null;
+  name_similarity: number | null;
+  shared_identifier: string | null; // its kind, such as "survey_number"
+  reasons?: string | string[] | null;
+}
+
+/** GET /api/dashboard (D1, D2). */
+export interface Dashboard {
+  tiles: {
+    documents: number;
+    documents_this_week: number;
+    departments: number;
+    new_versions_this_month: number;
+    versions_to_confirm: number;
+  };
+  by_type: { doc_type: DocType | null; count: number }[];
+  departments: { id: string; name: string; sort_order: number | null; files: number }[];
+  not_in_department: number;
+  recent: {
+    id: string;
+    display_name: string;
+    doc_type: DocType | null;
+    sensitivity: Sensitivity;
+    version_no: number;
+    status: DocumentStatus;
+    created_at: string;
+  }[];
+  activity: ActivityEntry[];
+}
+
+/** One row of a timeline (A5) or of the admin log: an AuditEntry with the names filled in. */
+export type ActivityEntry = AuditEntry;
+
+/** A page of a timeline or of the admin log, newest first; `next_cursor` asks for more (null: no more). */
+export interface ActivityPage {
+  items: ActivityEntry[];
+  next_cursor?: string | null;
+  total?: number; // the admin log only
+}
+
+/** A question this person asked about the document (P2), newest first. Plain text. */
+export interface DocumentQuestion {
+  id: string;
+  conversation_id: string;
+  question: string;
+  asked_at: string;
+  answer: string | null;
+}
+
+/** GET /api/documents/{id}/compare?with= (V11): from `with` (left) to `id` (right), page by page. */
+export type CompareKind = "same" | "added" | "removed";
+export interface CompareRun {
+  kind: CompareKind;
+  text: string;
+}
+export interface DocumentCompare {
+  left_id: string;
+  right_id: string;
+  summary: string; // "2 changes on page 2"
+  pages: { page_no: number; changes: number; truncated: boolean; runs: CompareRun[] }[];
+}
+
+/** An active person of this company, for the owner picker and the filters. */
+export interface Person {
+  id: string;
+  name: string;
 }
 
 /** A file's first unreadable page, for the tray's "Couldn't read page n" (U1): what
@@ -119,12 +219,16 @@ export interface BatchView {
   pages_read: number; // of pages_total (U1); the bar weighs each document's own fraction (batchTray.ts)
   pages_total: number;
   time_left: TimeLeft | null; // until the whole drop is ready; null when nothing is left to read
+  // V5 (stage 2): the files of this drop that look like new versions, each waiting for a person.
+  version_suggestion_count?: number;
+  version_suggestions?: VersionSuggestion[];
 }
 
 /** GET /api/search (PRD 3 Q2): the documents found, best first, at most SEARCH_MAX_DOCUMENTS. */
 export interface DocumentSearch {
   documents: FoundDocument[];
   story_matches?: unknown; // checked by lib/storyMatches.ts before use
+  understood_words?: { word: string; meaning: string }[]; // Q2: this person's own words used
 }
 
 /** How well a question tells a story the user wrote again (S3): never a score. */
@@ -145,6 +249,11 @@ export interface FoundDocument {
   score: number;
   best: { snippet: string; page_from: number; page_to: number; regions: Region[] }; // its best piece
   more: number; // its other pieces among the candidates
+  // Q5 (stage 3): its version, label and folder path.
+  version_no?: number;
+  versions?: number;
+  sensitivity?: Sensitivity;
+  folder_path?: string | null;
 }
 
 /** What kind of document the AI model's card says it is (PRD 2, D1). */
@@ -197,6 +306,11 @@ export interface DocumentVersion {
   status: DocumentStatus;
   is_current: boolean; // the one search and chat use: the highest version that is ready
   created_at: string;
+  // V12 (stage 2): its note, who uploaded it, and how it joined the family.
+  version_note?: string | null;
+  display_name?: string;
+  uploaded_by?: { id: string; name: string | null } | null;
+  joined?: "uploaded" | "linked" | "auto";
 }
 
 // A folder of this customer. The API sends the flat list; the screen builds the
@@ -207,6 +321,8 @@ export interface Folder {
   name: string;
   parent_id: string | null; // null: at the top level
   created_at: string;
+  kind?: FolderKind; // F1; left out by older replies: custom
+  sort_order?: number | null; // a department's place on the dashboard and in the tree
 }
 
 export interface Tag {
@@ -392,6 +508,9 @@ export interface DocumentDetail extends DocumentSummary {
   invoice: Invoice | null; // null for a document with no invoices row
   links: DocumentLink[]; // current, ready documents sharing an identifier (PRD 3 Y2); at most 50
   read_model: string | null; // the model it asked to be read with (MS5); null: the organisation's default
+  // P1, V6 (stage 2): who uploaded version 1, and a version suggestion about this document.
+  author_name?: string | null;
+  version_suggestion?: VersionSuggestion | null;
 }
 
 /** A related document (PRD 3 Y2). The value is stored normalised: no spaces, lower case. */
@@ -770,6 +889,12 @@ export interface CustomerSettings {
 export interface AuditEntry {
   id: number;
   action: string;
+  // File management A3, A5: the row's family, its document (deleted: true once gone) and folder,
+  // names filled in when shown; details hold resolved names (folder_path, from_name, to_name).
+  actor_id?: string | null;
+  family_id?: string | null;
+  document?: { id: string; name: string | null; version_no: number | null; deleted: boolean } | null;
+  folder?: { id: string; path: string } | null;
   actor_name: string | null;
   target_type: string | null;
   target_id: string | null;

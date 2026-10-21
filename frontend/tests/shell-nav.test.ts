@@ -21,13 +21,14 @@ import type { Me, Role, SessionScope } from "@/lib/types";
 describe("navLinks", () => {
   const labels = (role: Role, scope: SessionScope) => navLinks(role, scope).map((l) => l.label);
 
-  it("gives a member Documents, Ask and My words only", () => {
-    expect(labels("member", "app")).toEqual(["Documents", "Ask", "My words"]);
+  // Changed on purpose (PRD 1, screens): File management D1, Home (the dashboard) comes first for everyone.
+  it("gives a member Home, Documents, Ask and My words only", () => {
+    expect(labels("member", "app")).toEqual(["Home", "Documents", "Ask", "My words"]);
   });
 
   it("gives a member no Review or Admin link, by label or by address", () => {
     const links = navLinks("member", "app");
-    expect(links.map((l) => l.href)).toEqual(["/documents", "/chat", "/words"]);
+    expect(links.map((l) => l.href)).toEqual(["/dashboard", "/documents", "/chat", "/words"]);
     for (const link of links) {
       expect(link.href).not.toMatch(/^\/(review|admin)(\/|$)/);
       expect(link.label).not.toMatch(/review|admin/i);
@@ -35,22 +36,22 @@ describe("navLinks", () => {
   });
 
   it("adds Review for a reviewer", () => {
-    expect(labels("reviewer", "app")).toEqual(["Documents", "Ask", "My words", "Review"]);
+    expect(labels("reviewer", "app")).toEqual(["Home", "Documents", "Ask", "My words", "Review"]);
   });
 
   // PRD A1: the same admin account signed in at /login sees no Admin menu.
   it("gives an admin with an app session Review but no Admin", () => {
-    expect(labels("admin", "app")).toEqual(["Documents", "Ask", "My words", "Review"]);
+    expect(labels("admin", "app")).toEqual(["Home", "Documents", "Ask", "My words", "Review"]);
     expect(navLinks("admin", "app").map((l) => l.href)).not.toContain("/admin");
   });
 
   it("adds Admin only for an admin with an admin session", () => {
-    expect(labels("admin", "admin")).toEqual(["Documents", "Ask", "My words", "Review", "Admin"]);
+    expect(labels("admin", "admin")).toEqual(["Home", "Documents", "Ask", "My words", "Review", "Admin"]);
   });
 
   it("never gives Admin to a non-admin, whatever the scope says", () => {
-    expect(labels("member", "admin")).toEqual(["Documents", "Ask", "My words"]);
-    expect(labels("reviewer", "admin")).toEqual(["Documents", "Ask", "My words", "Review"]);
+    expect(labels("member", "admin")).toEqual(["Home", "Documents", "Ask", "My words"]);
+    expect(labels("reviewer", "admin")).toEqual(["Home", "Documents", "Ask", "My words", "Review"]);
   });
 
   it("points Ask at /chat", () => {
