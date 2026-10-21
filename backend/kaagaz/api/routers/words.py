@@ -44,11 +44,12 @@ from kaagaz.answering.words_text import (
     fold,
     is_built_in,
 )
-from kaagaz.api.auth import CurrentUser, User, require_feature
+from kaagaz.api.auth import CurrentUser, Reviewer, User, require_feature
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.routers.documents import _same_user
 from kaagaz.db import audit, listing
+from kaagaz.db import organization_words as organization_words_sql
 from kaagaz.db import user_words as words_sql
 
 router = APIRouter(dependencies=[Depends(require_feature("my_words"))])  # 0038: 403 feature_off
@@ -140,6 +141,21 @@ class WordChangeBody(BaseModel):
     meaning: str | None = Field(default=None, max_length=4 * MEANING_MAX)
     confirm_another: bool = False
     replace_id: uuid.UUID | None = None
+    user_id: str | None = None
+
+
+class OrganizationWordBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    word: str = Field(max_length=4 * WORD_MAX)
+    meaning: str = Field(max_length=4 * MEANING_MAX)
+    user_id: str | None = None
+
+
+class OrganizationWordDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["approve", "reject"]
     user_id: str | None = None
 
 
@@ -325,6 +341,74 @@ def delete_my_word(
             raise ApiError(404, "not_found")
         _audit(conn, user, "user_word.deleted", str(word_id))
     return Response(status_code=204)
+
+
+@router.get("/organization/words")
+def list_organization_words(user: User, context: Context) -> dict[str, Any]:
+    """Approved shared words, plus this member's submissions and reviewer queue."""
+    reviewer = user.role in {"reviewer", "admin"}
+    with context.db.user(user.customer_id, user.user_id) as conn:
+        rows = organization_words_sql.visible(conn, user.customer_id, user.user_id, reviewer=reviewer)
+    return {"items": [asdict(row) for row in rows]}
+
+
+@router.post("/organization/words", status_code=201)
+def suggest_organization_word(
+    body: OrganizationWordBody, user: User, context: Context
+) -> dict[str, Any]:
+    _same_user(body.user_id, user, SESSION_CHANGED)
+    word, built_in = _word_text(body.word)
+    meaning = _meaning_text(body.meaning)
+    with context.db.user(user.customer_id, user.user_id) as conn:
+        row = organization_words_sql.submit(
+            conn,
+            user.customer_id,
+            user.user_id,
+            word=word.text,
+            word_fold=word.fold,
+            meaning=meaning.text,
+            meaning_fold=meaning.fold,
+        )
+        if row == "too_many_words":
+            raise ApiError(409, "too_many_words", "Your organization has reached its 500 shared word limit.")
+        if row is None:
+            raise ApiError(409, "conflict", "This word and meaning are already pending or approved.")
+        audit.record(
+            conn,
+            user.customer_id,
+            actor_user_id=user.user_id,
+            action="organization_word.suggested",
+            target_type="organization_word_suggestion",
+            target_id=row.id,
+            details={"status": "pending"},
+        )
+    return {"item": asdict(row), "warning": "built_in" if built_in else None}
+
+
+@router.post("/organization/words/{suggestion_id}/decision")
+def decide_organization_word(
+    suggestion_id: uuid.UUID, body: OrganizationWordDecision, user: Reviewer, context: Context
+) -> dict[str, Any]:
+    _same_user(body.user_id, user, SESSION_CHANGED)
+    status: Literal["approved", "rejected"] = "approved" if body.decision == "approve" else "rejected"
+    with context.db.user(user.customer_id, user.user_id) as conn:
+        row = organization_words_sql.decide(
+            conn, user.customer_id, str(suggestion_id), user.user_id, status=status
+        )
+        if row is None:
+            raise ApiError(
+                409, "conflict", "This suggestion cannot be decided by you or is no longer pending."
+            )
+        audit.record(
+            conn,
+            user.customer_id,
+            actor_user_id=user.user_id,
+            action=f"organization_word.{status}",
+            target_type="organization_word_suggestion",
+            target_id=row.id,
+            details={"status": status},
+        )
+    return {"item": asdict(row)}
 
 
 @router.get("/documents/{document_id}/my-words")

@@ -162,7 +162,7 @@ def test_an_answer_that_used_a_word_is_needs_review_and_says_so() -> None:
 def test_a_capped_answer_is_needs_review_even_when_the_score_passed(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(service, "enough_evidence", lambda *_: "score")
     answer = ask("khilwa Bhiwandi?", [LEASE], Words(KHILWA), says(LEASE.text))
-    assert (answer.label, answer.understood_words) == ("needs_review", (KHILWA,))
+    assert (answer.label, answer.understood_words) == ("needs_review", ((*KHILWA, "personal"),))
 
 
 def test_the_number_asked_still_comes_first() -> None:
@@ -212,7 +212,15 @@ def test_a_meaning_never_reaches_the_model_or_the_sentences() -> None:
     assert model.prompts and "warehouse" in prompts  # the evidence's own word, as a control
     assert not re.search("ignore|previous|instructions|paid", prompts)
     assert "paid" not in " ".join(sentence.text for sentence in answer.sentences)
-    assert answer.understood_words == (KHILWA, INJECTED)
+    assert answer.understood_words == ((*KHILWA, "personal"), (*INJECTED, "personal"))
+
+
+def test_organization_word_is_marked_as_shared_in_chat_notes() -> None:
+    from kaagaz.answering.expansion import expand
+
+    assert expand("khilwa", [PersonalWord("khilwa", "warehouse", "organization")]).understood() == (
+        ("khilwa", "warehouse", "organization"),
+    )
 
 
 def test_a_meaning_never_backs_an_english_name(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -46,6 +46,7 @@ import type {
   MySpot,
   MyStory,
   MyWord,
+  OrganizationWord,
   OperatorMe,
   OperatorModel,
   OperatorMoveOffer,
@@ -517,6 +518,11 @@ export const getMyWordsOnPage = (documentId: string, page: number) =>
   request<{ items: MySpot[] }>("GET", `/documents/${encodeURIComponent(documentId)}/my-words${query({ page })}`);
 export const deleteMyWord = (id: string, userId: string) =>
   request<void>("DELETE", `/me/words/${encodeURIComponent(id)}${query({ user_id: userId })}`);
+export const listOrganizationWords = () => request<{ items: OrganizationWord[] }>("GET", "/organization/words");
+export const suggestOrganizationWord = (word: string, meaning: string, userId: string) =>
+  request<{ item: OrganizationWord }>("POST", "/organization/words", { word, meaning, user_id: userId });
+export const decideOrganizationWord = (id: string, decision: "approve" | "reject", userId: string) =>
+  request<{ item: OrganizationWord }>("POST", `/organization/words/${encodeURIComponent(id)}/decision`, { decision, user_id: userId });
 
 // --- review --------------------------------------------------------------------
 

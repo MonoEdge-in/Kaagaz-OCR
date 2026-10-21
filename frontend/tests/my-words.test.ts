@@ -134,6 +134,8 @@ describe("the chat note", () => {
   it("says each word as text, at most 10", () => {
     const one = understoodNotes({ understood_words: [{ word: "malak", meaning: "owner" }] });
     expect(one).toEqual(["Understood 'malak' as 'owner' (your word)"]);
+    expect(understoodNotes({ understood_words: [{ word: "Jalna", meaning: "district", origin: "organization" }] }))
+      .toEqual(["Understood 'Jalna' as 'district' (organization word)"]);
     const many = Array.from({ length: 12 }, (_, n) => ({ word: `w${n}`, meaning: "<b>x</b>" }));
     const notes = understoodNotes({ understood_words: many });
     expect(notes).toHaveLength(10);
