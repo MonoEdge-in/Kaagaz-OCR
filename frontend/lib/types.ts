@@ -964,6 +964,17 @@ export interface Organisation {
   autofile_on: boolean;
 }
 
+export interface ModelRateUser {
+  id: string;
+  email: string;
+  rpm: number | null;
+}
+
+export interface OrgModelRates {
+  organisation_rpm: number | null;
+  users: ModelRateUser[];
+}
+
 /** POST /operator/orgs: the temporary password is in this one reply only. */
 export interface OrganisationCreated {
   organisation: { id: string; name: string; admin: { email: string; name: string } };
