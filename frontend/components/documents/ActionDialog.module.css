@@ -9,7 +9,7 @@
   margin: auto;
   padding: 0;
   border: 1px solid var(--border);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   background: var(--bg-surface);
   color: var(--text-primary);
   overflow: hidden;

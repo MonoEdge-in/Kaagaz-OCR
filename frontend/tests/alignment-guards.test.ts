@@ -65,7 +65,10 @@ const PX_HEIGHTS = /(?:^|[;\s])(?:min-|max-)?(?:height|block-size):\s*(\d+)px/g;
 const HANDOFF_HEIGHTS = new Set(
   Array.from(readFileSync(join(ROOT, "..", "design", "kaagaz-ui-handoff", "styles", "kaagaz.css"), "utf8").matchAll(PX_HEIGHTS), (m) => m[1]),
 );
-const KIT = /^(components\/ui\/[A-Z]\w*\/|app\/styles\/)/;
+// The shell and each screen rebuilt from the handoff's own screen (the dashboard: desktop/Home.html;
+// the sign-in frame: desktop/SignIn.html)
+// follow the same rule.
+const KIT = /^(components\/ui\/[A-Z]\w*\/|app\/styles\/|components\/shell\/|components\/dashboard\/|app\/login\/)/;
 const handoffHeights = (file: string, body: string) =>
   KIT.test(file) && Array.from(body.matchAll(PX_HEIGHTS)).every((m) => HANDOFF_HEIGHTS.has(m[1]));
 
@@ -93,7 +96,8 @@ describe("one control height", () => {
     expect(btn).toMatch(/line-height:\s*1\.2;/);
     const field = top(".input, select.input, textarea.input")[0]?.body ?? "";
     expect(field).toMatch(/\bheight:\s*var\(--control-h\);/);
-    expect(field).toMatch(/padding:\s*0 var\(--space-3\);/);
+    // Changed on purpose (UI rebuild, 21 Oct 2026): the handoff's 16px field inset.
+    expect(field).toMatch(/padding:\s*0 var\(--space-4\);/);
     expect(field).toMatch(/line-height:\s*1\.25;/);
     // Only a textarea grows.
     const area = top("textarea.input")[0]?.body ?? "";
@@ -119,7 +123,8 @@ describe("one control height", () => {
       const body = top(selector)[0]?.body ?? "";
       expect(body, selector).toMatch(/min-height:\s*var\(--badge-h\);/);
       expect(body, selector).toMatch(/line-height:\s*1\.25;/);
-      expect(body, selector).toMatch(/border-radius:\s*2px;/);
+      // Changed on purpose (UI rebuild, 21 Oct 2026): the handoff's soft corners replace the 2px square ones: pills.
+      expect(body, selector).toMatch(/border-radius:\s*var\(--r-full\);/);
     }
     // Changed on purpose (Tushar, 16 Oct 2026): the sidebar Review count is gone.
   });

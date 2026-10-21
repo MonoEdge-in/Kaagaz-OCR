@@ -9,7 +9,7 @@
   min-width: 0;
   padding: var(--space-3);
   border: 1px solid var(--border);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   background: var(--bg-surface);
   contain: layout paint style;
 }
@@ -70,7 +70,7 @@
 
 .linesBox {
   border: 1px solid var(--border);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
 }
 
 .lines {

@@ -12,7 +12,7 @@
   gap: var(--space-3) var(--space-6);
   padding: var(--space-3) var(--space-4);
   border: 1px solid var(--border);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   background: var(--bg-surface);
   contain: layout style;
 }
@@ -95,7 +95,7 @@
   margin: var(--space-1) 0;
   padding: var(--space-3) var(--space-4);
   border: 1px solid var(--border-strong);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   background: var(--bg-surface);
   color: var(--text-primary);
   font-size: var(--fs-sm);
@@ -154,7 +154,7 @@
   margin: 0;
   padding: var(--space-3) var(--space-4);
   border: 1px solid var(--success);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
 }
 
 .word {
@@ -201,7 +201,7 @@
   margin-inline-start: var(--space-2);
   padding-inline: var(--space-1);
   border: 1px dashed var(--border-strong);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   color: var(--text-secondary);
   font-size: var(--fs-sm);
 }
@@ -310,7 +310,7 @@
   gap: var(--space-2);
   padding: var(--space-2);
   border: 1px solid var(--border-strong);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   background: var(--bg-surface);
 }
 

@@ -191,7 +191,8 @@ describe("folder name suggestions", () => {
     expect(source("FolderActions.tsx")).toContain('{mode === "new" && <NameChips names={suggestions}');
     expect(source("DocumentActions.tsx")).toContain("<NameChips names={suggestions} picked={newName}");
     const css = readFileSync(join(__dirname, "../components/documents/Library.module.css"), "utf8");
-    expect(css).toMatch(/\.chip \{[^}]*border-radius: 2px;/);
+    // Changed on purpose (UI rebuild, 21 Oct 2026): the handoff's chips are pills (desktop/Documents.html).
+    expect(css).toMatch(/\.chip \{[^}]*border-radius: var\(--k-r-pill\);/);
   });
 });
 

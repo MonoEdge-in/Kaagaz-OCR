@@ -208,7 +208,7 @@
   text-align: start;
   color: var(--text-secondary);
   border: 1px solid var(--border);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   background: var(--bg-surface);
 }
 
@@ -327,7 +327,7 @@
   margin: 0;
   padding: var(--space-1);
   border: 1px solid var(--border-strong);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   background: var(--bg-surface);
   color: var(--text-primary);
 }
@@ -350,7 +350,7 @@
   justify-content: center;
   padding: var(--space-1) var(--space-3);
   border: 0;
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   background: transparent;
   color: inherit;
   font: inherit;
@@ -576,7 +576,7 @@
   gap: var(--space-1);
   padding: var(--space-3) var(--space-4);
   border: 1px solid var(--border);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   background: var(--bg-surface);
   min-width: 0;
   contain: layout paint style;
@@ -616,7 +616,7 @@
   min-width: 0;
   padding: var(--space-3) var(--space-4);
   border: 1px solid var(--border);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   background: var(--bg-surface);
 }
 
@@ -666,19 +666,19 @@
 
 .skeletonRow {
   height: 104px;
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
 }
 
 @media (min-width: 768px) {
   .skeletonRow {
     height: var(--space-12); /* a table row's height */
-    border-radius: 2px;
+    border-radius: var(--k-r-2);
   }
 }
 
 .skeletonTile {
   height: 5.5rem;
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
 }
 
 .errorBanner {
@@ -688,7 +688,7 @@
   gap: var(--space-3);
   padding: var(--space-3) var(--space-4);
   border: 1px solid var(--critical);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   background: var(--bg-surface);
   color: var(--text-primary);
 }
@@ -745,7 +745,7 @@
   display: inline-block;
   padding: var(--space-1) var(--space-3);
   border: 1px dashed var(--border-strong);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   background: var(--bg-subdued);
   color: var(--text-primary);
   font-family: var(--font-mono);
@@ -852,7 +852,7 @@
   min-width: 0;
   padding: var(--space-3) var(--space-4) var(--space-4);
   border: 1px solid var(--border);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   background: var(--bg-surface);
   contain: layout paint style;
 }
@@ -943,7 +943,7 @@
   display: block;
   height: 0.5rem;
   min-width: 2px;
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   background: var(--accent);
 }
 

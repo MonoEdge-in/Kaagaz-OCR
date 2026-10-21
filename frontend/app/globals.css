@@ -1,71 +1,52 @@
-/* Kaagaz in the MonoEdge design system (16 Oct 2026, the owner's rules file
-   monoedge-design-system-rules.md). Flat, square, hairline: radius 2px, 1px
-   borders, no shadows, glows or gradients. Inter for text and UI, JetBrains
-   Mono for data only (.mono), Archivo for headings (UI audit G4, 16 Oct 2026:
-   the owner's decision over "mono everywhere"). Blue is punctuation: one
-   primary action per view.
+/* Kaagaz in the handoff's design (design/kaagaz-ui-handoff, UI rebuild, 21 Oct
+   2026). The screens' token names (--bg-page, --accent, --r-sm, ...) carry the
+   handoff's values, so every screen takes its look: warm off-white paper,
+   near-black ink, MonoEdge royal blue, soft rounded surfaces, pill controls with
+   mono capitals. The handoff's own tokens (--k-*) are in app/styles/tokens.css;
+   the faces are IBM Plex Sans for text, Plex Mono for data and labels, Archivo
+   for headings, all through those tokens.
 
    Every colour is a token. Light is the default; dark comes from the system
    (prefers-color-scheme) unless the person picked Light or Dark, which the
    server writes as data-theme on <html> (lib/theme.ts). Components use these
-   tokens only; tests/guards.test.ts fails on any hex colour outside this file.
-   The names the screens already use (--bg, --fg, --surface, --r-sm, ...) are
-   kept as aliases of the MonoEdge tokens.
+   tokens only; tests/guards.test.ts fails on any hex colour outside this file
+   and tokens.css. The old names (--bg, --fg, --surface, ...) stay as aliases.
 
-   WCAG 2.2 AA contrast, measured (light / dark), on page, surface, subdued:
-     --text-primary (--fg)                  18.2 18.9 17.3 / 19.9 18.9 17.1
-     --text-secondary (--fg-muted)           7.4  7.7  7.0 / 10.0  9.5  8.6
-     --text-muted (--control-edge)           5.2  5.4  4.9 /  7.6  7.2  6.5
-     --accent (links)                        8.8  9.1  8.3 /  8.3  7.8  7.1
-   --text-muted is a step darker (light) and lighter (dark) than the MonoEdge
-   file (UI audit, 16 Oct 2026), so muted text stays 4.5:1 on a hovered or
-   selected row too: 4.7 (light, on --accent-subtle) and 4.9 (dark, on
-   --bg-selected).
-   Pairs:
-     --accent on --accent-subtle             7.9 / 5.3
-     --text-onaccent on --accent             9.1 / 8.7
-     --verified-fg on --verified-bg          4.8 / 6.3
-     --review-fg on --review-bg              5.4 / 7.5
-     --danger-fg on --danger-bg              5.7 / 5.7
-     --text-onaccent on --critical           6.5 / 7.1 (a destructive button, pressed or hovered)
-     --review-solid (dashed edge) on surface 3.6 / 8.9
-     --review-on-solid on --review-solid     5.2 / 9.4 (the Review link's count)
-   Body text needs 4.5:1; large text, control edges and the focus ring 3:1.
-   --warning (#B7791F) is 3.6:1 on white: enough for an edge, not for text, so
-   light Needs review text is a darker amber (#8a5a12). --border-strong
-   (#D5D8DD, 1.4:1) is a hairline, so inputs take --control-edge instead. */
+   Every text and edge pair stays WCAG 2.2 AA in both themes: body text 4.5:1,
+   large text, control edges and the focus ring 3:1 (tests/theme.test.ts measures
+   each pair). */
 
 :root {
-  /* MonoEdge tokens, light */
-  --bg-page: #fafbfc;
+  /* The handoff's colours, light (styles/kaagaz.css, section 1) */
+  --bg-page: #f6f5f1;
   --bg-surface: #ffffff;
-  --bg-subdued: #f4f5f7;
-  --bg-hover: #f4f5f7;
-  --bg-selected: #f4f7fd;
-  --text-primary: #101114;
-  --text-secondary: #4e545c;
-  --text-muted: #646b74;
+  --bg-subdued: #efede6;
+  --bg-hover: #efede6;
+  --bg-selected: #e8ecf7;
+  --text-primary: #0e0e10;
+  --text-secondary: #5b5b60;
+  --text-muted: #66666b;
   --text-onaccent: #ffffff;
-  --accent: #204494;
-  --accent-hover: #264e9f;
-  --accent-subtle: #e9f0fa;
-  --border: #e8eaed; /* decorative hairline only */
-  --border-strong: #d5d8dd;
-  --focus: #204494;
-  --success: #1e7a3c;
-  --warning: #b7791f;
-  --critical: #b3261e;
+  --accent: #1e4396;
+  --accent-hover: #17357a;
+  --accent-subtle: #e8ecf7;
+  --border: #e6e3da; /* decorative hairline only */
+  --border-strong: #cfcbc0;
+  --focus: #1e4396;
+  --success: #1b7a4b;
+  --warning: #8a5800;
+  --critical: #b42318;
 
   /* Labels (value and answer labels only, never document status): tints of
      --success, --warning and --critical, the text pairs measured above. */
-  --verified-bg: #edf5ef;
+  --verified-bg: #e1f2e7;
   --verified-fg: var(--success);
   --verified-solid: var(--success);
-  --review-bg: #fbf3e6;
-  --review-fg: #8a5a12;
+  --review-bg: #fbf0d2;
+  --review-fg: #8a5800;
   --review-solid: var(--warning);
-  --review-on-solid: var(--text-primary); /* text on a filled amber count */
-  --danger-bg: #fbeceb;
+  --review-on-solid: #ffffff; /* text on a filled amber count */
+  --danger-bg: #fce6e2;
   --danger-fg: var(--critical);
 
   /* The four sensitivity labels (File management O2): a tint and its text, 4.5:1 or more
@@ -107,25 +88,20 @@
   /* The select's caret in --text-muted (an image cannot read a token). */
   --select-caret: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2 4l4 4 4-4' fill='none' stroke='%23646B74' stroke-width='1.5'/%3E%3C/svg%3E");
 
-  /* Type (UI audit G3/G4, 16 Oct 2026). next/font in app/layout.tsx sets
-     --font-inter, --font-jetbrains-mono and --font-archivo, each with its
-     size-adjusted fallback. Inter for text and UI; JetBrains Mono for data
-     only (values, IDs, numbers, scanned text: .mono, .readText); Archivo for
-     headings. None of them has Devanagari: Hindi and Marathi fall back to the
-     system faces after them. */
-  --font-sans: var(--font-inter, "Inter"), system-ui, -apple-system, "Segoe UI", Roboto, Arial,
-    "Noto Sans Devanagari", "Nirmala UI", sans-serif;
-  --font-mono: var(--font-jetbrains-mono, "JetBrains Mono"), ui-monospace, "SF Mono", Menlo, Consolas,
-    "Noto Sans Devanagari", "Nirmala UI", monospace;
-  --font-display: var(--font-archivo, "Archivo"), "Helvetica Neue", Arial, "Noto Sans Devanagari",
-    "Nirmala UI", sans-serif;
-  /* rem plus vw, so text still grows at 200% zoom. */
-  --fs-label: 0.6875rem; /* 11px: bold capitals */
-  --fs-sm: clamp(0.875rem, 0.85rem + 0.1vw, 0.9375rem);
-  --fs-base: clamp(1rem, 0.96rem + 0.2vw, 1.0625rem);
-  --fs-lg: clamp(1.125rem, 1.06rem + 0.3vw, 1.25rem);
-  --fs-xl: clamp(1.25rem, 1.15rem + 0.5vw, 1.5625rem);
-  --fs-2xl: clamp(1.5rem, 1.3rem + 1vw, 1.9375rem);
+  /* Type: the handoff's faces (app/layout.tsx serves them through next/font;
+     app/styles/tokens.css stacks them, Plex Sans Devanagari for Hindi and
+     Marathi). Plex Sans for text and UI; Plex Mono for data and labels (.mono,
+     .readText, buttons); Archivo, set wide, for headings. */
+  --font-sans: var(--k-font-body);
+  --font-mono: var(--k-font-mono);
+  --font-display: var(--k-font-display);
+  /* In rem, so text still grows at 200% zoom. */
+  --fs-label: 0.6875rem; /* 11px: mono capitals */
+  --fs-sm: 0.8125rem; /* 13px */
+  --fs-base: 0.875rem; /* 14px, the handoff's UI size */
+  --fs-lg: 1.125rem; /* 18px */
+  --fs-xl: 1.375rem; /* 22px */
+  --fs-2xl: clamp(1.625rem, 1.4rem + 0.8vw, 1.875rem); /* 26 to 30px */
 
   /* Spacing: 4, 8, 12, 16, 24, 32, 48, 64 only. --space-5 and --space-7 are
      the old names for 24 and 48. */
@@ -141,12 +117,12 @@
   --space-7: var(--space-12);
 
   /* Control heights: every control in one row shares one. */
-  --h-sm: 28px;
-  --h-md: 36px;
+  --h-sm: 32px;
+  --h-md: 40px;
   --h-lg: 44px;
   /* THE control height (one control height, 16 Oct 2026): every single-line
      control (.btn, IconButton, input, select, the header search, a segmented
-     control, a chip that acts as a button) is exactly this tall, 36px, 44px on
+     control, a chip that acts as a button) is exactly this tall, 40px, 44px on
      touch, so a button beside a field lines up with it. Only a textarea grows. */
   --control-h: var(--h-md);
   /* The least any control may be (UI audit G10): 32px, 44px on touch. */
@@ -154,12 +130,13 @@
   /* A badge, status chip or count (not a control): one height, 24px. */
   --badge-h: 24px;
 
-  /* Square and flat: one radius, no elevation. */
-  --r-sm: 2px;
-  --r-md: 2px;
-  --r-full: 2px;
-  --e-1: none;
-  --e-2: none;
+  /* Soft surfaces (the handoff's radii and shadows): small tiles and marks,
+     cards and panels, pills for buttons, chips, badges and nav items. */
+  --r-sm: var(--k-r-2);
+  --r-md: var(--k-r-4);
+  --r-full: var(--k-r-pill);
+  --e-1: var(--k-shadow-1);
+  --e-2: var(--k-shadow-2);
 
   /* Motion: transform and opacity only, 120 to 200ms (220ms for a drawer or sheet). */
   --ease: cubic-bezier(0.2, 0, 0.2, 1);
@@ -187,8 +164,8 @@
   --content-max: 1200px;
 
   /* The shell's zones (components/shell/Shell.module.css), fixed heights. */
-  --sidebar-w: 240px;
-  --header-h: 56px;
+  --sidebar-w: var(--k-side-w);
+  --header-h: var(--k-top-h);
   --toolbar-h: 48px;
   --statusbar-h: 32px;
   --bottombar-h: 0px; /* 56px below 768px */
@@ -202,7 +179,7 @@
      a screen sticks at the top of <main>: these old offsets are 0. */
   --topbar-h: 0px;
   --topbar-space: 0px;
-  --backdrop: rgb(0 0 0 / 0.45);
+  --backdrop: var(--k-scrim);
 
   color-scheme: light;
 }
@@ -211,29 +188,29 @@
    picked Dark below (tests/theme.test.ts holds them equal). */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg-page: #08090a;
-    --bg-surface: #101114;
-    --bg-subdued: #1a1c1f;
-    --bg-hover: #24272b;
-    --bg-selected: #172f65;
-    --text-primary: #ffffff;
-    --text-secondary: #b3b8c0;
-    --text-muted: #9aa0a8;
-    --text-onaccent: #000000;
-    --accent: #85a9dd;
-    --accent-hover: #a3bee7;
-    --accent-subtle: #172f65;
-    --border: #24272b;
-    --border-strong: #33383e;
-    --focus: #85a9dd;
-    --success: #4fb570;
-    --warning: #e0a93a;
-    --critical: #ef6e63;
-    --verified-bg: #12241a;
-    --review-bg: #2a2112;
+    --bg-page: #111113;
+    --bg-surface: #18181b;
+    --bg-subdued: #1f1f23;
+    --bg-hover: #232327;
+    --bg-selected: #1c2541;
+    --text-primary: #f2f1ec;
+    --text-secondary: #a6a5a0;
+    --text-muted: #93928d;
+    --text-onaccent: #0b1430;
+    --accent: #8fa8f0;
+    --accent-hover: #b0c2f5;
+    --accent-subtle: #1c2541;
+    --border: #2a2a2e;
+    --border-strong: #3a3a40;
+    --focus: #b0c2f5;
+    --success: #6fcf97;
+    --warning: #edb02b;
+    --critical: #f4917b;
+    --verified-bg: #10301f;
+    --review-bg: #3a2c0a;
     --review-fg: var(--warning);
     --review-on-solid: var(--bg-page);
-    --danger-bg: #2e1715;
+    --danger-bg: #3b1712;
     --label-public-bg: #1a1c1f;
     --label-public-fg: #b3b8c0;
     --label-internal-bg: #172f65;
@@ -249,29 +226,29 @@
 }
 
 :root[data-theme="dark"] {
-  --bg-page: #08090a;
-  --bg-surface: #101114;
-  --bg-subdued: #1a1c1f;
-  --bg-hover: #24272b;
-  --bg-selected: #172f65;
-  --text-primary: #ffffff;
-  --text-secondary: #b3b8c0;
-  --text-muted: #9aa0a8;
-  --text-onaccent: #000000;
-  --accent: #85a9dd;
-  --accent-hover: #a3bee7;
-  --accent-subtle: #172f65;
-  --border: #24272b;
-  --border-strong: #33383e;
-  --focus: #85a9dd;
-  --success: #4fb570;
-  --warning: #e0a93a;
-  --critical: #ef6e63;
-  --verified-bg: #12241a;
-  --review-bg: #2a2112;
+  --bg-page: #111113;
+  --bg-surface: #18181b;
+  --bg-subdued: #1f1f23;
+  --bg-hover: #232327;
+  --bg-selected: #1c2541;
+  --text-primary: #f2f1ec;
+  --text-secondary: #a6a5a0;
+  --text-muted: #93928d;
+  --text-onaccent: #0b1430;
+  --accent: #8fa8f0;
+  --accent-hover: #b0c2f5;
+  --accent-subtle: #1c2541;
+  --border: #2a2a2e;
+  --border-strong: #3a3a40;
+  --focus: #b0c2f5;
+  --success: #6fcf97;
+  --warning: #edb02b;
+  --critical: #f4917b;
+  --verified-bg: #10301f;
+  --review-bg: #3a2c0a;
   --review-fg: var(--warning);
   --review-on-solid: var(--bg-page);
-  --danger-bg: #2e1715;
+  --danger-bg: #3b1712;
   --label-public-bg: #1a1c1f;
   --label-public-fg: #b3b8c0;
   --label-internal-bg: #172f65;
@@ -296,7 +273,7 @@
   :root {
     --gutter: 16px;
     --margin: 16px;
-    --header-h: 48px;
+    --header-h: 60px;
     --bottombar-h: 56px;
   }
 }
@@ -363,7 +340,7 @@ body {
   color: var(--fg);
   font-family: var(--font-sans);
   font-size: var(--fs-base);
-  line-height: 1.55;
+  line-height: var(--k-lh-ui);
   font-variant-numeric: tabular-nums;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
@@ -426,29 +403,36 @@ a:hover {
   opacity: 1;
 }
 
-/* Headings use the loaded display face, Archivo (UI audit G3). */
+/* Headings: Archivo set wide for the page and section titles, Plex Sans for
+   the smaller ones (the handoff's .k-h1, .k-h2 and .k-h3). */
 h1,
 h2,
 h3 {
   font-family: var(--font-display);
-  line-height: 1.2;
+  font-stretch: var(--k-display-stretch);
+  line-height: var(--k-lh-tight);
   margin: 0 0 var(--space-2);
   color: var(--fg);
 }
 
 h1 {
   font-size: var(--fs-2xl);
-  font-weight: 700;
+  font-weight: 600;
+  letter-spacing: -0.02em;
 }
 
 h2 {
   font-size: var(--fs-xl);
-  font-weight: 700;
+  font-weight: 600;
+  letter-spacing: -0.015em;
 }
 
 h3 {
+  font-family: var(--font-sans);
+  font-stretch: normal;
   font-size: var(--fs-lg);
-  font-weight: 700;
+  font-weight: 600;
+  line-height: 1.3;
 }
 
 p {
@@ -537,15 +521,16 @@ input:-webkit-autofill:focus {
   font-variant-numeric: tabular-nums;
 }
 
-/* A small label: 11px bold capitals. */
+/* A small label: the handoff's eyebrow, 11px mono capitals. */
 .caps {
+  font-family: var(--font-mono);
   font-size: var(--fs-label);
-  font-weight: 700;
-  letter-spacing: 0.08em;
+  font-weight: 500;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
 }
 
-/* Data in JetBrains Mono (UI audit G4): values, IDs, numbers and scanned text.
+/* Data in Plex Mono: values, IDs, numbers and scanned text.
    Any screen puts it on the element that holds the value. */
 .mono,
 td.num {
@@ -646,8 +631,9 @@ td.num {
 .card {
   min-width: 0;
   background: var(--surface);
-  border: 1px solid var(--border);
+  border: 1px solid var(--k-card-edge);
   border-radius: var(--r-md);
+  box-shadow: var(--e-1);
   padding: var(--space-4);
 }
 
@@ -704,15 +690,18 @@ td.num {
   max-width: 100%;
   min-width: 0;
   padding-block: 0;
-  padding-inline: var(--space-4);
+  padding-inline: 18px;
   /* Inline in a line of words (a value, a sentence), it sits on the line's middle. */
   vertical-align: middle;
   border: 1px solid var(--border-strong);
-  border-radius: 2px;
+  border-radius: var(--r-full);
   background: var(--surface);
   color: var(--btn-fg);
-  font-size: var(--fs-sm);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
   font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
   line-height: 1.2;
   text-align: center;
   text-decoration: none;
@@ -786,6 +775,7 @@ td.num {
   --btn-fg: var(--text-onaccent);
   background: var(--accent);
   border-color: var(--accent);
+  font-weight: 600;
 }
 
 @media (hover: hover) and (pointer: fine) {
@@ -801,8 +791,8 @@ td.num {
 
 .btn-destructive,
 .btn-danger {
-  --btn-fg: var(--danger-fg);
-  background: var(--danger-bg);
+  --btn-fg: var(--text-onaccent);
+  background: var(--critical);
   border-color: var(--critical);
 }
 
@@ -811,17 +801,19 @@ td.num {
   .btn-danger:hover {
     --btn-fg: var(--text-onaccent);
     background: var(--critical);
+    border-color: var(--text-primary);
   }
 }
 
 .btn-quiet {
+  --btn-fg: var(--accent);
   border-color: transparent;
   background: transparent;
 }
 
 @media (hover: hover) and (pointer: fine) {
   .btn-quiet:hover {
-    background: var(--bg-hover);
+    background: var(--accent-subtle);
   }
 }
 
@@ -896,7 +888,7 @@ td.num {
 
 .tab[aria-selected="true"] {
   color: var(--text-primary);
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .tab[aria-selected="true"]::after {
@@ -917,7 +909,7 @@ td.num {
 .tab [data-label]::after {
   content: attr(data-label);
   height: 0;
-  font-weight: 700;
+  font-weight: 600;
   visibility: hidden;
   overflow: hidden;
   user-select: none;
@@ -939,9 +931,9 @@ textarea.input {
      line-height, next to 36px buttons). The words are centred by a fixed
      line-height and no block padding. */
   height: var(--control-h);
-  padding: 0 var(--space-3);
+  padding: 0 var(--space-4);
   border: 1px solid var(--control-edge);
-  border-radius: var(--r-sm);
+  border-radius: var(--k-r-3);
   background: var(--surface);
   color: var(--fg);
   font-size: var(--fs-base);
@@ -964,6 +956,8 @@ textarea.input {
 
 .input:focus-visible {
   border-color: var(--focus);
+  outline: none;
+  box-shadow: 0 0 0 4px var(--accent-subtle);
 }
 
 .input[aria-invalid="true"] {
@@ -990,11 +984,9 @@ select.input {
 
 .field > label,
 .label {
-  font-size: var(--fs-label);
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text-primary);
 }
 
 .hint {
@@ -1025,9 +1017,10 @@ select.input {
 }
 
 .table th {
-  font-size: var(--fs-label);
-  font-weight: 700;
-  letter-spacing: 0.08em;
+  font-family: var(--font-mono);
+  font-size: 0.65625rem;
+  font-weight: 500;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--text-secondary);
   background: var(--surface);
@@ -1042,26 +1035,26 @@ td.num {
 }
 
 /* --- Labels: Verified and Ready to verify -----------------------------------
-   Square, never pills. The two differ by icon, word and edge style, never by
-   colour or shape alone: Verified has a solid edge, Ready to verify a dashed one.
-   Document status uses .status-chip, never these. */
+   Pills, as the handoff's status badges. The two differ by icon, word and edge
+   style, never by colour alone: Verified is filled with a solid edge, Ready to
+   verify soft with a dashed one. Document status uses .status-chip, never these. */
 
 .badge {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-1);
+  gap: 5px;
   /* One height (24px) and centred words, wherever it sits (16 Oct 2026). */
   min-height: var(--badge-h);
-  padding: 0 var(--space-2);
-  font-size: var(--fs-sm);
-  font-weight: 700;
+  padding: 0 10px 0 7px;
+  font-size: 0.75rem;
+  font-weight: 600;
   line-height: 1.25;
   vertical-align: middle;
   max-width: 100%;
   white-space: normal;
   overflow-wrap: break-word;
   border: 1px solid transparent;
-  border-radius: 2px;
+  border-radius: var(--r-full);
 }
 
 .badge svg {
@@ -1069,8 +1062,8 @@ td.num {
 }
 
 .badge-verified {
-  background: var(--verified-bg);
-  color: var(--verified-fg);
+  background: var(--k-verified);
+  color: var(--k-verified-ink);
   border: 1px solid var(--verified-solid);
 }
 
@@ -1084,6 +1077,7 @@ td.num {
    colour, so the words carry it and the colour only repeats them. */
 .label-chip {
   display: inline-flex;
+  flex: none;
   align-items: center;
   min-height: var(--badge-h);
   padding: 0 var(--space-2);
@@ -1092,9 +1086,10 @@ td.num {
   line-height: 1.25;
   vertical-align: middle;
   max-width: 100%;
-  white-space: normal;
+  /* One word: it never breaks inside it (it did beside a long title). */
+  white-space: nowrap;
   border: 1px solid currentColor;
-  border-radius: 2px;
+  border-radius: var(--r-full);
 }
 
 .label-chip[data-label="public"] {
@@ -1126,9 +1121,10 @@ td.num {
   width: max-content;
   max-width: min(20rem, calc(100% - 16px)); /* fixed: 100% is the window, never 100vw */
   padding: var(--space-1) var(--space-2);
-  border: 1px solid var(--border-strong);
-  border-radius: 2px;
-  background: var(--surface);
+  border: 1px solid var(--k-card-edge);
+  border-radius: var(--r-sm);
+  background: var(--k-raised);
+  box-shadow: var(--e-2);
   color: var(--fg);
   font-size: var(--fs-sm);
   font-weight: 400;
@@ -1142,32 +1138,38 @@ td.num {
   display: none;
 }
 
-/* Document status: square, outlined, a square dot, ink or neutral colours. */
+/* Document status: a pill with a mark and its word (the handoff's Reading and
+   Failed badges; Ready in the accent). */
 .status-chip {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: 6px;
   min-height: var(--badge-h);
-  padding: 0 var(--space-2);
+  padding: 0 10px 0 8px;
   line-height: 1.25;
   vertical-align: middle;
-  border: 1px solid var(--border-strong);
-  border-radius: 2px;
-  font-size: var(--fs-sm);
-  font-weight: 700;
-  color: var(--fg);
-  background: var(--surface);
+  border: 1px solid transparent;
+  border-radius: var(--r-full);
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-subtle);
   max-width: 100%;
   white-space: normal;
 }
 
 .status-chip::before {
   content: "";
-  width: 8px;
-  height: 8px;
-  border-radius: 1px;
-  background: var(--fg-muted);
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
   flex: none;
+}
+
+.status-chip[data-tone="working"] {
+  color: var(--k-info);
+  background: var(--k-info-soft);
 }
 
 .status-chip[data-tone="ready"]::before {
@@ -1185,6 +1187,7 @@ td.num {
 .status-chip[data-tone="danger"] {
   border-color: var(--danger-fg);
   color: var(--danger-fg);
+  background: var(--danger-bg);
 }
 
 .status-chip[data-tone="danger"]::before {
@@ -1205,11 +1208,12 @@ td.num {
   align-items: center;
   gap: var(--space-3);
   max-width: min(24rem, calc(100% - 2 * var(--space-4)));
-  padding: var(--space-3) var(--space-4);
-  border: 1px solid var(--border-strong);
-  border-radius: 2px;
-  background: var(--surface);
-  color: var(--fg);
+  padding: var(--space-3) var(--space-3) var(--space-3) 18px;
+  border: 0;
+  border-radius: var(--r-md);
+  background: var(--k-inverse-bg);
+  color: var(--k-inverse-ink);
+  box-shadow: var(--e-2);
   /* In from its corner, out with a fade (components/ui/Toast.tsx keeps it while it goes). */
   --motion-y: 8px;
   animation: motion-in var(--t-med) var(--ease);

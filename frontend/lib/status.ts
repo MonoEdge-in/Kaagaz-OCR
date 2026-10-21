@@ -1,4 +1,4 @@
-// The handoff's six states (docs/ui-mapping.md, section 2), and which backend
+// The handoff's six states (docs/architecture.md, The screens), and which backend
 // values feed each. This is the only place the mapping lives: a screen asks
 // here, then draws the StatusBadge (components/ui/StatusBadge) or, for a
 // document, the status chip.

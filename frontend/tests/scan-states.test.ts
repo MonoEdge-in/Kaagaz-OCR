@@ -271,7 +271,11 @@ describe("the status bar", () => {
     expect(status).not.toMatch(/<dialog|showModal|role="dialog"/);
     const view = read("components/documents/DocumentsView.tsx");
     expect(view).not.toMatch(/<BatchTray/); // no tray in the flow above the list
-    expect(view).toMatch(/<UploadStatus/);
+    // Changed on purpose (UI rebuild, 21 Oct 2026, D-12): the one tray for every page is the shell's.
+    expect(view).not.toMatch(/<UploadStatus/);
+    expect(view).toContain("useSharedUploads(");
+    expect(read("components/shell/Uploads.tsx")).toMatch(/<UploadStatus/);
+    expect(read("components/shell/AppShell.tsx")).toContain("<UploadsProvider>{children}</UploadsProvider>");
     const css = read("components/documents/Documents.module.css");
     expect(css).toMatch(/\.trayPanel \{[^}]*position: fixed;[^}]*overscroll-behavior: contain;/);
   });

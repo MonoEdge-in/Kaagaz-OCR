@@ -89,12 +89,17 @@ describe("the tabs spec", () => {
 });
 
 describe("flat, square, hairline", () => {
-  it("has no gradient, shadow, glow, pill or round corner in these screens' styles", () => {
+  // Changed on purpose (UI rebuild, 21 Oct 2026): the handoff's soft corners replace the 2px square ones.
+  it("has no gradient, shadow or glow, and every corner is a handoff radius token", () => {
     const found = CSS_MODULES.flatMap((file) => {
-      const css = noComments(read(file));
+      // Changed on purpose (UI rebuild, 21 Oct 2026): the handoff's raised cards and pressed
+      // pills use its own shadow tokens (kaagaz.css --k-shadow-1, -2, -page); nothing else.
+      const css = noComments(read(file)).replace(/box-shadow:\s*var\(--k-shadow-(1|2|page)\);/g, "");
       const bad = [
         ...css.matchAll(/gradient\(|box-shadow|text-shadow|filter:\s*drop-shadow|backdrop-filter/g),
-        ...[...css.matchAll(/border-radius:\s*([^;]+);/g)].filter((m) => !/^(0|2px|2px 2px 0 0)$/.test(m[1] ?? "")),
+        ...[...css.matchAll(/border-radius:\s*([^;]+);/g)].filter(
+          (m) => !/^(0|var\(--k-r-(\d|pill)\)|2px 2px 0 0)$/.test(m[1] ?? ""),
+        ),
       ];
       return bad.map((m) => `${file}: ${m[0]}`);
     });

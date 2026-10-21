@@ -246,6 +246,20 @@ export function documentFromSearch(search: string): string | null {
   return id !== null && UUID.test(id) ? id.toLowerCase() : null;
 }
 
+// Home's Ask box opens chat with its question (/chat?q=...): it waits in the question
+// box for Send, so nothing is asked, and no AI call is made, until the person sends it.
+
+/** The question an address brings (trimmed, at most 1,000 characters), or null. */
+export function questionFromSearch(search: string): string | null {
+  const question = (new URLSearchParams(search).get("q") ?? "").trim();
+  return question ? question.slice(0, 1000) : null;
+}
+
+/** The chat address that brings a question to the box. */
+export function askHref(question: string): string {
+  return `/chat?q=${encodeURIComponent(question)}`;
+}
+
 /** The chat address that asks about one document. */
 export function askAboutHref(documentId: string): string {
   return `/chat?document=${encodeURIComponent(documentId)}`;

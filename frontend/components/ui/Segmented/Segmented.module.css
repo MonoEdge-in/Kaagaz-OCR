@@ -3,6 +3,9 @@
 .seg,
 .radio {
   display: inline-flex;
+  /* Its own width, also as an item of a column (a page's flex column stretches items). */
+  align-self: flex-start;
+  max-width: 100%;
   gap: 2px;
   padding: 3px;
   border-radius: var(--k-r-pill);

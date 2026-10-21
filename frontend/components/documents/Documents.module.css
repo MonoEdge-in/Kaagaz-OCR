@@ -17,7 +17,7 @@
 
 .drop {
   border: 1px dashed var(--border-strong);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   background: var(--bg-surface);
 }
 
@@ -65,7 +65,7 @@
   justify-content: center;
   gap: var(--space-2);
   border: 1px dashed var(--accent);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   background: var(--bg-selected);
   text-align: center;
   pointer-events: none;
@@ -222,7 +222,7 @@
   align-items: flex-start;
   padding: var(--space-3);
   border: 1px solid var(--border);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   background: var(--bg-surface);
 }
 
@@ -278,7 +278,7 @@
   align-items: center;
   padding: 0 var(--space-2);
   border: 1px solid var(--border-strong);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
 }
 
 .upload[data-state="error"] .badge {
@@ -320,43 +320,59 @@
 
 .listHead {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
   gap: var(--space-3);
 }
 
-/* The search row is as wide as the list: its end is the table's and the cards' end. */
+/* desktop/Documents.html: the search is one raised pill as wide as the list, its icon at the
+   start and Search inside its end; the tools row under it holds pills only. */
 .search {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
+  flex-direction: column;
   gap: var(--space-2);
-  flex: 1 1 100%;
   min-width: 0;
 }
 
 .searchField {
-  position: relative;
-  flex: 1 1 16rem;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
   min-width: 0;
+  padding: var(--space-1) var(--space-1) var(--space-1) var(--space-4);
+  border: 1px solid var(--k-card-edge);
+  border-radius: var(--k-r-pill);
+  background: var(--k-surface);
+  box-shadow: var(--k-shadow-1);
+}
+
+.searchField:focus-within {
+  border-color: var(--k-accent);
+  outline: 2px solid var(--k-focus);
+  outline-offset: 2px;
 }
 
 .searchIcon {
-  position: absolute;
-  inset-inline-start: var(--space-3);
-  top: 50%;
-  transform: translateY(-50%);
-  color: var(--text-secondary);
+  flex: none;
+  color: var(--k-ink-faint);
   pointer-events: none;
 }
 
 /* D6: the box is the Search button's height; the clear x sits inside its end. */
 .searchInput {
+  flex: 1;
+  min-width: 0;
   height: var(--control-h);
   min-height: var(--control-h);
-  padding-inline-start: calc(var(--space-3) + 16px + var(--space-2));
-  padding-inline-end: calc(var(--control-h) + var(--space-1));
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--k-ink);
+  font: 400 var(--fs-base) var(--k-font-body);
+}
+
+.searchInput::placeholder {
+  color: var(--k-ink-faint);
 }
 
 .searchInput::-webkit-search-cancel-button {
@@ -364,11 +380,13 @@
 }
 
 .searchClear {
-  position: absolute;
-  inset-inline-end: 0;
-  top: 0;
+  flex: none;
   border-color: transparent;
   background: transparent;
+}
+
+.searchGo {
+  flex: none;
 }
 
 @media (pointer: coarse) {
@@ -378,10 +396,42 @@
   }
 }
 
-/* Always shown (every input has a label you can see), on its own line above the box. */
+/* A label you can always see (MonoEdge design system, 16 Oct 2026), set small above the pill. */
 .searchLabel {
-  flex: 1 1 100%;
-  font-weight: 600;
+  color: var(--k-ink-muted);
+  font: 500 11px var(--k-font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+/* Inside documents / Names at the start; Sort and List / Grid at the end. */
+.listTools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-3);
+}
+
+.toolsEnd {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-inline-start: auto;
+}
+
+.sort {
+  width: 12rem;
+}
+
+/* The handoff's Sort select, as a pill the height of the pills beside it. */
+.sortSelect {
+  min-height: var(--h-md);
+  border-color: var(--k-rule);
+  border-radius: var(--k-r-pill);
+  font-size: var(--fs-sm);
+  font-weight: 500;
 }
 
 /* After the table, stuck to the bottom of the list's view while rows are ticked (D9), so
@@ -395,10 +445,53 @@
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2) var(--space-3);
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border-strong);
-  border-radius: 2px;
-  background: var(--bg-subdued);
+  padding: var(--space-2) var(--space-2) var(--space-2) var(--space-6);
+  border: 1px solid var(--k-rule);
+  border-radius: var(--k-r-5);
+  background: var(--k-surface);
+}
+
+/* With rows ticked: the handoff's dark bar (.k-bulk), raised over the list, its buttons
+   outlined in the inverse line. */
+.selectionBar:not([data-idle]) {
+  border-color: var(--k-inverse-bg);
+  background: var(--k-inverse-bg);
+  color: var(--k-inverse-ink);
+  box-shadow: var(--k-shadow-2);
+}
+
+.selectionBar:not([data-idle]) :global(.btn) {
+  border-color: var(--k-inverse-line);
+  background: transparent;
+  color: var(--k-inverse-ink);
+}
+
+.selectionBar:not([data-idle]) :global(.btn):hover {
+  background: var(--k-inverse-line);
+}
+
+.selectionBar:not([data-idle]) :global(.btn-quiet) {
+  border-color: transparent;
+}
+
+.selectionBar:not([data-idle]) :global(.muted),
+.selectionBar:not([data-idle]) .selectionError {
+  color: var(--k-inverse-ink);
+}
+
+.selectionBar:not([data-idle]) .selectAll {
+  color: var(--k-inverse-ink);
+  font-weight: 600;
+}
+
+/* The handoff's small buttons (.k-btn--sm), so the bar stays one line; 44px on touch. */
+@media (pointer: fine) {
+  .selectionBar:not([data-idle]) :global(.btn) {
+    height: var(--h-sm);
+    min-height: var(--h-sm);
+    padding-inline: var(--space-3);
+    font-size: 11px;
+  }
 }
 
 @container docs-list (min-width: 36rem) {
@@ -526,7 +619,7 @@ table.docs tbody tr[data-selected="true"] .selectHit input {
   gap: var(--space-3);
   padding: var(--space-3) var(--space-4);
   border: 1px solid var(--critical);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   background: var(--bg-surface);
   color: var(--critical);
 }
@@ -558,13 +651,13 @@ table.docs tbody tr[data-selected="true"] .selectHit input {
 
 .skeletonRow {
   height: 104px;
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
 }
 
 @container docs-list (min-width: 36rem) {
   .skeletonRow {
     height: 48px;
-    border-radius: 2px;
+    border-radius: var(--k-r-2);
   }
 }
 
@@ -604,7 +697,7 @@ table.docs {
   border-spacing: 0;
   background: var(--bg-surface);
   border: 1px solid var(--border);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   font-variant-numeric: tabular-nums;
 }
 
@@ -670,10 +763,12 @@ table.docs > tbody > tr {
   overflow: hidden;
 }
 
+/* The handoff's paper icon (.k-file-ic, 30px tall), centred on the name's line without
+   making the line taller, so the row's other cells still line up with it. */
 .fileIcon {
+  --file-ic-h: 30px; /* the height .k-file-ic sets */
   flex: none;
-  height: var(--name-line);
-  color: var(--text-secondary);
+  margin-block: calc((var(--name-line) - var(--file-ic-h)) / 2);
 }
 
 .selectHit,
@@ -904,11 +999,11 @@ table.docs > tbody > tr {
   }
 
   table.docs thead th:first-child {
-    border-start-start-radius: 2px;
+    border-start-start-radius: var(--k-r-4);
   }
 
   table.docs thead th:last-child {
-    border-start-end-radius: 2px;
+    border-start-end-radius: var(--k-r-4);
   }
 
   /* A control focused from the keyboard scrolls clear of the sticky header row too (2.4.11). */
@@ -1001,7 +1096,7 @@ table.docs > tbody > tr {
     width: min(20rem, 80cqi);
     padding: var(--space-3);
     border: 1px solid var(--border-strong);
-    border-radius: 2px;
+    border-radius: var(--k-r-2);
     background: var(--bg-surface);
     text-align: start;
   }
@@ -1165,7 +1260,7 @@ table.docs > tbody > tr {
     align-items: flex-start;
     background: var(--bg-surface);
     border: 1px solid var(--border);
-    border-radius: 2px;
+    border-radius: var(--k-r-2);
     padding: var(--space-3) var(--space-4);
   }
 
@@ -1253,15 +1348,6 @@ table.docs > tbody > tr {
 }
 
 /* Search inside documents (PRD 3 Q3): the mode choice and the results. */
-.searchMode {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-3);
-  margin: 0;
-  padding: 0;
-  border: 0;
-}
-
 .results {
   display: flex;
   flex-direction: column;
@@ -1278,7 +1364,7 @@ table.docs > tbody > tr {
   min-width: 0;
   padding: var(--space-3) var(--space-4);
   border: 1px solid var(--border);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   background: var(--bg-surface);
 }
 
@@ -1334,7 +1420,7 @@ table.docs > tbody > tr {
   height: 6px;
   appearance: none;
   border: 1px solid var(--border-strong);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   background: var(--bg-subdued);
   color: var(--text-secondary);
   overflow: hidden;
@@ -1423,7 +1509,7 @@ table.docs > tbody > tr {
   margin-inline-start: auto;
   padding-inline: var(--space-2);
   border: 1px solid var(--border-strong);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   background: transparent;
   color: var(--text-primary);
   font-weight: 600;
@@ -1456,7 +1542,7 @@ table.docs > tbody > tr {
   overflow-anchor: auto;
   padding: var(--space-4);
   border: 1px solid var(--border-strong);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   background: var(--bg-surface);
   color: var(--text-primary);
   font-size: var(--fs-base);

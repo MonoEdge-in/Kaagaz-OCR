@@ -28,14 +28,15 @@ import { DepartmentPicker } from "@/components/files/DepartmentPicker";
 import { departmentsOf, lastDepartment, rememberDepartment } from "@/components/files/departments";
 import { DocumentsGrid } from "@/components/files/DocumentsGrid";
 import { FolderTiles } from "@/components/files/FolderTiles";
-import fileStyles from "@/components/files/Files.module.css";
 import { readViewMode, saveViewMode } from "@/components/files/viewMode";
 import type { ViewMode } from "@/components/files/viewMode";
 import { FILES_TEXT } from "@/components/files/words";
-import { canReview } from "@/components/review/review";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Icon } from "@/components/ui/Icon";
+import { Icon as KitIcon } from "@/components/ui/Icon/Icon";
 import { IconButton } from "@/components/ui/IconButton";
+import { RadioPill, Segmented } from "@/components/ui/Segmented/Segmented";
+import { useSharedUploads } from "@/components/shell/Uploads";
 import { Toast } from "@/components/ui/Toast";
 import { VersionNoteDialog } from "@/components/versions/VersionNoteDialog";
 import { UploadWords } from "@/components/words/UploadWords";
@@ -70,7 +71,7 @@ import type { SearchMode } from "./insideSearch";
 import { folderNameSuggestions, libraryErrorText, noMatchTitle } from "./library";
 import { mergeList } from "./listMerge";
 import { LibraryFilters } from "./LibraryFilters";
-import { NO_FILTERS, includeSubfoldersHref, isFiltered, libraryHref, listParams, nextSort } from "./libraryQuery";
+import { NO_FILTERS, SORT_KEYS, includeSubfoldersHref, isFiltered, libraryHref, listParams, nextSort } from "./libraryQuery";
 import type { LibraryState, SortKey } from "./libraryQuery";
 import {
   ACCEPT_ATTRIBUTE,
@@ -82,8 +83,7 @@ import {
   uploadsFinishedText,
 } from "./logic";
 import { foreverNeeds } from "./trash";
-import { Dropzone, ReaderSelect, UploadStatus, useUploads } from "./UploadArea";
-import { isBusy } from "./uploadQueue";
+import { Dropzone, ReaderSelect } from "./UploadArea";
 import styles from "./Documents.module.css";
 import libraryStyles from "./Library.module.css";
 
@@ -150,8 +150,8 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
   const [newFolderAsk, setNewFolderAsk] = useState(0); // D12: the folder column's "+", the one New folder
   const [dropError, setDropError] = useState<string | null>(null);
   const [toast, setToast] = useState<{ message: string; undo: () => Promise<void> } | null>(null);
-  const uploads = useUploads(() => setReload((n) => n + 1));
-  const [trayOpen, setTrayOpen] = useState(false);
+  // The shell's one upload queue and tray (D-12); this screen adds files into the folder shown.
+  const { uploads, setTrayOpen } = useSharedUploads(() => setReload((n) => n + 1));
   const filtered = isFiltered(library);
   // File management: the people for the Owner filter, List or Grid (per person, F5), the
   // department picked for uploads outside any folder (F2), and the file waiting for its note (V9).
@@ -679,6 +679,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
                 <div className={styles.list}>
                   {showControls && (
                     <div className={styles.listHead}>
+                      {/* desktop/Documents.html: one pill to search in, Search inside its end. */}
                       <form className={styles.search} role="search" onSubmit={submitSearch}>
                         <label htmlFor="documents-q" className={styles.searchLabel}>
                           {mode === "inside" ? "Search inside documents" : "Search documents by name"}
@@ -687,7 +688,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
                           <Icon name="search" size={16} className={styles.searchIcon} />
                           <input
                             id="documents-q"
-                            className={`input ${styles.searchInput}`}
+                            className={styles.searchInput}
                             type="search"
                             enterKeyHint="search"
                             autoComplete="off"
@@ -701,42 +702,50 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
                           {q !== "" && (
                             <IconButton icon="close" label="Clear search" className={styles.searchClear} onClick={clearSearch} />
                           )}
+                          <button type="submit" className={`k-btn k-btn--primary ${styles.searchGo}`}>
+                            Search
+                          </button>
                         </div>
-                        <button type="submit" className="btn">
-                          Search
-                        </button>
-                        {!library.trash && (
-                          <fieldset className={styles.searchMode}>
-                            <legend className="visually-hidden">Search in</legend>
-                            {SEARCH_MODES.map((choice) => (
-                              <label key={choice.mode} className={libraryStyles.check}>
-                                <input
-                                  type="radio"
-                                  name="documents-search-mode"
-                                  checked={mode === choice.mode}
-                                  onChange={() => setModeChoice(choice.mode)}
-                                />
-                                {choice.label}
-                              </label>
-                            ))}
-                          </fieldset>
-                        )}
                       </form>
-                      {/* F5: List or Grid, remembered per person. */}
-                      <div className={fileStyles.switch} role="group" aria-labelledby="view-switch-label">
-                        <span id="view-switch-label">{FILES_TEXT.showAs}</span>
-                        <span className={fileStyles.switchButtons}>
-                          {(["list", "grid"] as const).map((mode) => (
-                            <button
-                              key={mode}
-                              type="button"
-                              className="btn"
-                              aria-pressed={viewMode === mode}
-                              onClick={() => chooseView(mode)}
+                      <div className={styles.listTools}>
+                        {!library.trash && (
+                          <RadioPill<SearchMode>
+                            label="Search in"
+                            name="documents-search-mode"
+                            options={SEARCH_MODES.map((choice) => ({ value: choice.mode, label: choice.label }))}
+                            value={mode}
+                            onChange={setModeChoice}
+                          />
+                        )}
+                        <span className={styles.toolsEnd}>
+                          <span className={`k-select-wrap ${styles.sort}`}>
+                            <label htmlFor="documents-sort" className="visually-hidden">
+                              {FILES_TEXT.sortLabel}
+                            </label>
+                            <select
+                              id="documents-sort"
+                              className={`k-select ${styles.sortSelect}`}
+                              value={library.sort}
+                              onChange={(event) => sortBy(event.target.value as SortKey)}
                             >
-                              {mode === "list" ? FILES_TEXT.list : FILES_TEXT.grid}
-                            </button>
-                          ))}
+                              {SORT_KEYS.map((key) => (
+                                <option key={key} value={key}>
+                                  {FILES_TEXT.sortNames[key]}
+                                </option>
+                              ))}
+                            </select>
+                            <KitIcon name="chev-down" size="sm" className="k-ic" />
+                          </span>
+                          {/* F5: List or Grid, remembered per person. */}
+                          <Segmented
+                            label={FILES_TEXT.showAs}
+                            options={[
+                              { value: "list", label: FILES_TEXT.list, icon: "list" },
+                              { value: "grid", label: FILES_TEXT.grid, icon: "grid" },
+                            ]}
+                            value={viewMode}
+                            onChange={chooseView}
+                          />
                         </span>
                       </div>
                     </div>
@@ -896,27 +905,6 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
         </section>
       </div>
 
-      <UploadStatus
-        open={trayOpen}
-        onOpenChange={setTrayOpen}
-        entries={uploads.entries}
-        views={uploads.views}
-        stored={uploads.stored}
-        tooMany={uploads.tooMany}
-        onClearFinished={() => {
-          uploads.clearFinished();
-          // Nothing left: the panel and its button go, so focus goes to the list's heading.
-          if (!uploads.entries.some(isBusy)) {
-            setTrayOpen(false);
-            headingRef.current?.focus();
-          }
-        }}
-        onRestore={(key, documentId, name) => void uploads.restore(key, documentId, name)}
-        onRetry={(key) => void uploads.retry(key)}
-        tree={tree}
-        onUndone={() => setReload((n) => n + 1)}
-        canReread={canReview(me.user.role)}
-      />
       <Toast
         message={toast?.message ?? null}
         onUndo={toast ? () => undoMove(toast.undo) : undefined}

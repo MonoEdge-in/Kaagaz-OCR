@@ -73,8 +73,9 @@ describe("G2: no dead scrollbar gutter", () => {
 });
 
 describe("G5: the header's search, Upload and account menu", () => {
-  it("sends a search to the documents screen's own search, /documents?q=...", () => {
-    expect(shell).toContain('<Form action="/documents" role="search" className={styles.search}>');
+  // Changed on purpose (UI rebuild, 21 Oct 2026): the top bar's search opens the Search screen (3.9).
+  it("sends a search to the Search screen, /search?q=...", () => {
+    expect(shell).toContain('<Form action="/search" role="search" className={styles.search}>');
     expect(shell).toMatch(/id="app-search"\s*name="q"/);
   });
 
@@ -104,11 +105,10 @@ describe("G5: the header's search, Upload and account menu", () => {
     const upload = end.indexOf("className={`btn btn-primary ${styles.upload}`}");
     expect(upload).toBeGreaterThan(end.indexOf('role="search"'));
     expect(end.indexOf("<AccountMenu")).toBeGreaterThan(upload);
-    // Changed on purpose (Tushar, 16 Oct 2026): the header search finds a document by name; the
-    // Documents page's own search is "Search inside documents".
-    expect(end).toMatch(/<label htmlFor="app-search" className="visually-hidden">\s*Find a document/);
-    expect(end).toContain('placeholder="Find a document"');
-    expect(end).toContain('title="Find a document by name (Ctrl+K, or Cmd+K on a Mac)"');
+    // Changed on purpose (UI rebuild, 21 Oct 2026): it searches inside documents first, names too.
+    expect(end).toMatch(/<label htmlFor="app-search" className="visually-hidden">\s*Search your documents/);
+    expect(end).toContain('placeholder="Search inside documents, or a name"');
+    expect(end).toContain('title="Search your documents (Ctrl+K, or Cmd+K on a Mac)"');
     expect(end).toContain('aria-keyshortcuts="Control+K Meta+K"');
     // Upload goes to the documents screen, and opens its picker when already there.
     expect(end).toMatch(/<Link href="\/documents" className=\{`btn btn-primary \$\{styles\.upload\}`\} onClick=\{upload\}>/);
@@ -175,12 +175,14 @@ describe("G7: no 'mode is fixed' line under the theme switch", () => {
 });
 
 describe("G8 and G9: the current link and the Review count", () => {
-  it("marks the current link with the accent tint, bold words and a 3px full-height bar", () => {
-    expect(rule(shellCss, ".current,\n.current:hover")).toMatch(/background: var\(--accent-subtle\);[\s\S]*font-weight: 700;/);
-    const bar = rule(shellCss, ".current::before");
-    expect(bar).toMatch(/inset-block: 0;/);
-    expect(bar).toMatch(/width: 3px;/);
-    expect(bar).toMatch(/background: var\(--accent\);/);
+  // Changed on purpose (UI rebuild, 21 Oct 2026): the handoff's active nav item, a raised pill with an
+  // edge, bold words and the accent icon, replaces the tint and 3px bar.
+  it("marks the current link with a raised pill, an edge, bold words and the accent icon", () => {
+    const current = rule(shellCss, ".current,\n.current:hover");
+    expect(current).toMatch(/background: var\(--k-nav-active\);/);
+    expect(current).toMatch(/border-color: var\(--k-card-edge\);/);
+    expect(current).toMatch(/font-weight: 600;/);
+    expect(rule(shellCss, ".current svg")).toMatch(/color: var\(--k-nav-accent\);/);
   });
 
   // Changed on purpose (Tushar, 16 Oct 2026): the Review count is gone (shell-nav.test.ts).

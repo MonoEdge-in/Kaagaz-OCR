@@ -1,7 +1,7 @@
 /* Kaagaz design tokens, copied exactly from design/kaagaz-ui-handoff/styles/kaagaz.css
    (sections 1, 1b and 2). The one addition is the System block after the dark one:
    with no data-theme on <html> (the "system" choice, lib/theme.ts) the dark tokens
-   follow prefers-color-scheme (docs/ui-mapping.md, D-2). The three --k-font-* tokens
+   follow prefers-color-scheme (docs/architecture.md, Decisions: D-2). The three --k-font-* tokens
    point at the faces app/layout.tsx serves through next/font, with the handoff's
    fallbacks after them. The only file outside globals.css allowed to hold hex colours
    (tests/guards.test.ts). */

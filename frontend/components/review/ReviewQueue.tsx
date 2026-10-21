@@ -28,7 +28,6 @@ import {
   focusProgress,
   groupByDocument,
   leftToReview,
-  parseReason,
   queueParams,
   resolvedMessage,
   withoutItem,
@@ -182,29 +181,28 @@ function Queue({ documentId }: { documentId?: string }) {
   return (
     <div className="page">
       <Header />
-      <div className="field">
-        <label htmlFor="review-reason">Show values where</label>
-        <select
-          id="review-reason"
-          className="input"
-          value={reason ?? ""}
-          // A "Show more" still loading belongs to the old filter: wait for it.
-          disabled={loadingMore}
-          onChange={(event) => {
-            setMoreError(null);
-            setReason(parseReason(event.target.value));
-            setIndex(0);
-            setDone(0);
-            setAttempt((n) => n + 1); // the loading state until the filtered list comes
-          }}
-        >
-          <option value="">Any reason</option>
-          {REASON_FILTERS.map((choice) => (
-            <option key={choice.value} value={choice.value}>
-              {choice.text}
-            </option>
-          ))}
-        </select>
+      {/* desktop/Review.html: the reasons as a row of pill chips, the one shown pressed. */}
+      <div className={`k-chip-row ${styles.reasons}`} role="group" aria-label="Show values where">
+        {[{ value: null, text: "Any reason" }, ...REASON_FILTERS].map((choice) => (
+          <button
+            key={choice.value ?? "any"}
+            type="button"
+            className="k-chip"
+            aria-pressed={reason === choice.value}
+            // A "Show more" still loading belongs to the old filter: wait for it.
+            disabled={loadingMore}
+            onClick={() => {
+              if (reason === choice.value) return;
+              setMoreError(null);
+              setReason(choice.value);
+              setIndex(0);
+              setDone(0);
+              setAttempt((n) => n + 1); // the loading state until the filtered list comes
+            }}
+          >
+            {choice.text}
+          </button>
+        ))}
       </div>
       {/* Native radios: arrow keys move between them, and Tab stops once (R6). */}
       <div className={styles.segments} role="radiogroup" aria-label="Show">

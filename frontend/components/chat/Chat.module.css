@@ -1,8 +1,7 @@
-/* The chat screen. It fills <main> (the shell's one scroller), so <main>
-   itself never scrolls here: the thread is the scroll area, the composer is
-   pinned to its foot. Colours are tokens from app/globals.css only. Flat and
-   square (MonoEdge): hairlines, 2px corners, no shadows; only transform and
-   opacity ever animate. */
+/* The chat screen, in the handoff's look (desktop/Ask.html). It fills <main> (the shell's
+   one scroller), so <main> itself never scrolls here: the thread is the scroll area, the
+   composer is pinned to its foot. The conversations sit on the page's ground, the question
+   is an accent bubble, each answer a raised card; only transform and opacity animate. */
 
 /* --- Frame ------------------------------------------------------------------ */
 
@@ -26,9 +25,8 @@
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: var(--space-4) var(--space-3);
-  background: var(--surface);
-  border-inline-end: 1px solid var(--border);
+  padding: var(--space-6) var(--space-3) var(--space-6) var(--space-4);
+  background: transparent;
   /* A thin, quiet scrollbar, never the thick one with arrows (Ask screen polish, 17 Oct 2026). */
   scrollbar-width: thin;
   scrollbar-color: var(--border-strong) transparent;
@@ -98,12 +96,14 @@
   gap: var(--space-1);
 }
 
+/* "Today", "This week": the handoff's mono group heading (.k-tree-group). */
 .groupTitle {
   margin: 0;
   padding-inline: var(--space-3);
-  font-size: var(--fs-sm);
-  font-weight: 600;
-  color: var(--fg-muted);
+  font: 500 10px/1.4 var(--k-font-mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--k-ink-muted);
 }
 
 .items {
@@ -126,9 +126,10 @@
   padding-block: 0;
   padding-inline: var(--space-3) var(--space-2);
   border: 0;
-  border-radius: var(--r-sm);
+  border-radius: var(--k-r-3);
   background: transparent;
-  color: var(--fg);
+  color: var(--k-ink);
+  font-size: 13px;
   text-align: start;
   cursor: pointer;
   contain: layout paint style;
@@ -136,21 +137,18 @@
 
 @media (hover: hover) and (pointer: fine) {
   .item:hover:not(:disabled) {
-    background: var(--surface-2);
+    background: var(--k-sunken);
   }
 }
 
+/* The open conversation: the accent's soft fill, its words bold (never colour alone). */
 .item[aria-current="true"] {
-  background: var(--accent-soft);
+  background: var(--k-accent-soft);
+  color: var(--k-accent-soft-ink);
 }
 
-.item[aria-current="true"]::before {
-  content: "";
-  position: absolute;
-  inset-block: var(--space-2);
-  inset-inline-start: 0;
-  width: 2px;
-  background: var(--accent);
+.item[aria-current="true"] .itemTitle {
+  font-weight: 600;
 }
 
 .item:disabled {
@@ -199,7 +197,7 @@
   inset-inline-end: 0;
   top: 0;
   opacity: 0;
-  background: var(--surface-2);
+  background: var(--k-sunken);
   transition: opacity var(--t-fast) var(--ease);
 }
 
@@ -235,9 +233,10 @@
 }
 
 .listSearch > label {
-  font-size: var(--fs-sm);
-  font-weight: 600;
-  color: var(--fg-muted);
+  font: 500 10px/1.4 var(--k-font-mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--k-ink-muted);
 }
 
 /* The Documents search field (Documents.module.css): a lens inside, an x to clear. */
@@ -257,6 +256,7 @@
 
 .searchInput {
   width: 100%;
+  border-radius: var(--k-r-pill);
   height: var(--control-h);
   min-height: var(--control-h);
   padding-inline-start: calc(var(--space-3) + 16px + var(--space-2));
@@ -409,15 +409,15 @@
   margin: 0;
 }
 
-/* The question: right aligned, in the accent's soft tint. */
+/* The question: right aligned, the handoff's accent bubble (.k-question). */
 .question {
   align-self: flex-end;
   max-width: 80%;
-  padding: var(--space-2) var(--space-4);
-  border-radius: var(--r-md);
-  border-end-end-radius: var(--r-sm);
-  background: var(--accent-soft);
-  color: var(--fg);
+  padding: 13px 20px;
+  border-radius: 22px 22px 6px 22px;
+  background: var(--k-accent);
+  color: var(--k-accent-ink);
+  font-size: 15px;
 }
 
 .plain {
@@ -435,9 +435,10 @@
   gap: var(--space-4);
   min-width: 0;
   padding: var(--space-4);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
+  background: var(--k-surface);
+  border: 1px solid var(--k-card-edge);
+  border-radius: var(--k-r-4);
+  box-shadow: var(--k-shadow-1);
   contain: layout paint style;
 }
 
@@ -471,7 +472,7 @@
   height: var(--badge-h);
   padding: 0 var(--space-1);
   border: 1px solid var(--accent);
-  border-radius: var(--r-sm);
+  border-radius: var(--k-r-2);
   background: var(--surface);
   color: var(--accent);
   font-size: var(--fs-sm);
@@ -734,7 +735,7 @@
 /* The question's words: a calm tint and bold, so never colour alone. */
 .snippet mark {
   padding: 0 1px;
-  border-radius: var(--r-sm);
+  border-radius: var(--k-r-2);
   background: var(--bg-selected);
   color: inherit;
   font-weight: 600;
@@ -848,9 +849,11 @@
   display: flex;
   flex-direction: column;
   min-width: 0;
-  background: var(--surface);
-  border: 1px solid var(--control-edge);
-  border-radius: var(--r-md);
+  padding: var(--space-1) var(--space-1) 0 var(--space-2);
+  background: var(--k-surface);
+  border: 1px solid var(--k-rule);
+  border-radius: var(--k-r-5);
+  box-shadow: var(--k-shadow-2);
 }
 
 .composerBox:has(.composerInput:focus) {
@@ -1057,7 +1060,7 @@
   gap: var(--space-3);
   min-height: var(--control-h);
   padding: var(--space-1) var(--space-2);
-  border-radius: var(--r-sm);
+  border-radius: var(--k-r-2);
   font-size: var(--fs-sm);
   overflow-wrap: anywhere;
   cursor: pointer;
@@ -1098,7 +1101,7 @@
   margin: 2px var(--space-2) 0;
   padding: 2px;
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-sm);
+  border-radius: var(--k-r-2);
   background: var(--surface-2);
 }
 
@@ -1177,7 +1180,7 @@
   gap: var(--space-2) var(--space-3);
   padding: var(--space-2) var(--space-3);
   border: 1px solid var(--danger-fg);
-  border-radius: var(--r-sm);
+  border-radius: var(--k-r-2);
   background: var(--danger-bg);
   color: var(--danger-fg);
 }
@@ -1231,7 +1234,7 @@
   min-height: var(--h-lg);
   padding: var(--space-3);
   border: 1px solid var(--border);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   background: var(--bg-surface);
   color: var(--text-primary);
   font: inherit;
@@ -1272,7 +1275,7 @@
    summary one control tall, its chevron turning when open (transform only). */
 .sourcesBar {
   border: 1px solid var(--border);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   background: var(--surface);
 }
 

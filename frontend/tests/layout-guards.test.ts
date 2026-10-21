@@ -222,7 +222,8 @@ describe("layout guards", () => {
     }
     const page = rulesFor("app/globals.css", "html:has(.app-shell) body")[0]?.body ?? "";
     expect(page).toMatch(/height:\s*100%;\s*overflow:\s*hidden;\s*overscroll-behavior:\s*none;/);
-    expect(read("components/shell/AppShell.tsx")).toContain('className={`app-shell ${styles.app}`}');
+    // Changed on purpose (UI rebuild, 21 Oct 2026): the frame is also a .k-root, for the handoff's base styles.
+    expect(read("components/shell/AppShell.tsx")).toContain('className={`app-shell k-root ${styles.app}`}');
   });
 
   it("gives the page frame no height limit of its own (no second scrollbar)", () => {
@@ -384,6 +385,9 @@ describe("layout guards", () => {
       "components/ui/Table/Table.module.css: .wrap: overscroll-behavior-x",
       "components/ui/Tabs/Tabs.module.css: .tabs: overscroll-behavior-x",
       "app/kit/kit.module.css: .states: overscroll-behavior-x", // the dev-only kit sheet's button table
+      // The handoff's tab row and table box, sideways only (app/styles/components.css).
+      "app/styles/components.css: .k-tabs: overscroll-behavior-x",
+      "app/styles/components.css: .k-table-wrap: overscroll-behavior-x",
     ];
     const found = everyRule(/overscroll-behavior/).flatMap(({ rule, name }) =>
       [...rule.body.matchAll(/(overscroll-behavior[-\w]*):/g)].map((match) => `${name}: ${match[1]}`),
@@ -474,6 +478,11 @@ describe("layout guards", () => {
       "components/ui/AnswerCard/AnswerCard.module.css: .dots i",
       "components/ui/Skeleton/Skeleton.module.css: .skel::after",
       "components/ui/StageProgress/StageProgress.module.css: .moving > i",
+      // The handoff's own classes (app/styles/components.css): the same four kinds of work in progress.
+      "app/styles/components.css: .k-btn.is-loading::before",
+      "app/styles/components.css: .k-status--reading::after",
+      "app/styles/components.css: .k-dots i",
+      "app/styles/components.css: .k-skel::after",
     ];
     const found = everyRule(/animation(-iteration-count)?:[^;]*\binfinite\b/).map(({ name }) => name);
     expect(found.filter((entry) => !allowed.includes(entry))).toEqual([]);

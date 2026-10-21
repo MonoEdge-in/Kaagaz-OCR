@@ -15,6 +15,7 @@ import type { DragEvent } from "react";
 import { departmentsOf, isDepartment } from "@/components/files/departments";
 import { FILES_TEXT } from "@/components/files/words";
 import { Icon } from "@/components/ui/Icon";
+import { Icon as TreeIcon } from "@/components/ui/Icon/Icon";
 import type { FolderNode, FolderTree } from "./folderTree";
 import { libraryHref } from "./libraryQuery";
 import type { LibraryState } from "./libraryQuery";
@@ -83,6 +84,7 @@ export function FolderNav({ tree, library, loading, error, onRetry, onNavigate, 
             onClick={() => onNavigate("All documents")}
             {...top.handlers}
           >
+            <TreeIcon name="documents" size="sm" className={styles.treeIcon} />
             All documents
           </Link>
         </li>
@@ -123,7 +125,7 @@ export function FolderNav({ tree, library, loading, error, onRetry, onNavigate, 
             aria-current={library.trash ? "page" : undefined}
             onClick={() => onNavigate("Trash")}
           >
-            <Icon name="trash" />
+            <TreeIcon name="trash" size="sm" className={styles.treeIcon} />
             Trash
           </Link>
         </li>
@@ -172,6 +174,7 @@ function FolderItem({
         onClick={() => onNavigate(node.folder.name)}
         {...target.handlers}
       >
+        <TreeIcon name={isDepartment(node.folder) ? "department" : "folder"} size="sm" className={styles.treeIcon} />
         {node.folder.name}
       </Link>
       {node.children.length > 0 && (

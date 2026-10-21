@@ -1,6 +1,6 @@
 // CitationChip, AnswerCard, Question, Working, SearchingFor, SourceCard,
 // Composer, SuggestionChip and DevanagariKeys, against Components.html
-// section 14 and the Ask rules in docs/ui-mapping.md (3.8).
+// section 14 and the Ask rules in docs/architecture.md (Needs backend: NB-21, NB-23).
 
 import { createElement as h } from "react";
 import { describe, expect, it } from "vitest";

@@ -186,7 +186,7 @@
   flex: none;
   min-width: var(--badge-h);
   line-height: var(--badge-h);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   background: var(--accent);
   color: var(--text-onaccent);
   font-weight: 700;

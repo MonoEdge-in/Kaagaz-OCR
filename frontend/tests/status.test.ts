@@ -1,4 +1,4 @@
-// The six-state mapping (docs/ui-mapping.md, section 2): every value the backend
+// The six-state mapping (docs/architecture.md, The screens): every value the backend
 // sends lands on exactly one state.
 
 import { describe, expect, it } from "vitest";

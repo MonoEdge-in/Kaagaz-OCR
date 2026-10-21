@@ -6,7 +6,7 @@
   max-width: 100%;
   padding: 0;
   border: 1px solid var(--border-strong);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   background: var(--surface);
   color: var(--fg);
 }
