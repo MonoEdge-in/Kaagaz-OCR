@@ -66,5 +66,9 @@ def test_answering_never_reaches_a_story_module() -> None:
 
 
 def test_the_guard_sees_a_story_import() -> None:
-    """The control: the routes that do use stories are seen to reach them."""
-    assert {"kaagaz.search.story_match", "kaagaz.search.story_search"} <= reached("kaagaz.api.routers.search")
+    """The control: the routes that do use stories are seen to reach them. Changed on purpose
+    (PRD 1, activity/search): GET /api/search is keyword only (Q1); the stories routes remain."""
+    assert {"kaagaz.search.story_match", "kaagaz.search.story_search"} <= reached(
+        "kaagaz.api.routers.stories"
+    )
+    assert "kaagaz.search.story_search" not in reached("kaagaz.api.routers.search")

@@ -115,7 +115,7 @@ export function ActivityView() {
       </p>
       {failed && <LoadFailed what="the activity" message={failed} onRetry={() => setAttempt((n) => n + 1)} />}
       {current && current.items.length > 0 && (
-        <div className={table.reflowWrap}>
+        <div className={`${table.reflowWrap} ${admin.tableScroll}`}>
           <table className={`table ${table.reflow}`} role="table">
             <caption className="visually-hidden">Activity, newest first</caption>
             <thead role="rowgroup">
@@ -133,7 +133,7 @@ export function ActivityView() {
                   <td role="cell" data-label="When" className="tabular">
                     <time dateTime={event.at}>{formatDateTime(event.at)}</time>
                   </td>
-                  <td role="cell" data-label="Organisation" className={styles.email}>
+                  <td role="cell" data-label="Organisation" className={admin.wrap}>
                     {event.organisation_name ?? (event.source === "platform" ? "Platform" : "Deleted organisation")}
                   </td>
                   <td role="cell" data-label="Action" className={styles.orgName}>
@@ -158,7 +158,13 @@ export function ActivityView() {
       )}
       {current?.next && (
         <div>
-          <button type="button" className="btn" onClick={loadMore} disabled={more.busy} aria-busy={more.busy || undefined}>
+          <button
+            type="button"
+            className={`btn ${more.busy ? admin.busy : ""}`}
+            onClick={loadMore}
+            disabled={more.busy}
+            aria-busy={more.busy || undefined}
+          >
             {more.busy && <span className="spinner" aria-hidden="true" />}
             Load more
           </button>

@@ -16,15 +16,20 @@ import {
   attentionItems,
   boardBest,
   boardRows,
+  changeLine,
   changeText,
   csvOf,
   dayList,
   monthForecast,
   orgFlags,
   periodTotals,
+  realMonthForecast,
+  realMonthSpend,
   rateText,
   riskOrder,
   series,
+  sparkOf,
+  unknownText,
   usdPer1000Pages,
   usdPer100Questions,
 } from "@/components/operator/insights";
@@ -49,6 +54,15 @@ const day = (overrides: Partial<InsightDay> = {}): InsightDay => ({
   cost_questions_usd: null,
   cost_estimated: false,
   cost_part_unknown: false,
+  pages_read: 0,
+  pages_reread: 0,
+  pages_read_costed: 0,
+  cost_real_usd: null,
+  cost_scan_real_usd: null,
+  cost_answer_real_usd: null,
+  cost_unknown_calls: 0,
+  scan_unknown_calls: 0,
+  answer_unknown_calls: 0,
   ...overrides,
 });
 
@@ -243,7 +257,70 @@ describe("periodTotals", () => {
     expect(totals).toEqual({
       activeOrganisations: 3, uploads: 1, pages: 10, questions: 3, runs: 3, runsFailed: 1, scanPages: 4, cachedPages: 2,
       costUsd: null, costDocumentsUsd: null, costQuestionsUsd: null, costEstimated: false, costPartUnknown: false,
+      pagesRead: 0, pagesReread: 0, pagesReadCosted: 0, costRealUsd: null, costScanRealUsd: null, costAnswerRealUsd: null,
+      unknownCalls: 0, scanUnknownCalls: 0, answerUnknownCalls: 0,
     });
+  });
+
+  // Tushar, 16 Oct 2026: the real figures (0032), pages read from the ledger, re-reads apart.
+  it("sums the pages models read, the re-reads apart, and only the cost OpenRouter reported", () => {
+    const totals = periodTotals(
+      [
+        day({ day: "2026-10-05", pages_read: 20, pages_reread: 3, pages_read_costed: 18, cost_real_usd: 0.5,
+          cost_scan_real_usd: 0.4, cost_answer_real_usd: null, cost_unknown_calls: 2, scan_unknown_calls: 2 }),
+        day({ organisation_id: "b", day: "2026-10-06", pages_read: 7, cost_real_usd: 0.25, cost_answer_real_usd: 0.1,
+          cost_unknown_calls: 1, answer_unknown_calls: 1 }),
+      ],
+      "2026-10-05",
+      "2026-10-11",
+    );
+    expect([totals.pagesRead, totals.pagesReread, totals.pagesReadCosted]).toEqual([27, 3, 18]);
+    expect([totals.costRealUsd, totals.costScanRealUsd, totals.costAnswerRealUsd]).toEqual([0.75, 0.4, 0.1]);
+    expect([totals.unknownCalls, totals.scanUnknownCalls, totals.answerUnknownCalls]).toEqual([3, 2, 1]);
+    expect(totals.activeOrganisations).toBe(2); // pages read is use, even with no counted run
+  });
+
+  it("says a tile's change in plain words, and nothing when both periods are 0", () => {
+    expect(changeLine(12, 10, "count", 30)).toBe("Up 20% on the previous 30 days");
+    expect(changeLine(5, 5, "count", 30)).toBe("Same as the previous 30 days");
+    expect(changeLine(3, 0, "count", 7)).toBe("None in the previous 7 days");
+    expect(changeLine(9, 4, "count", 30)).toBe("Not enough earlier data to compare");
+    expect(changeLine(0, 0, "count", 30)).toBeNull();
+  });
+
+  it("draws a day line only with 3 or more days of real values, never a made-up one", () => {
+    expect(sparkOf([0, 0, 1, 0, 2])).toBeUndefined();
+    expect(sparkOf([1, 0, 2, 0, 3])).toEqual([1, 0, 2, 0, 3]);
+    expect(sparkOf([])).toBeUndefined();
+  });
+
+  it("says calls of unknown cost in words, and nothing for none", () => {
+    expect(unknownText(12)).toBe("cost not known for 12 calls");
+    expect(unknownText(1)).toBe("cost not known for 1 call");
+    expect(unknownText(0)).toBeNull();
+  });
+
+  it("forecasts the month from real cost only with 7 days of it", () => {
+    const month = { from: "2026-10-01", today: "2026-10-10", days_in_month: 31 };
+    const days = (count: number) =>
+      Array.from({ length: count }, (_, i) => day({ day: `2026-10-${String(i + 1).padStart(2, "0")}`, cost_real_usd: 1, cost_usd: 9 }));
+    const covered = { from: "2026-09-11", to: "2026-10-10", previous_from: "2026-08-12", month };
+    expect(realMonthForecast(reply({ ...covered, daily: days(7) }))).toBeCloseTo((7 / 10) * 31); // real $7, never the $63
+    expect(realMonthForecast(reply({ ...covered, daily: days(6) }))).toBeNull();
+    // Changed on purpose (real figures, 16 Oct 2026): the server sends the month from its first
+    // day for a short period too, so a 7-day period forecasts as well.
+    expect(realMonthForecast(reply({ ...covered, previous_from: "2026-10-03", daily: days(7) }))).toBeCloseTo((7 / 10) * 31);
+  });
+
+  it("sums one organisation's real spend this month, counts the calls of unknown cost and never guesses", () => {
+    const daily = [
+      day({ day: "2026-10-02", cost_real_usd: 2, cost_usd: 5, cost_unknown_calls: 3 }),
+      day({ day: "2026-10-03", cost_real_usd: null, cost_usd: 4, cost_unknown_calls: 1 }), // estimated only
+      day({ day: "2026-09-30", cost_real_usd: 50, cost_unknown_calls: 9 }), // last month
+      day({ organisation_id: "b", day: "2026-10-02", cost_real_usd: 7 }),
+    ];
+    expect(realMonthSpend(reply({ daily }), 100, "a")).toEqual({ usd: 2, unknownCalls: 4, forecast: { usd: null, passDay: null } });
+    expect(realMonthSpend(reply({ daily: [day({ cost_real_usd: null, cost_unknown_calls: 2 })] }), null, "a").usd).toBeNull();
   });
 
   it("sums the known costs and or-s the estimated and part-unknown flags", () => {
@@ -380,12 +457,22 @@ describe("orgFlags", () => {
     expect(orgFlags(org(), reply(), NOW)).toEqual([]);
   });
 
+  // Changed on purpose (real figures, Tushar 16 Oct 2026): the spend is this month's real
+  // cost from the daily rows (month_cost_usd, with estimates, is not used), the calls of
+  // unknown cost make it "part not known", and a forecast needs 7 days of figures.
+  const spentReply = (usd: number | null, days = 1, unknownCalls = 0) =>
+    reply({
+      daily: Array.from({ length: days }, (_, i) =>
+        day({ day: `2026-10-${String(1 + i).padStart(2, "0")}`, cost_real_usd: usd === null ? null : usd / days, cost_unknown_calls: i === 0 ? unknownCalls : 0 }),
+      ),
+    });
+
   it("acts at 100% of the budget and checks at 80%, in the budget's words", () => {
-    const passed = orgFlags(org({ ai_budget_usd: 100, month_cost_usd: 100 }), reply(), NOW);
+    const passed = orgFlags(org({ ai_budget_usd: 100, month_cost_usd: 1 }), spentReply(100), NOW);
     expect(passed).toEqual([
       { code: "budget_passed", severity: "act", text: "AI spend has reached its budget ($100.00 of $100.00 this month)." },
     ]);
-    const near = orgFlags(org({ ai_budget_usd: 100, month_cost_usd: 99.99, month_cost_part_unknown: true }), reply(), NOW);
+    const near = orgFlags(org({ ai_budget_usd: 100 }), spentReply(99.99, 1, 2), NOW);
     expect(near).toEqual([
       {
         code: "budget_near",
@@ -393,25 +480,26 @@ describe("orgFlags", () => {
         text: "AI spend is at 99% of its budget ($99.99 (part not known) of $100.00 this month).",
       },
     ]);
-    expect(codes(org({ ai_budget_usd: 100, month_cost_usd: 80 }))).toEqual(["budget_near"]);
-    // 79.99 by day 11 is on course for about $225: the forecast flag, not "near".
-    expect(codes(org({ ai_budget_usd: 100, month_cost_usd: 79.99 }))).toEqual(["forecast_passes"]);
+    expect(codes(org({ ai_budget_usd: 100 }), spentReply(80))).toEqual(["budget_near"]);
+    // 79.99 by day 11 is on course for about $225: the forecast flag, not "near", with 7 days of figures.
+    expect(codes(org({ ai_budget_usd: 100 }), spentReply(79.99, 7))).toEqual(["forecast_passes"]);
+    expect(codes(org({ ai_budget_usd: 100 }), spentReply(79.99, 6))).toEqual([]);
   });
 
   it("checks a forecast that passes the budget this month, and not one that does not", () => {
-    const [flag] = orgFlags(org({ ai_budget_usd: 100, month_cost_usd: 50 }), reply(), NOW);
+    const [flag] = orgFlags(org({ ai_budget_usd: 100 }), spentReply(50, 7), NOW);
     expect(flag).toEqual({
       code: "forecast_passes",
       severity: "check",
       text: "AI spend is on course to pass its budget around day 22 of the month (about $140.91 by month end; $50.00 of $100.00 this month).",
     });
-    expect(codes(org({ ai_budget_usd: 1000, month_cost_usd: 50 }))).toEqual([]);
+    expect(codes(org({ ai_budget_usd: 1000 }), spentReply(50, 7))).toEqual([]);
   });
 
   it("has no budget flag with no budget, no cost known or no spend", () => {
-    expect(codes(org({ ai_budget_usd: null, month_cost_usd: 500 }))).toEqual([]);
-    expect(codes(org({ ai_budget_usd: 100, month_cost_usd: null }))).toEqual([]);
-    expect(codes(org({ ai_budget_usd: 0, month_cost_usd: 0 }))).toEqual([]);
+    expect(codes(org({ ai_budget_usd: null }), spentReply(500))).toEqual([]);
+    expect(codes(org({ ai_budget_usd: 100, month_cost_usd: 500 }), spentReply(null))).toEqual([]);
+    expect(codes(org({ ai_budget_usd: 0 }), spentReply(0))).toEqual([]);
   });
 
   it("checks 14 quiet days from the last active day, not 13, and never for an organisation never used", () => {
@@ -472,23 +560,24 @@ describe("orgFlags", () => {
     expect(codes(org({ open_review: 1, oldest_open_review_at: "not a date" }))).toEqual([]);
   });
 
+  // Changed on purpose (real figures, Tushar 16 Oct 2026): a spike is in the real cost.
   const week = (cost: number | null) =>
-    dayList("2026-10-04", "2026-10-10").map((d) => day({ day: d, cost_usd: cost }));
+    dayList("2026-10-04", "2026-10-10").map((d) => day({ day: d, cost_real_usd: cost }));
 
   it("checks spend today over twice the median of the 7 days before", () => {
-    expect(orgFlags(org(), reply({ daily: [...week(1), day({ cost_usd: 2.01 })] }), NOW)).toEqual([
+    expect(orgFlags(org(), reply({ daily: [...week(1), day({ cost_real_usd: 2.01, cost_usd: 1 })] }), NOW)).toEqual([
       { code: "spend_spike", severity: "check", text: "AI spend today ($2.01) is more than twice a usual day ($1.00)." },
     ]);
-    expect(codes(org(), reply({ daily: [...week(1), day({ cost_usd: 2 })] }))).toEqual([]);
+    expect(codes(org(), reply({ daily: [...week(1), day({ cost_real_usd: 2, cost_usd: 9 })] }))).toEqual([]);
   });
 
   it("does not call spend under $1 a spike, even from nothing", () => {
-    expect(codes(org(), reply({ daily: [day({ cost_usd: 1 })] }))).toEqual([]);
-    expect(codes(org(), reply({ daily: [...week(null), day({ cost_usd: 1.01 })] }))).toEqual(["spend_spike"]);
+    expect(codes(org(), reply({ daily: [day({ cost_real_usd: 1 })] }))).toEqual([]);
+    expect(codes(org(), reply({ daily: [...week(null), day({ cost_real_usd: 1.01 })] }))).toEqual(["spend_spike"]);
   });
 
   it("uses the median, so one big day before does not hide a spike", () => {
-    const daily = [...week(0.5).slice(1), day({ day: "2026-10-04", cost_usd: 50 }), day({ cost_usd: 1.5 })];
+    const daily = [...week(0.5).slice(1), day({ day: "2026-10-04", cost_real_usd: 50 }), day({ cost_real_usd: 1.5 })];
     expect(codes(org(), reply({ daily }))).toEqual(["spend_spike"]);
   });
 });
@@ -500,8 +589,9 @@ describe("attentionItems", () => {
     const r = reply({
       organisations: [
         org({ answers_30d: 100, not_found_30d: 40 }),
-        org({ organisation_id: "gone", ai_budget_usd: 10, month_cost_usd: 12 }),
+        org({ organisation_id: "gone", ai_budget_usd: 10 }),
       ],
+      daily: [day({ organisation_id: "gone", day: "2026-10-02", cost_real_usd: 12 })], // real figures (16 Oct 2026)
     });
     expect(attentionItems(r, names, quality({}), health(), NOW)).toEqual([
       {
@@ -572,7 +662,10 @@ describe("attentionItems", () => {
 
   it("keeps platform items before organisations within each severity", () => {
     const items = attentionItems(
-      reply({ organisations: [org({ ai_budget_usd: 10, month_cost_usd: 10 }), org({ organisation_id: "b", answers_30d: 10, not_found_30d: 5 })] }),
+      reply({
+        organisations: [org({ ai_budget_usd: 10 }), org({ organisation_id: "b", answers_30d: 10, not_found_30d: 5 })],
+        daily: [day({ day: "2026-10-02", cost_real_usd: 10 })], // real figures (16 Oct 2026)
+      }),
       names,
       quality({ runs: 100, runs_failed_platform: 50, runs_degraded: 50 }),
       health(),

@@ -92,14 +92,16 @@ def test_a_ready_document_with_no_vectors_yet_is_found_by_its_words_with_its_spo
     assert (found["id"], found["best"]["page_from"], found["best"]["regions"]) == (document, 1, [REGION])
 
 
-def test_with_the_model_on_a_question_with_no_shared_word_finds_by_meaning(db: Database) -> None:
+def test_with_the_model_on_a_question_with_no_shared_word_finds_nothing(db: Database) -> None:
+    """Changed on purpose (PRD 1, activity/search): File management Q1, keyword only, so the
+    model is never called (KZ-003 still holds: no meaning match on its own)."""
     model = FakeModel()
     api, signed = _signed(db, model)
-    document = _document(api, signed, [PIECE])
+    _document(api, signed, [PIECE])
 
-    assert [found["id"] for found in _search(signed, q="xyzzy plugh")["documents"]] == [document]
-    assert len(model.calls) == 1
-    assert model.calls[0][0].endswith("\nQuery:xyzzy plugh")
+    assert _search(signed, q="xyzzy plugh")["documents"] == []
+    assert _search(signed, q="INV-7001")["documents"]
+    assert model.calls == []
 
 
 def test_a_scope_that_matches_nothing_never_calls_the_model(db: Database) -> None:
@@ -108,7 +110,8 @@ def test_a_scope_that_matches_nothing_never_calls_the_model(db: Database) -> Non
     _document(api, signed, [PIECE])
 
     found = _search(signed, q="INV-7001", tag_ids=[str(uuid.uuid4())])
-    assert found == {"documents": [], "story_matches": []}
+    # Changed on purpose (PRD 1, activity/search): the reply adds understood_words (Q2).
+    assert found == {"documents": [], "story_matches": [], "understood_words": []}
     assert model.calls == []
 
 

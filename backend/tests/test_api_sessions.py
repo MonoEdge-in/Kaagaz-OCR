@@ -230,6 +230,8 @@ def test_must_change_blocks_every_route_except_password_logout_and_me(db: Databa
         ("POST", "/api/auth/login"),
         ("POST", "/api/auth/admin/login"),
         ("POST", "/api/auth/admin/enrol"),
+        ("GET", "/api/auth/signup"),
+        ("POST", "/api/auth/signup"),
     }
     allowed = {("POST", "/api/auth/password"), ("POST", "/api/auth/logout"), ("GET", "/api/auth/me")}
     calls = route_calls(api.app)
@@ -320,8 +322,9 @@ def test_every_auth_event_is_audited_with_a_valid_action(db: Database) -> None:
     assert client.post("/api/auth/logout-everywhere", headers=CSRF).status_code == 204
     enrolling_id, enrolling_email = api.add_user(admin.customer_id, "admin")
     enrolling = api.client()
-    assert api.admin_login(enrolling, enrolling_email).status_code == 200  # 2FA off: the password alone
-    offer = enrolling.post("/api/auth/admin/2fa/start", json={"password": PASSWORD}, headers=CSRF).json()
+    refused = api.admin_login(enrolling, enrolling_email)  # 2FA not set up: the offer, no session
+    assert (refused.status_code, refused.json()["error"]["code"]) == (403, "mfa_enrol_required")
+    offer = refused.json()["error"]["details"]
     secret = base64.b32decode(offer["secret"].replace(" ", ""))
     enrolled = enrolling.post(
         "/api/auth/admin/enrol",
@@ -329,8 +332,6 @@ def test_every_auth_event_is_audited_with_a_valid_action(db: Database) -> None:
         headers=CSRF,
     )
     assert enrolled.status_code == 200, enrolled.text
-    turned_off = enrolling.post("/api/auth/admin/2fa/off", json={"password": PASSWORD}, headers=CSRF)
-    assert turned_off.status_code == 200, turned_off.text
     assert admin.client.post("/api/auth/logout", headers=CSRF).status_code == 204
 
     with db.customer(admin.customer_id) as conn:
@@ -342,14 +343,12 @@ def test_every_auth_event_is_audited_with_a_valid_action(db: Database) -> None:
     assert not ACTION.fullmatch("user.reset_2fa")  # why the 2FA reset is "user.reset_totp"
     assert {
         "auth.login",
-        "auth.admin_login",
         "auth.login_failed",
         "auth.locked",
         "auth.password_change",
         "auth.logout_everywhere",
         "auth.logout",
         "auth.totp_on",
-        "auth.totp_off",
         "user.unlock",
         "user.reset_password",
         "user.reset_totp",

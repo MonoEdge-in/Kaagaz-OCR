@@ -5,11 +5,13 @@
 // dropped (key + cancelled). Plain React text, never sent to the model. Each
 // line can also get a meaning in My words ("Add meaning", ViewerWords.tsx).
 // Ensemble (feature 27): under a main reader's line that holds a voted value, the
-// readers' vote in plain words ("2 of 3 readers read …", voteText).
+// readers' vote in plain words ("2 of 3 readers read …", voteText). A main reader's line
+// flagged for review carries its band (FlagText.tsx, scan review UX rules, section 2).
 
 import { useEffect, useState } from "react";
+import { FlagText } from "@/components/review/FlagText";
 import { ApiError, getPageReadings } from "@/lib/api";
-import type { ExtractedValue, PageReadings, PageSummary, Region } from "@/lib/types";
+import type { ExtractedValue, PageReadings, PageSummary, Region, WordFlag } from "@/lib/types";
 import { voteText } from "./labels";
 import type { Spot } from "./panels";
 import {
@@ -43,12 +45,13 @@ export interface ScannedTextPanelProps {
   onClose: () => void;
   onAddMeaning?: (text: string, region: Region, opener: HTMLElement) => void;
   headingRef?: (heading: HTMLHeadingElement | null) => void; // to move focus to the heading
+  flags?: WordFlag[]; // the page's words still flagged for review: their lines carry the band
 }
 
 type Loaded = { key: string; readings: PageReadings } | { key: string; httpStatus: number | null };
 
 export function ScannedTextPanel(props: ScannedTextPanelProps) {
-  const { documentId, page, voted = [], active, cited, onShow, onClose, onAddMeaning, headingRef } = props;
+  const { documentId, page, voted = [], active, cited, onShow, onClose, onAddMeaning, headingRef, flags = [] } = props;
   const [attempt, setAttempt] = useState(0);
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [role, setRole] = useState<"first" | "second">("first");
@@ -150,8 +153,7 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
           {lines.some((line) => notSure(line.confidence)) && <p className={styles.muted}>{CONFIDENCE_NOTE}</p>}
           {truncated && <p className={styles.note}>{truncated}</p>}
           <div
-            className={styles.scroll}
-            tabIndex={0}
+            className={styles.linesBox}
             role="region"
             aria-label={`Lines read on page ${page.page_no}`}
           >
@@ -159,6 +161,8 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
               {shown.map((line, index) => {
                 const marked = lineMarked(line, cited);
                 const meta = confidenceText(line.confidence, line.origin);
+                const flag =
+                  reader?.role === "first" ? flags.find((each) => sameRegion(each.region, line.region)) : undefined;
                 return (
                   <li key={index} className={marked ? `${styles.line} ${styles.cited}` : styles.line}>
                     <div className={styles.lineRow}>
@@ -168,9 +172,13 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
                         aria-pressed={active !== null && sameRegion(active, line.region)}
                         onClick={() => onShow({ name: `line ${index + 1}`, region: line.region, label: null })}
                       >
-                        <bdi dir="auto" className="readText">
-                          {visibleText(line.text)}
-                        </bdi>
+                        {flag ? (
+                          <FlagText flag={flag} text={visibleText(line.text)} />
+                        ) : (
+                          <bdi dir="auto" className="readText">
+                            {visibleText(line.text)}
+                          </bdi>
+                        )}
                         {(marked || meta) && (
                           <span className={styles.lineMeta}>
                             {marked && <strong>{meta ? "Cited · " : "Cited"}</strong>}

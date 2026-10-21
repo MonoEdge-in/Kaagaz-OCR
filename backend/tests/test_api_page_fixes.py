@@ -421,7 +421,7 @@ def test_f4_the_summary_counts_pages_to_attend_to_and_values_to_review(db: Datab
     read_page(api, c, doc, 3, read_quality="uncertain", read_issues=["unpinned"], unpinned_lines=2)
     read_page(api, c, doc, 4)
     api.add_value(c, doc, page_no=3, reason="box_unanchored")
-    api.add_value(c, doc, page_no=3, field_name="gstin", reason="unsure_text")
+    api.add_value(c, doc, page_no=3, field_name="gstin", reason="low_confidence")
     api.add_value(c, doc, page_no=4, field_name="date", label="verified", reason="readers_agree")
     clean = api.add_document(c)
 
@@ -429,8 +429,8 @@ def test_f4_the_summary_counts_pages_to_attend_to_and_values_to_review(db: Datab
     detail = signed.client.get(f"/api/documents/{doc}").json()
 
     counts = ("pages_unreadable", "pages_uncertain", "values_to_review")
-    assert tuple(listed[doc][name] for name in counts) == (2, 1, 2)
-    assert tuple(detail[name] for name in counts) == (2, 1, 2)
+    assert tuple(listed[doc][name] for name in counts) == (2, 1, 1)  # box_unanchored: not counted
+    assert tuple(detail[name] for name in counts) == (2, 1, 1)
     assert tuple(listed[clean][name] for name in counts) == (0, 0, 0)
     reasons = sorted(value["label_reason"] for value in detail["values"])
-    assert reasons == ["box_unanchored", "readers_agree", "unsure_text"]  # PRD 5 reasons, as stored
+    assert reasons == ["box_unanchored", "low_confidence", "readers_agree"]  # PRD 5 reasons, as stored

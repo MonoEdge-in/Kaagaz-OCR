@@ -7,7 +7,7 @@ from types import ModuleType
 
 import pytest
 
-from kaagaz.answering import fixed_queries, unchecked
+from kaagaz.answering import exhaustive, fixed_queries, unchecked
 from kaagaz.search import hybrid
 from kaagaz.search.scope import EVERYTHING
 
@@ -19,6 +19,7 @@ SCOPED = [
     ),
     (fixed_queries, "_VALUE_REFS"),
     (unchecked, "_CARD_DOCUMENTS"),
+    (exhaustive, "_DOCUMENTS"),  # every document holding a word (16 Oct 2026); _PIECES takes its ids
 ]
 
 

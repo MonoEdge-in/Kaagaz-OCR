@@ -492,6 +492,7 @@ class _NoAnswers:
         user_id: str,
         memory: Any,
         choice: Any = None,
+        pins: Any = (),
     ) -> AnswerLike:
         raise AssertionError("not used here")
 
@@ -510,7 +511,7 @@ def _user(**changes: Any) -> CurrentUser:
         "scope": "app",
         "session_version": 3,
         "must_change_password": False,
-        "totp_enabled": False,
+        "totp_enabled": True,  # every admin has two-step sign-in (0035)
         "delete_forever_allowed": False,
     }
     return CurrentUser(**{**fields, **changes})
@@ -575,8 +576,8 @@ def _cookie(client: TestClient, claims: SessionClaims) -> None:
 
 def test_current_user_passes_a_matching_session_through(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: Lookups = []
-    client = _client(monkeypatch, _user(), seen)
-    _cookie(client, _session(expires_at=NOW + 60))
+    client = _client(monkeypatch, _user(role="member"), seen)
+    _cookie(client, _session(role="member", expires_at=NOW + 60))
     reply = client.get("/any")
     assert reply.status_code == 200
     assert reply.json() == {"id": UID, "scope": "app", "ver": 3}
@@ -615,8 +616,8 @@ def test_a_user_that_is_gone_or_disabled_is_401(monkeypatch: pytest.MonkeyPatch)
 
 
 def test_the_password_change_gate_is_inside_current_user(monkeypatch: pytest.MonkeyPatch) -> None:
-    client = _client(monkeypatch, _user(must_change_password=True))
-    _cookie(client, _session(expires_at=NOW + 60))
+    client = _client(monkeypatch, _user(role="member", must_change_password=True))
+    _cookie(client, _session(role="member", expires_at=NOW + 60))
     reply = client.get("/any")
     assert (reply.status_code, reply.json()["error"]["code"]) == (403, "password_change_required")
     assert client.get("/password").json() == {"id": UID, "must_change": True}
@@ -630,13 +631,28 @@ def test_the_password_change_gate_also_covers_admin_routes(monkeypatch: pytest.M
         assert (reply.status_code, reply.json()["error"]["code"]) == (403, "password_change_required"), path
 
 
-def test_an_app_session_is_refused_on_admin_routes_even_for_an_admin(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_an_admins_app_session_is_signed_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One sign-in (16 Oct 2026): every admin session has scope "admin". An admin's app
+    session from before rested on the password alone, so it ends, on every route."""
     client = _client(monkeypatch, _user())
     _cookie(client, _session(scope="app", expires_at=NOW + 60))
-    for path in ("/admin-area", "/admin-param"):
+    for path in ("/any", "/password", "/admin-area", "/admin-param"):
         reply = client.get(path)
-        assert (reply.status_code, reply.json()["error"]["code"]) == (403, "admin_session_required"), path
-    assert client.get("/any").status_code == 200
+        assert (reply.status_code, reply.json()["error"]["code"]) == (401, "not_signed_in"), path
+
+
+def test_an_admin_without_two_step_gets_only_the_set_up_answer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """MFA required for admins (0035): 403 mfa_enrol_required everywhere but /auth/me,
+    /auth/password and /auth/logout (current_user_allow_password_change)."""
+    client = _client(monkeypatch, _user(totp_enabled=False))
+    _cookie(client, _session(scope="admin", expires_at=NOW + 60))
+    for path in ("/any", "/admin-area", "/admin-param"):
+        reply = client.get(path)
+        assert (reply.status_code, reply.json()["error"]["code"]) == (403, "mfa_enrol_required"), path
+    assert client.get("/password").json() == {"id": UID, "must_change": False}
+    member = _client(monkeypatch, _user(role="member", totp_enabled=False))
+    _cookie(member, _session(role="member", expires_at=NOW + 60))
+    assert member.get("/any").status_code == 200  # two-step stays optional for everyone else
 
 
 def test_an_admin_session_opens_admin_and_app_routes(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -665,9 +681,9 @@ def _forever(client: TestClient, confirm: dict[str, Any] | None = None) -> tuple
     ("stored", "scope", "expected"),
     [
         # A grant never counts for an admin: a password-only admin stays refused.
-        ({"delete_forever_allowed": True}, "app", (403, "admin_session_required")),
-        ({"delete_forever_allowed": True}, "admin", (403, "two_step_required")),
-        ({"totp_enabled": True}, "admin", (200, None)),
+        ({"delete_forever_allowed": True}, "app", (401, "not_signed_in")),
+        ({"delete_forever_allowed": True, "totp_enabled": False}, "admin", (403, "mfa_enrol_required")),
+        ({}, "admin", (200, None)),
         ({"role": "member"}, "app", (403, "forbidden")),
         ({"role": "reviewer", "delete_forever_allowed": True}, "app", (200, None)),
     ],

@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Kaagaz · Admin · Users</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="../../styles/kaagaz.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@100..125,400..700&amp;family=IBM+Plex+Mono:wght@400;500&amp;family=IBM+Plex+Sans+Devanagari:wght@400;500;600&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;display=swap">
+<style>body{margin:0}</style>
+</helmet>
+<div class="k-root" data-theme="{{theme}}" style="min-height: 100vh">
+<div class="k-shell">
+  <nav class="k-side" aria-label="Main">
+    <div class="k-brand"><span class="k-brand-mark" aria-hidden="true"></span><span><span class="k-brand-name">Kaagaz</span><span class="k-brand-by">by MonoEdge</span></span></div>
+    <a class="k-nav-item" href="Home.html"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10.5 12 3l9 7.5V21h-6v-6H9v6H3z"></path></svg><span>Home</span></a>
+    <a class="k-nav-item" href="Documents.html"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H6v18h12V7z"></path><path d="M14 3v4h4M9 12h6M9 16h6"></path></svg><span>Documents</span></a>
+    <a class="k-nav-item" href="Ask.html"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H9l-5 4z"></path><path d="M8 9h8M8 12h5"></path></svg><span>Ask</span></a>
+    <a class="k-nav-item" href="Review.html"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v16H4z"></path><path d="M8 12l3 3 5-6"></path></svg><span>Review</span><span class="k-nav-count">23</span></a>
+    <a class="k-nav-item" href="MyWords.html"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3z"></path><path d="M5 17a3 3 0 0 1 3-3h11"></path></svg><span>My words</span></a>
+    <div class="k-nav-label">Company</div>
+    <a class="k-nav-item is-active" href="Admin.html" aria-current="page"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"></path></svg><span>Admin</span></a>
+    <div class="k-side-foot"><strong>Wakad Realty</strong><span>Priya · Admin</span></div>
+  </nav>
+  <div class="k-main">
+    <header class="k-top">
+      <label class="k-top-search"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"></circle><path d="M20 20l-4.5-4.5"></path></svg><input type="search" placeholder="Search inside documents or by name" aria-label="Search"><span class="k-kbd">/</span></label>
+      <div class="k-top-actions">
+        <a class="k-btn k-btn--primary" href="Upload.html"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V4M7 9l5-5 5 5M4 15v5h16v-5"></path></svg>Upload</a>
+        <button class="k-btn k-btn--quiet k-btn--icon" type="button" aria-label="Notifications, 3 new"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 16v-5a6 6 0 0 1 12 0v5l2 2H4z"></path><path d="M10 20a2 2 0 0 0 4 0"></path></svg></button>
+        <button class="k-btn k-btn--quiet" type="button" aria-label="Account menu, Priya"><span class="k-avatar">PR</span><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></button>
+      </div>
+    </header>
+    <div style="display: flex; flex-wrap: wrap; flex: 1; min-width: 0">
+    <main class="k-content" style="flex: 999 1 640px; min-width: 0">
+      <div class="k-page-head">
+        <div style="display: flex; flex-direction: column; gap: 6px">
+          <h1 class="k-h1">Admin</h1>
+          <p class="k-muted">People, departments and settings for Wakad Realty.</p>
+        </div>
+      </div>
+      <div class="k-tabs" role="tablist" aria-label="Admin sections">
+        <button class="k-tab" role="tab" type="button" aria-selected="true">Users <span class="k-tab-count">14</span></button>
+        <button class="k-tab" role="tab" type="button" aria-selected="false">Departments</button>
+        <button class="k-tab" role="tab" type="button" aria-selected="false">Settings</button>
+        <button class="k-tab" role="tab" type="button" aria-selected="false">Activity</button>
+        <button class="k-tab" role="tab" type="button" aria-selected="false">Numbers</button>
+        <button class="k-tab" role="tab" type="button" aria-selected="false">Failed files <span class="k-tab-count" style="background: var(--k-danger-soft); color: var(--k-danger)">3</span></button>
+      </div>
+
+      <div style="display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between">
+        <div class="k-chip-row">
+          <div class="k-input-wrap" style="width: 260px"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"></circle><path d="M20 20l-4.5-4.5"></path></svg><input class="k-input" type="search" placeholder="Search people" aria-label="Search people"></div>
+          <button class="k-chip" type="button">Role <svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></button>
+          <button class="k-chip is-on" type="button" aria-pressed="true">Status: <span class="k-chip-val">All but removed</span> <svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></button>
+          <button class="k-chip" type="button">Two-step <svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></button>
+        </div>
+        <button class="k-btn k-btn--primary" type="button"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>Invite people</button>
+      </div>
+
+      <div class="k-table-wrap">
+        <table class="k-table" style="min-width: 980px">
+          <thead><tr>
+            <th scope="col"><button class="k-sort" type="button" aria-sort="ascending">Name <svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></button></th>
+            <th scope="col">Role</th><th scope="col">Departments</th><th scope="col">Two-step</th><th scope="col">Status</th>
+            <th scope="col"><button class="k-sort" type="button">Last active</button></th>
+            <th scope="col"><span style="position: absolute; left: -9999px">Actions</span></th>
+          </tr></thead>
+          <tbody>
+            <tr><td><div class="k-name-cell"><span class="k-avatar">PK</span><div style="display: flex; flex-direction: column"><span>Priya Kulkarni</span><span class="k-sub">priya@wakadrealty.in</span></div></div></td>
+              <td><div class="k-select-wrap" style="width: 130px"><select class="k-select" aria-label="Role for Priya"><option>Admin</option></select><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></div></td>
+              <td>All</td><td><span style="display: inline-flex; gap: 5px; align-items: center"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true" style="color: var(--k-verified)"><path d="M5 12l5 5 9-10"></path></svg>On</span></td>
+              <td><span class="k-status k-status--verified"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg>Active</span></td><td class="k-muted">Now</td>
+              <td style="text-align: right"><button class="k-btn k-btn--quiet k-btn--icon k-btn--sm" type="button" aria-label="More for Priya"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true" style="stroke-width: 3"><path d="M5 12h.01M12 12h.01M19 12h.01"></path></svg></button></td></tr>
+            <tr><td><div class="k-name-cell"><span class="k-avatar">RD</span><div style="display: flex; flex-direction: column"><span>Rahul Deshmukh</span><span class="k-sub">rahul@wakadrealty.in</span></div></div></td>
+              <td><div class="k-select-wrap" style="width: 130px"><select class="k-select" aria-label="Role for Rahul"><option>Member</option></select><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></div></td>
+              <td>Land &amp; Legal, Sales</td><td><span style="display: inline-flex; gap: 5px; align-items: center"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true" style="color: var(--k-verified)"><path d="M5 12l5 5 9-10"></path></svg>On</span></td>
+              <td><span class="k-status k-status--verified"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg>Active</span></td><td class="k-muted">10:42</td>
+              <td style="text-align: right"><button class="k-btn k-btn--quiet k-btn--sm" type="button">Reset password</button></td></tr>
+            <tr><td><div class="k-name-cell"><span class="k-avatar">AJ</span><div style="display: flex; flex-direction: column"><span>Anita Joshi</span><span class="k-sub">anita@wakadrealty.in</span></div></div></td>
+              <td><div class="k-select-wrap" style="width: 130px"><select class="k-select" aria-label="Role for Anita"><option>Reviewer</option></select><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></div></td>
+              <td>Accounts, HR</td><td><span style="display: inline-flex; gap: 5px; align-items: center"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true" style="color: var(--k-verified)"><path d="M5 12l5 5 9-10"></path></svg>On</span></td>
+              <td><span class="k-status k-status--verified"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg>Active</span></td><td class="k-muted">09:58</td>
+              <td style="text-align: right"><button class="k-btn k-btn--quiet k-btn--sm" type="button">Reset password</button></td></tr>
+            <tr><td><div class="k-name-cell"><span class="k-avatar">TS</span><div style="display: flex; flex-direction: column"><span>Tushar Saini</span><span class="k-sub">tushar@wakadrealty.in</span></div></div></td>
+              <td><div class="k-select-wrap" style="width: 130px"><select class="k-select" aria-label="Role for Tushar"><option>Member</option></select><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></div></td>
+              <td>Operations</td><td><span class="k-muted" style="display: inline-flex; gap: 5px; align-items: center"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 12h8"></path></svg>Off</span></td>
+              <td><span class="k-status k-status--verified"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg>Active</span></td><td class="k-muted">2d ago</td>
+              <td style="text-align: right"><button class="k-btn k-btn--quiet k-btn--sm" type="button">Reset password</button></td></tr>
+            <tr><td><div class="k-name-cell"><span class="k-avatar">SP</span><div style="display: flex; flex-direction: column"><span>Sneha Patil</span><span class="k-sub">sneha@wakadrealty.in</span></div></div></td>
+              <td><div class="k-select-wrap" style="width: 130px"><select class="k-select" aria-label="Role for Sneha"><option>Member</option></select><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></div></td>
+              <td>Sales</td><td><span class="k-muted">Not set up yet</span></td>
+              <td><span class="k-status k-status--notfound"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path></svg>Invited</span></td><td class="k-muted">Invite sent 18 Oct</td>
+              <td style="text-align: right"><button class="k-btn k-btn--quiet k-btn--sm" type="button">Send invite again</button></td></tr>
+            <tr class="is-selected"><td><div class="k-name-cell"><span class="k-avatar">IS</span><div style="display: flex; flex-direction: column"><span>Imran Shaikh</span><span class="k-sub">imran@wakadrealty.in</span></div></div></td>
+              <td><div class="k-select-wrap" style="width: 130px"><select class="k-select" aria-label="Role for Imran"><option>Member</option></select><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></div></td>
+              <td>Accounts</td><td><span style="display: inline-flex; gap: 5px; align-items: center"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true" style="color: var(--k-verified)"><path d="M5 12l5 5 9-10"></path></svg>On</span></td>
+              <td><span class="k-status k-status--failed"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 11h12v10H6zM8 11V7a4 4 0 0 1 8 0v4"></path></svg>Locked</span></td><td class="k-muted">Today 10:12</td>
+              <td style="text-align: right"><button class="k-btn k-btn--sm" type="button"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 11h12v10H6zM8 11V7a4 4 0 0 1 7.5-2"></path></svg>Unlock</button></td></tr>
+            <tr class="is-selected"><td colspan="7" style="padding: 0 12px 10px 50px">
+              <div style="display: flex; gap: 8px; align-items: center; font-size: 12px; color: var(--k-danger); font-weight: 500"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4 2.5 20h19z"></path><path d="M12 10v4M12 17v.5"></path></svg>Locked after 5 wrong passwords at 10:12. Unlock, or he can wait 30 minutes.</div>
+            </td></tr>
+            <tr><td><div class="k-name-cell"><span class="k-avatar" style="background: var(--k-sunken); color: var(--k-ink-muted)">KR</span><div style="display: flex; flex-direction: column"><span class="k-muted">Kavita Rao</span><span class="k-sub">kavita@wakadrealty.in</span></div></div></td>
+              <td><div class="k-select-wrap" style="width: 130px"><select class="k-select" aria-label="Role for Kavita" disabled><option>Reviewer</option></select><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></div></td>
+              <td class="k-muted">Land &amp; Legal</td><td><span class="k-muted" style="display: inline-flex; gap: 5px; align-items: center"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 12h8"></path></svg>Off</span></td>
+              <td><span class="k-status k-status--notfound"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M8 12h8"></path></svg>Disabled</span></td><td class="k-muted">30 Sep 2026</td>
+              <td style="text-align: right"><button class="k-btn k-btn--quiet k-btn--sm" type="button">Turn back on</button></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="k-small k-muted" style="display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap"><span>Showing 7 of 14 people</span><a href="#">Show all 14</a></div>
+    </main>
+
+    <aside class="k-drawer" aria-label="Imran Shaikh" style="flex: 0 1 400px; border-top: 0">
+      <div style="display: flex; align-items: center; gap: 12px; padding: 18px 20px; border-bottom: 1px solid var(--k-rule)">
+        <span class="k-avatar k-avatar--lg">IS</span>
+        <div style="flex: 1; min-width: 0; display: flex; flex-direction: column"><h2 class="k-h3">Imran Shaikh</h2><span class="k-small k-muted">imran@wakadrealty.in</span></div>
+        <button class="k-btn k-btn--quiet k-btn--icon" type="button" aria-label="Close"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"></path></svg></button>
+      </div>
+      <div style="padding: 18px 20px; display: flex; flex-direction: column; gap: 18px">
+        <div class="k-banner k-banner--danger">
+          <svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 11h12v10H6zM8 11V7a4 4 0 0 1 8 0v4"></path></svg>
+          <div class="k-banner-body"><strong>Locked since 10:12 today</strong><span class="k-small">5 wrong passwords in 4 minutes from Pune, Chrome on Windows. Unlocks on its own at 10:42.</span></div>
+        </div>
+        <dl class="k-kv" style="grid-template-columns: 130px minmax(0, 1fr)">
+          <dt>Role</dt><dd>Member</dd>
+          <dt>Departments</dt><dd>Accounts</dd>
+          <dt>Two-step</dt><dd>On · phone app</dd>
+          <dt>Joined</dt><dd>4 Jun 2026</dd>
+          <dt>Last sign-in</dt><dd>19 Oct 2026, 18:05</dd>
+          <dt>Uploaded</dt><dd><span class="k-mono">412</span> documents</dd>
+        </dl>
+        <div style="display: flex; flex-direction: column; gap: 8px">
+          <button class="k-btn k-btn--primary k-btn--block" type="button"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 11h12v10H6zM8 11V7a4 4 0 0 1 7.5-2"></path></svg>Unlock now</button>
+          <button class="k-btn k-btn--block" type="button"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="15" r="4"></circle><path d="M11 12l9-9M17 6l3 3"></path></svg>Reset password (sends an email link)</button>
+          <button class="k-btn k-btn--block" type="button">Turn off two-step</button>
+          <button class="k-btn k-btn--quiet k-btn--block" type="button" style="color: var(--k-danger)"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"></path></svg>Remove from Wakad Realty</button>
+        </div>
+        <div class="k-confirm" style="flex-direction: column; align-items: stretch">
+          <strong>Remove Imran from Wakad Realty?</strong>
+          <span class="k-small">He will be signed out everywhere. His 412 uploads stay, owned by Priya.</span>
+          <div class="k-btn-group"><button class="k-btn k-btn--danger k-btn--sm" type="button">Remove Imran</button><button class="k-btn k-btn--sm" type="button">Keep him</button></div>
+        </div>
+      </div>
+    </aside>
+    </div>
+  </div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["light","dark"],"default":"light"},"$preview":{"width":1440,"height":1300}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return { theme: this.props.theme ?? 'light' };
+  }
+}
+</script>
+</body>
+</html>

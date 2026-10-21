@@ -17,11 +17,15 @@ written out in each of those statements): an older version's values no longer
 reach any answer, and a version still being read has nothing final to review.
 """
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import date
 from decimal import Decimal
+from typing import Any
 
 from sqlalchemy import Connection, RowMapping, text
+
+from kaagaz.db import audit
+from kaagaz.extraction.parsing import parse_amount, parse_date
 
 # One value with its document and page. On its own, by value id (``get_item``),
 # it has no Trash filter (plan 9.7): it reads back a value that ``lock_value``
@@ -202,4 +206,64 @@ def remember_correction(
             " DO UPDATE SET corrected_value = EXCLUDED.corrected_value, created_by = EXCLUDED.created_by"
         ),
         {"c": customer_id, "f": field, "raw": raw_value, "new": corrected_value, "u": user_id},
+    )
+
+
+def resolve_value(
+    conn: Connection,
+    customer_id: str,
+    current: Mapping[Any, Any],
+    *,
+    new_text: str,
+    choice: str,
+    remember: bool,
+    user_id: str,
+    details: Mapping[str, audit.DetailValue] | None = None,
+) -> None:
+    """Verify one needs-review value, already locked by the caller, as ``new_text``: the
+    value changed (its number and date parsed again by the pipeline's rules), its
+    correction row, the remembered correction when asked, and one ``review.resolve`` audit
+    row, all in the caller's transaction. ``current`` has the value's id, document_id,
+    field, value_text and value_raw as they were before. The correction screen and word
+    review (kaagaz/db/word_review.py) both verify a value only through here."""
+    value_id = str(current["id"])
+    apply_correction(
+        conn,
+        customer_id,
+        value_id,
+        value_text=new_text,
+        value_number=parse_amount(new_text),
+        value_date=parse_date(new_text),
+    )
+    add_correction(
+        conn,
+        customer_id,
+        value_id,
+        old_value=str(current["value_text"]),
+        new_value=new_text,
+        choice=choice,
+        user_id=user_id,
+    )
+    if remember:
+        remember_correction(
+            conn,
+            customer_id,
+            field=str(current["field"]),
+            raw_value=str(current["value_raw"]),
+            corrected_value=new_text,
+            user_id=user_id,
+        )
+    audit.record(
+        conn,
+        customer_id,
+        actor_user_id=user_id,
+        action="review.resolve",
+        target_type="extracted_value",
+        target_id=value_id,
+        details={
+            "choice": choice,
+            "remember": remember,
+            "document_id": str(current["document_id"]),
+            **(details or {}),
+        },
     )

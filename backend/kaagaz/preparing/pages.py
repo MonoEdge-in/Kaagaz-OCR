@@ -33,6 +33,8 @@ image, a photo's from its short side. The pipeline stores them with the page.
 
 ``PreparedPages.picture`` draws one page again, with the same DPI, pixel
 check and EXIF handling, so the checker's crop (PRD 5 V1) has the pixels preparing drew.
+``page_picture`` draws one page the same way with no other page drawn first: Ensemble's
+crops after the scan (scan review UX rules, 16 Oct 2026).
 
 Time is O(total pixels) to draw; memory is one page's picture at a time, O(1)
 in the page count.
@@ -60,8 +62,19 @@ _POINTS_PER_INCH = 72.0
 
 # Errors Pillow raises for a damaged or refused image. Pillow reports a file it
 # cannot identify as OSError (UnidentifiedImageError), and some damage as
-# ValueError, SyntaxError, EOFError, struct.error or zlib.error.
-_IMAGE_DAMAGED = (OSError, ValueError, SyntaxError, EOFError, struct.error, zlib.error)
+# ValueError, SyntaxError, EOFError, struct.error or zlib.error, and a truncated
+# multi-frame TIFF as TypeError, KeyError or IndexError (from n_frames, council 17 Oct 2026).
+_IMAGE_DAMAGED = (
+    OSError,
+    ValueError,
+    SyntaxError,
+    EOFError,
+    TypeError,
+    KeyError,
+    IndexError,
+    struct.error,
+    zlib.error,
+)
 _IMAGE_BOMB = (Image.DecompressionBombError, Image.DecompressionBombWarning)
 
 # Called with (page number, page count, picture) for each page drawn, in order.
@@ -92,7 +105,7 @@ class PreparedPages:
         if detected_type == sniff.PDF:
             document = open_pdf(data)
             try:
-                page = document[page_no - 1]
+                page = pdf_page(document, page_no - 1)
                 try:
                     return render_pdf_page(page, dpi=limits.dpi, max_image_pixels=limits.max_image_pixels)
                 finally:
@@ -135,6 +148,15 @@ def prepare_pages(
     return PreparedPages([])
 
 
+def page_picture(
+    detected_type: str, data: bytes, page_no: int, *, dpi: int, max_image_pixels: int
+) -> Image.Image:
+    """Page ``page_no`` of a pdf or image file, drawn as ``prepare_pages`` draws it, losslessly
+    (``PreparedPages.picture``). O(one page's pixels)."""
+    limits = _Limits(dpi, 0, max_image_pixels, 0.0, 0)  # only the DPI and the pixel check are used
+    return PreparedPages([], {}, (detected_type, data, limits)).picture(page_no)
+
+
 def sheet_pages(spans: Iterable[Span]) -> list[PageInfo]:
     """One page per sheet that has cells: width = last column used, height = last row used.
 
@@ -159,7 +181,7 @@ def _prepare_pdf(data: bytes, limits: _Limits, on_picture: OnPicture) -> Prepare
         count = len(document)
         check_page_count(count, limits.max_pages)
         for index in range(count):
-            page = document[index]
+            page = pdf_page(document, index)
             try:
                 width, height = page.get_size()
                 image = render_pdf_page(page, dpi=limits.dpi, max_image_pixels=limits.max_image_pixels)
@@ -194,6 +216,16 @@ def open_pdf(data: bytes) -> Any:
     except pdfium.PdfiumError as error:
         locked = error.err_code in (pdfium_c.FPDF_ERR_PASSWORD, pdfium_c.FPDF_ERR_SECURITY)
     raise ReadError("encrypted" if locked else "corrupt_file")  # outside the except block: nothing chained
+
+
+def pdf_page(document: Any, index: int) -> Any:
+    """Page ``index`` (from 0) of an open pypdfium2 document, or ReadError ``corrupt_file``
+    when PDFium cannot load it (a damaged page tree: PdfiumError, council 17 Oct 2026)."""
+    try:
+        return document[index]
+    except pdfium.PdfiumError:
+        pass
+    raise ReadError("corrupt_file")  # outside the except block: nothing chained
 
 
 def check_page_count(count: int, max_pages: int) -> None:

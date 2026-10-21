@@ -1,0 +1,60 @@
+/* The timeline (design/kaagaz-ui-handoff/styles/kaagaz.css, section 13). */
+
+.timeline {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+}
+.timeline li {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  gap: 12px;
+  position: relative;
+  padding-bottom: 18px;
+}
+.timeline li::before {
+  content: "";
+  position: absolute;
+  left: 14px;
+  top: 30px;
+  bottom: 2px;
+  width: 1px;
+  background: var(--k-rule);
+}
+.timeline li:last-child::before {
+  display: none;
+}
+.dot {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--k-sunken);
+  color: var(--k-ink-muted);
+}
+.dot svg {
+  width: 14px;
+  height: 14px;
+}
+.accent {
+  background: var(--k-accent-soft);
+  color: var(--k-accent);
+}
+.review {
+  background: var(--k-review-soft);
+  border: 1.5px dashed var(--k-review);
+  color: var(--k-review);
+}
+.text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.when {
+  font-size: 12px;
+  color: var(--k-ink-faint);
+}

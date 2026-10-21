@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Kaagaz · My words</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="../../styles/kaagaz.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@100..125,400..700&amp;family=IBM+Plex+Mono:wght@400;500&amp;family=IBM+Plex+Sans+Devanagari:wght@400;500;600&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;display=swap">
+<style>body{margin:0}</style>
+</helmet>
+<div class="k-root" data-theme="{{theme}}" style="min-height: 100vh">
+<div class="k-shell">
+  <nav class="k-side" aria-label="Main">
+    <div class="k-brand"><span class="k-brand-mark" aria-hidden="true"></span><span><span class="k-brand-name">Kaagaz</span><span class="k-brand-by">by MonoEdge</span></span></div>
+    <a class="k-nav-item" href="Home.html"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10.5 12 3l9 7.5V21h-6v-6H9v6H3z"></path></svg><span>Home</span></a>
+    <a class="k-nav-item" href="Documents.html"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H6v18h12V7z"></path><path d="M14 3v4h4M9 12h6M9 16h6"></path></svg><span>Documents</span></a>
+    <a class="k-nav-item" href="Ask.html"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H9l-5 4z"></path><path d="M8 9h8M8 12h5"></path></svg><span>Ask</span></a>
+    <a class="k-nav-item" href="Review.html"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v16H4z"></path><path d="M8 12l3 3 5-6"></path></svg><span>Review</span><span class="k-nav-count">23</span></a>
+    <a class="k-nav-item is-active" href="MyWords.html" aria-current="page"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3z"></path><path d="M5 17a3 3 0 0 1 3-3h11"></path></svg><span>My words</span></a>
+    <div class="k-nav-label">Company</div>
+    <a class="k-nav-item" href="Admin.html"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"></path></svg><span>Admin</span></a>
+    <div class="k-side-foot"><strong>Wakad Realty</strong><span>Priya · Admin</span></div>
+  </nav>
+  <div class="k-main">
+    <header class="k-top">
+      <label class="k-top-search"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"></circle><path d="M20 20l-4.5-4.5"></path></svg><input type="search" placeholder="Search inside documents or by name" aria-label="Search"><span class="k-kbd">/</span></label>
+      <div class="k-top-actions">
+        <a class="k-btn k-btn--primary" href="Upload.html"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V4M7 9l5-5 5 5M4 15v5h16v-5"></path></svg>Upload</a>
+        <button class="k-btn k-btn--quiet k-btn--icon" type="button" aria-label="Notifications, 3 new"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 16v-5a6 6 0 0 1 12 0v5l2 2H4z"></path><path d="M10 20a2 2 0 0 0 4 0"></path></svg></button>
+        <button class="k-btn k-btn--quiet" type="button" aria-label="Account menu, Priya"><span class="k-avatar">PR</span><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></button>
+      </div>
+    </header>
+    <main class="k-content">
+      <div class="k-page-head">
+        <div style="display: flex; flex-direction: column; gap: 6px">
+          <h1 class="k-h1">My words</h1>
+          <p class="k-muted" style="max-width: 66ch">Words in your papers and what they mean in English. Kaagaz uses them when it searches and answers. Only you see them.</p>
+        </div>
+        <span class="k-small k-muted"><span class="k-mono">11</span> words · last added today 09:14</span>
+      </div>
+
+      <div style="display: flex; flex-wrap: wrap; gap: 24px; align-items: flex-start">
+        <div style="flex: 999 1 640px; min-width: 0; display: flex; flex-direction: column; gap: 16px">
+          <form class="k-card" style="flex-direction: row; flex-wrap: wrap; align-items: flex-end; gap: 12px; padding: 16px 20px">
+            <div class="k-field" style="flex: 1 1 220px"><label class="k-label" for="w-word">Word</label><input class="k-input k-deva" id="w-word" placeholder="e.g. satbara or बोजा"></div>
+            <svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true" style="margin-bottom: 10px; color: var(--k-ink-faint)"><path d="M5 12h14M13 6l6 6-6 6"></path></svg>
+            <div class="k-field" style="flex: 1 1 220px"><label class="k-label" for="w-mean">Means</label><input class="k-input" id="w-mean" placeholder="e.g. 7/12 extract"></div>
+            <button class="k-btn k-btn--primary" type="button" style="min-height: 38px"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>Add word</button>
+          </form>
+
+          <div class="k-table-wrap">
+            <table class="k-table" style="min-width: 760px">
+              <thead><tr>
+                <th scope="col"><button class="k-sort" type="button" aria-sort="ascending">Word <svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></button></th>
+                <th scope="col">Means</th>
+                <th scope="col">Used in</th>
+                <th scope="col">Added</th>
+                <th scope="col"><span style="position: absolute; left: -9999px">Actions</span></th>
+              </tr></thead>
+              <tbody>
+                <tr><td><strong>satbara</strong></td><td>7/12 extract</td><td><a href="#">18 documents</a> · <a href="#">6 questions</a></td><td class="k-muted">12 Sep 2026</td><td style="text-align: right; white-space: nowrap"><button class="k-btn k-btn--quiet k-btn--sm" type="button">Edit</button><button class="k-btn k-btn--quiet k-btn--sm" type="button">Delete</button></td></tr>
+                <tr><td><strong class="k-deva">सातबारा</strong></td><td>7/12 extract</td><td><a href="#">22 documents</a> · <a href="#">4 questions</a></td><td class="k-muted">12 Sep 2026</td><td style="text-align: right; white-space: nowrap"><button class="k-btn k-btn--quiet k-btn--sm" type="button">Edit</button><button class="k-btn k-btn--quiet k-btn--sm" type="button">Delete</button></td></tr>
+                <tr class="is-selected"><td><strong class="k-deva">बोजा</strong></td><td>mortgage charge</td><td><a href="#">7 documents</a> · <a href="#">3 questions</a></td><td class="k-muted">2 Oct 2026</td><td style="text-align: right; white-space: nowrap"><button class="k-btn k-btn--quiet k-btn--sm" type="button">Edit</button><button class="k-btn k-btn--quiet k-btn--sm" type="button">Delete</button></td></tr>
+                <tr><td colspan="5" style="background: var(--k-sunken)">
+                  <div style="display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end">
+                    <div class="k-field" style="flex: 1 1 180px"><label class="k-label" for="e-word">Word</label><input class="k-input k-deva is-focus" id="e-word" value="फेरफार"></div>
+                    <div class="k-field" style="flex: 2 1 240px"><label class="k-label" for="e-mean">Means</label><input class="k-input" id="e-mean" value="mutation entry (change in land record)"></div>
+                    <div class="k-btn-group"><button class="k-btn k-btn--primary" type="button">Save</button><button class="k-btn" type="button">Cancel</button></div>
+                  </div>
+                </td></tr>
+                <tr><td><strong class="k-deva">भोगवटादार</strong></td><td>occupant / owner</td><td><a href="#">22 documents</a></td><td class="k-muted">20 Sep 2026</td><td style="text-align: right; white-space: nowrap"><button class="k-btn k-btn--quiet k-btn--sm" type="button">Edit</button><button class="k-btn k-btn--quiet k-btn--sm" type="button">Delete</button></td></tr>
+                <tr><td colspan="5" style="padding: 8px 12px">
+                  <div class="k-confirm">
+                    <svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true" style="color: var(--k-danger)"><path d="M12 4 2.5 20h19z"></path><path d="M12 10v4M12 17v.5"></path></svg>
+                    <span style="flex: 1 1 260px">Delete “<strong>malak</strong>”? Searches will stop matching it to owner.</span>
+                    <div class="k-btn-group"><button class="k-btn k-btn--danger k-btn--sm" type="button">Delete</button><button class="k-btn k-btn--sm" type="button">Keep</button></div>
+                  </div>
+                </td></tr>
+                <tr><td><strong>kiraya</strong> <span class="k-muted">/</span> <strong class="k-deva">किराया</strong></td><td>rent</td><td><a href="#">9 documents</a> · <a href="#">11 questions</a></td><td class="k-muted">28 Sep 2026</td><td style="text-align: right; white-space: nowrap"><button class="k-btn k-btn--quiet k-btn--sm" type="button">Edit</button><button class="k-btn k-btn--quiet k-btn--sm" type="button">Delete</button></td></tr>
+                <tr><td><strong>NA</strong></td><td>non-agricultural permission</td><td><a href="#">5 documents</a> · <a href="#">2 questions</a></td><td class="k-muted">1 Oct 2026</td><td style="text-align: right; white-space: nowrap"><button class="k-btn k-btn--quiet k-btn--sm" type="button">Edit</button><button class="k-btn k-btn--quiet k-btn--sm" type="button">Delete</button></td></tr>
+                <tr><td><strong>gat</strong></td><td>survey block number</td><td><a href="#">14 documents</a></td><td class="k-muted">today 09:14</td><td style="text-align: right; white-space: nowrap"><button class="k-btn k-btn--quiet k-btn--sm" type="button">Edit</button><button class="k-btn k-btn--quiet k-btn--sm" type="button">Delete</button></td></tr>
+                <tr><td><strong>bill</strong></td><td>invoice</td><td class="k-muted">Not used yet</td><td class="k-muted">today 09:10</td><td style="text-align: right; white-space: nowrap"><button class="k-btn k-btn--quiet k-btn--sm" type="button">Edit</button><button class="k-btn k-btn--quiet k-btn--sm" type="button">Delete</button></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <aside style="flex: 1 1 340px; min-width: 0; display: flex; flex-direction: column; gap: 16px">
+          <div class="k-card k-card--flush">
+            <div class="k-card-head k-card-head--bar"><h2 class="k-h4">Where “<span class="k-deva">बोजा</span>” was used</h2><span class="k-tag">mortgage charge</span></div>
+            <div style="padding: 4px 20px 12px">
+              <div class="k-eyebrow" style="padding: 10px 0 2px">Documents · 7</div>
+              <div class="k-rule-row"><span class="k-name-cell k-ellip"><span class="k-file-ic" data-ext="PDF" aria-hidden="true"></span><span class="k-ellip">7/12 Survey 44 Wakad.pdf</span></span><a href="DocumentPage.html" class="k-mono k-small">p.1</a></div>
+              <div class="k-rule-row"><span class="k-name-cell k-ellip"><span class="k-file-ic" data-ext="PDF" aria-hidden="true"></span><span class="k-ellip">Ferfar 2187 Wakad.pdf</span></span><a href="#" class="k-mono k-small">p.1</a></div>
+              <div class="k-rule-row"><span class="k-name-cell k-ellip"><span class="k-file-ic" data-ext="PDF" aria-hidden="true"></span><span class="k-ellip">Sale Deed Shinde Survey 44.pdf</span></span><a href="#" class="k-mono k-small">p.4, p.7</a></div>
+              <div class="k-rule-row"><span class="k-name-cell k-ellip"><span class="k-file-ic" data-ext="PDF" aria-hidden="true"></span><span class="k-ellip">Loan Sanction SBI Plot 7.pdf</span></span><a href="#" class="k-mono k-small">p.2</a></div>
+              <a href="#" class="k-small">Show 3 more</a>
+              <div class="k-eyebrow" style="padding: 16px 0 2px">Questions · 3</div>
+              <div class="k-rule-row"><span class="k-ellip">Is there any बोजा on Survey 44?</span><span class="k-small k-faint">Rahul · 14 Oct</span></div>
+              <div class="k-rule-row"><span class="k-ellip">Survey 44 pe kitna loan hai?</span><span class="k-small k-faint">Priya · 9 Oct</span></div>
+              <div class="k-rule-row"><span class="k-ellip">Which plots have a mortgage charge?</span><span class="k-small k-faint">Anita · 3 Oct</span></div>
+            </div>
+          </div>
+          <div class="k-card">
+            <div style="display: flex; gap: 10px; align-items: flex-start">
+              <svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true" style="color: var(--k-info)"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v5M12 8v.5"></path></svg>
+              <div style="display: flex; flex-direction: column; gap: 4px"><h2 class="k-h4">Kaagaz found these words often</h2><span class="k-small k-muted">Add a meaning so search and answers read them right.</span></div>
+            </div>
+            <div style="display: flex; flex-direction: column">
+              <div class="k-rule-row"><span><strong class="k-deva">वारस</strong> <span class="k-muted">· heir</span> <span class="k-small k-faint">· in 12 files</span></span><button class="k-btn k-btn--sm" type="button"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>Add</button></div>
+              <div class="k-rule-row"><span><strong class="k-deva">हक्क</strong> <span class="k-muted">· right</span> <span class="k-small k-faint">· in 9 files</span></span><button class="k-btn k-btn--sm" type="button"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>Add</button></div>
+              <div class="k-rule-row"><span><strong class="k-deva">तलाठी</strong> <span class="k-muted">· village accountant</span> <span class="k-small k-faint">· in 8 files</span></span><button class="k-btn k-btn--sm" type="button"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>Add</button></div>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </main>
+  </div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["light","dark"],"default":"light"},"$preview":{"width":1440,"height":1100}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return { theme: this.props.theme ?? 'light' };
+  }
+}
+</script>
+</body>
+</html>

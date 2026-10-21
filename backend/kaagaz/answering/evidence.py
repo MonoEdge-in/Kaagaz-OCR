@@ -90,7 +90,7 @@ from typing import Any, Literal, Protocol
 
 from kaagaz.answering import glossary
 from kaagaz.answering.expansion import NO_EXPANSION, Expansion
-from kaagaz.answering.sanitize import strip_ignorable
+from kaagaz.answering.sanitize import clean_snippet, strip_ignorable
 from kaagaz.chunking.script import ascii_digits, is_devanagari
 from kaagaz.db.engine import Database
 from kaagaz.extraction.parsing import _INDIAN, _WESTERN
@@ -98,6 +98,7 @@ from kaagaz.reading.spans import BoxLocation, location_from_json, location_to_js
 from kaagaz.search.scope import Scope
 
 CLOSEST_DOCUMENTS = 3
+RELATED_DOCUMENTS = 5  # "Also in" under an answer's sources (Tushar, 16 Oct 2026)
 
 # How the gate passed: a score, the English keywords, or only with the glossary's, a
 # sound's or the user's own words' help.
@@ -616,6 +617,43 @@ def closest_documents(hits: Sequence[Hit]) -> list[dict[str, str]]:
         if len(seen) == CLOSEST_DOCUMENTS:
             break
     return [{"id": document_id, "display_name": name} for document_id, name in seen.items()]
+
+
+def related_documents(
+    evidence: Sequence[Evidence],
+    cited: set[str],
+    keywords: Sequence[str],
+    min_score: float,
+    numbers: Sequence[str] | None = None,
+) -> list[dict[str, Any]]:
+    """ "Also in" (Tushar, 16 Oct 2026): the documents of the search's own hits that the
+    answer does not cite, best first, one row each (its best hit's page, spot and text), at
+    most ``RELATED_DOCUMENTS``. Precision first: a hit counts only when it passes the gate by
+    itself on its score or the English keywords (as ``_judged`` asks of a cited hit), so weak
+    matches never pad the list. No second search; neighbours are never hits. O(e * t)."""
+    seen = set(cited)
+    related: list[dict[str, Any]] = []
+    for item in evidence:
+        hit = item.hit
+        if item.neighbour or hit.document_id in seen:
+            continue
+        if enough_evidence([item], keywords, min_score, numbers) not in ("score", "keywords"):
+            continue
+        seen.add(hit.document_id)
+        page = item.regions[0]["page"]
+        related.append(
+            {
+                "document_id": hit.document_id,
+                "document_name": hit.document_name,
+                "detected_type": hit.detected_type,
+                "page_no": int(page),
+                "regions": [dict(region) for region in item.regions if region["page"] == page],
+                "snippet": clean_snippet(hit.text),
+            }
+        )
+        if len(related) == RELATED_DOCUMENTS:
+            break
+    return related
 
 
 def looks_like_instructions(text: str) -> bool:

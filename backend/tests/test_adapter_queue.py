@@ -414,6 +414,21 @@ class ExpressLaneTest(unittest.TestCase):
         self.queue.enqueue(JOB, express=True)
         self.queue.enqueue(JOB)
 
+    def test_with_an_express_lane_the_main_lane_waits_at_most_2_seconds(self) -> None:
+        """Council 16 Oct 2026: a worker waiting on the main lane never sees an express job
+        arrive, so it waits 2 s, not QUEUE_WAIT_SECONDS (20), before looking again."""
+        client = make_client()
+        stub = Stubber(client)
+        stub.activate()
+        self.addCleanup(stub.deactivate)
+        settings = make_settings(queue_url=URL, queue_express_url=EXPRESS_URL, queue_wait_seconds=20)
+        queue = SqsQueue(settings, client=client)
+        for url, wait in ((EXPRESS_URL, 0), (URL, 2)):
+            params = {**RECEIVE_PARAMS, "QueueUrl": url, "WaitTimeSeconds": wait}
+            stub.add_response("receive_message", {}, params)
+        self.assertIsNone(queue.receive())
+        stub.assert_no_pending_responses()
+
     def test_one_lane_sends_express_jobs_to_the_main_queue(self) -> None:
         client = make_client()
         stub = Stubber(client)

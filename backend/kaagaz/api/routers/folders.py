@@ -19,17 +19,18 @@ Why some choices:
 import uuid
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Response
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import Connection
 
 from kaagaz.api.auth import CurrentUser, User
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.names import FOLDER_NAME_MAX, clean_name
-from kaagaz.api.views import folder
+from kaagaz.api.routers.documents import ActivityCursor, ActivityLimit
+from kaagaz.api.views import folder, timeline
 from kaagaz.db import audit
 from kaagaz.db import folders as folders_sql
 
@@ -38,11 +39,17 @@ router = APIRouter()
 Context = Annotated[AppContext, Depends(get_context)]
 
 
+FolderKind = Literal["department", "category", "party", "property", "year", "custom"]
+SortOrder = Annotated[int, Field(strict=True, ge=0, le=10_000)]
+
+
 class NewFolderBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str
     parent_id: uuid.UUID | None = None  # None: at the top level
+    kind: FolderKind = "custom"  # File management F1: department is an admin's, top level only
+    sort_order: SortOrder | None = None
 
 
 class FolderChangesBody(BaseModel):
@@ -50,6 +57,14 @@ class FolderChangesBody(BaseModel):
 
     name: str | None = None
     parent_id: uuid.UUID | None = None  # an explicit null: the top level; left out: don't move
+    kind: FolderKind | None = None  # left out or null: keep it
+    sort_order: SortOrder | None = None  # an explicit null clears it; left out: keep it
+
+
+def _admin_for_departments(user: CurrentUser, *kinds: str | None) -> None:
+    """F1: only an admin creates, renames, moves, orders or changes a department."""
+    if "department" in kinds and user.role != "admin":
+        raise ApiError(403, "forbidden", "Only an admin can change departments.")
 
 
 @contextmanager
@@ -96,10 +111,17 @@ def list_folders(user: User, context: Context) -> dict[str, Any]:
 @router.post("/folders", status_code=201)
 def create_folder(body: NewFolderBody, user: User, context: Context) -> dict[str, Any]:
     name = _name(body.name)
+    _admin_for_departments(user, body.kind)
     parent_id = None if body.parent_id is None else str(body.parent_id)
     with _refused(), context.db.customer(user.customer_id) as conn:
         row = folders_sql.create_folder(
-            conn, user.customer_id, name=name, parent_id=parent_id, created_by=user.user_id
+            conn,
+            user.customer_id,
+            name=name,
+            parent_id=parent_id,
+            created_by=user.user_id,
+            kind=body.kind,
+            sort_order=body.sort_order,
         )
         _audit(conn, user, "folder.create", row.id, {"parent_id": parent_id})
     return folder(row)
@@ -116,7 +138,11 @@ def update_folder(
     target = str(folder_id)
     parent_id = None if body.parent_id is None else str(body.parent_id)
     with _refused(), context.db.customer(user.customer_id) as conn:
-        # The body names at least one of the two (checked above), so ``row`` is always set.
+        path = folders_sql.folder_path(conn, user.customer_id, target)
+        if not path:
+            raise folders_sql.FolderNotFound()
+        _admin_for_departments(user, path[-1].kind, body.kind)
+        # The body names at least one change (checked above), so ``row`` is always set.
         # The move goes first: it takes the tree lock before anything is written.
         if "parent_id" in given:
             row = folders_sql.move_folder(conn, user.customer_id, target, parent_id=parent_id)
@@ -124,6 +150,16 @@ def update_folder(
         if name is not None:
             row = folders_sql.rename_folder(conn, user.customer_id, target, name=name)
             _audit(conn, user, "folder.rename", target)
+        if body.kind is not None or "sort_order" in given:
+            row = folders_sql.set_kind(
+                conn,
+                user.customer_id,
+                target,
+                kind=body.kind,
+                sort_order=body.sort_order,
+                order="sort_order" in given,
+            )
+            _audit(conn, user, "folder.kind", target, {"kind": row.kind, "sort_order": row.sort_order})
     return folder(row)
 
 
@@ -131,6 +167,27 @@ def update_folder(
 def delete_folder(folder_id: uuid.UUID, user: User, context: Context) -> Response:
     target = str(folder_id)
     with _refused(), context.db.customer(user.customer_id) as conn:
+        path = folders_sql.folder_path(conn, user.customer_id, target)
+        _admin_for_departments(user, path[-1].kind if path else None)
         folders_sql.delete_folder(conn, user.customer_id, target)
         _audit(conn, user, "folder.delete", target)
     return Response(status_code=204)
+
+
+@router.get("/folders/{folder_id}/activity")
+def get_folder_activity(
+    folder_id: uuid.UUID,
+    user: User,
+    context: Context,
+    limit: ActivityLimit = 50,
+    cursor: ActivityCursor = None,
+) -> dict[str, Any]:
+    """File management A5: ``{items: [AuditEntry], next_cursor}``, what happened in the folder
+    and every folder below it, newest first (document, version and folder actions only).
+    Another customer's folder, or none, is 404."""
+    with context.db.customer(user.customer_id) as conn:
+        subtree = folders_sql.descendant_ids(conn, user.customer_id, str(folder_id))
+        if not subtree:
+            raise ApiError(404, "not_found")
+        filters = audit.Filters(folder_ids=tuple(subtree))
+        return timeline(conn, user.customer_id, filters, limit=limit, cursor=cursor)

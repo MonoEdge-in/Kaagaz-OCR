@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Kaagaz · Sign in states</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="../../styles/kaagaz.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@100..125,400..700&amp;family=IBM+Plex+Mono:wght@400;500&amp;family=IBM+Plex+Sans+Devanagari:wght@400;500;600&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;display=swap">
+<style>body{margin:0}</style>
+</helmet>
+<div class="k-root" data-theme="{{theme}}" style="min-height: 100vh">
+  <div style="max-width: 1440px; margin: 0 auto; padding: 48px 56px 72px; display: flex; flex-direction: column; gap: 36px">
+    <header style="display: flex; flex-direction: column; gap: 8px; border-bottom: 1px solid var(--k-rule); padding-bottom: 20px">
+      <span class="k-eyebrow">Screen 01 · Sign in</span>
+      <h1 class="k-h1">Sign in</h1>
+      <p class="k-muted" style="max-width: 70ch">Six states of one screen: staff sign-in, admin sign-in with a code, first-time two-step setup, a forced new password, a locked account and a wrong-password error. The left panel stays the same in every state.</p>
+    </header>
+
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(620px, 100%), 1fr)); gap: 40px 32px">
+
+      <!-- 01 -->
+      <section style="display: flex; flex-direction: column; gap: 10px">
+        <span class="k-eyebrow">01 · Sign in</span>
+        <div style="display: flex; flex-wrap: wrap; border: 1px solid var(--k-rule); border-radius: 20px; overflow: hidden; background: var(--k-surface); min-height: 520px">
+          <div style="flex: 1 1 240px; background: var(--k-accent); color: var(--k-accent-ink); padding: 32px; border-radius: 24px; display: flex; flex-direction: column; justify-content: space-between; gap: 24px; background-image: radial-gradient(var(--k-accent-line) 1.2px, transparent 1.6px); background-size: 18px 18px">
+            <div style="display: flex; align-items: center; gap: 10px"><span class="k-brand-mark" aria-hidden="true"></span><span><span class="k-brand-name">Kaagaz</span><span class="k-brand-by">by MonoEdge</span></span></div>
+            <div style="display: flex; flex-direction: column; gap: 10px">
+              <span class="k-deva" style="color: var(--k-accent-ink); font-size: 22px; font-weight: 600">कागज़ · paper</span>
+              <p style="color: var(--k-accent-ink); opacity: .85; font-size: 14px; line-height: 1.6; max-width: 26ch">Your business papers, read and filed. Every answer shows its proof.</p>
+            </div>
+          </div>
+          <form style="flex: 2 1 320px; padding: 36px 40px; display: flex; flex-direction: column; gap: 18px; justify-content: center">
+            <div style="display: flex; flex-direction: column; gap: 4px"><h2 class="k-h2">Sign in to Kaagaz</h2><p class="k-small k-muted">Use your work email.</p></div>
+            <div class="k-field"><label class="k-label" for="s1-email">Email</label><input class="k-input" id="s1-email" type="email" value="rahul@wakadrealty.in"></div>
+            <div class="k-field">
+              <div style="display: flex; justify-content: space-between; align-items: baseline"><label class="k-label" for="s1-pw">Password</label><a class="k-small" href="#">Forgot password?</a></div>
+              <div class="k-input-wrap"><input class="k-input" id="s1-pw" type="password" value="kaagazpaper24" style="padding-right: 64px"><button class="k-btn k-btn--quiet k-btn--sm" type="button" style="position: absolute; right: 4px">Show</button></div>
+            </div>
+            <label class="k-check"><input type="checkbox" checked>Keep me signed in on this computer</label>
+            <button class="k-btn k-btn--primary k-btn--lg k-btn--block" type="button">Sign in</button>
+            <p class="k-small k-muted" style="text-align: center">Company admin? <a href="#">Admin sign-in</a></p>
+          </form>
+        </div>
+      </section>
+
+      <!-- 02 -->
+      <section style="display: flex; flex-direction: column; gap: 10px">
+        <span class="k-eyebrow">02 · Admin sign-in · code</span>
+        <div style="display: flex; flex-wrap: wrap; border: 1px solid var(--k-rule); border-radius: 20px; overflow: hidden; background: var(--k-surface); min-height: 520px">
+          <div style="flex: 1 1 240px; background: var(--k-accent); color: var(--k-accent-ink); padding: 32px; border-radius: 24px; display: flex; flex-direction: column; justify-content: space-between; gap: 24px; background-image: radial-gradient(var(--k-accent-line) 1.2px, transparent 1.6px); background-size: 18px 18px">
+            <div style="display: flex; align-items: center; gap: 10px"><span class="k-brand-mark" aria-hidden="true"></span><span><span class="k-brand-name">Kaagaz</span><span class="k-brand-by">by MonoEdge</span></span></div>
+            <div style="display: flex; flex-direction: column; gap: 10px">
+              <span class="k-deva" style="color: var(--k-accent-ink); font-size: 22px; font-weight: 600">कागज़ · paper</span>
+              <p style="color: var(--k-accent-ink); opacity: .85; font-size: 14px; line-height: 1.6; max-width: 26ch">Your business papers, read and filed. Every answer shows its proof.</p>
+            </div>
+          </div>
+          <form style="flex: 2 1 320px; padding: 36px 40px; display: flex; flex-direction: column; gap: 18px; justify-content: center">
+            <div style="display: flex; flex-direction: column; gap: 6px">
+              <span class="k-tag" style="align-self: flex-start"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"></path></svg>Admin</span>
+              <h2 class="k-h2">Enter your 6-digit code</h2>
+              <p class="k-small k-muted">Signed in as priya@wakadrealty.in. Open your authenticator app and type the code shown for Kaagaz.</p>
+            </div>
+            <fieldset style="border: 0; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px">
+              <legend class="k-label" style="margin-bottom: 8px">Code from your authenticator app</legend>
+              <div class="k-code">
+                <input aria-label="Digit 1" value="4" inputmode="numeric"><input aria-label="Digit 2" value="8" inputmode="numeric"><input aria-label="Digit 3" value="2" inputmode="numeric"><input aria-label="Digit 4" value="" inputmode="numeric" class="is-focus" style="border-color: var(--k-accent)"><input aria-label="Digit 5" value="" inputmode="numeric"><input aria-label="Digit 6" value="" inputmode="numeric">
+              </div>
+              <span class="k-help">The code changes every 30 seconds.</span>
+            </fieldset>
+            <button class="k-btn k-btn--primary k-btn--lg k-btn--block" type="button" disabled>Verify and sign in</button>
+            <div style="display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px" class="k-small"><a href="#">Use a backup code</a><a href="#">Back to sign in</a></div>
+          </form>
+        </div>
+      </section>
+
+      <!-- 03 -->
+      <section style="display: flex; flex-direction: column; gap: 10px">
+        <span class="k-eyebrow">03 · First-time two-step setup</span>
+        <div style="display: flex; flex-wrap: wrap; border: 1px solid var(--k-rule); border-radius: 20px; overflow: hidden; background: var(--k-surface); min-height: 520px">
+          <div style="flex: 1 1 240px; background: var(--k-accent); color: var(--k-accent-ink); padding: 32px; border-radius: 24px; display: flex; flex-direction: column; justify-content: space-between; gap: 24px; background-image: radial-gradient(var(--k-accent-line) 1.2px, transparent 1.6px); background-size: 18px 18px">
+            <div style="display: flex; align-items: center; gap: 10px"><span class="k-brand-mark" aria-hidden="true"></span><span><span class="k-brand-name">Kaagaz</span><span class="k-brand-by">by MonoEdge</span></span></div>
+            <div style="display: flex; flex-direction: column; gap: 10px">
+              <span class="k-deva" style="color: var(--k-accent-ink); font-size: 22px; font-weight: 600">कागज़ · paper</span>
+              <p style="color: var(--k-accent-ink); opacity: .85; font-size: 14px; line-height: 1.6; max-width: 26ch">Your business papers, read and filed. Every answer shows its proof.</p>
+            </div>
+          </div>
+          <form style="flex: 2 1 320px; padding: 32px 40px; display: flex; flex-direction: column; gap: 16px; justify-content: center">
+            <div style="display: flex; flex-direction: column; gap: 6px">
+              <span class="k-eyebrow">Step 1 of 2</span>
+              <h2 class="k-h2">Turn on two-step sign-in</h2>
+              <p class="k-small k-muted">Admins need a code as well as a password. Scan this with Google Authenticator, Microsoft Authenticator or any code app.</p>
+            </div>
+            <div style="display: flex; gap: 20px; align-items: center; flex-wrap: wrap">
+              <div role="img" aria-label="QR code for setting up two-step sign-in" style="display: grid; grid-template-columns: repeat(21, 6px); grid-auto-rows: 6px; padding: 10px; background: #FFFFFF; border: 1px solid var(--k-rule-strong)">
+                <sc-for list="{{qr}}" as="c" hint-placeholder-count="441"><span style="background: {{c.bg}}"></span></sc-for>
+              </div>
+              <div style="display: flex; flex-direction: column; gap: 6px; min-width: 0">
+                <span class="k-small k-muted">Can’t scan? Type this key:</span>
+                <span class="k-mono" style="font-size: 16px; letter-spacing: 0.04em">KZ7Q 4MDE 2PLX 9WAK</span>
+                <button class="k-btn k-btn--sm" type="button" style="align-self: flex-start"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 8h12v12H8zM4 16V4h12"></path></svg>Copy key</button>
+              </div>
+            </div>
+            <fieldset style="border: 0; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px">
+              <legend class="k-label" style="margin-bottom: 8px">Type the 6-digit code the app shows</legend>
+              <div class="k-code"><input aria-label="Digit 1" value="" inputmode="numeric"><input aria-label="Digit 2" value="" inputmode="numeric"><input aria-label="Digit 3" value="" inputmode="numeric"><input aria-label="Digit 4" value="" inputmode="numeric"><input aria-label="Digit 5" value="" inputmode="numeric"><input aria-label="Digit 6" value="" inputmode="numeric"></div>
+            </fieldset>
+            <div class="k-btn-group"><button class="k-btn k-btn--primary" type="button">Check code and continue</button><span class="k-small k-muted">Next: save 8 backup codes</span></div>
+          </form>
+        </div>
+      </section>
+
+      <!-- 04 -->
+      <section style="display: flex; flex-direction: column; gap: 10px">
+        <span class="k-eyebrow">04 · Set a new password (required)</span>
+        <div style="display: flex; flex-wrap: wrap; border: 1px solid var(--k-rule); border-radius: 20px; overflow: hidden; background: var(--k-surface); min-height: 520px">
+          <div style="flex: 1 1 240px; background: var(--k-accent); color: var(--k-accent-ink); padding: 32px; border-radius: 24px; display: flex; flex-direction: column; justify-content: space-between; gap: 24px; background-image: radial-gradient(var(--k-accent-line) 1.2px, transparent 1.6px); background-size: 18px 18px">
+            <div style="display: flex; align-items: center; gap: 10px"><span class="k-brand-mark" aria-hidden="true"></span><span><span class="k-brand-name">Kaagaz</span><span class="k-brand-by">by MonoEdge</span></span></div>
+            <div style="display: flex; flex-direction: column; gap: 10px">
+              <span class="k-deva" style="color: var(--k-accent-ink); font-size: 22px; font-weight: 600">कागज़ · paper</span>
+              <p style="color: var(--k-accent-ink); opacity: .85; font-size: 14px; line-height: 1.6; max-width: 26ch">Your business papers, read and filed. Every answer shows its proof.</p>
+            </div>
+          </div>
+          <form style="flex: 2 1 320px; padding: 32px 40px; display: flex; flex-direction: column; gap: 16px; justify-content: center">
+            <div style="display: flex; flex-direction: column; gap: 6px">
+              <h2 class="k-h2">Set a new password</h2>
+              <p class="k-small k-muted">Your admin asked you to set a new password before you continue.</p>
+            </div>
+            <div class="k-field"><label class="k-label" for="s4-new">New password</label><input class="k-input" id="s4-new" type="password" value="wakadplot7anita"></div>
+            <ul style="list-style: none; display: flex; flex-direction: column; gap: 6px" class="k-small" aria-label="Password rules">
+              <li style="display: flex; gap: 8px; align-items: center; color: var(--k-verified)"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg><span style="color: var(--k-ink)">12 or more characters</span><span class="k-faint">· done</span></li>
+              <li style="display: flex; gap: 8px; align-items: center; color: var(--k-verified)"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg><span style="color: var(--k-ink)">Not your old password</span><span class="k-faint">· done</span></li>
+              <li style="display: flex; gap: 8px; align-items: center; color: var(--k-ink-faint)"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 12h8"></path></svg><span style="color: var(--k-ink-muted)">A number or symbol</span><span class="k-faint">· not yet</span></li>
+            </ul>
+            <div class="k-field"><label class="k-label" for="s4-again">Type it again</label><input class="k-input" id="s4-again" type="password" value=""></div>
+            <button class="k-btn k-btn--primary k-btn--lg k-btn--block" type="button" disabled>Save password and continue</button>
+          </form>
+        </div>
+      </section>
+
+      <!-- 05 -->
+      <section style="display: flex; flex-direction: column; gap: 10px">
+        <span class="k-eyebrow">05 · Locked account</span>
+        <div style="display: flex; flex-wrap: wrap; border: 1px solid var(--k-rule); border-radius: 20px; overflow: hidden; background: var(--k-surface); min-height: 520px">
+          <div style="flex: 1 1 240px; background: var(--k-accent); color: var(--k-accent-ink); padding: 32px; border-radius: 24px; display: flex; flex-direction: column; justify-content: space-between; gap: 24px; background-image: radial-gradient(var(--k-accent-line) 1.2px, transparent 1.6px); background-size: 18px 18px">
+            <div style="display: flex; align-items: center; gap: 10px"><span class="k-brand-mark" aria-hidden="true"></span><span><span class="k-brand-name">Kaagaz</span><span class="k-brand-by">by MonoEdge</span></span></div>
+            <div style="display: flex; flex-direction: column; gap: 10px">
+              <span class="k-deva" style="color: var(--k-accent-ink); font-size: 22px; font-weight: 600">कागज़ · paper</span>
+              <p style="color: var(--k-accent-ink); opacity: .85; font-size: 14px; line-height: 1.6; max-width: 26ch">Your business papers, read and filed. Every answer shows its proof.</p>
+            </div>
+          </div>
+          <div style="flex: 2 1 320px; padding: 36px 40px; display: flex; flex-direction: column; gap: 18px; justify-content: center">
+            <div style="width: 48px; height: 48px; border-radius: 50%; display: grid; place-items: center; background: var(--k-danger-soft); color: var(--k-danger); border: 1px solid var(--k-danger)"><svg class="k-ic k-ic--lg" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 11h12v10H6zM8 11V7a4 4 0 0 1 8 0v4"></path></svg></div>
+            <h2 class="k-h2">This account is locked</h2>
+            <div class="k-banner k-banner--danger" role="alert">
+              <svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4 2.5 20h19z"></path><path d="M12 10v4M12 17v.5"></path></svg>
+              <div class="k-banner-body"><p>This account is locked after 5 wrong passwords. It unlocks at <strong class="k-mono">11:40</strong>, or ask your admin (Priya) to unlock it now.</p></div>
+            </div>
+            <dl class="k-kv" style="grid-template-columns: 120px minmax(0, 1fr)">
+              <dt>Account</dt><dd>anita@wakadrealty.in</dd>
+              <dt>Locked at</dt><dd>20 Oct 2026, 11:10</dd>
+            </dl>
+            <div class="k-btn-group"><a class="k-btn" href="#"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H9l-5 4z"></path></svg>Email Priya</a><a class="k-btn k-btn--quiet" href="#">Reset my password</a></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 06 -->
+      <section style="display: flex; flex-direction: column; gap: 10px">
+        <span class="k-eyebrow">06 · Wrong email or password</span>
+        <div style="display: flex; flex-wrap: wrap; border: 1px solid var(--k-rule); border-radius: 20px; overflow: hidden; background: var(--k-surface); min-height: 520px">
+          <div style="flex: 1 1 240px; background: var(--k-accent); color: var(--k-accent-ink); padding: 32px; border-radius: 24px; display: flex; flex-direction: column; justify-content: space-between; gap: 24px; background-image: radial-gradient(var(--k-accent-line) 1.2px, transparent 1.6px); background-size: 18px 18px">
+            <div style="display: flex; align-items: center; gap: 10px"><span class="k-brand-mark" aria-hidden="true"></span><span><span class="k-brand-name">Kaagaz</span><span class="k-brand-by">by MonoEdge</span></span></div>
+            <div style="display: flex; flex-direction: column; gap: 10px">
+              <span class="k-deva" style="color: var(--k-accent-ink); font-size: 22px; font-weight: 600">कागज़ · paper</span>
+              <p style="color: var(--k-accent-ink); opacity: .85; font-size: 14px; line-height: 1.6; max-width: 26ch">Your business papers, read and filed. Every answer shows its proof.</p>
+            </div>
+          </div>
+          <form style="flex: 2 1 320px; padding: 36px 40px; display: flex; flex-direction: column; gap: 18px; justify-content: center">
+            <div style="display: flex; flex-direction: column; gap: 4px"><h2 class="k-h2">Sign in to Kaagaz</h2><p class="k-small k-muted">Use your work email.</p></div>
+            <div class="k-field is-error"><label class="k-label" for="s6-email">Email</label><input class="k-input" id="s6-email" type="email" value="tushar@wakadrealty.in" aria-invalid="true" aria-describedby="s6-err"></div>
+            <div class="k-field is-error">
+              <div style="display: flex; justify-content: space-between; align-items: baseline"><label class="k-label" for="s6-pw">Password</label><a class="k-small" href="#">Forgot password?</a></div>
+              <input class="k-input" id="s6-pw" type="password" value="tushar2026" aria-invalid="true" aria-describedby="s6-err">
+              <p class="k-error" id="s6-err"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4 2.5 20h19z"></path><path d="M12 10v4M12 17v.5"></path></svg><span>That email and password don’t match. Check for typos or reset your password.</span></p>
+            </div>
+            <p class="k-small k-muted">3 tries left before the account locks for 30 minutes.</p>
+            <button class="k-btn k-btn--primary k-btn--lg k-btn--block" type="button">Sign in</button>
+            <p class="k-small k-muted" style="text-align: center">Company admin? <a href="#">Admin sign-in</a></p>
+          </form>
+        </div>
+      </section>
+
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["light","dark"],"default":"light"},"$preview":{"width":1440,"height":1900}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const N = 21;
+    const finder = (r, c, R, C) => {
+      const y = r - R, x = c - C;
+      if (y < 0 || x < 0 || y > 6 || x > 6) return null;
+      if (y === 0 || y === 6 || x === 0 || x === 6) return true;
+      if (y >= 2 && y <= 4 && x >= 2 && x <= 4) return true;
+      return false;
+    };
+    const qr = [];
+    for (let r = 0; r < N; r++) {
+      for (let c = 0; c < N; c++) {
+        let on = finder(r, c, 0, 0);
+        if (on === null) on = finder(r, c, 0, 14);
+        if (on === null) on = finder(r, c, 14, 0);
+        if (on === null) {
+          const inSep = (r <= 7 && c <= 7) || (r <= 7 && c >= 13) || (r >= 13 && c <= 7);
+          if (inSep) on = false;
+          else if (r === 6) on = c % 2 === 0;
+          else if (c === 6) on = r % 2 === 0;
+          else on = ((r * 7 + c * 13 + r * c * 3) % 5) < 2;
+        }
+        qr.push({ bg: on ? '#13212B' : '#FFFFFF' });
+      }
+    }
+    return { theme: this.props.theme ?? 'light', qr };
+  }
+}
+</script>
+</body>
+</html>

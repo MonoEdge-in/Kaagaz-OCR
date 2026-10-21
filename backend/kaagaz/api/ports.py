@@ -10,6 +10,7 @@ from collections.abc import Sequence
 from typing import Any, Protocol
 
 from kaagaz.answering.memory import Memory
+from kaagaz.answering.pins import Pin
 from kaagaz.answering.rewrite import Turn
 from kaagaz.db.models import ChatChoice
 from kaagaz.ingestion.ports import BlobStorage, JobQueue
@@ -49,12 +50,14 @@ class Answers(Protocol):
         user_id: str,
         memory: Memory,
         choice: ChatChoice | None = None,
+        pins: Sequence[Pin] = (),
     ) -> AnswerLike:
         """``question`` is the stripped question text; ``scope`` is resolved for this customer;
         ``history`` is the conversation's earlier turns, oldest first; ``user_id`` is the
         asker, whose own words (My words) only may help; ``memory`` is the conversation's
         (PRD 5 M3), its documents still live, for the follow-up rewrite only; ``choice`` who
-        drafts the answer, checked for this customer (features 25-27)."""
+        drafts the answer, checked for this customer (features 25-27); ``pins`` the asker's
+        own Most relevant picks (``kaagaz.db.chat.pins_for``)."""
         ...
 
     def remember(self, turns: Sequence[Turn], memory: Memory, cited: Sequence[str]) -> Memory | None:

@@ -44,14 +44,14 @@ from kaagaz.answering.words_text import (
     fold,
     is_built_in,
 )
-from kaagaz.api.auth import CurrentUser, User
+from kaagaz.api.auth import CurrentUser, User, require_feature
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.routers.documents import _same_user
 from kaagaz.db import audit, listing
 from kaagaz.db import user_words as words_sql
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_feature("my_words"))])  # 0038: 403 feature_off
 
 Context = Annotated[AppContext, Depends(get_context)]
 

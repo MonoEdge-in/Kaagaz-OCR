@@ -35,7 +35,7 @@ def _message(status: str = "received", **kwargs: Any) -> str:
 def test_q6_the_waiting_texts_are_the_prds_words() -> None:
     assert files_ahead_message(12) == "Waiting: 12 files ahead in your batch"
     assert files_ahead_message(1) == "Waiting: 1 file ahead in your batch"
-    assert READER_WAITING == "Waiting for the reader to come back. This continues on its own."
+    assert READER_WAITING == "Reading is paused for now. It will continue on its own."
 
 
 @pytest.mark.parametrize("status", ["received", "clean"])
@@ -49,7 +49,8 @@ def test_q6_a_document_waiting_for_the_reader_says_so_and_shows_no_step(status: 
 def test_q6_files_ahead_in_the_batch_show_while_it_waits_its_turn() -> None:
     assert _message(batch_ahead=12) == "Waiting: 12 files ahead in your batch"
     assert _message("clean", batch_ahead=1) == "Waiting: 1 file ahead in your batch"
-    assert _message(batch_ahead=0) == "Waiting for the virus check."  # its turn: as before
+    # Its turn: as before. Changed on purpose (council 16 Oct 2026): "Waiting to start."
+    assert _message(batch_ahead=0) == "Waiting to start."
     reading = {"step": "reading", "done": 2, "total": 5}
     assert _message("clean", progress=reading, batch_ahead=3) == "Reading page 3 of 5…"  # being read now
     assert _message("ready", batch_ahead=3) == "Ready. You can ask about it."  # only while in progress
@@ -107,6 +108,17 @@ def _row(
         "newer": None,
         "first_unreadable": None,
         "values_found": counts.get("values", 0),
+        # Changed on purpose (PRD 1, 0041): listing._FILE_COLUMNS.
+        "owner_id": USER.user_id,
+        "owner_name": "Member",
+        "sensitivity": "internal",
+        "versions": 1,
+        "version_note": None,
+        "document_date": None,
+        "last_updated_at": NOW,
+        "last_updated_by_name": "Member",
+        "department": None,
+        "pending_suggestion": None,
     }
     return cast(RowMapping, row)
 
@@ -154,6 +166,12 @@ def test_a_batch_counts_each_file_once_and_its_bar_is_pages_read_over_total() ->
     assert view["documents"][6]["progress"] is None
     # The file being read: 30 s; the 5 pages waiting at its 5 s a page, 2 at a time.
     assert (view["time_left"]["seconds"], view["time_left"]["items_left"]) == (30.0 + 5 * 5.0 / 2, 8)
+
+
+def test_a_ready_rows_message_counts_its_unreadable_pages() -> None:
+    """Council 16 Oct 2026: document_summary passes the row's pages_unreadable on."""
+    summary = document_summary(_row("ready", unreadable=2), max_pages=100, tags=[], user=USER, now=NOW)
+    assert summary["status_message"] == "Ready. 2 pages to check."
 
 
 def test_a_batch_with_nothing_being_read_has_no_time_left() -> None:

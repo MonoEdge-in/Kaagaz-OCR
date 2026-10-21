@@ -22,6 +22,9 @@ from kaagaz.answering.sanitize import SNIPPET_MAX, clean_snippet, clean_text, st
         ("Bell\x07 and null\x00 gone", "Bell and null gone"),
         ("Right‮to left⁦ marks", "Rightto left marks"),
         ("   spaced    out   ", "spaced out"),
+        ("Total ........ 500", "Total 500"),  # dot leaders: four or more of . _ · …
+        ("Name ______ Date ··········· x ………… y", "Name Date x y"),
+        ("Rs. 1,20,000... and ___ stay", "Rs. 1,20,000... and ___ stay"),
     ],
 )
 def test_strips_links_images_markup_and_controls(raw: str, clean: str) -> None:

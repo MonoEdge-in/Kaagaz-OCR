@@ -1,0 +1,31 @@
+/* Breadcrumbs (design/kaagaz-ui-handoff/styles/kaagaz.css, section 9, .k-crumbs). */
+
+.crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--k-ink-muted);
+}
+.crumbs a {
+  color: var(--k-ink-muted);
+  text-decoration: none;
+}
+.crumbs a:hover {
+  color: var(--k-accent);
+  text-decoration: underline;
+}
+.crumbs a:focus-visible {
+  outline: 2px solid var(--k-focus);
+  outline-offset: 2px;
+}
+.crumbs svg {
+  width: 13px;
+  height: 13px;
+  color: var(--k-ink-faint);
+}
+.current {
+  color: var(--k-ink);
+  font-weight: 600;
+}

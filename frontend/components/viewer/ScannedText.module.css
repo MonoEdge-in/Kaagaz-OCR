@@ -1,13 +1,17 @@
-/* Scanned text and What was read: neutral colours only, never the label badges'. */
+/* Scanned text and What was read: neutral colours only, never the label badges'. Flat and
+   square (MonoEdge design system); the lines are part of the page's one scroll, never a
+   scrolling box of their own. */
 
 .panel {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+  min-width: 0;
   padding: var(--space-3);
   border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--surface);
+  border-radius: var(--k-r-2);
+  background: var(--bg-surface);
+  contain: layout paint style;
 }
 
 .heading {
@@ -44,7 +48,7 @@
 
 .muted {
   display: block;
-  color: var(--fg-muted);
+  color: var(--text-secondary);
 }
 
 .muted,
@@ -64,24 +68,24 @@
   gap: var(--space-2);
 }
 
-.scroll {
-  position: relative;
-  max-height: min(40dvh, 24rem);
-  overflow: auto;
+.linesBox {
   border: 1px solid var(--border);
-  border-radius: var(--r-sm);
+  border-radius: var(--k-r-2);
 }
 
 .lines {
   margin: 0;
   padding-inline-start: 3.5em;
-  color: var(--fg-muted);
+  color: var(--text-secondary);
   font-size: var(--fs-sm);
 }
 
+/* A long list paints only the lines near the screen; each keeps its last height. */
 .line {
   border-block-end: 1px solid var(--border);
-  border-inline-start: 3px solid transparent;
+  border-inline-start: 2px solid transparent;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 44px;
 }
 
 .line:last-child {
@@ -89,19 +93,20 @@
 }
 
 .cited {
-  border-inline-start-color: var(--fg);
+  border-inline-start-color: var(--text-primary);
 }
 
 .lineButton {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-1);
   flex: 1 1 12rem;
+  min-width: 0;
   min-height: 24px;
   padding: var(--space-1) var(--space-2);
   border: none;
   background: none;
-  color: var(--fg);
+  color: var(--text-primary);
   font-size: var(--fs-base);
   text-align: start;
   cursor: pointer;
@@ -114,11 +119,11 @@
 }
 
 .lineButton:hover {
-  background: var(--surface-2);
+  background: var(--bg-subdued);
 }
 
 .lineButton[aria-pressed="true"] {
-  background: var(--accent-soft);
+  background: var(--accent-subtle);
 }
 
 .lineRow {
@@ -129,25 +134,24 @@
 
 .addMeaning {
   flex: none;
-  min-height: 44px;
-  min-width: 44px;
+  min-width: var(--control-h);
 }
 
 .lineMeta {
-  font-family: var(--font-sans);
   font-size: var(--fs-sm);
-  color: var(--fg-muted);
+  color: var(--text-secondary);
 }
 
 /* What was read: a native disclosure under a value. */
 .read {
-  margin-top: var(--space-1);
+  margin-block-start: var(--space-1);
   font-size: var(--fs-sm);
 }
 
+/* One control tall, its one line centred (padding, so the disclosure triangle stays). */
 .read summary {
-  min-height: var(--control-h);
-  color: var(--fg-muted);
+  padding-block: calc((var(--control-h) - 1lh) / 2);
+  color: var(--text-secondary);
   cursor: pointer;
 }
 

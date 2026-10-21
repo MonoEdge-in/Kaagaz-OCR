@@ -66,7 +66,8 @@ def hits(
         body_ = ScopeBody.model_validate(body or {})
         scope = resolve(conn, customer_id, body_, timezone=ZONE, detected_type=detected_type)
         found, grouped = run(conn, customer_id, scope, query, embedding)
-    assert {result.best.document_id for result in grouped} == {hit.document_id for hit in found}
+    matched = {hit.document_id for hit in found if hit.word_score is not None or hit.fuzzy_score is not None}
+    assert {result.best.document_id for result in grouped} == matched
     return found
 
 
@@ -271,6 +272,15 @@ def test_results_are_grouped_by_document_capped_and_count_the_other_pieces(db: D
     for bad in (0, 101):
         with pytest.raises(ValueError, match="max_documents"):
             documents(db, customer, "INV-9001", most=bad)
+
+
+def test_a_term_no_document_holds_finds_nothing_even_with_an_embedding(db: Database) -> None:
+    """KZ-003: meaning alone always has a nearest piece, so it only re-ranks word or typo matches."""
+    customer, _ = new_customer(db)
+    add(db, customer)
+    with db.customer(customer) as conn:
+        assert run(conn, customer, EVERYTHING, "zebracrossing", axis(0))[1] == []
+        assert len(run(conn, customer, EVERYTHING, "INV-9001", axis(0))[1]) == 1
 
 
 def test_the_best_piece_is_the_documents_best_ranked_piece(db: Database) -> None:

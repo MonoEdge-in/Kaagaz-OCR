@@ -2,8 +2,11 @@
 
 // Users of this customer: the list (one User column, the name with the e-mail
 // under it, so neither is squeezed) with each account's status, changing a
-// role, disabling or enabling an account, unlocking it, resetting its password
-// or its 2FA, and adding a new user. An admin cannot disable themselves, drop
+// role, and each row's other actions in one menu (UI audit AD2, 16 Oct 2026):
+// disabling or enabling an account, unlocking it, resetting its password or its
+// 2FA, each that takes something away asked first in a dialog. "Add user" opens
+// the form in a side panel (AD3), with a password field across it and Generate.
+// What happened shows in a toast in the corner. An admin cannot disable themselves, drop
 // their own admin role or reset their own 2FA; the controls for that are not
 // shown, and the server refuses it anyway. An admin may allow a member or
 // reviewer to delete forever (asked first; needs the admin's own two-step
@@ -12,12 +15,14 @@
 // A reset password comes back once, in the reply. It is shown in a card above
 // the list, with Copy, until Done or until the tab is left; it is never stored.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
+import { ActionDialog } from "@/components/documents/ActionDialog";
 import { useMinuteNow } from "@/components/chat/hooks";
 import { roleName } from "@/components/shell/nav";
-import { WrapName } from "@/components/documents/WrapName";
+import { closeAllowed, isBackdropClick } from "@/components/ui/drawerLogic";
 import { Icon } from "@/components/ui/Icon";
+import { IconButton } from "@/components/ui/IconButton";
 import { PasswordField } from "@/components/ui/PasswordField";
 import {
   ApiError,
@@ -33,6 +38,11 @@ import { formatDate } from "@/lib/format";
 import type { AdminUser, Role } from "@/lib/types";
 import table from "@/components/documents/Table.module.css";
 import { CopyButton } from "./CopyButton";
+import { MoreRows, useRowCap } from "./RowCap";
+import { RowMenu } from "./RowMenu";
+import type { RowMenuItem } from "./RowMenu";
+import { Toast } from "./Toast";
+import type { Notice } from "./Toast";
 import {
   MIN_PASSWORD_LENGTH,
   NEW_USER_FIELD_IDS,
@@ -40,6 +50,8 @@ import {
   allowForeverQuestion,
   firstInvalidField,
   foreverControl,
+  generatePassword,
+  twoStepNote,
   userActions,
   userStatus,
   validateNewUser,
@@ -66,8 +78,12 @@ export function UsersPanel({
   const [users, setUsers] = useState<AdminUser[] | null>(null);
   const [error, setError] = useState<{ attempt: number; message: string } | null>(null);
   const [revealed, setRevealed] = useState<Revealed | null>(null);
+  const [notice, setNotice] = useState<Notice | null>(null);
+  const [adding, setAdding] = useState(false);
+  const closeNotice = useCallback(() => setNotice(null), []);
   // Rounded to the minute, so "Locked until" and Unlock clear on their own.
   const now = useMinuteNow();
+  const cap = useRowCap();
 
   useEffect(() => {
     let cancelled = false;
@@ -103,9 +119,21 @@ export function UsersPanel({
   return (
     <div className={styles.panelStack}>
       <section className={styles.section} aria-labelledby="users-heading">
-        <h2 id="users-heading" className={styles.sectionHeading}>
-          Users
-        </h2>
+        <div className={styles.sectionHead}>
+          <h2 id="users-heading" className={styles.sectionHeading}>
+            Users
+          </h2>
+          <button
+            type="button"
+            className="btn btn-primary"
+            aria-haspopup="dialog"
+            aria-expanded={adding}
+            onClick={() => setAdding(true)}
+          >
+            <Icon name="plus" />
+            Add user
+          </button>
+        </div>
         {revealed && <TemporaryPassword revealed={revealed} onDone={() => setRevealed(null)} />}
         {failed && !users && (
           <div className={styles.errorBanner} role="alert">
@@ -133,7 +161,7 @@ export function UsersPanel({
           </>
         )}
         {users && (
-          <div className={table.reflowWrap}>
+          <div className={`${table.reflowWrap} ${styles.tableScroll}`}>
             <table className={`table ${table.reflow}`} role="table">
               <caption className="visually-hidden">Users of this customer</caption>
               <thead role="rowgroup">
@@ -156,7 +184,7 @@ export function UsersPanel({
                 </tr>
               </thead>
               <tbody role="rowgroup">
-                {users.map((user) => (
+                {users.slice(0, cap.limit).map((user) => (
                   <UserRow
                     key={user.id}
                     user={user}
@@ -165,31 +193,53 @@ export function UsersPanel({
                     now={now}
                     onChanged={replace}
                     onPasswordReset={setRevealed}
+                    onNotice={setNotice}
                   />
                 ))}
               </tbody>
             </table>
           </div>
         )}
+        {users && <MoreRows shown={Math.min(cap.limit, users.length)} total={users.length} what="users" onMore={cap.showMore} />}
+        {/* AD7: two-step is required for admins (0035); one without it sets it up at the next sign-in. */}
+        {users?.some((user) => user.role === "admin" && !user.totp_enabled) && (
+          <p className="hint">{twoStepNote()}</p>
+        )}
       </section>
-      <AddUserForm
-        onAdded={(user) => setUsers((current) => (current ? [...current, user] : [user]))}
-      />
+      {adding && (
+        <AddUserPanel
+          onClose={() => setAdding(false)}
+          onAdded={(user) => {
+            setUsers((current) => (current ? [...current, user] : [user]));
+            setAdding(false);
+            setNotice({ text: `Added ${user.display_name}. They choose their own password when they first sign in.` });
+          }}
+        />
+      )}
+      <Toast notice={notice} onClose={closeNotice} />
     </div>
   );
 }
 
-/** The two resets ask first (each signs the user out on every device), and so does
- * allowing Delete forever. */
-type Confirming = "password" | "2fa" | "forever";
+/** Disabling and the two resets ask first (each signs the user out on every device), and
+ * so does allowing Delete forever (UI audit AD2: every action that takes something away). */
+type Confirming = "disable" | "password" | "2fa" | "forever";
 
 const CONFIRM_TEXT: Record<Confirming, (name: string) => string> = {
+  disable: (name) => `Disable ${name}'s account? They are signed out and can't sign in until it is enabled again.`,
   password: (name) =>
     `Reset ${name}'s password? They are signed out everywhere and must choose a new one.`,
   "2fa": (name) =>
     `Reset ${name}'s 2FA? They are signed out and set up the app again at their next ` +
-    "admin sign-in.",
+    "sign-in.",
   forever: allowForeverQuestion,
+};
+
+const CONFIRM_BUTTON: Record<Confirming, string> = {
+  disable: "Yes, disable",
+  password: "Yes, reset",
+  "2fa": "Yes, reset",
+  forever: "Yes, allow",
 };
 
 function UserRow({
@@ -199,6 +249,7 @@ function UserRow({
   now,
   onChanged,
   onPasswordReset,
+  onNotice,
 }: {
   user: AdminUser;
   isSelf: boolean;
@@ -206,30 +257,24 @@ function UserRow({
   now: number;
   onChanged: (user: AdminUser) => void;
   onPasswordReset: (revealed: Revealed) => void;
+  onNotice: (notice: Notice) => void;
 }) {
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [saved, setSaved] = useState<string | null>(null);
   const [confirming, setConfirming] = useState<Confirming | null>(null);
-
-  // Focus goes to Cancel when a question opens, so Enter never resets by accident.
-  const focusOnMount = useCallback((element: HTMLButtonElement | null) => {
-    element?.focus();
-  }, []);
 
   async function act(send: () => Promise<AdminUser>, done: string) {
     setBusy(true);
-    setError(null);
-    setSaved(null);
     try {
       onChanged(await send());
-      setSaved(done);
+      onNotice({ text: `${user.display_name}: ${done}` });
     } catch (caught) {
-      setError(
-        caught instanceof ApiError
-          ? caught.message
-          : "Could not save the change. Check your connection, then try again.",
-      );
+      onNotice({
+        problem: true,
+        text:
+          caught instanceof ApiError
+            ? caught.message
+            : "Could not save the change. Check your connection, then try again.",
+      });
     } finally {
       setBusy(false);
       setConfirming(null);
@@ -239,34 +284,50 @@ function UserRow({
   const change = (changes: { role?: Role; disabled?: boolean }, done: string) =>
     act(() => updateUser(user.id, changes), done);
 
-  const confirmed = (kind: Confirming) =>
-    kind === "forever"
-      ? act(() => setDeleteForever(user.id, true), "Delete forever allowed.")
-      : kind === "password"
-        ? act(async () => {
-            const reset = await resetUserPassword(user.id);
-            onPasswordReset({ name: user.display_name, password: reset.temporary_password });
-            return reset.user;
-          }, "Password reset.")
-        : act(() => resetUser2fa(user.id), "2FA reset.");
+  const confirmed = (kind: Confirming) => {
+    if (kind === "disable") return change({ disabled: true }, "account disabled.");
+    if (kind === "forever") return act(() => setDeleteForever(user.id, true), "Delete forever allowed.");
+    if (kind === "2fa") return act(() => resetUser2fa(user.id), "2FA reset.");
+    return act(async () => {
+      const reset = await resetUserPassword(user.id);
+      onPasswordReset({ name: user.display_name, password: reset.temporary_password });
+      return reset.user;
+    }, "password reset.");
+  };
 
   const can = userActions(user, { isSelf, now });
   const forever = foreverControl(user, { isSelf, adminTwoStep });
-  const reasonId = `forever-reason-${user.id}`;
   const reason = forever.kind === "allow" ? forever.disabledReason : null;
-  const foreverWord = forever.kind === "stop" ? "Stop" : "Allow";
   const selectId = `role-${user.id}`;
-  const confirmId = `confirm-${user.id}`;
+  // AD2: one menu per row. Safe actions first; the one that takes something away last, apart.
+  const items: RowMenuItem[] = [
+    ...(can.unlock ? [{ label: "Unlock", onSelect: () => void act(() => unlockUser(user.id), "unlocked.") }] : []),
+    ...(can.toggleDisabled && user.disabled
+      ? [{ label: "Enable", onSelect: () => void change({ disabled: false }, "account enabled.") }]
+      : []),
+    ...(forever.kind === "stop"
+      ? [{ label: "Stop Delete forever", onSelect: () => void act(() => setDeleteForever(user.id, false), "Delete forever stopped.") }]
+      : []),
+    ...(forever.kind === "allow"
+      ? [{ label: "Allow Delete forever", onSelect: () => setConfirming("forever"), disabledReason: reason }]
+      : []),
+    ...(can.resetPassword ? [{ label: "Reset password", onSelect: () => setConfirming("password") }] : []),
+    ...(can.reset2fa ? [{ label: "Reset 2FA", onSelect: () => setConfirming("2fa") }] : []),
+    ...(can.toggleDisabled && !user.disabled
+      ? [{ label: "Disable", onSelect: () => setConfirming("disable"), destructive: true }]
+      : []),
+  ];
   return (
     <tr role="row">
-      <td role="cell" className={styles.wrap}>
+      <td role="cell" className={styles.userCell}>
         <span className={styles.userName}>
           {user.display_name}
           {isSelf && <span className="muted"> (you)</span>}
         </span>
-        <span className={styles.userEmail}>
+        {/* AD1: one line, cut with "…"; the whole address on hover and for screen readers. */}
+        <span className={styles.userEmail} title={user.email}>
           <span className="visually-hidden">E-mail: </span>
-          <WrapName name={user.email} />
+          {user.email}
         </span>
       </td>
       <td role="cell" data-label="Role">
@@ -280,7 +341,7 @@ function UserRow({
           disabled={busy || isSelf}
           onChange={(event) => {
             const role = ROLES.find((option) => option === event.target.value);
-            if (role) void change({ role }, `Role changed to ${roleName(role)}.`);
+            if (role) void change({ role }, `role changed to ${roleName(role)}.`);
           }}
         >
           {ROLES.map((role) => (
@@ -300,122 +361,33 @@ function UserRow({
         </span>
       </td>
       <td role="cell" data-label="Added" className="tabular">
-        {formatDate(user.created_at)}
+        <span className={styles.date}>{formatDate(user.created_at)}</span>
       </td>
       <td role="cell" className={styles.actionsCell}>
-        {confirming ? (
-          <div className={styles.confirm} role="group" aria-labelledby={confirmId}>
-            <span id={confirmId}>{CONFIRM_TEXT[confirming](user.display_name)}</span>
-            <div className={styles.confirmButtons}>
-              <button
-                type="button"
-                className="btn btn-danger"
-                disabled={busy}
-                onClick={() => void confirmed(confirming)}
-              >
-                {busy ? (
-                  <>
-                    <span className="spinner" aria-hidden="true" />
-                    {confirming === "forever" ? "Saving…" : "Resetting…"}
-                  </>
-                ) : confirming === "forever" ? (
-                  "Yes, allow"
-                ) : (
-                  "Yes, reset"
-                )}
-              </button>
-              <button
-                ref={focusOnMount}
-                type="button"
-                className="btn"
-                disabled={busy}
-                onClick={() => setConfirming(null)}
-              >
+        <span className={styles.rowActions}>
+          <RowMenu name={user.display_name} items={items} />
+          {busy && <span className="spinner" aria-hidden="true" />}
+        </span>
+        {confirming && (
+          <ActionDialog title={user.display_name} onClose={() => setConfirming(null)} canClose={() => !busy}>
+            <p>{CONFIRM_TEXT[confirming](user.display_name)}</p>
+            {/* [Cancel] [Yes, ...]: the action last; Cancel has focus, so Enter never acts by accident. */}
+            <div className="actions">
+              <button type="button" className="btn" data-autofocus disabled={busy} onClick={() => setConfirming(null)}>
                 Cancel
               </button>
+              <button
+                type="button"
+                className={`btn btn-danger ${busy ? styles.busy : ""}`}
+                disabled={busy}
+                aria-busy={busy || undefined}
+                onClick={() => void confirmed(confirming)}
+              >
+                {busy && <span className="spinner" aria-hidden="true" />}
+                {CONFIRM_BUTTON[confirming]}
+              </button>
             </div>
-          </div>
-        ) : (
-          <div className={styles.actions}>
-            {can.unlock && (
-              <button
-                type="button"
-                className="btn"
-                disabled={busy}
-                onClick={() => void act(() => unlockUser(user.id), "Unlocked.")}
-                aria-label={`Unlock ${user.display_name}`}
-              >
-                Unlock
-              </button>
-            )}
-            {can.toggleDisabled && (
-              <button
-                type="button"
-                className={user.disabled ? "btn" : "btn btn-danger"}
-                disabled={busy}
-                onClick={() =>
-                  void change(
-                    { disabled: !user.disabled },
-                    user.disabled ? "Account enabled." : "Account disabled.",
-                  )
-                }
-                aria-label={`${user.disabled ? "Enable" : "Disable"} ${user.display_name}`}
-              >
-                {user.disabled ? "Enable" : "Disable"}
-              </button>
-            )}
-            {can.resetPassword && (
-              <button
-                type="button"
-                className="btn"
-                disabled={busy}
-                onClick={() => setConfirming("password")}
-                aria-label={`Reset password for ${user.display_name}`}
-              >
-                Reset password
-              </button>
-            )}
-            {can.reset2fa && (
-              <button
-                type="button"
-                className="btn"
-                disabled={busy}
-                onClick={() => setConfirming("2fa")}
-                aria-label={`Reset 2FA for ${user.display_name}`}
-              >
-                Reset 2FA
-              </button>
-            )}
-            {forever.kind !== "none" && (
-              <button
-                type="button"
-                className="btn"
-                disabled={busy || reason !== null}
-                onClick={() =>
-                  forever.kind === "stop"
-                    ? void act(() => setDeleteForever(user.id, false), "Delete forever stopped.")
-                    : setConfirming("forever")
-                }
-                aria-label={`${foreverWord} Delete forever for ${user.display_name}`}
-                aria-describedby={reason ? reasonId : undefined}
-              >
-                {foreverWord} Delete forever
-              </button>
-            )}
-            {reason && (
-              <span id={reasonId} className="muted">
-                {reason}
-              </span>
-            )}
-          </div>
-        )}
-        <span aria-live="polite" className={styles.saved}>
-          {saved ?? ""}
-        </span>
-        {error && (
-          <p className="error-text" role="alert">
-            {error}
-          </p>
+          </ActionDialog>
         )}
       </td>
     </tr>
@@ -460,19 +432,43 @@ function TemporaryPassword({ revealed, onDone }: { revealed: Revealed; onDone: (
 }
 
 const EMPTY_USER: NewUserInput = { email: "", display_name: "", role: "member", password: "" };
+const ADD_USER_TITLE_ID = "add-user-heading";
+const UNSAVED_QUESTION = "Close without adding? What you typed here will be lost.";
 
-function AddUserForm({ onAdded }: { onAdded: (user: AdminUser) => void }) {
+/**
+ * AD3: the new-user form in a side panel, a native <dialog> (top layer, focus trap,
+ * Esc, inert page). Esc, the backdrop (press and release both on it) and Close ask
+ * first when something is typed; focus goes back to "Add user" when it closes.
+ */
+function AddUserPanel({ onClose, onAdded }: { onClose: () => void; onAdded: (user: AdminUser) => void }) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const pressTarget = useRef<EventTarget | null>(null);
   const [input, setInput] = useState<NewUserInput>(EMPTY_USER);
   const [errors, setErrors] = useState<NewUserErrors>({});
   const [serverError, setServerError] = useState<string | null>(null);
-  const [added, setAdded] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [masked, setMasked] = useState(true);
+  const unsaved = input.email !== "" || input.display_name !== "" || input.password !== "";
+  const askClose = () => {
+    if (!busy && closeAllowed(unsaved, () => window.confirm(UNSAVED_QUESTION))) onClose();
+  };
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    dialog.showModal();
+    document.getElementById(NEW_USER_FIELD_IDS.email)?.focus();
+    return () => {
+      dialog.close();
+      if (opener?.isConnected) opener.focus();
+    };
+  }, []);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (busy) return; // Enter in a field while adding: never a second user
     setMasked(true); // never leave a password showing once it is sent
-    setAdded(null);
     setServerError(null);
     const found = validateNewUser(input);
     setErrors(found);
@@ -489,10 +485,6 @@ function AddUserForm({ onAdded }: { onAdded: (user: AdminUser) => void }) {
         display_name: input.display_name.trim(),
       });
       onAdded(user);
-      setInput(EMPTY_USER);
-      setAdded(
-        `Added ${user.display_name}. They choose their own password when they first sign in.`,
-      );
     } catch (caught) {
       const message =
         caught instanceof ApiError
@@ -503,84 +495,118 @@ function AddUserForm({ onAdded }: { onAdded: (user: AdminUser) => void }) {
       } else {
         setServerError(message);
       }
-    } finally {
       setBusy(false);
     }
   }
 
   return (
-    <section className="card stack" aria-labelledby="add-user-heading">
-      <h2 id="add-user-heading" className={styles.sectionHeading}>
-        Add a user
-      </h2>
-      <form className={styles.form} onSubmit={submit} noValidate>
-        <Field
-          id={NEW_USER_FIELD_IDS.email}
-          label="E-mail"
-          error={errors.email}
-          type="email"
-          value={input.email}
-          onChange={(email) => setInput({ ...input, email })}
-        />
-        <Field
-          id={NEW_USER_FIELD_IDS.display_name}
-          label="Name"
-          error={errors.display_name}
-          type="text"
-          value={input.display_name}
-          onChange={(display_name) => setInput({ ...input, display_name })}
-        />
-        <div className="field">
-          <label htmlFor="new-user-role">Role</label>
-          <select
-            id="new-user-role"
-            className="input"
-            value={input.role}
-            onChange={(event) => {
-              const role = ROLES.find((option) => option === event.target.value);
-              if (role) setInput({ ...input, role });
-            }}
-          >
-            {ROLES.map((role) => (
-              <option key={role} value={role}>
-                {roleName(role)}
-              </option>
-            ))}
-          </select>
+    <dialog
+      ref={dialogRef}
+      className={styles.sidePanel}
+      aria-labelledby={ADD_USER_TITLE_ID}
+      onCancel={(event) => {
+        event.preventDefault(); // Esc: asks first when something is typed
+        askClose();
+      }}
+      onPointerDown={(event) => {
+        pressTarget.current = event.target;
+      }}
+      onClick={(event) => {
+        if (isBackdropClick(pressTarget.current, event.target, event.currentTarget)) askClose();
+        pressTarget.current = null;
+      }}
+    >
+      <div className={styles.sidePanelBody}>
+        <div className={styles.sectionHead}>
+          <h2 id={ADD_USER_TITLE_ID} className={styles.sectionHeading}>
+            Add a user
+          </h2>
+          <IconButton icon="close" label="Close" className="btn-quiet" onClick={askClose} />
         </div>
-        <PasswordField
-          id={NEW_USER_FIELD_IDS.password}
-          label="Temporary password"
-          autoComplete="new-password"
-          hint={`At least ${MIN_PASSWORD_LENGTH} characters. They set their own when they sign in.`}
-          value={input.password}
-          onChange={(password) => setInput({ ...input, password })}
-          error={errors.password ?? null}
-          masked={masked}
-          onMaskedChange={setMasked}
-        />
-        <div className={styles.formEnd}>
-          <button type="submit" className="btn btn-primary" disabled={busy}>
-            {busy ? (
-              <>
-                <span className="spinner" aria-hidden="true" />
-                Adding…
-              </>
-            ) : (
-              "Add user"
-            )}
-          </button>
-          <span aria-live="polite" className={styles.saved}>
-            {added ?? ""}
-          </span>
+        <form className={styles.form} onSubmit={submit} noValidate>
+          <Field
+            id={NEW_USER_FIELD_IDS.email}
+            label="E-mail"
+            error={errors.email}
+            type="email"
+            value={input.email}
+            onChange={(email) => setInput({ ...input, email })}
+          />
+          <Field
+            id={NEW_USER_FIELD_IDS.display_name}
+            label="Name"
+            error={errors.display_name}
+            type="text"
+            value={input.display_name}
+            onChange={(display_name) => setInput({ ...input, display_name })}
+          />
+          <div className="field">
+            <label htmlFor="new-user-role">Role</label>
+            <select
+              id="new-user-role"
+              className="input"
+              value={input.role}
+              onChange={(event) => {
+                const role = ROLES.find((option) => option === event.target.value);
+                if (role) setInput({ ...input, role });
+              }}
+            >
+              {ROLES.map((role) => (
+                <option key={role} value={role}>
+                  {roleName(role)}
+                </option>
+              ))}
+            </select>
+          </div>
+          {/* AD3: the password across the panel, Generate and Copy under it. */}
+          <div className={styles.passwordBlock}>
+            <PasswordField
+              id={NEW_USER_FIELD_IDS.password}
+              label="Temporary password"
+              autoComplete="new-password"
+              hint={`At least ${MIN_PASSWORD_LENGTH} characters. Give it to them yourself; they set their own when they sign in.`}
+              value={input.password}
+              onChange={(password) => setInput({ ...input, password })}
+              error={errors.password ?? null}
+              masked={masked}
+              onMaskedChange={setMasked}
+            />
+            <div className={styles.passwordTools}>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => {
+                  setInput({ ...input, password: generatePassword() });
+                  setMasked(false); // shown, so it can be copied and given to them
+                }}
+              >
+                Generate
+              </button>
+              {input.password !== "" && <CopyButton text={input.password} what="Password" buttonText="Copy" />}
+            </div>
+          </div>
           {serverError && (
-            <span className="error-text" role="alert">
+            <p className={`error-text ${styles.formEnd}`} role="alert">
               {serverError}
-            </span>
+            </p>
           )}
-        </div>
-      </form>
-    </section>
+          <div className={`actions ${styles.formEnd}`}>
+            <button type="button" className="btn" disabled={busy} onClick={askClose}>
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className={`btn btn-primary ${busy ? styles.busy : ""}`}
+              disabled={busy}
+              aria-busy={busy || undefined}
+            >
+              {busy && <span className="spinner" aria-hidden="true" />}
+              Add user
+            </button>
+          </div>
+        </form>
+      </div>
+    </dialog>
   );
 }
 

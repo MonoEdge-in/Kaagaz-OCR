@@ -76,6 +76,28 @@ def logout(conn: Connection, operator_id: str) -> None:
     conn.execute(text("SELECT kaagaz_op_logout(:o)"), {"o": operator_id})
 
 
+def move_check(conn: Connection, operator_id: str, step: int) -> bool:
+    """The password and current code were right for a two-step move (0031): use up the
+    step and clear the count. False: the step was used already, disabled or no secret."""
+    return bool(
+        conn.execute(
+            text("SELECT kaagaz_op_move_check(:o, :step)"), {"o": operator_id, "step": step}
+        ).scalar()
+    )
+
+
+def move_totp(
+    conn: Connection, operator_id: str, *, version: int, sealed: str, step: int, now: datetime
+) -> int | None:
+    """Replace the two-step secret with the confirmed new one and end every other session
+    (0031), only while the session version is still ``version``. The new one, or None."""
+    new_version = conn.execute(
+        text("SELECT kaagaz_op_move_totp(:o, :ver, :s, :step, :now)"),
+        {"o": operator_id, "ver": version, "s": sealed, "step": step, "now": now},
+    ).scalar()
+    return None if new_version is None else int(new_version)
+
+
 # --- the command line, as the table owner ------------------------------------------------
 
 FIND = text("SELECT id FROM operators WHERE email = :e FOR UPDATE")

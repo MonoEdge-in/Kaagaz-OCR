@@ -1,82 +1,100 @@
 "use client";
 
-// The frame around every signed-in screen. From 1024 px up: a sidebar down the
-// whole page, with the wordmark and ShellMenu sticking to the window. Below that: a sticky top bar (menu button,
-// wordmark, the current page's name) and a Drawer with the same ShellMenu.
-// Both get their links from the one navLinks list for the whole shell.
+// The frame around every signed-in screen, in the handoff's layout (desktop/Home.html,
+// phone/PhoneHome.html) on one grid: from 1024 px the sidebar (244 px) runs the
+// full height with the brand, the links and the workspace, and the top bar (68 px)
+// sits over <main> beside it; the status bar (32 px, only while a screen has a line
+// in it, StatusBar.tsx) and, on a phone, the tab bar with the links. The page itself
+// never scrolls: only <main> and the sidebar do, each held in. Below 1024 px the top
+// bar has the brand and a menu button that opens a Drawer with the same ShellMenu.
+// Every list of links comes from the one navLinks. The whole frame is a .k-root, so
+// the handoff's base styles and the UI kit apply inside it.
+// The top bar's end: the search (Ctrl+K or Cmd+K focuses it; it opens /search?q=...,
+// inside documents first, docs/architecture.md, The screens), the Upload button and the account
+// menu (AccountMenu).
 // <main id="main"> has no padding; screens use .page (the chat fills it).
 
+import Form from "next/form";
+import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useState } from "react";
-import type { ReactNode } from "react";
-import { clearStored } from "@/components/documents/batchTray";
+import { useEffect, useRef, useState } from "react";
+import type { MouseEvent, ReactNode } from "react";
+import { MAX_SEARCH_LENGTH } from "@/components/documents/insideSearch";
 import { Drawer } from "@/components/ui/Drawer";
+import { Icon } from "@/components/ui/Icon";
 import { IconButton } from "@/components/ui/IconButton";
-import { ApiError, logout, logoutEverywhere } from "@/lib/api";
+import { canReview } from "@/components/review/review";
+import { listReview } from "@/lib/api";
 import { useSession } from "@/lib/session";
-import { announceSession, leavePage } from "@/lib/sessionChannel";
-import { sessionScope, signedOutPath } from "./gate";
-import { currentPageName, navLinks } from "./nav";
+import { AccountMenu } from "./AccountMenu";
+import { sessionScope } from "./gate";
+import { currentPageName, isCurrent, isSearchShortcut, navLinks, reviewCountText, roleName } from "./nav";
 import { ShellMenu } from "./ShellMenu";
-import type { SignOutKind } from "./ShellMenu";
+import { StatusBarSlot } from "./StatusBar";
+import { SHELL_UPLOAD_INPUT_ID, UploadsProvider } from "./Uploads";
 import { Wordmark } from "./Wordmark";
 import styles from "./Shell.module.css";
 
 const MENU_ID = "app-menu";
 
+/** The documents screen's and the dashboard's file input (DocumentsView.tsx, Dashboard.tsx). */
+const UPLOAD_INPUT_ID = "upload-input";
+
 export function AppShell({ children }: { children: ReactNode }) {
   const { me } = useSession();
   const pathname = usePathname();
   const [menuOpen, setMenuOpen] = useState(false);
-  const [signingOut, setSigningOut] = useState<SignOutKind | null>(null);
-  const [signOutError, setSignOutError] = useState<string | null>(null);
   const links = navLinks(me.user.role, sessionScope(me));
   const pageName = currentPageName(links, pathname);
+  const [statusBar, setStatusBar] = useState<HTMLDivElement | null>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  // D-7: a reviewer's and an admin's Review link counts the values waiting there, asked
+  // again on each page change (a value checked in Review lowers it). A member never asks.
+  const reviewer = canReview(me.user.role);
+  const [reviewTotal, setReviewTotal] = useState<number | null>(null);
+  useEffect(() => {
+    if (!reviewer) return;
+    let cancelled = false;
+    listReview({ limit: 1 }).then(
+      (reply) => {
+        if (!cancelled) setReviewTotal(reply.total);
+      },
+      () => undefined, // no count is shown rather than a wrong one
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [reviewer, pathname]);
+  const reviewCount = reviewer ? reviewCountText(reviewTotal) : null;
 
-  // "everywhere" raises the account's session version on the server, which
-  // ends this browser's session too, so both end on the sign-in page. It is a
-  // full page load, so nothing of this person stays in the tab's memory, and
-  // the other tabs are told (lib/sessionChannel.ts).
-  async function endSession(kind: SignOutKind) {
-    setSigningOut(kind);
-    setSignOutError(null);
-    try {
-      await (kind === "everywhere" ? logoutEverywhere() : logout());
-    } catch (caught) {
-      // Already signed out on the server (401): go to the sign-in page anyway.
-      if (!(caught instanceof ApiError && caught.status === 401)) {
-        setSignOutError(
-          caught instanceof ApiError && caught.status !== 0
-            ? "Could not sign out. Try again in a minute."
-            : "Could not reach Kaagaz to sign out. Check your internet connection and try again.",
-        );
-        setSigningOut(null);
-        return;
-      }
-    }
-    clearStored(); // the upload tray's drops (PRD 5 U1) are this person's
-    announceSession(null);
-    leavePage(signedOutPath(pathname));
+  // Ctrl+K (Cmd+K on a Mac) anywhere: to the header's search.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (!isSearchShortcut(event)) return;
+      event.preventDefault();
+      searchRef.current?.focus();
+      searchRef.current?.select();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // Upload opens a file picker on every page (D-12): the screen's own on the documents
+  // screen and the dashboard (into the folder or department shown), the shell's
+  // elsewhere; the files go to the one tray in the status bar (Uploads.tsx).
+  function upload(event: MouseEvent<HTMLAnchorElement>) {
+    const input = document.getElementById(UPLOAD_INPUT_ID) ?? document.getElementById(SHELL_UPLOAD_INPUT_ID);
+    if (!(input instanceof HTMLInputElement)) return;
+    event.preventDefault();
+    input.click();
   }
-
-  const signOut = () => endSession("here");
-  // The stronger sign-out sits under the plain one: ask first, so a slip costs nothing.
-  const signOutEverywhere = () => {
-    if (window.confirm("Sign out on every phone and computer? You will need to sign in again on each one.")) {
-      void endSession("everywhere");
-    }
-  };
 
   const menu = (
     <ShellMenu
       links={links}
       pathname={pathname}
-      me={me}
-      signingOut={signingOut}
-      signOutError={signOutError}
-      onSignOut={signOut}
-      onSignOutEverywhere={signOutEverywhere}
       onLinkClick={() => setMenuOpen(false)}
+      reviewCount={reviewCount}
     />
   );
 
@@ -85,38 +103,106 @@ export function AppShell({ children }: { children: ReactNode }) {
       <a className={styles.skip} href="#main">
         Skip to content
       </a>
-      <div className={styles.frame}>
-        <header className={styles.topbar}>
+      <div className={`app-shell k-root ${styles.app}`}>
+        <header className={styles.header}>
           <IconButton
             icon="menu"
             label="Open menu"
-            className="btn-quiet"
+            className={`btn-quiet ${styles.menuButton}`}
             aria-haspopup="dialog"
             aria-controls={MENU_ID}
             aria-expanded={menuOpen}
             onClick={() => setMenuOpen(true)}
           />
-          <Wordmark href="/documents" />
+          <span className={styles.headerBrand}>
+            <Wordmark href="/dashboard" />
+          </span>
           {pageName && (
             <span className={styles.pageName}>
               <span className="visually-hidden">, </span>
               {pageName}
             </span>
           )}
+
+          <div className={styles.headerEnd}>
+            <Form action="/search" role="search" className={styles.search}>
+              <label htmlFor="app-search" className="visually-hidden">
+                Search your documents
+              </label>
+              <Icon name="search" className={styles.searchIcon} />
+              <input
+                ref={searchRef}
+                id="app-search"
+                name="q"
+                className={`input ${styles.searchInput}`}
+                type="search"
+                enterKeyHint="search"
+                autoComplete="off"
+                maxLength={MAX_SEARCH_LENGTH}
+                placeholder="Search inside documents, or a name"
+                aria-keyshortcuts="Control+K Meta+K"
+                title="Search your documents (Ctrl+K, or Cmd+K on a Mac)"
+              />
+            </Form>
+            <Link href="/documents" className={`btn btn-primary ${styles.upload}`} onClick={upload}>
+              <Icon name="upload" />
+              <span className="narrow-hide">Upload</span>
+            </Link>
+            <AccountMenu me={me} />
+          </div>
         </header>
 
         <div className={styles.sidebar}>
-          <div className={styles.sidebarInner}>
-            <div className={styles.sidebarBrand}>
-              <Wordmark href="/documents" />
-            </div>
-            {menu}
+          <div className={styles.brand}>
+            <Wordmark href="/dashboard" />
+          </div>
+          {menu}
+          <div className={styles.sideFoot}>
+            <p className={styles.sideFootName}>{me.customer.name}</p>
+            <p>
+              {me.user.display_name} · {roleName(me.user.role)}
+            </p>
           </div>
         </div>
 
-        <main id="main" className={styles.main}>
-          {children}
+        <main
+          id="main"
+          className={styles.main}
+          // A 1px edge under the header once the content has scrolled (UI audit G11).
+          onScroll={(event) => event.currentTarget.toggleAttribute("data-scrolled", event.currentTarget.scrollTop > 0)}
+        >
+          <StatusBarSlot value={statusBar}>
+            <UploadsProvider>{children}</UploadsProvider>
+          </StatusBarSlot>
         </main>
+
+        <div ref={setStatusBar} className={`app-statusbar ${styles.statusbar}`} />
+
+        {/* A phone: the links at the thumb, the rest in the menu. */}
+        <nav aria-label="Quick links" className={styles.bottombar}>
+          {links.map((link) => {
+            const current = isCurrent(link.href, pathname);
+            return (
+              <Link
+                key={link.href}
+                href={link.href}
+                className={styles.bottomLink}
+                aria-current={current ? "page" : undefined}
+              >
+                <span className={styles.bottomIcon}>
+                  <Icon name={link.icon} />
+                  {link.count === "review" && reviewCount !== null && (
+                    <span className={styles.bottomCount}>
+                      {reviewCount}
+                      <span className="visually-hidden"> to review</span>
+                    </span>
+                  )}
+                </span>
+                <span>{link.label}</span>
+              </Link>
+            );
+          })}
+        </nav>
       </div>
 
       <Drawer id={MENU_ID} title="Menu" open={menuOpen} onClose={() => setMenuOpen(false)}>

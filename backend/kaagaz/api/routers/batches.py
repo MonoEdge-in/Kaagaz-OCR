@@ -20,6 +20,7 @@ from kaagaz.api.errors import ApiError
 from kaagaz.api.views import batch_view
 from kaagaz.db import listing
 from kaagaz.db import tags as tags_sql
+from kaagaz.db import versions as versions_sql
 
 router = APIRouter()
 
@@ -28,8 +29,10 @@ Context = Annotated[AppContext, Depends(get_context)]
 
 @router.get("/batches/{batch_id}")
 def get_batch(batch_id: uuid.UUID, user: User, context: Context) -> dict[str, Any]:
-    """``BatchView``: the files, their counts, pages read over total and the time left.
-    Two queries: the files, then their tags (one batch)."""
+    """``BatchView``: the files, their counts, pages read over total and the time left, and
+    (File management V5) the batch's version suggestions still to answer and its automatic
+    links (``VersionSuggestion``, db/versions.py) with their count. Three queries: the files,
+    their tags, the suggestions."""
     customer_id, target = user.customer_id, str(batch_id)
     settings = context.settings
     with context.db.customer(customer_id) as conn:
@@ -39,7 +42,10 @@ def get_batch(batch_id: uuid.UUID, user: User, context: Context) -> dict[str, An
         if not rows:
             raise ApiError(404, "not_found")
         tags = tags_sql.tags_for_documents(conn, customer_id, [str(row["id"]) for row in rows])
-    return batch_view(
+        found = versions_sql.in_batch(
+            conn, customer_id, target, user_id=user.user_id, limit=settings.max_files_per_batch
+        )
+    view = batch_view(
         target,
         rows,
         max_pages=settings.max_pages,
@@ -48,3 +54,5 @@ def get_batch(batch_id: uuid.UUID, user: User, context: Context) -> dict[str, An
         now=context.clock(),
         max_active=settings.max_active_per_customer,
     )
+    # V5: the tray's "N files look like new versions", with Review.
+    return {**view, "version_suggestion_count": len(found), "version_suggestions": found}

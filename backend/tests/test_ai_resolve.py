@@ -119,14 +119,13 @@ PLATFORM = Agent(SETTINGS.ocr_model, "google-vertex", SETTINGS.ocr_model)
 # --- the vendor allow-list (S1) -----------------------------------------------------------
 
 
-def test_the_vendor_allow_list_is_google_and_anthropic_unless_set() -> None:
-    """Tushar, 15 Oct 2026: Sonnet 5.5 is allowed by default, so anthropic is in it."""
-    assert {"google", "anthropic"} == DEFAULT_MODEL_VENDORS
-    assert Settings.from_env(shipped()).openrouter_model_vendors == {"google", "anthropic"}
-    assert Settings.from_env(shipped(OPENROUTER_MODEL_VENDORS="")).openrouter_model_vendors == {
-        "google",
-        "anthropic",
-    }
+def test_the_vendor_allow_list_is_google_anthropic_qwen_and_meta_llama_unless_set() -> None:
+    """Tushar, 15 Oct 2026: Sonnet 5.5 is allowed by default, so anthropic is in it.
+    Changed on purpose (Tushar 18 Oct: models without thinking levels): qwen and meta-llama too."""
+    four = {"google", "anthropic", "qwen", "meta-llama"}
+    assert four == DEFAULT_MODEL_VENDORS
+    assert Settings.from_env(shipped()).openrouter_model_vendors == four
+    assert Settings.from_env(shipped(OPENROUTER_MODEL_VENDORS="")).openrouter_model_vendors == four
     assert Settings.from_env(shipped(OPENROUTER_MODEL_VENDORS="google")).openrouter_model_vendors == {
         "google"
     }
@@ -183,8 +182,10 @@ def test_a_mode_no_longer_allowed_reads_single_with_a_note() -> None:
     """S2: the worker checks the upload's mode again; exactly one model reads each page."""
     rows = [row(PRO, default=True, tokens=(4000, 2000)), row(FLASH)]
     ensemble = document(PRO, "ensemble", [FLASH])
+    # Changed on purpose (Ensemble after the scan, 16 Oct 2026): an old Ensemble document is
+    # read single, with or without the switch, noted ensemble_after_scan.
     assert scan(FakeConn(scan=rows, document=ensemble)) == models.Reading(
-        "single", agent(PRO), thinking="low", notes=("mode_revoked",)
+        "single", agent(PRO), thinking="low", notes=("ensemble_after_scan",)
     )
     dynamic = FakeConn(
         scan=[row(FLASH, default=True), row(PRO, tokens=(4000, 2000))], document=document(None, "dynamic")
@@ -192,41 +193,70 @@ def test_a_mode_no_longer_allowed_reads_single_with_a_note() -> None:
     assert scan(dynamic) == models.Reading("single", agent(FLASH), thinking="low", notes=("mode_revoked",))
 
 
-def test_an_allowed_ensemble_reads_with_the_usable_others_only() -> None:
-    """A junk or unusable read_also id is never read, and is noted."""
+def test_an_old_ensemble_document_is_read_by_its_lead_alone() -> None:
+    """Changed on purpose (Ensemble after the scan, 16 Oct 2026): with the switch on, an
+    Ensemble document of before is read single by its lead; its read_also is never read."""
     rows = [row(PRO, default=True), row(FLASH), row(SONNET)]
     allowed = {"ensemble": True}
     reading = scan(
         FakeConn(scan=rows, settings=allowed, document=document(PRO, "ensemble", [FLASH, "google/junk"]))
     )
-    assert (reading.mode, reading.lead, reading.others, reading.notes) == (
-        "ensemble",
-        agent(PRO),
-        (agent(FLASH),),
-        ("agent_unusable",),
-    )
-    alone = scan(FakeConn(scan=rows, settings=allowed, document=document(PRO, "ensemble", ["google/junk"])))
-    assert (alone.mode, alone.others, alone.notes) == ("single", (), ("agent_unusable",))
+    assert reading == models.Reading("single", agent(PRO), thinking="low", notes=("ensemble_after_scan",))
     assert reading.config() == {
-        "mode": "ensemble",
+        "mode": "single",
         "lead": {"model": PRO, "provider": "google-vertex"},
-        "others": [{"model": FLASH, "provider": "google-vertex"}],
+        "others": [],
         "careful": None,
         "thinking": "low",
-        "notes": ["agent_unusable"],
+        "notes": ["ensemble_after_scan"],
     }
 
 
-def test_dynamic_needs_a_careful_tier_other_than_the_lead() -> None:
-    allowed = {"dynamic": True}
+def test_dynamic_reads_low_first_with_the_careful_tier_or_else_the_lead() -> None:
+    """Tushar, 16 Oct 2026: the first read thinks low (not the organisation's level); with no
+    Careful tier other than the lead, the lead itself is Careful (gemini_ocr reads it at
+    OCR_RETRY_THINKING_LEVEL), so Dynamic works with one allowed model."""
+    allowed = {"dynamic": True, "scan_thinking": "high"}
     cheap, dear = row(FLASH, default=True), row(PRO, tokens=(4000, 2000))
     reading = scan(FakeConn(scan=[cheap, dear], settings=allowed, document=document(None, "dynamic")))
-    assert (reading.mode, reading.lead, reading.careful) == ("dynamic", agent(FLASH), agent(PRO))
+    assert (reading.mode, reading.lead, reading.careful, reading.thinking) == (
+        "dynamic",
+        agent(FLASH),
+        agent(PRO),
+        "low",
+    )
     near = row(PRO, tokens=(1050, 520))  # under 1.1 times Standard a page: no Careful tier
     reading = scan(FakeConn(scan=[cheap, near], settings=allowed, document=document(None, "dynamic")))
-    assert (reading.mode, reading.careful, reading.notes) == ("single", None, ("careful_missing",))
+    assert (reading.mode, reading.careful, reading.thinking, reading.notes) == (
+        "dynamic",
+        agent(FLASH),
+        "low",
+        (),
+    )
     reading = scan(FakeConn(scan=[cheap, dear], settings=allowed, document=document(PRO, "dynamic")))
-    assert (reading.mode, reading.notes) == ("single", ("careful_missing",))  # Careful is the lead itself
+    assert (reading.mode, reading.careful, reading.notes) == ("dynamic", agent(PRO), ())  # the lead itself
+    alone = scan(FakeConn(scan=[cheap], settings=allowed, document=document(None, "dynamic")))
+    assert (alone.mode, alone.careful, alone.thinking) == ("dynamic", agent(FLASH), "low")
+
+
+def test_dynamic_keeps_the_leads_level_when_it_does_not_think_low() -> None:
+    allowed = {"dynamic": True, "scan_thinking": "high"}
+    lead = row(PRO, default=True, efforts=["medium", "high"])
+    reading = scan(FakeConn(scan=[lead], settings=allowed, document=document(None, "dynamic")))
+    assert (reading.mode, reading.thinking, reading.notes) == ("dynamic", "high", ("thinking_fallback",))
+
+
+def test_dynamic_is_on_unless_the_organisation_or_the_platform_turns_it_off() -> None:
+    """The effective switch: the organisation's, else the platform's, else on (16 Oct 2026)."""
+    sql = str(models._SETTINGS)
+    # Changed on purpose (0038): the platform's Cost saving switch can turn it off too.
+    assert "COALESCE(s.dynamic, p.dynamic, true) AND COALESCE(w.cost_saving, true) AS dynamic" in sql
+    off = scan(
+        FakeConn(
+            scan=[row(FLASH, default=True)], settings={"dynamic": False}, document=document(None, "dynamic")
+        )
+    )
+    assert (off.mode, off.notes) == ("single", ("mode_revoked",))
 
 
 def test_a_thinking_level_the_lead_does_not_accept_falls_back_to_the_environments() -> None:

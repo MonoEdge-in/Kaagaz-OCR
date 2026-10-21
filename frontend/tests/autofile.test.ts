@@ -76,6 +76,7 @@ const tray = (document: DocumentSummary, folders = [{ id: INVOICES, name: "Invoi
       onRetry: () => undefined,
       tree: buildTree(folders),
       onUndone: () => undefined,
+      canReread: true,
     }),
   );
 
@@ -128,7 +129,9 @@ describe("a filed file in the uploads tray", () => {
   it("says where it was filed, links to that folder and offers Undo", () => {
     const html = tray(doc("filed"));
     expect(html).toContain(`<a href="/documents?folder=${INVOICES}">Filed into Invoices</a> · <button`);
-    expect(html).toMatch(/>Undo<span class="visually-hidden"> the filing of bill\.pdf<\/span><\/button>/);
+    // Changed on purpose (MonoEdge design system, 16 Oct 2026): the label keeps its width while
+    // Undo runs (BusyLabel), so "Undo" sits in a span of its own.
+    expect(html).toMatch(/data-busy="false"><span>Undo<\/span>[\s\S]*?<span class="visually-hidden"> the filing of bill\.pdf<\/span><\/button>/);
   });
 
   it("names the whole path, or a folder not loaded yet", () => {

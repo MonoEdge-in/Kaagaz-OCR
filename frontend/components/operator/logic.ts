@@ -2,7 +2,7 @@
 // them: the sign-in form, an organisation's status and counts in words, the
 // search, the new-organisation form, and what to say when the server says no.
 
-import { codeError } from "@/app/admin/login/adminSignIn";
+import { codeError } from "@/app/login/twoStep";
 import { NETWORK_FAILURE, SIGN_IN_DOWN, TOO_MANY_ATTEMPTS, emailError, passwordError } from "@/app/login/signIn";
 import type { CloseWay } from "@/components/documents/ActionDialog";
 import { ApiError } from "@/lib/api";
@@ -137,8 +137,6 @@ export const REFUSALS: Record<string, string> = {
   unavailable: "One of these models is not enabled on the platform now, or can't do this work. Reload and choose again.",
   default_not_allowed: "Choose each default from its own ticked list.",
   level_not_supported: "A chosen model does not accept one of these thinking levels. Choose levels every model accepts.",
-  needs_two_models_scan: "Dynamic and Ensemble need at least two scanning models. Tick another model or turn them off.",
-  needs_two_models_chat: "Ensemble needs at least two answering models. Tick another, or tick none to follow the platform defaults.",
 };
 
 /** Plain words for a refused change. A 409 keeps the server's own sentence

@@ -1,24 +1,8 @@
-// /admin/login: the separate sign-in for customer admins (PRD A1). It sits
-// outside the (app) group on purpose: nobody is signed in yet, so there is no
-// session to load and no shell. The same sign-in frame as /login (AuthFrame).
-// The form gives an admin session, which alone opens /admin. A note says when
-// a session has just ended.
+// /admin/login is gone (one sign-in page, 16 Oct 2026): old links and bookmarks
+// go to /login, which comes back to /admin once signed in.
 
-import { signedOutMessage } from "@/components/shell/gate";
-import { AuthFrame } from "../../login/AuthFrame";
-import { AdminSignInForm } from "./AdminSignInForm";
+import { redirect } from "next/navigation";
 
-export const metadata = { title: "Sign in" };
-
-export default async function AdminLoginPage({
-  searchParams,
-}: {
-  searchParams: Promise<Record<string, string | string[] | undefined>>;
-}) {
-  const note = signedOutMessage(await searchParams);
-  return (
-    <AuthFrame variant="admin">
-      <AdminSignInForm note={note} />
-    </AuthFrame>
-  );
+export default function AdminLoginPage() {
+  redirect("/login?next=/admin");
 }

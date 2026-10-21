@@ -1,5 +1,6 @@
-/* The operator (super admin) screens. Tokens only (app/globals.css). The table
-   uses the shared reflow in components/documents/Table.module.css. */
+/* The operator (super admin) screens. MonoEdge tokens only (app/globals.css): flat,
+   square (2px), hairline borders. The tables use the shared reflow in
+   components/documents/Table.module.css, inside Admin.module.css's .tableScroll. */
 
 /* --- The top bar: wraps onto two lines on a phone, never scrolls sideways --- */
 
@@ -8,25 +9,31 @@
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2) var(--space-3);
+  min-height: var(--header-h);
   padding: max(var(--space-2), env(safe-area-inset-top)) max(var(--space-4), env(safe-area-inset-right))
     var(--space-2) max(var(--space-4), env(safe-area-inset-left));
-  background: var(--surface);
+  background: var(--bg-surface);
   border-bottom: 1px solid var(--border);
 }
 
 .brand {
   margin-inline-end: auto;
   padding-inline-start: var(--space-3);
-  border-inline-start: 2px solid var(--brand-lal);
-  font-family: var(--font-display);
-  font-size: var(--fs-xl);
+  border-inline-start: 2px solid var(--accent);
+  font-family: var(--font-display); /* 24px: the display face only at 24px and up */
+  font-size: 1.5rem;
   font-weight: 700;
 }
 
+/* A long e-mail is cut with an ellipsis; its title holds all of it. */
 .who {
+  flex: 0 1 auto;
   min-width: 0;
-  overflow-wrap: anywhere;
-  color: var(--fg-muted);
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--text-secondary);
   font-size: var(--fs-sm);
 }
 
@@ -54,9 +61,14 @@
   max-width: 28rem;
 }
 
+/* In the toolbar (bottom-aligned, as each field's label sits above its box): one
+   control tall, so its words sit on the boxes' middle line. */
 .summary {
+  display: flex;
+  align-items: center;
+  min-height: var(--control-h);
   margin: 0;
-  color: var(--fg-muted);
+  color: var(--text-secondary);
   font-size: var(--fs-sm);
 }
 
@@ -64,12 +76,94 @@
   font-weight: 600;
 }
 
+/* A long organisation name is cut with an ellipsis; its title holds all of it. */
+.orgNameText {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* "33 minutes ago" and dates stay on one line. */
+.when {
+  white-space: nowrap;
+}
+
+/* --- The Manage menu (ManageMenu.tsx): one per row, in a portal on <body> ------
+   Its button is a plain .btn, one control tall (36px, 44px on touch). */
+
+.menu {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: var(--z-dropdown);
+  visibility: hidden; /* until placed by its button (menuPlace) */
+  display: flex;
+  flex-direction: column;
+  min-width: 12rem;
+  max-width: calc(100% - 16px); /* fixed: 100% is the window, without its scrollbar (not 100vw) */
+  max-height: calc(100dvh - 16px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--space-1);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--k-r-2);
+}
+
+.menuItem {
+  display: flex;
+  align-items: center;
+  min-height: var(--control-h);
+  padding: 0 var(--space-3);
+  border: 0;
+  border-radius: var(--k-r-2);
+  background: none;
+  color: var(--text-primary);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .menuItem:hover {
+    background: var(--bg-hover);
+  }
+}
+
+.menuItem:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.menuDanger {
+  color: var(--critical);
+}
+
+/* The status changes sit apart from the safe items, 16px between the groups. */
+.menuSeparator {
+  height: 1px;
+  margin: var(--space-2) 0;
+  background: var(--border);
+}
+
 .statusNote,
 .extra {
   display: block;
   margin-top: var(--space-1);
-  color: var(--fg-muted);
+  color: var(--text-secondary);
   font-size: var(--fs-sm);
+}
+
+/* The test model, while it runs: above the tabs, its figures then Undo, wrapping on a phone. */
+.testBanner {
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+  border-left: 2px solid var(--focus);
+  overflow-wrap: anywhere;
 }
 
 .counts {
@@ -83,6 +177,10 @@
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
+}
+
+.rowActions.spaced {
+  gap: var(--space-4);
 }
 
 /* --- One organisation's admins ----------------------------------------------- */
@@ -100,12 +198,18 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
+  min-width: 0;
   padding-block-start: var(--space-3);
   border-top: 1px solid var(--border);
+  contain: layout paint style;
 }
 
+/* A long e-mail is cut with an ellipsis; its title holds all of it. */
 .email {
-  overflow-wrap: anywhere;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 /* Pages and size have their own columns from 64rem and on the cards; between
@@ -116,7 +220,7 @@
 
 @container reflow (min-width: 48rem) {
   .statusColumn {
-    width: 8rem;
+    width: 7rem; /* 1rem went to Last activity (16 Oct 2026): "33 minutes ago" on one line */
   }
 
   .usersColumn {
@@ -136,7 +240,7 @@
   }
 
   .activityColumn {
-    width: 7.5rem;
+    width: 8.5rem;
   }
 
   .actionsColumn {
@@ -147,6 +251,20 @@
      organisation, the model catalogue): the name column keeps room for its words. */
   .nameWide th:first-child {
     width: 10rem;
+  }
+
+  /* Comparison tables (Compare models, Quality per organisation): room for every column,
+     scrolled sideways in .tableScroll, the name column staying in view. */
+  .compare {
+    min-width: 60rem;
+  }
+
+  .compare th:first-child,
+  .compare td:first-child {
+    position: sticky;
+    inset-inline-start: 0;
+    z-index: 1;
+    background: var(--bg-surface);
   }
 }
 
@@ -179,11 +297,41 @@
   margin: 0;
 }
 
+/* A defaults save's impact: a lead line, the areas as a list, then who keeps their own. */
+.impact {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.impact ul {
+  margin: 0;
+  padding-inline-start: var(--space-6);
+}
+
+/* [Destructive] ... [Cancel] [Primary]: the primary last, a destructive one pushed to the start. */
 .buttons {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: var(--space-2);
+}
+
+.buttons > .destructive:has(+ :not(.destructive)) {
+  margin-inline-end: auto;
+}
+
+/* Below 480px the buttons stack full width, the primary on top. */
+@media (max-width: 479.98px) {
+  .buttons {
+    flex-direction: column-reverse;
+    align-items: stretch;
+  }
+
+  .buttons > .destructive {
+    margin-inline-end: 0;
+  }
 }
 
 .resultHeading {
@@ -193,12 +341,6 @@
 
 .resultHeading:focus-visible {
   outline-offset: 4px;
-}
-
-@media (pointer: coarse) {
-  .buttons :global(.btn) {
-    min-height: 44px;
-  }
 }
 
 /* --- One organisation's AI models (model choice) ------------------------------- */
@@ -213,11 +355,13 @@
   min-width: 0;
 }
 
+/* A choice's words may wrap: its box sits on the middle of their first line. */
 .choice {
   display: flex;
   align-items: flex-start;
   gap: var(--space-2);
   min-height: var(--control-h);
+  padding-block: calc((var(--control-h) - 1lh) / 2) 0;
   overflow-wrap: anywhere;
 }
 
@@ -225,7 +369,7 @@
   flex: none;
   width: 1.125rem;
   height: 1.125rem;
-  margin-top: 0.125rem;
+  margin: calc((1lh - 1.125rem) / 2) 0 0;
 }
 
 /* --- AI settings: an organisation's and the platform defaults (features 25-27) ---- */
@@ -237,7 +381,7 @@
   margin: 0;
   padding: var(--space-3);
   border: 1px solid var(--border);
-  border-radius: var(--r-sm);
+  border-radius: var(--k-r-2);
   min-width: 0;
 }
 
@@ -246,16 +390,66 @@
   font-weight: 600;
 }
 
-.fromDefaults {
+/* Board 9: "Same as platform default" or "Changed from platform default", in words. */
+.sectionTag {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+  min-height: var(--badge-h);
   margin-inline-start: var(--space-2);
-  color: var(--fg-muted);
-  font-size: var(--fs-sm);
-  font-weight: 400;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--k-r-2);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  line-height: 1.25;
 }
 
-@media (pointer: coarse) {
-  .choice {
-    min-height: 44px;
-    align-items: center;
-  }
+.sectionTools {
+  display: flex;
+  justify-content: flex-end;
 }
+
+/* The save bar sticks to the foot of the dialog's scrolling body, edge to edge, while the
+   form scrolls under it (its negative margins undo the body's padding). */
+.saveBar {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-3);
+  margin: 0 calc(-1 * var(--space-4)) calc(-1 * var(--space-4));
+  padding: var(--space-3) var(--space-4);
+  border-top: 1px solid var(--border);
+  background: var(--bg-surface);
+}
+
+/* Closing with unsaved changes asks first: [Close without saving] ... [Keep editing]. */
+.leaveAsk {
+  flex: 1 1 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--warning);
+  border-radius: var(--k-r-2);
+}
+
+.leaveAsk p {
+  margin: 0;
+}
+
+.changes {
+  flex: 1 1 12rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: var(--fs-sm);
+}
+

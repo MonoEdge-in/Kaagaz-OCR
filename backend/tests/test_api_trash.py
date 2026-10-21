@@ -253,12 +253,11 @@ def test_only_an_admin_session_deletes_forever(db: Database) -> None:
     uploader = api.new_signed()
     first, _second = _family(api, uploader)
     assert _trash(uploader, first) == 204
-    admin_app_session = api.sign_in(uploader.customer_id, "admin")
 
-    # A member needs an admin's grant (test_api_delete_forever_grant.py); an admin, their admin session.
-    for signed, code in ((uploader, "forbidden"), (admin_app_session, "admin_session_required")):
-        refused = signed.client.delete(f"/api/documents/{first}/permanent", headers=CSRF)
-        assert (refused.status_code, refused.json()["error"]["code"]) == (403, code)
+    # A member needs an admin's grant (test_api_delete_forever_grant.py); an admin, their admin
+    # session (every admin session is one since 0035: test_auth_tokens).
+    refused = uploader.client.delete(f"/api/documents/{first}/permanent", headers=CSRF)
+    assert (refused.status_code, refused.json()["error"]["code"]) == (403, "forbidden")
     assert _counts(db, uploader.customer_id) == (2, 2, 2)
     admin = api.admin_sign_in(uploader.customer_id)
     assert admin.client.delete(f"/api/documents/{first}/permanent", headers=CSRF).status_code == 204
@@ -319,19 +318,14 @@ def test_a_family_in_trash_cannot_be_renamed_moved_tagged_or_given_a_version(db:
 
 
 def test_delete_forever_needs_an_admin_with_two_step_sign_in_on(db: Database) -> None:
-    """2FA is each admin's choice, but deleting forever is not password-only: an
-    admin session without two-step sign-in gets 403 two_step_required."""
+    """Deleting forever is never password-only: since 0035 an admin without two-step
+    sign-in gets no session at all (the gate: test_auth_tokens, test_api_admin_sign_in)."""
     api = Api(db)
     customer_id, _ = api.customer()
     _, email = api.add_user(customer_id, "admin")
-    client = api.client()
-    assert api.admin_login(client, email).status_code == 200  # password only: 2FA is off
+    refused = api.admin_login(api.client(), email)
+    assert (refused.status_code, refused.json()["error"]["code"]) == (403, "mfa_enrol_required")
     document = api.add_document(customer_id, deleted_at=api.clock())
-
-    reply = client.delete(f"/api/documents/{document}/permanent", headers=CSRF)
-
-    assert reply.status_code == 403
-    assert reply.json()["error"]["code"] == "two_step_required"
     with_two_step = api.new_admin_of(customer_id)  # the same customer's admin, 2FA on
     assert (
         with_two_step.client.delete(f"/api/documents/{document}/permanent", headers=CSRF).status_code == 204

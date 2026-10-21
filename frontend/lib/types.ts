@@ -30,7 +30,7 @@ export type LabelReason =
   | "box_unanchored" // PRD 5 G5: its spot on the page couldn't be confirmed
   | "local_reader"; // PRD 5 Q7: read by the backup reader while the main reader was down
 
-/** "admin" only for a session started at /admin/login (PRD A1). */
+/** "admin" only for an admin's session (from /login, always with two-step since 16 Oct 2026). */
 export type SessionScope = "app" | "admin";
 
 // must_change_password and session are always sent (backend api/views.py
@@ -43,7 +43,7 @@ export interface Me {
     display_name: string;
     role: Role;
     must_change_password: boolean;
-    totp_enabled: boolean; // two-step sign-in is on (each admin chooses)
+    totp_enabled: boolean; // two-step sign-in is on (required for an admin)
     can_delete_forever: boolean; // an admin allowed this member or reviewer (never an admin)
   };
   customer: { id: string; name: string };
@@ -85,6 +85,7 @@ export interface DocumentSummary {
   newer_version: NewerVersion | null; // a later version still being read, or one that failed
   progress: DocumentProgress | null; // null unless it is being checked or read; status_message already says it
   time_left: TimeLeft | null; // null until preparing (PRD 4 #13): while scanning, waiting or done; never in Trash
+  understanding?: boolean; // Ready first (16 Oct 2026): ready and usable, its card and map still coming
   doc_type: DocType | null; // from the AI model's document card; null without one (PRD 2, D6)
   languages: string[]; // "en", "hi", "mr", "other"; [] when not known
   // PRD 5 F4: pages unreadable or uncertain still on the attention list (a page kept as is
@@ -99,6 +100,106 @@ export interface DocumentSummary {
   // Feature 28: Kaagaz filed it into its folder by type ("filed", Undo offered), or could not
   // tell where it belongs ("not_filed"); null when auto-filing had nothing to do with it.
   autofile?: "filed" | "not_filed" | null;
+  // File management (PRD 1, Phase 2: O1 to O3, F5, Q3): the family's owner and label, this
+  // version's note, the card's date, the last change and who made it, its department, and a
+  // version suggestion waiting for a person (V5). Optional: older replies lack them. (The
+  // list's count of versions is left out: the detail's `versions` is the list itself.)
+  owner?: { id: string; name: string | null } | null;
+  sensitivity?: Sensitivity;
+  version_note?: string | null;
+  document_date?: string | null; // YYYY-MM-DD
+  updated_at?: string | null;
+  updated_by?: string | null;
+  department?: { id: string; name: string } | null;
+  // "new": this document may be a new version of another; "candidate": a newer one waits on this family.
+  pending_suggestion?: { id: string; role: "new" | "candidate" } | null;
+}
+
+/** The four sensitivity labels (O2). They inform; they restrict nothing. */
+export type Sensitivity = "public" | "internal" | "confidential" | "restricted";
+
+/** What a folder is (F1): a department is a top-level folder an admin made. */
+export type FolderKind = "department" | "category" | "party" | "property" | "year" | "custom";
+
+/**
+ * A suggestion that an upload is a new version of another family (V5, V6): GET
+ * /documents/{id}'s `version_suggestion`, and GET /batches/{id}'s `version_suggestions`. The
+ * scores are 0 to 1, or null when that signal did not count; `reasons` are the server's plain words.
+ */
+export interface VersionSuggestion {
+  id: string;
+  role: "new" | "candidate"; // this document is the new upload, or its family is the candidate
+  outcome: "suggested" | "auto";
+  status: "pending" | "accepted" | "rejected" | "undone";
+  document: { id: string; name: string }; // the new upload
+  candidate: { family_id: string; id: string; name: string }; // id: the family's current version
+  next_version_no: number; // "Make it version N"
+  text_overlap: number | null;
+  name_similarity: number | null;
+  shared_identifier: string | null; // its kind, such as "survey_number"
+  reasons?: string | string[] | null;
+}
+
+/** GET /api/dashboard (D1, D2). */
+export interface Dashboard {
+  tiles: {
+    documents: number;
+    documents_this_week: number;
+    departments: number;
+    new_versions_this_month: number;
+    versions_to_confirm: number;
+  };
+  by_type: { doc_type: DocType | null; count: number }[];
+  departments: { id: string; name: string; sort_order: number | null; files: number }[];
+  not_in_department: number;
+  recent: {
+    id: string;
+    display_name: string;
+    doc_type: DocType | null;
+    sensitivity: Sensitivity;
+    version_no: number;
+    status: DocumentStatus;
+    created_at: string;
+  }[];
+  activity: ActivityEntry[];
+}
+
+/** One row of a timeline (A5) or of the admin log: an AuditEntry with the names filled in. */
+export type ActivityEntry = AuditEntry;
+
+/** A page of a timeline or of the admin log, newest first; `next_cursor` asks for more (null: no more). */
+export interface ActivityPage {
+  items: ActivityEntry[];
+  next_cursor?: string | null;
+  total?: number; // the admin log only
+}
+
+/** A question this person asked about the document (P2), newest first. Plain text. */
+export interface DocumentQuestion {
+  id: string;
+  conversation_id: string;
+  question: string;
+  asked_at: string;
+  answer: string | null;
+}
+
+/** GET /api/documents/{id}/compare?with= (V11): from `with` (left) to `id` (right), page by page. */
+export type CompareKind = "same" | "added" | "removed";
+export interface CompareRun {
+  kind: CompareKind;
+  text: string;
+}
+export interface DocumentCompare {
+  left_id: string;
+  right_id: string;
+  summary: string; // "2 changes on page 2"
+  pages: { page_no: number; changes: number; truncated: boolean; runs: CompareRun[] }[];
+}
+
+/** An active person of this company, for the owner picker and the filters. */
+export interface Person {
+  id: string;
+  name: string;
 }
 
 /** A file's first unreadable page, for the tray's "Couldn't read page n" (U1): what
@@ -118,12 +219,16 @@ export interface BatchView {
   pages_read: number; // of pages_total (U1); the bar weighs each document's own fraction (batchTray.ts)
   pages_total: number;
   time_left: TimeLeft | null; // until the whole drop is ready; null when nothing is left to read
+  // V5 (stage 2): the files of this drop that look like new versions, each waiting for a person.
+  version_suggestion_count?: number;
+  version_suggestions?: VersionSuggestion[];
 }
 
 /** GET /api/search (PRD 3 Q2): the documents found, best first, at most SEARCH_MAX_DOCUMENTS. */
 export interface DocumentSearch {
   documents: FoundDocument[];
   story_matches?: unknown; // checked by lib/storyMatches.ts before use
+  understood_words?: { word: string; meaning: string }[]; // Q2: this person's own words used
 }
 
 /** How well a question tells a story the user wrote again (S3): never a score. */
@@ -144,6 +249,11 @@ export interface FoundDocument {
   score: number;
   best: { snippet: string; page_from: number; page_to: number; regions: Region[] }; // its best piece
   more: number; // its other pieces among the candidates
+  // Q5 (stage 3): its version, label and folder path.
+  version_no?: number;
+  versions?: number;
+  sensitivity?: Sensitivity;
+  folder_path?: string | null;
 }
 
 /** What kind of document the AI model's card says it is (PRD 2, D1). */
@@ -175,7 +285,7 @@ export interface TimeLeft {
   items_left: number; // pages still to draw (preparing) or read; 0 once reading has ended
   item_seconds: number; // expected seconds a page
   after_seconds: number; // expected seconds from the end of this step's pages until ready
-  confidence: "low" | "high"; // low: not enough of this customer's history; shown as a rough guess
+  confidence: "low" | "high"; // low: not enough of this customer's history; shown as "About ..." like any estimate
   elapsed_seconds: number; // since this run started: the percentage is elapsed / (elapsed + left)
   done_fraction: number; // 0 to 1, the server's, the same on every load: a refreshed bar starts from it
 }
@@ -196,6 +306,11 @@ export interface DocumentVersion {
   status: DocumentStatus;
   is_current: boolean; // the one search and chat use: the highest version that is ready
   created_at: string;
+  // V12 (stage 2): its note, who uploaded it, and how it joined the family.
+  version_note?: string | null;
+  display_name?: string;
+  uploaded_by?: { id: string; name: string | null } | null;
+  joined?: "uploaded" | "linked" | "auto";
 }
 
 // A folder of this customer. The API sends the flat list; the screen builds the
@@ -206,6 +321,8 @@ export interface Folder {
   name: string;
   parent_id: string | null; // null: at the top level
   created_at: string;
+  kind?: FolderKind; // F1; left out by older replies: custom
+  sort_order?: number | null; // a department's place on the dashboard and in the tree
 }
 
 export interface Tag {
@@ -391,6 +508,9 @@ export interface DocumentDetail extends DocumentSummary {
   invoice: Invoice | null; // null for a document with no invoices row
   links: DocumentLink[]; // current, ready documents sharing an identifier (PRD 3 Y2); at most 50
   read_model: string | null; // the model it asked to be read with (MS5); null: the organisation's default
+  // P1, V6 (stage 2): who uploaded version 1, and a version suggestion about this document.
+  author_name?: string | null;
+  version_suggestion?: VersionSuggestion | null;
 }
 
 /** A related document (PRD 3 Y2). The value is stored normalised: no spaces, lower case. */
@@ -413,21 +533,12 @@ export interface UploadLimits {
   sheet_bytes: number;
   max_pages: number; // for a PDF's pages and a TIFF's frames
   readers: UploadReader[]; // the scan readers an upload may choose, the server's default first
-  ensemble?: EnsembleOffer | null; // "More than one reader…" (feature 27); null: not allowed here
 }
 
-/** What an upload or a whole document's Read again asks for (features 26, 27); nothing: the default. */
+/** What an upload or a whole document's Read again asks for (feature 26); nothing: the default. */
 export interface UploadReading {
-  read_mode?: "dynamic" | "ensemble";
+  read_mode?: "dynamic";
   read_model?: string;
-  read_agents?: string[];
-}
-
-/** The models an upload may read with together (feature 27), by name; main is the main reader. */
-export interface EnsembleOffer {
-  readers: { id: string; name: string }[];
-  max: number;
-  main: string;
 }
 
 /** One scan reader the server offers (PRD 4 #17): reason says why it can't be used here. */
@@ -473,6 +584,24 @@ export interface ReadLine {
   origin: "cell" | "text_layer" | "ocr" | null;
   kind: string | null; // a layout block kind, when the reader gives one
   region: Region;
+  table?: { id: string; row: number; col: number; header: boolean } | null; // a table cell's place
+}
+
+/** GET /documents/{id}/clear-copy (Read clearly): every page's main reader lines, in order. */
+export interface ClearCopy {
+  pages: { page_no: number; lines: ReadLine[]; marks: ReadingMark[] }[];
+  truncated: boolean; // the document-wide cap was reached: the rest was left out
+}
+
+export type TranslateLanguage = "en" | "hi" | "mr";
+
+/** POST /documents/{id}/pages/{n}/translate: one translation for each line, in order. */
+export interface PageTranslation {
+  page_no: number;
+  language: TranslateLanguage;
+  lines: string[]; // plain text only, through visibleText
+  truncated: boolean; // only the first lines of a long page were translated
+  cached: boolean;
 }
 
 /** What became of a cited document since the answer was given. Missing means "live". */
@@ -496,6 +625,41 @@ export interface Citation {
   label_page_no?: number | null; // where a value's label is, when it was found
   label_regions?: Region[]; // [] for a piece, and once the document is in Trash or deleted
   hard_to_read?: boolean; // PRD 5 F6: the cited text holds an unsure or illegible word; missing before it
+  // Ranked sources (Tushar, 16 Oct 2026): the place in the search's order, 1 the most
+  // relevant; null (or missing, before it) where there is no such order.
+  rank?: number | null;
+}
+
+/** "Also in" (Tushar, 16 Oct 2026): a document the search found that the answer does not cite. */
+export interface RelatedDocument {
+  document_id: string;
+  document_name: string;
+  detected_type: DetectedType;
+  page_no: number; // its best hit's page
+  regions: Region[]; // that hit's spot on the page
+  snippet: string; // plain text, never markup
+}
+
+/** "Also mentions" (Tushar, 17 Oct 2026): another document holding the question's key terms. */
+export interface MentionedDocument {
+  document_id: string;
+  document_name: string;
+  page_no: number; // its first matching piece's page
+  pages: number[]; // every page a term is on, in order
+  snippet: string; // two lines around the first match, plain text, never markup
+}
+
+export interface Mentions {
+  terms: string[]; // the question's key terms, as typed
+  total: number; // every such document; more than the ones listed when there are many
+  documents: MentionedDocument[];
+}
+
+/** The source a person put on top of an answer ("Most relevant"). */
+export interface SourcePin {
+  document_id: string;
+  page_no: number;
+  ref_id?: string | null; // the cited source's, so one of two on the same page; none for Also in
 }
 
 /** A page a not-found answer names as not read well (PRD 5 F6), for its link. */
@@ -513,7 +677,7 @@ export interface AnswerSentence {
 
 export interface Answer {
   // "unchecked": the figure asked for is only in unchecked card values, so no
-  // number is given; one sentence asks for Review and closest_documents says where.
+  // number is given; closest_documents says where.
   status: "answered" | "not_found" | "unchecked";
   label: Label | null; // null when not found
   sentences: AnswerSentence[];
@@ -530,6 +694,8 @@ export interface Answer {
   reading_note?: string | null;
   unreadable_pages?: UnreadablePage[];
   unreadable_page_count?: number;
+  related_documents?: RelatedDocument[]; // "Also in"; missing before 16 Oct 2026
+  mentions?: Mentions; // "Also mentions"; only when there is one (17 Oct 2026)
   // Features 25-27 (C7), only on an answer drafted with the asker's answer settings: the
   // names (and ids) of the models that replied, the one used first; how many were asked;
   // whether the others confirmed it (null with one model); the thinking level.
@@ -625,6 +791,7 @@ export interface Message {
   answer: Answer | null; // set for assistant messages only
   scope?: ScopeBody | null; // the scope a question used (PRD 3 H2); null when it had none
   feedback: "up" | "down" | null;
+  pin?: SourcePin | null; // the source this person put on top of the answer; missing on a new reply
 }
 
 export interface ChatResponse {
@@ -722,6 +889,12 @@ export interface CustomerSettings {
 export interface AuditEntry {
   id: number;
   action: string;
+  // File management A3, A5: the row's family, its document (deleted: true once gone) and folder,
+  // names filled in when shown; details hold resolved names (folder_path, from_name, to_name).
+  actor_id?: string | null;
+  family_id?: string | null;
+  document?: { id: string; name: string | null; version_no: number | null; deleted: boolean } | null;
+  folder?: { id: string; path: string } | null;
   actor_name: string | null;
   target_type: string | null;
   target_id: string | null;
@@ -763,6 +936,13 @@ export interface MyStory {
 export interface OperatorMe {
   operator: { id: string; email: string; name: string };
   session: { expires_at: number }; // Unix seconds; the session lasts 30 minutes
+}
+
+// POST /operator/2fa/move/start: the new device's key; nothing is stored until it is confirmed.
+export interface OperatorMoveOffer {
+  move_token: string; // lasts 10 minutes, and only for this session
+  secret: string; // base32, in groups of 4
+  otpauth_uri: string; // the same key as an otpauth:// link, for a QR code
 }
 
 export type OrgStatus = "active" | "disabled" | "deleting";
@@ -957,6 +1137,16 @@ export interface OperatorModel {
   tokens_per_page_out: number | null;
   ledger_tokens_in: number | null; // MC3: a scanned page's average over the last 30 days; null: none
   ledger_tokens_out: number | null;
+  // 0031: the real cost OpenRouter reported over the last 30 days, every organisation's
+  // ledger together. *_costed: those with a reported cost; cost null: none reported.
+  scan_pages: number;
+  scan_pages_costed: number;
+  scan_cost_usd: number | null;
+  scan_cost_unknown_calls: number;
+  answer_questions: number;
+  answer_questions_costed: number;
+  answer_cost_usd: number | null;
+  answer_cost_unknown_calls: number;
   enabled_at: string | null; // null: not enabled on the platform
   chat_eligible: boolean; // may answer questions (features 25-27, C11)
   chat_verified: boolean; // verify-models passed for the current answer prompt
@@ -1034,6 +1224,18 @@ export interface InsightDay {
   cost_questions_usd: number | null; // chat, memory, search
   cost_estimated: boolean;
   cost_part_unknown: boolean;
+  // 0032, from the ledger: pages a model read first (scan, upgrade, not cached) and read
+  // again (careful, ensemble_scan), the first reads with a reported cost, and only the cost
+  // OpenRouter reported (null: none); calls with no reported cost are counted apart.
+  pages_read: number;
+  pages_reread: number;
+  pages_read_costed: number;
+  cost_real_usd: number | null;
+  cost_scan_real_usd: number | null;
+  cost_answer_real_usd: number | null;
+  cost_unknown_calls: number;
+  scan_unknown_calls: number;
+  answer_unknown_calls: number;
 }
 
 /** F2: one organisation's health now. */
@@ -1061,7 +1263,7 @@ export interface InsightsReply {
   ai_enabled: boolean; // false: keyless mode, no model is called
   month: { from: string; today: string; days_in_month: number };
   organisations: OrgInsight[];
-  daily: InsightDay[]; // previous_from to to
+  daily: InsightDay[]; // previous_from (or month.from, when earlier) to to
 }
 
 /** F3: reading, answers and review of one organisation, or the platform (organisation_id null). */
@@ -1142,4 +1344,151 @@ export interface BoardReply {
   to: string;
   ai_enabled: boolean;
   items: BoardRow[];
+}
+
+// --- Word-level review and Ensemble after the scan (scan review UX rules, 16 Oct 2026;
+// backend/kaagaz/api/routers/word_review.py and ensemble.py, views.run_json) ---
+
+export type Band = "check" | "review";
+export type FlagState = "open" | "reviewed" | "resolved" | "in_ensemble" | "proposed";
+export type EnsembleScope = "word" | "words" | "flagged" | "document";
+
+/** ``Run``: one Ensemble run's progress, counts and error. */
+export interface EnsembleRun {
+  id: string;
+  scope: EnsembleScope;
+  status: "queued" | "running" | "done" | "stopped" | "failed";
+  pages_total: number;
+  pages_done: number;
+  page_now: number | null; // while running
+  words_total: number;
+  agreed: number;
+  changed: number;
+  unresolved: number;
+  kept: number;
+  failed_pages: number[];
+  started_at: string | null;
+  finished_at: string | null;
+  error: { code: string; message: string } | null; // message: what happened, what it means
+}
+
+/** GET /documents/{id}/review-status */
+export interface ReviewStatus {
+  pages: number;
+  words: number;
+  flagged: number;
+  by_band: Record<Band, number>;
+  reviewed: number;
+  resolved: number;
+  remaining: number;
+  last_change_at: string | null;
+  status: DocumentStatus;
+  summary: string | null; // "Scan complete · 14 pages · 2,431 words · 12 flagged for review"; null until ready
+  export: { ready: boolean; message: string };
+  can_review: boolean; // the Reviewer check: confirm, edit, undo, Ensemble
+  ensemble: { allowed: boolean; reason: string | null; run: EnsembleRun | null };
+}
+
+/** ``WordFlag``: one flagged word (GET /documents/{id}/flags, and the confirm or edit reply). */
+export interface WordFlag {
+  word_key: string;
+  kind: "mark" | "line" | "value";
+  page_no: number;
+  region: Region;
+  as_read: string;
+  text: string; // the text now
+  band: Band;
+  reason: string;
+  reason_text: string; // "smudged print"
+  score: number | null; // only when something measured it
+  alternatives: string[] | null; // null for a member
+  value_id: string | null;
+  state: FlagState;
+  ensemble: {
+    reading_id: string;
+    run_id: string;
+    outcome: "agreed" | "changed" | "unresolved" | "skipped_user_edit";
+    proposal: string | null;
+    decision: "kept" | "reverted" | null;
+  } | null; // reviewers only
+  change: { id: string; action: string; at: string | null; by_you: boolean } | null;
+}
+
+/** ``WordChange``: one row of the history. */
+export interface WordChange {
+  id: string;
+  word_key: string;
+  kind: string;
+  page_no: number;
+  region: Region;
+  action: string; // confirm, edit, resolve, keep, ...
+  before_text: string;
+  after_text: string;
+  by: "person" | "ensemble";
+  by_you: boolean;
+  user_name: string | null;
+  created_at: string | null;
+  undone_at: string | null;
+  on_page: boolean;
+  note: string | null; // "No longer on the page"
+  can_undo: boolean;
+}
+
+export interface EnsembleEstimate {
+  pages: number;
+  words: number;
+  seconds: number;
+}
+
+/** AI settings by task (spec 17 Oct 2026): levels, never model names. */
+export type AiTask = "scan" | "ask" | "ensemble" | "autofile";
+export type TaskLevel = "none" | "low" | "high" | "max" | "off" | "on";
+
+export interface AiTaskSetting {
+  task: AiTask;
+  effective: TaskLevel;
+  mine: TaskLevel | null; // null: the organisation's setting
+  organisation: TaskLevel | null;
+  locked: boolean;
+  allowed: TaskLevel[];
+  available: boolean; // false: switched off for the whole product
+}
+
+/** GET /ai-settings, and both PUTs' reply. */
+export interface AiSettings {
+  tasks: AiTaskSetting[];
+  can_edit_organisation: boolean;
+}
+
+/** GET /operator/feature-switches: one row per product feature. */
+export interface FeatureSwitch {
+  feature: string;
+  enabled: boolean;
+  organisations_using: number;
+}
+
+/** GET /operator/orgs/{id}/feature-switches (0039): one organisation's own switch, with the platform's. */
+export interface OrgFeatureSwitch {
+  feature: string;
+  enabled: boolean;
+  platform_enabled: boolean; // false: off for every organisation, whatever this one says
+}
+
+/** GET /operator/session-timeout and /operator/orgs/{id}/session-timeout (0040): hours with no
+ * activity before signing in again, 1 to 24. null: the default (the platform's) or follow the
+ * platform (an organisation's); platform_hours only on an organisation's. */
+export interface SessionTimeout {
+  hours: number | null;
+  platform_hours?: number | null;
+  default_hours: number;
+}
+
+/** GET /operator/test-model: the whole platform on one model for a test, or not. */
+export interface TestModel {
+  active: boolean;
+  scan_model: string | null;
+  chat_model: string | null;
+  started_at: string | null;
+  since: { pages: number; questions: number; cost_usd: number | null; avg_seconds_per_page: number | null } | null; // null when none runs
+  note: string | null;
 }

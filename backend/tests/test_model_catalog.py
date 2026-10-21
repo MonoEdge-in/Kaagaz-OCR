@@ -24,7 +24,7 @@ from kaagaz.ai.openrouter import OpenRouterClient, Probe
 from kaagaz.db.engine import Database
 from kaagaz.jobs import catalog
 from kaagaz.jobs.catalog import CatalogModel, CatalogUnavailable, RefreshCatalog, Refreshed, candidate, fetch
-from kaagaz.settings import MODEL_ID
+from kaagaz.settings import DEFAULT_MODEL_VENDORS, MODEL_ID
 from kaagaz.worker_main import catalog_refresh
 from tests.openrouter_fake import API_PATH, KEY, OpenRouterFake, Recorded, Reply, error_reply, running_fake
 from tests.settings_factory import make_settings
@@ -157,13 +157,41 @@ def _with(**changes: Any) -> dict[str, Any]:
         _with(reasoning={"supported_efforts": ["low", "high", "x" * 17]}),
         _with(reasoning={"supported_efforts": ["low", "high", *(f"e{chr(97 + n)}" for n in range(15))]}),
         _with(reasoning={"supported_efforts": "low,high"}),
-        _with(reasoning=None),
+        # Changed on purpose (Tushar 18 Oct: models without thinking levels): reasoning=None
+        # is now a model with no thinking levels (below); a reasoning that is not an object
+        # is still malformed.
+        _with(reasoning="high"),
         _with(expiration_date="soon"),
         _with(expiration_date=20271231),
     ],
 )
 def test_hostile_or_malformed_json_is_left_out(item: object) -> None:
     assert candidate(item, efforts=EFFORTS, today=TODAY) is None
+
+
+TEXT_ONLY = {"input_modalities": ["text"], "output_modalities": ["text"]}
+
+
+@pytest.mark.parametrize("reasoning", [None, {}, {"supported_efforts": None}, {"supported_efforts": []}])
+def test_a_model_with_no_thinking_levels_may_scan_and_answer_with_empty_efforts(reasoning: object) -> None:
+    """Tushar, 18 Oct 2026: rule 6 is optional; such a model is saved with no efforts."""
+    scan = candidate(_with(reasoning=reasoning), efforts=EFFORTS, today=TODAY)
+    assert scan is not None and scan.efforts == () and (scan.eligible, scan.chat_eligible) == (True, True)
+    chat = candidate(_with(reasoning=reasoning, architecture=TEXT_ONLY), efforts=EFFORTS, today=TODAY)
+    assert chat is not None and (chat.eligible, chat.chat_eligible) == (False, True)
+
+
+def test_a_model_listing_efforts_must_still_list_the_ones_we_send() -> None:
+    lacking = candidate(_with(reasoning={"supported_efforts": ["medium"]}), efforts=EFFORTS, today=TODAY)
+    assert lacking is None  # neither low and high for scans, nor low for answers
+    no_low = {"supported_efforts": ["medium", "high"]}
+    assert candidate(_with(reasoning=no_low, architecture=TEXT_ONLY), efforts=EFFORTS, today=TODAY) is None
+
+
+def test_qwen_and_meta_llama_pass_the_vendor_rule_by_default() -> None:
+    """Tushar, 18 Oct 2026: OPENROUTER_MODEL_VENDORS unset allows these four vendors."""
+    assert make_settings().openrouter_model_vendors == DEFAULT_MODEL_VENDORS
+    assert {"google", "anthropic", "qwen", "meta-llama"} == DEFAULT_MODEL_VENDORS
 
 
 def test_a_name_loses_control_and_format_characters_and_is_clamped() -> None:

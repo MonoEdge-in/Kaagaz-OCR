@@ -44,7 +44,7 @@ def test_the_shipped_env_example_parses_with_the_scan_reader_defaults() -> None:
     settings = Settings.from_env(shipped())
     assert (settings.ocr_engine, settings.ocr_timeout_seconds, settings.ocr_dpi) == (
         "rapidocr",
-        120.0,  # one Gemini page (PRD 5 Q8; was 300)
+        60.0,  # one Gemini page (PRD 5 Q8; was 300)
         300,
     )
     assert (settings.queue_lease_seconds, settings.page_image_dpi) == (1200, 150)
@@ -377,11 +377,14 @@ def test_the_express_lane_must_be_another_queue() -> None:
 
 
 def test_q8_the_shipped_reader_timeout_fits_the_lease_with_room_for_a_heartbeat() -> None:
-    """PRD 5 Q8: OCR_TIMEOUT_SECONDS ships at 120 (one Gemini page) and QUEUE_LEASE_SECONDS at
+    """PRD 5 Q8: OCR_TIMEOUT_SECONDS ships at 60 (one page at most, 16 Oct 2026) and QUEUE_LEASE_SECONDS at
     1200, and the existing rule OCR_TIMEOUT_SECONDS + 135 <= QUEUE_LEASE_SECONDS holds; a timeout
     one second past the rule is refused by name."""
     settings = Settings.from_env(shipped())
-    assert (settings.ocr_timeout_seconds, settings.queue_lease_seconds) == (120.0, 1200)
+    assert (settings.ocr_timeout_seconds, settings.queue_lease_seconds) == (
+        60.0,
+        1200,
+    )  # 60 s a page (Tushar, 16 Oct)
     assert settings.ocr_timeout_seconds + 135 <= settings.queue_lease_seconds
     with pytest.raises(SettingsError, match="OCR_TIMEOUT_SECONDS"):
         Settings.from_env(shipped(OCR_TIMEOUT_SECONDS="1066"))

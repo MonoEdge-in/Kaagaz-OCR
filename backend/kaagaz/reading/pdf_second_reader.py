@@ -34,7 +34,7 @@ import pypdfium2.raw as pdfium_c
 
 from kaagaz.preparing.pages import check_page_count, open_pdf
 from kaagaz.reading.lines import PageFrame, line_spans
-from kaagaz.reading.pdf_signals import ViewerFrame, is_hidden_char
+from kaagaz.reading.pdf_signals import ViewerFrame, hidden_chars
 from kaagaz.reading.socket import OnPage
 from kaagaz.reading.spans import ReadError, Span
 
@@ -75,7 +75,7 @@ def _page_spans(page: Any, number: int) -> list[Span]:
     frame = ViewerFrame.of(page)
     textpage = page.get_textpage()
     try:
-        words = [frame.word(*run) for run in _runs(textpage)]
+        words = [frame.word(*run) for run in _runs(textpage, hidden_chars(page, textpage))]
     finally:
         textpage.close()
     return line_spans(words, number, PageFrame(0.0, 0.0, frame.width, frame.height), origin="text_layer")
@@ -85,13 +85,13 @@ def _page_spans(page: Any, number: int) -> list[Span]:
 _Run = tuple[str, float, float, float, float]
 
 
-def _runs(textpage: Any) -> list[_Run]:
+def _runs(textpage: Any, hidden: frozenset[int]) -> list[_Run]:
     runs: list[_Run] = []
     units: list[str] = []
     box = (0.0, 0.0, 0.0, 0.0)
     count = textpage.count_chars()
     for index in range(count + 1):  # one past the end flushes the last run
-        char = _char(textpage, index) if index < count else " "
+        char = _char(textpage, index, hidden) if index < count else " "
         if char.isspace():
             if units:
                 runs.append((_text(units), *box))
@@ -106,15 +106,15 @@ def _runs(textpage: Any) -> list[_Run]:
     return runs
 
 
-def _char(textpage: Any, index: int) -> str:
+def _char(textpage: Any, index: int, hidden: frozenset[int]) -> str:
     """The character at ``index``; a space for one PDFium made up (a line break
-    or a space it inferred), one with no Unicode value, or one that can't be seen
-    (``pdf_signals.is_hidden_char``: hidden text never agrees with itself), so
-    it ends a run."""
+    or a space it inferred), one with no Unicode value, or one in ``hidden``
+    (``pdf_signals.hidden_chars``, the first reader's own decision: hidden text
+    never agrees with itself), so it ends a run."""
     code = int(pdfium_c.FPDFText_GetUnicode(textpage, index))
     if not 0 < code < 0x110000 or pdfium_c.FPDFText_IsGenerated(textpage, index) == 1:
         return " "
-    if is_hidden_char(textpage, index):
+    if index in hidden:
         return " "
     return chr(code)
 

@@ -104,8 +104,10 @@ def test_insights_cover_twice_the_days_and_today_with_exactly_the_agreed_keys(of
     assert [set(row) for row in body["organisations"]] == [ORG_HEALTH_KEYS]
     assert [set(row) for row in body["daily"]] == [DAILY_KEYS]
     assert body["daily"][0]["day"] == "2026-09-27" and body["daily"][0]["organisation_id"] == CID
+    # Changed on purpose (real figures, Tushar 16 Oct 2026): daily starts at the month's first
+    # day when that is before previous_from, so this month's real spend is summed from it.
     assert sorted(offline.calls) == [
-        ("daily", (OID, date(2026, 9, 14), TODAY, ZONE)),  # previous_from to to: 14 days
+        ("daily", (OID, date(2026, 9, 1), TODAY, ZONE)),
         ("org_health", (OID, TODAY, ZONE)),
     ]
 

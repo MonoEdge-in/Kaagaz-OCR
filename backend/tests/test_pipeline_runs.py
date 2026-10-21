@@ -818,6 +818,29 @@ class EveryPathClosesItsRunTest(unittest.TestCase):
             system.make(CrashingSocket(build_reader_socket(SETTINGS, None), beat))(job, beat)
         self.assertEqual(self.closed(system, job), [("failed", "internal_error")])
 
+    def test_a_crash_clears_the_progress_so_the_row_waits_to_try_again(self) -> None:
+        """Council 17 Oct 2026: the worker hands a crashed job back for another try in a
+        minute, so the row must not stay on the step it crashed in ("Starting…" for 100
+        minutes in the incident). Cleared before the run is closed, as for JobFailed."""
+        system = rig()
+        job = system.job(CSV)
+
+        class CrashingSocket(CallbackSocket):
+            def read(
+                self,
+                detected_type: str,
+                data: bytes,
+                *,
+                on_page: Callable[[RouteDecision | None], None] | None = None,
+            ) -> list[Span]:
+                raise RuntimeError("a bug")
+
+        with self.assertRaises(RuntimeError):
+            system.make(CrashingSocket(build_reader_socket(SETTINGS, None), beat))(job, beat)
+        self.assertNotEqual(system.progress.history, [])  # it had got as far as a step
+        self.assertNotIn((CUSTOMER, job.document_id), system.progress.progress)
+        self.assertEqual(self.closed(system, job), [("failed", "internal_error")])
+
     def test_the_last_delivery_closes_a_run_a_dead_worker_left_open(self) -> None:
         """AR11: mark_exhausted ends the runs still running, failed with retries_exhausted."""
         system = rig()
@@ -956,6 +979,12 @@ def live(answer: dict[str, object], step: str, since: timedelta) -> float:
     numbers = {key: float(value) for key, value in answer.items() if isinstance(value, int | float)}
     if numbers["since_move_seconds"] + dt > numbers["slow_after_seconds"]:
         return numbers["done_fraction"]  # taking longer than usual: done_fraction alone
+    if step in FLOORED_STEPS:
+        # Changed on purpose (council 16 Oct 2026), as lib/timeLeft.ts and lib/progress.ts now:
+        # more than 10 s past the floor is taking longer; else it stops at the step's end.
+        if numbers["seconds"] - dt < numbers["after_seconds"] - 10:
+            return numbers["done_fraction"]
+        dt = min(dt, max(0.0, numbers["seconds"] - numbers["after_seconds"]))
     left = max(0.0, numbers["seconds"] - dt)
     left = max(left, numbers["after_seconds"]) if step in FLOORED_STEPS else left
     elapsed = numbers["elapsed_seconds"] + dt

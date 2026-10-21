@@ -28,7 +28,8 @@ Lock order (plan 4.3), the same in ``save`` and ``clear``:
    row each way, sorted, ON CONFLICT DO NOTHING.
 
 The run fence: with ``run_id``, a save goes ahead only if that run is still
-open (``runs.is_run_open``, read under the family lock);
+open (``runs.is_run_open``, read under the family lock) and the document is not set to
+be read again (``received``: Ready first saves again after Ready, 16 Oct 2026);
 otherwise it raises Superseded and writes nothing. A deadlock that PostgreSQL
 breaks (40P01) runs the whole transaction again (AR7).
 
@@ -59,7 +60,8 @@ carries it forward from the page row it replaces, by page number, unless that pa
 was read again: a page whose ``read_again_requested_at`` is set loses it, and the
 save clears the request, since this run read the page again (the council
 architect's finding). A read again of one page is refused while the document is
-being read (F5), so no request can arrive between a run's start and its save. The
+being read (F5), so no request can arrive between a run's start and its first save
+(one that arrives before the second save of Ready first refuses that save). The
 page cache (``page_reads``, kaagaz.db.page_reads) is written outside this save, page
 by page, so a crash keeps it; the save never touches it. Sections and topics
 (``document_sections``, ``document_topics``, PRD 5 CX2 to CX4) are deleted with the
@@ -68,7 +70,9 @@ them and none is ever half saved. A section's ``tsv`` is written with it, as
 ``to_tsvector('simple', ...)`` of its heading path and summary; its vector comes after
 the save, like a piece's (kaagaz.search.indexing). ``_check_map`` checks them against
 the pieces before the transaction opens (CX4): a bug upstream stops the save before any
-statement, like the card-label check.
+statement, like the card-label check. Word review (0030): after the values, each word
+change still in force is written again into the new values and pieces
+(``word_review.reapply``), so a read again never silently undoes a person's text.
 
 Cost per save: one family lock, 1 update, 1 read of the earlier pages' "Keep as is",
 7 deletes; per SAVE_CHUNK rows, one batched insert of pages, one of pieces and one of
@@ -89,6 +93,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import Connection, text
 
 from kaagaz.chunking.piece import Piece
+from kaagaz.db import word_review
 from kaagaz.db.engine import Database, unavailable
 from kaagaz.db.runs import is_run_open
 from kaagaz.db.sqlstate import retry_on_deadlock
@@ -118,6 +123,20 @@ _UPDATE_FACTS = text(
     " summary = :summary, document_date = :document_date, card = CAST(:card AS jsonb)"
     " WHERE customer_id = :c AND id = :d"
 )
+# File management O2: the type rule sets the family's starting label once the card is read;
+# a label a person set is never changed, and nothing is audited.
+# Versions (stage 2): only the family's current version sets it, so a read again of an older
+# version never relabels the family by its own type; it never touches is_current either.
+CONFIDENTIAL_TYPES = ("land_record", "contract", "bank_statement")
+_TYPE_LABEL = text(
+    "UPDATE documents SET sensitivity = CASE WHEN CAST(:doc_type AS text) = ANY(CAST(:secret AS text[]))"
+    " THEN 'confidential' ELSE 'internal' END"
+    " WHERE customer_id = :c AND NOT sensitivity_set_by_person AND CAST(:doc_type AS text) IS NOT NULL"
+    " AND family_id = (SELECT family_id FROM documents WHERE customer_id = :c AND id = :d AND is_current)"
+)
+# Ready first (16 Oct 2026): a run's second save comes after Ready, when a read again may
+# have set the document back to received (its job not started yet): that save is refused.
+_READ_AGAIN_SET = text("SELECT status = 'received' FROM documents WHERE customer_id = :c AND id = :d")
 # PRD 5 F5: the pages' "Keep as is" to carry forward, from the rows the save replaces; a
 # page asked to be read again is left out, so it loses its acceptance.
 _ACCEPTED = text(
@@ -332,7 +351,10 @@ class PgPipelineStore:
             # a deadlock retry runs this again and builds them again (C-architect 5).
             with self._db.customer(customer_id) as conn:
                 family_id = lock_family(conn, customer_id, document_id)
-                if run_id is not None and not is_run_open(conn, customer_id, document_id, run_id):
+                if run_id is not None and (
+                    not is_run_open(conn, customer_id, document_id, run_id)
+                    or conn.execute(_READ_AGAIN_SET, ids).scalar()
+                ):
                     raise Superseded(run_id)
                 accepted = _accepted(conn, ids)  # read before the delete below
                 _replace_facts_and_delete(conn, ids, content.facts)
@@ -346,6 +368,9 @@ class PgPipelineStore:
                     conn.execute(_INSERT_PIECE, [_piece_row(ids, seq, pieces[seq]) for seq in seqs])
                 _insert_map(conn, ids, content.sections, content.topics)
                 _insert_values(conn, ids, content.values, content.reader)
+                # A person's word changes, written again into the new rows (0030), so a
+                # read again of another page never undoes their text.
+                word_review.reapply(conn, customer_id, document_id)
                 if content.invoice is not None:
                     _insert_invoice(conn, ids, content.invoice)
                 _replace_links(conn, ids, family_id, content.links)
@@ -383,7 +408,7 @@ def _accepted(conn: Connection, ids: dict[str, str]) -> dict[int, tuple[object, 
 
 def _replace_facts_and_delete(conn: Connection, ids: dict[str, str], facts: DocumentFacts) -> None:
     """Write the card columns (always, so no older card stays), then delete the rows
-    an earlier run saved. 8 statements."""
+    an earlier run saved, after the type rule sets the family's label (O2). 9 statements."""
     conn.execute(
         _UPDATE_FACTS,
         {
@@ -395,6 +420,7 @@ def _replace_facts_and_delete(conn: Connection, ids: dict[str, str], facts: Docu
             "card": None if facts.card is None else json.dumps(facts.card),
         },
     )
+    conn.execute(_TYPE_LABEL, {**ids, "doc_type": facts.doc_type, "secret": list(CONFIDENTIAL_TYPES)})
     for statement in _DELETES:
         conn.execute(statement, ids)
 

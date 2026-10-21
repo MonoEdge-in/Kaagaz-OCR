@@ -13,18 +13,11 @@ import {
   describeAction,
   describeDetails,
   describeTarget,
-  pageRouteTiles,
-  statTiles,
+  breakdowns,
+  kpiTiles,
 } from "@/components/admin/logic";
 import { UsageReportView } from "@/components/admin/UsagePanel";
-import {
-  DUPLICATE_READER_NOTE,
-  ENSEMBLE_HINT,
-  READERS_CAP,
-  agentsHint,
-  readAgainWarning,
-  readerOptions,
-} from "@/components/documents/readers";
+import { DUPLICATE_READER_NOTE, readAgainWarning, readerOptions } from "@/components/documents/readers";
 import { REASON_FILTERS } from "@/components/review/review";
 import { REASON_FILTER_TEXT, reasonText, voteText } from "@/components/viewer/labels";
 import { lowResolutionText, noCardText } from "@/components/viewer/panels";
@@ -129,8 +122,9 @@ function shownTexts(): string[] {
     ...STATUSES.map(noCardText),
     lowResolutionText({ low_resolution: true, effective_dpi: 96.4 }),
     ...TABS.map((tab) => tab.label),
-    ...statTiles(STATS).map((tile) => tile.label),
-    ...pageRouteTiles(STATS).map((tile) => tile.label),
+    // Changed on purpose (UI audit, 16 Oct 2026): AD4, four headline numbers and small lists.
+    ...kpiTiles(STATS).flatMap((tile) => [tile.label, tile.note ?? null]),
+    ...breakdowns(STATS).flatMap((group) => [group.title, group.none, ...group.rows.map((row) => row.label)]),
     ...[...STATUSES, "answered"].map((status) =>
       describeDetails({ status, page_no: 3, versions: 2, tag_count: 1, max_upload_mb: 25, role: "admin" }),
     ),
@@ -152,19 +146,14 @@ function shownTexts(): string[] {
       texts.push(heading.title, heading.notSureCount);
     }
   }
-  // Features 25-27 (15 Oct 2026): Dynamic, more than one reader and a value's vote. The
-  // readers' names come from the server, only into the upload reader picker (below).
-  const ensemble = { readers: [{ id: "google/a", name: "A" }], max: 3, main: "google/a" };
-  const options = readerOptions(
-    [
-      { id: "dynamic", title: "Dynamic", hint: "", available: true, reason: null, default: true },
-      { id: "google/gemini-3.1-pro-preview", title: "Standard", hint: "", available: true, reason: null },
-      { id: "anthropic/claude-sonnet-5.5", title: "Careful", hint: "", available: true, reason: null },
-    ],
-    ensemble,
-  );
-  texts.push(...options.map((option) => option.label), ENSEMBLE_HINT, READERS_CAP);
-  texts.push(agentsHint(ensemble, []), agentsHint(ensemble, ["google/a", "google/b"]));
+  // Features 25-27 (15 Oct 2026): Dynamic and a value's vote. Changed on purpose (Ensemble
+  // after the scan, 16 Oct 2026): the upload picker has no "More than one reader…" now.
+  const options = readerOptions([
+    { id: "dynamic", title: "Automatic", hint: "", available: true, reason: null, default: true },
+    { id: "google/gemini-3.1-pro-preview", title: "Standard", hint: "", available: true, reason: null },
+    { id: "anthropic/claude-sonnet-5.5", title: "Careful", hint: "", available: true, reason: null },
+  ]);
+  texts.push(...options.map((option) => option.label));
   const reads = [
     { main: true, text: "1,130.00" },
     { main: false, text: "1,180.00" },
@@ -240,6 +229,24 @@ describe("technical words on user and admin screens", () => {
         fields.test(readFileSync(join(app, file), "utf8")),
     );
     expect(readers).toEqual([]);
+  });
+
+  // Cost saving (Tushar, 16 Oct 2026): the super admin's name for Dynamic stays in the
+  // operator console; members and org admins see "Automatic" (from the server).
+  it("never name Cost saving outside the super admin console", () => {
+    const app = join(__dirname, "..");
+    const files = ["app", "components", "lib"].flatMap((dir) =>
+      readdirSync(join(app, dir), { recursive: true, encoding: "utf8" })
+        .filter((file) => /\.tsx?$/.test(file))
+        .map((file) => join(dir, file).replace(/\\/g, "/")),
+    );
+    const naming = files.filter(
+      (file) =>
+        !file.startsWith("components/operator/") &&
+        !file.startsWith("app/operator/") &&
+        /cost saving|\bCOST_SAVING\b|\bDYNAMIC_HINT\b/i.test(readFileSync(join(app, file), "utf8")),
+    );
+    expect(naming).toEqual([]);
   });
 });
 

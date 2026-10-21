@@ -7,15 +7,22 @@ Why each piece (FULL-BUILD-SPEC section 3, PRD 1 A1 to A7):
   ``scrypt$16384$8$1$<salt b64>$<hash b64>``, and compared in constant time.
 * **The session** is a cookie ``<payload b64url>.<HMAC-SHA256 b64url>``. The
   payload is ``{"uid","cid","role","scope","ver","exp"}`` and the MAC is over
-  ``b"session\\x00" + body``. ``scope`` is "app" (from /login) or "admin" (from
-  /admin/login, admins only); ``ver`` is the user's ``session_version``. Nothing
-  is stored server side, so every request re-checks, with one query inside
-  ``db.customer(cid)``, that the user still exists, is not disabled, still has
-  that role and still has that session version. Raising the version (a new
-  password, "sign out everywhere", disabling, a 2FA reset) ends every other
-  session at its next request.
-* **The enrol token** carries a pending TOTP secret between an admin pressing
-  "Turn on" (/auth/admin/2fa/start) and their first code: ``{"uid","cid","ver","sec","exp"}``, MAC over
+  ``b"session\\x00" + body``. ``scope`` is "app" (a member or reviewer from /login)
+  or "admin" (an admin from /login or from enrolling; every admin session is one);
+  ``ver`` is the user's ``session_version``. Nothing is stored server side, so
+  every request re-checks, with one query inside ``db.customer(cid)``, that
+  the user still exists, is not disabled, still has that role and still has
+  that session version. Raising the version (a new password, "sign out
+  everywhere", disabling, a 2FA reset) ends every other session at its next
+  request.
+* **The idle timeout** (0040): the same query reads the hours the super admin set (the
+  organisation's, else the platform's; none saved: no idle limit) and the user's last use
+  or sign-in. Unused for longer ends the session (401 ``not_signed_in``); a use writes
+  ``last_seen_at`` at most once a minute. ``exp`` stays the outer cap: 24 hours for a sign-in
+  while hours are set (member and admin alike), else SESSION_HOURS or ADMIN_SESSION_MINUTES.
+* **The enrol token** carries a pending TOTP secret between an admin's right
+  password at /auth/login (403 ``mfa_enrol_required``) and their first code:
+  ``{"uid","cid","ver","sec","exp"}``, MAC over
   ``b"enrol\\x00" + body``, 10 minutes. The purposes have different MAC
   inputs and different fields, so neither token ever reads as the other.
 * **The confirm token** (council 4 Oct 2026, PROVISIONAL): a granted member or
@@ -27,10 +34,12 @@ Why each piece (FULL-BUILD-SPEC section 3, PRD 1 A1 to A7):
   signs in once more.
 * **The customer always comes from the session**, never from the request: the
   signed ``cid`` is the only customer id any route uses.
-* **The password-change gate is inside ``current_user``** (deny by default):
-  while ``must_change_password`` is set, every route refuses with 403
-  ``password_change_required``, except the few that use
-  ``current_user_allow_password_change`` (/auth/password, /auth/logout, /auth/me).
+* **The password-change and two-step gates are inside ``current_user``** (deny
+  by default): while ``must_change_password`` is set, every route refuses with 403
+  ``password_change_required``; then an admin without two-step sign-in set up gets
+  403 ``mfa_enrol_required`` (MFA required for admins, 16 Oct 2026). Only the few
+  routes that use ``current_user_allow_password_change`` (/auth/password,
+  /auth/logout, /auth/me) skip both; /auth/admin/enrol needs no session.
 * **CSRF**: every request that is not GET, HEAD or OPTIONS must carry
   ``X-Requested-With: kaagaz``. A cross-site form cannot add a header, and a
   cross-site script cannot either without CORS, which the API never allows.
@@ -48,13 +57,15 @@ import secrets
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from functools import cache
 from typing import Annotated, Any
 
 from fastapi import Depends, Request, Response
 
-from kaagaz.api.context import get_context, get_operator_db
+from kaagaz.api.context import AppContext, get_context, get_operator_db
 from kaagaz.api.errors import ApiError
+from kaagaz.db import ai_settings
 from kaagaz.db import operators as operators_sql
 from kaagaz.db import users as users_sql
 from kaagaz.db.engine import Database
@@ -72,6 +83,9 @@ CONFIRM_PATH = "/api/documents"  # the browser calls the API on its own origin, 
 OPERATOR_COOKIE = "kaagaz_operator"
 OPERATOR_PATH = "/api/operator"
 OPERATOR_SESSION_SECONDS = 30 * 60  # absolute, PROVISIONAL (change plan question 4)
+# A session's end while an idle timeout is set (0040): the idle timeout, 1 to 24 hours, ends it.
+# Cookies issued before keep the end they were given.
+CAPPED_SECONDS = 24 * 3600
 
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _SCRYPT_N, _SCRYPT_R, _SCRYPT_P, _SCRYPT_LEN = 2**14, 8, 1, 32
@@ -136,6 +150,7 @@ class SessionClaims:
     scope: str  # "app" or "admin"
     session_version: int
     expires_at: int  # seconds since the epoch
+    capped: bool = False  # given the 24-hour cap while idle hours were set (0040): "cap": true
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -163,10 +178,17 @@ _ENROL_FIELDS = frozenset({"uid", "cid", "ver", "sec", "exp"})
 _CONFIRM_FIELDS = frozenset({"uid", "cid", "ver", "exp"})
 _OPERATOR_PURPOSE = b"operator"
 _OPERATOR_FIELDS = frozenset({"oid", "ver", "exp"})
+_MOVE_PURPOSE = b"operator_move"
+_MOVE_FIELDS = frozenset({"oid", "ver", "sec", "exp"})
 
 
-def session_seconds(scope: str, settings: Settings) -> int:
-    """How long a session of this scope lasts: ADMIN_SESSION_MINUTES or SESSION_HOURS."""
+def session_seconds(scope: str, settings: Settings, idle_hours: int | None = None) -> int:
+    """How long a session of this scope lasts: ADMIN_SESSION_MINUTES or SESSION_HOURS; with an
+    idle timeout set (0040, Tushar 18 Oct 2026) CAPPED_SECONDS for both, as the idle timeout ends it."""
+    if scope not in SCOPES:
+        raise ValueError("unknown session scope")
+    if idle_hours is not None:
+        return CAPPED_SECONDS
     if scope == "admin":
         return settings.admin_session_minutes * 60
     if scope == "app":
@@ -183,6 +205,7 @@ def new_session(
     session_version: int,
     settings: Settings,
     now: int,
+    idle_hours: int | None = None,
 ) -> SessionClaims:
     """Claims for a new session that ends one scope lifetime after ``now``."""
     return SessionClaims(
@@ -191,7 +214,8 @@ def new_session(
         role=role,
         scope=scope,
         session_version=session_version,
-        expires_at=now + session_seconds(scope, settings),
+        expires_at=now + session_seconds(scope, settings, idle_hours),
+        capped=idle_hours is not None,
     )
 
 
@@ -204,6 +228,7 @@ def sign_session(claims: SessionClaims, secret: str) -> str:
             "scope": claims.scope,
             "ver": claims.session_version,
             "exp": claims.expires_at,
+            **({"cap": True} if claims.capped else {}),  # left out otherwise: older cookies stay valid
         },
         _SESSION_PURPOSE,
         secret,
@@ -303,6 +328,40 @@ def read_operator(token: str, secret: str, now: int) -> OperatorClaims | None:
     return OperatorClaims(operator_id=oid, session_version=ver, expires_at=exp)
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class MoveClaims:
+    """Moving the operator's two-step to a new device (0031): the new secret, sealed."""
+
+    operator_id: str
+    session_version: int
+    sealed_secret: str  # SecretBox.seal(new secret, aad=operator_id)
+    expires_at: int  # seconds since the epoch
+
+
+def sign_move(claims: MoveClaims, secret: str) -> str:
+    """A move token: exactly ``{oid, ver, sec, exp}``, MAC purpose ``operator_move``."""
+    payload = {
+        "oid": claims.operator_id,
+        "ver": claims.session_version,
+        "sec": claims.sealed_secret,
+        "exp": claims.expires_at,
+    }
+    return _sign(payload, _MOVE_PURPOSE, secret)
+
+
+def read_move(token: str, secret: str, now: int) -> MoveClaims | None:
+    """The claims of a genuine, unexpired move token, else None. Strict, as ``read_operator``."""
+    data = _verified(token, _MOVE_PURPOSE, secret)
+    if not isinstance(data, dict) or set(data) != _MOVE_FIELDS:
+        return None
+    oid, ver, sec, exp = data["oid"], data["ver"], data["sec"], data["exp"]
+    if not (isinstance(oid, str) and _is_uuid(oid) and isinstance(sec, str) and sec):
+        return None
+    if not (_is_version(ver) and _is_int(exp)) or exp <= now:
+        return None
+    return MoveClaims(operator_id=oid, session_version=ver, sealed_secret=sec, expires_at=exp)
+
+
 def set_operator_cookie(response: Response, claims: OperatorClaims, settings: Settings, *, now: int) -> None:
     """HttpOnly, SameSite=Strict, sent only to /api/operator, for the token's own lifetime."""
     response.set_cookie(
@@ -342,8 +401,13 @@ def _verified(token: str, purpose: bytes, secret: str) -> Any:
 
 
 def _claims(data: Any, now: int) -> SessionClaims | None:
-    """Strict: exactly the six fields, each of its type; scope "admin" needs role "admin"."""
-    if not isinstance(data, dict) or set(data) != _SESSION_FIELDS:
+    """Strict: exactly the six fields, each of its type, and "cap" (only ever true, 0040);
+    scope "admin" needs role "admin"."""
+    if (
+        not isinstance(data, dict)
+        or set(data) - {"cap"} != _SESSION_FIELDS
+        or data.get("cap", True) is not True
+    ):
         return None
     uid, cid, role, scope = data["uid"], data["cid"], data["role"], data["scope"]
     ver, exp = data["ver"], data["exp"]
@@ -358,7 +422,13 @@ def _claims(data: Any, now: int) -> SessionClaims | None:
     if not (_is_uuid(uid) and _is_uuid(cid)):
         return None
     return SessionClaims(
-        user_id=uid, customer_id=cid, role=role, scope=scope, session_version=ver, expires_at=exp
+        user_id=uid,
+        customer_id=cid,
+        role=role,
+        scope=scope,
+        session_version=ver,
+        expires_at=exp,
+        capped="cap" in data,
     )
 
 
@@ -451,8 +521,33 @@ class CurrentUser:
     scope: str  # the session's: "app" or "admin"
     session_version: int
     must_change_password: bool
-    totp_enabled: bool  # two-step sign-in is on (each admin chooses)
+    totp_enabled: bool  # two-step sign-in is on (required for an admin)
     delete_forever_allowed: bool  # an admin allowed Delete forever (ignored for an admin)
+    idle_hours: int | None = None  # the idle timeout in effect (0040); None: no idle limit
+    seen_at: datetime | None = None  # the session's last use or sign-in, the idle clock
+
+
+# The idle timeout (0040): the last use is written at most this often, so a request is not a write.
+TOUCH_EVERY = timedelta(minutes=1)
+
+
+def idle_over(seen_at: datetime | None, idle_hours: int | None, now: datetime) -> bool:
+    """Unused for longer than the idle timeout. No timeout: never. Every sign-in stamps
+    ``last_login_at``, so a live session always has a ``seen_at``; with none, never too."""
+    return idle_hours is not None and seen_at is not None and now - seen_at > timedelta(hours=idle_hours)
+
+
+def cap_outlived(claims: SessionClaims, idle_hours: int | None, settings: Settings, now: int) -> bool:
+    """A cookie given the 24-hour cap while hours were set ("cap"), once the hours are removed:
+    it may not outlive the normal length. It began CAPPED_SECONDS before its end, and ends one
+    normal length after that."""
+    normal = session_seconds(claims.scope, settings)
+    return idle_hours is None and claims.capped and now >= claims.expires_at - CAPPED_SECONDS + normal
+
+
+def touch_due(seen_at: datetime | None, now: datetime) -> bool:
+    """The last use or sign-in on record is a minute old or more."""
+    return seen_at is not None and now - seen_at >= TOUCH_EVERY
 
 
 def set_confirm_cookie(response: Response, user: CurrentUser, settings: Settings, *, now: int) -> None:
@@ -479,10 +574,13 @@ def current_user(request: Request) -> CurrentUser:
 
     401 ``not_signed_in`` unless the session is genuine and still matches the
     user (enabled, same role, same session version). Then 403
-    ``password_change_required`` while the user must set a new password."""
+    ``password_change_required`` while the user must set a new password, and 403
+    ``mfa_enrol_required`` for an admin without two-step sign-in set up."""
     user = _signed_in(request)
     if user.must_change_password:
         raise ApiError(403, "password_change_required")
+    if user.role == "admin" and not user.totp_enabled:
+        raise ApiError(403, "mfa_enrol_required")
     return user
 
 
@@ -494,13 +592,25 @@ def current_user_allow_password_change(request: Request) -> CurrentUser:
 
 def _signed_in(request: Request) -> CurrentUser:
     context = get_context(request)
-    now = int(context.clock().timestamp())
-    claims = session_claims(request, context.settings, now)
+    now = context.clock()
+    claims = session_claims(request, context.settings, int(now.timestamp()))
     if claims is None:
         raise ApiError(401, "not_signed_in")
     user = load_user(context.db, claims.customer_id, claims.user_id, scope=claims.scope)
     if user is None or user.role != claims.role or user.session_version != claims.session_version:
         raise ApiError(401, "not_signed_in")
+    if user.role == "admin" and claims.scope != "admin":
+        # An admin's app session from before 16 Oct 2026 rested on the password alone.
+        raise ApiError(401, "not_signed_in")
+    if cap_outlived(claims, user.idle_hours, context.settings, int(now.timestamp())):
+        raise ApiError(401, "not_signed_in")
+    if idle_over(user.seen_at, user.idle_hours, now):  # the super admin's idle timeout (0040)
+        raise ApiError(401, "not_signed_in")
+    if touch_due(user.seen_at, now):
+        # ponytail: one last use per user, not per browser; a use or a sign-in anywhere keeps
+        # every session of that user alive. Per session needs a server-side session row.
+        with context.db.customer(user.customer_id) as conn:
+            users_sql.touch_seen(conn, user.customer_id, user.user_id, now=now)
     return user
 
 
@@ -524,6 +634,8 @@ def load_user(db: Database, customer_id: str, user_id: str, *, scope: str) -> Cu
         must_change_password=bool(row["must_change_password"]),
         totp_enabled=bool(row["totp_enabled"]),
         delete_forever_allowed=bool(row["delete_forever_allowed"]),
+        idle_hours=row["idle_hours"],
+        seen_at=row["seen_at"],
     )
 
 
@@ -532,7 +644,7 @@ UserAllowPasswordChange = Annotated[CurrentUser, Depends(current_user_allow_pass
 
 
 def require_admin_session(user: User) -> CurrentUser:
-    """For the /admin router: an admin signed in at /admin/login, else 403
+    """For the /admin router: an admin's session (scope "admin", from /login), else 403
     ``admin_session_required`` (an admin's own app session included)."""
     if user.scope != "admin" or user.role != "admin":
         raise ApiError(403, "admin_session_required")
@@ -545,8 +657,8 @@ AdminSession = Annotated[CurrentUser, Depends(require_admin_session)]
 def require_admin_with_two_step(user: AdminSession) -> CurrentUser:
     """For what can't be undone (deleting a document forever, deleting a tag): an
     admin session whose admin has two-step sign-in on, else 403
-    ``two_step_required``. Two-step sign-in is each admin's choice, so an admin
-    session alone may rest on a password; these actions must not."""
+    ``two_step_required``. ``current_user`` already requires two-step sign-in for
+    every admin; this stays as a second check on what can't be undone."""
     if not user.totp_enabled:
         raise ApiError(403, "two_step_required", "Turn on two-step sign-in in Admin, Settings to do this.")
     return user
@@ -594,6 +706,26 @@ def require_role(*roles: str) -> Callable[[CurrentUser], CurrentUser]:
 Reviewer = Annotated[CurrentUser, Depends(require_role("reviewer", "admin"))]
 Admin = Annotated[CurrentUser, Depends(require_role("admin"))]
 
+FEATURE_OFF = "This is turned off for now."
+
+
+def feature_on(context: AppContext, feature: str, customer_id: str | None = None) -> bool:
+    """The super admin's switch for ``feature`` (0038) and ``customer_id``'s own (0039; None:
+    the platform's alone); no row: on. One statement."""
+    with context.db.system() if customer_id is None else context.db.customer(customer_id) as conn:
+        return ai_settings.switch_on(conn, feature, customer_id)
+
+
+def require_feature(feature: str) -> Callable[[Request, CurrentUser], None]:
+    """A dependency: 403 ``feature_off`` while the super admin switched ``feature`` off for
+    every organisation (0038) or for the user's own (0039)."""
+
+    def dependency(request: Request, user: User) -> None:
+        if not feature_on(get_context(request), feature, user.customer_id):
+            raise ApiError(403, "feature_off", FEATURE_OFF)
+
+    return dependency
+
 
 @dataclass(frozen=True, slots=True)
 class CurrentOperator:
@@ -601,6 +733,7 @@ class CurrentOperator:
     email: str
     display_name: str
     expires_at: int  # the session's, seconds since the epoch
+    session_version: int  # the session's (a two-step move binds its token to it)
 
 
 def current_operator(request: Request) -> CurrentOperator:
@@ -616,7 +749,7 @@ def current_operator(request: Request) -> CurrentOperator:
         found = operators_sql.session_operator(conn, claims.operator_id)
     if found is None or found[2] != claims.session_version:
         raise ApiError(401, "not_signed_in")
-    return CurrentOperator(claims.operator_id, found[0], found[1], claims.expires_at)
+    return CurrentOperator(claims.operator_id, found[0], found[1], claims.expires_at, claims.session_version)
 
 
 OperatorSession = Annotated[CurrentOperator, Depends(current_operator)]

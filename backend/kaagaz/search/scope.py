@@ -20,7 +20,7 @@ Time and space: O(s log F) for s subfolders, O(k log T) for k tags, O(n) for n i
 
 import uuid
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from typing import Any, Literal, Self
 
@@ -28,7 +28,9 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import Connection
 
 from kaagaz.db import folders as folders_sql
+from kaagaz.db import listing
 from kaagaz.db import tags as tags_sql
+from kaagaz.db.autofile import survey_digits
 
 # The documents.doc_type values (migration 0004's CHECK).
 DocType = Literal[
@@ -115,6 +117,53 @@ def resolve(
         date_from=body.date_from,
         date_to=body.date_to,
         timezone=timezone,
+    )
+
+
+class FileFilters(BaseModel):
+    """File management Q3 on search: the document list's filters (GET /api/documents), read
+    the same way (``listing.file_filters``). A field left out filters nothing."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    department_id: uuid.UUID | None = None
+    owner_id: uuid.UUID | None = None
+    sensitivity: list[Literal["public", "internal", "confidential", "restricted"]] | None = Field(
+        default=None, max_length=4
+    )
+    party: str | None = Field(default=None, max_length=200)
+    property: str | None = Field(default=None, max_length=64)
+    doc_date_from: date | None = None
+    doc_date_to: date | None = None
+    has_newer_version: bool = False
+
+
+def narrow(conn: Connection, customer_id: str, scope: Scope, asked: FileFilters) -> Scope:
+    """``scope`` kept to the documents ``asked`` keeps, as its ``document_ids`` (with any it
+    already names); an unknown department (another customer's too) matches nothing. With no
+    filter, ``scope`` as it is. O(D) for this customer's D current documents."""
+    if all(getattr(asked, name) == field.default for name, field in FileFilters.model_fields.items()):
+        return scope
+    department = None
+    if asked.department_id is not None:
+        department = folders_sql.descendant_ids(conn, customer_id, str(asked.department_id))
+    kept = set(
+        listing.matching_ids(
+            conn,
+            customer_id,
+            department_folders=department,
+            owner_id=None if asked.owner_id is None else str(asked.owner_id),
+            sensitivities=asked.sensitivity or (),
+            party=(asked.party or "").strip() or None,
+            property_number=None if asked.property is None else survey_digits(asked.property),
+            doc_date_from=asked.doc_date_from,
+            doc_date_to=asked.doc_date_to,
+            has_newer_version=asked.has_newer_version,
+        )
+    )
+    named = scope.document_ids
+    return replace(
+        scope, document_ids=tuple(sorted(kept) if named is None else (d for d in named if d in kept))
     )
 
 

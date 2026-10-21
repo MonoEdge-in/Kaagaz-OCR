@@ -250,6 +250,7 @@ class MemoryDocuments(MemoryRepository):
         self.read_again: dict[tuple[str, str], set[int]] = {}  # PRD 5 F5: the marked pages
         self.filed: list[tuple[str, str]] = []  # feature 28: each file_document asked for
         self.file_error: Exception | None = None  # raised by file_document when set
+        self.readied: list[tuple[str | None, bool]] = []  # each mark_ready that passed its fence
 
     def set_failed(self, customer_id: str, document_id: str, code: str, *, run_id: str | None = None) -> None:
         """Failed, with the read-again marks cleared at once, as PgDocuments.set_failed."""
@@ -266,18 +267,28 @@ class MemoryDocuments(MemoryRepository):
             self.page_counts[(customer_id, document_id)] = page_count
 
     def mark_ready(
-        self, customer_id: str, document_id: str, page_count: int, *, run: FinishedRun | None = None
+        self,
+        customer_id: str,
+        document_id: str,
+        page_count: int,
+        *,
+        run: FinishedRun | None = None,
+        open_run: str | None = None,
     ) -> None:
         """Like PgDocuments.mark_ready for a family of one version (records have no
         family here): the page count, then ready. A rejected document keeps both.
         With ``run`` and ``runs``: the fence first, then the run is finished too
-        (failed with document_missing, or rejected, on the early returns). Families
+        (failed with document_missing, or rejected, on the early returns); with
+        ``open_run``, the fence only (Ready first: the run stays open). Each call is kept
+        in ``readied`` (the run id or None, and whether it was ``open_run``). Families
         of several versions are tested on PostgreSQL (tests/test_documents_mark_ready_db.py)."""
         if self.get(customer_id, document_id) is None:
             self._finish(customer_id, run, status="failed", error_code="document_missing")
             return
-        if run is not None and not self._open(customer_id, document_id, run.run_id):
-            raise Superseded(run.run_id)
+        fence = run.run_id if run is not None else open_run
+        if fence is not None and not self._open(customer_id, document_id, fence):
+            raise Superseded(fence)
+        self.readied.append((fence, open_run is not None))
         if self._statuses.get_status(customer_id, document_id) is DocumentStatus.REJECTED:
             self._finish(customer_id, run, status="rejected")
             return
@@ -640,6 +651,7 @@ class FakeChat:
         thinking: str | None = None,
         provider: str | None = None,
         deadline: float | None = None,
+        temperature: float | None = None,
     ) -> dict[str, Any]:
         with self._lock:
             self.calls.append({"system": system, "user": user, "schema": schema, "max_tokens": max_tokens})

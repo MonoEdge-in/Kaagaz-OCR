@@ -14,6 +14,7 @@ symbols a garbled text layer holds (PRD 2 R2).
 """
 
 import re
+import struct
 import zlib
 from dataclasses import dataclass, field
 
@@ -228,5 +229,45 @@ def _assemble(objects: list[bytes], trailer_extra: bytes) -> bytes:
     for offset in offsets:
         out += b"%010d 00000 n \n" % offset
     out += b"trailer\n<< /Size %d /Root 1 0 R" % (len(objects) + 1) + trailer_extra + b" >>\n"
+    out += b"startxref\n%d\n%%%%EOF\n" % xref
+    return bytes(out)
+
+
+def make_objstm_pdf(plain: list[bytes], packed: list[bytes], *, objstm_offset: int | None = None) -> bytes:
+    """A PDF 1.5 file as most writers save one today: the ``packed`` object bodies in one
+    compressed object stream, indexed by a cross-reference stream. Objects are numbered
+    ``plain`` first, from 1 (object 1 must be the catalog), then ``packed``, then the
+    object stream and the index. ``objstm_offset`` writes a wrong offset in the object
+    stream's index entry (a broken index)."""
+    out = bytearray(b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n")
+    entries = [struct.pack(">BIH", 0, 0, 0xFFFF)]
+    for number, body in enumerate(plain, start=1):
+        entries.append(struct.pack(">BIH", 1, len(out), 0))
+        out += b"%d 0 obj\n" % number + body + b"\nendobj\n"
+    stream_number = len(plain) + len(packed) + 1
+    header, bodies = [], b""
+    for index, body in enumerate(packed):
+        header.append(b"%d %d" % (len(plain) + 1 + index, len(bodies)))
+        bodies += body + b"\n"
+        entries.append(struct.pack(">BIH", 2, stream_number, index))
+    first = b" ".join(header) + b"\n"
+    data = zlib.compress(first + bodies)
+    entries.append(struct.pack(">BIH", 1, len(out) if objstm_offset is None else objstm_offset, 0))
+    out += b"%d 0 obj\n<< /Type /ObjStm /N %d /First %d /Filter /FlateDecode /Length %d >>\nstream\n" % (
+        stream_number,
+        len(packed),
+        len(first),
+        len(data),
+    )
+    out += data + b"\nendstream\nendobj\n"
+    xref = len(out)
+    entries.append(struct.pack(">BIH", 1, xref, 0))
+    table = b"".join(entries)
+    out += b"%d 0 obj\n<< /Type /XRef /Size %d /W [1 4 2] /Root 1 0 R /Length %d >>\nstream\n" % (
+        stream_number + 1,
+        stream_number + 2,
+        len(table),
+    )
+    out += table + b"\nendstream\nendobj\n"
     out += b"startxref\n%d\n%%%%EOF\n" % xref
     return bytes(out)

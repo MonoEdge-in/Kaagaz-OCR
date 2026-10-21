@@ -37,6 +37,7 @@ from typing import Any
 
 from kaagaz.ai.client import ModelClient, ModelOutputError, ModelUnavailable
 from kaagaz.answering.draft import _escape
+from kaagaz.answering.rewrite import REWRITE_TEMPERATURE
 from kaagaz.chunking.script import ascii_digits, has_other_script_letters, letter_script
 
 _log = logging.getLogger(__name__)
@@ -105,7 +106,13 @@ def translate(model: ModelClient, question: str, scripts: Sequence[str]) -> list
         "required": ["queries"],
     }
     try:
-        reply = model.chat_json(system=SYSTEM_PROMPT, user=user, schema=schema, max_tokens=_MAX_TOKENS)
+        reply = model.chat_json(
+            system=SYSTEM_PROMPT,
+            user=user,
+            schema=schema,
+            max_tokens=_MAX_TOKENS,
+            temperature=REWRITE_TEMPERATURE,
+        )
     except ModelUnavailable:
         return _fallback("translate_model_down")
     except ModelOutputError:

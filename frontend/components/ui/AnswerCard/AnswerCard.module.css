@@ -1,0 +1,96 @@
+/* The answer, the question, the working line and the search note
+   (design/kaagaz-ui-handoff/styles/kaagaz.css, section 14). */
+
+.answer {
+  background: var(--k-surface);
+  color: var(--k-ink);
+  border: 1px solid var(--k-card-edge);
+  border-radius: var(--k-r-4);
+  padding: 24px 26px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  box-shadow: var(--k-shadow-1);
+}
+.head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.question {
+  align-self: flex-end;
+  max-width: 72%;
+  background: var(--k-accent);
+  color: var(--k-accent-ink);
+  border-radius: 22px 22px 6px 22px;
+  padding: 13px 20px;
+  font-size: 15px;
+  overflow-wrap: anywhere;
+}
+
+.working {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 13px;
+  color: var(--k-info);
+  font-weight: 500;
+}
+.dots {
+  display: inline-flex;
+  gap: 3px;
+}
+.dots i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: breathe 1.6s ease-in-out infinite;
+}
+.dots i:nth-child(2) {
+  animation-delay: 0.25s;
+}
+.dots i:nth-child(3) {
+  animation-delay: 0.5s;
+}
+.elapsed {
+  color: var(--k-ink-muted);
+  font-family: var(--k-font-mono);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.searching {
+  font-size: 11px;
+  color: var(--k-ink-muted);
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  font-family: var(--k-font-mono);
+  letter-spacing: 0.04em;
+}
+
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dots i {
+    animation: none;
+  }
+}
+@media (max-width: 600px) {
+  .question {
+    max-width: 88%;
+  }
+  .answer {
+    padding: 18px;
+  }
+}

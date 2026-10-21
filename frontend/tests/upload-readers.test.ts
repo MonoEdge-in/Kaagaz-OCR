@@ -113,14 +113,35 @@ describe("the Read with select in the source", () => {
     expect(select).toContain("className={`input ");
   });
 
-  it("is offered once, beside Upload files", () => {
+  it("is offered once, at the end of the list's head row", () => {
     const view = readFileSync(join(__dirname, "..", "components/documents/DocumentsView.tsx"), "utf8");
-    // Changed on purpose (UI quality council, 15 Oct 2026): the header hides Upload on an empty list, whose empty state has its own.
-    expect(view).toMatch(/\{readerSelect\}\s*\{view !== "empty" && uploadButton\}/);
+    // Changed on purpose (Tushar, 16 Oct 2026): no Upload files beside it, and out of the page
+    // header (it only touches uploads): in the list's head row, at the content's right edge.
+    // Changed on purpose (PRD 1, screens): the Department picker (F2) comes just before it.
+    expect(view).toMatch(/<div className=\{styles\.uploadControls\}>[\s\S]*<DepartmentPicker[\s\S]*\{readerSelect\}\s*<\/div>/);
     // Changed on purpose (UI touch-up council, 15 Oct 2026): the slim dropzone no longer repeats
     // it; two "Read with" pickers on one screen looked like two different choices.
     expect(view.match(/\{readerSelect\}/g)).toHaveLength(1);
     expect(readFileSync(join(__dirname, "..", "components/documents/UploadArea.tsx"), "utf8")).not.toContain("readerChoice");
+  });
+
+  // Tushar, 16 Oct 2026: two upload buttons side by side. The app header's Upload is the one
+  // upload action with documents; an empty list's empty state keeps its own Upload files.
+  it("leaves Upload files out of the page header, and keeps it in the empty state", () => {
+    const view = readFileSync(join(__dirname, "..", "components/documents/DocumentsView.tsx"), "utf8");
+    const header = view.slice(view.indexOf('<header className="page-header">'), view.indexOf("</header>"));
+    expect(header).not.toContain("{readerSelect}"); // Changed on purpose (Tushar, 16 Oct 2026): see above
+    expect(header).not.toContain("uploadButton");
+    expect(view.match(/\{uploadButton\}/g)).toHaveLength(1);
+    expect(view).toMatch(/view === "empty" \? \(\s*<Dropzone[\s\S]*?action=\{\s*<>\s*\{uploadButton\}/);
+  });
+
+  it("lays Read with out as one row: the label beside the select, the hint under it", () => {
+    const docs = readFileSync(join(__dirname, "..", "components/documents/Documents.module.css"), "utf8");
+    expect(docs).toMatch(/\.uploadControls \.reader \{[^}]*display: grid;[^}]*grid-template-columns: auto minmax\(0, auto\);/);
+    expect(docs).toMatch(/\.uploadControls \.readerHint \{[^}]*grid-column: 2;/);
+    expect(docs).toMatch(/\.uploadControls \.readerSelect \{[^}]*width: auto;/); // beats select.input's 100%
+    expect(docs).toMatch(/@media \(max-width: 639\.98px\) \{\s*\.uploadControls \{[^}]*justify-content: flex-start;/);
   });
 });
 
@@ -205,9 +226,9 @@ describe("Read again for the whole document (MS4)", () => {
   it("is offered in the Read again question, and per-page Read again has no model choice", () => {
     const dialog = readFileSync(join(__dirname, "..", "app/(app)/documents/[id]/ReadAgain.tsx"), "utf8");
     // The select starts on the document's own model (read_model), not the default.
-    // Changed on purpose (features 25-27, 15 Oct 2026): the select also offers more than one reader.
+    // Changed on purpose (Ensemble after the scan, 16 Oct 2026): no "More than one reader…" here.
     expect(dialog).toMatch(/<ReaderSelect\s+readers=\{readers\}\s+picked=\{picked \?\? readModel\}\s+onPick=\{setPicked\}/);
-    expect(dialog).toContain("ensemble={ensemble}");
+    expect(dialog).not.toMatch(/ensemble=\{|agents=\{/);
     const view = readFileSync(join(__dirname, "..", "app/(app)/documents/[id]/DocumentView.tsx"), "utf8");
     expect(view).toContain("readModel={detail.read_model}");
     expect(dialog).toContain("reprocessDocument(documentId, model)");

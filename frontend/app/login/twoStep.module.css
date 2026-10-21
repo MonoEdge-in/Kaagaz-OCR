@@ -1,0 +1,131 @@
+/* Admin sign-in and the 2FA set-up step (shown in Admin, Settings). The frame
+   (app/login/AuthFrame.tsx), banner, submit button and help line come from
+   app/login/login.module.css; this adds only what the admin screen has of its
+   own. Tokens only (app/globals.css). */
+
+.intro {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.title {
+  margin: 0;
+  font-size: var(--fs-2xl);
+}
+
+.stepTitle {
+  margin: 0;
+  font-size: var(--fs-lg);
+}
+
+.stepTitle:focus-visible {
+  outline-offset: 4px;
+}
+
+/* The lines of the admin's own Two-step sign-in section. */
+.twoStepText {
+  margin: 0;
+}
+
+.lead {
+  margin: 0;
+  color: var(--fg-muted);
+}
+
+.bannerText {
+  margin: 0;
+}
+
+.bannerText + .bannerText {
+  margin-top: var(--space-2);
+}
+
+/* --- The code field ------------------------------------------------------- */
+
+.code {
+  max-width: 12rem;
+  font-family: var(--font-mono);
+  font-size: var(--fs-lg);
+  letter-spacing: 0.12em;
+  font-variant-numeric: tabular-nums;
+}
+
+.message {
+  margin: 0;
+}
+
+/* --- The set-up step -------------------------------------------------------- */
+
+.steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding-inline-start: var(--space-6);
+}
+
+.steps li::marker {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.keyCard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+/* The QR code keeps its own white quiet zone, so it sits on the card as it is. */
+.qr {
+  align-self: center;
+  line-height: 0;
+}
+
+.details {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+}
+
+.detail {
+  display: grid;
+  grid-template-columns: 5.5rem minmax(0, 1fr);
+  gap: var(--space-2);
+  align-items: baseline;
+}
+
+.detail dt {
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.detail dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* The key: large, fixed-width letters, easy to select in one go. */
+.key {
+  display: inline-block;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--k-r-2);
+  background: var(--surface-2);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: var(--fs-lg);
+  letter-spacing: 0.06em;
+  line-height: 1.5;
+  word-spacing: 0.2em;
+  user-select: all;
+}
+
+.note {
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: var(--fs-sm);
+}

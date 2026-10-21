@@ -49,6 +49,7 @@ KINDS = (
     "careful",
     "ensemble_scan",
     "ensemble_chat",
+    "translate",  # Read clearly's page translation (19 Oct 2026)
 )
 
 _log = logging.getLogger(__name__)

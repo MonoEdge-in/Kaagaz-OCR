@@ -78,6 +78,13 @@ def test_b_cannot_open_a_conversation_or_rate_its_answer(world: _World) -> None:
     _assert_not_found(opened.status_code, opened.json())
     rated = b.post(f"/api/messages/{world.answer_message}/feedback", json={"rating": "down"}, headers=CSRF)
     _assert_not_found(rated.status_code, rated.json())
+    # UI audit A1 (16 Oct 2026): nor rename or delete it; A's conversation is unchanged.
+    path = f"/api/conversations/{world.conversation}"
+    renamed = b.patch(path, json={"title": "mehta now"}, headers=CSRF)
+    _assert_not_found(renamed.status_code, renamed.json())
+    deleted = b.delete(path, headers=CSRF)
+    _assert_not_found(deleted.status_code, deleted.json())
+    assert world.a.client.get(path).json()["title"] == "sharma question"
     follow_up = b.post(
         "/api/chat", json={"question": "more", "conversation_id": world.conversation}, headers=CSRF
     )

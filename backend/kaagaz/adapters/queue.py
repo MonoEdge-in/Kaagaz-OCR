@@ -6,6 +6,8 @@ worker takes it out), with the lease model described in kaagaz/jobs/ports.py:
 * The message body is ``{"customer_id": ..., "document_id": ...}``: ids only,
   never a file or its name. A job handed back by ``defer`` also carries
   ``"tries"``: the attempts it used before, a whole number 0 to MAX_TRIES (1000).
+  An Ensemble run's job also carries ``"run_id"``, written only when set, so every
+  other message is as before.
 * Two lanes (PRD 5 Q4): ``enqueue(job, express=True)`` sends the job to
   ``queue_express_url``, the express lane; any other job, or every job when there
   is no express lane, goes to ``queue_url``. The caller decides ``express`` from
@@ -87,6 +89,9 @@ _MAX_WAIT_SECONDS = 20
 _MAX_LEASE_SECONDS = 12 * 60 * 60
 _MAX_DELAY_SECONDS = 15 * 60
 
+# With an express lane, the main lane's longest wait (seconds), so express jobs start soon.
+EXPRESS_POLL_SECONDS = 2
+
 # The most attempts a handed-back job's body may carry (PRD 5 V1): far above any
 # JOB_MAX_ATTEMPTS, so it only bounds what a message can claim.
 MAX_TRIES = 1000
@@ -141,6 +146,8 @@ class _Received:
 
 def _body(job: Job, tries: int = 0) -> str:
     fields: dict[str, object] = {"customer_id": job.customer_id, "document_id": job.document_id}
+    if job.run_id is not None:
+        fields["run_id"] = job.run_id
     if tries:
         fields["tries"] = tries
     return json.dumps(fields)
@@ -163,7 +170,10 @@ def _job_from_body(body: str) -> tuple[Job, int] | None:
     tries = data.get("tries", 0)
     if not isinstance(tries, int) or isinstance(tries, bool) or not 0 <= tries <= MAX_TRIES:
         return None
-    return Job(customer_id=customer_id, document_id=document_id), tries
+    run_id = data.get("run_id")
+    if run_id is not None and (not isinstance(run_id, str) or not run_id):
+        return None
+    return Job(customer_id=customer_id, document_id=document_id, run_id=run_id), tries
 
 
 def _max_receive_count(policy: object) -> int | None:
@@ -199,7 +209,14 @@ class SqsQueue:
             self._client = self._send_client = client
         self._url = settings.queue_url
         self._express_url = settings.queue_express_url
-        self._wait = settings.queue_wait_seconds
+        # The main lane's long poll. With an express lane it is at most EXPRESS_POLL_SECONDS: a
+        # worker waiting on the main lane never sees an express job arrive, so a small upload
+        # waited up to QUEUE_WAIT_SECONDS for a free worker (council 16 Oct 2026).
+        self._wait = (
+            settings.queue_wait_seconds
+            if self._express_url is None
+            else min(settings.queue_wait_seconds, EXPRESS_POLL_SECONDS)
+        )
         self._lease = settings.queue_lease_seconds
         self._received: OrderedDict[str, _Received] = OrderedDict()
         self._main_first = False  # set by defer, for the next receive only
@@ -267,11 +284,12 @@ class SqsQueue:
         except _UNREACHABLE as error:
             raise BackendUnavailable("queue") from error
 
-    def defer(self, receipt: str, seconds: int) -> None:
+    def defer(self, receipt: str, seconds: int, *, counted: bool = False) -> None:
         """Hand the job back, to be handed out again after ``seconds`` (0 to SQS's
         longest delay, 15 minutes), without counting this delivery as an attempt
-        (the module docstring). Raises LeaseLost, and sends nothing, when another
-        delivery owns the job. 3 calls."""
+        (the module docstring), or counting it (``counted``: a retryable failure, so the
+        retries still end). Raises LeaseLost, and sends nothing, when another delivery
+        owns the job. 3 calls."""
         if not 0 <= seconds <= _MAX_DELAY_SECONDS:
             raise ValueError(f"seconds must be 0 to {_MAX_DELAY_SECONDS}")
         received = self._received.get(receipt)
@@ -279,7 +297,7 @@ class SqsQueue:
             # Not a job's receipt from this queue object: a bug, never a normal case.
             raise ValueError("unknown receipt")
         self.extend(receipt)
-        body = _body(received.job, min(received.attempt - 1, MAX_TRIES))
+        body = _body(received.job, min(received.attempt - (0 if counted else 1), MAX_TRIES))
         try:
             self._send_client.send_message(QueueUrl=received.url, MessageBody=body, DelaySeconds=seconds)
         except _ANY_ERROR as error:

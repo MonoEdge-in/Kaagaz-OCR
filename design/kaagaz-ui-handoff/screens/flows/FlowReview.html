@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Kaagaz · Flow C · Clear five values</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="../../styles/kaagaz.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@100..125,400..700&amp;family=IBM+Plex+Mono:wght@400;500&amp;family=IBM+Plex+Sans+Devanagari:wght@400;500;600&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;display=swap">
+<style>body{margin:0}</style>
+</helmet>
+<div class="k-root" data-theme="{{theme}}" style="width: 3200px; height: 1240px; padding: 56px 64px; display: flex; flex-direction: column; gap: 32px; overflow: hidden">
+
+  <header style="display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; border-bottom: 2px solid var(--k-ink); padding-bottom: 20px">
+    <div style="display: flex; flex-direction: column; gap: 8px">
+      <span class="k-eyebrow">Flow C · Review</span>
+      <h1 class="k-h1" style="font-size: 36px">A reviewer clears five Needs review values</h1>
+      <p class="k-muted k-read">Anita works through the queue from the keyboard: 1 and 2 pick a reading, 3 types the right value, Enter moves on. Five values, under a minute, and the agreement becomes fully Verified.</p>
+    </div>
+    <div style="display: flex; gap: 10px; align-items: center" class="k-small k-muted"><span class="k-kbd">1</span>first reading<span class="k-kbd">2</span>second reading<span class="k-kbd">3</span>type value<span class="k-kbd">Enter</span>next</div>
+  </header>
+
+  <div style="display: flex; align-items: flex-start; gap: 0">
+
+    <!-- STEP 1 -->
+    <div style="width: 420px; flex: none; display: flex; flex-direction: column; gap: 14px">
+      <div style="display: flex; gap: 12px; align-items: flex-start; min-height: 72px">
+        <span class="k-mono" style="width: 32px; height: 32px; border-radius: 50%; border: 1.5px solid var(--k-accent); color: var(--k-accent); display: grid; place-items: center; flex: none; font-weight: 500">1</span>
+        <div style="display: flex; flex-direction: column; gap: 3px"><strong>Opens Review</strong><span class="k-small k-muted">Five values waiting, grouped by document, with the reason in plain words.</span></div>
+      </div>
+      <div class="k-card k-card--flush" style="height: 760px; overflow: hidden">
+        <div style="display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 14px; border-bottom: 1px solid var(--k-rule); background: var(--k-surface)"><span style="width: 12px; height: 15px; background: var(--k-ink); clip-path: polygon(0 0, 70% 0, 100% 22%, 100% 100%, 0 100%)" aria-hidden="true"></span><span class="k-small k-muted">Review</span></div>
+        <div style="padding: 18px; display: flex; flex-direction: column; gap: 14px">
+          <div style="display: flex; justify-content: space-between; align-items: baseline"><h2 class="k-h2">Review</h2><span class="k-mono k-small" style="color: var(--k-review)">5 left</span></div>
+          <div class="k-chip-row"><button class="k-chip is-on" type="button">All reasons</button><button class="k-chip" type="button">Readers disagree</button><button class="k-chip" type="button">Handwriting</button></div>
+          <div style="display: flex; flex-direction: column; gap: 0; border: 1px solid var(--k-rule); border-radius: 20px">
+            <div style="padding: 10px 12px; background: var(--k-sunken); border-bottom: 1px solid var(--k-rule); display: flex; justify-content: space-between"><strong class="k-small">Rent Agreement Shinde.pdf</strong><span class="k-mono k-small k-muted">3</span></div>
+            <div class="k-rule-row" style="padding: 10px 12px; background: var(--k-accent-soft)"><span class="k-small"><strong>Security deposit</strong><br><span class="k-muted">Two readers read this differently · p.2</span></span><span class="k-status k-status--review">Needs review</span></div>
+            <div class="k-rule-row" style="padding: 10px 12px"><span class="k-small"><strong>Licensee GSTIN</strong><br><span class="k-muted">One digit unclear · p.1</span></span><span class="k-status k-status--review">Needs review</span></div>
+            <div class="k-rule-row" style="padding: 10px 12px"><span class="k-small"><strong>Stamp duty</strong><br><span class="k-muted">Faint stamp · p.6</span></span><span class="k-status k-status--review">Needs review</span></div>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 0; border: 1px solid var(--k-rule); border-radius: 20px">
+            <div style="padding: 10px 12px; background: var(--k-sunken); border-bottom: 1px solid var(--k-rule); display: flex; justify-content: space-between"><strong class="k-small">7/12 Survey 44 Wakad.pdf</strong><span class="k-mono k-small k-muted">1</span></div>
+            <div class="k-rule-row" style="padding: 10px 12px"><span class="k-small"><strong class="k-deva">भोगवटादाराचे नाव</strong><br><span class="k-muted">Handwritten · p.2</span></span><span class="k-status k-status--review">Needs review</span></div>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 0; border: 1px solid var(--k-rule); border-radius: 20px">
+            <div style="padding: 10px 12px; background: var(--k-sunken); border-bottom: 1px solid var(--k-rule); display: flex; justify-content: space-between"><strong class="k-small">GST Invoice 0412 Mehta Textiles.pdf</strong><span class="k-mono k-small k-muted">1</span></div>
+            <div class="k-rule-row" style="padding: 10px 12px"><span class="k-small"><strong>Invoice total</strong><br><span class="k-muted">Total doesn’t match the line items · p.1</span></span><span class="k-status k-status--review">Needs review</span></div>
+          </div>
+          <a class="k-btn k-btn--quiet k-btn--sm" href="Review.html" style="align-self: flex-start">Open full screen</a>
+        </div>
+      </div>
+    </div>
+
+    <div style="flex: 1; min-width: 80px; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 440px 10px 0">
+      <div style="display: flex; align-items: center; width: 100%; color: var(--k-accent)"><span style="flex: 1; height: 1.5px; background: var(--k-accent)"></span><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"></path></svg></div>
+      <span class="k-small k-muted" style="text-align: center">starts with the first</span>
+    </div>
+
+    <!-- STEP 2 -->
+    <div style="width: 420px; flex: none; display: flex; flex-direction: column; gap: 14px">
+      <div style="display: flex; gap: 12px; align-items: flex-start; min-height: 72px">
+        <span class="k-mono" style="width: 32px; height: 32px; border-radius: 50%; border: 1.5px solid var(--k-accent); color: var(--k-accent); display: grid; place-items: center; flex: none; font-weight: 500">2</span>
+        <div style="display: flex; flex-direction: column; gap: 3px"><strong>Presses 1</strong><span class="k-small k-muted">The zoomed spot shows ₹1,50,000 clearly. First reading wins.</span></div>
+      </div>
+      <div class="k-card k-card--flush" style="height: 760px; overflow: hidden">
+        <div style="display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 14px; border-bottom: 1px solid var(--k-rule); background: var(--k-surface)"><span style="width: 12px; height: 15px; background: var(--k-ink); clip-path: polygon(0 0, 70% 0, 100% 22%, 100% 100%, 0 100%)" aria-hidden="true"></span><span class="k-small k-muted">Review · 1 of 5</span></div>
+        <div style="padding: 18px; display: flex; flex-direction: column; gap: 14px">
+          <div style="display: flex; flex-direction: column; gap: 4px"><span class="k-small k-muted">Rent Agreement Shinde.pdf · page 2</span><h2 class="k-h3">Security deposit</h2></div>
+          <div style="background: var(--k-sunken); padding: 16px; border-radius: 16px"><div class="k-paper" style="padding: 18px 20px; font-size: 15px">refundable security deposit of <span class="k-mark k-mark--unsure">Rs. 1,50,000</span> at signing</div></div>
+          <p class="k-small" style="display: flex; gap: 6px; align-items: center"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true" style="color: var(--k-review)"><circle cx="12" cy="12" r="9"></circle><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .8-1 1.5V14M12 17v.5"></path></svg>Two readers read this differently.</p>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px">
+            <div class="k-reading is-picked"><span class="k-eyebrow">First reading</span><span class="k-reading-val">₹1,50,000</span></div>
+            <div class="k-reading"><span class="k-eyebrow">Second reading</span><span class="k-reading-val">₹1,30,000</span></div>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 8px">
+            <button class="k-btn k-btn--primary is-focus" type="button" style="justify-content: space-between"><span>Use first reading</span><span class="k-kbd">1</span></button>
+            <button class="k-btn" type="button" style="justify-content: space-between"><span>Use second reading</span><span class="k-kbd">2</span></button>
+            <button class="k-btn" type="button" style="justify-content: space-between"><span>Type the correct value</span><span class="k-kbd">3</span></button>
+          </div>
+          <label class="k-check"><input type="checkbox">Remember this correction</label>
+        </div>
+      </div>
+    </div>
+
+    <div style="flex: 1; min-width: 80px; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 440px 10px 0">
+      <div style="display: flex; align-items: center; width: 100%; color: var(--k-accent)"><span style="flex: 1; height: 1.5px; background: var(--k-accent)"></span><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"></path></svg></div>
+      <span class="k-small k-muted" style="text-align: center">next value opens</span>
+    </div>
+
+    <!-- STEP 3 -->
+    <div style="width: 420px; flex: none; display: flex; flex-direction: column; gap: 14px">
+      <div style="display: flex; gap: 12px; align-items: flex-start; min-height: 72px">
+        <span class="k-mono" style="width: 32px; height: 32px; border-radius: 50%; border: 1.5px solid var(--k-accent); color: var(--k-accent); display: grid; place-items: center; flex: none; font-weight: 500">3</span>
+        <div style="display: flex; flex-direction: column; gap: 3px"><strong>Types the right name</strong><span class="k-small k-muted">Handwritten Marathi. Both readings are off; she types शिंदे and asks Kaagaz to remember it.</span></div>
+      </div>
+      <div class="k-card k-card--flush" style="height: 760px; overflow: hidden">
+        <div style="display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 14px; border-bottom: 1px solid var(--k-rule); background: var(--k-surface)"><span style="width: 12px; height: 15px; background: var(--k-ink); clip-path: polygon(0 0, 70% 0, 100% 22%, 100% 100%, 0 100%)" aria-hidden="true"></span><span class="k-small k-muted">Review · 2 of 5</span></div>
+        <div style="padding: 18px; display: flex; flex-direction: column; gap: 14px">
+          <div style="display: flex; flex-direction: column; gap: 4px"><span class="k-small k-muted">7/12 Survey 44 Wakad.pdf · page 2</span><h2 class="k-h3 k-deva">भोगवटादाराचे नाव</h2></div>
+          <div style="background: var(--k-sunken); padding: 16px; border-radius: 16px"><div class="k-paper k-deva" style="padding: 18px 20px; font-size: 17px; font-style: italic">सुरेश बाबूराव <span class="k-mark k-mark--unsure">शिंदे</span></div></div>
+          <p class="k-small" style="display: flex; gap: 6px; align-items: center"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true" style="color: var(--k-review)"><path d="M4 18c3-6 5-9 7-9s-1 8 2 8 3-5 5-5 2 3 2 3"></path></svg>Handwritten. The readers aren’t sure of one letter.</p>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px">
+            <div class="k-reading"><span class="k-eyebrow">First reading</span><span class="k-reading-val k-deva" style="font-family: 'IBM Plex Sans Devanagari', sans-serif">शिंढे</span></div>
+            <div class="k-reading"><span class="k-eyebrow">Second reading</span><span class="k-reading-val k-deva" style="font-family: 'IBM Plex Sans Devanagari', sans-serif">शिदे</span></div>
+          </div>
+          <div class="k-field">
+            <label class="k-label" for="fc-val">Correct value</label>
+            <input class="k-input k-deva is-focus" id="fc-val" value="शिंदे" style="font-size: 18px">
+            <span class="k-help">Type in Marathi, Hindi or English. <span class="k-kbd">Enter</span> saves.</span>
+          </div>
+          <label class="k-check"><input type="checkbox" checked>Remember this correction</label>
+          <span class="k-small k-muted" style="margin-top: -6px; padding-left: 24px">Next time “शिंढे” appears near Survey 44, it is read as “शिंदे”.</span>
+          <button class="k-btn k-btn--primary" type="button">Save and next</button>
+        </div>
+      </div>
+    </div>
+
+    <div style="flex: 1; min-width: 80px; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 440px 10px 0">
+      <div style="display: flex; align-items: center; width: 100%; color: var(--k-accent)"><span style="flex: 1; height: 1.5px; background: var(--k-accent)"></span><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"></path></svg></div>
+      <span class="k-small k-muted" style="text-align: center">presses Enter</span>
+    </div>
+
+    <!-- STEP 4 -->
+    <div style="width: 420px; flex: none; display: flex; flex-direction: column; gap: 14px">
+      <div style="display: flex; gap: 12px; align-items: flex-start; min-height: 72px">
+        <span class="k-mono" style="width: 32px; height: 32px; border-radius: 50%; border: 1.5px solid var(--k-accent); color: var(--k-accent); display: grid; place-items: center; flex: none; font-weight: 500">4</span>
+        <div style="display: flex; flex-direction: column; gap: 3px"><strong>Presses 2</strong><span class="k-small k-muted">GSTIN with one doubtful digit. The second reading matches the page.</span></div>
+      </div>
+      <div class="k-card k-card--flush" style="height: 760px; overflow: hidden">
+        <div style="display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 14px; border-bottom: 1px solid var(--k-rule); background: var(--k-surface)"><span style="width: 12px; height: 15px; background: var(--k-ink); clip-path: polygon(0 0, 70% 0, 100% 22%, 100% 100%, 0 100%)" aria-hidden="true"></span><span class="k-small k-muted">Review · 3 of 5</span></div>
+        <div style="padding: 18px; display: flex; flex-direction: column; gap: 14px">
+          <div style="display: flex; flex-direction: column; gap: 4px"><span class="k-small k-muted">Rent Agreement Shinde.pdf · page 1</span><h2 class="k-h3">Licensee GSTIN</h2></div>
+          <div style="background: var(--k-sunken); padding: 16px; border-radius: 16px"><div class="k-paper" style="padding: 18px 20px; font-size: 15px">GSTIN: <span class="k-mono">27AABCS</span><span class="k-mark k-mark--unsure k-mono">8</span><span class="k-mono">821K1Z3</span></div></div>
+          <p class="k-small" style="display: flex; gap: 6px; align-items: center"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true" style="color: var(--k-review)"><circle cx="12" cy="12" r="9"></circle><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .8-1 1.5V14M12 17v.5"></path></svg>One digit was read as 3 and as 8.</p>
+          <div style="display: grid; grid-template-columns: 1fr; gap: 10px">
+            <div class="k-reading"><span class="k-eyebrow">First reading</span><span class="k-reading-val" style="font-size: 17px">27AABCS<span style="background: var(--k-diff-del-soft); color: var(--k-diff-del)">3</span>821K1Z3</span></div>
+            <div class="k-reading is-picked"><span class="k-eyebrow">Second reading · valid GSTIN check digit</span><span class="k-reading-val" style="font-size: 17px">27AABCS<span style="background: var(--k-diff-add-soft); color: var(--k-diff-add)">8</span>821K1Z3</span></div>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 8px">
+            <button class="k-btn" type="button" style="justify-content: space-between"><span>Use first reading</span><span class="k-kbd">1</span></button>
+            <button class="k-btn k-btn--primary is-focus" type="button" style="justify-content: space-between"><span>Use second reading</span><span class="k-kbd">2</span></button>
+            <button class="k-btn" type="button" style="justify-content: space-between"><span>Type the correct value</span><span class="k-kbd">3</span></button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div style="flex: 1; min-width: 80px; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 440px 10px 0">
+      <div style="display: flex; align-items: center; width: 100%; color: var(--k-accent)"><span style="flex: 1; height: 1.5px; background: var(--k-accent)"></span><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"></path></svg></div>
+      <span class="k-small k-muted" style="text-align: center">1, then 1</span>
+    </div>
+
+    <!-- STEP 5 -->
+    <div style="width: 420px; flex: none; display: flex; flex-direction: column; gap: 14px">
+      <div style="display: flex; gap: 12px; align-items: flex-start; min-height: 72px">
+        <span class="k-mono" style="width: 32px; height: 32px; border-radius: 50%; border: 1.5px solid var(--k-accent); color: var(--k-accent); display: grid; place-items: center; flex: none; font-weight: 500">5</span>
+        <div style="display: flex; flex-direction: column; gap: 3px"><strong>Clears the last two</strong><span class="k-small k-muted">Stamp duty and invoice total, one key each. The counter runs down.</span></div>
+      </div>
+      <div class="k-card k-card--flush" style="height: 760px; overflow: hidden">
+        <div style="display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 14px; border-bottom: 1px solid var(--k-rule); background: var(--k-surface)"><span style="width: 12px; height: 15px; background: var(--k-ink); clip-path: polygon(0 0, 70% 0, 100% 22%, 100% 100%, 0 100%)" aria-hidden="true"></span><span class="k-small k-muted">Review · 5 of 5</span></div>
+        <div style="padding: 18px; display: flex; flex-direction: column; gap: 14px">
+          <div style="display: flex; flex-direction: column; gap: 8px">
+            <div style="display: flex; justify-content: space-between"><strong class="k-small">Progress</strong><span class="k-mono k-small">5 / 5</span></div>
+            <div class="k-meter"><span class="is-ready" style="width: 100%"></span></div>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 10px; padding: 12px; border: 1px solid var(--k-rule); border-radius: 16px; opacity: .85">
+            <div style="display: flex; justify-content: space-between; align-items: center"><span class="k-small"><span class="k-muted">4 of 5 · Stamp duty · p.6</span><br><strong class="k-mono">₹2,700</strong></span><span class="k-status k-status--verified"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg>Verified</span></div>
+            <span class="k-small k-muted">Used first reading <span class="k-kbd">1</span> · 3 s</span>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 10px; padding: 12px; border: 2px solid var(--k-accent); border-radius: 16px">
+            <span class="k-small k-muted">GST Invoice 0412 Mehta Textiles.pdf · page 1</span>
+            <h2 class="k-h3">Invoice total</h2>
+            <div style="background: var(--k-sunken); padding: 12px; border-radius: 16px"><div class="k-paper" style="padding: 14px 16px; font-size: 14px">Grand total <span class="k-mark k-mark--unsure k-mono">₹1,18,000</span></div></div>
+            <p class="k-small">The total doesn’t match the line items (₹1,00,000 + 18% GST = ₹1,18,000). First reading agrees with the sum.</p>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px">
+              <div class="k-reading is-picked"><span class="k-eyebrow">First</span><span class="k-reading-val" style="font-size: 17px">₹1,18,000</span></div>
+              <div class="k-reading"><span class="k-eyebrow">Second</span><span class="k-reading-val" style="font-size: 17px">₹1,16,000</span></div>
+            </div>
+            <button class="k-btn k-btn--primary is-focus" type="button" style="justify-content: space-between"><span>Use first reading</span><span class="k-kbd">1</span></button>
+          </div>
+          <div class="k-toast" role="status" style="max-width: none">
+            <svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true" style="color: var(--k-nav-accent)"><path d="M5 12l5 5 9-10"></path></svg>
+            <span style="flex: 1">Stamp duty verified</span>
+            <button class="k-btn k-btn--quiet k-btn--sm" type="button">Undo</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div style="flex: 1; min-width: 80px; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 440px 10px 0">
+      <div style="display: flex; align-items: center; width: 100%; color: var(--k-accent)"><span style="flex: 1; height: 1.5px; background: var(--k-accent)"></span><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"></path></svg></div>
+      <span class="k-small k-muted" style="text-align: center">queue empties</span>
+    </div>
+
+    <!-- STEP 6 -->
+    <div style="width: 420px; flex: none; display: flex; flex-direction: column; gap: 14px">
+      <div style="display: flex; gap: 12px; align-items: flex-start; min-height: 72px">
+        <span class="k-mono" style="width: 32px; height: 32px; border-radius: 50%; background: var(--k-verified); color: var(--k-verified-ink); display: grid; place-items: center; flex: none"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true" style="stroke-width: 2.5"><path d="M5 12l5 5 9-10"></path></svg></span>
+        <div style="display: flex; flex-direction: column; gap: 3px"><strong>Nothing left to review</strong><span class="k-small k-muted">The badges flip to Verified everywhere the values appear.</span></div>
+      </div>
+      <div class="k-card k-card--flush" style="height: 760px; overflow: hidden">
+        <div style="display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 14px; border-bottom: 1px solid var(--k-rule); background: var(--k-surface)"><span style="width: 12px; height: 15px; background: var(--k-ink); clip-path: polygon(0 0, 70% 0, 100% 22%, 100% 100%, 0 100%)" aria-hidden="true"></span><span class="k-small k-muted">Review</span></div>
+        <div style="padding: 18px; display: flex; flex-direction: column; gap: 18px">
+          <div class="k-empty" style="padding: 28px 12px 12px">
+            <div style="position: relative; width: 180px; height: 132px"><span class="k-ledger k-ledger--back" aria-hidden="true"></span><span class="k-ledger" aria-hidden="true" style="position: absolute; inset: 0"></span></div>
+            <h2 class="k-h2">Nothing left to review</h2>
+            <p class="k-small">New values that need a second look will appear here.</p>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 0; border-top: 1px solid var(--k-rule)">
+            <div class="k-rule-row"><span class="k-small">Values verified</span><strong class="k-mono">5</strong></div>
+            <div class="k-rule-row"><span class="k-small">Corrections remembered</span><strong class="k-mono">1</strong></div>
+            <div class="k-rule-row"><span class="k-small">Time taken</span><strong class="k-mono">48 s</strong></div>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 10px; padding: 12px; border: 1px solid var(--k-rule); border-radius: 16px">
+            <strong class="k-small">Rent Agreement Shinde.pdf is now fully verified</strong>
+            <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap">
+              <span class="k-status k-status--review" style="opacity: .7; text-decoration: line-through">Needs review</span>
+              <svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"></path></svg>
+              <span class="k-status k-status--verified"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg>Verified</span>
+            </div>
+          </div>
+          <a class="k-btn" href="DocumentPage.html" style="align-self: flex-start">Open Rent Agreement Shinde.pdf</a>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["light","dark"],"default":"light"},"$preview":{"width":3200,"height":1240}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return { theme: this.props.theme ?? 'light' };
+  }
+}
+</script>
+</body>
+</html>

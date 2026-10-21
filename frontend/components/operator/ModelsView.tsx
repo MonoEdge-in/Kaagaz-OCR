@@ -20,7 +20,7 @@ import type { Confirm } from "./ConfirmDialog";
 import { modelConfirm, modelFocusId } from "./confirms";
 import { LoadFailed } from "./LoadFailed";
 import { afterDone, operatorErrorMessage } from "./logic";
-import { VENDOR_NOT_ALLOWED, modelAction, notEnabledReason, pageCostText, priceText, yesNo } from "./models";
+import { NO_LEVELS, VENDOR_NOT_ALLOWED, hasNoLevels, modelAction, notEnabledReason, priceText, realCostText, yesNo } from "./models";
 import { PlatformDefaults } from "./PlatformDefaults";
 import admin from "@/components/admin/Admin.module.css";
 import styles from "./Operator.module.css";
@@ -51,8 +51,8 @@ export function ModelsView() {
           Models
         </h2>
         <p className={styles.summary}>
-          From OpenRouter&apos;s live list, refreshed daily. A model can be enabled once it passes the rules and
-          verify-models; then organisations can be given it.
+          From OpenRouter&apos;s live list, refreshed daily. Only models Kaagaz can use are listed. A model can be
+          enabled once it passes verify-models; then organisations can be given it.
         </p>
         <p className="visually-hidden" role="status">
           {done || (!models && !failed ? "Loading the models…" : "")}
@@ -85,7 +85,7 @@ export function ModelsView() {
 
 export function ModelsTable({ models, onChange }: { models: OperatorModel[]; onChange(model: OperatorModel, enable: boolean): void }) {
   return (
-    <div className={table.reflowWrap}>
+    <div className={`${table.reflowWrap} ${admin.tableScroll}`}>
       <table className={`table ${table.reflow} ${styles.nameWide}`} role="table">
         <caption className="visually-hidden">The model catalogue</caption>
         <thead role="rowgroup">
@@ -130,11 +130,13 @@ function ModelRow({ model, onChange }: { model: OperatorModel; onChange(enable: 
       </td>
       <td role="cell" data-label="Eligible">
         Scanning: {yesNo(model.eligible)}, answering: {yesNo(model.chat_eligible)}
-        {model.expires_on && <span className={styles.statusNote}>Ends {formatDate(model.expires_on)}</span>}
+        {hasNoLevels(model) && <span className={styles.statusNote}>{NO_LEVELS}</span>}
+        {model.expires_on &&<span className={styles.statusNote}>Ends {formatDate(model.expires_on)}</span>}
       </td>
       <td role="cell" data-label="Verified">
         Scanning: {yesNo(model.verified)}, answering: {yesNo(model.chat_verified)}
-        <span className={styles.statusNote}>{pageCostText(model)}</span>
+        {model.eligible && <span className={`${styles.statusNote} tabular`}>Scanning: {realCostText(model, "scan")}</span>}
+        {model.chat_eligible && <span className={`${styles.statusNote} tabular`}>Answering: {realCostText(model, "chat")}</span>}
       </td>
       <td role="cell" data-label="Enabled">
         {model.enabled_at ? `Yes, since ${formatDate(model.enabled_at)}` : "No"}

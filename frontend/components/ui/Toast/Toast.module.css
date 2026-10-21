@@ -1,0 +1,31 @@
+/* Toasts (design/kaagaz-ui-handoff/styles/kaagaz.css, section 11, .k-toast). */
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 12px 12px 18px;
+  border-radius: var(--k-r-4);
+  background: var(--k-inverse-bg);
+  color: var(--k-inverse-ink);
+  box-shadow: var(--k-shadow-2);
+  font-size: 14px;
+  max-width: 460px;
+}
+.toast > svg {
+  flex: none;
+}
+.message {
+  flex: 1;
+  min-width: 0;
+}
+.toast button,
+.toast button:hover {
+  color: var(--k-inverse-accent);
+}
+.toast button:hover {
+  background: var(--k-inverse-line);
+}
+.toast button:focus-visible {
+  outline-color: var(--k-inverse-accent);
+}

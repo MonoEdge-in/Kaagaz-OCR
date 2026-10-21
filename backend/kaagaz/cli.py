@@ -34,7 +34,7 @@
   ``platform_audit`` row with no operator.
 * ``reset-admin-2fa --email``: turn an admin's two-step code off (PRD 1 A6), for
   the last admin of a customer, who has no other admin to do it. Their sessions
-  end; they can turn it on again in Admin, Settings. It needs no password:
+  end; they set it up again at their next sign-in. It needs no password:
   whoever runs it already has the server.
 * ``measure --file PATH [--truth DIR] [--engine gemini|rapidocr]``: read one local
   file the way the worker does and print, per page, its route and why, the route
@@ -83,8 +83,16 @@
 * ``scan-times [--customer-id ID] [--last N]``: the last N ready runs (5), one line each,
   ids and seconds only: upload to Ready, queued, the run to Ready, and its steps (preparing,
   reading, Careful, card, map, checker, from the run's config), then how long after Ready
-  its vectors were made (the ``embed`` ledger row; fast scan, council 16 Oct 2026). Each
+  its vectors were made (the ``embed`` ledger row; fast scan, council 16 Oct 2026). Ready
+  first (16 Oct 2026): a run ready before its card ends after it, so Ready is its start plus
+  ``seconds_to_ready``, and ``understood_after_ready`` is ``seconds_after_ready``. Each
   customer is read in its own ``db.customer()``.
+* ``cost-saving [--customer-id ID] [--last N]``: Cost saving over the last N ready runs (50),
+  from their run config (``cost_saving_report``): the pages read, those that kept the quick
+  read, those read through the words path and those read whole again, the Careful tokens
+  spent (all measured), and the tokens saved (estimated: a whole-page Careful read's tokens
+  less what the page spent). Per-page tokens are recorded only since 16 Oct 2026, so the
+  token lines count only the runs read since, and it says how many. Numbers only.
 
 Why passwords are never flags: a flag lands in the shell history and the
 process list. They come from ``KAAGAZ_ADMIN_PASSWORD`` (``KAAGAZ_DEMO_PASSWORD``
@@ -102,9 +110,9 @@ import sys
 import time
 import unicodedata
 import uuid
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -132,7 +140,7 @@ from kaagaz.jobs import catalog
 from kaagaz.jobs.purge import CustomerStorage, purge_customer
 from kaagaz.preparing.page_checks import BlankMeasure, measure_blank
 from kaagaz.preparing.pages import PreparedPages, prepare_pages
-from kaagaz.reading.ocr import READER_PROMPT_VERSION, MeteredOcrEngine, PageRead
+from kaagaz.reading.ocr import PATH_PAGE, PATH_WORDS, READER_PROMPT_VERSION, MeteredOcrEngine, PageRead
 from kaagaz.reading.route import RouteDecision
 from kaagaz.reading.socket import NoReader
 from kaagaz.reading.spans import ReadError, Span
@@ -167,6 +175,8 @@ CUSTOMER_STATUS = {
 }
 # The operator commands that print a new two-step secret: only at a terminal.
 SECRET_COMMANDS = ("create-operator", "reset-operator-2fa")
+# cost-saving: the limits a run's config names (``reader_config``), after "cost_saving_".
+LIMIT_NAMES = ("hard_lines_max", "hard_share", "crop_pad")
 
 
 class CliError(Exception):
@@ -239,6 +249,10 @@ def _parser() -> argparse.ArgumentParser:
     times = commands.add_parser("scan-times", help="how long the last documents took, step by step")
     times.add_argument("--customer-id", help="one customer only (default: every customer)")
     times.add_argument("--last", type=int, default=5, help="the last N ready runs (default 5)")
+
+    saving = commands.add_parser("cost-saving", help="what Cost saving read and saved in the last runs")
+    saving.add_argument("--customer-id", "--customer", help="one customer only (default: every customer)")
+    saving.add_argument("--last", type=int, default=50, help="the last N ready runs (default 50)")
     return parser
 
 
@@ -519,8 +533,14 @@ def _reembed(db: Database, model: ModelClient, customer_id: str | None, every: b
 
 
 def _scan_times(db: Database, customer_id: str | None, last: int, out: TextIO) -> None:
+    """The last ``last`` ready runs (``_ready_runs``), one line each (``scan_times_line``)."""
+    for row in _ready_runs(db, customer_id, last):
+        out.write(scan_times_line(row) + "\n")
+
+
+def _ready_runs(db: Database, customer_id: str | None, last: int) -> list[RowMapping]:
     """The last ``last`` ready runs, newest first, each customer's read in its own
-    ``db.customer()`` (one query a customer), one line each (``scan_times_line``)."""
+    ``db.customer()`` (one query a customer)."""
     if last < 1:
         raise CliError("--last must be at least 1")
     if customer_id is None:
@@ -537,8 +557,7 @@ def _scan_times(db: Database, customer_id: str | None, last: int, out: TextIO) -
         with db.customer(customer) as conn:
             rows += conn.execute(_SCAN_TIMES, {"c": customer, "n": last}).mappings().all()
     rows.sort(key=lambda row: row["finished_at"], reverse=True)
-    for row in rows[:last]:
-        out.write(scan_times_line(row) + "\n")
+    return rows[:last]
 
 
 # scan-times: a ready run's times; indexed_at is when its embeddings' ledger row was saved
@@ -547,7 +566,9 @@ _SCAN_TIMES = text(
     "SELECT r.document_id, d.created_at AS uploaded_at, r.started_at, r.finished_at, r.pages_ocr,"
     " r.config, (SELECT max(u.created_at) FROM model_usage u WHERE u.customer_id = r.customer_id"
     " AND u.document_id = r.document_id AND u.kind = 'embed' AND u.created_at >= r.finished_at)"
-    " AS indexed_at"
+    " AS indexed_at, r.error_code, (SELECT count(*) FROM pieces p WHERE r.model_embed IS NOT NULL"
+    " AND p.customer_id = r.customer_id AND p.document_id = r.document_id AND p.embedding IS NULL)"
+    " AS vectors_pending"
     " FROM processing_runs r JOIN documents d ON d.customer_id = r.customer_id AND d.id = r.document_id"
     " WHERE r.customer_id = :c AND r.status = 'ready' ORDER BY r.finished_at DESC LIMIT :n"
 )
@@ -556,7 +577,8 @@ _SCAN_TIMES = text(
 def scan_times_line(row: Mapping[Any, Any]) -> str:
     """One run's line: ids and seconds only (fast scan, council 16 Oct 2026). Upload to
     Ready counts from the upload (a read-again run from its first upload); careful is "inline"
-    when Careful read inside reading (the pages it read). O(1)."""
+    when Careful read inside reading (the pages it read), and careful_words how many of the
+    pages read again had only their hard words read (Cost saving). O(escalated pages)."""
     config = row["config"] or {}
 
     def seconds(key: str) -> str:
@@ -566,17 +588,134 @@ def scan_times_line(row: Mapping[Any, Any]) -> str:
     def between(start: datetime | None, end: datetime | None) -> str:
         return "-" if start is None or end is None else f"{(end - start).total_seconds():.1f}"
 
+    to_ready = config.get("seconds_to_ready")
+    ready = (
+        row["started_at"] + timedelta(seconds=to_ready)
+        if isinstance(to_ready, int | float) and row["started_at"] is not None
+        else row["finished_at"]
+    )
+
     escalated = (config.get("reading") or {}).get("escalated") or []
     careful = seconds("seconds_careful") if "seconds_careful" in config else f"inline({len(escalated)} pages)"
+    # Cost saving (16 Oct 2026): of those pages, how many had only their hard words read again.
+    words = sum(PATH_WORDS in (page.get("reasons") or ()) for page in escalated)
+    careful = f"{careful} careful_words {words}"
     return (
         f"document {row['document_id']} ocr_pages {row['pages_ocr']}"
-        f" upload_to_ready {between(row['uploaded_at'], row['finished_at'])}"
+        f" upload_to_ready {between(row['uploaded_at'], ready)}"
         f" queued {between(row['uploaded_at'], row['started_at'])}"
-        f" run_to_ready {between(row['started_at'], row['finished_at'])}"
+        f" run_to_ready {between(row['started_at'], ready)}"
         f" preparing {seconds('seconds_preparing')} reading {seconds('seconds_reading')} careful {careful}"
         f" card {seconds('seconds_card')} map {seconds('seconds_map')} checker {seconds('seconds_checker')}"
-        f" index_after_ready {between(row['finished_at'], row['indexed_at'])}"
+        f" understood_after_ready {seconds('seconds_after_ready')}"
+        f" index_after_ready {between(ready, row['indexed_at'])}"
+        f" pending {_pending(row)}"
     )
+
+
+def _pending(row: Mapping[Any, Any]) -> str:
+    """The post-Ready steps still to come (never stuck, 17 Oct 2026): ``vectors`` while pieces
+    have none (EmbedMissing fills them), ``card`` when the model failed it; ``-`` for none."""
+    steps = ["vectors"] if (row.get("vectors_pending") or 0) > 0 else []
+    steps += ["card"] if str(row.get("error_code") or "").startswith("model_") else []
+    return ",".join(steps) or "-"
+
+
+def cost_saving_report(rows: Sequence[Mapping[Any, Any]]) -> str:
+    """Cost saving (16 Oct 2026) over ``rows`` (``_ready_runs``), from each run's config.
+    Measured: the pages read in the runs read with Cost saving (Dynamic), split into those
+    that kept the quick read, those read through the words path and those read whole again;
+    the Careful tokens they spent (the per-page tokens ``pipeline._note_tokens`` records, so
+    only runs with ``kept_quick``, read since; older ones are counted apart). Estimated: the
+    tokens saved, for each words-path page, and each kept page that the old rule read whole
+    (``kept_quick``), a whole-page Careful read's tokens less what the page spent; that read is
+    the average of the document's own whole-page Careful reads, else the page's first read
+    times the run set's Careful-to-first ratio, else not enough data. O(pages)."""
+    dynamic = [
+        (row, reading)
+        for row in rows
+        if (reading := (row["config"] or {}).get("reading") or {}).get("mode") == "dynamic"
+    ]
+    pages = sum(row["pages_ocr"] or 0 for row, _reading in dynamic)
+    escalated = [entry for _row, reading in dynamic for entry in reading.get("escalated") or []]
+    words = sum(_path(entry) == PATH_WORDS for entry in escalated)
+    exact = [reading for _row, reading in dynamic if "kept_quick" in reading]
+    spent = _sums(entry for reading in exact for entry in [*_escalated(reading), *reading["kept_quick"]])
+    # Whole-page Careful reads with tokens: each document's own, and the run set's ratio of
+    # their Careful tokens to their first read's.
+    own = [[entry for entry in _escalated(reading) if _path(entry) == PATH_PAGE] for reading in exact]
+    whole_pages = [entry for one in own for entry in one]
+    careful, first = _sums(whole_pages), _sums(whole_pages, prefix="first")
+    ratio = None if 0 in first else (careful[0] / first[0], careful[1] / first[1])
+    saved = {"words path": [0.0, 0.0, 0], "kept quick": [0.0, 0.0, 0]}
+    unknown = 0
+    for reading, whole in zip(exact, own, strict=True):
+        average = None if not whole else tuple(total / len(whole) for total in _sums(whole))
+        pages_saved = [("words path", entry) for entry in _escalated(reading) if _path(entry) == PATH_WORDS]
+        pages_saved += [("kept quick", entry) for entry in reading["kept_quick"]]
+        for kind, entry in pages_saved:
+            estimate = average
+            first_in, first_out = entry.get("first_in", 0), entry.get("first_out", 0)
+            if estimate is None and ratio is not None and first_in + first_out:
+                estimate = (first_in * ratio[0], first_out * ratio[1])
+            if estimate is None:
+                unknown += 1
+                continue
+            total = saved[kind]
+            total[0] += estimate[0] - entry.get("tokens_in", 0)
+            total[1] += estimate[1] - entry.get("tokens_out", 0)
+            total[2] += 1
+    limits = sorted(
+        {
+            "/".join(str((row["config"] or {}).get(f"cost_saving_{name}", "-")) for name in LIMIT_NAMES)
+            for row, _reading in dynamic
+        }
+    )
+    lines = [
+        f"cost saving: last {len(rows)} ready documents, {len(dynamic)} read with Cost saving"
+        f" ({len(exact)} with per-page tokens, {len(dynamic) - len(exact)} read before they were recorded)",
+        f"limits seen (hard lines max/hard share/crop pad): {', '.join(limits) or 'none'}",
+        f"measured  pages read                     {pages}",
+        f"measured  pages that kept the quick read {pages - len(escalated)}",
+        f"measured  pages read via the words path  {words}",
+        f"measured  pages read whole again         {len(escalated) - words}",
+        f"measured  careful tokens spent           in {spent[0]} out {spent[1]}",
+    ]
+    for kind, (saved_in, saved_out, count) in saved.items():
+        lines.append(
+            f"estimated tokens saved, {kind:<16} in {round(saved_in)} out {round(saved_out)} ({count} pages)"
+        )
+    total_in, total_out = (round(sum(total[i] for total in saved.values())) for i in (0, 1))
+    lines.append(f"estimated tokens saved, total            in {total_in} out {total_out}")
+    if unknown:
+        lines.append(f"estimated tokens saved: not enough data for {unknown} pages (no whole-page read)")
+    shown = "none yet" if ratio is None else f"in {ratio[0]:.2f} out {ratio[1]:.2f}"
+    lines += [
+        "note: a page's estimate is a whole-page Careful read's tokens (its document's own whole-page"
+        f" reads' average, else its first read x the Careful/first ratio, {shown}) less what it spent",
+        "note: the token lines are exact only for documents read after per-page tokens were recorded"
+        " (16 Oct 2026); the page counts cover every document",
+    ]
+    return "\n".join(lines)
+
+
+def _escalated(reading: Mapping[str, Any]) -> list[dict[str, Any]]:
+    return reading.get("escalated") or []
+
+
+def _path(entry: Mapping[str, Any]) -> str:
+    """How an escalated page was read again: the last of its reasons."""
+    reasons = entry.get("reasons") or [""]
+    return str(reasons[-1])
+
+
+def _sums(entries: Iterable[Mapping[str, Any]], *, prefix: str = "tokens") -> tuple[int, int]:
+    """The entries' ``<prefix>_in`` and ``<prefix>_out`` added up (0 when missing)."""
+    tokens_in = tokens_out = 0
+    for entry in entries:
+        tokens_in += entry.get(f"{prefix}_in", 0)
+        tokens_out += entry.get(f"{prefix}_out", 0)
+    return tokens_in, tokens_out
 
 
 def _reembed_stories(db: Database, model: ModelClient, customer: str) -> int:
@@ -904,6 +1043,8 @@ def main(
             _reembed(db, model, args.customer_id, args.all, stdout)
         elif args.command == "scan-times":
             _scan_times(db, args.customer_id, args.last, stdout)
+        elif args.command == "cost-saving":
+            stdout.write(cost_saving_report(_ready_runs(db, args.customer_id, args.last)) + "\n")
         elif args.command in CUSTOMER_STATUS:
             line = _set_customer_status(db, args.command, args.customer_id, datetime.now(UTC))
             stdout.write(line + "\n")
@@ -924,7 +1065,7 @@ def main(
             stdout.write(_change_operator(db, key, args.command, args.email))
         elif args.command == "reset-admin-2fa":
             user_id = _reset_admin_2fa(db, args.email)
-            stdout.write(f"user {user_id}: 2FA is off; they can turn it on again in Admin, Settings\n")
+            stdout.write(f"user {user_id}: 2FA is off; they set it up again at their next sign-in\n")
         else:
             _seed_demo(db, _password(env, DEMO_ENV_VAR, None), stdout)
     except (CliError, SettingsError) as error:

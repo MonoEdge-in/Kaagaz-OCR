@@ -44,8 +44,8 @@ export function Sparkline({ values }: { values: readonly number[] }): ReactEleme
 
 export interface SharePart { label: string; value: number }
 
-// Theme tokens, light and dark (app/globals.css); the legend's words carry the meaning.
-const TOKENS = ["--accent", "--verified-solid", "--review-solid", "--fg-muted", "--danger-fg", "--border-strong"];
+// MonoEdge tokens, light and dark (app/globals.css); the legend's words carry the meaning.
+const TOKENS = ["--accent", "--success", "--warning", "--text-secondary", "--critical", "--border-strong"];
 
 function shareWords(value: number, total: number): string {
   const percent = (value / total) * 100;
@@ -66,7 +66,7 @@ export function ShareBar({ parts }: { parts: readonly SharePart[] }): ReactEleme
       {/* forcedColorAdjust keeps the segments drawn in forced colours; the legend says the same in words */}
       <div
         aria-hidden="true"
-        style={{ display: "flex", height: "0.75rem", borderRadius: "var(--r-sm)", overflow: "hidden", forcedColorAdjust: "none" }}
+        style={{ display: "flex", height: "0.75rem", borderRadius: "2px", overflow: "hidden", forcedColorAdjust: "none" }}
       >
         {legend.filter((part) => part.value > 0).map((part) => (
           <span key={part.label} style={{ width: `${coord((part.value / total) * 100)}%`, background: part.colour }} />
@@ -77,7 +77,7 @@ export function ShareBar({ parts }: { parts: readonly SharePart[] }): ReactEleme
           <li key={part.label}>
             <span
               aria-hidden="true"
-              style={{ display: "inline-block", width: "0.75rem", height: "0.75rem", marginInlineEnd: "var(--space-1)", borderRadius: "var(--r-sm)", background: part.colour, forcedColorAdjust: "none" }}
+              style={{ display: "inline-block", width: "0.75rem", height: "0.75rem", marginInlineEnd: "var(--space-1)", borderRadius: "2px", background: part.colour, forcedColorAdjust: "none" }}
             />
             {part.label} {shareWords(part.value, total)}
           </li>

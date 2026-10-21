@@ -1,10 +1,13 @@
-/* The document screen. Tokens only (app/globals.css). */
+/* The document screen, in the handoff's layout (desktop/DocumentPage.html): the page on a
+   sunken pane at the start, and beside it one card with the name, its place and actions,
+   then the tabs. Verified and Needs review differ by icon, word and edge (solid or dashed),
+   never by colour alone. */
 
 .back {
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
-  min-height: 24px;
+  min-height: var(--control-min, 32px); /* G10 */
   font-size: var(--fs-sm);
   font-weight: 600;
   align-self: flex-start;
@@ -15,10 +18,63 @@
   flex-direction: column;
   gap: var(--space-2);
   min-width: 0;
+  padding-block-end: var(--space-4);
+  border-block-end: 1px solid var(--k-rule);
 }
 
-/* The title, then Download original and Ask about this document at its end;
-   they wrap under a long title. */
+/* DD2: where it is filed, Documents / Folder / name; the name is cut to one line. */
+.crumbs ol {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 var(--space-1);
+  margin: 0;
+  padding: 0;
+  font-size: 13px;
+  color: var(--k-ink-muted);
+}
+
+.crumbs a {
+  color: var(--k-ink-muted);
+  text-decoration: none;
+}
+
+.crumbs a:hover {
+  color: var(--k-accent);
+  text-decoration: underline;
+}
+
+.crumbs li {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  min-height: var(--control-min, 32px);
+}
+
+.crumbs li + li::before {
+  content: "/";
+  content: "/" / "";
+  margin-inline-end: var(--space-1);
+}
+
+/* The name takes the room left on the trail's line, cut short, never a line of its own. */
+.crumbs li[aria-current] {
+  flex: 1 1 0;
+  min-width: 4rem;
+}
+
+.crumbs li[aria-current] > span {
+  max-width: 24rem;
+  color: var(--k-ink);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* DD2: the title and its status chip, then Download, Ask and the menu on the row under it
+   (desktop/DocumentPage.html: the pane is too narrow for one row). */
 .titleRow {
   display: flex;
   flex-wrap: wrap;
@@ -27,10 +83,28 @@
 }
 
 .title {
-  flex: 1 1 20rem;
+  flex: 0 1 auto;
   min-width: 0;
   margin: 0;
+  font-family: var(--k-font-display);
+  font-stretch: var(--k-display-stretch);
+  font-size: var(--k-fs-22);
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -0.015em;
   overflow-wrap: anywhere;
+}
+
+.headActions {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  /* At 320px its one line (312px) was wider than the room (288px) and <main> scrolled
+     sideways; capped, the menu button wraps under the other two instead. */
+  max-width: 100%;
+  align-items: center;
+  gap: var(--space-2);
+  flex-basis: 100%;
 }
 
 /* One meta line (board 12 P4): status, type and pages, Read again, the folder
@@ -43,8 +117,8 @@
 }
 
 .meta {
-  color: var(--fg-muted);
-  font-size: var(--fs-sm);
+  color: var(--k-ink-muted);
+  font-size: 13px;
 }
 
 /* "Read again" (ReadAgain.tsx): the button sits in the meta line; its
@@ -61,9 +135,9 @@
   flex-direction: column;
   gap: var(--space-2);
   padding: var(--space-3) var(--space-4);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--r-md);
-  background: var(--surface-2);
+  border: 1px solid var(--k-rule);
+  border-radius: var(--k-r-4);
+  background: var(--k-sunken);
   font-size: var(--fs-sm);
 }
 
@@ -75,10 +149,27 @@
   font-weight: 600;
 }
 
+/* [Cancel] [Primary], at the end of the row; below 480px stacked full width, the primary on top. */
 .readAgainButtons {
   display: flex;
   flex-wrap: wrap;
+  justify-content: flex-end;
   gap: var(--space-2);
+}
+
+/* A destructive button stands apart from Cancel and the rest of its row. */
+.apart {
+  margin-inline-end: auto;
+}
+
+@media (max-width: 479.98px) {
+  .readAgainButtons {
+    flex-direction: column-reverse;
+  }
+
+  .readAgainButtons > * {
+    width: 100%;
+  }
 }
 
 /* Where it is filed: the folder path, the tags, the versions. */
@@ -90,14 +181,13 @@
   min-width: 0;
 }
 
+/* The MonoEdge label style: 11px, bold, capitals, a little apart. */
 .placeLabel {
-  font-size: var(--fs-sm);
-  font-weight: 600;
-  color: var(--fg-muted);
-}
-
-.download {
-  margin-inline-start: auto;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
 }
 
 /* A phone: the title has its own row; Download original is its icon alone
@@ -107,8 +197,11 @@
     flex-basis: 100%;
   }
 
+  /* Its icon alone: a square, like the menu button at the row's end. */
   .download {
+    width: var(--control-h);
     margin-inline-start: 0;
+    padding-inline: 0;
   }
 
   .ask {
@@ -131,33 +224,33 @@
   align-items: center;
   justify-content: center;
   min-width: var(--control-h);
-  min-height: var(--control-h);
+  height: var(--control-h);
   padding: 0 var(--space-2);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--r-sm);
-  color: var(--fg);
+  border: 1px solid var(--k-rule);
+  border-radius: var(--k-r-pill);
+  color: var(--k-ink);
   font-size: var(--fs-sm);
   font-weight: 600;
   text-decoration: none;
 }
 
 .versionLink:hover {
-  background: var(--surface-2);
-  color: var(--fg);
+  border-color: var(--k-rule-strong);
+  color: var(--k-ink);
 }
 
 /* Filled and bold, so colour is not the only sign of the one being viewed. */
 .versionLink[aria-current="page"] {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--accent-fg);
+  background: var(--k-accent);
+  border-color: var(--k-accent);
+  color: var(--k-accent-ink);
   font-weight: 700;
 }
 
 .note {
   margin: 0;
-  font-size: var(--fs-sm);
-  color: var(--fg-muted);
+  font-size: 13px;
+  color: var(--k-ink-muted);
 }
 
 .trashNotice {
@@ -165,24 +258,25 @@
   align-items: flex-start;
   gap: var(--space-2);
   margin: 0;
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--r-md);
-  background: var(--surface-2);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--k-rule);
+  border-radius: var(--k-r-4);
+  background: var(--k-surface);
   font-size: var(--fs-sm);
 }
 
+/* As tall as the first line of words, so the icon sits on it. */
 .trashNotice svg {
   flex: none;
-  margin-top: 2px;
+  height: 1lh;
 }
 
-/* Viewer 3fr, the panels (the values among them) 2fr from 1024 px; stacked
-   below that. Wider still: see below. */
+/* Viewer 3fr, the panels 2fr from 1024 px; stacked below that. With the column sticky
+   (below), the page takes --split (DD5, set by the handle) and the panels the rest. */
 .layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: var(--space-5);
+  gap: var(--space-4);
   align-items: start;
 }
 
@@ -192,26 +286,54 @@
   }
 }
 
-/* A window tall enough: the page column sticks, exactly the window's height,
-   and the page fits inside it ("Fit page", PageViewer). The same query is
-   STICKY_VIEWER_QUERY in components/viewer/viewer.ts. */
+/* The split's handle (SplitHandle): only beside the sticky column. */
+.handle {
+  display: none;
+}
+
+/* A window tall enough: the page column sticks, as tall as <main>, the page fitted to
+   its width inside it (DD5, PageViewer `fill`). The same query is STICKY_VIEWER_QUERY in
+   components/viewer/viewer.ts. The handle is the 24px gap between the columns: a 1px
+   line, the whole gap its target; hover and focus change its colour only. */
 @media (min-width: 1024px) and (min-height: 36rem) {
+  .layout {
+    grid-template-columns: minmax(0, var(--split, 55%)) var(--space-6) minmax(0, 1fr);
+    gap: 0;
+  }
+
   .viewer {
     position: sticky;
     top: var(--space-4);
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
-    height: calc(100svh - 2 * var(--space-4));
+    height: calc(var(--main-h) - 2 * var(--space-4)); /* <main> is the one scroller */
   }
-}
 
-/* A wide window: the page column is only as wide as a page fitted to the
-   window's height needs (an A4 page plus its frame; never past 55%), and the
-   panels take the rest. */
-@media (min-width: 90rem) and (min-height: 36rem) {
-  .layout {
-    grid-template-columns: minmax(0, min(calc((100svh - 7rem) * 0.8), 55%)) minmax(0, 1fr);
+  .handle {
+    position: sticky;
+    top: var(--space-4);
+    display: block;
+    height: calc(var(--main-h) - 2 * var(--space-4));
+    cursor: col-resize;
+    touch-action: none;
+  }
+
+  .handle::before {
+    content: "";
+    position: absolute;
+    inset-block: 0;
+    inset-inline-start: calc(50% - 1px);
+    border-inline-start: 2px solid var(--k-rule);
+  }
+
+  .handle:hover::before,
+  .handle:focus-visible::before {
+    border-inline-start-color: var(--k-accent);
+  }
+
+  .handle:focus-visible {
+    outline-offset: -2px;
   }
 }
 
@@ -220,14 +342,21 @@
   min-width: 0;
 }
 
+/* The page on the sunken ground, as the handoff's viewer pane. */
+.viewer {
+  padding: var(--space-3);
+  border-radius: var(--k-r-5);
+  background: var(--k-sunken);
+}
+
 .noPages {
   margin: 0;
-  padding: var(--space-6) var(--space-4);
+  padding: var(--space-8) var(--space-4);
   text-align: center;
-  color: var(--fg-muted);
-  background: var(--paper-frame);
+  color: var(--text-secondary);
+  background: var(--bg-subdued);
   border: 1px solid var(--border);
-  border-radius: var(--r-md);
+  border-radius: var(--k-r-2);
 }
 
 .values {
@@ -245,17 +374,18 @@
   font-size: var(--fs-lg);
 }
 
+/* The handoff's tab count (.k-tab-count): mono figures in a small sunken pill. */
 .count {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 1.75rem;
+  min-width: var(--badge-h);
+  height: var(--badge-h);
   padding: 0 var(--space-2);
-  border-radius: var(--r-full);
-  background: var(--surface-2);
-  color: var(--fg-muted);
-  font-size: var(--fs-sm);
-  font-weight: 600;
+  border-radius: var(--k-r-pill);
+  background: var(--k-sunken);
+  color: var(--k-ink-muted);
+  font: 500 11px/1 var(--k-font-mono);
 }
 
 /* The values table: a table while its column is wide enough, cards when not.
@@ -266,8 +396,8 @@
   border-collapse: separate;
   border-spacing: 0;
   border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--surface);
+  border-radius: var(--k-r-2);
+  background: var(--bg-surface);
 }
 
 .valuesTable th,
@@ -275,25 +405,13 @@
   overflow-wrap: break-word;
 }
 
-.valuesTable thead th {
-  position: sticky;
-  top: var(--topbar-space);
-  z-index: var(--z-sticky);
-  border-bottom: 0;
-  box-shadow: inset 0 -1px 0 var(--border);
-}
-
-.valuesTable thead th:first-child {
-  border-start-start-radius: var(--r-md);
-}
-
-.valuesTable thead th:last-child {
-  border-start-end-radius: var(--r-md);
-}
-
-/* A control focused from the keyboard scrolls clear of the sticky header row too (2.4.11). */
-.valuesTable tbody :is(a, button, input, select, summary) {
-  scroll-margin-top: calc(var(--topbar-space) + 4rem);
+/* The values table's wrapper is the only thing that may scroll sideways (the MonoEdge rule
+   for tables); inside it a header cannot stick to the window, so the header row stays put. */
+.valuesWrap {
+  position: relative;
+  min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
 }
 
 .valuesTable tbody tr:last-child td {
@@ -304,18 +422,28 @@
   font-weight: 600;
 }
 
-.labelCell {
+/* Label and reason: the badge stays on one line, its reason wraps under it. */
+.labelCell :global(.badge) {
   white-space: nowrap;
 }
 
-.reasonCell {
+.reason {
+  margin-block-start: var(--space-1);
   font-size: var(--fs-sm);
-  color: var(--fg-muted);
+  color: var(--text-secondary);
 }
 
+/* "Show all N" under a long values list: quiet, at the list's start. */
+.showAll {
+  align-self: flex-start;
+}
+
+/* A value is a word in a line, beside its Add meaning button: both sit on the
+   line's middle (vertical-align), not the value's baseline. */
 .valueButton {
   display: inline-block;
   min-height: 24px;
+  vertical-align: middle;
   margin-inline-end: var(--space-2);
   padding: 0;
   border: none;
@@ -340,27 +468,122 @@
   .valueButton {
     display: inline-flex;
     align-items: center;
-    min-height: 44px;
+    min-height: var(--h-lg);
   }
 
   .back {
-    min-height: var(--control-h);
+    min-height: var(--h-lg);
   }
 }
 
-/* The panels beside the page (DocumentPanels.tsx, PRD 3 Y1 to Y3). */
+/* The panels beside the page, as tabs (DD6; the global .tabs and .tab). Each tab's panel
+   keeps the same least height, so switching never moves the page. */
+/* The pane beside the page: one raised card, the name and actions at its head. */
 .panels {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
+  padding: var(--space-6);
+  border: 1px solid var(--k-card-edge);
+  border-radius: var(--k-r-5);
+  background: var(--k-surface);
+  box-shadow: var(--k-shadow-1);
 }
 
+/* Stacked (below 1024px), as phone/PhoneDocument.html: the name and its actions first, then
+   the page, then the rest, with no card around them. */
+@media (max-width: 1023.98px) {
+  .panels {
+    display: contents;
+  }
+
+  .header {
+    order: -1;
+  }
+}
+
+.tabs {
+  gap: var(--space-3);
+  margin-block-end: var(--space-4);
+  font-size: var(--fs-sm);
+}
+
+/* The status keeps its words on one line beside a long title. */
+.titleRow > :global(.status-chip) {
+  flex: none;
+  white-space: nowrap;
+}
+
+.tabCount[data-zero] {
+  color: var(--text-muted);
+}
+
+.tabPanel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+  min-height: 24rem;
+}
+
+/* DD7: the shown page's marks, short chips with the mark's own edge (never colour alone). */
+.markChips {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+}
+
+.markChip {
+  max-width: 100%;
+}
+
+.markChip[data-quality="unsure"] {
+  border-style: dashed;
+  border-color: var(--warning);
+}
+
+.markChip[data-quality="illegible"] {
+  border-color: var(--critical);
+}
+
+.markChip[data-quality="unpinned"] {
+  border-style: dotted;
+}
+
+.markChip[data-hot] {
+  background: var(--bg-selected);
+}
+
+.markWord {
+  min-width: 0;
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Attention with something to check: the same dashed edge as a Needs review value. */
+.attentionToCheck {
+  padding-inline-start: var(--space-3);
+  border-inline-start: 1px dashed var(--warning);
+}
+
+.attentionLead {
+  margin: 0;
+}
+
+/* Layout and style kept inside each panel, so a change in one never lays out the others
+   (no paint containment: a value's focus ring may reach past the panel's edge). */
 .panel {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  padding-bottom: var(--space-4);
-  border-bottom: 1px solid var(--border);
+  min-width: 0;
+  padding-block-end: var(--space-4);
+  border-block-end: 1px solid var(--border);
+  contain: layout style;
 }
 
 .panelHeading {
@@ -380,13 +603,13 @@
 .summary {
   margin: 0;
   padding-inline-start: var(--space-3);
-  border-inline-start: 3px dashed var(--review-solid);
+  border-inline-start: 1px dashed var(--warning);
 }
 
 /* Why the invoice needs review, one reason a line, under its short badge. */
 .checkReasons {
   margin: 0;
-  padding-inline-start: var(--space-5);
+  padding-inline-start: var(--space-6);
   font-size: var(--fs-sm);
   overflow-wrap: break-word;
 }
@@ -405,7 +628,9 @@
 
 .factRow dt {
   flex: 0 0 8rem;
+  min-width: 0;
   font-weight: 600;
+  overflow-wrap: break-word;
 }
 
 /* A long value (a GSTIN) moves under its name rather than breaking. */
@@ -418,31 +643,38 @@
 
 .pageNote {
   font-size: var(--fs-sm);
-  color: var(--fg-muted);
+  color: var(--text-secondary);
 }
 
-/* background-color, so a selected Needs review row keeps its hatched edge. */
+/* background-color only, so a selected row keeps its edge. */
 .activeRow td {
-  background-color: var(--accent-soft);
+  background-color: var(--accent-subtle);
 }
 
 .activeRow .valueButton {
   text-decoration-thickness: 2px;
 }
 
-/* A Needs review value: a hatched edge at the row's inline start, as on a
-   Needs review answer (the label badge still says it). */
+/* The row's edge at its inline start: solid for Verified, dashed for Needs review (1px),
+   beside the badge's own icon and word, so the two differ at a glance. */
 @container (min-width: 36rem) {
-  .valuesTable tr[data-label="needs_review"] td:first-child {
-    background-image: repeating-linear-gradient(45deg, var(--review-solid) 0 4px, transparent 4px 8px);
-    background-size: 4px 100%;
-    background-repeat: no-repeat;
+  .valuesTable tbody td:first-child {
+    position: relative;
+    padding-inline-start: var(--space-4);
   }
-}
 
-:global([dir="rtl"]) .valuesTable tr[data-label="needs_review"],
-:global([dir="rtl"]) .valuesTable tr[data-label="needs_review"] td:first-child {
-  background-position: right;
+  .valuesTable tr[data-label] td:first-child::before {
+    content: "";
+    position: absolute;
+    inset-block: var(--space-2);
+    inset-inline-start: var(--space-1);
+    border-inline-start: 1px solid var(--success);
+  }
+
+  .valuesTable tr[data-label="needs_review"] td:first-child::before {
+    border-inline-start-style: dashed;
+    border-inline-start-color: var(--warning);
+  }
 }
 
 @container (max-width: 35.99rem) {
@@ -467,36 +699,43 @@
     white-space: nowrap;
   }
 
+  /* desktop/DocumentPage.html: one rounded list, a hairline between the values. */
   .valuesTable tbody {
     display: flex;
     flex-direction: column;
-    gap: var(--space-2);
+    border: 1px solid var(--k-rule);
+    border-radius: var(--k-r-5);
+    background: var(--k-surface);
+    overflow: clip;
   }
 
   .valuesTable tbody tr {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr);
     grid-template-areas:
-      "field label"
-      "value value"
-      "reason reason";
+      "field"
+      "value"
+      "label";
     gap: var(--space-1) var(--space-3);
     padding: var(--space-3) var(--space-4);
-    border: 1px solid var(--border);
-    border-radius: var(--r-md);
-    background: var(--surface);
+    border: 1px solid transparent;
+    border-block-end-color: var(--k-rule);
+  }
+
+  .valuesTable tbody tr:last-child {
+    border-block-end-color: transparent;
   }
 
   .valuesTable tbody tr.activeRow {
-    background-color: var(--accent-soft);
+    background-color: var(--accent-subtle);
     border-color: var(--accent);
   }
 
+  /* A row: no edge for Verified, a dashed one and the review tint for Needs review. */
   .valuesTable tr[data-label="needs_review"] {
-    padding-inline-start: calc(var(--space-4) + 4px);
-    background-image: repeating-linear-gradient(45deg, var(--review-solid) 0 4px, transparent 4px 8px);
-    background-size: 4px 100%;
-    background-repeat: no-repeat;
+    border-style: dashed;
+    border-color: var(--warning);
+    background-color: var(--k-review-soft);
   }
 
   .valuesTable td,
@@ -509,12 +748,22 @@
   .fieldCell {
     grid-area: field;
     align-self: center;
-    font-size: var(--fs-sm);
-    color: var(--fg-muted);
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--k-ink-muted);
   }
 
-  .labelCell {
+  /* The badge, then its reason beside it, wrapping under it when long. */
+  .valuesTable td.labelCell {
     grid-area: label;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-1) var(--space-2);
+  }
+
+  .reason {
+    margin-block-start: 0;
   }
 
   .valueCell {
@@ -525,16 +774,13 @@
     font-size: var(--fs-lg);
   }
 
-  .reasonCell {
-    grid-area: reason;
-  }
 }
 
 /* Loading and errors */
 .loading {
   display: flex;
   flex-direction: column;
-  gap: var(--space-5);
+  gap: var(--space-6);
 }
 
 .titleSkeleton {
@@ -545,29 +791,38 @@
 .pageSkeleton {
   aspect-ratio: 1 / 1.3;
   max-height: 80dvh;
-  border-radius: var(--r-md);
+  border-radius: var(--k-r-2);
 }
 
 .valuesSkeleton {
   height: 16rem;
-  border-radius: var(--r-md);
+  border-radius: var(--k-r-2);
 }
 
+/* Icon, words and Try again: the icon and the first line of words sit on the
+   button's middle line (each moved down by half of what the button is taller
+   than a line), and a longer message runs on below it. */
 .errorBanner {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-start;
   gap: var(--space-3);
   padding: var(--space-3) var(--space-4);
-  border: 1px solid var(--danger-fg);
-  border-radius: var(--r-md);
-  background: var(--danger-bg);
-  color: var(--danger-fg);
+  border: 1px solid var(--critical);
+  border-radius: var(--k-r-2);
+  background: var(--bg-surface);
+  color: var(--critical);
 }
 
+/* As tall as the first line of words, so the icon sits on it. */
 .errorIcon {
   flex: none;
-  margin-top: 3px;
+  height: 1lh;
+}
+
+.errorIcon,
+.errorBody {
+  margin-block-start: max(0px, (var(--control-h) - 1lh) / 2);
 }
 
 .errorBody {
@@ -583,11 +838,11 @@
   font-weight: 600;
 }
 
-/* Your story about this document (StoryPanel.tsx): every button is at least
-   44 px (the touch size); the story is the user's text, wrapped anywhere. */
+/* Your story about this document (StoryPanel.tsx): every button is one
+   control tall and at least as wide (44 px on touch, from --control-h); the
+   story is the user's text, wrapped anywhere. */
 .storyTarget {
-  min-height: 44px;
-  min-width: 44px;
+  min-width: var(--control-h);
 }
 
 .storyBox {
@@ -608,14 +863,14 @@
   gap: var(--space-2);
   padding: var(--space-3);
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-md);
-  background: var(--surface-2);
+  border-radius: var(--k-r-2);
+  background: var(--bg-subdued);
   font-size: var(--fs-sm);
 }
 
 .problemBanner > svg {
   flex: none;
-  margin-top: 2px;
+  height: 1lh;
 }
 
 .problemBody {
@@ -626,9 +881,16 @@
   min-width: 0;
 }
 
-.problemList {
+/* DD4: the alert's title, then its lines, then one row of like buttons. */
+.problemTitle {
   margin: 0;
-  padding-inline-start: var(--space-4);
+  font-weight: 700;
+}
+
+.problemActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
 }
 
 .problemSays {

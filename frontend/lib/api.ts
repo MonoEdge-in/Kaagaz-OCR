@@ -8,17 +8,25 @@ import type { DocumentSearchParams } from "@/components/documents/insideSearch";
 import type { DocumentListParams } from "@/components/documents/libraryQuery";
 import type { StoryMatchBody } from "./storyMatches";
 import type {
+  ActivityPage,
   AdminChange,
   AdminCreated,
   AdminUser,
   AiDefaults,
+  AiSettings,
+  AiTask,
   AiValues,
   AnswerChoice,
-  AuditEntry,
   BatchView,
+  Dashboard,
+  DocumentCompare,
+  DocumentQuestion,
+  Person,
+  Sensitivity,
   BoardReply,
   ChatOptions,
   ChatResponse,
+  ClearCopy,
   Conversation,
   ConversationSummary,
   CustomerSettings,
@@ -26,7 +34,12 @@ import type {
   DocumentList,
   DocumentSearch,
   DocumentSummary,
+  EnsembleEstimate,
+  EnsembleRun,
+  EnsembleScope,
   FailedDocument,
+  FeatureSwitch,
+  FlagState,
   Folder,
   InsightsReply,
   Me,
@@ -35,13 +48,16 @@ import type {
   MyWord,
   OperatorMe,
   OperatorModel,
+  OperatorMoveOffer,
   OperatorUsageRow,
   OrgAdmin,
   OrgAiReply,
+  OrgFeatureSwitch,
   Organisation,
   OrganisationCreated,
   PageReadings,
   PageSummary,
+  PageTranslation,
   PasswordReset,
   PlatformEvent,
   PlatformHealth,
@@ -50,16 +66,24 @@ import type {
   ReviewItem,
   ReviewList,
   ReviewReason,
+  ReviewStatus,
   Role,
   ScopeBody,
+  SessionTimeout,
   SheetCells,
+  SourcePin,
   Stats,
   Tag,
+  TaskLevel,
+  TestModel,
+  TranslateLanguage,
   TwoStepSetup,
   UploadLimits,
   UploadReading,
   UploadResult,
   UsageReport,
+  WordChange,
+  WordFlag,
   WordSaved,
 } from "./types";
 
@@ -91,13 +115,21 @@ function noticeSessionEnd(error: ApiError): ApiError {
 // which a cross-site form cannot add (CSRF).
 const CSRF_HEADER = { "X-Requested-With": "kaagaz" };
 
+/** What every screen says where a feature switched off for the whole product was (403 feature_off). */
+export const FEATURE_OFF = "This is turned off for now.";
+
+/** A refusal because the super admin switched the feature off for everyone. */
+export const isFeatureOff = (caught: unknown) => caught instanceof ApiError && caught.code === "feature_off";
+
 async function errorFrom(response: Response): Promise<ApiError> {
   try {
     const body = (await response.json()) as { error?: { code?: string; message?: string; details?: unknown } };
+    const code = body.error?.code ?? "error";
     return new ApiError(
       response.status,
-      body.error?.code ?? "error",
-      body.error?.message ?? "Something went wrong.",
+      code,
+      // One calm sentence wherever the message is shown, whatever the server's words.
+      code === "feature_off" ? FEATURE_OFF : (body.error?.message ?? "Something went wrong."),
       body.error?.details,
     );
   } catch {
@@ -152,32 +184,29 @@ export function query(params: Record<string, QueryValue>): string {
 // --- files the browser loads directly (img src, PDF.js) ----------------------
 
 export const fileUrl = (documentId: string) => `/api/documents/${documentId}/file`;
+/** The Download button's address (A2): only it is logged, and it saves under the document's name. */
+export const downloadUrl = (documentId: string) => `${fileUrl(documentId)}?download=1`;
 export const pageImageUrl = (documentId: string, pageNo: number) =>
   `/api/documents/${documentId}/pages/${pageNo}/image`;
 
 // --- auth ----------------------------------------------------------------------
 
-export const login = (email: string, password: string) =>
-  request<Me>("POST", "/auth/login", { email, password });
+/** The one sign-in (16 Oct 2026). An admin also sends the code once the server asks
+ * for it (401 code_required), or sets two-step up first (403 mfa_enrol_required). */
+export const login = (email: string, password: string, code?: string) =>
+  request<Me>("POST", "/auth/login", { email, password, ...(code === undefined ? {} : { code }) });
 export const logout = () => request<void>("POST", "/auth/logout");
+/** Whether anyone may create an organisation at /signup (SELF_SIGNUP_ENABLED). */
+export const signUpOpen = () => request<{ enabled: boolean }>("GET", "/auth/signup");
+/** A new organisation and its first admin. The reply is the two-step set-up (admins must
+ * have it); the first code (adminEnrol) signs in as that admin. */
+export const signUp = (body: { organisation_name: string; name: string; email: string; password: string }) =>
+  request<TwoStepSetup>("POST", "/auth/signup", body);
 export const me = () => request<Me>("GET", "/auth/me");
 
-/** The admin screen's sign-in. The code is needed only once the admin has turned 2FA on. */
-export const adminLogin = (email: string, password: string, code?: string) =>
-  request<Me>("POST", "/auth/admin/login", {
-    email,
-    password,
-    ...(code === undefined ? {} : { code }),
-  });
-/** The signed-in admin's own two-step sign-in: with the current password, a new
- * key; then the first code turns it on. */
-export const startTwoStep = (password: string) =>
-  request<TwoStepSetup>("POST", "/auth/admin/2fa/start", { password });
+/** The first code from the set-up (sign-in or sign-up) turns two-step on and signs in. */
 export const adminEnrol = (enrolToken: string, code: string) =>
   request<Me>("POST", "/auth/admin/enrol", { enrol_token: enrolToken, code });
-/** Turns it off; the server re-signs this browser and signs out the others. */
-export const turnOffTwoStep = (password: string) =>
-  request<Me>("POST", "/auth/admin/2fa/off", { password });
 export const changePassword = (current: string, next: string) =>
   request<Me>("POST", "/auth/password", { current_password: current, new_password: next });
 export const logoutEverywhere = () => request<void>("POST", "/auth/logout-everywhere");
@@ -205,8 +234,8 @@ export const restoreDocument = (id: string) =>
  * Read the document again from the start (PRD 2, X1): a reviewer or an admin,
  * for a ready, failed or unreadable document out of Trash (403 forbidden or
  * 409 not_reprocessable otherwise). The reply has its new status, received.
- * reading: the reading asked for (a model, Dynamic, or Ensemble's readers; one the
- * organisation may not use is 403); none keeps the document's own.
+ * reading: the reading asked for (a model or Dynamic; one the organisation may not
+ * use is 403); none keeps the document's own.
  */
 export const reprocessDocument = (id: string, reading?: UploadReading) =>
   request<DocumentSummary>("POST", `/documents/${id}/reprocess`, reading);
@@ -224,8 +253,47 @@ export const deleteDocumentForever = (id: string) =>
  */
 export const updateDocument = (
   id: string,
-  changes: { display_name?: string; folder_id?: string | null },
+  changes: {
+    display_name?: string;
+    folder_id?: string | null;
+    owner_id?: string; // O1: the whole family; an active person of the company
+    sensitivity?: Sensitivity; // O2: the whole family
+    version_note?: string | null; // V9: this version; null clears it
+  },
 ) => request<DocumentSummary>("PATCH", `/documents/${id}`, changes);
+
+// --- file management (PRD 1, Phase 2) -----------------------------------------------
+
+/** D1, D2: the home screen in one request. */
+export const getDashboard = () => request<Dashboard>("GET", "/dashboard");
+/** The company's active people, for the owner picker and the Owner filter. */
+export const listPeople = () => request<{ items: Person[] }>("GET", "/people");
+/** V6 Make it version N: the document joins the candidate's family, with an optional note (V9). */
+export const acceptSuggestion = (id: string, versionNote?: string) =>
+  request<DocumentSummary>(
+    "POST",
+    `/version-suggestions/${encodeURIComponent(id)}/accept`,
+    versionNote ? { version_note: versionNote } : undefined,
+  );
+/** V6 Keep separate: the pair is never suggested again. */
+export const rejectSuggestion = (id: string) =>
+  request<void>("POST", `/version-suggestions/${encodeURIComponent(id)}/reject`);
+/** V7: the link undone while it is still the newest version; 409 not_newest after that. */
+export const undoVersionLink = (id: string) => request<DocumentSummary>("POST", `${doc(id)}/version-undo`);
+/** V10: this ready version becomes the one search and chat use. */
+export const makeCurrent = (id: string) => request<DocumentSummary>("POST", `${doc(id)}/make-current`);
+/** V11: the reader text of `withId` (left) against `id` (right), page by page. */
+export const compareDocuments = (id: string, withId: string) =>
+  request<DocumentCompare>("GET", `${doc(id)}/compare${query({ with: withId })}`);
+/** A5: every version of the family, newest first. */
+export const documentActivity = (id: string, cursor?: string) =>
+  request<ActivityPage>("GET", `${doc(id)}/activity${query({ cursor })}`);
+/** A5: the folder and everything below it. */
+export const folderActivity = (id: string, cursor?: string) =>
+  request<ActivityPage>("GET", `/folders/${encodeURIComponent(id)}/activity${query({ cursor })}`);
+/** P2: this person's questions about the document, newest first. */
+export const documentQuestions = (id: string) =>
+  request<{ items: DocumentQuestion[] }>("GET", `${doc(id)}/questions`);
 /**
  * Feature 28: move a family Kaagaz filed back to "Not in a folder"; the folder stays.
  * 409 already_moved when someone moved it since, 409 in_trash in Trash.
@@ -252,6 +320,11 @@ export const acceptPage = (id: string, pageNo: number) =>
 /** What each reader read on one page, as read (the viewer's Scanned text panel only). */
 export const getPageReadings = (id: string, pageNo: number) =>
   request<PageReadings>("GET", `/documents/${id}/pages/${pageNo}/readings`);
+/** Read clearly: every page's lines in one request (no AI). */
+export const getClearCopy = (id: string) => request<ClearCopy>("GET", `/documents/${id}/clear-copy`);
+/** Read clearly: one page in English, Hindi or Marathi (follows Ask: 403 feature_off when off). */
+export const translatePage = (id: string, pageNo: number, language: TranslateLanguage) =>
+  request<PageTranslation>("POST", `/documents/${id}/pages/${pageNo}/translate`, { language });
 
 /** This user's story of the document (any version: it belongs to the family); story is null when there is none. */
 export const getMyStory = (id: string) =>
@@ -268,8 +341,8 @@ export const deleteMyStory = (id: string, userId: string) =>
  * into a folder when one is given, else at the top level. userId is who was
  * signed in when the file was chosen: the server refuses the file (409
  * session_changed) if someone else has signed in since, in another tab.
- * reading is what was chosen in "Read with" (readers.ts), sent as read_mode, read_model
- * and read_agents (one field each); none means the organisation's default.
+ * reading is what was chosen in "Read with" (readers.ts), sent as read_mode or
+ * read_model; none means the organisation's default.
  * batchId is the drop it came in (PRD 5 Q1, a UUID the browser made; 409 batch_full
  * past MAX_FILES_PER_BATCH). onSent: the last byte has gone, so Saving starts (U10).
  */
@@ -281,9 +354,11 @@ export function uploadDocument(
   reading?: UploadReading,
   batchId?: string,
   onSent?: () => void,
+  departmentId?: string, // F2: used by the server when no folder is named
 ): Promise<UploadResult> {
   const form = new FormData();
   if (folderId) form.append("folder_id", folderId);
+  else if (departmentId) form.append("department_id", departmentId);
   appendReading(form, reading);
   if (batchId) form.append("batch_id", batchId);
   form.append("user_id", userId);
@@ -303,19 +378,20 @@ export function uploadVersion(
   onProgress: (fraction: number) => void,
   reading?: UploadReading,
   onSent?: () => void,
+  versionNote?: string, // V9: optional, at most 200 characters
 ): Promise<UploadResult> {
   const form = new FormData();
   appendReading(form, reading);
+  if (versionNote) form.append("version_note", versionNote);
   form.append("user_id", userId);
   form.append("file", file);
   return sendForm(`/api/documents/${documentId}/versions`, form, onProgress, onSent);
 }
 
-/** The reading's form fields (features 26, 27): read_agents once per reader. */
+/** The reading's form fields (feature 26). */
 function appendReading(form: FormData, reading: UploadReading | undefined): void {
   if (reading?.read_mode) form.append("read_mode", reading.read_mode);
   if (reading?.read_model) form.append("read_model", reading.read_model);
-  for (const agent of reading?.read_agents ?? []) form.append("read_agents", agent);
 }
 
 /**
@@ -369,12 +445,22 @@ function sendForm(
 // --- folders and tags ------------------------------------------------------------
 
 export const listFolders = () => request<{ items: Folder[] }>("GET", "/folders");
-/** A new folder inside parentId, or at the top level for null. */
-export const createFolder = (name: string, parentId: string | null) =>
-  request<Folder>("POST", "/folders", { name, ...(parentId ? { parent_id: parentId } : {}) });
-/** Rename or move. An explicit parent_id: null moves the folder to the top level. */
-export const updateFolder = (id: string, changes: { name?: string; parent_id?: string | null }) =>
-  request<Folder>("PATCH", `/folders/${id}`, changes);
+/** A new folder inside parentId, or at the top level for null. F1: a department is an admin's, top level only. */
+export const createFolder = (
+  name: string,
+  parentId: string | null,
+  department?: { sort_order: number },
+) =>
+  request<Folder>("POST", "/folders", {
+    name,
+    ...(parentId ? { parent_id: parentId } : {}),
+    ...(department ? { kind: "department", sort_order: department.sort_order } : {}),
+  });
+/** Rename, move or order. An explicit parent_id: null moves the folder to the top level. */
+export const updateFolder = (
+  id: string,
+  changes: { name?: string; parent_id?: string | null; sort_order?: number | null },
+) => request<Folder>("PATCH", `/folders/${id}`, changes);
 export const deleteFolder = (id: string) => request<void>("DELETE", `/folders/${id}`);
 export const listTags = () => request<{ items: Tag[] }>("GET", "/tags");
 export const createTag = (name: string) => request<Tag>("POST", "/tags", { name });
@@ -406,6 +492,12 @@ export const listConversations = () =>
   request<{ items: ConversationSummary[] }>("GET", "/conversations");
 export const getConversation = (id: string) =>
   request<Conversation>("GET", `/conversations/${id}`);
+export const renameConversation = (id: string, title: string) =>
+  request<ConversationSummary>("PATCH", `/conversations/${id}`, { title });
+export const deleteConversation = (id: string) => request<void>("DELETE", `/conversations/${id}`);
+/** "Most relevant" (ranked sources, 16 Oct 2026): this source on top of the answer, kept as relevance feedback. */
+export const pinSource = (messageId: string, pin: SourcePin, previousRank: number) =>
+  request<void>("POST", `/messages/${messageId}/pin`, { ...pin, previous_rank: previousRank });
 export const sendFeedback = (messageId: string, rating: "up" | "down", reason?: string) =>
   request<void>("POST", `/messages/${messageId}/feedback`, {
     rating,
@@ -471,8 +563,23 @@ export const updateSettings = (maxUploadMb: number | null, autofileOn?: boolean)
     max_upload_mb: maxUploadMb,
     ...(autofileOn === undefined ? {} : { autofile_on: autofileOn }),
   });
-export const listAudit = (params: { limit?: number; offset?: number } = {}) =>
-  request<{ items: AuditEntry[]; total: number }>("GET", `/admin/audit${query(params)}`);
+/** A5: the admin log, filtered (stage 3); `cursor` is the reply's `next`. The older reply pages by offset. */
+export type AuditParams = {
+  limit?: number;
+  offset?: number;
+  cursor?: string;
+  user_id?: string; // who did it
+  folder_id?: string; // with its subfolders
+  document_id?: string;
+  action?: readonly string[];
+  from?: string; // YYYY-MM-DD, both days included
+  to?: string;
+};
+export const listAudit = (params: AuditParams = {}) =>
+  request<ActivityPage>("GET", `/admin/audit${query(params)}`);
+/** A6 Export to Excel: the filtered rows as CSV, streamed; logged as audit.export. */
+export const auditExportUrl = (params: AuditParams) =>
+  `/api/admin/audit/export${query({ ...params, limit: undefined, offset: undefined, cursor: undefined })}`;
 export const getStats = () => request<Stats>("GET", "/admin/stats");
 /** Documents that failed or can't be read (PRD 3 Z1); Retry is reprocessDocument. */
 export const listFailed = (params: { limit?: number; offset?: number } = {}) =>
@@ -489,6 +596,12 @@ export const operatorLogin = (email: string, password: string, code: string) =>
   request<OperatorMe>("POST", "/operator/login", { email, password, code });
 export const operatorLogout = () => request<void>("POST", "/operator/logout");
 export const operatorMe = () => request<OperatorMe>("GET", "/operator/me");
+/** Moving two-step to a new device: the password and a code from the CURRENT device give the new key. */
+export const operatorMoveStart = (password: string, code: string) =>
+  request<OperatorMoveOffer>("POST", "/operator/2fa/move/start", { password, code });
+/** A code from the NEW device moves it; every other browser is signed out, this one stays in. */
+export const operatorMoveConfirm = (move_token: string, code: string) =>
+  request<OperatorMe>("POST", "/operator/2fa/move/confirm", { move_token, code });
 export const listOrgs = () => request<{ items: Organisation[] }>("GET", "/operator/orgs");
 export const createOrg = (org: { name: string; admin_email: string; admin_name: string }) =>
   request<OrganisationCreated>("POST", "/operator/orgs", org);
@@ -527,7 +640,7 @@ export const putOrgAi = (
   id: string,
   body: AiValues & { ensemble: boolean; ai_budget_usd: number | null },
   code: string,
-) => request<OrgAiReply>("PUT", `/operator/orgs/${id}/ai`, { ...body, code });
+) => request<OrgAiReply & { ensemble_off: boolean }>("PUT", `/operator/orgs/${id}/ai`, { ...body, code });
 /** The platform defaults and how many organisations follow each area. */
 export const getAiDefaults = () => request<AiDefaults>("GET", "/operator/ai-defaults");
 /** Save them, with a fresh code: every organisation still on them follows. */
@@ -551,3 +664,78 @@ export const getOperatorInsights = (days: number) =>
 export const getOperatorQuality = (days: number) => request<QualityReply>("GET", `/operator/quality${query({ days })}`);
 /** Compare models (F4): observational, not an A/B test. */
 export const getModelBoard = (days: number) => request<BoardReply>("GET", `/operator/model-board${query({ days })}`);
+
+// --- word-level review and Ensemble after the scan (routers/word_review.py, ensemble.py) ---
+
+const doc = (id: string) => `/documents/${encodeURIComponent(id)}`;
+const word = (id: string, key: string) => `${doc(id)}/flags/${encodeURIComponent(key)}`;
+
+export const getReviewStatus = (id: string) => request<ReviewStatus>("GET", `${doc(id)}/review-status`);
+export const listFlags = (id: string, params: { page?: number; state?: FlagState } = {}) =>
+  request<{ items: WordFlag[]; total: number }>("GET", `${doc(id)}/flags${query(params)}`);
+/** A reviewer or an admin; `expectedText` is the text they saw (409 changed_since if it moved on). */
+export const confirmWord = (id: string, key: string, expectedText: string) =>
+  request<WordFlag>("POST", `${word(id, key)}/confirm`, { expected_text: expectedText });
+export const editWord = (id: string, key: string, text: string, expectedText: string) =>
+  request<WordFlag>("POST", `${word(id, key)}/edit`, { text, expected_text: expectedText });
+export const listChanges = (
+  id: string,
+  params: { source?: "person" | "ensemble"; limit?: number; before?: string } = {},
+) => request<{ items: WordChange[]; next_before: string | null }>("GET", `${doc(id)}/changes${query(params)}`);
+export const undoChange = (id: string, changeId: string) =>
+  request<WordChange>("POST", `${doc(id)}/changes/${encodeURIComponent(changeId)}/undo`);
+
+export const getEnsembleEstimate = (id: string, scope: EnsembleScope, wordKeys: string[] = []) =>
+  request<EnsembleEstimate>("GET", `${doc(id)}/ensemble/estimate${query({ scope, word_keys: wordKeys })}`);
+export const startEnsemble = (id: string, scope: EnsembleScope, wordKeys: string[] = []) =>
+  request<EnsembleRun>("POST", `${doc(id)}/ensemble`, { scope, word_keys: wordKeys });
+/** The document's latest run; 404 when it has none. */
+export const getEnsemble = (id: string) => request<EnsembleRun>("GET", `${doc(id)}/ensemble`);
+const run = (id: string, runId: string) => `${doc(id)}/ensemble/${encodeURIComponent(runId)}`;
+export const stopEnsemble = (id: string, runId: string) => request<EnsembleRun>("POST", `${run(id, runId)}/stop`);
+export const retryEnsemble = (id: string, runId: string) => request<EnsembleRun>("POST", `${run(id, runId)}/retry`);
+export const keepAllEnsemble = (id: string, runId: string) =>
+  request<{ kept: number; skipped: number }>("POST", `${run(id, runId)}/keep-all`);
+const reading = (id: string, readingId: string) => `${doc(id)}/ensemble/readings/${encodeURIComponent(readingId)}`;
+export const keepReading = (id: string, readingId: string) =>
+  request<{ id: string; decision: "kept"; change_id: string }>("POST", `${reading(id, readingId)}/keep`);
+export const revertReading = (id: string, readingId: string) =>
+  request<{ id: string; decision: "reverted" }>("POST", `${reading(id, readingId)}/revert`);
+
+// --- AI settings by task (spec 17 Oct 2026) ------------------------------------------
+
+export const getAiSettings = () => request<AiSettings>("GET", "/ai-settings");
+/** A member's own choices; null: use the organisation's setting. */
+export const putMyAiSettings = (tasks: Partial<Record<AiTask, TaskLevel | null>>) =>
+  request<AiSettings>("PUT", "/ai-settings/me", { tasks });
+/** Admins only: the organisation's defaults and locks. */
+export const putOrgAiSettings = (tasks: Partial<Record<AiTask, { level: TaskLevel; locked: boolean }>>) =>
+  request<AiSettings>("PUT", "/ai-settings/organisation", { tasks });
+
+/** Operator: every product feature's platform switch. */
+export const getFeatureSwitches = () => request<FeatureSwitch[]>("GET", "/operator/feature-switches");
+/** Flip one, with a fresh code (step-up, as every operator change that takes something away). */
+export const setFeatureSwitch = (feature: string, enabled: boolean, code: string) =>
+  request<FeatureSwitch[]>("PUT", `/operator/feature-switches/${encodeURIComponent(feature)}`, { enabled, code });
+const orgSwitches = (orgId: string) => `/operator/orgs/${encodeURIComponent(orgId)}/feature-switches`;
+/** Operator: one organisation's own switches (0039), each with the platform's. */
+export const getOrgFeatureSwitches = (orgId: string) => request<OrgFeatureSwitch[]>("GET", orgSwitches(orgId));
+/** Flip one for that organisation only, with a fresh code (step-up). */
+export const setOrgFeatureSwitch = (orgId: string, feature: string, enabled: boolean, code: string) =>
+  request<OrgFeatureSwitch[]>("PUT", `${orgSwitches(orgId)}/${encodeURIComponent(feature)}`, { enabled, code });
+
+/** Operator: the sign-in idle timeout (0040), the platform's (no orgId) or one organisation's. */
+const timeoutPath = (orgId?: string) =>
+  orgId ? `/operator/orgs/${encodeURIComponent(orgId)}/session-timeout` : "/operator/session-timeout";
+export const getSessionTimeout = (orgId?: string) => request<SessionTimeout>("GET", timeoutPath(orgId));
+/** Set it, with a fresh code (step-up); null: the default, or follow the platform. */
+export const setSessionTimeout = (hours: number | null, code: string, orgId?: string) =>
+  request<SessionTimeout>("PUT", timeoutPath(orgId), { hours, code });
+
+/** Operator: the platform-wide test model. */
+export const getTestModel = () => request<TestModel>("GET", "/operator/test-model");
+/** Start or replace it, with a fresh code (step-up). */
+export const startTestModel = (body: { scan_model: string | null; chat_model: string | null; note: string }, code: string) =>
+  request<TestModel>("POST", "/operator/test-model", { ...body, code });
+/** Undo it: every organisation back on its own settings, with a fresh code (step-up). */
+export const stopTestModel = (code: string) => request<TestModel>("DELETE", "/operator/test-model", { code });

@@ -147,22 +147,27 @@ def largest_image_dpi(page: Any) -> int | None:
     by placed area, or None when the page has no image drawn on it directly.
 
     An image whose pixel size or matrix PDFium cannot read, or whose area is
-    not finite, is passed over. O(objects on the page) time, O(1) space.
+    not finite, is passed over; a page whose objects PDFium cannot list has no
+    DPI (None: flagged nothing, refused nothing). O(objects on the page) time,
+    O(1) space.
     """
     best: tuple[float, tuple[int, int], float, float] | None = None
-    for image in page.get_objects(filter=[pdfium_c.FPDF_PAGEOBJ_IMAGE], max_depth=1):
-        try:
-            image_px = image.get_px_size()
-            a, b, c, d, _e, _f = image.get_matrix().get()
-        except pdfium.PdfiumError:
-            continue
-        if min(image_px) < 1:
-            continue
-        area = abs(a * d - b * c)
-        if not math.isfinite(area):
-            continue
-        if best is None or area > best[0]:
-            best = (area, image_px, *placed_size(a, b, c, d))
+    try:
+        for image in page.get_objects(filter=[pdfium_c.FPDF_PAGEOBJ_IMAGE], max_depth=1):
+            try:
+                image_px = image.get_px_size()
+                a, b, c, d, _e, _f = image.get_matrix().get()
+            except pdfium.PdfiumError:
+                continue
+            if min(image_px) < 1:
+                continue
+            area = abs(a * d - b * c)
+            if not math.isfinite(area):
+                continue
+            if best is None or area > best[0]:
+                best = (area, image_px, *placed_size(a, b, c, d))
+    except pdfium.PdfiumError:
+        return None
     if best is None:
         return None
     _area, image_px, width, height = best

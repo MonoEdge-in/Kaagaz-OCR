@@ -6,6 +6,7 @@ import {
   cropRect,
   cropView,
   fitCropView,
+  framedCropView,
   decodeRegion,
   encodeRegion,
   highlightedCells,
@@ -237,5 +238,32 @@ describe("links and ?page=", () => {
     expect(parsePageParam("1e1", [10])).toBeNull();
     expect(parsePageParam("-1", [1])).toBeNull();
     expect(parsePageParam(null, [1])).toBeNull();
+  });
+});
+
+// UI audit R1 (16 Oct 2026): no empty band, and a margin so the highlight never touches the edge.
+describe("framedCropView", () => {
+  const a4Aspect = 595 / 842;
+
+  it("stays inside the box and its height limit, margin included", () => {
+    const view = framedCropView({ x0: 0.1, y0: 0.1, x1: 0.9, y1: 0.15 }, a4Aspect, 600, 176, 2400, 12);
+    expect(view.frameWidth).toBeLessThanOrEqual(600 + 1e-9);
+    expect(view.frameHeight).toBeLessThanOrEqual(176 + 1e-9);
+  });
+
+  it("shows the margin of page all round a spot at the page's very edge", () => {
+    const crop = { x0: 0, y0: 0, x1: 1, y1: 0.05 }; // a full-width line at the top: cropRect cannot pad it
+    const view = framedCropView(crop, a4Aspect, 600, 176, 2400, 12);
+    // The crop itself starts 12px inside the frame on the left and the top.
+    expect(view.offsetX).toBeCloseTo(-12);
+    expect(view.offsetY).toBeCloseTo(-12);
+    // and ends 12px before its right and bottom edges.
+    expect(view.offsetX + view.frameWidth - crop.x1 * view.pageWidth).toBeCloseTo(12);
+    expect(view.offsetY + view.frameHeight - crop.y1 * view.pageHeight).toBeCloseTo(12);
+  });
+
+  it("is fitCropView with no margin", () => {
+    const crop = { x0: 0.2, y0: 0.3, x1: 0.6, y1: 0.35 };
+    expect(framedCropView(crop, a4Aspect, 500, 176, 2400, 0)).toEqual(fitCropView(crop, a4Aspect, 500, 176, 2400));
   });
 });

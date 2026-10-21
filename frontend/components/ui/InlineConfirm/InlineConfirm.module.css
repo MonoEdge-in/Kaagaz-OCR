@@ -1,0 +1,19 @@
+/* The in-page confirmation (design/kaagaz-ui-handoff/styles/kaagaz.css, section 11, .k-confirm). */
+
+.confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  padding: 12px 12px 12px 18px;
+  border-radius: var(--k-r-4);
+  background: var(--k-danger-soft);
+  color: var(--k-ink);
+}
+.confirm > svg {
+  color: var(--k-danger);
+  flex: none;
+}
+.message {
+  flex: 1 1 220px;
+}
