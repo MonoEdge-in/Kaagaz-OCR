@@ -443,7 +443,7 @@ function putPart(url: string, body: Blob, onProgress: (loaded: number) => void):
 }
 
 async function resumableUpload(
-  file: File, metadata: ResumableStart, onProgress: (fraction: number) => void,
+  file: File, metadata: Omit<ResumableStart, "fingerprint">, onProgress: (fraction: number) => void,
   onSent?: () => void, onWaiting?: (waiting: boolean) => void,
 ): Promise<UploadResult> {
   const partCount = Math.ceil(file.size / UPLOAD_PART_BYTES);

@@ -282,7 +282,9 @@ describe("confirm, edit and undo", () => {
     const html = panel(status({ reviewed: 12, remaining: 0 }), [done]);
     expect(html).toContain("Reviewed by you · ");
     expect(html).toContain(">Undo<");
-    expect(html).toContain("All 12 flagged words reviewed. Document ready to export.");
+    expect(html).toContain("Verified. All 12 flagged words are reviewed or resolved. Document ready to export.");
+    expect(html).toContain(">Verified<");
+    for (const label of [">Confirm<", ">Edit<", ">Skip<", ">Send to Ensemble<"]) expect(html).not.toContain(label);
   });
 });
 
@@ -397,6 +399,13 @@ describe("Ensemble", () => {
     expect(none).not.toContain("Run Ensemble on flagged words");
     expect(none).not.toContain(">Review flagged words<");
     expect(none).toContain("Run Ensemble on full document"); // quietly, in More
+  });
+
+  it("says Verified and removes the review action once every flagged word is settled", () => {
+    const html = bar(status({ reviewed: 8, resolved: 4, remaining: 0 }));
+    expect(html).toContain("Verified. All 12 flagged words are reviewed or resolved. Document ready to export.");
+    expect(html).not.toContain(">Review flagged words<");
+    expect(html).not.toContain(">Continue review<");
   });
 });
 

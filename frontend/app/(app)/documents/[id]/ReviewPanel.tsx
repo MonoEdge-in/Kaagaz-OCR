@@ -70,6 +70,8 @@ export function ReviewPanel(props: ReviewPanelProps) {
   const index = Math.max(0, flags.findIndex((flag) => flag.word_key === current));
   const flag = flags[index];
   const canReview = status?.can_review ?? false;
+  const finished = status !== null && status.flagged > 0 && status.remaining === 0;
+  const canEdit = canReview && !finished;
   const [view, setView] = useState<"words" | "history">("words");
   const [editing, setEditing] = useState<{ key: string; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -115,12 +117,12 @@ export function ReviewPanel(props: ReviewPanelProps) {
     void act(() => saveWord(detail.id, flag, typed === flag.text ? null : typed), true);
   };
   const startEdit = () => {
-    if (!flag || !canReview) return;
+    if (!flag || !canEdit) return;
     setEditing({ key: flag.word_key, text: flag.text });
     requestAnimationFrame(() => inputRef.current?.select());
   };
   const sendWord = () => {
-    if (flag && canReview && ensembleAllowed) onEnsemble("word", [flag.word_key]);
+    if (flag && canEdit && ensembleAllowed) onEnsemble("word", [flag.word_key]);
   };
 
   const onKey = useEffectEvent((event: KeyboardEvent) => {
@@ -142,9 +144,9 @@ export function ReviewPanel(props: ReviewPanelProps) {
     if (action === "next") go(1);
     else if (action === "previous") go(-1);
     else if (action === "exit") onExit();
-    else if (action === "confirm" && canReview) save(null);
-    else if (action === "edit") startEdit();
-    else if (action === "ensemble") sendWord();
+    else if (action === "confirm" && canEdit) save(null);
+    else if (action === "edit" && canEdit) startEdit();
+    else if (action === "ensemble" && canEdit) sendWord();
   });
   useEffect(() => {
     const listener = (event: KeyboardEvent) => onKey(event);
@@ -157,18 +159,17 @@ export function ReviewPanel(props: ReviewPanelProps) {
   const page = flag ? detail.pages.find((each) => each.page_no === flag.page_no) : undefined;
   const changed = flag ? proposal(flag) : null;
   const options = flag ? (unsettled(flag) ? readingsOf(flag) : (flag.alternatives ?? [])) : [];
-  const finished = status.flagged > 0 && status.remaining === 0;
   const draft = editing && flag && editing.key === flag.word_key ? editing.text : null;
   const after = flag ? doneText(flag) : null;
   const score = flag ? scoreText(flag.score) : null;
-  const selectable = canReview && ensembleAllowed;
+  const selectable = canEdit && ensembleAllowed;
   const keys = flags.map((each) => each.word_key);
 
   return (
     <section className={styles.review} aria-labelledby="review-heading">
       <div className={styles.reviewHead}>
         <h2 id="review-heading" ref={headingRef} tabIndex={-1} className={styles.heading}>
-          {canReview ? "Review flagged words" : "Flagged words"}
+          {finished ? "Verified" : canReview ? "Review flagged words" : "Flagged words"}
         </h2>
         <p className={`${styles.line} tabular`} aria-live="polite">
           {progressText(done, status.flagged)}
@@ -232,7 +233,7 @@ export function ReviewPanel(props: ReviewPanelProps) {
                   <p className="mono" aria-hidden="true">
                     {changed.before} → {changed.after}
                   </p>
-                  {canReview && flag.ensemble && (
+                  {canEdit && flag.ensemble && (
                     <div className={styles.row}>
                       <button type="button" className="btn" disabled={busy} onClick={() => void act(() => decide(detail.id, flag.ensemble?.reading_id ?? "", false), false)}>
                         Revert
@@ -244,8 +245,8 @@ export function ReviewPanel(props: ReviewPanelProps) {
                   )}
                 </div>
               )}
-              {canReview && unsettled(flag) && <p className={styles.line}>{readingsDifferText(options)}</p>}
-              {canReview && (
+              {canEdit && unsettled(flag) && <p className={styles.line}>{readingsDifferText(options)}</p>}
+              {canEdit && (
                 <>
                   <label className={styles.field}>
                     <span className={styles.fieldLabel}>Reading</span>
