@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Kaagaz · Phone · Upload tray</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="../../styles/kaagaz.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@100..125,400..700&amp;family=IBM+Plex+Mono:wght@400;500&amp;family=IBM+Plex+Sans+Devanagari:wght@400;500;600&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;display=swap">
+<style>body{margin:0}</style>
+</helmet>
+<div class="k-root k-phone" data-theme="{{theme}}" style="min-height: 1240px">
+  <header class="k-phone-top" style="padding-left: 4px">
+    <a class="k-btn k-btn--quiet k-btn--icon" href="PhoneDocuments.html" aria-label="Back" style="width: 44px; height: 44px; color: var(--k-ink)"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"></path></svg></a>
+    <h1 class="k-h3 k-ellip" style="flex: 1">Uploading 48 files</h1>
+    <button class="k-btn k-btn--quiet k-btn--icon" type="button" aria-label="Notifications" style="width: 44px; height: 44px; color: var(--k-ink)"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 16v-5a6 6 0 0 1 12 0v5l2 2H4z"></path><path d="M10 20a2 2 0 0 0 4 0"></path></svg></button>
+    <button class="k-btn k-btn--quiet k-btn--icon" type="button" aria-label="Account: Rahul" style="width: 44px; height: 44px"><span class="k-avatar">RK</span></button>
+  </header>
+
+  <main class="k-phone-body" style="gap: 14px">
+    <section class="k-card" style="padding: 14px; gap: 10px" aria-label="Batch progress">
+      <p style="font-weight: 600; font-size: 15px">48 files · 41 ready · 5 reading · 2 waiting · 1 already uploaded</p>
+      <div class="k-meter" role="img" aria-label="41 ready, 5 reading, 1 already uploaded, 2 waiting">
+        <span class="is-ready" style="width: 84%"></span><span class="is-reading" style="width: 10%"></span><span class="is-dup" style="width: 2%"></span><span class="is-waiting" style="width: 4%"></span>
+      </div>
+      <div class="k-legend">
+        <span><i style="background: var(--k-verified)"></i>Ready</span>
+        <span><i style="background: var(--k-info)"></i>Reading</span>
+        <span><i style="background: var(--k-review)"></i>Already uploaded</span>
+        <span><i style="background: var(--k-rule-strong)"></i>Waiting</span>
+      </div>
+      <span class="k-small k-muted">About 2 minutes left. Safe to close this screen.</span>
+    </section>
+
+    <a href="VersionCompare.html" class="k-banner k-banner--version" style="text-decoration: none; color: var(--k-ink); align-items: center; min-height: 56px; padding: 12px 14px">
+      <svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 3 8l9 5 9-5z"></path><path d="M3 13l9 5 9-5"></path></svg>
+      <span style="flex: 1"><strong>4 files look like new versions.</strong></span>
+      <span style="color: var(--k-accent); font-weight: 600; display: inline-flex; align-items: center; gap: 2px">Review<svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"></path></svg></span>
+    </a>
+
+    <div class="k-field">
+      <label class="k-label" for="pu-dept">Department for this batch</label>
+      <div class="k-select-wrap">
+        <select id="pu-dept" class="k-select" style="min-height: 44px"><option>Land &amp; Legal</option><option>Accounts</option><option>HR</option><option>Operations</option><option>Sales</option><option>Let Kaagaz decide</option></select>
+        <svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg>
+      </div>
+      <span class="k-help">Kaagaz files each paper into a folder inside it after reading.</span>
+    </div>
+
+    <ul class="k-card k-card--flush" style="list-style: none">
+      <li style="padding: 14px; border-bottom: 1px solid var(--k-rule); display: flex; flex-direction: column; gap: 8px">
+        <div style="display: flex; gap: 10px; align-items: flex-start">
+          <span class="k-file-ic" data-ext="PDF" aria-hidden="true"></span>
+          <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px">
+            <span class="k-ellip" style="font-weight: 600">7-12 Survey 44 Wakad Oct.pdf</span>
+            <span class="k-filed"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"></path></svg><b class="k-ellip">Land &amp; Legal / Land records / Survey 44, Wakad</b></span>
+          </div>
+          <span class="k-status k-status--verified"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg>Ready</span>
+        </div>
+        <div class="k-stages" aria-hidden="true"><div class="k-stage"><i style="width: 100%"></i></div><div class="k-stage"><i style="width: 100%"></i></div><div class="k-stage"><i style="width: 100%"></i></div></div>
+        <span class="k-ver k-ver--newer" style="align-self: flex-start">Looks like v2 of 7/12 Survey 44 Wakad.pdf</span>
+      </li>
+      <li style="padding: 14px; border-bottom: 1px solid var(--k-rule); display: flex; flex-direction: column; gap: 8px">
+        <div style="display: flex; gap: 10px; align-items: flex-start">
+          <span class="k-file-ic" data-ext="JPG" aria-hidden="true"></span>
+          <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px">
+            <span class="k-ellip" style="font-weight: 600">Ferfar 2231 photo.jpg</span>
+            <span class="k-small k-muted">Reading page 1 of 1 · फेरफार found</span>
+          </div>
+          <span class="k-status k-status--reading"><span class="k-dots" aria-hidden="true"><i></i><i></i><i></i></span>Reading</span>
+        </div>
+        <div class="k-stages" role="img" aria-label="Sent, saved, reading 60 percent"><div class="k-stage"><i style="width: 100%"></i></div><div class="k-stage"><i style="width: 100%"></i></div><div class="k-stage is-active"><i style="width: 60%"></i></div></div>
+        <div class="k-stage-labels"><span class="is-done">Sending ✓</span><span class="is-done">Saving ✓</span><span class="is-active">Reading</span></div>
+      </li>
+      <li style="padding: 14px; border-bottom: 1px solid var(--k-rule); display: flex; flex-direction: column; gap: 8px">
+        <div style="display: flex; gap: 10px; align-items: flex-start">
+          <span class="k-file-ic" data-ext="PDF" aria-hidden="true"></span>
+          <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px">
+            <span class="k-ellip" style="font-weight: 600">NA Order Plot 7 Collector.pdf</span>
+            <span class="k-small k-muted">Reading 4 of 9 pages</span>
+          </div>
+          <span class="k-mono k-small k-muted">44%</span>
+        </div>
+        <div class="k-stages" role="img" aria-label="Sent, saved, reading 4 of 9 pages"><div class="k-stage"><i style="width: 100%"></i></div><div class="k-stage"><i style="width: 100%"></i></div><div class="k-stage is-active"><i style="width: 44%"></i></div></div>
+        <div class="k-stage-labels"><span class="is-done">Sending ✓</span><span class="is-done">Saving ✓</span><span class="is-active">Reading 4/9</span></div>
+      </li>
+      <li style="padding: 14px; border-bottom: 1px solid var(--k-rule); display: flex; flex-direction: column; gap: 8px">
+        <div style="display: flex; gap: 10px; align-items: flex-start">
+          <span class="k-file-ic" data-ext="PDF" aria-hidden="true"></span>
+          <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px">
+            <span class="k-ellip" style="font-weight: 600">Society NOC Wakad.pdf</span>
+            <span class="k-small k-muted">Sending · 1.2 of 3.8 MB</span>
+          </div>
+          <span class="k-mono k-small k-muted">Sending</span>
+        </div>
+        <div class="k-stages" role="img" aria-label="Sending 32 percent"><div class="k-stage is-active"><i style="width: 32%"></i></div><div class="k-stage"><i style="width: 0%"></i></div><div class="k-stage"><i style="width: 0%"></i></div></div>
+        <div class="k-stage-labels"><span class="is-active">Sending</span><span>Saving</span><span>Reading</span></div>
+      </li>
+      <li style="padding: 14px; border-bottom: 1px solid var(--k-rule); display: flex; flex-direction: column; gap: 10px; background: var(--k-danger-soft)">
+        <div style="display: flex; gap: 10px; align-items: flex-start">
+          <span class="k-file-ic" data-ext="JPG" aria-hidden="true"></span>
+          <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px">
+            <span class="k-ellip" style="font-weight: 600">IMG_1287.jpg</span>
+            <span class="k-small" style="color: var(--k-ink)">Glare covers the lower half, so the amounts can’t be read.</span>
+          </div>
+          <span class="k-status k-status--failed"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4 2.5 20h19z"></path><path d="M12 10v4M12 17v.5"></path></svg>Couldn’t read</span>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px">
+          <button class="k-btn" type="button" style="min-height: 44px"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z"></path><circle cx="12" cy="13" r="3.5"></circle></svg>Retake photo</button>
+          <button class="k-btn" type="button" style="min-height: 44px"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v4h-4"></path></svg>Read again</button>
+        </div>
+      </li>
+      <li style="padding: 14px; border-bottom: 1px solid var(--k-rule); display: flex; flex-direction: column; gap: 10px; background: var(--k-review-soft)">
+        <div style="display: flex; gap: 10px; align-items: flex-start">
+          <span class="k-file-ic" data-ext="PDF" aria-hidden="true"></span>
+          <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px">
+            <span class="k-ellip" style="font-weight: 600">Sale Deed Shinde Survey 44.pdf</span>
+            <span class="k-small" style="color: var(--k-ink)">Already uploaded on 2 Jul 2026 by Priya, same file.</span>
+          </div>
+          <span class="k-status k-status--review"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 8h12v12H8zM4 16V4h12"></path></svg>Duplicate</span>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px">
+          <button class="k-btn" type="button" style="min-height: 44px">Keep both</button>
+          <button class="k-btn k-btn--primary" type="button" style="min-height: 44px">Skip this file</button>
+        </div>
+      </li>
+      <li style="padding: 14px; display: flex; flex-direction: column; gap: 8px">
+        <div style="display: flex; gap: 10px; align-items: flex-start">
+          <span class="k-file-ic" data-ext="PDF" aria-hidden="true"></span>
+          <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px">
+            <span class="k-ellip" style="font-weight: 600">Property Tax Receipt Wakad.pdf</span>
+            <span class="k-filed"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"></path></svg><b class="k-ellip">Land &amp; Legal / Tax receipts / 2026</b></span>
+          </div>
+          <span class="k-status k-status--verified"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg>Ready</span>
+        </div>
+      </li>
+    </ul>
+    <button class="k-btn k-btn--quiet" type="button" style="min-height: 44px">Show all 48 files</button>
+
+    <div style="margin-top: 4px; padding-top: 14px; border-top: 1px solid var(--k-rule); display: flex; flex-direction: column; gap: 6px">
+      <button class="k-btn k-btn--block k-btn--lg" type="button">Hide — uploads continue in the background</button>
+      <span class="k-small k-muted" style="text-align: center">We’ll send a notification when all 48 are ready.</span>
+    </div>
+  </main>
+
+  <nav class="k-tabbar" aria-label="Main" style="margin-top: auto">
+    <a href="PhoneHome.html"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10.5 12 3l9 7.5V21h-6v-6H9v6H3z"></path></svg>Home</a>
+    <a href="PhoneDocuments.html" class="is-active" aria-current="page"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H6v18h12V7z"></path><path d="M14 3v4h4M9 12h6M9 16h6"></path></svg>Documents</a>
+    <a href="PhoneAsk.html"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H9l-5 4z"></path><path d="M8 9h8M8 12h5"></path></svg>Ask</a>
+    <a href="PhoneReview.html"><span style="position: relative; display: inline-flex"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v16H4z"></path><path d="M8 12l3 3 5-6"></path></svg><span class="k-nav-count" style="position: absolute; top: -6px; left: 14px; font-size: 10px; padding: 0 4px">23</span></span>Review</a>
+    <a href="MyWords.html"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"></path></svg>More</a>
+  </nav>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["light","dark"],"default":"light"},"$preview":{"width":375,"height":1240}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return { theme: this.props.theme ?? 'light' };
+  }
+}
+</script>
+</body>
+</html>

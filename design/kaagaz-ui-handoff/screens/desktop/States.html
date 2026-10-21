@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Kaagaz · System states</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="../../styles/kaagaz.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@100..125,400..700&amp;family=IBM+Plex+Mono:wght@400;500&amp;family=IBM+Plex+Sans+Devanagari:wght@400;500;600&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;display=swap">
+<style>body{margin:0}</style>
+</helmet>
+<div class="k-root" data-theme="{{theme}}" style="min-height: 100vh">
+<div style="padding: 48px 56px 72px; display: flex; flex-direction: column; gap: 32px; max-width: 1440px; margin: 0 auto">
+  <div style="display: flex; flex-direction: column; gap: 6px">
+    <span class="k-eyebrow">Screen 13</span>
+    <h1 class="k-h1">System states</h1>
+    <p class="k-muted">Every screen has these. Shown here on Documents; the same pattern applies everywhere.</p>
+  </div>
+
+  <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(600px, 100%), 1fr)); gap: 24px">
+
+    <!-- 1 Empty folder -->
+    <section class="k-card k-card--flush" aria-label="Empty folder">
+      <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--k-rule)">
+        <nav class="k-crumbs" aria-label="Breadcrumb"><a href="#">Land &amp; Legal</a><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"></path></svg><a href="#">Land records</a><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"></path></svg><span aria-current="page">Survey 44, Wakad</span></nav>
+        <span class="k-eyebrow">1 · Empty folder</span>
+      </div>
+      <div class="k-empty">
+        <div style="position: relative; width: 200px; height: 150px; display: grid; place-items: center"><div class="k-ledger k-ledger--back" aria-hidden="true"></div><div class="k-ledger" aria-hidden="true"></div></div>
+        <h2 class="k-h2">No documents in Survey 44, Wakad yet</h2>
+        <p>Upload 7/12 extracts, ferfar entries and deeds here. Kaagaz reads each page and files it.</p>
+        <div class="k-btn-group" style="justify-content: center"><button class="k-btn k-btn--primary" type="button"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V4M7 9l5-5 5 5M4 15v5h16v-5"></path></svg>Upload</button><button class="k-btn" type="button"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h6l2 2h10v11H3z"></path><path d="M10 13h6M14 11l2 2-2 2"></path></svg>Move files here</button></div>
+      </div>
+    </section>
+
+    <!-- 2 Empty Ask -->
+    <section class="k-card k-card--flush" aria-label="Empty Ask">
+      <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--k-rule)"><strong class="k-h4">Ask</strong><span class="k-eyebrow">2 · No questions yet</span></div>
+      <div class="k-empty">
+        <div class="k-ledger" aria-hidden="true" style="width: 160px; height: 116px"></div>
+        <h2 class="k-h2">Ask anything about your papers</h2>
+        <p>Answers come with the page and the exact spot. If it isn’t in your documents, Kaagaz says Not found.</p>
+        <div style="display: flex; flex-direction: column; gap: 8px; align-items: stretch; width: 100%; max-width: 420px">
+          <button class="k-suggest" type="button">What is the monthly rent in the Shinde agreement?</button>
+          <button class="k-suggest" type="button">Kiska bill sabse zyada tha last month?</button>
+          <button class="k-suggest k-deva" type="button">सर्वे 44 चा भोगवटादार कोण आहे?</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 3 Empty Review -->
+    <section class="k-card k-card--flush" aria-label="Empty review">
+      <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--k-rule)"><strong class="k-h4">Review</strong><span class="k-eyebrow">3 · All clear</span></div>
+      <div class="k-empty">
+        <div aria-hidden="true" style="width: 120px; height: 120px; border-radius: 50%; border: 3px solid var(--k-verified); display: grid; place-items: center; transform: rotate(-10deg); box-shadow: inset 0 0 0 6px var(--k-surface), inset 0 0 0 7.5px var(--k-verified); color: var(--k-verified)">
+          <span style="display: flex; flex-direction: column; align-items: center; gap: 2px"><svg class="k-ic" viewBox="0 0 24 24" style="width: 34px; height: 34px; stroke-width: 2.25"><path d="M5 12l5 5 9-10"></path></svg><span class="k-mono" style="font-size: 10px; letter-spacing: .12em; font-weight: 500">VERIFIED</span></span>
+        </div>
+        <h2 class="k-h2">Nothing to review. Every value is verified.</h2>
+        <p>New values that need a second look will show up here. You cleared 23 this week.</p>
+        <a class="k-btn" href="Documents.html">Back to Documents</a>
+      </div>
+    </section>
+
+    <!-- 4 Loading -->
+    <section class="k-card k-card--flush" aria-label="Loading" aria-busy="true">
+      <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--k-rule)"><span class="k-skel" style="width: 220px; height: 14px; display: block"></span><span class="k-eyebrow">4 · Loading</span></div>
+      <div style="display: grid; grid-template-columns: 170px minmax(0, 1fr); min-height: 340px">
+        <div style="border-right: 1px solid var(--k-rule); padding: 16px; display: flex; flex-direction: column; gap: 12px">
+          <span class="k-skel" style="height: 10px; width: 60%; display: block"></span>
+          <span class="k-skel" style="height: 14px; width: 90%; display: block"></span>
+          <span class="k-skel" style="height: 14px; width: 75%; display: block; margin-left: 16px"></span>
+          <span class="k-skel" style="height: 14px; width: 70%; display: block; margin-left: 16px"></span>
+          <span class="k-skel" style="height: 14px; width: 85%; display: block"></span>
+          <span class="k-skel" style="height: 14px; width: 60%; display: block"></span>
+        </div>
+        <div style="padding: 16px; display: flex; flex-direction: column; gap: 0">
+          <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 16px"><span class="k-skel" style="height: 56px; display: block"></span><span class="k-skel" style="height: 56px; display: block"></span><span class="k-skel" style="height: 56px; display: block"></span></div>
+          <sc-for list="{{rows}}" as="r" hint-placeholder-count="6">
+            <div style="display: grid; grid-template-columns: 22px minmax(0, 3fr) 1fr 1fr 1fr; gap: 14px; align-items: center; padding: 11px 0; border-bottom: 1px solid var(--k-rule)">
+              <span class="k-skel" style="height: 28px; display: block"></span>
+              <span class="k-skel" style="height: 12px; width: {{r.w}}%; display: block"></span>
+              <span class="k-skel" style="height: 12px; display: block"></span>
+              <span class="k-skel" style="height: 18px; width: 70%; display: block"></span>
+              <span class="k-skel" style="height: 12px; display: block"></span>
+            </div>
+          </sc-for>
+          <span class="k-small k-muted" style="padding-top: 10px">Loading Land records…</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- 5 Offline -->
+    <section class="k-card k-card--flush" aria-label="Offline">
+      <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--k-rule)">
+        <nav class="k-crumbs" aria-label="Breadcrumb"><a href="#">Accounts</a><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"></path></svg><span aria-current="page">Invoices</span></nav>
+        <span class="k-eyebrow">5 · Offline</span>
+      </div>
+      <div style="padding: 16px; display: flex; flex-direction: column; gap: 14px">
+        <div class="k-banner k-banner--warning" role="status">
+          <svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3l18 18M8.5 16a5 5 0 0 1 7 0M5 12.5a10 10 0 0 1 3.5-2.2M19 12.5a10 10 0 0 0-3-2M2 8.5a15 15 0 0 1 4.5-2.8M22 8.5A15 15 0 0 0 10.5 5M12 19.5h.01"></path></svg>
+          <div class="k-banner-body"><strong>You’re offline.</strong><span class="k-small">You can still open documents you viewed today. Uploads will start when you’re back.</span></div>
+        </div>
+        <div style="display: flex; gap: 8px; flex-wrap: wrap"><button class="k-btn is-disabled" type="button" disabled><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V4M7 9l5-5 5 5M4 15v5h16v-5"></path></svg>Upload (waiting for connection)</button><button class="k-btn is-disabled" type="button" disabled>Ask</button></div>
+        <div style="display: flex; flex-direction: column">
+          <div class="k-rule-row"><span class="k-name-cell"><span class="k-file-ic" data-ext="PDF" aria-hidden="true"></span>GST Invoice 0412 Mehta Textiles.pdf</span><span class="k-tag"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg>Available offline</span></div>
+          <div class="k-rule-row" style="opacity: .55"><span class="k-name-cell"><span class="k-file-ic" data-ext="PDF" aria-hidden="true"></span>GST Invoice 0409 Sharma Traders.pdf</span><span class="k-small k-muted">Needs connection</span></div>
+          <div class="k-rule-row" style="opacity: .55"><span class="k-name-cell"><span class="k-file-ic" data-ext="PDF" aria-hidden="true"></span>Purchase Bill 2291.pdf</span><span class="k-small k-muted">Needs connection</span></div>
+          <div class="k-rule-row"><span class="k-name-cell"><span class="k-file-ic" data-ext="JPG" aria-hidden="true"></span>IMG_1301.jpg</span><span class="k-status k-status--notfound"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path></svg>Upload waiting</span></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 6 Error -->
+    <section class="k-card k-card--flush" aria-label="Error">
+      <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--k-rule)">
+        <nav class="k-crumbs" aria-label="Breadcrumb"><a href="#">Land &amp; Legal</a><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"></path></svg><span aria-current="page">Land records</span></nav>
+        <span class="k-eyebrow">6 · Error</span>
+      </div>
+      <div class="k-empty">
+        <div aria-hidden="true" style="width: 64px; height: 64px; border: 2px solid var(--k-danger); display: grid; place-items: center; color: var(--k-danger); background: var(--k-danger-soft)"><svg class="k-ic" viewBox="0 0 24 24" style="width: 30px; height: 30px"><path d="M12 4 2.5 20h19z"></path><path d="M12 10v4M12 17v.5"></path></svg></div>
+        <h2 class="k-h2">Couldn’t load this folder</h2>
+        <p>The server didn’t answer in time. Your files are safe. Try again; if it keeps happening, tell your admin.</p>
+        <button class="k-btn k-btn--primary" type="button"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v4h-4"></path></svg>Try again</button>
+        <span class="k-mono k-small k-faint">Error code KZ-504 · 10:42</span>
+      </div>
+    </section>
+
+    <!-- 7 No permission -->
+    <section class="k-card k-card--flush" aria-label="No permission">
+      <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--k-rule)">
+        <nav class="k-crumbs" aria-label="Breadcrumb"><a href="#">Land &amp; Legal</a><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"></path></svg><span aria-current="page">Deeds</span></nav>
+        <span class="k-eyebrow">7 · No permission</span>
+      </div>
+      <div class="k-empty">
+        <div aria-hidden="true" style="position: relative; width: 110px; height: 140px; background: var(--k-paper); box-shadow: var(--k-shadow-page); clip-path: polygon(0 0, 72% 0, 100% 20%, 100% 100%, 0 100%); background-image: repeating-linear-gradient(180deg, transparent 0 11px, var(--k-paper-rule) 11px 12px); background-size: 70% 100%; background-position: 50% 30px; background-repeat: no-repeat; display: grid; place-items: center">
+          <span style="width: 52px; height: 52px; border-radius: 50%; background: var(--k-surface); border: 2px solid var(--k-lab-restricted); display: grid; place-items: center; color: var(--k-lab-restricted)"><svg class="k-ic k-ic--lg" viewBox="0 0 24 24"><path d="M6 11h12v10H6zM8 11V7a4 4 0 0 1 8 0v4"></path></svg></span>
+        </div>
+        <span class="k-lab k-lab--restricted">Restricted</span>
+        <h2 class="k-h2">You don’t have access to this document</h2>
+        <p><strong style="color: var(--k-ink)">Sale Deed Shinde Survey 44.pdf</strong> is Restricted. Ask Priya (admin) for access.</p>
+        <div class="k-btn-group" style="justify-content: center"><button class="k-btn k-btn--primary" type="button">Request access</button><a class="k-btn" href="Documents.html">Back to Deeds</a></div>
+      </div>
+    </section>
+
+    <!-- 8 404 -->
+    <section class="k-card k-card--flush" aria-label="Page not found">
+      <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--k-rule)"><span class="k-mono k-small k-muted">kaagaz.monoedge.in/d/9f2a…</span><span class="k-eyebrow">8 · 404</span></div>
+      <div class="k-empty">
+        <div style="position: relative; display: grid; place-items: center; padding: 8px 32px; border-top: 1.5px solid var(--k-ink); border-bottom: 1.5px solid var(--k-ink)">
+          <span style="font-family: var(--k-font-display); font-weight: 700; font-size: 104px; line-height: 1; letter-spacing: -0.04em">404</span>
+          <span class="k-mono" style="position: absolute; right: -6px; bottom: -11px; font-size: 10px; letter-spacing: .12em; background: var(--k-surface); padding: 0 6px; color: var(--k-ink-muted)">NO SUCH PAGE</span>
+        </div>
+        <h2 class="k-h2">This page isn’t here</h2>
+        <p>The document may have been moved or deleted. Moved files keep their history; check Trash if it was deleted in the last 30 days.</p>
+        <div class="k-btn-group" style="justify-content: center"><a class="k-btn k-btn--primary" href="Documents.html">Go to Documents</a><a class="k-btn" href="Search.html"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"></circle><path d="M20 20l-4.5-4.5"></path></svg>Search</a></div>
+      </div>
+    </section>
+
+    <!-- 9 Search no results -->
+    <section class="k-card k-card--flush" aria-label="No search results">
+      <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--k-rule)"><strong class="k-h4">Search</strong><span class="k-eyebrow">9 · No results</span></div>
+      <div style="padding: 16px; display: flex; flex-direction: column; gap: 12px">
+        <div style="display: flex; gap: 8px; flex-wrap: wrap">
+          <div class="k-input-wrap" style="flex: 1 1 240px"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"></circle><path d="M20 20l-4.5-4.5"></path></svg><input class="k-input" value="gat 112" aria-label="Search"></div>
+          <div class="k-radio-pill" role="radiogroup" aria-label="Search in"><label class="is-on"><input type="radio" name="sin" checked>Inside documents</label><label><input type="radio" name="sin">Names</label></div>
+        </div>
+        <div class="k-empty" style="padding: 32px 16px">
+          <div aria-hidden="true" style="width: 150px; height: 80px; position: relative; background-image: repeating-linear-gradient(180deg, transparent 0 15px, var(--k-rule) 15px 16px); border-left: 1px solid var(--k-danger)">
+            <span style="position: absolute; left: 20px; right: 20px; top: 38px; border-top: 1.5px dashed var(--k-ink-faint)"></span>
+          </div>
+          <h2 class="k-h3">No documents match “gat 112”</h2>
+          <p>Try Names, or check My words. Also searched: “गट 112”, “gut 112”.</p>
+          <div class="k-btn-group" style="justify-content: center"><button class="k-btn" type="button">Search in Names</button><a class="k-btn k-btn--quiet" href="MyWords.html">Open My words</a></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 10 Toast + session expired -->
+    <section class="k-card k-card--flush" aria-label="Upload failed and session expired">
+      <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--k-rule)"><strong class="k-h4">Messages</strong><span class="k-eyebrow">10 · Toast + signed out</span></div>
+      <div style="position: relative; min-height: 380px; background: var(--k-scrim); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 24px; padding: 24px">
+        <div class="k-dialog" role="dialog" aria-modal="true" aria-labelledby="sx-t" style="width: 100%">
+          <div style="display: flex; gap: 12px; align-items: flex-start">
+            <span style="width: 36px; height: 36px; display: grid; place-items: center; background: var(--k-info-soft); color: var(--k-info); flex: none"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 11h12v10H6zM8 11V7a4 4 0 0 1 8 0v4"></path></svg></span>
+            <div style="display: flex; flex-direction: column; gap: 6px"><h2 class="k-h3" id="sx-t">You were signed out</h2><p class="k-muted">You were signed out after 30 minutes away. Sign in again to continue. Your upload is saved.</p></div>
+          </div>
+          <div class="k-field"><label class="k-label" for="sx-p">Password for priya@wakadrealty.in</label><input class="k-input is-focus" id="sx-p" type="password" value="••••••••"></div>
+          <div class="k-btn-group" style="justify-content: flex-end"><button class="k-btn" type="button">Use another account</button><button class="k-btn k-btn--primary" type="button">Sign in again</button></div>
+        </div>
+        <div class="k-toast" role="alert" style="width: 100%">
+          <svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true" style="color: var(--k-danger)"><path d="M12 4 2.5 20h19z"></path><path d="M12 10v4M12 17v.5"></path></svg>
+          <span style="flex: 1; min-width: 0">IMG_1291.jpg couldn’t be read: too dark. Retake it in better light.</span>
+          <button class="k-btn k-btn--quiet k-btn--sm" type="button">Upload again</button>
+          <button class="k-btn k-btn--quiet k-btn--icon k-btn--sm" type="button" aria-label="Dismiss"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"></path></svg></button>
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["light","dark"],"default":"light"},"$preview":{"width":1440,"height":2200}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return { theme: this.props.theme ?? 'light', rows: [{ w: 78 }, { w: 62 }, { w: 84 }, { w: 55 }, { w: 70 }, { w: 66 }] };
+  }
+}
+</script>
+</body>
+</html>

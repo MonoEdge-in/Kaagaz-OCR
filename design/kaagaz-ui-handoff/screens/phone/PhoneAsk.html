@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Kaagaz · Phone · Ask</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="../../styles/kaagaz.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@100..125,400..700&amp;family=IBM+Plex+Mono:wght@400;500&amp;family=IBM+Plex+Sans+Devanagari:wght@400;500;600&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;display=swap">
+<style>body{margin:0}</style>
+</helmet>
+<div class="k-root k-phone" data-theme="{{theme}}" style="min-height: 1240px">
+  <header class="k-phone-top" style="padding-left: 4px">
+    <button class="k-btn k-btn--quiet k-btn--icon" type="button" aria-label="Conversations" style="width: 44px; height: 44px; color: var(--k-ink)"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"></path></svg></button>
+    <h1 class="k-h4 k-ellip" style="flex: 1; font-size: 15px">Shinde rent and bills</h1>
+    <button class="k-btn k-btn--quiet k-btn--icon" type="button" aria-label="New question" style="width: 44px; height: 44px; color: var(--k-ink)"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg></button>
+    <button class="k-btn k-btn--quiet k-btn--icon" type="button" aria-label="Account: Rahul" style="width: 44px; height: 44px"><span class="k-avatar">RK</span></button>
+  </header>
+
+  <main class="k-phone-body" style="gap: 14px">
+    <button class="k-chip" type="button" style="align-self: flex-start; min-height: 44px; padding: 0 12px"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h6l2 2h10v11H3z"></path></svg>Asking in: <span class="k-chip-val">All documents</span><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></button>
+
+    <p class="k-question" style="max-width: 88%; font-size: 15px">What is the monthly rent in the Shinde agreement?</p>
+
+    <article class="k-answer" style="padding: 16px; gap: 12px">
+      <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap">
+        <span class="k-status k-status--verified"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg>Verified</span>
+        <span class="k-small k-muted">From 1 document</span>
+      </div>
+      <p class="k-read">The monthly rent is <strong class="k-mono" style="font-size: 16px">₹45,000</strong>, due on or before the 5th of every month <a class="k-cite" href="PhoneDocument.html" aria-label="Source 1: Rent Agreement Shinde.pdf, page 2">1</a>. It went up from ₹40,000 in version 2, uploaded today <a class="k-cite" href="VersionCompare.html" aria-label="Source 2: compare versions">2</a>.</p>
+
+      <div class="k-source">
+        <div class="k-source-crop">
+          <div class="k-paper-crop" style="font-size: 12.5px">…shall pay a monthly licence fee of <span class="k-mark k-mark--cited">Rs. 45,000 (Rupees Forty Five Thousand only)</span> on or before the 5th…</div>
+        </div>
+        <div class="k-source-body">
+          <div style="display: flex; align-items: center; gap: 8px"><span class="k-cite" aria-hidden="true">1</span><span class="k-ellip" style="font-weight: 600; flex: 1">Rent Agreement Shinde.pdf</span><span class="k-ver">v2</span></div>
+          <span class="k-small k-muted">Page 2 · clause 3</span>
+          <a class="k-btn k-btn--sm" href="PhoneDocument.html" style="min-height: 44px; align-self: flex-start"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v16H4z"></path><path d="M9 9h6v6H9z"></path></svg>Open page 2</a>
+        </div>
+      </div>
+
+      <button class="k-btn k-btn--quiet" type="button" style="min-height: 44px; align-self: flex-start; padding: 0 8px"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 8h12v12H8zM4 16V4h12"></path></svg>Copy answer with quotes</button>
+    </article>
+
+    <p class="k-question" style="max-width: 88%; font-size: 15px">Kiska bill sabse zyada tha last month?</p>
+
+    <section class="k-answer" style="padding: 16px; gap: 10px" aria-live="polite">
+      <span class="k-searching"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"></circle><path d="M20 20l-4.5-4.5"></path></svg>Searching for: largest bill amount, September 2026, all suppliers</span>
+      <div class="k-steps">
+        <span class="k-step is-done"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg>Searching 120 invoices</span>
+        <span class="k-step is-active"><span class="k-dots" aria-hidden="true"><i></i><i></i><i></i></span>Reading 12 pages… 7 done</span>
+        <span class="k-step"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle></svg>Adding totals</span>
+      </div>
+      <span class="k-small k-muted">You can leave this screen. The answer will be here.</span>
+    </section>
+  </main>
+
+  <section style="margin-top: auto; padding: 10px 16px 12px; background: var(--k-ground); border-top: 1px solid var(--k-rule); display: flex; flex-direction: column; gap: 10px" aria-label="Ask a question">
+    <div style="display: flex; gap: 8px; overflow-x: auto; margin: 0 -16px; padding: 0 16px">
+      <button class="k-suggest" type="button" style="min-height: 44px; flex: none">When does the Shinde agreement end?</button>
+      <button class="k-suggest k-deva" type="button" style="min-height: 44px; flex: none">सर्वे 44 चा भोगवटादार कोण?</button>
+      <button class="k-suggest" type="button" style="min-height: 44px; flex: none">Total GST paid in September</button>
+    </div>
+    <div class="k-composer" style="padding: 8px 8px 8px 12px; flex-direction: row; align-items: flex-end; gap: 6px">
+      <label for="pa-q" style="position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0)">Your question</label>
+      <textarea id="pa-q" rows="2" placeholder="Ask in English, Hinglish, मराठी or हिंदी" style="flex: 1; min-height: 44px; font-size: 15px"></textarea>
+      <button class="k-btn k-btn--quiet k-btn--icon" type="button" aria-label="Show Marathi and Hindi letters" aria-pressed="false" style="width: 44px; height: 44px; font-family: 'IBM Plex Sans Devanagari', sans-serif; font-size: 16px; color: var(--k-ink)">अ</button>
+      <button class="k-btn k-btn--primary k-btn--icon" type="button" aria-label="Ask" style="width: 44px; height: 44px"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"></path></svg></button>
+    </div>
+  </section>
+
+  <nav class="k-tabbar" aria-label="Main">
+    <a href="PhoneHome.html"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10.5 12 3l9 7.5V21h-6v-6H9v6H3z"></path></svg>Home</a>
+    <a href="PhoneDocuments.html"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H6v18h12V7z"></path><path d="M14 3v4h4M9 12h6M9 16h6"></path></svg>Documents</a>
+    <a href="PhoneAsk.html" class="is-active" aria-current="page"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H9l-5 4z"></path><path d="M8 9h8M8 12h5"></path></svg>Ask</a>
+    <a href="PhoneReview.html"><span style="position: relative; display: inline-flex"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v16H4z"></path><path d="M8 12l3 3 5-6"></path></svg><span class="k-nav-count" style="position: absolute; top: -6px; left: 14px; font-size: 10px; padding: 0 4px">23</span></span>Review</a>
+    <a href="MyWords.html"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"></path></svg>More</a>
+  </nav>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["light","dark"],"default":"light"},"$preview":{"width":375,"height":1240}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return { theme: this.props.theme ?? 'light' };
+  }
+}
+</script>
+</body>
+</html>

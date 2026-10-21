@@ -1,0 +1,29 @@
+/* Details as name and value (design/kaagaz-ui-handoff/styles/kaagaz.css, section 15, .k-kv). */
+
+.kv {
+  display: grid;
+  grid-template-columns: 160px minmax(0, 1fr);
+  gap: 0;
+  font-size: 14px;
+  margin: 0;
+  color: var(--k-ink);
+}
+.kv dt {
+  color: var(--k-ink-muted);
+  padding: 12px 0;
+  border-bottom: 1px solid var(--k-rule);
+  font-size: 13px;
+}
+.kv dd {
+  margin: 0;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--k-rule);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 480px) {
+  .kv {
+    grid-template-columns: 120px minmax(0, 1fr);
+  }
+}

@@ -1,0 +1,51 @@
+/* Sensitivity labels (design/kaagaz-ui-handoff/styles/kaagaz.css, section 7, .k-lab).
+   Each has its own shape, so it reads without colour. */
+
+.lab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px 3px 8px;
+  border-radius: var(--k-r-pill);
+  font: 600 12px/1.3 var(--k-font-body);
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+.lab::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  background: currentColor;
+  flex: none;
+}
+.public {
+  color: var(--k-lab-public);
+  background: var(--k-lab-public-soft);
+}
+.public::before {
+  border-radius: 50%;
+}
+.internal {
+  color: var(--k-lab-internal);
+  background: var(--k-lab-internal-soft);
+}
+.internal::before {
+  border-radius: 1px;
+}
+.confidential {
+  color: var(--k-lab-confidential);
+  background: var(--k-lab-confidential-soft);
+}
+.confidential::before {
+  transform: rotate(45deg);
+}
+.restricted {
+  color: var(--k-lab-restricted);
+  background: var(--k-lab-restricted-soft);
+  border-color: currentColor;
+}
+.restricted::before {
+  width: 8px;
+  height: 8px;
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+}

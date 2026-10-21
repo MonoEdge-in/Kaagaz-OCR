@@ -1,0 +1,63 @@
+/* Segmented buttons and the radio pill (design/kaagaz-ui-handoff/styles/kaagaz.css, section 9). */
+
+.seg,
+.radio {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: var(--k-r-pill);
+  background: var(--k-sunken);
+}
+.seg button {
+  border: 0;
+  background: none;
+  padding: 0 14px;
+  min-height: 34px;
+  border-radius: var(--k-r-pill);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font: 500 13px var(--k-font-body);
+  color: var(--k-ink-muted);
+  cursor: pointer;
+}
+.seg button:focus-visible {
+  outline: 2px solid var(--k-focus);
+  outline-offset: 2px;
+}
+.seg button[aria-pressed="true"] {
+  background: var(--k-surface);
+  color: var(--k-ink);
+  box-shadow: var(--k-shadow-1);
+}
+
+.radio label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 14px;
+  border-radius: var(--k-r-pill);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--k-ink-muted);
+  cursor: pointer;
+  position: relative;
+}
+.radio input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+}
+.radio label:focus-within {
+  outline: 2px solid var(--k-focus);
+  outline-offset: 2px;
+}
+.on {
+  background: var(--k-surface);
+  box-shadow: var(--k-shadow-1);
+}
+.radio label.on {
+  color: var(--k-ink);
+}

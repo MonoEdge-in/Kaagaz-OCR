@@ -326,7 +326,12 @@ describe("layout guards", () => {
     const narrow = btn.find((rule) => rule.at === "@media (max-width: 479.98px)")?.body ?? "";
     expect(narrow).toMatch(/height:\s*auto;[\s\S]*white-space:\s*normal/);
     const nowrap = everyRule(NOWRAP).filter(({ file, rule }) => file !== "app/globals.css" && /\.btn\b/.test(rule.selector));
-    expect(nowrap.map((found) => found.name)).toEqual([]);
+    // Changed on purpose (UI rebuild, 20 Oct 2026): the new kit's Button is its own .btn, and wraps the same way.
+    const KIT_BUTTON = "components/ui/Button/Button.module.css";
+    expect(nowrap.map((found) => found.name)).toEqual([`${KIT_BUTTON}: .btn`]);
+    const kit = rulesFor(KIT_BUTTON, ".btn");
+    expect(kit.find((rule) => rule.at === "")?.body).toMatch(/max-width:\s*100%/);
+    expect(kit.find((rule) => rule.at === "@media (max-width: 479.98px)")?.body).toMatch(/white-space:\s*normal/);
   });
 
   it("traps scrolling only in drawers, dialogs and the chat's own panes", () => {
@@ -372,6 +377,11 @@ describe("layout guards", () => {
       "components/operator/Operator.module.css: .menu: overscroll-behavior",
       // Changed on purpose (Read clearly, 19 Oct 2026): a wide table in the clean copy, sideways only.
       "components/viewer/ReadClearly.module.css: .tableBox: overscroll-behavior-x",
+      // Changed on purpose (UI rebuild, 20 Oct 2026): the new kit's drawer body, and its table and tab row sideways.
+      "components/ui/Drawer/Drawer.module.css: .body: overscroll-behavior",
+      "components/ui/Table/Table.module.css: .wrap: overscroll-behavior-x",
+      "components/ui/Tabs/Tabs.module.css: .tabs: overscroll-behavior-x",
+      "app/kit/kit.module.css: .states: overscroll-behavior-x", // the dev-only kit sheet's button table
     ];
     const found = everyRule(/overscroll-behavior/).flatMap(({ rule, name }) =>
       [...rule.body.matchAll(/(overscroll-behavior[-\w]*):/g)].map((match) => `${name}: ${match[1]}`),
@@ -453,6 +463,15 @@ describe("layout guards", () => {
       // Changed on purpose (MonoEdge design system, 16 Oct 2026): a busy button's spinner.
       'app/globals.css: .btn[aria-busy="true"]::after',
       "components/documents/Documents.module.css: .readMeter:indeterminate",
+      // Changed on purpose (UI rebuild, 20 Oct 2026): the new kit's work in progress, each stopped under
+      // reduced motion by globals.css: a busy button, Reading's dots and bar, the working line, a
+      // skeleton, and an upload stage with no number to show.
+      "components/ui/Button/Button.module.css: .loading::before",
+      "components/ui/StatusBadge/StatusBadge.module.css: .reading::after",
+      "components/ui/StatusBadge/StatusBadge.module.css: .dots i",
+      "components/ui/AnswerCard/AnswerCard.module.css: .dots i",
+      "components/ui/Skeleton/Skeleton.module.css: .skel::after",
+      "components/ui/StageProgress/StageProgress.module.css: .moving > i",
     ];
     const found = everyRule(/animation(-iteration-count)?:[^;]*\binfinite\b/).map(({ name }) => name);
     expect(found.filter((entry) => !allowed.includes(entry))).toEqual([]);

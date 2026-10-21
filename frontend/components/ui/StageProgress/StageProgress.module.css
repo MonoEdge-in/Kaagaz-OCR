@@ -1,0 +1,87 @@
+/* Per-file upload stages (design/kaagaz-ui-handoff/styles/kaagaz.css, section 12). */
+
+.file {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+.name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.stages,
+.labels {
+  display: grid;
+  grid-template-columns: 1fr 1fr 2fr;
+  gap: 4px;
+}
+.stages {
+  height: 6px;
+}
+.stage {
+  background: var(--k-chart-track);
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--k-r-pill);
+}
+.stage > i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--k-accent);
+  border-radius: var(--k-r-pill);
+}
+.stage.active > i {
+  background: var(--k-info);
+}
+/* No number to show (saving, or a sheet being read): a short piece moves across. */
+.moving > i {
+  width: 40%;
+  animation: slide 2.4s var(--k-ease) infinite;
+}
+.labels {
+  font: 500 10px/1 var(--k-font-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--k-ink-faint);
+}
+.labels .done {
+  color: var(--k-ink-muted);
+}
+.labels .active {
+  color: var(--k-info);
+}
+
+.filed {
+  font-size: 12px;
+  color: var(--k-ink-muted);
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+.filed b {
+  color: var(--k-ink);
+  font-weight: 500;
+}
+
+@keyframes slide {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(260%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .moving > i {
+    animation: none;
+  }
+}

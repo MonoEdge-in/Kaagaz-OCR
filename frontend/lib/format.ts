@@ -3,6 +3,7 @@
 // they are unit tested in node (tests/format.test.ts).
 
 import type { DetectedType, DocType, DocumentStatus } from "./types";
+import { documentStatus, documentWords } from "./status";
 
 // The product is for Indian businesses, so times are shown in India time
 // whatever the browser's own zone is. This also keeps the tests stable.
@@ -158,16 +159,12 @@ export interface StatusChip {
   className: "status-chip";
 }
 
-const STATUS_CHIPS: Record<DocumentStatus, { text: string; tone: StatusTone }> = {
-  received: { text: "Checking", tone: "working" },
-  clean: { text: "Reading", tone: "working" },
-  ready: { text: "Ready", tone: "ready" },
-  needs_reader: { text: "Stored", tone: "neutral" },
-  rejected: { text: "Rejected", tone: "danger" },
-  failed: { text: "Failed", tone: "danger" },
-};
+// The words come from the six-state mapping (lib/status.ts): checked or read is
+// Reading, refused, failed or not readable is Failed, and ready stays Ready.
+const STATUS_TONES = { reading: "working", failed: "danger" } as const;
 
 /** The words, tone and class for a document status chip. */
 export function statusChip(status: DocumentStatus): StatusChip {
-  return { ...STATUS_CHIPS[status], className: "status-chip" };
+  const state = documentStatus(status);
+  return { text: documentWords(status), tone: state === null ? "ready" : STATUS_TONES[state], className: "status-chip" };
 }

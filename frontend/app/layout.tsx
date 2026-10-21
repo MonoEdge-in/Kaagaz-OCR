@@ -1,11 +1,13 @@
 import type { Metadata, Viewport } from "next";
-import { Archivo, Inter, JetBrains_Mono } from "next/font/google";
+import { Archivo, IBM_Plex_Mono, IBM_Plex_Sans, IBM_Plex_Sans_Devanagari, Inter, JetBrains_Mono } from "next/font/google";
 import { cookies } from "next/headers";
 import type { ReactNode } from "react";
 import { ThemeProvider } from "@/components/ui/ThemeProvider";
 import { WheelGuard } from "@/components/ui/WheelGuard";
 import { parseTheme, THEME_COOKIE, themeAttribute } from "@/lib/theme";
 import "./globals.css";
+import "./styles/tokens.css";
+import "./styles/base.css";
 
 // The three faces, served from this app at build time, so no page asks Google
 // for anything; next/font adds a size-adjusted fallback to each, so the swap
@@ -20,7 +22,40 @@ const jetbrainsMono = JetBrains_Mono({
   display: "swap",
   variable: "--font-jetbrains-mono",
 });
-const archivo = Archivo({ subsets: ["latin", "latin-ext"], display: "swap", variable: "--font-archivo" });
+// Archivo carries its width axis too: the handoff sets headings at wdth 112
+// (--k-display-stretch). next/font only takes axes with the whole variable
+// weight range, so the file covers wght 100 to 900 and wdth 62 to 125.
+const archivo = Archivo({
+  subsets: ["latin", "latin-ext"],
+  display: "swap",
+  axes: ["wdth"],
+  variable: "--font-archivo",
+});
+// The handoff's faces (docs/ui-mapping.md, Step 1): IBM Plex Sans for text and
+// UI, Plex Sans Devanagari for Hindi and Marathi, Plex Mono for data. They sit
+// first in --k-font-body and --k-font-mono (app/styles/tokens.css). Inter and
+// JetBrains Mono stay until no screen uses --font-sans or --font-mono.
+const plexSans = IBM_Plex_Sans({
+  subsets: ["latin", "latin-ext"],
+  weight: ["400", "500", "600"],
+  display: "swap",
+  variable: "--font-plex-sans",
+});
+// Not preloaded: most pages carry no Devanagari, and the face's unicode range
+// means a browser fetches it only when a page does.
+const plexDevanagari = IBM_Plex_Sans_Devanagari({
+  subsets: ["devanagari"],
+  weight: ["400", "500", "600"],
+  display: "swap",
+  preload: false,
+  variable: "--font-plex-devanagari",
+});
+const plexMono = IBM_Plex_Mono({
+  subsets: ["latin", "latin-ext"],
+  weight: ["400", "500"],
+  display: "swap",
+  variable: "--font-plex-mono",
+});
 
 // Tab titles stay generic: browser history syncs off the device, so no
 // document or customer name ever goes here. A section sets only its own
@@ -51,7 +86,7 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
     <html
       lang="en"
       data-theme={themeAttribute(choice)}
-      className={`${inter.variable} ${jetbrainsMono.variable} ${archivo.variable}`}
+      className={`${inter.variable} ${jetbrainsMono.variable} ${archivo.variable} ${plexSans.variable} ${plexDevanagari.variable} ${plexMono.variable}`}
       // Next turns smooth scrolling off while it moves between pages.
       data-scroll-behavior="smooth"
     >

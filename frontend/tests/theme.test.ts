@@ -195,12 +195,19 @@ describe("MonoEdge design system", () => {
   // Extended (no licence here) and no Poppins.
   it("loads Inter, JetBrains Mono and Archivo, each first in its stack, with Devanagari faces after them", () => {
     const layout = read("app/layout.tsx");
-    expect(layout).toContain('import { Archivo, Inter, JetBrains_Mono } from "next/font/google";');
-    for (const variable of ["--font-inter", "--font-jetbrains-mono", "--font-archivo"]) {
+    // Changed on purpose (UI rebuild Step 1, 20 Oct 2026): the handoff's IBM Plex faces load
+    // next to these three until no screen uses --font-sans or --font-mono (app/styles/tokens.css).
+    expect(layout).toContain(
+      'import { Archivo, IBM_Plex_Mono, IBM_Plex_Sans, IBM_Plex_Sans_Devanagari, Inter, JetBrains_Mono } from "next/font/google";',
+    );
+    const variables = ["--font-inter", "--font-jetbrains-mono", "--font-archivo", "--font-plex-sans", "--font-plex-devanagari", "--font-plex-mono"];
+    for (const variable of variables) {
       expect(layout).toContain(`variable: "${variable}"`);
     }
-    expect(layout.match(/display: "swap"/g)).toHaveLength(3);
-    expect(layout).toContain("className={`${inter.variable} ${jetbrainsMono.variable} ${archivo.variable}`}");
+    expect(layout.match(/display: "swap"/g)).toHaveLength(6);
+    expect(layout).toContain(
+      "className={`${inter.variable} ${jetbrainsMono.variable} ${archivo.variable} ${plexSans.variable} ${plexDevanagari.variable} ${plexMono.variable}`}",
+    );
     expect(light["--font-sans"]?.startsWith('var(--font-inter, "Inter"),')).toBe(true);
     expect(light["--font-mono"]?.startsWith('var(--font-jetbrains-mono, "JetBrains Mono"),')).toBe(true);
     expect(light["--font-display"]?.startsWith('var(--font-archivo, "Archivo"),')).toBe(true);

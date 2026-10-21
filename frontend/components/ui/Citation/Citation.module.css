@@ -1,0 +1,31 @@
+/* The citation chip (design/kaagaz-ui-handoff/styles/kaagaz.css, section 14, .k-cite). */
+
+.cite {
+  display: inline-grid;
+  place-items: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: var(--k-r-pill);
+  background: var(--k-accent-soft);
+  color: var(--k-accent-soft-ink);
+  font: 600 11px/1 var(--k-font-mono);
+  vertical-align: 2px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  text-decoration: none;
+}
+a.cite:hover,
+button.cite:hover,
+.active,
+.active:hover {
+  background: var(--k-accent);
+  color: var(--k-accent-ink);
+}
+.cite:focus-visible {
+  outline: 2px solid var(--k-focus);
+  outline-offset: 2px;
+}
+span.cite {
+  cursor: default;
+}
