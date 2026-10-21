@@ -11,10 +11,11 @@ customers"): the unique key is (customer_id, field, raw_value).
 A value is listed with its page. Values whose page row is missing are not
 listed; the pipeline always stores the pages of a document it saves values for.
 
-Only values of each family's current, ready version, out of Trash, are listed,
-counted or resolved (the ``LIVE_CURRENT`` text, kaagaz/db/visibility.py, is
-written out in each of those statements): an older version's values no longer
-reach any answer, and a version still being read has nothing final to review.
+Only values of each family's current, ready version, out of Trash, are listed
+or counted in the review queue. A reviewer may also resolve a value directly
+from an older ready version in its document viewer; those values do not reach
+search or chat while that version is not current. A version still being read
+has nothing final to review.
 """
 
 from collections.abc import Mapping, Sequence
@@ -108,7 +109,7 @@ _LOCK_VALUE = (
     "SELECT v.id, v.document_id, v.field, v.value_text, v.value_raw, v.second_reading, v.label"
     " FROM extracted_values v"
     " JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id"
-    " WHERE v.customer_id = :c AND v.id = :v AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
+    " WHERE v.customer_id = :c AND v.id = :v AND d.deleted_at IS NULL AND d.status = 'ready'"
     " FOR UPDATE OF v"
 )
 

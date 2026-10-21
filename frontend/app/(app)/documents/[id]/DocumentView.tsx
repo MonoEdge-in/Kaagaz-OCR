@@ -414,7 +414,6 @@ export function DocumentView({
   const canVerifyValues =
     canReview(me.user.role) &&
     detail.status === "ready" &&
-    detail.versions.some((version) => version.id === detail.id && version.is_current) &&
     detail.deleted_at === null;
   const pendingValues = detail.values.filter((value) => value.label === "needs_review");
   // About six values, then "Show all N"; a Ready to verify value and the one highlighted always show.
