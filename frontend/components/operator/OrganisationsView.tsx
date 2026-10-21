@@ -31,6 +31,7 @@ import { CreateDialog } from "./CreateDialog";
 import { ManageMenu } from "./ManageMenu";
 import { OrgFeatureSwitchesDialog } from "./FeatureSwitches";
 import { OrgAiSettings, orgAiFocusId } from "./OrgAiSettings";
+import { OrgModelRates, orgModelRateFocusId } from "./OrgModelRates";
 import { OrgSessionTimeoutDialog } from "./SessionTimeout";
 import { afterDone, countText, deleteCountdown, filterOrgs, lastActivityText, operatorErrorMessage, orgStatus, searchSummary, userCounts } from "./logic";
 import { MoreRows, useRowCap } from "@/components/admin/RowCap";
@@ -64,6 +65,7 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
   const [changing, setChanging] = useState<Confirm | null>(null);
   const [adminsOf, setAdminsOf] = useState<Organisation | null>(null);
   const [modelsOf, setModelsOf] = useState<Organisation | null>(null);
+  const [ratesOf, setRatesOf] = useState<Organisation | null>(null);
   const [switchesOf, setSwitchesOf] = useState<Organisation | null>(null);
   const [timeoutOf, setTimeoutOf] = useState<Organisation | null>(null);
   const [done, setDone] = useState("");
@@ -200,6 +202,7 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
                       now={now}
                       onAdmins={() => setAdminsOf(org)}
                       onModels={() => setModelsOf(org)}
+                      onModelRates={() => setRatesOf(org)}
                       onSwitches={() => setSwitchesOf(org)}
                       onTimeout={() => setTimeoutOf(org)}
                       onChange={(change) => setChanging(orgConfirm(org, change, Date.now()))}
@@ -225,6 +228,7 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
       )}
       {adminsOf && <AdminsDialog org={adminsOf} onClose={() => setAdminsOf(null)} />}
       {modelsOf && <OrgAiSettings org={modelsOf} onClose={() => setModelsOf(null)} onSaved={setDone} />}
+      {ratesOf && <OrgModelRates org={ratesOf} onClose={() => setRatesOf(null)} onSaved={setDone} />}
       {switchesOf && <OrgFeatureSwitchesDialog org={switchesOf} onClose={() => setSwitchesOf(null)} />}
       {timeoutOf && <OrgSessionTimeoutDialog org={timeoutOf} onClose={() => setTimeoutOf(null)} />}
       {changing && (
@@ -257,12 +261,13 @@ function OrgRow(props: {
   now: number;
   onAdmins(): void;
   onModels(): void;
+  onModelRates(): void;
   onSwitches(): void;
   onTimeout(): void;
   onChange(change: OrgChange): void;
   onAutofile(): void;
 }) {
-  const { org, now, onAdmins, onModels, onSwitches, onTimeout, onChange, onAutofile } = props;
+  const { org, now, onAdmins, onModels, onModelRates, onSwitches, onTimeout, onChange, onAutofile } = props;
   const status = orgStatus(org);
   const countdown = org.status === "deleting" ? deleteCountdown(org.delete_after, now) : null;
   const size = formatBytes(org.storage_bytes);
@@ -306,6 +311,48 @@ function OrgRow(props: {
         <span className={styles.when}>{lastActivityText(org.last_activity_at, now)}</span>
       </td>
       <td role="cell">
+        <span className={styles.rowActions}>
+          <button type="button" className="btn" onClick={onAdmins} aria-label={`Admins of ${org.name}`}>
+            Admins
+          </button>
+          {org.status !== "deleting" && (
+            <button
+              id={orgAiFocusId(org.id)}
+              type="button"
+              className="btn"
+              onClick={onModels}
+              aria-label={`AI settings of ${org.name}`}
+            >
+              AI settings
+            </button>
+          )}
+          {org.status !== "deleting" && (
+            <button id={orgModelRateFocusId(org.id)} type="button" className="btn" onClick={onModelRates} aria-label={`OpenRouter request limits of ${org.name}`}>
+              Request limits
+            </button>
+          )}
+          {org.status !== "deleting" && (
+            <button
+              type="button"
+              className="btn"
+              onClick={onAutofile}
+              aria-label={`${org.autofile_granted ? "Stop" : "Allow"} auto-filing for ${org.name}`}
+            >
+              {org.autofile_granted ? "Stop auto-filing" : "Allow auto-filing"}
+            </button>
+          )}
+          {CHANGES[org.status].map(({ change, label, danger }) => (
+            <button
+              key={change}
+              type="button"
+              className={danger ? "btn btn-danger" : "btn"}
+              onClick={() => onChange(change)}
+              aria-label={`${label} ${org.name}`}
+            >
+              {label}
+            </button>
+          ))}
+        </span>
         {/* One menu (owner, 16 Oct 2026): the safe actions, then Disable, Enable, Delete
             or Cancel deletion after a separator. Each change opens its confirm. The
             button keeps orgAiFocusId, so closing AI settings comes back to it. */}
