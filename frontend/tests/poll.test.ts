@@ -1,5 +1,5 @@
-// The shared poller (lib/poll.ts) under fake timers: no request while the tab
-// is hidden, the 3 → 6 → 12 → 15 s steps, back to 3 s on a change, one
+// The shared poller (lib/poll.ts) under fake timers: no planned request while
+// the tab is hidden, the 3 → 5 s steps, back to 3 s on a change, one
 // request at a time, and retrying after a failure.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -70,29 +70,32 @@ afterEach(() => {
 });
 
 describe("createPoller", () => {
-  it("waits 3, 6, 12, then 15 s while nothing changes", async () => {
+  // Changed on purpose (council 16 Oct 2026): the steps are 3 s then 5 s (were 3, 6, 12, 15 s), so Ready shows within 5 s.
+  it("waits 3 s, then 5 s while nothing changes, and never more than 5 s", async () => {
     const { poller, gaps } = harness();
     poller.refresh();
-    await vi.advanceTimersByTimeAsync(3000 + 6000 + 12000 + 15000 + 15000);
-    expect(gaps()).toEqual([3000, 6000, 12000, 15000, 15000]);
-    expect(POLL_STEPS_MS).toEqual([3000, 6000, 12000, 15000]);
+    await vi.advanceTimersByTimeAsync(3000 + 5000 * 4);
+    expect(gaps()).toEqual([3000, 5000, 5000, 5000, 5000]);
+    expect(POLL_STEPS_MS).toEqual([3000, 5000]);
+    expect(Math.max(...POLL_STEPS_MS)).toBeLessThanOrEqual(5000);
     poller.stop();
   });
 
+  // Changed on purpose (council 16 Oct 2026): the steps are 3 s then 5 s (were 3, 6, 12, 15 s), so Ready shows within 5 s.
   it("goes back to 3 s whenever the status, status_message or progress changes", async () => {
     const { poller, world, gaps } = harness();
     poller.refresh();
-    await vi.advanceTimersByTimeAsync(3000 + 6000); // 3 requests; the next waits 12 s
+    await vi.advanceTimersByTimeAsync(3000 + 5000); // 3 requests; the next waits 5 s
     world.doc = { ...world.doc, status_message: "Reading page 1 of 4" };
-    await vi.advanceTimersByTimeAsync(12000); // this one sees the change
+    await vi.advanceTimersByTimeAsync(5000); // this one sees the change
     await vi.advanceTimersByTimeAsync(3000);
     world.doc = { ...world.doc, progress: { step: "reading", done: 2, total: 4 } };
-    await vi.advanceTimersByTimeAsync(6000);
+    await vi.advanceTimersByTimeAsync(5000);
     await vi.advanceTimersByTimeAsync(3000);
     world.doc = { ...world.doc, status: "clean" };
-    await vi.advanceTimersByTimeAsync(6000);
+    await vi.advanceTimersByTimeAsync(5000);
     await vi.advanceTimersByTimeAsync(3000);
-    expect(gaps()).toEqual([3000, 6000, 12000, 3000, 6000, 3000, 6000, 3000]);
+    expect(gaps()).toEqual([3000, 5000, 5000, 3000, 5000, 3000, 5000, 3000]);
     poller.stop();
   });
 
@@ -107,27 +110,43 @@ describe("createPoller", () => {
     expect(seen.at(-1)).toBe("Ready");
   });
 
-  it("sends nothing while the tab is hidden, and asks once when it is shown", async () => {
+  // N1 (QA 17 Oct): the first load in a background tab used to wait until the tab was shown.
+  it("sends an explicit refresh even while hidden, but no planned poll until the tab is shown", async () => {
     const { poller, world, calls } = harness();
     world.hidden = true;
     poller.refresh();
     await vi.advanceTimersByTimeAsync(120_000);
-    expect(calls).toEqual([]);
+    expect(calls).toHaveLength(1);
 
     world.hidden = false;
     poller.wake();
     await vi.advanceTimersByTimeAsync(0);
-    expect(calls).toHaveLength(1);
+    expect(calls).toHaveLength(2);
 
     // Hidden again while it polls: the planned poll comes due, but waits.
     world.hidden = true;
     await vi.advanceTimersByTimeAsync(120_000);
-    expect(calls).toHaveLength(1);
+    expect(calls).toHaveLength(2);
     world.hidden = false;
     poller.wake();
     poller.wake(); // visible and online together: still one request
     await vi.advanceTimersByTimeAsync(0);
+    expect(calls).toHaveLength(3);
+    poller.stop();
+  });
+
+  // CodeRabbit (17 Oct): a refresh queued behind a request in flight keeps its force.
+  it("runs a refresh queued behind a request even while hidden", async () => {
+    const { poller, world, calls } = harness();
+    world.hold = true;
+    poller.refresh();
+    await vi.advanceTimersByTimeAsync(0);
+    world.hidden = true;
+    poller.refresh(); // queued behind the first
+    world.held.shift()?.();
+    await vi.advanceTimersByTimeAsync(0);
     expect(calls).toHaveLength(2);
+    world.held.shift()?.();
     poller.stop();
   });
 
@@ -156,8 +175,8 @@ describe("createPoller", () => {
     const { poller, world, calls, seen, gaps } = harness();
     world.failing = true;
     poller.refresh();
-    await vi.advanceTimersByTimeAsync(6000 + 12000 + 15000);
-    expect(gaps()).toEqual([6000, 12000, 15000]);
+    await vi.advanceTimersByTimeAsync(5000 * 3); // changed on purpose (council 16 Oct 2026): 5 s steps
+    expect(gaps()).toEqual([5000, 5000, 5000]);
     world.failing = false;
     poller.wake(); // back online
     await vi.advanceTimersByTimeAsync(0);
@@ -205,8 +224,8 @@ describe("progressSignature", () => {
     let seconds = 100;
     Object.defineProperty(world.doc, "time_left", { enumerable: true, get: () => ({ seconds: (seconds -= 5) }) });
     poller.refresh();
-    await vi.advanceTimersByTimeAsync(3000 + 6000 + 12000 + 15000);
-    expect(gaps()).toEqual([3000, 6000, 12000, 15000]);
+    await vi.advanceTimersByTimeAsync(3000 + 5000 * 3); // changed on purpose (council 16 Oct 2026): 5 s steps
+    expect(gaps()).toEqual([3000, 5000, 5000, 5000]);
     expect(seconds).toBe(75); // five answers, each with a new time left
     poller.stop();
   });

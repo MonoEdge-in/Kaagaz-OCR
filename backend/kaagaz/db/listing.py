@@ -32,7 +32,7 @@ admin, or a user who uploaded every version, may do it (``can_delete``).
 """
 
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy import Connection, RowMapping, text
@@ -41,20 +41,61 @@ from sqlalchemy.exc import IntegrityError
 from kaagaz.chunking.context import document_part
 from kaagaz.db.documents import folder_missing
 from kaagaz.db.folders import FolderNotFound
+from kaagaz.db.visibility import LIVE_SUGGESTION
+from kaagaz.db.word_review import FLAGGED_VALUE
+from kaagaz.versions import name_key
+
+# File management (Q3, Q4, F5, O1 to O3): the owner and label, the version count, the
+# document date, the last change (the newest upload or the details stamp, whichever is
+# newer) and who made it, the department (the top-level folder above the document, when it
+# is a department; at most 5 levels up) and a pending version suggestion naming this
+# document as the new one (``new``) or its family as the candidate (``candidate``).
+# ponytail: the candidate probe has no index of its own; suggestions are few per customer.
+_LAST_UPLOAD = (
+    "(SELECT lu.created_at FROM documents lu WHERE lu.customer_id = d.customer_id"
+    " AND lu.family_id = d.family_id ORDER BY lu.created_at DESC LIMIT 1)"
+)
+_LAST_UPLOADER = (
+    "(SELECT lu.uploaded_by FROM documents lu WHERE lu.customer_id = d.customer_id"
+    " AND lu.family_id = d.family_id ORDER BY lu.created_at DESC LIMIT 1)"
+)
+_FILE_COLUMNS = (
+    " d.owner_id, d.sensitivity, d.document_date, d.version_note,"  # noqa: S608 - fixed fragments only
+    " (SELECT ow.display_name FROM users ow WHERE ow.customer_id = d.customer_id AND ow.id = d.owner_id)"
+    " AS owner_name,"
+    " (SELECT count(*) FROM documents vc WHERE vc.customer_id = d.customer_id AND vc.family_id = d.family_id)"
+    " AS versions,"
+    f" GREATEST(d.details_updated_at, {_LAST_UPLOAD}) AS last_updated_at,"
+    " (SELECT ub.display_name FROM users ub WHERE ub.customer_id = d.customer_id AND ub.id ="
+    f" CASE WHEN d.details_updated_at >= {_LAST_UPLOAD} THEN d.details_updated_by ELSE {_LAST_UPLOADER} END)"
+    " AS last_updated_by_name,"
+    " (WITH RECURSIVE up (id, parent_id, depth) AS ("
+    " SELECT f.id, f.parent_id, 1 FROM folders f WHERE f.customer_id = d.customer_id AND f.id = d.folder_id"
+    " UNION ALL SELECT f.id, f.parent_id, up.depth + 1 FROM up JOIN folders f ON f.id = up.parent_id"
+    " WHERE f.customer_id = d.customer_id AND up.depth < 6)"
+    " SELECT json_build_object('id', dep.id, 'name', dep.name) FROM up"
+    " JOIN folders dep ON dep.customer_id = d.customer_id AND dep.id = up.id"
+    " WHERE up.parent_id IS NULL AND dep.kind = 'department') AS department,"
+    " (SELECT json_build_object('id', s.id,"
+    " 'role', CASE WHEN s.document_id = d.id THEN 'new' ELSE 'candidate' END)"
+    f" FROM version_suggestions s WHERE s.customer_id = d.customer_id AND {LIVE_SUGGESTION}"
+    " AND (s.document_id = d.id OR s.candidate_family_id = d.family_id)"
+    " ORDER BY (s.document_id = d.id) DESC, s.created_at DESC LIMIT 1) AS pending_suggestion"
+)
 
 # A DocumentSummary row: the document, its uploader's name, who uploaded each
 # version of its family, and the newest version after it that is not in Trash
 # (one small JSON object, or NULL). Both subqueries use the index
 # documents_family_version on the family's few rows. PRD 5 F4: the pages read
 # unreadable or uncertain that are still on the attention list (not kept as is,
-# F5), and the values labelled needs review, each counted on the document's own
-# rows (the pages key, the index extracted_values_record). PRD 5 U2: the unsure words on
-# those pages. PRD 5 Q6: ``batch_ahead``, the files of the same uploader's batch (the
+# F5), and the values the review screen flags, each counted on the document's own
+# rows (the pages key, the index extracted_values_record). PRD 5 U2: the unsure and
+# illegible words on those pages. PRD 5 Q6: ``batch_ahead``, the files of the same uploader's batch (the
 # documents_batch index) uploaded before this one and still being read or waiting; 0
 # for a document in no batch. It counts this customer's own rows only, so another
 # customer's load never shows in it.
 _COLUMNS = (
-    "SELECT d.id, d.display_name, d.detected_type, d.size_bytes, d.status, d.failure_code,"
+    "SELECT d.id, d.display_name, d.detected_type, d.size_bytes, d.status, d.failure_code,"  # noqa: S608 - a fixed fragment, word_review.FLAGGED_VALUE
     " d.page_count, d.created_at, d.uploaded_by, d.folder_id, d.deleted_at, d.family_id, d.version_no,"
     " d.attempts, d.max_attempts, d.progress, d.doc_type, d.languages, d.summary, d.read_model,"
     " u.display_name AS uploaded_by_name,"
@@ -62,13 +103,17 @@ _COLUMNS = (
     " AND pu.read_quality = 'unreadable' AND pu.accepted_at IS NULL) AS pages_unreadable,"
     " (SELECT count(*) FROM pages pc WHERE pc.customer_id = d.customer_id AND pc.document_id = d.id"
     " AND pc.read_quality = 'uncertain' AND pc.accepted_at IS NULL) AS pages_uncertain,"
-    " (SELECT coalesce(sum(pw.unsure_words), 0) FROM pages pw WHERE pw.customer_id = d.customer_id"
-    " AND pw.document_id = d.id AND pw.accepted_at IS NULL) AS words_unsure,"
+    " (SELECT coalesce(sum(pw.unsure_words + pw.illegible_words), 0) FROM pages pw"
+    " WHERE pw.customer_id = d.customer_id AND pw.document_id = d.id AND pw.accepted_at IS NULL)"
+    " AS words_unsure,"
     " (SELECT count(*) FROM documents b WHERE b.customer_id = d.customer_id AND b.batch_id = d.batch_id"
     " AND b.uploaded_by = d.uploaded_by AND b.deleted_at IS NULL AND b.status IN ('received', 'clean')"
     " AND (b.created_at, b.id) < (d.created_at, d.id)) AS batch_ahead,"
-    " (SELECT count(*) FROM extracted_values ev WHERE ev.customer_id = d.customer_id"
-    " AND ev.document_id = d.id AND ev.label = 'needs_review') AS values_to_review,"
+    # ponytail: the review screen's values only (word_review.FLAGGED_VALUE); its model-box,
+    # unreadable-page and ensemble word flags are not counted here. Exact would need
+    # word_review.load per row.
+    " (SELECT count(*) FROM extracted_values v WHERE v.customer_id = d.customer_id"
+    f" AND v.document_id = d.id AND {FLAGGED_VALUE}) AS values_to_review,"
     " (SELECT array_agg(o.uploaded_by) FROM documents o"
     " WHERE o.customer_id = d.customer_id AND o.family_id = d.family_id) AS family_uploaders,"
     # Auto-filing (feature 28), from the family's first version: filed while it is still in a
@@ -83,7 +128,7 @@ _COLUMNS = (
     " 'attempts', n.attempts, 'max_attempts', n.max_attempts, 'progress', n.progress)"
     " FROM documents n WHERE n.customer_id = d.customer_id AND n.family_id = d.family_id"
     " AND n.version_no > d.version_no AND n.deleted_at IS NULL"
-    " ORDER BY n.version_no DESC LIMIT 1) AS newer"
+    " ORDER BY n.version_no DESC LIMIT 1) AS newer," + _FILE_COLUMNS
 )
 
 _COUNT = "SELECT count(*)"
@@ -110,8 +155,14 @@ _TRASH_LIST = (
     " WHERE d.customer_id = :c AND d.deleted_at IS NOT NULL AND d.is_current"
 )
 
+# V12: each version's note, uploader and how it joined: linked from a suggestion (by a person
+# or on its own, ``auto``) or uploaded.
 _VERSIONS = (
-    "SELECT d.id, d.version_no, d.status, d.is_current, d.created_at FROM documents d"
+    "SELECT d.id, d.version_no, d.status, d.is_current, d.created_at, d.display_name, d.version_note,"
+    " d.uploaded_by, u.display_name AS uploaded_by_name,"
+    " (SELECT s.outcome FROM version_suggestions s WHERE s.customer_id = d.customer_id"
+    " AND s.document_id = d.id AND s.candidate_family_id = d.family_id AND s.status = 'accepted') AS linked"
+    " FROM documents d LEFT JOIN users u ON u.customer_id = d.customer_id AND u.id = d.uploaded_by"
     " WHERE d.customer_id = :c AND d.family_id = :f ORDER BY d.version_no"
 )
 
@@ -132,15 +183,50 @@ _OF_TYPE = " AND d.detected_type = :detected_type"
 # PRD 5 U2 "Needs attention": a page unreadable or uncertain still on the attention list
 # (not kept as is), or a value to review; the same rows _COLUMNS counts.
 _NEEDS_ATTENTION = (
-    " AND (EXISTS (SELECT 1 FROM pages pa WHERE pa.customer_id = :c AND pa.document_id = d.id"
+    " AND (EXISTS (SELECT 1 FROM pages pa WHERE pa.customer_id = :c AND pa.document_id = d.id"  # noqa: S608 - a fixed fragment, word_review.FLAGGED_VALUE
     " AND pa.read_quality IN ('unreadable', 'uncertain') AND pa.accepted_at IS NULL)"
-    " OR EXISTS (SELECT 1 FROM extracted_values va WHERE va.customer_id = :c"
-    " AND va.document_id = d.id AND va.label = 'needs_review'))"
+    " OR EXISTS (SELECT 1 FROM extracted_values v WHERE v.customer_id = :c"
+    f" AND v.document_id = d.id AND {FLAGGED_VALUE}))"
 )
 _UPLOADED_FROM = " AND d.created_at >= :uploaded_from"
 _UPLOADED_TO = " AND d.created_at < :uploaded_to"
+# File management Q3: the department (its whole subtree), owner, labels, a party on the card
+# (its name as written or in Latin letters, contained, any letter case), a survey number on
+# the card (as autofile.survey_digits reads it), the document date and a newer version
+# waiting to be confirmed.
+_IN_DEPARTMENT = " AND d.folder_id = ANY(CAST(:department_folders AS uuid[]))"
+_OF_OWNER = " AND d.owner_id = :owner_id"
+_LABELLED = " AND d.sensitivity = ANY(CAST(:sensitivities AS text[]))"
+_WITH_PARTY = (
+    " AND EXISTS (SELECT 1 FROM jsonb_array_elements(coalesce(d.card -> 'parties', '[]'::jsonb)) p"
+    " WHERE p ->> 'name' ILIKE :party ESCAPE '\\' OR p ->> 'name_latin' ILIKE :party ESCAPE '\\')"
+)
+_WITH_PROPERTY = (
+    " AND EXISTS (SELECT 1 FROM jsonb_array_elements(coalesce(d.card -> 'identifiers', '[]'::jsonb)) i"
+    " WHERE i ->> 'kind' = 'survey_number'"
+    " AND substring(translate(regexp_replace(i ->> 'value', '\\s', '', 'g'),"
+    " '०१२३४५६७८९', '0123456789') from '[0-9]+(?:/[0-9]+)*') = :property)"
+)
+_DATED_FROM = " AND d.document_date >= :doc_date_from"
+_DATED_TO = " AND d.document_date <= :doc_date_to"
+_HAS_NEWER = (
+    " AND EXISTS (SELECT 1 FROM version_suggestions s WHERE s.customer_id = :c"  # noqa: S608 - visibility.LIVE_SUGGESTION
+    f" AND s.candidate_family_id = d.family_id AND {LIVE_SUGGESTION})"
+)
+# Q4: the sort keys; the label by its strength. Output-column names (owner_name,
+# last_updated_at) are allowed alone in ORDER BY.
+SORTS = {
+    "name": "lower(d.display_name)",
+    "doc_type": "d.doc_type",
+    "owner": "owner_name",
+    "sensitivity": "array_position(ARRAY['public', 'internal', 'confidential', 'restricted'], d.sensitivity)",
+    "version": "d.version_no",
+    "document_date": "d.document_date",
+    "updated_at": "last_updated_at",
+    "created_at": "d.created_at",
+}
 
-_RENAME = "UPDATE documents SET display_name = :name WHERE customer_id = :c AND id = :d"
+_RENAME = "UPDATE documents SET display_name = :name, name_key = :key WHERE customer_id = :c AND id = :d"
 _NAME_OF = "SELECT display_name FROM documents WHERE customer_id = :c AND id = :d"
 # The context header's first part is "Document: {name}" (PRD 2 C4), followed by
 # " | " or nothing; a rename swaps it for the new name in each of the document's pieces.
@@ -184,8 +270,19 @@ def list_documents(
     uploaded_to: datetime | None = None,
     trashed: bool = False,
     attention: bool = False,
+    department_folders: Sequence[str] | None = None,
+    owner_id: str | None = None,
+    sensitivities: Sequence[str] = (),
+    party: str | None = None,
+    property_number: str | None = None,
+    doc_date_from: date | None = None,
+    doc_date_to: date | None = None,
+    has_newer_version: bool = False,
+    sort: str = "created_at",
+    descending: bool = True,
 ) -> tuple[Sequence[RowMapping], int]:
-    """One page of this customer's documents, newest first, and the total that match.
+    """One page of this customer's documents, newest first unless ``sort`` (Q4: a SORTS key)
+    and ``descending`` say otherwise, and the total that match.
 
     One row per family: its current version, out of Trash, or with ``trashed``
     only what is in Trash.
@@ -194,7 +291,11 @@ def list_documents(
     folder), ``folder_ids`` (in one of these folders), ``tag_ids`` (holding every
     one of these tags), ``detected_type``, and ``uploaded_from`` (inclusive) to
     ``uploaded_to`` (exclusive), ``attention`` (PRD 5 U2: a page or a value needs
-    attention). All of them apply in both queries, before LIMIT.
+    attention); File management Q3: ``department_folders`` (a department's subtree),
+    ``owner_id``, ``sensitivities`` (any of), ``party``, ``property_number`` (normalised),
+    ``doc_date_from`` to ``doc_date_to`` (both inclusive) and ``has_newer_version``. All of
+    them apply in both queries, before LIMIT. A sort other than ``created_at`` reads every
+    match before the page.
 
     Two queries (the page and the count). Cost for this customer's D documents:
     no filter, O(limit + offset) rows on the (customer_id, created_at) index; a
@@ -233,10 +334,26 @@ def list_documents(
         params["uploaded_to"] = uploaded_to
     if attention:
         chosen.append(_NEEDS_ATTENTION)
+    chosen.append(
+        file_filters(
+            params,
+            department_folders=department_folders,
+            owner_id=owner_id,
+            sensitivities=sensitivities,
+            party=party,
+            property_number=property_number,
+            doc_date_from=doc_date_from,
+            doc_date_to=doc_date_to,
+            has_newer_version=has_newer_version,
+        )
+    )
     where = (_TRASH_LIST if trashed else _LIST) + _FILTERS + "".join(chosen)
+    way = "DESC" if descending else "ASC"
+    nulls = "" if sort == "created_at" else " NULLS LAST"  # created_at: the listing index, as before
+    order = f" ORDER BY {SORTS[sort]} {way}{nulls}, d.id {way}"
     rows = (
         conn.execute(
-            text(_COLUMNS + where + " ORDER BY d.created_at DESC, d.id DESC LIMIT :limit OFFSET :offset"),
+            text(_COLUMNS + where + order + " LIMIT :limit OFFSET :offset"),
             params,
         )
         .mappings()
@@ -244,6 +361,52 @@ def list_documents(
     )
     total: int = conn.execute(text(_COUNT + where), params).scalar_one()
     return rows, int(total)
+
+
+def file_filters(
+    params: dict[str, Any],
+    *,
+    department_folders: Sequence[str] | None = None,
+    owner_id: str | None = None,
+    sensitivities: Sequence[str] = (),
+    party: str | None = None,
+    property_number: str | None = None,
+    doc_date_from: date | None = None,
+    doc_date_to: date | None = None,
+    has_newer_version: bool = False,
+) -> str:
+    """Q3's fixed fragments for the filters given, their values added to ``params``; the list
+    and search (``matching_ids``) share them. O(1)."""
+    optional = (
+        (
+            department_folders is not None,
+            _IN_DEPARTMENT,
+            "department_folders",
+            list(department_folders or ()),
+        ),
+        (owner_id is not None, _OF_OWNER, "owner_id", owner_id),
+        (bool(sensitivities), _LABELLED, "sensitivities", list(dict.fromkeys(sensitivities))),
+        (bool(party), _WITH_PARTY, "party", _like_pattern(party)),
+        (bool(property_number), _WITH_PROPERTY, "property", property_number),
+        (doc_date_from is not None, _DATED_FROM, "doc_date_from", doc_date_from),
+        (doc_date_to is not None, _DATED_TO, "doc_date_to", doc_date_to),
+        (has_newer_version, _HAS_NEWER, "has_newer", None),
+    )
+    chosen = []
+    for wanted, fragment, name, value in optional:
+        if wanted:
+            chosen.append(fragment)
+            params[name] = value
+    return "".join(chosen)
+
+
+def matching_ids(conn: Connection, customer_id: str, **filters: Any) -> list[str]:
+    """Q3 on search: the current, untrashed documents ``file_filters`` keeps. One query over
+    this customer's current documents: O(D)."""
+    params: dict[str, Any] = {"c": customer_id}
+    where = _LIST + file_filters(params, **filters)
+    found: Sequence[object] = conn.execute(text("SELECT d.id" + where), params).scalars().all()
+    return [str(document) for document in found]
 
 
 def get_document(conn: Connection, customer_id: str, document_id: str) -> RowMapping | None:
@@ -483,9 +646,11 @@ _SET_READINGS_TIMEOUT = text("SELECT set_config('statement_timeout', :ms, true)"
 # one and says ``truncated`` (views.page_readings).
 _PAGE_READINGS = text(
     "SELECT ro.role, ro.reader, ro.reader_version, l.ord, l.text, l.cut, l.confidence, l.origin,"
-    " l.kind, l.region"
+    " l.kind, l.region, l.table_id, l.table_row, l.table_col, l.table_header"
     " FROM reader_outputs ro"
     " LEFT JOIN LATERAL (SELECT * FROM (SELECT e.ord, left(e.span ->> 'raw', :max_chars) AS text,"
+    " e.span ->> 'table_id' AS table_id, CAST(e.span ->> 'row' AS integer) AS table_row,"
+    " CAST(e.span ->> 'col' AS integer) AS table_col, CAST(e.span ->> 'header' AS boolean) AS table_header,"
     " length(e.span ->> 'raw') > :max_chars AS cut,"
     " CAST(e.span ->> 'confidence' AS double precision) AS confidence,"
     " e.span ->> 'origin' AS origin, e.span ->> 'kind' AS kind, e.span -> 'region' AS region,"
@@ -554,16 +719,175 @@ def page_marks(conn: Connection, customer_id: str, document_id: str, page_no: in
     return conn.execute(_PAGE_MARKS, params).mappings().all()
 
 
+# Read clearly (19 Oct 2026): the whole document's main reader lines (its first role) in one
+# unpacking, page by page in stored order, under a document-wide cap: at most
+# CLEAR_COPY_LINES lines and about CLEAR_COPY_TEXT characters (one line over leaves the
+# database, as in _PAGE_READINGS; views.clear_copy drops it and says ``truncated``).
+CLEAR_COPY_LINES = 20_000
+CLEAR_COPY_TEXT = 1_000_000
+_CLEAR_COPY = text(
+    "SELECT * FROM (SELECT (e.span -> 'region' ->> 'page')::int AS page_no, e.ord,"
+    " left(e.span ->> 'raw', :max_chars) AS text, length(e.span ->> 'raw') > :max_chars AS cut,"
+    " CAST(e.span ->> 'confidence' AS double precision) AS confidence,"
+    " e.span ->> 'origin' AS origin, e.span ->> 'kind' AS kind, e.span -> 'region' AS region,"
+    " e.span ->> 'table_id' AS table_id, CAST(e.span ->> 'row' AS integer) AS table_row,"
+    " CAST(e.span ->> 'col' AS integer) AS table_col, CAST(e.span ->> 'header' AS boolean) AS table_header,"
+    " sum(length(left(e.span ->> 'raw', :max_chars)))"
+    " OVER (ORDER BY (e.span -> 'region' ->> 'page')::int, e.ord) AS upto"
+    " FROM reader_outputs ro"
+    " CROSS JOIN LATERAL jsonb_array_elements(ro.output) WITH ORDINALITY AS e(span, ord)"
+    " WHERE ro.customer_id = :c AND ro.document_id = :d AND ro.role = (SELECT min(role) FROM reader_outputs"
+    " WHERE customer_id = :c AND document_id = :d)"
+    " AND NOT (coalesce(e.span ->> 'origin', '') = 'ocr' AND e.span ->> 'kind' IS NULL"
+    " AND coalesce(e.span ->> 'quality', '') IN ('unsure', 'illegible'))"
+    " ORDER BY (e.span -> 'region' ->> 'page')::int, e.ord LIMIT :max_lines + 1) AS s"
+    " WHERE s.upto - length(s.text) <= :max_text ORDER BY s.page_no, s.ord"
+)
+# Its marks, as _PAGE_MARKS for every page in one unpacking, at most CLEAR_COPY_LINES.
+_CLEAR_COPY_MARKS = text(
+    "SELECT (e.span -> 'region' ->> 'page')::int AS page_no,"
+    " CASE WHEN e.span ->> 'kind' IS NULL THEN e.span ->> 'quality' ELSE 'unpinned' END AS quality,"
+    " e.span -> 'region' AS region, left(e.span ->> 'text', :max_chars) AS text"
+    " FROM reader_outputs ro"
+    " CROSS JOIN LATERAL jsonb_array_elements(ro.output) WITH ORDINALITY AS e(span, ord)"
+    " WHERE ro.customer_id = :c AND ro.document_id = :d AND e.span ->> 'origin' = 'ocr'"
+    " AND ((e.span ->> 'kind' IS NULL AND e.span ->> 'quality' IN ('unsure', 'illegible'))"
+    " OR (e.span ->> 'kind' IS NOT NULL AND e.span ->> 'box_source' = 'model'))"
+    " ORDER BY ro.role, e.ord LIMIT :max_lines"
+)
+
+
+def clear_copy(
+    conn: Connection, customer_id: str, document_id: str
+) -> tuple[Sequence[RowMapping], Sequence[RowMapping]]:
+    """The document's lines and marks for Read clearly: two statements, each unpacking the
+    stored output once, under the readings' timeout. O(spans of the document)."""
+    conn.execute(_SET_READINGS_TIMEOUT, {"ms": str(READINGS_TIMEOUT_MS)})
+    params = {
+        "c": customer_id,
+        "d": document_id,
+        "max_lines": CLEAR_COPY_LINES,
+        "max_chars": MAX_READING_CHARS,
+        "max_text": CLEAR_COPY_TEXT,
+    }
+    lines = conn.execute(_CLEAR_COPY, params).mappings().all()
+    return lines, conn.execute(_CLEAR_COPY_MARKS, params).mappings().all()
+
+
 def rename_document(conn: Connection, customer_id: str, document_id: str, *, name: str) -> None:
     """Give this one version a new display name, already cleaned by the caller, and
     put it in its pieces' context headers too, so search never shows the old name.
     O(log D + P) for the document's P pieces."""
     params = {"c": customer_id, "d": document_id}
     old = conn.execute(text(_NAME_OF), params).scalar_one_or_none()
-    conn.execute(text(_RENAME), {**params, "name": name})
+    conn.execute(text(_RENAME), {**params, "name": name, "key": name_key(name)})  # V2
     if old is not None:
         headers = {"old": document_part(old), "new": document_part(name)}
         conn.execute(text(_RENAME_HEADERS), {**params, **headers})
+
+
+# --- the dashboard (File management D2) ----------------------------------------------
+# Plain counts over the current, untrashed documents (the documents_current index), with the
+# documents_listing index for the week and month and the recent list.
+_DASHBOARD_TILES = text(
+    "SELECT (SELECT count(*) FROM documents d WHERE d.customer_id = :c"  # noqa: S608 - visibility.LIVE_SUGGESTION
+    " AND d.deleted_at IS NULL AND d.is_current) AS documents,"
+    " (SELECT count(*) FROM documents d"
+    " JOIN documents r ON r.customer_id = d.customer_id AND r.id = d.family_id"
+    " WHERE d.customer_id = :c AND d.deleted_at IS NULL AND d.is_current"
+    " AND r.created_at >= :week) AS this_week,"
+    " (SELECT count(*) FROM documents d WHERE d.customer_id = :c AND d.deleted_at IS NULL"
+    " AND d.version_no > 1 AND d.created_at >= :month) AS new_versions,"
+    f" (SELECT count(*) FROM version_suggestions s WHERE s.customer_id = :c AND {LIVE_SUGGESTION})"
+    " AS to_confirm"
+)
+_DASHBOARD_TYPES = text(
+    "SELECT doc_type, count(*) AS n FROM documents"
+    " WHERE customer_id = :c AND is_current AND deleted_at IS NULL"
+    " GROUP BY doc_type ORDER BY n DESC, doc_type NULLS LAST"
+)
+# Each department with the current, untrashed documents anywhere below it (5 levels at most).
+_DASHBOARD_DEPARTMENTS = text(
+    "WITH RECURSIVE tree (id, root, depth) AS ("
+    " SELECT id, id, 1 FROM folders WHERE customer_id = :c AND parent_id IS NULL AND kind = 'department'"
+    " UNION ALL SELECT f.id, t.root, t.depth + 1 FROM tree t JOIN folders f ON f.parent_id = t.id"
+    " WHERE f.customer_id = :c AND t.depth < 6)"
+    " SELECT dep.id, dep.name, dep.sort_order, count(d.id) AS files FROM folders dep"
+    " JOIN tree t ON t.root = dep.id"
+    " LEFT JOIN documents d ON d.customer_id = :c AND d.folder_id = t.id"
+    " AND d.deleted_at IS NULL AND d.is_current WHERE dep.customer_id = :c"
+    " GROUP BY dep.id ORDER BY dep.sort_order NULLS LAST, lower(dep.name), dep.id"
+)
+_DASHBOARD_RECENT = text(
+    "SELECT id, display_name, doc_type, sensitivity, version_no, status, created_at FROM documents"
+    " WHERE customer_id = :c AND is_current AND deleted_at IS NULL ORDER BY created_at DESC, id DESC LIMIT 10"
+)
+
+
+def dashboard(conn: Connection, customer_id: str, *, week: datetime, month: datetime) -> dict[str, Any]:
+    """D2: the tiles (documents, those added since ``week``, versions added since ``month``,
+    suggestions to confirm), documents by type, each department's files and the files in
+    none and the 10 newest documents (the last 20 activities: ``audit.entries``, A5). Four
+    statements, each on an index or a count over this customer's current documents: O(D)."""
+    params = {"c": customer_id, "week": week, "month": month}
+    tiles = conn.execute(_DASHBOARD_TILES, params).mappings().one()
+    departments = conn.execute(_DASHBOARD_DEPARTMENTS, params).mappings().all()
+    return {
+        "tiles": dict(tiles),
+        "by_type": conn.execute(_DASHBOARD_TYPES, params).mappings().all(),
+        "departments": departments,
+        "not_in_department": int(tiles["documents"]) - sum(int(row["files"]) for row in departments),
+        "recent": conn.execute(_DASHBOARD_RECENT, params).mappings().all(),
+    }
+
+
+# File management O1 to O3, V9: the owner and label of the whole family, this version's note,
+# and the family's details stamp, in one statement; a field not given keeps its value.
+_SET_DETAILS = (
+    "UPDATE documents SET"
+    " owner_id = CASE WHEN :set_owner THEN CAST(:owner AS uuid) ELSE owner_id END,"
+    " sensitivity = CASE WHEN :set_label THEN CAST(:label AS text) ELSE sensitivity END,"
+    " sensitivity_set_by_person = sensitivity_set_by_person OR :set_label,"
+    " version_note = CASE WHEN :set_note AND id = :d THEN CAST(:note AS text) ELSE version_note END,"
+    " details_updated_by = :u, details_updated_at = now()"
+    " WHERE customer_id = :c"
+    " AND family_id = (SELECT family_id FROM documents WHERE customer_id = :c AND id = :d)"
+)
+_ACTIVE_USER = "SELECT 1 FROM users WHERE customer_id = :c AND id = :u AND NOT disabled"
+_UNSET: Any = object()
+
+
+def active_user(conn: Connection, customer_id: str, user_id: str) -> bool:
+    """O1: an owner is an active user of this customer. One lookup by key."""
+    return conn.execute(text(_ACTIVE_USER), {"c": customer_id, "u": user_id}).first() is not None
+
+
+def set_details(
+    conn: Connection,
+    customer_id: str,
+    document_id: str,
+    *,
+    by: str,
+    owner_id: str | None = _UNSET,
+    sensitivity: str | None = _UNSET,
+    version_note: str | None = _UNSET,
+) -> None:
+    """Set what is given (O1 owner and O2 label on every version of the family, V9 this
+    version's note) and stamp the family's details as changed by ``by`` now (O3); with
+    nothing given, the stamp alone (a rename, a move, a tag change). The caller holds the
+    family lock. One statement: O(v log D) for the family's v versions."""
+    params = {
+        "c": customer_id,
+        "d": document_id,
+        "u": by,
+        "set_owner": owner_id is not _UNSET,
+        "owner": None if owner_id is _UNSET else owner_id,
+        "set_label": sensitivity is not _UNSET,
+        "label": None if sensitivity is _UNSET else sensitivity,
+        "set_note": version_note is not _UNSET,
+        "note": None if version_note is _UNSET else version_note,
+    }
+    conn.execute(text(_SET_DETAILS), params)
 
 
 def move_family(conn: Connection, customer_id: str, document_id: str, *, folder_id: str | None) -> None:

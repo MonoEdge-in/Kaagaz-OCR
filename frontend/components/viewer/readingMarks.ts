@@ -1,7 +1,7 @@
 // Reading problems drawn on the page (PRD 5 U3), kept pure so they are unit tested in
 // node (tests/reading-marks.test.ts). Three marks, each with its own pattern and words,
 // so colour is never the only cue: an unsure word is dashed amber, a part that couldn't
-// be read ([?]) is hatched red, a spot not confirmed is dotted grey. Each mark is a
+// be read ([?]) has a double red edge and a light fill, a spot not confirmed is dotted grey. Each mark is a
 // button named for what it marks; its hit area is at least 24 x 24 px (WCAG 2.5.8),
 // and the Attention panel lists the same marks. The text is shown as read (visibleText).
 
@@ -16,7 +16,7 @@ export const MIN_HIT_PX = 24;
 
 export const MARK_WORDS: Record<MarkQuality, { name: string; legend: string }> = {
   unsure: { name: "Unsure word", legend: "Unsure word (dashed)" },
-  illegible: { name: "Couldn't read", legend: "Couldn't read (hatched)" },
+  illegible: { name: "Hard to read", legend: "Hard to read (double edge)" },
   unpinned: { name: "Spot not confirmed", legend: "Spot not confirmed (dotted)" },
 };
 
@@ -32,6 +32,11 @@ export function markName(mark: ReadingMark, index: number, total: number): strin
   const text = visibleText(mark.text).trim();
   const words = MARK_WORDS[mark.quality].name;
   return `${text ? `${words} '${text}'` : words}, mark ${index + 1} of ${total}`;
+}
+
+/** The Needs attention tab's short chip (UI audit DD7): the word as read, else what the mark is. */
+export function markChipText(mark: ReadingMark): string {
+  return visibleText(mark.text).trim() || MARK_WORDS[mark.quality].name;
 }
 
 /** The legend: one entry for each kind of mark the page has, in a fixed order. */

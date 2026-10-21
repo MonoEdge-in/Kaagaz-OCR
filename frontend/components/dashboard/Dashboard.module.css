@@ -1,0 +1,368 @@
+/* The home screen in the handoff's layout (desktop/Home.html): the welcome on a dot field,
+   the Review queue panel, the totals strip, then two columns of cards. The bars are CSS
+   widths on one scale; nothing animates its size. */
+
+.page {
+  max-width: 1280px;
+  gap: 28px;
+}
+
+/* --- The welcome --------------------------------------------------------------------- */
+
+.hero {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(460px, 100%), 1fr));
+  gap: 28px;
+  align-items: stretch;
+}
+
+.welcome {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 22px;
+  min-width: 0;
+  padding: var(--space-2) 0;
+}
+
+.greeting {
+  max-width: 15ch;
+  margin: 0;
+  font-size: clamp(2.25rem, 1.6rem + 2.4vw, 3.5rem);
+  overflow-wrap: normal;
+}
+
+.ask {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: 620px;
+  padding: 6px 6px 6px 22px;
+  border: 1px solid var(--k-card-edge);
+  border-radius: var(--k-r-pill);
+  background: var(--k-surface);
+  box-shadow: var(--k-shadow-2);
+}
+
+.ask:focus-within {
+  border-color: var(--k-accent);
+}
+
+.askIcon {
+  flex: none;
+  color: var(--k-ink-faint);
+}
+
+.askInput {
+  flex: 1;
+  min-width: 0;
+  height: var(--k-touch);
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--k-ink);
+  font: 400 15px var(--k-font-body);
+}
+
+.askInput::placeholder {
+  color: var(--k-ink-faint);
+}
+
+/* --- The panel beside it, and Upload ---------------------------------------------------- */
+
+.side {
+  display: grid;
+  grid-template-rows: 1fr auto auto;
+  gap: 14px;
+  min-width: 0;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 28px;
+  min-height: 260px;
+  text-decoration: none;
+  background-image: radial-gradient(var(--k-accent-line) 1.2px, transparent 1.6px);
+  background-size: 18px 18px;
+}
+
+.panel:focus-visible {
+  outline: 2px solid var(--k-focus);
+  outline-offset: 3px;
+}
+
+.panelHead {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+/* The handoff's pixel mark, drawn by the page's own dots: a small square of the ink. */
+.pixels {
+  width: 51px;
+  height: 36px;
+  background-image: radial-gradient(var(--k-accent-ink) 2.4px, transparent 2.6px);
+  background-size: 9px 9px;
+  opacity: 0.9;
+}
+
+.panelLabel {
+  font: 500 11px var(--k-font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--k-accent-ink);
+  opacity: 0.8;
+}
+
+.panelBody {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  color: var(--k-accent-ink);
+}
+
+.panelNumber {
+  font-family: var(--k-font-display);
+  font-stretch: var(--k-display-stretch);
+  font-size: 88px;
+  font-weight: 600;
+  line-height: 0.9;
+  letter-spacing: -0.04em;
+}
+
+.panelLine {
+  max-width: 36ch;
+  font-size: 15px;
+  line-height: 1.5;
+  opacity: 0.92;
+}
+
+.panelButton {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 40px;
+  padding: 0 18px;
+  border-radius: var(--k-r-pill);
+  background: var(--k-accent-ink);
+  color: var(--k-accent);
+  font: 600 12px var(--k-font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.upload {
+  justify-content: space-between;
+  background: var(--k-surface);
+  border-color: var(--k-card-edge);
+  box-shadow: var(--k-shadow-1);
+}
+
+.uploadWords {
+  display: inline-flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.uploadWhere {
+  text-transform: none;
+  letter-spacing: 0;
+  font-family: var(--k-font-body);
+  font-weight: 400;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* --- The totals strip ------------------------------------------------------------------- */
+
+.totals {
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
+  gap: 0;
+}
+
+.total {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 24px 26px;
+  color: var(--k-ink);
+  text-decoration: none;
+  border-inline-end: 1px solid var(--k-rule);
+}
+
+.total:last-child {
+  border-inline-end: 0;
+}
+
+a.total:hover {
+  background: var(--k-ground);
+  color: var(--k-ink);
+}
+
+.eyebrowRow {
+  display: inline-flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.waiting {
+  color: var(--k-review);
+}
+
+.more {
+  display: inline-flex;
+  gap: var(--space-1);
+  align-items: center;
+  color: var(--k-accent);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+/* --- The cards ------------------------------------------------------------------------- */
+
+.columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(520px, 100%), 1fr));
+  gap: var(--space-4);
+}
+
+.headWords {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.bars {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fill {
+  display: block;
+}
+
+.departments {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(180px, 100%), 1fr));
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.department {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  height: 100%;
+  padding: 14px;
+  border: 1px solid var(--k-rule);
+  border-radius: 16px;
+  background: var(--k-surface);
+  color: var(--k-ink);
+  text-decoration: none;
+}
+
+.department:hover {
+  border-color: var(--k-rule-strong);
+  color: var(--k-ink);
+}
+
+.departmentName {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--k-accent);
+}
+
+.departmentName strong {
+  color: var(--k-ink);
+}
+
+.count {
+  font-size: 18px;
+}
+
+/* "Not in a department": dashed, the files still to sort. */
+.outside {
+  border-style: dashed;
+  border-width: 1.5px;
+  border-color: var(--k-rule-strong);
+  background: transparent;
+}
+
+.outside .departmentName {
+  color: var(--k-ink-muted);
+}
+
+.sortThem {
+  color: var(--k-accent);
+  font-weight: 600;
+}
+
+.recent {
+  margin: 0;
+  padding: 0 20px;
+  list-style: none;
+}
+
+.recentName {
+  flex: 1;
+}
+
+.recentWords {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.recentLink {
+  color: var(--k-ink);
+  text-decoration: none;
+}
+
+.recentLink:hover {
+  color: var(--k-accent);
+  text-decoration: underline;
+}
+
+.recentMeta {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  flex: none;
+}
+
+.when {
+  width: 72px;
+  text-align: right;
+}
+
+.empty {
+  padding: 20px;
+}
+
+.activityWords {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: var(--space-1);
+  min-width: 0;
+}
+
+@media (max-width: 600px) {
+  .total {
+    border-inline-end: 0;
+    border-bottom: 1px solid var(--k-rule);
+  }
+
+  .recentMeta .when {
+    display: none;
+  }
+}

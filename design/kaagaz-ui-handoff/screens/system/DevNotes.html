@@ -1,0 +1,530 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Kaagaz · Build notes</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="../../styles/kaagaz.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@100..125,400..700&amp;family=IBM+Plex+Mono:wght@400;500&amp;family=IBM+Plex+Sans+Devanagari:wght@400;500;600&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;display=swap">
+<style>body{margin:0}</style>
+</helmet>
+<div class="k-root" data-theme="{{theme}}" style="min-height: 100vh">
+  <div style="max-width: 1440px; margin: 0 auto; padding: 56px 64px 96px; display: flex; flex-direction: column; gap: 64px">
+
+    <header style="display: flex; flex-direction: column; gap: 16px; border-bottom: 2px solid var(--k-ink); padding-bottom: 28px">
+      <span class="k-eyebrow">Kaagaz by MonoEdge · Developer handoff · v1 · 20 Oct 2026</span>
+      <h1 class="k-display">Build notes · Next.js + CSS modules</h1>
+      <p class="k-read k-muted" style="max-width: 76ch">Plain CSS custom properties, no Tailwind, no component library. kaagaz.css in this canvas is the reference: copy its token blocks to app/styles/tokens.css, and split its component sections into one CSS module per component.</p>
+      <nav aria-label="Sections" class="k-chip-row">
+        <a class="k-chip" href="#files">1 · File structure</a>
+        <a class="k-chip" href="#theme">2 · Theming</a>
+        <a class="k-chip" href="#tokens">3 · Tokens</a>
+        <a class="k-chip" href="#components">4 · Components</a>
+        <a class="k-chip" href="#rules">5 · Rules that must not drift</a>
+        <a class="k-chip" href="#copy">6 · Copy</a>
+      </nav>
+    </header>
+
+    <!-- 1 FILES -->
+    <section id="files" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(560px, 100%), 1fr)); gap: 32px; align-items: start">
+      <div style="display: flex; flex-direction: column; gap: 12px">
+        <span class="k-eyebrow">01 · File structure</span>
+        <h2 class="k-h1">One module per component</h2>
+        <p class="k-muted">Tokens are global (imported once in app/layout.tsx). Every component reads only var(--k-…) tokens, never hex values. Class names in kaagaz.css map to module class names by dropping the k- prefix: .k-btn--primary becomes styles.primary in Button.module.css.</p>
+        <div class="k-banner k-banner--info">
+          <svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v5M12 8v.5"></path></svg>
+          <div class="k-banner-body"><p class="k-small">Fonts load through next/font/google: Archivo (wdth 100–125, 400–700; set font-stretch 112%), IBM Plex Sans (400, 500, 600), IBM Plex Sans Devanagari (400, 500, 600), IBM Plex Mono (400, 500). Expose them as --k-font-display, --k-font-body, --k-font-mono on html.</p></div>
+        </div>
+      </div>
+      <pre class="k-mono" style="margin: 0; white-space: pre-wrap; background: var(--k-sunken); border: 1px solid var(--k-rule); border-radius: 20px; padding: 20px 22px; font-size: 12.5px; line-height: 1.6; color: var(--k-ink)">{{code.tree}}</pre>
+    </section>
+
+    <!-- 2 THEME -->
+    <section id="theme" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(560px, 100%), 1fr)); gap: 32px; align-items: start">
+      <div style="display: flex; flex-direction: column; gap: 12px">
+        <span class="k-eyebrow">02 · Theming</span>
+        <h2 class="k-h1">data-theme on html</h2>
+        <ol style="padding-left: 20px; display: flex; flex-direction: column; gap: 8px">
+          <li>Three choices in the account menu: Light, Dark, System. Store the choice on the user’s profile so it follows them across devices.</li>
+          <li>System follows prefers-color-scheme and updates live when the OS changes.</li>
+          <li>Set data-theme on html before first paint (a tiny inline script in the head) to avoid a flash of the wrong theme.</li>
+          <li>Never write a colour that exists in only one theme. A new token goes into both blocks in the same commit.</li>
+          <li>Document pages keep --k-paper (light) in dark mode; marks on paper use the fixed --k-mark-* tokens.</li>
+        </ol>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 12px">
+        <pre class="k-mono" style="margin: 0; white-space: pre-wrap; background: var(--k-sunken); border: 1px solid var(--k-rule); border-radius: 20px; padding: 20px 22px; font-size: 12.5px; line-height: 1.6; color: var(--k-ink)">{{code.theme}}</pre>
+        <pre class="k-mono" style="margin: 0; white-space: pre-wrap; background: var(--k-sunken); border: 1px solid var(--k-rule); border-radius: 20px; padding: 20px 22px; font-size: 12.5px; line-height: 1.6; color: var(--k-ink)">{{code.script}}</pre>
+      </div>
+    </section>
+
+    <!-- 3 TOKENS -->
+    <section id="tokens" style="display: flex; flex-direction: column; gap: 20px">
+      <div style="display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 12px">
+        <div style="display: flex; flex-direction: column; gap: 6px"><span class="k-eyebrow">03 · Tokens</span><h2 class="k-h1">Every token, both themes</h2></div>
+        <p class="k-muted" style="max-width: 56ch">Values that don’t change between themes show one value in both columns. Swatches show the real value.</p>
+      </div>
+      <div class="k-table-wrap">
+        <table class="k-table" style="min-width: 960px">
+          <thead><tr><th scope="col" style="width: 300px">Token</th><th scope="col" style="width: 200px">Light</th><th scope="col" style="width: 200px">Dark</th><th scope="col">Use</th></tr></thead>
+          <tbody>
+            <sc-for list="{{tokens}}" as="t" hint-placeholder-count="20">
+              <sc-if value="{{t.group}}" hint-placeholder-val="{{ false }}">
+                <tr><td colspan="4" style="background: var(--k-ground); padding-top: 18px"><span class="k-eyebrow" style="color: var(--k-ink)">{{t.title}}</span></td></tr>
+              </sc-if>
+              <sc-if value="{{t.row}}" hint-placeholder-val="{{ true }}">
+                <tr>
+                  <td><code class="k-mono" style="font-size: 12.5px; font-weight: 500">{{t.name}}</code></td>
+                  <td><span style="display: inline-flex; gap: 8px; align-items: center"><sc-if value="{{t.sw}}" hint-placeholder-val="{{ true }}"><span style="width: 18px; height: 18px; border: 1px solid var(--k-rule-strong); background: {{t.light}}"></span></sc-if><span class="k-mono" style="font-size: 12px">{{t.light}}</span></span></td>
+                  <td><span style="display: inline-flex; gap: 8px; align-items: center"><sc-if value="{{t.sw}}" hint-placeholder-val="{{ true }}"><span style="width: 18px; height: 18px; border: 1px solid var(--k-rule-strong); background: {{t.dark}}"></span></sc-if><span class="k-mono" style="font-size: 12px">{{t.dark}}</span></span></td>
+                  <td class="k-muted">{{t.use}}</td>
+                </tr>
+              </sc-if>
+            </sc-for>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 4 COMPONENTS -->
+    <section id="components" style="display: flex; flex-direction: column; gap: 20px">
+      <div style="display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 12px">
+        <div style="display: flex; flex-direction: column; gap: 6px"><span class="k-eyebrow">04 · Components</span><h2 class="k-h1">Names, modules, variants, states</h2></div>
+        <p class="k-muted" style="max-width: 56ch">States marked “shown” are drawn on the Components artboards. Focus is always the 2px --k-focus ring at 2px offset.</p>
+      </div>
+      <div class="k-table-wrap">
+        <table class="k-table" style="min-width: 1180px">
+          <thead><tr><th scope="col" style="width: 170px">Component</th><th scope="col" style="width: 210px">CSS module</th><th scope="col" style="width: 300px">Classes / variants</th><th scope="col" style="width: 240px">States</th><th scope="col">Notes</th></tr></thead>
+          <tbody>
+            <sc-for list="{{comps}}" as="c" hint-placeholder-count="20">
+              <tr>
+                <td><strong>{{c.n}}</strong></td>
+                <td><code class="k-mono" style="font-size: 12px">{{c.m}}</code></td>
+                <td><code class="k-mono" style="font-size: 12px; white-space: normal">{{c.v}}</code></td>
+                <td class="k-small">{{c.s}}</td>
+                <td class="k-small k-muted">{{c.x}}</td>
+              </tr>
+            </sc-for>
+          </tbody>
+        </table>
+      </div>
+      <div class="k-card">
+        <h3 class="k-h4">Icon names (components/Icon/icons.ts)</h3>
+        <p class="k-small k-muted">24px grid, stroke 1.6, round caps and joins, fill none, stroke currentColor. Sizes 14 / 18 / 22. Decorative icons get aria-hidden; icon-only buttons get aria-label.</p>
+        <div class="k-chip-row">
+          <sc-for list="{{icons}}" as="i" hint-placeholder-count="30"><span class="k-tag k-mono">{{i}}</span></sc-for>
+        </div>
+      </div>
+    </section>
+
+    <!-- 5 RULES -->
+    <section id="rules" style="display: flex; flex-direction: column; gap: 20px">
+      <div style="display: flex; flex-direction: column; gap: 6px"><span class="k-eyebrow">05 · Rules that must not drift</span><h2 class="k-h1">Meaning, formats, progress, access</h2></div>
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(600px, 100%), 1fr)); gap: 16px; align-items: start">
+        <div class="k-card k-card--flush">
+          <div class="k-card-head k-card-head--bar"><h3 class="k-h4">Status meaning</h3><span class="k-spec">StatusBadge variant → when</span></div>
+          <div style="padding: 0 20px">
+            <div class="k-rule-row"><span class="k-status k-status--verified"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg>Verified</span><span class="k-small k-muted" style="flex: 1">verified · both readers agreed, or a reviewer confirmed it</span></div>
+            <div class="k-rule-row"><span class="k-status k-status--review"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .8-1 1.5V14M12 17v.5"></path></svg>Needs review</span><span class="k-small k-muted" style="flex: 1">review · readers disagreed or were unsure; always dashed</span></div>
+            <div class="k-rule-row"><span class="k-status k-status--from"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H6v18h12V7z"></path><path d="M14 3v4h4"></path></svg>From documents</span><span class="k-small k-muted" style="flex: 1">from · answer built from cited pages, not every value verified</span></div>
+            <div class="k-rule-row"><span class="k-status k-status--notfound"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M8 12h8"></path></svg>Not found</span><span class="k-small k-muted" style="flex: 1">notfound · say so, list unreadable pages that might hold it</span></div>
+            <div class="k-rule-row"><span class="k-status k-status--reading"><span class="k-dots" aria-hidden="true"><i></i><i></i><i></i></span>Reading</span><span class="k-small k-muted" style="flex: 1">reading · with a count (“Reading 4 of 6”); calm motion only</span></div>
+            <div class="k-rule-row"><span class="k-status k-status--failed"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4 2.5 20h19z"></path><path d="M12 10v4M12 17v.5"></path></svg>Couldn’t read</span><span class="k-small k-muted" style="flex: 1">failed · always with the reason and one fix button</span></div>
+          </div>
+        </div>
+        <div class="k-card k-card--flush">
+          <div class="k-card-head k-card-head--bar"><h3 class="k-h4">Sensitivity labels</h3><span class="k-spec">LabelChip variant → applies to</span></div>
+          <div style="padding: 0 20px">
+            <div class="k-rule-row"><span class="k-lab k-lab--public">Public</span><span class="k-small k-muted" style="flex: 1">public · fine to share outside the company</span></div>
+            <div class="k-rule-row"><span class="k-lab k-lab--internal">Internal</span><span class="k-small k-muted" style="flex: 1">internal · default for every new upload</span></div>
+            <div class="k-rule-row"><span class="k-lab k-lab--confidential">Confidential</span><span class="k-small k-muted" style="flex: 1">confidential · contracts, bank statements, salary sheets, land records</span></div>
+            <div class="k-rule-row"><span class="k-lab k-lab--restricted">Restricted</span><span class="k-small k-muted" style="flex: 1">restricted · land titles, board papers, ID documents</span></div>
+          </div>
+        </div>
+        <div class="k-card">
+          <h3 class="k-h4">Indian formats (lib/format.ts)</h3>
+          <pre class="k-mono" style="margin: 0; white-space: pre-wrap; background: var(--k-sunken); border: 1px solid var(--k-rule); border-radius: 20px; padding: 16px 18px; font-size: 12.5px; line-height: 1.6; color: var(--k-ink)">{{code.format}}</pre>
+          <span class="k-small k-muted">Amounts and IDs render in --k-font-mono with tabular figures; right-aligned in tables. Relative times (“2d ago”) only in lists, with the full date in a title tooltip.</span>
+        </div>
+        <div class="k-card">
+          <h3 class="k-h4">Upload progress never lies</h3>
+          <div style="display: flex; flex-direction: column; gap: 6px">
+            <div class="k-stages"><span class="k-stage"><i style="width: 100%"></i></span><span class="k-stage"><i style="width: 100%"></i></span><span class="k-stage is-active"><i style="width: 50%"></i></span></div>
+            <div class="k-stage-labels"><span class="is-done">Sending 20%</span><span class="is-done">Saving 20%</span><span class="is-active">Reading 60% · pages read / total</span></div>
+          </div>
+          <pre class="k-mono" style="margin: 0; white-space: pre-wrap; background: var(--k-sunken); border: 1px solid var(--k-rule); border-radius: 20px; padding: 16px 18px; font-size: 12.5px; line-height: 1.6; color: var(--k-ink)">{{code.progress}}</pre>
+        </div>
+        <div class="k-card">
+          <h3 class="k-h4">Accessibility checklist</h3>
+          <ul style="list-style: none; display: flex; flex-direction: column; gap: 0">
+            <sc-for list="{{a11y}}" as="a" hint-placeholder-count="8">
+              <li class="k-rule-row" style="justify-content: flex-start; align-items: flex-start"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true" style="color: var(--k-verified); margin-top: 3px"><path d="M5 12l5 5 9-10"></path></svg><span class="k-small">{{a}}</span></li>
+            </sc-for>
+          </ul>
+        </div>
+        <div class="k-card">
+          <h3 class="k-h4">Layout rules</h3>
+          <ul style="list-style: none; display: flex; flex-direction: column; gap: 0">
+            <sc-for list="{{layout}}" as="a" hint-placeholder-count="6">
+              <li class="k-rule-row" style="justify-content: flex-start; align-items: flex-start"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true" style="color: var(--k-accent); margin-top: 3px"><path d="M9 6l6 6-6 6"></path></svg><span class="k-small">{{a}}</span></li>
+            </sc-for>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- 6 COPY -->
+    <section id="copy" style="display: flex; flex-direction: column; gap: 20px">
+      <div style="display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 12px">
+        <div style="display: flex; flex-direction: column; gap: 6px"><span class="k-eyebrow">06 · Copy</span><h2 class="k-h1">Plain, specific, no apologies</h2></div>
+        <p class="k-muted" style="max-width: 60ch">Buttons say exactly what happens. Errors say what went wrong and how to fix it. No technical words where staff can see them: not OCR, engine, vector, embedding, model, confidence score, pipeline.</p>
+      </div>
+      <div class="k-table-wrap">
+        <table class="k-table" style="min-width: 900px">
+          <thead><tr><th scope="col" style="width: 200px">Situation</th><th scope="col">Write</th><th scope="col">Not</th></tr></thead>
+          <tbody>
+            <sc-for list="{{copy}}" as="c" hint-placeholder-count="10">
+              <tr>
+                <td class="k-small k-muted">{{c.w}}</td>
+                <td><span style="display: inline-flex; gap: 8px; align-items: flex-start"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true" style="color: var(--k-verified); margin-top: 3px"><path d="M5 12l5 5 9-10"></path></svg><span>{{c.d}}</span></span></td>
+                <td><span style="display: inline-flex; gap: 8px; align-items: flex-start; color: var(--k-ink-muted)"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true" style="color: var(--k-danger); margin-top: 3px"><path d="M6 6l12 12M18 6 6 18"></path></svg><span style="text-decoration: line-through; text-decoration-color: var(--k-danger)">{{c.n}}</span></span></td>
+              </tr>
+            </sc-for>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <footer style="border-top: 1px solid var(--k-rule); padding-top: 16px; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px" class="k-spec">
+      <span>Source of truth: project/kaagaz.css in this canvas</span>
+      <span>Questions on a token or component: comment on its artboard</span>
+    </footer>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["light","dark"],"default":"light"},"$preview":{"width":1440,"height":4200}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const code = {
+      tree: [
+        'app/',
+        '  layout.tsx            fonts, <html data-theme>, imports styles',
+        '  styles/',
+        '    tokens.css          :root + [data-theme="light"], [data-theme="dark"]',
+        '    base.css            reset, body, focus ring, reduced motion',
+        'components/',
+        '  AppShell/AppShell.module.css        shell, side, main, top',
+        '  NavItem/NavItem.module.css',
+        '  Button/Button.module.css',
+        '  Field/Field.module.css              Input, Select, DateField, Textarea',
+        '  CodeInput/CodeInput.module.css',
+        '  Checkbox/Checkbox.module.css',
+        '  Switch/Switch.module.css',
+        '  Chip/Chip.module.css                Chip, FilterChip, Tag',
+        '  LabelChip/LabelChip.module.css',
+        '  StatusBadge/StatusBadge.module.css',
+        '  VersionChip/VersionChip.module.css',
+        '  Tabs/Tabs.module.css',
+        '  Table/Table.module.css              SortHeader, NameCell, FileIcon',
+        '  BulkBar/BulkBar.module.css',
+        '  Tree/Tree.module.css',
+        '  Breadcrumbs/Breadcrumbs.module.css',
+        '  Segmented/Segmented.module.css      Segmented, RadioPill',
+        '  Card/Card.module.css                Card, StatTile, RuleRow',
+        '  BarChart/BarChart.module.css',
+        '  Banner/Banner.module.css',
+        '  Toast/Toast.module.css',
+        '  Dialog/Dialog.module.css            Dialog, InlineConfirm, Scrim',
+        '  Drawer/Drawer.module.css',
+        '  Menu/Menu.module.css',
+        '  DropZone/DropZone.module.css',
+        '  StageProgress/StageProgress.module.css',
+        '  BatchMeter/BatchMeter.module.css',
+        '  Timeline/Timeline.module.css',
+        '  CitationChip/CitationChip.module.css',
+        '  SourceCard/SourceCard.module.css',
+        '  AnswerCard/AnswerCard.module.css    Question, Answer',
+        '  LiveSteps/LiveSteps.module.css',
+        '  Composer/Composer.module.css        DevanagariKeys, Suggestion',
+        '  Viewer/Viewer.module.css            PageThumb, PaperPage, Marks, Zoom',
+        '  KeyValueList/KeyValueList.module.css',
+        '  ReviewReading/ReviewReading.module.css',
+        '  EmptyState/EmptyState.module.css    LedgerIllustration',
+        '  Skeleton/Skeleton.module.css',
+        '  Avatar/Avatar.module.css',
+        '  Kbd/Kbd.module.css',
+        '  Icon/Icon.tsx + icons.ts',
+        '  PhoneTabBar/PhoneTabBar.module.css',
+        '  BottomSheet/BottomSheet.module.css',
+        'lib/',
+        '  format.ts            rupees, dates, GSTIN, survey numbers',
+        '  theme.ts             light | dark | system'
+      ].join('\n'),
+      theme: [
+        '/* app/styles/tokens.css */',
+        ':root,',
+        '[data-theme="light"] {',
+        '  color-scheme: light;',
+        '  --k-ground: #F6F5F1;',
+        '  --k-accent: #1E4396;',
+        '  /* …every light token… */',
+        '}',
+        '[data-theme="dark"] {',
+        '  color-scheme: dark;',
+        '  --k-ground: #111113;',
+        '  --k-accent: #8FA8F0;',
+        '  /* …the same names, dark values… */',
+        '}',
+        '',
+        '/* components/Button/Button.module.css */',
+        '.btn { border: 1px solid var(--k-rule-strong);',
+        '  background: var(--k-surface); color: var(--k-ink);',
+        '  border-radius: var(--k-r-3); min-height: 36px; }',
+        '.primary { background: var(--k-accent);',
+        '  border-color: var(--k-accent); color: var(--k-accent-ink); }',
+        '.btn:focus-visible { outline: 2px solid var(--k-focus);',
+        '  outline-offset: 2px; }'
+      ].join('\n'),
+      script: [
+        '// lib/theme.ts — choice is "light" | "dark" | "system"',
+        'export function applyTheme(choice) {',
+        '  const dark = window.matchMedia("(prefers-color-scheme: dark)");',
+        '  const resolved = choice === "system"',
+        '    ? (dark.matches ? "dark" : "light")',
+        '    : choice;',
+        '  document.documentElement.dataset.theme = resolved;',
+        '}',
+        '// run in <head> before paint with the saved profile choice,',
+        '// and re-run on dark.addEventListener("change", …) when "system"'
+      ].join('\n'),
+      format: [
+        'const rupees = new Intl.NumberFormat("en-IN", {',
+        '  style: "currency", currency: "INR", maximumFractionDigits: 0 });',
+        'rupees.format(150000)   // "₹1,50,000"',
+        '',
+        'const day = new Intl.DateTimeFormat("en-IN", {',
+        '  day: "2-digit", month: "short", year: "numeric" });',
+        'day.format(new Date("2026-10-14"))   // "14 Oct 2026"',
+        '',
+        '// GSTIN: 15 chars, uppercase, never split across lines',
+        '// Land: "Survey 44/2", "Gat 112", "Ferfar 2187"'
+      ].join('\n'),
+      progress: [
+        '// stage weights: sending 20, saving 20, reading 60',
+        'const pct = 0.2 * sent + 0.2 * saved + 0.6 * (pagesRead / pagesTotal);',
+        '// show 100% and "Ready" only when reading is done;',
+        '// cap the bar at 99% until the server confirms every page.',
+        '// The batch line uses aria-live="polite":',
+        '// "48 files · 41 ready · 5 reading · 2 waiting · 1 already uploaded"'
+      ].join('\n')
+    };
+
+    const out = [];
+    const G = (title) => out.push({ group: true, row: false, title, name: '', light: '', dark: '', use: '', sw: false });
+    const T = (name, light, dark, use, sw) => out.push({ group: false, row: true, title: '', name, light, dark: dark || light, use, sw: sw !== false });
+    const S = (name, value, use) => out.push({ group: false, row: true, title: '', name, light: value, dark: value, use, sw: false });
+
+    G('Ground & surfaces');
+    T('--k-ground', '#F6F5F1', '#111113', 'Page background (MonoEdge off-white)');
+    T('--k-surface', '#FFFFFF', '#18181B', 'Cards, tables, inputs');
+    T('--k-raised', '#FFFFFF', '#1F1F23', 'Menus, dialogs, drawers, sheets');
+    T('--k-sunken', '#EFEDE6', '#0C0C0E', 'Viewer well, segmented tracks, hovers');
+    T('--k-card-edge', 'rgba(14,14,16,.05)', 'rgba(255,255,255,.06)', 'Near-invisible card edge', false);
+    T('--k-paper', '#FFFFFF', '#E9E7E1', 'A document page in the viewer');
+    T('--k-paper-ink', '#1A1A1A', '#1A1A1A', 'Text drawn on paper');
+    T('--k-paper-rule', '#E2E0D8', '#CBC8BF', 'Lines on paper, thumbnail rules');
+    G('Ink & rules');
+    T('--k-ink', '#0E0E10', '#F2F1EC', 'Text, headings');
+    T('--k-ink-muted', '#5B5B60', '#A6A5A0', 'Secondary text, labels');
+    T('--k-ink-faint', '#66666B', '#8C8B87', 'Placeholders, meta (AA on sunken)');
+    T('--k-ink-inverse', '#FFFFFF', '#111113', 'Text on ink or semantic fills');
+    T('--k-rule', '#E6E3DA', '#2A2A2E', 'Hairlines inside cards and tables');
+    T('--k-rule-strong', '#CFCBC0', '#3A3A40', 'Input and secondary button edges');
+    G('Accent · MonoEdge royal blue');
+    T('--k-accent', '#1E4396', '#8FA8F0', 'Primary action, current place, cited proof');
+    T('--k-accent-hover', '#17357A', '#B0C2F5', 'Hover and pressed');
+    T('--k-accent-ink', '#FFFFFF', '#0B1430', 'Text on accent');
+    T('--k-accent-soft', '#E8ECF7', '#1C2541', 'Selected rows, active chips, version banner');
+    T('--k-accent-soft-ink', '#1E4396', '#B7C6F6', 'Text on accent-soft');
+    T('--k-accent-2', '#2A55C0', '#2A4A9E', 'Illustrative blue panels');
+    T('--k-accent-line', 'rgba(255,255,255,.14)', 'rgba(255,255,255,.10)', 'Dots and lines on blue panels', false);
+    T('--k-focus', '#1E4396', '#B0C2F5', 'Focus ring; 4px soft halo on inputs');
+    T('--k-cite-fill', 'rgba(30,67,150,.12)', 'rgba(30,67,150,.18)', 'Fill inside a cited box', false);
+    T('--k-dot', 'rgba(30,67,150,.22)', 'rgba(143,168,240,.22)', 'Signal dot texture', false);
+    G('Navigation (light sidebar)');
+    T('--k-nav-bg', '#F6F5F1', '#111113', 'Sidebar (sits on ground, hairline right)');
+    T('--k-nav-ink', '#55555A', '#A6A5A0', 'Sidebar text');
+    T('--k-nav-ink-strong', '#0E0E10', '#F2F1EC', 'Active item, brand');
+    T('--k-nav-active', '#FFFFFF', '#1F1F23', 'Active pill');
+    T('--k-nav-rule', '#E6E3DA', '#2A2A2E', 'Sidebar hairline');
+    T('--k-nav-accent', '#1E4396', '#8FA8F0', 'Active icon');
+    G('Inverse surface');
+    T('--k-inverse-bg', '#141416', '#F2F1EC', 'Bulk bar, toasts, mini tray');
+    T('--k-inverse-ink', '#F6F5F1', '#111113', 'Text on inverse');
+    T('--k-inverse-muted', '#A9A9AE', '#55555A', 'Secondary text on inverse');
+    T('--k-inverse-line', '#2A2A2E', '#D9D7CF', 'Lines and tracks on inverse');
+    T('--k-inverse-accent', '#9DB4F0', '#1E4396', 'Actions on inverse (Undo)');
+    G('Semantic');
+    T('--k-verified', '#1B7A4B', '#6FCF97', 'Verified, ready');
+    T('--k-verified-ink', '#FFFFFF', '#08200F', 'Text on verified');
+    T('--k-verified-soft', '#E1F2E7', '#10301F', 'Verified backgrounds');
+    T('--k-review', '#8A5800', '#EDB02B', 'Needs review (dashed)');
+    T('--k-review-soft', '#FBF0D2', '#3A2C0A', 'Review backgrounds');
+    T('--k-review-mark', '#C08A00', '#C08A00', 'Amber marks and meters');
+    T('--k-danger', '#B42318', '#F4917B', 'Failed, couldn’t read, delete');
+    T('--k-danger-ink', '#FFFFFF', '#2A0B05', 'Text on danger');
+    T('--k-danger-soft', '#FCE6E2', '#3B1712', 'Failure backgrounds');
+    T('--k-info', '#35588F', '#9DB8E6', 'Reading, processing');
+    T('--k-info-soft', '#E7EDF6', '#182638', 'Info backgrounds');
+    T('--k-neutral', '#5E5E63', '#A9A8A3', 'Not found');
+    T('--k-neutral-soft', '#EEEDE8', '#222226', 'Not found background');
+    G('Sensitivity labels');
+    T('--k-lab-public', '#1B7A4B', '#6FCF97', 'Public chip text and marker');
+    T('--k-lab-public-soft', '#E1F2E7', '#10301F', 'Public chip fill');
+    T('--k-lab-internal', '#4A5E80', '#A9BBD8', 'Internal chip (default)');
+    T('--k-lab-internal-soft', '#E8ECF2', '#1E2533', 'Internal chip fill');
+    T('--k-lab-confidential', '#8A5800', '#EDB02B', 'Confidential chip');
+    T('--k-lab-confidential-soft', '#FBF0D2', '#3A2C0A', 'Confidential chip fill');
+    T('--k-lab-restricted', '#B42318', '#F4917B', 'Restricted chip and outline');
+    T('--k-lab-restricted-soft', '#FCE6E2', '#3B1712', 'Restricted chip fill');
+    G('Diff');
+    T('--k-diff-add', '#1B7A4B', '#6FCF97', 'Added words');
+    T('--k-diff-add-soft', '#E1F2E7', '#10301F', 'Added background');
+    T('--k-diff-del', '#B42318', '#F4917B', 'Removed words (with strikethrough)');
+    T('--k-diff-del-soft', '#FCE6E2', '#3B1712', 'Removed background');
+    G('Chart');
+    T('--k-chart-1', '#1E4396', '#8FA8F0', 'Main series');
+    T('--k-chart-2', '#9DB0DD', '#3A4E86', 'Second series');
+    T('--k-chart-track', '#ECEAE3', '#232327', 'Bar and meter tracks (pill)');
+    G('Marks on paper (same in both themes)');
+    T('--k-mark-cite', '#1E4396', '#1E4396', 'Cited value box');
+    T('--k-mark-unsure', '#A06B00', '#A06B00', 'Unsure word, dashed');
+    T('--k-mark-unreadable', '#B42318', '#B42318', 'Couldn’t be read, hatched');
+    T('--k-mark-unconfirmed', '#66666B', '#66666B', 'Spot not confirmed, dotted');
+    T('--k-mark-unsure-fill', 'rgba(240,180,40,.18)', 'rgba(240,180,40,.18)', 'Fill inside an unsure mark', false);
+    T('--k-mark-unreadable-hatch', 'rgba(180,35,24,.28)', 'rgba(180,35,24,.28)', 'Hatch inside an unreadable mark', false);
+    T('--k-on-fill', '#FFFFFF', '#FFFFFF', 'Switch knob, text on the cited-mark tag');
+    T('--k-stripe', 'rgba(255,255,255,.28)', 'rgba(255,255,255,.28)', 'Stripes on the Reading meter', false);
+    G('Elevation');
+    T('--k-shadow-1', '0 1px 2px …04, 0 2px 8px -4px …06', '0 1px 2px rgba(0,0,0,.4)', 'Cards, tables, active nav pill', false);
+    T('--k-shadow-2', '0 28px 56px -24px rgba(20,24,40,.28)…', '0 28px 56px -20px rgba(0,0,0,.75)…', 'Composer, menus, dialogs, toasts, tab bar', false);
+    T('--k-shadow-page', '0 1px 2px … 0 12px 28px -14px …', '0 1px 2px … 0 14px 28px -12px …', 'Document pages only', false);
+    T('--k-scrim', 'rgba(14,14,16,.40)', 'rgba(0,0,0,.6)', 'Behind dialogs and drawers');
+    G('Type');
+    S('--k-font-display', 'Archivo, wdth 112 (--k-display-stretch)', 'Titles, big numbers, hero lines');
+    S('--k-font-body', 'IBM Plex Sans + Plex Sans Devanagari', 'Everything else');
+    S('--k-font-mono', 'IBM Plex Mono', 'Buttons and labels (caps, +8–14%), IDs, amounts, pages');
+    S('--k-fs-11 / 12 / 13 / 14', '11 · 12 · 13 · 14px', 'Eyebrow · meta · dense · UI');
+    S('--k-fs-16 / 18 / 22', '16 · 18 · 22px', 'Reading · h3 · h2');
+    S('--k-fs-28 / 36 / 48', '30 · 40 · 56px', 'Page title · numbers · display');
+    S('--k-lh-tight / ui / read', '1.08 · 1.45 · 1.65', '1.65 wherever Devanagari appears');
+    G('Space');
+    S('--k-sp-1 … --k-sp-6', '2 · 4 · 8 · 12 · 16 · 20px', 'Inside components');
+    S('--k-sp-7 … --k-sp-11', '24 · 32 · 40 · 48 · 64px', 'Between sections');
+    G('Radius');
+    S('--k-r-1', '4px', 'Paper, marks, thumbnails');
+    S('--k-r-2', '10px', 'Tree items, keys, small tiles');
+    S('--k-r-3', '14px', 'Inputs, menu items');
+    S('--k-r-4', '20px', 'Cards, tables, panels, banners');
+    S('--k-r-5', '28px', 'Hero panels, dialogs, drop zone, composer');
+    S('--k-r-pill', '999px', 'Buttons, chips, badges, nav items, tab bar');
+    G('Layout');
+    S('--k-side-w', '244px', 'Sidebar open');
+    S('--k-side-w-collapsed', '72px', 'Sidebar collapsed (icons only)');
+    S('--k-top-h', '68px', 'Top bar');
+    S('--k-touch', '44px', 'Minimum touch target on phone');
+    G('Motion');
+    S('--k-ease', 'cubic-bezier(.2,.7,.2,1)', 'All movement; 120–240ms');
+    S('k-slide / k-breathe', '2.4s / 1.6s', 'Reading underline and dots; off for reduced motion');
+
+    const C = (n, m, v, s, x) => ({ n, m, v, s, x });
+    const comps = [
+      C('AppShell', 'AppShell.module.css', 'shell · side · side.isCollapsed · main · top · topSearch · content · pageHead', 'sidebar open / collapsed; phone: tab bar', 'Side menu wraps above content under 720px on desktop layouts; phone uses PhoneTabBar'),
+      C('NavItem', 'NavItem.module.css', 'item · item.isActive · count · label', 'default, hover, active (aria-current), focus', 'Active marker is a 3px accent bar plus bold text, not colour alone'),
+      C('Button', 'Button.module.css', 'btn · primary · quiet · danger · dangerOutline · sm · lg · icon · block', 'default, hover, focus, disabled, loading', 'Label says what happens: “Make it version 2”, “Read this page again”'),
+      C('Field / Input / Select / DateField', 'Field.module.css', 'field · label · help · input · select (+ chevron) · inputWrap (+ icon) · error', 'default, hover, focus, filled, disabled, error', 'Error text sits under the field with an alert icon; date shows 14 Oct 2026'),
+      C('CodeInput', 'CodeInput.module.css', 'code · digit', 'empty, filled, focus, error', '6 boxes, autocomplete="one-time-code", paste fills all'),
+      C('Checkbox / Switch', 'Checkbox / Switch.module.css', 'check · switch · switchState', 'off, on, focus, disabled', 'Switch shows On/Off text beside it'),
+      C('Chip / FilterChip / Tag', 'Chip.module.css', 'chip · chip.isOn · chipVal · chipRow · tag', 'default, hover, on (aria-pressed), focus', 'Filter chip shows its value when set: “Owner: Anita ×”'),
+      C('LabelChip', 'LabelChip.module.css', 'lab · public (circle) · internal (square) · confidential (diamond) · restricted (triangle + outline)', 'static; picker in Details', 'Shape marker carries meaning without colour'),
+      C('StatusBadge', 'StatusBadge.module.css', 'status · verified · review · from · notfound · reading · failed', 'static; reading animates', 'Always icon + text; review is dashed'),
+      C('VersionChip', 'VersionChip.module.css', 'ver · newer · current', 'static', '“v1 · newer?” dashed amber when a newer version waits'),
+      C('Tabs', 'Tabs.module.css', 'tabs · tab · tab[aria-selected] · tabCount', 'default, hover, selected, focus', 'role=tablist; arrow keys move; scrolls sideways on phone'),
+      C('Table + SortHeader', 'Table.module.css', 'tableWrap · table · sort[aria-sort] · nameCell · sub · fileIcon · isNum · isSelected', 'row hover, selected, sorted asc/desc', 'Wide tables scroll inside tableWrap, never the page'),
+      C('BulkBar', 'BulkBar.module.css', 'bulk', 'appears when ≥1 row selected', 'Move · Tag · Read again · Move to Trash; Trash asks inline'),
+      C('Tree', 'Tree.module.css', 'tree · group · item (--lvl) · item.isActive · count · caret', 'collapsed, open, active, hover, focus', 'role=tree; Departments then Other'),
+      C('Breadcrumbs', 'Breadcrumbs.module.css', 'crumbs · current', 'link hover, current', 'Collapses middle levels to “…” on phone'),
+      C('Segmented / RadioPill', 'Segmented.module.css', 'seg · radioPill · isOn', 'off, on, focus', 'List/Grid toggle; Inside documents/Names'),
+      C('Card / StatTile / RuleRow', 'Card.module.css', 'card · flush · dashed · cardHead · bar · stat · statDelta · ruleRow · ellip', 'static, hover when linked', 'Dashed card = “Not in a department: 312 files”'),
+      C('BarChart', 'BarChart.module.css', 'bars · bar · track · fill · val', 'static', 'Square ends, values in mono, sorted largest first'),
+      C('Banner', 'Banner.module.css', 'banner · info · warning · danger · version · quiet', 'static, with actions', 'Problem pages: reason + Read this page again / Upload a better scan / Keep as is'),
+      C('Toast', 'Toast.module.css', 'toast', 'enter, idle, exit', 'One action max (Undo); role=status; 6–10s'),
+      C('Dialog / InlineConfirm', 'Dialog.module.css', 'dialog · confirm · scrim', 'open, focus trapped', 'Never browser popups; deletes confirm inline'),
+      C('Drawer', 'Drawer.module.css', 'drawer', 'open, closing', 'Filters on phone, details on narrow desktop'),
+      C('Menu', 'Menu.module.css', 'menu · menuItem · danger', 'hover, focus, disabled', 'Account menu: Theme, Sign out, Sign out everywhere'),
+      C('DropZone', 'DropZone.module.css', 'drop · drop.isOver', 'idle, drag over, disabled, error', 'Department picker sits beside it; up to 100 files'),
+      C('StageProgress', 'StageProgress.module.css', 'stages · stage · stage.isActive · stageLabels', 'sending, saving, reading n/m, ready, failed', 'Weights 20/20/60; never 100% before reading ends'),
+      C('BatchMeter', 'BatchMeter.module.css', 'meter · isReady · isReading · isWaiting · isDup · legend', 'live', 'One summary line above it, aria-live polite'),
+      C('Timeline', 'Timeline.module.css', 'timeline · dot · dotAccent · dotReview · when', 'static', 'Views, downloads, versions, moves, label changes'),
+      C('CitationChip', 'CitationChip.module.css', 'cite · cite.isActive', 'default, hover, active, focus', 'Number matches the source card and the box on the page'),
+      C('SourceCard', 'SourceCard.module.css', 'source · sourceCrop · paperCrop · sourceBody', 'default, active', 'Cropped spot, Open page n, Copy answer with quotes'),
+      C('AnswerCard', 'AnswerCard.module.css', 'question · answer', 'working, answered, not found', 'Status badge first, value in mono, citations inline'),
+      C('LiveSteps', 'LiveSteps.module.css', 'steps · step · isDone · isActive · searching', 'pending, active, done', 'Kept when the user switches tabs; aria-live polite'),
+      C('Composer + DevanagariKeys', 'Composer.module.css', 'composer · keys · suggest', 'empty, typing, sending, disabled', 'Scope picker on top; Marathi/Hindi key helper toggles'),
+      C('PageThumb / PaperPage / Marks / Zoom', 'Viewer.module.css', 'viewer · thumbs · thumb · thumbPage · thumbFlag · paper · mark (cited, unsure, unreadable, unconfirmed) · markTag · zoom', 'thumb active, flagged; zoom 50–400%', 'Paper stays light in dark theme'),
+      C('KeyValueList', 'KeyValueList.module.css', 'kv (dt, dd)', 'read, editing', 'Details tab, admin settings'),
+      C('ReviewReading', 'ReviewReading.module.css', 'reading · reading.isPicked · readingVal', 'default, picked, focus', 'Keys 1 / 2 / 3; Enter next'),
+      C('EmptyState + LedgerIllustration', 'EmptyState.module.css', 'empty · ledger · ledgerBack', 'static', 'Paper with signal dots + stamp; no people, no cartoons'),
+      C('Skeleton', 'Skeleton.module.css', 'skel', 'loading', 'Matches final layout; sweep off for reduced motion'),
+      C('Avatar / Kbd', 'Avatar / Kbd.module.css', 'avatar · avatarLg · kbd', 'static', 'Initials only'),
+      C('Icon', 'Icon.tsx', 'name · size (14, 18, 22)', 'static', 'Inline SVG, currentColor'),
+      C('PhoneTabBar', 'PhoneTabBar.module.css', 'tabbar · item.isActive', 'default, active', 'Home · Documents · Ask · Review · More; 52px tall'),
+      C('BottomSheet', 'BottomSheet.module.css', 'sheet · grip', 'peek, open', 'Phone filters, actions, version banner')
+    ];
+
+    const icons = ['home', 'documents', 'folder', 'ask', 'review', 'words', 'admin', 'search', 'upload', 'download', 'bell', 'check', 'check-circle', 'alert', 'info', 'question', 'not-found', 'x', 'chev-right', 'chev-down', 'chev-left', 'arrow-right', 'send', 'versions', 'clock', 'tag', 'trash', 'move', 'read-again', 'zoom-in', 'zoom-out', 'grid', 'list', 'filter', 'user', 'users', 'lock', 'unlock', 'key', 'eye', 'copy', 'keyboard', 'settings', 'more', 'menu', 'plus', 'sign-out', 'offline', 'link', 'compare', 'department', 'sheet', 'camera', 'sun', 'moon', 'undo', 'open-spot', 'server', 'chart', 'handwriting'];
+
+    const a11y = [
+      'Focus ring: 2px solid var(--k-focus), outline-offset 2px, on every interactive element (:focus-visible).',
+      'Touch targets at least 44px on phone (--k-touch); 36px minimum on desktop.',
+      'Sortable headers are buttons inside th with aria-sort="ascending | descending | none".',
+      'Live steps, batch summary and toasts use aria-live="polite"; failures use role="alert".',
+      'prefers-reduced-motion: stop the reading underline, dots, skeleton sweep and spinners.',
+      'Every state carries an icon, word or shape as well as colour (dashed = review, triangle = restricted).',
+      'Text contrast at least 4.5:1 in both themes, including --k-ink-faint on --k-sunken.',
+      'Icon-only buttons have aria-label; decorative SVG has aria-hidden="true".',
+      'html lang="en" with lang="mr" / lang="hi" on Marathi and Hindi runs for correct screen-reader voice.'
+    ];
+
+    const layout = [
+      'Desktop target 1440 wide; content max-width 1440; sidebar 232px, collapsible to 64px.',
+      'At 375px nothing scrolls the page sideways; tables scroll inside .tableWrap.',
+      'Use flex/grid with gap; grids repeat(auto-fit, minmax(min(Npx, 100%), 1fr)).',
+      'Dense where people work: 13px table body, 10px row padding.',
+      'Generous where people read: 16px answers and document text, line-height 1.65.',
+      'Rules (1px --k-rule) before shadows; shadows only for paper and floating layers.'
+    ];
+
+    const copy = [
+      { w: 'Page couldn’t be read', d: 'Glare covers the lower half. Upload a better photo.', n: 'OCR failed on page 3 (low confidence)' },
+      { w: 'Bad scan', d: 'Upload a sharper scan', n: 'Image quality below threshold' },
+      { w: 'Answer missing', d: 'Not found in the readable text. 2 pages couldn’t be read: Invoice_12.pdf page 3', n: 'Sorry, I couldn’t find that. Maybe try rephrasing?' },
+      { w: 'Possible new version', d: 'This looks like a new version of Rent Agreement Shinde.pdf', n: 'Duplicate detected (similarity 0.86)' },
+      { w: 'Same file twice', d: 'Already uploaded on 12 Oct by Rahul. Open it', n: 'Error 409: file hash exists' },
+      { w: 'Too many files', d: 'You can upload 100 files at a time. Upload the first 100 now?', n: 'Upload limit exceeded' },
+      { w: 'Values unsure', d: 'Two readers read this differently', n: 'Low model confidence (0.62)' },
+      { w: 'Account locked', d: 'Locked after 5 wrong passwords. Ask Priya (admin) to unlock it, or try again at 11:40.', n: 'Authentication error. Access denied.' },
+      { w: 'No permission', d: 'This folder is Restricted. Ask Priya for access.', n: '403 Forbidden' },
+      { w: 'Destructive button', d: 'Move 3 files to Trash', n: 'OK' }
+    ];
+
+    return { theme: this.props.theme ?? 'light', code, tokens: out, comps, icons, a11y, layout, copy };
+  }
+}
+</script>
+</body>
+</html>

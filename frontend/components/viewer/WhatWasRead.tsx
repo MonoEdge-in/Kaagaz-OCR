@@ -55,7 +55,7 @@ export function WhatWasRead({ value, page }: { value: ExtractedValue; page: Page
         )}
         {value.label === "needs_review" && (
           <div>
-            <dt>Why it needs review</dt>
+            <dt>Why to verify it</dt>
             <dd>{reasonText(value.label_reason)}</dd>
           </div>
         )}

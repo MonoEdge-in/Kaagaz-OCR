@@ -282,7 +282,8 @@ describe("BACKUP_ISSUES (PRD 5 Q7, G6)", () => {
 describe("labels in words", () => {
   it("says the label and reason, never only a colour", () => {
     expect(labelText("verified")).toBe("Verified");
-    expect(labelText("needs_review")).toBe("Needs review");
+    // Changed on purpose (Tushar, 16 Oct 2026: Ready to verify).
+    expect(labelText("needs_review")).toBe("Ready to verify");
     expect(reasonText("readers_disagree")).toMatch(/different/);
     expect(fieldText("invoice_number")).toBe("Invoice number");
   });
@@ -307,7 +308,7 @@ describe("reasons for values read from a hard page (PRD 5 V4, G5, Q7)", () => {
   it("says why a value needs review, in words people know, with no engine named", () => {
     expect(reasonText("unsure_text")).toBe("Part of this value was hard to read. Check it against the page.");
     expect(reasonText("box_unanchored")).toBe(
-      "The exact spot of this value on the page couldn't be confirmed. Check it against the page.",
+      "Check the exact spot of this value against the page.",
     );
     expect(reasonText("local_reader")).toBe(
       "Read by the backup reader while the main reader was down. It will be read again automatically.",

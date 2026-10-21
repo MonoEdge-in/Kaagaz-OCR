@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Kaagaz · Flow B · Ask the rent</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="../../styles/kaagaz.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@100..125,400..700&amp;family=IBM+Plex+Mono:wght@400;500&amp;family=IBM+Plex+Sans+Devanagari:wght@400;500;600&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;display=swap">
+<style>body{margin:0}</style>
+</helmet>
+<div class="k-root" data-theme="{{theme}}" style="width: 3200px; height: 1240px; padding: 56px 64px; display: flex; flex-direction: column; gap: 32px; overflow: hidden">
+
+  <header style="display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; border-bottom: 2px solid var(--k-ink); padding-bottom: 20px">
+    <div style="display: flex; flex-direction: column; gap: 8px">
+      <span class="k-eyebrow">Flow B · Ask with proof</span>
+      <h1 class="k-h1" style="font-size: 36px">Ask the monthly rent and open the cited spot</h1>
+      <p class="k-muted k-read">Rahul asks a plain question. Kaagaz shows its working while it searches, answers with a Verified value and a numbered citation, and one click lands on the exact spot on page 2.</p>
+    </div>
+    <div class="k-legend"><span><i style="background: var(--k-accent)"></i>What the person does</span><span><i style="background: var(--k-rule-strong)"></i>What Kaagaz shows</span></div>
+  </header>
+
+  <div style="display: flex; align-items: flex-start; gap: 0">
+
+    <!-- STEP 1 -->
+    <div style="width: 420px; flex: none; display: flex; flex-direction: column; gap: 14px">
+      <div style="display: flex; gap: 12px; align-items: flex-start; min-height: 72px">
+        <span class="k-mono" style="width: 32px; height: 32px; border-radius: 50%; border: 1.5px solid var(--k-accent); color: var(--k-accent); display: grid; place-items: center; flex: none; font-weight: 500">1</span>
+        <div style="display: flex; flex-direction: column; gap: 3px"><strong>Types the question</strong><span class="k-small k-muted">Scope stays on All documents. Suggested questions sit under the box.</span></div>
+      </div>
+      <div class="k-card k-card--flush" style="height: 760px; overflow: hidden">
+        <div style="display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 14px; border-bottom: 1px solid var(--k-rule); background: var(--k-surface)"><span style="width: 12px; height: 15px; background: var(--k-ink); clip-path: polygon(0 0, 70% 0, 100% 22%, 100% 100%, 0 100%)" aria-hidden="true"></span><span class="k-small k-muted">Ask · New conversation</span></div>
+        <div style="padding: 18px; display: flex; flex-direction: column; gap: 16px; height: 720px">
+          <div style="flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; text-align: center">
+            <h2 class="k-h2">Ask about your documents</h2>
+            <p class="k-small k-muted" style="max-width: 32ch">Answers come with the page and the spot. If it isn’t in the documents, Kaagaz says Not found.</p>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 8px">
+            <span class="k-eyebrow">Try</span>
+            <button class="k-suggest" type="button">Kiska bill sabse zyada tha last month?</button>
+            <button class="k-suggest" type="button">Total GST paid to Mehta Textiles in September</button>
+            <button class="k-suggest k-deva" type="button">सर्वे ४४ चे भोगवटादार कोण आहेत?</button>
+          </div>
+          <div class="k-composer">
+            <div style="display: flex; gap: 6px; align-items: center"><span class="k-small k-muted">Search in</span><button class="k-chip is-on" type="button"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H6v18h12V7z"></path><path d="M14 3v4h4"></path></svg>All documents<svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></button></div>
+            <label for="fb-q" style="position: absolute; width: 1px; height: 1px; overflow: hidden">Your question</label>
+            <textarea id="fb-q" rows="2">What is the monthly rent in the Shinde agreement?</textarea>
+            <div style="display: flex; justify-content: space-between; align-items: center">
+              <button class="k-btn k-btn--quiet k-btn--sm" type="button"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18v12H3zM7 10h.01M11 10h.01M15 10h.01M7 14h10"></path></svg>अ मराठी / हिंदी</button>
+              <button class="k-btn k-btn--primary k-btn--icon is-focus" type="button" aria-label="Ask"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"></path></svg></button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div style="flex: 1; min-width: 80px; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 440px 10px 0">
+      <div style="display: flex; align-items: center; width: 100%; color: var(--k-accent)"><span style="flex: 1; height: 1.5px; background: var(--k-accent)"></span><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"></path></svg></div>
+      <span class="k-small k-muted" style="text-align: center">presses Enter</span>
+    </div>
+
+    <!-- STEP 2 -->
+    <div style="width: 420px; flex: none; display: flex; flex-direction: column; gap: 14px">
+      <div style="display: flex; gap: 12px; align-items: flex-start; min-height: 72px">
+        <span class="k-mono" style="width: 32px; height: 32px; border-radius: 50%; border: 1.5px solid var(--k-accent); color: var(--k-accent); display: grid; place-items: center; flex: none; font-weight: 500">2</span>
+        <div style="display: flex; flex-direction: column; gap: 3px"><strong>Sees the working, live</strong><span class="k-small k-muted">Each step appears as it happens. Switching tabs doesn’t lose it.</span></div>
+      </div>
+      <div class="k-card k-card--flush" style="height: 760px; overflow: hidden">
+        <div style="display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 14px; border-bottom: 1px solid var(--k-rule); background: var(--k-surface)"><span style="width: 12px; height: 15px; background: var(--k-ink); clip-path: polygon(0 0, 70% 0, 100% 22%, 100% 100%, 0 100%)" aria-hidden="true"></span><span class="k-small k-muted">Ask · Monthly rent Shinde</span></div>
+        <div style="padding: 18px; display: flex; flex-direction: column; gap: 16px">
+          <div class="k-question" style="max-width: 88%">What is the monthly rent in the Shinde agreement?</div>
+          <div class="k-answer" style="padding: 16px">
+            <span class="k-status k-status--reading" style="align-self: flex-start"><span class="k-dots" aria-hidden="true"><i></i><i></i><i></i></span>Working</span>
+            <div class="k-steps" aria-live="polite">
+              <div class="k-step is-done"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg>Searching 2,560 documents</div>
+              <div class="k-step is-done"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg>Found Rent Agreement Shinde.pdf (version 2)</div>
+              <div class="k-step is-active"><span class="k-dots" aria-hidden="true"><i></i><i></i><i></i></span>Reading page 2…</div>
+              <div class="k-step"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle></svg>Checking the value with a second reader</div>
+            </div>
+            <div style="display: flex; flex-direction: column; gap: 8px">
+              <span class="k-skel" style="height: 12px; width: 90%"></span>
+              <span class="k-skel" style="height: 12px; width: 70%"></span>
+            </div>
+          </div>
+          <div class="k-banner k-banner--quiet" style="padding: 10px 12px">
+            <svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v5M12 8v.5"></path></svg>
+            <span class="k-small k-muted">You can leave this page. The answer will be here when you come back.</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div style="flex: 1; min-width: 80px; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 440px 10px 0">
+      <div style="display: flex; align-items: center; width: 100%; color: var(--k-accent)"><span style="flex: 1; height: 1.5px; background: var(--k-accent)"></span><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"></path></svg></div>
+      <span class="k-small k-muted" style="text-align: center">about 6 seconds</span>
+    </div>
+
+    <!-- STEP 3 -->
+    <div style="width: 420px; flex: none; display: flex; flex-direction: column; gap: 14px">
+      <div style="display: flex; gap: 12px; align-items: flex-start; min-height: 72px">
+        <span class="k-mono" style="width: 32px; height: 32px; border-radius: 50%; border: 1.5px solid var(--k-accent); color: var(--k-accent); display: grid; place-items: center; flex: none; font-weight: 500">3</span>
+        <div style="display: flex; flex-direction: column; gap: 3px"><strong>Gets a Verified answer</strong><span class="k-small k-muted">The value, a numbered citation, and a crop of the exact spot.</span></div>
+      </div>
+      <div class="k-card k-card--flush" style="height: 760px; overflow: hidden">
+        <div style="display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 14px; border-bottom: 1px solid var(--k-rule); background: var(--k-surface)"><span style="width: 12px; height: 15px; background: var(--k-ink); clip-path: polygon(0 0, 70% 0, 100% 22%, 100% 100%, 0 100%)" aria-hidden="true"></span><span class="k-small k-muted">Ask · Monthly rent Shinde</span></div>
+        <div style="padding: 18px; display: flex; flex-direction: column; gap: 16px">
+          <div class="k-question" style="max-width: 88%">What is the monthly rent in the Shinde agreement?</div>
+          <div class="k-answer" style="padding: 16px">
+            <span class="k-status k-status--verified" style="align-self: flex-start"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg>Verified</span>
+            <p class="k-read"><strong class="k-mono" style="font-size: 18px">₹45,000</strong> a month, due on the 5th <a class="k-cite" href="#c1">1</a></p>
+            <p class="k-small k-muted">From version 2 of the agreement, effective 1 Oct 2026. Version 1 said ₹40,000.</p>
+            <div class="k-source">
+              <div class="k-source-crop"><div class="k-paper-crop">…shall pay a monthly licence fee of <span class="k-mark k-mark--cited">Rs. 45,000 (Rupees Forty Five Thousand only)</span> on or before the 5th…</div></div>
+              <div class="k-source-body">
+                <span style="display: flex; gap: 8px; align-items: center"><span class="k-cite">1</span><strong>Rent Agreement Shinde.pdf</strong></span>
+                <span class="k-small k-muted">Version 2 · page 2 · <span class="k-lab k-lab--confidential">Confidential</span></span>
+                <div class="k-btn-group"><a class="k-btn k-btn--sm" href="DocumentPage.html">Open page 2</a><button class="k-btn k-btn--quiet k-btn--sm" type="button"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 8h12v12H8zM4 16V4h12"></path></svg>Copy answer with quotes</button></div>
+              </div>
+            </div>
+          </div>
+          <a class="k-btn k-btn--quiet k-btn--sm" href="Ask.html" style="align-self: flex-start">Open full screen</a>
+        </div>
+      </div>
+    </div>
+
+    <div style="flex: 1; min-width: 80px; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 440px 10px 0">
+      <div style="display: flex; align-items: center; width: 100%; color: var(--k-accent)"><span style="flex: 1; height: 1.5px; background: var(--k-accent)"></span><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"></path></svg></div>
+      <span class="k-small k-muted" style="text-align: center">clicks citation 1</span>
+    </div>
+
+    <!-- STEP 4 -->
+    <div style="width: 420px; flex: none; display: flex; flex-direction: column; gap: 14px">
+      <div style="display: flex; gap: 12px; align-items: flex-start; min-height: 72px">
+        <span class="k-mono" style="width: 32px; height: 32px; border-radius: 50%; border: 1.5px solid var(--k-accent); color: var(--k-accent); display: grid; place-items: center; flex: none; font-weight: 500">4</span>
+        <div style="display: flex; flex-direction: column; gap: 3px"><strong>Clicks the citation</strong><span class="k-small k-muted">Citation 1 lights up in the answer and its source card. “Open page 2” is one tab away.</span></div>
+      </div>
+      <div class="k-card k-card--flush" style="height: 760px; overflow: hidden">
+        <div style="display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 14px; border-bottom: 1px solid var(--k-rule); background: var(--k-surface)"><span style="width: 12px; height: 15px; background: var(--k-ink); clip-path: polygon(0 0, 70% 0, 100% 22%, 100% 100%, 0 100%)" aria-hidden="true"></span><span class="k-small k-muted">Ask · Monthly rent Shinde</span></div>
+        <div style="padding: 18px; display: flex; flex-direction: column; gap: 16px">
+          <div class="k-answer" style="padding: 16px">
+            <span class="k-status k-status--verified" style="align-self: flex-start"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg>Verified</span>
+            <p class="k-read"><strong class="k-mono" style="font-size: 18px">₹45,000</strong> a month, due on the 5th <a class="k-cite is-active is-focus" href="#c1">1</a></p>
+          </div>
+          <div class="k-source" style="border-color: var(--k-accent); box-shadow: 0 0 0 1px var(--k-accent)">
+            <div class="k-source-crop" style="padding: 18px">
+              <div class="k-paper-crop" style="padding: 16px">
+                <p style="margin: 0 0 6px; font-size: 11px; color: #5C6970" class="k-mono">Page 2 · clause 3</p>
+                3. The Licensee shall pay a monthly licence fee of <span class="k-mark k-mark--cited">Rs. 45,000 (Rupees Forty Five Thousand only)</span> on or before the 5th of every month by bank transfer.
+              </div>
+            </div>
+            <div class="k-source-body">
+              <span style="display: flex; gap: 8px; align-items: center"><span class="k-cite is-active">1</span><strong>Rent Agreement Shinde.pdf</strong></span>
+              <span class="k-small k-muted">Version 2 · page 2 · uploaded by Rahul, 14 Oct 2026</span>
+              <div class="k-btn-group"><a class="k-btn k-btn--primary k-btn--sm is-focus" href="DocumentPage.html" style="position: relative">Open page 2<svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"></path></svg><svg viewBox="0 0 24 24" aria-hidden="true" style="position: absolute; right: -10px; bottom: -16px; width: 22px; height: 22px; fill: var(--k-ink); stroke: var(--k-surface); stroke-width: 1.5"><path d="M5 3l14 8-6 1.5L10 19z"></path></svg></a></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div style="flex: 1; min-width: 80px; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 440px 10px 0">
+      <div style="display: flex; align-items: center; width: 100%; color: var(--k-accent)"><span style="flex: 1; height: 1.5px; background: var(--k-accent)"></span><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"></path></svg></div>
+      <span class="k-small k-muted" style="text-align: center">clicks Open page 2</span>
+    </div>
+
+    <!-- STEP 5 -->
+    <div style="width: 420px; flex: none; display: flex; flex-direction: column; gap: 14px">
+      <div style="display: flex; gap: 12px; align-items: flex-start; min-height: 72px">
+        <span class="k-mono" style="width: 32px; height: 32px; border-radius: 50%; border: 1.5px solid var(--k-accent); color: var(--k-accent); display: grid; place-items: center; flex: none; font-weight: 500">5</span>
+        <div style="display: flex; flex-direction: column; gap: 3px"><strong>Lands on the spot</strong><span class="k-small k-muted">Page 2 opens with the blue box over ₹45,000; its row in Values is highlighted.</span></div>
+      </div>
+      <div class="k-card k-card--flush" style="height: 760px; overflow: hidden">
+        <div style="display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 14px; border-bottom: 1px solid var(--k-rule); background: var(--k-surface)"><span style="width: 12px; height: 15px; background: var(--k-ink); clip-path: polygon(0 0, 70% 0, 100% 22%, 100% 100%, 0 100%)" aria-hidden="true"></span><span class="k-small k-muted">Rent Agreement Shinde.pdf · page 2</span></div>
+        <div class="k-viewer" style="height: 400px">
+          <div class="k-thumbs" style="padding: 12px 8px; gap: 10px">
+            <button class="k-thumb" type="button" style="width: 44px"><span class="k-thumb-page" style="width: 44px; height: 58px"></span>1</button>
+            <button class="k-thumb is-active" type="button" style="width: 44px" aria-current="page"><span class="k-thumb-page" style="width: 44px; height: 58px"></span>2</button>
+            <button class="k-thumb" type="button" style="width: 44px"><span class="k-thumb-page" style="width: 44px; height: 58px"></span>3</button>
+          </div>
+          <div style="flex: 1; padding: 16px; display: flex; justify-content: center; overflow: hidden">
+            <div class="k-paper" style="padding: 22px 24px; width: 290px; font-size: 10.5px; line-height: 1.65; position: relative">
+              <p style="font-weight: 600; text-align: center; margin-bottom: 8px">LEAVE AND LICENCE AGREEMENT</p>
+              <p>2. The licence is granted for a period of 11 months from 1 October 2026.</p>
+              <p style="margin-top: 14px; position: relative">3. The Licensee shall pay a monthly licence fee of <span class="k-mark k-mark--cited" style="position: relative"><span class="k-mark-tag" style="left: -2px; top: 0">1 · Verified</span>Rs. 45,000 (Rupees Forty Five Thousand only)</span> on or before the 5th of every month.</p>
+              <p style="margin-top: 8px">4. The Licensee has paid a refundable security deposit of Rs. 1,50,000.</p>
+            </div>
+          </div>
+        </div>
+        <div style="padding: 14px 18px; display: flex; flex-direction: column; gap: 10px; border-top: 1px solid var(--k-rule)">
+          <div class="k-tabs" role="tablist" aria-label="Document sections">
+            <button class="k-tab" role="tab" type="button" aria-selected="false">Details</button>
+            <button class="k-tab" role="tab" type="button" aria-selected="true">Values</button>
+            <button class="k-tab" role="tab" type="button" aria-selected="false">Text</button>
+          </div>
+          <div style="display: flex; flex-direction: column">
+            <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 10px; background: var(--k-accent-soft); border-left: 3px solid var(--k-accent)"><span class="k-small"><span class="k-muted">Monthly rent</span><br><strong class="k-mono">₹45,000</strong></span><span class="k-status k-status--verified"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg>Verified</span></div>
+            <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 10px; border-bottom: 1px solid var(--k-rule)"><span class="k-small"><span class="k-muted">Due date</span><br><strong>5th of every month</strong></span><span class="k-status k-status--verified"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg>Verified</span></div>
+            <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 10px"><span class="k-small"><span class="k-muted">Security deposit</span><br><strong class="k-mono">₹1,50,000</strong></span><span class="k-status k-status--review"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .8-1 1.5V14M12 17v.5"></path></svg>Needs review</span></div>
+          </div>
+          <a class="k-btn k-btn--quiet k-btn--sm" href="DocumentPage.html" style="align-self: flex-start">Open full screen</a>
+        </div>
+      </div>
+    </div>
+
+    <div style="flex: 1; min-width: 80px; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 440px 10px 0">
+      <div style="display: flex; align-items: center; width: 100%; color: var(--k-accent)"><span style="flex: 1; height: 1.5px; background: var(--k-accent)"></span><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"></path></svg></div>
+      <span class="k-small k-muted" style="text-align: center">back in Ask, copies the answer</span>
+    </div>
+
+    <!-- STEP 6 -->
+    <div style="width: 420px; flex: none; display: flex; flex-direction: column; gap: 14px">
+      <div style="display: flex; gap: 12px; align-items: flex-start; min-height: 72px">
+        <span class="k-mono" style="width: 32px; height: 32px; border-radius: 50%; background: var(--k-verified); color: var(--k-verified-ink); display: grid; place-items: center; flex: none"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true" style="stroke-width: 2.5"><path d="M5 12l5 5 9-10"></path></svg></span>
+        <div style="display: flex; flex-direction: column; gap: 3px"><strong>Shares it with its proof</strong><span class="k-small k-muted">Copy answer with quotes puts the value, file, version, page and quote on the clipboard.</span></div>
+      </div>
+      <div class="k-card k-card--flush" style="height: 760px; overflow: hidden; position: relative">
+        <div style="display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 14px; border-bottom: 1px solid var(--k-rule); background: var(--k-surface)"><span style="width: 12px; height: 15px; background: var(--k-ink); clip-path: polygon(0 0, 70% 0, 100% 22%, 100% 100%, 0 100%)" aria-hidden="true"></span><span class="k-small k-muted">Ask · Monthly rent Shinde</span></div>
+        <div style="padding: 18px; display: flex; flex-direction: column; gap: 16px">
+          <div class="k-answer" style="padding: 16px">
+            <span class="k-status k-status--verified" style="align-self: flex-start"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg>Verified</span>
+            <p class="k-read"><strong class="k-mono" style="font-size: 18px">₹45,000</strong> a month, due on the 5th <a class="k-cite" href="#c1">1</a></p>
+            <div class="k-btn-group"><button class="k-btn k-btn--sm is-focus" type="button"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg>Copied</button><button class="k-btn k-btn--quiet k-btn--sm" type="button">Ask a follow-up</button></div>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 8px">
+            <span class="k-eyebrow">On the clipboard</span>
+            <pre class="k-mono" style="margin: 0; white-space: pre-wrap; background: var(--k-sunken); border: 1px solid var(--k-rule); border-radius: 16px; padding: 14px; font-size: 12px; line-height: 1.6; color: var(--k-ink)">Monthly rent: ₹45,000 — Rent Agreement Shinde.pdf, v2, page 2: ‘monthly licence fee of Rs. 45,000 (Rupees Forty Five Thousand only)’</pre>
+          </div>
+          <div class="k-banner k-banner--quiet" style="padding: 10px 12px">
+            <svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 11h12v10H6zM8 11V7a4 4 0 0 1 8 0v4"></path></svg>
+            <span class="k-small k-muted">The file is Confidential. The quote is copied; the file itself is not shared.</span>
+          </div>
+        </div>
+        <div class="k-toast" role="status" style="position: absolute; left: 18px; right: 18px; bottom: 22px">
+          <svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true" style="color: var(--k-nav-accent)"><path d="M8 8h12v12H8zM4 16V4h12"></path></svg>
+          <span style="flex: 1">Answer copied with its quote and page</span>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["light","dark"],"default":"light"},"$preview":{"width":3200,"height":1240}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return { theme: this.props.theme ?? 'light' };
+  }
+}
+</script>
+</body>
+</html>

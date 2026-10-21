@@ -9,6 +9,7 @@ _log = logging.getLogger(__name__)
 
 UNIQUE_VIOLATION = "23505"
 FOREIGN_KEY_VIOLATION = "23503"
+CHECK_VIOLATION = "23514"
 DEADLOCK_DETECTED = "40P01"
 DEADLOCK_RETRIES = 3  # AR7: the whole transaction runs again up to 3 times
 

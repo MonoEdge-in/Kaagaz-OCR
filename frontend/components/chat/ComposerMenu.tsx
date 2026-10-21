@@ -61,7 +61,7 @@ export function ComposerMenu({
         role="dialog"
         aria-label={title}
         tabIndex={-1}
-        className={`${styles.menu} ${end ? styles.menuEnd : ""}`}
+        className={`motion-pop ${styles.menu} ${end ? styles.menuEnd : ""}`}
         style={{ positionAnchor: anchor }}
         onKeyDown={closeOnEnter}
         onToggle={(event) => {

@@ -7,7 +7,8 @@ writes its own audit rows.
 * ``GET /operator/models``: the catalogue, from OpenRouter's live lists (``jobs/catalog``),
   with ``verified`` for the reader's current prompt (``READER_PROMPT_VERSION``),
   ``chat_verified`` for the answer prompt (``ANSWER_PROMPT_HASH``) and ``vendor_allowed``
-  (its maker is in OPENROUTER_MODEL_VENDORS; outside it, it is never used).
+  (its maker is in OPENROUTER_MODEL_VENDORS; outside it, it is never used), and the real
+  cost of each model's scanned pages and answered questions over the last 30 days.
 * ``PUT /operator/models/{model}`` {enabled, code} (step-up, as 0016's): enable or disable
   one model on the platform. Only an eligible model verified for scanning or answering
   can be enabled; one an organisation or the platform defaults still name can't be
@@ -18,10 +19,31 @@ writes its own audit rows.
 * ``GET`` and ``PUT /operator/orgs/{id}/ai`` (PUT with a fresh code): one organisation's
   own AI settings (an empty list or a null field follows the platform defaults), its
   Ensemble switch and its monthly budget in dollars (warn only; the operator's alone,
-  never in the organisation's own log or screens).
+  never in the organisation's own log or screens). Any number of scanning models (0037):
+  Ensemble asked with fewer than two in effect is saved off and the PUT says
+  ``ensemble_off``.
 * ``GET /operator/usage?from&to``: tokens and dollars per organisation and model, days in
   TIMEZONE with both ends included (this month so far when left out), at most
   ``MAX_DAYS``. Never a user or a document: the function has no column for either.
+
+* ``GET /operator/feature-switches``: every product feature, on or off for the whole
+  product, and how many organisations use it now. ``PUT .../{feature}`` {enabled, code}
+  (step-up): flip it for every organisation; the list comes back (0038).
+* ``GET /operator/orgs/{id}/feature-switches``: one organisation's switches, each
+  ``{feature, enabled, platform_enabled}`` (no self sign-up). ``PUT .../{feature}``
+  {enabled, code} (step-up): flip it for that organisation only; the list comes back. A
+  feature runs there only while both switches are on (0039).
+* ``GET`` and ``PUT`` {hours, code} ``/operator/session-timeout`` and
+  ``/operator/orgs/{id}/session-timeout`` (PUT with a fresh code): how long an
+  organisation's admins and members stay signed in with no activity, 1 to 24 hours; the
+  organisation's, else the platform's, else none (``default_hours``: SESSION_HOURS, the
+  session's own end, which stays the cap) (0040).
+* ``GET``, ``POST`` {scan_model, chat_model, note, code} and ``DELETE`` {code}
+  ``/operator/test-model`` (POST and DELETE with a fresh code): the platform test model, one
+  allowed model for every organisation's scanning and answering, and its undo (every
+  organisation back as it was), with what ran on it since it started (pages, questions, the
+  cost OpenRouter reported, reading seconds a page). A model must be enabled, eligible and
+  verified for its use, and its maker and one provider inside the server's lists (0038).
 
 A refused change is said in plain words; an unknown organisation or model gets 404.
 """
@@ -42,7 +64,7 @@ from kaagaz.api.context import AppContext, get_context, get_operator_db
 from kaagaz.api.errors import ApiError
 from kaagaz.api.routers.auth import MAX_CODE
 from kaagaz.api.routers.documents import day_start
-from kaagaz.api.routers.operator_orgs import StepUp, _check, _step_up
+from kaagaz.api.routers.operator_orgs import StepUp, StepUpBody, _check, _step_up
 from kaagaz.api.views import iso
 from kaagaz.db import operator_models as models_sql
 from kaagaz.db.engine import OperatorDatabase
@@ -96,16 +118,6 @@ _REFUSALS = {
         "level_not_supported",
         "A chosen model does not accept one of these thinking levels. Choose levels every model accepts.",
     ),
-    "needs_two_models_scan": (
-        409,
-        "needs_two_models_scan",
-        "Dynamic and Ensemble need at least two scanning models. Allow another model or turn them off.",
-    ),
-    "needs_two_models_chat": (
-        409,
-        "needs_two_models_chat",
-        "Ensemble needs at least two answering models. Allow another, or leave the list empty.",
-    ),
 }
 
 Level = Literal["low", "medium", "high"]
@@ -137,6 +149,49 @@ class OrgAiBody(BaseModel):
     dynamic: bool | None
     ensemble: bool
     ai_budget_usd: Decimal | None = Field(gt=0, le=MAX_BUDGET, decimal_places=2)
+    code: str = Field(min_length=1, max_length=MAX_CODE)
+
+
+Feature = Literal[
+    "scan_ai",
+    "ask",
+    "ensemble",
+    "autofile",
+    "cost_saving",
+    "review",
+    "my_words",
+    "self_signup",
+    "version_spotting",
+]
+# Sign-up makes a new organisation: one has no switch of its own for it (0039).
+OrgFeature = Literal[
+    "scan_ai", "ask", "ensemble", "autofile", "cost_saving", "review", "my_words", "version_spotting"
+]
+
+
+class TimeoutBody(BaseModel):
+    """The sign-in idle timeout in whole hours, 1 to 24 (0040); null: the default (the platform's)
+    or follow the platform (an organisation's). Strict: 1.5, "3" and true are refused."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    hours: Annotated[int, Field(strict=True, ge=1, le=24)] | None
+    code: str = Field(min_length=1, max_length=MAX_CODE)
+
+
+class SwitchBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool
+    code: str = Field(min_length=1, max_length=MAX_CODE)
+
+
+class TestModelBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    scan_model: ModelId | None = None
+    chat_model: ModelId | None = None
+    note: str | None = Field(default=None, max_length=500)
     code: str = Field(min_length=1, max_length=MAX_CODE)
 
 
@@ -173,9 +228,14 @@ class UserModelRateBody(BaseModel):
 
 @router.get("/models")
 def list_models(operator: OperatorSession, db: OperatorDb, context: Context) -> dict[str, Any]:
+    """Only the models Kaagaz can use (Tushar, 18 Oct 2026: "remove the models not feasible
+    for this product"): eligible to scan or to answer, or still enabled, so it can be
+    turned off. A model failing a rule (no zero-data-retention provider, no image input...)
+    stays in model_catalog but is not listed."""
     with db.operator() as conn:
         rows = models_sql.list_models(conn, operator.operator_id)
-    return {"items": [_model(row, context.settings) for row in rows]}
+    usable = (row for row in rows if row["eligible"] or row["chat_eligible"] or row["enabled_at"] is not None)
+    return {"items": [_model(row, context.settings) for row in usable]}
 
 
 @router.put("/models/{model:path}")
@@ -279,7 +339,212 @@ def set_org_ai(
             step=step_up.step,
         )
     _refuse(db, operator, outcome.code, step_up)
-    return get_org_ai(customer_id, operator, db, context)
+    saved = get_org_ai(customer_id, operator, db, context)
+    # Ensemble with fewer than two scanning models in effect is saved off, not refused (0037).
+    return {**saved, "ensemble_off": body.ensemble and not saved["ensemble"]}
+
+
+@router.get("/feature-switches")
+def get_feature_switches(operator: OperatorSession, db: OperatorDb) -> list[dict[str, Any]]:
+    """Every product feature, on or off for every organisation, and how many use it now."""
+    with db.operator() as conn:
+        rows = models_sql.feature_switches(conn, operator.operator_id)
+    return [
+        {
+            "feature": row["feature"],
+            "enabled": bool(row["enabled"]),
+            "organisations_using": int(row["organisations_using"]),
+        }
+        for row in rows
+    ]
+
+
+@router.put("/feature-switches/{feature}")
+def set_feature_switch(
+    feature: Feature, body: SwitchBody, operator: OperatorSession, db: OperatorDb, context: Context
+) -> list[dict[str, Any]]:
+    """Flip one feature for every organisation (a fresh code first); the list comes back."""
+    step_up = _step_up(db, context, operator, body.code)
+    with db.operator() as conn:
+        outcome = models_sql.set_feature_switch(
+            conn, operator.operator_id, feature, enabled=body.enabled, step=step_up.step
+        )
+    _refuse(db, operator, outcome, step_up)
+    return get_feature_switches(operator, db)
+
+
+@router.get("/orgs/{customer_id}/feature-switches")
+def get_org_feature_switches(
+    customer_id: uuid.UUID, operator: OperatorSession, db: OperatorDb
+) -> list[dict[str, Any]]:
+    """One organisation's switches, each with the platform's (off there wins)."""
+    with db.operator() as conn:
+        rows = models_sql.org_feature_switches(conn, operator.operator_id, str(customer_id))
+    if not rows:
+        raise ApiError(404, "not_found")
+    return [
+        {
+            "feature": row["feature"],
+            "enabled": bool(row["enabled"]),
+            "platform_enabled": bool(row["platform_enabled"]),
+        }
+        for row in rows
+    ]
+
+
+@router.put("/orgs/{customer_id}/feature-switches/{feature}")
+def set_org_feature_switch(
+    customer_id: uuid.UUID,
+    feature: OrgFeature,
+    body: SwitchBody,
+    operator: OperatorSession,
+    db: OperatorDb,
+    context: Context,
+) -> list[dict[str, Any]]:
+    """Flip one feature for one organisation (a fresh code first); its list comes back."""
+    step_up = _step_up(db, context, operator, body.code)
+    with db.operator() as conn:
+        outcome = models_sql.set_org_feature_switch(
+            conn, operator.operator_id, str(customer_id), feature, enabled=body.enabled, step=step_up.step
+        )
+    _refuse(db, operator, outcome, step_up)
+    return get_org_feature_switches(customer_id, operator, db)
+
+
+@router.get("/session-timeout")
+def get_session_timeout(operator: OperatorSession, db: OperatorDb, context: Context) -> dict[str, Any]:
+    """The platform's sign-in idle timeout in hours (null: the default, SESSION_HOURS)."""
+    row = _timeout(db, operator, None)
+    return {"hours": row["platform_hours"], "default_hours": context.settings.session_hours}
+
+
+@router.put("/session-timeout")
+def set_session_timeout(
+    body: TimeoutBody, operator: OperatorSession, db: OperatorDb, context: Context
+) -> dict[str, Any]:
+    """Set it (a fresh code first); every organisation without its own follows at its next request."""
+    step_up = _step_up(db, context, operator, body.code)
+    with db.operator() as conn:
+        outcome = models_sql.set_session_timeout(
+            conn, operator.operator_id, None, body.hours, step=step_up.step
+        )
+    _refuse(db, operator, outcome, step_up)
+    return get_session_timeout(operator, db, context)
+
+
+@router.get("/orgs/{customer_id}/session-timeout")
+def get_org_session_timeout(
+    customer_id: uuid.UUID, operator: OperatorSession, db: OperatorDb, context: Context
+) -> dict[str, Any]:
+    """One organisation's own idle timeout (null: follow the platform), with the platform's."""
+    row = _timeout(db, operator, str(customer_id))
+    return {
+        "hours": row["org_hours"],
+        "platform_hours": row["platform_hours"],
+        "default_hours": context.settings.session_hours,
+    }
+
+
+@router.put("/orgs/{customer_id}/session-timeout")
+def set_org_session_timeout(
+    customer_id: uuid.UUID, body: TimeoutBody, operator: OperatorSession, db: OperatorDb, context: Context
+) -> dict[str, Any]:
+    """Set one organisation's (null: follow the platform), a fresh code first."""
+    step_up = _step_up(db, context, operator, body.code)
+    with db.operator() as conn:
+        outcome = models_sql.set_session_timeout(
+            conn, operator.operator_id, str(customer_id), body.hours, step=step_up.step
+        )
+    _refuse(db, operator, outcome, step_up)
+    return get_org_session_timeout(customer_id, operator, db, context)
+
+
+def _timeout(db: OperatorDatabase, operator: CurrentOperator, customer_id: str | None) -> RowMapping:
+    with db.operator() as conn:
+        row = models_sql.session_timeout(conn, operator.operator_id, customer_id)
+    if row is None:  # an unknown organisation, or the operator was disabled meanwhile
+        raise ApiError(404, "not_found") if customer_id else ApiError(401, "not_signed_in")
+    return row
+
+
+@router.get("/test-model")
+def get_test_model(operator: OperatorSession, db: OperatorDb) -> dict[str, Any]:
+    """The platform test model, and what ran on it since it started (real spend rows only)."""
+    with db.operator() as conn:
+        row = models_sql.current_test_model(conn, operator.operator_id)
+    if row is None:
+        return {
+            "active": False,
+            "scan_model": None,
+            "chat_model": None,
+            "note": None,
+            "started_at": None,
+            "since": None,
+        }
+    return {
+        "active": True,
+        "scan_model": row["scan_model"],
+        "chat_model": row["chat_model"],
+        "note": row["note"],
+        "started_at": iso(row["started_at"]),
+        "since": {
+            "pages": int(row["pages"]),
+            "questions": int(row["questions"]),
+            "cost_usd": _number(row["cost_usd"]),  # what OpenRouter reported; null: none reported
+            "avg_seconds_per_page": row["seconds_per_page"],
+        },
+    }
+
+
+@router.post("/test-model")
+def start_test_model(
+    body: TestModelBody, operator: OperatorSession, db: OperatorDb, context: Context
+) -> dict[str, Any]:
+    """Every organisation scans with ``scan_model`` and answers with ``chat_model`` (either
+    may be null: that area stays each organisation's own) until the undo."""
+    named = [model for model in (body.scan_model, body.chat_model) if model is not None]
+    if not named or not all(valid_model_id(model) for model in named):
+        raise ApiError(400, "bad_request", "Choose a scanning model, an answering model or both.")
+    with db.operator() as conn:
+        catalogue = {row["id"]: row for row in models_sql.list_models(conn, operator.operator_id)}
+    if not all(_callable(catalogue.get(model), context.settings) for model in named):
+        raise ApiError(*_REFUSALS["unavailable"])
+    step_up = _step_up(db, context, operator, body.code)
+    with db.operator() as conn:
+        outcome = models_sql.set_test_model(
+            conn,
+            operator.operator_id,
+            scan_model=body.scan_model,
+            chat_model=body.chat_model,
+            note=body.note,
+            scan_prompt=READER_PROMPT_VERSION,
+            chat_prompt=ANSWER_PROMPT_HASH,
+            step=step_up.step,
+        )
+    _refuse(db, operator, outcome, step_up)
+    return get_test_model(operator, db)
+
+
+@router.delete("/test-model")
+def undo_test_model(
+    body: StepUpBody, operator: OperatorSession, db: OperatorDb, context: Context
+) -> dict[str, Any]:
+    """Every organisation back to its own models, exactly as before (a fresh code first)."""
+    step_up = _step_up(db, context, operator, body.code)
+    with db.operator() as conn:
+        outcome = models_sql.clear_test_model(conn, operator.operator_id, step=step_up.step)
+    _refuse(db, operator, outcome, step_up)
+    return get_test_model(operator, db)
+
+
+def _callable(row: RowMapping | None, settings: Settings) -> bool:
+    """The model is in the catalogue, its maker in OPENROUTER_MODEL_VENDORS and one of its
+    providers in OPENROUTER_PROVIDERS (S1), so the app can call it."""
+    return (
+        row is not None
+        and vendor(row["id"]) in settings.openrouter_model_vendors
+        and any(slug in settings.openrouter_providers for slug in row["providers"])
+    )
 
 
 @router.get("/orgs/{customer_id}/model-rates")
@@ -440,6 +705,17 @@ def _model(row: RowMapping, settings: Settings) -> dict[str, Any]:
         # organisation's, numbers only); null with none.
         "ledger_tokens_in": _number(row["ledger_tokens_in"]),
         "ledger_tokens_out": _number(row["ledger_tokens_out"]),
+        # The real cost OpenRouter reported over the same 30 days (0033): scanned pages and
+        # answered questions, those with a reported cost, that cost (null: none reported)
+        # and the calls whose cost is not known (never guessed from the list price).
+        "scan_pages": int(row["scan_pages"]),
+        "scan_pages_costed": int(row["scan_pages_costed"]),
+        "scan_cost_usd": _number(row["scan_cost_usd"]),
+        "scan_cost_unknown_calls": int(row["scan_cost_unknown_calls"]),
+        "answer_questions": int(row["answer_questions"]),
+        "answer_questions_costed": int(row["answer_questions_costed"]),
+        "answer_cost_usd": _number(row["answer_cost_usd"]),
+        "answer_cost_unknown_calls": int(row["answer_cost_unknown_calls"]),
         "enabled_at": None if row["enabled_at"] is None else iso(row["enabled_at"]),
         # C11: may it answer questions, and did verify-models pass the answer prompt.
         "chat_eligible": bool(row["chat_eligible"]),

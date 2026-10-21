@@ -200,6 +200,9 @@ class ModelOnTest(unittest.TestCase):
                 "summary_dropped": 0,
                 **NO_TIME,
                 "seconds_card": 0.0,
+                # Ready first (16 Oct 2026): ready before the card, then understood.
+                "seconds_to_ready": 0.0,
+                "seconds_after_ready": 0.0,
             },
         )
         self.assertEqual((totals.values_verified, totals.values_needs_review), (3, 3))
@@ -210,8 +213,11 @@ class ModelOnTest(unittest.TestCase):
         on, off = rig(FakeChat(CARD)), rig()
         on_job, _ = on.read(), off.read()
         steps = [p for _, _, p in on.progress.history if p.step == "understanding"]
-        self.assertEqual(steps, [Progress("understanding", done, 2) for done in (0, 1, 2)])
-        self.assertEqual(len(on.beats) - len(off.beats), 2)
+        # Ready first: the card comes after Ready, so only the steps before it are written (the
+        # last says when it was ready); the beats after the call, the searches and the 2nd save.
+        self.assertEqual(steps, [Progress("understanding", 0, 2)] * 2)
+        self.assertEqual([p.ready_at for p in steps], [None, T0])
+        self.assertEqual(len(on.beats) - len(off.beats), 3)
         self.assertEqual(on.statuses.get_status(CUSTOMER, on_job.document_id), DocumentStatus.READY)
 
     def test_a_chat_model_needs_its_budget(self) -> None:

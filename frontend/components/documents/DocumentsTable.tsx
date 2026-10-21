@@ -1,10 +1,14 @@
 "use client";
 
-// The list of this customer's documents: one table, reflowed into cards when
-// the list is narrower than 48rem (Documents.module.css). Names, tags and
-// status messages are shown as plain text. Each row has an Actions button
-// (DocumentActions.tsx). Move to Trash, and Delete forever in Trash, ask
-// first; focus goes to Cancel, and back to Actions if it is cancelled. Restore
+// The list of this customer's documents: one table, reflowed into cards only when
+// the list is narrower than 36rem (Documents.module.css; UI audit D3, 16 Oct 2026).
+// Names, tags and status messages are shown as plain text. The whole row opens the
+// document (its name is a stretched link, D11); each row has a menu button
+// (DocumentActions.tsx). The select-all box heads the select column (D9); the bar
+// with the selection's actions shows only while rows are ticked, stuck to the bottom
+// of the list's view, so it never pushes a row (on cards it also holds Select all).
+// Move to Trash, and Delete forever in Trash, ask
+// first; focus goes to Cancel, and back to the menu button if it is cancelled. Restore
 // needs no question: nothing is lost. Ticked rows can be moved to Trash
 // together; in Trash they can be restored together, or deleted forever together
 // by whoever may (canDeleteForever, asked first; a granted member or reviewer
@@ -16,16 +20,28 @@
 // or "Unknown" without the AI model's card: PRD 2, D6). Names wrap in full at
 // their _ . - and @ marks (WrapName.tsx). The By cell says "Uploaded by" in
 // words; the full table hides those words under its By header. A document with
-// reading problems gets chips in its status ("2 pages unreadable", PRD 5 U2), and
-// a reviewer or an admin can have ticked documents read again, one at a time,
-// after an inline question.
+// reading problems says so in its status ("Scan complete" then "12 flagged · Review",
+// the link read out as "Review 12 flagged words in ..."), and a reviewer or an admin can have ticked documents
+// read again, one at a time, after an inline question.
+// Move to folder (16 Oct 2026): every row out of Trash can be ticked, and the bar's Move to folder
+// opens the same Move dialog as a row's menu (MoveDialog) for the ticked rows.
+// Scan states (16 Oct 2026): the status cell is two fixed lines while a document
+// is queued, being read, or read, so a scan finishing never changes its row's height;
+// a row keeps its place (the list is newest first, which a state never changes), and
+// while the pointer is on the list a row not shown yet waits until it leaves
+// (rowsInPlace), so nothing is put in above the pointer.
 
 import Link from "next/link";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { MouseEvent as ReactMouseEvent, RefCallback } from "react";
+import { extensionOf } from "@/components/dashboard/words";
+import { LabelChip } from "@/components/files/LabelChip";
+import { FILES_TEXT, NEWER_SPOKEN, versionCell } from "@/components/files/words";
 import { Icon } from "@/components/ui/Icon";
 import { PasswordField } from "@/components/ui/PasswordField";
-import { canReprocess } from "@/components/viewer/reprocess";
+import { beingRead, canReprocess } from "@/components/viewer/reprocess";
 import { newerVersionText } from "@/components/viewer/versions";
+import { FADE_IN, MOTION_MS, play } from "@/lib/motion";
 import {
   ApiError,
   confirmPassword,
@@ -37,11 +53,24 @@ import {
 import { useSession } from "@/lib/session";
 import { docTypeLabel, formatBytes, formatDate, formatDateTime, formatRelative, typeLabel } from "@/lib/format";
 import type { DocumentSummary, Me, Tag } from "@/lib/types";
-import { EditDialog, RowMenu } from "./DocumentActions";
+import { EditDialog, MoveDialog, RowMenu } from "./DocumentActions";
+import { DOCUMENT_DRAG } from "./FolderNav";
+import { pathLabel } from "./folderTree";
 import type { FolderTree } from "./folderTree";
-import { attentionWords } from "./library";
+import { BusyLabel } from "./BusyLabel";
+import { movableItems } from "./library";
 import type { EditAction, RowAction } from "./library";
-import { deletedMessage, formatProgressPercent } from "./logic";
+import type { SortKey, SortOrder } from "./libraryQuery";
+import { rowsInPlace } from "./listMerge";
+import {
+  UNDERSTANDING_TEXT,
+  deletedMessage,
+  flaggedShort,
+  formatProgressPercent,
+  scanWords,
+  shortWhen,
+  toReview,
+} from "./logic";
 import { StatusChip } from "./StatusChip";
 import { TimeLeft } from "./TimeLeft";
 import { WrapName } from "./WrapName";
@@ -69,11 +98,13 @@ import library from "./Library.module.css";
 export interface RowEvents {
   /** Moved to Trash, restored or deleted for good: announce it and ask for the list again. */
   onRemoved(message: string): void;
-  /** Renamed, moved or tagged: announce it and ask for the list again. */
-  onSaved(message: string): void;
+  /** Renamed, moved or tagged: announce it and ask for the list again; a move can be undone. */
+  onSaved(message: string, undo?: () => Promise<void>): void;
   /** After a move the row may be gone: focus the list's heading. */
   onFocusList(): void;
   onTagCreated(): void;
+  /** A folder was made in the Move dialog: ask for the folders again. */
+  onFolderCreated(): void;
   /** "Upload new version": the screen opens the file picker for this document. */
   onUploadVersion(document: DocumentSummary): void;
 }
@@ -85,10 +116,90 @@ interface Props extends RowEvents {
   now: number;
   tree: FolderTree;
   tags: Tag[] | null;
+  /** Names for a new folder (folderNameSuggestions). */
+  suggestions: readonly string[];
+  /** A moved document leaves this list (a folder is shown), so focus goes to the list. */
+  movedLeaves: boolean;
+  /** Q4: the list's sort and what a header press does; left out, the headers are words only. */
+  sorting?: Sorting;
 }
 
-export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events }: Props) {
+/** The list's sort (Q4) and the header press that changes it. */
+export interface Sorting {
+  sort: SortKey;
+  order: SortOrder;
+  onSort(key: SortKey): void;
+}
+
+/** A column header that sorts (Q4): a button, with aria-sort on the header while it is the sort. */
+function SortHeader({
+  className,
+  column,
+  label,
+  sorting,
+}: {
+  className: string | undefined;
+  column: SortKey;
+  label: string;
+  sorting: Sorting | undefined;
+}) {
+  const active = sorting?.sort === column;
+  const ascending = sorting?.order === "asc";
+  return (
+    <th
+      scope="col"
+      role="columnheader"
+      className={className}
+      aria-sort={active ? (ascending ? "ascending" : "descending") : undefined}
+    >
+      {sorting ? (
+        <button
+          type="button"
+          className={styles.sortButton}
+          title={FILES_TEXT.sortBy(label)}
+          onClick={() => sorting.onSort(column)}
+        >
+          {label}
+          {active && (
+            <span className={styles.sortMark} aria-hidden="true">
+              {ascending ? "↑" : "↓"}
+            </span>
+          )}
+        </button>
+      ) : (
+        label
+      )}
+    </th>
+  );
+}
+
+export function DocumentsTable({
+  items: listed,
+  inTrash,
+  me,
+  now,
+  tree,
+  tags,
+  suggestions,
+  movedLeaves,
+  sorting,
+  ...events
+}: Props) {
   const { onRemoved } = events;
+  // The rows shown when the pointer came onto the list; null while it is elsewhere.
+  const [pinned, setPinned] = useState<ReadonlySet<string> | null>(null);
+  const items = useMemo(() => rowsInPlace(listed, pinned), [listed, pinned]);
+  // A row that arrives (an upload, a poll) fades in where it sits; the first rows do not.
+  const body = useRef<HTMLTableSectionElement>(null);
+  const seenIds = useRef<ReadonlySet<string> | null>(null);
+  useLayoutEffect(() => {
+    const before = seenIds.current;
+    seenIds.current = new Set(items.map((item) => item.id));
+    if (before === null) return;
+    for (const row of body.current?.querySelectorAll<HTMLElement>("tr[data-id]") ?? []) {
+      if (!before.has(row.dataset.id ?? "")) play(row, FADE_IN, MOTION_MS.med);
+    }
+  }, [items]);
   const { refresh } = useSession();
   const canForever = canDeleteForever(me);
   const askPassword = foreverNeedsPassword(me);
@@ -97,10 +208,14 @@ export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events 
     (item: DocumentSummary) => !inTrash && canReprocess(me.user.role, item),
     [inTrash, me.user.role],
   );
-  const deletableItems = useMemo(
-    () => items.filter((item) => selectable(item, inTrash, canForever) || readable(item)),
-    [items, inTrash, canForever, readable],
+  // A row out of Trash can always be ticked: anyone may move it to a folder.
+  const tickable = useCallback(
+    (item: DocumentSummary) => !inTrash || selectable(item, inTrash, canForever),
+    [inTrash, canForever],
   );
+  const deletableItems = useMemo(() => items.filter(tickable), [items, tickable]);
+  const [moving, setMoving] = useState(false);
+  const bulkMoved = useRef(false);
   const [password, setPassword] = useState("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   // The selection's action waiting for its "now" button: Move to Trash or Delete forever.
@@ -109,7 +224,8 @@ export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events 
   const [busyAction, setBusyAction] = useState<BulkAction | null>(null);
   const [deleteProgress, setDeleteProgress] = useState<{ done: number; total: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const selectAll = useRef<HTMLInputElement | null>(null);
+  // Two select-all boxes: the table's header, and the bar's on cards; one shows at a time.
+  const selectAll = useRef<HTMLInputElement[]>([]);
   const visibleIds = useMemo(() => new Set(items.map((item) => item.id)), [items]);
   const visibleSelectedIds = useMemo(
     () => new Set([...selectedIds].filter((id) => visibleIds.has(id))),
@@ -120,6 +236,7 @@ export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events 
   const restorableIds = items
     .filter((item) => item.can_delete && visibleSelectedIds.has(item.id))
     .map((item) => item.id);
+  const movable = movableItems(items, visibleSelectedIds);
   const readableIds = items
     .filter((item) => readable(item) && visibleSelectedIds.has(item.id))
     .map((item) => item.id);
@@ -143,13 +260,19 @@ export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events 
   const rowEvents = useMemo<RowEvents>(
     () => ({
       onRemoved: (message) => latestEvents.current.onRemoved(message),
-      onSaved: (message) => latestEvents.current.onSaved(message),
+      onSaved: (message, undo) => latestEvents.current.onSaved(message, undo),
       onFocusList: () => latestEvents.current.onFocusList(),
       onTagCreated: () => latestEvents.current.onTagCreated(),
+      onFolderCreated: () => latestEvents.current.onFolderCreated(),
       onUploadVersion: (document) => latestEvents.current.onUploadVersion(document),
     }),
     [],
   );
+
+  // Stable, so it focuses Cancel once, when the question opens (never the destructive button).
+  const focusOnMount = useCallback((element: HTMLButtonElement | null) => {
+    element?.focus();
+  }, []);
 
   function toggleAll() {
     setSelectedIds(allSelected ? new Set() : new Set(deletableItems.map((item) => item.id)));
@@ -199,25 +322,114 @@ export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events 
       if (action === "read") events.onSaved(bulkDoneMessage(action, result.done.length));
       else onRemoved(bulkDoneMessage(action, result.done.length));
     }
-    // The buttons pressed are gone now: keep keyboard focus on the selection bar.
-    selectAll.current?.focus();
+    // The buttons pressed are gone now: keep keyboard focus on the select-all box shown.
+    selectAll.current.find((input) => input.isConnected && input.offsetParent !== null)?.focus();
   }
+
+  const allRef: RefCallback<HTMLInputElement> = (input) => {
+    if (!input) return;
+    input.indeterminate = partiallySelected;
+    if (!selectAll.current.includes(input)) selectAll.current = [...selectAll.current.filter((i) => i.isConnected), input];
+  };
+  const allBox = (label?: string) => (
+    <input
+      type="checkbox"
+      checked={allSelected}
+      aria-checked={partiallySelected ? "mixed" : allSelected}
+      aria-label={label}
+      title={label}
+      onChange={toggleAll}
+      ref={allRef}
+    />
+  );
+  const idle = selectedCount === 0 && !confirming && !busy && !error;
+
+  const nowButton = confirming && (
+    <button
+      type="button"
+      className={confirming === "read" ? "btn btn-primary" : `btn btn-danger ${styles.apart}`}
+      onClick={() => void runSelected(confirming)}
+      disabled={busy || (confirming === "forever" && askPassword && password === "")}
+    >
+      <Icon name={confirming === "read" ? "refresh" : "trash"} />
+      <BusyLabel busy={busy} idle={NOW_WORDS[confirming]} working={BUSY_WORDS[confirming]} />
+    </button>
+  );
 
   return (
     <>
-      {deletableItems.length > 0 && (
-        <div className={styles.selectionBar} role="toolbar" aria-label="Document selection actions">
-          <label className={styles.selectAll}>
-            <input
-              type="checkbox"
-              checked={allSelected}
-              aria-checked={partiallySelected ? "mixed" : allSelected}
-              onChange={toggleAll}
-              ref={(input) => {
-                selectAll.current = input;
-                if (input) input.indeterminate = partiallySelected;
-              }}
+      <table
+        className={`table ${styles.docs}`}
+        role="table"
+        onPointerEnter={() => setPinned(new Set(listed.map((item) => item.id)))}
+        onPointerLeave={() => setPinned(null)}
+      >
+        <caption className="visually-hidden">{inTrash ? "Documents in Trash" : "Your documents"}</caption>
+        <thead role="rowgroup">
+          <tr role="row">
+            <th scope="col" role="columnheader" className={styles.selectColumn}>
+              {deletableItems.length > 0 ? (
+                <label className={styles.selectHit}>{allBox("Select all visible documents")}</label>
+              ) : (
+                <span className="visually-hidden">Select</span>
+              )}
+            </th>
+            {/* File management F5, Q4 (Changed on purpose, PRD 1 screens): every column with a sort key sorts. */}
+            <SortHeader className={styles.nameColumn} column="name" label={FILES_TEXT.columns.name} sorting={sorting} />
+            <th scope="col" role="columnheader" className={styles.statusColumn}>Status</th>
+            <SortHeader className={styles.typeColumn} column="doc_type" label={FILES_TEXT.columns.type} sorting={sorting} />
+            <SortHeader className={styles.ownerColumn} column="owner" label={FILES_TEXT.columns.owner} sorting={sorting} />
+            <SortHeader className={styles.labelColumn} column="sensitivity" label={FILES_TEXT.columns.label} sorting={sorting} />
+            <SortHeader className={styles.versionColumn} column="version" label={FILES_TEXT.columns.version} sorting={sorting} />
+            <SortHeader
+              className={styles.docDateColumn}
+              column="document_date"
+              label={FILES_TEXT.columns.documentDate}
+              sorting={sorting}
             />
+            <SortHeader
+              className={styles.uploadedColumn}
+              column="updated_at"
+              label={inTrash ? "Trashed" : FILES_TEXT.columns.updatedAt}
+              sorting={inTrash ? undefined : sorting}
+            />
+            <th scope="col" role="columnheader" className={styles.byColumn}>{FILES_TEXT.columns.updatedBy}</th>
+            <th scope="col" role="columnheader" className={styles.actionsColumn}>
+              <span className="visually-hidden">Actions</span>
+            </th>
+          </tr>
+        </thead>
+        <tbody ref={body} role="rowgroup">
+          {items.map((document) => (
+            <DocumentRow
+              key={document.id}
+              document={document}
+              whenShort={shortWhen(whenOf(document, inTrash), now)}
+              whenSpoken={whenSpoken(document, inTrash, now)}
+              inTrash={inTrash}
+              deletable={tickable(document)}
+              canForever={canForever}
+              askPassword={askPassword}
+              selected={selectedIds.has(document.id)}
+              onToggle={toggle}
+              tree={tree}
+              tags={tags}
+              suggestions={suggestions}
+              movedLeaves={movedLeaves}
+              events={rowEvents}
+            />
+          ))}
+        </tbody>
+      </table>
+      {deletableItems.length > 0 && (
+        <div
+          className={styles.selectionBar}
+          role="toolbar"
+          aria-label="Document selection actions"
+          data-idle={idle ? "true" : undefined}
+        >
+          <label className={styles.selectAll}>
+            {allBox()}
             <span>
               {allSelected
                 ? "All visible documents selected"
@@ -238,7 +450,7 @@ export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events 
                       disabled={busy}
                     >
                       <Icon name="history" />
-                      {busy ? "Restoring…" : `Restore (${restorableIds.length})`}
+                      <BusyLabel busy={busy} idle={`Restore (${restorableIds.length})`} working="Restoring…" />
                     </button>
                   )}
                   {canForever && (
@@ -255,6 +467,11 @@ export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events 
                 </>
               ) : (
                 <>
+                  {movable.length > 0 && (
+                    <button type="button" className="btn" onClick={() => setMoving(true)}>
+                      Move to folder ({movable.length})
+                    </button>
+                  )}
                   {readableIds.length > 0 && (
                     <button type="button" className="btn" onClick={() => setConfirming("read")}>
                       <Icon name="refresh" />
@@ -280,8 +497,9 @@ export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events 
               className={styles.bulkConfirm}
               role="group"
               aria-label={CONFIRM_LABEL[confirming]}
+              aria-describedby="bulk-confirm-question"
             >
-              <span>
+              <span id="bulk-confirm-question">
                 {confirming === "forever"
                   ? bulkForeverQuestion(selectedCount)
                   : confirming === "read"
@@ -297,19 +515,13 @@ export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events 
                   onChange={setPassword}
                 />
               )}
-              <button
-                type="button"
-                className={confirming === "read" ? "btn btn-primary" : "btn btn-danger"}
-                onClick={() => void runSelected(confirming)}
-                disabled={busy || (confirming === "forever" && askPassword && password === "")}
-              >
-                <Icon name={confirming === "read" ? "refresh" : "trash"} />
-                {busy ? BUSY_WORDS[confirming] : NOW_WORDS[confirming]}
-              </button>
-              <button type="button" className="btn" onClick={clearSelection} disabled={busy}>
+              {/* [Destructive] ... [Cancel], or [Cancel] [Read again now]; focus starts on Cancel. */}
+              {confirming !== "read" && nowButton}
+              <button ref={focusOnMount} type="button" className="btn" onClick={clearSelection} disabled={busy}>
                 <Icon name="close" />
                 Cancel
               </button>
+              {confirming === "read" && nowButton}
             </div>
           )}
           {busy && deleteProgress && (
@@ -320,7 +532,7 @@ export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events 
                 max={deleteProgress.total}
                 aria-label={PROGRESS_LABEL[busyAction ?? "trash"]}
               />
-              <span className={`muted tabular ${styles.small}`} aria-hidden="true">
+              <span className={`muted tabular ${styles.small} ${styles.barText}`} aria-hidden="true">
                 {formatProgressPercent(deleteProgress.done, deleteProgress.total)}
               </span>
             </div>
@@ -328,45 +540,29 @@ export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events 
           {error && <p className={`error-text ${styles.selectionError}`} role="alert">{error}</p>}
         </div>
       )}
-      <table className={`table ${styles.docs}`} role="table">
-        <caption className="visually-hidden">{inTrash ? "Documents in Trash" : "Your documents"}</caption>
-        <thead role="rowgroup">
-          <tr role="row">
-            <th scope="col" role="columnheader" className={styles.selectColumn}>
-              <span className="visually-hidden">Select</span>
-            </th>
-            <th scope="col" role="columnheader" className={styles.nameColumn}>Name</th>
-            <th scope="col" role="columnheader" className={styles.statusColumn}>Status</th>
-            <th scope="col" role="columnheader" className={styles.typeColumn}>Type</th>
-            <th scope="col" role="columnheader" className={styles.sizeColumn}>Size</th>
-            <th scope="col" role="columnheader" className={styles.uploadedColumn}>
-              {inTrash ? "Trashed" : "Uploaded"}
-            </th>
-            <th scope="col" role="columnheader" className={styles.byColumn}>By</th>
-            <th scope="col" role="columnheader" className={styles.actionsColumn}>
-              <span className="visually-hidden">Actions</span>
-            </th>
-          </tr>
-        </thead>
-        <tbody role="rowgroup">
-          {items.map((document) => (
-            <DocumentRow
-              key={document.id}
-              document={document}
-              whenText={whenText(document, inTrash, now)}
-              inTrash={inTrash}
-              deletable={selectable(document, inTrash, canForever) || readable(document)}
-              canForever={canForever}
-              askPassword={askPassword}
-              selected={selectedIds.has(document.id)}
-              onToggle={toggle}
-              tree={tree}
-              tags={tags}
-              events={rowEvents}
-            />
-          ))}
-        </tbody>
-      </table>
+      {moving && (
+        <MoveDialog
+          items={movable}
+          tree={tree}
+          suggestions={suggestions}
+          onClose={() => setMoving(false)}
+          onClosed={() => {
+            // Cancelled: focus goes back to Move to folder. Moved: the bar's buttons are gone.
+            if (!bulkMoved.current) return;
+            bulkMoved.current = false;
+            const box = selectAll.current.find((input) => input.isConnected && input.offsetParent !== null);
+            if (box) box.focus();
+            else events.onFocusList();
+          }}
+          onSaved={(message, _moved, undo) => {
+            bulkMoved.current = true;
+            setMoving(false);
+            clearSelection();
+            events.onSaved(message, undo);
+          }}
+          onFolderCreated={events.onFolderCreated}
+        />
+      )}
     </>
   );
 }
@@ -376,7 +572,9 @@ export function DocumentsTable({ items, inTrash, me, now, tree, tags, ...events 
 export const listScrollKey = () => `docs-y:${location.search}`;
 function rememberListScroll() {
   try {
-    sessionStorage.setItem(listScrollKey(), String(Math.round(scrollY)));
+    // The app shell's <main> is the one scroller (MonoEdge design system); the window on other pages.
+    const main = document.getElementById("main");
+    sessionStorage.setItem(listScrollKey(), String(Math.round(main ? main.scrollTop : scrollY)));
   } catch {
     // Storage blocked (private window): Back starts at the top, as before.
   }
@@ -422,20 +620,23 @@ const PROGRESS_LABEL: Record<BulkAction, string> = {
 
 type Confirming = "trash" | "forever" | null;
 
-// In Trash the time column is when it was trashed; elsewhere, when it was uploaded.
+// In Trash the time column is when it was trashed; elsewhere, its last change (File management
+// O3: the newest upload or details change), or when it was uploaded on an older reply.
 const whenOf = (document: DocumentSummary, inTrash: boolean) =>
-  inTrash && document.deleted_at !== null ? document.deleted_at : document.created_at;
+  inTrash && document.deleted_at !== null ? document.deleted_at : (document.updated_at ?? document.created_at);
 
 // Worked out here, so a row renders again only when its own words change, not on every poll.
-function whenText(document: DocumentSummary, inTrash: boolean, now: number): string {
+// Shown "2h ago" (shortWhen); read out "2 hours ago, 16 Oct 2026, 2:05 pm".
+function whenSpoken(document: DocumentSummary, inTrash: boolean, now: number): string {
   const when = whenOf(document, inTrash);
   const relative = formatRelative(when, now);
-  return relative === formatDate(when) ? relative : `${relative} · ${formatDate(when)}`;
+  return relative === formatDate(when) ? formatDateTime(when) : `${relative}, ${formatDateTime(when)}`;
 }
 
 const DocumentRow = memo(function DocumentRow({
   document,
-  whenText,
+  whenShort,
+  whenSpoken,
   inTrash,
   deletable,
   canForever,
@@ -444,10 +645,13 @@ const DocumentRow = memo(function DocumentRow({
   onToggle,
   tree,
   tags,
+  suggestions,
+  movedLeaves,
   events,
 }: {
   document: DocumentSummary;
-  whenText: string;
+  whenShort: string;
+  whenSpoken: string;
   inTrash: boolean;
   deletable: boolean; // it gets a checkbox (selectable)
   canForever: boolean;
@@ -456,6 +660,8 @@ const DocumentRow = memo(function DocumentRow({
   onToggle: (id: string) => void;
   tree: FolderTree;
   tags: Tag[] | null;
+  suggestions: readonly string[];
+  movedLeaves: boolean;
   events: RowEvents;
 }) {
   const [confirming, setConfirming] = useState<Confirming>(null);
@@ -494,14 +700,15 @@ const DocumentRow = memo(function DocumentRow({
       void act(restoreDocument, restoredMessage(document.display_name), "Could not restore this document.");
       return;
     }
+    if (action === "read") return; // only the document screen's menu offers it
     afterEdit.current = "actions";
     setEditing(action);
   }
 
-  function saved(message: string, moved = false) {
-    afterEdit.current = moved ? "list" : "actions";
+  function saved(message: string, moved = false, undo?: () => Promise<void>) {
+    afterEdit.current = moved && movedLeaves ? "list" : "actions";
     setEditing(null);
-    events.onSaved(message);
+    events.onSaved(message, undo);
   }
 
   // The dialog is shut: hand focus back to Actions, or to the list after a move.
@@ -555,11 +762,45 @@ const DocumentRow = memo(function DocumentRow({
     setConfirming(null);
   }
 
-  const by = document.uploaded_by_name;
+  // O3: who changed it last (the newest upload or details change); the uploader on an older reply.
+  const by = document.updated_by ?? document.uploaded_by_name;
   const when = whenOf(document, inTrash);
+  // F5: "v1 · newer?" while a newer version of this family waits to be confirmed.
+  const newer = document.pending_suggestion?.role === "candidate";
+  const owner = document.owner?.name ?? null;
+  const version = (
+    <>
+      {versionCell(document.version_no, false)}
+      {newer && (
+        <span className={styles.newer}>
+          <span aria-hidden="true"> · newer?</span>
+          <span className="visually-hidden">{`, ${NEWER_SPOKEN}`}</span>
+        </span>
+      )}
+    </>
+  );
+  const dash = (
+    <>
+      <span aria-hidden="true">—</span>
+      <span className="visually-hidden">Not known</span>
+    </>
+  );
+  // D11: the whole row opens the document. A click handler, not a stretched link: an
+  // absolutely placed ::after stays in its row only where the browser makes a <tr> its
+  // containing block, and some (Safari) do not, so it covered the page and any click
+  // opened one file (QA video, 17 Oct 2026). Controls, modifier clicks and text
+  // selection keep their own behaviour; the name stays a real link for keys and new tabs.
+  function openRow(event: ReactMouseEvent<HTMLTableRowElement>) {
+    if (event.defaultPrevented || event.button !== 0) return;
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    if ((event.target as Element).closest("a, button, input, label, select, textarea, [role='menu'], [role='dialog']")) return;
+    if (window.getSelection()?.toString()) return;
+    // The name's own link: its navigation and its scroll memory, nothing new.
+    event.currentTarget.querySelector<HTMLAnchorElement>(`.${styles.name}`)?.click();
+  }
   const question = confirming === "forever" ? foreverQuestion(document) : trashQuestion(document);
   return (
-    <tr role="row" data-selected={selected ? "true" : undefined}>
+    <tr role="row" data-id={document.id} data-selected={selected ? "true" : undefined} onClick={openRow}>
       <td
         role="cell"
         className={styles.selectCell}
@@ -583,9 +824,41 @@ const DocumentRow = memo(function DocumentRow({
           className={styles.name}
           title={document.display_name}
           onClick={rememberListScroll}
+          onDragStart={(event) => {
+            if (inTrash) return;
+            event.dataTransfer.setData(DOCUMENT_DRAG, document.id);
+            event.dataTransfer.effectAllowed = "copyMove";
+          }}
         >
-          <WrapName name={document.display_name} />
+          <span className={`k-file-ic ${styles.fileIcon}`} data-ext={extensionOf(document.display_name)} aria-hidden="true" />
+          <span>
+            <WrapName name={document.display_name} />
+          </span>
         </Link>
+        <span className={styles.bandType}>
+          {typeLabel(document.detected_type)} · {docTypeLabel(document.doc_type)} · {formatBytes(document.size_bytes)}
+        </span>
+        {/* F5: the label, version, owner and date, each here until its own column has room. */}
+        <span className={styles.facts}>
+          {document.sensitivity && (
+            <span className={styles.factLabel}>
+              <LabelChip label={document.sensitivity} />
+            </span>
+          )}
+          <span className={styles.factVersion}>{version}</span>
+          {owner && (
+            <span className={styles.factOwner}>
+              {FILES_TEXT.columns.owner}: {owner}
+            </span>
+          )}
+          {document.document_date && (
+            <span className={styles.factDate}>{FILES_TEXT.dated(formatDate(document.document_date))}</span>
+          )}
+        </span>
+        {/* Where it is filed, so a move shows in All documents too (16 Oct 2026). */}
+        {!inTrash && document.folder_id && tree.byId.has(document.folder_id) && (
+          <span className={styles.inFolder}>In {pathLabel(tree, document.folder_id)}</span>
+        )}
         {document.tags.length > 0 && (
           <ul className={`${library.tags} ${library.rowTags}`} aria-label="Tags">
             {document.tags.map((tag) => (
@@ -602,44 +875,45 @@ const DocumentRow = memo(function DocumentRow({
         )}
       </td>
       <td role="cell" className={styles.statusCell}>
-        <span className={styles.statusContent}>
-          <StatusChip status={document.status} />
-          <span className={styles.statusMessage}>{document.status_message}</span>
-          <TimeLeft document={document} />
-          {!inTrash &&
-            attentionWords(document).map((words) => (
-              <span key={words} className={styles.attentionChip}>
-                <Icon name="eye-alert" size={16} />
-                {words}
-              </span>
-            ))}
-        </span>
+        <StatusCell document={document} inTrash={inTrash} />
       </td>
-      <td role="cell" className={styles.meta}>
+      <td role="cell" className={`${styles.meta} ${styles.typeCell}`}>
         {typeLabel(document.detected_type)}
         <span className={styles.docType}>{docTypeLabel(document.doc_type)}</span>
         <span className={`${styles.bandSize} tabular`}>{formatBytes(document.size_bytes)}</span>
       </td>
-      <td role="cell" className={`${styles.meta} ${styles.sizeCell} tabular`}>
-        {formatBytes(document.size_bytes)}
+      <td role="cell" className={`${styles.meta} ${styles.ownerCell}`}>
+        {owner ? <WrapName name={owner} /> : dash}
       </td>
-      <td role="cell" className={styles.meta}>
+      <td role="cell" className={`${styles.meta} ${styles.labelCell}`}>
+        {document.sensitivity ? <LabelChip label={document.sensitivity} /> : dash}
+      </td>
+      <td role="cell" className={`${styles.meta} ${styles.versionCell} tabular`}>
+        {version}
+      </td>
+      <td role="cell" className={`${styles.meta} ${styles.docDateCell} tabular`}>
+        {document.document_date ? formatDate(document.document_date) : dash}
+      </td>
+      <td role="cell" className={`${styles.meta} ${styles.uploadedCell}`}>
         {inTrash && <span className="visually-hidden">Trashed </span>}
-        {/* The exact date too: a touch screen never shows the hover title. */}
-        <time dateTime={when} title={formatDateTime(when)}>
-          {whenText}
+        {/* One short line, the exact date in its title; read out in full instead. */}
+        <time dateTime={when} title={formatDateTime(when)} className={styles.when} aria-hidden="true">
+          {whenShort}
         </time>
+        <span className="visually-hidden">{whenSpoken}</span>
         {by && (
-          <span className={styles.bandBy}>
-            Uploaded by <WrapName name={by} />
+          <span className={styles.bandBy} title={by}>
+            <span className="visually-hidden">Updated </span>by {by}
           </span>
         )}
       </td>
       <td role="cell" className={`${styles.meta} ${styles.byCell}`} data-empty={by ? undefined : "true"}>
         {by ? (
           <>
-            <span className={styles.byLabel}>Uploaded by </span>
-            <WrapName name={by} />
+            <span className={styles.byLabel}>Updated by </span>
+            <span className={styles.byName} title={by}>
+              <WrapName name={by} />
+            </span>
           </>
         ) : (
           <>
@@ -681,16 +955,11 @@ const DocumentRow = memo(function DocumentRow({
                 onClick={confirm}
                 disabled={busy || (confirming === "forever" && askPassword && password === "")}
               >
-                {busy ? (
-                  <>
-                    <span className="spinner" aria-hidden="true" />
-                    {confirming === "forever" ? "Deleting…" : "Moving…"}
-                  </>
-                ) : confirming === "forever" ? (
-                  "Delete forever"
-                ) : (
-                  "Move to Trash"
-                )}
+                <BusyLabel
+                  busy={busy}
+                  idle={confirming === "forever" ? "Delete forever" : "Move to Trash"}
+                  working={confirming === "forever" ? "Deleting…" : "Moving…"}
+                />
               </button>
               <button
                 ref={focusOnMount}
@@ -719,9 +988,79 @@ const DocumentRow = memo(function DocumentRow({
             onClosed={dialogClosed}
             onSaved={saved}
             onTagCreated={events.onTagCreated}
+            suggestions={suggestions}
+            onFolderCreated={events.onFolderCreated}
           />
         )}
       </td>
     </tr>
   );
 });
+
+/**
+ * The status cell. Queued, being read, and read: two lines of fixed height (the chip and
+ * its words, then the bar and the time left, or what was flagged), keyed by phase so the
+ * new lines fade in (opacity only) and nothing else moves. Any other state: the chip and
+ * the server's words, which may wrap.
+ */
+export function StatusCell({ document, inTrash }: { document: DocumentSummary; inTrash: boolean }) {
+  if (beingRead(document.status) && document.deleted_at === null) {
+    const words = scanWords(document);
+    const detail = words ? words.detail : document.status_message;
+    return (
+      <span className={styles.statusContent} key="scanning">
+        <span className={styles.statusLine}>
+          <StatusChip status={document.status} text={words ? words.chip : "Queued"} />
+          <span className={styles.statusText} title={detail}>
+            {detail}
+          </span>
+        </span>
+        <span className={styles.statusLine}>
+          <TimeLeft document={document} />
+        </span>
+      </span>
+    );
+  }
+  if (document.status === "ready") {
+    const flagged = flaggedShort(document);
+    // UI audit D4 (16 Oct 2026): a clean read is its badge alone; the second line stays laid out.
+    const clean = !toReview(document);
+    return (
+      <span className={styles.statusContent} key="done">
+        <span className={styles.statusLine}>
+          <StatusChip status="ready" text="Scan complete" />
+        </span>
+        <span className={styles.statusLine}>
+          {document.understanding === true ? (
+            <span className={styles.statusText} title={UNDERSTANDING_TEXT}>
+              {UNDERSTANDING_TEXT}
+            </span>
+          ) : (
+            !clean && (
+              <span className={styles.statusText} title={flagged.shown}>
+                {flagged.shown}
+              </span>
+            )
+          )}
+          {!inTrash && toReview(document) && (
+            <Link href={`/documents/${document.id}`} className={styles.statusAction} onClick={rememberListScroll}>
+              Review<span className="visually-hidden">{` ${flagged.spoken} in ${document.display_name}`}</span>
+            </Link>
+          )}
+        </span>
+      </span>
+    );
+  }
+  return (
+    <span className={styles.statusContent}>
+      <span className={styles.statusLine}>
+        <StatusChip status={document.status} />
+      </span>
+      <span className={styles.statusLine}>
+        <span className={styles.statusText} title={document.status_message}>
+          {document.status_message}
+        </span>
+      </span>
+    </span>
+  );
+}

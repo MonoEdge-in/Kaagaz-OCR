@@ -21,18 +21,38 @@
 // saved, and its results show in their own section (StorySearchView.tsx)
 // instead of the conversation. The mode is kept for the tab; a conversation or
 // "Ask about this document" always asks the documents.
+// UI audit (16 Oct 2026): each conversation can be renamed or deleted from the list
+// (A1, ConversationList.tsx), what happened shows in a toast; the newest "not found"
+// answer offers to search all documents (A4); the empty screen offers up to three
+// example questions about the newest ready documents, each asked about its own (A5).
+// A question out when Ask is left (another page of the app) is kept in askStore.ts;
+// back on Ask it shows as pending again, or answered, or failed with the question
+// back in the box (Tushar, 16 Oct 2026).
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { Toast } from "@/components/admin/Toast";
+import type { Notice } from "@/components/admin/Toast";
 import { StoryMatches } from "@/components/stories/StoryMatches";
 import { Drawer } from "@/components/ui/Drawer";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Icon } from "@/components/ui/Icon";
 import { IconButton } from "@/components/ui/IconButton";
 import { useHydrated } from "@/components/ui/useHydrated";
-import { ApiError, ask, getChatOptions, getConversation, listConversations, listDocuments } from "@/lib/api";
+import { capChatOptions, effectiveOf, taskOf, useAiSettings } from "@/lib/aiSettings";
+import {
+  ApiError,
+  FEATURE_OFF,
+  ask,
+  deleteConversation,
+  getChatOptions,
+  getConversation,
+  listConversations,
+  listDocuments,
+  renameConversation,
+} from "@/lib/api";
 import { MODE_TEXTS, modeLockedText, readMode, saveMode, sendPlan, startMode, STORY_SEARCH_LIMIT } from "@/lib/chatMode";
 import type { ChatMode } from "@/lib/chatMode";
 import {
@@ -47,6 +67,7 @@ import {
 import type { ChatOptions, ConversationSummary, Message } from "@/lib/types";
 import { answerStatusText, ASKING_STATUS, LOADED_STATUS, questionsByAnswer } from "./answer";
 import { AnswerSettings } from "./AnswerSettings";
+import { askInFlight, resumable, resumedConversation, settleAsk, startAsk } from "./askStore";
 import { AnswerView } from "./AnswerView";
 import { ConversationList } from "./ConversationList";
 import { scrollBehavior } from "./hooks";
@@ -61,14 +82,17 @@ import {
   hasChoices,
   isNearBottom,
   STILL_LOOKING_AFTER_MS,
+  questionFromSearch,
+  starterQuestions,
 } from "./logic";
-import type { AnswerPick } from "./logic";
+import type { AnswerPick, Starter } from "./logic";
 import { ModeSwitch } from "./ModeSwitch";
 import { QuestionBox } from "./QuestionBox";
 import {
   answeredScope,
   chipScope,
   chooseScope,
+  EVERY_DOCUMENT,
   keptScope,
   restoredScope,
   scopeLockedText,
@@ -76,6 +100,7 @@ import {
   startScope,
 } from "./scope";
 import { ScopePicker } from "./ScopePicker";
+import type { ChosenScope } from "./scope";
 import { storyPlace, storySlot } from "./storySlot";
 import type { StorySlot, StorySlotEvent } from "./storySlot";
 import { StorySearchView } from "./StorySearchView";
@@ -122,6 +147,9 @@ function tabStorage(): Storage | null {
   }
 }
 
+/** What to say when a question got no answer. */
+const errorText = (error: unknown) => askErrorText(error instanceof ApiError ? error : null);
+
 /** Keep the address bar on the open conversation, without a navigation. */
 function showInUrl(conversationId: string | null): void {
   window.history.replaceState(null, "", chatHref(conversationId));
@@ -132,9 +160,13 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
   const pathname = usePathname();
   const [conversations, setConversations] = useState<ConversationSummary[] | null>(null);
   const [listFailed, setListFailed] = useState(false);
-  // The conversation named in the URL, read once at mount: later changes are
-  // this screen's own replaceState.
-  const [restoreId] = useState(() => conversationFromSearch(initialSearch));
+  // A question sent before Ask was left (askStore.ts), picked up once at mount.
+  const [resumed] = useState(() => resumable(askInFlight(), initialSearch));
+  // The conversation named in the URL, or the picked-up question's, read once at
+  // mount: later changes are this screen's own replaceState.
+  const [restoreId] = useState(
+    () => conversationFromSearch(initialSearch) ?? (resumed ? resumedConversation(resumed) : null),
+  );
   const [activeId, setActiveId] = useState<string | null>(restoreId);
   // The documents the next question may use (scope.ts): one document when the
   // viewer's "Ask about this document" opened chat, else restored from the conversation.
@@ -145,9 +177,23 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
   const [threadState, setThreadState] = useState<"idle" | "loading" | "error">(
     restoreId ? "loading" : "idle",
   );
-  const [pending, setPending] = useState<string | null>(null);
-  const [askError, setAskError] = useState<string | null>(null);
+  // Still on its way at mount: pending until it settles (the effect below).
+  const [waiting] = useState(() => resumed !== null && !resumed.outcome);
+  const [pending, setPending] = useState<string | null>(() => (waiting ? resumed!.question : null));
+  const [askError, setAskError] = useState<string | null>(() =>
+    resumed?.outcome && "error" in resumed.outcome ? errorText(resumed.outcome.error) : null,
+  );
+  // A picked-up question that failed goes back into the box.
+  // Or the question Home's Ask box brought (?q=), waiting for Send.
+  const [draft, setDraft] = useState<string | undefined>(() =>
+    resumed?.outcome && "error" in resumed.outcome
+      ? resumed.question
+      : (questionFromSearch(initialSearch) ?? undefined),
+  );
   const [noDocuments, setNoDocuments] = useState<boolean | null>(null);
+  const [starters, setStarters] = useState<Starter[]>([]);
+  const [notice, setNotice] = useState<Notice | null>(null);
+  const closeNotice = useCallback(() => setNotice(null), []);
   // The one status line for screen readers.
   const [status, setStatus] = useState("");
   // The newest question's story matches (storySlot.ts), mirrored in a ref so a
@@ -171,11 +217,25 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
   const listOpen = listOpenOn !== null && listOpenOn === pathname;
   // Answer settings (features 25-27): what the organisation allows, and this tab's pick.
   // Not loaded or failed: no chip, and the organisation's defaults answer.
-  const [chatOptions, setChatOptions] = useState<ChatOptions | null>(null);
-  const [answerPick, setAnswerPick] = useState<AnswerPick | null>(null);
+  const [loadedOptions, setChatOptions] = useState<ChatOptions | null>(null);
+  const [picked, setAnswerPick] = useState<AnswerPick | null>(null); // null: nothing picked in this tab
+  // AI settings (spec 17 Oct 2026): the levels stop at the effective Ask level, and start from it.
+  const aiSettings = useAiSettings();
+  const chatOptions = loadedOptions && capChatOptions(loadedOptions, effectiveOf(aiSettings, "ask"));
+  const answerPick =
+    chatOptions && (picked && chatOptions.levels.includes(picked.level) ? picked : defaultPick(chatOptions));
+  const askOff = taskOf(aiSettings, "ask")?.available === false;
 
   // Only the latest conversation opened may fill the thread.
   const openRequest = useRef(0);
+  // False once the screen is gone: an answer then waits in askStore.ts for the next one.
+  const alive = useRef(false);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
   const threadRef = useRef<HTMLElement>(null);
   const logRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
@@ -230,9 +290,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
       });
     getChatOptions()
       .then((options) => {
-        if (cancelled) return;
-        setChatOptions(options);
-        setAnswerPick(defaultPick(options));
+        if (!cancelled) setChatOptions(options);
       })
       .catch(() => undefined); // no chip: the organisation's defaults answer
     return () => {
@@ -241,40 +299,83 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
   }, []);
 
   // Reopen the conversation from the URL. One that is gone or not this person's
-  // (the server says 404) quietly becomes the empty chat.
+  // (the server says 404) quietly becomes the empty chat. A picked-up question
+  // still on its way stays pending; once answered (and saved), the conversation
+  // loads again with it. `loaded` runs when that load ends, whichever way.
   useEffect(() => {
-    if (!restoreId) return;
-    const request = ++openRequest.current;
-    getConversation(restoreId)
-      .then((conversation) => {
-        if (request !== openRequest.current) return;
-        jumpToEnd.current = true;
-        setMessages(conversation.messages);
-        setScope(restoredScope(conversation.messages));
-        setThreadState("idle");
-        setStatus(LOADED_STATUS);
-      })
-      .catch((error: unknown) => {
-        if (request !== openRequest.current) return;
-        if (error instanceof ApiError && error.status === 404) {
-          setActiveId(null);
-          setScope(startScope(null));
+    let cancelled = false;
+    const load = (id: string, loaded?: () => void) => {
+      const request = ++openRequest.current;
+      getConversation(id)
+        .then((conversation) => {
+          if (request !== openRequest.current) return;
+          jumpToEnd.current = true;
+          setMessages(conversation.messages);
+          setScope(restoredScope(conversation.messages));
           setThreadState("idle");
-          showInUrl(null);
-        } else {
-          setThreadState("error");
-        }
-      });
-  }, [restoreId]);
+          setStatus(LOADED_STATUS);
+        })
+        .catch((error: unknown) => {
+          if (request !== openRequest.current) return;
+          if (error instanceof ApiError && error.status === 404) {
+            setActiveId(null);
+            setScope(startScope(null));
+            setThreadState("idle");
+            showInUrl(null);
+          } else {
+            setThreadState("error");
+          }
+        })
+        .finally(() => {
+          if (!cancelled) loaded?.();
+        });
+    };
+    if (restoreId) load(restoreId);
+    if (resumed && !waiting) settleAsk(resumed);
+    else if (resumed) {
+      resumed.done.then(
+        (reply) => {
+          if (cancelled) return;
+          settleAsk(resumed);
+          if (!restoreId) {
+            // A new conversation: its answer made it.
+            setActiveId(reply.conversation_id);
+            showInUrl(reply.conversation_id);
+            setThreadState("loading");
+            listConversations()
+              .then((list) => {
+                if (!cancelled) setConversations(list.items);
+              })
+              .catch(() => undefined);
+          }
+          load(reply.conversation_id, () => {
+            setPending(null);
+            setStatus(answerStatusText(reply.answer.answer));
+          });
+        },
+        (error: unknown) => {
+          if (cancelled) return;
+          settleAsk(resumed);
+          setPending(null);
+          setAskError(errorText(error));
+          setDraft(resumed.question);
+        },
+      );
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [restoreId, resumed, waiting]);
 
   // One small call tells the empty screen whether there is anything to ask about.
   useEffect(() => {
     let cancelled = false;
-    listDocuments({ limit: 1 })
+    listDocuments({ limit: 6 })
       .then((list) => {
         if (cancelled) return;
         const none = list.total === 0 && list.items.length === 0;
         setNoDocuments(none);
+        setStarters(starterQuestions(list.items));
         if (!none && window.document.activeElement === window.document.body) {
           focusComposerOnDesktop(inputRef.current);
         }
@@ -413,9 +514,12 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
     }
   };
 
-  const onAsk = async (question: string): Promise<boolean> => {
+  /** `only`: ask about these documents this once (A4 "Search all documents", A5's examples). */
+  const onAsk = async (question: string, only?: ChosenScope): Promise<boolean> => {
     const plan = sendPlan(mode);
     if (!plan.chat) return searchStories(question);
+    const asked = only ? chooseScope(scope, only) : scope;
+    if (only) setScope(asked);
     setPending(question);
     setAskError(null);
     setStatus(ASKING_STATUS);
@@ -426,15 +530,21 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
     storyAbort.current = controller;
     updateSlot({ type: "ask", token, question });
     if (plan.sideCards) {
-      void findStoryMatches(question, chipScope(scope), controller.signal).then((matches) => {
+      void findStoryMatches(question, chipScope(asked), controller.signal).then((matches) => {
         const now = updateSlot({ type: "matches", token, matches });
         if (now?.token === token && now.answer !== "pending" && matches.length > 0) {
           setStatus(storyStatusText(matches.length));
         }
       });
     }
+    // Kept outside this screen (askStore.ts), so leaving Ask never drops it.
+    const entry = startAsk(question, activeId, () =>
+      ask(question, activeId ?? undefined, sentScope(asked), choiceBody(chatOptions, answerPick)),
+    );
     try {
-      const reply = await ask(question, activeId ?? undefined, sentScope(scope), choiceBody(chatOptions, answerPick));
+      const reply = await entry.done;
+      if (!alive.current) return true; // the next chat screen shows it
+      settleAsk(entry);
       setMessages((current) => [...current, reply.question, reply.answer]);
       setScope((current) => answeredScope(current, reply.question));
       const answerStatus = answerStatusText(reply.answer.answer);
@@ -448,13 +558,40 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
       }
       return true;
     } catch (error) {
+      if (!alive.current) return false; // the next chat screen shows it
+      settleAsk(entry);
       // The error is its own alert; the story cards stay, at the end of the log.
       updateSlot({ type: "failed", token });
       setStatus("");
-      setAskError(askErrorText(error instanceof ApiError ? error : null));
+      setAskError(errorText(error));
       return false;
     } finally {
       setPending(null);
+    }
+  };
+
+  const rename = async (id: string, title: string): Promise<boolean> => {
+    try {
+      const renamed = await renameConversation(id, title);
+      setConversations((list) => list?.map((item) => (item.id === id ? renamed : item)) ?? list);
+      setNotice({ text: "Conversation renamed." });
+      return true;
+    } catch (error) {
+      setNotice({ problem: true, text: error instanceof ApiError ? error.message : "Not renamed. Check your connection, then try again." });
+      return false;
+    }
+  };
+
+  const remove = async (id: string): Promise<boolean> => {
+    try {
+      await deleteConversation(id);
+      setConversations((list) => list?.filter((item) => item.id !== id) ?? list);
+      if (id === activeId) startNew();
+      setNotice({ text: "Conversation deleted." });
+      return true;
+    } catch (error) {
+      setNotice({ problem: true, text: error instanceof ApiError ? error.message : "Not deleted. Check your connection, then try again." });
+      return false;
     }
   };
 
@@ -466,6 +603,14 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
       <StoryMatches matches={slot.matches} note={STORY_NOTE_CHAT} headingLevel={2} question={question} />
     ) : null;
   const empty = messages.length === 0 && threadState === "idle" && !busy;
+  // A4: the newest answer, when it found nothing in fewer than every document, offers them all.
+  const last = messages.at(-1);
+  const askAllFor =
+    last?.answer?.status === "not_found" && scope.scope.kind !== "all" && scope.scope.kind !== "kept" ? last : null;
+  const askAllQuestion = askAllFor ? (questions.get(askAllFor.id) ?? null) : null;
+  const askAll = () => {
+    if (askAllQuestion && !busy) void onAsk(askAllQuestion, EVERY_DOCUMENT);
+  };
   const activeTitle = conversations?.find((item) => item.id === activeId)?.title ?? null;
 
   const list = (
@@ -480,6 +625,8 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
         setListFailed(false);
         void refreshList();
       }}
+      onRename={rename}
+      onDelete={remove}
     />
   );
 
@@ -511,6 +658,28 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
         <EmptyState icon="chat" title={HEADING} headingLevel={1}>
           Get clear answers from your documents, with every response linked to its source page.
         </EmptyState>
+        {starters.length > 0 ? (
+          <section className={styles.starters} aria-labelledby="chat-starters">
+            <h2 id="chat-starters" className={styles.subheading}>
+              Try one of these
+            </h2>
+            <ul className={styles.starterList}>
+              {starters.map((starter) => (
+                <li key={starter.documentId}>
+                  <button
+                    type="button"
+                    className={styles.starter}
+                    disabled={busy}
+                    onClick={() => void onAsk(starter.question, { kind: "documents", ids: [starter.documentId] })}
+                  >
+                    <span>{starter.question}</span>
+                    <span className={styles.starterDoc}>{starter.documentName}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
       </div>
     );
   }
@@ -599,7 +768,11 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
                 ) : (
                   <Fragment key={message.id}>
                     <div className={styles.answerWrap}>
-                      <AnswerView message={message} question={questions.get(message.id) ?? null} />
+                      <AnswerView
+                        message={message}
+                        question={questions.get(message.id) ?? null}
+                        onAskAll={message === askAllFor ? askAll : undefined}
+                      />
                     </div>
                     {place.at === "answer" && place.answerId === message.id ? storyCards() : null}
                   </Fragment>
@@ -619,10 +792,15 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
             </div>
           </div>
           <div ref={composerRef} className={styles.composer}>
+            {/* Ask switched off for the whole product: a calm note where the composer was. */}
+            {askOff || askError === FEATURE_OFF ? (
+              <p className={styles.composerNote}>{FEATURE_OFF}</p>
+            ) : (
             <QuestionBox
               pending={busy || search.kind === "loading"}
               error={mode === "documents" ? askError : null}
               onAsk={onAsk}
+              draft={draft}
               inputRef={inputRef}
               texts={MODE_TEXTS[mode]}
               tools={
@@ -641,6 +819,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
                 ) : null
               }
             />
+            )}
           </div>
         </div>
       </section>
@@ -648,6 +827,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
       <Drawer open={listOpen} onClose={() => setListOpenOn(null)} title="Conversations" id={DRAWER_ID}>
         {list}
       </Drawer>
+      <Toast notice={notice} onClose={closeNotice} />
     </div>
   );
 }

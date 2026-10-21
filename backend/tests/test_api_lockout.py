@@ -93,12 +93,11 @@ def test_locked_unknown_wrong_and_disabled_replies_are_identical(db: Database) -
     assert all("set-cookie" not in reply.headers for reply in replies.values())
 
 
-def test_the_admin_screen_replies_are_identical_too(db: Database) -> None:
+def test_an_admins_failed_replies_are_identical_too(db: Database) -> None:
     api = Api(db)
     customer_id, _ = api.customer()
     admin = api.enrol_admin(customer_id)
     locked = api.enrol_admin(customer_id)
-    _, member_email = api.add_user(customer_id, "member")
     _, no_2fa_email = api.add_user(customer_id, "admin")
     client = api.client()
     for _ in range(5):
@@ -109,14 +108,18 @@ def test_the_admin_screen_replies_are_identical_too(db: Database) -> None:
         "unknown": api.admin_login(client, "nobody-at-all@example.test", code="123456"),
         "wrong password": api.admin_login(client, admin.email, password=WRONG, code=api.code(admin.secret)),
         "wrong code": api.admin_login(client, admin.email, code=wrong_code(api, admin.secret)),
-        "no code": api.admin_login(client, admin.email),
-        "not an admin": api.admin_login(client, member_email),
+        "wrong password, no code": api.admin_login(client, admin.email, password=WRONG),
         "2FA off, wrong password": api.admin_login(client, no_2fa_email, password=WRONG),
     }
 
     assert {reply.status_code for reply in replies.values()} == {401}
     assert len({reply.text for reply in replies.values()}) == 1
     assert replies["locked"].json()["error"]["code"] == "bad_credentials"
+    # Only a right password learns that a code is needed, or must be set up (0035).
+    no_code = api.admin_login(client, admin.email)
+    assert (no_code.status_code, no_code.json()["error"]["code"]) == (401, "code_required")
+    set_up = api.admin_login(client, no_2fa_email)
+    assert (set_up.status_code, set_up.json()["error"]["code"]) == (403, "mfa_enrol_required")
 
 
 def test_an_expired_lock_lets_the_right_password_in_and_resets(db: Database) -> None:
@@ -259,9 +262,8 @@ def test_every_attempt_spends_exactly_one_hash(db: Database, monkeypatch: pytest
         "admin: locked": lambda: api.admin_login(
             client, locked_admin.email, code=api.code(locked_admin.secret)
         ),
-        "admin: not an admin": lambda: api.admin_login(client, email),
         "admin: right code": lambda: api.admin_login(api.client(), admin.email, code=api.code(admin.secret)),
-        "admin: 2FA off, password alone": lambda: api.admin_login(api.client(), no_2fa_email),
+        "admin: 2FA off, the set-up offer": lambda: api.admin_login(api.client(), no_2fa_email),
     }
     for name, attempt in attempts.items():
         hashes.clear()

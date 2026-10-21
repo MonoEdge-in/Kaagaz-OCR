@@ -23,12 +23,20 @@ export const ATTENTION = {
 } as const;
 /** A count's change, or a unit cost's on this few pages or questions before, is "too few to compare" (PROVISIONAL, UI/UX F2). */
 export const CHANGE_MIN_BASE = 5;
+/** Tushar, 16 Oct 2026: a unit cost needs this many pages or questions behind it; fewer say
+ * what was spent on them so far, never a per-1,000 figure stretched from one page. */
+export const UNIT_MIN_PAGES = 20;
+export const UNIT_MIN_QUESTIONS = 10;
+/** A month's forecast needs this many days of this month with figures. */
+export const FORECAST_MIN_DAYS = 7;
+/** A tile's line needs this many days with a value, else it is not drawn. */
+export const SPARK_MIN_DAYS = 3;
 
 const DAY_MS = 86_400_000;
 const DASH = "\u2014"; // the repo's empty-cell dash
 
 export type DayMetric = "uploads" | "sign_ins" | "questions" | "corrections" | "runs" | "runs_failed"
-  | "pages" | "scan_pages" | "cached_pages" | "cost_usd";
+  | "pages" | "scan_pages" | "cached_pages" | "cost_usd" | "cost_real_usd";
 
 /** A YYYY-MM-DD as days since 1970 (UTC on the string, so no timezone drift); NaN if not a date. */
 const dayNumber = (day: string) => Date.parse(`${day}T00:00:00Z`) / DAY_MS;
@@ -57,10 +65,14 @@ export interface PeriodTotals {
   activeOrganisations: number; uploads: number; pages: number; questions: number; runs: number; runsFailed: number;
   scanPages: number; cachedPages: number; costUsd: number | null; costDocumentsUsd: number | null;
   costQuestionsUsd: number | null; costEstimated: boolean; costPartUnknown: boolean;
+  // 0034: from the ledger, the real figures (the cost OpenRouter reported only).
+  pagesRead: number; pagesReread: number; pagesReadCosted: number; costRealUsd: number | null;
+  costScanRealUsd: number | null; costAnswerRealUsd: number | null; unknownCalls: number;
+  scanUnknownCalls: number; answerUnknownCalls: number;
 }
 
 /** Active: an upload, a question or a run that day (sign-ins alone are not use). */
-const isActive = (row: InsightDay) => row.uploads > 0 || row.questions > 0 || row.runs > 0;
+const isActive = (row: InsightDay) => row.uploads > 0 || row.questions > 0 || row.runs > 0 || row.pages_read > 0;
 const addCost = (sum: number | null, cost: number | null) => (cost === null ? sum : (sum ?? 0) + cost);
 
 /** F1 summed over [from, to]; a cost is null when no day in it has a known cost. */
@@ -69,6 +81,8 @@ export function periodTotals(daily: readonly InsightDay[], from: string, to: str
   const totals: PeriodTotals = {
     activeOrganisations: 0, uploads: 0, pages: 0, questions: 0, runs: 0, runsFailed: 0, scanPages: 0, cachedPages: 0,
     costUsd: null, costDocumentsUsd: null, costQuestionsUsd: null, costEstimated: false, costPartUnknown: false,
+    pagesRead: 0, pagesReread: 0, pagesReadCosted: 0, costRealUsd: null, costScanRealUsd: null, costAnswerRealUsd: null,
+    unknownCalls: 0, scanUnknownCalls: 0, answerUnknownCalls: 0,
   };
   for (const row of daily) {
     if (row.day < from || row.day > to) continue;
@@ -85,6 +99,15 @@ export function periodTotals(daily: readonly InsightDay[], from: string, to: str
     totals.costQuestionsUsd = addCost(totals.costQuestionsUsd, row.cost_questions_usd);
     totals.costEstimated ||= row.cost_estimated;
     totals.costPartUnknown ||= row.cost_part_unknown;
+    totals.pagesRead += row.pages_read;
+    totals.pagesReread += row.pages_reread;
+    totals.pagesReadCosted += row.pages_read_costed;
+    totals.costRealUsd = addCost(totals.costRealUsd, row.cost_real_usd);
+    totals.costScanRealUsd = addCost(totals.costScanRealUsd, row.cost_scan_real_usd);
+    totals.costAnswerRealUsd = addCost(totals.costAnswerRealUsd, row.cost_answer_real_usd);
+    totals.unknownCalls += row.cost_unknown_calls;
+    totals.scanUnknownCalls += row.scan_unknown_calls;
+    totals.answerUnknownCalls += row.answer_unknown_calls;
   }
   totals.activeOrganisations = active.size;
   return totals;
@@ -117,6 +140,50 @@ export function changeText(now: number, before: number, kind: ChangeKind): strin
   if (percent === 0) return "no change";
   return `${percent > 0 ? "up" : "down"} ${formatNumber(Math.abs(percent))}%`;
 }
+
+/**
+ * A tile's change line, in plain words (Tushar, 16 Oct 2026): "Up 12% on the previous 30
+ * days", "Same as the previous 30 days", "None in the previous 30 days" (from 0), "Not
+ * enough earlier data to compare"; null when both are 0 (nothing to say).
+ */
+export function changeLine(now: number, before: number, kind: ChangeKind, days: number): string | null {
+  const text = changeText(now, before, kind);
+  const previous = `the previous ${formatNumber(days)} days`;
+  if (text === "no change") return now === 0 ? null : `Same as ${previous}`;
+  if (text === "new this period") return `None in ${previous}`;
+  if (text === "too few to compare") return "Not enough earlier data to compare";
+  return `${text.charAt(0).toUpperCase()}${text.slice(1)} on ${previous}`;
+}
+
+/** A day series to draw, or undefined when fewer than SPARK_MIN_DAYS days have a value (no made-up line). */
+export const sparkOf = (values: readonly number[]) =>
+  values.filter((value) => Number.isFinite(value) && value > 0).length >= SPARK_MIN_DAYS ? [...values] : undefined;
+
+/** "cost not known for 12 calls"; null for none. */
+export const unknownText = (calls: number) =>
+  calls > 0 ? `cost not known for ${formatNumber(calls)} ${calls === 1 ? "call" : "calls"}` : null;
+
+/** This month's AI spend: real cost, the calls whose cost is not known, and the forecast. */
+export interface MonthSpend { usd: number | null; unknownCalls: number; forecast: MonthForecast }
+
+/**
+ * This month's spend of one organisation, or the platform's without one (Tushar, 16 Oct
+ * 2026: every number real): only the cost OpenRouter reported, from the daily rows (the
+ * server sends them from the month's first day); the calls whose cost is not known are
+ * counted, never guessed. The forecast (a straight line to the month end, and the day it
+ * passes `budget`) only when at least FORECAST_MIN_DAYS days of this month have figures.
+ */
+export function realMonthSpend(reply: InsightsReply, budget: number | null = null, organisationId?: string): MonthSpend {
+  const { month } = reply;
+  const daily = organisationId === undefined ? reply.daily : reply.daily.filter((row) => row.organisation_id === organisationId);
+  const totals = periodTotals(daily, month.from, month.today);
+  const days = new Set(daily.filter((row) => row.day >= month.from && row.day <= month.today && row.cost_real_usd !== null).map((row) => row.day));
+  const forecast = days.size >= FORECAST_MIN_DAYS ? monthForecast(totals.costRealUsd, budget, month) : { usd: null, passDay: null };
+  return { usd: totals.costRealUsd, unknownCalls: totals.unknownCalls, forecast };
+}
+
+/** The platform's forecast for this month (realMonthSpend); null under FORECAST_MIN_DAYS days of figures. */
+export const realMonthForecast = (reply: InsightsReply) => realMonthSpend(reply).forecast.usd;
 
 /** "12.5%" of the whole; "Too few to rate (n)" when the server suppressed it; a dash for nothing. */
 export function rateText(part: number | null, whole: number): string {
@@ -164,8 +231,9 @@ function median(values: readonly number[]): number {
 
 /**
  * One organisation's "Needs attention" flags (decisions, PROVISIONAL thresholds), from F2
- * and F1. One budget flag at most: passed (act), else near 80% (check), else the forecast
- * passes it this month (check). Quiet: 14 days or more from the last active day (F2's
+ * and F1. Money is this month's real spend (realMonthSpend). One budget flag at most:
+ * passed (act), else near 80% (check), else the forecast passes it this month (check, with
+ * FORECAST_MIN_DAYS days of figures). Quiet: 14 days or more from the last active day (F2's
  * last_active_day, any time before) to the reply's last day; never active is not quiet;
  * quiet hides "activity down". Spend spike: today over 2 x the median of the 7 days before and
  * over $1. Review: the oldest open item more than 7 days old at `now`.
@@ -175,10 +243,11 @@ export function orgFlags(org: OrgInsight, reply: InsightsReply, now: Date): Flag
   const id = org.organisation_id;
   const daily = reply.daily.filter((row) => row.organisation_id === id);
   const budget = org.ai_budget_usd;
-  const spent = org.month_cost_usd;
+  const month = realMonthSpend(reply, budget, id);
+  const spent = month.usd;
   if (budget !== null && spent !== null) {
-    const line = budgetLine({ ai_budget_usd: budget, spent_this_month_usd: spent, spent_part_unknown: org.month_cost_part_unknown });
-    const forecast = monthForecast(spent, budget, reply.month);
+    const line = budgetLine({ ai_budget_usd: budget, spent_this_month_usd: spent, spent_part_unknown: month.unknownCalls > 0 });
+    const { forecast } = month;
     if (spent > 0 && spent >= budget * ATTENTION.budgetAct) {
       flags.push({ code: "budget_passed", severity: "act", text: `AI spend has reached its budget (${line}).` });
     } else if (spent > 0 && spent >= budget * ATTENTION.budgetCheck) {
@@ -228,7 +297,7 @@ export function orgFlags(org: OrgInsight, reply: InsightsReply, now: Date): Flag
   }
 
   const today = dayNumber(reply.to);
-  const costs = series(daily, dayList(dayText(today - 7), reply.to), "cost_usd");
+  const costs = series(daily, dayList(dayText(today - 7), reply.to), "cost_real_usd");
   const spike = costs.pop() ?? 0;
   const usual = median(costs);
   if (spike > ATTENTION.spikeFloorUsd && spike > usual * ATTENTION.spikeTimesMedian) {

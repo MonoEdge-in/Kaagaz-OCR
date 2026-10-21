@@ -98,11 +98,11 @@ export function attentionPages(pages: readonly PageSummary[]): AttentionPage[] {
         problems.length > 0
           ? problems
           : [
-              page.read_quality === "unreadable" ? "This page couldn't be read." : "",
+              page.read_quality === "unreadable" ? "This page needs a closer look." : "",
               page.unsure_words > 0 ? counted(page.unsure_words, "word unsure", "words unsure") : "",
-              page.illegible_words > 0 ? `${counted(page.illegible_words, "word", "words")} couldn't be read.` : "",
+              page.illegible_words > 0 ? `Hard to read: ${counted(page.illegible_words, "word", "words")}.` : "",
               page.unpinned_lines > 0
-                ? `The exact spot of ${counted(page.unpinned_lines, "line", "lines")} couldn't be confirmed.`
+                ? `The exact spot of ${counted(page.unpinned_lines, "line", "lines")} needs a check.`
                 : "",
             ].filter(Boolean);
       return { pageNo: page.page_no, lines, kept: page.accepted_at !== null };

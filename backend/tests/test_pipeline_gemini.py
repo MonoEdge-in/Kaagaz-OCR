@@ -25,8 +25,10 @@ from PIL import Image
 
 from kaagaz import pipeline
 from kaagaz.ai.openrouter import OpenRouterClient
+from kaagaz.chunking.sections import MapBudget
 from kaagaz.db.engine import Database, make_engine
 from kaagaz.db.page_reads import PageKey
+from kaagaz.extraction.understanding import ModelBudget
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import Job
 from kaagaz.ingestion.service import UploadService
@@ -48,6 +50,7 @@ from kaagaz.scanning.gate import DocumentStatus, ScanGate, Verdict
 from kaagaz.settings import Settings
 from tests.exit_fixtures import SCRIPTED_READ_BY, EchoChecker, ScriptedOcr, english_bill
 from tests.fakes import (
+    FakeChat,
     FakeEmbedder,
     FakeScanner,
     MemoryDocuments,
@@ -494,6 +497,26 @@ class PageResultTest(unittest.TestCase):
         values = system.store.values_for(CUSTOMER, job.document_id)
         self.assertTrue(values)
         self.assertNotIn("verified", {value.label for value in values})
+
+    def test_no_card_or_map_is_asked_on_a_document_with_no_readable_page(self) -> None:
+        """Council 16 Oct 2026: the card (type, date, summary, links) is never made up from a
+        local reader's text of unreadable pages; with no readable page, no card or map call."""
+        refused = page_read(TOTAL, read_by="rapidocr", quality=None, issues=("reader_refused",))
+        chat = FakeChat()
+        system = rig(
+            ScriptedReader({1: refused}),
+            checker=FakeChecker(),
+            chat=chat,
+            chat_model="chat-tag",
+            model_budget=ModelBudget.from_settings(SETTINGS),
+            map_budget=MapBudget.from_settings(SETTINGS),
+        )
+        job = system.run(make_pdf([SCANNED]))
+        self.assertIs(system.status(job), DocumentStatus.READY)
+        self.assertEqual(chat.calls, [])
+        content = system.store.content(CUSTOMER, job.document_id)
+        assert content is not None
+        self.assertIsNone(content.facts.doc_type)
 
     def test_f4_a_readable_text_page_keeps_the_document_ready(self) -> None:
         refused = page_read(TOTAL, read_by="rapidocr", quality=None, issues=("reader_refused",))

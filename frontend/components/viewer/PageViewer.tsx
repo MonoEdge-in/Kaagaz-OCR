@@ -7,8 +7,10 @@
 // lib/regions.ts, so they land on the same spot at any size.
 //
 // The full page fits the width of its container (measured with a
-// ResizeObserver), or with fit="page" the whole page inside the container
-// (the document screen's sticky column), and zooms from there. Beside its
+// ResizeObserver) and zooms from there. With `fill` (the document screen's sticky
+// column) the viewer fills its parent's height, and a toggle fits the whole page
+// in it instead (UI audit DD5, 16 Oct 2026). Ctrl or Cmd with the wheel zooms; the
+// plain wheel scrolls the page, on into <main>, never trapped (DD1). Beside its
 // number a blank page says so. Zoomed in, a PDF page is drawn twice: the whole
 // page, softer, and on top of it a sharp drawing of only the part on screen,
 // redrawn 150ms after scrolling stops (visibleRect). The user's own words
@@ -17,27 +19,32 @@
 // once it comes near the screen (IntersectionObserver); until then a skeleton
 // holds its space. Reading problems (PRD 5 U3, readingMarks.ts) are a second
 // layer of marks on the full page, each a button with its own pattern, with a
-// legend and a "Show reading problems" checkbox, on at first for an uncertain or
-// unreadable page. A highlighted spot is zoomed to readable size (focusZoom)
-// and scrolled to the middle of the frame, then into view, with a short pulse.
+// "Show reading problems" toggle in the toolbar (its legend in a tooltip, DD9), on at
+// first for an uncertain or unreadable page. A highlighted spot is zoomed to readable size (focusZoom)
+// and scrolled to the middle of the frame, then into view, with a short pulse. Words
+// flagged for review (scan review UX rules, section 2) are a third layer: each a button
+// with its band's underline and glyph ("?" Check, "!" Review) and its words as its name.
 
 import dynamic from "next/dynamic";
 import Image from "next/image";
-import { useCallback, useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useId, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { Icon } from "@/components/ui/Icon";
 import { IconButton } from "@/components/ui/IconButton";
 import { markerId } from "@/components/words/ViewerWords";
 import { markerRect } from "@/components/words/spots";
 import type { Marker } from "@/components/words/spots";
+import { flagDomId, flagLabel, IN_ENSEMBLE } from "@/components/review/wordReview";
 import { pageImageUrl } from "@/lib/api";
-import { boxToPixels, cropRect, fitCropView, pageAspect, regionsOnPage } from "@/lib/regions";
+import { FADE_IN, MOTION_MS, play } from "@/lib/motion";
+import { boxToPixels, cropRect, framedCropView, pageAspect, regionsOnPage } from "@/lib/regions";
 import type { BoxRegion, CropView, FractionRect } from "@/lib/regions";
-import type { DocumentSummary, PageSummary, ReadingMark, Region } from "@/lib/types";
+import type { DocumentSummary, PageSummary, ReadingMark, Region, WordFlag } from "@/lib/types";
 import { MARK_WORDS, legend, markName, markRect, marksOnPage, showByDefault } from "./readingMarks";
 import { SheetGrid } from "./SheetGrid";
 import { useObservedBox } from "./useObservedBox";
 import type { ViewRect } from "./canvasPlan";
-import { ZOOM_STEPS, centerScroll, fitPageSize, focusZoom, pageMode, stepZoom, visibleRect } from "./viewer";
+import { ZOOM_STEPS, centerScroll, fitPageSize, focusZoom, pageMode, stepZoom, visibleRect, wheelZoom } from "./viewer";
 import styles from "./PageViewer.module.css";
 
 // PDF.js needs the browser, so its component never renders on the server.
@@ -47,6 +54,9 @@ const PdfPage = dynamic(() => import("./PdfPage"), {
 });
 
 const MAX_CROP_PAGE_WIDTH = 2400; // a tiny spot is not enlarged beyond this
+const CROP_MAX_HEIGHT = 176; // 11rem: the tallest a crop preview gets
+// 8px of page around the highlight's 4px ring (UI audit R1), so it never touches or clips the text.
+const CROP_MARGIN = 12;
 const WHOLE_PAGE: FractionRect = { x0: 0, y0: 0, x1: 1, y1: 1 };
 const MIN_ZOOM = ZOOM_STEPS[0];
 const MAX_ZOOM = ZOOM_STEPS[ZOOM_STEPS.length - 1] ?? 3;
@@ -70,11 +80,22 @@ export interface PageViewerProps {
   /** My words on this page (ViewerWords.tsx) and the one its list marked. */
   marks?: Marker[];
   activeMark?: string | null;
-  /** "page": fill the parent's height and fit the whole page in it; "width" (default): fit the width. */
-  fit?: "page" | "width";
+  /** Fill the parent's height (the sticky column): fit width at first, with a Fit page toggle. */
+  fill?: boolean;
   /** PRD 5 U3: the page's reading problems, and what a mark does when pressed (with its name). */
   readingMarks?: ReadingMark[];
   onMark?: (mark: ReadingMark, name: string) => void;
+  /** Said under the page while a box is highlighted ("Highlighted: Grand total"); else how many boxes mark spots. */
+  highlightNote?: string;
+  /** DD7: the reading problem pointed at (its index on the page), here or in its list. */
+  hotMark?: number | null;
+  onHotMark?: (index: number | null) => void;
+  /** Words still flagged for review on this page, the one being reviewed, and what a press does. */
+  flags?: WordFlag[];
+  activeFlag?: string | null;
+  onFlag?: (flag: WordFlag) => void;
+  /** A crop's tallest size (the review panel zooms its crop with it). */
+  cropMaxHeight?: number;
 }
 
 export function PageViewer({
@@ -88,9 +109,16 @@ export function PageViewer({
   belowToolbar,
   marks = [],
   activeMark = null,
-  fit = "width",
+  fill = false,
   readingMarks,
   onMark,
+  highlightNote,
+  hotMark = null,
+  onHotMark,
+  flags = [],
+  activeFlag = null,
+  onFlag,
+  cropMaxHeight = CROP_MAX_HEIGHT,
 }: PageViewerProps) {
   const isCrop = crop !== undefined;
   const { ref: measureRef, box, near } = useObservedBox(isCrop);
@@ -120,6 +148,9 @@ export function PageViewer({
     [measureRef],
   );
   const onPdfFailed = useCallback(() => setPdfFailedFor(pageKey), [pageKey]);
+  const [fitChoice, setFitChoice] = useState<"width" | "page">("width");
+  const fit = fill ? fitChoice : "width";
+  const legendId = useId();
   // "Show reading problems", chosen on this page; until then, on for a page with problems.
   const [problemsChoice, setProblemsChoice] = useState<{ key: string; on: boolean } | null>(null);
 
@@ -130,6 +161,10 @@ export function PageViewer({
   const drawnKey = `${pageKey}:${mode}`;
   const onDrawn = useCallback(() => setDrawnFor(drawnKey), [drawnKey]);
   const drawn = drawnFor === drawnKey;
+  // Motion pass (16 Oct 2026): a page fades in once drawn, as its placeholder goes.
+  useLayoutEffect(() => {
+    if (drawn) play(stageRef.current, FADE_IN, MOTION_MS.med);
+  }, [drawn]);
 
   const onThisPage = regionsOnPage(highlights, page.page_no);
   const cropHere = crop && crop.page === page.page_no ? crop : undefined;
@@ -145,11 +180,21 @@ export function PageViewer({
   let spotZoom = 1;
   if (spot && box && (mode === "pdf" || mode === "image")) {
     const fitted = fitPageSize(box.width, aspect, 1, fit === "page" ? box.height : undefined);
-    const frame = { width: box.width, height: fit === "page" ? box.height : Infinity };
+    const frame = { width: box.width, height: fill ? box.height : Infinity };
     spotZoom = focusZoom(boxToPixels(spot.box, fitted.width, fitted.height), frame);
   }
   const zoom = zoomChoice && zoomChoice.key === spotKey ? zoomChoice.zoom : spotZoom;
   const setZoom = (next: number) => setZoomChoice({ key: spotKey, zoom: next });
+
+  // A zoom the user chose grows or shrinks the page from its old size (transform only;
+  // the new size is already laid out). A spot's own zoom just shows.
+  const shownZoom = useRef(zoom);
+  useLayoutEffect(() => {
+    const was = shownZoom.current;
+    shownZoom.current = zoom;
+    if (zoomChoice?.key !== spotKey || was === zoom) return;
+    play(stageRef.current, [{ transform: `scale(${was / zoom})` }, { transform: "none" }], MOTION_MS.med);
+  }, [zoom, zoomChoice, spotKey]);
 
   // A new spot or zoom: the spot to the middle of the frame (a size change alone
   // keeps the user's own scrolling); a new spot also into the window's view (a
@@ -175,14 +220,32 @@ export function PageViewer({
     );
     if (shownSpot.current === spotKey) return;
     shownSpot.current = spotKey;
-    marked.scrollIntoView({ block: fit === "page" ? "nearest" : "center", inline: "nearest" });
-  }, [spotKey, zoom, box, fit]);
+    marked.scrollIntoView({ block: fill ? "nearest" : "center", inline: "nearest" });
+  }, [spotKey, zoom, box, fill]);
 
   // A new page with no spot to show starts at its top-left, even zoomed in.
   const toPageStart = useEffectEvent(() => {
     if (!spotKey) frameRef.current?.scrollTo(0, 0);
   });
   useLayoutEffect(() => toPageStart(), [pageKey]);
+
+  // Ctrl or Cmd with the wheel zooms the page, not the browser; any other wheel is left
+  // alone (no preventDefault), so it scrolls the page and then <main> (DD1). Not passive,
+  // or the browser's own zoom could not be held back.
+  const onWheel = useEffectEvent((event: WheelEvent) => {
+    const direction = wheelZoom(event);
+    if (direction === null) return;
+    event.preventDefault();
+    setZoom(stepZoom(zoom, direction));
+  });
+  const wheelZooms = !isCrop && (mode === "pdf" || mode === "image");
+  useEffect(() => {
+    const frame = frameRef.current;
+    if (!wheelZooms || !frame) return;
+    const listener = (event: WheelEvent) => onWheel(event);
+    frame.addEventListener("wheel", listener, { passive: false });
+    return () => frame.removeEventListener("wheel", listener);
+  }, [wheelZooms, pageKey]);
 
   const size = box ? fitPageSize(box.width, aspect, zoom, fit === "page" ? box.height : undefined) : null;
   // Zoomed in on a PDF page: measure what shows 150ms after the last scroll or
@@ -210,12 +273,16 @@ export function PageViewer({
       timer = setTimeout(measure, MEASURE_DELAY_MS);
     };
     later();
+    // <main> is the app shell's one scroller (MonoEdge design system); the window too, for other pages.
+    const main = window.document.getElementById("main");
     frame.addEventListener("scroll", later, { passive: true });
+    main?.addEventListener("scroll", later, { passive: true });
     window.addEventListener("scroll", later, { passive: true });
     window.addEventListener("resize", later, { passive: true });
     return () => {
       clearTimeout(timer);
       frame.removeEventListener("scroll", later);
+      main?.removeEventListener("scroll", later);
       window.removeEventListener("scroll", later);
       window.removeEventListener("resize", later);
     };
@@ -317,6 +384,28 @@ export function PageViewer({
               </div>
             );
           })}
+      {crop
+        ? null
+        : flags.map((flag) => {
+            if (flag.region.kind !== "box" || flag.page_no !== page.page_no) return null;
+            const px = markerRect(flag.region.box, width, height);
+            const name = `${flagLabel(flag)}${flag.state === "in_ensemble" ? `, ${IN_ENSEMBLE}` : ""}`;
+            return (
+              <button
+                key={flag.word_key}
+                id={flagDomId(flag.word_key)}
+                type="button"
+                className={styles.flag}
+                data-band={flag.band}
+                data-state={flag.state}
+                aria-current={flag.word_key === activeFlag ? "true" : undefined}
+                aria-label={name}
+                title={name}
+                style={{ left: px.left, top: px.top, width: px.width, height: px.height }}
+                onClick={() => onFlag?.(flag)}
+              />
+            );
+          })}
       {crop || !showProblems
         ? null
         : problems.map((mark, index) => {
@@ -329,10 +418,13 @@ export function PageViewer({
                 type="button"
                 className={styles.problem}
                 data-quality={mark.quality}
+                data-hot={hotMark === index ? "true" : undefined}
                 aria-label={name}
                 title={name}
                 style={{ left: px.left, top: px.top, width: px.width, height: px.height }}
                 onClick={() => onMark?.(mark, name)}
+                onPointerEnter={() => onHotMark?.(index)}
+                onPointerLeave={() => onHotMark?.(null)}
               />
             );
           })}
@@ -343,33 +435,35 @@ export function PageViewer({
 
   if (isCrop) {
     let preview: ReactNode;
-    if (!near) {
-      preview = <span className={`skeleton ${styles.fill}`} aria-hidden="true" />;
-    } else if (mode === "sheet") {
-      preview = (
+    if (mode === "sheet") {
+      preview = near ? (
         <SheetGrid
           documentId={document.id}
           page={page}
           highlights={onThisPage}
           crop={cropHere?.kind === "cell" ? cropHere : undefined}
         />
+      ) : (
+        <span className={`skeleton ${styles.fill}`} aria-hidden="true" />
       );
     } else if (mode === "none") {
       preview = failed;
-    } else if (!box || box.width < 1 || box.height < 1) {
+    } else if (!box || box.width < 1) {
       preview = <span className={`skeleton ${styles.fill}`} aria-hidden="true" />;
     } else {
+      // The frame's size comes from the page's size and the spot alone, so it holds
+      // its place before the page is drawn (or near the screen): nothing jumps.
       const rect = (cropHere ? cropRect(cropHere, page) : null) ?? WHOLE_PAGE;
-      const view = fitCropView(rect, aspect, box.width, box.height, MAX_CROP_PAGE_WIDTH);
+      const view = framedCropView(rect, aspect, box.width, cropMaxHeight, MAX_CROP_PAGE_WIDTH, CROP_MARGIN);
       preview = (
         <>
           <div
             className={styles.cropFrame}
             style={{ width: `${view.frameWidth}px`, height: `${view.frameHeight}px` }}
           >
-            {stage(view.pageWidth, view.pageHeight, view)}
+            {near ? stage(view.pageWidth, view.pageHeight, view) : null}
           </div>
-          {drawn ? null : <span className={`skeleton ${styles.fill}`} aria-hidden="true" />}
+          {near && drawn ? null : <span className={`skeleton ${styles.fill}`} aria-hidden="true" />}
         </>
       );
     }
@@ -417,9 +511,10 @@ export function PageViewer({
         </div>
         {boxes.length > 0 ? (
           <p className={`muted ${styles.note}`}>
-            {boxes.length === 1
-              ? "The highlighted box marks the spot on this page."
-              : `${boxes.length} highlighted boxes mark the spots on this page.`}
+            {highlightNote ??
+              (boxes.length === 1
+                ? "The highlighted box marks the spot on this page."
+                : `${boxes.length} highlighted boxes mark the spots on this page.`)}
           </p>
         ) : null}
       </>
@@ -433,10 +528,16 @@ export function PageViewer({
   const canZoom = mode === "pdf" || mode === "image";
   const showPages = onPageChange !== undefined && numbers.length > 0;
   // On a phone only "Fit" shows; the whole name is still read out.
-  const fitName = <>Fit<span className="narrow-hide">{fit === "page" ? " page" : " width"}</span></>;
+  // One span, so the button's gap never adds to the space before "page" / "width".
+  const fitName = (
+    <span>
+      Fit<span className="narrow-hide">{fit === "page" ? " page" : " width"}</span>
+    </span>
+  );
+  const otherFit = fit === "page" ? "width" : "page";
 
   return (
-    <div className={fit === "page" ? `${styles.viewer} ${styles.fitPage}` : styles.viewer}>
+    <div className={fill ? `${styles.viewer} ${styles.fitPage}` : styles.viewer}>
       {showPages || canZoom || tools ? (
         <div className={styles.toolbar}>
           {showPages ? (
@@ -448,7 +549,11 @@ export function PageViewer({
                   disabled={previous === undefined}
                   onClick={() => previous !== undefined && onPageChange?.(previous)}
                 />
-                <span className={`tabular ${styles.readout}`} aria-live="polite">
+                <span
+                  className={`tabular ${styles.readout}`}
+                  aria-live="polite"
+                  style={{ minWidth: `${9 + 2 * String(numbers.length).length}ch` }}
+                >
                   Page {page.page_no} of {numbers.length}
                 </span>
                 <IconButton
@@ -469,48 +574,66 @@ export function PageViewer({
                 onClick={() => setZoom(stepZoom(zoom, "out"))}
                 disabled={zoom <= MIN_ZOOM}
               />
-              <span className={`tabular ${styles.readout}`} aria-live="polite">
+              {/* The readout is the way back to the fit (Tushar, 16 Oct 2026: no hidden button
+                  holding room in the row). Its least width keeps the buttons beside it still. */}
+              <button
+                type="button"
+                className={`btn btn-quiet tabular ${styles.readout}`}
+                onClick={() => setZoom(1)}
+                aria-live="polite"
+                title={zoom === 1 ? undefined : `Back to fit ${fit}`}
+              >
                 {zoom === 1 ? fitName : `${Math.round(zoom * 100)}%`}
-              </span>
+              </button>
               <IconButton
                 icon="zoom-in"
                 label="Zoom in"
                 onClick={() => setZoom(stepZoom(zoom, "in"))}
                 disabled={zoom >= MAX_ZOOM}
               />
-              {zoom !== 1 ? (
-                <button type="button" className="btn btn-quiet" onClick={() => setZoom(1)}>
-                  {fitName}
+              {fill ? (
+                <button
+                  type="button"
+                  className="btn btn-quiet"
+                  onClick={() => {
+                    setFitChoice(otherFit);
+                    setZoom(1);
+                  }}
+                >
+                  Fit {otherFit}
                 </button>
               ) : null}
             </div>
+          ) : null}
+          {problems.length > 0 && canZoom ? (
+            <span className={styles.problemTool}>
+              <button
+                type="button"
+                className="btn btn-quiet"
+                aria-pressed={showProblems}
+                aria-label="Show reading problems"
+                aria-describedby={legendId}
+                onClick={() => setProblemsChoice({ key: marksKey, on: !showProblems })}
+              >
+                <Icon name="eye-alert" />
+                <span className="narrow-hide">Reading problems</span>
+              </button>
+              <span id={legendId} role="tooltip" className={styles.legendTip}>
+                <ul className={styles.legend} aria-label="What the marks mean">
+                  {legend(problems).map((quality) => (
+                    <li key={quality}>
+                      <span className={styles.swatch} data-quality={quality} aria-hidden="true" />
+                      {MARK_WORDS[quality].legend}
+                    </li>
+                  ))}
+                </ul>
+              </span>
+            </span>
           ) : null}
           {tools}
         </div>
       ) : null}
       {belowToolbar}
-      {problems.length > 0 && canZoom ? (
-        <div className={styles.problemBar}>
-          <label className={styles.problemToggle}>
-            <input
-              type="checkbox"
-              checked={showProblems}
-              onChange={() => setProblemsChoice({ key: marksKey, on: !showProblems })}
-            />
-            Show reading problems
-          </label>
-          {showProblems ? (
-            <ul className={styles.legend} aria-label="What the marks mean">
-              {legend(problems).map((quality) => (
-                <li key={quality}>
-                  <span className={styles.swatch} data-quality={quality} aria-hidden="true" />
-                  {MARK_WORDS[quality].legend}
-                </li>
-              ))}
-            </ul>
-          ) : null}
-        </div>
-      ) : null}
       {body}
     </div>
   );

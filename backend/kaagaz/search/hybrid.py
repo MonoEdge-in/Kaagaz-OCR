@@ -64,7 +64,8 @@ keeps at most ``CANDIDATES`` pieces.
 The scope (PRD 3 Q1, kaagaz/search/scope.py) is in the WHERE of all three
 lists, before ranking: static predicates, each true for a NULL parameter (the
 custom plans drop them). A scope that matches nothing returns before any SQL.
-``search_documents`` (Q2) groups the candidates by document. ``neighbours`` (Q4)
+``search_documents`` (Q2) groups the candidates the words or typos found by document
+(meaning only re-ranks them). ``neighbours`` (Q4)
 fetches the pieces next to an answer's hits, with the same filters and scope. A
 piece of an invoice whose check failed comes back needs review (edge case 10).
 PRD 5 adds, with the same filters and scope: ``whole`` (CX5), every piece of the scope
@@ -680,19 +681,24 @@ def search_documents(
     recipe: str,
     ef_search: int,
     scope: Scope = EVERYTHING,
+    expansion: Expansion = NO_EXPANSION,
 ) -> list[DocumentResult]:
     """The best ``max_documents`` documents, best first (Q2). ``fuse`` ranks best first, so
     one pass groups the c candidates in an insertion-ordered dict, opening no document
     after ``max_documents``: O(c) time and space. Details are fetched for the best pieces only.
+    ``expansion``: the searcher's own words, as ``search`` takes them (File management Q2).
     """
     if not 1 <= max_documents <= MAX_LIMIT:
         raise ValueError("max_documents must be between 1 and 100")
     if scope.matches_nothing:
         return []
-    fused, owners = _candidates(conn, customer_id, query_text, embedding, recipe, ef_search, scope)
+    fused, owners = _candidates(conn, customer_id, query_text, embedding, recipe, ef_search, scope, expansion)
     best: dict[str, FusedPiece] = {}
     more: dict[str, int] = {}
     for piece in fused:
+        if piece.word_score is None and piece.fuzzy_score is None:
+            # Meaning alone always has a nearest piece, so it never matches by itself; it only re-ranks.
+            continue
         document_id = owners[piece.piece_id]
         if document_id in best:
             more[document_id] += 1

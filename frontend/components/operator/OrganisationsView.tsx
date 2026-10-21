@@ -4,7 +4,10 @@
 // status and counts only (never a document's or a person's name), a search by
 // name, and Create organisation. Admins opens one organisation's admins
 // (AdminsDialog); AI settings opens its scanning and answering settings, Ensemble and
-// budget (OrgAiSettings, features 25-27). Each change opens a dialog (ConfirmDialog): disable, enable,
+// budget (OrgAiSettings, features 25-27); Feature switches its own switches (0039,
+// OrgFeatureSwitchesDialog); Session timeout its own sign-in idle timeout (0040,
+// OrgSessionTimeoutDialog). They sit in one Manage menu per row (ManageMenu,
+// 16 Oct 2026). Each change opens a dialog (ConfirmDialog): disable, enable,
 // delete (only a disabled organisation) and cancel the deletion; a row being
 // deleted shows its date and the days left. Auto-filing (feature 28) is allowed or
 // stopped per organisation, also in a ConfirmDialog. The table is the shared reflow
@@ -25,9 +28,13 @@ import type { Confirm } from "./ConfirmDialog";
 import { autofileConfirm, orgConfirm, orgFocusId } from "./confirms";
 import type { OrgChange } from "./confirms";
 import { CreateDialog } from "./CreateDialog";
+import { ManageMenu } from "./ManageMenu";
+import { OrgFeatureSwitchesDialog } from "./FeatureSwitches";
 import { OrgAiSettings, orgAiFocusId } from "./OrgAiSettings";
 import { OrgModelRates, orgModelRateFocusId } from "./OrgModelRates";
+import { OrgSessionTimeoutDialog } from "./SessionTimeout";
 import { afterDone, countText, deleteCountdown, filterOrgs, lastActivityText, operatorErrorMessage, orgStatus, searchSummary, userCounts } from "./logic";
+import { MoreRows, useRowCap } from "@/components/admin/RowCap";
 import admin from "@/components/admin/Admin.module.css";
 import styles from "./Operator.module.css";
 
@@ -51,12 +58,16 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
   const [error, setError] = useState<{ attempt: number; message: string } | null>(null);
   const [search, setSearch] = useState(initialSearch);
   const [searched, setSearched] = useState(initialSearch); // the initialSearch last applied
+  const [query, setQuery] = useState(initialSearch); // the search, 200ms after the last key
+  const cap = useRowCap();
   const searchRef = useRef<HTMLInputElement>(null);
   const [creating, setCreating] = useState(false);
   const [changing, setChanging] = useState<Confirm | null>(null);
   const [adminsOf, setAdminsOf] = useState<Organisation | null>(null);
   const [modelsOf, setModelsOf] = useState<Organisation | null>(null);
   const [ratesOf, setRatesOf] = useState<Organisation | null>(null);
+  const [switchesOf, setSwitchesOf] = useState<Organisation | null>(null);
+  const [timeoutOf, setTimeoutOf] = useState<Organisation | null>(null);
   const [done, setDone] = useState("");
   const now = useMinuteNow();
 
@@ -86,9 +97,15 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
     if (initialSearch && loaded) searchRef.current?.focus();
   }, [initialSearch, loaded]);
 
+  // Debounced: the list filters once typing pauses, so each key stays quick.
+  useEffect(() => {
+    const timer = window.setTimeout(() => setQuery(search), 200);
+    return () => window.clearTimeout(timer);
+  }, [search]);
+
   const failed = error !== null && error.attempt === attempt ? error.message : null;
   const reload = () => setAttempt((n) => n + 1);
-  const shown = orgs ? filterOrgs(orgs, search) : [];
+  const shown = orgs ? filterOrgs(orgs, query) : [];
   const create = (
     <button type="button" className="btn btn-primary" onClick={() => setCreating(true)}>
       <Icon name="plus" />
@@ -159,13 +176,13 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
               />
             </div>
             <p id="org-search-summary" className={styles.summary} role="status">
-              {searchSummary(shown.length, orgs.length, search)}
+              {searchSummary(shown.length, orgs.length, query)}
             </p>
           </div>
           {shown.length === 0 ? (
             <p className={admin.emptyLine}>No organisation name has these letters.</p>
           ) : (
-            <div className={table.reflowWrap}>
+            <div className={`${table.reflowWrap} ${admin.tableScroll}`}>
               <table className={`table ${table.reflow}`} role="table">
                 <caption className="visually-hidden">Organisations, counts only</caption>
                 <thead role="rowgroup">
@@ -178,7 +195,7 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
                   </tr>
                 </thead>
                 <tbody role="rowgroup">
-                  {shown.map((org) => (
+                  {shown.slice(0, cap.limit).map((org) => (
                     <OrgRow
                       key={org.id}
                       org={org}
@@ -186,6 +203,8 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
                       onAdmins={() => setAdminsOf(org)}
                       onModels={() => setModelsOf(org)}
                       onModelRates={() => setRatesOf(org)}
+                      onSwitches={() => setSwitchesOf(org)}
+                      onTimeout={() => setTimeoutOf(org)}
                       onChange={(change) => setChanging(orgConfirm(org, change, Date.now()))}
                       onAutofile={() => setChanging(autofileConfirm(org, !org.autofile_granted))}
                     />
@@ -194,6 +213,7 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
               </table>
             </div>
           )}
+          <MoreRows shown={Math.min(cap.limit, shown.length)} total={shown.length} what="organisations" onMore={cap.showMore} />
         </>
       )}
 
@@ -209,6 +229,8 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
       {adminsOf && <AdminsDialog org={adminsOf} onClose={() => setAdminsOf(null)} />}
       {modelsOf && <OrgAiSettings org={modelsOf} onClose={() => setModelsOf(null)} onSaved={setDone} />}
       {ratesOf && <OrgModelRates org={ratesOf} onClose={() => setRatesOf(null)} onSaved={setDone} />}
+      {switchesOf && <OrgFeatureSwitchesDialog org={switchesOf} onClose={() => setSwitchesOf(null)} />}
+      {timeoutOf && <OrgSessionTimeoutDialog org={timeoutOf} onClose={() => setTimeoutOf(null)} />}
       {changing && (
         <ConfirmDialog
           confirm={changing}
@@ -244,13 +266,19 @@ function OrgRow(props: {
   onAutofile(): void;
 }) {
   const { org, now, onAdmins, onModels, onModelRates, onChange, onAutofile } = props;
+  onSwitches(): void;
+  onTimeout(): void;
+  onChange(change: OrgChange): void;
+  onAutofile(): void;
+}) {
+  const { org, now, onAdmins, onModels, onSwitches, onTimeout, onChange, onAutofile } = props;
   const status = orgStatus(org);
   const countdown = org.status === "deleting" ? deleteCountdown(org.delete_after, now) : null;
   const size = formatBytes(org.storage_bytes);
   return (
     <tr role="row">
       <td role="cell" className={styles.orgName}>
-        <span id={orgFocusId(org.id)} tabIndex={-1}>
+        <span id={orgFocusId(org.id)} tabIndex={-1} className={styles.orgNameText} title={org.name}>
           {org.name}
         </span>
       </td>
@@ -284,7 +312,7 @@ function OrgRow(props: {
         {size}
       </td>
       <td role="cell" data-label="Last activity">
-        {lastActivityText(org.last_activity_at, now)}
+        <span className={styles.when}>{lastActivityText(org.last_activity_at, now)}</span>
       </td>
       <td role="cell">
         <span className={styles.rowActions}>
@@ -329,6 +357,29 @@ function OrgRow(props: {
             </button>
           ))}
         </span>
+        {/* One menu (owner, 16 Oct 2026): the safe actions, then Disable, Enable, Delete
+            or Cancel deletion after a separator. Each change opens its confirm. The
+            button keeps orgAiFocusId, so closing AI settings comes back to it. */}
+        <ManageMenu
+          name={org.name}
+          buttonId={orgAiFocusId(org.id)}
+          safe={[
+            { label: "Admins", onSelect: onAdmins },
+            ...(org.status === "deleting"
+              ? []
+              : [
+                  { label: "AI settings", onSelect: onModels },
+                  { label: "Feature switches", onSelect: onSwitches },
+                  { label: "Session timeout", onSelect: onTimeout },
+                  { label: org.autofile_granted ? "Stop auto-filing" : "Allow auto-filing", onSelect: onAutofile },
+                ]),
+          ]}
+          changes={CHANGES[org.status].map(({ change, label, danger }) => ({
+            label,
+            danger,
+            onSelect: () => onChange(change),
+          }))}
+        />
       </td>
     </tr>
   );

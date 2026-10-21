@@ -1,0 +1,573 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Kaagaz · Components</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="../../styles/kaagaz.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@100..125,400..700&amp;family=IBM+Plex+Mono:wght@400;500&amp;family=IBM+Plex+Sans+Devanagari:wght@400;500;600&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;display=swap">
+<style>body{margin:0}</style>
+</helmet>
+<div class="k-root" data-theme="{{theme}}" style="min-height: 100vh">
+  <div style="max-width: 1440px; margin: 0 auto; padding: 56px 64px 96px; display: flex; flex-direction: column; gap: 64px">
+
+    <header style="display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: 16px; border-bottom: 2px solid var(--k-ink); padding-bottom: 24px">
+      <div style="display: flex; flex-direction: column; gap: 10px">
+        <span class="k-eyebrow">Kaagaz design system · Components</span>
+        <h1 class="k-display">Components and their states</h1>
+      </div>
+      <p class="k-muted" style="max-width: 52ch">Every part used on the screens, with each state drawn. Class names match project/kaagaz.css one to one. Flip the Theme tweak to see dark.</p>
+    </header>
+
+    <!-- 06 BUTTONS -->
+    <section style="display: flex; flex-direction: column; gap: 20px">
+      <div style="display: flex; flex-direction: column; gap: 6px"><span class="k-eyebrow">06 · Buttons</span><h2 class="k-h1">Buttons say exactly what happens</h2></div>
+      <div class="k-card" style="gap: 0; padding: 0">
+        <div style="display: grid; grid-template-columns: 160px repeat(5, minmax(0, 1fr)); gap: 0; align-items: center">
+          <span class="k-eyebrow" style="padding: 12px 20px; border-bottom: 1px solid var(--k-rule)">Variant</span>
+          <span class="k-eyebrow" style="padding: 12px 8px; border-bottom: 1px solid var(--k-rule)">Default</span>
+          <span class="k-eyebrow" style="padding: 12px 8px; border-bottom: 1px solid var(--k-rule)">Hover</span>
+          <span class="k-eyebrow" style="padding: 12px 8px; border-bottom: 1px solid var(--k-rule)">Focus</span>
+          <span class="k-eyebrow" style="padding: 12px 8px; border-bottom: 1px solid var(--k-rule)">Disabled</span>
+          <span class="k-eyebrow" style="padding: 12px 8px; border-bottom: 1px solid var(--k-rule)">Loading</span>
+
+          <span style="padding: 16px 20px; border-bottom: 1px solid var(--k-rule); display: flex; flex-direction: column; gap: 2px"><strong>Primary</strong><span class="k-spec">.k-btn--primary</span></span>
+          <span style="padding: 16px 8px; border-bottom: 1px solid var(--k-rule)"><button class="k-btn k-btn--primary" type="button">Make it version 2</button></span>
+          <span style="padding: 16px 8px; border-bottom: 1px solid var(--k-rule)"><button class="k-btn k-btn--primary is-hover" type="button">Make it version 2</button></span>
+          <span style="padding: 16px 8px; border-bottom: 1px solid var(--k-rule)"><button class="k-btn k-btn--primary is-focus" type="button">Make it version 2</button></span>
+          <span style="padding: 16px 8px; border-bottom: 1px solid var(--k-rule)"><button class="k-btn k-btn--primary" type="button" disabled>Make it version 2</button></span>
+          <span style="padding: 16px 8px; border-bottom: 1px solid var(--k-rule)"><button class="k-btn k-btn--primary is-loading" type="button">Linking…</button></span>
+
+          <span style="padding: 16px 20px; border-bottom: 1px solid var(--k-rule); display: flex; flex-direction: column; gap: 2px"><strong>Secondary</strong><span class="k-spec">.k-btn</span></span>
+          <span style="padding: 16px 8px; border-bottom: 1px solid var(--k-rule)"><button class="k-btn" type="button">Keep separate</button></span>
+          <span style="padding: 16px 8px; border-bottom: 1px solid var(--k-rule)"><button class="k-btn is-hover" type="button">Keep separate</button></span>
+          <span style="padding: 16px 8px; border-bottom: 1px solid var(--k-rule)"><button class="k-btn is-focus" type="button">Keep separate</button></span>
+          <span style="padding: 16px 8px; border-bottom: 1px solid var(--k-rule)"><button class="k-btn" type="button" disabled>Keep separate</button></span>
+          <span style="padding: 16px 8px; border-bottom: 1px solid var(--k-rule)"><button class="k-btn is-loading" type="button">Saving…</button></span>
+
+          <span style="padding: 16px 20px; border-bottom: 1px solid var(--k-rule); display: flex; flex-direction: column; gap: 2px"><strong>Quiet</strong><span class="k-spec">.k-btn--quiet</span></span>
+          <span style="padding: 16px 8px; border-bottom: 1px solid var(--k-rule)"><button class="k-btn k-btn--quiet" type="button">Compare first</button></span>
+          <span style="padding: 16px 8px; border-bottom: 1px solid var(--k-rule)"><button class="k-btn k-btn--quiet is-hover" type="button">Compare first</button></span>
+          <span style="padding: 16px 8px; border-bottom: 1px solid var(--k-rule)"><button class="k-btn k-btn--quiet is-focus" type="button">Compare first</button></span>
+          <span style="padding: 16px 8px; border-bottom: 1px solid var(--k-rule)"><button class="k-btn k-btn--quiet" type="button" disabled>Compare first</button></span>
+          <span style="padding: 16px 8px; border-bottom: 1px solid var(--k-rule)"><button class="k-btn k-btn--quiet is-loading" type="button">Opening…</button></span>
+
+          <span style="padding: 16px 20px; border-bottom: 1px solid var(--k-rule); display: flex; flex-direction: column; gap: 2px"><strong>Danger</strong><span class="k-spec">.k-btn--danger</span></span>
+          <span style="padding: 16px 8px; border-bottom: 1px solid var(--k-rule)"><button class="k-btn k-btn--danger" type="button">Move to Trash</button></span>
+          <span style="padding: 16px 8px; border-bottom: 1px solid var(--k-rule)"><button class="k-btn k-btn--danger is-hover" type="button" style="filter: brightness(0.9)">Move to Trash</button></span>
+          <span style="padding: 16px 8px; border-bottom: 1px solid var(--k-rule)"><button class="k-btn k-btn--danger is-focus" type="button">Move to Trash</button></span>
+          <span style="padding: 16px 8px; border-bottom: 1px solid var(--k-rule)"><button class="k-btn k-btn--danger" type="button" disabled>Move to Trash</button></span>
+          <span style="padding: 16px 8px; border-bottom: 1px solid var(--k-rule)"><button class="k-btn k-btn--danger is-loading" type="button">Moving…</button></span>
+
+          <span style="padding: 16px 20px; display: flex; flex-direction: column; gap: 2px"><strong>Danger outline</strong><span class="k-spec">.k-btn--danger-outline</span></span>
+          <span style="padding: 16px 8px"><button class="k-btn k-btn--danger-outline" type="button">Sign out everywhere</button></span>
+          <span style="padding: 16px 8px"><button class="k-btn k-btn--danger-outline is-hover" type="button" style="background: var(--k-danger-soft)">Sign out everywhere</button></span>
+          <span style="padding: 16px 8px"><button class="k-btn k-btn--danger-outline is-focus" type="button">Sign out everywhere</button></span>
+          <span style="padding: 16px 8px"><button class="k-btn k-btn--danger-outline" type="button" disabled>Sign out everywhere</button></span>
+          <span style="padding: 16px 8px"><button class="k-btn k-btn--danger-outline is-loading" type="button">Signing out…</button></span>
+        </div>
+      </div>
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr)); gap: 16px">
+        <div class="k-card">
+          <h3 class="k-h4">Sizes</h3>
+          <div class="k-btn-group" style="align-items: flex-end">
+            <span style="display: flex; flex-direction: column; gap: 6px"><button class="k-btn k-btn--primary k-btn--sm" type="button">Review</button><span class="k-spec">sm · 30px · rows, toolbars</span></span>
+            <span style="display: flex; flex-direction: column; gap: 6px"><button class="k-btn k-btn--primary" type="button">Upload</button><span class="k-spec">md · 36px · default</span></span>
+            <span style="display: flex; flex-direction: column; gap: 6px"><button class="k-btn k-btn--primary k-btn--lg" type="button">Sign in</button><span class="k-spec">lg · 44px · phone, forms</span></span>
+          </div>
+        </div>
+        <div class="k-card">
+          <h3 class="k-h4">With icons, icon-only</h3>
+          <div class="k-btn-group">
+            <button class="k-btn k-btn--primary" type="button"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V4M7 9l5-5 5 5M4 15v5h16v-5"></path></svg>Upload</button>
+            <button class="k-btn" type="button"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M4 20h16"></path></svg>Download</button>
+            <button class="k-btn" type="button"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v16H4zM4 10h16M4 15h16M10 4v16"></path></svg>Export to Excel</button>
+            <button class="k-btn k-btn--icon" type="button" aria-label="More actions"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h.01M12 12h.01M19 12h.01" style="stroke-width: 3"></path></svg></button>
+            <button class="k-btn k-btn--icon k-btn--quiet" type="button" aria-label="Notifications"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 16v-5a6 6 0 0 1 12 0v5l2 2H4zM10 20a2 2 0 0 0 4 0"></path></svg></button>
+          </div>
+          <span class="k-spec">Icon-only buttons always carry aria-label. One primary per view.</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- 07 INPUTS -->
+    <section style="display: flex; flex-direction: column; gap: 20px">
+      <div style="display: flex; flex-direction: column; gap: 6px"><span class="k-eyebrow">07 · Inputs and controls</span><h2 class="k-h1">Fields that tell you how to fix them</h2></div>
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr)); gap: 16px">
+        <div class="k-card">
+          <h3 class="k-h4">Text input · states</h3>
+          <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px 16px">
+            <div class="k-field"><label class="k-label" for="c-in1">Party name</label><input class="k-input" id="c-in1" placeholder="e.g. Mehta Textiles"><span class="k-spec">default</span></div>
+            <div class="k-field"><label class="k-label" for="c-in2">Party name</label><input class="k-input is-focus" id="c-in2" value="Meh"><span class="k-spec">focus</span></div>
+            <div class="k-field"><label class="k-label" for="c-in3">Party name</label><input class="k-input" id="c-in3" value="Mehta Textiles"><span class="k-spec">filled</span></div>
+            <div class="k-field"><label class="k-label" for="c-in5">Party name</label><input class="k-input" id="c-in5" value="Mehta Textiles" disabled><span class="k-spec">disabled</span></div>
+            <div class="k-field is-error" style="grid-column: 1 / -1"><label class="k-label" for="c-in4">GSTIN</label><input class="k-input k-mono" id="c-in4" value="27AABCM1234F1" aria-invalid="true" aria-describedby="c-in4e"><span class="k-error" id="c-in4e"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4 2.5 20h19z"></path><path d="M12 10v4M12 17v.5"></path></svg>Enter a 15-character GSTIN, like 27AABCM1234F1Z5</span><span class="k-spec">error · red edge + icon + words</span></div>
+          </div>
+        </div>
+        <div class="k-card">
+          <h3 class="k-h4">Select, date, search</h3>
+          <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px 16px">
+            <div class="k-field"><label class="k-label" for="c-sel">Department</label><span class="k-select-wrap"><select class="k-select" id="c-sel"><option>Land &amp; Legal</option><option>Accounts</option><option>HR</option><option>Operations</option><option>Sales</option></select><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></span></div>
+            <div class="k-field"><label class="k-label" for="c-date">Document date</label><span class="k-input-wrap"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16v14H4zM4 10h16M8 3v4M16 3v4"></path></svg><input class="k-input" id="c-date" value="14 Oct 2026"></span><span class="k-help">Day Month Year</span></div>
+            <div class="k-field" style="grid-column: 1 / -1"><label class="k-label" for="c-srch">Search inside documents</label><span class="k-input-wrap"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"></circle><path d="M20 20l-4.5-4.5"></path></svg><input class="k-input" id="c-srch" placeholder="e.g. rent paid in September, सातबारा 44"></span></div>
+          </div>
+        </div>
+        <div class="k-card">
+          <h3 class="k-h4">6-digit code (admin sign-in)</h3>
+          <div class="k-field">
+            <span class="k-label" id="c-code-l">Code from your authenticator app</span>
+            <div class="k-code" role="group" aria-labelledby="c-code-l">
+              <input aria-label="Digit 1" value="4" maxlength="1"><input aria-label="Digit 2" value="8" maxlength="1"><input aria-label="Digit 3" value="2" maxlength="1"><input aria-label="Digit 4" class="is-focus" value="" maxlength="1"><input aria-label="Digit 5" value="" maxlength="1"><input aria-label="Digit 6" value="" maxlength="1">
+            </div>
+            <span class="k-help">Paste works. The code changes every 30 seconds.</span>
+          </div>
+        </div>
+        <div class="k-card">
+          <h3 class="k-h4">Checkbox, switch</h3>
+          <div style="display: flex; flex-direction: column; gap: 10px">
+            <label class="k-check"><input type="checkbox" checked> Remember this correction</label>
+            <label class="k-check"><input type="checkbox"> Include Trash</label>
+            <label class="k-check" style="color: var(--k-ink-faint)"><input type="checkbox" disabled> Read handwriting (turned off by admin)</label>
+            <hr class="k-divider">
+            <label class="k-switch"><input type="checkbox" checked role="switch"><span>File new uploads into folders on their own</span><span class="k-switch-state">On</span></label>
+            <label class="k-switch"><input type="checkbox" role="switch"><span>Two-step sign-in for members</span><span class="k-switch-state">Off</span></label>
+          </div>
+          <span class="k-spec">Switches state On/Off in words beside the track.</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- 08 CHIPS / STATUS -->
+    <section style="display: flex; flex-direction: column; gap: 20px">
+      <div style="display: flex; flex-direction: column; gap: 6px"><span class="k-eyebrow">08 · Chips, labels, status</span><h2 class="k-h1">Small parts, fixed meanings</h2></div>
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr)); gap: 16px">
+        <div class="k-card">
+          <h3 class="k-h4">Filter chips</h3>
+          <div class="k-chip-row">
+            <button class="k-chip" type="button">Type<svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></button>
+            <button class="k-chip is-on" type="button" aria-pressed="true">Department: <span class="k-chip-val">Accounts</span><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-label="Remove filter" role="img"><path d="M6 6l12 12M18 6 6 18"></path></svg></button>
+            <button class="k-chip is-on" type="button" aria-pressed="true">Label: <span class="k-chip-val">Confidential</span><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-label="Remove filter" role="img"><path d="M6 6l12 12M18 6 6 18"></path></svg></button>
+            <button class="k-chip" type="button" style="border-style: dashed"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>Party</button>
+            <button class="k-chip is-focus" type="button">Needs attention</button>
+          </div>
+          <span class="k-spec">off · on (value + remove) · add filter (dashed) · focus</span>
+          <hr class="k-divider">
+          <h3 class="k-h4">Tags</h3>
+          <div class="k-chip-row"><span class="k-tag">GST</span><span class="k-tag">FY 2026–27</span><span class="k-tag">Wakad</span><span class="k-tag k-deva">सातबारा</span></div>
+        </div>
+        <div class="k-card">
+          <h3 class="k-h4">Sensitivity labels</h3>
+          <div class="k-chip-row"><span class="k-lab k-lab--public">Public</span><span class="k-lab k-lab--internal">Internal</span><span class="k-lab k-lab--confidential">Confidential</span><span class="k-lab k-lab--restricted">Restricted</span></div>
+          <span class="k-spec">round · square · diamond · triangle + outline — readable without colour</span>
+          <hr class="k-divider">
+          <h3 class="k-h4">Version chips, problems</h3>
+          <div class="k-chip-row"><span class="k-ver">v1</span><span class="k-ver">v2</span><span class="k-ver k-ver--current">Current</span><span class="k-ver k-ver--newer">v1 · newer?</span><span class="k-problem"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4 2.5 20h19z"></path><path d="M12 10v4M12 17v.5"></path></svg>2 pages unreadable</span></div>
+        </div>
+        <div class="k-card" style="grid-column: 1 / -1">
+          <h3 class="k-h4">Status badges</h3>
+          <div class="k-chip-row" style="gap: 12px">
+            <span class="k-status k-status--verified"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg>Verified</span>
+            <span class="k-status k-status--review"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .8-1 1.5V14M12 17v.5"></path></svg>Needs review</span>
+            <span class="k-status k-status--from"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H6v18h12V7z"></path><path d="M14 3v4h4"></path></svg>From documents</span>
+            <span class="k-status k-status--notfound"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M8 12h8"></path></svg>Not found</span>
+            <span class="k-status k-status--reading"><span class="k-dots" aria-hidden="true"><i></i><i></i><i></i></span>Reading 4 of 12</span>
+            <span class="k-status k-status--failed"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4 2.5 20h19z"></path><path d="M12 10v4M12 17v.5"></path></svg>Couldn’t read</span>
+          </div>
+          <div class="k-banner k-banner--danger" style="max-width: 640px">
+            <svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4 2.5 20h19z"></path><path d="M12 10v4M12 17v.5"></path></svg>
+            <div class="k-banner-body"><span><strong>Couldn’t read Invoice_12.pdf page 3.</strong> The photo is blurred. Upload a sharper scan, or type the values in.</span></div>
+          </div>
+          <span class="k-spec">Failed always travels with the reason and the fix.</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- 09 NAVIGATION -->
+    <section style="display: flex; flex-direction: column; gap: 20px">
+      <div style="display: flex; flex-direction: column; gap: 6px"><span class="k-eyebrow">09 · Navigation</span><h2 class="k-h1">Tabs, tree, breadcrumbs</h2></div>
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr)); gap: 16px">
+        <div class="k-card">
+          <h3 class="k-h4">Tabs</h3>
+          <div class="k-tabs" role="tablist" aria-label="Document sections">
+            <button class="k-tab" role="tab" aria-selected="true" type="button">Details</button>
+            <button class="k-tab" role="tab" aria-selected="false" type="button">Text</button>
+            <button class="k-tab" role="tab" aria-selected="false" type="button">Questions <span class="k-tab-count">4</span></button>
+            <button class="k-tab" role="tab" aria-selected="false" type="button">Versions <span class="k-tab-count">2</span></button>
+            <button class="k-tab" role="tab" aria-selected="false" type="button">Activity</button>
+            <button class="k-tab" role="tab" aria-selected="false" type="button">Values <span class="k-tab-count" style="background: var(--k-review-soft); color: var(--k-review)">3 to check</span></button>
+          </div>
+          <span class="k-spec">active: ink + 2px accent rule + 600 weight</span>
+          <hr class="k-divider">
+          <h3 class="k-h4">Breadcrumbs</h3>
+          <nav class="k-crumbs" aria-label="Breadcrumb">
+            <a href="#">All documents</a><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"></path></svg>
+            <a href="#">Land &amp; Legal</a><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"></path></svg>
+            <a href="#">Land records</a><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"></path></svg>
+            <span aria-current="page">Survey 44, Wakad</span>
+          </nav>
+          <hr class="k-divider">
+          <h3 class="k-h4">Segmented</h3>
+          <div class="k-btn-group">
+            <div class="k-seg" role="group" aria-label="View">
+              <button type="button" aria-pressed="true"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"></path></svg>List</button>
+              <button type="button" aria-pressed="false"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z"></path></svg>Grid</button>
+            </div>
+            <div class="k-radio-pill" role="radiogroup" aria-label="Search in">
+              <label class="is-on"><input type="radio" name="c-scope" checked>Inside documents</label>
+              <label><input type="radio" name="c-scope">Names</label>
+            </div>
+          </div>
+        </div>
+        <div class="k-card">
+          <h3 class="k-h4">Folder tree</h3>
+          <div class="k-tree" role="tree" aria-label="Folders">
+            <span class="k-tree-group">Departments</span>
+            <a class="k-tree-item" href="#" role="treeitem" aria-expanded="true" style="--lvl: 0"><span class="k-tree-caret"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></span><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 21V5l8-3 8 3v16M9 21v-4h6v4M8 9h.01M12 9h.01M16 9h.01M8 13h.01M12 13h.01M16 13h.01"></path></svg>Accounts<span class="k-tree-count">1,310</span></a>
+            <a class="k-tree-item" href="#" role="treeitem" aria-expanded="true" style="--lvl: 1"><span class="k-tree-caret"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></span><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h6l2 2h10v11H3z"></path></svg>Invoices<span class="k-tree-count">820</span></a>
+            <a class="k-tree-item" href="#" role="treeitem" style="--lvl: 2"><span class="k-tree-caret"></span><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h6l2 2h10v11H3z"></path></svg>Mehta Textiles<span class="k-tree-count">64</span></a>
+            <a class="k-tree-item" href="#" role="treeitem" aria-expanded="true" style="--lvl: 0"><span class="k-tree-caret"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></span><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 21V5l8-3 8 3v16M9 21v-4h6v4M8 9h.01M12 9h.01M16 9h.01M8 13h.01M12 13h.01M16 13h.01"></path></svg>Land &amp; Legal<span class="k-tree-count">420</span></a>
+            <a class="k-tree-item" href="#" role="treeitem" aria-expanded="true" style="--lvl: 1"><span class="k-tree-caret"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></span><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h6l2 2h10v11H3z"></path></svg>Land records<span class="k-tree-count">138</span></a>
+            <a class="k-tree-item is-active" href="#" role="treeitem" aria-current="page" style="--lvl: 2"><span class="k-tree-caret"></span><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h6l2 2h10v11H3z"></path></svg>Survey 44, Wakad<span class="k-tree-count">12</span></a>
+            <a class="k-tree-item" href="#" role="treeitem" aria-expanded="false" style="--lvl: 0"><span class="k-tree-caret"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"></path></svg></span><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 21V5l8-3 8 3v16M9 21v-4h6v4M8 9h.01M12 9h.01M16 9h.01M8 13h.01M12 13h.01M16 13h.01"></path></svg>HR<span class="k-tree-count">260</span></a>
+            <span class="k-tree-group">Other</span>
+            <a class="k-tree-item" href="#" role="treeitem" style="--lvl: 0"><span class="k-tree-caret"></span><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H6v18h12V7z"></path><path d="M14 3v4h4"></path></svg>Not in a department<span class="k-tree-count">312</span></a>
+            <a class="k-tree-item" href="#" role="treeitem" style="--lvl: 0"><span class="k-tree-caret"></span><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"></path></svg>Trash<span class="k-tree-count">9</span></a>
+          </div>
+          <span class="k-spec">16px indent per level · counts in mono · active = accent-soft</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- 10 TABLE -->
+    <section style="display: flex; flex-direction: column; gap: 20px">
+      <div style="display: flex; flex-direction: column; gap: 6px"><span class="k-eyebrow">10 · Table</span><h2 class="k-h1">Sortable list, dense and calm</h2></div>
+      <div class="k-bulk" role="region" aria-label="Selection actions">
+        <strong>1 selected</strong>
+        <button class="k-btn k-btn--sm" type="button"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h6l2 2h10v11H3zM10 13h6M14 11l2 2-2 2"></path></svg>Move</button>
+        <button class="k-btn k-btn--sm" type="button"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12V4h8l10 10-8 8z"></path><circle cx="7.5" cy="7.5" r="1"></circle></svg>Tag</button>
+        <button class="k-btn k-btn--sm" type="button"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v4h-4"></path></svg>Read again</button>
+        <button class="k-btn k-btn--sm" type="button"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"></path></svg>Move to Trash</button>
+        <button class="k-btn k-btn--sm" type="button" style="margin-left: auto">Clear selection</button>
+      </div>
+      <div class="k-table-wrap">
+        <table class="k-table" style="min-width: 1100px">
+          <thead>
+            <tr>
+              <th style="width: 40px"><input type="checkbox" aria-label="Select all" style="accent-color: var(--k-accent)"></th>
+              <th><button class="k-sort" type="button">Name</button></th>
+              <th><button class="k-sort" type="button">Type</button></th>
+              <th><button class="k-sort" type="button">Owner</button></th>
+              <th><button class="k-sort" type="button">Label</button></th>
+              <th><button class="k-sort" type="button">Version</button></th>
+              <th aria-sort="descending"><button class="k-sort" type="button" aria-sort="descending">Document date<svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></button></th>
+              <th><button class="k-sort" type="button">Last updated</button></th>
+              <th><button class="k-sort" type="button">Updated by</button></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><input type="checkbox" aria-label="Select GST Invoice 0412" style="accent-color: var(--k-accent)"></td>
+              <td><span class="k-name-cell"><span class="k-file-ic" data-ext="PDF" aria-hidden="true"></span><span>GST Invoice 0412 Mehta Textiles.pdf</span></span></td>
+              <td>GST invoice</td><td>Anita</td><td><span class="k-lab k-lab--internal">Internal</span></td><td><span class="k-ver">v1</span></td><td>14 Oct 2026</td><td>today 10:15</td><td>Priya</td>
+            </tr>
+            <tr class="is-selected">
+              <td><input type="checkbox" checked aria-label="Select Rent Agreement Shinde" style="accent-color: var(--k-accent)"></td>
+              <td><span class="k-name-cell"><span class="k-file-ic" data-ext="PDF" aria-hidden="true"></span><span>Rent Agreement Shinde.pdf</span></span></td>
+              <td>Rent agreement</td><td>Rahul</td><td><span class="k-lab k-lab--confidential">Confidential</span></td><td><span class="k-ver">v2</span></td><td>1 Oct 2026</td><td>today 10:42</td><td>Rahul</td>
+            </tr>
+            <tr>
+              <td><input type="checkbox" aria-label="Select 7/12 Survey 44 Wakad" style="accent-color: var(--k-accent)"></td>
+              <td><span class="k-name-cell"><span class="k-file-ic" data-ext="PDF" aria-hidden="true"></span><span style="display: flex; flex-direction: column"><span>7/12 Survey 44 Wakad.pdf</span><span class="k-sub k-deva">सातबारा उतारा · मराठी</span></span></span></td>
+              <td>7/12 extract</td><td>Tushar</td><td><span class="k-lab k-lab--confidential">Confidential</span></td><td><span class="k-ver k-ver--newer">v1 · newer?</span></td><td>28 Sep 2026</td><td>yesterday</td><td>Tushar</td>
+            </tr>
+            <tr>
+              <td><input type="checkbox" aria-label="Select Sale Deed Shinde" style="accent-color: var(--k-accent)"></td>
+              <td><span class="k-name-cell"><span class="k-file-ic" data-ext="PDF" aria-hidden="true"></span><span style="display: flex; flex-direction: column"><span>Sale Deed Shinde Survey 44.pdf</span><span class="k-problem"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4 2.5 20h19z"></path><path d="M12 10v4M12 17v.5"></path></svg>2 pages unreadable</span></span></span></td>
+              <td>Sale deed</td><td>Priya</td><td><span class="k-lab k-lab--restricted">Restricted</span></td><td><span class="k-ver">v1</span></td><td>12 Mar 2024</td><td>16 Oct 2026</td><td>Priya</td>
+            </tr>
+            <tr>
+              <td><input type="checkbox" aria-label="Select Bank Statement HDFC Sept" style="accent-color: var(--k-accent)"></td>
+              <td><span class="k-name-cell"><span class="k-file-ic" data-ext="XLS" aria-hidden="true"></span><span>Bank Statement HDFC Sept.xlsx</span></span></td>
+              <td>Bank statement</td><td>Anita</td><td><span class="k-lab k-lab--confidential">Confidential</span></td><td><span class="k-ver">v1</span></td><td>30 Sep 2026</td><td>2 Oct 2026</td><td>Anita</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <span class="k-spec">Header: mono caps 11px on --k-sunken · sorted column in ink with arrow + aria-sort · selected row --k-accent-soft · table scrolls inside its own box at narrow widths</span>
+    </section>
+
+    <!-- 11 CARDS, BANNERS, TOASTS -->
+    <section style="display: flex; flex-direction: column; gap: 20px">
+      <div style="display: flex; flex-direction: column; gap: 6px"><span class="k-eyebrow">11 · Cards, banners, toasts</span><h2 class="k-h1">Say what happened and what to do</h2></div>
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr)); gap: 16px">
+        <div class="k-card k-stat"><span class="k-eyebrow">Documents</span><span class="k-num">2,560</span><span class="k-stat-delta"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"></path></svg>+148 this week</span></div>
+        <a class="k-card" href="#" style="text-decoration: none; color: var(--k-ink)"><span style="display: flex; align-items: center; gap: 10px"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 21V5l8-3 8 3v16M9 21v-4h6v4M8 9h.01M12 9h.01M16 9h.01M8 13h.01M12 13h.01M16 13h.01"></path></svg><strong>Land &amp; Legal</strong></span><span class="k-small k-muted">420 files · 3 folders</span></a>
+        <a class="k-card k-card--dashed" href="#" style="text-decoration: none; color: var(--k-ink)"><span style="display: flex; align-items: center; gap: 10px"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H6v18h12V7z"></path><path d="M14 3v4h4"></path></svg><strong>Not in a department</strong></span><span class="k-small k-muted">312 files · Sort them into folders</span></a>
+      </div>
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(560px, 100%), 1fr)); gap: 16px">
+        <div class="k-banner k-banner--info">
+          <svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v5M12 8v.5"></path></svg>
+          <div class="k-banner-body"><span><strong>Still reading 5 files.</strong> You can keep working; answers will include them once they’re ready.</span></div>
+        </div>
+        <div class="k-banner k-banner--warning">
+          <svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4 2.5 20h19z"></path><path d="M12 10v4M12 17v.5"></path></svg>
+          <div class="k-banner-body">
+            <span><strong>Glare covers the lower half of page 3. Upload a better photo.</strong> 6 values on this page couldn’t be checked.</span>
+            <div class="k-btn-group"><button class="k-btn k-btn--sm" type="button">Read this page again</button><button class="k-btn k-btn--sm" type="button">Upload a better scan</button><button class="k-btn k-btn--sm k-btn--quiet" type="button">Keep as is</button></div>
+          </div>
+        </div>
+        <div class="k-banner k-banner--version">
+          <svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 3 8l9 5 9-5z"></path><path d="M3 13l9 5 9-5"></path></svg>
+          <div class="k-banner-body">
+            <span><strong>This looks like a new version of 7/12 Survey 44 Wakad.pdf.</strong> 86% of the text is the same and the survey number matches.</span>
+            <div class="k-btn-group"><button class="k-btn k-btn--primary k-btn--sm" type="button">Make it version 2</button><button class="k-btn k-btn--sm" type="button">Keep separate</button><button class="k-btn k-btn--sm k-btn--quiet" type="button">Compare first</button></div>
+          </div>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 16px">
+          <div class="k-banner k-banner--quiet">
+            <svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"></path></svg>
+            <div class="k-banner-body" style="flex-direction: row; align-items: center; justify-content: space-between; gap: 12px"><span>Linked as version 3 of GST Invoice 0412 Mehta Textiles.pdf (same file, scanned again).</span><button class="k-btn k-btn--sm k-btn--quiet" type="button"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14 4 9l5-5M4 9h10a6 6 0 0 1 0 12h-3"></path></svg>Undo</button></div>
+          </div>
+          <div class="k-banner k-banner--danger">
+            <svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4 2.5 20h19z"></path><path d="M12 10v4M12 17v.5"></path></svg>
+            <div class="k-banner-body"><span><strong>Salary Register Sept.xlsx wasn’t saved.</strong> The file is 62 MB; the limit is 50 MB. Split it by month and upload again.</span></div>
+          </div>
+        </div>
+      </div>
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr)); gap: 16px; align-items: start">
+        <div style="display: flex; flex-direction: column; gap: 10px">
+          <span class="k-eyebrow">Toasts · bottom left, 6 s, pause on hover</span>
+          <div class="k-toast" role="status"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg><span style="flex: 1">Moved 3 files to Land &amp; Legal › Land records</span><button class="k-btn k-btn--sm k-btn--quiet" type="button">Undo</button></div>
+          <div class="k-toast" role="status"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"></path></svg><span style="flex: 1">Sale Deed Shinde Survey 44.pdf moved to Trash</span><button class="k-btn k-btn--sm k-btn--quiet" type="button">Undo</button></div>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 10px">
+          <span class="k-eyebrow">In-page confirmation · never a browser popup</span>
+          <div class="k-confirm" role="alertdialog" aria-label="Confirm move to Trash">
+            <svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true" style="color: var(--k-danger)"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"></path></svg>
+            <span style="flex: 1 1 220px"><strong>Move 3 files to Trash?</strong> You can restore them for 30 days.</span>
+            <div class="k-btn-group"><button class="k-btn k-btn--danger k-btn--sm" type="button">Move to Trash</button><button class="k-btn k-btn--sm" type="button">Cancel</button></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 12 OVERLAYS -->
+    <section style="display: flex; flex-direction: column; gap: 20px">
+      <div style="display: flex; flex-direction: column; gap: 6px"><span class="k-eyebrow">12 · Dialog, drawer, menu</span><h2 class="k-h1">Things that float</h2></div>
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(380px, 100%), 1fr)); gap: 16px; align-items: start">
+        <div class="k-scrim" style="padding: 28px; border-radius: 20px; display: flex; justify-content: center">
+          <div class="k-dialog" role="dialog" aria-labelledby="c-dlg-t">
+            <div style="display: flex; justify-content: space-between; gap: 12px; align-items: flex-start"><h3 class="k-h3" id="c-dlg-t">Make version 2 the current one?</h3><button class="k-btn k-btn--icon k-btn--quiet k-btn--sm" type="button" aria-label="Close"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"></path></svg></button></div>
+            <p class="k-muted">Rent Agreement Shinde.pdf will open on version 2 for everyone. Version 1 stays in Versions and can be made current again.</p>
+            <div class="k-field"><label class="k-label" for="c-note">Note for this version (optional)</label><input class="k-input" id="c-note" value="Rent changed to ₹45,000"></div>
+            <div class="k-btn-group" style="justify-content: flex-end"><button class="k-btn" type="button">Cancel</button><button class="k-btn k-btn--primary" type="button">Make version 2 current</button></div>
+          </div>
+        </div>
+        <div style="display: flex; border: 1px solid var(--k-rule); border-radius: 20px; overflow: hidden; min-height: 360px; background: var(--k-ground)">
+          <div style="flex: 1" class="k-scrim"></div>
+          <aside class="k-drawer" style="width: 300px" aria-label="Move files">
+            <div class="k-card-head k-card-head--bar"><h3 class="k-h4">Move 3 files</h3><button class="k-btn k-btn--icon k-btn--quiet k-btn--sm" type="button" aria-label="Close"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"></path></svg></button></div>
+            <div style="padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; flex: 1">
+              <span class="k-input-wrap"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"></circle><path d="M20 20l-4.5-4.5"></path></svg><input class="k-input" aria-label="Find a folder" placeholder="Find a folder"></span>
+              <div class="k-tree">
+                <a class="k-tree-item" href="#" style="--lvl: 0">Land &amp; Legal</a>
+                <a class="k-tree-item is-active" href="#" style="--lvl: 1">Land records</a>
+                <a class="k-tree-item" href="#" style="--lvl: 1">Agreements</a>
+                <a class="k-tree-item" href="#" style="--lvl: 0">Accounts</a>
+              </div>
+            </div>
+            <div style="padding: 12px 16px; border-top: 1px solid var(--k-rule); display: flex; gap: 8px; justify-content: flex-end"><button class="k-btn" type="button">Cancel</button><button class="k-btn k-btn--primary" type="button">Move here</button></div>
+          </aside>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 8px; align-items: flex-start">
+          <span style="display: flex; align-items: center; gap: 8px"><span class="k-avatar">PR</span><span class="k-small">Account menu</span></span>
+          <div class="k-menu" role="menu" aria-label="Account">
+            <div style="padding: 8px 10px 10px; border-bottom: 1px solid var(--k-rule); margin-bottom: 4px; display: flex; flex-direction: column"><strong>Priya Kulkarni</strong><span class="k-small k-muted">Admin · Wakad Realty</span></div>
+            <div style="padding: 6px 10px; display: flex; justify-content: space-between; align-items: center; gap: 12px"><span class="k-small k-muted">Theme</span>
+              <div class="k-seg" role="group" aria-label="Theme"><button type="button" aria-pressed="true"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4 12H2M22 12h-2M5 5l1.5 1.5M17.5 17.5 19 19M5 19l1.5-1.5M17.5 6.5 19 5"></path></svg>Light</button><button type="button" aria-pressed="false"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"></path></svg>Dark</button></div>
+            </div>
+            <button class="k-menu-item" role="menuitem" type="button"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"></circle><path d="M4 21a8 8 0 0 1 16 0"></path></svg>Your profile</button>
+            <button class="k-menu-item" role="menuitem" type="button"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 4h4v16h-4M10 8l-4 4 4 4M6 12h10"></path></svg>Sign out</button>
+            <button class="k-menu-item k-menu-item--danger" role="menuitem" type="button"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 11h12v10H6zM8 11V7a4 4 0 0 1 8 0v4"></path></svg>Sign out everywhere</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 13 UPLOAD PROGRESS -->
+    <section style="display: flex; flex-direction: column; gap: 20px">
+      <div style="display: flex; flex-direction: column; gap: 6px"><span class="k-eyebrow">13 · Upload progress</span><h2 class="k-h1">Three stages, never 100% early</h2></div>
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr)); gap: 16px">
+        <div class="k-card">
+          <h3 class="k-h4">Per file · Sending → Saving → Reading</h3>
+          <div style="display: flex; flex-direction: column; gap: 18px">
+            <div style="display: flex; flex-direction: column; gap: 6px">
+              <div style="display: flex; justify-content: space-between; gap: 12px"><span class="k-ellip">Bank Statement HDFC Sept.xlsx</span><span class="k-small k-muted">Sending 60%</span></div>
+              <div class="k-stages" role="progressbar" aria-label="Sending, 60 percent" aria-valuenow="15" aria-valuemin="0" aria-valuemax="100"><span class="k-stage is-active"><i style="width: 60%"></i></span><span class="k-stage"></span><span class="k-stage"></span></div>
+              <div class="k-stage-labels"><span class="is-active">Sending</span><span>Saving</span><span>Reading</span></div>
+            </div>
+            <div style="display: flex; flex-direction: column; gap: 6px">
+              <div style="display: flex; justify-content: space-between; gap: 12px"><span class="k-ellip">NA Permission Plot 7.pdf</span><span class="k-small k-muted">Saving</span></div>
+              <div class="k-stages" role="progressbar" aria-label="Saving"><span class="k-stage"><i style="width: 100%"></i></span><span class="k-stage is-active"><i style="width: 45%"></i></span><span class="k-stage"></span></div>
+              <div class="k-stage-labels"><span class="is-done">Sent</span><span class="is-active">Saving</span><span>Reading</span></div>
+            </div>
+            <div style="display: flex; flex-direction: column; gap: 6px">
+              <div style="display: flex; justify-content: space-between; gap: 12px"><span class="k-ellip">7/12 Survey 44 Wakad (2).pdf</span><span class="k-small k-muted">Reading 4 of 12 pages</span></div>
+              <div class="k-stages" role="progressbar" aria-label="Reading, 4 of 12 pages"><span class="k-stage"><i style="width: 100%"></i></span><span class="k-stage"><i style="width: 100%"></i></span><span class="k-stage is-active"><i style="width: 33%"></i></span></div>
+              <div class="k-stage-labels"><span class="is-done">Sent</span><span class="is-done">Saved</span><span class="is-active">Reading 4 / 12</span></div>
+            </div>
+            <div style="display: flex; flex-direction: column; gap: 6px">
+              <div style="display: flex; justify-content: space-between; gap: 12px; align-items: center"><span class="k-ellip">GST Invoice 0413 Mehta Textiles.pdf</span><span class="k-status k-status--verified"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg>Ready</span></div>
+              <span class="k-filed"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"></path></svg><b>Accounts / Invoices / Mehta Textiles</b></span>
+            </div>
+          </div>
+          <span class="k-spec">Reading takes half the bar; it only fills when the last page is read.</span>
+        </div>
+        <div class="k-card">
+          <h3 class="k-h4">Batch summary</h3>
+          <strong>48 files · 41 ready · 5 reading · 2 waiting · 1 already uploaded</strong>
+          <div class="k-meter" role="img" aria-label="41 ready, 5 reading, 2 waiting, 1 already uploaded">
+            <span class="is-ready" style="width: 83%"></span><span class="is-reading" style="width: 10%"></span><span class="is-waiting" style="width: 4%"></span><span class="is-dup" style="width: 2%"></span>
+          </div>
+          <div class="k-legend"><span><i style="background: var(--k-verified)"></i>Ready 41</span><span><i style="background: var(--k-info)"></i>Reading 5</span><span><i style="background: var(--k-rule-strong)"></i>Waiting 2</span><span><i style="background: var(--k-review)"></i>Already uploaded 1</span></div>
+          <div class="k-banner k-banner--version" style="padding: 10px 14px; align-items: center">
+            <svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 3 8l9 5 9-5z"></path><path d="M3 13l9 5 9-5"></path></svg>
+            <div class="k-banner-body" style="flex-direction: row; justify-content: space-between; align-items: center"><strong>4 files look like new versions.</strong><button class="k-btn k-btn--primary k-btn--sm" type="button">Review</button></div>
+          </div>
+          <span class="k-spec">Segments are hatched or labelled, so the split reads in greyscale too.</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- 14 TIMELINE / ASK -->
+    <section style="display: flex; flex-direction: column; gap: 20px">
+      <div style="display: flex; flex-direction: column; gap: 6px"><span class="k-eyebrow">14 · Timeline, citations, source card</span><h2 class="k-h1">Every answer points at its proof</h2></div>
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr)); gap: 16px; align-items: start">
+        <div class="k-card">
+          <h3 class="k-h4">Timeline</h3>
+          <ol class="k-timeline">
+            <li><span class="k-tl-dot"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"></path><circle cx="12" cy="12" r="3"></circle></svg></span><span style="display: flex; flex-direction: column"><span><strong>Priya</strong> viewed</span><span class="k-tl-when">today 11:04</span></span></li>
+            <li><span class="k-tl-dot k-tl-dot--accent"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 3 8l9 5 9-5z"></path><path d="M3 13l9 5 9-5"></path></svg></span><span style="display: flex; flex-direction: column"><span><strong>Rahul</strong> linked version 2 · “Rent changed to ₹45,000”</span><span class="k-tl-when">today 10:42</span></span></li>
+            <li><span class="k-tl-dot k-tl-dot--review"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12V4h8l10 10-8 8z"></path><circle cx="7.5" cy="7.5" r="1"></circle></svg></span><span style="display: flex; flex-direction: column"><span><strong>Anita</strong> changed the label Internal → Confidential</span><span class="k-tl-when">5 Oct 2026, 16:20</span></span></li>
+            <li><span class="k-tl-dot"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V4M7 9l5-5 5 5M4 15v5h16v-5"></path></svg></span><span style="display: flex; flex-direction: column"><span><strong>Rahul</strong> uploaded version 1 to Land &amp; Legal / Agreements</span><span class="k-tl-when">3 Sep 2026, 09:15</span></span></li>
+          </ol>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 16px">
+          <div class="k-answer">
+            <div style="display: flex; gap: 8px; align-items: center"><span class="k-status k-status--verified"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg>Verified</span><span class="k-small k-muted">from 2 pages in 1 document</span></div>
+            <p class="k-read">The monthly rent is <strong>₹45,000</strong>, due on or before the 5th of each month <a class="k-cite is-active" href="#">1</a>. The security deposit is ₹1,50,000 <a class="k-cite" href="#">2</a>, refundable at the end of the licence on 30 Sep 2027 <a class="k-cite" href="#">3</a>.</p>
+            <span class="k-spec">Citation chip: mono number, accent-soft · active chip outlines the same box on the page</span>
+          </div>
+          <div class="k-source" style="max-width: 420px">
+            <div class="k-source-crop"><div class="k-paper-crop">3. The Licensee shall pay a monthly licence fee of <span class="k-mark k-mark--cited">Rs. 45,000 (Rupees Forty Five Thousand only)</span> on or before the 5th…</div></div>
+            <div class="k-source-body">
+              <span style="display: flex; gap: 8px; align-items: center"><span class="k-cite">1</span><strong class="k-ellip">Rent Agreement Shinde.pdf</strong><span class="k-ver">v2</span></span>
+              <span class="k-small k-muted">Page 2 · clause 3 · Land &amp; Legal / Agreements</span>
+              <div class="k-btn-group"><a class="k-btn k-btn--sm" href="#"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v16H4z"></path><path d="M9 9h6v6H9z"></path></svg>Open page 2</a><button class="k-btn k-btn--sm k-btn--quiet" type="button"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 8h12v12H8zM4 16V4h12"></path></svg>Copy answer with quotes</button></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 15 VIEWER -->
+    <section style="display: flex; flex-direction: column; gap: 20px">
+      <div style="display: flex; flex-direction: column; gap: 6px"><span class="k-eyebrow">15 · Viewer parts</span><h2 class="k-h1">Thumbnails, marks, zoom, readings</h2></div>
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr)); gap: 16px; align-items: start">
+        <div class="k-card">
+          <h3 class="k-h4">Page thumbnails</h3>
+          <div style="display: flex; gap: 20px; flex-wrap: wrap; padding: 8px 4px">
+            <button class="k-thumb is-active" type="button" aria-label="Page 1, current"><span class="k-thumb-page"></span>1</button>
+            <button class="k-thumb" type="button" aria-label="Page 2"><span class="k-thumb-page"></span>2</button>
+            <button class="k-thumb" type="button" aria-label="Page 3, could not be read"><span class="k-thumb-page"><span class="k-thumb-flag">!</span></span>3</button>
+            <button class="k-thumb" type="button" aria-label="Page 4, 2 values need review"><span class="k-thumb-page"><span class="k-thumb-flag k-thumb-flag--review">?</span></span>4</button>
+          </div>
+          <span class="k-spec">current: accent edge · “!” couldn’t read · “?” dashed: values to review</span>
+          <hr class="k-divider">
+          <h3 class="k-h4">Zoom</h3>
+          <div class="k-zoom" role="group" aria-label="Zoom"><button type="button" aria-label="Zoom out"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"></circle><path d="M20 20l-4.5-4.5M8 11h6"></path></svg></button><span>125%</span><button type="button" aria-label="Zoom in"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"></circle><path d="M20 20l-4.5-4.5M11 8v6M8 11h6"></path></svg></button><button type="button" style="width: auto; padding: 0 10px; font-size: 12px">Fit width</button></div>
+        </div>
+        <div class="k-card">
+          <h3 class="k-h4">Marks on a page</h3>
+          <div class="k-viewer" style="padding: 20px; justify-content: center; border-radius: 4px">
+            <div class="k-paper" style="padding: 28px 30px; max-width: 460px">
+              <p style="font-weight: 600; text-align: center">LEAVE AND LICENCE AGREEMENT</p>
+              <div class="k-paper-rule" style="margin: 8px 0 10px"></div>
+              <p>Licensor: <span class="k-mark k-mark--unconfirmed">Suresh Baburao Shinde</span>, Survey 44/2, Wakad, Pune.</p>
+              <p>Licensee: <span class="k-mark k-mark--unsure">Prakash</span> Mehta</p>
+              <p>3. Monthly licence fee of <span class="k-mark k-mark--cited">Rs. 45,000</span> payable on or before the 5th.</p>
+              <p>4. Security deposit of <span class="k-mark k-mark--unreadable">Rs. 1,50,000</span> paid by cheque.</p>
+            </div>
+          </div>
+          <div class="k-legend"><span><i style="outline: 2px solid var(--k-mark-cite)"></i>Cited</span><span><i style="outline: 1.5px dashed var(--k-mark-unsure)"></i>Unsure word</span><span><i style="outline: 1.5px solid var(--k-mark-unreadable); background: var(--k-danger-soft)"></i>Couldn’t be read</span><span><i style="outline: 1.5px dotted var(--k-mark-unconfirmed)"></i>Spot not confirmed</span></div>
+        </div>
+        <div class="k-card">
+          <h3 class="k-h4">Two readings (review)</h3>
+          <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px">
+            <div class="k-reading is-picked"><span class="k-eyebrow">First reading</span><span class="k-reading-val">₹45,000</span><span class="k-small k-muted" style="display: flex; gap: 6px; align-items: center"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true" style="color: var(--k-accent)"><path d="M5 12l5 5 9-10"></path></svg>Chosen · matches page 1 summary</span></div>
+            <div class="k-reading"><span class="k-eyebrow">Second reading</span><span class="k-reading-val">₹46,000</span><span class="k-small k-muted">The 5 is smudged</span></div>
+          </div>
+          <span class="k-spec">picked: 2px accent edge + check + words</span>
+        </div>
+        <div class="k-card">
+          <h3 class="k-h4">Marathi and Hindi keyboard helper</h3>
+          <div class="k-keys" role="group" aria-label="Devanagari letters">
+            <button type="button">अ</button><button type="button">आ</button><button type="button">इ</button><button type="button">ई</button><button type="button">उ</button><button type="button">ऊ</button><button type="button">ए</button><button type="button">ऐ</button><button type="button">ओ</button><button type="button">औ</button><button type="button">ं</button><button type="button">्</button>
+            <button type="button">क</button><button type="button">ख</button><button type="button">ग</button><button type="button">घ</button><button type="button">च</button><button type="button">ज</button><button type="button">ट</button><button type="button">ड</button><button type="button">त</button><button type="button">द</button><button type="button">न</button><button type="button">प</button>
+            <button type="button">ब</button><button type="button">म</button><button type="button">य</button><button type="button">र</button><button type="button">ल</button><button type="button">व</button><button type="button">श</button><button type="button">स</button><button type="button">ह</button><button type="button">ा</button><button type="button">ि</button><button type="button">ी</button>
+            <button type="button">ु</button><button type="button">ू</button><button type="button">े</button><button type="button">ै</button><button type="button">ो</button><button type="button">ौ</button><button type="button">ृ</button><button type="button" style="grid-column: span 3; font-size: 13px">Space</button><button type="button" style="grid-column: span 2; font-size: 13px">Delete</button>
+          </div>
+          <span class="k-spec">Opens under the composer from the keyboard icon. Typing “satbara” also suggests सातबारा.</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- 16 EMPTY / LOADING -->
+    <section style="display: flex; flex-direction: column; gap: 20px">
+      <div style="display: flex; flex-direction: column; gap: 6px"><span class="k-eyebrow">16 · Empty, loading, small parts</span><h2 class="k-h1">Paper and signal, not cartoons</h2></div>
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr)); gap: 16px; align-items: start">
+        <div class="k-card">
+          <div class="k-empty">
+            <div style="position: relative; width: 180px; height: 132px"><span class="k-ledger k-ledger--back"></span><span class="k-ledger" style="position: absolute; inset: 0"></span></div>
+            <h3 class="k-h3">No documents in this folder yet</h3>
+            <p>Drop bills, agreements or 7/12 extracts here. Kaagaz reads every page and files each one into the right folder.</p>
+            <button class="k-btn k-btn--primary" type="button"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V4M7 9l5-5 5 5M4 15v5h16v-5"></path></svg>Upload to Survey 44, Wakad</button>
+          </div>
+        </div>
+        <div class="k-card">
+          <h3 class="k-h4">Skeletons</h3>
+          <div style="display: flex; flex-direction: column; gap: 14px" aria-busy="true" aria-label="Loading documents">
+            <div style="display: flex; gap: 12px; align-items: center"><span class="k-skel" style="width: 22px; height: 28px"></span><span style="flex: 1; display: flex; flex-direction: column; gap: 6px"><span class="k-skel" style="height: 12px; width: 62%"></span><span class="k-skel" style="height: 10px; width: 34%"></span></span><span class="k-skel" style="height: 20px; width: 84px"></span></div>
+            <div style="display: flex; gap: 12px; align-items: center"><span class="k-skel" style="width: 22px; height: 28px"></span><span style="flex: 1; display: flex; flex-direction: column; gap: 6px"><span class="k-skel" style="height: 12px; width: 48%"></span><span class="k-skel" style="height: 10px; width: 28%"></span></span><span class="k-skel" style="height: 20px; width: 84px"></span></div>
+            <div style="display: flex; gap: 12px; align-items: center"><span class="k-skel" style="width: 22px; height: 28px"></span><span style="flex: 1; display: flex; flex-direction: column; gap: 6px"><span class="k-skel" style="height: 12px; width: 70%"></span><span class="k-skel" style="height: 10px; width: 40%"></span></span><span class="k-skel" style="height: 20px; width: 84px"></span></div>
+            <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px"><span class="k-skel" style="height: 72px"></span><span class="k-skel" style="height: 72px"></span><span class="k-skel" style="height: 72px"></span><span class="k-skel" style="height: 72px"></span></div>
+          </div>
+          <hr class="k-divider">
+          <h3 class="k-h4">Avatar, keyboard keys</h3>
+          <div class="k-chip-row" style="gap: 14px">
+            <span class="k-avatar">PR</span><span class="k-avatar">RA</span><span class="k-avatar k-avatar--lg">AN</span><span class="k-avatar k-avatar--lg">TU</span>
+            <span class="k-small k-muted" style="display: inline-flex; gap: 6px; align-items: center"><span class="k-kbd">1</span> first reading</span>
+            <span class="k-small k-muted" style="display: inline-flex; gap: 6px; align-items: center"><span class="k-kbd">2</span> second</span>
+            <span class="k-small k-muted" style="display: inline-flex; gap: 6px; align-items: center"><span class="k-kbd">T</span> type</span>
+            <span class="k-small k-muted" style="display: inline-flex; gap: 6px; align-items: center"><span class="k-kbd">J</span><span class="k-kbd">K</span> next / previous</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["light","dark"],"default":"light"},"$preview":{"width":1440,"height":5400}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return { theme: this.props.theme ?? 'light' };
+  }
+}
+</script>
+</body>
+</html>

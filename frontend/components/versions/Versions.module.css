@@ -1,0 +1,191 @@
+/* The new-version banner, the Versions tab and the Compare view (File management V6 to V12).
+   Tokens only; flat, square, hairline. Removed and added words carry a mark as well as a
+   colour (struck through, underlined), so colour is never the only sign. */
+
+.banner {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--accent);
+  border-radius: var(--k-r-2);
+  background: var(--accent-subtle);
+  min-width: 0;
+}
+
+.bannerTitle {
+  margin: 0;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.bannerText {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.bannerButtons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.choice {
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.versions {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.version {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding-block: var(--space-3);
+  border-bottom: 1px solid var(--border);
+  min-width: 0;
+}
+
+.version:last-child {
+  border-bottom: 0;
+}
+
+.version[aria-current="true"] .versionNo {
+  color: var(--accent);
+}
+
+.versionHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+}
+
+.versionNo {
+  font-weight: 700;
+}
+
+.versionMeta {
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.note {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.versionActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.noteForm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-2);
+}
+
+.noteForm > :global(.field) {
+  flex: 1 1 14rem;
+}
+
+/* The Compare view. */
+.back {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  align-self: flex-start;
+}
+
+.compareHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.compareTitle {
+  margin: 0;
+}
+
+.legend {
+  display: flex;
+  gap: var(--space-3);
+  font-size: var(--fs-sm);
+}
+
+.comparePage {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.pageHeading {
+  margin: 0;
+  font-size: var(--fs-base);
+}
+
+.columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-3);
+}
+
+@media (min-width: 768px) {
+  .columns {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.column {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--k-r-2);
+  background: var(--bg-surface);
+}
+
+.columnTitle {
+  margin: 0;
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.text {
+  margin: 0;
+}
+
+.removed {
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+  text-decoration: line-through;
+}
+
+.added {
+  background: var(--verified-bg);
+  color: var(--verified-fg);
+  text-decoration: underline;
+}
+
+.removed[data-current],
+.added[data-current] {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}

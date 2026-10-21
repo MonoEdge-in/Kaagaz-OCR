@@ -29,10 +29,13 @@ from kaagaz.api.middleware import ErrorMiddleware, RateLimiter, RequestMiddlewar
 from kaagaz.api.ports import Answers, ApiQueue, ApiStorage
 from kaagaz.api.routers import (
     admin,
+    ai_settings,
     auth,
     batches,
     chat,
+    dashboard,
     documents,
+    ensemble,
     folders,
     health,
     operator,
@@ -40,10 +43,13 @@ from kaagaz.api.routers import (
     operator_insights,
     operator_models,
     operator_orgs,
+    read_clearly,
     review,
     search,
     stories,
     tags,
+    versions,
+    word_review,
     words,
 )
 from kaagaz.db.engine import Database, OperatorDatabase, make_engine
@@ -101,16 +107,22 @@ def create_app(
         health.router,
         auth.router,
         documents.router,
+        versions.router,
+        read_clearly.router,
         batches.router,
+        dashboard.router,
         folders.router,
         tags.router,
         chat.router,
+        ai_settings.router,
         search.router,
         review.router,
         admin.router,
         words.router,
         stories.router,
         words.router,
+        word_review.router,
+        ensemble.router,
         operator.router,
         operator.signed_in,
         operator_orgs.router,
@@ -131,11 +143,12 @@ def configure_logging(level: str) -> None:
     uvicorn's own access log is switched off: its line holds the query string, and
     a search there can be a name. The access line comes from RequestMiddleware."""
     # Imported here, like the adapters below: the worker module brings them in.
-    from kaagaz.worker_main import JsonFormatter
+    from kaagaz.worker_main import JsonFormatter, quiet_parser_logs
 
     handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(JsonFormatter())
     logging.basicConfig(level=level.upper(), handlers=[handler], force=True)
+    quiet_parser_logs()  # the same libraries are imported here (the readers, the page count)
     uvicorn_errors = logging.getLogger("uvicorn.error")
     uvicorn_errors.handlers = [handler]
     uvicorn_errors.propagate = False

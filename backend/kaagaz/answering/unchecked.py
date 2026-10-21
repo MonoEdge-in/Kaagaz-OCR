@@ -3,10 +3,10 @@
 A card value is found by the model and located on the page, but no second
 reader has confirmed it, so it is always ``needs_review`` and the fixed
 queries never add it up. When a question asks for a figure that only card
-values hold, the answer gives no number: it says the figure isn't checked yet,
-asks for it to be confirmed in Review first, and points to the documents where
-it appears, so the reader can open the whole document instead of getting a
-wrong number.
+values hold, the answer gives no number: it says the figure is in these
+documents and points to them, so the reader can open the whole document instead
+of getting a wrong number. No Review or needs-review wording (Tushar, 16 Oct
+2026: Ask stays calm; Review is its own feature).
 
 ``documents_with`` is one query over this customer's current, ready documents
 out of Trash (the ``LIVE_CURRENT`` text of kaagaz/db/visibility.py, written out
@@ -77,8 +77,4 @@ class PgUncheckedValues:
 
 def unchecked_sentence(concept: str) -> str:
     """The one sentence of an ``unchecked`` answer, for a metric concept such as "profit"."""
-    return (
-        f"A {concept} figure appears in these documents, but it hasn't been checked yet, so I won't"
-        " give a number from it. Ask a reviewer to confirm it in Review, then ask again. Until then,"
-        " open the document to read it yourself."
-    )
+    return f"A {concept} figure is in these documents. Open them to see it."

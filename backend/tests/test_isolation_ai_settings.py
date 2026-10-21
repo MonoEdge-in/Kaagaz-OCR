@@ -223,7 +223,6 @@ def _save_for_outcome(db: Database, outcome: str, operator: str, customer: str) 
     if outcome == "step_up":
         set_org(db, operator, customer, ops.AiChoice([catalog_model(db)], None), step=500)  # no change
         return set_org(db, operator, customer, _scan_only(catalog_model(db)), step=500)  # the same code
-    ensemble = outcome.startswith("needs_two_models")
     if outcome == "unavailable":
         choice = _scan_only(catalog_model(db, enabled=False))
     elif outcome == "not_verified":
@@ -238,12 +237,9 @@ def _save_for_outcome(db: Database, outcome: str, operator: str, customer: str) 
         choice = ops.AiChoice(chat_levels=["low", "huge"], chat_default_level="low")
     elif outcome == "default_not_allowed":
         choice = ops.AiChoice([catalog_model(db)], None)
-    elif outcome == "needs_two_models_chat":
-        scan, answer = catalog_model(db), chat_model(db)
-        choice = ops.AiChoice([scan, catalog_model(db)], scan, [answer], answer)
-    else:  # signed_out, missing, deleting, needs_two_models_scan (one scan model) and done
+    else:  # signed_out, missing, deleting and done
         choice = _scan_only(catalog_model(db))
-    return set_org(db, operator, customer, choice, ensemble=ensemble)
+    return set_org(db, operator, customer, choice)
 
 
 OUTCOMES = (
@@ -256,8 +252,8 @@ OUTCOMES = (
     "chat_not_verified",
     "level_not_supported",
     "default_not_allowed",
-    "needs_two_models_scan",
-    "needs_two_models_chat",
+    # Changed on purpose (Tushar, 16 Oct 2026: any number of models): 0037 returns neither
+    # needs_two_models_scan nor needs_two_models_chat.
     "done",
 )
 
@@ -380,7 +376,7 @@ def test_the_platform_defaults_count_the_organisations_each_area_reaches(db: Dat
         set_defaults(
             db, platform, ops.AiChoice([a], a, chat_levels=["low"], chat_default_level="low", dynamic=True)
         )
-        == "needs_two_models_scan"
+        == "done"  # Changed on purpose (Tushar, 16 Oct 2026: any number of models): Cost saving with one
     )
 
 
@@ -458,15 +454,44 @@ def test_a_mode_revoked_after_upload_reads_single_and_a_junk_reader_is_never_use
     assert set_org(db, operator, customer, ops.AiChoice([lead, other], lead), ensemble=True).code == "done"
     document = _document(db, customer, read_model=lead, read_mode="ensemble", read_also=[other, outsider])
     reading = _scan(db, customer, document)
-    assert (reading.mode, reading.lead.model, [one.model for one in reading.others], reading.notes) == (
-        "ensemble",
+    # Changed on purpose (Ensemble after the scan, 16 Oct 2026): an old Ensemble document is
+    # read by its lead alone, so neither other nor outsider is ever read.
+    assert (reading.mode, reading.lead.model, reading.others, reading.notes) == (
+        "single",
         lead,
-        [other],
-        ("agent_unusable",),  # outsider is not the organisation's: never read
+        (),
+        ("ensemble_after_scan",),
     )
     assert set_org(db, operator, customer, ops.AiChoice([lead, other], lead), ensemble=False).code == "done"
     revoked = _scan(db, customer, document)
-    assert (revoked.mode, revoked.others, revoked.notes) == ("single", (), ("agent_unusable", "mode_revoked"))
+    assert (revoked.mode, revoked.others, revoked.notes) == ("single", (), ("ensemble_after_scan",))
+
+
+def test_one_scanning_model_saves_with_cost_saving_and_ensemble_saved_off(db: Database) -> None:
+    # 0037 (Tushar, 16 Oct 2026: any number of models): Cost saving re-reads with the lead
+    # itself; Ensemble, which needs a second scanning model, is saved off, not refused.
+    operator = new_operator(db)
+    customer, _ = new_customer(db)
+    lead = catalog_model(db)
+    choice = ops.AiChoice([lead], lead, dynamic=True)
+    assert set_org(db, operator, customer, choice, ensemble=True).code == "done"
+    with db.customer(customer) as conn:
+        allowed = models.effective_settings(conn, customer)
+    assert (allowed["dynamic"], allowed["ensemble"]) == (True, False)
+    [(details,)] = as_owner(
+        db,
+        "SELECT details FROM audit_log WHERE customer_id = :c AND action = 'org.ai_settings_set'",
+        {"c": customer},
+    )
+    assert (details["dynamic"], details["ensemble"]) == (True, False)
+    reading = _scan(db, customer, _document(db, customer, read_model=lead, read_mode="dynamic"))
+    assert (reading.mode, reading.lead.model, reading.careful) == ("dynamic", lead, reading.lead)
+    # Two scanning models and one answering model: Ensemble stays on (Ask answers with one).
+    answer, other = chat_model(db), catalog_model(db)
+    two = ops.AiChoice([lead, other], lead, [answer], answer)
+    assert set_org(db, operator, customer, two, ensemble=True).code == "done"
+    with db.customer(customer) as conn:
+        assert models.effective_settings(conn, customer)["ensemble"] is True
 
 
 def test_a_vendor_outside_the_allow_list_is_unusable_even_when_enabled_and_verified(db: Database) -> None:

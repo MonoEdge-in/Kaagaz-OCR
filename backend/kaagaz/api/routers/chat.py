@@ -1,5 +1,9 @@
-"""POST /api/chat, GET /api/chat/options, GET /api/conversations, GET
-/api/conversations/{id} and POST /api/messages/{id}/feedback.
+"""POST /api/chat, GET /api/chat/options, GET /api/conversations, GET, PATCH {title}
+and DELETE /api/conversations/{id}, and POST /api/messages/{id}/feedback.
+
+A new conversation's title is its first question made short (``short_title``, UI audit
+A1, 16 Oct 2026: no model call); its owner may rename it or delete it with its messages
+(audited ``chat.rename`` / ``chat.delete``, ids only).
 
 Who drafts the answer (features 25-27, council 15 Oct 2026, C7, C10): the asker may name
 the chat models (by id, at most MAX_AGENTS, more than one only with the organisation's
@@ -52,20 +56,25 @@ from sqlalchemy.exc import SQLAlchemyError
 from kaagaz.ai.client import ModelOutputError, ModelUnavailable
 from kaagaz.ai.usage import usage_scope
 from kaagaz.answering.memory import NO_MEMORY, Memory, from_row, live
+from kaagaz.answering.pins import Pin
 from kaagaz.answering.rewrite import Turn
-from kaagaz.api.auth import User
+from kaagaz.api.auth import FEATURE_OFF, CurrentUser, User
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.middleware import RateLimiter
+from kaagaz.api.names import clean_name
 from kaagaz.api.views import answer_with_source_states, cited_document_ids, conversation_summary, message
-from kaagaz.db import audit
+from kaagaz.db import ai_settings, audit
 from kaagaz.db import chat as chat_sql
 from kaagaz.db.models import (
     LEVELS,
     MAX_AGENTS,
+    NO_MODEL,
     AiNotAllowed,
+    ChatChoice,
     effective_settings,
     resolve_chat,
+    strongest_chat,
     usable_chat_models,
 )
 from kaagaz.ingestion.errors import BackendUnavailable
@@ -78,6 +87,7 @@ logger = logging.getLogger(__name__)
 Context = Annotated[AppContext, Depends(get_context)]
 
 MAX_TITLE = 200
+SHORT_TITLE = 60  # characters of the first question a new conversation's title keeps
 NOT_FOUND_TEXT = "I couldn't find this in your documents."
 MAX_SCOPE_BYTES = 4096  # the messages.scope CHECK (migration 0006)
 TOO_MANY_QUESTIONS = "You have asked many questions in a short time. Please wait a minute and ask again."
@@ -118,6 +128,36 @@ NOT_ALLOWED = {
     "ensemble_not_allowed": "Your organisation does not allow more than one answer model at once.",
     "thinking_not_allowed": "That thinking level is not available here. Choose another in Answer settings.",
 }
+
+
+class TitleBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1, max_length=MAX_TITLE)  # then clean_name, as a folder's
+
+
+def short_title(question: str) -> str:
+    """The first question as a short title: one line, at most SHORT_TITLE characters, cut
+    at a word with "…" when longer. O(len(question))."""
+    line = " ".join(question.split())
+    if len(line) <= SHORT_TITLE:
+        return line
+    cut = line[: SHORT_TITLE - 1]
+    at = cut.rfind(" ")
+    return (cut[:at] if at > SHORT_TITLE // 2 else cut).rstrip(" ,.;:") + "…"
+
+
+class PinBody(BaseModel):
+    """A source put on top of an answer (ranked sources, Tushar, 16 Oct 2026): where it is,
+    and where it was in the list before (1 is the top)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    document_id: uuid.UUID
+    page_no: int = Field(ge=1, le=100000)
+    # The cited source's ref_id, so one of two sources on one page; None for Also in.
+    ref_id: str | None = Field(default=None, min_length=1, max_length=100)
+    previous_rank: int = Field(ge=1, le=1000)
 
 
 class FeedbackBody(BaseModel):
@@ -163,10 +203,16 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
             if chosen is None
             else resolve(conn, user.customer_id, chosen, timezone=context.settings.timezone)
         )
+        # Most relevant picks (answering/pins.py): the asker's own only, live documents only.
+        pins = [
+            Pin(row["document_id"], int(row["page_no"]), bool(row["same"]), str(row["question"]))
+            for row in chat_sql.pins_for(conn, user.customer_id, user.user_id, conversation_id)
+        ]
+        if not ai_settings.switch_on(conn, "ask", user.customer_id):  # switched off (0038, 0039)
+            raise ApiError(403, "feature_off", FEATURE_OFF)
         try:
-            choice = resolve_chat(
-                conn, user.customer_id, body.agents, body.thinking, settings=context.settings
-            )
+            agents = _first_allowed(conn, user.customer_id, body.agents, context)
+            choice = _choice(conn, user, agents, body.thinking, context)
         except AiNotAllowed as refused:
             raise ApiError(403, refused.code, NOT_ALLOWED[refused.code]) from None
     saved = None if chosen is None else chosen.model_dump(mode="json")
@@ -182,7 +228,7 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
         kind="chat",
         conversation_id=conversation_id,
     ) as spend:
-        answer = context.answers.answer(
+        reply = context.answers.answer(
             user.customer_id,
             question,
             scope=scope,
@@ -190,12 +236,16 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
             user_id=user.user_id,
             memory=memory,
             choice=choice,
-        ).to_json()
+            pins=pins,
+        )
+        if reply.unavailable:  # KZ-006: an outage is never "not found"; nothing is stored
+            raise ApiError(503, "backend_unavailable", headers={"Retry-After": "60"})
+        answer = reply.to_json()
 
         with context.db.customer(user.customer_id) as conn:
             if conversation_id is None:
                 conversation_id = chat_sql.create_conversation(
-                    conn, user.customer_id, user.user_id, question[:MAX_TITLE]
+                    conn, user.customer_id, user.user_id, short_title(question)
                 )
             elif chat_sql.get_conversation(conn, user.customer_id, conversation_id, user.user_id) is None:
                 raise ApiError(404, "not_found")
@@ -264,6 +314,39 @@ def chat_options(user: User, context: Context) -> dict[str, Any]:
         "ensemble": bool(allowed["ensemble"]) and len(rows) >= 2,
         "max_agents": MAX_AGENTS,
     }
+
+
+def _choice(
+    conn: Connection, user: CurrentUser, agents: list[str] | None, thinking: str | None, context: AppContext
+) -> ChatChoice:
+    """Who drafts the answer under the asker's Ask setting (AI settings, 0038): nothing
+    saved, ``resolve_chat`` as before; None, no model (``NO_MODEL``); Low and High those
+    thinking levels, the request's own level capped at it; Max high on the strongest
+    usable answer model unless the request names one. One statement more than before."""
+    ceiling = effective_settings(conn, user.customer_id)
+    saved = ai_settings.rows(conn, user.customer_id, user.user_id)
+    task = ai_settings.resolve("ask", saved, *ai_settings.ask_ceiling(ceiling))
+    if task.chosen and task.effective == "none":
+        return NO_MODEL
+    if task.chosen:
+        thinking = ai_settings.ask_thinking(task.effective, ceiling["chat_levels"] or ["low"], thinking)
+        if task.effective == "max" and agents is None:
+            agents = strongest_chat(
+                usable_chat_models(conn, user.customer_id, settings=context.settings), thinking
+            )
+    return resolve_chat(conn, user.customer_id, agents, thinking, settings=context.settings)
+
+
+def _first_allowed(
+    conn: Connection, customer_id: str, agents: list[str] | None, context: AppContext
+) -> list[str] | None:
+    """One model answers in Ask (Tushar, 16 Oct 2026): a request naming several (an older
+    screen) gets the first one this organisation allows, never a refusal for naming more;
+    none allowed, the first, which ``resolve_chat`` refuses as before. One query, only then."""
+    if agents is None or len(agents) <= 1:
+        return agents
+    usable = {row["id"] for row in usable_chat_models(conn, customer_id, settings=context.settings)}
+    return [next((agent for agent in agents if agent in usable), agents[0])]
 
 
 def _live_memory(conn: Connection, customer_id: str, state: RowMapping) -> Memory:
@@ -384,12 +467,63 @@ def get_conversation(conversation_id: uuid.UUID, user: User, context: Context) -
         states = chat_sql.document_states(conn, user.customer_id, cited)
     messages = []
     for row in rows:
-        shown = message(row, row["feedback"])
+        pin = (
+            None
+            if row["pin_document_id"] is None
+            else {
+                "document_id": row["pin_document_id"],
+                "page_no": row["pin_page_no"],
+                "ref_id": row["pin_ref_id"],
+            }
+        )
+        shown = message(row, row["feedback"], pin)
         if shown["answer"]:
             # Sources moved to Trash, deleted or replaced since: see views.answer_with_source_states.
             shown["answer"] = answer_with_source_states(shown["answer"], states)
         messages.append(shown)
     return {"id": str(found["id"]), "title": found["title"], "messages": messages}
+
+
+@router.patch("/conversations/{conversation_id}")
+def rename_conversation(
+    conversation_id: uuid.UUID, body: TitleBody, user: User, context: Context
+) -> dict[str, Any]:
+    title = clean_name(body.title, max_length=MAX_TITLE)
+    if title is None:
+        raise ApiError(400, "bad_request", "Enter a name for the conversation.")
+    with context.db.customer(user.customer_id) as conn:
+        found = chat_sql.rename_conversation(
+            conn, user.customer_id, str(conversation_id), user.user_id, title
+        )
+        if found is None:
+            raise ApiError(404, "not_found")
+        audit.record(
+            conn,
+            user.customer_id,
+            actor_user_id=user.user_id,
+            action="chat.rename",
+            target_type="conversation",
+            target_id=str(conversation_id),
+        )
+    return conversation_summary(found)
+
+
+@router.delete("/conversations/{conversation_id}", status_code=204)
+def delete_conversation(conversation_id: uuid.UUID, user: User, context: Context) -> Response:
+    """The conversation and its messages and feedback (ON DELETE CASCADE); its AI spend
+    stays, without the conversation (model_usage, ON DELETE SET NULL)."""
+    with context.db.customer(user.customer_id) as conn:
+        if not chat_sql.delete_conversation(conn, user.customer_id, str(conversation_id), user.user_id):
+            raise ApiError(404, "not_found")
+        audit.record(
+            conn,
+            user.customer_id,
+            actor_user_id=user.user_id,
+            action="chat.delete",
+            target_type="conversation",
+            target_id=str(conversation_id),
+        )
+    return Response(status_code=204)
 
 
 @router.post("/messages/{message_id}/feedback", status_code=204)
@@ -403,6 +537,27 @@ def send_feedback(message_id: uuid.UUID, body: FeedbackBody, user: User, context
             user.user_id,
             rating=body.rating,
             reason=reason,
+        )
+    if not stored:
+        raise ApiError(404, "not_found")
+    return Response(status_code=204)
+
+
+@router.post("/messages/{message_id}/pin", status_code=204)
+def pin_source(message_id: uuid.UUID, body: PinBody, user: User, context: Context) -> Response:
+    """ "Most relevant": the asker puts one source of an answer on top (0036). Kept as
+    relevance feedback; the answer's text never changes. 404 for anyone else's answer or a
+    document that is not this customer's."""
+    with context.db.customer(user.customer_id) as conn:
+        stored = chat_sql.add_pin(
+            conn,
+            user.customer_id,
+            str(message_id),
+            user.user_id,
+            document_id=str(body.document_id),
+            page_no=body.page_no,
+            previous_rank=body.previous_rank,
+            ref_id=body.ref_id,
         )
     if not stored:
         raise ApiError(404, "not_found")

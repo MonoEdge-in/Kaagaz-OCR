@@ -5,11 +5,10 @@
 // can prove them. Dollars stay in the operator console: org admins and members never see
 // money (Tushar, 15 Oct 2026).
 
-import { formatUsd } from "@/lib/format";
-import type { AiDefaults, AiEnv, AiLevel, AiValues, OperatorModel, OperatorUsageRow, UsageTotals } from "@/lib/types";
+import { PART_NOT_KNOWN, formatUsd } from "@/lib/format";
+import type { AiDefaults, AiEnv, AiLevel, AiValues, OperatorModel, OperatorUsageRow, OrgInsight, UsageTotals } from "@/lib/types";
 import { countText } from "./logic";
 
-const TOKENS_PER_M = 1_000_000;
 // numeric(12,2): the largest budget the server's column holds.
 export const MAX_BUDGET = 9_999_999_999.99;
 
@@ -28,28 +27,68 @@ export function usd(value: number | null, estimated = false): string {
 /** A live price: "$2.00" (per million tokens). */
 export const priceText = (perM: number) => perMillion.format(perM);
 
+/** "List price $3.00 in · $15.00 out per million tokens". */
+export const listPriceText = (model: OperatorModel) =>
+  `List price ${priceText(model.price_in_usd_per_m)} in · ${priceText(model.price_out_usd_per_m)} out per million tokens`;
+
 /**
- * MC3: what one page costs at the live price: from the pages scanned in the last 30
- * days (ledger_tokens_*); else from verify-models' small test page, a rough estimate;
- * null with neither.
+ * Tushar, 16 Oct 2026: only the REAL cost, what OpenRouter charged in the last 30 days
+ * (0033), never tokens times the list price. Scanning: "$42.49 per 1,000 pages · from 312
+ * pages, last 30 days"; answering: "$0.12 per 1,000 questions · from 40 questions, last
+ * 30 days". Calls with no reported cost are said beside the number, never guessed; no
+ * real use says the list price and "not used yet".
  */
-export function pageCost(model: OperatorModel): { usd: number; rough: boolean } | null {
-  const rough = model.ledger_tokens_in === null || model.ledger_tokens_out === null;
-  const tokensIn = rough ? model.tokens_per_page_in : model.ledger_tokens_in;
-  const tokensOut = rough ? model.tokens_per_page_out : model.ledger_tokens_out;
-  if (tokensIn === null || tokensOut === null) return null;
-  return {
-    usd: (tokensIn * model.price_in_usd_per_m + tokensOut * model.price_out_usd_per_m) / TOKENS_PER_M,
-    rough,
-  };
+export function realCostText(model: OperatorModel, area: Area): string {
+  const [units, costed, cost, unknown, one, many] =
+    area === "scan"
+      ? [model.scan_pages, model.scan_pages_costed, model.scan_cost_usd, model.scan_cost_unknown_calls, "page", "pages"]
+      : [model.answer_questions, model.answer_questions_costed, model.answer_cost_usd, model.answer_cost_unknown_calls, "question", "questions"];
+  if (units === 0) return `${listPriceText(model)} · not used yet`;
+  const notKnown = unknown > 0 ? `cost not known for ${countText(unknown, "call", "calls")}` : "";
+  if (costed === 0 || cost === null) return `${listPriceText(model)} · ${notKnown || "cost not known"}, last 30 days`;
+  const real = `${usd((cost / costed) * 1000)} per 1,000 ${many} · from ${countText(costed, one, many)}, last 30 days`;
+  return notKnown ? `${real} · ${notKnown}` : real;
 }
 
-/** The cost a page in words, as the upload's "Read with" says it. */
-export function pageCostText(model: OperatorModel): string {
-  const cost = pageCost(model);
-  if (cost === null) return "Cost not measured yet";
-  const text = cost.usd < 0.01 ? "under $0.01 a page" : `about ${usd(cost.usd)} a page`;
-  return cost.rough ? `${text} (rough estimate)` : text;
+// ponytail: one rate set by hand (Oct 2026), so the rupees drift from the real rate; read a
+// live rate if anyone ever acts on the rupee figure rather than the dollars.
+export const INR_PER_USD = 88;
+const rupees = new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 });
+
+/** The budget in rupees, roughly: "≈ ₹10,560 a month (at ₹88 per $)"; null without a budget. */
+export const inrText = (dollars: number | null | undefined) =>
+  typeof dollars === "number" ? `≈ ${rupees.format(dollars * INR_PER_USD)} a month (at ₹${INR_PER_USD} per $)` : null;
+
+/** "This month: $58.10 used", from the operator insights; null when no cost is known. */
+export function monthSpentText(org: OrgInsight | undefined): string | null {
+  if (!org || org.month_cost_usd === null) return null;
+  const part = org.month_cost_part_unknown ? ` ${PART_NOT_KNOWN}` : "";
+  return `This month: ${usd(org.month_cost_usd, org.month_cost_estimated)} used${part}`;
+}
+
+const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
+
+/** A model's job in Compare models (board 8): "Scan default (High) · chat default (Medium)",
+ * else what it can do: "Chat only · not used for scan". */
+export function jobText(model: OperatorModel, platform: AiDefaults | null): string {
+  const jobs: string[] = [];
+  if (platform) {
+    const { defaults, env } = platform;
+    const scanDefault = defaults.scan_models.length > 0 ? defaults.scan_default : env.scan_model;
+    const chatDefault = defaults.chat_models.length > 0 ? defaults.chat_default : env.chat_model;
+    const scanLevel = defaults.scan_thinking ? LEVEL_WORDS[defaults.scan_thinking] : env.scan_thinking;
+    if (model.id === scanDefault) jobs.push(`scan default (${scanLevel})`);
+    if (model.id === chatDefault)
+      jobs.push(defaults.chat_default_level ? `chat default (${LEVEL_WORDS[defaults.chat_default_level]})` : "chat default");
+  }
+  if (jobs.length === 0) {
+    const scan = canScan(model);
+    const chat = canAnswer(model);
+    if (model.enabled_at === null) jobs.push("not enabled");
+    else if (!model.vendor_allowed) jobs.push("never used: its maker is not allowed");
+    else jobs.push(scan && chat ? "scan and chat" : scan ? "scan only · not used for chat" : chat ? "chat only · not used for scan" : "not used for scan or chat");
+  }
+  return capital(jobs.join(" · "));
 }
 
 export const yesNo = (value: boolean) => (value ? "Yes" : "No");
@@ -86,11 +125,26 @@ export function usesText(model: OperatorModel): string {
 /** S1: a model whose maker is not allowed is never used, even when enabled. */
 export const VENDOR_NOT_ALLOWED = "Never used: its maker is not on the allowed list (OPENROUTER_MODEL_VENDORS).";
 
+/** Tushar, 18 Oct 2026: a model that lists no thinking levels is always called with none;
+ * any level set for it means its one mode. Super admin only (it names the model). */
+export const NO_LEVELS = "No thinking levels";
+export const hasNoLevels = (model: Pick<OperatorModel, "efforts">) => (model.efforts ?? []).length === 0;
+
 // --- AI settings: one organisation's, or the platform defaults (features 25-27) ----------
 
 export const LEVELS: AiLevel[] = ["low", "medium", "high"];
 export const LEVEL_WORDS: Record<AiLevel, string> = { low: "Low", medium: "Medium", high: "High" };
-export const DYNAMIC_HINT = "Picks the right reading for each page.";
+// Cost saving (Tushar, 16 Oct 2026): the super admin's name for Dynamic (its id and the
+// `dynamic` field stay). Organisations never see it: their "Read with" calls it "Automatic".
+export const COST_SAVING = "Cost saving";
+export const DYNAMIC_HINT = "Reads clear pages quickly and spends extra effort only on hard-to-read words.";
+// Any number of scanning models (Tushar, 16 Oct 2026): Ensemble asked with fewer than two
+// in effect is saved off, and the save says so calmly (0037).
+export const ENSEMBLE_OFF = "Ensemble is off: it needs a second scanning model.";
+
+/** What a saved organisation's AI settings say, with the Ensemble note when the server turned it off. */
+export const savedText = (orgName: string, ensembleOff: boolean) =>
+  `Saved the AI settings of ${orgName}.${ensembleOff ? ` ${ENSEMBLE_OFF}` : ""}`;
 
 export type Area = "scan" | "chat";
 
@@ -124,12 +178,34 @@ export function draftOf(values: AiValues, extra: { ensemble: boolean; ai_budget_
   };
 }
 
+/** A section of an organisation's AI settings (board 9). Ensemble and the budget have no
+ * platform default: off and no budget stand for it. */
+export type Section = "scan" | "chat" | "ensemble" | "budget";
+
+/** Does a section of the draft follow the platform default ("Same as platform default")? */
+export function sameAsDefault(draft: AiDraft, section: Section): boolean {
+  if (section === "ensemble") return !draft.ensemble;
+  if (section === "budget") return draft.budget.trim() === "";
+  return follows(aiBody(draft))[section] === "all";
+}
+
+/** "Reset section": that section back to the platform default, the others as they are. */
+export function resetSection(draft: AiDraft, section: Section): AiDraft {
+  switch (section) {
+    case "scan":
+      return { ...draft, scan_models: [], scan_default: null, scan_thinking: null, dynamic: null };
+    case "chat":
+      return { ...draft, chat_models: [], chat_default: null, chat_levels: [], chat_default_level: null };
+    case "ensemble":
+      return { ...draft, ensemble: false };
+    case "budget":
+      return { ...draft, budget: "" };
+  }
+}
+
 /** Follow the platform defaults in both areas: no own models, levels or switches, and no
  * Ensemble (it is never a default). The budget stays. */
-export const followDefaults = (draft: AiDraft): AiDraft => ({
-  ...draftOf({ scan_models: [], scan_default: null, chat_models: [], chat_default: null, scan_thinking: null, chat_levels: null, chat_default_level: null, dynamic: null }),
-  budget: draft.budget,
-});
+export const followDefaults = (draft: AiDraft): AiDraft => resetSection(resetSection(resetSection(draft, "scan"), "chat"), "ensemble");
 
 /** Tick or untick a model of an area. The first ticked becomes the area's default;
  * unticking the default moves it to the first left, or to none. */
@@ -242,49 +318,119 @@ export function inheritedText(
       return defaults.chat_models.length > 0 ? namesOf(defaults.chat_models, catalogue, defaults.chat_default) : `the server's model (${env.chat_model})`;
     case "scan_thinking":
       return defaults.scan_thinking !== null ? LEVEL_WORDS[defaults.scan_thinking] : `the server's level (${env.scan_thinking})`;
-    case "chat_levels": {
-      const levels = defaults.chat_levels ?? [];
-      const words = levels.map((level) => LEVEL_WORDS[level]).join(", ");
-      return defaults.chat_default_level ? `${words}; default ${LEVEL_WORDS[defaults.chat_default_level]}` : words;
-    }
+    case "chat_levels":
+      return levelText(defaults);
     case "dynamic":
       return defaults.dynamic ? "On" : "Off";
   }
 }
 
-// The platform defaults' areas, in the order the save's summary says them.
-const DEFAULT_AREAS: { area: keyof AiDefaults["orgs_inheriting"]; label: string; changed(a: AiValues, b: AiValues): boolean }[] = [
-  { area: "scan_models", label: "scanning models", changed: (a, b) => !same(a.scan_models, b.scan_models) || a.scan_default !== b.scan_default },
-  { area: "scan_thinking", label: "scanning level", changed: (a, b) => a.scan_thinking !== b.scan_thinking },
-  { area: "dynamic", label: "Dynamic", changed: (a, b) => a.dynamic !== b.dynamic },
-  { area: "chat_models", label: "answering models", changed: (a, b) => !same(a.chat_models, b.chat_models) || a.chat_default !== b.chat_default },
+/** "High, Medium; default Medium". */
+function levelText(values: Pick<AiValues, "chat_levels" | "chat_default_level">): string {
+  const words = (values.chat_levels ?? []).map((level) => LEVEL_WORDS[level]).join(", ");
+  return values.chat_default_level ? `${words}; default ${LEVEL_WORDS[values.chat_default_level]}` : words;
+}
+
+/** Board 9: "People at Sharma Traders will see: Two (default), One; levels High, Medium;
+ * default Medium", from the draft, or the platform defaults where it follows them. */
+export function pickerText(orgName: string, draft: AiDraft, defaults: AiValues, env: AiEnv, catalogue: OperatorModel[]): string {
+  const own = aiBody(draft);
+  const models = own.chat_models.length > 0 ? namesOf(own.chat_models, catalogue, own.chat_default) : inheritedText("chat_models", defaults, env, catalogue);
+  const levels = own.chat_levels !== null ? levelText(own) : inheritedText("chat_levels", defaults, env, catalogue);
+  return `People at ${orgName} will see: ${models}; levels ${levels}`;
+}
+
+// The platform defaults' areas, in the order the save's summary says them; `now` says an
+// organisation's value, for its save bar.
+const DEFAULT_AREAS: {
+  area: keyof AiDefaults["orgs_inheriting"];
+  label: string;
+  changed(a: AiValues, b: AiValues): boolean;
+  now(v: AiValues, catalogue: OperatorModel[]): string;
+}[] = [
+  {
+    area: "scan_models",
+    label: "scanning models",
+    changed: (a, b) => !same(a.scan_models, b.scan_models) || a.scan_default !== b.scan_default,
+    now: (v, catalogue) => (v.scan_models.length > 0 ? namesOf(v.scan_models, catalogue, v.scan_default) : "platform defaults"),
+  },
+  {
+    area: "scan_thinking",
+    label: "scanning level",
+    changed: (a, b) => a.scan_thinking !== b.scan_thinking,
+    now: (v) => (v.scan_thinking ? LEVEL_WORDS[v.scan_thinking] : "platform default"),
+  },
+  {
+    area: "dynamic",
+    label: COST_SAVING,
+    changed: (a, b) => a.dynamic !== b.dynamic,
+    now: (v) => (v.dynamic === null ? "platform default" : v.dynamic ? "On" : "Off"),
+  },
+  {
+    area: "chat_models",
+    label: "answering models",
+    changed: (a, b) => !same(a.chat_models, b.chat_models) || a.chat_default !== b.chat_default,
+    now: (v, catalogue) => (v.chat_models.length > 0 ? namesOf(v.chat_models, catalogue, v.chat_default) : "platform defaults"),
+  },
   {
     area: "chat_levels",
     label: "answering levels",
     changed: (a, b) => !same(a.chat_levels ?? [], b.chat_levels ?? []) || a.chat_default_level !== b.chat_default_level,
+    now: (v) => (v.chat_levels !== null ? levelText(v) : "platform defaults"),
   },
 ];
 
+const budgetWords = (text: string) => {
+  const value = parseBudget(text);
+  return value === null ? "none" : value === undefined ? text.trim() : usd(value);
+};
+
+/** The save bar's list (board 9): what saving the draft changes, in words; empty: nothing. */
+export function changesText(saved: AiDraft, draft: AiDraft, catalogue: OperatorModel[]): string[] {
+  const [before, after] = [aiBody(saved), aiBody(draft)];
+  const changes = DEFAULT_AREAS.filter((each) => each.changed(before, after)).map(
+    (each) => `${capital(each.label)}: ${each.now(after, catalogue)}`,
+  );
+  if (saved.ensemble !== draft.ensemble) changes.push(`Ensemble: ${draft.ensemble ? "on" : "off"}`);
+  const [was, now] = [budgetWords(saved.budget), budgetWords(draft.budget)];
+  if (was !== now) changes.push(`Budget: ${was} to ${now}`);
+  return changes;
+}
+
 const same = (a: string[], b: string[]) => [...a].sort().join("\n") === [...b].sort().join("\n");
 
-/** Before a platform defaults save (C12): which organisations still on the defaults it
- * changes, per area; "Nothing changes." when it changes no area. */
-export function defaultsImpact(saved: AiValues, next: AiValues, counts: AiDefaults["orgs_inheriting"]): string {
-  const parts = DEFAULT_AREAS.filter((each) => each.changed(saved, next)).map(
-    (each) => `the ${each.label} of ${countText(counts[each.area], "organisation", "organisations")}`,
-  );
-  if (parts.length === 0) return "Nothing changes.";
-  return `This save changes ${parts.join(", ")} still on the platform defaults. Organisations with their own settings keep them.`;
+export const KEEP_OWN = "Organisations with their own settings keep them.";
+
+/** Before a platform defaults save (C12), as a short list (Tushar, 16 Oct 2026): "This save
+ * changes, for 1 organisation still on platform defaults:" and the areas it changes; when
+ * the areas reach different numbers, each says its own. "Nothing changes." (no areas)
+ * when it changes no area. */
+export function defaultsImpact(
+  saved: AiValues,
+  next: AiValues,
+  counts: AiDefaults["orgs_inheriting"],
+): { lead: string; areas: string[] } {
+  const changed = DEFAULT_AREAS.filter((each) => each.changed(saved, next));
+  if (changed.length === 0) return { lead: "Nothing changes.", areas: [] };
+  const orgs = (count: number) => countText(count, "organisation", "organisations");
+  const reached = [...new Set(changed.map((each) => counts[each.area]))];
+  if (reached.length === 1)
+    return {
+      lead: `This save changes, for ${orgs(reached[0] ?? 0)} still on platform defaults:`,
+      areas: changed.map((each) => capital(each.label)),
+    };
+  return {
+    lead: "This save changes, for the organisations still on platform defaults:",
+    areas: changed.map((each) => `${capital(each.label)}: ${orgs(counts[each.area])}`),
+  };
 }
 
 /** A refusal of a save, next to the field it is about (C12): the server's code, its field. */
 export function refusalField(code: string): AiField {
   switch (code) {
     case "not_verified":
-    case "needs_two_models_scan":
       return "scan_models";
     case "chat_not_verified":
-    case "needs_two_models_chat":
       return "chat_models";
     default: // unavailable, default_not_allowed, level_not_supported: either area
       return "form";

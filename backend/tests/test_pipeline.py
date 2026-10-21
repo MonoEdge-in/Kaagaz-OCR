@@ -15,7 +15,7 @@ from kaagaz.ingestion import sniff
 from kaagaz.ingestion.policy import UploadPolicy, limits_by_type
 from kaagaz.ingestion.ports import Job
 from kaagaz.ingestion.service import UploadService
-from kaagaz.jobs.worker import Handler, JobFailed, Worker
+from kaagaz.jobs.worker import RETRY_FIRST_SECONDS, RETRY_MOST_SECONDS, Handler, JobFailed, Worker
 from kaagaz.pipeline import DocumentProcessor, OnPicture, ReadingSocket
 from kaagaz.reading.csv_reader import CsvReader
 from kaagaz.reading.route import RouteDecision
@@ -406,7 +406,8 @@ class StatusAndFailureTest(unittest.TestCase):
         doc = system.upload.accept(CUSTOMER, io.BytesIO(CSV)).document_id
         for _ in range(MAX_ATTEMPTS + 1):
             system.worker.run_once()
-            system.clock.advance(LEASE_SECONDS)
+            # Changed on purpose (council 16 Oct 2026): retried after retry_delay, at most 900 s.
+            system.clock.advance(RETRY_MOST_SECONDS)
 
         self.assertIs(system.statuses.get_status(CUSTOMER, doc), DocumentStatus.FAILED)
         self.assertEqual(system.repo.failure_codes[(CUSTOMER, doc)], "retries_exhausted")
@@ -420,10 +421,11 @@ class StatusAndFailureTest(unittest.TestCase):
 
         system = build(preparer=CrashingPreparer())
         doc = system.upload.accept(CUSTOMER, io.BytesIO(CSV)).document_id
+        # Changed on purpose (council 17 Oct 2026): a crash is that job's; run_once hands it
+        # back counted and goes on, and it comes back after a minute, not after the lease.
         for _ in range(MAX_ATTEMPTS):
-            with self.assertRaises(RuntimeError):
-                system.worker.run_once()
-            system.clock.advance(LEASE_SECONDS)
+            self.assertTrue(system.worker.run_once())
+            system.clock.advance(RETRY_FIRST_SECONDS)
         self.assertIs(system.statuses.get_status(CUSTOMER, doc), DocumentStatus.CLEAN)  # "Reading…"
         system.worker.run_once()
 

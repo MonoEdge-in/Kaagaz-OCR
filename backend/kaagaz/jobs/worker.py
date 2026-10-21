@@ -5,14 +5,21 @@
 * the handler returns: the job is acked (done).
 * the handler raises JobFailed(retryable=False): the job is buried in the
   failure bin with its code, and never retried.
-* the handler raises JobFailed(retryable=True): nothing is called; the lease
-  runs out and the queue hands the job out again later. The lease length acts
-  as a fixed back-off.
+* the handler raises JobFailed(retryable=True): the job is handed back (``defer``,
+  counted as an attempt) to come out again after ``retry_delay``: 1, 2, 4, 8, then
+  15 minutes (council 16 Oct 2026; it used to wait out the whole lease).
 * the lease is lost (LeaseLost from a heartbeat, ack or bury): the job has
   already been handed to another delivery, so this worker leaves it alone.
   That is normal, not an error.
-* anything else is a bug and propagates. The job is not acked, so the queue
-  hands it out again. There is no blanket ``except Exception`` here on purpose.
+* any other exception from the handler is that job's crash (council 17 Oct 2026: a
+  damaged upload crashed every worker that took it, for ~100 minutes): it is logged
+  CRITICAL (kaagaz/worker_main.py LoggedHandler) and the job is handed back counted,
+  after RETRY_FIRST_SECONDS (60 s), so a file that always crashes reaches its last try
+  in minutes and the worker takes the next job. A crash outside the handler (``admit``,
+  ``on_attempt``, ``on_exhausted``, the queue), a MemoryError, or CRASHES_IN_A_ROW (3)
+  handler crashes in a row, each of a different job, still end the process. A database
+  that cannot be reached is BackendUnavailable("database"), never a crash, so an outage
+  costs no try.
 * the heartbeat renews the lease at most once every LEASE_RENEW_SECONDS (15 s)
   on the worker's clock: a beat after every page or embedding batch
   would be hundreds of queue calls on a long document. The settings' AR1
@@ -40,8 +47,7 @@
   KEY_PROBLEM_DEFER_SECONDS (300) and the error goes on up, so the loop still
   pauses. Every other BackendUnavailable goes up as before and the lease runs out.
 
-PROVISIONAL: the retry back-off is the fixed lease length. Exponential
-back-off with jitter needs the queue settings, which are Vrushit's.
+PROVISIONAL: the retry back-off has no jitter; that needs the queue settings, which are Vrushit's.
 
 Why one bad job cannot block the others: while a job is leased it is hidden,
 and each ``run_once`` handles exactly one job, so the jobs behind a failing one
@@ -54,6 +60,9 @@ import contextlib
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from typing import Protocol
+
+from sqlalchemy.exc import DBAPIError, InterfaceError, OperationalError
+from sqlalchemy.exc import TimeoutError as PoolTimeout
 
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import Job
@@ -80,6 +89,30 @@ class RunsJobs(Protocol):
     """A Worker, or a sweep wrapped around one (kaagaz/worker_main.py)."""
 
     def run_once(self) -> bool: ...
+
+
+RETRY_FIRST_SECONDS = 60
+RETRY_MOST_SECONDS = 900
+
+
+# Handler crashes in a row that end the process: one bad file is that job's, three in a
+# row (different jobs) is the process's (council 17 Oct 2026).
+CRASHES_IN_A_ROW = 3
+
+
+def database_unreachable(error: Exception) -> bool:
+    """A database error that means "cannot reach it" (most calls already raise
+    BackendUnavailable("database"), kaagaz/db/engine.py ``unavailable``; this catches
+    the ones that do not), so an outage is not counted as a try."""
+    return isinstance(error, (OperationalError, InterfaceError, PoolTimeout)) or (
+        isinstance(error, DBAPIError) and error.connection_invalidated
+    )
+
+
+def retry_delay(attempt: int) -> int:
+    """Seconds before a retryable failure's next try: 60 doubling each attempt, at most 900
+    (SQS's longest delay). O(1)."""
+    return min(RETRY_FIRST_SECONDS * 2 ** max(0, attempt - 1), RETRY_MOST_SECONDS)
 
 
 class JobFailed(Exception):
@@ -137,6 +170,8 @@ class Worker:
         self._on_attempt = on_attempt
         self._clock = clock
         self._admit = admit
+        self._crashes = 0  # handler crashes in a row, of different jobs
+        self._last_crash: Job | None = None
 
     def run_once(self) -> bool:
         """Process one job. Returns False when the queue had nothing ready.
@@ -170,9 +205,22 @@ class Worker:
                     try:
                         self._handler(delivery.job, heartbeat)
                     except JobFailed as failure:
+                        self._crashes, self._last_crash = 0, None
                         if not failure.retryable:
                             self._queue.bury(delivery.receipt, failure.code)
+                        else:
+                            # Council 16 Oct 2026: back soon (1, 2, 4, 8, then 15 minutes), each
+                            # counted, rather than after the whole lease with the row frozen.
+                            self._queue.defer(delivery.receipt, retry_delay(delivery.attempt), counted=True)
                         return True
+                    except (Deferred, BackendUnavailable, LeaseLost):
+                        raise
+                    except Exception as error:  # noqa: BLE001 - one job's crash, see the docstring
+                        if database_unreachable(error):
+                            raise BackendUnavailable("database") from None
+                        self._crashed(delivery.job, delivery.receipt, error)
+                        return True
+                    self._crashes, self._last_crash = 0, None
                     self._queue.ack(delivery.receipt)
             except Deferred as deferred:
                 self._queue.defer(delivery.receipt, deferred.seconds)
@@ -184,3 +232,22 @@ class Worker:
         except LeaseLost:
             pass  # another delivery owns the job now
         return True
+
+    def _crashed(self, job: Job, receipt: str, error: Exception) -> None:
+        """A handler crash (council 17 Oct 2026): the job is handed back counted, after
+        RETRY_FIRST_SECONDS, so a file that crashes its parser every time reaches
+        ``on_exhausted`` in minutes, not after JOB_MAX_ATTEMPTS whole leases. The process
+        goes on, unless it is a MemoryError or the CRASHES_IN_A_ROW-th crash in a row of
+        different jobs (one file crashing on each of its tries is that file's): then the fault
+        is the process's, so the job is handed back and the error goes on up.
+
+        ponytail: a native crash (a segfault, or the OOM killer's SIGKILL) never reaches
+        Python, so it bypasses this. The content check already runs in a child process with
+        time and memory limits (kaagaz/scanning/isolated.py); the upgrade path is the same for
+        the parsers."""
+        if job != self._last_crash:
+            self._crashes, self._last_crash = self._crashes + 1, job
+        with contextlib.suppress(LeaseLost):  # another delivery owns it: nothing to hand back
+            self._queue.defer(receipt, RETRY_FIRST_SECONDS, counted=True)
+        if isinstance(error, MemoryError) or self._crashes >= CRASHES_IN_A_ROW:
+            raise error

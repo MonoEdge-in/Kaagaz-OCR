@@ -1,8 +1,9 @@
 "use client";
 
 // The composer, pinned to the foot of the thread: one card with the question on
-// top and a slim toolbar inside it (the mode and scope chips on the left, the
-// answer settings and the round Send button on the right). With a mouse or
+// top and a slim toolbar inside it, one row (UI audit A2, 16 Oct 2026): the mode and
+// scope chips on the left, the answer settings and Send on the right. Send is a solid
+// primary button with its words (A3), clearly dimmed while the box is empty. With a mouse or
 // trackpad, Enter sends and Shift+Enter makes a new line; on a touch screen Enter
 // makes a new line and the Send button sends. The box grows with the text up to
 // about eight lines. The box empties as soon as a question is sent, so the next
@@ -13,7 +14,6 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode, RefObject } from "react";
 import { Icon } from "@/components/ui/Icon";
-import { IconButton } from "@/components/ui/IconButton";
 import type { ModeTexts } from "@/lib/chatMode";
 import { cleanQuestion, MAX_QUESTION_LENGTH, restoreAfterFailure, sendsOnKey } from "./answer";
 import { useMediaQuery } from "./hooks";
@@ -34,6 +34,7 @@ export function QuestionBox({
   pending,
   error,
   onAsk,
+  draft,
   inputRef,
   texts,
   tools,
@@ -46,9 +47,16 @@ export function QuestionBox({
   /** Why the last question could not be sent, or null. */
   error: string | null;
   onAsk: (question: string) => Promise<boolean>;
+  /** A question that failed while Ask was left (askStore.ts): back into the box, as after any failure. */
+  draft?: string;
   inputRef: RefObject<HTMLTextAreaElement | null>;
 }) {
-  const [text, setText] = useState("");
+  const [text, setText] = useState(draft ?? "");
+  const [shownDraft, setShownDraft] = useState(draft);
+  if (draft !== shownDraft) {
+    setShownDraft(draft);
+    if (draft) setText((current) => restoreAfterFailure(current, draft));
+  }
   const [emptyTried, setEmptyTried] = useState(false);
   const coarse = useMediaQuery("(pointer: coarse)");
   // Set from the moment a question is accepted, so a quick second Enter or
@@ -88,6 +96,7 @@ export function QuestionBox({
     }
   };
 
+  const empty = !cleanQuestion(text);
   const describedBy = [emptyTried ? EMPTY_ID : null, texts.help ? HELP_ID : null, coarse ? null : HINT_ID]
     .filter(Boolean)
     .join(" ");
@@ -144,22 +153,29 @@ export function QuestionBox({
           <div className={styles.toolGroup}>{tools}</div>
           <div className={`${styles.toolGroup} ${styles.toolEnd}`}>
             {settings}
-            <IconButton
-              icon="send"
-              label={texts.button}
-              className={`btn-primary ${styles.send}`}
+            <button
+              type="button"
+              className={`btn btn-primary ${styles.send}`}
               // aria-disabled, not disabled: the button keeps focus while the answer
-              // is out, and submit() ignores a press then.
-              aria-disabled={pending || undefined}
+              // is out, and submit() ignores a press then (or says to type first).
+              aria-disabled={pending || empty || undefined}
               aria-busy={pending || undefined}
               onClick={() => void submit()}
-            />
+            >
+              <Icon name="send" size={16} />
+              <span>{texts.button}</span>
+            </button>
           </div>
         </div>
       </div>
       {emptyTried ? (
         <p id={EMPTY_ID} className="error-text">
           Type a question first.
+        </p>
+      ) : null}
+      {text.length >= MAX_QUESTION_LENGTH ? (
+        <p className={styles.composerNote} role="status">
+          Questions can be up to 1,000 characters. The rest was left out.
         </p>
       ) : null}
       {texts.help ? (

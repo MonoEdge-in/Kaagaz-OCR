@@ -125,15 +125,14 @@ describe("statusChip", () => {
 
   it("uses the status chip with a tone, never the label badge classes", () => {
     expect(statusChip("ready")).toEqual({ text: "Ready", tone: "ready", className: "status-chip" });
-    expect(statusChip("received")).toEqual({
-      text: "Checking",
-      tone: "working",
-      className: "status-chip",
-    });
+    // Changed on purpose (UI rebuild Step 1, 20 Oct 2026): the words follow the six
+    // states in lib/status.ts, so a file being checked is Reading and a refused or
+    // unreadable one is Failed.
+    expect(statusChip("received")).toEqual({ text: "Reading", tone: "working", className: "status-chip" });
     expect(statusChip("clean")).toEqual({ text: "Reading", tone: "working", className: "status-chip" });
-    expect(statusChip("needs_reader").tone).toBe("neutral");
-    expect(statusChip("rejected").tone).toBe("danger");
-    expect(statusChip("failed").tone).toBe("danger");
+    expect(statusChip("needs_reader")).toEqual({ text: "Failed", tone: "danger", className: "status-chip" });
+    expect(statusChip("rejected")).toEqual({ text: "Failed", tone: "danger", className: "status-chip" });
+    expect(statusChip("failed")).toEqual({ text: "Failed", tone: "danger", className: "status-chip" });
     for (const status of all) expect(statusChip(status).className).not.toMatch(/badge/);
   });
 });

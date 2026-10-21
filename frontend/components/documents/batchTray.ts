@@ -1,6 +1,8 @@
 // The batch tray (PRD 5 U1), kept pure so it is unit tested in node
 // (tests/batch-tray.test.ts): one line and one bar for each drop of files, then its
-// files, worst first. A drop is remembered in this browser for 24 hours so the tray
+// files in the order they were dropped (changed on purpose, scan states, 16 Oct 2026:
+// worst first moved a file under the pointer each time one changed state), and the
+// status bar's line for all of them (statusBarText). A drop is remembered in this browser for 24 hours so the tray
 // comes back after a reload (from GET /api/batches/{id}): only its id and two counts
 // the server does not keep (files refused as already uploaded, and files not sent),
 // never a file name. Signing out forgets them (AppShell). Every storage access is
@@ -10,7 +12,15 @@ import { ApiError } from "@/lib/api";
 import { documentFraction, longerThanUsual } from "@/lib/progress";
 import type { BatchView, DocumentSummary } from "@/lib/types";
 import { attentionWords } from "./library";
-import { estimateIngestSeconds, estimatePages, uploadKind } from "./logic";
+import {
+  counted,
+  estimateIngestSeconds,
+  estimatePages,
+  flaggedCount,
+  flaggedWords,
+  pagesToCheck,
+  uploadKind,
+} from "./logic";
 import type { UploadEntry } from "./uploadQueue";
 import { NO_TIMES, jobFraction } from "./uploadStages";
 
@@ -34,7 +44,8 @@ export function newBatchId(random: (bytes: Uint8Array) => Uint8Array = (b) => cr
 
 export type RowKind = "failed" | "stopped" | "attention" | "waiting" | "sending" | "reading" | "already" | "ready";
 
-const WORST_FIRST: readonly RowKind[] = [
+// Every kind, for the total (the tray lists files in the order they were dropped).
+const ROW_KINDS: readonly RowKind[] = [
   "failed",
   "stopped",
   "attention",
@@ -74,11 +85,6 @@ export function rowKind(entry: Pick<UploadEntry, "state">): RowKind {
   }
 }
 
-/** The files worst first: failed, stopped, need attention, waiting, sending, reading, already uploaded, ready. */
-export function worstFirst<T extends Pick<UploadEntry, "state">>(entries: readonly T[]): T[] {
-  return [...entries].sort((a, b) => WORST_FIRST.indexOf(rowKind(a)) - WORST_FIRST.indexOf(rowKind(b)));
-}
-
 // --- one drop -----------------------------------------------------------------------
 
 export interface TrayCounts {
@@ -112,7 +118,7 @@ export function trayCounts(
   for (const entry of entries) counts[rowKind(entry)] += 1;
   counts.already = Math.max(counts.already, stored.already);
   counts.failed = Math.max(counts.failed, stored.notSent);
-  counts.total = WORST_FIRST.reduce((sum, kind) => sum + counts[kind], 0);
+  counts.total = ROW_KINDS.reduce((sum, kind) => sum + counts[kind], 0);
   return counts;
 }
 
@@ -135,17 +141,21 @@ export function summaryText(counts: TrayCounts): string {
 }
 
 /**
- * U1's words for a file with an unreadable page: "Couldn't read page n", then what
+ * U1's words for a file with an unreadable page: "Page n to check", then what
  * happened and the fix (null when the server could say neither); null for a file with
- * no unreadable page to look at, or from a listing without the field.
+ * no unreadable page to look at, or from a listing without the field. ``canReread``:
+ * a reviewer or an admin (canReprocess); a member can't read it again, so a "Read ...
+ * again" fix becomes "Upload a better scan." (council 16 Oct 2026).
  */
 export function unreadableWords(
   document: Pick<DocumentSummary, "first_unreadable">,
+  canReread: boolean,
 ): { title: string; detail: string | null } | null {
   const page = document.first_unreadable;
   if (!page) return null;
-  const detail = [page.says, page.fix].filter(Boolean).join(" ");
-  return { title: `Couldn't read page ${page.page_no}`, detail: detail || null };
+  const fix = !canReread && page.fix?.startsWith("Read ") ? "Upload a better scan." : page.fix;
+  const detail = [page.says, fix].filter(Boolean).join(" ");
+  return { title: `Page ${page.page_no} to check`, detail: detail || null };
 }
 
 /**
@@ -163,44 +173,117 @@ export function verifiedWords(
   return attentionWords(document).length === 0 ? "All values verified" : null;
 }
 
-/**
- * What the tray's one live region says (role=status): the ready, attention, failed and
- * stopped totals of all its drops, so it speaks only when a file ends one way or another,
- * never as files move from stage to stage, and never a percent. "" while none has ended.
- */
-export function announcement(drops: readonly (readonly Pick<UploadEntry, "state">[])[]): string {
-  const total = { ready: 0, attention: 0, failed: 0, stopped: 0 };
-  for (const rows of drops) {
-    const counts = trayCounts(rows);
-    total.ready += counts.ready;
-    total.attention += counts.attention;
-    total.failed += counts.failed;
-    total.stopped += counts.stopped;
-  }
-  const parts = [
-    total.ready > 0 ? `${total.ready} ready` : "",
-    total.attention > 0 ? `${total.attention} ${total.attention === 1 ? "needs" : "need"} attention` : "",
-    total.failed > 0 ? `${total.failed} failed` : "",
-    total.stopped > 0 ? `${total.stopped} stopped` : "",
-  ].filter(Boolean);
-  return parts.length > 0 ? `Uploads: ${parts.join(" · ")}` : "";
+/** "About 6 min left": whole minutes, at least 1 (an estimate always says "about"). */
+export function aboutLeft(seconds: number): string {
+  return `About ${Math.max(1, Math.ceil((Number.isFinite(seconds) ? seconds : 0) / 60))} min left`;
 }
 
 /**
- * "about 6 min left" for the whole drop; "Taking longer than usual" while any of its files
- * is, by its row's rule (longerThanUsual); null when nothing is left to read or it is not known.
+ * How long the drop has left: the batch's own time_left (the documents' longest while it
+ * has none), and whether any of its files is taking longer than usual by its row's rule
+ * (longerThanUsual); null when nothing is left to read and none is taking longer.
+ */
+function dropLeft(
+  view: Pick<BatchView, "time_left" | "documents">,
+  now: number,
+): { seconds: number; longer: boolean } | null {
+  const longer = view.documents.some(
+    (document) => document.progress && document.time_left && longerThanUsual(document.time_left, document.progress.step, now),
+  );
+  const own = view.time_left?.seconds;
+  if (!longer && (own === undefined || !Number.isFinite(own) || own <= 0)) return null;
+  const longest = Math.max(0, ...view.documents.map((document) => document.time_left?.seconds ?? 0));
+  return { seconds: own ?? longest, longer };
+}
+
+/**
+ * "About 6 min left" for the whole drop; "Taking longer than usual · About 6 min left" while
+ * any of its files is; null when nothing is left to read or it is not known.
  */
 export function leftText(
   view: Pick<BatchView, "time_left" | "documents"> | null,
   now = performance.now(),
 ): string | null {
-  const longer = view?.documents.some(
-    (document) => document.progress && document.time_left && longerThanUsual(document.time_left, document.progress.step, now),
+  const left = view ? dropLeft(view, now) : null;
+  if (left === null) return null;
+  return left.longer ? `Taking longer than usual · ${aboutLeft(left.seconds)}` : aboutLeft(left.seconds);
+}
+
+const PAGES_DONE_AFTER_READING = new Set(["rereading", "understanding", "indexing"]);
+
+/**
+ * The status bar's one line for this tab's uploads (scan states, 16 Oct 2026; brief C: progress
+ * in the status bar, never a modal): "Uploading invoice_march.pdf · 14 pages", "Scanning 2
+ * documents · page 3 of 14 · About 1 min left", "2 documents waiting to be read", and once nothing is left "Scan complete · 3
+ * documents · 12 flagged for review" (flagged: flaggedCount, logic.ts). "" with no uploads.
+ * "page 3 of 14" counts the pages of the documents being read together.
+ */
+export function statusBarText(
+  entries: readonly Pick<UploadEntry, "state" | "name" | "pages" | "batchId">[],
+  views: Readonly<Record<string, Pick<BatchView, "time_left" | "documents">>>,
+  now: number,
+): string {
+  const sending = entries.filter((entry) => ["waiting", "sending", "saving"].includes(entry.state.kind));
+  const parts: string[] = [];
+  const [one] = sending;
+  if (sending.length === 1 && one) parts.push(`Uploading ${one.name}${one.pages ? ` · ${counted(one.pages, "page")}` : ""}`);
+  else if (sending.length > 1) parts.push(`Uploading ${sending.length} files`);
+  // U7 (QA 17 Oct): a document with no progress is waiting for the reader, counted on its own.
+  const followed = entries.flatMap((entry) => (entry.state.kind === "reading" ? [entry.state.document] : []));
+  const held = (document: { progress?: { step: string } | null }) => !document.progress || document.progress.step === "waiting";
+  const waiting = followed.filter(held).length;
+  const reading = entries.filter((entry) => entry.state.kind === "reading" && !held(entry.state.document));
+  if (reading.length > 0) {
+    parts.push(`Scanning ${counted(reading.length, "document")}`);
+    let done = 0;
+    let total = 0;
+    let onPage = false;
+    for (const entry of reading) {
+      const progress = entry.state.kind === "reading" ? entry.state.document.progress : null;
+      if (!progress || progress.total <= 0) continue;
+      total += progress.total;
+      if (progress.step === "reading") {
+        onPage = true;
+        done += Math.min(progress.done, progress.total);
+      } else if (PAGES_DONE_AFTER_READING.has(progress.step)) done += progress.total;
+    }
+    if (onPage) parts.push(`page ${Math.min(done + 1, total)} of ${total}`);
+    const lefts = [...new Set(reading.map((entry) => entry.batchId))].flatMap((id) => {
+      const view = id === undefined ? undefined : views[id];
+      const left = view ? dropLeft(view, now) : null;
+      return left ? [left] : [];
+    });
+    if (lefts.length > 0) {
+      const about = aboutLeft(Math.max(...lefts.map((left) => left.seconds)));
+      parts.push(lefts.some((left) => left.longer) ? `Taking longer than usual · ${about}` : about);
+    }
+  }
+  if (waiting > 0) parts.push(`${counted(waiting, "document")} waiting to be read`);
+  return parts.length > 0 ? parts.join(" · ") : finishedText(entries);
+}
+
+/** "Scan complete · 3 documents · Nothing flagged · 1 not uploaded"; "" with no uploads. */
+function finishedText(entries: readonly Pick<UploadEntry, "state">[]): string {
+  if (entries.length === 0) return "";
+  const ready = entries.flatMap((entry) =>
+    entry.state.kind === "done" && entry.state.document?.status === "ready" ? [entry.state.document] : [],
   );
-  if (longer) return "Taking longer than usual";
-  const seconds = view?.time_left?.seconds;
-  if (seconds === undefined || !Number.isFinite(seconds) || seconds <= 0) return null;
-  return seconds < 60 ? "under a minute left" : `about ${Math.ceil(seconds / 60)} min left`;
+  const counts = trayCounts(entries);
+  const notSent = entries.filter((entry) => entry.state.kind === "error").length;
+  const notRead = counts.failed - notSent + counts.stopped;
+  const uploaded = entries.filter((entry) => entry.state.kind === "done" && !entry.state.document).length;
+  const sum = (count: (document: DocumentSummary) => number) =>
+    ready.reduce((total, document) => total + count(document), 0);
+  const parts = [
+    ready.length > 0
+      ? `Scan complete · ${counted(ready.length, "document")} · ${flaggedWords(sum(flaggedCount), sum(pagesToCheck))}`
+      : "Uploads finished",
+    uploaded > 0 ? `${uploaded} uploaded` : "",
+    counts.already > 0 ? `${counts.already} already uploaded` : "",
+    notRead > 0 ? `${notRead} failed` : "",
+    notSent > 0 ? `${notSent} not uploaded` : "",
+  ];
+  return parts.filter(Boolean).join(" · ");
 }
 
 /**

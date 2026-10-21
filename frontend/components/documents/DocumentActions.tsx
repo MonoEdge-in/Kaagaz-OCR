@@ -1,48 +1,65 @@
 "use client";
 
-// One document's actions, behind its "Actions" button (menuEntries,
-// library.ts). In a folder or All documents: Rename, Move to folder, Tags,
-// Upload new version, Download original and, when the server says can_delete,
-// Move to Trash. In Trash: Restore (can_delete), Download original and, in an
-// admin session, Delete forever (PRD 1, F5).
-// The menu is a disclosure (a button and a list of buttons): Tab moves through
-// it; Esc, a click elsewhere or leaving it closes it. Rename, Move and Tags
-// each open a small dialog with the error next to its field; Move to Trash and
-// Delete forever keep the table's own "are you sure" step. Any user of the
-// customer may rename, move and tag (PRD 1, F2 and F3); the server checks again.
+// One document's actions, behind its menu button (menuEntries, library.ts). In a
+// folder or All documents: Rename, Move to folder, Tags, Upload new version,
+// Download original and, when the server says can_delete, Move to Trash. In
+// Trash: Restore (can_delete), Download original and, in an admin session, Delete
+// forever (PRD 1, F5). On the document screen: Read again first (DD2).
+// UI audit D5 (16 Oct 2026): the button is an icon ("More actions for <name>"); the
+// menu opens in a portal on <body>, fixed beside the button with a 1px edge, flipped
+// above it near the window's bottom, so neither <main> nor the table cuts it. It is a
+// menu: the first item takes focus, Up/Down/Home/End move, Esc or Tab closes it (Esc
+// back to the button), and a press outside closes it and only that. Scrolling or a
+// resize closes it, so it never floats away from its row. Rename, Move and Tags each
+// open a small dialog with the error next to its field; Move to Trash and Delete
+// forever keep their own "are you sure" step. Any user of the customer may rename,
+// move and tag (PRD 1, F2 and F3); the server checks again.
 
-import { useCallback, useEffect, useId, useRef, useState } from "react";
-import type { FormEvent, KeyboardEvent, RefCallback } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import type { FormEvent, KeyboardEvent, ReactNode, RefCallback } from "react";
+import { createPortal } from "react-dom";
 import { Icon } from "@/components/ui/Icon";
-import { createTag, setDocumentTags, updateDocument } from "@/lib/api";
+import { createFolder, createTag, setDocumentTags, updateDocument } from "@/lib/api";
 import type { DocumentSummary, Tag } from "@/lib/types";
 import { ActionDialog } from "./ActionDialog";
+import { BusyLabel } from "./BusyLabel";
+import { NameChips } from "./FolderActions";
 import { inTreeOrder, pathLabel } from "./folderTree";
 import type { FolderTree } from "./folderTree";
 import {
   documentNameProblem,
   findTagByName,
+  folderNameProblem,
   libraryErrorText,
   menuEntries,
+  menuItemAfterKey,
+  menuPlace,
+  moveSuggestion,
+  movedMessage,
   tagNameProblem,
 } from "./library";
 import type { EditAction, RowAction } from "./library";
+import { documentsCount, runEach } from "./trash";
 import styles from "./Library.module.css";
 
 export interface RowMenuProps {
   item: DocumentSummary;
   canForever: boolean; // Delete forever (canDeleteForever, trash.ts)
   onPick(action: RowAction): void;
-  /** The row keeps hold of the Actions button, to hand focus back to it. */
+  /** The row keeps hold of the menu button, to hand focus back to it. */
   toggleRef: RefCallback<HTMLButtonElement>;
+  /** The document screen's menu (DD2): Read again first when `readAgain`. */
+  place?: "list" | "document";
+  readAgain?: boolean;
 }
 
-export function RowMenu({ item, canForever, onPick, toggleRef }: RowMenuProps) {
+export function RowMenu({ item, canForever, onPick, toggleRef, place = "list", readAgain = false }: RowMenuProps) {
   const [open, setOpen] = useState(false);
-  const wrap = useRef<HTMLDivElement>(null);
+  const [at, setAt] = useState<{ top: number; left: number } | null>(null);
   const button = useRef<HTMLButtonElement | null>(null);
+  const list = useRef<HTMLUListElement>(null);
   const menuId = useId();
-  const entries = menuEntries(item, canForever);
+  const entries = menuEntries(item, canForever, place, readAgain);
 
   const setButton = useCallback(
     (element: HTMLButtonElement | null) => {
@@ -51,88 +68,153 @@ export function RowMenu({ item, canForever, onPick, toggleRef }: RowMenuProps) {
     },
     [toggleRef],
   );
-  const focusOnMount = useCallback((element: HTMLElement | null) => {
-    element?.focus();
-  }, []);
 
-  // A press anywhere outside closes the menu.
-  useEffect(() => {
-    if (!open) return;
-    const onPointerDown = (event: PointerEvent) => {
-      if (event.target instanceof Node && wrap.current?.contains(event.target)) return;
-      setOpen(false);
-    };
-    window.document.addEventListener("pointerdown", onPointerDown);
-    return () => window.document.removeEventListener("pointerdown", onPointerDown);
+  function close(refocus: boolean) {
+    setOpen(false);
+    setAt(null);
+    if (refocus) button.current?.focus();
+  }
+
+  // Placed once its size is known, before it paints (the re-render this asks for comes first
+  // too); its first item takes focus.
+  useLayoutEffect(() => {
+    const menu = list.current;
+    const opener = button.current;
+    if (!open || !menu || !opener) return;
+    const spot = menuPlace(opener.getBoundingClientRect(), menu.getBoundingClientRect(), {
+      width: window.innerWidth,
+      height: window.innerHeight,
+    });
+    setAt({ top: spot.top, left: spot.left });
+    menu.querySelector<HTMLElement>("[role=menuitem]")?.focus();
   }, [open]);
 
-  function onKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    if (event.key !== "Escape" || !open) return;
-    event.stopPropagation();
-    setOpen(false);
-    button.current?.focus();
+  // A press anywhere outside closes the menu, and only that: its click is swallowed, so it
+  // never lands on a link or button that lay under the open menu (MonoEdge misclick rule).
+  // A scroll (of <main>, or anything but the menu) or a resize closes it too.
+  useEffect(() => {
+    if (!open) return;
+    const shut = () => {
+      setOpen(false);
+      setAt(null);
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Node && (list.current?.contains(target) || button.current?.contains(target))) return;
+      shut();
+      const swallow = (click: MouseEvent) => {
+        click.preventDefault();
+        click.stopPropagation();
+      };
+      window.addEventListener("click", swallow, { capture: true, once: true });
+      // A press that turns into a scroll has no click: then the next click is a real one.
+      window.addEventListener("pointercancel", () => window.removeEventListener("click", swallow, true), { once: true });
+    };
+    const onScroll = (event: Event) => {
+      if (!(event.target instanceof Node && list.current?.contains(event.target))) shut();
+    };
+    window.document.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("scroll", onScroll, { capture: true, passive: true });
+    window.addEventListener("resize", shut, { passive: true });
+    return () => {
+      window.document.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", shut);
+    };
+  }, [open]);
+
+  function onMenuKey(event: KeyboardEvent<HTMLUListElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      close(true);
+      return;
+    }
+    if (event.key === "Tab") {
+      close(true); // back on the button, so Tab goes on from there
+      return;
+    }
+    const items = [...(list.current?.querySelectorAll<HTMLElement>("[role=menuitem]") ?? [])];
+    const next = menuItemAfterKey(items.indexOf(event.target as HTMLElement), event.key, items.length);
+    if (next === null) return;
+    event.preventDefault();
+    items[next]?.focus();
   }
 
   function pick(action: RowAction) {
-    setOpen(false);
+    close(false);
     onPick(action);
   }
 
   if (entries.length === 0) return null;
+  const name = `More actions for ${item.display_name}`;
   return (
-    <div
-      ref={wrap}
-      className={styles.menu}
-      onKeyDown={onKeyDown}
-      onBlur={(event) => {
-        const next = event.relatedTarget;
-        if (next instanceof Node && event.currentTarget.contains(next)) return;
-        if (next !== null) setOpen(false);
-      }}
-    >
+    <>
       <button
         ref={setButton}
         type="button"
-        className="btn"
+        className={`btn ${styles.menuButton}`}
+        aria-haspopup="menu"
         aria-expanded={open}
         aria-controls={open ? menuId : undefined}
-        onClick={() => setOpen((now) => !now)}
+        aria-label={name}
+        title={name}
+        onClick={() => (open ? close(false) : setOpen(true))}
+        onKeyDown={(event) => {
+          if (event.key !== "ArrowDown" || open) return;
+          event.preventDefault();
+          setOpen(true);
+        }}
       >
-        Actions<span className="visually-hidden"> for {item.display_name}</span>
+        {/* Three square dots, drawn here: the icon set has no "more" icon yet. */}
+        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+          <rect x="2" y="7" width="2.5" height="2.5" fill="currentColor" />
+          <rect x="6.75" y="7" width="2.5" height="2.5" fill="currentColor" />
+          <rect x="11.5" y="7" width="2.5" height="2.5" fill="currentColor" />
+        </svg>
       </button>
-      {open && (
-        <ul id={menuId} className={styles.menuList} aria-label={`Actions for ${item.display_name}`}>
-          {entries.map((entry, index) => (
-            <li key={entry.kind === "download" ? "download" : entry.action}>
-              {entry.kind === "download" ? (
-                <a
-                  ref={index === 0 ? focusOnMount : undefined}
-                  className={styles.menuItem}
-                  href={entry.href}
-                  download
-                  onClick={() => {
-                    setOpen(false);
-                    button.current?.focus();
-                  }}
-                >
-                  Download original
-                </a>
-              ) : (
-                <button
-                  ref={index === 0 ? focusOnMount : undefined}
-                  type="button"
-                  className={entry.danger ? `${styles.menuItem} ${styles.danger}` : styles.menuItem}
-                  onClick={() => pick(entry.action)}
-                >
-                  {entry.danger && <Icon name="trash" />}
-                  {entry.words}
-                </button>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
+      {open &&
+        createPortal(
+          <ul
+            ref={list}
+            id={menuId}
+            role="menu"
+            className={`motion-pop ${styles.menuList}`}
+            aria-label={`Actions for ${item.display_name}`}
+            style={at ? { top: at.top, left: at.left } : { top: 0, left: 0 }}
+            onKeyDown={onMenuKey}
+          >
+            {entries.map((entry) => (
+              <li key={entry.kind === "download" ? "download" : entry.action} role="none">
+                {entry.kind === "download" ? (
+                  <a
+                    role="menuitem"
+                    tabIndex={-1}
+                    className={styles.menuItem}
+                    href={entry.href}
+                    download
+                    onClick={() => close(true)}
+                  >
+                    Download original
+                  </a>
+                ) : (
+                  <button
+                    role="menuitem"
+                    tabIndex={-1}
+                    type="button"
+                    className={entry.danger ? `${styles.menuItem} ${styles.danger}` : styles.menuItem}
+                    onClick={() => pick(entry.action)}
+                  >
+                    {entry.danger && <Icon name="trash" />}
+                    {entry.words}
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>,
+          window.document.body,
+        )}
+    </>
   );
 }
 
@@ -144,9 +226,12 @@ export interface EditDialogProps {
   onClose(): void;
   /** Called once the dialog is shut and the page can take focus again. */
   onClosed(): void;
-  /** Saved. moved: the document may have left the list being viewed. */
-  onSaved(message: string, moved?: boolean): void;
+  /** Saved. moved: the document may have left the list being viewed; undo puts it back. */
+  onSaved(message: string, moved?: boolean, undo?: () => Promise<void>): void;
   onTagCreated(): void;
+  /** Names for a new folder in Move (folderNameSuggestions). */
+  suggestions?: readonly string[];
+  onFolderCreated?(): void;
 }
 
 export function EditDialog({
@@ -158,6 +243,8 @@ export function EditDialog({
   onClosed,
   onSaved,
   onTagCreated,
+  suggestions,
+  onFolderCreated,
 }: EditDialogProps) {
   const titles: Record<EditAction, string> = {
     rename: `Rename “${item.display_name}”`,
@@ -167,7 +254,16 @@ export function EditDialog({
   return (
     <ActionDialog title={titles[action]} onClose={onClose} onClosed={onClosed}>
       {action === "rename" && <RenameForm item={item} onSaved={onSaved} onCancel={onClose} />}
-      {action === "move" && <MoveForm item={item} tree={tree} onSaved={onSaved} onCancel={onClose} />}
+      {action === "move" && (
+        <MoveForm
+          items={[item]}
+          tree={tree}
+          suggestions={suggestions}
+          onSaved={onSaved}
+          onFolderCreated={onFolderCreated}
+          onCancel={onClose}
+        />
+      )}
       {action === "tags" && (
         <TagsForm
           item={item}
@@ -192,14 +288,14 @@ function FormButtons({
   disabled?: boolean;
   onCancel(): void;
 }) {
+  // [Cancel] [Primary]: the primary last (Library.module.css .formButtons).
   return (
     <div className={styles.formButtons}>
-      <button type="submit" className="btn btn-primary" disabled={busy || disabled}>
-        {busy && <span className="spinner" aria-hidden="true" />}
-        {words}
-      </button>
       <button type="button" className="btn" onClick={onCancel} disabled={busy}>
         Cancel
+      </button>
+      <button type="submit" className="btn btn-primary" disabled={busy || disabled}>
+        <BusyLabel busy={busy} idle={words} working={words} />
       </button>
     </div>
   );
@@ -266,63 +362,185 @@ function RenameForm({ item, onSaved, onCancel }: FormProps) {
   );
 }
 
-function MoveForm({ item, tree, onSaved, onCancel }: FormProps & { tree: FolderTree }) {
-  const [target, setTarget] = useState(item.folder_id ?? ""); // "" is the top level
+// Move to folder (Tushar, 16 Oct 2026: files already here had no clear way into a folder):
+// radio buttons, so arrows move between choices and a disabled one is skipped. All documents
+// (no folder), then every folder in tree order, indented by depth; where the documents are now is
+// marked Current and can't be chosen. First, marked Suggested, the folder named for their kind of
+// document, or a new folder of that name (moveSuggestion); last, New folder… with a name box and
+// suggested names, which makes the folder at the top level and moves into it in one go. One
+// document or many (the selection bar); one call each, the server checks each again.
+const TOP = ""; // All documents: no folder
+const NEW = "+new";
+const SUGGESTED_NEW = "+suggested";
+
+export interface MoveFormProps {
+  items: readonly DocumentSummary[];
+  tree: FolderTree;
+  /** Names for a new folder (folderNameSuggestions). */
+  suggestions?: readonly string[];
+  /** Moved; undo puts each document back where it was. */
+  onSaved(message: string, moved: boolean, undo: () => Promise<void>): void;
+  /** A folder was made here: the screen asks for the folders again. */
+  onFolderCreated?(): void;
+  onCancel(): void;
+}
+
+export function MoveForm({ items, tree, suggestions = [], onSaved, onFolderCreated, onCancel }: MoveFormProps) {
+  const places = new Set(items.map((item) => item.folder_id ?? TOP));
+  const current = places.size === 1 ? [...places][0] : null; // where they all are now
+  const [suggested] = useState(() => moveSuggestion(items, tree)); // kept while the folders reload
+  const suggestedId = suggested && "folderId" in suggested ? suggested.folderId : null;
+  const suggestedName = suggested && "newName" in suggested ? suggested.newName : null;
+  const [choice, setChoice] = useState<string | null>(
+    suggestedId ?? (suggestedName !== null ? SUGGESTED_NEW : null),
+  );
+  const [newName, setNewName] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const id = useId();
+  // Every folder once, in tree order; the suggested one is tagged where it is and chosen
+  // at first (Tushar, 16 Oct 2026: no second copy of it breaking the column).
   const folders = inTreeOrder(tree);
+  // Focus starts on the choice made, else on the first one that can be chosen.
+  const focusValue = choice ?? (current === TOP ? (folders[0]?.folder.id ?? NEW) : TOP);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (choice === null) {
+      setError("Choose where to move to.");
+      return;
+    }
+    const name = choice === SUGGESTED_NEW ? suggestedName : choice === NEW ? newName : null;
+    const problem = name === null ? null : folderNameProblem(name);
+    if (problem) {
+      setError(problem);
+      return;
+    }
     setBusy(true);
     setError(null);
-    try {
-      await updateDocument(item.id, { folder_id: target || null });
-      const where = target ? pathLabel(tree, target) : "the top level";
-      onSaved(`Moved ${item.display_name} to ${where}.`, true);
-    } catch (caught) {
-      setError(libraryErrorText(caught, "document"));
-      setBusy(false);
+    let target = choice;
+    let where = target === TOP ? "All documents" : pathLabel(tree, target);
+    if (name !== null) {
+      try {
+        const created = await createFolder(name.trim(), null);
+        onFolderCreated?.();
+        target = created.id;
+        where = created.name;
+        setChoice(created.id); // trying again moves into it, and makes no second folder
+      } catch (caught) {
+        setError(libraryErrorText(caught, "folder"));
+        setBusy(false);
+        return;
+      }
     }
+    const before = new Map(items.map((item) => [item.id, item.folder_id]));
+    const ids = items.filter((item) => (item.folder_id ?? TOP) !== target).map((item) => item.id);
+    const result = await runEach(ids, (docId) => updateDocument(docId, { folder_id: target || null }));
+    if (result.done.length === 0) {
+      setError(libraryErrorText(result.firstError, "document"));
+      setBusy(false);
+      return;
+    }
+    const undo = async () => {
+      const back = await runEach(result.done, (docId) => updateDocument(docId, { folder_id: before.get(docId) ?? null }));
+      if (back.failed.length > 0) throw back.firstError;
+    };
+    const reason = result.failed.length > 0 ? libraryErrorText(result.firstError, "document") : "";
+    onSaved(movedMessage(result.done.length, ids.length, where, reason), true, undo);
   }
+
+  const option = (value: string, key: string, words: ReactNode, depth = 0) => {
+    const here = value === current;
+    return (
+      <li key={key} style={depth > 0 ? { paddingInlineStart: `calc(${depth} * var(--space-4))` } : undefined}>
+        <label className={styles.check}>
+          <input
+            type="radio"
+            name={`${id}-to`}
+            value={value}
+            checked={choice === value}
+            disabled={here || busy}
+            data-autofocus={value === focusValue ? true : undefined}
+            onChange={() => {
+              setChoice(value);
+              setError(null);
+            }}
+          />
+          {words}
+          {here && <span className={styles.tag}>Current</span>}
+        </label>
+      </li>
+    );
+  };
 
   return (
     <form className={styles.dialogForm} onSubmit={submit} noValidate>
-      <div className="field">
-        <label htmlFor={`${id}-folder`}>Folder</label>
-        <select
-          id={`${id}-folder`}
-          data-autofocus
-          className="input"
-          value={target}
-          onChange={(event) => setTarget(event.target.value)}
-          aria-invalid={error ? true : undefined}
-          aria-describedby={error ? `${id}-error` : undefined}
-        >
-          <option value="">Top level (no folder)</option>
-          {folders.map((node) => (
-            <option key={node.folder.id} value={node.folder.id}>
-              {pathLabel(tree, node.folder.id)}
-            </option>
-          ))}
-        </select>
-        {folders.length === 0 && (
-          <p className="hint">No folders yet. Make one with New folder, above the list.</p>
-        )}
-        {error && (
-          <p id={`${id}-error`} className="error-text" role="alert">
-            {error}
-          </p>
-        )}
-      </div>
-      <FormButtons
-        busy={busy}
-        words="Move"
-        disabled={target === (item.folder_id ?? "")}
-        onCancel={onCancel}
-      />
+      <fieldset className={styles.fieldset} aria-describedby={error ? `${id}-error` : undefined}>
+        <legend>Move to</legend>
+        <ul className={styles.folderChoices}>
+          {suggestedName !== null &&
+            option(
+              SUGGESTED_NEW,
+              "suggested",
+              <>
+                New folder: {suggestedName} <span className={styles.tag}>Suggested</span>
+              </>,
+            )}
+          {option(TOP, "top", "All documents (no folder)")}
+          {folders.map((node) =>
+            option(
+              node.folder.id,
+              node.folder.id,
+              node.folder.id === suggestedId ? (
+                <>
+                  {node.folder.name} <span className={styles.tag}>Suggested</span>
+                </>
+              ) : (
+                node.folder.name
+              ),
+              node.depth,
+            ),
+          )}
+          {option(NEW, "new", "New folder…")}
+        </ul>
+      </fieldset>
+      {choice === NEW && (
+        <div className="field">
+          <label htmlFor={`${id}-name`}>Name of the new folder</label>
+          <input
+            id={`${id}-name`}
+            className="input"
+            value={newName}
+            maxLength={100}
+            autoComplete="off"
+            placeholder="e.g. Invoices 2026"
+            onChange={(event) => setNewName(event.target.value)}
+          />
+          <NameChips names={suggestions} picked={newName} onPick={setNewName} />
+        </div>
+      )}
+      {error && (
+        <p id={`${id}-error`} className="error-text" role="alert">
+          {error}
+        </p>
+      )}
+      <FormButtons busy={busy} words="Move" disabled={choice === null} onCancel={onCancel} />
     </form>
+  );
+}
+
+export interface MoveDialogProps extends Omit<MoveFormProps, "onCancel"> {
+  onClose(): void;
+  onClosed?(): void;
+}
+
+/** The Move dialog for the documents ticked in the list. */
+export function MoveDialog({ onClose, onClosed, ...form }: MoveDialogProps) {
+  const title = form.items.length === 1 ? `Move “${form.items[0]?.display_name}”` : `Move ${documentsCount(form.items.length)}`;
+  return (
+    <ActionDialog title={title} onClose={onClose} onClosed={onClosed}>
+      <MoveForm {...form} onCancel={onClose} />
+    </ActionDialog>
   );
 }
 

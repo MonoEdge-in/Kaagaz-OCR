@@ -12,10 +12,12 @@ import type {
   Citation,
   ConversationSummary,
   DetectedType,
+  DocType,
+  DocumentSummary,
   Region,
   ThinkingLevel,
 } from "@/lib/types";
-import { citationRegion, modelName } from "./answer";
+import { citationRegion } from "./answer";
 
 // --- Grouping the conversation list by day ------------------------------------
 
@@ -188,30 +190,12 @@ export function pageJumps(citation: Citation): PageJump[] {
   return jumps;
 }
 
-export interface SourceAction {
-  text: string; // the link text
-  check: boolean; // true: shown as an outlined button asking the person to check
-  reason: string | null; // why to check, for Needs review
-}
-
 /**
- * The link at the foot of a source card. Verified opens the page; Needs review
- * asks the person to check it, and says why.
+ * The link at the foot of a source card: "Open page 3", the same for every source.
+ * No Needs review in Ask (Tushar, 16 Oct 2026): checking values is the Review screen's.
  */
-export function sourceAction(
-  citation: Pick<Citation, "label" | "kind" | "detected_type" | "page_no">,
-): SourceAction {
-  const word = placeWord(citation).toLowerCase();
-  const place = `${word} ${citation.page_no}`;
-  if (citation.label === "verified") {
-    return { text: `Open ${place}`, check: false, reason: null };
-  }
-  const what = citation.kind === "value" ? "This value" : "This text";
-  return {
-    text: `Check ${place}`,
-    check: true,
-    reason: `${what} was not fully checked when the document was read. Look at the ${word} before you rely on it.`,
-  };
+export function openText(citation: Pick<Citation, "detected_type" | "page_no">): string {
+  return `Open ${placeWord(citation).toLowerCase()} ${citation.page_no}`;
 }
 
 // --- Sending a question ---------------------------------------------------------
@@ -227,6 +211,7 @@ export function askErrorText(error: { status: number; message: string } | null):
     return "Could not reach Kaagaz. Check your internet connection, then try again.";
   }
   if (error.status === 429) return "Too many questions at once. Wait a minute, then try again.";
+  if (error.status === 503) return "Kaagaz is busy right now. Try again in a minute."; // the AI service is down
   const message = error.message.trim();
   if (error.status >= 400 && error.status < 500 && message && message !== GENERIC_MESSAGE) {
     return message;
@@ -261,6 +246,20 @@ export function documentFromSearch(search: string): string | null {
   return id !== null && UUID.test(id) ? id.toLowerCase() : null;
 }
 
+// Home's Ask box opens chat with its question (/chat?q=...): it waits in the question
+// box for Send, so nothing is asked, and no AI call is made, until the person sends it.
+
+/** The question an address brings (trimmed, at most 1,000 characters), or null. */
+export function questionFromSearch(search: string): string | null {
+  const question = (new URLSearchParams(search).get("q") ?? "").trim();
+  return question ? question.slice(0, 1000) : null;
+}
+
+/** The chat address that brings a question to the box. */
+export function askHref(question: string): string {
+  return `/chat?q=${encodeURIComponent(question)}`;
+}
+
 /** The chat address that asks about one document. */
 export function askAboutHref(documentId: string): string {
   return `/chat?document=${encodeURIComponent(documentId)}`;
@@ -289,40 +288,26 @@ export function hasChoices(options: ChatOptions | null): options is ChatOptions 
   return options !== null && (options.agents.length > 1 || options.levels.length > 1);
 }
 
-/** The levels this pick may use: High with one model only (the server refuses more). */
-export function allowedLevels(options: ChatOptions, pick: AnswerPick): ThinkingLevel[] {
-  return options.levels.filter((level) => level !== "high" || pick.agents.length <= 1);
+/** One model answers in Ask (Tushar, 16 Oct 2026): picking one replaces the last; every
+ * level stays open to it. */
+export function chooseAgent(pick: AnswerPick, id: string): AnswerPick {
+  return { ...pick, agents: [id] };
 }
 
-/** `pick` with its level moved to an allowed one when it no longer is. */
-function keepLevel(options: ChatOptions, pick: AnswerPick): AnswerPick {
-  const levels = allowedLevels(options, pick);
-  if (levels.includes(pick.level)) return pick;
-  const level = levels.includes(options.default_level) ? options.default_level : levels[levels.length - 1];
-  return level ? { ...pick, level } : pick;
-}
-
-/** One model (no Ensemble): that one. */
-export function chooseAgent(options: ChatOptions, pick: AnswerPick, id: string): AnswerPick {
-  return keepLevel(options, { ...pick, agents: [id] });
-}
-
-/** Ensemble: tick or untick a model; at most `max_agents`, never none. */
-export function toggleAgent(options: ChatOptions, pick: AnswerPick, id: string): AnswerPick {
-  if (pick.agents.includes(id)) {
-    return pick.agents.length > 1 ? { ...pick, agents: pick.agents.filter((agent) => agent !== id) } : pick;
-  }
-  if (pick.agents.length >= options.max_agents) return pick;
-  return keepLevel(options, { ...pick, agents: [...pick.agents, id] });
-}
-
-/** The chip: the models by name and the level, "Gemini 3.8 Flash · Medium". */
+/** The chip: "Standard · High". Changed on purpose (spec 17 Oct 2026): org users never see a
+ * model's name, so the model is its tier (shown only when there is more than one), then the level. */
 export function pickSummary(options: ChatOptions, pick: AnswerPick): string {
-  const names = pick.agents
-    .map((id) => options.agents.find((agent) => agent.id === id)?.name)
-    .filter((name): name is string => Boolean(name))
-    .map(modelName);
-  return [names.join(" + "), LEVEL_NAMES[pick.level]].filter(Boolean).join(" · ");
+  const index = options.agents.findIndex((agent) => agent.id === pick.agents[0]);
+  const tier = options.agents.length > 1 && index >= 0 ? agentTier(options, index) : "Thinking";
+  return `${tier} · ${LEVEL_NAMES[pick.level]}`;
+}
+
+/** A model's neutral name for org users: the default is "Standard", the others "Careful" (then "Careful 2"…). */
+export function agentTier(options: ChatOptions, index: number): string {
+  const agent = options.agents[index];
+  if (!agent || agent.default) return "Standard";
+  const place = options.agents.filter((each, at) => !each.default && at <= index).length;
+  return place === 1 ? "Careful" : `Careful ${place}`;
 }
 
 /** What POST /chat sends: nothing when the pick is the organisation's default. */
@@ -330,5 +315,57 @@ export function choiceBody(options: ChatOptions | null, pick: AnswerPick | null)
   if (options === null || pick === null) return undefined;
   const usual = defaultPick(options);
   if (pick.level === usual.level && pick.agents.join(",") === usual.agents.join(",")) return undefined;
-  return { ...(pick.agents.length > 0 ? { agents: pick.agents } : {}), thinking: pick.level };
+  return { ...(pick.agents.length > 0 ? { agents: pick.agents.slice(0, 1) } : {}), thinking: pick.level };
+}
+
+// --- UI audit, 16 Oct 2026 (A1, A5) ---------------------------------------------
+
+/** A1: the conversations whose title has the search's words, in the list's order. */
+export function filterConversations(items: readonly ConversationSummary[], search: string): ConversationSummary[] {
+  const words = search.toLowerCase().split(/\s+/).filter(Boolean);
+  return items.filter((item) => words.every((word) => item.title.toLowerCase().includes(word)));
+}
+
+const STARTERS: Partial<Record<DocType, string>> = {
+  invoice: "What is the total amount on this invoice?",
+  receipt: "How much was paid, and to whom?",
+  bank_statement: "What is the closing balance?",
+  land_record: "Who is the owner named in this record?",
+  contract: "Who are the parties, and when does it end?",
+  register: "Which entry has the largest amount?",
+};
+// Any document: the first not yet suggested, so no question shows twice (17 Oct 2026).
+const STARTERS_ANY = [
+  "What is this document about?",
+  "Who are the parties named in it?",
+  "What amounts does it mention?",
+  "When is it dated?",
+];
+export const MAX_STARTERS = 3;
+
+export interface Starter {
+  documentId: string;
+  documentName: string;
+  question: string;
+}
+
+/**
+ * A5: up to three example questions about the newest ready documents, one each, by the
+ * document's type. Each is asked about its own document only. Plain, fixed questions: no
+ * AI call makes them. Never the same question twice (Ask screen polish, 17 Oct 2026): a
+ * type's question already used, or a document with no type, takes the next unused one.
+ */
+export function starterQuestions(documents: readonly DocumentSummary[]): Starter[] {
+  const used = new Set<string>();
+  const starters: Starter[] = [];
+  for (const doc of documents) {
+    if (starters.length === MAX_STARTERS) break;
+    if (doc.status !== "ready" || doc.deleted_at !== null) continue;
+    const typed = doc.doc_type ? STARTERS[doc.doc_type] : undefined;
+    const question = [typed, ...STARTERS_ANY].find((text) => text !== undefined && !used.has(text));
+    if (!question) continue;
+    used.add(question);
+    starters.push({ documentId: doc.id, documentName: doc.display_name, question });
+  }
+  return starters;
 }

@@ -91,10 +91,10 @@ def test_an_admin_deletes_a_tag_and_it_comes_off_every_document(db: Database) ->
     assert admin.client.delete(f"/api/tags/{tag}", headers=CSRF).status_code == 404
 
 
-@pytest.mark.parametrize("role", ["member", "reviewer", "admin"])
+@pytest.mark.parametrize("role", ["member", "reviewer"])
 def test_only_an_admin_session_may_delete_a_tag(db: Database, role: str) -> None:
     api = Api(db)
-    signed = api.new_signed(role)  # an app session, an admin's included
+    signed = api.new_signed(role)  # an app session (an admin has none since 0035)
     tag = api.add_tag(signed.customer_id, signed.user_id, "Paid")
     reply = signed.client.delete(f"/api/tags/{tag}", headers=CSRF)
     assert reply.status_code == 403
@@ -211,13 +211,14 @@ def test_deleting_a_tag_needs_an_admin_with_two_step_sign_in_on(db: Database) ->
     api = Api(db)
     customer_id, _ = api.customer()
     _, email = api.add_user(customer_id, "admin")
-    client = api.client()
-    assert api.admin_login(client, email).status_code == 200  # password only: 2FA is off
-    made = client.post("/api/tags", json={"name": "GST"}, headers=CSRF)
+    # 2FA off: no session at all since 0035, so nothing to delete with.
+    refused = api.admin_login(api.client(), email)
+    assert (refused.status_code, refused.json()["error"]["code"]) == (403, "mfa_enrol_required")
+    admin = api.admin_sign_in(customer_id)
+    made = admin.client.post("/api/tags", json={"name": "GST"}, headers=CSRF)
     assert made.status_code == 201
 
-    reply = client.delete(f"/api/tags/{made.json()['id']}", headers=CSRF)
+    reply = admin.client.delete(f"/api/tags/{made.json()['id']}", headers=CSRF)
 
-    assert reply.status_code == 403
-    assert reply.json()["error"]["code"] == "two_step_required"
-    assert [tag["name"] for tag in client.get("/api/tags").json()["items"]] == ["GST"]
+    assert reply.status_code == 204, reply.text
+    assert admin.client.get("/api/tags").json()["items"] == []

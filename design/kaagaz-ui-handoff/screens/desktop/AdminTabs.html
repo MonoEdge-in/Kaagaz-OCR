@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Kaagaz · Admin other tabs</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="../../styles/kaagaz.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@100..125,400..700&amp;family=IBM+Plex+Mono:wght@400;500&amp;family=IBM+Plex+Sans+Devanagari:wght@400;500;600&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;display=swap">
+<style>body{margin:0}</style>
+</helmet>
+<div class="k-root" data-theme="{{theme}}" style="min-height: 100vh">
+<div style="padding: 48px 56px 72px; display: flex; flex-direction: column; gap: 32px; max-width: 1440px; margin: 0 auto">
+  <div style="display: flex; flex-direction: column; gap: 6px">
+    <span class="k-eyebrow">Screen 11 · Admin console</span>
+    <h1 class="k-h1">Admin · other tabs</h1>
+    <p class="k-muted">Departments, Settings, Activity, Numbers and Failed files. Each sits under the same Admin header and tab row as Users.</p>
+  </div>
+
+  <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(600px, 100%), 1fr)); gap: 24px; align-items: start">
+    <!-- DEPARTMENTS -->
+    <section class="k-card k-card--flush" aria-labelledby="t-dep">
+      <div class="k-card-head k-card-head--bar"><h2 class="k-h3" id="t-dep">Departments</h2><span class="k-small k-muted">The order here is the order everywhere</span></div>
+      <div style="padding: 8px 20px 20px; display: flex; flex-direction: column">
+        <sc-for list="{{depts}}" as="d" hint-placeholder-count="5">
+          <div class="k-rule-row">
+            <span style="display: flex; align-items: center; gap: 12px; min-width: 0">
+              <button class="k-btn k-btn--quiet k-btn--icon k-btn--sm" type="button" aria-label="Drag to reorder {{d.name}}" style="cursor: grab; color: var(--k-ink-faint)"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"></path></svg></button>
+              <span class="k-mono k-faint" style="width: 18px">{{d.n}}</span>
+              <span style="display: flex; flex-direction: column; min-width: 0"><strong>{{d.name}}</strong><span class="k-small k-muted">{{d.who}}</span></span>
+            </span>
+            <span style="display: flex; align-items: center; gap: 6px">
+              <span class="k-mono k-small k-muted" style="min-width: 80px; text-align: right">{{d.files}} files</span>
+              <button class="k-btn k-btn--quiet k-btn--icon k-btn--sm" type="button" aria-label="Move {{d.name}} up"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"></path></svg></button>
+              <button class="k-btn k-btn--quiet k-btn--icon k-btn--sm" type="button" aria-label="Move {{d.name}} down"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true" style="transform: rotate(180deg)"><path d="M12 19V5M5 12l7-7 7 7"></path></svg></button>
+              <button class="k-btn k-btn--quiet k-btn--sm" type="button">Edit</button>
+            </span>
+          </div>
+        </sc-for>
+        <div style="display: flex; gap: 10px; align-items: flex-end; padding-top: 16px; flex-wrap: wrap">
+          <div class="k-field" style="flex: 1 1 240px"><label class="k-label" for="new-dep">Add department</label><input class="k-input" id="new-dep" placeholder="e.g. Purchase"></div>
+          <button class="k-btn k-btn--primary" type="button" style="min-height: 38px">Add department</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section class="k-card k-card--flush" aria-labelledby="t-set">
+      <div class="k-card-head k-card-head--bar"><h2 class="k-h3" id="t-set">Settings</h2><button class="k-btn k-btn--primary k-btn--sm" type="button">Save changes</button></div>
+      <div style="padding: 4px 20px 20px; display: flex; flex-direction: column">
+        <div class="k-rule-row" style="align-items: flex-start; padding: 14px 0">
+          <div style="display: flex; flex-direction: column; gap: 2px"><strong>Upload limit</strong><span class="k-small k-muted">Files in one batch</span></div>
+          <div class="k-select-wrap" style="width: 200px"><select class="k-select" aria-label="Upload limit"><option>100 files per batch</option></select><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></div>
+        </div>
+        <div class="k-rule-row" style="align-items: flex-start; padding: 14px 0">
+          <div style="display: flex; flex-direction: column; gap: 2px"><strong>Largest file</strong><span class="k-small k-muted">Bigger files are refused with the reason</span></div>
+          <div class="k-select-wrap" style="width: 200px"><select class="k-select" aria-label="Largest file"><option>50 MB</option></select><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></div>
+        </div>
+        <div class="k-rule-row" style="align-items: flex-start; padding: 14px 0; gap: 24px">
+          <div style="display: flex; flex-direction: column; gap: 2px"><strong>Auto-filing</strong><span class="k-small k-muted">Kaagaz files new documents into folders on its own. Turn off to file everything into Not in a department.</span></div>
+          <label class="k-switch"><input type="checkbox" checked aria-label="Auto-filing"><span class="k-switch-state">On</span></label>
+        </div>
+        <div class="k-rule-row" style="align-items: flex-start; padding: 14px 0; gap: 24px">
+          <div style="display: flex; flex-direction: column; gap: 2px"><strong>Link new versions on their own</strong><span class="k-small k-muted">Only when 95% or more of the text is the same and the name matches. Everything else is suggested, never linked.</span></div>
+          <label class="k-switch"><input type="checkbox" checked aria-label="Link new versions on their own"><span class="k-switch-state">On</span></label>
+        </div>
+        <div class="k-rule-row" style="align-items: flex-start; padding: 14px 0">
+          <div style="display: flex; flex-direction: column; gap: 2px"><strong>Default label</strong><span class="k-small k-muted">Given to new uploads until someone changes it</span></div>
+          <div style="display: flex; gap: 10px; align-items: center"><span class="k-lab k-lab--internal">Internal</span><div class="k-select-wrap" style="width: 150px"><select class="k-select" aria-label="Default label"><option>Internal</option></select><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></div></div>
+        </div>
+        <div class="k-rule-row" style="align-items: flex-start; padding: 14px 0">
+          <div style="display: flex; flex-direction: column; gap: 2px"><strong>Sign out after</strong><span class="k-small k-muted">Time away before people are signed out</span></div>
+          <div class="k-select-wrap" style="width: 200px"><select class="k-select" aria-label="Sign out after"><option>30 minutes away</option></select><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></div>
+        </div>
+        <div class="k-rule-row" style="align-items: flex-start; padding: 14px 0; gap: 24px">
+          <div style="display: flex; flex-direction: column; gap: 2px"><strong style="display: inline-flex; gap: 6px; align-items: center">Two-step sign-in for admins <svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true" style="color: var(--k-ink-faint)"><path d="M6 11h12v10H6zM8 11V7a4 4 0 0 1 8 0v4"></path></svg></strong><span class="k-small k-muted">Always on. Admins can see every department.</span></div>
+          <label class="k-switch" style="opacity: .6"><input type="checkbox" checked disabled aria-label="Two-step sign-in for admins, always on"><span class="k-switch-state">On</span></label>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- ACTIVITY -->
+  <section class="k-card k-card--flush" aria-labelledby="t-act">
+    <div class="k-card-head k-card-head--bar"><h2 class="k-h3" id="t-act">Activity</h2><button class="k-btn k-btn--sm" type="button"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v16H4zM4 10h16M4 15h16M10 4v16"></path></svg>Export to Excel</button></div>
+    <div style="padding: 16px 20px; display: flex; flex-direction: column; gap: 14px">
+      <div class="k-chip-row">
+        <button class="k-chip is-on" type="button" aria-pressed="true">Person: <span class="k-chip-val">Tushar</span><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-label="Remove filter" role="img"><path d="M6 6l12 12M18 6 6 18"></path></svg></button>
+        <button class="k-chip is-on" type="button" aria-pressed="true">Folder: <span class="k-chip-val">Land &amp; Legal</span><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-label="Remove filter" role="img"><path d="M6 6l12 12M18 6 6 18"></path></svg></button>
+        <button class="k-chip" type="button">File <svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></button>
+        <button class="k-chip" type="button">Action <svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></button>
+        <button class="k-chip is-on" type="button" aria-pressed="true">Dates: <span class="k-chip-val">1–20 Oct 2026</span></button>
+        <button class="k-btn k-btn--quiet k-btn--sm" type="button">Clear all</button>
+        <span class="k-small k-muted" style="margin-left: auto"><span class="k-mono">48</span> events</span>
+      </div>
+      <div class="k-table-wrap">
+        <table class="k-table" style="min-width: 900px">
+          <thead><tr><th scope="col"><button class="k-sort" type="button" aria-sort="descending">When <svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></button></th><th scope="col">Person</th><th scope="col">Action</th><th scope="col">File</th><th scope="col">Folder</th></tr></thead>
+          <tbody>
+            <sc-for list="{{acts}}" as="a" hint-placeholder-count="8">
+              <tr><td class="k-mono k-small" style="white-space: nowrap">{{a.when}}</td><td><span class="k-name-cell"><span class="k-avatar">TS</span>Tushar</span></td><td>{{a.action}}</td><td><span class="k-ellip" style="display: block; max-width: 300px">{{a.file}}</span></td><td class="k-muted">{{a.folder}}</td></tr>
+            </sc-for>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- NUMBERS -->
+  <section class="k-card k-card--flush" aria-labelledby="t-num">
+    <div class="k-card-head k-card-head--bar"><h2 class="k-h3" id="t-num">Numbers</h2><span class="k-small k-muted">October 2026 · resets 1 Nov</span></div>
+    <div style="padding: 20px; display: flex; flex-direction: column; gap: 24px">
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); gap: 0; border: 1px solid var(--k-rule); border-radius: 20px">
+        <div class="k-stat" style="padding: 16px 18px; border-right: 1px solid var(--k-rule)"><span class="k-eyebrow">Pages read this month</span><span class="k-num">18,420</span><div class="k-meter" role="img" aria-label="74 percent of 25,000 pages used"><span class="is-ready" style="width: 74%; background: var(--k-accent)"></span></div><span class="k-small k-muted">of <span class="k-mono">25,000</span> in your plan · 74%</span></div>
+        <div class="k-stat" style="padding: 16px 18px; border-right: 1px solid var(--k-rule)"><span class="k-eyebrow">Values waiting for review</span><span class="k-num">23</span><span class="k-status k-status--review" style="align-self: flex-start"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .8-1 1.5V14M12 17v.5"></path></svg>Oldest 3 days</span></div>
+        <div class="k-stat" style="padding: 16px 18px; border-right: 1px solid var(--k-rule)"><span class="k-eyebrow">Documents</span><span class="k-num">2,560</span><span class="k-stat-delta">+148 this week</span></div>
+        <div class="k-stat" style="padding: 16px 18px; border-right: 1px solid var(--k-rule)"><span class="k-eyebrow">Storage</span><span class="k-num">41.2 <span style="font-size: 18px">GB</span></span><div class="k-meter" role="img" aria-label="41 percent of 100 GB used"><span style="width: 41%; background: var(--k-chart-2)"></span></div><span class="k-small k-muted">of <span class="k-mono">100 GB</span></span></div>
+        <div class="k-stat" style="padding: 16px 18px"><span class="k-eyebrow">Questions asked</span><span class="k-num">612</span><span class="k-small k-muted"><span class="k-mono">41</span> answered Not found</span></div>
+      </div>
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(480px, 100%), 1fr)); gap: 24px">
+        <div style="display: flex; flex-direction: column; gap: 12px">
+          <h3 class="k-h4">Pages read per week</h3>
+          <div role="img" aria-label="Pages read per week: 2,910, 3,480, 4,120, 3,960, 3,950" style="display: grid; grid-template-columns: 40px repeat(5, minmax(0, 1fr)); gap: 12px; align-items: end; height: 200px; border-bottom: 1px solid var(--k-rule-strong); padding-bottom: 0">
+            <div style="display: flex; flex-direction: column; justify-content: space-between; height: 100%; font: 11px var(--k-font-mono); color: var(--k-ink-faint)"><span>5k</span><span>2.5k</span><span>0</span></div>
+            <div style="display: flex; flex-direction: column; align-items: center; gap: 4px; height: 100%; justify-content: flex-end"><span class="k-mono k-small k-muted">2,910</span><span style="width: 100%; height: 58%; background: var(--k-chart-2)"></span></div>
+            <div style="display: flex; flex-direction: column; align-items: center; gap: 4px; height: 100%; justify-content: flex-end"><span class="k-mono k-small k-muted">3,480</span><span style="width: 100%; height: 70%; background: var(--k-chart-2)"></span></div>
+            <div style="display: flex; flex-direction: column; align-items: center; gap: 4px; height: 100%; justify-content: flex-end"><span class="k-mono k-small k-muted">4,120</span><span style="width: 100%; height: 82%; background: var(--k-chart-2)"></span></div>
+            <div style="display: flex; flex-direction: column; align-items: center; gap: 4px; height: 100%; justify-content: flex-end"><span class="k-mono k-small k-muted">3,960</span><span style="width: 100%; height: 79%; background: var(--k-chart-2)"></span></div>
+            <div style="display: flex; flex-direction: column; align-items: center; gap: 4px; height: 100%; justify-content: flex-end"><span class="k-mono k-small" style="color: var(--k-ink)">3,950</span><span style="width: 100%; height: 79%; background: var(--k-chart-1)"></span></div>
+          </div>
+          <div style="display: grid; grid-template-columns: 40px repeat(5, minmax(0, 1fr)); gap: 12px; font: 11px var(--k-font-mono); color: var(--k-ink-muted); text-align: center"><span></span><span>15 Sep</span><span>22 Sep</span><span>29 Sep</span><span>6 Oct</span><span>13 Oct</span></div>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 12px">
+          <h3 class="k-h4">Usage this month by department</h3>
+          <div class="k-table-wrap">
+            <table class="k-table">
+              <thead><tr><th scope="col">Department</th><th scope="col" class="is-num">Pages read</th><th scope="col" class="is-num">Questions</th><th scope="col" class="is-num">In review</th></tr></thead>
+              <tbody>
+                <tr><td>Accounts</td><td class="is-num">8,940</td><td class="is-num">288</td><td class="is-num">9</td></tr>
+                <tr><td>Land &amp; Legal</td><td class="is-num">5,210</td><td class="is-num">174</td><td class="is-num">11</td></tr>
+                <tr><td>HR</td><td class="is-num">1,880</td><td class="is-num">62</td><td class="is-num">1</td></tr>
+                <tr><td>Operations</td><td class="is-num">1,420</td><td class="is-num">51</td><td class="is-num">2</td></tr>
+                <tr><td>Sales</td><td class="is-num">540</td><td class="is-num">29</td><td class="is-num">0</td></tr>
+                <tr><td class="k-muted">Not in a department</td><td class="is-num">430</td><td class="is-num">8</td><td class="is-num">0</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- FAILED FILES -->
+  <section class="k-card k-card--flush" aria-labelledby="t-fail">
+    <div class="k-card-head k-card-head--bar"><h2 class="k-h3" id="t-fail">Failed files <span class="k-tab-count" style="background: var(--k-danger-soft); color: var(--k-danger)">3</span></h2><button class="k-btn k-btn--sm" type="button"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v4h-4"></path></svg>Retry all</button></div>
+    <div style="padding: 4px 20px 12px">
+      <div class="k-rule-row" style="padding: 16px 0; flex-wrap: wrap">
+        <span class="k-name-cell" style="flex: 1 1 280px"><span class="k-file-ic" data-ext="JPG" aria-hidden="true"></span><span style="display: flex; flex-direction: column"><span>IMG_1291.jpg</span><span class="k-sub">Uploaded by Tushar · today 09:40 · Operations</span></span></span>
+        <span style="flex: 1 1 320px; display: flex; flex-direction: column; gap: 2px"><span class="k-status k-status--failed" style="align-self: flex-start"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4 2.5 20h19z"></path><path d="M12 10v4M12 17v.5"></path></svg>Too dark to read</span><span class="k-small k-muted">Retake in better light, or near a window.</span></span>
+        <span class="k-btn-group"><button class="k-btn k-btn--sm" type="button">Retry</button><button class="k-btn k-btn--primary k-btn--sm" type="button">Upload new photo</button></span>
+      </div>
+      <div class="k-rule-row" style="padding: 16px 0; flex-wrap: wrap">
+        <span class="k-name-cell" style="flex: 1 1 280px"><span class="k-file-ic" data-ext="PDF" aria-hidden="true"></span><span style="display: flex; flex-direction: column"><span>Bank Statement ICICI Aug.pdf</span><span class="k-sub">Uploaded by Anita · 18 Oct · Accounts</span></span></span>
+        <span style="flex: 1 1 320px; display: flex; flex-direction: column; gap: 2px"><span class="k-status k-status--failed" style="align-self: flex-start"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 11h12v10H6zM8 11V7a4 4 0 0 1 8 0v4"></path></svg>Password protected</span><span class="k-small k-muted">Upload an unlocked copy, or enter the password once.</span></span>
+        <span class="k-btn-group"><button class="k-btn k-btn--sm" type="button">Enter password</button><button class="k-btn k-btn--primary k-btn--sm" type="button">Upload unlocked copy</button></span>
+      </div>
+      <div class="k-rule-row" style="padding: 16px 0; flex-wrap: wrap">
+        <span class="k-name-cell" style="flex: 1 1 280px"><span class="k-file-ic" data-ext="PDF" aria-hidden="true"></span><span style="display: flex; flex-direction: column"><span>Board Minutes Sept.pdf</span><span class="k-sub">Uploaded by Priya · 16 Oct · Not in a department</span></span></span>
+        <span style="flex: 1 1 320px; display: flex; flex-direction: column; gap: 2px"><span class="k-status k-status--failed" style="align-self: flex-start"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4 2.5 20h19z"></path><path d="M12 10v4M12 17v.5"></path></svg>212 pages, over the 200-page limit</span><span class="k-small k-muted">Split it into two files and upload both.</span></span>
+        <span class="k-btn-group"><button class="k-btn k-btn--sm" type="button">Retry</button><button class="k-btn k-btn--primary k-btn--sm" type="button">Upload new</button></span>
+      </div>
+    </div>
+  </section>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["light","dark"],"default":"light"},"$preview":{"width":1440,"height":2600}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const depts = [
+      { n: 1, name: 'Accounts', files: '1,310', who: 'Priya, Anita, Imran +3' },
+      { n: 2, name: 'Land & Legal', files: '420', who: 'Priya, Rahul, Kavita' },
+      { n: 3, name: 'HR', files: '260', who: 'Priya, Anita' },
+      { n: 4, name: 'Operations', files: '190', who: 'Everyone' },
+      { n: 5, name: 'Sales', files: '68', who: 'Rahul, Sneha' }
+    ];
+    const acts = [
+      { when: '20 Oct 10:42', action: 'Downloaded', file: 'Sale Deed Shinde Survey 44.pdf', folder: 'Land & Legal › Deeds' },
+      { when: '20 Oct 10:31', action: 'Viewed', file: '7/12 Survey 44 Wakad.pdf (v2)', folder: 'Land & Legal › Land records › Survey 44, Wakad' },
+      { when: '19 Oct 17:05', action: 'Linked version 2', file: '7/12 Survey 44 Wakad.pdf', folder: 'Land & Legal › Land records › Survey 44, Wakad' },
+      { when: '19 Oct 16:48', action: 'Changed label Internal → Confidential', file: 'NA Permission Plot 7.pdf', folder: 'Land & Legal › Permissions' },
+      { when: '18 Oct 12:20', action: 'Moved from Not in a department', file: 'Ferfar 2187 Wakad.pdf', folder: 'Land & Legal › Land records' },
+      { when: '18 Oct 09:02', action: 'Signed in from a new device', file: '—', folder: 'Chrome on Android · Pune' },
+      { when: '16 Oct 15:37', action: 'Asked a question', file: 'Rent Agreement Shinde.pdf', folder: 'Land & Legal › Agreements' },
+      { when: '14 Oct 11:10', action: 'Uploaded 6 files', file: 'Satbara batch', folder: 'Land & Legal › Land records' }
+    ];
+    return { theme: this.props.theme ?? 'light', depts, acts };
+  }
+}
+</script>
+</body>
+</html>

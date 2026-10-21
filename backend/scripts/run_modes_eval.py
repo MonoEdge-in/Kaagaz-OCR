@@ -11,7 +11,8 @@ pages read again by ``--careful``) and Ensemble (``--others`` vote, 2 of 3). It 
 row per mode: values read, Verified, wrong and Verified, Needs review, abstain (a truth
 value nothing was read for), not in the truth, Verified precision and tokens. It exits 1
 when Ensemble has more wrong-and-Verified values than Single, or Dynamic's Verified
-precision is below Single's.
+precision is below Single's. Since 16 Oct 2026 a scan never votes (Ensemble runs only after
+the scan), so Ensemble's row labels as Single's does.
 
 ``--fake`` reads tests/fixtures/modes_eval_fake.json: scripted model and checker
 readings of one-line scans, C14's slices (3/8, 1/7, 0/O, a stamp over digits). No

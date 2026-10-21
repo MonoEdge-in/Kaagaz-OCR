@@ -16,9 +16,30 @@ refresh columns alone it may write, and the operator's five functions.
 Auto-filing (0025): the app may switch its own ``autofile_on``, never ``autofile_granted``,
 which only the operator's ``kaagaz_op_set_org_autofile`` writes.
 
+Two-step by grant (0029) is gone (0035): no ``two_step_granted``, no ``kaagaz_op_set_org_two_step``.
+
 Features 25-27 (0026): an organisation's AI settings the app may only read, the platform
 defaults (no customer) every role that may reads, the catalogue's chat_eligible the refresh
 writes, and the operator's AI functions in place of 0023's organisation models ones.
+
+Word review (0030, NEEDS VRUSHIT'S APPROVAL): word changes the app adds and only marks undone
+or writes again (applied), Ensemble runs whose progress columns alone change, readings whose
+decision alone is set; none is ever deleted by the app (they go with their document).
+
+Ranked sources (0036): a source a person put on top of an answer, added only.
+
+AI settings by task (0038, for Vrushit's later review): the organisation's and members' task
+levels the app reads and writes; the feature switches and the platform test model (no
+customer) every role that may reads, two columns each, written only by the operator's
+functions (step-up).
+
+Per-organisation feature switches (0039): the app reads three columns of its own rows, never
+who flipped one; only the operator's functions write (step-up).
+
+The sign-in idle timeout (0040): the same for one organisation's hours (two columns).
+
+File management (0041): version suggestions the app reads, adds and decides, never deletes
+(they go with their document).
 """
 
 import re
@@ -77,6 +98,30 @@ FROM_0023 = {
 }
 # Features 25-27 (0026): the operator alone writes an organisation's AI settings.
 FROM_0026 = {"customer_ai_settings": (True, False, False, False)}
+# Word review (0030): added, never deleted; only the columns below may be updated.
+FROM_0030 = {
+    "word_changes": (True, True, False, False),
+    "ensemble_runs": (True, True, False, False),
+    "ensemble_readings": (True, True, False, False),
+}
+# Ranked sources (0036): a pick is added, never changed or deleted by the app.
+FROM_0036 = {"source_pins": (True, True, False, False)}
+# AI settings by task (0038): a person's or the organisation's level is saved, changed and removed.
+FROM_0038 = {"ai_task_settings": (True, True, True, True)}
+# Per-organisation feature switches (0039): a column grant only (no table right), the operator writes.
+FROM_0039 = {"org_feature_switches": (False, False, False, False)}
+# The sign-in idle timeout (0040): the same, two columns.
+FROM_0040 = {"org_session_settings": (False, False, False, False)}
+# Changed on purpose (PRD 1, 0041): version suggestions are read, added and decided, never deleted.
+FROM_0041 = {"version_suggestions": (True, True, True, False)}
+UPDATES_0030 = {
+    "word_changes": {"applied", "undone_at", "undone_by"},
+    "ensemble_runs": {
+        "pages_done", "pages_failed", "status", "stop_requested_at", "error_code", "attempts", "started_at",
+        "finished_at",
+    },
+    "ensemble_readings": {"decision", "decided_by", "decided_at"},
+}  # fmt: skip
 # The catalogue (no customer): the app's refresh writes these columns only, never
 # verified_*, tokens_per_page_* (verify-models, the owner) or enabled_* (the operator).
 CATALOG_REFRESH = {
@@ -90,6 +135,9 @@ CATALOG_POLICIES = {
     # 0026: the platform defaults, read by every role that may (the app's grant is SELECT only).
     ("platform_models", "read_all"): ("SELECT", "PERMISSIVE", ["public"], "true", None),
     ("platform_ai_settings", "read_all"): ("SELECT", "PERMISSIVE", ["public"], "true", None),
+    # 0038: the feature switches and the platform test model (the app's grant: two columns each).
+    ("feature_switches", "read_all"): ("SELECT", "PERMISSIVE", ["public"], "true", None),
+    ("platform_model_override", "read_all"): ("SELECT", "PERMISSIVE", ["public"], "true", None),
 }
 PAGE_READ_UPDATES = {"result", "input_tokens", "output_tokens", "created_at"}
 SECTION_UPDATES = {"embedding", "embed_recipe"}
@@ -138,7 +186,7 @@ OPERATOR_RIGHTS = {
     "kaagaz_op_session": ("TABLE(email text, display_name text, session_version integer)", EMPTY_PATH),
     "kaagaz_op_logout": ("void", EMPTY_PATH),
     # 0016: organisations with counts only, and the writes, each answering (outcome, result_id).
-    # 0025 added each one's auto-filing grant and switch.
+    # 0025 added each one's auto-filing grant and switch (0029's two-step grant went in 0035).
     "kaagaz_op_customers": (
         "TABLE(customer_id uuid, name text, status text, disabled_at timestamp with time zone,"
         " delete_after timestamp with time zone, created_at timestamp with time zone, admins bigint,"
@@ -169,6 +217,9 @@ OPERATOR_RIGHTS = {
         EMPTY_PATH,
     ),
     "kaagaz_op_step_up_failed": ("void", EMPTY_PATH),
+    # 0031, moving the operator's own two-step to a new device (never off).
+    "kaagaz_op_move_check": ("boolean", EMPTY_PATH),
+    "kaagaz_op_move_totp": ("integer", EMPTY_PATH),
     # 0020, read-only: the feed (no details, target id, person or document) and counts.
     "kaagaz_op_activity": (
         "TABLE(source text, entry_id bigint, created_at timestamp with time zone, action text,"
@@ -200,7 +251,10 @@ OPERATOR_RIGHTS = {
         " verified_prompt_version text, verified_at timestamp with time zone, tokens_per_page_in integer,"
         " tokens_per_page_out integer, enabled_at timestamp with time zone, ledger_tokens_in numeric,"
         " ledger_tokens_out numeric, chat_eligible boolean, chat_verified_prompt text,"
-        " chat_verified_at timestamp with time zone)",  # 0026: the answer columns
+        " chat_verified_at timestamp with time zone, scan_pages bigint, scan_pages_costed bigint,"
+        " scan_cost_usd numeric, scan_cost_unknown_calls bigint, answer_questions bigint,"
+        " answer_questions_costed bigint, answer_cost_usd numeric, answer_cost_unknown_calls bigint)",
+        # 0026: the answer columns; 0033: the real cost, counts and sums only
         EMPTY_PATH,
     ),
     "kaagaz_op_set_model_enabled": ("text", EMPTY_PATH),
@@ -236,7 +290,10 @@ OPERATOR_RIGHTS = {
         "TABLE(customer_id uuid, day date, uploads bigint, sign_ins bigint, questions bigint,"
         " corrections bigint, runs bigint, runs_failed bigint, pages bigint, scan_pages bigint,"
         " cached_pages bigint, cost_usd numeric, cost_scan_usd numeric, cost_documents_usd numeric,"
-        " cost_questions_usd numeric, cost_estimated boolean, cost_part_unknown boolean)",
+        " cost_questions_usd numeric, cost_estimated boolean, cost_part_unknown boolean, pages_read bigint,"
+        " pages_reread bigint, pages_read_costed bigint, cost_real_usd numeric, cost_scan_real_usd numeric,"
+        " cost_answer_real_usd numeric, cost_unknown_calls bigint, scan_unknown_calls bigint,"
+        " answer_unknown_calls bigint)",  # 0034: the real figures, counts and sums only
         EMPTY_PATH,
     ),
     "kaagaz_op_org_health": (
@@ -266,12 +323,37 @@ OPERATOR_RIGHTS = {
         " pages_refused bigint, pages_fell_back bigint, pages_unpinned bigint)",
         EMPTY_PATH,
     ),
+    # 0038: the feature switches (counts only) and the platform test model (numbers only),
+    # and their writes (step-up), each answering its outcome.
+    "kaagaz_op_feature_switches": (
+        "TABLE(feature text, enabled boolean, organisations_using bigint,"
+        " changed_at timestamp with time zone)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_op_test_model": (
+        "TABLE(scan_model text, chat_model text, note text, started_at timestamp with time zone,"
+        " pages bigint, questions bigint, cost_usd numeric, seconds_per_page double precision)",
+        EMPTY_PATH,
+    ),
+    **dict.fromkeys(
+        ("kaagaz_op_set_feature_switch", "kaagaz_op_set_test_model", "kaagaz_op_clear_test_model"),
+        ("text", EMPTY_PATH),
+    ),
+    # 0039: one organisation's feature switches, and their write (step-up).
+    "kaagaz_op_org_feature_switches": (
+        "TABLE(feature text, enabled boolean, platform_enabled boolean)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_op_set_org_feature_switch": ("text", EMPTY_PATH),
+    # Changed on purpose (0040): the sign-in idle timeout, and its write (step-up).
+    "kaagaz_op_session_timeout": ("TABLE(org_hours integer, platform_hours integer)", EMPTY_PATH),
+    "kaagaz_op_set_session_timeout": ("text", EMPTY_PATH),
 }
 # The only tables without customer_id: the customers themselves, alembic's own, the
 # platform operator's (0015), the workers' reader status (0022) and the model catalogue
 # (0023) and the platform AI defaults (0026), which belong to no customer.
 OPERATOR_TABLES = {"operators", "platform_audit"}
-PLATFORM_DEFAULTS = {"platform_models", "platform_ai_settings"}
+PLATFORM_DEFAULTS = {"platform_models", "platform_ai_settings", "feature_switches", "platform_model_override"}
 NO_CUSTOMER_ID = (
     {"customers", "alembic_version", "reader_status", "model_catalog"} | PLATFORM_DEFAULTS | OPERATOR_TABLES
 )
@@ -301,6 +383,12 @@ def test_every_customer_table_has_row_level_security_and_the_customer_only_polic
         | set(FROM_0021)
         | set(FROM_0023)
         | set(FROM_0026)
+        | set(FROM_0030)
+        | set(FROM_0036)
+        | set(FROM_0038)
+        | set(FROM_0039)
+        | set(FROM_0040)
+        | set(FROM_0041)  # Changed on purpose (PRD 1, 0041)
     )
 
     with db.system() as conn:
@@ -344,11 +432,27 @@ def test_every_customer_table_is_granted_to_the_app_role(db: Database) -> None:
 
     assert set(granted) == set(tables)
     for table, (select, insert, _update, _delete) in granted.items():
-        if table not in FROM_0023 | FROM_0026:  # an organisation's models and settings are the operator's
+        # An organisation's models and settings are the operator's. Changed on purpose (0039):
+        # its feature switches too.
+        # Changed on purpose (0040): and its sign-in idle timeout.
+        if table not in FROM_0023 | FROM_0026 | FROM_0039 | FROM_0040:
             assert (select, insert) == (True, True), table
     for table in FROM_0002:
         assert granted[table] == (True, True, True, True), table
-    for table, expected in (FROM_0004 | FROM_0008 | FROM_0009 | FROM_0021 | FROM_0023 | FROM_0026).items():
+    for table, expected in (
+        FROM_0004
+        | FROM_0008
+        | FROM_0009
+        | FROM_0021
+        | FROM_0023
+        | FROM_0026
+        | FROM_0030
+        | FROM_0036
+        | FROM_0038
+        | FROM_0039
+        | FROM_0040
+        | FROM_0041  # Changed on purpose (PRD 1, 0041)
+    ).items():
         assert granted[table] == expected, table
 
 
@@ -397,6 +501,12 @@ def test_the_app_may_update_only_a_cached_reads_result_and_a_sections_vector(db:
     assert _updatable(db, "page_reads") == PAGE_READ_UPDATES
     assert _updatable(db, "document_sections") == SECTION_UPDATES
     assert _updatable(db, "document_topics") == set()
+
+
+def test_the_app_may_update_only_the_undo_and_progress_columns_of_word_review(db: Database) -> None:
+    """0030: never a change's word, texts, who or when, so the history can't be rewritten;
+    never a run's scope, pages or models, nor a reading's outcome or readings."""
+    assert {table: _updatable(db, table) for table in UPDATES_0030} == UPDATES_0030
 
 
 def test_the_app_writes_only_the_refresh_columns_of_the_model_catalogue(db: Database) -> None:
@@ -467,7 +577,15 @@ def test_every_foreign_key_between_customer_tables_matches_the_customer_on_both_
         keys = [tuple(row) for row in conn.execute(_FOREIGN_KEYS)]
     between = [key for key in keys if key[1] in tables and key[2] in tables]
 
-    assert {key[1] for key in between} >= set(FROM_0004) | set(FROM_0021) | {"pages", "model_usage"}
+    assert {key[1] for key in between} >= (
+        set(FROM_0004)
+        | set(FROM_0021)
+        | set(FROM_0030)
+        | set(FROM_0036)
+        | set(FROM_0038)
+        | set(FROM_0041)  # Changed on purpose (PRD 1, 0041)
+        | {"pages", "model_usage", "documents"}  # documents.owner_id (0041)
+    )
     for name, _table, _parent, columns, parent_columns in between:
         assert ("customer_id", "customer_id") in zip(columns, parent_columns, strict=True), name
 

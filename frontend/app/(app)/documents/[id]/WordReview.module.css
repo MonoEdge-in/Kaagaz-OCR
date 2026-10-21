@@ -1,0 +1,348 @@
+/* The summary bar, the review panel and History (WordReview.tsx, ReviewPanel.tsx; scan
+   review UX rules, sections 3 to 8). MonoEdge tokens only: flat, square (2px), hairline.
+   Buttons in a row share one height, the primary last; a disabled one keeps its size. */
+
+/* --- Summary bar: above the document ------------------------------------------- */
+
+.bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3) var(--space-6);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--k-r-2);
+  background: var(--bg-surface);
+  contain: layout style;
+}
+
+/* While the bar loads: about its usual height, so the page below does not move. */
+.placeholder {
+  min-height: 4.5rem;
+}
+
+.text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  flex: 1 1 20rem;
+  margin: 0; /* it may be a <p>: no paragraph margin under it, so it centres in the bar */
+}
+
+.text > p {
+  margin: 0;
+}
+
+.summary {
+  font-weight: 600;
+}
+
+.line {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+}
+
+/* The live region stays in the page (so its words are read out) and takes no space while empty. */
+.line:empty {
+  display: none;
+}
+
+.result {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-inline-start: auto;
+}
+
+.ensemble {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  min-width: 0;
+}
+
+/* Why Ensemble waits, beside its button (disabled keeps size and says why nearby). */
+.reason {
+  flex: 1 1 100%;
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+}
+
+.info {
+  inline-size: var(--control-h);
+  padding-inline: 0;
+  font-weight: 700;
+}
+
+.popover {
+  position: fixed;
+  position-area: block-end span-inline-start;
+  position-try-fallbacks: flip-block, flip-inline;
+  inset: auto;
+  width: min(22rem, calc(100% - 2 * var(--space-4)));
+  margin: var(--space-1) 0;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--k-r-2);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+  z-index: var(--z-dropdown);
+}
+
+.popover p {
+  margin: 0;
+}
+
+/* --- Review panel: the detail panel; a bottom sheet on a phone ----------------- */
+
+.review {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+@media (max-width: 767.98px) {
+  .review {
+    position: fixed;
+    inset-inline: 0;
+    inset-block-end: var(--bottombar-h);
+    z-index: var(--z-overlay);
+    max-height: min(70dvh, 36rem);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: var(--space-4) var(--space-4) max(var(--space-4), env(safe-area-inset-bottom));
+    border-block-start: 1px solid var(--border-strong);
+    background: var(--bg-surface);
+    --motion-y: 16px;
+    animation: motion-in var(--t-med) var(--ease);
+  }
+}
+
+.reviewHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+}
+
+.heading {
+  margin: 0;
+  font-size: var(--fs-lg);
+}
+
+.headActions {
+  display: flex;
+  gap: var(--space-2);
+  margin-inline-start: auto;
+}
+
+.finished {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--success);
+  border-radius: var(--k-r-2);
+}
+
+.word {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  padding-block-end: var(--space-4);
+  border-block-end: 1px solid var(--border);
+  contain: layout style;
+}
+
+.word > p {
+  margin: 0;
+}
+
+.crop {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.crop > figure {
+  width: 100%;
+}
+
+.reading {
+  font-size: var(--fs-lg);
+}
+
+.band {
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+}
+
+.score {
+  color: var(--text-muted);
+}
+
+/* "in Ensemble": subtle, words not colour. */
+.inEnsemble {
+  margin-inline-start: var(--space-2);
+  padding-inline: var(--space-1);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--k-r-2);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+}
+
+.change {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.change p {
+  margin: 0;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.fieldLabel {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.input {
+  width: 100%;
+}
+
+.options,
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.row {
+  justify-content: flex-end;
+}
+
+.keys {
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+
+/* --- Flagged words list and its selection ------------------------------------- */
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+  padding-inline: var(--space-2);
+  border-inline-start: 2px solid transparent;
+  contain: layout style;
+}
+
+.item[aria-current="true"] {
+  border-inline-start-color: var(--accent);
+  background: var(--bg-selected);
+}
+
+.itemButton {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-3);
+  flex: 1;
+  min-width: 0;
+  min-height: var(--control-min);
+  padding: var(--space-1) 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.itemMeta {
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+}
+
+.selection {
+  position: sticky;
+  inset-block-end: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--k-r-2);
+  background: var(--bg-surface);
+}
+
+.selection > span {
+  margin-inline-end: auto;
+}
+
+/* --- History ----------------------------------------------------------------- */
+
+.history {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.filters label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--control-min);
+}
+
+.skeleton {
+  height: 6rem;
+}

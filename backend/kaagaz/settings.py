@@ -35,6 +35,9 @@ _GEMINI_PAGE_CALLS = 3
 # PRD 5 G2 and F5: the media_resolution and thinking_level a page is read with.
 MEDIA_RESOLUTIONS = frozenset({"low", "medium", "high", "ultra_high"})
 THINKING_LEVELS = frozenset({"minimal", "low", "medium", "high"})
+# A model with no thinking levels (catalogue ``efforts`` empty; Tushar, 18 Oct 2026) is read
+# and asked at this "level": the request carries no ``reasoning`` field at all.
+NO_THINKING = "none"
 # How a page's media resolution reaches the model through OpenRouter (council 8 Oct 2026).
 # "detail": the image part's image_url.detail, which takes low or high only, so only those
 # two levels can be sent: OCR_MEDIA_RESOLUTION and OCR_RETRY_MEDIA_RESOLUTION refuse medium
@@ -57,8 +60,10 @@ DEFAULT_PROVIDER = "google-vertex"
 DEFAULT_MODEL = "google/gemini-3.8-flash"
 # The model vendors (the part of a model id before "/") the operator may allow, a ceiling
 # apart from the providers (features 25-27, council 15 Oct 2026, S1). Tushar decided on 15
-# Oct 2026 that Sonnet 5.5 is allowed by default, so the default is google and anthropic.
-DEFAULT_MODEL_VENDORS = frozenset({"google", "anthropic"})
+# Oct 2026 that Sonnet 5.5 is allowed by default, so the default is google and anthropic;
+# Tushar, 18 Oct 2026: qwen and meta-llama too (Qwen VL and Llama models for organisations).
+# A server with OPENROUTER_MODEL_VENDORS set keeps its own list.
+DEFAULT_MODEL_VENDORS = frozenset({"google", "anthropic", "qwen", "meta-llama"})
 MODEL_VENDOR = re.compile(r"[a-z0-9][a-z0-9-]{0,127}")  # MODEL_ID's part before "/"
 # OPENROUTER_BASE_URL may be plain http only on these hosts (a fake server in tests, or the
 # exit test's closed port); anywhere else the key would cross the network in the clear.
@@ -218,7 +223,8 @@ class Settings:
     # Pages are read locally once the reader has been down for
     # reader_outage_fallback_minutes (Q7).
     # Fast scan (council 16 Oct 2026): a Dynamic document of at most careful_early_max_pages
-    # pages starts each page's Careful read with its first read (0: never); optional, 2.
+    # pages starts each page's Careful read with its first read (0: never); optional, 0 since
+    # Cost saving (16 Oct 2026): the early read is a whole careful read paid for every page.
     ocr_model: str
     openrouter_api_key: str | None = field(repr=False)
     openrouter_base_url: str
@@ -300,6 +306,9 @@ class Settings:
     login_max_failures: int
     login_lock_minutes: int
     admin_session_minutes: int
+    # Anyone may create an organisation and its first admin at /signup (16 Oct 2026).
+    # On unless "false"; off, POST /auth/signup is 404 and the sign-in pages hide the link.
+    self_signup_enabled: bool
 
     # Trash (PRD 1 F5): days a document stays in Trash before the worker deletes it for good.
     trash_days: int
@@ -345,6 +354,16 @@ class Settings:
     rate_limit_per_minute: int
     chat_questions_per_minute: int  # chat questions a user may ask a minute (security, 15 Oct 2026)
     log_level: str
+    # Tushar (16 Oct 2026): a document's reading budget is this many seconds per page (1 page =
+    # 1 min, 30 pages = 30 min), never less than OCR_TIMEOUT_SECONDS (gemini_ocr).
+    ocr_seconds_per_page: int = 60
+    # Cost saving (16 Oct 2026, ``ocr.careful_plan``): a page is read again through its hard
+    # lines only when they are at most cost_saving_hard_lines_max (1-60) and at most
+    # cost_saving_hard_share (0.05-1.0) of its lines; each crop reaches cost_saving_crop_pad
+    # (0.1-2.0) of the line's height past its sides (``gemini_ocr.crop_boxes``). Optional.
+    cost_saving_hard_lines_max: int = 12
+    cost_saving_hard_share: float = 0.4
+    cost_saving_crop_pad: float = 0.5
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "Settings":
@@ -531,11 +550,18 @@ class Settings:
             openrouter_providers=providers,
             openrouter_model_vendors=vendors,
             ocr_media_resolution=env.media_resolution("OCR_MEDIA_RESOLUTION"),
-            ocr_thinking_level=env.choice("OCR_THINKING_LEVEL", set(THINKING_LEVELS)),
+            # Tushar (16 Oct 2026): the built-in scan default is Gemini 3.8 Flash at high.
+            ocr_thinking_level=env.choice("OCR_THINKING_LEVEL", set(THINKING_LEVELS))
+            if env.optional("OCR_THINKING_LEVEL")
+            else "high",
             ocr_retry_media_resolution=env.media_resolution("OCR_RETRY_MEDIA_RESOLUTION"),
             ocr_retry_thinking_level=env.choice("OCR_RETRY_THINKING_LEVEL", set(THINKING_LEVELS)),
             ocr_page_concurrency=env.positive("OCR_PAGE_CONCURRENCY"),
-            careful_early_max_pages=env.at_least("CAREFUL_EARLY_MAX_PAGES", 0, default=2),
+            careful_early_max_pages=env.at_least("CAREFUL_EARLY_MAX_PAGES", 0, default=0),
+            ocr_seconds_per_page=env.positive_or("OCR_SECONDS_PER_PAGE", 60),
+            cost_saving_hard_lines_max=env.between_or("COST_SAVING_HARD_LINES_MAX", 1, 60, default=12),
+            cost_saving_hard_share=env.number_in("COST_SAVING_HARD_SHARE", 0.05, 1.0, default=0.4),
+            cost_saving_crop_pad=env.number_in("COST_SAVING_CROP_PAD", 0.1, 2.0, default=0.5),
             cpu_workers=env.positive("CPU_WORKERS"),
             max_check_crops=env.positive("MAX_CHECK_CROPS"),
             model_rpm=env.between("MODEL_RPM", 1, 1200),
@@ -569,6 +595,9 @@ class Settings:
             login_max_failures=env.positive("LOGIN_MAX_FAILURES"),
             login_lock_minutes=env.positive("LOGIN_LOCK_MINUTES"),
             admin_session_minutes=env.positive("ADMIN_SESSION_MINUTES"),
+            # Off unless set to true (security review, 16 Oct 2026): no e-mail is proven yet.
+            self_signup_enabled=env.optional("SELF_SIGNUP_ENABLED") is not None
+            and env.boolean("SELF_SIGNUP_ENABLED"),
             trash_days=env.integer("TRASH_DAYS"),
             reprocess_per_hour=env.positive("REPROCESS_PER_HOUR"),
             search_ef=env.between("SEARCH_EF", 1, 1000),
@@ -640,6 +669,19 @@ class _Env:
         if not low <= number <= high:
             raise SettingsError(f"{name} must be between {low} and {high}")
         return number
+
+    def between_or(self, name: str, low: int, high: int, *, default: int) -> int:
+        """``between``, or ``default`` when unset or empty."""
+        return default if self.optional(name) is None else self.between(name, low, high)
+
+    def number_in(self, name: str, low: float, high: float, *, default: float) -> float:
+        """An optional number from ``low`` to ``high``: ``default`` when unset or empty."""
+        if self.optional(name) is None:
+            return default
+        value = self.number(name)
+        if not (math.isfinite(value) and low <= value <= high):
+            raise SettingsError(f"{name} must be a number from {low} to {high}")
+        return value
 
     def optional_integer(self, name: str) -> int | None:
         return None if self.optional(name) is None else self.integer(name)

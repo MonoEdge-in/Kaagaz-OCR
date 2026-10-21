@@ -383,6 +383,15 @@ class LearnedTest(unittest.TestCase):
         fixes = [LearnedCorrection("total_amount", "1,13O.00", "1,130.00")]
         self.assertEqual(apply_learned([card], fixes), [card])
 
+    def test_a_locally_read_or_unpinned_value_is_never_corrected_into_verified(self) -> None:
+        """Council 16 Oct 2026: a page the model did not read (or ran out of time on), or a spot
+        the reader never pinned, stays needs review with its reason, whatever was remembered."""
+        fixes = [LearnedCorrection("total_amount", "1,13O.00", "1,130.00")]
+        for why in ("local_reader", "box_unanchored"):
+            with self.subTest(why):
+                value = replace(box_value("1,13O.00"), label="needs_review", label_reason=why)
+                self.assertEqual(apply_learned([value], fixes), [value])
+
 
 if __name__ == "__main__":
     unittest.main()

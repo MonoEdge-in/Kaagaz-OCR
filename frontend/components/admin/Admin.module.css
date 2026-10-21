@@ -1,63 +1,175 @@
-/* The admin screen. Tokens only (app/globals.css). Tables use the shared
-   reflow in components/documents/Table.module.css. */
+/* The admin screen. MonoEdge tokens only (app/globals.css): flat, square (2px), hairline
+   borders, no shadows or pills. Tables use the shared reflow in
+   components/documents/Table.module.css, inside .tableScroll. */
 
-/* --- Tabs: a segmented control that wraps onto a second line when it runs out
-   of room, so every tab stays in view (no hidden sideways scroll) ------------- */
+/* --- Tabs (Tabs.tsx, MonoEdge design system, 16 Oct 2026): one line that scrolls
+   sideways and never wraps, a 2px bar under the selected tab, edge arrows where
+   there is a mouse. More than six tabs become a select below 768px. ----------- */
+
+.tabBar {
+  position: relative;
+  min-width: 0;
+}
 
 .tabs {
+  position: relative;
   display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-1);
-  width: fit-content;
-  max-width: 100%;
-  padding: var(--space-1);
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--surface-2);
+  gap: var(--space-6);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x proximity;
+}
+
+.tabs::-webkit-scrollbar {
+  display: none;
 }
 
 .tab {
+  position: relative;
   flex: none;
-  min-height: calc(var(--control-h) - 8px);
-  padding: 0 var(--space-4);
-  border: 1px solid transparent;
-  border-radius: var(--r-sm);
-  background: transparent;
-  color: var(--fg-muted);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: var(--h-lg);
+  padding-inline: 0;
+  background: none;
+  border: 0;
+  border-radius: 0;
+  color: var(--text-secondary);
   font: inherit;
-  font-size: var(--fs-sm);
-  font-weight: 600;
+  font-weight: 500;
   white-space: nowrap;
+  scroll-snap-align: start;
   cursor: pointer;
-  transition:
-    background-color var(--t-fast) var(--ease),
-    color var(--t-fast) var(--ease);
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
 }
 
-@media (pointer: coarse) {
-  .tab {
-    min-height: 44px;
+@media (hover: hover) and (pointer: fine) {
+  .tab:hover {
+    color: var(--text-primary);
   }
 }
 
-.tab:hover {
-  color: var(--fg);
+.tab[aria-selected="true"] {
+  color: var(--text-primary);
+  font-weight: 700;
 }
 
-.tab[aria-selected="true"] {
-  background: var(--surface);
-  border-color: var(--border-strong);
-  color: var(--fg);
-  box-shadow: var(--e-1);
+/* Inside the scroll box: bottom 0, so the bar sits on the tablist's hairline. */
+.tab[aria-selected="true"]::after {
+  content: "";
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--accent);
+  transform-origin: left; /* it slides from the tab chosen before (lib/motion.ts) */
 }
 
 .tab:focus-visible {
   outline-offset: -2px;
-  box-shadow: none;
 }
 
+/* The bold label's width is kept for every tab, so selecting one never moves the others. */
+.tabLabel {
+  display: inline-grid;
+}
+
+.tabLabel::before {
+  content: attr(data-label);
+  content: attr(data-label) / "";
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+  font-weight: 700;
+  user-select: none;
+}
+
+.tabCount {
+  min-width: 2ch;
+  font-variant-numeric: tabular-nums;
+  text-align: end;
+  color: var(--text-secondary);
+}
+
+/* The edge arrows: only with a mouse, only on a side with more tabs. */
+.tabEdge {
+  position: absolute;
+  inset-block: 0 1px;
+  z-index: 1;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: var(--h-sm);
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: var(--bg-page);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.tabEdge:hover {
+  color: var(--text-primary);
+}
+
+.tabEdge[data-side="start"] {
+  inset-inline-start: 0;
+}
+
+.tabEdge[data-side="end"] {
+  inset-inline-end: 0;
+}
+
+.tabEdge svg {
+  flex: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .tabEdge:not([hidden]) {
+    display: inline-flex;
+  }
+}
+
+.tabSelect {
+  display: none;
+}
+
+@media (max-width: 767.98px) {
+  .tabBar[data-many] {
+    display: none;
+  }
+
+  .tabSelect {
+    display: flex;
+  }
+}
+
+/* Every panel keeps the same least height, so switching tabs never moves the page. */
 .panel {
+  min-height: 70svh;
   outline-offset: 4px;
+}
+
+/* A busy button keeps its width: the label goes clear and the spinner sits over it. */
+.busy {
+  position: relative;
+  -webkit-text-fill-color: transparent;
+}
+
+.busy > :global(.spinner) {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+}
+
+.busy > svg {
+  visibility: hidden;
 }
 
 /* --- Sections ---------------------------------------------------------------- */
@@ -65,7 +177,7 @@
 .panelStack {
   display: flex;
   flex-direction: column;
-  gap: var(--space-6);
+  gap: var(--space-8);
 }
 
 .section {
@@ -80,14 +192,24 @@
   font-size: var(--fs-lg);
 }
 
+/* A section's heading with its one action at the end (Users: Add user). */
+.sectionHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-4);
+  min-width: 0;
+}
+
 .emptyLine {
   margin: 0;
-  padding: var(--space-5) var(--space-4);
-  text-align: center;
-  color: var(--fg-muted);
+  padding: var(--space-6) var(--space-4);
+  text-align: start;
+  color: var(--text-secondary);
   border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--surface);
+  border-radius: var(--k-r-2);
+  background: var(--bg-surface);
 }
 
 .customer {
@@ -95,7 +217,32 @@
 }
 
 .saved {
-  color: var(--fg-muted);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+}
+
+/* --- Tables: each in its own sideways scroller, so a wide one never widens the page --- */
+
+.tableScroll {
+  position: relative;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+}
+
+/* In the scroller the header cannot stick to the page (it would sit over the first rows). */
+.tableScroll table thead th {
+  position: static;
+}
+
+/* Over 100 rows: the next rows on a button, so a long list never slows the page (RowCap). */
+.moreRows {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+  color: var(--text-secondary);
   font-size: var(--fs-sm);
 }
 
@@ -111,7 +258,7 @@
 
 .details {
   font-size: var(--fs-sm);
-  color: var(--fg-muted);
+  color: var(--text-secondary);
 }
 
 /* The User column: the name, and the e-mail under it. */
@@ -123,7 +270,7 @@
 .userEmail {
   display: block;
   font-size: var(--fs-sm);
-  color: var(--fg-muted);
+  color: var(--text-secondary);
 }
 
 .roleSelect {
@@ -131,11 +278,28 @@
   min-width: 0;
 }
 
-.actions {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  align-items: flex-start;
+/* AD1 (UI audit, 16 Oct 2026): the e-mail on one line, cut with "…" (its title holds
+   it all); the Added date never breaks. */
+.userCell {
+  min-width: 0;
+  max-width: 0; /* the table cell takes the column's width, not the e-mail's */
+}
+
+.userName,
+.userEmail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.date {
+  white-space: nowrap;
+}
+
+.rowActions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
 }
 
 /* Status: Active / Locked until 14:05 / Disabled, then 2FA on or off. */
@@ -145,18 +309,76 @@
   gap: var(--space-1);
 }
 
-.confirm {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  font-size: var(--fs-sm);
-  font-weight: 600;
+/* AD2: one row's menu (RowMenu.tsx), a native popover under its button, flipped above
+   near the window's foot; centred where anchor positioning is missing. The action that
+   takes something away is last, under a hairline, 16px from the rest. */
+.rowMenuButton {
+  padding-inline: var(--space-2);
 }
 
-.confirmButtons {
+.rowMenuCaret {
+  transform: rotate(90deg);
+}
+
+.rowMenu {
+  position: fixed;
+  min-width: 12rem;
+  max-width: min(20rem, calc(100% - 2 * var(--space-4)));
+  margin: 0;
+  padding: var(--space-1);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--k-r-2);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+}
+
+@supports (position-area: bottom) {
+  .rowMenu {
+    inset: auto;
+    margin-block: var(--space-1);
+    position-area: bottom span-left;
+    position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline;
+  }
+}
+
+.rowMenuItem {
   display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
+  flex-direction: column;
+  align-items: flex-start;
+  width: 100%;
+  min-height: var(--control-h);
+  justify-content: center;
+  padding: var(--space-1) var(--space-3);
+  border: 0;
+  border-radius: var(--k-r-2);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: var(--fs-sm);
+  text-align: start;
+  cursor: pointer;
+}
+
+.rowMenuItem:hover,
+.rowMenuItem:focus-visible {
+  background: var(--bg-hover);
+}
+
+.rowMenuItem[aria-disabled="true"] {
+  color: var(--text-secondary);
+  cursor: not-allowed;
+}
+
+.rowMenuHint {
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+
+.rowMenuDanger {
+  margin-top: var(--space-4);
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+  color: var(--critical);
 }
 
 /* The Users table's short columns (Table.module.css switches at 48rem); the
@@ -175,20 +397,7 @@
   }
 
   .actionsColumn {
-    width: 10rem;
-  }
-}
-
-/* Room enough: the row's actions side by side, so a row stays short. */
-@container reflow (min-width: 64rem) {
-  .actionsColumn {
-    width: 20rem;
-  }
-
-  .actions {
-    flex-direction: row;
-    flex-wrap: wrap;
-    align-items: center;
+    width: 6.5rem; /* "More" and a spinner: the actions are in its menu */
   }
 }
 
@@ -198,14 +407,11 @@
   }
 
   .actionsCell {
-    margin-top: var(--space-2);
+    padding-block-start: var(--space-2);
   }
 
-  .actions {
-    flex-direction: row;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: var(--space-2);
+  .userCell {
+    max-width: none;
   }
 }
 
@@ -215,6 +421,23 @@
   gap: var(--space-2);
   align-items: center;
   justify-content: flex-end;
+}
+
+/* A form's buttons: [Destructive] ... [Cancel] [Primary], the primary last; below 480px
+   they stack full width, the primary on top. */
+.formButtons {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+@media (max-width: 479.98px) {
+  .formButtons {
+    flex-direction: column-reverse;
+    align-items: stretch;
+  }
 }
 
 /* --- Add a user ---------------------------------------------------------------- */
@@ -238,6 +461,105 @@
   max-width: 10rem;
 }
 
+/* AD6: Settings in sections; the Save bar sticks to the screen's foot while changed. */
+.settingsGroup {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  margin: 0;
+  padding: var(--space-4) 0 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+
+.settingsLegend {
+  float: left;
+  width: 100%;
+  margin-bottom: var(--space-3);
+  padding: 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.saveBar {
+  position: sticky;
+  bottom: 0;
+  z-index: var(--z-sticky);
+  justify-content: flex-end;
+  padding: var(--space-3) 0;
+  border-top: 1px solid var(--border);
+  background: var(--bg-surface);
+}
+
+/* AD3: Add user's side panel, at the end of the window; flat, a hairline edge. It slides
+   in from that edge (motion pass, 16 Oct 2026); its backdrop fades (globals.css). */
+.sidePanel[open] {
+  animation: side-in var(--t-drawer) var(--ease);
+}
+
+@keyframes side-in {
+  from {
+    transform: translateX(100%);
+  }
+}
+
+.sidePanel {
+  position: fixed;
+  inset-block: 0;
+  inset-inline: auto 0;
+  width: min(100%, 28rem);
+  max-width: 100%;
+  height: 100%;
+  max-height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-inline-start: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  overflow: hidden;
+}
+
+.sidePanel::backdrop {
+  background: var(--backdrop);
+}
+
+.sidePanelBody {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  height: 100%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--space-6);
+  padding-block-end: max(var(--space-6), env(safe-area-inset-bottom));
+}
+
+.passwordBlock {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.passwordTools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.toastText {
+  margin: 0;
+  min-width: 0;
+}
+
 /* --- Numbers ---------------------------------------------------------------- */
 
 .tiles {
@@ -254,14 +576,20 @@
   gap: var(--space-1);
   padding: var(--space-3) var(--space-4);
   border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--surface);
+  border-radius: var(--k-r-2);
+  background: var(--bg-surface);
   min-width: 0;
+  contain: layout paint style;
 }
 
-.tileLabel {
-  font-size: var(--fs-sm);
-  color: var(--fg-muted);
+/* Labels: 11px, bold, upper case, 0.08em apart. */
+.tileLabel,
+.usageTileHead {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
 }
 
 .tileValue {
@@ -274,6 +602,55 @@
 }
 
 /* A second row of tiles under its own heading (the pages read by route). */
+/* AD4: the small lists under the four large numbers. */
+.breakdowns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
+  gap: var(--space-4);
+}
+
+.breakdown {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--k-r-2);
+  background: var(--bg-surface);
+}
+
+.breakdown p {
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+.breakdownList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+
+.breakdownRow {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.breakdownRow dt {
+  min-width: 0;
+  color: var(--text-secondary);
+}
+
+.breakdownRow dd {
+  margin: 0;
+  font-weight: 600;
+  text-align: end;
+}
+
 .tilesHeading {
   margin: var(--space-3) 0 0;
   font-size: var(--fs-base);
@@ -289,19 +666,19 @@
 
 .skeletonRow {
   height: 104px;
-  border-radius: var(--r-md);
+  border-radius: var(--k-r-2);
 }
 
 @media (min-width: 768px) {
   .skeletonRow {
-    height: 48px;
-    border-radius: var(--r-sm);
+    height: var(--space-12); /* a table row's height */
+    border-radius: var(--k-r-2);
   }
 }
 
 .skeletonTile {
   height: 5.5rem;
-  border-radius: var(--r-md);
+  border-radius: var(--k-r-2);
 }
 
 .errorBanner {
@@ -310,15 +687,23 @@
   align-items: flex-start;
   gap: var(--space-3);
   padding: var(--space-3) var(--space-4);
-  border: 1px solid var(--danger-fg);
-  border-radius: var(--r-md);
-  background: var(--danger-bg);
-  color: var(--danger-fg);
+  border: 1px solid var(--critical);
+  border-radius: var(--k-r-2);
+  background: var(--bg-surface);
+  color: var(--text-primary);
 }
 
+/* Icon, words and Try again: the icon and the first line of words sit on the
+   button's middle line; a longer message runs on below it. */
 .errorIcon {
   flex: none;
-  margin-top: 3px;
+  height: 1lh;
+  color: var(--critical);
+}
+
+.errorIcon,
+.errorBody {
+  margin-block-start: max(0px, (var(--control-h) - 1lh) / 2);
 }
 
 .errorBody {
@@ -339,14 +724,13 @@
   align-items: center;
   gap: var(--space-2);
   margin: 0;
-  color: var(--fg-muted);
+  color: var(--text-secondary);
 }
 
 /* --- A temporary password, shown once ----------------------------------------- */
 
 .reveal {
   border-color: var(--accent);
-  border-inline-start-width: 4px;
 }
 
 .reveal p {
@@ -361,9 +745,9 @@
   display: inline-block;
   padding: var(--space-1) var(--space-3);
   border: 1px dashed var(--border-strong);
-  border-radius: var(--r-sm);
-  background: var(--surface-2);
-  color: var(--fg);
+  border-radius: var(--k-r-2);
+  background: var(--bg-subdued);
+  color: var(--text-primary);
   font-family: var(--font-mono);
   font-size: var(--fs-lg);
   letter-spacing: 0.06em;
@@ -402,30 +786,186 @@
   align-items: end;
 }
 
+/* Figures as of, and Refresh, at the end of the controls' row. */
+.usageFresh {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  margin-inline-start: auto;
+}
+
+.asOf {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+
 .usageTables {
   display: flex;
   flex-direction: column;
-  gap: var(--space-5);
+  gap: var(--space-6);
 }
 
-/* The daily table: the amount, then a bar (decoration: the amount says it). */
+/* The tokens tile: its label with the period on one line (wrapping on a phone),
+   the number with its unit, then a day's average. */
+.usageTile {
+  flex-direction: column;
+}
+
+/* AD4: a headline number reads label, number, note, top down. */
+.kpi {
+  flex-direction: column;
+  justify-content: flex-start;
+}
+
+.usageTileHead {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: var(--space-1) var(--space-3);
+}
+
+.usageRange {
+  font-variant-numeric: tabular-nums;
+}
+
+.tileUnit {
+  font-size: var(--fs-base);
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.tileNote {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+
+/* Tokens by day: one upright bar per day, drawn in a box of fixed height so a
+   new period never moves the page below it. */
+.chartCard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: var(--space-3) var(--space-4) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--k-r-2);
+  background: var(--bg-surface);
+  contain: layout paint style;
+}
+
+/* The bars and dates in their own sideways scroller: a long period never widens the card. */
+.chart {
+  position: relative;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+}
+
+.chartHead {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: var(--space-1) var(--space-3);
+}
+
+.chartTitle {
+  font-weight: 600;
+}
+
+.chartNote {
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+}
+
+.plot {
+  position: relative;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  grid-template-rows: 100%;
+  align-items: end;
+  /* A fixed box: a new period never moves the page below it. */
+  height: 12rem;
+  min-width: 100%;
+  padding-top: 1.75rem; /* room for the busiest day's label */
+  border-bottom: 1px solid var(--border-strong);
+}
+
+.dayBar {
+  width: 70%;
+  margin-inline: auto;
+  border-radius: 2px 2px 0 0;
+  background: var(--accent);
+}
+
+.peak,
+.tick {
+  position: absolute;
+  white-space: nowrap;
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.peak {
+  top: 0;
+  font-weight: 600;
+}
+
+.ticks {
+  position: relative;
+  height: 1.5rem;
+  margin-top: var(--space-1);
+  color: var(--text-secondary);
+}
+
+.tick {
+  top: 0;
+}
+
+/* A kind of work's share: the words, then a bar (decoration: the words say it). */
 .barCell {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
+  gap: var(--space-2);
 }
 
 .barCell > span:first-child {
   flex: none;
-  min-width: 6rem;
+  min-width: 4.5rem;
 }
 
 .bar {
   display: block;
-  height: 0.75rem;
-  min-width: 1px;
-  max-width: calc(100% - 7rem);
-  border-radius: var(--r-sm);
+  height: 0.5rem;
+  min-width: 2px;
+  border-radius: var(--k-r-2);
   background: var(--accent);
 }
 
+/* High contrast: the system's text colour, so the bars stay visible. */
+@media (forced-colors: active) {
+  .dayBar,
+  .bar {
+    background: CanvasText;
+  }
+}
+
+/* File management F1: Move up and Move down, the chevrons turned to point that way. */
+.upButton svg,
+.downButton svg {
+  transform: rotate(90deg);
+}
+
+/* File management A5, A6: the Activity tab's filter row, then the table, then the pager. */
+.activityHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}

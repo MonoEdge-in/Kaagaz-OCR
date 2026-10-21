@@ -44,7 +44,7 @@ INVOICE_12 = FlaggedPage(str(uuid.uuid4()), "Invoice_12.pdf", 3, "unreadable")
 REGISTER = FlaggedPage(str(uuid.uuid4()), "Register.jpg", 1, "uncertain")
 # The PRD's own example (F6).
 TWO_PAGES_NOTE = (
-    "Not found in the readable text. 2 pages couldn't be read: Invoice_12.pdf page 3, Register.jpg page 1."
+    "Not found in the readable text. 2 pages to check: Invoice_12.pdf page 3, Register.jpg page 1."
 )
 # A word mark inside INVOICE's one box (page 1, 0.1..0.9 x 0.2..0.3), and one elsewhere.
 INSIDE = BoxLocation(1, 0.5, 0.25, 0.6, 0.28)
@@ -94,13 +94,13 @@ def ask(
 def test_f6_the_not_found_note_names_each_page_as_the_prd_says() -> None:
     assert not_found_note([INVOICE_12, REGISTER], 2) == TWO_PAGES_NOTE
     assert not_found_note([INVOICE_12], 1) == (
-        "Not found in the readable text. 1 page couldn't be read: Invoice_12.pdf page 3."
+        "Not found in the readable text. 1 page to check: Invoice_12.pdf page 3."
     )
 
 
 def test_f6_pages_past_the_named_ones_are_counted() -> None:
     assert not_found_note([INVOICE_12, REGISTER], 9) == (
-        "Not found in the readable text. 9 pages couldn't be read:"
+        "Not found in the readable text. 9 pages to check:"
         " Invoice_12.pdf page 3, Register.jpg page 1, and 7 more."
     )
 
@@ -263,7 +263,7 @@ def test_f6_a_saved_answer_never_names_a_document_that_is_gone(state: str | None
     assert shown["unreadable_pages"] == [REGISTER.to_json()]
     assert shown["unreadable_page_count"] == 2
     assert shown["reading_note"] == (
-        "Not found in the readable text. 2 pages couldn't be read: Register.jpg page 1, and 1 more."
+        "Not found in the readable text. 2 pages to check: Register.jpg page 1, and 1 more."
     )
     assert "Invoice_12" not in str(shown)
     assert saved == _saved(INVOICE_12, REGISTER, total=3)  # the stored answer never changes

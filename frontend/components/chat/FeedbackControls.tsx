@@ -91,12 +91,14 @@ export function FeedbackControls({
             value={reason}
             onChange={(event) => setReason(event.target.value)}
           />
-          <div className="row">
-            <button type="submit" className="btn btn-primary" disabled={busy}>
-              Send feedback
-            </button>
+          {/* Cancel, then the form's own action last; secondary, as Send in the
+              question box is the screen's one primary. */}
+          <div className="actions">
             <button type="button" className="btn btn-quiet" disabled={busy} onClick={() => setAskingReason(false)}>
               Cancel
+            </button>
+            <button type="submit" className="btn" disabled={busy}>
+              Send feedback
             </button>
           </div>
         </form>

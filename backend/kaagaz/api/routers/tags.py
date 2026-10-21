@@ -29,7 +29,7 @@ from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.names import TAG_NAME_MAX, clean_name
 from kaagaz.api.views import tag
-from kaagaz.db import audit
+from kaagaz.db import audit, listing
 from kaagaz.db import tags as tags_sql
 from kaagaz.db.trash import InTrash
 
@@ -117,6 +117,7 @@ def set_document_tags(
     try:
         with _refused(), context.db.customer(user.customer_id) as conn:
             rows = tags_sql.set_document_tags(conn, user.customer_id, target, wanted)
+            listing.set_details(conn, user.customer_id, target, by=user.user_id)  # File management O3
             _audit(conn, user, "document.tags", "document", target, {"tag_count": len(rows)})
     except InTrash:  # Trash means deleted: nothing was changed
         raise ApiError(409, "in_trash", "This document is in the Trash. Restore it first.") from None

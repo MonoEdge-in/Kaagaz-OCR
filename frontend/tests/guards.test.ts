@@ -29,8 +29,11 @@ describe("guards", () => {
     expect(offenders.map((p) => relative(ROOT, p))).toEqual([]);
   });
 
-  it("uses colour tokens: no hex colours in CSS outside app/globals.css", () => {
-    const offenders = all((p) => p.endsWith(".css") && !p.endsWith("globals.css")).filter((p) =>
+  // Changed on purpose (UI rebuild Step 1, 20 Oct 2026): app/styles/tokens.css holds
+  // the handoff's colour tokens, so it is the second file allowed hex colours.
+  it("uses colour tokens: no hex colours in CSS outside app/globals.css and app/styles/tokens.css", () => {
+    const tokenFiles = [join(ROOT, "app", "globals.css"), join(ROOT, "app", "styles", "tokens.css")];
+    const offenders = all((p) => p.endsWith(".css") && !tokenFiles.includes(p)).filter((p) =>
       /#[0-9a-fA-F]{3,8}\b/.test(readFileSync(p, "utf8")),
     );
     expect(offenders.map((p) => relative(ROOT, p))).toEqual([]);
@@ -58,12 +61,15 @@ describe("guards", () => {
       /login|signInPath|endedPath|signedOutPath|pageAfterSessionChange/.test(m.to),
     );
     expect(toSignIn).toEqual([{ file: "lib/session.tsx", to: "signInPath(pathname" }]);
-    const fromSignIn = moves.filter((m) => m.file.startsWith("app/login/") || m.file.startsWith("app/admin/login/"));
+    const fromSignIn = moves.filter((m) => m.file.startsWith("app/login/"));
     expect(fromSignIn).toEqual([]);
     const leaving = [
       "app/login/SignInForm.tsx",
-      "app/admin/login/AdminSignInForm.tsx",
+      "app/login/EnrolStep.tsx", // one sign-in page (16 Oct 2026): the admin form went
+      "app/signup/SignUpForm.tsx",
+      // Changed on purpose (UI audit G6, 16 Oct 2026): signing out moved from AppShell to AccountMenu.
       "components/shell/AppShell.tsx",
+      "components/shell/AccountMenu.tsx",
       "components/shell/SetPasswordScreen.tsx",
       "components/admin/AdminView.tsx",
     ];
@@ -81,9 +87,12 @@ describe("guards", () => {
   });
 
   // A8a: the uploads list is not a live region; the screen says each batch once, politely.
+  // Changed on purpose (scan states, 16 Oct 2026): the status bar's one line is said politely
+  // (brief: aria-live="polite" for progress); the tray's rows, lines and counts still are not.
   it("keeps the uploads list and its counts out of the live regions", () => {
     const source = readFileSync(join(ROOT, "components", "documents", "UploadArea.tsx"), "utf8");
-    expect(source).not.toMatch(/aria-live/);
+    expect(source.match(/aria-live/g)).toHaveLength(1);
+    expect(source).toMatch(/<p className=\{styles\.barLine\} aria-live="polite"/);
   });
 
   // One way out (lib/sessionChannel.ts), so the first page asked for wins.
@@ -94,12 +103,13 @@ describe("guards", () => {
     expect(offenders).toEqual(["lib/sessionChannel.ts"]);
   });
 
+  // Changed on purpose (UI audit, 16 Oct 2026): A3, Send is a labelled button, dimmed while the box is empty too.
   it("keeps Send focusable while waiting: aria-disabled, never disabled", () => {
     const box = readFileSync(join(ROOT, "components/chat/QuestionBox.tsx"), "utf8");
-    const start = box.indexOf('icon="send"');
+    const start = box.indexOf("styles.send}`}");
     expect(start).toBeGreaterThan(-1);
-    const send = box.slice(start, box.indexOf("/>", start));
-    expect(send).toContain("aria-disabled={pending");
+    const send = box.slice(start, box.indexOf("</button>", start));
+    expect(send).toContain("aria-disabled={pending || empty || undefined}");
     expect(send).not.toMatch(/\sdisabled=/);
   });
 
@@ -124,7 +134,12 @@ describe("guards", () => {
 
   it("keeps a focused element clear of the sticky top bar (WCAG 2.4.11)", () => {
     const css = readFileSync(join(ROOT, "app/globals.css"), "utf8");
-    expect(css).toMatch(/scroll-padding-top:\s*calc\(var\(--topbar-space\) \+ var\(--space-4\)\)/);
+    // Changed on purpose (MonoEdge design system, 16 Oct 2026): the header plus 8px, and the
+    // header is now a row above <main>, the one scroller, which keeps its own 8px.
+    expect(css).toMatch(/scroll-padding-top:\s*calc\(var\(--topbar-space\) \+ var\(--space-2\)\)/);
+    expect(readFileSync(join(ROOT, "components/shell/Shell.module.css"), "utf8")).toMatch(
+      /\.main \{[^}]*scroll-padding-top:\s*var\(--space-2\);/,
+    );
   });
 
   // PRD 4 #13: the countdown is never announced, and every countdown shares one timer.

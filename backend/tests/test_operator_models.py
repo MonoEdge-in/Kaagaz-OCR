@@ -76,6 +76,15 @@ CATALOGUE_ROW = {
     "chat_eligible": True,
     "chat_verified_prompt": ANSWER_PROMPT_HASH,
     "chat_verified_at": NOW,
+    # 0033: 312 pages read, 300 with OpenRouter's cost; 40 questions, 38 with it.
+    "scan_pages": 312,
+    "scan_pages_costed": 300,
+    "scan_cost_usd": Decimal("12.747000"),
+    "scan_cost_unknown_calls": 12,
+    "answer_questions": 40,
+    "answer_questions_costed": 38,
+    "answer_cost_usd": Decimal("0.190000"),
+    "answer_cost_unknown_calls": 3,
 }
 # kaagaz_op_org_ai's row: the organisation's own scan models, the rest from the defaults.
 ORG_ROW = {
@@ -280,6 +289,15 @@ def test_the_catalogue_says_verified_for_the_current_prompts_only(
         "tokens_per_page_out": 830,
         "ledger_tokens_in": 2400.5,  # MC3: the ledger's average a page, numbers only
         "ledger_tokens_out": None,
+        # 0033: the real cost OpenRouter reported, the unknown calls apart, numbers only.
+        "scan_pages": 312,
+        "scan_pages_costed": 300,
+        "scan_cost_usd": 12.747,
+        "scan_cost_unknown_calls": 12,
+        "answer_questions": 40,
+        "answer_questions_costed": 38,
+        "answer_cost_usd": 0.19,
+        "answer_cost_unknown_calls": 3,
         "enabled_at": None,
         "chat_eligible": True,
         "chat_verified": True,
@@ -296,6 +314,22 @@ def test_the_catalogue_says_verified_for_the_current_prompts_only(
     [model] = offline.client.get("/api/operator/models", headers=offline.headers).json()["items"]
     assert (model["verified"], model["chat_verified"], model["expires_on"]) == (False, False, "2027-01-31")
     assert model["vendor_allowed"] is False  # example is not in OPENROUTER_MODEL_VENDORS
+
+
+def test_only_models_kaagaz_can_use_are_listed(offline: _Offline, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Tushar, 18 Oct 2026: a model failing the rules (no zero-data-retention provider...) is
+    # not listed; one still enabled is, so it can be turned off.
+    unusable = {**CATALOGUE_ROW, "eligible": False, "chat_eligible": False}
+    rows = [
+        {**unusable, "id": "anthropic/not-usable"},
+        {**unusable, "id": "anthropic/still-on", "enabled_at": datetime(2026, 10, 1, tzinfo=UTC)},
+        {**CATALOGUE_ROW, "id": "google/answers-only", "eligible": False},
+        {**CATALOGUE_ROW, "id": "google/scans-only", "chat_eligible": False},
+    ]
+    monkeypatch.setattr(models_sql, "list_models", lambda conn, oid: rows)
+    items = offline.client.get("/api/operator/models", headers=offline.headers).json()["items"]
+    listed = [item["id"] for item in items]
+    assert listed == ["anthropic/still-on", "google/answers-only", "google/scans-only"]
 
 
 def test_enabling_a_model_needs_a_fresh_code_and_names_both_current_prompts(offline: _Offline) -> None:
@@ -400,7 +434,7 @@ def test_an_organisations_ai_settings_round_trip_with_the_defaults_it_follows(of
     }
     put = offline.client.put(path, json={**ORG_BODY, "code": offline.code()}, headers=offline.headers)
     assert put.status_code == 200, put.text
-    assert put.json() == reply  # the settings as saved, read again
+    assert put.json() == {**reply, "ensemble_off": False}  # the settings as saved, read again
     [(_, args, kwargs)] = [call for call in offline.calls if call[0] == "set_org_ai"]
     assert args == (
         OID,
@@ -437,6 +471,15 @@ def test_saving_an_organisations_ai_settings_needs_a_fresh_code(offline: _Offlin
     assert offline.names() == ["step_up_failed"]
 
 
+def test_ensemble_saved_off_with_one_scanning_model_is_said_not_refused(offline: _Offline) -> None:
+    # 0037: with fewer than two scanning models in effect the save is done and Ensemble off.
+    offline.org = {**ORG_ROW, "scan_models": [MODEL], "dynamic": True, "ensemble": False}
+    body = {**ORG_BODY, "scan_models": [MODEL], "dynamic": True, "code": offline.code()}
+    put = offline.client.put(f"/api/operator/orgs/{CID}/ai", json=body, headers=offline.headers)
+    assert put.status_code == 200, put.text
+    assert (put.json()["ensemble"], put.json()["ensemble_off"]) == (False, True)
+
+
 # Every outcome of kaagaz_op_set_org_ai (C10): a status, a code and plain words.
 ORG_OUTCOMES = [
     ("done", 200, None),
@@ -447,8 +490,8 @@ ORG_OUTCOMES = [
     ("chat_not_verified", 409, "chat_not_verified"),
     ("level_not_supported", 409, "level_not_supported"),
     ("default_not_allowed", 409, "default_not_allowed"),
-    ("needs_two_models_scan", 409, "needs_two_models_scan"),
-    ("needs_two_models_chat", 409, "needs_two_models_chat"),
+    # Changed on purpose (Tushar, 16 Oct 2026: any number of models): 0037 no longer returns
+    # needs_two_models_scan or needs_two_models_chat.
     ("signed_out", 401, "not_signed_in"),
     ("step_up", 403, "step_up_failed"),
 ]
@@ -567,7 +610,7 @@ def test_saving_the_platform_defaults_needs_a_fresh_code_and_sends_the_choice(of
 
 @pytest.mark.parametrize(
     ("outcome", "status", "code"),
-    [row for row in ORG_OUTCOMES if row[0] not in ("missing", "deleting", "needs_two_models_chat")],
+    [row for row in ORG_OUTCOMES if row[0] not in ("missing", "deleting")],
 )
 def test_each_defaults_outcome_gets_its_reply(
     offline: _Offline, outcome: str, status: int, code: str | None

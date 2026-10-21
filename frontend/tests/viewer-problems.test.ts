@@ -153,6 +153,17 @@ describe("the banner (PageProblems)", () => {
     expect(kept).toMatch(/<p [^>]*tabindex="-1"[^>]*>[^<]*It stays marked/);
   });
 
+  // UI audit DD4 (16 Oct 2026): an alert, its title, each problem a line (no bullet), one row of like buttons.
+  it("is an alert with a title, no bullets, and one row of like buttons", () => {
+    const html = render();
+    expect(html).toMatch(/<section [^>]*aria-labelledby="page-3-problems"/);
+    expect(html).toMatch(/<p id="page-3-problems"[^>]*>Page 3 is flagged for review<\/p>/);
+    expect(html).not.toMatch(/<ul|<li/);
+    const buttons = html.match(/<button [^>]*class="([^"]*)"/g) ?? [];
+    expect(buttons).toHaveLength(3);
+    for (const button of buttons) expect(button).toContain('class="btn"');
+  });
+
   it("shows nothing for a good page", () => {
     expect(render({ page: page({ read_quality: "good", problems: [] }) })).toBe("");
   });

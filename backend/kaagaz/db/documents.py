@@ -73,7 +73,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import Connection, text
 from sqlalchemy.exc import IntegrityError
 
-from kaagaz.db import audit, autofile, customers
+from kaagaz.db import audit, autofile, customers, versions
 from kaagaz.db.engine import Database, unavailable
 from kaagaz.db.runs import close_running, finish_run, is_run_open
 from kaagaz.db.sqlstate import FOREIGN_KEY_VIOLATION, retry_on_deadlock, sqlstate
@@ -106,6 +106,14 @@ _READY_STATE = (
     " FROM documents d WHERE d.customer_id = :c AND d.id = :d"
 )
 
+# Versions V10 (verify): a run ready before this one means a read again, which never changes
+# which version is current (a version made current by hand stays so). The run fence's own run
+# is still running here, so only an earlier one counts.
+_READ_BEFORE = (
+    "SELECT EXISTS (SELECT 1 FROM processing_runs r WHERE r.customer_id = :c AND r.document_id = :d"
+    " AND r.status = 'ready' AND r.id IS DISTINCT FROM CAST(:fence AS uuid))"
+)
+
 # The others first, then this one: the unique index documents_current allows
 # one current row per family at every moment.
 _OTHERS_NOT_CURRENT = (
@@ -113,19 +121,35 @@ _OTHERS_NOT_CURRENT = (
     " WHERE customer_id = :c AND family_id = :f AND id <> :d AND is_current"
 )
 
+# Ready first (16 Oct 2026): the progress is kept while the run goes on understanding the
+# ready document (``open_run``), else cleared: a ready document shows none.
 _READY = (
-    "UPDATE documents SET status = 'ready', failure_code = NULL, page_count = :pages, is_current = :current"
+    "UPDATE documents SET status = 'ready', failure_code = NULL, page_count = :pages,"
+    " is_current = CASE WHEN CAST(:again AS boolean) THEN is_current ELSE :current END,"
+    " progress = CASE WHEN CAST(:keep AS boolean) THEN progress ELSE NULL END"
     " WHERE customer_id = :c AND id = :d"
 )
 
 
 def mark_ready(
-    conn: Connection, customer_id: str, document_id: str, page_count: int, *, run: "FinishedRun | None" = None
+    conn: Connection,
+    customer_id: str,
+    document_id: str,
+    page_count: int,
+    *,
+    run: "FinishedRun | None" = None,
+    open_run: str | None = None,
 ) -> None:
     """The document is read: set it ready with its page count and, unless a newer
     version of its family is ready already, make it the family's one current version.
+    A read again (a run of it was ready before, ``_READ_BEFORE``) keeps ``is_current`` as it
+    is, so it never changes which version is current (File management V10).
     With ``run``, finish that run in the same transaction, so a ready document and
-    its finished run commit together.
+    its finished run commit together. With ``open_run`` instead (Ready first, 16 Oct
+    2026), the run fence on that run id, which stays open while the run goes on
+    understanding the ready document, and the progress it wrote last is kept; otherwise
+    the progress is cleared. A document set to be read again meanwhile (``received``)
+    raises Superseded with either, so a run never takes a read again back to ready.
 
     ``conn`` comes from ``Database.customer(customer_id)``. The family lock
     (``trash.lock_family``) comes before any write, so two versions finishing at
@@ -134,7 +158,8 @@ def mark_ready(
     is still finished: failed with ``document_missing``, or rejected (AR11,
     PROVISIONAL). Raises Superseded, and writes nothing, when ``run`` is no longer
     open (the run fence, read under the family lock).
-    3 to 6 statements; O(v log D) time and O(v) space for the family's v versions.
+    3 to 7 statements; O(v log D + r) time and O(v) space for the family's v versions and the
+    document's r runs.
     """
     family_id = lock_family(conn, customer_id, document_id)
     if family_id is None:
@@ -142,19 +167,24 @@ def mark_ready(
             closed = dataclasses.replace(run.totals, status="failed", error_code="document_missing")
             finish_run(conn, customer_id, dataclasses.replace(run, totals=closed))
         return
-    if run is not None and not is_run_open(conn, customer_id, document_id, run.run_id):
-        raise Superseded(run.run_id)
+    fence = run.run_id if run is not None else open_run
+    if fence is not None and not is_run_open(conn, customer_id, document_id, fence):
+        raise Superseded(fence)
     params = {"c": customer_id, "d": document_id, "f": family_id}
     state = conn.execute(text(_READY_STATE), params).one()
+    if fence is not None and state.status == DocumentStatus.RECEIVED.value:
+        raise Superseded(fence)
     if state.status == DocumentStatus.REJECTED.value:
         if run is not None:
             closed = dataclasses.replace(run.totals, status="rejected")
             finish_run(conn, customer_id, dataclasses.replace(run, totals=closed))
         return
+    again = bool(conn.execute(text(_READ_BEFORE), {**params, "fence": fence}).scalar_one())
     current = not state.newer_ready
-    if current:
+    if current and not again:
         conn.execute(text(_OTHERS_NOT_CURRENT), params)
-    conn.execute(text(_READY), {**params, "pages": page_count, "current": current})
+    ready = {"pages": page_count, "current": current, "again": again, "keep": open_run is not None}
+    conn.execute(text(_READY), {**params, **ready})
     if run is not None:
         finish_run(conn, customer_id, run)
 
@@ -186,6 +216,11 @@ class NotReprocessable(Exception):
     """The document is being read, was rejected, or is in Trash."""
 
 
+class EnsembleRunning(NotReprocessable):
+    """An Ensemble run of the document is queued or running (scan review UX rules, 16 Oct
+    2026): it is read again once the run ends or is stopped."""
+
+
 class ReprocessLimited(Exception):
     """Too many "read again" requests. ``reason`` is ``hourly`` (the customer's
     REPROCESS_PER_HOUR) or ``cooldown`` (this document, within the cooldown)."""
@@ -197,6 +232,11 @@ class ReprocessLimited(Exception):
 
 _REPROCESS_STATE = (
     "SELECT status, deleted_at IS NOT NULL AS in_trash FROM documents WHERE customer_id = :c AND id = :d"
+)
+# A queued or running Ensemble run of the document (0030's ensemble_runs_one_active index).
+_ENSEMBLE_RUNNING = (
+    "SELECT EXISTS (SELECT 1 FROM ensemble_runs WHERE customer_id = :c AND document_id = :d"
+    " AND status IN ('queued', 'running'))"
 )
 
 # One customer's "read again" requests take their counts one after the other
@@ -253,7 +293,8 @@ def mark_for_reprocess(
     first, and is waited for, never skipped: a family being moved to Trash is
     waited for, then seen. Then the customer's reprocess lock (a transaction
     advisory lock), so the hourly count is exact. Raises NotReprocessable unless the status is ready,
-    failed or needs_reader and it is out of Trash, and ReprocessLimited when the
+    failed or needs_reader and it is out of Trash (EnsembleRunning while an Ensemble run of
+    it is queued or running), and ReprocessLimited when the
     customer already started ``per_hour`` in the last hour, or this document one
     in the last REPROCESS_COOLDOWN_MINUTES. Nothing is changed when it raises.
     ``is_current`` is kept, so an older version never takes its place.
@@ -266,6 +307,8 @@ def mark_for_reprocess(
     state = conn.execute(text(_REPROCESS_STATE), params).one()
     if state.in_trash or state.status not in REPROCESSABLE:
         raise NotReprocessable(document_id)
+    if conn.execute(text(_ENSEMBLE_RUNNING), params).scalar_one():
+        raise EnsembleRunning(document_id)
     conn.execute(text(_REPROCESS_LOCK), params)  # held to the end of the transaction
     if int(conn.execute(text(_REPROCESSED_THIS_HOUR), params).scalar_one()) >= per_hour:
         raise ReprocessLimited("hourly")
@@ -294,6 +337,8 @@ _OLDEST_READ_LOCALLY = (
     " WHERE d.customer_id = :c AND d.status = 'ready' AND d.deleted_at IS NULL"
     " AND d.id IN (SELECT p.document_id FROM pages p"
     " WHERE p.customer_id = :c AND 'read_locally' = ANY (p.read_issues))"
+    " AND NOT EXISTS (SELECT 1 FROM ensemble_runs r WHERE r.customer_id = :c AND r.document_id = d.id"
+    " AND r.status IN ('queued', 'running'))"
     " AND NOT EXISTS (SELECT 1 FROM audit_log a WHERE a.customer_id = :c"
     " AND a.action = 'document.read_upgrade' AND a.target_id = d.id::text"
     " AND a.created_at > now() - make_interval(hours => :hours))"
@@ -316,7 +361,7 @@ def mark_for_upgrade(conn: Connection, customer_id: str, document_id: str) -> bo
     """Set a document read locally to be read again by the main reader (PRD 5 Q7):
     True when it was set and audited as ``document.read_upgrade`` (no actor, the
     sweep's own); False when this customer has no such document, or it is being read,
-    rejected or in Trash, and then nothing changes.
+    rejected, in Trash or in an Ensemble run, and then nothing changes.
 
     ``conn`` comes from ``Database.customer(customer_id)``. The family lock comes first,
     as in ``mark_for_reprocess``, then the same change (``_REPROCESS``), with none of
@@ -327,7 +372,10 @@ def mark_for_upgrade(conn: Connection, customer_id: str, document_id: str) -> bo
     3 statements; O(v log D) for the family's v versions."""
     if lock_family(conn, customer_id, document_id) is None:
         return False
-    params = {"c": customer_id, "d": document_id, "by": None, "model": None}
+    if conn.execute(text(_ENSEMBLE_RUNNING), {"c": customer_id, "d": document_id}).scalar_one():
+        return False
+    # Every bind of _REPROCESS (a missing one made the sweep fail on its first document).
+    params = {"c": customer_id, "d": document_id, "by": None, "m": None, "mode": None, "also": None}
     if conn.execute(text(_REPROCESS + " RETURNING id"), params).first() is None:
         return False
     audit.record(
@@ -549,10 +597,15 @@ _NEXT_VERSION = (
     " FROM documents d WHERE d.customer_id = :c AND d.id = :of AND d.deleted_at IS NULL"
 )
 
+# File management O1, O2: a new version takes the family's owner and label.
 _INSERT_VERSION = (
     "INSERT INTO documents (id, customer_id, display_name, sha256, size_bytes, detected_type,"
-    " uploaded_by, read_requested_by, folder_id, family_id, version_no, is_current, ocr_choice)"
-    " VALUES (:d, :c, :name, :h, :size, :type, :by, :by, :folder, :f, :version, false, :ocr)"
+    " uploaded_by, read_requested_by, folder_id, family_id, version_no, is_current, ocr_choice,"
+    " owner_id, sensitivity, sensitivity_set_by_person)"
+    " VALUES (:d, :c, :name, :h, :size, :type, :by, :by, :folder, :f, :version, false, :ocr,"
+    " (SELECT o.owner_id FROM documents o WHERE o.customer_id = :c AND o.id = :of),"
+    " (SELECT o.sensitivity FROM documents o WHERE o.customer_id = :c AND o.id = :of),"
+    " (SELECT o.sensitivity_set_by_person FROM documents o WHERE o.customer_id = :c AND o.id = :of))"
     " ON CONFLICT (customer_id, sha256) DO NOTHING RETURNING id"
 )
 
@@ -660,9 +713,16 @@ class PgDocuments:
                     text(
                         "INSERT INTO documents (id, customer_id, display_name, sha256, size_bytes,"
                         " detected_type, uploaded_by, read_requested_by, folder_id, family_id, version_no,"
-                        " ocr_choice, batch_id, autofile) VALUES (:d, :c, :name, :h, :size, :type, :by, :by,"
-                        " :folder, :family, :version, :ocr, :batch, (SELECT 'pending' FROM customers"
-                        " WHERE id = :c AND autofile_on AND CAST(:folder AS uuid) IS NULL))"
+                        " ocr_choice, batch_id, owner_id, autofile) VALUES (:d, :c, :name, :h, :size, :type,"
+                        " :by, :by, :folder, :family, :version, :ocr, :batch, :by,"
+                        # File management F2: no folder, or a department (filed inside it, F3).
+                        " (SELECT 'pending' FROM customers WHERE id = :c"
+                        " AND (CAST(:folder AS uuid) IS NULL OR EXISTS (SELECT 1 FROM folders"
+                        " WHERE customer_id = :c AND id = CAST(:folder AS uuid) AND kind = 'department'))"
+                        " AND (autofile_on"
+                        " OR (autofile_granted AND EXISTS (SELECT 1 FROM ai_task_settings s"
+                        " WHERE s.customer_id = :c AND s.task = 'autofile' AND s.level = 'on'"
+                        " AND (s.user_id IS NULL OR s.user_id = :by))))))"
                         " ON CONFLICT (customer_id, sha256) DO NOTHING RETURNING id"
                     ),
                     params,
@@ -753,30 +813,51 @@ class PgDocuments:
             conn.execute(text(_CLEAR_READ_AGAIN), {"c": customer_id, "d": document_id})
 
     def mark_ready(
-        self, customer_id: str, document_id: str, page_count: int, *, run: "FinishedRun | None" = None
+        self,
+        customer_id: str,
+        document_id: str,
+        page_count: int,
+        *,
+        run: "FinishedRun | None" = None,
+        open_run: str | None = None,
     ) -> None:
-        """``mark_ready`` in its own transaction: the pipeline's last step."""
+        """``mark_ready`` in its own transaction: the pipeline's last step (Ready first: also
+        the one before the document is understood, with ``open_run``)."""
 
         def transaction() -> None:
             with self._db.customer(customer_id) as conn:
-                mark_ready(conn, customer_id, document_id, page_count, run=run)
+                mark_ready(conn, customer_id, document_id, page_count, run=run, open_run=open_run)
 
         with unavailable():
             retry_on_deadlock(transaction, customer_id=customer_id, document_id=document_id)
 
     def file_document(self, customer_id: str, document_id: str) -> None:
         """Auto-filing (feature 28) in its own transaction, run again on a deadlock, right
-        after ``mark_ready``. What was decided is logged as a code with the ids only."""
+        after ``mark_ready``; then version spotting (``versions.spot``) in another. What was
+        decided is logged as a code with the ids only."""
 
         def transaction() -> str | None:
             with self._db.customer(customer_id) as conn:
                 return autofile.file_document(conn, customer_id, document_id)
 
-        with unavailable():
-            code = retry_on_deadlock(transaction, customer_id=customer_id, document_id=document_id)
+        def spotting() -> str | None:
+            with self._db.customer(customer_id) as conn:
+                return versions.spot(conn, customer_id, document_id)
+
+        ids = {"customer_id": customer_id, "document_id": document_id}
+        try:
+            with unavailable():
+                code = retry_on_deadlock(transaction, **ids)
+        except Exception as failed:  # noqa: BLE001 - a filing bug must never skip spotting
+            code = None
+            _log.warning("autofile_failed", extra={**ids, "code": type(failed).__name__})
         if code is not None:
-            ids = {"customer_id": customer_id, "document_id": document_id}
             _log.info("autofile", extra={**ids, "code": code})
+        # Versions V1 to V5, after filing: an automatic link checks the folder filing chose.
+        with unavailable():
+            code = retry_on_deadlock(spotting, **ids)
+        if code is not None:
+            _log.info("version_spotting", extra={**ids, "code": code})
 
     def set_progress(
         self, customer_id: str, document_id: str, progress: "Progress", *, run_id: str | None = None

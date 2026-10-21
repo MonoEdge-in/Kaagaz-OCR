@@ -1,7 +1,7 @@
 "use client";
 
 // The poller (lib/poll.ts) for one screen: each request uses the latest task
-// the screen rendered, nothing is sent while the tab is hidden, and showing
+// the screen rendered, no planned poll is sent while the tab is hidden, and showing
 // the tab again or coming back online sends a planned poll at once.
 
 import { useEffect, useMemo, useRef } from "react";

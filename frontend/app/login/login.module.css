@@ -1,22 +1,20 @@
-/* The sign-in frame (AuthFrame.tsx) and the sign-in form. Below 900 px a short
-   ledger band (wordmark and value line) sits above the form; from 900 px the
-   ledger brand panel (5fr) sits beside the form (7fr). */
+/* The sign-in frame (AuthFrame.tsx), in the handoff's layout (desktop/SignIn.html): the
+   page on a dot field, and on it one card. The card's left panel is the brand in the
+   accent, its own dot texture over it ("कागज़ · paper"), and the form sits on its right.
+   Below 760 px the panel is a short band above the form. A content page: it scrolls as a page. */
 
 .page {
   position: relative;
+  min-height: 100vh;
   min-height: 100dvh;
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: auto 1fr;
-  background: var(--bg);
+  place-items: center;
+  padding: max(var(--space-16), env(safe-area-inset-top)) max(var(--space-4), env(safe-area-inset-right))
+    max(var(--space-8), env(safe-area-inset-bottom)) max(var(--space-4), env(safe-area-inset-left));
+  background-color: var(--k-ground);
+  background-image: radial-gradient(var(--k-dot) 1.2px, transparent 1.6px);
+  background-size: 22px 22px;
   overflow-x: clip;
-}
-
-@media (min-width: 900px) {
-  .page {
-    grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
-    grid-template-rows: auto;
-  }
 }
 
 .theme {
@@ -26,278 +24,149 @@
   inset-inline-end: max(var(--space-4), env(safe-area-inset-right));
 }
 
-/* --- The brand panel: ruled like a ledger page, with the lal margin rule. --- */
+/* The card: the brand panel and the form side by side, wrapping on a phone. */
+.shell {
+  display: flex;
+  flex-wrap: wrap;
+  width: 100%;
+  max-width: 1000px;
+  min-height: 560px;
+  overflow: hidden;
+  border: 1px solid var(--k-card-edge);
+  border-radius: var(--k-r-5);
+  background: var(--k-surface);
+  box-shadow: var(--k-shadow-2);
+}
+
+/* --- The brand panel: the accent, with a dot texture of its own --- */
 
 .brand {
-  display: none;
-  position: relative;
-  container: brand-panel / inline-size;
-  overflow: clip;
-  background-color: var(--surface-2);
-  background-image: repeating-linear-gradient(
-    to bottom,
-    transparent 0 27px,
-    color-mix(in srgb, var(--border) 40%, transparent) 27px 28px
-  );
-  border-inline-end: 1px solid var(--border);
+  flex: 1 1 260px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: var(--space-6);
+  padding: var(--space-8);
+  border-radius: 24px;
+  background-color: var(--k-accent);
+  background-image: radial-gradient(var(--k-accent-line) 1.2px, transparent 1.6px);
+  background-size: 18px 18px;
+  color: var(--k-accent-ink);
 }
 
-.brand::before {
+/* The lockup: the folded-page mark, the name set wide, "by MonoEdge" in mono capitals. */
+.mark {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+}
+
+.markGlyph {
+  position: relative;
+  flex: none;
+  width: 22px;
+  height: 28px;
+  border-radius: 3px;
+  background: var(--k-accent-ink);
+  clip-path: polygon(0 0, 66% 0, 100% 26%, 100% 100%, 0 100%);
+}
+
+.markGlyph::before,
+.markGlyph::after {
   content: "";
   position: absolute;
-  inset-block: 0;
-  inset-inline-start: var(--space-7);
-  width: 2px;
-  background: var(--brand-lal);
+  left: 5px;
+  right: 5px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--k-accent);
 }
 
-@media (min-width: 900px) {
-  .brand {
-    display: block;
-  }
+.markGlyph::before {
+  top: 12px;
 }
 
-/* The wordmark on top, the value line and figure in the middle, the facts at
-   the bottom. One column as wide as the panel, so the figure never widens it. */
-.brandInner {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: auto 1fr auto;
-  min-height: 100dvh;
-  width: 100%;
-  max-width: 40rem;
-  margin-inline-start: auto; /* a very wide screen: beside the form, not far from it */
-  padding: max(var(--space-7), env(safe-area-inset-top)) var(--space-7)
-    max(var(--space-7), env(safe-area-inset-bottom)) calc(var(--space-7) * 2);
+.markGlyph::after {
+  top: 17px;
 }
 
-.mark {
-  margin: 0;
-  font-family: var(--font-display);
-  font-weight: 700;
-  font-size: var(--fs-xl);
+.markWords {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.markName {
+  font-family: var(--k-font-display);
+  font-stretch: var(--k-display-stretch);
+  font-size: 1.25rem;
+  font-weight: 650;
   line-height: 1;
-  letter-spacing: 0.01em;
-  color: var(--fg);
+  letter-spacing: -0.02em;
 }
 
 .markSub {
   font-weight: 400;
-  color: var(--fg-muted);
+  opacity: 0.85;
 }
 
-.mid {
-  align-self: center;
+.by {
+  font-family: var(--k-font-mono);
+  font-size: 0.59375rem;
+  font-weight: 500;
+  line-height: 1.2;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  opacity: 0.85;
+}
+
+.brandWords {
   display: flex;
   flex-direction: column;
-  gap: var(--space-7);
+  gap: 10px;
+}
+
+.deva {
+  margin: 0;
+  font-family: var(--font-plex-devanagari), "IBM Plex Sans Devanagari", var(--k-font-body);
+  font-size: 1.375rem;
+  font-weight: 600;
 }
 
 .value {
   margin: 0;
-  font-family: var(--font-display);
-  font-weight: 600;
-  font-size: clamp(1.75rem, 1.1rem + 1.4vw, 2.75rem);
-  line-height: 1.18;
-  letter-spacing: -0.005em;
-  text-wrap: balance;
-  max-width: 16em;
-  color: var(--fg);
+  max-width: 28ch;
+  font-size: var(--fs-base);
+  line-height: 1.6;
+  opacity: 0.9;
 }
 
-/* --- The figure: a white page with the cited line highlighted, and its answer
-   card marked Verified, joined by a dotted line from chip [1]. --- */
-
-.figure {
-  position: relative;
-  width: 360px;
-  height: 214px;
-  transform-origin: left top;
-}
-
-@container brand-panel (max-width: 30rem) {
-  .figure {
-    transform: scale(0.85);
-  }
-}
-
-@container brand-panel (max-width: 26rem) {
-  .figure {
-    transform: scale(0.72);
-  }
-}
-
-/* The page stays paper white in both themes (--paper). */
-.sheet {
-  position: absolute;
-  inset: 0 auto auto 0;
-  width: 236px;
-  height: 214px;
-  padding: 20px;
+/* What Kaagaz promises, in three short lines at the panel's foot. */
+.points {
+  list-style: none;
+  margin: 0;
+  padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 9px;
-  background: var(--paper);
-  border-radius: 3px;
-  box-shadow:
-    0 1px 2px rgb(0 0 0 / 0.08),
-    0 14px 34px rgb(0 0 0 / 0.09);
+  gap: var(--space-2);
+  font-size: var(--fs-sm);
+  opacity: 0.9;
 }
 
-.sheet i {
-  display: block;
-  flex: none;
-  height: 5px;
-  border-radius: 3px;
-  background: var(--paper-bar);
-}
-
-.sheet i:nth-child(1) {
-  width: 46%;
-  height: 7px;
-  background: var(--paper-bar-strong);
-}
-
-.sheet i:nth-child(2) {
-  width: 30%;
-}
-
-.sheet i:nth-child(4) {
-  width: 88%;
-}
-
-.sheet i:nth-child(5) {
-  width: 76%;
-}
-
-.sheet i:nth-child(6) {
-  width: 82%;
-}
-
-.sheet i:nth-child(7) {
-  width: 64%;
-}
-
-.sheet i:nth-child(8) {
-  width: 70%;
-}
-
-.sheet i:nth-child(9) {
-  width: 52%;
-}
-
-.sheetRule {
-  display: block;
-  height: 1px;
-  margin: 3px 0;
-  background: var(--paper-rule);
-}
-
-/* The cited line, ringed like a highlight in the viewer. */
-.sheet .hl {
-  height: 9px;
-  margin: 2px 0;
-  border-radius: 2px;
-  background: var(--hl-fill);
-  outline: 2px solid var(--hl-border);
-  box-shadow:
-    0 0 0 4px var(--paper),
-    0 0 0 6px var(--hl-halo);
-}
-
-.card {
-  position: absolute;
-  left: 150px;
-  top: 132px;
-  width: 210px;
+.points li {
   display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 12px 14px 12px 18px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  box-shadow: 0 10px 28px rgb(0 0 0 / 0.12);
-}
-
-.card::before {
-  content: "";
-  position: absolute;
-  inset-block: -1px;
-  inset-inline-start: -1px;
-  width: 4px;
-  border-radius: var(--r-md) 0 0 var(--r-md);
-  background: var(--verified-solid);
-}
-
-.card i {
-  display: block;
-  height: 5px;
-  border-radius: 3px;
-  background: var(--border);
-}
-
-.card i:nth-of-type(1) {
-  width: 92%;
-}
-
-.card i:nth-of-type(2) {
-  width: 68%;
-}
-
-.card i:nth-of-type(3) {
-  width: 80%;
-}
-
-.pill {
-  align-self: flex-start;
-  font-size: 0.78rem;
-  padding: 0 8px;
-}
-
-.chip {
-  position: absolute;
-  top: 10px;
-  right: 12px;
-  display: inline-flex;
   align-items: center;
-  justify-content: center;
-  min-width: 22px;
-  height: 22px;
-  border: 1.5px solid var(--accent);
-  border-radius: var(--r-sm);
-  background: var(--surface);
-  color: var(--accent);
-  font-size: 0.8125rem;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
+  gap: var(--space-2);
 }
 
-.link {
-  position: absolute;
-  inset: 0;
-  width: 360px;
-  height: 214px;
-  overflow: visible;
-  pointer-events: none;
+.points svg {
+  flex: none;
 }
 
-.link path {
-  fill: none;
-  stroke: var(--accent);
-  stroke-width: 1.5;
-  stroke-dasharray: 3 4;
-}
-
-.link circle {
-  fill: var(--accent);
-}
-
-/* The only motion: the citation fades in once. */
-.sheet .hl,
-.chip,
-.link {
-  animation: auth-cite 600ms var(--ease) 400ms both;
+/* The only motion: the panel's words fade in once. */
+.brandWords {
+  animation: auth-cite 200ms var(--ease) 400ms both;
 }
 
 @keyframes auth-cite {
@@ -311,104 +180,123 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .sheet .hl,
-  .chip,
-  .link {
+  .brandWords {
     animation: none;
   }
 }
 
-.points {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  font-size: var(--fs-sm);
-  color: var(--fg-muted);
-}
-
-.points li {
-  display: flex;
-  gap: var(--space-3);
-  align-items: center;
-}
-
-.points svg {
-  flex: none;
-  width: 18px;
-  height: 18px;
-  color: var(--accent);
-}
-
-/* --- Below 900 px: a short ledger band with the wordmark and value line. --- */
-
-.band {
-  position: relative;
-  padding: max(var(--space-5), env(safe-area-inset-top)) var(--space-5) var(--space-5)
-    calc(var(--space-5) * 2 - 4px);
-  background-color: var(--surface-2);
-  background-image: repeating-linear-gradient(
-    to bottom,
-    transparent 0 27px,
-    color-mix(in srgb, var(--border) 40%, transparent) 27px 28px
-  );
-  border-bottom: 1px solid var(--border);
-}
-
-.band::before {
-  content: "";
-  position: absolute;
-  inset-block: 0;
-  inset-inline-start: var(--space-5);
-  width: 2px;
-  background: var(--brand-lal);
-}
-
-.band .value {
-  font-size: var(--fs-xl);
-  margin-top: var(--space-3);
-  max-width: 15em;
-}
-
-@media (min-width: 900px) {
-  .band {
-    display: none;
-  }
-}
-
-/* --- The form column --------------------------------------------------------- */
+/* --- The form side --- */
 
 .main {
+  flex: 2 1 340px;
   display: flex;
   flex-direction: column;
-  align-items: center;
+  justify-content: center;
   min-width: 0;
-  padding: var(--space-6) max(var(--space-4), env(safe-area-inset-right))
-    max(var(--space-5), env(safe-area-inset-bottom)) max(var(--space-4), env(safe-area-inset-left));
-}
-
-@media (min-width: 900px) {
-  .main {
-    min-height: 100dvh;
-    padding-block: var(--space-8) var(--space-5);
-  }
+  padding: 36px 40px;
 }
 
 .formColumn {
   width: 100%;
-  max-width: 400px;
-  margin-block: auto;
+  max-width: 420px;
+  margin-inline: auto;
   display: flex;
   flex-direction: column;
-  gap: var(--space-5);
+  gap: var(--space-6);
+}
+
+@media (max-width: 759.98px) {
+  .page {
+    padding-inline: max(var(--space-3), env(safe-area-inset-left));
+  }
+
+  .shell {
+    min-height: 0;
+  }
+
+  .brand {
+    flex-basis: 100%;
+    padding: var(--space-6);
+  }
+
+  .points {
+    display: none;
+  }
+
+  .main {
+    padding: var(--space-8) var(--space-6);
+  }
 }
 
 .form {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-5);
+  display: grid;
+  /* One label column for every field, so all the lines start at one place. */
+  grid-template-columns: max-content minmax(0, 1fr);
+  row-gap: var(--space-6);
+}
+
+.form > * {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
+/* The fields as lines on a paper form (Vrushit, 21 Oct 2026): the label, then a bold
+   line to write on, "E-mail: ________". The line is in ink, well over 3:1 on the page
+   in both themes, and turns the accent and thicker while focused. An error, a hint or
+   Caps Lock note sits under the line. Sign-in, sign-up and the two-step forms share it. */
+.form :global(.field) {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  grid-template-columns: subgrid;
+  align-items: end;
+  column-gap: var(--space-3);
+  row-gap: var(--space-1);
+}
+
+.form :global(.field) > label {
+  padding-bottom: var(--space-2);
+  color: var(--text-primary);
+  font-size: var(--fs-base);
+  font-weight: 600;
+}
+
+.form :global(.field) > label::after {
+  content: ":";
+}
+
+/* Everything after the label (the line, then its notes) sits under the line's column. */
+.form :global(.field) > :not(label) {
+  grid-column: 2;
+}
+
+.form :global(.input) {
+  height: var(--k-touch);
+  padding-inline: var(--space-1);
+  border: 0;
+  border-bottom: 2px solid var(--text-primary);
+  border-radius: 0;
+  background: transparent;
+  font-size: var(--fs-lg);
+}
+
+.form :global(.input):hover {
+  border-bottom-color: var(--text-primary);
+}
+
+.form :global(.input):focus-visible {
+  outline: none;
+  box-shadow: none;
+  border-bottom: 3px solid var(--accent);
+}
+
+.form :global(.input)[aria-invalid="true"] {
+  border-bottom-color: var(--danger-fg);
+}
+
+/* The password's Show button sits on the line, with no box of its own. */
+.form :global(.field) button:not(:global(.btn)) {
+  border: 0;
+  background: transparent;
 }
 
 .intro {
@@ -435,11 +323,10 @@
 .banner {
   padding: var(--space-3) var(--space-4);
   border: 1px solid var(--danger-fg);
-  border-inline-start-width: 4px;
-  border-radius: var(--r-sm);
+  border-radius: var(--k-r-2);
   background: var(--danger-bg);
   color: var(--danger-fg);
-  font-weight: 600;
+  font-weight: 700;
   font-size: var(--fs-sm);
   line-height: 1.45;
 }
@@ -452,9 +339,10 @@
   align-items: flex-start;
 }
 
+/* As tall as the first line of words, so the icon sits on its middle. */
 .banner svg {
   flex: none;
-  margin-top: 1px;
+  height: 1lh;
 }
 
 /* After signing out (SignedOutNotice): calm, not an error. One line high
@@ -464,13 +352,12 @@
   min-height: calc(1lh + 2 * var(--space-3) + 2px);
   padding: var(--space-3) var(--space-4);
   border: 1px solid var(--border-strong);
-  border-inline-start-width: 4px;
-  border-radius: var(--r-sm);
+  border-radius: var(--k-r-2);
   background: var(--surface-2);
 }
 
+/* One control tall, like the fields above it (one control height, 16 Oct 2026). */
 .submit {
-  min-height: calc(var(--control-h) + 4px);
   font-size: var(--fs-base);
 }
 
@@ -481,8 +368,8 @@
   text-wrap: pretty;
 }
 
-/* "Account admin? Admin sign-in" under a hairline. The link is 44 px tall
-   without making the text any bigger. */
+/* "New to Kaagaz? Create an account" (SignUpLink) under a hairline. The link is
+   44 px tall without making the text any bigger. */
 .switch {
   margin: 0;
   padding-top: var(--space-4);
@@ -491,16 +378,16 @@
   color: var(--fg-muted);
 }
 
+/* Two such lines in a row (sign-up): one hairline for both. */
+.switch + .switch {
+  padding-top: 0;
+  border-top: 0;
+}
+
 .switch a {
   display: inline-flex;
   align-items: center;
-  min-height: 44px;
+  min-height: var(--h-lg);
   font-weight: 600;
 }
 
-.footer {
-  margin: var(--space-7) 0 0;
-  font-size: var(--fs-sm);
-  color: var(--fg-muted);
-  text-align: center;
-}

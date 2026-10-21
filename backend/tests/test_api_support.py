@@ -10,7 +10,7 @@ builder owns (FULL-BUILD-SPEC section 10); pytest collects it and finds nothing.
 * ``TestClient``: re-exported, so every API test imports it from one place.
 * ``MovingClock``: the app's clock. Tests move it forward instead of sleeping.
 * ``Api``: a TestClient on a real test database, with helpers to add users,
-  sign in (on the normal screen, or on the admin screen with a 6-digit code)
+  sign in (one sign-in screen; an admin with a 6-digit code)
   and add document rows directly with SQL (as the pipeline would).
 * ``route_calls``: every API route with its path filled in, for tests that walk
   all routes (the admin-session and the password-change gates).
@@ -34,6 +34,7 @@ from sqlalchemy import RowMapping, text
 
 from kaagaz.ai.client import ModelClient
 from kaagaz.answering.memory import Memory
+from kaagaz.answering.pins import Pin
 from kaagaz.answering.rewrite import Turn
 from kaagaz.api import totp
 from kaagaz.api.app import create_app
@@ -133,6 +134,7 @@ def answer_json(*, status: str = "answered", label: str | None = "verified") -> 
 @dataclass(frozen=True)
 class _FixedAnswer:
     data: dict[str, Any]
+    unavailable: bool = False
 
     def to_json(self) -> dict[str, Any]:
         return dict(self.data)
@@ -147,6 +149,8 @@ class FakeAnswers:
     remembered: Memory | None = None  # what ``remember`` gives back
     summarised: list[tuple[list[Turn], Memory, list[str]]] = field(default_factory=list)
     choices: list[ChatChoice | None] = field(default_factory=list)  # features 25-27: who drafts each
+    pins: list[list[Pin]] = field(default_factory=list)  # the Most relevant picks each question got
+    unavailable: bool = False  # KZ-006: not found while the model was down
 
     def answer(
         self,
@@ -158,12 +162,14 @@ class FakeAnswers:
         user_id: str,
         memory: Memory,
         choice: ChatChoice | None = None,
+        pins: Sequence[Pin] = (),
     ) -> _FixedAnswer:
         self.asked.append((customer_id, question))
+        self.pins.append(list(pins))
         self.choices.append(choice)
         self.scopes.append(scope)
         self.memories.append(memory)
-        return _FixedAnswer(self.reply)
+        return _FixedAnswer(self.reply, self.unavailable)
 
     def remember(self, turns: Sequence[Turn], memory: Memory, cited: Sequence[str]) -> Memory | None:
         self.summarised.append((list(turns), memory, list(cited)))
@@ -172,8 +178,8 @@ class FakeAnswers:
 
 @dataclass
 class Signed:
-    """A signed-in user and their client. ``scope`` is the session's: "app" from
-    /login, "admin" from /admin/login. ``totp_secret`` is set for an enrolled admin."""
+    """A signed-in user and their client. ``scope`` is the session's: "app" for a member
+    or reviewer, "admin" for an admin (both from /login). ``totp_secret`` is set for an admin."""
 
     client: TestClient
     customer_id: str
@@ -260,7 +266,10 @@ class Api:
         return str(row["id"]), email
 
     def sign_in(self, customer_id: str, role: str = "member") -> Signed:
-        """A new user of this role, signed in on the normal screen (an app session)."""
+        """A new user of this role, signed in: an app session, or for an admin (who must have
+        two-step sign-in, 0035) an enrolled admin's admin session."""
+        if role == "admin":
+            return self.admin_sign_in(customer_id)
         user_id, email = self.add_user(customer_id, role)
         client = self.client()
         reply = client.post("/api/auth/login", json={"email": email, "password": PASSWORD}, headers=CSRF)
@@ -301,10 +310,10 @@ class Api:
         body: dict[str, str] = {"email": email, "password": password}
         if code is not None:
             body["code"] = code
-        return client.post("/api/auth/admin/login", json=body, headers=CSRF)
+        return client.post("/api/auth/login", json=body, headers=CSRF)  # one sign-in (16 Oct 2026)
 
     def admin_sign_in(self, customer_id: str) -> Signed:
-        """A new enrolled admin, signed in on the admin screen with this step's code."""
+        """A new enrolled admin, signed in with this step's code (an admin session)."""
         admin = self.enrol_admin(customer_id)
         client = self.client()
         reply = self.admin_login(client, admin.email, code=self.code(admin.secret))
@@ -312,11 +321,11 @@ class Api:
         return Signed(client, customer_id, admin.user_id, admin.email, "admin", admin.secret)
 
     def new_admin_of(self, customer_id: str) -> Signed:
-        """Another admin of this customer, with 2FA on, signed in on the admin screen."""
+        """Another admin of this customer, with 2FA on, signed in (an admin session)."""
         return self.admin_sign_in(customer_id)
 
     def new_admin(self, name: str = "Test customer") -> Signed:
-        """A new customer and an admin signed in on the admin screen."""
+        """A new customer and an admin signed in (an admin session)."""
         customer_id, _ = self.customer(name)
         return self.admin_sign_in(customer_id)
 

@@ -13,21 +13,23 @@ import type { OperatorUsageRow, UsageTotals } from "@/lib/types";
 import { LoadFailed } from "./LoadFailed";
 import { operatorErrorMessage } from "./logic";
 import { PERIODS, periodRange, spendTotals } from "./models";
+import { Freshness } from "./OverviewView";
 import type { PeriodId } from "./models";
 import admin from "@/components/admin/Admin.module.css";
 import styles from "./Operator.module.css";
+import css from "./Insights.module.css";
 
 export function SpendView() {
   const [period, setPeriod] = useState<PeriodId>("month");
   const [attempt, setAttempt] = useState(0);
-  const [loaded, setLoaded] = useState<{ key: string; rows: OperatorUsageRow[] } | null>(null);
+  const [loaded, setLoaded] = useState<{ key: string; rows: OperatorUsageRow[]; at: number } | null>(null);
   const [error, setError] = useState<{ key: string; message: string } | null>(null);
   const key = `${period}|${attempt}`;
 
   useEffect(() => {
     let cancelled = false;
     getOperatorUsage(periodRange(period, new Date())).then(
-      (result) => !cancelled && setLoaded({ key, rows: result.items }),
+      (result) => !cancelled && setLoaded({ key, rows: result.items, at: Date.now() }),
       (caught: unknown) => !cancelled && setError({ key, message: operatorErrorMessage(caught) }),
     );
     return () => {
@@ -36,6 +38,7 @@ export function SpendView() {
   }, [period, attempt, key]);
 
   const rows = loaded?.key === key ? loaded.rows : null;
+  const loadedAt = loaded?.key === key ? loaded.at : null;
   const failed = error?.key === key ? error.message : null;
   return (
     <section className={admin.section} aria-labelledby="spend-heading">
@@ -62,6 +65,11 @@ export function SpendView() {
             ))}
           </select>
         </div>
+        {loadedAt !== null && (
+          <div className={css.toolEnd}>
+            <Freshness loadedAt={loadedAt} refreshing={false} onRefresh={() => setAttempt((n) => n + 1)} />
+          </div>
+        )}
       </div>
       <p className="visually-hidden" role="status">
         {!rows && !failed ? "Loading the spend…" : ""}
@@ -76,16 +84,16 @@ export function SpendView() {
 function Cells({ totals }: { totals: UsageTotals }) {
   return (
     <>
-      <td role="cell" data-label="Calls" className="tabular">
+      <td role="cell" data-label="Calls" className="num">
         {formatNumber(totals.calls)}
         {totals.cached_calls > 0 && (
           <span className={styles.statusNote}>{formatNumber(totals.cached_calls)} from the page cache</span>
         )}
       </td>
-      <td role="cell" data-label="Tokens in" className="tabular">
+      <td role="cell" data-label="Tokens in" className="num">
         {formatNumber(totals.input_tokens)}
       </td>
-      <td role="cell" data-label="Tokens out" className="tabular">
+      <td role="cell" data-label="Tokens out" className="num">
         {formatNumber(totals.output_tokens)}
       </td>
       <td role="cell" data-label="Cost" className="num">
@@ -98,16 +106,16 @@ function Cells({ totals }: { totals: UsageTotals }) {
 export function SpendTable({ rows }: { rows: OperatorUsageRow[] }) {
   const totals = spendTotals(rows);
   return (
-    <div className={table.reflowWrap}>
+    <div className={`${table.reflowWrap} ${admin.tableScroll}`}>
       <table className={`table ${table.reflow}`} role="table">
         <caption className="visually-hidden">AI spend per organisation and model</caption>
         <thead role="rowgroup">
           <tr role="row">
             <th scope="col" role="columnheader">Organisation</th>
             <th scope="col" role="columnheader">Model</th>
-            <th scope="col" role="columnheader">Calls</th>
-            <th scope="col" role="columnheader">Tokens in</th>
-            <th scope="col" role="columnheader">Tokens out</th>
+            <th scope="col" role="columnheader" className="num">Calls</th>
+            <th scope="col" role="columnheader" className="num">Tokens in</th>
+            <th scope="col" role="columnheader" className="num">Tokens out</th>
             <th scope="col" role="columnheader" className="num">Cost</th>
           </tr>
         </thead>

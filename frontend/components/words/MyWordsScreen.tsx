@@ -5,16 +5,32 @@
 // most 500); each meaning can be changed or deleted (asked first). An add or a
 // change that meets another meaning asks first (DuplicateDialog). Results go to
 // one polite live region; problems are alerts by the form or in the dialog.
+// UI audit (16 Oct 2026): Add waits until both boxes are filled, and Enter adds (W1);
+// the search shows from SEARCH_FROM words, and Download CSV saves the list (W2).
 
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { ActionDialog } from "@/components/documents/ActionDialog";
 import { EmptyState } from "@/components/ui/EmptyState";
-import { addMyWord, changeMyWord, deleteMyWord, listMyWords } from "@/lib/api";
+import { FEATURE_OFF, addMyWord, changeMyWord, deleteMyWord, isFeatureOff, listMyWords } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import type { MyWord } from "@/lib/types";
 import { DuplicateDialog, WordFields } from "./WordParts";
-import { addBody, changeBody, draftOk, failedState, limitNote, retryBody, savedState, SOURCE_TEXT, textProblem, wordGroups } from "./words";
+import {
+  addBody,
+  changeBody,
+  draftFilled,
+  draftOk,
+  failedState,
+  limitNote,
+  retryBody,
+  savedState,
+  SEARCH_FROM,
+  SOURCE_TEXT,
+  textProblem,
+  wordGroups,
+  wordsCsv,
+} from "./words";
 import type { ChangeBody, Choice, Existing, NewWordBody, WordDraft } from "./words";
 import styles from "./Words.module.css";
 
@@ -22,6 +38,16 @@ const EMPTY: WordDraft = { word: "", meaning: "" };
 type RowDialog = { mode: "change" | "delete"; item: MyWord; draft: WordDraft; error: string | null };
 // One save: an add (POST), or a change (PATCH of wordId). draft is what the question names.
 type Job = { draft: WordDraft } & ({ body: NewWordBody; wordId?: undefined } | { body: ChangeBody; wordId: string });
+
+/** W2: the list as a file the browser saves; nothing leaves the device. */
+function downloadCsv(items: MyWord[]) {
+  const url = URL.createObjectURL(new Blob([wordsCsv(items)], { type: "text/csv;charset=utf-8" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "my-words.csv";
+  link.click();
+  URL.revokeObjectURL(url);
+}
 
 /** After a refused draft, focus the field to fix (once its message has rendered). */
 const focusProblem = (idPrefix: string, draft: WordDraft) =>
@@ -35,6 +61,7 @@ export function MyWordsScreen() {
   const [attempt, setAttempt] = useState(0);
   const [items, setItems] = useState<MyWord[] | null>(null);
   const [loadError, setLoadError] = useState(false);
+  const [off, setOff] = useState(false); // My words switched off for the whole product
   const [filter, setFilter] = useState("");
   const [draft, setDraft] = useState(EMPTY);
   const [tried, setTried] = useState(false);
@@ -48,7 +75,7 @@ export function MyWordsScreen() {
     let cancelled = false;
     listMyWords().then(
       (result) => !cancelled && setItems(result.items),
-      () => !cancelled && setLoadError(true),
+      (caught: unknown) => !cancelled && (isFeatureOff(caught) ? setOff(true) : setLoadError(true)),
     );
     return () => {
       cancelled = true;
@@ -127,10 +154,21 @@ export function MyWordsScreen() {
     if (body) void save({ body, wordId: item.id, draft: { word: body.word ?? item.word, meaning: body.meaning ?? item.meaning } }, fail);
   }
 
-  const groups = items ? wordGroups(items, filter) : [];
+  // With the search hidden (SEARCH_FROM words or fewer), a search typed earlier no longer filters.
+  const groups = items ? wordGroups(items, items.length > SEARCH_FROM ? filter : "") : [];
   const note = items ? limitNote(items.length) : null;
   const spinner = busy && <span className="spinner" aria-hidden="true" />;
+  const busyClass = busy ? styles.busy : "";
   const alert = (text: string | null) => text && <p className="error-text" role="alert">{text}</p>;
+
+  if (off) {
+    return (
+      <div className="page">
+        <header className="page-header"><h1>My words</h1></header>
+        <EmptyState icon="words" title={FEATURE_OFF} />
+      </div>
+    );
+  }
 
   return (
     <div className="page">
@@ -145,10 +183,21 @@ export function MyWordsScreen() {
         <h2 id="add-word-heading" className={styles.subheading}>Add a word</h2>
         <div className={styles.fields}>
           <WordFields idPrefix="add" draft={draft} onChange={setDraft} checked={tried} />
-          <button type="submit" className={`btn btn-primary ${styles.target}`} aria-disabled={busy || undefined}>
+          <button
+            type="submit"
+            className={`btn btn-primary ${styles.target} ${busyClass}`}
+            disabled={!draftFilled(draft)}
+            aria-disabled={busy || undefined}
+            aria-describedby={draftFilled(draft) ? undefined : "add-word-why"}
+          >
             {spinner}Add
           </button>
         </div>
+        {!draftFilled(draft) && (
+          <p id="add-word-why" className="hint">
+            Type a word and its meaning to add it.
+          </p>
+        )}
         {note && <p className="hint">{note}</p>}
       </form>
 
@@ -172,10 +221,15 @@ export function MyWordsScreen() {
         <section aria-labelledby="words-heading" className={`stack ${styles.block}`}>
           <div className={styles.fields}>
             <h2 id="words-heading" className={styles.subheading}>Your words ({items.length})</h2>
-            <div className={`field ${styles.field}`}>
-              <label htmlFor="words-filter">Search your words</label>
-              <input id="words-filter" type="search" className="input" value={filter} autoComplete="off" onChange={(event) => setFilter(event.target.value)} />
-            </div>
+            {items.length > SEARCH_FROM && (
+              <div className={`field ${styles.field}`}>
+                <label htmlFor="words-filter">Search your words</label>
+                <input id="words-filter" type="search" className="input" value={filter} autoComplete="off" onChange={(event) => setFilter(event.target.value)} />
+              </div>
+            )}
+            <button type="button" className={`btn ${styles.target}`} onClick={() => downloadCsv(items)}>
+              Download CSV
+            </button>
           </div>
           <p className="muted" role="status">{groups.length === 0 ? "No words match this search." : ""}</p>
           <ul className={styles.list}>
@@ -220,11 +274,12 @@ export function MyWordsScreen() {
               <p>Delete &apos;{row.item.word}&apos; as &apos;{row.item.meaning}&apos;? Chat stops using it.</p>
             )}
             {alert(row.error)}
-            <div className="row">
-              <button type="submit" className={`btn ${row.mode === "change" ? "btn-primary" : "btn-danger"} ${styles.target}`} aria-disabled={busy || undefined}>
+            {/* [Cancel] [Save or Delete]: the action last; Delete starts on Cancel. */}
+            <div className={styles.dialogButtons}>
+              <button type="button" className={`btn ${styles.target}`} data-autofocus={row.mode === "delete" || undefined} onClick={() => setRow(null)}>Cancel</button>
+              <button type="submit" className={`btn ${row.mode === "change" ? "btn-primary" : "btn-danger"} ${styles.target} ${busyClass}`} aria-disabled={busy || undefined}>
                 {spinner}{row.mode === "change" ? "Save" : "Delete"}
               </button>
-              <button type="button" className={`btn ${styles.target}`} data-autofocus={row.mode === "delete" || undefined} onClick={() => setRow(null)}>Cancel</button>
             </div>
           </form>
         </ActionDialog>

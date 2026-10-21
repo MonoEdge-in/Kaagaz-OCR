@@ -1,0 +1,25 @@
+/* Checkbox (design/kaagaz-ui-handoff/styles/kaagaz.css, section 6, .k-check). */
+
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 28px;
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--k-ink);
+}
+.check input {
+  width: 17px;
+  height: 17px;
+  accent-color: var(--k-accent);
+  margin: 0;
+}
+.check input:focus-visible {
+  outline: 2px solid var(--k-focus);
+  outline-offset: 2px;
+}
+.disabled {
+  color: var(--k-ink-faint);
+  cursor: not-allowed;
+}

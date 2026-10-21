@@ -35,11 +35,30 @@ describe("the composer card", () => {
     expect(box).toBeGreaterThan(-1);
     expect(question).toBeGreaterThan(box);
     expect(toolbar).toBeGreaterThan(question);
-    const order = ["TOOLS", "SETTINGS", 'aria-label="Send question"'].map((part) => html.indexOf(part, toolbar));
+    // Changed on purpose (UI audit, 16 Oct 2026): A3, Send shows its words, so they are its name.
+    const order = ["TOOLS", "SETTINGS", "<span>Send question</span>"].map((part) => html.indexOf(part, toolbar));
     expect(order.every((at) => at > toolbar)).toBe(true);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
     expect(html).toContain('placeholder="Ask about your documents"');
     expect(html).toContain("Enter to send, Shift+Enter for a new line");
+  });
+
+  // QA 17 Oct: the 1,000 character limit cut a pasted question silently.
+  it("says so when a question reaches the 1,000 character limit", () => {
+    const box = (draft: string) =>
+      renderToStaticMarkup(
+        createElement(QuestionBox, {
+          pending: false,
+          error: null,
+          onAsk: async () => true,
+          inputRef: createRef<HTMLTextAreaElement>(),
+          texts: MODE_TEXTS.documents,
+          draft,
+        }),
+      );
+    const note = "Questions can be up to 1,000 characters. The rest was left out.";
+    expect(box("a".repeat(1000))).toContain(`role="status">${note}</p>`);
+    expect(box("a".repeat(999))).not.toContain(note);
   });
 
   it("lets the question grow to about eight lines, then scroll", () => {

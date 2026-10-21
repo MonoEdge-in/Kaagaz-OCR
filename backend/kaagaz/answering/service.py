@@ -20,8 +20,8 @@ The steps (docs/architecture.md):
    from the query's result (numbers written the Indian way). Citations are
    the values used. No rows: not found.
    **Unchecked**: no plan because no checked value holds the figure, but an
-   unchecked card value does: no number, a request to confirm it in Review, and
-   the documents where it appears (status ``unchecked``, answering/unchecked.py).
+   unchecked card value does: no number, a calm line saying it is in these
+   documents, and the documents where it appears (status ``unchecked``, answering/unchecked.py).
 5. **Search route**: embed the question (skipped without a model), retrieve,
    the evidence gate on the hits, then the hits' neighbours (Q4) after them,
    then a draft (the model, or quoting without one), then ``verify`` drops
@@ -77,9 +77,30 @@ The steps (docs/architecture.md):
     verified only when today's rules say so and every other model's checked sentences
     hold the lead's numbers from the same sources (``agreement``). Agreement only ever
     adds Needs review.
+13. Every document (Tushar, 16 Oct 2026, kaagaz/answering/exhaustive.py): a question that
+    asks how many or which documents hold a word or phrase is answered before the fixed
+    route from every document in scope, never the top hits: the exact count, the documents
+    by name with their pages, each citing its first matching piece (route ``fixed_query``,
+    no model). The count sentence cites nothing: it sums up the cited lines after it, so no
+    sentence carries more than one number. No document holds it: the steps above answer as
+    before.
+14. Steady answers (16 Oct 2026): the evidence, the prompt, the schema and verify are the
+    same whichever model drafts. The rewrite and aspects (which steer the search) and the
+    translation are asked for at REWRITE_TEMPERATURE (rewrite.py), so what is searched does
+    not change from one run to the next; the draft stays at the model's default (Google's
+    guidance for Gemini 3).
+15. Most relevant picks (16 Oct 2026, kaagaz/answering/pins.py): on the search route, after
+    the gate, a hit on a page the asker picked earlier (this conversation, or another on the
+    same words) moves up a few places, only when it passes the gate by itself. It never adds
+    a piece or changes whether there is an answer; the timing line counts the hits moved.
+16. Also mentions (17 Oct 2026, ``_mentioned``): after an answered or not-found answer (not
+    a count, not while the model is down), the other documents in scope holding the
+    question's key terms (Jalna, जालना) as whole words, from one word-index statement; the
+    answer's text, label and verify never see them.
 
 No source, no answer: an answered result always has at least one sentence,
-every sentence cites at least one source, and every source has a region.
+every sentence cites at least one source (but step 13's count, which sums up its cited
+lines), and every source has a region.
 
 Nothing here logs the question or any document text: a model error is logged
 as its code, and each model answer as the model's tag and ANSWER_PROMPT_HASH.
@@ -99,6 +120,7 @@ O(e * t) over e pieces of evidence of t characters. e is at most
 ANSWER_MAX_EVIDENCE hits plus 2 * ANSWER_NEIGHBOURS neighbours per hit.
 """
 
+import copy
 import logging
 import re
 import time
@@ -153,8 +175,22 @@ from kaagaz.answering.evidence import (
     looks_like_instructions,
     number_evidence,
     numbers_asked,
+    related_documents,
     valid_regions,
     word_text,
+)
+from kaagaz.answering.exhaustive import (
+    MAX_LISTED,
+    MAX_MENTIONED,
+    Exhaustive,
+    Mentions,
+    PgExhaustive,
+    count_sentence,
+    document_sentence,
+    exhaustive_query,
+    key_terms,
+    more_text,
+    pages_with,
 )
 from kaagaz.answering.expansion import NO_EXPANSION, Expansion, PgWords, WordSource, expand
 from kaagaz.answering.fixed_queries import MAX_CITED_VALUES, FixedQueries, FixedRow, PgFixedQueries, ValueRef
@@ -170,6 +206,7 @@ from kaagaz.answering.hard_to_read import (
 from kaagaz.answering.hinglish import NormalisedQuestion, normalise
 from kaagaz.answering.intent import FixedPlan, metric_asked, plan_fixed
 from kaagaz.answering.memory import NO_MEMORY, Memory, allowed_tokens, prompt_text, summarise
+from kaagaz.answering.pins import Pin, lifts, pinned_first
 from kaagaz.answering.rewrite import MAX_REPLY_TOKENS as REWRITE_REPLY_TOKENS
 from kaagaz.answering.rewrite import SYSTEM_PROMPT as REWRITE_PROMPT
 from kaagaz.answering.rewrite import Turn, rewrite
@@ -219,6 +256,9 @@ class Citation:
     label_page_no: int | None  # H4: where a value's label is, when it was located
     label_regions: list[dict[str, Any]]
     hard_to_read: bool = False  # PRD 5 F6: the cited text holds an unsure or illegible word
+    # Ranked sources (Tushar, 16 Oct 2026): the hit's place in the search's fused order (1 is
+    # the most relevant); None where there is no such order (values, a whole document).
+    rank: int | None = None
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -237,6 +277,7 @@ class Citation:
             "label_page_no": self.label_page_no,
             "label_regions": [dict(region) for region in self.label_regions],
             "hard_to_read": self.hard_to_read,
+            "rank": self.rank,
         }
 
 
@@ -277,6 +318,16 @@ class Answer:
     unreadable_pages: tuple[FlaggedPage, ...] = ()
     unreadable_page_count: int = 0
     team: Team | None = None  # features 25-27: who drafted it, when the asker's choice did
+    # "Also in" (Tushar, 16 Oct 2026): documents the search found but the answer does not
+    # cite (evidence.related_documents).
+    related_documents: list[dict[str, Any]] = field(default_factory=list)
+    # "Also mentions" (Tushar, 17 Oct 2026): {"terms", "total", "documents"}, other documents in
+    # scope holding the question's key terms (``AnswerService._mentioned``); in to_json only
+    # when there is one, so answers without it keep their shape.
+    mentions: dict[str, Any] | None = None
+    # KZ-006: not found while the model was down, so "not found" may be wrong; the route
+    # answers 503 instead. Never in to_json.
+    unavailable: bool = False
 
     def to_json(self) -> dict[str, Any]:
         """The ``Answer`` of frontend/lib/types.ts, exactly; ``agents``, ``agent_ids``,
@@ -308,7 +359,9 @@ class Answer:
             "reading_note": self.reading_note,
             "unreadable_pages": [page.to_json() for page in self.unreadable_pages],
             "unreadable_page_count": self.unreadable_page_count,
+            "related_documents": [dict(doc) for doc in self.related_documents],
             **team,
+            **({} if self.mentions is None else {"mentions": self.mentions}),
         }
 
 
@@ -323,6 +376,8 @@ class _Timing:
     whole: bool = False
     aspects: int = 0
     reason: str | None = None  # the not-found reason code
+    pinned: int = 0  # hits a Most relevant pick moved up (answering/pins.py)
+    degraded: bool = False  # the model was down for the question's vector or its draft (KZ-006)
 
     def lap(self, stage: str) -> None:
         now = time.monotonic()
@@ -355,13 +410,14 @@ def _timed[**P](answer: Callable[P, Answer]) -> Callable[P, Answer]:
             _TIMING.reset(token)
             LIMITER_WAIT.reset(waits)
         _timing_log.info(
-            "answer timing route=%s status=%s outcome=%s whole=%d aspects=%d %s"
+            "answer timing route=%s status=%s outcome=%s whole=%d aspects=%d pinned=%d %s"
             " limiter_wait_ms=%.0f total_ms=%.0f",
             result.route,
             result.status,
             timing.reason or result.label,
             timing.whole,
             timing.aspects,
+            timing.pinned,
             " ".join(f"{stage}_ms={timing.ms.get(stage, 0.0):.0f}" for stage in _STAGES),
             waited[0] * 1000,
             (timing.last - timing.start) * 1000,
@@ -395,6 +451,8 @@ class AnswerService:
         translated_search: TranslatedSearch | None = None,
         reading: ReadingQuality | None = None,
         context: Context | None = None,
+        exhaustive: Exhaustive | None = None,
+        mentions: Mentions | None = None,
     ) -> None:
         self._model = model
         self._translator = translator if settings.answer_translate_question else None
@@ -425,6 +483,8 @@ class AnswerService:
         self._words = words if words is not None else PgWords(db)
         self._reading: ReadingQuality | None = PgReadingQuality(db) if retriever is None else reading
         self._context: Context | None = pg if retriever is None else context
+        self._exhaustive: Exhaustive | None = PgExhaustive(db) if retriever is None else exhaustive
+        self._mentions: Mentions | None = PgExhaustive(db) if retriever is None else mentions
 
     @_timed
     def answer(
@@ -437,6 +497,7 @@ class AnswerService:
         user_id: str | None = None,
         memory: Memory = NO_MEMORY,
         choice: ChatChoice | None = None,
+        pins: Sequence[Pin] = (),
     ) -> Answer:
         """Answer ``question`` for ``customer_id`` only, from documents inside ``scope``;
         ``history`` is the conversation's earlier turns, oldest first; ``user_id``, the
@@ -444,7 +505,28 @@ class AnswerService:
         conversation's (M3), for the rewrite only; ``choice``, who drafts the answer
         (``kaagaz.db.models.resolve_chat``, features 25-27; None: MODEL_CHAT at low, as
         before). Only the draft uses it: the rewrite, translation and memory stay on
-        MODEL_CHAT."""
+        MODEL_CHAT. ``pins``: the asker's Most relevant picks that may move a hit up
+        (answering/pins.py; ``kaagaz.db.chat.pins_for``). A ``choice`` with no agent
+        (``models.NO_MODEL``: the asker's Ask setting is None, 0038) answers as with the model
+        off: no model call at all, the lines found quoted."""
+        if choice is not None and not choice.agents:
+            keyless = copy.copy(self)  # shallow: the same ports, without the model clients
+            keyless._model = keyless._translator = None
+            return keyless._respond(customer_id, question, scope, history, user_id, memory, None, pins)
+        return self._respond(customer_id, question, scope, history, user_id, memory, choice, pins)
+
+    def _respond(
+        self,
+        customer_id: str,
+        question: str,
+        scope: Scope,
+        history: Sequence[Turn],
+        user_id: str | None,
+        memory: Memory,
+        choice: ChatChoice | None,
+        pins: Sequence[Pin],
+    ) -> Answer:
+        """``answer``'s work, timed by it."""
         if scope.matches_nothing:
             return _not_found("search", question.strip(), [], model_used=False, reason="notfound_empty_scope")
         whole = self._whole(customer_id, scope)
@@ -469,8 +551,37 @@ class AnswerService:
         timing = _timing()
         timing.lap("rewrite")
         timing.whole, timing.aspects = whole is not None, len(aspects)
-        answer = self._answer(customer_id, rewritten or question, scope, user_id, whole, aspects, choice)
-        return replace(self._unreadable(customer_id, answer, scope), rewritten_question=rewritten)
+        asked = rewritten or question
+        answer = self._answer(customer_id, asked, scope, user_id, whole, aspects, choice, pins)
+        # KZ-006: an answer found without the model stays answered; a not found may be the outage.
+        unavailable = answer.status == "not_found" and _timing().degraded
+        answer = self._unreadable(customer_id, answer, scope)
+        if not unavailable:
+            answer = self._mentioned(customer_id, asked, answer, scope)
+        return replace(answer, rewritten_question=rewritten, unavailable=unavailable)
+
+    def _mentioned(self, customer_id: str, question: str, answer: Answer, scope: Scope) -> Answer:
+        """ "Also mentions" (Tushar, 17 Oct 2026): every other document in ``scope`` that holds
+        one of the question's key terms (``key_terms``, the cited text's first) as whole words,
+        not cited nor in "Also in", most matching pieces first, at most MAX_MENTIONED, and how
+        many in all. Only for an answered or not-found answer, never a count (it lists its
+        documents already); none without a key term. One statement over the word index."""
+        if self._mentions is None or answer.status not in ("answered", "not_found"):
+            return answer
+        if exhaustive_query(question) is not None:
+            return answer
+        terms = key_terms(question, [c.snippet for c in answer.citations])
+        if not terms:
+            return answer
+        shown = (
+            {c.document_id for c in answer.citations}
+            | {d["document_id"] for d in answer.related_documents}
+            | {d["id"] for d in answer.closest_documents}  # a not-found answer's list (CodeRabbit)
+        )
+        total, documents = self._mentions.mentions(customer_id, terms, scope, sorted(shown), MAX_MENTIONED)
+        if not total:
+            return answer
+        return replace(answer, mentions={"terms": terms, "total": total, "documents": documents})
 
     def remember(self, turns: Sequence[Turn], memory: Memory, cited: Sequence[str]) -> Memory | None:
         """M3: the conversation's new summary and memory from ``memory`` and the ``turns``
@@ -531,12 +642,18 @@ class AnswerService:
         whole: Sequence[Hit] | None = None,
         aspects: Sequence[str] = (),
         choice: ChatChoice | None = None,
+        pins: Sequence[Pin] = (),
     ) -> Answer:
         """``whole``: every piece of the scope (CX5), or None to search; ``aspects``: CX6's;
-        ``choice``: who drafts (``answer``)."""
+        ``choice``: who drafts and ``pins``, the asker's picks (``answer``)."""
         normalised = normalise(question)
         # "Hinglish understood as" is shown only when there was Hinglish to understand.
         shown = normalised.english if normalised.hinglish else question.strip()
+        query = exhaustive_query(question)
+        if query is not None and self._exhaustive is not None:
+            counted = self._exhaustive_answer(self._exhaustive, customer_id, *query, shown, scope)
+            if counted is not None:
+                return counted
         found_range = date_range(normalised, self._today())
         fixed = self._fixed.scoped(scope)
         fields = partial(fixed.available_fields, customer_id)  # asked for only if a plan could follow
@@ -550,7 +667,7 @@ class AnswerService:
         words = () if user_id is None else self._words.words(customer_id, user_id)
         expansion = expand(question, words) if words else NO_EXPANSION
         answer = self._search_answer(
-            customer_id, question, normalised, shown, scope, expansion, whole, aspects, choice
+            customer_id, question, normalised, shown, scope, expansion, whole, aspects, choice, pins
         )
         if not expansion.used:
             return answer
@@ -562,7 +679,7 @@ class AnswerService:
         self, customer_id: str, normalised: NormalisedQuestion, shown: str, scope: Scope
     ) -> Answer | None:
         """A figure asked for that no checked value holds but a card does: no number,
-        the documents where it appears, and a request to confirm it in Review first
+        the documents where it appears, and a calm line to open them
         (decided 30 Sep 2026). None when no card holds it either."""
         asked = metric_asked(normalised)
         if asked is None:
@@ -583,6 +700,60 @@ class AnswerService:
         )
 
     # --- fixed route --------------------------------------------------------
+
+    def _exhaustive_answer(
+        self,
+        source: Exhaustive,
+        customer_id: str,
+        term: str,
+        kinds: tuple[str, ...],
+        shown: str,
+        scope: Scope,
+    ) -> Answer | None:
+        """How many documents in ``scope`` hold ``term``, and which (kaagaz/answering/
+        exhaustive.py): the exact count first, then each listed document with its pages,
+        citing its first matching piece; past MAX_LISTED, how many more. None when no
+        document holds it: the search route answers as before. Two statements, and one for
+        the word marks (F6). ``kinds``: the document types asked for ("land documents of
+        Jalna"), inside the chat's own (none left: None, the search answers)."""
+        if kinds:
+            within = kinds if scope.doc_types is None else tuple(k for k in scope.doc_types if k in kinds)
+            scope = replace(scope, doc_types=within)
+        total, documents = source.documents_with(customer_id, term, scope, MAX_LISTED)
+        said = clean_text(term)
+        citations: list[Citation] = []
+        lines: dict[int, list[dict[str, Any]]] = {}
+        listed: list[AnswerSentence] = []
+        for hits in documents:
+            usable = number_evidence(hits)
+            if not usable:
+                continue  # counted, never shown without a place to open
+            n = len(citations) + 1
+            first = replace(usable[0], n=n)
+            citations.append(_piece_citation(n, first, [said]))
+            lines[n] = first.regions
+            name = clean_text(first.hit.document_name)[:_MAX_NAME].strip()
+            listed.append(AnswerSentence(document_sentence(name, pages_with(hits, term)), [n]))
+        if not total or not citations or not said:
+            return None
+        citations = self._marked(customer_id, citations, lines)
+        hard = any(c.hard_to_read for c in citations)
+        head = count_sentence(said, total, kinds)
+        if total > len(citations):
+            head += " " + more_text(len(citations), total - len(citations))
+        return Answer(
+            status="answered",
+            label="verified"
+            if all(c.label == "verified" for c in citations) and not hard
+            else "needs_review",
+            sentences=[AnswerSentence(head, []), *listed],  # the count sums up the lines below
+            citations=citations,
+            closest_documents=[],
+            route="fixed_query",
+            normalized_question=shown,
+            model_used=False,
+            reading_note=HARD_TO_READ_NOTE if hard else None,
+        )
 
     def _fixed_answer(self, customer_id: str, plan: FixedPlan, shown: str, fixed: FixedQueries) -> Answer:
         rows = self._run_plan(fixed, customer_id, plan)
@@ -662,6 +833,7 @@ class AnswerService:
         whole: Sequence[Hit] | None = None,
         aspects: Sequence[str] = (),
         choice: ChatChoice | None = None,
+        pins: Sequence[Pin] = (),
     ) -> Answer:
         # Romanised question words and fillers (ahe, kiti) say nothing about the topic: they
         # are left out of every step below, never out of normalise (PR 2b-2).
@@ -686,6 +858,8 @@ class AnswerService:
             _timing().lap("embed")
             extra = [(_search_text(text), meaning) for text, meaning in zip(aspects, meanings, strict=True)]
             hits = self._hits(customer_id, query_text, vector, extra, scope, expansion)
+            if hits:  # never stuck (17 Oct 2026): found by words and typos, a missing vector is no outage
+                _timing().degraded = False
             translated = self._translated_search(
                 customer_id, question, query_text, vector, hits, scope, expansion, extra
             )
@@ -694,6 +868,7 @@ class AnswerService:
                 first = enough_evidence(own, normalised.keywords, min_score, numbers, expansion)
                 hits = translated.hits
             evidence = number_evidence(hits)
+        hits_only = list(evidence)  # the search's own hits, before widening adds to the list
         # Only usable evidence counts as close: an instruction-like piece is not.
         closest = closest_documents([item.hit for item in evidence])
         gate = enough_evidence(evidence, normalised.keywords, min_score, numbers, expansion)
@@ -708,6 +883,16 @@ class AnswerService:
         if not passed:
             return _not_found("search", shown, closest, model_used=False, reason="notfound_gate")
         if whole is None:
+            # Most relevant picks (answering/pins.py): after the gate, so a pick never decides
+            # whether there is an answer; only a hit that passes on its own moves up.
+            def alone(item: Evidence) -> bool:
+                return enough_evidence([item], normalised.keywords, min_score, numbers) in (
+                    "score",
+                    "keywords",
+                )
+
+            evidence, moved = pinned_first(evidence, lifts(pins, normalised.keywords), alone)
+            _timing().pinned = moved
             terms = [question, *aspects]
             widened = self._widened(customer_id, terms, normalised.keywords, vector, evidence, scope)
             evidence += number_evidence(widened, start=len(evidence) + 1)
@@ -740,8 +925,13 @@ class AnswerService:
             for n in sentence.evidence:
                 renumber.setdefault(n, len(renumber) + 1)
         by_n = {item.n: item for item in evidence}
+        # Ranked sources: a hit's evidence number is its place in the fused search order, after
+        # the Most relevant picks' lift.
         citations = [
-            _piece_citation(new, by_n[old], [s.text for s in kept if old in s.evidence])
+            replace(
+                _piece_citation(new, by_n[old], [s.text for s in kept if old in s.evidence]),
+                rank=None if whole is not None else old,
+            )
             for old, new in renumber.items()
         ]
         # F6: the cited text is the whole piece, every line of it.
@@ -788,6 +978,13 @@ class AnswerService:
             model_used=model_used,
             reading_note=HARD_TO_READ_NOTE if hard else None,
             team=team,
+            related_documents=(
+                []
+                if whole is not None
+                else related_documents(
+                    hits_only, {c.document_id for c in citations}, normalised.keywords, min_score, numbers
+                )
+            ),
         )
 
     def _translated_search(
@@ -869,6 +1066,8 @@ class AnswerService:
             vectors = self._model.embed(wanted)
         except (ModelUnavailable, ModelOutputError) as error:
             _log.warning("question searched without its meaning vector", extra={"code": error.code})
+            if isinstance(error, ModelUnavailable):
+                _timing().degraded = True
             return [None] * len(texts)
         if len(vectors) != len(wanted):
             return [None] * len(texts)
@@ -925,6 +1124,8 @@ class AnswerService:
                     return drafted, True, seen, "notfound_model", team
             # Quoting the evidence needs no model.
             _log.warning("answer drafted without the model", extra={"code": code})
+            if code != "evidence_too_large":
+                _timing().degraded = True
         why = "notfound_no_model" if self._model is None else f"notfound_model_error:{code}"
         if mentions_date(normalised):
             # A quoted line cannot be checked against a date.
@@ -959,7 +1160,7 @@ class AnswerService:
             call = partial(
                 draft_with,
                 chat_model=agent.model,
-                thinking=choice.thinking,
+                thinking=agent.level(choice.thinking),  # no reasoning field for a model with no levels
                 provider=agent.provider,
                 deadline=deadline,
             )
@@ -1020,7 +1221,9 @@ def _single(
         if choice is None or agent is None:
             draft = draft_with()
         else:
-            draft = draft_with(chat_model=agent.model, thinking=choice.thinking, provider=agent.provider)
+            draft = draft_with(
+                chat_model=agent.model, thinking=agent.level(choice.thinking), provider=agent.provider
+            )
     except (ModelUnavailable, ModelOutputError) as error:
         return None, None, error.code
     _log.info(
@@ -1054,7 +1257,10 @@ def _kept(draft: Draft, texts: dict[int, str]) -> list[DraftSentence]:
     if draft.status != "answered":
         return []
     cleaned = [DraftSentence(clean_text(s.text), s.evidence) for s in draft.sentences]
-    return verify([s for s in cleaned if s.text], texts)
+    kept: dict[str, DraftSentence] = {}
+    for sentence in verify([s for s in cleaned if s.text], texts):
+        kept.setdefault(sentence.text, sentence)  # a repeated sentence once, the first kept
+    return list(kept.values())
 
 
 def agreement(

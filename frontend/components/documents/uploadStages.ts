@@ -14,6 +14,7 @@
 //   CAP_PERCENT (lib/progress.ts) until the document is ready; then the bar is gone.
 
 import { CAP_PERCENT, documentFraction } from "@/lib/progress";
+import { uploadStateText } from "./logic";
 import type { UploadState } from "./logic";
 
 export const MAX_STEP_PERCENT = 15;
@@ -95,11 +96,11 @@ export function nextShown(previous: Shown | null, fraction: number, now: number)
   return { percent: Math.min(target, shown.percent + MAX_STEP_PERCENT), at: now };
 }
 
-const STAGE_WORDS: Record<Stage, string> = { sending: "Sending", saving: "Saving…", reading: "Reading" };
-
-export const stageText = (stage: Stage) => STAGE_WORDS[stage];
-
-/** The <progress>'s aria-valuetext: the stage and its percent; Saving has no percent (indeterminate). */
-export function valueText(stage: Stage, percent: number): string {
-  return stage === "saving" ? "Saving" : `${STAGE_WORDS[stage]}, ${percent}%`;
+/**
+ * The <progress>'s aria-valuetext: the row's badge words and its percent. Saving (indeterminate)
+ * and a document waiting for the reader (U7, QA 17 Oct) have no percent.
+ */
+export function valueText(state: UploadState, percent: number): string {
+  const words = uploadStateText(state);
+  return state.kind === "saving" || words === "Waiting" ? words : `${words}, ${percent}%`;
 }

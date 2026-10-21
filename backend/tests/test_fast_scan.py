@@ -7,6 +7,7 @@ counts a model's pages read at once. tests/test_replay_scan.py proves the saved 
 unchanged."""
 
 import io
+import itertools
 import threading
 import time
 import unittest
@@ -18,6 +19,7 @@ from PIL import Image
 from sqlalchemy.exc import OperationalError
 
 from kaagaz import cli
+from kaagaz.ai import openrouter
 from kaagaz.ai.replies import ModelOutputError
 from kaagaz.ingestion import sniff
 from kaagaz.ingestion.errors import BackendUnavailable
@@ -315,20 +317,71 @@ class ReadyBeforeIndexTest(unittest.TestCase):
                 code = getattr(record, "code", "")
                 self.assertIn(code, {"model_down", "OperationalError", "BackendUnavailable"})
                 self.assertNotIn("gone", code)
+                # Never stuck (17 Oct 2026): the model down is pending (EmbedMissing retries it).
+                outcome = "pending_retry" if code == "model_down" else "failed"
+                self.assertEqual((record.__dict__["step"], record.__dict__["outcome"]), ("indexing", outcome))
 
-    def test_embeddings_go_at_once_through_the_one_client_in_order(self) -> None:
-        client = _client("http://127.0.0.1:9/api/v1")
+    def test_indexing_past_its_deadline_frees_the_worker_and_leaves_the_rest_pending(self) -> None:
+        """Never stuck (17 Oct 2026): a long document's vectors (one request a piece through
+        the limiter) held the worker until every one was made; past ``index_seconds`` the job
+        ends after the batch in hand, ready, and EmbedMissing makes the rest."""
+        embedded: list[int] = []
 
-        def call(path: str, body: dict[str, Any], deadline: float) -> dict[str, Any]:
-            time.sleep(0.3)
+        def during(batch: int) -> None:
+            embedded.append(batch)
+            system.timer.advance(20.0)
+
+        system = runs_rig(embed=FakeEmbedder(batches=3, during_batch=during))
+        processor = system.make()
+        processor._index_seconds = 30.0  # build_processor: MODEL_TIMEOUT_SECONDS
+        job = system.job(CSV)
+        with self.assertLogs("kaagaz.pipeline", level="INFO") as logs:
+            processor(job, lambda: None)  # returns: the job is acked, the worker takes the next
+        self.assertEqual(embedded, [1, 2])  # batch 3 is the sweep's
+        self.assertIs(system.statuses.get_status(job.customer_id, job.document_id), DocumentStatus.READY)
+        steps = [
+            (r.__dict__["step"], r.__dict__["outcome"], r.__dict__["code"])
+            for r in logs.records
+            if "step" in r.__dict__
+        ]
+        self.assertEqual(steps, [("filing", "done", None), ("indexing", "pending_retry", "deadline")])
+        self.assertEqual(
+            [r.__dict__["seconds"] for r in logs.records if r.__dict__.get("step") == "indexing"], [40.0]
+        )
+
+    def test_embeddings_go_16_at_once_through_the_one_gate_in_order(self) -> None:
+        """EMBED_FAN_OUT 16 (16 Oct 2026): 16 requests in flight, their starts still spaced by
+        the limiter (MODEL_RPM), the vectors in the texts' order."""
+        client = _client("http://127.0.0.1:9/api/v1", model_rpm=3000)  # one start every 0.02 s
+        lock, slots, flying = threading.Lock(), [], [0, 0]  # flying: now, most at once
+        take_slot = client.gate.take_slot
+
+        def booked(deadline: float, model: str) -> float:
+            start = take_slot(deadline, model)
+            slots.append(start)  # the limiter's own start times, under its lock
+            return start
+
+        def send(path: str, body: dict[str, Any], timeout: float, **_options: Any) -> Any:
+            with lock:
+                flying[0] += 1
+                flying[1] = max(flying)
+            time.sleep(0.4)
+            with lock:
+                flying[0] -= 1
             number = float(body["input"][0].split()[-1])
-            return {"data": [{"embedding": [number, 0.5, 0.25, 1.0], "index": 0}]}
+            reply = {"data": [{"embedding": [number, 0.5, 0.25, 1.0], "index": 0}]}
+            return openrouter._Reply(200, None, reply)
 
-        with mock.patch.object(client, "_call", call):
+        with mock.patch.object(client, "_send", send), mock.patch.object(client.gate, "take_slot", booked):
             started = time.perf_counter()
-            vectors = client.embed([f"piece {n}" for n in range(8)])
-        self.assertLess(time.perf_counter() - started, 1.2)  # one after another: 2.4 s
-        self.assertEqual([vector[0] for vector in vectors], [float(n) for n in range(8)])
+            vectors = client.embed([f"piece {n}" for n in range(16)])
+        self.assertEqual(openrouter.EMBED_FAN_OUT, 16)
+        self.assertLess(time.perf_counter() - started, 0.95)  # 8 at once: two rounds, over 0.8 s
+        self.assertEqual(flying[1], 16)
+        slots.sort()
+        gaps = [later - earlier for earlier, later in itertools.pairwise(slots)]
+        self.assertGreaterEqual(min(gaps), client.gate.interval - 1e-9)  # MODEL_RPM still holds
+        self.assertEqual([vector[0] for vector in vectors], [float(n) for n in range(16)])
 
 
 class PicturesAtOnceTest(unittest.TestCase):
@@ -351,16 +404,28 @@ class PicturesAtOnceTest(unittest.TestCase):
 
 
 class SettingsAndCliTest(unittest.TestCase):
-    def test_careful_early_max_pages_is_2_unless_set_and_never_below_0(self) -> None:
-        self.assertEqual(Settings.from_env(shipped(CAREFUL_EARLY_MAX_PAGES=None)).careful_early_max_pages, 2)
+    def test_careful_early_max_pages_is_0_unless_set_and_never_below_0(self) -> None:
+        # Changed on purpose (Cost saving, 16 Oct 2026): 0 when unset, was 2.
+        self.assertEqual(Settings.from_env(shipped(CAREFUL_EARLY_MAX_PAGES=None)).careful_early_max_pages, 0)
+        self.assertEqual(Settings.from_env(shipped(CAREFUL_EARLY_MAX_PAGES="2")).careful_early_max_pages, 2)
         self.assertEqual(Settings.from_env(shipped(CAREFUL_EARLY_MAX_PAGES="0")).careful_early_max_pages, 0)
         with self.assertRaisesRegex(SettingsError, "CAREFUL_EARLY_MAX_PAGES"):
             Settings.from_env(shipped(CAREFUL_EARLY_MAX_PAGES="-1"))
+
+    def test_the_servers_12_pages_at_once_is_a_valid_setting(self) -> None:
+        """Ready first (16 Oct 2026): OCR_PAGE_CONCURRENCY=12 reads 10 pages in one round."""
+        self.assertEqual(Settings.from_env(shipped(OCR_PAGE_CONCURRENCY="12")).ocr_page_concurrency, 12)
 
     def test_scan_times_prints_each_step_in_seconds_and_ids_only(self) -> None:
         from datetime import UTC, datetime, timedelta
 
         t0 = datetime(2026, 10, 16, 10, 0, tzinfo=UTC)
+        config = {
+            "seconds_preparing": 1.2,
+            "seconds_reading": 5.0,
+            "seconds_card": 1.5,
+            "reading": {"escalated": [{"page": 2, "reasons": ["handwritten"]}]},
+        }
         row = {
             "document_id": "d-1",
             "pages_ocr": 7,
@@ -368,15 +433,29 @@ class SettingsAndCliTest(unittest.TestCase):
             "started_at": t0 + timedelta(seconds=1),
             "finished_at": t0 + timedelta(seconds=9.5),
             "indexed_at": t0 + timedelta(seconds=14),
-            "config": {
-                "seconds_preparing": 1.2,
-                "seconds_reading": 5.0,
-                "seconds_card": 1.5,
-                "reading": {"escalated": [{"page": 2, "reasons": ["handwritten"]}]},
-            },
+            "config": config,
         }
+        # Changed on purpose (Cost saving, 16 Oct 2026): careful_words follows careful.
         self.assertEqual(
             cli.scan_times_line(row),
             "document d-1 ocr_pages 7 upload_to_ready 9.5 queued 1.0 run_to_ready 8.5 preparing 1.2"
-            " reading 5.0 careful inline(1 pages) card 1.5 map - checker - index_after_ready 4.5",
+            " reading 5.0 careful inline(1 pages) careful_words 0 card 1.5 map - checker -"
+            " understood_after_ready - index_after_ready 4.5 pending -",  # pending: changed on purpose
         )
+        # Ready first: ready 4 s into the run, understood 4.5 s more, the run's end after that.
+        ready_first = {**row, "config": {**config, "seconds_to_ready": 4.0, "seconds_after_ready": 4.5}}
+        self.assertEqual(
+            cli.scan_times_line(ready_first),
+            "document d-1 ocr_pages 7 upload_to_ready 5.0 queued 1.0 run_to_ready 4.0 preparing 1.2"
+            " reading 5.0 careful inline(1 pages) careful_words 0 card 1.5 map - checker -"
+            " understood_after_ready 4.5 index_after_ready 9.0 pending -",
+        )
+        # Never stuck (17 Oct 2026): the post-Ready steps still to come.
+        later = {**row, "vectors_pending": 12, "error_code": "model_key_rejected"}
+        self.assertTrue(cli.scan_times_line(later).endswith(" pending vectors,card"))
+        words = [
+            {"page": 1, "reasons": ["unsure_words", "path_words"]},
+            {"page": 2, "reasons": ["blurry", "path_page"]},
+        ]
+        two = {**row, "config": {**config, "reading": {"escalated": words}}}
+        self.assertIn(" careful inline(2 pages) careful_words 1 card", cli.scan_times_line(two))

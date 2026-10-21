@@ -1,13 +1,17 @@
-/* My words and "Words in these files". Tokens only (app/globals.css); the
+/* My words and "Words in these files". MonoEdge tokens only (app/globals.css); the
    global .stack and .row do the rest. Every button, field and summary here is
-   at least 44 px tall (the touch size). */
+   one control tall, like every other screen (36 px, 44 px on touch: --control-h;
+   one control height, 16 Oct 2026: they were 44 px beside 36 px ones). */
 
-.target,
-.field :global(.input),
+.target {
+  min-width: var(--control-h);
+}
+
+/* A disclosure's summary and the viewer's "my words" switch: rows of their own, not
+   controls beside a button, so a full 44 px target everywhere. */
 .uploadWords > summary,
 .toggle {
   min-height: 44px;
-  min-width: 44px;
 }
 
 .subheading {
@@ -15,13 +19,23 @@
   font-size: var(--fs-lg);
 }
 
+/* A heading in a row of fields (bottom-aligned): one control tall, its words on the
+   boxes' middle line. */
+.fields > .subheading {
+  display: flex;
+  align-items: center;
+  min-height: var(--control-h);
+}
+
 .block {
-  margin-bottom: var(--space-5);
+  margin-bottom: var(--space-6);
 }
 
 .fields {
   display: flex;
   flex-wrap: wrap;
+  /* The fields' boxes and the button share a bottom edge (each label sits above
+     its box); every box is one control tall, so their middles line up too. */
   align-items: flex-end;
   gap: var(--space-2) var(--space-3);
 }
@@ -42,6 +56,8 @@
 .group {
   display: flex;
   flex-wrap: wrap;
+  /* The word sits on the line of its first meaning (whose row centres its buttons). */
+  align-items: baseline;
   gap: var(--space-2) var(--space-4);
   padding: var(--space-3) 0;
   border-bottom: 1px solid var(--border);
@@ -59,14 +75,67 @@
 
 .uploadWords > summary {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
+  gap: var(--space-2);
   font-weight: 600;
   cursor: pointer;
+  list-style: none;
+}
+
+.uploadWords > summary::-webkit-details-marker {
+  display: none;
+}
+
+/* D8: the chevron turns down when open (transform only; reduced motion makes it instant).
+   It is the title's line tall, so it sits on that line, not between it and the hint. */
+.chevron {
+  flex: none;
+  height: 1.5em;
+  transition: transform 160ms cubic-bezier(0.2, 0, 0.2, 1);
+}
+
+.uploadWords[open] > summary .chevron {
+  transform: rotate(90deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chevron {
+    transition: none;
+  }
+}
+
+.summaryText {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.summaryHint {
+  font-size: var(--fs-sm);
+  font-weight: 400;
+  color: var(--text-secondary);
 }
 
 .pairState {
   flex-basis: 100%;
   margin: 0;
+}
+
+/* Words in these files, open (Tushar, 16 Oct 2026): one indent rule, everything under the
+   summary's words, after the 16px chevron and its gap. */
+.uploadWords > summary + * {
+  margin-block-start: var(--space-4);
+  padding-inline-start: calc(16px + var(--space-2));
+}
+
+/* Remove sits on the inputs' line, centred with them (both are the field height). */
+.uploadWords .fields > .target {
+  align-self: flex-end;
+}
+
+/* A normal secondary button at the inputs' left edge, never the card's full width. */
+.addWord {
+  align-self: flex-start;
 }
 
 /* My words in the viewer (B2): the list under the page and the "Add meaning" form. */
@@ -91,6 +160,7 @@
   height: 1.25rem;
 }
 
+/* A list row as a button: one control tall for one line, taller when its words wrap. */
 .markerItem {
   display: flex;
   flex-wrap: wrap;
@@ -98,21 +168,27 @@
   justify-content: flex-start;
   gap: var(--space-2);
   width: 100%;
+  height: auto;
+  min-height: var(--control-h);
+  padding-block: var(--space-1);
+  white-space: normal;
   text-align: start;
 }
 
 .markerItem[aria-pressed="true"] {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
-  background: var(--accent-soft);
+  background: var(--accent-subtle);
   font-weight: 600;
 }
 
 .markerNumber {
-  min-width: 1.5rem;
-  border-radius: var(--r-full);
+  flex: none;
+  min-width: var(--badge-h);
+  line-height: var(--badge-h);
+  border-radius: var(--k-r-2);
   background: var(--accent);
-  color: var(--accent-fg);
+  color: var(--text-onaccent);
   font-weight: 700;
   text-align: center;
 }
@@ -129,4 +205,40 @@
 .picks legend {
   margin-bottom: var(--space-1);
   font-weight: 600;
+}
+
+/* A dialog's buttons: [Destructive] ... [Cancel] [Primary], the primary last (MonoEdge design
+   system). Below 480px they stack full width, the primary on top. */
+.dialogButtons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.dialogButtons > .destructive:has(+ :not(.destructive)) {
+  margin-inline-end: auto;
+}
+
+@media (max-width: 479.98px) {
+  .dialogButtons {
+    flex-direction: column-reverse;
+    align-items: stretch;
+  }
+
+  .dialogButtons > .destructive {
+    margin-inline-end: 0;
+  }
+}
+
+/* A busy button keeps its width: the label goes clear and the spinner sits over it. */
+.busy {
+  position: relative;
+  -webkit-text-fill-color: transparent;
+}
+
+.busy > :global(.spinner) {
+  position: absolute;
+  inset: 0;
+  margin: auto;
 }

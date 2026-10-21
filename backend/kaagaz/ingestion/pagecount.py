@@ -24,7 +24,9 @@ own cost, on at most COUNT_MAX_BYTES.
 """
 
 import io
+import struct
 import threading
+import zlib
 from typing import IO
 
 import pypdfium2 as pdfium
@@ -36,7 +38,21 @@ from kaagaz.ingestion import sniff
 COUNT_MAX_BYTES = 5 * 1024 * 1024
 
 _PDFIUM = threading.Lock()
-_DAMAGED = (OSError, ValueError, SyntaxError, EOFError, Image.DecompressionBombError)
+# What Pillow raises for a damaged TIFF, as kaagaz/preparing/pages.py lists it (a
+# truncated multi-frame TIFF raises TypeError, KeyError or IndexError from n_frames, council 17 Oct 2026).
+_DAMAGED = (
+    OSError,
+    ValueError,
+    SyntaxError,
+    EOFError,
+    TypeError,
+    KeyError,
+    IndexError,
+    struct.error,
+    zlib.error,
+    Image.DecompressionBombError,
+    Image.DecompressionBombWarning,
+)
 
 
 def count_pages(file: IO[bytes], detected_type: str) -> int | None:

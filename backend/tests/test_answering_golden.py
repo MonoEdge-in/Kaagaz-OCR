@@ -59,6 +59,7 @@ ANSWER_KEYS = {
     "reading_note",  # PRD 5 F6
     "unreadable_pages",
     "unreadable_page_count",
+    "related_documents",  # "Also in" (Tushar, 16 Oct 2026)
 }
 CITATION_KEYS = {
     "n",
@@ -76,6 +77,7 @@ CITATION_KEYS = {
     "label_page_no",
     "label_regions",
     "hard_to_read",  # PRD 5 F6
+    "rank",  # ranked sources (Tushar, 16 Oct 2026)
 }
 
 
@@ -417,6 +419,7 @@ class FakeModel:
         thinking: str | None = None,
         provider: str | None = None,
         deadline: float | None = None,
+        temperature: float | None = None,
     ) -> dict[str, Any]:
         self.prompts.append((system, user))
         self.max_tokens.append(max_tokens)
@@ -873,7 +876,7 @@ def test_every_answered_sentence_cites_a_source_with_a_region(model_reply: Reply
 SEPT_REPORT = {"id": str(uuid.uuid4()), "display_name": "Sept report.pdf"}
 
 
-def test_a_figure_only_a_card_holds_gives_no_number_and_asks_for_review() -> None:
+def test_a_figure_only_a_card_holds_gives_no_number_and_points_to_the_documents() -> None:
     unchecked = FakeUnchecked({A: {"profit": [SEPT_REPORT]}})
     answer = service(records=[invoice_record()], unchecked=unchecked)[0].answer(
         A, "What was the total profit?"
@@ -882,7 +885,8 @@ def test_a_figure_only_a_card_holds_gives_no_number_and_asks_for_review() -> Non
     assert_well_formed(answer)
     assert answer.status == "unchecked"
     assert answer.closest_documents == [SEPT_REPORT]  # the whole document, to open and read
-    assert "Review" in answer.sentences[0].text
+    # Changed on purpose (Tushar, 16 Oct 2026: no Needs review in Ask): no Review wording.
+    assert answer.sentences[0].text == "A profit figure is in these documents. Open them to see it."
     assert unchecked.calls == [(A, ("profit", "net_profit"))]
 
 
@@ -1004,6 +1008,43 @@ def test_a_model_error_is_logged_as_its_code_only(caplog: pytest.LogCaptureFixtu
         ("kaagaz.answering.service", "answer drafted without the model", "timeout"),
     ]
     assert canary.casefold() not in caplog.text.casefold()
+    assert answer.unavailable is False  # KZ-006: an answer quoted without the model stays answered
+
+
+def test_a_sentence_the_model_repeats_is_shown_once() -> None:
+    def twice(system: str, user: str) -> dict[str, Any]:
+        said = {"text": "The grand total of INV-1042 is Rs. 1,20,000.", "evidence": [1]}
+        return {"status": "answered", "sentences": [said, {**said, "text": f" {said['text']}  "}]}
+
+    answer = service(pieces=[INVOICE], model=FakeModel(twice))[0].answer(A, QUESTION)
+    assert [s.text for s in answer.sentences] == ["The grand total of INV-1042 is Rs. 1,20,000."]
+
+
+def test_not_found_while_the_model_is_down_is_unavailable() -> None:
+    """KZ-006: "not found" is never shown for an outage; a genuine not found stays one."""
+    question = "What is the GST number of INV-1042?"
+    down = ModelUnavailable("unreachable")
+
+    def ask(pieces: list[FakeHit], model: FakeModel) -> Answer:
+        return service(pieces=pieces, model=model)[0].answer(A, question)
+
+    for answer in (ask([INVOICE], FakeModel(chat_error=down)), ask([], FakeModel(embed_error=down))):
+        assert (answer.status, answer.unavailable) == ("not_found", True)
+        assert "unavailable" not in answer.to_json()
+    for answer in (ask([], FakeModel()), ask([], FakeModel(embed_error=ModelOutputError("embedding_dim")))):
+        assert (answer.status, answer.unavailable) == ("not_found", False)
+
+
+def test_a_missing_question_vector_is_no_outage_when_words_found_pieces() -> None:
+    """Never stuck (17 Oct 2026): the word and typo search found pieces, so a model that could
+    not embed the question is not "busy"; the draft's own not found stands."""
+
+    def not_found(system: str, user: str) -> dict[str, Any]:
+        return {"status": "not_found", "sentences": []}
+
+    model = FakeModel(not_found, embed_error=ModelUnavailable("key_rejected"))
+    answer = service(pieces=[INVOICE], model=model)[0].answer(A, "What is the GST number of INV-1042?")
+    assert (answer.status, answer.unavailable) == ("not_found", False)
 
 
 def test_each_model_answer_logs_the_model_and_the_prompt_hash(caplog: pytest.LogCaptureFixture) -> None:
@@ -1033,7 +1074,7 @@ def test_each_answer_logs_one_timing_line_of_codes_and_numbers(caplog: pytest.Lo
     ]
     assert len(lines) == len(expected)
     for line, start in zip(lines, expected, strict=True):
-        assert re.fullmatch(f"answer timing {start} whole=0 aspects=0{stages}", line), line
+        assert re.fullmatch(f"answer timing {start} whole=0 aspects=0 pinned=0{stages}", line), line
         assert "INV-1042" not in line
 
 
@@ -1096,3 +1137,42 @@ def test_devanagari_evidence_is_counted_cautiously_and_left_out_whole() -> None:
     assert [item.n for item in fit_evidence(QUESTION, pieces, first_estimate)] == [1]
     roomy = estimate_tokens_cautiously(user_prompt(QUESTION, pieces))
     assert fit_evidence(QUESTION, pieces, roomy) == pieces
+
+
+def test_sources_carry_their_search_rank_and_also_in_lists_the_strong_uncited_documents() -> None:
+    # Ranked sources (Tushar, 16 Oct 2026): a citation's rank is its hit's place in the
+    # search order; "Also in" holds the documents the search found that the answer does not
+    # cite, only those that pass the gate by themselves (a weak match never pads it).
+    ledger = piece("ledger.pdf", "Ledger entry\nINV-1042 grand total received in full")
+    weak = piece("weak.pdf", "The total of something else entirely")
+    answer = service(pieces=[INVOICE, ledger, weak, TERMS], model=None)[0].answer(
+        A, "What is the grand total of INV-1042?"
+    )
+
+    assert answer.status == "answered"
+    ranks = {c.document_name: c.rank for c in answer.citations}
+    assert all(isinstance(rank, int) and rank >= 1 for rank in ranks.values())
+    cited = {c.document_id for c in answer.citations}
+    related = answer.related_documents
+    assert related and all(doc["document_id"] not in cited for doc in related)
+    names = [doc["document_name"] for doc in related]
+    assert "weak.pdf" not in names and "terms.pdf" not in names
+    assert len(names) == len(set(names))
+    row = related[0]
+    assert set(row) == {"document_id", "document_name", "detected_type", "page_no", "regions", "snippet"}
+    assert answer.to_json()["related_documents"] == related
+    assert all("rank" in c for c in answer.to_json()["citations"])
+
+
+def test_also_in_stops_at_five_documents() -> None:
+    from kaagaz.answering.evidence import RELATED_DOCUMENTS, number_evidence, related_documents
+
+    hits = [piece(f"doc-{i}.pdf", "INV-1042 grand total") for i in range(8)]
+    found = related_documents(number_evidence(hits), set(), ["grand", "total", "inv-1042"], 0.5, ["inv-1042"])
+    assert RELATED_DOCUMENTS == 5 and [d["document_name"] for d in found] == [
+        f"doc-{i}.pdf" for i in range(5)
+    ]
+    cited = {hits[0].document_id}
+    assert hits[0].document_id not in {
+        d["document_id"] for d in related_documents(number_evidence(hits), cited, ["inv-1042"], 0.5)
+    }

@@ -1,191 +1,85 @@
+/* The brand lockup (the handoff's .k-brand, styles/kaagaz.css section 4). */
+
 .wordmark {
-  position: relative;
   display: inline-flex;
   align-items: center;
-  font-family: var(--font-display);
-  font-size: var(--fs-xl);
-  font-weight: 700;
-  line-height: 1.1;
-  letter-spacing: 0.01em;
+  gap: 10px;
+  /* Never squeezed: at 320px the header shrank it and "Kaagaz" broke as "Kaaga|z";
+     the page name beside it (ellipsis) gives way instead. */
+  flex: none;
   color: var(--fg);
   text-decoration: none;
 }
 
-.rule {
-  padding-inline-start: var(--space-3);
-  border-inline-start: 2px solid var(--brand-lal);
+/* A folded page in the accent with two ruled lines. */
+.mark {
+  position: relative;
+  flex: none;
+  width: 22px;
+  height: 28px;
+  border-radius: 3px;
+  background: var(--accent);
+  clip-path: polygon(0 0, 66% 0, 100% 26%, 100% 100%, 0 100%);
+}
+
+.mark::after {
+  content: "";
+  position: absolute;
+  left: 5px;
+  right: 5px;
+  top: 12px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--text-onaccent);
+  opacity: 0.9;
+}
+
+.mark::before {
+  content: "";
+  position: absolute;
+  left: 5px;
+  right: 5px;
+  top: 17px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--text-onaccent);
+  opacity: 0.9;
+}
+
+.words {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+/* The display face, Archivo, set wide. */
+.name {
+  font-family: var(--font-display);
+  font-stretch: var(--k-display-stretch);
+  font-size: 1.25rem;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+/* "by MonoEdge": a mono label in capitals. */
+.by {
+  font-family: var(--k-font-mono);
+  font-size: 0.59375rem;
+  font-weight: 500;
+  line-height: 1.2;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+  white-space: nowrap;
 }
 
 a.wordmark:hover {
   color: var(--fg);
 }
 
-/* The link's target: 24 px, 44 px for touch. */
+/* The link's target: one control tall (32 px, 44 px for touch). */
 a.wordmark {
-  min-height: 24px;
-}
-
-@media (pointer: coarse) {
-  a.wordmark {
-    min-height: 44px;
-  }
-}
-
-.reader {
-  position: absolute;
-  inset-inline-start: calc(100% + var(--space-2));
-  bottom: -2px;
-  width: 34px;
-  height: 38px;
-  color: var(--accent);
-  pointer-events: none;
-  opacity: 0;
-  transform: translateY(16px) scale(0.75);
-  transform-origin: bottom center;
-  animation: reader-cycle 5s var(--ease); /* once, then gone: its last frame is its start */
-}
-
-.robotHead,
-.robotBody {
-  position: absolute;
-  display: block;
-  border: 2px solid currentColor;
-  background: var(--surface);
-}
-
-.robotHead {
-  inset-inline-start: 7px;
-  top: 1px;
-  width: 20px;
-  height: 15px;
-  border-radius: 6px 6px 4px 4px;
-}
-
-.robotHead::before,
-.robotHead::after {
-  content: "";
-  position: absolute;
-  top: 5px;
-  width: 3px;
-  height: 3px;
-  border-radius: var(--r-full);
-  background: currentColor;
-}
-
-.robotHead::before {
-  inset-inline-start: 4px;
-}
-
-.robotHead::after {
-  inset-inline-end: 4px;
-}
-
-.robotEye {
-  position: absolute;
-  inset-inline-start: 8px;
-  top: -7px;
-  width: 2px;
-  height: 5px;
-  background: currentColor;
-}
-
-.robotEye::after {
-  content: "";
-  position: absolute;
-  top: -2px;
-  inset-inline-start: -2px;
-  width: 6px;
-  height: 2px;
-  border-radius: var(--r-full);
-  background: var(--brand-lal);
-}
-
-.robotBody {
-  inset-inline-start: 9px;
-  top: 17px;
-  width: 16px;
-  height: 15px;
-  border-radius: 4px 4px 3px 3px;
-}
-
-.robotBody::before,
-.robotBody::after {
-  content: "";
-  position: absolute;
-  bottom: -6px;
-  width: 3px;
-  height: 6px;
-  background: currentColor;
-}
-
-.robotBody::before {
-  inset-inline-start: 3px;
-}
-
-.robotBody::after {
-  inset-inline-end: 3px;
-}
-
-.robotArm {
-  position: absolute;
-  inset-inline-end: -8px;
-  top: 4px;
-  width: 9px;
-  height: 2px;
-  background: currentColor;
-  transform: rotate(22deg);
-  transform-origin: left center;
-}
-
-.document {
-  position: absolute;
-  inset-inline-end: -1px;
-  top: 19px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  width: 13px;
-  height: 16px;
-  padding: 4px 2px;
-  border: 1px solid var(--brand-lal);
-  background: var(--surface);
-  transform: rotate(8deg);
-}
-
-.document span {
-  display: block;
-  height: 1px;
-  background: var(--brand-lal);
-}
-
-@keyframes reader-cycle {
-  0%,
-  8% {
-    opacity: 0;
-    transform: translateY(16px) scale(0.75);
-  }
-
-  18%,
-  68% {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
-
-  38%,
-  56% {
-    transform: translateY(0) scale(1) rotate(-2deg);
-  }
-
-  78%,
-  100% {
-    opacity: 0;
-    transform: translateY(16px) scale(0.75);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .reader {
-    animation: none;
-    opacity: 0;
-  }
+  min-height: var(--control-min);
 }

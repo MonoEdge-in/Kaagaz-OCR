@@ -36,7 +36,9 @@ media resolution goes the way ``MEDIA_RESOLUTION_SHAPE`` says (``image_url.detai
 high). Thinking is ``reasoning: {effort, exclude: true}``: the effort is the setting, and
 the thinking itself never comes back. The output cap is ``max_completion_tokens``.
 Structured output is ``response_format`` ``json_schema`` named ``page`` with ``strict:
-STRICT_SCHEMA``. Temperature is left at the default (PRD 5 section 14). A repair turn sends
+STRICT_SCHEMA``. Temperature is left at the default (PRD 5 section 14), but for a ``chat_json``
+call that names one (Ask's question rewrite and translation, 16 Oct 2026), sent to a Google
+model only. A repair turn sends
 the first reply back with role assistant. ``python -m kaagaz.cli verify-models`` checks
 each of these against the live API.
 
@@ -141,6 +143,7 @@ from kaagaz.settings import (
     DEFAULT_PROVIDER,
     MEDIA_RESOLUTION_SHAPE,
     MEDIA_RESOLUTIONS,
+    NO_THINKING,
     PROVIDER_SLUG,
     SENDABLE_MEDIA_RESOLUTIONS,
     THINKING_LEVELS,
@@ -181,8 +184,9 @@ EMBED_PROVIDER: Mapping[str, Any] = {**PROVIDER, "require_parameters": False}
 # ever serves batches.
 EMBED_TEXTS_PER_REQUEST = 1
 # Fast scan (council 16 Oct 2026): at most this many embedding requests at once, through the
-# one limiter (never a gate of its own: OpenRouter's limit is the key's).
-EMBED_FAN_OUT = 8
+# one limiter (never a gate of its own: OpenRouter's limit is the key's); 16 since Ready first
+# (16 Oct 2026): their starts stay MODEL_RPM apart, so a higher MODEL_RPM is what speeds them.
+EMBED_FAN_OUT = 16
 
 # Structured output (G3): response_format json_schema with strict set to this. Whether
 # Google honours strict through OpenRouter is checked by verify-models (strict_schema).
@@ -193,7 +197,10 @@ SCHEMA_NAME = "page"
 # Q8 (cost guard): an initial page read's output ceiling, thinking included. The PR 1
 # measurement may set a tighter value; it is sent as max_completion_tokens. A reply that
 # reaches it ends "length" (output_truncated), and the reader reads the page in two halves.
-PAGE_MAX_OUTPUT_TOKENS = 32768
+# 65536 (scan reliability, 16 Oct 2026): Gemini 3.8 Flash's own ceiling on every Google
+# endpoint; at high thinking a dense handwritten page passed 32768, and its halves then ran
+# out of the page's time. Only the tokens generated are billed.
+PAGE_MAX_OUTPUT_TOKENS = 65536
 # chat_json thinks at this effort: the card, the invoice windows, answers
 # and the follow-up rewrite want a short exact reply. gemini-3.1-pro-preview has no
 # "minimal" level (Google's thinking page), so "low" is the least it accepts. An answer's
@@ -207,6 +214,10 @@ CHAT_THINKING_TOKENS = {"low": 8192, "medium": 16384, "high": 32768}
 # out for every other vendor's model, whose structured output may refuse it (features 25-27,
 # C7). The answer's sentences are capped after the reply anyway (draft._parse).
 MAX_LENGTH_VENDOR = "google"
+# Ask's steady search (16 Oct 2026): only these vendors' models get a chat_json ``temperature``.
+# Anthropic's refuse a temperature other than 1 while thinking, and with require_parameters
+# a model whose endpoint lists no temperature would be routed nowhere.
+TEMPERATURE_VENDORS = frozenset({"google"})
 
 # Backoff (G6): attempt n waits a random time up to min(BACKOFF_MAX_SECONDS,
 # BACKOFF_BASE_SECONDS * 2**n) ("full jitter"), or the server's Retry-After if longer.
@@ -399,14 +410,16 @@ def chat_request(
     provider_slug: str = DEFAULT_PROVIDER,
 ) -> dict[str, Any]:
     """A /chat/completions body: the model, the messages, the thinking effort, the output
-    cap, the schema and ``provider(provider_slug)``."""
+    cap, the schema and ``provider(provider_slug)``. ``thinking`` NO_THINKING (a model with
+    no thinking levels, Tushar 18 Oct 2026) sends no ``reasoning`` field at all."""
     body: dict[str, Any] = {
         "model": model,
         "messages": messages,
         "stream": False,
-        "reasoning": reasoning(thinking),
         "provider": provider(provider_slug),
     }
+    if thinking != NO_THINKING:
+        body["reasoning"] = reasoning(thinking)
     if max_output_tokens is not None:
         body["max_completion_tokens"] = max_output_tokens
     if schema is not None:
@@ -754,11 +767,13 @@ class ModelGate:
                     raise ModelUnavailable("rate_limited")
                 self.sleep(wait)
                 waited += wait
+        starts before ``deadline`` (``ModelUnavailable("timeout")`` if not: the caller's time
+        ran out, the model is not refusing; and ``model``'s probe, if this was it, is released)."""
         with self._lock:
             start = max(self.clock(), self._next_start)
             if start >= deadline:
                 self._breakers.setdefault(model, _Breaker()).probing = False
-                raise ModelUnavailable("rate_limited")
+                raise ModelUnavailable("timeout")
             self._next_start = start + self.interval
             return start
 
@@ -937,6 +952,7 @@ class OpenRouterClient:
         thinking: str | None = None,
         provider: str | None = None,
         deadline: float | None = None,
+        temperature: float | None = None,
     ) -> dict[str, Any]:
         """One JSON object following ``schema``, from ``model`` at ``thinking`` through
         ``provider`` (None: MODEL_CHAT, CHAT_THINKING_LEVEL, DEFAULT_PROVIDER; features
@@ -946,13 +962,14 @@ class OpenRouterClient:
         ``invalid_output``. A reply longer than ``max_tokens`` (thinking not counted) raises
         ``output_truncated`` with no repair. ``deadline`` (on ``time.monotonic()``): both
         tries end by then (``timeout`` once it has passed); None, each has the chat
-        timeout."""
+        timeout. ``temperature``: sent only to a model of TEMPERATURE_VENDORS; None, the
+        default."""
         if model is not None and not valid_model_id(model):
             raise ValueError("a model ID must be an OpenRouter author/slug with no :variant")
         slug = DEFAULT_PROVIDER if provider is None else provider
         self._check_provider(slug)
         level = CHAT_THINKING_LEVEL if thinking is None else thinking
-        if level not in CHAT_THINKING_TOKENS:
+        if level not in CHAT_THINKING_TOKENS and level != NO_THINKING:
             raise ValueError("unknown thinking level")
         ends = None if deadline is None else self.now() + (deadline - time.monotonic())
         messages: list[dict[str, Any]] = [
@@ -960,14 +977,17 @@ class OpenRouterClient:
             {"role": "user", "content": user},
         ]
         output_limit = self._default_chat_tokens if max_tokens is None else max_tokens
+        chosen = self.chat_model if model is None else model
         body = chat_request(
-            model=self.chat_model if model is None else model,
+            model=chosen,
             messages=messages,
             thinking=level,
             schema=schema,
-            max_output_tokens=output_limit + CHAT_THINKING_TOKENS[level],
+            max_output_tokens=output_limit + CHAT_THINKING_TOKENS.get(level, 0),
             provider_slug=slug,
         )
+        if temperature is not None and chosen.split("/", 1)[0] in TEMPERATURE_VENDORS:
+            body["temperature"] = temperature
         content, spent = self._chat_reply(body, output_limit, (0, 0), ends)
         value, problem = parse_reply(content, schema)
         if value is not None:
@@ -1151,9 +1171,13 @@ class OpenRouterClient:
                 if 300 <= reply.status < 400:
                     raise ModelUnavailable("redirect_refused")
                 raise ModelUnavailable("http_error")
-            gate.record(model, failed=True)
             if reply.status == 0 and code == "timeout":
+                # Our own deadline ran out (a slow page at high thinking), not the model failing:
+                # never counted on the breaker, so slow pages cannot open it and make every other
+                # page of the document wait for its lease (scan reliability, 16 Oct 2026).
+                gate.release_probe(model)
                 raise ModelUnavailable("timeout")
+            gate.record(model, failed=True)
             wait = gate.random() * min(BACKOFF_MAX_SECONDS, BACKOFF_BASE_SECONDS * 2**attempt)
             asked = _retry_after(reply.headers, gate.wall_clock())
             if asked is not None:

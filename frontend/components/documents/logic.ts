@@ -2,6 +2,7 @@
 // they are unit tested in node (tests/shell-documents.test.ts).
 
 import { ApiError } from "@/lib/api";
+import { formatDate } from "@/lib/format";
 import type { DocumentStatus, DocumentSummary, UploadLimits } from "@/lib/types";
 
 /** File name endings the backend can take. The server checks the bytes again. */
@@ -130,20 +131,29 @@ const SETTLING: readonly DocumentStatus[] = ["received", "clean"];
 
 interface Polled {
   status: DocumentStatus;
+  understanding?: boolean;
   newer_version?: { status: DocumentStatus } | null;
 }
 
 /**
  * Keep asking the server only while something is still being checked or read,
  * a newer version included, so the status_message the server writes as it
- * goes ("Reading page 3 of 40…", PRD 2 X3) keeps moving.
+ * goes ("Reading page 3 of 40…", PRD 2 X3) keeps moving; and while a ready
+ * document is still being understood (Ready first), so its type shows when it comes.
  */
 export function shouldPoll(items: readonly Polled[]): boolean {
   return items.some((item) => {
     const newer = item.newer_version?.status;
-    return SETTLING.includes(item.status) || (newer !== undefined && SETTLING.includes(newer));
+    return (
+      SETTLING.includes(item.status) ||
+      item.understanding === true ||
+      (newer !== undefined && SETTLING.includes(newer))
+    );
   });
 }
+
+/** Said beside a ready document while its card and map are still coming (Ready first). */
+export const UNDERSTANDING_TEXT = "Understanding the document…";
 
 export interface PageInfo {
   from: number; // 1-based first row shown, 0 when there are none
@@ -177,11 +187,13 @@ export const MB_PER_PDF_PAGE = 0.4;
  * PDF page 0.05 s, and a 200-row sheet 0.01 s. A PDF can't be told apart before
  * it is read, so it is estimated as a scan: the text "Up to N minutes" is then
  * true for both. With the model on, the card and invoice calls add time these
- * numbers don't include.
+ * numbers don't include. Changed (council 16 Oct 2026): a PDF or photo page is now
+ * 35 s, as Gemini reads scans at High thinking (30 to 130 s a page), so the upload
+ * row's last byte is not most of its bar.
  */
 export const SECONDS_PER_PAGE: Readonly<Record<UploadKind, number>> = {
-  pdf: 7,
-  image: 7,
+  pdf: 35,
+  image: 35,
   sheet: 1,
 };
 
@@ -264,17 +276,19 @@ export function uploadStateText(state: UploadState): string {
   switch (state.kind) {
     case "waiting":
       return "Waiting to upload";
+    // Changed on purpose (scan states, 16 Oct 2026): the brief's words, Uploading then Scanning.
     case "sending":
-      return "Sending";
+      return "Uploading";
     case "saving":
-      return "Saving…";
+      return "Saving";
+    // U7 (QA 17 Oct): a document waiting for the reader says so, never "Scanning".
     case "reading":
-      return "Reading";
+      return scanWords(state.document)?.chip ?? "Waiting";
     case "done": {
       const { document } = state;
       if (!document) return "Uploaded";
       if (document.status !== "ready") return document.failure_code === "customer_disabled" ? "Stopped" : "Not read";
-      return document.first_unreadable ? `Couldn't read page ${document.first_unreadable.page_no}` : "Ready";
+      return document.first_unreadable ? `Page ${document.first_unreadable.page_no} to check` : "Ready";
     }
     case "duplicate":
       return state.inTrash ? "Already uploaded, in Trash" : "Already uploaded";
@@ -341,4 +355,101 @@ export function listView(
 /** The polite announcement once a document is gone from the list: Delete moves it to Trash. */
 export function deletedMessage(name: string): string {
   return `Moved ${name} to Trash.`;
+}
+
+// --- Scan states (16 Oct 2026, scan-review UX rules section 3 and 6) ----------------------
+
+type Scanned = Pick<DocumentSummary, "progress" | "attempts" | "max_attempts">;
+
+export const counted = (n: number, one: string) => `${n} ${n === 1 ? one : `${one}s`}`;
+
+/**
+ * A document being checked or read, as a status chip word and the words after it, read
+ * together: "Scanning" "page 6 of 14". From its progress, so the words never depend on
+ * the server's status_message; null with no progress (queued: the status_message says
+ * what it waits for, "Waiting to start." and the like).
+ */
+export function scanWords(document: Scanned): { chip: string; detail: string } | null {
+  const { progress } = document;
+  // A "waiting" step (held for the reader) is not being read: no chip words, so callers
+  // say Waiting and the server's message says why (CodeRabbit, QA 17 Oct).
+  if (!progress || progress.step === "waiting") return null;
+  const { step, done, total } = progress;
+  const pageOf = total > 0 ? `page ${Math.max(1, Math.min(done + 1, total))} of ${total}` : "the whole file";
+  let words: { chip: string; detail: string };
+  if (step === "scanning") words = { chip: "Checking", detail: "for viruses" };
+  else if (step === "preparing") words = { chip: "Preparing", detail: pageOf };
+  else if (step === "rereading") words = { chip: "Scanning", detail: `${counted(total, "page")} again, carefully` };
+  else if (step === "understanding") words = { chip: "Understanding", detail: "the document" };
+  else if (step === "indexing") words = { chip: "Indexing", detail: "for search" };
+  else words = { chip: "Scanning", detail: pageOf };
+  const { attempts, max_attempts: most } = document;
+  if (attempts >= 2 && most) words.detail += ` · Try ${Math.min(attempts, most)} of ${most}`;
+  return words;
+}
+
+/** The words as one line, "Scanning page 6 of 14"; the server's words while it is queued. */
+export function scanPhrase(document: Scanned & Pick<DocumentSummary, "status_message">): string {
+  const words = scanWords(document);
+  return words ? `${words.chip} ${words.detail}` : document.status_message;
+}
+
+type Finished = Pick<DocumentSummary, "pages_unreadable" | "pages_uncertain" | "words_unsure" | "values_to_review">;
+
+/**
+ * Flagged for review: the unsure words plus the values labelled needs review. Pages to
+ * check are counted on their own, as attentionWords (library.ts) counts them.
+ */
+export function flaggedCount(document: Finished): number {
+  return (document.words_unsure ?? 0) + document.values_to_review;
+}
+
+export function pagesToCheck(document: Finished): number {
+  return document.pages_unreadable + ((document.words_unsure ?? 0) === 0 ? document.pages_uncertain : 0);
+}
+
+/** Something to look at once it is read: the list row then ends with "Review", the tray with "Open to review". */
+export const toReview = (document: Finished) => flaggedCount(document) > 0 || pagesToCheck(document) > 0;
+
+/** After "Scan complete": "12 flagged for review · 2 pages to check", or "Nothing flagged". */
+export function flaggedText(document: Finished): string {
+  return flaggedWords(flaggedCount(document), pagesToCheck(document));
+}
+
+/**
+ * The list's status line (Tushar, 16 Oct 2026: "7 flagged…" was cut short): "7 flagged",
+ * "7 flagged · 2 pages to check"; and the words its Review link is read out with,
+ * "7 flagged words", "7 flagged words and 2 pages to check".
+ */
+export function flaggedShort(document: Finished): { shown: string; spoken: string } {
+  const flagged = flaggedCount(document);
+  const pages = pagesToCheck(document);
+  const check = pages > 0 ? `${counted(pages, "page")} to check` : "";
+  const words = flagged > 0 ? `${flagged} flagged` : "";
+  const spokenWords = flagged > 0 ? `${words} ${flagged === 1 ? "word" : "words"}` : "";
+  return {
+    shown: [words, check].filter(Boolean).join(" · "),
+    spoken: [spokenWords, check].filter(Boolean).join(" and "),
+  };
+}
+
+/**
+ * The list's Uploaded time, short so it stays on one line: "now", "5m ago", "2h ago",
+ * "3d ago", then the date ("9 Oct 2026"). The exact time goes in its title and is read out.
+ */
+export function shortWhen(iso: string, now: number): string {
+  const at = new Date(iso).getTime();
+  if (Number.isNaN(at)) return "";
+  const minutes = Math.round((now - at) / 60_000);
+  if (minutes < 1) return "now";
+  if (minutes < 60) return `${minutes}m ago`;
+  if (minutes < 24 * 60) return `${Math.round(minutes / 60)}h ago`;
+  if (minutes < 7 * 24 * 60) return `${Math.round(minutes / (24 * 60))}d ago`;
+  return formatDate(iso);
+}
+
+/** flaggedText for counts, summed over several documents (the status bar). */
+export function flaggedWords(flagged: number, pages: number): string {
+  const parts = [flagged > 0 ? `${flagged} flagged for review` : "", pages > 0 ? `${counted(pages, "page")} to check` : ""];
+  return parts.filter(Boolean).join(" · ") || "Nothing flagged";
 }

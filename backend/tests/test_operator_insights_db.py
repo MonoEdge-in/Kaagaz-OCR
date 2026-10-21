@@ -683,3 +683,30 @@ def test_the_last_active_day_is_the_newest_upload_question_or_run_within_366_day
         None,
         None,
     ]
+
+
+def test_the_overview_counts_pages_read_from_the_ledger_and_only_the_reported_cost(db: Database) -> None:
+    """0034: pages read are the non-cached scan and upgrade calls, read again the careful and
+    ensemble_scan ones, apart; a superseded run's pages still count (the ledger keeps them);
+    the real cost is what OpenRouter reported, and a NULL or estimated cost counts its calls
+    as unknown, never as dollars."""
+    day, model = window_day(), new_model()
+    customer, _ = new_customer(db)
+    when = at(day)
+    document_id = document(db, customer, when)
+    run(db, customer, document_id, when, status="superseded", ocr=27)  # left out of the old pages
+    usage(db, customer, when, "scan", model, 20, "0.40", document_id=document_id)
+    usage(db, customer, when, "upgrade", model, 7, None, document_id=document_id)  # cost not reported
+    usage(db, customer, when, "scan", model, 5, "0", cached=True, document_id=document_id)  # cache: no read
+    usage(db, customer, when, "careful", model, 3, "0.09", document_id=document_id)
+    usage(db, customer, when, "ensemble_scan", model, 2, "0.05", estimated=True, document_id=document_id)
+    usage(db, customer, when, "chat", model, 4, "0.08")
+    usage(db, customer, when, "ensemble_chat", model, 1, None)
+    usage(db, customer, when, "card", model, 1, "0.10", document_id=document_id)
+    [row] = of(read(db, operator(db), insights.daily, day, day, "UTC"), customer)
+    assert (row["pages"], row["runs"]) == (0, 0)  # the old run-based count missed all 27 pages
+    assert (row["pages_read"], row["pages_reread"], row["pages_read_costed"]) == (27, 5, 20)
+    assert row["cost_real_usd"] == Decimal("0.67")  # 0.40 + 0.09 + 0.08 + 0.10 (+ the cached 0)
+    assert row["cost_scan_real_usd"] == Decimal("0.49")  # 0.40 + 0.09
+    assert row["cost_answer_real_usd"] == Decimal("0.08")
+    assert (row["cost_unknown_calls"], row["scan_unknown_calls"], row["answer_unknown_calls"]) == (10, 9, 1)
