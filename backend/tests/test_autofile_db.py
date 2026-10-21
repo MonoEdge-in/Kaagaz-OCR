@@ -174,9 +174,7 @@ def test_r10_a_renamed_and_moved_type_folder_is_still_used(db: Database) -> None
     first = upload(db, customer, admin)
     read(db, customer, first)
     invoices = next(
-        f[0]
-        for f in folders(db, customer)
-        if f[3] is not None and f[3].startswith("type:invoice:")
+        f[0] for f in folders(db, customer) if f[3] is not None and f[3].startswith("type:invoice:")
     )
     with db.customer(customer) as conn:
         archive = create_folder(conn, customer, name="Archive", parent_id=None, created_by=admin)
@@ -195,11 +193,7 @@ def test_r10_a_deleted_type_folder_takes_its_key_and_the_next_file_makes_a_new_o
     customer, admin = organisation(db)
     first = upload(db, customer, admin)
     read(db, customer, first)
-    old = next(
-        f[0]
-        for f in folders(db, customer)
-        if f[3] is not None and f[3].startswith("type:invoice:")
-    )
+    old = next(f[0] for f in folders(db, customer) if f[3] is not None and f[3].startswith("type:invoice:"))
     person_moves(db, customer, first, None)
     with db.customer(customer) as conn:
         delete_folder(conn, customer, old)
@@ -323,9 +317,7 @@ def test_r12_a_child_name_taken_by_another_type_keeps_the_file_in_its_department
     receipt = upload(db, customer, admin)
     read(db, customer, receipt, "receipt")
     receipts = next(
-        f[0]
-        for f in folders(db, customer)
-        if f[3] is not None and f[3].startswith("type:receipt:")
+        f[0] for f in folders(db, customer) if f[3] is not None and f[3].startswith("type:receipt:")
     )
     with db.customer(customer) as conn:
         rename_folder(conn, customer, receipts, name="Invoices")  # still files receipts
@@ -457,9 +449,7 @@ def test_race_filing_waits_for_a_folder_move_and_a_folder_delete_without_a_deadl
     first = upload(db, customer, admin)
     read(db, customer, first)
     invoices = next(
-        f[0]
-        for f in folders(db, customer)
-        if f[3] is not None and f[3].startswith("type:invoice:")
+        f[0] for f in folders(db, customer) if f[3] is not None and f[3].startswith("type:invoice:")
     )
     with db.customer(customer) as conn:
         archive = create_folder(conn, customer, name="Archive", parent_id=None, created_by=admin)
@@ -520,9 +510,7 @@ def test_r16_undo_moves_the_family_back_keeps_the_folder_and_names_who(db: Datab
     document = upload(db, customer, admin)
     read(db, customer, document)
     invoices = next(
-        f[0]
-        for f in folders(db, customer)
-        if f[3] is not None and f[3].startswith("type:invoice:")
+        f[0] for f in folders(db, customer) if f[3] is not None and f[3].startswith("type:invoice:")
     )
     department = next(f[0] for f in folders(db, customer) if f[1] == "Accounts and HR")
 
@@ -567,9 +555,7 @@ def test_stale_flag_a_deleted_folder_of_a_filed_family_in_trash_is_not_filed_any
     document = upload(db, customer, admin)
     read(db, customer, document)
     invoices = next(
-        f[0]
-        for f in folders(db, customer)
-        if f[3] is not None and f[3].startswith("type:invoice:")
+        f[0] for f in folders(db, customer) if f[3] is not None and f[3].startswith("type:invoice:")
     )
     with db.customer(customer) as conn:
         trash_document(conn, customer, document, by=admin, now=NOW)
