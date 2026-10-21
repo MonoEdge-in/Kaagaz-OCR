@@ -776,9 +776,7 @@ class ModelGate:
             except Exception:  # noqa: BLE001 - release any stranded ticket and fail closed.
                 self.release_probe(model)
                 with contextlib.suppress(Exception):
-                    self.database.model_rate_slot(
-                        request_id, customer_id, user_id, 0.0, self.platform_rpm
-                    )
+                    self.database.model_rate_slot(request_id, customer_id, user_id, 0.0, self.platform_rpm)
                 raise ModelUnavailable("rate_limited") from None
         with self._lock:
             start = max(self.clock(), self._next_start)
