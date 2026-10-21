@@ -10,6 +10,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
+import Link from "next/link";
 import { ActionDialog } from "@/components/documents/ActionDialog";
 import { EmptyState } from "@/components/ui/EmptyState";
 import {
@@ -210,7 +211,7 @@ export function MyWordsScreen() {
     <div className="page">
       <header className="page-header"><div>
         <h1 ref={headingRef} tabIndex={-1}>My words</h1>
-        <p>Your words stay private. You can also suggest words for your organization; a reviewer or admin must approve them before everyone can use them.</p>
+        <p>Your words stay private. Suggestions made here are organization-wide; words sent from a document viewer apply only to that document after a reviewer or admin approves them.</p>
       </div></header>
       <p className="visually-hidden" role="status" aria-live="polite">{status}</p>
       {alert(problem)}
@@ -255,6 +256,11 @@ export function MyWordsScreen() {
             {organizationItems.map((item) => (
               <li key={item.id} className={styles.group}>
                 <span className={styles.word}>{item.word}</span><span className={styles.text}>→ {item.meaning}</span>
+                {item.document_id && item.page_no && (
+                  <Link href={`/documents/${encodeURIComponent(item.document_id)}?page=${item.page_no}`}>
+                    From document, page {item.page_no}
+                  </Link>
+                )}
                 <span className="muted">{item.status === "pending" ? "Awaiting review" : item.status}</span>
                 {item.status === "pending" && (me.user.role === "reviewer" || me.user.role === "admin") && item.submitted_by !== userId && (
                   <>

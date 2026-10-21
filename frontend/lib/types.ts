@@ -783,6 +783,8 @@ export interface OrganizationWord {
   status: "pending" | "approved" | "rejected";
   submitted_by: string;
   created_at: string;
+  document_id: string | null;
+  page_no: number | null;
 }
 
 /** POST /me/words: 201 created, 200 already there or replaced. */

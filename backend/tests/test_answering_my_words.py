@@ -44,7 +44,7 @@ class Words:
         self.items = [PersonalWord(word, meaning) for word, meaning in pairs]
         self.reads = 0
 
-    def words(self, customer_id: str, user_id: str) -> list[PersonalWord]:
+    def words(self, customer_id: str, user_id: str, *, document_id: str | None = None) -> list[PersonalWord]:
         self.reads += 1
         return self.items
 
