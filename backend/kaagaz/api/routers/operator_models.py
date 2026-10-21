@@ -555,7 +555,7 @@ def get_org_model_rates(customer_id: uuid.UUID, operator: OperatorSession, db: O
     if not rows:
         raise ApiError(404, "not_found")
     return {
-        "organisation_rpm": int(rows[0]["org_rpm"]),
+        "organisation_rpm": rows[0]["org_rpm"],
         "users": [
             {"id": str(row["user_id"]), "email": row["email"], "rpm": row["user_rpm"]}
             for row in rows

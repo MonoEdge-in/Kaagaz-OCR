@@ -262,16 +262,12 @@ function OrgRow(props: {
   onAdmins(): void;
   onModels(): void;
   onModelRates(): void;
-  onChange(change: OrgChange): void;
-  onAutofile(): void;
-}) {
-  const { org, now, onAdmins, onModels, onModelRates, onChange, onAutofile } = props;
   onSwitches(): void;
   onTimeout(): void;
   onChange(change: OrgChange): void;
   onAutofile(): void;
 }) {
-  const { org, now, onAdmins, onModels, onSwitches, onTimeout, onChange, onAutofile } = props;
+  const { org, now, onAdmins, onModels, onModelRates, onSwitches, onTimeout, onChange, onAutofile } = props;
   const status = orgStatus(org);
   const countdown = org.status === "deleting" ? deleteCountdown(org.delete_after, now) : null;
   const size = formatBytes(org.storage_bytes);

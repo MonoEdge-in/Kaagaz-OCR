@@ -738,8 +738,9 @@ class ModelGate:
 
     def take_slot(self, deadline: float, model: str) -> float:
         """When this request may start under the limiter; the slot is booked only when it
-        starts before ``deadline`` (``ModelUnavailable("rate_limited")`` if not, and
-        ``model``'s probe, if this was it, is released)."""
+        starts before ``deadline``. Production waits use the shared database scheduler; if
+        admission cannot happen by the deadline, ``ModelUnavailable("rate_limited")`` is
+        raised and this model's half-open probe is released."""
         if self.database is not None:
             customer_id, user_id = usage.current_rate_scope()
             request_id = str(uuid.uuid4())
@@ -767,8 +768,6 @@ class ModelGate:
                     raise ModelUnavailable("rate_limited")
                 self.sleep(wait)
                 waited += wait
-        starts before ``deadline`` (``ModelUnavailable("timeout")`` if not: the caller's time
-        ran out, the model is not refusing; and ``model``'s probe, if this was it, is released)."""
         with self._lock:
             start = max(self.clock(), self._next_start)
             if start >= deadline:

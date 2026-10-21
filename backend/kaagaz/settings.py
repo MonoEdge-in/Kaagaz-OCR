@@ -219,7 +219,7 @@ class Settings:
     # pages of a document are read at a time and RapidOCR work runs on cpu_workers threads
     # (G8). At most max_check_crops values of a document are read again by the CPU checker
     # (V1). Production RPM admission is shared by API and worker processes in PostgreSQL
-    # (migration 0027); model_rpm is its 1,200 RPM ceiling and the isolated-tool fallback.
+    # (migration 0043); model_rpm is its 1,200 RPM ceiling and the isolated-tool fallback.
     # Pages are read locally once the reader has been down for
     # reader_outage_fallback_minutes (Q7).
     # Fast scan (council 16 Oct 2026): a Dynamic document of at most careful_early_max_pages
