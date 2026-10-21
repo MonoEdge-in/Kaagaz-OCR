@@ -1,5 +1,5 @@
 """Auto-filing (feature 28, council 15 Oct 2026): a new upload nobody put in a folder
-goes into the folder for its type once it is read, like Invoices or Bank statements.
+goes into its mapped department, then the folder for its type, once it is read.
 
 Why here: the filing rules (R1 to R18 of the council's plan) next to their SQL. Every
 function takes a connection from ``Database.customer(customer_id)`` and also filters on
@@ -14,11 +14,11 @@ always wins, and nothing is moved twice.
 ``file_document`` runs after ``mark_ready``, in its own transaction
 (``PgDocuments.file_document``). It takes the tree lock, then the family lock: the order
 of folder create, move and delete, so it queues behind them instead of deadlocking. Under
-the locks the folder is the one holding the type's key wherever it now is, else a
-top-level folder of the same name (any letter case) with no key, which is adopted, else a
-new top-level folder owned by the uploader. Nothing is inserted to be caught: the unique
-index folders_autofile_key is only the backstop. No model is called: the type is the
-document card's (``documents.doc_type``).
+the locks it reuses a matching department or creates the mapped one, then reuses the type
+folder wherever it now is, adopts an unkeyed same-name child, or creates it under the
+department. Nothing is inserted to be caught: the unique index folders_autofile_key is only
+the backstop. No model is called: department and type come from the document card's
+``documents.doc_type``.
 
 Party folders (backlog 28b, final polish 16 Oct 2026): a verified invoice goes one level
 deeper, into a folder for the other party inside the type folder ("Invoices / Mehta
@@ -36,15 +36,18 @@ own a new folder, the type folder is used. Undo still moves the family to the to
 ``undo`` moves a filed family back to the top level, or to its department when it was filed
 inside one; the folder stays.
 
-The department template (File management F3, 0041): a file uploaded into a department (a
-top-level folder of kind department, F2) is filed inside it: Category (the type folder,
+The department template (File management F3, 0041): a file is routed to a department from
+its recognized type (finance documents to Accounts and HR, land records and contracts to
+Land & Legal, forms and registers to Operations, letters to Correspondence). A mapped
+department is created when absent. An upload already placed in a department keeps that
+choice. The file is filed inside it: Category (the type folder,
 key ``type:<type>:<department id>``), then Property for land records and deeds with a
 survey number (``property:<village>:<number>``, "Survey 44, Wakad"; the village is a key
 fact whose field names a village, in Latin letters, else "Survey 44"; a deed with no village
 joins the one property folder of its number when there is just one), Party for verified
 invoices (``party:<GSTIN>``, as above) or Year (``year:<yyyy>:<category id>``). A land record
-with no survey number is filed by year. Folders Kaagaz makes carry the matching kind. A
-file with no department is filed as before.
+with no survey number is filed by year. Folders Kaagaz makes carry the matching kind. An
+unrecognized type remains unfiled; it never creates a guessed department.
 """
 
 import re
@@ -76,6 +79,24 @@ FOLDERS = {
     "letter": "Letters",
 }
 
+# A document's recognized type is enough to choose these departments without another model call.
+DEPARTMENTS = {
+    "invoice": "Accounts and HR",
+    "bank_statement": "Accounts and HR",
+    "receipt": "Accounts and HR",
+    "land_record": "Land & Legal",
+    "contract": "Land & Legal",
+    "register": "Operations",
+    "form": "Operations",
+    "letter": "Correspondence",
+}
+DEPARTMENT_ALIASES = {
+    "Accounts and HR": ("Accounts and HR", "Accounts", "Finance", "Accounts and Finance"),
+    "Land & Legal": ("Land & Legal", "Land and Legal", "Legal", "Land"),
+    "Operations": ("Operations", "Administration", "Admin"),
+    "Correspondence": ("Correspondence", "Communications"),
+}
+
 # The family's state is on its first version, r.
 _PRE_CHECK = (
     "SELECT r.autofile FROM documents d"
@@ -96,13 +117,17 @@ _SET_STATE = "UPDATE documents SET autofile = :state WHERE customer_id = :c AND 
 _BY_KEY = "SELECT id FROM folders WHERE customer_id = :c AND autofile_key = :k"
 # At most one: the unique index folders_sibling_name.
 _BY_NAME = (
-    "SELECT id, autofile_key FROM folders"
+    "SELECT id FROM folders"
     " WHERE customer_id = :c AND parent_id IS NULL AND lower(name) = lower(:name)"
 )
 _ADOPT = "UPDATE folders SET autofile_key = :k WHERE customer_id = :c AND id = :f"
 _CREATE = (
     "INSERT INTO folders (customer_id, parent_id, name, created_by, autofile_key, kind)"
     " VALUES (:c, :p, :name, :u, :k, :kind) RETURNING id"
+)
+_DEPARTMENTS = (
+    "SELECT id, name FROM folders"
+    " WHERE customer_id = :c AND parent_id IS NULL AND kind = 'department' ORDER BY lower(name), id"
 )
 # File management F3: the property folders of one survey number, whatever their village (at
 # most 2 read: one is used only when it is the only one).
@@ -158,7 +183,7 @@ _CHILD_NAMED = (
 
 def file_document(conn: Connection, customer_id: str, document_id: str) -> str | None:
     """File the family of this just-read document by its type (R1 to R18). Returns the
-    code of what was decided, for the log (filed, other, clash, no_owner, trash, off,
+    code of what was decided, for the log (filed, other, no_department, trash, off,
     inactive, not_current, no_type), or None when there was nothing to do. The audit rows
     (no actor: Kaagaz did it) commit with the change. A few indexed statements:
     O(v log D + log F) for the family's v versions and the customer's F folders."""
@@ -187,15 +212,16 @@ def file_document(conn: Connection, customer_id: str, document_id: str) -> str |
     if name is None:
         _set(conn, customer_id, family, SKIPPED)
         return "other"
-    if state["folder_kind"] == "department":
-        folder = _in_department(conn, customer_id, document_id, str(state["folder_id"]), state)
+    department = (
+        str(state["folder_id"])
+        if state["folder_kind"] == "department"
+        else _department(conn, customer_id, state["doc_type"], state["uploaded_by"])
+    )
+    if department is not None:
+        folder = _in_department(conn, customer_id, document_id, department, state)
     else:
-        folder = _folder(conn, customer_id, f"type:{state['doc_type']}", name, state["uploaded_by"])
-        if folder in ("clash", "no_owner"):
-            _set(conn, customer_id, family, SKIPPED)
-            return folder
-        if state["doc_type"] == "invoice":
-            folder = _party_folder(conn, customer_id, document_id, folder, state["uploaded_by"])
+        _set(conn, customer_id, family, SKIPPED)
+        return "no_department"
     conn.execute(text(_FILE_FAMILY), {"c": customer_id, "f": family, "folder": folder, "state": FILED})
     audit.record(
         conn,
@@ -218,28 +244,27 @@ def _filing_on(conn: Connection, customer_id: str, state: RowMapping) -> bool:
     return ai_settings.task_on(conn, customer_id, uploader, "autofile", granted, bool(state["autofile_on"]))
 
 
-def _folder(conn: Connection, customer_id: str, key: str, name: str, owner: object) -> str:
-    """The folder for this type (R9, R10, R12, R13): its id, or ``clash`` (a top-level
-    folder of that name already files another type) or ``no_owner`` (none to use, and
-    no uploader to own a new one)."""
-    params = {"c": customer_id, "k": key, "name": name}
-    keyed = conn.execute(text(_BY_KEY), params).scalar()
-    if keyed is not None:
-        return str(keyed)
-    same = conn.execute(text(_BY_NAME), params).first()
-    if same is not None:
-        if same[1] is not None:
-            return "clash"
-        conn.execute(text(_ADOPT), {**params, "f": same[0]})
-        return str(same[0])
-    if owner is None:
-        return "no_owner"
-    return _create(conn, customer_id, None, name, owner, key, "category")
-
-
 # --- the department template (File management F3) ---
 _SURVEY = re.compile(r"[0-9]+(?:/[0-9]+)*")
 VILLAGE_MAX = 40
+
+
+def _department(conn: Connection, customer_id: str, doc_type: str, owner: object) -> str | None:
+    """Find or create the department mapped to this recognized type; the caller holds the
+    tree lock. Unknown types and missing owners never produce guessed departments."""
+    name = DEPARTMENTS.get(doc_type)
+    if name is None:
+        return None
+    aliases = {alias.casefold() for alias in DEPARTMENT_ALIASES[name]}
+    rows = conn.execute(text(_DEPARTMENTS), {"c": customer_id}).all()
+    matching = next((row for row in rows if row[1].casefold() in aliases), None)
+    if matching is not None:
+        return str(matching[0])
+    if owner is None:
+        return None
+    if conn.execute(text(_BY_NAME), {"c": customer_id, "name": name}).first() is not None:
+        return None
+    return _create(conn, customer_id, None, name, owner, None, "department")
 
 
 def survey_digits(value: str) -> str | None:

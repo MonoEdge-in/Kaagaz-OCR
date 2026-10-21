@@ -223,12 +223,38 @@ def test_f3_a_land_record_with_no_survey_number_and_others_file_by_year(db: Data
     assert kinds["Land records"] == kinds["Letters"] == "category"
 
 
-def test_f3_a_file_with_no_department_is_filed_as_before(db: Database) -> None:
+def test_f3_a_file_without_a_department_gets_one_and_is_filed_inside_it(db: Database) -> None:
     customer, admin = organisation(db)
     document = upload(db, customer, admin)
     _read(db, customer, document, "land_record", _land("44"))
+    name, kind, key, parent, department = _place(db, customer, document)
+    assert (name, kind, parent, department) == (
+        "Survey 44, Wakad",
+        "property",
+        "Land records",
+        "Land & Legal",
+    )
+    assert key == "property:vkd:44"
+    with db.customer(customer) as conn:
+        assert conn.execute(
+            text("SELECT kind FROM folders WHERE customer_id = :c AND name = 'Land & Legal'"),
+            {"c": customer},
+        ).scalar_one() == "department"
+
+
+def test_f3_auto_filing_reuses_an_existing_finance_department(db: Database) -> None:
+    customer, admin = organisation(db)
+    department = _department(db, customer, admin, "Finance")
+    document = upload(db, customer, admin)
+    _read(db, customer, document, "invoice", {})
     name, kind, key, parent, _ = _place(db, customer, document)
-    assert (name, kind, key, parent) == ("Land records", "category", "type:land_record", None)
+    assert (name, kind, parent) == ("Invoices", "category", "Finance")
+    assert key == f"type:invoice:{department}"
+    with db.customer(customer) as conn:
+        assert conn.execute(
+            text("SELECT count(*) FROM folders WHERE customer_id = :c AND kind = 'department'"),
+            {"c": customer},
+        ).scalar_one() == 1
 
 
 def test_f2_a_department_form_field_must_be_a_department(db: Database) -> None:
