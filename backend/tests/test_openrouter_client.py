@@ -14,7 +14,7 @@ import time
 import urllib.request
 from collections.abc import Iterator
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -38,6 +38,7 @@ from kaagaz.ai.openrouter import (
     page_request,
     process_gate,
 )
+from kaagaz.db.engine import Database
 from kaagaz.settings import NO_THINKING, Settings
 from kaagaz.worker_main import worker_model
 from tests import openrouter_fake
@@ -699,7 +700,7 @@ def test_shared_database_limiter_failure_releases_its_probe() -> None:
             raise RuntimeError("database unavailable")
 
     database = BrokenDatabase()
-    gate = ModelGate(make_settings(), database=database)
+    gate = ModelGate(make_settings(), database=cast(Database, database))
     gate._breakers["m"] = openrouter._Breaker(state=openrouter._HALF_OPEN, probing=True)
 
     with pytest.raises(ModelUnavailable) as caught:
