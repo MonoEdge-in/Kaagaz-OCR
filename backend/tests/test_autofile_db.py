@@ -468,7 +468,9 @@ def test_race_filing_waits_for_a_folder_move_and_a_folder_delete_without_a_deadl
             wait_until_blocked(db, application_name=session)
         assert third.result(timeout=10) == "filed"
     assert {(f[1], f[2]) for f in folders(db, customer)} == {
-        ("Accounts and HR", None), ("Archive", None), ("Invoices", "Accounts and HR")
+        ("Accounts and HR", None),
+        ("Archive", None),
+        ("Invoices", "Accounts and HR"),
     }
 
 
