@@ -236,10 +236,13 @@ def test_f3_a_file_without_a_department_gets_one_and_is_filed_inside_it(db: Data
     )
     assert key == "property:vkd:44"
     with db.customer(customer) as conn:
-        assert conn.execute(
-            text("SELECT kind FROM folders WHERE customer_id = :c AND name = 'Land & Legal'"),
-            {"c": customer},
-        ).scalar_one() == "department"
+        assert (
+            conn.execute(
+                text("SELECT kind FROM folders WHERE customer_id = :c AND name = 'Land & Legal'"),
+                {"c": customer},
+            ).scalar_one()
+            == "department"
+        )
 
 
 def test_f3_auto_filing_reuses_an_existing_finance_department(db: Database) -> None:
@@ -251,10 +254,13 @@ def test_f3_auto_filing_reuses_an_existing_finance_department(db: Database) -> N
     assert (name, kind, parent) == ("Invoices", "category", "Finance")
     assert key == f"type:invoice:{department}"
     with db.customer(customer) as conn:
-        assert conn.execute(
-            text("SELECT count(*) FROM folders WHERE customer_id = :c AND kind = 'department'"),
-            {"c": customer},
-        ).scalar_one() == 1
+        assert (
+            conn.execute(
+                text("SELECT count(*) FROM folders WHERE customer_id = :c AND kind = 'department'"),
+                {"c": customer},
+            ).scalar_one()
+            == 1
+        )
 
 
 def test_f2_a_department_form_field_must_be_a_department(db: Database) -> None:

@@ -144,9 +144,7 @@ def test_r2_r9_r13_a_new_upload_goes_into_a_new_invoices_folder_its_uploader_own
     by_name = {row[1]: row for row in folders(db, customer)}
     department, invoices = by_name["Accounts and HR"], by_name["Invoices"]
     assert (department[2], department[3], department[4]) == (None, None, admin)
-    assert (invoices[2], invoices[3], invoices[4]) == (
-        department[0], f"type:invoice:{department[0]}", admin
-    )
+    assert (invoices[2], invoices[3], invoices[4]) == (department[0], f"type:invoice:{department[0]}", admin)
     assert view(db, customer, document) == "filed"
     assert audit(db, customer) == [  # no actor: Kaagaz did it; ids only
         ("folder.create", None, {"parent_id": None, "auto": True}),
