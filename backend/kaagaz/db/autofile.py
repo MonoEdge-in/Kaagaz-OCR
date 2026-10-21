@@ -368,7 +368,8 @@ def _child(
 
 
 def _create(
-    conn: Connection, customer_id: str, parent: str | None, name: str, owner: object, key: str, kind: str
+    conn: Connection, customer_id: str, parent: str | None, name: str, owner: object,
+    key: str | None, kind: str
 ) -> str:
     """A new folder Kaagaz made, with its key and kind, audited (no actor)."""
     params = {"c": customer_id, "p": parent, "name": name, "u": owner, "k": key, "kind": kind}
