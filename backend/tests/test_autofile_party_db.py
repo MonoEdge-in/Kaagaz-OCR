@@ -11,7 +11,7 @@ from sqlalchemy import text
 
 from kaagaz.db import autofile
 from kaagaz.db.engine import Database
-from kaagaz.db.folders import move_folder, rename_folder
+from kaagaz.db.folders import create_folder, move_folder, rename_folder
 from kaagaz.db.trash import lock_live_family
 from tests.db_support import insert_document, insert_folder
 from tests.test_autofile_db import audit, folders, organisation, read, state, upload
@@ -76,10 +76,11 @@ def test_a_verified_bill_goes_into_a_folder_for_its_party_inside_invoices(db: Da
     assert state(db, customer, document)[0] == "filed"
     assert path(db, customer, document) == ("Invoices", "Mehta Textiles")
     by_name = {f[1]: f for f in folders(db, customer)}
-    invoices, mehta = by_name["Invoices"], by_name["Mehta Textiles"]
+    department, invoices, mehta = by_name["Accounts and HR"], by_name["Invoices"], by_name["Mehta Textiles"]
     assert (mehta[2], mehta[3], mehta[4]) == (invoices[0], f"party:{MEHTA}", admin)
     assert audit(db, customer) == [
         ("folder.create", None, {"parent_id": None, "auto": True}),
+        ("folder.create", None, {"parent_id": department[0], "auto": True}),
         ("folder.create", None, {"parent_id": invoices[0], "auto": True}),
         ("document.autofile", None, {"folder_id": mehta[0]}),
     ]
@@ -95,7 +96,7 @@ def test_one_party_is_one_folder_whatever_name_or_role_it_was_read_with(db: Data
     read(db, customer, sold)
 
     assert {path(db, customer, d) for d in (first, renamed, sold)} == {("Invoices", "Mehta Textiles")}
-    assert sorted(f[1] for f in folders(db, customer)) == ["Invoices", "Mehta Textiles"]
+    assert sorted(f[1] for f in folders(db, customer)) == ["Accounts and HR", "Invoices", "Mehta Textiles"]
 
 
 def test_a_folder_named_after_the_organisation_itself_is_never_made(db: Database) -> None:
@@ -109,7 +110,7 @@ def test_a_folder_named_after_the_organisation_itself_is_never_made(db: Database
     invoice(db, customer, both, ("Our Shop", OWN), ("Our Shop", OWN))
     read(db, customer, both)
     assert path(db, customer, both) == (None, "Invoices")
-    assert [f[1] for f in folders(db, customer)] == ["Invoices"]
+    assert [f[1] for f in folders(db, customer)] == ["Accounts and HR", "Invoices"]
 
 
 def test_a_bill_that_needs_review_stays_in_invoices(db: Database) -> None:
@@ -123,7 +124,10 @@ def test_a_persons_folder_of_that_name_is_never_taken_the_gstin_is_added(db: Dat
     customer, admin = organisation(db)
     history(db, customer)
     with db.customer(customer) as conn:
-        invoices = insert_folder(conn, customer, admin, "Invoices")
+        department = create_folder(
+            conn, customer, name="Finance", parent_id=None, created_by=admin, kind="department"
+        )
+        invoices = insert_folder(conn, customer, admin, "Invoices", parent_id=department.id)
         mine = insert_folder(conn, customer, admin, "mehta textiles", invoices)
     document = bill(db, customer, admin, ("Mehta Textiles", MEHTA))
     assert path(db, customer, document) == ("Invoices", f"Mehta Textiles ({MEHTA})")
@@ -152,4 +156,4 @@ def test_a_moved_and_renamed_party_folder_is_still_used_and_undo_goes_to_the_top
         assert lock_live_family(conn, customer, first) is not None
         assert autofile.undo(conn, customer, first) == mehta
     assert state(db, customer, first) == (None, None)
-    assert len(folders(db, customer)) == 2  # the folders stay
+    assert len(folders(db, customer)) == 3  # the folders stay
