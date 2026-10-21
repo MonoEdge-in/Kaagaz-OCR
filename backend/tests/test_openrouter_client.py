@@ -690,6 +690,26 @@ def test_a_call_that_cannot_start_before_its_deadline_is_a_timeout() -> None:
     assert caught.value.code == "timeout"
 
 
+def test_shared_database_limiter_failure_releases_its_probe() -> None:
+    class BrokenDatabase:
+        calls = 0
+
+        def model_rate_slot(self, *_args: Any) -> float:
+            self.calls += 1
+            raise RuntimeError("database unavailable")
+
+    database = BrokenDatabase()
+    gate = ModelGate(make_settings(), database=database)
+    gate._breakers["m"] = openrouter._Breaker(state=openrouter._HALF_OPEN, probing=True)
+
+    with pytest.raises(ModelUnavailable) as caught:
+        gate.take_slot(time.monotonic() + 1, "m")
+
+    assert caught.value.code == "rate_limited"
+    assert database.calls == 2  # one failed reservation and a best-effort ticket cleanup
+    assert not gate._breakers["m"].probing
+
+
 def test_a_trickled_reply_inside_the_deadline_is_read(fake: OpenRouterFake) -> None:
     fake.script("completions", trickled(json_reply(GOOD), 0.2))
     assert _read(_client(fake.url)).value == GOOD

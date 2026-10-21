@@ -114,6 +114,7 @@ limiter (fast scan, council 16 Oct 2026). Checking a reply is O(its size).
 """
 
 import base64
+import contextlib
 import contextvars
 import copy
 import email.utils
@@ -696,6 +697,7 @@ class ModelGate:
             raise ValueError("workers must be at least 1")
         self.clock, self.sleep, self.random, self.wall_clock = clock, sleep, random, wall_clock
         self.database = database
+        self.platform_rpm = settings.model_rpm
         self._lock = threading.Lock()
         # The limiter: calls start at least this many seconds apart.
         self.interval = 60.0 * workers / settings.model_rpm
@@ -745,29 +747,39 @@ class ModelGate:
             customer_id, user_id = usage.current_rate_scope()
             request_id = str(uuid.uuid4())
             waited = 0.0
-            while True:
-                wait = self.database.model_rate_slot(
-                    request_id,
-                    customer_id,
-                    user_id,
-                    max(0.0, deadline - self.clock()),
-                )
-                if wait < 0:
-                    with self._lock:
-                        self._breakers.setdefault(model, _Breaker()).probing = False
-                    raise ModelUnavailable("rate_limited")
-                if wait == 0:
-                    counter = LIMITER_WAIT.get()
-                    if counter is not None:
-                        counter[0] += waited
-                    return self.clock()
-                if self.clock() + wait >= deadline:
-                    self.database.model_rate_slot(request_id, customer_id, user_id, 0.0)
-                    with self._lock:
-                        self._breakers.setdefault(model, _Breaker()).probing = False
-                    raise ModelUnavailable("rate_limited")
-                self.sleep(wait)
-                waited += wait
+            try:
+                while True:
+                    wait = self.database.model_rate_slot(
+                        request_id,
+                        customer_id,
+                        user_id,
+                        max(0.0, deadline - self.clock()),
+                        self.platform_rpm,
+                    )
+                    if wait < 0:
+                        raise ModelUnavailable("rate_limited")
+                    if wait == 0:
+                        counter = LIMITER_WAIT.get()
+                        if counter is not None:
+                            counter[0] += waited
+                        return self.clock()
+                    if self.clock() + wait >= deadline:
+                        self.database.model_rate_slot(
+                            request_id, customer_id, user_id, 0.0, self.platform_rpm
+                        )
+                        raise ModelUnavailable("rate_limited")
+                    # Renew the ticket well inside its lease, even for a long user or
+                    # organisation cooldown.
+                    wait = min(wait, 2.0)
+                    self.sleep(wait)
+                    waited += wait
+            except Exception:  # noqa: BLE001 - release any stranded ticket and fail closed.
+                self.release_probe(model)
+                with contextlib.suppress(Exception):
+                    self.database.model_rate_slot(
+                        request_id, customer_id, user_id, 0.0, self.platform_rpm
+                    )
+                raise ModelUnavailable("rate_limited") from None
         with self._lock:
             start = max(self.clock(), self._next_start)
             if start >= deadline:

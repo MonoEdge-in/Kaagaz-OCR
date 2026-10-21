@@ -774,7 +774,7 @@ def _serve(settings: Settings) -> None:
     model = worker_model(settings, db)
     processor = build_processor(settings=settings, db=db, storage=storage, scanner=scanner, model=model)
     # Ensemble after the scan reads with a scan reader of its own (the same gate and pool).
-    reader = build_ocr_engine(settings) if settings.ocr_engine == GEMINI else None
+    reader = build_ocr_engine(settings, db=db) if settings.ocr_engine == GEMINI else None
     ensemble = EnsembleRuns(db, storage, reader, settings=settings, clock=_utc_now)
 
     stop = threading.Event()

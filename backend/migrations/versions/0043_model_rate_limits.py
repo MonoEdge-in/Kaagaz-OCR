@@ -94,7 +94,7 @@ UPGRADE = [
     "CREATE POLICY customer_only ON model_rate_state USING (customer_id = current_setting('kaagaz.customer_id', true)::uuid)",
     """
     CREATE FUNCTION kaagaz_model_rate_slot(
-        p_request uuid, p_customer uuid, p_user uuid, p_wait_budget double precision
+        p_request uuid, p_customer uuid, p_user uuid, p_wait_budget double precision, p_platform_rpm integer
     ) RETURNS double precision
     LANGUAGE plpgsql SECURITY DEFINER SET search_path = '' AS $$
     DECLARE
@@ -105,8 +105,8 @@ UPGRADE = [
         v_org_rpm integer;
         v_user_rpm integer;
         v_next_request uuid;
-        v_next_customer uuid;
-        v_next_user uuid;
+        v_eligible_at timestamptz;
+        v_delay double precision;
     BEGIN
         IF p_request IS NULL OR (p_customer IS NOT NULL AND (
             current_setting('kaagaz.customer_id', true) IS DISTINCT FROM p_customer::text
@@ -123,7 +123,7 @@ UPGRADE = [
         v_now := clock_timestamp();
         DELETE FROM public.model_rate_waiters WHERE lease_until <= v_now;
         INSERT INTO public.model_rate_waiters (request_id, customer_id, user_id, lease_until)
-            VALUES (p_request, p_customer, p_user, v_now + interval '2 minutes')
+            VALUES (p_request, p_customer, p_user, v_now + interval '10 seconds')
             ON CONFLICT (request_id) DO UPDATE SET lease_until = EXCLUDED.lease_until;
         INSERT INTO public.model_rate_customer_turns (customer_id) VALUES (p_customer)
             ON CONFLICT (customer_id) DO NOTHING;
@@ -133,19 +133,46 @@ UPGRADE = [
             DELETE FROM public.model_rate_waiters WHERE request_id = p_request;
             RETURN -1;
         END IF;
-        -- Each active customer and user waits for the one least recently served.
-        SELECT w.customer_id INTO v_next_customer
+        IF p_platform_rpm IS NULL OR p_platform_rpm < 1 OR p_platform_rpm > 1200 THEN
+            RAISE EXCEPTION 'invalid platform model rate' USING ERRCODE = 'check_violation';
+        END IF;
+        -- Serve the least recently served eligible organisation, then user. A capped
+        -- organisation or user keeps its place but cannot hold up other eligible work.
+        SELECT w.request_id INTO v_next_request
             FROM public.model_rate_waiters w
-            JOIN public.model_rate_customer_turns t ON t.customer_id IS NOT DISTINCT FROM w.customer_id
-            GROUP BY w.customer_id, t.last_served_at
-            ORDER BY t.last_served_at, min(w.queued_at), w.customer_id NULLS FIRST LIMIT 1;
-        SELECT w.request_id, w.user_id INTO v_next_request, v_next_user
-            FROM public.model_rate_waiters w
+            JOIN public.model_rate_customer_turns ct ON ct.customer_id IS NOT DISTINCT FROM w.customer_id
             JOIN public.model_rate_user_turns t
               ON t.customer_id IS NOT DISTINCT FROM w.customer_id
              AND t.user_id IS NOT DISTINCT FROM w.user_id
-            WHERE w.customer_id IS NOT DISTINCT FROM v_next_customer
-            ORDER BY t.last_served_at, w.queued_at, w.request_id LIMIT 1;
+            WHERE NOT EXISTS (
+                SELECT 1 FROM public.model_rate_overrides o
+                JOIN public.model_rate_state s ON s.scope = 'organisation' AND s.customer_id = o.customer_id
+                WHERE o.customer_id = w.customer_id AND s.next_at > v_now
+            )
+              AND NOT EXISTS (
+                SELECT 1 FROM public.user_model_rate_overrides o
+                JOIN public.model_rate_state s ON s.scope = 'user'
+                  AND s.customer_id = o.customer_id AND s.user_id = o.user_id
+                WHERE o.customer_id = w.customer_id AND o.user_id = w.user_id AND s.next_at > v_now
+            )
+            ORDER BY ct.last_served_at, t.last_served_at, w.queued_at, w.request_id LIMIT 1;
+        IF v_next_request IS NULL THEN
+            SELECT min(greatest(v_now, coalesce(os.next_at, v_now), coalesce(us.next_at, v_now)))
+                INTO v_eligible_at
+                FROM public.model_rate_waiters w
+                LEFT JOIN public.model_rate_overrides oo ON oo.customer_id = w.customer_id
+                LEFT JOIN public.model_rate_state os ON os.scope = 'organisation' AND os.customer_id = oo.customer_id
+                LEFT JOIN public.user_model_rate_overrides uo
+                  ON uo.customer_id = w.customer_id AND uo.user_id = w.user_id
+                LEFT JOIN public.model_rate_state us
+                  ON us.scope = 'user' AND us.customer_id = uo.customer_id AND us.user_id = uo.user_id;
+            v_delay := greatest(0.05, least(5.0, extract(epoch FROM v_eligible_at - v_now)));
+            IF p_wait_budget IS NOT NULL AND v_delay >= p_wait_budget THEN
+                DELETE FROM public.model_rate_waiters WHERE request_id = p_request;
+                RETURN -1;
+            END IF;
+            RETURN v_delay;
+        END IF;
         IF v_next_request IS DISTINCT FROM p_request THEN
             IF p_wait_budget IS NOT NULL AND p_wait_budget <= 0.05 THEN
                 DELETE FROM public.model_rate_waiters WHERE request_id = p_request;
@@ -184,7 +211,7 @@ UPGRADE = [
         END IF;
 
         UPDATE public.model_rate_scheduler
-            SET next_at = v_start + interval '50 milliseconds'
+            SET next_at = v_start + make_interval(secs => 60.0 / p_platform_rpm)
             WHERE id;
         DELETE FROM public.model_rate_waiters WHERE request_id = p_request;
         UPDATE public.model_rate_customer_turns SET last_served_at = v_now
@@ -200,7 +227,7 @@ UPGRADE = [
         IF v_user_rpm IS NOT NULL THEN
             INSERT INTO public.model_rate_state (scope, customer_id, user_id, next_at)
                 VALUES ('user', p_customer, p_user,
-                    v_start + make_interval(secs => 60.0 / least(coalesce(v_org_rpm, 1200), v_user_rpm)))
+                    v_start + make_interval(secs => 60.0 / least(p_platform_rpm, coalesce(v_org_rpm, p_platform_rpm), v_user_rpm)))
                 ON CONFLICT (customer_id, user_id) WHERE scope = 'user'
                 DO UPDATE SET next_at = EXCLUDED.next_at;
         END IF;
@@ -208,8 +235,8 @@ UPGRADE = [
     END
     $$
     """,
-    "REVOKE ALL ON FUNCTION kaagaz_model_rate_slot(uuid, uuid, uuid, double precision) FROM PUBLIC",
-    f"GRANT EXECUTE ON FUNCTION kaagaz_model_rate_slot(uuid, uuid, uuid, double precision) TO {APP_ROLE}",
+    "REVOKE ALL ON FUNCTION kaagaz_model_rate_slot(uuid, uuid, uuid, double precision, integer) FROM PUBLIC",
+    f"GRANT EXECUTE ON FUNCTION kaagaz_model_rate_slot(uuid, uuid, uuid, double precision, integer) TO {APP_ROLE}",
     """
     CREATE FUNCTION kaagaz_op_model_rates(p_operator uuid, p_customer uuid)
     RETURNS TABLE (org_rpm integer, user_id uuid, email text, user_rpm integer)
@@ -308,7 +335,7 @@ UPGRADE = [
     "COMMENT ON POLICY customer_only ON model_rate_overrides IS 'An organisation can see its own saved RPM override only.'",
     "COMMENT ON POLICY customer_only ON user_model_rate_overrides IS 'An organisation can see its own user RPM overrides only.'",
     "COMMENT ON POLICY customer_only ON model_rate_state IS 'An organisation can see only its own RPM scheduling state.'",
-    "COMMENT ON FUNCTION kaagaz_model_rate_slot(uuid, uuid, uuid, double precision) IS 'Fairly queues and admits one platform, organisation and user model API request.'",
+    "COMMENT ON FUNCTION kaagaz_model_rate_slot(uuid, uuid, uuid, double precision, integer) IS 'Fairly queues and admits one platform, organisation and user model API request.'",
     "COMMENT ON FUNCTION kaagaz_op_model_rates(uuid, uuid) IS 'Operator: read one organisation and its users model RPM overrides.'",
     "COMMENT ON FUNCTION kaagaz_op_set_model_rate(uuid, uuid, uuid, integer, bigint) IS 'Operator, with a fresh code: set or clear one organisation or user RPM override and audit it.'",
 ]
@@ -316,7 +343,7 @@ UPGRADE = [
 DOWNGRADE = [
     "DROP FUNCTION IF EXISTS kaagaz_op_set_model_rate(uuid, uuid, uuid, integer, bigint)",
     "DROP FUNCTION IF EXISTS kaagaz_op_model_rates(uuid, uuid)",
-    "DROP FUNCTION IF EXISTS kaagaz_model_rate_slot(uuid, uuid, uuid, double precision)",
+    "DROP FUNCTION IF EXISTS kaagaz_model_rate_slot(uuid, uuid, uuid, double precision, integer)",
     "DROP TABLE IF EXISTS model_rate_user_turns, model_rate_customer_turns, model_rate_waiters, model_rate_state, user_model_rate_overrides, model_rate_overrides, model_rate_scheduler",
 ]
 

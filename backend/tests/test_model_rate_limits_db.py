@@ -15,11 +15,13 @@ pytestmark = pytest.mark.db
 _PROCESS_DB: Database | None = None
 
 
-def _admit(db: Database, customer: str | None = None, user: str | None = None) -> None:
+def _admit(
+    db: Database, customer: str | None = None, user: str | None = None, platform_rpm: int = 1200
+) -> None:
     deadline = time.monotonic() + 10
     request_id = str(uuid.uuid4())
     while True:
-        wait = db.model_rate_slot(request_id, customer, user, deadline - time.monotonic())
+        wait = db.model_rate_slot(request_id, customer, user, deadline - time.monotonic(), platform_rpm)
         if wait < 0:
             raise AssertionError("rate admission exceeded its deadline")
         if wait == 0:
@@ -69,6 +71,52 @@ def test_a_busy_organisation_does_not_block_another_from_progress(db: Database) 
 
     assert time.monotonic() - started < 1
     assert busy_admissions
+
+
+def test_an_organisation_cap_does_not_block_other_organisations(db: Database) -> None:
+    capped_org, capped_user = new_customer(db, name="Capped RPM organisation")
+    open_org, open_user = new_customer(db, name="Open RPM organisation")
+    with db.engine.begin() as conn:
+        conn.execute(
+            text("INSERT INTO model_rate_overrides (customer_id, rpm) VALUES (:c, 1)"),
+            {"c": capped_org},
+        )
+
+    _admit(db, capped_org, capped_user)
+    started = time.monotonic()
+    _admit(db, open_org, open_user)
+    assert time.monotonic() - started < 1
+
+
+def test_a_user_cap_does_not_block_another_user_in_the_same_organisation(db: Database) -> None:
+    customer, capped_user = new_customer(db, name="Capped RPM user")
+    with db.customer(customer) as conn:
+        open_user = conn.execute(
+            text(
+                "INSERT INTO users (customer_id, email, display_name, role, password_hash) "
+                "VALUES (:c, :email, 'Open', 'member', 'x') RETURNING id"
+            ),
+            {"c": customer, "email": f"rpm-open-{uuid.uuid4().hex}@example.test"},
+        ).scalar_one()
+    with db.engine.begin() as conn:
+        conn.execute(
+            text("INSERT INTO user_model_rate_overrides (customer_id, user_id, rpm) VALUES (:c, :u, 1)"),
+            {"c": customer, "u": capped_user},
+        )
+
+    _admit(db, customer, capped_user)
+    started = time.monotonic()
+    _admit(db, customer, str(open_user))
+    assert time.monotonic() - started < 1
+
+
+def test_platform_rpm_controls_shared_spacing(db: Database) -> None:
+    _admit(db, platform_rpm=60)
+    with db.engine.begin() as conn:
+        remaining = conn.execute(
+            text("SELECT extract(epoch FROM next_at - clock_timestamp()) FROM model_rate_scheduler WHERE id")
+        ).scalar_one()
+    assert 0.95 <= remaining <= 1.0
 
 
 def test_dynamic_rate_change_is_used_by_the_next_reservation(db: Database) -> None:
