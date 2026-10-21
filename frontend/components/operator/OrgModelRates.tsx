@@ -7,9 +7,8 @@ import { ActionDialog } from "@/components/documents/ActionDialog";
 import { ApiError, getOrgModelRates, putOrgModelRate, putUserModelRate } from "@/lib/api";
 import type { OrgModelRates, Organisation } from "@/lib/types";
 import { canCloseDialog, operatorErrorMessage } from "./logic";
+import { orgAiFocusId } from "./OrgAiSettings";
 import styles from "./Operator.module.css";
-
-export const orgModelRateFocusId = (id: string) => `org-model-rate-${id}`;
 
 export function OrgModelRates({ org, onClose, onSaved }: { org: Organisation; onClose(): void; onSaved(message: string): void }) {
   const [rates, setRates] = useState<OrgModelRates | null>(null);
@@ -59,7 +58,7 @@ export function OrgModelRates({ org, onClose, onSaved }: { org: Organisation; on
   }
 
   return (
-    <ActionDialog title={`OpenRouter request limits · ${org.name}`} onClose={onClose} canClose={(way) => canCloseDialog({ busy }, way)} onClosed={() => document.getElementById(orgModelRateFocusId(org.id))?.focus()}>
+    <ActionDialog title={`OpenRouter request limits · ${org.name}`} onClose={onClose} canClose={(way) => canCloseDialog({ busy }, way)} onClosed={() => document.getElementById(orgAiFocusId(org.id))?.focus()}>
       {!rates && !problem && <p className="muted" role="status">Loading request limits…</p>}
       {problem && <p className="error-text" role="alert">{problem}</p>}
       {problem && !rates && <button type="button" className="btn" onClick={() => { setProblem(null); setAttempt((value) => value + 1); }}>Try again</button>}

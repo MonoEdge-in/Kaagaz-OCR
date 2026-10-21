@@ -31,7 +31,7 @@ import { CreateDialog } from "./CreateDialog";
 import { ManageMenu } from "./ManageMenu";
 import { OrgFeatureSwitchesDialog } from "./FeatureSwitches";
 import { OrgAiSettings, orgAiFocusId } from "./OrgAiSettings";
-import { OrgModelRates, orgModelRateFocusId } from "./OrgModelRates";
+import { OrgModelRates } from "./OrgModelRates";
 import { OrgSessionTimeoutDialog } from "./SessionTimeout";
 import { afterDone, countText, deleteCountdown, filterOrgs, lastActivityText, operatorErrorMessage, orgStatus, searchSummary, userCounts } from "./logic";
 import { MoreRows, useRowCap } from "@/components/admin/RowCap";
@@ -327,11 +327,6 @@ function OrgRow(props: {
             </button>
           )}
           {org.status !== "deleting" && (
-            <button id={orgModelRateFocusId(org.id)} type="button" className="btn" onClick={onModelRates} aria-label={`OpenRouter request limits of ${org.name}`}>
-              Request limits
-            </button>
-          )}
-          {org.status !== "deleting" && (
             <button
               type="button"
               className="btn"
@@ -367,6 +362,7 @@ function OrgRow(props: {
                   { label: "AI settings", onSelect: onModels },
                   { label: "Feature switches", onSelect: onSwitches },
                   { label: "Session timeout", onSelect: onTimeout },
+                  { label: "Request limits", onSelect: onModelRates },
                   { label: org.autofile_granted ? "Stop auto-filing" : "Allow auto-filing", onSelect: onAutofile },
                 ]),
           ]}
