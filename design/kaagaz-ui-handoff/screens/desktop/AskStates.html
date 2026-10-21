@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Kaagaz · Ask states</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="../../styles/kaagaz.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@100..125,400..700&amp;family=IBM+Plex+Mono:wght@400;500&amp;family=IBM+Plex+Sans+Devanagari:wght@400;500;600&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;display=swap">
+<style>body{margin:0}</style>
+</helmet>
+<div class="k-root" data-theme="{{theme}}" style="min-height: 100vh">
+  <div style="max-width: 1440px; margin: 0 auto; padding: 48px 56px 72px; display: flex; flex-direction: column; gap: 28px">
+    <div style="display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 12px; border-bottom: 2px solid var(--k-ink); padding-bottom: 16px">
+      <div style="display: flex; flex-direction: column; gap: 6px"><span class="k-eyebrow">07 · Ask</span><h1 class="k-h1">Ask · other states</h1></div>
+      <p class="k-muted" style="max-width: 58ch">Working, Not found, the Marathi and Hindi keyboard helper, an answer that leans on an unchecked value, the scope picker, and deleting a conversation.</p>
+    </div>
+
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(600px, 100%), 1fr)); gap: 24px; align-items: start">
+
+      <!-- (a) Working -->
+      <section class="k-card" style="gap: 16px">
+        <div class="k-card-head"><span class="k-eyebrow">A · Working</span><span class="k-spec">steps stream in, answer persists across tabs</span></div>
+        <p class="k-question">Total GST paid to Sharma Traders this year?</p>
+        <div class="k-answer" style="gap: 12px">
+          <span class="k-status k-status--reading" style="align-self: flex-start"><span class="k-dots" aria-hidden="true"><i></i><i></i><i></i></span>Working on it</span>
+          <ol class="k-steps" aria-live="polite" style="list-style: none">
+            <li class="k-step is-done"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg>Searching 120 invoices</li>
+            <li class="k-step is-done"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg>Found 18 from Sharma Traders</li>
+            <li class="k-step is-active"><span class="k-dots" aria-hidden="true" style="width: 14px"><i></i><i></i><i></i></span>Reading 12 pages… <span class="k-mono k-faint">7 of 12</span></li>
+            <li class="k-step"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle></svg>Adding totals</li>
+          </ol>
+          <div style="display: flex; flex-direction: column; gap: 8px">
+            <span class="k-skel" style="height: 12px; width: 92%"></span>
+            <span class="k-skel" style="height: 12px; width: 74%"></span>
+          </div>
+          <div class="k-banner k-banner--quiet" style="padding: 10px 12px"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v5M12 8v.5"></path></svg><div class="k-banner-body"><span class="k-small">You can switch tabs. The answer will be here when you come back.</span></div></div>
+          <div style="display: flex; gap: 8px"><button class="k-btn k-btn--sm" type="button">Stop</button></div>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 6px">
+          <span class="k-small k-muted">The browser tab tells you when it’s done</span>
+          <div style="display: flex; align-items: center; gap: 8px; max-width: 280px; padding: 8px 12px; border: 1px solid var(--k-rule); border-bottom: 0; border-radius: 16px 16px 0 0; background: var(--k-surface)">
+            <span style="width: 12px; height: 15px; background: var(--k-ink); clip-path: polygon(0 0, 70% 0, 100% 22%, 100% 100%, 0 100%)" aria-hidden="true"></span>
+            <span class="k-small" style="font-weight: 600">(1) Answer ready · Kaagaz</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- (b) Not found -->
+      <section class="k-card" style="gap: 16px">
+        <div class="k-card-head"><span class="k-eyebrow">B · Not found</span><span class="k-spec">said plainly, with what couldn’t be read</span></div>
+        <p class="k-question">What was the penalty for late NA conversion on Plot 7?</p>
+        <div class="k-answer">
+          <span class="k-status k-status--notfound" style="align-self: flex-start"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M8 12h8"></path></svg>Not found</span>
+          <p class="k-read">Not found in the readable text. I searched 46 documents in Land &amp; Legal, including NA Permission Plot 7.pdf.</p>
+          <div class="k-banner k-banner--danger" style="padding: 12px 14px">
+            <svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4 2.5 20h19z"></path><path d="M12 10v4M12 17v.5"></path></svg>
+            <div class="k-banner-body" style="gap: 6px">
+              <strong class="k-small">2 pages couldn’t be read, so the answer may be on them:</strong>
+              <a href="DocumentPage.html">Invoice_12.pdf · page 3</a>
+              <a href="DocumentPage.html">Ferfar 2203 Survey 44.pdf · page 2</a>
+            </div>
+          </div>
+          <div class="k-btn-group">
+            <a class="k-btn k-btn--sm" href="Upload.html"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V4M7 9l5-5 5 5M4 15v5h16v-5"></path></svg>Upload sharper scans</a>
+            <a class="k-btn k-btn--sm" href="Search.html">Search names instead</a>
+            <button class="k-btn k-btn--quiet k-btn--sm" type="button">Ask a different way</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- (c) Keyboard helper -->
+      <section class="k-card" style="gap: 14px">
+        <div class="k-card-head"><span class="k-eyebrow">C · मराठी / हिंदी helper</span><span class="k-spec">on-screen letters + English-letter typing</span></div>
+        <div class="k-composer">
+          <label for="kb-in" style="position: absolute; width: 1px; height: 1px; overflow: hidden">Your question</label>
+          <textarea id="kb-in" class="k-deva" rows="1">सर्वे ४४ चे मालक कोण?</textarea>
+          <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center">
+            <button class="k-btn k-btn--sm" type="button" aria-pressed="true" style="border-color: var(--k-accent); background: var(--k-accent-soft); color: var(--k-accent-soft-ink)"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18v12H3zM7 10h.01M11 10h.01M15 10h.01M7 14h10"></path></svg><span class="k-deva">मराठी / हिंदी letters</span></button>
+            <button class="k-btn k-btn--primary k-btn--icon" type="button" aria-label="Ask" style="margin-left: auto"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"></path></svg></button>
+          </div>
+        </div>
+        <div style="border: 1px solid var(--k-rule); border-radius: var(--k-r-4); background: var(--k-surface); padding: 12px; display: flex; flex-direction: column; gap: 10px">
+          <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between">
+            <div class="k-tabs" role="tablist" style="border: 0"><button class="k-tab k-deva" role="tab" type="button" aria-selected="true">मराठी</button><button class="k-tab k-deva" role="tab" type="button" aria-selected="false">हिंदी</button></div>
+            <button class="k-btn k-btn--quiet k-btn--icon k-btn--sm" type="button" aria-label="Close letters"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"></path></svg></button>
+          </div>
+          <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 10px; background: var(--k-sunken); border-radius: var(--k-r-2)">
+            <span class="k-small k-muted">Type in English letters:</span><span class="k-mono">satbara</span><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"></path></svg>
+            <button class="k-chip is-on k-deva" type="button">सातबारा</button><button class="k-chip k-deva" type="button">सात बारा</button><button class="k-chip" type="button">7/12</button>
+          </div>
+          <span class="k-eyebrow">Vowels</span>
+          <div class="k-keys"><button type="button">अ</button><button type="button">आ</button><button type="button">इ</button><button type="button">ई</button><button type="button">उ</button><button type="button">ऊ</button><button type="button">ए</button><button type="button">ऐ</button><button type="button">ओ</button><button type="button">औ</button><button type="button">अं</button><button type="button">ऋ</button></div>
+          <span class="k-eyebrow">Letters</span>
+          <div class="k-keys"><button type="button">क</button><button type="button">ख</button><button type="button">ग</button><button type="button">घ</button><button type="button">च</button><button type="button">छ</button><button type="button">ज</button><button type="button">झ</button><button type="button">ट</button><button type="button">ठ</button><button type="button">ड</button><button type="button">ढ</button>
+          <button type="button">ण</button><button type="button">त</button><button type="button">थ</button><button type="button">द</button><button type="button">ध</button><button type="button">न</button><button type="button">प</button><button type="button">फ</button><button type="button">ब</button><button type="button">भ</button><button type="button">म</button><button type="button">य</button>
+          <button type="button">र</button><button type="button">ल</button><button type="button">व</button><button type="button">श</button><button type="button">ष</button><button type="button">स</button><button type="button">ह</button><button type="button">ळ</button><button type="button">क्ष</button><button type="button">ज्ञ</button><button type="button">श्र</button><button type="button">त्र</button></div>
+          <span class="k-eyebrow">Matras and numbers</span>
+          <div class="k-keys"><button type="button">ा</button><button type="button">ि</button><button type="button">ी</button><button type="button">ु</button><button type="button">ू</button><button type="button">े</button><button type="button">ै</button><button type="button">ो</button><button type="button">ौ</button><button type="button">ं</button><button type="button">्</button><button type="button" aria-label="Backspace"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"></path></svg></button>
+          <button type="button">१</button><button type="button">२</button><button type="button">३</button><button type="button">४</button><button type="button">५</button><button type="button">६</button><button type="button">७</button><button type="button">८</button><button type="button">९</button><button type="button">०</button><button type="button">।</button><button type="button" aria-label="Space" style="font-size: 12px">space</button></div>
+        </div>
+      </section>
+
+      <div style="display: flex; flex-direction: column; gap: 24px">
+        <!-- (d) Needs review -->
+        <section class="k-card" style="gap: 14px">
+          <div class="k-card-head"><span class="k-eyebrow">D · Answer with an unchecked value</span></div>
+          <p class="k-question">Security deposit kitna hai?</p>
+          <div class="k-answer">
+            <span class="k-status k-status--review" style="align-self: flex-start"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .8-1 1.5V14M12 17v.5"></path></svg>Needs review</span>
+            <p class="k-read">The deposit is <strong style="border-bottom: 1.5px dashed var(--k-review)">₹1,50,000</strong> <a class="k-cite" href="#">1</a>.</p>
+            <div class="k-banner k-banner--warning" style="padding: 10px 12px">
+              <svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .8-1 1.5V14M12 17v.5"></path></svg>
+              <div class="k-banner-body" style="gap: 6px"><span class="k-small">Two readers read this differently (<span class="k-mono">₹1,50,000</span> / <span class="k-mono">₹1,30,000</span>). The words on the page say “One Lakh Fifty Thousand”.</span><a class="k-small" href="Review.html" style="font-weight: 600">Check it in Review</a></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- (e) Scope picker -->
+        <section class="k-card" style="gap: 14px">
+          <div class="k-card-head"><span class="k-eyebrow">E · Scope picker, open</span></div>
+          <button class="k-chip is-on is-focus" type="button" aria-expanded="true" style="align-self: flex-start">Ask about: <span class="k-chip-val">Selected documents (3)</span><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></button>
+          <div class="k-menu" style="max-width: 420px">
+            <button class="k-menu-item" type="button"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H6v18h12V7z"></path><path d="M14 3v4h4"></path></svg>All documents <span class="k-small k-muted" style="margin-left: auto">2,560</span></button>
+            <button class="k-menu-item" type="button"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h6l2 2h10v11H3z"></path></svg>A folder…</button>
+            <button class="k-menu-item" type="button" style="background: var(--k-accent-soft); color: var(--k-accent-soft-ink); font-weight: 600"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg>Selected documents (3)</button>
+            <div class="k-divider" style="margin: 6px 0"></div>
+            <div style="padding: 4px 10px; display: flex; flex-direction: column; gap: 2px">
+              <label class="k-check"><input type="checkbox" checked>Rent Agreement Shinde.pdf</label>
+              <label class="k-check"><input type="checkbox" checked>7/12 Survey 44 Wakad.pdf</label>
+              <label class="k-check"><input type="checkbox" checked>Sale Deed Shinde Survey 44.pdf <span class="k-lab k-lab--restricted">Restricted</span></label>
+              <label class="k-check"><input type="checkbox">NA Permission Plot 7.pdf</label>
+            </div>
+            <div style="display: flex; justify-content: flex-end; gap: 6px; padding: 8px 6px 2px"><button class="k-btn k-btn--quiet k-btn--sm" type="button">Clear</button><button class="k-btn k-btn--primary k-btn--sm" type="button">Ask about these 3</button></div>
+          </div>
+        </section>
+
+        <!-- (f) Delete confirm -->
+        <section class="k-card" style="gap: 14px">
+          <div class="k-card-head"><span class="k-eyebrow">F · Delete, confirmed in place</span></div>
+          <div class="k-confirm">
+            <svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true" style="color: var(--k-danger)"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"></path></svg>
+            <span style="flex: 1; min-width: 220px"><strong>Delete this conversation?</strong> Its answers can’t be recovered.</span>
+            <button class="k-btn k-btn--sm" type="button">Cancel</button>
+            <button class="k-btn k-btn--danger k-btn--sm" type="button">Delete</button>
+          </div>
+        </section>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["light","dark"],"default":"light"},"$preview":{"width":1440,"height":1500}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return { theme: this.props.theme ?? 'light' };
+  }
+}
+</script>
+</body>
+</html>

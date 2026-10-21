@@ -2,6 +2,7 @@
 // tab (P1, O1 to O3) and the admin Departments tab, in one place so the wording is easy to
 // change. Pure functions here are unit tested in node (tests/file-management.test.ts).
 
+import type { SortKey } from "@/components/documents/libraryQuery";
 import { formatNumber } from "@/lib/format";
 
 export const FILES_TEXT = {
@@ -29,6 +30,18 @@ export const FILES_TEXT = {
     updatedBy: "Updated by",
   },
   sortBy: (column: string) => `Sort by ${column}`,
+  // The Sort pill above the list (desktop/Documents.html): the same keys as the headers, so the grid sorts too.
+  sortLabel: "Sort by",
+  sortNames: {
+    created_at: "Date uploaded",
+    document_date: "Document date",
+    updated_at: "Last updated",
+    name: "Name",
+    doc_type: "Type",
+    owner: "Owner",
+    sensitivity: "Label",
+    version: "Version",
+  } satisfies Record<SortKey, string>,
   dated: (date: string) => `Dated ${date}`,
   noOwner: "No owner",
   noDate: "No date",

@@ -1,0 +1,57 @@
+/* Menus (design/kaagaz-ui-handoff/styles/kaagaz.css, section 11, .k-menu). */
+
+.menu {
+  background: var(--k-raised);
+  color: var(--k-ink);
+  border: 1px solid var(--k-card-edge);
+  border-radius: var(--k-r-4);
+  box-shadow: var(--k-shadow-2);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  min-width: 230px;
+}
+.items {
+  display: flex;
+  flex-direction: column;
+}
+.item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  padding: 0 12px;
+  border-radius: var(--k-r-3);
+  background: none;
+  border: 0;
+  text-align: left;
+  font: 400 14px var(--k-font-body);
+  color: var(--k-ink);
+  cursor: pointer;
+}
+.item:hover,
+.item:focus-visible {
+  background: var(--k-sunken);
+}
+.item:focus-visible {
+  outline: 2px solid var(--k-focus);
+  outline-offset: -2px;
+}
+.danger,
+.danger:hover {
+  color: var(--k-danger);
+}
+.header {
+  padding: 8px 10px 10px;
+  border-bottom: 1px solid var(--k-rule);
+  margin-bottom: 4px;
+  display: flex;
+  flex-direction: column;
+}
+.row {
+  padding: 6px 10px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}

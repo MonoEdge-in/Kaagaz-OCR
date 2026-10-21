@@ -1,0 +1,136 @@
+/* Buttons: pills, mono caps (design/kaagaz-ui-handoff/styles/kaagaz.css, section 5). */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 0 18px;
+  border-radius: var(--k-r-pill);
+  border: 1px solid var(--k-rule-strong);
+  background: var(--k-surface);
+  color: var(--k-ink);
+  font: 500 12px/1 var(--k-font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  text-decoration: none;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.btn:hover {
+  background: var(--k-sunken);
+  color: var(--k-ink);
+}
+.btn:focus-visible {
+  outline: 2px solid var(--k-focus);
+  outline-offset: 2px;
+}
+
+.primary,
+.primary:hover {
+  background: var(--k-accent);
+  border-color: var(--k-accent);
+  color: var(--k-accent-ink);
+  font-weight: 600;
+}
+.primary:hover {
+  background: var(--k-accent-hover);
+  border-color: var(--k-accent-hover);
+}
+
+.quiet,
+.quiet:hover {
+  border-color: transparent;
+  background: transparent;
+  color: var(--k-accent);
+}
+.quiet:hover {
+  background: var(--k-accent-soft);
+}
+
+.danger,
+.danger:hover {
+  background: var(--k-danger);
+  border-color: var(--k-danger);
+  color: var(--k-danger-ink);
+}
+.danger:hover {
+  filter: brightness(0.9);
+}
+
+.dangerOutline,
+.dangerOutline:hover {
+  color: var(--k-danger);
+  border-color: var(--k-danger);
+  background: var(--k-surface);
+}
+.dangerOutline:hover {
+  background: var(--k-danger-soft);
+}
+
+.btn:disabled,
+.btn:disabled:hover {
+  background: var(--k-sunken);
+  border-color: var(--k-sunken);
+  color: var(--k-ink-faint);
+  cursor: not-allowed;
+  filter: none;
+}
+
+.sm {
+  min-height: 32px;
+  padding: 0 13px;
+  font-size: 11px;
+  gap: 6px;
+}
+.lg {
+  min-height: 48px;
+  padding: 0 24px;
+  font-size: 13px;
+}
+.icon {
+  width: 40px;
+  padding: 0;
+}
+.icon.sm {
+  width: 32px;
+}
+.block {
+  width: 100%;
+}
+
+.loading {
+  cursor: progress;
+}
+.loading::before {
+  content: "";
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  animation: spin 1.2s linear infinite;
+}
+
+.group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+/* A long label wraps on a narrow phone instead of running off the screen. */
+@media (max-width: 479.98px) {
+  .btn {
+    white-space: normal;
+    text-align: center;
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

@@ -521,171 +521,6 @@ export function DocumentView({
 
   return (
     <div className="page page-wide">
-      <header className={styles.header}>
-        {/* DD2: where it is filed, as a path: Documents / Folder / name. */}
-        <nav aria-label="Breadcrumb" className={styles.crumbs}>
-          <ol>
-            <li>
-              <Link href={detail.deleted_at === null ? "/documents" : "/documents?trash=1"}>
-                {detail.deleted_at === null ? "Documents" : "Trash"}
-              </Link>
-            </li>
-            {trail.map((folder) => (
-              <li key={folder.id}>
-                <Link href={libraryHref({ ...ALL_DOCUMENTS, folderId: folder.id })}>{folder.name}</Link>
-              </li>
-            ))}
-            <li aria-current="page" title={detail.display_name}>
-              <span className="mono">{detail.display_name}</span>
-            </li>
-          </ol>
-        </nav>
-        {/* DD2: one row. The title and its status; then Download, Ask (the one primary), the menu. */}
-        <div className={styles.titleRow}>
-          <h1 className={styles.title}>{detail.display_name}</h1>
-          <StatusChip status={detail.status} />
-          {/* File management P1: the label chip and "Version N of M" beside the name. */}
-          {detail.sensitivity && <LabelChip label={detail.sensitivity} />}
-          <span className={styles.meta}>
-            {versionText({ number: detail.version_no, total: Math.max(detail.versions.length, 1) })}
-          </span>
-          <div className={styles.headActions}>
-            {download && (
-              <a className={`btn ${styles.download}`} href={download} download>
-                <Icon name="download" />
-                <span className="narrow-hide">Download original</span>
-              </a>
-            )}
-            {hasScannedText && (
-              <button type="button" className="btn" onClick={openClear}>
-                <Icon name="scan-text" />
-                Read clearly
-              </button>
-            )}
-            {usedInChat(detail) && (
-              <Link className={`btn btn-primary ${styles.ask}`} href={askAboutHref(detail.id)}>
-                <Icon name="chat" />
-                Ask about this document
-              </Link>
-            )}
-            <DocumentMenu
-              buttonRef={menuButton}
-              detail={detail}
-              readAgain={canReprocess(me.user.role, detail)}
-              onReadAgain={() => setReadAgainKey((n) => n + 1)}
-              onChanged={reloadWith}
-            />
-          </div>
-        </div>
-        <div className={styles.status}>
-          {/* D4 / DD2: a ready document is its badge alone; other states keep the server's words. */}
-          {detail.status !== "ready" && <span>{detail.status_message}</span>}
-          {detail.status === "ready" && detail.understanding === true && <span>{UNDERSTANDING_TEXT}</span>}
-          <TimeLeft document={detail} />
-          <span className={styles.meta}>
-            {typeLabel(detail.detected_type)}
-            <span className="mono">{pagesText}</span>
-          </span>
-          {review.status?.summary && <span className={`${styles.meta} tabular`}>{trustText(review.status)}</span>}
-          {trail.length === 0 && <span className={styles.meta}>Not in a folder</span>}
-          <AutofileNote
-            document={detail}
-            name={detail.display_name}
-            filed={FILED_HERE_TEXT}
-            folderHref={null}
-            onUndone={() => setReloads((n) => n + 1)}
-          />
-          {detail.tags.length > 0 && (
-            <div className={styles.placeItem}>
-              <span className={styles.placeLabel} id="document-tags-label">
-                Tags
-              </span>
-              <ul className={libraryStyles.tags} aria-labelledby="document-tags-label">
-                {detail.tags.map((tag) => (
-                  <li key={tag.id} className={libraryStyles.tag}>
-                    {tag.name}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-          {position && (
-            <nav aria-label="Versions" className={styles.placeItem}>
-              <span className={styles.placeLabel}>{VERSION_TEXT.versions}</span>
-              <ol className={styles.versions}>
-                {sortedVersions(detail.versions).map((version) => {
-                  const here = version.id === detail.id;
-                  const words = `Version ${version.version_no}, uploaded ${formatDateTime(version.created_at)}${version.is_current ? ", used in search and chat" : ""}`;
-                  return (
-                    <li key={version.id}>
-                      <Link
-                        href={`/documents/${version.id}`}
-                        className={`${styles.versionLink} mono`}
-                        aria-current={here ? "page" : undefined}
-                        aria-label={words}
-                        title={words}
-                      >
-                        {version.version_no}
-                      </Link>
-                    </li>
-                  );
-                })}
-              </ol>
-            </nav>
-          )}
-          {readAgainKey > 0 && (
-            <ReadAgain
-              key={readAgainKey}
-              documentId={detail.id}
-              fixes={detail.reviewer_fixes}
-              pages={detail.page_count}
-              readModel={detail.read_model}
-              reading={beingRead(detail.status)}
-              onStarted={(reply) => {
-                merge(reply);
-                readingAgain.current = true;
-                poll.later();
-              }}
-              onClosed={() => menuButton.current?.focus()}
-            />
-          )}
-        </div>
-        {note && <p className={styles.note}>{note}</p>}
-        {detail.newer_version && (
-          <p className={styles.note}>
-            <Link href={`/documents/${detail.newer_version.id}`}>
-              {newerVersionText(detail.newer_version)}
-            </Link>
-          </p>
-        )}
-        {detail.deleted_at !== null && (
-          <p className={styles.trashNotice} role="status">
-            <Icon name="trash" />
-            <span>
-              In Trash since {formatDate(detail.deleted_at)}, so it is left out of search and chat.{" "}
-              <Link href="/documents?trash=1">Open Trash</Link> to restore it.
-            </span>
-          </p>
-        )}
-      </header>
-      {/* File management V6, V7: a suggestion that this is a new version of another document. */}
-      <VersionBanner detail={detail} onChanged={reloadWith} />
-      {detail.status !== "rejected" && (
-        <SummaryBar
-          documentId={detail.id}
-          review={review}
-          scanning={detail.status_message}
-          reviewing={reviewing}
-          reviewRef={reviewButton}
-          onReview={() => startReview()}
-          onEnsemble={(scope) => void ensemble.ask(scope)}
-          ensembleBusy={ensemble.busy}
-          ensembleError={ensemble.error}
-          onExport={() => setExporting(true)}
-          download={download}
-          say={setAnnouncement}
-        />
-      )}
       <p className="visually-hidden" aria-live="polite">
         {announcement}
       </p>
@@ -722,6 +557,172 @@ export function DocumentView({
         </section>
         <SplitHandle split={split} onSplit={setSplit} layout={layoutRef} />
         <div className={styles.panels}>
+          {/* desktop/DocumentPage.html: the name, its place and its actions head the pane beside the page. */}
+          <header className={styles.header}>
+            {/* DD2: where it is filed, as a path: Documents / Folder / name. */}
+            <nav aria-label="Breadcrumb" className={styles.crumbs}>
+              <ol>
+                <li>
+                  <Link href={detail.deleted_at === null ? "/documents" : "/documents?trash=1"}>
+                    {detail.deleted_at === null ? "Documents" : "Trash"}
+                  </Link>
+                </li>
+                {trail.map((folder) => (
+                  <li key={folder.id}>
+                    <Link href={libraryHref({ ...ALL_DOCUMENTS, folderId: folder.id })}>{folder.name}</Link>
+                  </li>
+                ))}
+                <li aria-current="page" title={detail.display_name}>
+                  <span className="mono">{detail.display_name}</span>
+                </li>
+              </ol>
+            </nav>
+            {/* DD2: one row. The title and its status; then Download, Ask (the one primary), the menu. */}
+            <div className={styles.titleRow}>
+              <h1 className={styles.title}>{detail.display_name}</h1>
+              <StatusChip status={detail.status} />
+              {/* File management P1: the label chip and "Version N of M" beside the name. */}
+              {detail.sensitivity && <LabelChip label={detail.sensitivity} />}
+              <span className={styles.meta}>
+                {versionText({ number: detail.version_no, total: Math.max(detail.versions.length, 1) })}
+              </span>
+              <div className={styles.headActions}>
+                {download && (
+                  <a className={`btn ${styles.download}`} href={download} download>
+                    <Icon name="download" />
+                    <span className="narrow-hide">Download original</span>
+                  </a>
+                )}
+                {hasScannedText && (
+                  <button type="button" className="btn" onClick={openClear}>
+                    <Icon name="scan-text" />
+                    Read clearly
+                  </button>
+                )}
+                {usedInChat(detail) && (
+                  <Link className={`btn btn-primary ${styles.ask}`} href={askAboutHref(detail.id)}>
+                    <Icon name="chat" />
+                    Ask about this document
+                  </Link>
+                )}
+                <DocumentMenu
+                  buttonRef={menuButton}
+                  detail={detail}
+                  readAgain={canReprocess(me.user.role, detail)}
+                  onReadAgain={() => setReadAgainKey((n) => n + 1)}
+                  onChanged={reloadWith}
+                />
+              </div>
+            </div>
+            <div className={styles.status}>
+              {/* D4 / DD2: a ready document is its badge alone; other states keep the server's words. */}
+              {detail.status !== "ready" && <span>{detail.status_message}</span>}
+              {detail.status === "ready" && detail.understanding === true && <span>{UNDERSTANDING_TEXT}</span>}
+              <TimeLeft document={detail} />
+              <span className={styles.meta}>
+                {typeLabel(detail.detected_type)}
+                <span className="mono">{pagesText}</span>
+              </span>
+              {review.status?.summary && <span className={`${styles.meta} tabular`}>{trustText(review.status)}</span>}
+              {trail.length === 0 && <span className={styles.meta}>Not in a folder</span>}
+              <AutofileNote
+                document={detail}
+                name={detail.display_name}
+                filed={FILED_HERE_TEXT}
+                folderHref={null}
+                onUndone={() => setReloads((n) => n + 1)}
+              />
+              {detail.tags.length > 0 && (
+                <div className={styles.placeItem}>
+                  <span className={styles.placeLabel} id="document-tags-label">
+                    Tags
+                  </span>
+                  <ul className={libraryStyles.tags} aria-labelledby="document-tags-label">
+                    {detail.tags.map((tag) => (
+                      <li key={tag.id} className={libraryStyles.tag}>
+                        {tag.name}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {position && (
+                <nav aria-label="Versions" className={styles.placeItem}>
+                  <span className={styles.placeLabel}>{VERSION_TEXT.versions}</span>
+                  <ol className={styles.versions}>
+                    {sortedVersions(detail.versions).map((version) => {
+                      const here = version.id === detail.id;
+                      const words = `Version ${version.version_no}, uploaded ${formatDateTime(version.created_at)}${version.is_current ? ", used in search and chat" : ""}`;
+                      return (
+                        <li key={version.id}>
+                          <Link
+                            href={`/documents/${version.id}`}
+                            className={`${styles.versionLink} mono`}
+                            aria-current={here ? "page" : undefined}
+                            aria-label={words}
+                            title={words}
+                          >
+                            {version.version_no}
+                          </Link>
+                        </li>
+                      );
+                    })}
+                  </ol>
+                </nav>
+              )}
+              {readAgainKey > 0 && (
+                <ReadAgain
+                  key={readAgainKey}
+                  documentId={detail.id}
+                  fixes={detail.reviewer_fixes}
+                  pages={detail.page_count}
+                  readModel={detail.read_model}
+                  reading={beingRead(detail.status)}
+                  onStarted={(reply) => {
+                    merge(reply);
+                    readingAgain.current = true;
+                    poll.later();
+                  }}
+                  onClosed={() => menuButton.current?.focus()}
+                />
+              )}
+            </div>
+            {note && <p className={styles.note}>{note}</p>}
+            {detail.newer_version && (
+              <p className={styles.note}>
+                <Link href={`/documents/${detail.newer_version.id}`}>
+                  {newerVersionText(detail.newer_version)}
+                </Link>
+              </p>
+            )}
+            {detail.deleted_at !== null && (
+              <p className={styles.trashNotice} role="status">
+                <Icon name="trash" />
+                <span>
+                  In Trash since {formatDate(detail.deleted_at)}, so it is left out of search and chat.{" "}
+                  <Link href="/documents?trash=1">Open Trash</Link> to restore it.
+                </span>
+              </p>
+            )}
+          </header>
+          {/* File management V6, V7: a suggestion that this is a new version of another document. */}
+          <VersionBanner detail={detail} onChanged={reloadWith} />
+          {detail.status !== "rejected" && (
+            <SummaryBar
+              documentId={detail.id}
+              review={review}
+              scanning={detail.status_message}
+              reviewing={reviewing}
+              reviewRef={reviewButton}
+              onReview={() => startReview()}
+              onEnsemble={(scope) => void ensemble.ask(scope)}
+              ensembleBusy={ensemble.busy}
+              ensembleError={ensemble.error}
+              onExport={() => setExporting(true)}
+              download={download}
+              say={setAnnouncement}
+            />
+          )}
           <PanelTabs tabs={tabs} active={tab} onChange={setTab}>
             {(shownTab) =>
               shownTab === "overview" ? (

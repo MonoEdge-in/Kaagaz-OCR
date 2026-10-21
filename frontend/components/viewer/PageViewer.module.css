@@ -58,7 +58,7 @@
   overflow: auto;
   padding: var(--space-3);
   border: 1px solid var(--border);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   background: var(--bg-subdued);
   scrollbar-gutter: stable both-edges;
   overscroll-behavior-x: contain; /* a sideways swipe pans the page, never goes back */
@@ -87,7 +87,7 @@
   position: absolute;
   background: var(--hl-fill);
   border: 2px solid var(--hl-border);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   box-shadow: 0 0 0 2px var(--paper), 0 0 0 4px var(--hl-halo);
   pointer-events: none;
 }
@@ -111,7 +111,7 @@
 .mine {
   position: absolute;
   border: 2px dashed var(--mine-on-paper);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   box-shadow: 0 0 0 1px var(--paper);
   pointer-events: none;
 }
@@ -126,7 +126,7 @@
   display: inline-block;
   min-width: 1.25rem;
   padding: 0 0.25rem;
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   font-size: 0.75rem;
   font-weight: 700;
   line-height: 1.25rem;
@@ -202,7 +202,7 @@
   min-height: var(--h-lg);
   overflow: hidden;
   border: 1px solid var(--border);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   background: var(--bg-subdued);
 }
 
@@ -252,7 +252,7 @@
   max-height: 70dvh;
   overflow: auto;
   border: 1px solid var(--border);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   background: var(--bg-surface);
   overscroll-behavior-x: contain; /* a sideways swipe pans the sheet, never goes back; the wheel runs on (DD1) */
 }
@@ -305,7 +305,7 @@
 .problem {
   position: absolute;
   padding: 0;
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   background: transparent;
   box-shadow: 0 0 0 1px var(--paper);
   cursor: pointer;
@@ -379,7 +379,7 @@
   max-width: 20rem;
   padding: var(--space-2) var(--space-3);
   border: 1px solid var(--border-strong);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   background: var(--bg-surface);
   font-size: var(--fs-sm);
   pointer-events: none;
@@ -411,7 +411,7 @@
   display: inline-block;
   width: 1.5rem;
   height: 1rem;
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
 }
 
 /* After the patterns: a swatch sits on paper, like the marks it explains (the "couldn't read"
@@ -457,7 +457,7 @@
   place-items: center;
   inline-size: 14px;
   block-size: 14px;
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   background: var(--paper);
   font-size: 11px;
   font-weight: 700;

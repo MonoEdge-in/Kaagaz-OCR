@@ -57,6 +57,21 @@ const MODULES = ["app", "components"].flatMap((dir) =>
 // (--control-h, --control-min, --h-sm/md/lg, --badge-h), so every row shares one.
 const PX_HEIGHT = /(?:^|[;\s])(?:min-|max-)?(?:height|block-size):\s*(?:2\d|3\d|4[0-8])px/;
 
+// Changed on purpose (UI rebuild, 20 Oct 2026): the new kit (components/ui/<Name>/ and
+// app/styles/) takes each control's size from the handoff, which sets them per control
+// (Components.html 06 and 07), not from --control-h. A kit height passes only when
+// design/kaagaz-ui-handoff/styles/kaagaz.css uses the same one.
+const PX_HEIGHTS = /(?:^|[;\s])(?:min-|max-)?(?:height|block-size):\s*(\d+)px/g;
+const HANDOFF_HEIGHTS = new Set(
+  Array.from(readFileSync(join(ROOT, "..", "design", "kaagaz-ui-handoff", "styles", "kaagaz.css"), "utf8").matchAll(PX_HEIGHTS), (m) => m[1]),
+);
+// The shell and each screen rebuilt from the handoff's own screen (the dashboard: desktop/Home.html;
+// the sign-in frame: desktop/SignIn.html)
+// follow the same rule.
+const KIT = /^(components\/ui\/[A-Z]\w*\/|app\/styles\/|components\/shell\/|components\/dashboard\/|app\/login\/)/;
+const handoffHeights = (file: string, body: string) =>
+  KIT.test(file) && Array.from(body.matchAll(PX_HEIGHTS)).every((m) => HANDOFF_HEIGHTS.has(m[1]));
+
 /** Not controls in a row of controls, each with its reason ("file: selector"). */
 const ALLOWED = new Map<string, string>([
   ["app/(app)/documents/[id]/DocumentView.module.css: .valueButton", "a value is a word in a table cell: the 24px WCAG target, 44px on touch"],
@@ -81,7 +96,8 @@ describe("one control height", () => {
     expect(btn).toMatch(/line-height:\s*1\.2;/);
     const field = top(".input, select.input, textarea.input")[0]?.body ?? "";
     expect(field).toMatch(/\bheight:\s*var\(--control-h\);/);
-    expect(field).toMatch(/padding:\s*0 var\(--space-3\);/);
+    // Changed on purpose (UI rebuild, 21 Oct 2026): the handoff's 16px field inset.
+    expect(field).toMatch(/padding:\s*0 var\(--space-4\);/);
     expect(field).toMatch(/line-height:\s*1\.25;/);
     // Only a textarea grows.
     const area = top("textarea.input")[0]?.body ?? "";
@@ -95,7 +111,7 @@ describe("one control height", () => {
   it("never hard-codes a 20-48px height in a screen's CSS, outside the reasoned list", () => {
     const found = MODULES.flatMap((file) =>
       rules(read(file))
-        .filter((rule) => PX_HEIGHT.test(rule.body))
+        .filter((rule) => PX_HEIGHT.test(rule.body) && !handoffHeights(file, rule.body))
         .map((rule) => `${file}: ${rule.selector}`),
     );
     expect(found.filter((name) => !ALLOWED.has(name))).toEqual([]);
@@ -107,7 +123,8 @@ describe("one control height", () => {
       const body = top(selector)[0]?.body ?? "";
       expect(body, selector).toMatch(/min-height:\s*var\(--badge-h\);/);
       expect(body, selector).toMatch(/line-height:\s*1\.25;/);
-      expect(body, selector).toMatch(/border-radius:\s*2px;/);
+      // Changed on purpose (UI rebuild, 21 Oct 2026): the handoff's soft corners replace the 2px square ones: pills.
+      expect(body, selector).toMatch(/border-radius:\s*var\(--r-full\);/);
     }
     // Changed on purpose (Tushar, 16 Oct 2026): the sidebar Review count is gone.
   });

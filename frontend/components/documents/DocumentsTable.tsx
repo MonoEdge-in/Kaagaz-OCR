@@ -34,6 +34,7 @@
 import Link from "next/link";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent, RefCallback } from "react";
+import { extensionOf } from "@/components/dashboard/words";
 import { LabelChip } from "@/components/files/LabelChip";
 import { FILES_TEXT, NEWER_SPOKEN, versionCell } from "@/components/files/words";
 import { Icon } from "@/components/ui/Icon";
@@ -829,7 +830,7 @@ const DocumentRow = memo(function DocumentRow({
             event.dataTransfer.effectAllowed = "copyMove";
           }}
         >
-          <Icon name="file" className={styles.fileIcon} />
+          <span className={`k-file-ic ${styles.fileIcon}`} data-ext={extensionOf(document.display_name)} aria-hidden="true" />
           <span>
             <WrapName name={document.display_name} />
           </span>

@@ -29,8 +29,11 @@ describe("guards", () => {
     expect(offenders.map((p) => relative(ROOT, p))).toEqual([]);
   });
 
-  it("uses colour tokens: no hex colours in CSS outside app/globals.css", () => {
-    const offenders = all((p) => p.endsWith(".css") && !p.endsWith("globals.css")).filter((p) =>
+  // Changed on purpose (UI rebuild Step 1, 20 Oct 2026): app/styles/tokens.css holds
+  // the handoff's colour tokens, so it is the second file allowed hex colours.
+  it("uses colour tokens: no hex colours in CSS outside app/globals.css and app/styles/tokens.css", () => {
+    const tokenFiles = [join(ROOT, "app", "globals.css"), join(ROOT, "app", "styles", "tokens.css")];
+    const offenders = all((p) => p.endsWith(".css") && !tokenFiles.includes(p)).filter((p) =>
       /#[0-9a-fA-F]{3,8}\b/.test(readFileSync(p, "utf8")),
     );
     expect(offenders.map((p) => relative(ROOT, p))).toEqual([]);

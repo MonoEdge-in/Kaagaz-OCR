@@ -1,6 +1,7 @@
-/* The document screen. Tokens only (app/globals.css). MonoEdge design system (16 Oct 2026):
-   flat and square, no shadows or gradients; Verified and Needs review differ by icon, word
-   and edge (solid or dashed, 1px), never by colour alone. */
+/* The document screen, in the handoff's layout (desktop/DocumentPage.html): the page on a
+   sunken pane at the start, and beside it one card with the name, its place and actions,
+   then the tabs. Verified and Needs review differ by icon, word and edge (solid or dashed),
+   never by colour alone. */
 
 .back {
   display: inline-flex;
@@ -17,6 +18,8 @@
   flex-direction: column;
   gap: var(--space-2);
   min-width: 0;
+  padding-block-end: var(--space-4);
+  border-block-end: 1px solid var(--k-rule);
 }
 
 /* DD2: where it is filed, Documents / Folder / name; the name is cut to one line. */
@@ -28,8 +31,18 @@
   gap: 0 var(--space-1);
   margin: 0;
   padding: 0;
-  font-size: var(--fs-sm);
-  color: var(--text-secondary);
+  font-size: 13px;
+  color: var(--k-ink-muted);
+}
+
+.crumbs a {
+  color: var(--k-ink-muted);
+  text-decoration: none;
+}
+
+.crumbs a:hover {
+  color: var(--k-accent);
+  text-decoration: underline;
 }
 
 .crumbs li {
@@ -45,15 +58,23 @@
   margin-inline-end: var(--space-1);
 }
 
+/* The name takes the room left on the trail's line, cut short, never a line of its own. */
+.crumbs li[aria-current] {
+  flex: 1 1 0;
+  min-width: 4rem;
+}
+
 .crumbs li[aria-current] > span {
   max-width: 24rem;
+  color: var(--k-ink);
+  font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* DD2: one row. The title and its status chip; Download, Ask and the menu at its end.
-   They wrap under a long title. */
+/* DD2: the title and its status chip, then Download, Ask and the menu on the row under it
+   (desktop/DocumentPage.html: the pane is too narrow for one row). */
 .titleRow {
   display: flex;
   flex-wrap: wrap;
@@ -65,6 +86,12 @@
   flex: 0 1 auto;
   min-width: 0;
   margin: 0;
+  font-family: var(--k-font-display);
+  font-stretch: var(--k-display-stretch);
+  font-size: var(--k-fs-22);
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -0.015em;
   overflow-wrap: anywhere;
 }
 
@@ -77,15 +104,7 @@
   max-width: 100%;
   align-items: center;
   gap: var(--space-2);
-  margin-inline-start: auto;
-}
-
-/* One row from 768px (Tushar, 16 Oct 2026): a long title wraps inside its own room
-   and the actions stay beside it, never on a row of their own. */
-@media (min-width: 768px) {
-  .titleRow {
-    flex-wrap: nowrap;
-  }
+  flex-basis: 100%;
 }
 
 /* One meta line (board 12 P4): status, type and pages, Read again, the folder
@@ -98,8 +117,8 @@
 }
 
 .meta {
-  color: var(--text-secondary);
-  font-size: var(--fs-sm);
+  color: var(--k-ink-muted);
+  font-size: 13px;
 }
 
 /* "Read again" (ReadAgain.tsx): the button sits in the meta line; its
@@ -116,9 +135,9 @@
   flex-direction: column;
   gap: var(--space-2);
   padding: var(--space-3) var(--space-4);
-  border: 1px solid var(--border-strong);
-  border-radius: 2px;
-  background: var(--bg-subdued);
+  border: 1px solid var(--k-rule);
+  border-radius: var(--k-r-4);
+  background: var(--k-sunken);
   font-size: var(--fs-sm);
 }
 
@@ -207,31 +226,31 @@
   min-width: var(--control-h);
   height: var(--control-h);
   padding: 0 var(--space-2);
-  border: 1px solid var(--border-strong);
-  border-radius: 2px;
-  color: var(--text-primary);
+  border: 1px solid var(--k-rule);
+  border-radius: var(--k-r-pill);
+  color: var(--k-ink);
   font-size: var(--fs-sm);
   font-weight: 600;
   text-decoration: none;
 }
 
 .versionLink:hover {
-  background: var(--bg-subdued);
-  color: var(--text-primary);
+  border-color: var(--k-rule-strong);
+  color: var(--k-ink);
 }
 
 /* Filled and bold, so colour is not the only sign of the one being viewed. */
 .versionLink[aria-current="page"] {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--text-onaccent);
+  background: var(--k-accent);
+  border-color: var(--k-accent);
+  color: var(--k-accent-ink);
   font-weight: 700;
 }
 
 .note {
   margin: 0;
-  font-size: var(--fs-sm);
-  color: var(--text-secondary);
+  font-size: 13px;
+  color: var(--k-ink-muted);
 }
 
 .trashNotice {
@@ -239,10 +258,10 @@
   align-items: flex-start;
   gap: var(--space-2);
   margin: 0;
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border-strong);
-  border-radius: 2px;
-  background: var(--bg-subdued);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--k-rule);
+  border-radius: var(--k-r-4);
+  background: var(--k-surface);
   font-size: var(--fs-sm);
 }
 
@@ -257,7 +276,7 @@
 .layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: var(--space-6);
+  gap: var(--space-4);
   align-items: start;
 }
 
@@ -305,12 +324,12 @@
     position: absolute;
     inset-block: 0;
     inset-inline-start: calc(50% - 1px);
-    border-inline-start: 2px solid var(--border);
+    border-inline-start: 2px solid var(--k-rule);
   }
 
   .handle:hover::before,
   .handle:focus-visible::before {
-    border-inline-start-color: var(--accent);
+    border-inline-start-color: var(--k-accent);
   }
 
   .handle:focus-visible {
@@ -323,6 +342,13 @@
   min-width: 0;
 }
 
+/* The page on the sunken ground, as the handoff's viewer pane. */
+.viewer {
+  padding: var(--space-3);
+  border-radius: var(--k-r-5);
+  background: var(--k-sunken);
+}
+
 .noPages {
   margin: 0;
   padding: var(--space-8) var(--space-4);
@@ -330,7 +356,7 @@
   color: var(--text-secondary);
   background: var(--bg-subdued);
   border: 1px solid var(--border);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
 }
 
 .values {
@@ -348,6 +374,7 @@
   font-size: var(--fs-lg);
 }
 
+/* The handoff's tab count (.k-tab-count): mono figures in a small sunken pill. */
 .count {
   display: inline-flex;
   align-items: center;
@@ -355,12 +382,10 @@
   min-width: var(--badge-h);
   height: var(--badge-h);
   padding: 0 var(--space-2);
-  border-radius: 2px;
-  background: var(--bg-subdued);
-  color: var(--text-secondary);
-  font-size: var(--fs-sm);
-  font-weight: 600;
-  line-height: 1;
+  border-radius: var(--k-r-pill);
+  background: var(--k-sunken);
+  color: var(--k-ink-muted);
+  font: 500 11px/1 var(--k-font-mono);
 }
 
 /* The values table: a table while its column is wide enough, cards when not.
@@ -371,7 +396,7 @@
   border-collapse: separate;
   border-spacing: 0;
   border: 1px solid var(--border);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   background: var(--bg-surface);
 }
 
@@ -453,9 +478,28 @@
 
 /* The panels beside the page, as tabs (DD6; the global .tabs and .tab). Each tab's panel
    keeps the same least height, so switching never moves the page. */
+/* The pane beside the page: one raised card, the name and actions at its head. */
 .panels {
   display: flex;
   flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-6);
+  border: 1px solid var(--k-card-edge);
+  border-radius: var(--k-r-5);
+  background: var(--k-surface);
+  box-shadow: var(--k-shadow-1);
+}
+
+/* Stacked (below 1024px), as phone/PhoneDocument.html: the name and its actions first, then
+   the page, then the rest, with no card around them. */
+@media (max-width: 1023.98px) {
+  .panels {
+    display: contents;
+  }
+
+  .header {
+    order: -1;
+  }
 }
 
 .tabs {
@@ -655,10 +699,14 @@
     white-space: nowrap;
   }
 
+  /* desktop/DocumentPage.html: one rounded list, a hairline between the values. */
   .valuesTable tbody {
     display: flex;
     flex-direction: column;
-    gap: var(--space-2);
+    border: 1px solid var(--k-rule);
+    border-radius: var(--k-r-5);
+    background: var(--k-surface);
+    overflow: clip;
   }
 
   .valuesTable tbody tr {
@@ -670,9 +718,12 @@
       "label";
     gap: var(--space-1) var(--space-3);
     padding: var(--space-3) var(--space-4);
-    border: 1px solid var(--border);
-    border-radius: 2px;
-    background: var(--bg-surface);
+    border: 1px solid transparent;
+    border-block-end-color: var(--k-rule);
+  }
+
+  .valuesTable tbody tr:last-child {
+    border-block-end-color: transparent;
   }
 
   .valuesTable tbody tr.activeRow {
@@ -680,10 +731,11 @@
     border-color: var(--accent);
   }
 
-  /* A card: a solid edge for Verified, a dashed one for Needs review. */
+  /* A row: no edge for Verified, a dashed one and the review tint for Needs review. */
   .valuesTable tr[data-label="needs_review"] {
     border-style: dashed;
     border-color: var(--warning);
+    background-color: var(--k-review-soft);
   }
 
   .valuesTable td,
@@ -696,8 +748,9 @@
   .fieldCell {
     grid-area: field;
     align-self: center;
-    font-size: var(--fs-sm);
-    color: var(--text-secondary);
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--k-ink-muted);
   }
 
   /* The badge, then its reason beside it, wrapping under it when long. */
@@ -738,12 +791,12 @@
 .pageSkeleton {
   aspect-ratio: 1 / 1.3;
   max-height: 80dvh;
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
 }
 
 .valuesSkeleton {
   height: 16rem;
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
 }
 
 /* Icon, words and Try again: the icon and the first line of words sit on the
@@ -756,7 +809,7 @@
   gap: var(--space-3);
   padding: var(--space-3) var(--space-4);
   border: 1px solid var(--critical);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   background: var(--bg-surface);
   color: var(--critical);
 }
@@ -810,7 +863,7 @@
   gap: var(--space-2);
   padding: var(--space-3);
   border: 1px solid var(--border-strong);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   background: var(--bg-subdued);
   font-size: var(--fs-sm);
 }

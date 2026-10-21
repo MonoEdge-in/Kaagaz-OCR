@@ -41,14 +41,18 @@ const declarations = (property: RegExp) =>
   );
 
 describe("the MonoEdge design system on the documents screens", () => {
-  it("has no gradients and no pill shapes; corners are 2px", () => {
+  // Changed on purpose (UI rebuild, 21 Oct 2026): the handoff's soft corners replace the 2px square ones.
+  it("has no gradients; every corner is one of the handoff's radius tokens", () => {
     expect(declarations(/gradient\(/)).toEqual([]);
-    const radius = declarations(/^border(-[a-z-]+)?-radius:/).filter((d) => !/radius:\s*(2px|0|inherit)$/.test(d));
+    const radius = declarations(/^border(-[a-z-]+)?-radius:/).filter(
+      (d) => !/radius:\s*(var\(--k-r-(\d|pill)\)|0|inherit|2px 2px 0 0)$/.test(d),
+    );
     expect(radius).toEqual([]);
   });
 
-  it("has no shadows, only the 0-blur rings round marks on the page (the highlight, my words, reading problems)", () => {
-    const shadows = declarations(/^box-shadow:/);
+  // Changed on purpose (UI rebuild, 21 Oct 2026): the handoff's soft surfaces, from its shadow tokens only.
+  it("has no shadows but the handoff's tokens, and the 0-blur rings round marks on the page", () => {
+    const shadows = declarations(/^box-shadow:/).filter((d) => !/box-shadow:\s*var\(--k-shadow-(1|2|page)\)$/.test(d));
     const rings = /^box-shadow:\s*0 0 0 \d+px var\(--[\w-]+\)(, 0 0 0 \d+px var\(--[\w-]+\))?$/;
     const marks = /PageViewer\.module\.css: \.(box|mine|mineActive|problem|problem:hover|problem:focus-visible):/;
     expect(shadows.filter((d) => !(marks.test(d) && rings.test(d.split(": ").slice(2).join(": "))))).toEqual([]);

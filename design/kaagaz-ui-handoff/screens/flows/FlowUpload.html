@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Kaagaz · Flow A · New Satbara to version 2</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="../../styles/kaagaz.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@100..125,400..700&amp;family=IBM+Plex+Mono:wght@400;500&amp;family=IBM+Plex+Sans+Devanagari:wght@400;500;600&amp;family=IBM+Plex+Sans:wght@400;500;600&amp;display=swap">
+<style>body{margin:0}</style>
+</helmet>
+<div class="k-root" data-theme="{{theme}}" style="width: 3200px; height: 1240px; padding: 56px 64px; display: flex; flex-direction: column; gap: 32px; overflow: hidden">
+
+  <header style="display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; border-bottom: 2px solid var(--k-ink); padding-bottom: 20px">
+    <div style="display: flex; flex-direction: column; gap: 8px">
+      <span class="k-eyebrow">Flow A · Upload and versions</span>
+      <h1 class="k-h1" style="font-size: 36px">Upload a batch with a new Satbara, confirm it as version 2</h1>
+      <p class="k-muted k-read">Anita drops 12 papers without choosing a folder. Kaagaz reads them, files the 7/12 under Survey 44, spots that it is a newer copy, and lets her check the change before it becomes version 2.</p>
+    </div>
+    <div class="k-legend"><span><i style="background: var(--k-accent)"></i>What the person does</span><span><i style="background: var(--k-rule-strong)"></i>What Kaagaz shows</span></div>
+  </header>
+
+  <div style="display: flex; align-items: flex-start; gap: 0">
+
+    <!-- STEP 1 -->
+    <div style="width: 420px; flex: none; display: flex; flex-direction: column; gap: 14px">
+      <div style="display: flex; gap: 12px; align-items: flex-start; min-height: 72px">
+        <span class="k-mono" style="width: 32px; height: 32px; border-radius: 50%; border: 1.5px solid var(--k-accent); color: var(--k-accent); display: grid; place-items: center; flex: none; font-weight: 500">1</span>
+        <div style="display: flex; flex-direction: column; gap: 3px"><strong>Drops 12 files on Upload</strong><span class="k-small k-muted">Department left as “Let Kaagaz decide”. Upload starts at once.</span></div>
+      </div>
+      <div class="k-card k-card--flush" style="height: 760px; overflow: hidden">
+        <div style="display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 14px; border-bottom: 1px solid var(--k-rule); background: var(--k-surface)"><span style="width: 12px; height: 15px; background: var(--k-ink); clip-path: polygon(0 0, 70% 0, 100% 22%, 100% 100%, 0 100%)" aria-hidden="true"></span><span class="k-small k-muted">Documents › Upload</span></div>
+        <div style="padding: 18px; display: flex; flex-direction: column; gap: 16px">
+          <h2 class="k-h2">Upload documents</h2>
+          <div class="k-field">
+            <label class="k-label" for="fa-dept">Department</label>
+            <div class="k-select-wrap"><select class="k-select" id="fa-dept"><option>Let Kaagaz decide</option><option>Land &amp; Legal</option><option>Accounts</option></select><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></div>
+            <span class="k-help">Kaagaz reads each paper and files it in the right folder.</span>
+          </div>
+          <div class="k-drop is-over" style="flex-direction: column; align-items: center; text-align: center; padding: 40px 20px; gap: 12px">
+            <svg class="k-ic k-ic--lg" viewBox="0 0 24 24" aria-hidden="true" style="color: var(--k-accent)"><path d="M12 15V4M7 9l5-5 5 5M4 15v5h16v-5"></path></svg>
+            <strong>Drop to upload 12 files</strong>
+            <span class="k-small k-muted">PDF, JPG, PNG, Excel · up to 100 at once</span>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 0">
+            <div class="k-rule-row"><span style="display: flex; gap: 10px; align-items: center"><span class="k-file-ic" data-ext="PDF"></span><span class="k-small">7/12 Survey 44 Wakad (2).pdf</span></span><span class="k-spec">640 KB</span></div>
+            <div class="k-rule-row"><span style="display: flex; gap: 10px; align-items: center"><span class="k-file-ic" data-ext="PDF"></span><span class="k-small">GST Invoice 0413 Mehta Textiles.pdf</span></span><span class="k-spec">210 KB</span></div>
+            <div class="k-rule-row"><span style="display: flex; gap: 10px; align-items: center"><span class="k-file-ic" data-ext="JPG"></span><span class="k-small">IMG_1291.jpg</span></span><span class="k-spec">2 MB</span></div>
+            <div class="k-rule-row"><span style="display: flex; gap: 10px; align-items: center"><span class="k-file-ic" data-ext="XLS"></span><span class="k-small">Salary Register Oct.xlsx</span></span><span class="k-spec">88 KB</span></div>
+            <div class="k-rule-row"><span class="k-small k-muted">+ 8 more</span><span></span></div>
+          </div>
+          <a class="k-btn k-btn--quiet k-btn--sm" href="Upload.html" style="align-self: flex-start">Open full screen</a>
+        </div>
+      </div>
+    </div>
+
+    <div style="flex: 1; min-width: 80px; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 440px 10px 0">
+      <div style="display: flex; align-items: center; width: 100%; color: var(--k-accent)"><span style="flex: 1; height: 1.5px; background: var(--k-accent)"></span><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"></path></svg></div>
+      <span class="k-small k-muted" style="text-align: center">drops the files</span>
+    </div>
+
+    <!-- STEP 2 -->
+    <div style="width: 420px; flex: none; display: flex; flex-direction: column; gap: 14px">
+      <div style="display: flex; gap: 12px; align-items: flex-start; min-height: 72px">
+        <span class="k-mono" style="width: 32px; height: 32px; border-radius: 50%; border: 1.5px solid var(--k-accent); color: var(--k-accent); display: grid; place-items: center; flex: none; font-weight: 500">2</span>
+        <div style="display: flex; flex-direction: column; gap: 3px"><strong>Watches the batch tray</strong><span class="k-small k-muted">Each file moves through Sending, Saving, Reading. Nothing jumps to done early.</span></div>
+      </div>
+      <div class="k-card k-card--flush" style="height: 760px; overflow: hidden">
+        <div style="display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 14px; border-bottom: 1px solid var(--k-rule); background: var(--k-surface)"><span style="width: 12px; height: 15px; background: var(--k-ink); clip-path: polygon(0 0, 70% 0, 100% 22%, 100% 100%, 0 100%)" aria-hidden="true"></span><span class="k-small k-muted">Upload · batch of 12</span></div>
+        <div style="padding: 18px; display: flex; flex-direction: column; gap: 14px">
+          <div style="display: flex; flex-direction: column; gap: 8px" aria-live="polite">
+            <strong class="k-small">12 files · 7 ready · 3 reading · 2 waiting</strong>
+            <div class="k-meter"><span class="is-ready" style="width: 58%"></span><span class="is-reading" style="width: 25%"></span><span class="is-waiting" style="width: 17%"></span></div>
+            <div class="k-legend"><span><i style="background: var(--k-verified)"></i>Ready</span><span><i style="background: var(--k-info)"></i>Reading</span><span><i style="background: var(--k-rule-strong)"></i>Waiting</span></div>
+          </div>
+          <hr class="k-divider">
+          <div style="display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--k-accent); border-radius: 16px; background: var(--k-surface)">
+            <div style="display: flex; justify-content: space-between; gap: 8px; align-items: center"><span style="display: flex; gap: 10px; align-items: center"><span class="k-file-ic" data-ext="PDF"></span><strong class="k-small">7/12 Survey 44 Wakad (2).pdf</strong></span><span class="k-status k-status--reading"><span class="k-dots" aria-hidden="true"><i></i><i></i><i></i></span>Reading 1 of 2 pages</span></div>
+            <div class="k-stages"><span class="k-stage"><i style="width: 100%"></i></span><span class="k-stage"><i style="width: 100%"></i></span><span class="k-stage is-active"><i style="width: 50%"></i></span></div>
+            <div class="k-stage-labels"><span class="is-done">Sending</span><span class="is-done">Saving</span><span class="is-active">Reading 1/2</span></div>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--k-rule); border-radius: 16px">
+            <div style="display: flex; justify-content: space-between; gap: 8px; align-items: center"><span class="k-small">GST Invoice 0413 Mehta Textiles.pdf</span><span class="k-status k-status--verified"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg>Ready</span></div>
+            <span class="k-filed"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"></path></svg><b>Accounts / Invoices / Mehta Textiles</b></span>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--k-rule); border-radius: 16px">
+            <div style="display: flex; justify-content: space-between; gap: 8px; align-items: center"><span class="k-small">IMG_1291.jpg</span><span class="k-mono k-small k-muted">Saving</span></div>
+            <div class="k-stages"><span class="k-stage"><i style="width: 100%"></i></span><span class="k-stage is-active"><i style="width: 60%"></i></span><span class="k-stage"><i style="width: 0%"></i></span></div>
+            <div class="k-stage-labels"><span class="is-done">Sending</span><span class="is-active">Saving</span><span>Reading</span></div>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--k-rule); border-radius: 16px">
+            <div style="display: flex; justify-content: space-between; gap: 8px; align-items: center"><span class="k-small">Salary Register Oct.xlsx</span><span class="k-mono k-small k-muted">Sending 40%</span></div>
+            <div class="k-stages"><span class="k-stage is-active"><i style="width: 40%"></i></span><span class="k-stage"><i style="width: 0%"></i></span><span class="k-stage"><i style="width: 0%"></i></span></div>
+            <div class="k-stage-labels"><span class="is-active">Sending</span><span>Saving</span><span>Reading</span></div>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px dashed var(--k-rule-strong); border-radius: 16px">
+            <div style="display: flex; justify-content: space-between; gap: 8px; align-items: center"><span class="k-small k-muted">Rent Receipt Oct Shinde.pdf</span><span class="k-mono k-small k-muted">Waiting</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div style="flex: 1; min-width: 80px; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 440px 10px 0">
+      <div style="display: flex; align-items: center; width: 100%; color: var(--k-accent)"><span style="flex: 1; height: 1.5px; background: var(--k-accent)"></span><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"></path></svg></div>
+      <span class="k-small k-muted" style="text-align: center">reading finishes</span>
+    </div>
+
+    <!-- STEP 3 -->
+    <div style="width: 420px; flex: none; display: flex; flex-direction: column; gap: 14px">
+      <div style="display: flex; gap: 12px; align-items: flex-start; min-height: 72px">
+        <span class="k-mono" style="width: 32px; height: 32px; border-radius: 50%; border: 1.5px solid var(--k-accent); color: var(--k-accent); display: grid; place-items: center; flex: none; font-weight: 500">3</span>
+        <div style="display: flex; flex-direction: column; gap: 3px"><strong>Sees where it was filed</strong><span class="k-small k-muted">The 7/12 lands in Survey 44, Wakad. A strip flags it as a likely new version.</span></div>
+      </div>
+      <div class="k-card k-card--flush" style="height: 760px; overflow: hidden">
+        <div style="display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 14px; border-bottom: 1px solid var(--k-rule); background: var(--k-surface)"><span style="width: 12px; height: 15px; background: var(--k-ink); clip-path: polygon(0 0, 70% 0, 100% 22%, 100% 100%, 0 100%)" aria-hidden="true"></span><span class="k-small k-muted">Upload · batch of 12</span></div>
+        <div style="padding: 18px; display: flex; flex-direction: column; gap: 14px">
+          <div style="display: flex; flex-direction: column; gap: 8px">
+            <strong class="k-small">12 files · 12 ready</strong>
+            <div class="k-meter"><span class="is-ready" style="width: 100%"></span></div>
+          </div>
+          <div class="k-banner k-banner--version" style="align-items: center; padding: 12px 14px">
+            <svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 3 8l9 5 9-5z"></path><path d="M3 13l9 5 9-5"></path></svg>
+            <div class="k-banner-body" style="flex-direction: row; align-items: center; justify-content: space-between; gap: 10px"><strong class="k-small">1 file looks like a new version.</strong><button class="k-btn k-btn--primary k-btn--sm" type="button">Review</button></div>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 2px solid var(--k-accent); border-radius: 16px">
+            <div style="display: flex; justify-content: space-between; gap: 8px; align-items: center"><span style="display: flex; gap: 10px; align-items: center"><span class="k-file-ic" data-ext="PDF"></span><strong class="k-small">7/12 Survey 44 Wakad (2).pdf</strong></span><span class="k-status k-status--verified"><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5 9-10"></path></svg>Ready</span></div>
+            <span class="k-filed"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"></path></svg><b>Land &amp; Legal / Land records / Survey 44, Wakad</b></span>
+            <span style="display: flex; gap: 6px; flex-wrap: wrap"><span class="k-lab k-lab--confidential">Confidential</span><span class="k-ver k-ver--newer">v1 · newer?</span><span class="k-tag k-deva">सातबारा</span></span>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 6px; padding: 12px; border: 1px solid var(--k-rule); border-radius: 16px">
+            <div style="display: flex; justify-content: space-between; gap: 8px"><span class="k-small">GST Invoice 0413 Mehta Textiles.pdf</span><span class="k-lab k-lab--internal">Internal</span></div>
+            <span class="k-filed"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"></path></svg><b>Accounts / Invoices / Mehta Textiles</b></span>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 6px; padding: 12px; border: 1px solid var(--k-rule); border-radius: 16px">
+            <div style="display: flex; justify-content: space-between; gap: 8px"><span class="k-small">Salary Register Oct.xlsx</span><span class="k-lab k-lab--confidential">Confidential</span></div>
+            <span class="k-filed"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"></path></svg><b>HR / Salary registers / 2026</b></span>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 6px; padding: 12px; border: 1px solid var(--k-rule); border-radius: 16px">
+            <div style="display: flex; justify-content: space-between; gap: 8px"><span class="k-small">IMG_1291.jpg</span><span class="k-problem"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4 2.5 20h19z"></path><path d="M12 10v4M12 17v.5"></path></svg>1 page unreadable</span></div>
+            <span class="k-filed"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"></path></svg><b>Not in a department</b></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div style="flex: 1; min-width: 80px; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 440px 10px 0">
+      <div style="display: flex; align-items: center; width: 100%; color: var(--k-accent)"><span style="flex: 1; height: 1.5px; background: var(--k-accent)"></span><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"></path></svg></div>
+      <span class="k-small k-muted" style="text-align: center">clicks Review</span>
+    </div>
+
+    <!-- STEP 4 -->
+    <div style="width: 420px; flex: none; display: flex; flex-direction: column; gap: 14px">
+      <div style="display: flex; gap: 12px; align-items: flex-start; min-height: 72px">
+        <span class="k-mono" style="width: 32px; height: 32px; border-radius: 50%; border: 1.5px solid var(--k-accent); color: var(--k-accent); display: grid; place-items: center; flex: none; font-weight: 500">4</span>
+        <div style="display: flex; flex-direction: column; gap: 3px"><strong>Reads why Kaagaz thinks so</strong><span class="k-small k-muted">The banner says what matched. She chooses Compare first.</span></div>
+      </div>
+      <div class="k-card k-card--flush" style="height: 760px; overflow: hidden">
+        <div style="display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 14px; border-bottom: 1px solid var(--k-rule); background: var(--k-surface)"><span style="width: 12px; height: 15px; background: var(--k-ink); clip-path: polygon(0 0, 70% 0, 100% 22%, 100% 100%, 0 100%)" aria-hidden="true"></span><span class="k-small k-muted">Land &amp; Legal › Land records › Survey 44, Wakad</span></div>
+        <div style="padding: 18px; display: flex; flex-direction: column; gap: 14px">
+          <div style="display: flex; flex-direction: column; gap: 4px">
+            <h2 class="k-h3">7/12 Survey 44 Wakad (2).pdf</h2>
+            <span style="display: flex; gap: 6px; align-items: center"><span class="k-small k-muted">Version 1 of 1</span><span class="k-lab k-lab--confidential">Confidential</span></span>
+          </div>
+          <div class="k-banner k-banner--version">
+            <svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 3 8l9 5 9-5z"></path><path d="M3 13l9 5 9-5"></path></svg>
+            <div class="k-banner-body">
+              <p class="k-small" style="line-height: 1.55"><strong>This looks like a new version of 7/12 Survey 44 Wakad.pdf.</strong> 86% of the text is the same and the survey number matches.</p>
+              <div class="k-btn-group">
+                <button class="k-btn k-btn--primary k-btn--sm" type="button">Make it version 2</button>
+                <button class="k-btn k-btn--sm" type="button">Keep separate</button>
+                <button class="k-btn k-btn--quiet k-btn--sm is-hover is-focus" type="button" style="position: relative">Compare first<svg viewBox="0 0 24 24" aria-hidden="true" style="position: absolute; right: -8px; bottom: -16px; width: 22px; height: 22px; fill: var(--k-ink); stroke: var(--k-surface); stroke-width: 1.5"><path d="M5 3l14 8-6 1.5L10 19z"></path></svg></button>
+              </div>
+            </div>
+          </div>
+          <div style="background: var(--k-sunken); padding: 18px; display: flex; justify-content: center; border-radius: 16px">
+            <div class="k-paper" style="padding: 20px 22px; width: 300px; font-size: 11px; line-height: 1.6">
+              <p class="k-deva" style="font-weight: 600; text-align: center; font-size: 12px">गाव नमुना सात</p>
+              <div class="k-paper-rule" style="margin: 6px 0"></div>
+              <p class="k-deva">गाव: वाकड · तालुका: मुळशी</p>
+              <p class="k-deva">भूमापन क्रमांक: <span class="k-mono">44/2</span></p>
+              <p class="k-deva">भोगवटादाराचे नाव: सुरेश बाबूराव शिंदे, अनिता सुरेश शिंदे</p>
+              <p class="k-deva">इतर अधिकार: बोजा — स्टेट बँक ऑफ इंडिया</p>
+              <p class="k-deva">फेरफार क्र. <span class="k-mono">2187</span>, <span class="k-mono">2245</span></p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div style="flex: 1; min-width: 80px; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 440px 10px 0">
+      <div style="display: flex; align-items: center; width: 100%; color: var(--k-accent)"><span style="flex: 1; height: 1.5px; background: var(--k-accent)"></span><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"></path></svg></div>
+      <span class="k-small k-muted" style="text-align: center">clicks Compare first</span>
+    </div>
+
+    <!-- STEP 5 -->
+    <div style="width: 420px; flex: none; display: flex; flex-direction: column; gap: 14px">
+      <div style="display: flex; gap: 12px; align-items: flex-start; min-height: 72px">
+        <span class="k-mono" style="width: 32px; height: 32px; border-radius: 50%; border: 1.5px solid var(--k-accent); color: var(--k-accent); display: grid; place-items: center; flex: none; font-weight: 500">5</span>
+        <div style="display: flex; flex-direction: column; gap: 3px"><strong>Checks exactly what changed</strong><span class="k-small k-muted">A new co-owner and a new mutation entry. Two changes, both on page 2.</span></div>
+      </div>
+      <div class="k-card k-card--flush" style="height: 760px; overflow: hidden">
+        <div style="display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 14px; border-bottom: 1px solid var(--k-rule); background: var(--k-surface)"><span style="width: 12px; height: 15px; background: var(--k-ink); clip-path: polygon(0 0, 70% 0, 100% 22%, 100% 100%, 0 100%)" aria-hidden="true"></span><span class="k-small k-muted">Compare · 7/12 Survey 44 Wakad</span></div>
+        <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 12px 18px; border-bottom: 1px solid var(--k-rule)">
+          <strong class="k-small">2 changes on page 2</strong>
+          <button class="k-btn k-btn--sm" type="button">Next change<svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg></button>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr">
+          <div style="padding: 14px; display: flex; flex-direction: column; gap: 10px; border-right: 1px solid var(--k-rule)">
+            <span class="k-eyebrow">Current · v1 · 12 Mar 2025</span>
+            <p class="k-deva" style="font-size: 13px">भोगवटादाराचे नाव:<br>सुरेश बाबूराव शिंदे</p>
+            <p class="k-deva" style="font-size: 13px">इतर अधिकार: बोजा — स्टेट बँक ऑफ इंडिया</p>
+            <p class="k-deva" style="font-size: 13px">फेरफार क्र. <span class="k-mono">2187</span></p>
+          </div>
+          <div style="padding: 14px; display: flex; flex-direction: column; gap: 10px">
+            <span class="k-eyebrow">New · 14 Oct 2026</span>
+            <p class="k-deva" style="font-size: 13px">भोगवटादाराचे नाव:<br>सुरेश बाबूराव शिंदे, <span style="background: var(--k-diff-add-soft); color: var(--k-diff-add); outline: 2px solid var(--k-focus); outline-offset: 1px; padding: 0 2px">अनिता सुरेश शिंदे</span></p>
+            <p class="k-deva" style="font-size: 13px">इतर अधिकार: बोजा — स्टेट बँक ऑफ इंडिया</p>
+            <p class="k-deva" style="font-size: 13px">फेरफार क्र. <span class="k-mono">2187</span>, <span class="k-mono" style="background: var(--k-diff-add-soft); color: var(--k-diff-add); padding: 0 2px">2245</span></p>
+          </div>
+        </div>
+        <div style="padding: 0 18px 14px; display: flex; flex-direction: column; gap: 8px">
+          <div style="display: flex; gap: 14px; flex-wrap: wrap" class="k-small">
+            <span style="display: inline-flex; gap: 6px; align-items: center"><span style="background: var(--k-diff-add-soft); color: var(--k-diff-add); padding: 0 4px; font-weight: 600">+ added</span></span>
+            <span style="display: inline-flex; gap: 6px; align-items: center"><span style="background: var(--k-diff-del-soft); color: var(--k-diff-del); padding: 0 4px; text-decoration: line-through; font-weight: 600">removed</span></span>
+          </div>
+          <hr class="k-divider">
+          <span class="k-eyebrow">Change 1 of 2</span>
+          <p class="k-small">A second owner was added under भोगवटादाराचे नाव after mutation entry <span class="k-mono">2245</span>.</p>
+          <div class="k-btn-group" style="margin-top: 6px">
+            <button class="k-btn k-btn--primary k-btn--sm" type="button">Make it version 2</button>
+            <button class="k-btn k-btn--sm" type="button">Keep separate</button>
+          </div>
+          <a class="k-btn k-btn--quiet k-btn--sm" href="VersionCompare.html" style="align-self: flex-start">Open full screen</a>
+        </div>
+      </div>
+    </div>
+
+    <div style="flex: 1; min-width: 80px; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 440px 10px 0">
+      <div style="display: flex; align-items: center; width: 100%; color: var(--k-accent)"><span style="flex: 1; height: 1.5px; background: var(--k-accent)"></span><svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"></path></svg></div>
+      <span class="k-small k-muted" style="text-align: center">clicks Make it version 2</span>
+    </div>
+
+    <!-- STEP 6 -->
+    <div style="width: 420px; flex: none; display: flex; flex-direction: column; gap: 14px">
+      <div style="display: flex; gap: 12px; align-items: flex-start; min-height: 72px">
+        <span class="k-mono" style="width: 32px; height: 32px; border-radius: 50%; background: var(--k-verified); color: var(--k-verified-ink); display: grid; place-items: center; flex: none"><svg class="k-ic k-ic--sm" viewBox="0 0 24 24" aria-hidden="true" style="stroke-width: 2.5"><path d="M5 12l5 5 9-10"></path></svg></span>
+        <div style="display: flex; flex-direction: column; gap: 3px"><strong>Version 2 is current</strong><span class="k-small k-muted">One file, two versions, full history. Undo stays for 10 seconds.</span></div>
+      </div>
+      <div class="k-card k-card--flush" style="height: 760px; overflow: hidden; position: relative">
+        <div style="display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 14px; border-bottom: 1px solid var(--k-rule); background: var(--k-surface)"><span style="width: 12px; height: 15px; background: var(--k-ink); clip-path: polygon(0 0, 70% 0, 100% 22%, 100% 100%, 0 100%)" aria-hidden="true"></span><span class="k-small k-muted">Land &amp; Legal › Land records › Survey 44, Wakad</span></div>
+        <div style="padding: 18px; display: flex; flex-direction: column; gap: 14px">
+          <div style="display: flex; flex-direction: column; gap: 4px">
+            <h2 class="k-h3">7/12 Survey 44 Wakad.pdf</h2>
+            <span style="display: flex; gap: 6px; align-items: center"><span class="k-small"><strong>Version 2 of 2</strong></span><span class="k-lab k-lab--confidential">Confidential</span></span>
+          </div>
+          <div class="k-tabs" role="tablist" aria-label="Document sections">
+            <button class="k-tab" role="tab" type="button" aria-selected="false">Details</button>
+            <button class="k-tab" role="tab" type="button" aria-selected="false">Values</button>
+            <button class="k-tab" role="tab" type="button" aria-selected="true">Versions <span class="k-tab-count">2</span></button>
+            <button class="k-tab" role="tab" type="button" aria-selected="false">Activity</button>
+          </div>
+          <div style="display: flex; flex-direction: column; border: 1px solid var(--k-rule); border-radius: 16px">
+            <div style="display: grid; grid-template-columns: 36px minmax(0, 1fr); gap: 10px; padding: 12px; border-bottom: 1px solid var(--k-rule); background: var(--k-accent-soft)">
+              <span class="k-mono" style="font-weight: 600; color: var(--k-accent-soft-ink)">v2</span>
+              <div style="display: flex; flex-direction: column; gap: 4px"><span style="display: flex; gap: 6px; align-items: center"><strong class="k-small">New co-owner added</strong><span class="k-ver k-ver--current">Current</span></span><span class="k-small k-muted">Anita · today 11:20 · confirmed after Compare</span><span style="display: flex; gap: 6px"><button class="k-btn k-btn--sm" type="button">View</button></span></div>
+            </div>
+            <div style="display: grid; grid-template-columns: 36px minmax(0, 1fr); gap: 10px; padding: 12px">
+              <span class="k-mono" style="font-weight: 600; color: var(--k-ink-muted)">v1</span>
+              <div style="display: flex; flex-direction: column; gap: 4px"><strong class="k-small">First upload</strong><span class="k-small k-muted">Rahul · 12 Mar 2025</span><span style="display: flex; gap: 6px; flex-wrap: wrap"><button class="k-btn k-btn--sm" type="button">View</button><button class="k-btn k-btn--sm" type="button">Compare</button><button class="k-btn k-btn--sm" type="button">Make current</button></span></div>
+            </div>
+          </div>
+          <a class="k-btn k-btn--quiet k-btn--sm" href="DocumentPage.html" style="align-self: flex-start">Open full screen</a>
+        </div>
+        <div class="k-toast" role="status" style="position: absolute; left: 18px; right: 18px; bottom: 22px">
+          <svg class="k-ic" viewBox="0 0 24 24" aria-hidden="true" style="color: var(--k-nav-accent)"><path d="M5 12l5 5 9-10"></path></svg>
+          <span style="flex: 1">Saved as version 2 of 7/12 Survey 44 Wakad.pdf</span>
+          <button class="k-btn k-btn--quiet k-btn--sm" type="button">Undo</button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","options":["light","dark"],"default":"light"},"$preview":{"width":3200,"height":1240}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return { theme: this.props.theme ?? 'light' };
+  }
+}
+</script>
+</body>
+</html>

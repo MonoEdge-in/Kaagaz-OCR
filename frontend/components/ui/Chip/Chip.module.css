@@ -1,0 +1,56 @@
+/* Filter chips and tags (design/kaagaz-ui-handoff/styles/kaagaz.css, section 7). */
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 14px;
+  border: 1px solid var(--k-rule);
+  border-radius: var(--k-r-pill);
+  background: var(--k-surface);
+  color: var(--k-ink);
+  font: 500 13px/1 var(--k-font-body);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.chip:hover {
+  border-color: var(--k-rule-strong);
+}
+.chip:focus-visible {
+  outline: 2px solid var(--k-focus);
+  outline-offset: 2px;
+}
+.chip[aria-pressed="true"] {
+  border-color: var(--k-accent);
+  background: var(--k-accent-soft);
+  color: var(--k-accent-soft-ink);
+}
+.add {
+  border-style: dashed;
+}
+.value {
+  font-weight: 600;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 9px;
+  border-radius: var(--k-r-pill);
+  background: var(--k-sunken);
+  color: var(--k-ink-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.deva {
+  font-family: var(--font-plex-devanagari), "IBM Plex Sans Devanagari", var(--k-font-body);
+}

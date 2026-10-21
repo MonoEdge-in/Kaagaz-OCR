@@ -135,120 +135,125 @@ export function ReviewCard({
         {notSure(value.confidence) && <p className={`muted ${styles.reason}`}>{CONFIDENCE_NOTE}</p>}
       </header>
 
-      <PageViewer
-        document={{
-          id: item.document_id,
-          display_name: item.document_name,
-          detected_type: item.detected_type,
-        }}
-        page={item.page}
-        highlights={[value.region]}
-        crop={value.region}
-      />
+      {/* desktop/Review.html: the spot on the sunken side, the readings and the typing beside it. */}
+      <div className={styles.spot}>
+        <PageViewer
+          document={{
+            id: item.document_id,
+            display_name: item.document_name,
+            detected_type: item.detected_type,
+          }}
+          page={item.page}
+          highlights={[value.region]}
+          crop={value.region}
+        />
+      </div>
 
-      <div className={styles.readings}>
-        <section className={styles.reading} aria-labelledby={`${idBase}-first`}>
-          <h3 id={`${idBase}-first`} className={styles.readingHeading}>
-            First reading
-          </h3>
-          <p className={styles.readingText}>{value.raw}</p>
-          <button
-            type="button"
-            className="btn"
-            disabled={busy}
-            aria-keyshortcuts={onSkip ? "1" : undefined}
-            onClick={() => void resolve("first")}
-          >
-            Use first reading
-          </button>
-        </section>
-        {value.second_reading !== null ? (
-          <section className={styles.reading} aria-labelledby={`${idBase}-second`}>
-            <h3 id={`${idBase}-second`} className={styles.readingHeading}>
-              Second reading
+      <div className={styles.work}>
+        <div className={styles.readings}>
+          <section className={styles.reading} aria-labelledby={`${idBase}-first`}>
+            <h3 id={`${idBase}-first`} className={styles.readingHeading}>
+              First reading
             </h3>
-            <p className={styles.readingText}>{value.second_reading}</p>
+            <p className={styles.readingText}>{value.raw}</p>
             <button
               type="button"
               className="btn"
               disabled={busy}
-              aria-keyshortcuts={onSkip ? "2" : undefined}
-              onClick={() => void resolve("second")}
+              aria-keyshortcuts={onSkip ? "1" : undefined}
+              onClick={() => void resolve("first")}
             >
-              Use second reading
+              Use first reading
             </button>
           </section>
+          {value.second_reading !== null ? (
+            <section className={styles.reading} aria-labelledby={`${idBase}-second`}>
+              <h3 id={`${idBase}-second`} className={styles.readingHeading}>
+                Second reading
+              </h3>
+              <p className={styles.readingText}>{value.second_reading}</p>
+              <button
+                type="button"
+                className="btn"
+                disabled={busy}
+                aria-keyshortcuts={onSkip ? "2" : undefined}
+                onClick={() => void resolve("second")}
+              >
+                Use second reading
+              </button>
+            </section>
+          ) : null}
+        </div>
+        {value.second_reading === null ? (
+          <p className={`muted ${styles.noReading}`}>No second reading for this value.</p>
+        ) : null}
+
+        <form
+          className={styles.typedForm}
+          noValidate
+          onSubmit={(event) => {
+            event.preventDefault();
+            void resolve("typed");
+          }}
+        >
+          <label htmlFor={`${idBase}-typed`} className="label">
+            Type the correct value
+          </label>
+          <div className={styles.typedRow}>
+            <input
+              ref={typedRef}
+              id={`${idBase}-typed`}
+              className={`input ${styles.typed}`}
+              type="text"
+              autoComplete="off"
+              spellCheck={false}
+              maxLength={MAX_TYPED_LENGTH}
+              value={typed}
+              onChange={(event) => setTyped(event.target.value)}
+              aria-describedby={error ? errorId : undefined}
+              aria-keyshortcuts={onSkip ? "E" : undefined}
+            />
+            <button type="submit" className="btn btn-primary" disabled={busy}>
+              Save
+            </button>
+          </div>
+        </form>
+
+        <label className={styles.remember}>
+          <input
+            id={`${idBase}-remember`}
+            type="checkbox"
+            checked={remember}
+            onChange={(event) => setRemember(event.target.checked)}
+          />
+          <span>Remember this correction for future documents</span>
+        </label>
+
+        {onSkip ? (
+          <div className={styles.focusBar}>
+            <p className={`muted ${styles.keys}`}>
+              Keys: <kbd>1</kbd> first reading · <kbd>2</kbd> second reading · <kbd>E</kbd> type it ·{" "}
+              <kbd>S</kbd> skip · <kbd>Enter</kbd> save
+            </p>
+            <button type="button" className="btn" disabled={busy} aria-keyshortcuts="S" onClick={onSkip}>
+              Skip
+            </button>
+          </div>
+        ) : null}
+
+        {busy ? (
+          <p className={styles.saving} role="status">
+            <span className="spinner" aria-hidden="true" />
+            Saving…
+          </p>
+        ) : null}
+        {error ? (
+          <p id={errorId} className={`error-text ${styles.error}`} role="alert">
+            <Icon name="alert" size={16} />
+            {error}
+          </p>
         ) : null}
       </div>
-      {value.second_reading === null ? (
-        <p className={`muted ${styles.noReading}`}>No second reading for this value.</p>
-      ) : null}
-
-      <form
-        className={styles.typedForm}
-        noValidate
-        onSubmit={(event) => {
-          event.preventDefault();
-          void resolve("typed");
-        }}
-      >
-        <label htmlFor={`${idBase}-typed`} className="label">
-          Type the correct value
-        </label>
-        <div className={styles.typedRow}>
-          <input
-            ref={typedRef}
-            id={`${idBase}-typed`}
-            className={`input ${styles.typed}`}
-            type="text"
-            autoComplete="off"
-            spellCheck={false}
-            maxLength={MAX_TYPED_LENGTH}
-            value={typed}
-            onChange={(event) => setTyped(event.target.value)}
-            aria-describedby={error ? errorId : undefined}
-            aria-keyshortcuts={onSkip ? "E" : undefined}
-          />
-          <button type="submit" className="btn btn-primary" disabled={busy}>
-            Save
-          </button>
-        </div>
-      </form>
-
-      <label className={styles.remember}>
-        <input
-          id={`${idBase}-remember`}
-          type="checkbox"
-          checked={remember}
-          onChange={(event) => setRemember(event.target.checked)}
-        />
-        <span>Remember this correction for future documents</span>
-      </label>
-
-      {onSkip ? (
-        <div className={styles.focusBar}>
-          <p className={`muted ${styles.keys}`}>
-            Keys: <kbd>1</kbd> first reading · <kbd>2</kbd> second reading · <kbd>E</kbd> type it ·{" "}
-            <kbd>S</kbd> skip · <kbd>Enter</kbd> save
-          </p>
-          <button type="button" className="btn" disabled={busy} aria-keyshortcuts="S" onClick={onSkip}>
-            Skip
-          </button>
-        </div>
-      ) : null}
-
-      {busy ? (
-        <p className={styles.saving} role="status">
-          <span className="spinner" aria-hidden="true" />
-          Saving…
-        </p>
-      ) : null}
-      {error ? (
-        <p id={errorId} className={`error-text ${styles.error}`} role="alert">
-          <Icon name="alert" size={16} />
-          {error}
-        </p>
-      ) : null}
     </article>
   );
 }

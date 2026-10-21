@@ -26,6 +26,9 @@ describe("theme choice", () => {
   });
 });
 
+// Changed on purpose (UI rebuild, 21 Oct 2026): the handoff (design/kaagaz-ui-handoff)
+// replaces the flat, square MonoEdge rules file: its colours, faces, radii and soft
+// shadows. Every pair is still measured for WCAG 2.2 AA in both themes.
 // Changed on purpose (MonoEdge design system, 16 Oct 2026): the owner's rules
 // file replaces the monoedge.in look. Its tokens exactly, the old names kept as
 // aliases, every text and edge pair still WCAG 2.2 AA in both themes, JetBrains
@@ -60,25 +63,24 @@ describe("MonoEdge design system", () => {
     return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
   };
 
+  // The handoff's colours (styles/kaagaz.css, sections 1 and 1b).
   const LIGHT = {
-    "--bg-page": "#fafbfc", "--bg-surface": "#ffffff", "--bg-subdued": "#f4f5f7", "--bg-hover": "#f4f5f7",
-    // Changed on purpose (UI audit, 16 Oct 2026): --text-muted a step darker (#697079 in the MonoEdge
-    // file), so muted text stays 4.5:1 on a selected row's tint too.
-    "--bg-selected": "#f4f7fd", "--text-primary": "#101114", "--text-secondary": "#4e545c", "--text-muted": "#646b74",
-    "--text-onaccent": "#ffffff", "--accent": "#204494", "--accent-hover": "#264e9f", "--accent-subtle": "#e9f0fa",
-    "--border": "#e8eaed", "--border-strong": "#d5d8dd", "--focus": "#204494",
-    "--success": "#1e7a3c", "--warning": "#b7791f", "--critical": "#b3261e",
+    "--bg-page": "#f6f5f1", "--bg-surface": "#ffffff", "--bg-subdued": "#efede6", "--bg-hover": "#efede6",
+    "--bg-selected": "#e8ecf7", "--text-primary": "#0e0e10", "--text-secondary": "#5b5b60", "--text-muted": "#66666b",
+    "--text-onaccent": "#ffffff", "--accent": "#1e4396", "--accent-hover": "#17357a", "--accent-subtle": "#e8ecf7",
+    "--border": "#e6e3da", "--border-strong": "#cfcbc0", "--focus": "#1e4396",
+    "--success": "#1b7a4b", "--warning": "#8a5800", "--critical": "#b42318",
   };
   const DARK = {
-    "--bg-page": "#08090a", "--bg-surface": "#101114", "--bg-subdued": "#1a1c1f", "--bg-hover": "#24272b",
-    // Changed on purpose (UI audit, 16 Oct 2026): a step lighter than #8a9099, 4.5:1 on --bg-selected.
-    "--bg-selected": "#172f65", "--text-primary": "#ffffff", "--text-secondary": "#b3b8c0", "--text-muted": "#9aa0a8",
-    "--text-onaccent": "#000000", "--accent": "#85a9dd", "--accent-hover": "#a3bee7", "--accent-subtle": "#172f65",
-    "--border": "#24272b", "--border-strong": "#33383e", "--focus": "#85a9dd",
-    "--success": "#4fb570", "--warning": "#e0a93a", "--critical": "#ef6e63",
+    "--bg-page": "#111113", "--bg-surface": "#18181b", "--bg-subdued": "#1f1f23", "--bg-hover": "#232327",
+    // A step lighter than the handoff's #8c8b87 (4.43:1), so muted text is 4.5:1 on a selected row.
+    "--bg-selected": "#1c2541", "--text-primary": "#f2f1ec", "--text-secondary": "#a6a5a0", "--text-muted": "#93928d",
+    "--text-onaccent": "#0b1430", "--accent": "#8fa8f0", "--accent-hover": "#b0c2f5", "--accent-subtle": "#1c2541",
+    "--border": "#2a2a2e", "--border-strong": "#3a3a40", "--focus": "#b0c2f5",
+    "--success": "#6fcf97", "--warning": "#edb02b", "--critical": "#f4917b",
   };
 
-  it("sets every MonoEdge colour token, in light and in both dark selectors", () => {
+  it("sets every colour token, in light and in both dark selectors", () => {
     expect(light).toMatchObject(LIGHT);
     expect(dark).toMatchObject(DARK);
     // The system's dark and the picked Dark are the same colours.
@@ -143,76 +145,78 @@ describe("MonoEdge design system", () => {
     expect(ratio(t, "--review-on-solid", "--review-solid")).toBeGreaterThanOrEqual(4.5);
   });
 
-  it("uses the 4px spacing scale, three control heights and one 2px radius", () => {
+  it("uses the 4px spacing scale, three control heights and the handoff's radii and shadows", () => {
     expect(light).toMatchObject({
       "--space-1": "4px", "--space-2": "8px", "--space-3": "12px", "--space-4": "16px",
       "--space-6": "24px", "--space-8": "32px", "--space-12": "48px", "--space-16": "64px",
-      "--h-sm": "28px", "--h-md": "36px", "--h-lg": "44px",
-      "--r-sm": "2px", "--r-md": "2px", "--r-full": "2px",
-      "--e-1": "none", "--e-2": "none",
+      "--h-sm": "32px", "--h-md": "40px", "--h-lg": "44px",
+      "--r-sm": "var(--k-r-2)", "--r-md": "var(--k-r-4)", "--r-full": "var(--k-r-pill)",
+      "--e-1": "var(--k-shadow-1)", "--e-2": "var(--k-shadow-2)",
     });
     const radii = Array.from(css.matchAll(/border-radius:\s*([^;]+);/g), (m) => m[1]);
-    // Square everywhere but the round spinners.
-    expect(radii.filter((r) => !["2px", "1px", "50%", "var(--r-sm)", "var(--r-md)"].includes(r ?? ""))).toEqual([]);
+    // Every corner from a token, but the round marks.
+    expect(radii.filter((r) => !/^(var\(--(r-sm|r-md|r-full|k-r-\d)\)|50%|1px)$/.test(r ?? ""))).toEqual([]);
   });
 
   it("sets the grid, the shell's zones and the layer scale (brief C)", () => {
     expect(light).toMatchObject({
       "--grid-columns": "12", "--gutter": "24px", "--margin": "32px", "--content-max": "1200px",
-      "--header-h": "56px", "--toolbar-h": "48px", "--statusbar-h": "32px", "--sidebar-w": "240px",
+      "--header-h": "var(--k-top-h)", "--toolbar-h": "48px", "--statusbar-h": "32px", "--sidebar-w": "var(--k-side-w)",
       "--z-base": "0", "--z-sticky": "10", "--z-dropdown": "20", "--z-overlay": "30",
       "--z-modal": "40", "--z-toast": "50", "--z-tooltip": "60",
       "--ease": "cubic-bezier(0.2, 0, 0.2, 1)",
     });
     expect(block("@media (max-width: 767.98px) {\n  :root {")).toMatchObject({
-      "--gutter": "16px", "--margin": "16px", "--header-h": "48px", "--bottombar-h": "56px",
+      "--gutter": "16px", "--margin": "16px", "--header-h": "60px", "--bottombar-h": "56px",
     });
   });
 
-  it("has no shadow, glow, gradient or backdrop blur in the global styles", () => {
+  it("takes shadows only from the shadow tokens, with no glow, gradient or backdrop blur", () => {
     const code = css.replace(/\/\*[\s\S]*?\*\//g, "");
-    expect(Array.from(code.matchAll(/box-shadow:\s*([^;]+);/g), (m) => m[1])).toEqual([]);
+    const shadows = Array.from(code.matchAll(/box-shadow:\s*([^;]+);/g), (m) => m[1]);
+    expect(shadows.filter((s) => !/^(var\(--e-[12]\)|0 0 0 4px var\(--accent-subtle\))$/.test(s ?? ""))).toEqual([]);
     expect(code).not.toMatch(/gradient\(|text-shadow|backdrop-filter|filter:\s*drop-shadow/);
   });
 
   it("styles the focus ring, labels and numbers as the rules say", () => {
     expect(css).toMatch(/:focus-visible \{\s*outline: 2px solid var\(--focus\);\s*outline-offset: 2px;\s*\}/);
-    expect(css).toMatch(/\.field > label,\s*\.label \{\s*font-size: var\(--fs-label\);\s*font-weight: 700;\s*letter-spacing: 0\.08em;\s*text-transform: uppercase;/);
+    // The handoff's field label: 13px, semibold, in ink.
+    expect(css).toMatch(/\.field > label,\s*\.label \{\s*font-size: var\(--fs-sm\);\s*font-weight: 600;\s*color: var\(--text-primary\);/);
     expect(light["--fs-label"]).toBe("0.6875rem");
     expect(css).toMatch(/body \{[^}]*font-variant-numeric: tabular-nums;/);
     expect(css).toMatch(/@media \(prefers-reduced-motion: no-preference\) \{\s*html \{\s*scroll-behavior: smooth;/);
   });
 
-  it("tells Verified from Needs review by a solid or dashed edge, never a pill", () => {
+  // Changed on purpose (UI rebuild, 21 Oct 2026): pills now, as the handoff's status badges.
+  it("tells Verified from Needs review by a solid or dashed edge", () => {
     expect(css).toMatch(/\.badge-verified \{[^}]*border: 1px solid var\(--verified-solid\);/);
     expect(css).toMatch(/\.badge-review \{[^}]*border: 1px dashed var\(--review-solid\);/);
     // Changed on purpose (Tushar, 16 Oct 2026: no Needs review in Ask): no edge on an answer card.
     expect(read("components/chat/Chat.module.css")).not.toContain("data-label");
   });
 
-  // Changed on purpose (UI audit G3/G4, 16 Oct 2026): the owner's decision over "mono everywhere".
-  // Inter for text and UI, JetBrains Mono for data only, Archivo (loaded) for headings; no Monument
-  // Extended (no licence here) and no Poppins.
-  it("loads Inter, JetBrains Mono and Archivo, each first in its stack, with Devanagari faces after them", () => {
+  // Changed on purpose (UI rebuild, 21 Oct 2026): the handoff's faces replace Inter and JetBrains
+  // Mono: Archivo set wide for headings, IBM Plex Sans for text, Plex Sans Devanagari for Hindi and
+  // Marathi, Plex Mono for data and labels. No Monument Extended (no licence here) and no Poppins.
+  it("loads the handoff's four faces and points the screens' font tokens at them", () => {
     const layout = read("app/layout.tsx");
-    expect(layout).toContain('import { Archivo, Inter, JetBrains_Mono } from "next/font/google";');
-    for (const variable of ["--font-inter", "--font-jetbrains-mono", "--font-archivo"]) {
+    expect(layout).toContain('import { Archivo, IBM_Plex_Mono, IBM_Plex_Sans, IBM_Plex_Sans_Devanagari } from "next/font/google";');
+    for (const variable of ["--font-archivo", "--font-plex-sans", "--font-plex-devanagari", "--font-plex-mono"]) {
       expect(layout).toContain(`variable: "${variable}"`);
     }
-    expect(layout.match(/display: "swap"/g)).toHaveLength(3);
-    expect(layout).toContain("className={`${inter.variable} ${jetbrainsMono.variable} ${archivo.variable}`}");
-    expect(light["--font-sans"]?.startsWith('var(--font-inter, "Inter"),')).toBe(true);
-    expect(light["--font-mono"]?.startsWith('var(--font-jetbrains-mono, "JetBrains Mono"),')).toBe(true);
-    expect(light["--font-display"]?.startsWith('var(--font-archivo, "Archivo"),')).toBe(true);
-    for (const token of ["--font-sans", "--font-mono", "--font-display"]) {
-      expect(light[token], token).toMatch(/"Noto Sans Devanagari",\s*"Nirmala UI"/);
-    }
+    expect(layout.match(/display: "swap"/g)).toHaveLength(4);
+    expect(layout).not.toMatch(/Inter|JetBrains/);
+    expect(light).toMatchObject({
+      "--font-sans": "var(--k-font-body)",
+      "--font-mono": "var(--k-font-mono)",
+      "--font-display": "var(--k-font-display)",
+    });
     for (const file of ["app/layout.tsx", "app/globals.css", "components/shell/Wordmark.module.css"]) {
       expect(read(file), file).not.toMatch(/Monument|Poppins/);
     }
   });
 
-  it("sets text in Inter and headings in Archivo, and keeps mono for data through .mono", () => {
+  it("sets text in Plex Sans and headings in Archivo, and keeps mono for data through .mono", () => {
     expect(css).toMatch(/body \{[^}]*font-family: var\(--font-sans\);/);
     expect(css).toMatch(/h1,\s*h2,\s*h3 \{\s*font-family: var\(--font-display\);/);
     expect(css).toMatch(/\.mono,\s*td\.num \{\s*font-family: var\(--font-mono\);/);

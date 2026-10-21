@@ -29,6 +29,15 @@
   min-width: 0;
 }
 
+/* The handoff's folder card (desktop/Documents.html): the tree on a raised white surface. */
+.treeWrap {
+  padding: var(--space-3) var(--space-2) var(--space-4);
+  border: 1px solid var(--k-card-edge);
+  border-radius: var(--k-r-4);
+  background: var(--k-surface);
+  box-shadow: var(--k-shadow-1);
+}
+
 /* One gap between the screen's sections: the place, Words in these files, the search and list. */
 .main {
   display: flex;
@@ -70,6 +79,22 @@
   gap: var(--space-3);
 }
 
+.treeIcon {
+  flex: none;
+  color: var(--k-ink-faint);
+}
+
+.treeLink[aria-current="page"] .treeIcon {
+  color: inherit;
+}
+
+.treeCount {
+  margin-inline-start: auto;
+  font-family: var(--k-font-mono);
+  font-size: var(--fs-label);
+  color: var(--k-ink-faint);
+}
+
 .tree,
 .subtree {
   list-style: none;
@@ -78,18 +103,17 @@
 }
 
 .subtree {
-  margin-inline-start: var(--space-3);
-  padding-inline-start: var(--space-1);
-  border-inline-start: 1px solid var(--border);
+  margin-inline-start: var(--space-4);
 }
 
 .treeLink {
   display: flex;
   align-items: center;
-  min-height: var(--control-h);
+  gap: var(--space-2);
+  min-height: var(--control-min);
   padding: var(--space-1) var(--space-3);
-  border-radius: 2px;
-  color: var(--text-primary);
+  border-radius: var(--k-r-2);
+  color: var(--k-ink);
   font-size: var(--fs-sm);
   text-decoration: none;
   overflow-wrap: anywhere;
@@ -145,12 +169,13 @@
 
 .groupHeading,
 .groupSub {
-  padding: var(--space-2) var(--space-3) var(--space-1);
-  font-size: var(--fs-label);
-  font-weight: 700;
-  letter-spacing: 0.08em;
+  padding: var(--space-4) var(--space-3) var(--space-1);
+  font-family: var(--k-font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.16em;
   text-transform: uppercase;
-  color: var(--text-secondary);
+  color: var(--k-ink-muted);
 }
 
 .groupSub {
@@ -165,7 +190,7 @@
 .trashItem {
   margin-block-start: var(--space-2);
   padding-block-start: var(--space-2);
-  border-block-start: 1px solid var(--border);
+  border-block-start: 1px solid var(--k-rule);
 }
 
 .trashItem .treeLink {
@@ -178,9 +203,9 @@
 
 /* The folder being viewed: bold as well as tinted, so colour is not the only sign. */
 .treeLink[aria-current="page"] {
-  background: var(--accent-subtle);
-  color: var(--accent);
-  font-weight: 700;
+  background: var(--k-accent-soft);
+  color: var(--k-accent-soft-ink);
+  font-weight: 600;
 }
 
 /* A short message with an optional Try again under it. */
@@ -302,7 +327,7 @@
   max-width: 34rem;
   padding: var(--space-3) var(--space-4);
   border: 1px solid var(--border);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   background: var(--bg-surface);
 }
 
@@ -349,18 +374,18 @@
   gap: var(--space-2);
 }
 
+/* desktop/Documents.html: each filter is a pill (.k-chip), as tall as the pills beside it. */
 .chip {
   display: inline-flex;
   align-items: center;
   min-height: var(--control-h);
   max-width: 100%;
-  padding: 0 var(--space-3);
-  border: 1px solid var(--border-strong);
-  border-radius: 2px;
-  background: var(--bg-surface);
-  color: var(--text-primary);
-  font-size: var(--fs-sm);
-  font-weight: 600;
+  padding: 0 var(--space-4);
+  border: 1px solid var(--k-rule);
+  border-radius: var(--k-r-pill);
+  background: var(--k-surface);
+  color: var(--k-ink);
+  font: 500 13px/1.2 var(--k-font-body);
   text-align: start;
   overflow-wrap: anywhere;
   cursor: pointer;
@@ -368,38 +393,40 @@
 
 @media (hover: hover) and (pointer: fine) {
   .chip:hover {
-    background-color: var(--bg-subdued);
+    border-color: var(--k-rule-strong);
   }
 }
 
-/* Set to something (D7): filled and edged, bold; the words say what. */
+/* Set to something (D7): the accent's soft fill and edge; the words say what. */
 .chip[data-active="true"] {
-  background-color: var(--accent-subtle);
-  border-color: var(--accent);
-  color: var(--text-primary);
-  font-weight: 700;
+  background-color: var(--k-accent-soft);
+  border-color: var(--k-accent);
+  color: var(--k-accent-soft-ink);
+  font-weight: 600;
 }
 
 /* A chip that opens a panel: a chevron at its end (the select's own caret). */
 .chipOpens {
-  padding-inline-end: calc(var(--space-3) + 12px + var(--space-2));
+  padding-inline-end: calc(var(--space-4) + 12px + var(--space-2));
   background-image: var(--select-caret);
   background-repeat: no-repeat;
-  background-position: right var(--space-3) center;
+  background-position: right var(--space-4) center;
   background-size: 12px 12px;
 }
 
-.chipOpens[aria-expanded="true"] {
-  background-color: var(--bg-selected);
+.chipOpens[aria-expanded="true"]:not([data-active="true"]) {
+  border-color: var(--k-rule-strong);
+  background-color: var(--k-sunken);
 }
 
-/* A set chip and its x: one control to the eye, two targets, sharing the chip's edge. */
+/* A set chip and its x: one pill to the eye, two targets, sharing the chip's edge. */
 .chipGroup {
   display: inline-flex;
   max-width: 100%;
 }
 
 .chipGroup[data-active="true"] > .chip {
+  border-inline-end: 0;
   border-start-end-radius: 0;
   border-end-end-radius: 0;
 }
@@ -407,18 +434,23 @@
 .chipRemove {
   min-width: var(--control-h);
   height: var(--control-h);
-  border-color: var(--accent);
+  border-color: var(--k-accent);
   border-inline-start: 0;
   border-start-start-radius: 0;
   border-end-start-radius: 0;
-  background: var(--accent-subtle);
+  border-start-end-radius: var(--k-r-pill);
+  border-end-end-radius: var(--k-r-pill);
+  background: var(--k-accent-soft);
+  color: var(--k-accent-soft-ink);
 }
 
+/* A chip's panel: a raised card just under the row. */
 .filterPanel {
-  padding: var(--space-3) var(--space-4);
-  border: 1px solid var(--border);
-  border-radius: 2px;
-  background: var(--bg-surface);
+  padding: var(--space-4);
+  border: 1px solid var(--k-card-edge);
+  border-radius: var(--k-r-4);
+  background: var(--k-surface);
+  box-shadow: var(--k-shadow-1);
 }
 
 .filterPanel fieldset,
@@ -523,7 +555,7 @@
 .tag {
   display: inline-block;
   padding: 0 var(--space-2);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   background: var(--bg-subdued);
   color: var(--text-primary);
   font-size: var(--fs-sm);
@@ -549,7 +581,7 @@
   padding: var(--space-1);
   list-style: none;
   border: 1px solid var(--border-strong);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   background: var(--bg-surface);
   text-align: start;
   white-space: normal;
@@ -563,7 +595,7 @@
   min-height: var(--control-h);
   padding: 0 var(--space-3);
   border: 0;
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   background: transparent;
   color: var(--text-primary);
   font-size: var(--fs-sm);

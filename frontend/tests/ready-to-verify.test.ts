@@ -106,14 +106,15 @@ describe("the confidence tooltip", () => {
     expect(placeTip({ top: 100, bottom: 124, left: 10 }, { width: 500, height: 30 }, view).left).toBe(8);
   });
 
-  it("looks like MonoEdge: 2px radius, 1px border, no shadow, the surface colour, small tabular text", () => {
+  // Changed on purpose (UI rebuild, 21 Oct 2026): the handoff's raised surface, soft corner and shadow.
+  it("looks like the handoff's floating card: soft corner, hairline edge, raised surface, small tabular text", () => {
     const css = read("app/globals.css");
     const rule = /\n\.tip \{([^}]*)\}/.exec(css)?.[1] ?? "";
-    expect(rule).toContain("border-radius: 2px;");
-    expect(rule).toContain("border: 1px solid var(--border-strong);");
-    expect(rule).toContain("background: var(--surface);");
+    expect(rule).toContain("border-radius: var(--r-sm);");
+    expect(rule).toContain("border: 1px solid var(--k-card-edge);");
+    expect(rule).toContain("background: var(--k-raised);");
+    expect(rule).toContain("box-shadow: var(--e-2);");
     expect(rule).toContain("font-size: var(--fs-sm);");
-    expect(rule).not.toContain("shadow");
     expect(read("components/ui/Tip.tsx")).toContain('className="tip tabular"');
   });
 

@@ -1,0 +1,249 @@
+/* Kaagaz design tokens, copied exactly from design/kaagaz-ui-handoff/styles/kaagaz.css
+   (sections 1, 1b and 2). The one addition is the System block after the dark one:
+   with no data-theme on <html> (the "system" choice, lib/theme.ts) the dark tokens
+   follow prefers-color-scheme (docs/architecture.md, Decisions: D-2). The three --k-font-* tokens
+   point at the faces app/layout.tsx serves through next/font, with the handoff's
+   fallbacks after them. The only file outside globals.css allowed to hold hex colours
+   (tests/guards.test.ts). */
+
+/* ---------- 1. Tokens: light (default) ---------- */
+:root,
+[data-theme="light"] {
+  color-scheme: light;
+  --k-ground: #F6F5F1;          /* MonoEdge warm off-white */
+  --k-surface: #FFFFFF;
+  --k-raised: #FFFFFF;
+  --k-sunken: #EFEDE6;
+  --k-card-edge: rgba(14, 14, 16, 0.05);
+  --k-paper: #FFFFFF;
+  --k-paper-ink: #1A1A1A;
+  --k-paper-rule: #E2E0D8;
+  --k-mark-cite: #1E4396; --k-mark-unsure: #A06B00; --k-mark-unreadable: #B42318; --k-mark-unconfirmed: #66666B;
+  --k-mark-unsure-fill: rgba(240, 180, 40, 0.18); --k-mark-unreadable-hatch: rgba(180, 35, 24, 0.28); --k-on-fill: #FFFFFF; --k-stripe: rgba(255, 255, 255, 0.28);
+
+  --k-ink: #0E0E10;
+  --k-ink-muted: #5B5B60;
+  --k-ink-faint: #66666B;
+  --k-ink-inverse: #FFFFFF;
+  --k-rule: #E6E3DA;
+  --k-rule-strong: #CFCBC0;
+
+  --k-accent: #1E4396;          /* MonoEdge royal blue */
+  --k-accent-hover: #17357A;
+  --k-accent-ink: #FFFFFF;
+  --k-accent-soft: #E8ECF7;
+  --k-accent-soft-ink: #1E4396;
+  --k-accent-2: #2A55C0;        /* lighter blue for illustrative panels */
+  --k-accent-line: rgba(255, 255, 255, 0.14);
+  --k-focus: #1E4396;
+  --k-cite-fill: rgba(30, 67, 150, 0.12);
+
+  /* sidebar: light, part of the page */
+  --k-nav-bg: #F6F5F1;
+  --k-nav-ink: #55555A;
+  --k-nav-ink-strong: #0E0E10;
+  --k-nav-active: #FFFFFF;
+  --k-nav-rule: #E6E3DA;
+  --k-nav-accent: #1E4396;
+
+  /* inverse surface: bulk bar, toasts, mini tray */
+  --k-inverse-bg: #141416;
+  --k-inverse-ink: #F6F5F1;
+  --k-inverse-muted: #A9A9AE;
+  --k-inverse-line: #2A2A2E;
+  --k-inverse-accent: #9DB4F0;
+
+  --k-verified: #1B7A4B;   --k-verified-ink: #FFFFFF;  --k-verified-soft: #E1F2E7;
+  --k-review: #8A5800;     --k-review-soft: #FBF0D2;   --k-review-mark: #C08A00;
+  --k-danger: #B42318;     --k-danger-ink: #FFFFFF;    --k-danger-soft: #FCE6E2;
+  --k-info: #35588F;       --k-info-soft: #E7EDF6;
+  --k-neutral: #5E5E63;    --k-neutral-soft: #EEEDE8;
+
+  --k-lab-public: #1B7A4B;       --k-lab-public-soft: #E1F2E7;
+  --k-lab-internal: #4A5E80;     --k-lab-internal-soft: #E8ECF2;
+  --k-lab-confidential: #8A5800; --k-lab-confidential-soft: #FBF0D2;
+  --k-lab-restricted: #B42318;   --k-lab-restricted-soft: #FCE6E2;
+
+  --k-diff-add: #1B7A4B;  --k-diff-add-soft: #E1F2E7;
+  --k-diff-del: #B42318;  --k-diff-del-soft: #FCE6E2;
+
+  --k-chart-1: #1E4396;
+  --k-chart-2: #9DB0DD;
+  --k-chart-track: #ECEAE3;
+  --k-dot: rgba(30, 67, 150, 0.22);
+
+  --k-shadow-1: 0 1px 2px rgba(20, 20, 30, 0.04), 0 2px 8px -4px rgba(20, 20, 30, 0.06);
+  --k-shadow-2: 0 28px 56px -24px rgba(20, 24, 40, 0.28), 0 6px 16px -6px rgba(20, 24, 40, 0.10);
+  --k-shadow-page: 0 1px 2px rgba(20, 20, 30, 0.08), 0 12px 28px -14px rgba(20, 20, 30, 0.22);
+  --k-scrim: rgba(14, 14, 16, 0.40);
+}
+
+/* ---------- 1b. Tokens: dark ---------- */
+[data-theme="dark"] {
+  color-scheme: dark;
+  --k-ground: #111113;
+  --k-surface: #18181B;
+  --k-raised: #1F1F23;
+  --k-sunken: #0C0C0E;
+  --k-card-edge: rgba(255, 255, 255, 0.06);
+  --k-paper: #E9E7E1;
+  --k-paper-ink: #1A1A1A;
+  --k-paper-rule: #CBC8BF;
+  --k-mark-cite: #1E4396; --k-mark-unsure: #A06B00; --k-mark-unreadable: #B42318; --k-mark-unconfirmed: #66666B;
+  --k-mark-unsure-fill: rgba(240, 180, 40, 0.18); --k-mark-unreadable-hatch: rgba(180, 35, 24, 0.28); --k-on-fill: #FFFFFF; --k-stripe: rgba(255, 255, 255, 0.28);
+
+  --k-ink: #F2F1EC;
+  --k-ink-muted: #A6A5A0;
+  --k-ink-faint: #8C8B87;
+  --k-ink-inverse: #111113;
+  --k-rule: #2A2A2E;
+  --k-rule-strong: #3A3A40;
+
+  --k-accent: #8FA8F0;
+  --k-accent-hover: #B0C2F5;
+  --k-accent-ink: #0B1430;
+  --k-accent-soft: #1C2541;
+  --k-accent-soft-ink: #B7C6F6;
+  --k-accent-2: #2A4A9E;
+  --k-accent-line: rgba(255, 255, 255, 0.10);
+  --k-focus: #B0C2F5;
+  --k-cite-fill: rgba(30, 67, 150, 0.18);
+
+  --k-nav-bg: #111113;
+  --k-nav-ink: #A6A5A0;
+  --k-nav-ink-strong: #F2F1EC;
+  --k-nav-active: #1F1F23;
+  --k-nav-rule: #2A2A2E;
+  --k-nav-accent: #8FA8F0;
+
+  --k-inverse-bg: #F2F1EC;
+  --k-inverse-ink: #111113;
+  --k-inverse-muted: #55555A;
+  --k-inverse-line: #D9D7CF;
+  --k-inverse-accent: #1E4396;
+
+  --k-verified: #6FCF97;   --k-verified-ink: #08200F;  --k-verified-soft: #10301F;
+  --k-review: #EDB02B;     --k-review-soft: #3A2C0A;   --k-review-mark: #C08A00;
+  --k-danger: #F4917B;     --k-danger-ink: #2A0B05;    --k-danger-soft: #3B1712;
+  --k-info: #9DB8E6;       --k-info-soft: #182638;
+  --k-neutral: #A9A8A3;    --k-neutral-soft: #222226;
+
+  --k-lab-public: #6FCF97;       --k-lab-public-soft: #10301F;
+  --k-lab-internal: #A9BBD8;     --k-lab-internal-soft: #1E2533;
+  --k-lab-confidential: #EDB02B; --k-lab-confidential-soft: #3A2C0A;
+  --k-lab-restricted: #F4917B;   --k-lab-restricted-soft: #3B1712;
+
+  --k-diff-add: #6FCF97;  --k-diff-add-soft: #10301F;
+  --k-diff-del: #F4917B;  --k-diff-del-soft: #3B1712;
+
+  --k-chart-1: #8FA8F0;
+  --k-chart-2: #3A4E86;
+  --k-chart-track: #232327;
+  --k-dot: rgba(143, 168, 240, 0.22);
+
+  --k-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --k-shadow-2: 0 28px 56px -20px rgba(0, 0, 0, 0.75), 0 4px 12px -4px rgba(0, 0, 0, 0.5);
+  --k-shadow-page: 0 1px 2px rgba(0, 0, 0, 0.5), 0 14px 28px -12px rgba(0, 0, 0, 0.7);
+  --k-scrim: rgba(0, 0, 0, 0.6);
+}
+
+/* ---------- 1c. Tokens: dark when the system says so (no explicit choice) ---------- */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --k-ground: #111113;
+    --k-surface: #18181B;
+    --k-raised: #1F1F23;
+    --k-sunken: #0C0C0E;
+    --k-card-edge: rgba(255, 255, 255, 0.06);
+    --k-paper: #E9E7E1;
+    --k-paper-ink: #1A1A1A;
+    --k-paper-rule: #CBC8BF;
+    --k-mark-cite: #1E4396; --k-mark-unsure: #A06B00; --k-mark-unreadable: #B42318; --k-mark-unconfirmed: #66666B;
+    --k-mark-unsure-fill: rgba(240, 180, 40, 0.18); --k-mark-unreadable-hatch: rgba(180, 35, 24, 0.28); --k-on-fill: #FFFFFF; --k-stripe: rgba(255, 255, 255, 0.28);
+
+    --k-ink: #F2F1EC;
+    --k-ink-muted: #A6A5A0;
+    --k-ink-faint: #8C8B87;
+    --k-ink-inverse: #111113;
+    --k-rule: #2A2A2E;
+    --k-rule-strong: #3A3A40;
+
+    --k-accent: #8FA8F0;
+    --k-accent-hover: #B0C2F5;
+    --k-accent-ink: #0B1430;
+    --k-accent-soft: #1C2541;
+    --k-accent-soft-ink: #B7C6F6;
+    --k-accent-2: #2A4A9E;
+    --k-accent-line: rgba(255, 255, 255, 0.10);
+    --k-focus: #B0C2F5;
+    --k-cite-fill: rgba(30, 67, 150, 0.18);
+
+    --k-nav-bg: #111113;
+    --k-nav-ink: #A6A5A0;
+    --k-nav-ink-strong: #F2F1EC;
+    --k-nav-active: #1F1F23;
+    --k-nav-rule: #2A2A2E;
+    --k-nav-accent: #8FA8F0;
+
+    --k-inverse-bg: #F2F1EC;
+    --k-inverse-ink: #111113;
+    --k-inverse-muted: #55555A;
+    --k-inverse-line: #D9D7CF;
+    --k-inverse-accent: #1E4396;
+
+    --k-verified: #6FCF97;   --k-verified-ink: #08200F;  --k-verified-soft: #10301F;
+    --k-review: #EDB02B;     --k-review-soft: #3A2C0A;   --k-review-mark: #C08A00;
+    --k-danger: #F4917B;     --k-danger-ink: #2A0B05;    --k-danger-soft: #3B1712;
+    --k-info: #9DB8E6;       --k-info-soft: #182638;
+    --k-neutral: #A9A8A3;    --k-neutral-soft: #222226;
+
+    --k-lab-public: #6FCF97;       --k-lab-public-soft: #10301F;
+    --k-lab-internal: #A9BBD8;     --k-lab-internal-soft: #1E2533;
+    --k-lab-confidential: #EDB02B; --k-lab-confidential-soft: #3A2C0A;
+    --k-lab-restricted: #F4917B;   --k-lab-restricted-soft: #3B1712;
+
+    --k-diff-add: #6FCF97;  --k-diff-add-soft: #10301F;
+    --k-diff-del: #F4917B;  --k-diff-del-soft: #3B1712;
+
+    --k-chart-1: #8FA8F0;
+    --k-chart-2: #3A4E86;
+    --k-chart-track: #232327;
+    --k-dot: rgba(143, 168, 240, 0.22);
+
+    --k-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --k-shadow-2: 0 28px 56px -20px rgba(0, 0, 0, 0.75), 0 4px 12px -4px rgba(0, 0, 0, 0.5);
+    --k-shadow-page: 0 1px 2px rgba(0, 0, 0, 0.5), 0 14px 28px -12px rgba(0, 0, 0, 0.7);
+    --k-scrim: rgba(0, 0, 0, 0.6);
+  }
+}
+
+/* ---------- 2. Type, space, radius ---------- */
+:root {
+  --k-font-display: var(--font-archivo), "Archivo", var(--font-plex-sans), system-ui, sans-serif;   /* wide grotesk, set at wdth 112 */
+  --k-font-body: var(--font-plex-sans), var(--font-plex-devanagari), "IBM Plex Sans", "IBM Plex Sans Devanagari", "Noto Sans Devanagari", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --k-font-mono: var(--font-plex-mono), "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --k-display-stretch: 112%;
+
+  --k-fs-11: 11px; --k-fs-12: 12px; --k-fs-13: 13px; --k-fs-14: 14px;
+  --k-fs-16: 16px; --k-fs-18: 18px; --k-fs-22: 22px; --k-fs-28: 30px;
+  --k-fs-36: 40px; --k-fs-48: 56px;
+  --k-lh-tight: 1.08; --k-lh-ui: 1.45; --k-lh-read: 1.65;
+
+  --k-sp-1: 2px;  --k-sp-2: 4px;  --k-sp-3: 8px;  --k-sp-4: 12px;
+  --k-sp-5: 16px; --k-sp-6: 20px; --k-sp-7: 24px; --k-sp-8: 32px;
+  --k-sp-9: 40px; --k-sp-10: 48px; --k-sp-11: 64px;
+
+  --k-r-1: 4px;    /* marks, thumbnails, paper */
+  --k-r-2: 10px;   /* small tiles, keys, tree items */
+  --k-r-3: 14px;   /* inputs, menus items, source crops */
+  --k-r-4: 20px;   /* cards, panels, tables */
+  --k-r-5: 28px;   /* hero panels, dialogs, drop zone */
+  --k-r-pill: 999px; /* buttons, chips, badges, nav items */
+
+  --k-side-w: 244px;
+  --k-side-w-collapsed: 72px;
+  --k-top-h: 68px;
+  --k-touch: 44px;
+  --k-ease: cubic-bezier(.2, .7, .2, 1);
+}

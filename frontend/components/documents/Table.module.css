@@ -31,7 +31,7 @@
   border-spacing: 0;
   background: var(--bg-surface);
   border: 1px solid var(--border);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
 }
 
 /* Long words break only when they cannot fit on a line of their own. */
@@ -96,7 +96,7 @@
   .reflow tbody tr {
     background: var(--bg-surface);
     border: 1px solid var(--border);
-    border-radius: 2px;
+    border-radius: var(--k-r-2);
     padding: var(--space-3) var(--space-4);
   }
 

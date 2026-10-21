@@ -1,0 +1,141 @@
+/* Tables and the bulk bar (design/kaagaz-ui-handoff/styles/kaagaz.css, section 10). */
+
+.wrap {
+  position: relative;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  border: 1px solid var(--k-card-edge);
+  border-radius: var(--k-r-4);
+  background: var(--k-surface);
+  box-shadow: var(--k-shadow-1);
+}
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13.5px;
+  color: var(--k-ink);
+}
+.table th {
+  text-align: left;
+  font: 500 10.5px/1 var(--k-font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--k-ink-muted);
+  padding: 0 16px;
+  height: 46px;
+  background: transparent;
+  border-bottom: 1px solid var(--k-rule);
+  white-space: nowrap;
+}
+.table td {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--k-rule);
+  vertical-align: middle;
+}
+.table tr:last-child td {
+  border-bottom: 0;
+}
+.table tbody tr:hover td {
+  background: var(--k-ground);
+}
+.table tr.selected td {
+  background: var(--k-accent-soft);
+}
+.table input[type="checkbox"] {
+  accent-color: var(--k-accent);
+}
+.num {
+  text-align: right;
+  font-family: var(--k-font-mono);
+}
+
+.sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.sort:focus-visible {
+  outline: 2px solid var(--k-focus);
+  outline-offset: 2px;
+}
+.sorted {
+  color: var(--k-accent);
+}
+/* There is no up chevron in the set: ascending turns the down one over. */
+.up {
+  transform: rotate(180deg);
+}
+
+.name {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  font-weight: 500;
+}
+.nameText {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.sub {
+  font-size: 12px;
+  color: var(--k-ink-muted);
+  font-weight: 400;
+}
+.file {
+  width: 24px;
+  height: 30px;
+  flex: none;
+  background: var(--k-paper);
+  border: 1px solid var(--k-rule-strong);
+  clip-path: polygon(0 0, 66% 0, 100% 26%, 100% 100%, 0 100%);
+  border-radius: 3px;
+  position: relative;
+}
+.file::after {
+  content: attr(data-ext);
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 4px;
+  text-align: center;
+  font: 600 7px/1 var(--k-font-mono);
+  color: var(--k-accent);
+  letter-spacing: 0.04em;
+}
+
+.bulk {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 8px 10px 8px 22px;
+  background: var(--k-inverse-bg);
+  color: var(--k-inverse-ink);
+  border-radius: var(--k-r-pill);
+  box-shadow: var(--k-shadow-2);
+}
+.bulk button,
+.bulk button:hover {
+  background: transparent;
+  color: var(--k-inverse-ink);
+  border-color: var(--k-inverse-line);
+}
+.bulk button:hover {
+  background: var(--k-inverse-line);
+}
+.bulk button:focus-visible {
+  outline-color: var(--k-inverse-accent);
+}
+.clear {
+  margin-left: auto;
+}

@@ -14,7 +14,7 @@ import {
   signedOutPath,
   signInPath,
 } from "@/components/shell/gate";
-import { currentPageName, isCurrent, navLinks, roleName } from "@/components/shell/nav";
+import { currentPageName, isCurrent, navLinks, reviewCountText, roleName } from "@/components/shell/nav";
 import { ShellMenu } from "@/components/shell/ShellMenu";
 import type { Me, Role, SessionScope } from "@/lib/types";
 
@@ -261,17 +261,34 @@ describe("one nav list for the sidebar and the drawer", () => {
 // UI mockups board 5 (16 Oct 2026): the Review link counts the values waiting to be checked.
 // Changed on purpose (Tushar, 16 Oct 2026): the Review link carries no count; a big
 // number there made people uneasy. The Review page itself has the list.
+// Changed on purpose (D-7, Vrushit, 21 Oct 2026): the handoff's count is back for a reviewer and an
+// admin; a member has no Review link and the shell never asks for a count for one.
 describe("the Review link", () => {
-  const menu = (role: Role) =>
-    renderToStaticMarkup(createElement(ShellMenu, { links: navLinks(role, "admin"), pathname: "/documents" }));
+  const menu = (role: Role, reviewCount: string | null) =>
+    renderToStaticMarkup(
+      createElement(ShellMenu, { links: navLinks(role, "admin"), pathname: "/documents", reviewCount }),
+    );
 
-  it("shows no count, and the shell never asks the server for one", () => {
-    const html = menu("admin");
-    expect(html).toContain('href="/review"');
-    expect(html).not.toContain("to check");
+  it("shows the values waiting on the Review link, said with its words", () => {
+    const html = menu("admin", "23");
+    expect(html).toMatch(/href="\/review"[^>]*>.*<span>Review<\/span><span class="_count_\w+">23<span class="visually-hidden"> to review<\/span><\/span><\/a>/);
+    expect(menu("admin", null)).not.toContain("to review");
+  });
+
+  it("counts in words a link can hold, none at 0", () => {
+    expect(reviewCountText(null)).toBeNull();
+    expect(reviewCountText(0)).toBeNull();
+    expect(reviewCountText(23)).toBe("23");
+    expect(reviewCountText(99)).toBe("99");
+    expect(reviewCountText(1200)).toBe("99+");
+  });
+
+  it("asks the server only for a reviewer or an admin", () => {
     const shell = readFileSync(join(__dirname, "..", "components", "shell", "AppShell.tsx"), "utf8");
-    expect(shell).not.toContain("listReview");
-    expect(readFileSync(join(__dirname, "..", "components", "shell", "Shell.module.css"), "utf8")).not.toMatch(/^\.badge \{/m);
+    expect(shell).toContain("const reviewer = canReview(me.user.role);");
+    expect(shell).toMatch(/if \(!reviewer\) return;\s*let cancelled = false;\s*listReview\(\{ limit: 1 \}\)/);
+    expect(shell).toContain("const reviewCount = reviewer ? reviewCountText(reviewTotal) : null;");
+    expect(menu("member", "23")).not.toContain("review");
   });
 });
 

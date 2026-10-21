@@ -1,0 +1,73 @@
+/* Empty states and the ledger drawing (design/kaagaz-ui-handoff/styles/kaagaz.css, section 16). */
+
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 16px;
+  padding: 56px 24px;
+}
+.empty p {
+  max-width: 46ch;
+  color: var(--k-ink-muted);
+  margin: 0;
+}
+.stack {
+  position: relative;
+  width: 180px;
+  height: 132px;
+}
+
+.ledger {
+  display: block;
+  width: 180px;
+  height: 132px;
+  position: relative;
+  background: var(--k-paper);
+  border-radius: 6px;
+  box-shadow: var(--k-shadow-page);
+  background-image:
+    radial-gradient(var(--k-dot) 1.1px, transparent 1.5px),
+    repeating-linear-gradient(180deg, transparent 0 15px, var(--k-paper-rule) 15px 16px);
+  background-size:
+    12px 12px,
+    100% 100%;
+  background-position:
+    0 0,
+    0 26px;
+}
+.ledger::before {
+  content: "";
+  position: absolute;
+  left: 18px;
+  right: 70px;
+  top: 14px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--k-accent);
+  opacity: 0.85;
+}
+.ledger::after {
+  content: "";
+  position: absolute;
+  right: 16px;
+  bottom: 14px;
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  border: 2px solid var(--k-accent);
+  transform: rotate(-12deg);
+  box-shadow:
+    inset 0 0 0 4px var(--k-paper),
+    inset 0 0 0 5px var(--k-accent);
+}
+.back {
+  position: absolute;
+  transform: rotate(-5deg) translate(-16px, 6px);
+  opacity: 0.55;
+}
+.front {
+  position: absolute;
+  inset: 0;
+}

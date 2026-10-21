@@ -61,6 +61,38 @@
 }
 
 /* The two readings: side by side from 720 px, stacked below. */
+/* desktop/Review.html: the spot on the sunken side, the readings and the typing beside it. */
+.spot {
+  min-width: 0;
+  padding: var(--space-3);
+  border-radius: var(--k-r-4);
+  background: var(--k-sunken);
+}
+
+.work {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+@media (min-width: 1180px) {
+  .item {
+    display: grid;
+    grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+    gap: var(--space-4) var(--space-6);
+    align-items: start;
+  }
+
+  .item > .head {
+    grid-column: 1 / -1;
+  }
+}
+
+.reasons {
+  margin-block-end: var(--space-1);
+}
+
 .readings {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -78,26 +110,27 @@
   flex-direction: column;
   align-items: flex-start;
   gap: var(--space-2);
-  padding: var(--space-3) var(--space-4);
-  border: 1px solid var(--border);
-  border-radius: 2px;
-  background: var(--bg-subdued);
+  padding: var(--space-4);
+  border: 1px solid var(--k-rule);
+  border-radius: var(--k-r-4);
+  background: var(--k-surface);
   min-width: 0;
 }
 
 .readingHeading {
   margin: 0;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
+  font: 500 10px/1.4 var(--k-font-mono);
+  letter-spacing: 0.16em;
   text-transform: uppercase;
-  color: var(--text-secondary);
+  color: var(--k-ink-muted);
 }
 
+/* The handoff's reading value (.k-reading-val): large mono figures. */
 .readingText {
   margin: 0;
-  font-family: var(--font-mono);
-  font-size: var(--fs-lg);
+  font-family: var(--k-font-mono);
+  font-size: 22px;
+  font-weight: 500;
   font-variant-numeric: tabular-nums;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -164,7 +197,7 @@
   margin: 0;
   padding: var(--space-2) var(--space-3);
   border: 1px solid var(--border);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   background: var(--bg-surface);
   font-size: var(--fs-sm);
 }
@@ -187,7 +220,7 @@
 
 .skeletonCard {
   height: 26rem;
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
 }
 
 .errorBanner {
@@ -197,7 +230,7 @@
   gap: var(--space-3);
   padding: var(--space-3) var(--space-4);
   border: 1px solid var(--critical);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   background: var(--bg-surface);
   color: var(--text-primary);
 }
@@ -249,9 +282,9 @@
   align-self: flex-start;
   gap: 2px;
   padding: 2px;
-  border: 1px solid var(--border-strong);
-  border-radius: 2px;
-  background: var(--bg-subdued);
+  border: 1px solid transparent;
+  border-radius: var(--k-r-pill);
+  background: var(--k-sunken);
 }
 
 /* The track (2px padding and a 1px edge each side) is one control tall. On
@@ -263,9 +296,10 @@
   height: calc(var(--control-h) - 6px);
   line-height: 1.25;
   padding-inline: var(--space-4);
-  color: var(--text-secondary);
-  font-size: var(--fs-sm);
-  font-weight: 600;
+  border-radius: var(--k-r-pill);
+  color: var(--k-ink-muted);
+  font-size: 13px;
+  font-weight: 500;
   cursor: pointer;
 }
 
@@ -276,10 +310,9 @@
 }
 
 .segment:has(input:checked) {
-  background: var(--bg-surface);
-  color: var(--text-primary);
-  outline: 1px solid var(--border-strong);
-  outline-offset: -1px;
+  background: var(--k-surface);
+  color: var(--k-ink);
+  box-shadow: var(--k-shadow-1);
 }
 
 .segment:has(input:focus-visible) {
@@ -326,7 +359,7 @@
   min-width: 1.5em;
   padding: 0 var(--space-1);
   border: 1px solid var(--border-strong);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   font-family: var(--font-mono);
   text-align: center;
   color: var(--text-primary);

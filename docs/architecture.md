@@ -137,6 +137,84 @@ The `isolation` tests prove both on every pull request.
 | Migrations blocking the app | Every migration runs with `lock_timeout` 10 s (`migrations/env.py`), so a busy table makes it fail fast instead of queueing requests |
 | Secrets and dependencies | No secrets in git, and CI checks for them; every new library needs approval; AGPL, SSPL and GPL v3 are refused |
 
+## The screens
+
+The look comes from the design handoff in `design/kaagaz-ui-handoff/` (HANDOFF.md, `styles/kaagaz.css`, the screens in `screens/`). Signed off for the UI rebuild on 20 and 21 Oct 2026.
+
+**The design system.**
+- `frontend/app/styles/tokens.css` holds the handoff's tokens (`--k-*`) exactly, light and dark; a System choice follows `prefers-color-scheme`. `app/styles/base.css` holds its base and type classes under `.k-root`.
+- `app/globals.css` keeps the screens' token names (`--bg-page`, `--accent`, `--r-sm`, ...) but gives them the handoff's values, so every screen has the look. Every text and edge pair is measured for WCAG 2.2 AA in both themes (`tests/theme.test.ts`).
+- Faces, through `next/font`: Archivo set wide for headings, IBM Plex Sans for text, Plex Sans Devanagari for Hindi and Marathi, Plex Mono for data and labels.
+- The UI kit is `components/ui/<Name>/<Name>.tsx`, one CSS module each, with render tests in `tests/kit-*.test.ts`. `/kit` shows every part in its states, in development only.
+- Icons: `components/ui/Icon/`, the handoff's set at a 1.6 stroke, plus ten the screens draw that the set left out.
+
+**What a status means** (`frontend/lib/status.ts`, the only place this lives):
+
+| State | Backend values |
+|---|---|
+| Verified | value `label = verified`; a value fixed by a reviewer (`corrected`, `learned_correction`); answer `answered` with `label = verified` |
+| Ready to verify (the review state) | value `label = needs_review`, its reason in plain words from `label_reason`; answer `label = needs_review` or `status = unchecked`; page `read_quality = uncertain` |
+| From documents | answer `answered` with `label = null` |
+| Not found | answer `not_found` |
+| Reading | document `received` or `clean` |
+| Failed, always with its reason and one fix | document `failed`, `rejected` or `needs_reader` (the fix kept per `failure_code`); page `read_quality = unreadable` |
+
+**The shell** (`components/shell/`): the sidebar with the brand, the links for the role and session, and the workspace; the top bar with the search, Upload and the account menu; the status bar; the phone's tab bar. Only `<main>` and the sidebar scroll.
+- Upload works on every page: the shell holds the one upload queue and the one batch tray (`Uploads.tsx`). The documents screen and the dashboard add files into the folder or department they show; anywhere else the files go into the last department used.
+- The top bar's search opens `/search`: inside documents first, names on request.
+- A reviewer's and an admin's Review link shows the values waiting there; a member has no Review link.
+
+**Needs backend.** Parts of the handoff the backend can't feed yet. Each stays out of the UI (or uses its fallback) behind `TODO(needs-backend: NB-xx)`; no screen shows made-up data. Size: S = a field or filter on an existing query, M = a new endpoint, L = a new feature. Priority 1 first, then 2 (approved 20 Oct 2026); the list as of that day.
+
+| # | What the UI needs | Screens | Size | Priority |
+|---|---|---|---|---|
+| NB-01 | Theme saved on the user's profile (today: cookie per browser) | Shell | S |  |
+| NB-02 | Notifications (bell count, list, "ready" notices) | Shell, Upload | L |  |
+| NB-03 | Backup codes for two-step | Sign in | M |  |
+| NB-04 | Forgot / reset my password by email | Sign in | M |  |
+| NB-05 | "Keep me signed in" | Sign in | S |  |
+| NB-06 | Review count per department | Home | S |  |
+| NB-07 | New versions split: linked by people vs on their own | Home | S |  |
+| NB-08 | Last updated per department | Home | S |  |
+| NB-09 | Folder path on dashboard recent documents | Home | S | 1 |
+| NB-10 | Recently viewed by me | Phone Home | M |  |
+| NB-11 | Max files per batch in `/upload-limits` | Upload | S | 1 |
+| NB-12 | Why a file was filed or re-filed | Upload | S |  |
+| NB-13 | File counts per folder in `GET /folders` | Documents | S | 1 |
+| NB-14 | Marathi / Hindi labels for document types, folder subtitles and value fields | Documents, Document page | S |  |
+| NB-15 | `doc_types[]` filter on `GET /documents` | Documents | S | 1 |
+| NB-16 | Label on related documents | Document page | S | 1 |
+| NB-17 | Link reason (overlap %, shared id) on each version | Document page | S |  |
+| NB-18 | Plain-words explanation of each change in Compare | Compare | M |  |
+| NB-19 | Version number on each citation | Ask | S | 1 |
+| NB-20 | "Scope widened" flag on answers | Ask | S |  |
+| NB-21 | Table answers with the rows behind a total, and their export | Ask | M | 2 |
+| NB-22 | Both readings on a needs-review citation | Ask | S |  |
+| NB-23 | Streamed live steps and answers that survive a reload | Ask | L | 2 |
+| NB-24 | How many documents were searched, on Not found | Ask | S |  |
+| NB-25 | Glossary / Latin-spelling expansions in `understood_words` | Search | S |  |
+| NB-26 | Version, label, folder path and page notes on search results | Search | S | 1 |
+| NB-27 | Search sorting and "show more" paging | Search | M |  |
+| NB-28 | Review counts by reason | Review | S |  |
+| NB-29 | Review check notes ("matches the words") and "used in N answers" | Review | M |  |
+| NB-30 | Values cleared this week | Review | S |  |
+| NB-31 | Where each of My words was used | My words | M |  |
+| NB-32 | Suggested words | My words | M |  |
+| NB-33 | Invites | Admin | M |  |
+| NB-34 | People in departments (comes with access control) | Admin | L |  |
+| NB-35 | Last active on admin users | Admin | S | 1 |
+| NB-36 | Sign-in device and place, lock events, uploads per user | Admin | M |  |
+| NB-37 | Org settings: batch limit, link on their own, default label, sign out after | Admin | M |  |
+| NB-38 | Plan quotas (pages, storage) | Admin, Operator | M |  |
+| NB-39 | Usage by department | Admin | S |  |
+| NB-40 | Uploader and department on failed files | Admin | S |  |
+| NB-41 | Unlock a password-protected file | Admin, Upload | M |  |
+| NB-42 | Plans, page quotas and revenue per org | Operator | M |  |
+| NB-43 | Live job list | Operator | M |  |
+| NB-44 | Raise page limit, view as admin with approval | Operator | M |  |
+| NB-45 | Offline mode | States | L |  |
+| NB-46 | Access control and Request access | States | L |  |
+
 ## Code map
 
 | Folder | What |
@@ -159,7 +237,7 @@ The `isolation` tests prove both on every pull request.
 **Frontend rules.**
 - Document text and server messages are shown as plain text, never as HTML.
 - Hiding a button is only a hint: the server checks the role on every request.
-- Colours come only from the tokens in `app/globals.css`.
+- Colours come only from the tokens in `app/styles/tokens.css` and `app/globals.css`.
 
 ## Measure and tune Cost saving on the server
 
@@ -243,6 +321,19 @@ After the change, `cost-saving` shows the new limits under `limits seen`. Unset 
 | Models: `MODEL_CHAT` for chat and extraction, `MODEL_EMBED` (`google/gemini-embedding-2`, 1024 dimensions) for meaning vectors and `OCR_MODEL` for scans, all `google/gemini-` models through OpenRouter (replaced on 8 Oct 2026, PRD 5) | No model runs on the server, so it is a plain CPU instance; a bigger model is a setting change |
 | The queue worker stays; Temporal isn't used | Retries, leases and a failure bin already work; Temporal pays off only for hosted workflows that wait days |
 | Vectors live in the same PostgreSQL (pgvector) | One place for customer separation, filters and backups; revisit past a few million pieces |
+| The UI follows the design handoff, committed as `design/kaagaz-ui-handoff/` (D-1, 20 Oct 2026); screens are restyled through the shared tokens and classes, not rebuilt one by one (21 Oct 2026) | One look everywhere at once, while each screen keeps its tested behaviour |
+| Theme: Light, Dark and System, in the `kaagaz_theme` cookie, read on the server (D-2) | No flash on load; System follows the device |
+| Icons at a 1.6 stroke (D-3) | The handoff's value |
+| Review keys: 1 first reading, 2 second, T type the value, Enter save and next, J and K next and previous (D-4) | One set of keys across Review |
+| A duplicate offers "Skip this file" and "Open it", never "Keep both" (D-5) | Identical files are stored once, by fingerprint |
+| No locked-account screen and no "tries left" (D-6) | Either would tell someone which accounts exist |
+| Review is for reviewers and admins; their Review link shows the count waiting (D-7) | The server allows only them; a member sees no link and no count |
+| The Questions tab shows only the person's own questions (D-8) | Conversations are private |
+| No "Handwritten" review chip (D-9) | Values don't carry it yet |
+| `@playwright/test` approved as a dev dependency, for screenshot checks only (D-10) | Screens checked in both themes and at phone width |
+| UI decisions live here, in this file (D-11) | One file for the design and its decisions |
+| Upload is a drop zone plus one batch tray on every page, not a separate page (D-12) | A drop keeps going and stays in view between screens |
+| The review state's words stay "Ready to verify" (16 Oct 2026), not the handoff's "Needs review" | Kept until changed in one place, `lib/status.ts` |
 | A job is tried 5 times (`JOB_MAX_ATTEMPTS`), and each try shows in the file list (29 Sep 2026) | The queue's own limit (10) leaves spare deliveries to mark a document failed even if the database is down |
 | When two versions of a document finish reading, the highest version number is current (29 Sep 2026) | An older upload finishing late never replaces a newer one |
 | Trash means deleted: a document there can't be renamed, moved, tagged, downloaded or given a new version (29 Sep 2026) | Only Restore or Delete forever |

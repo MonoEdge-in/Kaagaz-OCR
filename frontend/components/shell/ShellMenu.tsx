@@ -4,8 +4,8 @@
 // links for this person's role and session. One component, so the two places
 // always show the same links. Who is signed in, the theme switch and the two
 // sign-outs are in the header's account menu (AccountMenu, UI audit G6). The Review
-// link carries no count (Tushar, 16 Oct 2026: a big number there makes people uneasy;
-// the Review page itself has the list).
+// link shows how many values wait there, for a reviewer and an admin (D-7, 20 Oct
+// 2026: the handoff's count; a member has no Review link at all); "99+" past 99.
 
 import Link from "next/link";
 import { Icon } from "@/components/ui/Icon";
@@ -18,9 +18,11 @@ export interface ShellMenuProps {
   pathname: string;
   /** Called when a link is followed, so the drawer also closes on its own page's link. */
   onLinkClick?(): void;
+  /** The Review link's count ("23", "99+"); null shows none. */
+  reviewCount?: string | null;
 }
 
-export function ShellMenu({ links, pathname, onLinkClick }: ShellMenuProps) {
+export function ShellMenu({ links, pathname, onLinkClick, reviewCount = null }: ShellMenuProps) {
   return (
     <div className={styles.menu}>
       <nav aria-label="Main">
@@ -37,6 +39,12 @@ export function ShellMenu({ links, pathname, onLinkClick }: ShellMenuProps) {
                 >
                   <Icon name={link.icon} />
                   <span>{link.label}</span>
+                  {link.count === "review" && reviewCount !== null && (
+                    <span className={styles.count}>
+                      {reviewCount}
+                      <span className="visually-hidden"> to review</span>
+                    </span>
+                  )}
                 </Link>
               </li>
             );

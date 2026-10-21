@@ -1,10 +1,11 @@
-/* The app shell (brief C): fixed zones on one grid, and the page never
-   scrolls. Rows: header (56 px, 48 px below 768 px), the content, the status
-   bar (32 px, 0 while empty: UI audit G1) and, below 768 px, the bottom bar
-   (56 px). From 1024 px the side
-   nav (240 px) sits beside <main>. Only <main> and the side nav scroll, each
-   held in (overscroll-behavior: contain). The header, status and bottom bars
-   are grid rows, never position: fixed. */
+/* The app shell, in the handoff's layout (design/kaagaz-ui-handoff, desktop/Home.html
+   and phone/PhoneHome.html; styles/kaagaz.css sections 4 and 17). The page never
+   scrolls. Rows: the top bar (68 px, 60 px below 768 px), the content, the status
+   bar (32 px, 0 while empty: UI audit G1) and, below 768 px, the tab bar. From
+   1024 px the sidebar (244 px) runs the full height on the left, with the brand,
+   the links and the workspace; the top bar sits over <main> beside it. Only <main>
+   and the sidebar scroll, each held in (overscroll-behavior: contain). The top bar,
+   status bar and tab bar are grid rows, never position: fixed. */
 
 .app {
   display: grid;
@@ -25,13 +26,13 @@
     grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr) auto;
     grid-template-areas:
-      "header header"
+      "side header"
       "side main"
-      "status status";
+      "side status";
   }
 }
 
-/* --- Header ------------------------------------------------------------------ */
+/* --- Top bar ------------------------------------------------------------------- */
 
 .header {
   grid-area: header;
@@ -41,18 +42,19 @@
   min-width: 0;
   height: calc(var(--header-h) + env(safe-area-inset-top));
   padding: env(safe-area-inset-top) max(var(--space-2), env(safe-area-inset-right)) 0
-    max(var(--space-2), env(safe-area-inset-left));
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
+    max(var(--space-4), env(safe-area-inset-left));
+  background: var(--bg-page);
+  border-bottom: 1px solid transparent;
 }
 
 @media (min-width: 1024px) {
   .header {
-    padding-inline: max(var(--space-6), env(safe-area-inset-left)) max(var(--margin), env(safe-area-inset-right));
+    padding-inline: max(40px, env(safe-area-inset-left)) max(40px, env(safe-area-inset-right));
   }
 
   .menuButton,
-  .pageName {
+  .pageName,
+  .headerBrand {
     display: none;
   }
 }
@@ -64,32 +66,34 @@
   white-space: nowrap;
   color: var(--fg-muted);
   font-size: var(--fs-sm);
-  font-weight: 700;
+  font-weight: 600;
 }
 
-/* Content scrolled under the header: its bottom edge darkens, a 1px line and
-   no shadow (UI audit G11). AppShell sets data-scrolled on <main>. */
+/* Content scrolled under the top bar: a 1px rule shows under it, no shadow (UI audit G11). */
 .app:has(> .main[data-scrolled]) > .header {
   border-bottom-color: var(--border-strong);
 }
 
-/* The header's end (UI audit G5): search, Upload, the account menu. */
+/* The top bar's end: search, Upload, the account menu. From 1024 px the search
+   pill takes the room on the left and the actions keep to the right. */
 .headerEnd {
   display: flex;
   flex: 1 1 auto;
   align-items: center;
   justify-content: flex-end;
-  gap: var(--space-2);
+  gap: 10px;
   min-width: 0;
   margin-inline-start: auto;
 }
 
-/* The search box shows from 768 px; a phone searches on the documents screen. */
+/* The search pill shows from 768 px; a phone searches on the documents screen. */
 .search {
   position: relative;
   display: none;
-  flex: 0 1 20rem;
+  flex: 1 1 auto;
+  max-width: 560px;
   min-width: 0;
+  margin-inline-end: auto;
 }
 
 @media (min-width: 768px) {
@@ -100,19 +104,22 @@
 
 .searchIcon {
   position: absolute;
-  inset-inline-start: var(--space-3);
+  inset-inline-start: 18px;
   top: 50%;
   transform: translateY(-50%);
   color: var(--text-muted);
   pointer-events: none;
 }
 
-/* One height with the buttons beside it. */
+/* The handoff's search pill: one height with the touch target, a hairline edge. */
 .searchInput {
-  height: var(--control-h);
+  height: var(--k-touch);
   padding-block: 0;
-  padding-inline-start: calc(var(--space-3) + 16px + var(--space-2));
-  font-size: var(--fs-sm);
+  padding-inline-start: 46px;
+  border-color: var(--border);
+  border-radius: var(--k-r-pill);
+  background: var(--bg-surface);
+  font-size: var(--fs-base);
 }
 
 .avatarButton {
@@ -120,7 +127,7 @@
   padding: 0;
 }
 
-/* Upload: on a phone only its icon shows, so it is a square like the others. */
+/* Upload: on a phone only its icon shows, so it is a round button like the others. */
 @media (max-width: 639.98px) {
   .upload {
     width: var(--control-h);
@@ -128,25 +135,26 @@
   }
 }
 
-/* Square, like everything else: the initials in a neutral box. */
+/* The initials in an accent circle (the handoff's .k-avatar). */
 .avatar {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: var(--h-sm);
   height: var(--h-sm);
-  border: 1px solid var(--border-strong);
-  border-radius: 2px;
-  background: var(--surface-2);
-  color: var(--fg);
-  font-size: var(--fs-label);
-  font-weight: 700;
-  letter-spacing: 0.04em;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--text-onaccent);
+  font-family: var(--font-sans);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
 }
 
 /* The account menu: a native popover in the top layer, under the avatar at the
-   header's end. It shows only while open (display is set only then, so the
-   browser's own hiding still works). */
+   top bar's end (the handoff's .k-menu). It shows only while open (display is set
+   only then, so the browser's own hiding still works). */
 .account {
   position: fixed;
   inset: auto;
@@ -155,28 +163,28 @@
   width: min(18rem, calc(100% - 2 * var(--space-2)));
   max-height: calc(100% - var(--header-h) - env(safe-area-inset-top) - var(--space-4));
   margin: 0;
-  padding: var(--space-4);
+  padding: var(--space-3);
   overflow-y: auto;
   overscroll-behavior: contain;
-  border: 1px solid var(--border-strong);
-  border-radius: 2px;
-  background: var(--surface);
+  border: 1px solid var(--k-card-edge);
+  border-radius: var(--k-r-4);
+  background: var(--k-raised);
   color: var(--fg);
 }
 
 .account:popover-open {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-3);
 }
 
 @media (min-width: 1024px) {
   .account {
-    inset-inline-end: max(var(--margin), env(safe-area-inset-right));
+    inset-inline-end: max(40px, env(safe-area-inset-right));
   }
 }
 
-/* --- Side nav (1024 px and up) ------------------------------------------------- */
+/* --- Sidebar (1024 px and up) ---------------------------------------------------- */
 
 .sidebar {
   display: none;
@@ -188,27 +196,57 @@
     position: relative;
     display: flex;
     flex-direction: column;
+    gap: var(--space-1);
     min-height: 0;
     overflow-y: auto;
     overscroll-behavior: contain;
-    padding-inline-start: env(safe-area-inset-left);
-    background: var(--surface-2);
-    border-inline-end: 1px solid var(--border);
+    padding: 22px var(--space-4) var(--space-4);
+    padding-inline-start: max(var(--space-4), env(safe-area-inset-left));
+    background: var(--k-nav-bg);
+    border-inline-end: 1px solid var(--k-nav-rule);
   }
 }
 
-/* --- The menu: shared by the side nav and the drawer ------------------------- */
+/* The brand at the sidebar's head, the handoff's .k-brand. */
+.brand {
+  padding: 2px var(--space-2) 26px;
+}
+
+/* Who is signed in and where, at the sidebar's foot (the handoff's .k-side-foot). */
+.sideFoot {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 14px;
+  border: 1px solid var(--k-card-edge);
+  border-radius: var(--k-r-4);
+  background: var(--bg-surface);
+  color: var(--k-nav-ink);
+  font-size: var(--fs-sm);
+}
+
+.sideFoot p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.sideFootName {
+  color: var(--k-nav-ink-strong);
+  font-weight: 600;
+}
+
+/* --- The menu: shared by the sidebar and the drawer -------------------------------- */
 
 .menu {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
-  flex: 1;
-  min-height: 100%;
 }
 
-.sidebar .menu {
-  padding: var(--space-3) var(--space-3) var(--space-4);
+.drawerMenu {
+  flex: 1;
+  min-height: 100%;
 }
 
 .links {
@@ -220,18 +258,18 @@
   padding: 0;
 }
 
-/* Every nav item one height (--h-lg, 44px), one 16px icon column and one
-   left padding; its words centred by a fixed line-height. */
+/* The handoff's nav item: a pill, one height, one 18px icon column. */
 .link {
   position: relative;
   display: flex;
   align-items: center;
-  gap: var(--space-2);
-  min-height: var(--h-lg);
-  padding: var(--space-1) var(--space-3);
+  gap: var(--space-3);
+  min-height: 42px;
+  padding: var(--space-2) 14px;
   line-height: 1.25;
-  border-radius: var(--r-sm);
-  color: var(--fg);
+  border: 1px solid transparent;
+  border-radius: var(--k-r-pill);
+  color: var(--k-nav-ink);
   font-weight: 500;
   text-decoration: none;
   user-select: none;
@@ -245,46 +283,53 @@
 
 .link svg {
   flex: none;
-  color: var(--fg-muted);
+  color: currentColor;
 }
 
 /* Hover with a mouse only: on touch a tapped link kept the hover tint. */
 @media (hover: hover) and (pointer: fine) {
   .link:hover {
-    background: var(--bg-hover);
-    color: var(--fg);
+    background: var(--bg-subdued);
+    color: var(--k-nav-ink-strong);
   }
 }
 
-/* The current page, one style in both themes (UI audit G8): an accent tint,
-   bold words and a 3 px accent bar (3:1 and more on the tint and the sidebar). */
+/* The current page (the handoff's .k-nav-item.is-active): a raised white pill
+   with an edge, bold words and the accent icon, so it is not told by colour alone. */
 .current,
 .current:hover {
-  background: var(--accent-subtle);
-  color: var(--fg);
-  font-weight: 700;
+  background: var(--k-nav-active);
+  border-color: var(--k-card-edge);
+  color: var(--k-nav-ink-strong);
+  font-weight: 600;
 }
 
 .current svg {
-  color: var(--accent);
+  color: var(--k-nav-accent);
 }
 
-.current::before {
-  content: "";
-  position: absolute;
-  inset-block: 0;
-  inset-inline-start: 0;
-  width: 3px;
-  background: var(--accent);
+/* The Review link's count (the handoff's .k-nav-count): values waiting, in review colours. */
+.count {
+  margin-inline-start: auto;
+  padding: 2px var(--space-2);
+  border-radius: var(--k-r-pill);
+  background: var(--review-bg);
+  color: var(--review-fg);
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  font-weight: 500;
+  white-space: nowrap;
 }
 
-/* --- In the account menu: who is signed in, then the sign-outs --------------- */
+/* --- In the account menu: who is signed in, then the sign-outs -------------------- */
 
 .user {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
+  gap: 2px;
   min-width: 0;
+  padding: var(--space-2) 10px 10px;
+  border-bottom: 1px solid var(--border);
 }
 
 .user p {
@@ -293,7 +338,7 @@
 }
 
 .userName {
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .userMeta {
@@ -301,12 +346,12 @@
   font-size: var(--fs-sm);
 }
 
-/* Sign out and Sign out everywhere: a separate row each, 16 px apart, under a hairline. */
+/* Sign out and Sign out everywhere: a separate row each, under a hairline. */
 .signOuts {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
-  padding-top: var(--space-4);
+  gap: var(--space-1);
+  padding-top: var(--space-3);
   border-top: 1px solid var(--border);
 }
 
@@ -315,7 +360,7 @@
   padding-inline: var(--space-3);
 }
 
-/* --- Content: the one main scroller -------------------------------------------- */
+/* --- Content: the one main scroller --------------------------------------------------- */
 
 .main {
   grid-area: main;
@@ -331,7 +376,7 @@
   scroll-padding-top: var(--space-2);
 }
 
-/* --- Status bar: the slot for background work (StatusBar.tsx) ---------------- */
+/* --- Status bar: the slot for background work (StatusBar.tsx) ----------------------- */
 
 .statusbar {
   grid-area: status;
@@ -342,9 +387,10 @@
   height: var(--statusbar-h);
   padding-inline: max(var(--margin), env(safe-area-inset-left)) max(var(--margin), env(safe-area-inset-right));
   overflow: hidden;
-  background: var(--surface);
+  background: var(--bg-surface);
   border-top: 1px solid var(--border);
   color: var(--fg-muted);
+  font-family: var(--font-mono);
   font-size: var(--fs-label);
   white-space: nowrap;
 }
@@ -354,16 +400,20 @@
   border-top: 0;
 }
 
-/* --- Bottom bar (phones): the links at the thumb ------------------------------ */
+/* --- Tab bar (phones): the handoff's floating pill of links at the thumb ------------ */
 
 .bottombar {
   grid-area: bottom;
   display: flex;
+  gap: 2px;
   min-width: 0;
+  margin: 0 12px;
+  padding: 6px;
   padding-bottom: env(safe-area-inset-bottom);
-  padding-inline: env(safe-area-inset-left) env(safe-area-inset-right);
-  background: var(--surface);
-  border-top: 1px solid var(--border);
+  background: var(--bg-surface);
+  border: 1px solid var(--k-card-edge);
+  border-bottom: 0;
+  border-radius: var(--k-r-5) var(--k-r-5) 0 0;
 }
 
 @media (min-width: 768px) {
@@ -379,15 +429,14 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: var(--space-1);
+  gap: 2px;
   min-width: 0;
   height: var(--bottombar-h);
   line-height: 1.25;
-  color: var(--fg-muted);
-  font-size: var(--fs-label);
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  border-radius: var(--k-r-pill);
+  color: var(--text-secondary);
+  font-size: 0.65625rem;
+  font-weight: 500;
   text-decoration: none;
   -webkit-tap-highlight-color: transparent;
   touch-action: manipulation;
@@ -407,22 +456,33 @@
   }
 }
 
-.bottomLink[aria-current="page"] {
-  color: var(--fg);
+/* The tab's icon, with the Review count on its corner, which shows past the icon's box. */
+.bottomLink > .bottomIcon {
+  position: relative;
+  display: inline-flex;
+  overflow: visible;
 }
 
-.bottomLink[aria-current="page"] svg {
-  color: var(--accent);
-}
-
-/* The current link's bar on the top edge: not shown by colour alone. */
-.bottomLink[aria-current="page"]::before {
-  content: "";
+.bottomCount {
   position: absolute;
-  inset-inline: var(--space-3);
-  top: -1px;
-  height: 2px;
+  inset-block-start: -6px;
+  inset-inline-start: 14px;
+  padding: 0 4px;
+  border-radius: var(--k-r-pill);
+  background: var(--review-bg);
+  color: var(--review-fg);
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  font-weight: 500;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+/* The current link fills with the accent: its words stay, so not by colour alone. */
+.bottomLink[aria-current="page"] {
   background: var(--accent);
+  color: var(--text-onaccent);
+  font-weight: 600;
 }
 
 /* Loading and error states before the shell exists (lib/session.tsx). */
@@ -480,10 +540,10 @@
 .gateBanner {
   padding: var(--space-3) var(--space-4);
   border: 1px solid var(--danger-fg);
-  border-radius: var(--r-sm);
+  border-radius: var(--k-r-4);
   background: var(--danger-bg);
   color: var(--danger-fg);
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .gateSubmit {
@@ -512,10 +572,10 @@
   top: var(--space-2);
   z-index: var(--z-skip);
   padding: var(--space-2) var(--space-4);
-  border-radius: var(--r-sm);
+  border-radius: var(--k-r-pill);
   background: var(--accent);
   color: var(--accent-fg);
-  font-weight: 700;
+  font-weight: 600;
   text-decoration: none;
   display: inline-flex;
   align-items: center;

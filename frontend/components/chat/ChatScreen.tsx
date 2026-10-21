@@ -82,6 +82,7 @@ import {
   hasChoices,
   isNearBottom,
   STILL_LOOKING_AFTER_MS,
+  questionFromSearch,
   starterQuestions,
 } from "./logic";
 import type { AnswerPick, Starter } from "./logic";
@@ -183,8 +184,11 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
     resumed?.outcome && "error" in resumed.outcome ? errorText(resumed.outcome.error) : null,
   );
   // A picked-up question that failed goes back into the box.
+  // Or the question Home's Ask box brought (?q=), waiting for Send.
   const [draft, setDraft] = useState<string | undefined>(() =>
-    resumed?.outcome && "error" in resumed.outcome ? resumed.question : undefined,
+    resumed?.outcome && "error" in resumed.outcome
+      ? resumed.question
+      : (questionFromSearch(initialSearch) ?? undefined),
   );
   const [noDocuments, setNoDocuments] = useState<boolean | null>(null);
   const [starters, setStarters] = useState<Starter[]>([]);

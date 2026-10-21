@@ -1,12 +1,12 @@
-// The frame of the sign-in pages (/login, /operator/login) and
-// /signup, in the MonoEdge look. From 900 px up it is two columns: a panel
-// that says what Kaagaz does (static text only: no API call, no customer names
-// or counts) and the form. Below 900 px the panel is a short band with the
-// lockup and the value line, above the form. The one motion: the highlight,
-// the chip and the dotted link between them fade in once.
+// The frame of the sign-in pages (/login, /operator/login) and /signup, in the
+// handoff's layout (desktop/SignIn.html): the page on a dot field, and one card
+// on it, with the brand panel in the accent on the left (the lockup, "कागज़ ·
+// paper" and what Kaagaz promises; static text only: no API call, no customer
+// names or counts) and the form on the right. Below 760 px the panel is a short
+// band above the form. The one motion: the panel's words fade in once.
 
 import type { ReactNode } from "react";
-import { Icon } from "@/components/ui/Icon";
+import { Icon } from "@/components/ui/Icon/Icon";
 import { ThemeToggle } from "@/components/ui/ThemeToggle";
 import styles from "./login.module.css";
 
@@ -17,87 +17,50 @@ export function AuthFrame({
   variant?: "member" | "platform";
   children: ReactNode;
 }) {
-  const mark = (
-    <p className={styles.mark}>
-      Kaagaz
-      {variant === "platform" && <span className={styles.markSub}> · Platform</span>}{" "}
-      <span className={styles.by}>by MonoEdge</span>
-    </p>
-  );
-  const value = (
-    <p className={styles.value}>
-      Ask your documents.
-      <br />
-      Kaagaz shows you the page.
-    </p>
-  );
-
   return (
     <div className={styles.page}>
       <div className={styles.theme}>
         <ThemeToggle compact />
       </div>
 
-      <aside className={styles.brand} aria-label="About Kaagaz">
-        <div className={styles.brandInner}>
-          {mark}
-          <div className={styles.mid}>
-            {value}
-            {/* A page with the cited line highlighted, and its answer marked Verified. */}
-            <div className={styles.figure} aria-hidden="true">
-              <div className={styles.sheet}>
-                <i />
-                <i />
-                <b className={styles.sheetRule} />
-                <i />
-                <i />
-                <i />
-                <i />
-                <i className={styles.hl} />
-                <i />
-                <i />
-              </div>
-              <div className={styles.card}>
-                <span className={`badge badge-verified ${styles.pill}`}>
-                  <Icon name="check-seal" size={14} />
-                  Verified
-                </span>
-                <i />
-                <i />
-                <i />
-                <span className={styles.chip}>1</span>
-              </div>
-              <svg className={styles.link} viewBox="0 0 360 214">
-                <path d="M335 142 C 335 114, 250 114, 158 114" />
-                <circle cx="158" cy="114" r="3" />
-              </svg>
-            </div>
+      <div className={styles.shell}>
+        <aside className={styles.brand} aria-label="About Kaagaz">
+          <p className={styles.mark}>
+            <span className={styles.markGlyph} aria-hidden="true" />
+            <span className={styles.markWords}>
+              <span className={styles.markName}>
+                Kaagaz
+                {variant === "platform" && <span className={styles.markSub}> · Platform</span>}
+              </span>
+              <span className={styles.by}>by MonoEdge</span>
+            </span>
+          </p>
+          <div className={styles.brandWords}>
+            <p className={styles.deva} lang="hi">
+              कागज़ · paper
+            </p>
+            <p className={styles.value}>Your business papers, read and filed. Every answer shows its proof.</p>
           </div>
           <ul className={styles.points}>
             <li>
-              <Icon name="file" />
+              <Icon name="file" size="sm" />
               Every answer shows its source page.
             </li>
             <li>
-              <Icon name="check-seal" />
+              <Icon name="check-circle" size="sm" />
               Every value is Verified or Ready to verify.
             </li>
             <li>
-              <Icon name="search-off" />
+              <Icon name="not-found" size="sm" />
               Not in your documents? It says so. It never guesses.
             </li>
           </ul>
-        </div>
-      </aside>
+        </aside>
 
-      <div className={styles.band}>
-        {mark}
-        {value}
+        <main className={styles.main}>
+          <div className={styles.formColumn}>{children}</div>
+        </main>
       </div>
-
-      <main className={styles.main}>
-        <div className={styles.formColumn}>{children}</div>
-      </main>
     </div>
   );
 }

@@ -219,7 +219,8 @@ describe("the documents list (D1, D2, D3, D6, D9, D10, D11)", () => {
     expect(table).toMatch(/closest\("a, button, input, label, select, textarea/);
     expect(table).toContain("querySelector<HTMLAnchorElement>(`.${styles.name}`)?.click()");
     expect(docs).toMatch(/\.name \{[^}]*text-decoration:\s*none;/);
-    expect(table).toContain('<Icon name="file" className={styles.fileIcon} />');
+    // Changed on purpose (UI rebuild, 21 Oct 2026): the handoff's paper icon with the file's extension.
+    expect(table).toContain('<span className={`k-file-ic ${styles.fileIcon}`} data-ext={extensionOf(document.display_name)} aria-hidden="true" />');
   });
 
   it("D12: puts New folder in the folder column's header and moves a document dropped on a folder", () => {
@@ -251,7 +252,9 @@ describe("the documents list (D1, D2, D3, D6, D9, D10, D11)", () => {
   });
 
   it("makes the search row as wide as the list, and the header's words a name search", () => {
-    expect(docs).toMatch(/\.search \{[^}]*flex: 1 1 100%;/);
+    // Changed on purpose (UI rebuild, 21 Oct 2026): the head is a column (desktop/Documents.html),
+    // so the search pill is a full row; the tools sit on the row under it.
+    expect(docs).toMatch(/\.listHead \{[^}]*flex-direction: column;/);
     expect(view).toContain('useState<SearchMode>(startQ === "" ? DEFAULT_SEARCH_MODE : "names")');
     expect(view).toMatch(/if \(startQ !== ""\) \{\s*setSearch\(\{ view: viewKey, q: startQ, offset: 0 \}\);\s*setModeChoice\("names"\);/);
   });

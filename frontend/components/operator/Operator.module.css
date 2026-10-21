@@ -109,7 +109,7 @@
   padding: var(--space-1);
   background: var(--bg-surface);
   border: 1px solid var(--border);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
 }
 
 .menuItem {
@@ -118,7 +118,7 @@
   min-height: var(--control-h);
   padding: 0 var(--space-3);
   border: 0;
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   background: none;
   color: var(--text-primary);
   font: inherit;
@@ -381,7 +381,7 @@
   margin: 0;
   padding: var(--space-3);
   border: 1px solid var(--border);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   min-width: 0;
 }
 
@@ -399,7 +399,7 @@
   margin-inline-start: var(--space-2);
   padding: 0 var(--space-2);
   border: 1px solid var(--border);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
   color: var(--text-secondary);
   font-size: 11px;
   font-weight: 700;
@@ -439,7 +439,7 @@
   min-width: 0;
   padding: var(--space-3);
   border: 1px solid var(--warning);
-  border-radius: 2px;
+  border-radius: var(--k-r-2);
 }
 
 .leaveAsk p {
