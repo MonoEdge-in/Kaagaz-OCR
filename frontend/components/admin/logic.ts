@@ -37,6 +37,7 @@ export function adminGate(me: Me): AdminGate {
 export const TABS = [
   { id: "users", label: "Users" },
   { id: "settings", label: "Settings" },
+  { id: "departments", label: "Departments" }, // File management F1
   { id: "ai", label: "AI settings" },
   { id: "activity", label: "Activity" },
   { id: "numbers", label: "Numbers" },
@@ -481,6 +482,18 @@ const ACTION_WORDS: Record<string, string> = {
   "settings.autofile_off": "Turned auto-filing off",
   "org.autofile_grant": "Auto-filing allowed",
   "org.autofile_revoke": "Auto-filing stopped",
+  // File management (PRD 1, Phase 2): owner, label, departments, versions and the log itself.
+  "document.owner_change": "Changed a document's owner",
+  "document.label_change": "Changed a document's label",
+  "document.view": "Viewed a document",
+  "document.download": "Downloaded a document",
+  "folder.kind": "Changed a department",
+  "version.suggested": "Kaagaz suggested a new version",
+  "version.accepted": "Linked a new version",
+  "version.rejected": "Kept a document separate",
+  "version.undone": "Undid a version link",
+  "version.make_current": "Made a version current",
+  "audit.export": "Exported the activity",
 };
 
 /** The audit action in words; an action this screen does not know is shown as is. */

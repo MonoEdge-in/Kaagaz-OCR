@@ -397,9 +397,11 @@ describe("describeTarget", () => {
     expect(describeTarget("something_new")).toBe("—");
   });
 
+  // Changed on purpose (PRD 1, screens): File management A5, the Document column names the
+  // document, and what anything else was done on when the row is not about one.
   it("is what the Activity tab shows, with no target id", () => {
     const panel = readFileSync(join(__dirname, "..", "components/admin/ActivityPanel.tsx"), "utf8");
-    expect(panel).toContain("{describeTarget(entry.target_type)}");
+    expect(panel).toContain("{activityDocument(entry) ?? describeTarget(entry.target_type)}");
     expect(panel).not.toContain("target_id");
   });
 });

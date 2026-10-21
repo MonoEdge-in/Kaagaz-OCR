@@ -186,7 +186,9 @@ describe("layout guards", () => {
     const found = budgets(DOCS_CSS, "docs-list", NAME_AND_STATUS_REM);
     // Changed on purpose (UI audit, 16 Oct 2026): D3, a table from 36rem (a laptop's list with the
     // side nav and the folder tree), Type back at 48rem, every column from 64rem.
-    expect(found.map((b) => b.start)).toEqual([36, 64]);
+    // Changed on purpose (PRD 1, screens): File management F5's columns come in one by one,
+    // Label at 56rem, Owner at 64rem, Version and Updated by at 72rem, Document date at 80rem.
+    expect(found.map((b) => b.start)).toEqual([36, 56, 64, 72, 80]);
     for (const { start, needs } of found) expect(needs, `at ${start}rem`).toBeLessThanOrEqual(start);
     const css = read(DOCS_CSS);
     expect(columnsAt(css, "docs-list", 36).has("typeColumn")).toBe(false);

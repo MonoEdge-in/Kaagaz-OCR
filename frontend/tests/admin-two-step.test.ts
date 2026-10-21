@@ -113,10 +113,11 @@ describe("an admin session without two-step sign-in", () => {
     expect(session).toContain("leavePage(twoStepPath(pathname));");
   });
 
-  it("comes back only to /admin or /documents after signing in", () => {
+  // Changed on purpose (PRD 1, screens): File management D1, the dashboard is the home screen.
+  it("comes back only to /admin or the dashboard after signing in", () => {
     expect(pathAfterSignIn({ next: "/admin" })).toBe("/admin");
-    expect(pathAfterSignIn({})).toBe("/documents");
-    expect(pathAfterSignIn({ next: "https://example.com" })).toBe("/documents");
-    expect(pathAfterSignIn({ next: "//example.com" })).toBe("/documents");
+    expect(pathAfterSignIn({})).toBe("/dashboard");
+    expect(pathAfterSignIn({ next: "https://example.com" })).toBe("/dashboard");
+    expect(pathAfterSignIn({ next: "//example.com" })).toBe("/dashboard");
   });
 });

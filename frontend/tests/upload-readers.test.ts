@@ -117,7 +117,8 @@ describe("the Read with select in the source", () => {
     const view = readFileSync(join(__dirname, "..", "components/documents/DocumentsView.tsx"), "utf8");
     // Changed on purpose (Tushar, 16 Oct 2026): no Upload files beside it, and out of the page
     // header (it only touches uploads): in the list's head row, at the content's right edge.
-    expect(view).toContain("<div className={styles.uploadControls}>{readerSelect}</div>");
+    // Changed on purpose (PRD 1, screens): the Department picker (F2) comes just before it.
+    expect(view).toMatch(/<div className=\{styles\.uploadControls\}>[\s\S]*<DepartmentPicker[\s\S]*\{readerSelect\}\s*<\/div>/);
     // Changed on purpose (UI touch-up council, 15 Oct 2026): the slim dropzone no longer repeats
     // it; two "Read with" pickers on one screen looked like two different choices.
     expect(view.match(/\{readerSelect\}/g)).toHaveLength(1);

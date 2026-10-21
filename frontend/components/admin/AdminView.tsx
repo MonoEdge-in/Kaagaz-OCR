@@ -1,7 +1,7 @@
 "use client";
 
-// The admin screen: seven tabs (Users, Settings, AI settings, Activity, Numbers, Usage,
-// Failed documents), one line that scrolls sideways (Tabs.tsx). The
+// The admin screen: eight tabs (Users, Settings, Departments, AI settings, Activity, Numbers,
+// Usage, Failed documents), one line that scrolls sideways (Tabs.tsx). The
 // models are the operator's only (UI quality council, 15 Oct 2026). Only the open tab is mounted, so each one loads its data when it is opened. Settings
 // also shows `twoStep`, the signed-in admin's own Two-step sign-in, which the
 // page passes in (app/(app)/admin/TwoStepPanel.tsx).
@@ -19,6 +19,7 @@ import { useSession } from "@/lib/session";
 import { leavePage } from "@/lib/sessionChannel";
 import { ActivityPanel } from "./ActivityPanel";
 import { AiSettingsPanel } from "./AiSettingsPanel";
+import { DepartmentsPanel } from "./DepartmentsPanel";
 import { FailedPanel } from "./FailedPanel";
 import { TABS, adminGate } from "./logic";
 import type { TabId } from "./logic";
@@ -89,6 +90,7 @@ export function AdminView({ twoStep }: { twoStep: ReactNode }) {
             {twoStep}
           </div>
         )}
+        {active === "departments" && <DepartmentsPanel />}
         {active === "ai" && <AiSettingsPanel scope="organisation" />}
         {active === "activity" && <ActivityPanel />}
         {active === "numbers" && <NumbersPanel />}

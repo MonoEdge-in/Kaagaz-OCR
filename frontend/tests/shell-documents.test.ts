@@ -577,10 +577,12 @@ describe("uploadDocument into a folder", () => {
 });
 
 describe("downloadHref", () => {
+  // Changed on purpose (PRD 1, screens): File management A2, the Download button asks with
+  // ?download=1, so only it is logged; the viewer still draws the page from the plain /file.
   it("downloads the original through the API, never a storage link", () => {
-    expect(downloadHref({ id: "d-1", status: "ready" })).toBe("/api/documents/d-1/file");
-    expect(downloadHref({ id: "d-1", status: "needs_reader" })).toBe("/api/documents/d-1/file");
-    expect(downloadHref({ id: "d-1", status: "clean" })).toBe("/api/documents/d-1/file");
+    expect(downloadHref({ id: "d-1", status: "ready" })).toBe("/api/documents/d-1/file?download=1");
+    expect(downloadHref({ id: "d-1", status: "needs_reader" })).toBe("/api/documents/d-1/file?download=1");
+    expect(downloadHref({ id: "d-1", status: "clean" })).toBe("/api/documents/d-1/file?download=1");
   });
 
   it("offers nothing the server would refuse: not yet checked, rejected or failed", () => {
