@@ -31,9 +31,9 @@ describe("Ready to verify", () => {
     expect(labelText("verified")).toBe("Verified");
   });
 
-  it("offers single and bulk verification only for pending values on the current ready document", () => {
+  it("offers single and bulk verification for pending values on any ready, non-Trash version", () => {
     const view = read("app/(app)/documents/[id]/DocumentView.tsx");
-    expect(view).toContain('detail.versions.some((version) => version.id === detail.id && version.is_current)');
+    expect(view).not.toContain('detail.versions.some((version) => version.id === detail.id && version.is_current)');
     expect(view).toContain('detail.values.filter((value) => value.label === "needs_review")');
     expect(view).toContain('value.label === "needs_review" && (');
     expect(view.match(/await resolveReview\(value.id, "typed", false, value.value\);/g)).toHaveLength(2);
