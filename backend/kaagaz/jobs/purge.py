@@ -45,7 +45,7 @@ from typing import Protocol
 
 from sqlalchemy.exc import SQLAlchemyError
 
-from kaagaz.db import customer_purge
+from kaagaz.db import customer_purge, upload_sessions as upload_sessions_sql
 from kaagaz.db.documents import delete_forever
 from kaagaz.db.engine import Database, unavailable
 from kaagaz.db.trash import customer_ids_with_trash, purge_next_family
@@ -64,6 +64,10 @@ class CustomerStorage(BlobStorage, Protocol):
     def delete_customer(self, customer_id: str) -> None:
         """Remove everything stored for this customer (both prefixes). Safe to repeat."""
         ...
+
+    def abort_resumable(self, key: str, upload_id: str) -> None: ...
+
+    def delete_resumable(self, key: str) -> None: ...
 
 
 def purge_expired(
@@ -90,6 +94,20 @@ def purge_expired(
             while purged < batch and _purge_one_family(db, storage, customer_id, before):
                 purged += 1
     return purged
+
+
+def purge_upload_sessions(db: Database, storage: CustomerStorage, clock: Callable[[], datetime]) -> int:
+    """Release multipart uploads abandoned for seven days; retry next hour on storage failure."""
+    now = clock()
+    rows = upload_sessions_sql.expired(db, now, limit=100)
+    removed = 0
+    for row in rows:
+        storage.abort_resumable(str(row["storage_key"]), str(row["storage_upload_id"]))
+        storage.delete_resumable(str(row["storage_key"]))
+        with db.customer(str(row["customer_id"])) as conn:
+            upload_sessions_sql.delete_expired(conn, str(row["customer_id"]), str(row["id"]), now)
+        removed += 1
+    return removed
 
 
 def _purge_one_family(db: Database, storage: BlobStorage, customer_id: str, before: datetime) -> bool:
