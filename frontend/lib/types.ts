@@ -174,13 +174,13 @@ export interface ActivityPage {
   total?: number; // the admin log only
 }
 
-/** A question this person asked about the document (P2), newest first. Plain text. */
+/** A question this person asked about the document (P2), newest first. */
 export interface DocumentQuestion {
   id: string;
   conversation_id: string;
   question: string;
   asked_at: string;
-  answer: string | null;
+  answer: Answer | null;
 }
 
 /** GET /api/documents/{id}/compare?with= (V11): from `with` (left) to `id` (right), page by page. */

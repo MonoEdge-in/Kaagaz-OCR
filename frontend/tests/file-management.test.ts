@@ -48,7 +48,7 @@ const { documentDateChipText, labelsChipText, ownerChipText, partyChipText } = a
   "@/components/files/filterChips"
 );
 const { LABELS, LABEL_DESCRIPTIONS, labelName } = await import("@/components/files/labels");
-const { QuestionsPanel } = await import("@/components/files/QuestionsPanel");
+const { QuestionsPanel, questionAnswerText } = await import("@/components/files/QuestionsPanel");
 const { readViewMode, saveViewMode } = await import("@/components/files/viewMode");
 const { tileCount, versionCell } = await import("@/components/files/words");
 const { CompareBody } = await import("@/components/versions/CompareView");
@@ -838,13 +838,61 @@ describe("the document page (P1, P2)", () => {
     const html = render(
       createElement(QuestionsPanel, {
         documentId: "d3",
-        initial: [{ id: "m1", conversation_id: "c1", question: "Who owns <b>44</b>?", answer: "Ramesh Shinde.", asked_at: "2026-10-17T09:00:00Z" }],
+        initial: [
+          {
+            id: "m1",
+            conversation_id: "c1",
+            question: "Who owns <b>44</b>?",
+            answer: {
+              status: "answered",
+              label: "verified",
+              sentences: [
+                { text: "Ramesh Shinde owns it.", citations: [1] },
+                { text: "The record is from 2025.", citations: [1] },
+              ],
+              citations: [],
+              closest_documents: [],
+              route: "search",
+              normalized_question: "Who owns 44?",
+              model_used: false,
+            },
+            asked_at: "2026-10-17T09:00:00Z",
+          },
+        ],
       }),
     );
     expect(html).toContain("Who owns &lt;b&gt;44&lt;/b&gt;?");
-    expect(html).toContain("Ramesh Shinde.");
+    expect(html).toContain("Ramesh Shinde owns it. The record is from 2025.");
     expect(html).toContain('href="/chat?c=c1"');
     expect(render(createElement(QuestionsPanel, { documentId: "d3", initial: [] }))).toContain("No questions about this document yet");
+  });
+
+  it("renders non-answer statuses as readable text", () => {
+    expect(questionAnswerText(null)).toBe("No answer was saved.");
+    expect(
+      questionAnswerText({
+        status: "not_found",
+        label: null,
+        sentences: [],
+        citations: [],
+        closest_documents: [],
+        route: "search",
+        normalized_question: "",
+        model_used: false,
+      }),
+    ).toBe("Not found in the documents searched.");
+    expect(
+      questionAnswerText({
+        status: "unchecked",
+        label: null,
+        sentences: [],
+        citations: [],
+        closest_documents: [],
+        route: "fixed_query",
+        normalized_question: "",
+        model_used: false,
+      }),
+    ).toBe("This figure is in these documents. Open them to see it.");
   });
 });
 
