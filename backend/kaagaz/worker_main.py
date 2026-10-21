@@ -114,7 +114,13 @@ from kaagaz.ingestion.ports import Job
 from kaagaz.jobs.catalog import RefreshCatalog, Refreshed, last_refreshed, refresh
 from kaagaz.jobs.fair_share import FairShare, SweepLock, first_free_lock, no_lock, sweep_lock
 from kaagaz.jobs.ports import LeaseLost, QueueSetupError, WorkQueue
-from kaagaz.jobs.purge import CustomerStorage, purge_deleted_customers, purge_expired, sweep_purged_customers
+from kaagaz.jobs.purge import (
+    CustomerStorage,
+    purge_deleted_customers,
+    purge_expired,
+    purge_upload_sessions,
+    sweep_purged_customers,
+)
 from kaagaz.jobs.revive import ReviveStuck, revive_stuck
 from kaagaz.jobs.upgrade import UpgradeLocalReads, upgrade_oldest
 from kaagaz.jobs.worker import (
@@ -619,6 +625,7 @@ def _purge(db: Database, storage: CustomerStorage, trash_days: int) -> int:
     """The hourly turn: old Trash (its count is returned and logged by PurgeHourly), then
     the organisations whose deletion is due, and their second sweep a day later (logged here)."""
     families = purge_expired(db, storage, _utc_now, trash_days)
+    logger.info("abandoned uploads removed: %d", purge_upload_sessions(db, storage, _utc_now))
     logger.info("deleted organisations: %d families", purge_deleted_customers(db, storage, _utc_now))
     logger.info("purged organisations swept again: %d", sweep_purged_customers(db, storage, _utc_now))
     return families

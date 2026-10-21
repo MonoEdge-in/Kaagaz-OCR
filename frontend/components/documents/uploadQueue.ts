@@ -53,6 +53,7 @@ export type QueueEvent =
 export const isBusy = (entry: UploadEntry) =>
   entry.state.kind === "waiting" ||
   entry.state.kind === "sending" ||
+  entry.state.kind === "offline" ||
   entry.state.kind === "saving" ||
   entry.state.kind === "reading" ||
   entry.state.kind === "restoring";
