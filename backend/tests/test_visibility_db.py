@@ -173,7 +173,7 @@ def test_review_lists_only_the_current_version_not_older_ones_or_trash(db: Datab
         assert (list(older), older_total) == ([], 0)
         assert (list(in_trash), trash_total) == ([], 0)
         assert review.lock_value(conn, customer, library.to_review["binned"]) is None
-        assert review.lock_value(conn, customer, library.to_review["old"]) is None
+        assert review.lock_value(conn, customer, library.to_review["old"]) is not None
         assert review.lock_value(conn, customer, library.to_review["current"]) is not None
         # By id there is no Trash filter (plan 9.7): the read-back after a resolve.
         assert review.get_item(conn, customer, library.to_review["binned"]) is not None

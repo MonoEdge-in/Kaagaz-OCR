@@ -152,6 +152,16 @@ describe("D7: the filter chips", () => {
     expect(css("components/documents/Library.module.css")).toMatch(/\.chipOpens \{[^}]*background-image:\s*var\(--select-caret\);/);
   });
 
+  // SoW 19 Oct 2026: the chips sit behind one Filters button, closed until a filter is set.
+  it("keeps the chips behind a closed Filters button until a filter is set, then opens it with the count", () => {
+    const closed = render();
+    expect(closed).toMatch(/^<details class="_filters_\w+"><summary class="_filterToggle_\w+">/);
+    expect(closed).toContain("Filters</summary>");
+    const set = render({ ...ALL_DOCUMENTS, type: "pdf", attention: true });
+    expect(set).toMatch(/^<details class="_filters_\w+" open="">/);
+    expect(set).toMatch(/Filters<span class="_filterCount_\w+ tabular">2<\/span><\/summary>/);
+  });
+
   it("fills a set chip, gives it its own x, and counts the filters in Clear all", () => {
     const html = render({ ...ALL_DOCUMENTS, type: "pdf", attention: true });
     expect(html).toMatch(/data-active="true"[^>]*>Type: PDF<\/button>/);
@@ -168,7 +178,9 @@ describe("the documents list (D1, D2, D3, D6, D9, D10, D11)", () => {
   it("D1: keeps Read with's room from the first paint, a skeleton until the limits come", () => {
     expect(view).toMatch(/const readerSelect = uploads\.limitsLoaded \? \([\s\S]*?\) : \(\s*<span className=\{`skeleton \$\{styles\.readerSkeleton\}`\}/);
     // Changed on purpose (Tushar, 16 Oct 2026, one control height): --control-h, 44px on touch.
-    expect(docs).toMatch(/\.uploadControls \{[^}]*min-height:\s*calc\(var\(--control-h\)/);
+    // Changed on purpose (SoW 19 Oct 2026, gaps and alignment): one control tall, no line kept
+    // for the hint, which left a gap under the heading; a hint now adds its own line.
+    expect(docs).toMatch(/\.uploadControls \{[^}]*min-height:\s*calc\(var\(--control-h\)\);/);
     expect(docs).toMatch(/@media \(pointer: coarse\) \{\s*\.uploadControls \{\s*min-height:\s*calc\(var\(--h-lg\)/);
   });
 

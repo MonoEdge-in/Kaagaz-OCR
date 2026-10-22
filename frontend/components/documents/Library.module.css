@@ -88,13 +88,6 @@
   color: inherit;
 }
 
-.treeCount {
-  margin-inline-start: auto;
-  font-family: var(--k-font-mono);
-  font-size: var(--fs-label);
-  color: var(--k-ink-faint);
-}
-
 .tree,
 .subtree {
   list-style: none;
@@ -365,6 +358,49 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+}
+
+/* SoW 19 Oct: one Filters pill opens the chips; open, it is filled like a pressed chip. */
+.filterToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  align-self: flex-start;
+  min-height: var(--control-h);
+  padding: 0 var(--space-4);
+  border: 1px solid var(--k-rule);
+  border-radius: var(--k-r-pill);
+  background: var(--k-surface);
+  color: var(--k-ink);
+  font: 500 13px/1.2 var(--k-font-body);
+  list-style: none;
+  cursor: pointer;
+}
+
+.filterToggle::-webkit-details-marker {
+  display: none;
+}
+
+.filterToggle:hover {
+  border-color: var(--k-rule-strong);
+}
+
+.filters[open] > .filterToggle {
+  border-color: var(--k-accent);
+  background: var(--k-accent-soft);
+  color: var(--k-accent-soft-ink);
+}
+
+.filterCount {
+  display: inline-grid;
+  place-items: center;
+  min-width: var(--badge-h);
+  height: var(--badge-h);
+  padding: 0 var(--space-2);
+  border-radius: var(--k-r-pill);
+  background: var(--k-accent);
+  color: var(--k-accent-ink);
+  font: 600 11px/1 var(--k-font-mono);
 }
 
 .filterRow {

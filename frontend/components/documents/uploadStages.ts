@@ -43,7 +43,7 @@ export interface Shown {
 
 /** The stage a row is in; null when it has no bar (waiting, done, refused, failed). */
 export function stageOf(state: UploadState): Stage | null {
-  return state.kind === "sending" || state.kind === "saving" || state.kind === "reading" ? state.kind : null;
+  return state.kind === "sending" || state.kind === "offline" ? "sending" : state.kind === "saving" || state.kind === "reading" ? state.kind : null;
 }
 
 const seconds = (from: number | null, to: number | null) =>
@@ -70,16 +70,16 @@ export function jobFraction(
     return documentFraction(progress?.step, value ?? null, now) ?? 0;
   }
   const size = Math.max(0, sizeBytes);
-  let send = seconds(times.startedAt, times.sentAt);
+  let send = state.kind === "offline" ? size / ASSUMED_BYTES_PER_SECOND : seconds(times.startedAt, times.sentAt);
   if (send === null) {
     const elapsed = seconds(times.startedAt, now) ?? 0;
-    const fraction = state.kind === "sending" ? state.fraction : 0;
+    const fraction = state.kind === "sending" || state.kind === "offline" ? state.fraction : 0;
     send = fraction >= MEASURED_FROM && elapsed > 0 ? elapsed / fraction : size / ASSUMED_BYTES_PER_SECOND;
   }
   const save = seconds(times.sentAt, times.repliedAt) ?? Math.max(MIN_SAVE_SECONDS, size / SAVE_BYTES_PER_SECOND);
   const read = Math.max(1, readSeconds);
   const total = send + save + read;
-  if (state.kind === "sending") return (send * Math.min(1, Math.max(0, state.fraction))) / total;
+  if (state.kind === "sending" || state.kind === "offline") return (send * Math.min(1, Math.max(0, state.fraction))) / total;
   if (state.kind === "saving") {
     const saving = seconds(times.sentAt, now) ?? 0;
     return (send + save * Math.min(SAVING_AT_MOST, saving / save)) / total;

@@ -66,8 +66,8 @@ export const progressText = (done: number, total: number) =>
 
 export function finishedText(total: number): string {
   return total === 1
-    ? "The flagged word is reviewed. Document ready to export."
-    : `All ${total.toLocaleString("en-IN")} flagged words reviewed. Document ready to export.`;
+    ? "Verified. The flagged word is reviewed or resolved. Document ready to export."
+    : `Verified. All ${total.toLocaleString("en-IN")} flagged words are reviewed or resolved. Document ready to export.`;
 }
 
 /** "Scanning…" until the scan is done; then the API's sentence. */

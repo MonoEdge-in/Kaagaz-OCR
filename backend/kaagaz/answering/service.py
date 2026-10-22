@@ -312,7 +312,7 @@ class Answer:
     normalized_question: str
     model_used: bool
     rewritten_question: str | None = None  # H1: what was searched for, when a follow-up was rewritten
-    understood_words: tuple[tuple[str, str], ...] = ()  # My words used: (word, meaning)
+    understood_words: tuple[tuple[str, str, str], ...] = ()  # (word, meaning, personal or organization)
     # PRD 5 F6: the note on pages that couldn't be read, the pages it names, and how many in all.
     reading_note: str | None = None
     unreadable_pages: tuple[FlaggedPage, ...] = ()
@@ -355,7 +355,10 @@ class Answer:
             "normalized_question": self.normalized_question,
             "model_used": self.model_used,
             "rewritten_question": self.rewritten_question,
-            "understood_words": [{"word": w, "meaning": m} for w, m in self.understood_words],
+            "understood_words": [
+                {"word": w, "meaning": m, **({"origin": origin} if origin != "personal" else {})}
+                for w, m, origin in self.understood_words
+            ],
             "reading_note": self.reading_note,
             "unreadable_pages": [page.to_json() for page in self.unreadable_pages],
             "unreadable_page_count": self.unreadable_page_count,
@@ -664,7 +667,10 @@ class AnswerService:
         if unchecked is not None:
             return unchecked
         # My words: read once, for this question and this user only, never cached.
-        words = () if user_id is None else self._words.words(customer_id, user_id)
+        document_id = (
+            scope.document_ids[0] if scope.document_ids is not None and len(scope.document_ids) == 1 else None
+        )
+        words = () if user_id is None else self._words.words(customer_id, user_id, document_id=document_id)
         expansion = expand(question, words) if words else NO_EXPANSION
         answer = self._search_answer(
             customer_id, question, normalised, shown, scope, expansion, whole, aspects, choice, pins

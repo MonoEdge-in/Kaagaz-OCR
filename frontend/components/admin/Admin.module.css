@@ -423,23 +423,6 @@
   justify-content: flex-end;
 }
 
-/* A form's buttons: [Destructive] ... [Cancel] [Primary], the primary last; below 480px
-   they stack full width, the primary on top. */
-.formButtons {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: flex-end;
-  gap: var(--space-2);
-}
-
-@media (max-width: 479.98px) {
-  .formButtons {
-    flex-direction: column-reverse;
-    align-items: stretch;
-  }
-}
-
 /* --- Add a user ---------------------------------------------------------------- */
 
 .form {

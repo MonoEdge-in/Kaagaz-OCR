@@ -380,7 +380,7 @@ export function SummaryBar(props: SummaryBarProps) {
             )}
           </span>
         ) : null}
-        {ready && status.flagged > 0 && (
+        {ready && status.flagged > 0 && status.remaining > 0 && (
           <button
             ref={reviewRef}
             type="button"
@@ -388,7 +388,7 @@ export function SummaryBar(props: SummaryBarProps) {
             aria-pressed={reviewing}
             onClick={onReview}
           >
-            {!status.can_review ? SHOW_FLAGS : done > 0 && status.remaining > 0 ? CONTINUE_LABEL : REVIEW_LABEL}
+            {!status.can_review ? SHOW_FLAGS : done > 0 ? CONTINUE_LABEL : REVIEW_LABEL}
           </button>
         )}
       </div>

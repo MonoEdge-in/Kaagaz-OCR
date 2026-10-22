@@ -71,12 +71,13 @@ FILTERED: dict[tuple[ModuleType, str], str] = {
     (unchecked, "_CARD_DOCUMENTS"): LIVE_CURRENT,
     # The pages a not-found answer names as not read well (PRD 5 F6): the same.
     (hard_to_read, "_FLAGGED_PAGES"): LIVE_CURRENT,
-    # Review: the values of the version answers use, and nothing else.
+    # Review queue: current-version values only. The direct resolve lock may also
+    # see an older ready version opened in its document viewer.
     (review, "_QUEUE"): LIVE_CURRENT,
     (review, "_COUNT"): LIVE_CURRENT,
     (review, "_QUEUE_FOR_DOCUMENT"): LIVE_CURRENT,
     (review, "_COUNT_FOR_DOCUMENT"): LIVE_CURRENT,
-    (review, "_LOCK_VALUE"): LIVE_CURRENT,
+    (review, "_LOCK_VALUE"): LIVE,
     # The admin numbers: each family once, by its current version; open review
     # items as the queue shows them.
     (admin, "_DOCUMENTS_BY_STATUS"): LISTED,

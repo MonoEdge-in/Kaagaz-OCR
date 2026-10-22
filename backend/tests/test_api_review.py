@@ -125,7 +125,7 @@ def test_queue_filters_by_document_and_paginates(db: Database) -> None:
 
 
 @pytest.mark.db
-def test_only_the_current_ready_version_is_reviewed(db: Database) -> None:
+def test_queue_is_current_only_but_ready_older_versions_can_be_verified_from_the_viewer(db: Database) -> None:
     api, reviewer, older, older_value = _setup(db)
     customer_id = reviewer.customer_id
     with db.customer(customer_id) as conn:
@@ -141,12 +141,17 @@ def test_only_the_current_ready_version_is_reviewed(db: Database) -> None:
 
     body = reviewer.client.get("/api/review").json()
     assert ([item["value"]["id"] for item in body["items"]], body["total"]) == ([values[current]], 1)
-    for value_id in (older_value, values[reading]):
-        reply = reviewer.client.post(
-            f"/api/review/{value_id}", json={"choice": "first", "remember": False}, headers=CSRF
-        )
-        assert (reply.status_code, reply.json()["error"]["code"]) == (404, "not_found")
-        assert _stored(db, customer_id, value_id)[3] == "needs_review"
+    resolved_older = reviewer.client.post(
+        f"/api/review/{older_value}", json={"choice": "first", "remember": False}, headers=CSRF
+    )
+    assert resolved_older.status_code == 200
+    assert _stored(db, customer_id, older_value)[3] == "verified"
+
+    reply = reviewer.client.post(
+        f"/api/review/{values[reading]}", json={"choice": "first", "remember": False}, headers=CSRF
+    )
+    assert (reply.status_code, reply.json()["error"]["code"]) == (404, "not_found")
+    assert _stored(db, customer_id, values[reading])[3] == "needs_review"
     resolved = reviewer.client.post(
         f"/api/review/{values[current]}", json={"choice": "first", "remember": False}, headers=CSRF
     )

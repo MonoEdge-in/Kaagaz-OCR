@@ -3,7 +3,6 @@
 // server checks again and wins (a word chat reads its own way is refused only there).
 // Words are the user's text: shown as text only, never logged.
 
-import type { UploadEntry } from "@/components/documents/uploadQueue";
 import { ApiError } from "@/lib/api";
 import type { Answer, MyWord, WordSaved } from "@/lib/types";
 
@@ -153,31 +152,9 @@ export function understoodNotes(answer: Pick<Answer, "understood_words">): strin
   return words
     .filter((w) => typeof w?.word === "string" && typeof w?.meaning === "string" && w.word && w.meaning)
     .slice(0, MAX_NOTES)
-    .map((w: { word: string; meaning: string }) => `Understood '${w.word}' as '${w.meaning}' (your word)`);
-}
-
-// sent: the last request, to send again after the duplicate question.
-export type UploadPair = WordDraft & { key: string; state: { kind: "draft" } | { kind: "saving" } | SaveState; sent?: NewWordBody };
-
-/** The documents of uploads that finished (new, already there, or restored) and were not linked yet. */
-export function uploadedIds(entries: UploadEntry[], linked: ReadonlySet<string>): string[] {
-  const ids = entries.flatMap(({ state }) =>
-    state.kind === "done" || state.kind === "duplicate" || state.kind === "restored" ? [state.documentId] : [],
-  );
-  return [...new Set(ids)].filter((id) => !linked.has(id));
-}
-
-/** The pairs the next finished upload saves: drafts with text that looks fine. */
-export const pairsToSave = (pairs: UploadPair[]) =>
-  pairs.filter((pair) => pair.state.kind === "draft" && draftOk(pair));
-
-/** One line for the live region once the upload's words have been sent. */
-export function pairsSummary(states: SaveState[]): string {
-  const count = (kind: SaveState["kind"]) => states.filter((s) => s.kind === kind).length;
-  const parts = [[count("saved"), "saved to My words"], [count("ask"), "already have a meaning: choose what to do"],
-    [count("refused"), "not saved"]] as const;
-  const said = parts.filter(([n]) => n > 0).map(([n, text]) => `${n} ${text}`);
-  return said.length > 0 ? `Words in these files: ${said.join(", ")}.` : "";
+    .map((w: { word: string; meaning: string; origin?: string }) =>
+      `Understood '${w.word}' as '${w.meaning}' (${w.origin === "organization" ? "organization word" : "your word"})`,
+    );
 }
 
 // --- UI audit, 16 Oct 2026 (W1, W2) ------------------------------------------------

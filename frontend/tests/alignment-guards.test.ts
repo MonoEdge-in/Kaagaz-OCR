@@ -78,7 +78,7 @@ const ALLOWED = new Map<string, string>([
   ["components/chat/Chat.module.css: .openLink", "a link in a source card's text: the 24px target, 44px on touch"],
   ["components/viewer/ScannedText.module.css: .lineButton", "a scanned line, as tall as its text (tests/layout-guards.test.ts)"],
   ["app/login/login.module.css: .chip", "the sign-in page's drawing of a citation number, not a control"],
-  ["components/words/Words.module.css: .uploadWords > summary, .toggle", "a disclosure summary and a switch on rows of their own, a full 44px target (kept for the Documents pass)"],
+  ["components/words/Words.module.css: .toggle", "a switch on a row of its own, a full 44px target"],
   // components/documents/* (the Documents pass owns these): inline targets and table-row heights.
   ["components/documents/Documents.module.css: .inlineAction", "an action word inside a line of text: 24px, 44px on touch"],
   ["components/documents/Documents.module.css: .selectAll, .selectHit", "a tick box's hit area: 24px, 44px on touch"],
