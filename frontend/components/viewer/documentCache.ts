@@ -4,7 +4,6 @@
 // often point at one document, so each document is fetched once and kept for
 // the session of this tab. A failed fetch is forgotten, so it can retry.
 
-import { useEffect, useState } from "react";
 import { getDocument } from "@/lib/api";
 import type { DocumentDetail } from "@/lib/types";
 
@@ -21,26 +20,3 @@ export function loadDocument(id: string): Promise<DocumentDetail> {
   return loading;
 }
 
-export type DocumentState =
-  | { status: "loading" }
-  | { status: "ready"; document: DocumentDetail }
-  | { status: "error" };
-
-/** The cached document detail for one id. */
-export function useDocumentDetail(id: string): DocumentState {
-  const [state, setState] = useState<{ id: string; value: DocumentState } | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    loadDocument(id)
-      .then((document) => {
-        if (!cancelled) setState({ id, value: { status: "ready", document } });
-      })
-      .catch(() => {
-        if (!cancelled) setState({ id, value: { status: "error" } });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [id]);
-  return state && state.id === id ? state.value : { status: "loading" };
-}

@@ -19,6 +19,9 @@ import { listFolders } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import type { Folder } from "@/lib/types";
 
+/** How long the screens wait to hear of stored files, so a run of them is one refresh. */
+const NOTIFY_MS = 1000;
+
 /** The shell's own file input; a screen with its own (#upload-input) is used first. */
 export const SHELL_UPLOAD_INPUT_ID = "upload-input-shell";
 
@@ -36,7 +39,22 @@ const UploadsContext = createContext<SharedUploads | null>(null);
 export function UploadsProvider({ children }: { children: ReactNode }) {
   const { me } = useSession();
   const listeners = useRef(new Set<() => void>());
-  const notify = () => listeners.current.forEach((listener) => listener());
+  const notifyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // One refresh for a run of stored files: a 100-file drop asks each screen again about once
+  // a second while it lands, not 100 times in a row.
+  const notify = () => {
+    if (notifyTimer.current !== null) return;
+    notifyTimer.current = setTimeout(() => {
+      notifyTimer.current = null;
+      listeners.current.forEach((listener) => listener());
+    }, NOTIFY_MS);
+  };
+  useEffect(
+    () => () => {
+      if (notifyTimer.current !== null) clearTimeout(notifyTimer.current);
+    },
+    [],
+  );
   const uploads = useUploads(notify);
   const [trayOpen, setTrayOpen] = useState(false);
   const [folders, setFolders] = useState<Folder[]>([]);

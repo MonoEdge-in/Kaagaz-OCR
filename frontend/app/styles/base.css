@@ -51,18 +51,10 @@
 .k-deva { font-family: var(--font-plex-devanagari), "IBM Plex Sans Devanagari", var(--k-font-body); line-height: var(--k-lh-read); }
 
 .k-ic { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; vertical-align: middle; }
-.k-ic--sm { width: 14px; height: 14px; }
-.k-ic--lg { width: 22px; height: 22px; }
 
-/* decorative: MonoEdge-style dot field and pixel matrix */
+/* decorative: MonoEdge-style dot field */
 .k-dotfield { background-image: radial-gradient(var(--k-dot) 1.2px, transparent 1.6px); background-size: 22px 22px; }
-.k-pixels { display: grid; grid-template-columns: repeat(6, 6px); grid-auto-rows: 6px; gap: 3px; }
-.k-pixels i { background: currentColor; opacity: .3; }
-.k-pixels i.on { opacity: 1; }
 .k-blue-panel { background: var(--k-accent); color: var(--k-accent-ink); border-radius: var(--k-r-5); padding: 28px; position: relative; overflow: hidden; }
 
 /* ---------- 18. Motion ---------- */
 @keyframes k-spin { to { transform: rotate(360deg); } }
-@keyframes k-slide { 0% { transform: translateX(-100%); } 100% { transform: translateX(260%); } }
-@keyframes k-breathe { 0%, 100% { opacity: .25; } 50% { opacity: 1; } }
-@keyframes k-sweep { to { transform: translateX(100%); } }

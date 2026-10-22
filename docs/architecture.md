@@ -147,7 +147,7 @@ The look comes from the design handoff in `design/kaagaz-ui-handoff/` (HANDOFF.m
 - `frontend/app/styles/tokens.css` holds the handoff's tokens (`--k-*`) exactly, light and dark; a System choice follows `prefers-color-scheme`. `app/styles/base.css` holds its base and type classes under `.k-root`.
 - `app/globals.css` keeps the screens' token names (`--bg-page`, `--accent`, `--r-sm`, ...) but gives them the handoff's values, so every screen has the look. Every text and edge pair is measured for WCAG 2.2 AA in both themes (`tests/theme.test.ts`).
 - Faces, through `next/font`: Archivo set wide for headings, IBM Plex Sans for text, Plex Sans Devanagari for Hindi and Marathi, Plex Mono for data and labels.
-- The UI kit is `components/ui/<Name>/<Name>.tsx`, one CSS module each, with render tests in `tests/kit-*.test.ts`. `/kit` shows every part in its states, in development only.
+- The UI kit is `components/ui/<Name>/<Name>.tsx`, one CSS module each, with render tests in `tests/kit-*.test.ts`; it holds only the parts the screens use (the rest of the handoff's kit, and its `/kit` sheet, were removed on 22 Oct 2026 as unused).
 - Icons: `components/ui/Icon/`, the handoff's set at a 1.6 stroke, plus ten the screens draw that the set left out.
 
 **What a status means** (`frontend/lib/status.ts`, the only place this lives):

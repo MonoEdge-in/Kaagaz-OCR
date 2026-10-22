@@ -71,6 +71,7 @@ import {
   versionNote,
   versionPosition,
   versionText,
+  withSummary,
 } from "@/components/viewer/versions";
 import { LabelBadge } from "@/components/viewer/LabelBadge";
 import { fieldText, reasonText, voteText } from "@/components/viewer/labels";
@@ -207,7 +208,7 @@ export function DocumentView({
   const merge = (summary: DocumentSummary) =>
     setLoaded((shown) =>
       shown && "detail" in shown && shown.detail.id === summary.id
-        ? { ...shown, detail: { ...shown.detail, ...summary } }
+        ? { ...shown, detail: withSummary(shown.detail, summary) }
         : shown,
     );
   const poll = usePoll<DocumentSummary>({
@@ -267,10 +268,10 @@ export function DocumentView({
   const markedPage = shown && selection ? shown.pages.find((p) => p.page_no === selection.pageNo) : undefined;
   const readingMarks = usePageMarks(documentId, markedPage, reloads);
 
+  // While it loads, only the skeleton (SoW 19 Oct: "Back to documents" flashed for half a second).
   if (!current) {
     return (
       <div className="page page-wide">
-        <BackLink />
         <p className="visually-hidden" role="status">
           Loading the document…
         </p>
@@ -567,6 +568,10 @@ export function DocumentView({
                     </td>
                     <td role="cell" className={styles.labelCell}>
                       <LabelBadge label={value.label} confidence={value.confidence ?? null} />
+                      <div className={styles.reason}>
+                        {reasonText(value.label_reason)}
+                        {value.votes && <div className={styles.pageNote}>{voteText(value.votes)}</div>}
+                      </div>
                       {canVerifyValues && value.label === "needs_review" && (
                         <button
                           type="button"
@@ -578,10 +583,6 @@ export function DocumentView({
                           <span className="visually-hidden">{` ${fieldText(value.field)} on page ${value.region.page}`}</span>
                         </button>
                       )}
-                      <div className={styles.reason}>
-                        {reasonText(value.label_reason)}
-                        {value.votes && <div className={styles.pageNote}>{voteText(value.votes)}</div>}
-                      </div>
                     </td>
                   </tr>
                 );

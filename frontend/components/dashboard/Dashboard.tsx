@@ -203,7 +203,9 @@ export function Dashboard() {
             </span>
             <span className={`k-faint ${styles.uploadWhere}`}>{chosenName ? `into ${chosenName}` : DASHBOARD_TEXT.uploadAutofile}</span>
           </button>
-          <DepartmentPicker departments={departments} value={chosen} onChange={pick} />
+          <div className={styles.uploadTo}>
+            <DepartmentPicker departments={departments} value={chosen} onChange={pick} />
+          </div>
         </div>
       </section>
 

@@ -90,7 +90,8 @@
   justify-content: flex-end;
   gap: var(--space-2) var(--space-3);
   min-width: 0;
-  min-height: calc(var(--control-h) + var(--space-1) + 1.5em);
+  /* One control tall (SoW 19 Oct: the hint's reserved line left a gap under the heading). */
+  min-height: calc(var(--control-h));
   margin-inline-start: auto; /* at the right edge, also when it wraps under the heading */
 }
 
@@ -112,7 +113,7 @@
 /* On touch the select is 44px: the room kept for it is too. */
 @media (pointer: coarse) {
   .uploadControls {
-    min-height: calc(var(--h-lg) + var(--space-1) + 1.5em);
+    min-height: calc(var(--h-lg));
   }
 
   .readerSkeleton {
@@ -193,18 +194,6 @@
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
-}
-
-.uploadsTitleWrap {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: var(--space-2);
-}
-
-.queueSummary {
-  font-size: var(--fs-sm);
-  color: var(--text-secondary);
 }
 
 .uploads {
@@ -404,25 +393,67 @@
   text-transform: uppercase;
 }
 
-/* Inside documents / Names at the start; Sort and List / Grid at the end. */
-.listTools {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2) var(--space-3);
+/* The search bar's More (SoW 19 Oct): a round quiet button at the pill's end. */
+.more {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: var(--control-h);
+  height: var(--control-h);
+  padding: 0;
+  border: 0;
+  border-radius: var(--k-r-pill);
+  background: transparent;
+  color: var(--k-ink-muted);
+  cursor: pointer;
+  anchor-name: --documents-more;
 }
 
-.toolsEnd {
+.more:hover,
+.more:has(+ :popover-open) {
+  background: var(--k-sunken);
+  color: var(--k-ink);
+}
+
+/* Its panel: a raised card under the button's end, each choice with a small label. */
+.morePanel {
+  --pop-y: -4px; /* it opens below its button (.motion-pop, globals.css) */
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 16rem;
+  padding: var(--space-4);
+  border: 1px solid var(--k-card-edge);
+  border-radius: var(--k-r-4);
+  background: var(--k-surface);
+  color: var(--k-ink);
+  box-shadow: var(--k-shadow-2);
+}
+
+.morePanel:popover-open {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
+}
+
+@supports (position-area: bottom) {
+  .morePanel {
+    position-anchor: --documents-more;
+    inset: auto;
+    margin: var(--space-2) 0;
+    position-area: bottom span-left;
+    position-try-fallbacks: flip-block, flip-inline;
+  }
+}
+
+.moreGroup {
+  display: flex;
+  flex-direction: column;
   gap: var(--space-2);
-  margin-inline-start: auto;
 }
 
-.sort {
-  width: 12rem;
+.moreLabel {
+  color: var(--k-ink-muted);
+  font: 500 11px var(--k-font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
 }
 
 /* The handoff's Sort select, as a pill the height of the pills beside it. */
@@ -1015,9 +1046,9 @@ table.docs > tbody > tr {
      status chip and the dates share one line. */
   table.docs td {
     height: 48px;
-    padding-block: var(--space-2);
+    padding-block: var(--space-3); /* SoW 19 Oct: more room above and below each row */
     vertical-align: top;
-    border-bottom: 1px solid var(--border);
+    border-bottom: 1px solid var(--k-rule);
   }
 
   .statusCell .statusLine:first-child {
@@ -1120,9 +1151,11 @@ table.docs > tbody > tr {
 
 /* The narrow tables: the size is a line under the type. */
 @container docs-list (min-width: 36rem) and (max-width: 63.98rem) {
+  /* A short line of its own under the kind, not another control-tall one (SoW 19 Oct). */
   .bandSize {
     display: block;
     color: var(--text-secondary);
+    line-height: 1.5;
   }
 }
 

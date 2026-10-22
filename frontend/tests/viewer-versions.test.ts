@@ -6,6 +6,7 @@ import {
   versionNote,
   versionPosition,
   versionText,
+  withSummary,
 } from "@/components/viewer/versions";
 import type { DocumentStatus, DocumentVersion } from "@/lib/types";
 
@@ -89,5 +90,19 @@ describe("the line for a newer version", () => {
     expect(
       newerVersionText({ version_no: 3, status_message: "Reading the document… Try 2 of 5." }),
     ).toBe("Version 3: Reading the document… Try 2 of 5.");
+  });
+});
+
+// The black screen on a document being read (22 Oct 2026): the summary polled while it is read
+// says `versions: 2` (the family's count, as in the list), and laying it over the detail turned
+// the version list into a number, so versionPosition threw "detail.versions.find is not a function".
+describe("a polled summary laid over the detail", () => {
+  it("takes the summary's fields and keeps the detail's version list", () => {
+    const list = [v1, v2];
+    const detail = { id: "b", versions: list, status: "clean" as DocumentStatus };
+    const merged = withSummary(detail, { id: "b", versions: 2, status: "ready" });
+    expect(merged.status).toBe("ready");
+    expect(merged.versions).toBe(list);
+    expect(versionPosition(merged)).toEqual({ number: 2, total: 2 });
   });
 });

@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { UPLOADED, fakeUploadServer, nextPart } from "./fake-upload-server";
 import {
   ACCEPT_ATTRIBUTE,
   FALLBACK_UPLOAD_LIMITS,
@@ -444,135 +445,140 @@ describe("listView with filters", () => {
   });
 });
 
+// Changed on purpose (resumable uploads, cfc18ee3): a file goes as an upload session, in 8 MB
+// parts, not one form POST, so these read the session's start instead of a FormData.
 describe("uploadDocument into a folder", () => {
   const FOLDER = "0b4f7a8e-1c2d-4e5f-8a9b-0c1d2e3f4a5b";
-
-  // Stands in for the browser's XMLHttpRequest and keeps what was sent.
-  class FakeXhr {
-    static sent: FakeXhr[] = [];
-    method = "";
-    url = "";
-    body: unknown = null;
-    status = 0;
-    responseText = "";
-    withCredentials = false;
-    headers: Record<string, string> = {};
-    upload: { onprogress: ((event: { lengthComputable: boolean; loaded: number; total: number }) => void) | null } =
-      { onprogress: null };
-    onload: (() => void) | null = null;
-    onerror: (() => void) | null = null;
-    open(method: string, url: string) {
-      this.method = method;
-      this.url = url;
-    }
-    setRequestHeader(name: string, value: string) {
-      this.headers[name] = value;
-    }
-    send(body: unknown) {
-      this.body = body;
-      FakeXhr.sent.push(this);
-    }
-    reply(status: number, body: unknown) {
-      this.status = status;
-      this.responseText = JSON.stringify(body);
-      this.onload?.();
-    }
-  }
+  const csv = () => new File(["a,b"], "rates.csv");
+  const pdf = () => new File(["%PDF-1.7"], "bill v2.pdf");
 
   afterEach(() => {
     vi.unstubAllGlobals();
-    FakeXhr.sent = [];
+    vi.useRealTimers();
   });
 
-  function lastForm(): FormData {
-    const xhr = FakeXhr.sent.at(-1);
-    if (!xhr || !(xhr.body instanceof FormData)) throw new Error("nothing was uploaded");
-    return xhr.body;
-  }
+  // Only the waits between tries are faked: each round lets the real work (hashing the file)
+  // go on, then moves the clock a second.
+  const settled = async (outcome: () => unknown) => {
+    for (let round = 0; round < 2_000 && outcome() === null; round += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+      vi.advanceTimersByTime(1_000);
+    }
+  };
 
-  it("sends the folder being viewed as the form field folder_id, with the file", async () => {
-    vi.stubGlobal("XMLHttpRequest", FakeXhr);
+  it("sends the folder being viewed as folder_id, then the file as one part", async () => {
+    const server = fakeUploadServer();
     const file = new File(["%PDF-1.7"], "bill.pdf", { type: "application/pdf" });
-    const done = uploadDocument(file, "u1", () => {}, FOLDER);
-    const form = lastForm();
-    expect(form.get("folder_id")).toBe(FOLDER);
-    expect(form.get("file")).toBeInstanceOf(File);
-    expect(FakeXhr.sent[0]?.url).toBe("/api/documents");
-    FakeXhr.sent[0]?.reply(201, { document: { id: "d1" }, duplicate: false });
-    await expect(done).resolves.toMatchObject({ duplicate: false });
+    await expect(uploadDocument(file, "u1", () => {}, FOLDER)).resolves.toMatchObject({ duplicate: false });
+    expect(server.starts[0]).toMatchObject({ folder_id: FOLDER, file_name: "bill.pdf", file_size: 8 });
+    expect(server.parts[0]?.method).toBe("PUT");
+    expect(server.parts[0]?.url).toBe("/api/documents/upload-sessions/s1/parts/1");
+    expect((server.parts[0]?.body as Blob).size).toBe(8);
+    expect(server.completes).toBe(1);
   });
 
   it("sends no folder_id when uploading at the top level", async () => {
-    vi.stubGlobal("XMLHttpRequest", FakeXhr);
-    const done = uploadDocument(new File(["a,b"], "rates.csv"), "u1", () => {});
-    expect(lastForm().has("folder_id")).toBe(false);
-    FakeXhr.sent[0]?.reply(201, { document: { id: "d2" }, duplicate: false });
-    await done;
+    const server = fakeUploadServer();
+    await uploadDocument(csv(), "u1", () => {});
+    expect(server.starts[0]).not.toHaveProperty("folder_id");
   });
 
-  it("sends a new version to /documents/{id}/versions, with progress, and no folder", async () => {
-    vi.stubGlobal("XMLHttpRequest", FakeXhr);
+  it("sends a new version as version_document_id, with progress, and no folder", async () => {
+    const server = fakeUploadServer({
+      autoParts: false,
+      complete: { status: 201, body: { document: { id: "d9", version_no: 2 }, duplicate: false, in_trash: false } },
+    });
     const fractions: number[] = [];
-    const done = uploadVersion("d1", new File(["%PDF-1.7"], "bill v2.pdf"), "u1", (f) => fractions.push(f));
-    const xhr = FakeXhr.sent[0];
-    expect(xhr?.method).toBe("POST");
-    expect(xhr?.url).toBe("/api/documents/d1/versions");
-    expect(xhr?.headers["X-Requested-With"]).toBe("kaagaz");
-    expect(lastForm().get("file")).toBeInstanceOf(File);
-    expect(lastForm().has("folder_id")).toBe(false);
-    xhr?.upload.onprogress?.({ lengthComputable: true, loaded: 1, total: 4 });
-    expect(fractions).toEqual([0.25]);
-    xhr?.reply(201, { document: { id: "d9", version_no: 2 }, duplicate: false, in_trash: false });
+    const done = uploadVersion("d1", pdf(), "u1", (f) => fractions.push(f));
+    const part = await nextPart();
+    expect(server.starts[0]).toMatchObject({ version_document_id: "d1" });
+    expect(server.starts[0]).not.toHaveProperty("folder_id");
+    expect(part.headers["X-Requested-With"]).toBe("kaagaz");
+    part.upload.onprogress?.({ lengthComputable: true, loaded: 2 });
+    part.reply();
     await expect(done).resolves.toMatchObject({ document: { id: "d9" }, in_trash: false });
+    expect(fractions).toEqual([0.25, 1]);
   });
 
   // Critical #5: the server refuses the file (409 session_changed) when
   // someone else has signed in on this browser since it was chosen.
-  it("sends who was signed in when the file was chosen, on both routes", () => {
-    vi.stubGlobal("XMLHttpRequest", FakeXhr);
-    void uploadDocument(new File(["a,b"], "rates.csv"), "u1", () => {}, FOLDER);
-    expect(lastForm().get("user_id")).toBe("u1");
-    void uploadVersion("d1", new File(["%PDF-1.7"], "bill v2.pdf"), "u1", () => {});
-    expect(lastForm().get("user_id")).toBe("u1");
+  it("sends who was signed in when the file was chosen, on both routes", async () => {
+    const server = fakeUploadServer();
+    await uploadDocument(csv(), "u1", () => {}, FOLDER);
+    await uploadVersion("d1", pdf(), "u1", () => {});
+    expect(server.starts.map((start) => start.user_id)).toEqual(["u1", "u1"]);
   });
 
   // Model choice MS4, FINAL DECISIONS 6: read_model, never ocr_choice (accepted and ignored).
   // Changed on purpose (features 25-27, 15 Oct 2026): the reading chosen is sent whole
   // (read_mode or read_model), not a model alone.
-  it("sends the model chosen as read_model on both routes, and nothing for the default", () => {
-    vi.stubGlobal("XMLHttpRequest", FakeXhr);
+  it("sends the model chosen as read_model on both routes, and nothing for the default", async () => {
+    const server = fakeUploadServer();
     const model = "anthropic/claude-sonnet-5.5";
-    void uploadDocument(new File(["a,b"], "rates.csv"), "u1", () => {}, undefined, { read_model: model });
-    expect(lastForm().get("read_model")).toBe(model);
-    expect(lastForm().has("ocr_choice")).toBe(false);
-    void uploadVersion("d1", new File(["%PDF-1.7"], "bill v2.pdf"), "u1", () => {}, { read_model: model });
-    expect(lastForm().get("read_model")).toBe(model);
-    expect(lastForm().has("ocr_choice")).toBe(false);
-    void uploadDocument(new File(["a,b"], "rates.csv"), "u1", () => {}, FOLDER, undefined);
-    expect(lastForm().has("read_model")).toBe(false);
-    expect(lastForm().has("read_mode")).toBe(false);
-    void uploadVersion("d1", new File(["%PDF-1.7"], "bill v2.pdf"), "u1", () => {});
-    expect(lastForm().has("read_model")).toBe(false);
+    await uploadDocument(csv(), "u1", () => {}, undefined, { read_model: model });
+    await uploadVersion("d1", pdf(), "u1", () => {}, { read_model: model });
+    await uploadDocument(csv(), "u1", () => {}, FOLDER, undefined);
+    await uploadVersion("d1", pdf(), "u1", () => {});
+    const [first, second, third, fourth] = server.starts;
+    expect(first?.read_model).toBe(model);
+    expect(second?.read_model).toBe(model);
+    for (const start of [first, second]) expect(start).not.toHaveProperty("ocr_choice");
+    for (const start of [third, fourth]) {
+      expect(start).not.toHaveProperty("read_model");
+      expect(start).not.toHaveProperty("read_mode");
+    }
   });
 
   // Changed on purpose (Ensemble after the scan, 16 Oct 2026): no read_agents is ever sent.
-  it("sends Dynamic as read_mode on both routes, and never read_agents", () => {
-    vi.stubGlobal("XMLHttpRequest", FakeXhr);
-    void uploadDocument(new File(["a,b"], "rates.csv"), "u1", () => {}, undefined, { read_mode: "dynamic" });
-    expect(lastForm().get("read_mode")).toBe("dynamic");
-    expect(lastForm().has("read_agents")).toBe(false);
-    void uploadVersion("d1", new File(["%PDF-1.7"], "bill v2.pdf"), "u1", () => {}, { read_mode: "dynamic" });
-    expect(lastForm().get("read_mode")).toBe("dynamic");
-    expect(lastForm().has("read_agents")).toBe(false);
-    expect(lastForm().has("read_model")).toBe(false);
+  it("sends Dynamic as read_mode on both routes, and never read_agents", async () => {
+    const server = fakeUploadServer();
+    await uploadDocument(csv(), "u1", () => {}, undefined, { read_mode: "dynamic" });
+    await uploadVersion("d1", pdf(), "u1", () => {}, { read_mode: "dynamic" });
+    for (const start of server.starts) {
+      expect(start.read_mode).toBe("dynamic");
+      expect(start).not.toHaveProperty("read_agents");
+      expect(start).not.toHaveProperty("read_model");
+    }
   });
 
   it("gives the server's words when someone else has signed in since", async () => {
-    vi.stubGlobal("XMLHttpRequest", FakeXhr);
-    const done = uploadDocument(new File(["a,b"], "rates.csv"), "u1", () => {});
     const said = "Someone else has signed in on this browser since you chose this file.";
-    FakeXhr.sent[0]?.reply(409, { error: { code: "session_changed", message: said } });
-    await expect(done).rejects.toMatchObject({ status: 409, code: "session_changed", message: said });
+    fakeUploadServer({ candidates: { status: 409, body: { error: { code: "session_changed", message: said } } } });
+    await expect(uploadDocument(csv(), "u1", () => {})).rejects.toMatchObject({
+      status: 409,
+      code: "session_changed",
+      message: said,
+    });
+  });
+
+  // A failing server used to leave the row "waiting for the connection" for ever.
+  it("asks a failing server a few more times, then gives up with its error", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const server = fakeUploadServer({ complete: { status: 500, body: { error: { code: "server_error", message: "Try again." } } } });
+    let caught: unknown = null;
+    void uploadDocument(csv(), "u1", () => {}).catch((error: unknown) => (caught = error));
+    await settled(() => caught);
+    expect(caught).toMatchObject({ status: 500 });
+    expect(server.completes).toBe(5);
+  });
+
+  it("waits out a lost connection, saying so, and carries on", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const server = fakeUploadServer({
+      complete: (attempt) => {
+        if (attempt < 3) throw new TypeError("Failed to fetch");
+        return UPLOADED;
+      },
+    });
+    const waiting: boolean[] = [];
+    let result: unknown = null;
+    void uploadDocument(csv(), "u1", () => {}, undefined, undefined, undefined, undefined, undefined, (w) =>
+      waiting.push(w),
+    ).then((reply) => (result = reply));
+    await settled(() => result);
+    expect(result).toMatchObject({ duplicate: false });
+    expect(server.completes).toBe(3);
+    expect(waiting).toEqual([true, false, true, false]);
   });
 });
 

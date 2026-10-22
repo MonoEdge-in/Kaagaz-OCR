@@ -1074,14 +1074,6 @@ export type UsageKind =
   | "ensemble_scan" // Ensemble's other readers (feature 27)
   | "ensemble_chat"; // Ensemble's other answer drafts (feature 27)
 
-/** One model an upload may read scans with (GET /upload-limits readers), the default first. */
-export interface ReaderOption {
-  id: string; // the OpenRouter model ID, sent as read_model
-  title: string;
-  hint: string; // "about $X a page"
-  available: boolean;
-}
-
 /** Tokens of some model calls: all an org admin sees (no money, Tushar, 15 Oct 2026). */
 export interface UsageTokens {
   calls: number;

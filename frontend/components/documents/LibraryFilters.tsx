@@ -10,6 +10,8 @@
 // remove it; "Clear all (N)" counts the filters set.
 // File management Q3, Q5: Department, Type, Owner, Label, Party, Property, Document date and
 // Has newer version come first, in that order; they narrow the list and the search alike.
+// SoW 19 Oct: the chips sit behind one Filters button (a disclosure, closed until opened, and
+// open while any filter is set, so a set filter always shows), its count on the button.
 
 import { useId, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent } from "react";
@@ -23,6 +25,7 @@ import {
   propertyChipText,
 } from "@/components/files/filterChips";
 import { LABELS, LABEL_DESCRIPTIONS, labelName } from "@/components/files/labels";
+import { Icon } from "@/components/ui/Icon/Icon";
 import { IconButton } from "@/components/ui/IconButton";
 import { typeLabel } from "@/lib/format";
 import type { Folder, Person, Sensitivity, Tag } from "@/lib/types";
@@ -117,7 +120,7 @@ export function LibraryFilters({
   }
 
   // Esc in an open panel closes it and goes back to the chip that opened it.
-  function closeOnEscape(event: KeyboardEvent<HTMLDivElement>) {
+  function closeOnEscape(event: KeyboardEvent<HTMLElement>) {
     if (event.key !== "Escape" || open === null) return;
     rowRef.current?.querySelector<HTMLElement>('[aria-expanded="true"]')?.focus();
     setOpen(null);
@@ -129,7 +132,12 @@ export function LibraryFilters({
   }
 
   return (
-    <div className={styles.filters} onKeyDown={closeOnEscape}>
+    <details className={styles.filters} open={setCount > 0 || undefined} onKeyDown={closeOnEscape}>
+      <summary className={styles.filterToggle}>
+        <Icon name="filter" size="sm" />
+        Filters
+        {setCount > 0 && <span className={`${styles.filterCount} tabular`}>{setCount}</span>}
+      </summary>
       <div ref={rowRef} className={styles.filterRow} role="group" aria-label="Filters">
         {!library.trash &&
           departments.length > 0 &&
@@ -407,7 +415,7 @@ export function LibraryFilters({
           />
         </div>
       )}
-    </div>
+    </details>
   );
 }
 

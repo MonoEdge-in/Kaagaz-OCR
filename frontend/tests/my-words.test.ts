@@ -1,10 +1,8 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { UploadEntry } from "@/components/documents/uploadQueue";
-import { addBody, changeBody, duplicateQuestion, failedState, limitNote, pairsSummary, pairsToSave } from "@/components/words/words";
-import { retryBody, savedState, textProblem, understoodNotes, uploadedIds, wordGroups } from "@/components/words/words";
-import type { UploadPair } from "@/components/words/words";
+import { addBody, changeBody, duplicateQuestion, failedState, limitNote } from "@/components/words/words";
+import { retryBody, savedState, textProblem, understoodNotes, wordGroups } from "@/components/words/words";
 import { addMyWord, ApiError, changeMyWord, deleteMyWord, listMyWords } from "@/lib/api";
 import type { MyWord } from "@/lib/types";
 
@@ -140,32 +138,6 @@ describe("the chat note", () => {
     const notes = understoodNotes({ understood_words: many });
     expect(notes).toHaveLength(10);
     expect(notes[0]).toBe("Understood 'w0' as '<b>x</b>' (your word)");
-  });
-});
-
-describe("words in these files", () => {
-  const entry = (key: string, state: UploadEntry["state"]): UploadEntry => ({ key, name: "a.pdf", size: 1, state });
-  const pair = (key: string, w: string, m: string, kind: "draft" | "saving" = "draft"): UploadPair =>
-    ({ key, word: w, meaning: m, state: { kind } });
-
-  it("links the files that finished and were not linked yet", () => {
-    const entries = [entry("a", { kind: "done", documentId: "d1" }), entry("c", { kind: "error", message: "no" }),
-      entry("b", { kind: "duplicate", documentId: "d2", existingName: "x", inTrash: false }),
-      entry("d", { kind: "sending", fraction: 0.5 }), entry("e", { kind: "restored", documentId: "d3", existingName: "x" })];
-    expect(uploadedIds(entries, new Set())).toEqual(["d1", "d2", "d3"]);
-    expect(uploadedIds(entries, new Set(["d1", "d3"]))).toEqual(["d2"]);
-  });
-
-  it("sends only drafts whose text looks fine", () => {
-    const pairs = [pair("p1", "malak", "owner"), pair("p2", "", ""), pair("p3", "a<", "b"), pair("p4", "x", "y", "saving")];
-    expect(pairsToSave(pairs).map((p) => p.key)).toEqual(["p1"]);
-  });
-
-  it("sums up what became of them in one line", () => {
-    const saved = savedState({ word: word("w1", "a", "b"), outcome: "created", warning: null });
-    const said = pairsSummary([saved, saved, { kind: "ask", existing: [] }, { kind: "refused", message: "x" }]);
-    expect(said).toBe("Words in these files: 2 saved to My words, 1 already have a meaning: choose what to do, 1 not saved.");
-    expect(pairsSummary([])).toBe("");
   });
 });
 

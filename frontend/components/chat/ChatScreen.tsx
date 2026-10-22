@@ -31,7 +31,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useEffectEvent, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Toast } from "@/components/admin/Toast";
 import type { Notice } from "@/components/admin/Toast";
@@ -577,14 +577,15 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
 
   // Home submitted this question before navigating here. Consume the marker before
   // sending, so a refresh cannot submit the same question a second time.
+  const askOnce = useEffectEvent((question: string) => onAsk(question));
   useEffect(() => {
     if (!autoQuestion || !hydrated || askOff || resumed || pending !== null || autoQuestionSent.current) return;
     autoQuestionSent.current = true;
     showInUrl(null);
-    void onAsk(autoQuestion).then((sent) => {
+    void askOnce(autoQuestion).then((sent) => {
       if (!sent) setDraft(autoQuestion);
     });
-  }, [autoQuestion, hydrated, askOff, resumed, pending, onAsk]);
+  }, [autoQuestion, hydrated, askOff, resumed, pending]);
 
   const rename = async (id: string, title: string): Promise<boolean> => {
     try {

@@ -6,6 +6,7 @@
 // shows 100% until the document is ready (components/documents/uploadStages.ts).
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { fakeUploadServer, nextPart } from "./fake-upload-server";
 import {
   MAX_STEP_PERCENT,
   NO_TIMES,
@@ -190,46 +191,28 @@ describe("the stages, in words", () => {
   });
 });
 
+// Changed on purpose (resumable uploads, cfc18ee3): the file goes in parts of an upload session.
 describe("sending (lib/api.ts)", () => {
-  class FakeXhr {
-    static sent: FakeXhr[] = [];
-    status = 0;
-    responseText = "";
-    withCredentials = false;
-    body: unknown = null;
-    upload: {
-      onprogress: ((event: { lengthComputable: boolean; loaded: number; total: number }) => void) | null;
-      onload: (() => void) | null;
-    } = { onprogress: null, onload: null };
-    onload: (() => void) | null = null;
-    onerror: (() => void) | null = null;
-    open() {}
-    setRequestHeader() {}
-    send(body: unknown) {
-      this.body = body;
-      FakeXhr.sent.push(this);
-    }
-  }
-
   afterEach(() => {
     vi.unstubAllGlobals();
-    FakeXhr.sent = [];
   });
 
-  it("says when the last byte has gone (Saving starts), and the bytes never go backwards", () => {
-    vi.stubGlobal("XMLHttpRequest", FakeXhr);
+  it("says when the last byte has gone (Saving starts), and the bytes never go backwards", async () => {
+    const server = fakeUploadServer({ autoParts: false });
     const fractions: number[] = [];
     let sent = 0;
-    const file = new File(["%PDF-1.7"], "survey.pdf");
-    void uploadDocument(file, "u1", (f) => fractions.push(f), undefined, undefined, "b1", () => (sent += 1));
-    const xhr = FakeXhr.sent[0]!;
-    xhr.upload.onprogress?.({ lengthComputable: true, loaded: 2, total: 10 });
-    xhr.upload.onprogress?.({ lengthComputable: true, loaded: 1, total: 10 });
-    xhr.upload.onprogress?.({ lengthComputable: true, loaded: 10, total: 10 });
+    const file = new File(["0123456789"], "survey.pdf");
+    const done = uploadDocument(file, "u1", (f) => fractions.push(f), undefined, undefined, "b1", () => (sent += 1));
+    const part = await nextPart();
+    part.upload.onprogress?.({ lengthComputable: true, loaded: 2 });
+    part.upload.onprogress?.({ lengthComputable: true, loaded: 1 });
+    part.upload.onprogress?.({ lengthComputable: true, loaded: 10 });
     expect(fractions).toEqual([0.2, 1]);
     expect(sent).toBe(0);
-    xhr.upload.onload?.();
+    part.reply();
+    await done;
     expect(sent).toBe(1);
-    expect((xhr.body as FormData).get("batch_id")).toBe("b1");
+    expect(fractions).toEqual([0.2, 1]);
+    expect(server.starts[0]?.batch_id).toBe("b1");
   });
 });

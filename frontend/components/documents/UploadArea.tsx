@@ -233,9 +233,12 @@ export function useUploads(onUploaded: () => void) {
     try {
       const result = await start(
         (progress) => {
+          // Whole percents only: a browser reports about every 50 ms a file, and each report
+          // redraws every screen that shows the queue.
+          const step = Math.floor(progress * 100) !== Math.floor(fraction * 100);
           fraction = progress;
           if (progress > 0 && times.startedAt === null) times.startedAt = performance.now();
-          update(key, { kind: "sending", fraction: progress });
+          if (step) update(key, { kind: "sending", fraction: progress });
         },
         () => {
           times.sentAt = performance.now();
@@ -887,19 +890,24 @@ export function UploadStatus({
   onOpenChange,
   ...tray
 }: Omit<Parameters<typeof BatchTray>[0], "onHide"> & { open: boolean; onOpenChange: (open: boolean) => void }) {
-  const now = useTick();
   const id = useId();
   const toggle = useRef<HTMLButtonElement>(null);
-  const text = statusBarText(tray.entries, tray.views, now);
   const shown = tray.entries.length > 0 || tray.tooMany;
+  // The time left counts down only while a file is sending or being read; settled, the line
+  // stays still instead of redrawing on the shared tick.
+  const busy = tray.entries.some(isBusy);
   function hide() {
     onOpenChange(false);
     toggle.current?.focus();
   }
   return (
     <InStatusBar>
-      <p className={styles.barLine} aria-live="polite" title={text || undefined}>
-        {text}
+      <p className={styles.barLine} aria-live="polite">
+        {busy ? (
+          <TickingLine entries={tray.entries} views={tray.views} />
+        ) : (
+          <LineText text={statusBarText(tray.entries, tray.views, 0)} />
+        )}
       </p>
       {shown && (
         <button
@@ -922,9 +930,20 @@ export function UploadStatus({
             if (event.key === "Escape") hide();
           }}
         >
-          <BatchTray {...tray} onHide={hide} />
+          {/* Drawn only while open: closed, nobody sees its rows redraw. */}
+          {open && <BatchTray {...tray} onHide={hide} />}
         </div>
       )}
     </InStatusBar>
   );
+}
+
+function TickingLine({ entries, views }: { entries: UploadEntry[]; views: Record<string, BatchView> }) {
+  const now = useTick();
+  return <LineText text={statusBarText(entries, views, now)} />;
+}
+
+/** The line's words, the whole of them in the tooltip when the bar cuts them. */
+function LineText({ text }: { text: string }) {
+  return <span title={text || undefined}>{text}</span>;
 }

@@ -361,7 +361,7 @@ export function uploadDocument(
 ): Promise<UploadResult> {
   return resumableUpload(file, {
     file_name: file.name, file_size: file.size, user_id: userId, folder_id: folderId,
-    department_id: departmentId, batch_id: batchId, ...readingBody(reading),
+    department_id: folderId ? undefined : departmentId, batch_id: batchId, ...readingBody(reading),
   }, onProgress, onSent, onWaiting);
 }
 
@@ -402,19 +402,26 @@ async function digest(blob: Blob): Promise<string> {
 }
 
 function waitForNetwork(delay: number): Promise<void> {
-  if (navigator.onLine) return new Promise((resolve) => window.setTimeout(resolve, delay));
+  if (navigator.onLine !== false) return new Promise((resolve) => setTimeout(resolve, delay));
   return new Promise((resolve) => window.addEventListener("online", () => resolve(), { once: true }));
 }
 
+/** A busy or failing server (429, 5xx) is asked this many more times, then the row fails with Retry. */
+const SERVER_RETRIES = 4;
+
+/**
+ * Waits out a lost connection, however long; a busy or failing server only SERVER_RETRIES
+ * times more (about 30 s), so a server error never leaves a row "waiting" for ever.
+ */
 async function retryWhileOffline<T>(work: () => Promise<T>, onWaiting?: (waiting: boolean) => void): Promise<T> {
   let delay = 1000;
+  let serverTries = 0;
   for (;;) {
     try { return await work(); }
     catch (error) {
-      const transient = error instanceof ApiError
-        ? error.status === 0 || error.status === 429 || error.status >= 500
-        : error instanceof TypeError;
-      if (!transient) throw error;
+      const lost = error instanceof ApiError ? error.status === 0 : error instanceof TypeError;
+      const busy = error instanceof ApiError && (error.status === 429 || error.status >= 500);
+      if (!lost && !(busy && serverTries++ < SERVER_RETRIES)) throw error;
       onWaiting?.(true);
       await waitForNetwork(delay);
       onWaiting?.(false);
@@ -447,6 +454,13 @@ async function resumableUpload(
   file: File, metadata: Omit<ResumableStart, "fingerprint">, onProgress: (fraction: number) => void,
   onSent?: () => void, onWaiting?: (waiting: boolean) => void,
 ): Promise<UploadResult> {
+  // The bytes never go backwards, even when a part is sent again after a lost connection.
+  let shown = 0;
+  const report = (fraction: number) => {
+    if (fraction <= shown) return;
+    shown = fraction;
+    onProgress(fraction);
+  };
   const partCount = Math.ceil(file.size / UPLOAD_PART_BYTES);
   const partHashes: string[] = [];
   for (let number = 0; number < partCount; number++) {
@@ -488,11 +502,11 @@ async function resumableUpload(
       await retryWhileOffline(() => putPart(
         `/api/documents/upload-sessions/${session.id}/parts/${number}`,
         part,
-        (loaded) => onProgress(Math.min(1, (sent + loaded) / file.size)),
+        (loaded) => report(Math.min(1, (sent + loaded) / file.size)),
       ), onWaiting);
     }
     sent += part.size;
-    onProgress(Math.min(1, sent / file.size));
+    report(Math.min(1, sent / file.size));
   }
   onSent?.();
   return retryWhileOffline(
@@ -759,8 +773,6 @@ export const getEnsembleEstimate = (id: string, scope: EnsembleScope, wordKeys: 
   request<EnsembleEstimate>("GET", `${doc(id)}/ensemble/estimate${query({ scope, word_keys: wordKeys })}`);
 export const startEnsemble = (id: string, scope: EnsembleScope, wordKeys: string[] = []) =>
   request<EnsembleRun>("POST", `${doc(id)}/ensemble`, { scope, word_keys: wordKeys });
-/** The document's latest run; 404 when it has none. */
-export const getEnsemble = (id: string) => request<EnsembleRun>("GET", `${doc(id)}/ensemble`);
 const run = (id: string, runId: string) => `${doc(id)}/ensemble/${encodeURIComponent(runId)}`;
 export const stopEnsemble = (id: string, runId: string) => request<EnsembleRun>("POST", `${run(id, runId)}/stop`);
 export const retryEnsemble = (id: string, runId: string) => request<EnsembleRun>("POST", `${run(id, runId)}/retry`);

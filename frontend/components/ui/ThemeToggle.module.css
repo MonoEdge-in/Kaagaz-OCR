@@ -10,18 +10,17 @@
   margin-bottom: var(--space-2);
   font-size: var(--fs-sm);
   font-weight: 700;
-  color: var(--fg-muted);
+  color: var(--k-ink-muted);
 }
 
-/* The segmented track: one hairline box, the chosen segment outlined in it
-   (an edge and a colour, never colour alone). */
+/* The handoff's segmented pill (.k-seg): a sunken track, the chosen segment raised on it
+   (a lift and a colour, never colour alone). */
 .options {
   display: flex;
   gap: 2px;
-  padding: 2px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--k-r-2);
-  background: var(--surface-2);
+  padding: 3px;
+  border-radius: var(--k-r-pill);
+  background: var(--k-sunken);
 }
 
 .full .options {
@@ -38,8 +37,8 @@
   align-items: center;
   justify-content: center;
   gap: 2px;
-  border-radius: 1px;
-  color: var(--fg-muted);
+  border-radius: var(--k-r-pill);
+  color: var(--k-ink-muted);
   font-size: var(--fs-sm);
   font-weight: 700;
   line-height: 1.2;
@@ -52,6 +51,11 @@
   flex-direction: column;
   min-height: calc(var(--h-lg) + var(--space-1));
   padding: var(--space-1) var(--space-1);
+  border-radius: var(--k-r-4);
+}
+
+.full .options {
+  border-radius: var(--k-r-5);
 }
 
 /* Compact: icons only (the words stay for screen readers), square targets;
@@ -70,14 +74,13 @@
 }
 
 .option:hover {
-  color: var(--fg);
+  color: var(--k-ink);
 }
 
 .option:has(.radio:checked) {
-  background: var(--surface);
-  color: var(--fg);
-  outline: 1px solid var(--control-edge);
-  outline-offset: -1px;
+  background: var(--k-surface);
+  color: var(--k-ink);
+  box-shadow: var(--k-shadow-1);
 }
 
 /* The chosen segment's icon settles in (motion pass, 16 Oct 2026); reduced motion: still. */

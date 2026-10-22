@@ -1,6 +1,6 @@
 /* The chat screen, in the handoff's look (desktop/Ask.html). It fills <main> (the shell's
    one scroller), so <main> itself never scrolls here: the thread is the scroll area, the
-   composer is pinned to its foot. The conversations sit on the page's ground, the question
+   composer is pinned to its foot. The conversations sit on their own surface, the question
    is an accent bubble, each answer a raised card; only transform and opacity animate. */
 
 /* --- Frame ------------------------------------------------------------------ */
@@ -26,7 +26,9 @@
   overflow-y: auto;
   overscroll-behavior: contain;
   padding: var(--space-6) var(--space-3) var(--space-6) var(--space-4);
-  background: transparent;
+  /* Its own surface and a hairline, so it never runs into the thread (SoW 19 Oct). */
+  background: var(--k-surface);
+  border-inline-end: 1px solid var(--k-rule);
   /* A thin, quiet scrollbar, never the thick one with arrows (Ask screen polish, 17 Oct 2026). */
   scrollbar-width: thin;
   scrollbar-color: var(--border-strong) transparent;
@@ -585,10 +587,6 @@
   flex: none;
 }
 
-.docChipName {
-  overflow-wrap: anywhere;
-}
-
 /* Pending: a skeleton card while the answer is worked out. */
 .pendingText {
   margin: 0;
@@ -1039,7 +1037,7 @@
 }
 
 /* Floated, so the legend sits in the column under the hairline, not on it. */
-.menuGroup legend:not(.visually-hidden) {
+.menuGroup legend:not(:global(.visually-hidden)) {
   float: left;
   width: 100%;
   padding: var(--space-1) var(--space-2);

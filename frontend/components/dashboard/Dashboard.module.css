@@ -176,6 +176,29 @@
   text-overflow: ellipsis;
 }
 
+/* Where the upload goes, on one row under Upload (SoW 19 Oct): a small label, then the
+   picker as a pill as wide as the rest of the row. */
+.uploadTo > * {
+  flex-wrap: nowrap;
+  gap: var(--space-3);
+  padding-inline-start: var(--space-4);
+}
+
+.uploadTo label {
+  flex: none;
+  color: var(--k-ink-muted);
+  font: 500 11px var(--k-font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.uploadTo select {
+  flex: 1;
+  min-width: 0;
+  border-color: var(--k-rule);
+  border-radius: var(--k-r-pill);
+}
+
 /* --- The totals strip ------------------------------------------------------------------- */
 
 .totals {
