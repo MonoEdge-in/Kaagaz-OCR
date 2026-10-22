@@ -54,6 +54,7 @@ import type {
   OrgAiReply,
   OrgFeatureSwitch,
   Organisation,
+  OrgModelRates,
   OrganisationCreated,
   PageReadings,
   PageSummary,
@@ -635,6 +636,12 @@ export const getHealth = () => request<PlatformHealth>("GET", "/operator/health"
 export const getOperatorModels = () => request<{ items: OperatorModel[] }>("GET", "/operator/models");
 /** One organisation's AI settings, the defaults it follows and its budget (features 25-27). */
 export const getOrgAi = (id: string) => request<OrgAiReply>("GET", `/operator/orgs/${id}/ai`);
+/** Shared OpenRouter RPM settings for one organisation and its users. */
+export const getOrgModelRates = (id: string) => request<OrgModelRates>("GET", `/operator/orgs/${id}/model-rates`);
+export const putOrgModelRate = (id: string, rpm: number | null, code: string) =>
+  request<OrgModelRates>("PUT", `/operator/orgs/${id}/model-rates`, { rpm, code });
+export const putUserModelRate = (orgId: string, userId: string, rpm: number | null, code: string) =>
+  request<OrgModelRates>("PUT", `/operator/orgs/${orgId}/users/${userId}/model-rate`, { rpm, code });
 /** Save them, with a fresh code (step-up). */
 export const putOrgAi = (
   id: string,

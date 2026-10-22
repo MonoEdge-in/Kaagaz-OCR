@@ -31,6 +31,7 @@ import { CreateDialog } from "./CreateDialog";
 import { ManageMenu } from "./ManageMenu";
 import { OrgFeatureSwitchesDialog } from "./FeatureSwitches";
 import { OrgAiSettings, orgAiFocusId } from "./OrgAiSettings";
+import { OrgModelRates } from "./OrgModelRates";
 import { OrgSessionTimeoutDialog } from "./SessionTimeout";
 import { afterDone, countText, deleteCountdown, filterOrgs, lastActivityText, operatorErrorMessage, orgStatus, searchSummary, userCounts } from "./logic";
 import { MoreRows, useRowCap } from "@/components/admin/RowCap";
@@ -64,6 +65,7 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
   const [changing, setChanging] = useState<Confirm | null>(null);
   const [adminsOf, setAdminsOf] = useState<Organisation | null>(null);
   const [modelsOf, setModelsOf] = useState<Organisation | null>(null);
+  const [ratesOf, setRatesOf] = useState<Organisation | null>(null);
   const [switchesOf, setSwitchesOf] = useState<Organisation | null>(null);
   const [timeoutOf, setTimeoutOf] = useState<Organisation | null>(null);
   const [done, setDone] = useState("");
@@ -200,6 +202,7 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
                       now={now}
                       onAdmins={() => setAdminsOf(org)}
                       onModels={() => setModelsOf(org)}
+                      onModelRates={() => setRatesOf(org)}
                       onSwitches={() => setSwitchesOf(org)}
                       onTimeout={() => setTimeoutOf(org)}
                       onChange={(change) => setChanging(orgConfirm(org, change, Date.now()))}
@@ -225,6 +228,7 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
       )}
       {adminsOf && <AdminsDialog org={adminsOf} onClose={() => setAdminsOf(null)} />}
       {modelsOf && <OrgAiSettings org={modelsOf} onClose={() => setModelsOf(null)} onSaved={setDone} />}
+      {ratesOf && <OrgModelRates org={ratesOf} onClose={() => setRatesOf(null)} onSaved={setDone} />}
       {switchesOf && <OrgFeatureSwitchesDialog org={switchesOf} onClose={() => setSwitchesOf(null)} />}
       {timeoutOf && <OrgSessionTimeoutDialog org={timeoutOf} onClose={() => setTimeoutOf(null)} />}
       {changing && (
@@ -257,12 +261,13 @@ function OrgRow(props: {
   now: number;
   onAdmins(): void;
   onModels(): void;
+  onModelRates(): void;
   onSwitches(): void;
   onTimeout(): void;
   onChange(change: OrgChange): void;
   onAutofile(): void;
 }) {
-  const { org, now, onAdmins, onModels, onSwitches, onTimeout, onChange, onAutofile } = props;
+  const { org, now, onAdmins, onModels, onModelRates, onSwitches, onTimeout, onChange, onAutofile } = props;
   const status = orgStatus(org);
   const countdown = org.status === "deleting" ? deleteCountdown(org.delete_after, now) : null;
   const size = formatBytes(org.storage_bytes);
@@ -320,6 +325,7 @@ function OrgRow(props: {
                   { label: "AI settings", onSelect: onModels },
                   { label: "Feature switches", onSelect: onSwitches },
                   { label: "Session timeout", onSelect: onTimeout },
+                  { label: "Request limits", onSelect: onModelRates },
                   { label: org.autofile_granted ? "Stop auto-filing" : "Allow auto-filing", onSelect: onAutofile },
                 ]),
           ]}

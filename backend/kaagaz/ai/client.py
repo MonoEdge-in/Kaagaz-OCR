@@ -37,6 +37,7 @@ from kaagaz.ai.openrouter import OpenRouterClient, process_gate
 from kaagaz.ai.replies import ModelOutputError as ModelOutputError
 from kaagaz.ai.replies import ModelUnavailable as ModelUnavailable
 from kaagaz.ai.replies import schema_problem as schema_problem
+from kaagaz.db.engine import Database
 from kaagaz.settings import CHAT_OVERHEAD_TOKENS, Settings
 
 
@@ -101,7 +102,7 @@ def input_token_budget(*, num_ctx: int, max_tokens: int, system: str) -> int:
 
 
 def build_model_client(
-    settings: Settings, *, chat_timeout_seconds: float | None = None
+    settings: Settings, *, chat_timeout_seconds: float | None = None, db: Database | None = None
 ) -> ModelClient | None:
     """The configured model client, or None when the product runs without AI.
     ``chat_timeout_seconds`` is for ``chat_json`` only (the worker passes
@@ -109,4 +110,6 @@ def build_model_client(
     (``openrouter.process_gate``): one limiter and one circuit breaker for the process."""
     if not settings.model_enabled:
         return None
-    return OpenRouterClient(settings, chat_timeout_seconds=chat_timeout_seconds, gate=process_gate(settings))
+    return OpenRouterClient(
+        settings, chat_timeout_seconds=chat_timeout_seconds, gate=process_gate(settings, database=db)
+    )

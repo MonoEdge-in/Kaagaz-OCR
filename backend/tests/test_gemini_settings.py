@@ -114,6 +114,7 @@ def test_a_missing_reader_setting_stops_start_up_by_name(name: str) -> None:
         ("CPU_WORKERS", "-2"),
         ("MAX_CHECK_CROPS", "0"),
         ("MODEL_RPM", "0"),
+        ("MODEL_RPM", "1201"),
         ("MODEL_RPM", "1.5"),
         ("READER_OUTAGE_FALLBACK_MINUTES", "0"),
         ("READER_OUTAGE_FALLBACK_MINUTES", "15m"),

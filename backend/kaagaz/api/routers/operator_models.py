@@ -85,6 +85,7 @@ MAX_ORG_MODELS = 64
 MAX_BUDGET = Decimal("9999999999.99")
 # The outcomes kaagaz.db.operator_orgs' _check does not know, and their replies (C10).
 _REFUSALS = {
+    "invalid": (400, "bad_request", "The RPM value is outside the allowed limit."),
     "not_eligible": (409, "not_eligible", "This model does not pass the catalogue's rules now."),
     "not_verified": (
         409,
@@ -208,6 +209,20 @@ class DefaultsBody(BaseModel):
     chat_levels: Levels
     chat_default_level: Level
     dynamic: bool
+    code: str = Field(min_length=1, max_length=MAX_CODE)
+
+
+class ModelRateBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    rpm: int | None = Field(default=None, ge=1, le=600)
+    code: str = Field(min_length=1, max_length=MAX_CODE)
+
+
+class UserModelRateBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    rpm: int | None = Field(default=None, ge=1, le=120)
     code: str = Field(min_length=1, max_length=MAX_CODE)
 
 
@@ -530,6 +545,56 @@ def _callable(row: RowMapping | None, settings: Settings) -> bool:
         and vendor(row["id"]) in settings.openrouter_model_vendors
         and any(slug in settings.openrouter_providers for slug in row["providers"])
     )
+
+
+@router.get("/orgs/{customer_id}/model-rates")
+def get_org_model_rates(customer_id: uuid.UUID, operator: OperatorSession, db: OperatorDb) -> dict[str, Any]:
+    """The organisation RPM limit and each user's explicit override; no customer content."""
+    with db.operator() as conn:
+        rows = models_sql.model_rates(conn, operator.operator_id, str(customer_id))
+    if not rows:
+        raise ApiError(404, "not_found")
+    return {
+        "organisation_rpm": rows[0]["org_rpm"],
+        "users": [
+            {"id": str(row["user_id"]), "email": row["email"], "rpm": row["user_rpm"]}
+            for row in rows
+            if row["user_id"] is not None
+        ],
+    }
+
+
+@router.put("/orgs/{customer_id}/model-rates")
+def set_org_model_rate(
+    customer_id: uuid.UUID, body: ModelRateBody, operator: OperatorSession, db: OperatorDb, context: Context
+) -> dict[str, Any]:
+    """Set an organisation cap (1-600 RPM), or clear it to use fair platform sharing."""
+    step_up = _step_up(db, context, operator, body.code)
+    with db.operator() as conn:
+        outcome = models_sql.set_model_rate(
+            conn, operator.operator_id, str(customer_id), None, body.rpm, step_up.step
+        )
+    _refuse(db, operator, outcome, step_up)
+    return get_org_model_rates(customer_id, operator, db)
+
+
+@router.put("/orgs/{customer_id}/users/{user_id}/model-rate")
+def set_user_model_rate(
+    customer_id: uuid.UUID,
+    user_id: uuid.UUID,
+    body: UserModelRateBody,
+    operator: OperatorSession,
+    db: OperatorDb,
+    context: Context,
+) -> dict[str, Any]:
+    """Set a user cap (1-120 RPM), or null to inherit its organisation's cap."""
+    step_up = _step_up(db, context, operator, body.code)
+    with db.operator() as conn:
+        outcome = models_sql.set_model_rate(
+            conn, operator.operator_id, str(customer_id), str(user_id), body.rpm, step_up.step
+        )
+    _refuse(db, operator, outcome, step_up)
+    return get_org_model_rates(customer_id, operator, db)
 
 
 @router.get("/usage")

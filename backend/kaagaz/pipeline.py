@@ -2142,7 +2142,7 @@ def build_processor(
         embed = functools.partial(embed_pieces, db, model=model)
     # The Gemini reader (PRD 5 G1) from kaagaz.reading.wiring; the readers read pages on its
     # page pool (wiring.page_pool, G8) through the same meter.
-    engine = build_ocr_engine(settings)
+    engine = build_ocr_engine(settings, db=db)
     meter = None if engine is None else MeteredOcrEngine(engine, timer=time.perf_counter)
     # The checker (V1) reads the boxes of pages the reading model read, so only with it; it
     # shares the process's one RapidOCR pool with the box pinning (CPU_WORKERS).

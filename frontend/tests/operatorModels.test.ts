@@ -674,6 +674,19 @@ describe("the AI settings dialogs", () => {
   });
 });
 
+describe("OpenRouter rate limits", () => {
+  it("lets the operator set organisation and per-user RPM with a fresh code", () => {
+    const dialog = read("components/operator/OrgModelRates.tsx");
+    expect(dialog).toContain("putOrgModelRate(org.id");
+    expect(dialog).toContain("putUserModelRate(org.id, user.id");
+    expect(dialog).toContain("label=\"Fresh two-step code\"");
+    expect(dialog).toContain("1,200 requests per minute");
+    expect(dialog).toContain("1–600 RPM");
+    expect(dialog).toContain("1–120 RPM");
+    expect(read("components/operator/OrganisationsView.tsx")).toContain("<OrgModelRates");
+  });
+});
+
 describe("AI spend", () => {
   it("chooses whole days, both ends included", () => {
     const now = new Date(2026, 9, 11, 15, 30);

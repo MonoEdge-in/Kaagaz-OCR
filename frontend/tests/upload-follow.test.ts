@@ -86,9 +86,11 @@ const ready: DocumentSummary = { ...BATCH_DOCUMENT, status: "ready", status_mess
 describe("following an upload until it is ready", () => {
   beforeEach(() => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    vi.stubGlobal("navigator", { onLine: true });
     const page = { visibilityState: "visible", activeElement: null, ...target() };
     vi.stubGlobal("document", page);
     vi.stubGlobal("window", { document: page, HTMLIFrameElement: class {}, ...target() });
+    vi.stubGlobal("navigator", { onLine: true });
     api.getBatch.mockImplementation(
       async (id: string): Promise<BatchView> => ({
         id,

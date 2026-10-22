@@ -51,6 +51,9 @@ MODEL_ROUTES = {
     ("PUT", "/api/operator/ai-defaults"),
     ("GET", f"/api/operator/orgs/{ANY_ID}/ai"),
     ("PUT", f"/api/operator/orgs/{ANY_ID}/ai"),
+    ("GET", f"/api/operator/orgs/{ANY_ID}/model-rates"),
+    ("PUT", f"/api/operator/orgs/{ANY_ID}/model-rates"),
+    ("PUT", f"/api/operator/orgs/{ANY_ID}/users/{ANY_ID}/model-rate"),
     ("GET", "/api/operator/usage"),
 }
 CATALOGUE_ROW = {

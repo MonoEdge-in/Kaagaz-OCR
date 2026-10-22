@@ -175,9 +175,6 @@ jobs:
       - name: Format
         run: ruff format --check .
 
-      - name: Types
-        run: mypy .
-
       - name: Dependency licences
         run: |
           set -euo pipefail
@@ -212,6 +209,9 @@ jobs:
 
       - name: Tests
         run: pytest -v --no-header --durations=10
+
+      - name: Types
+        run: mypy .
 
   # ---------------------------------------------------------------------------
   # Frontend.

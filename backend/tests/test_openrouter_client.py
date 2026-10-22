@@ -14,7 +14,7 @@ import time
 import urllib.request
 from collections.abc import Iterator
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -38,6 +38,7 @@ from kaagaz.ai.openrouter import (
     page_request,
     process_gate,
 )
+from kaagaz.db.engine import Database
 from kaagaz.settings import NO_THINKING, Settings
 from kaagaz.worker_main import worker_model
 from tests import openrouter_fake
@@ -688,6 +689,26 @@ def test_a_call_that_cannot_start_before_its_deadline_is_a_timeout() -> None:
     with pytest.raises(ModelUnavailable) as caught:
         gate.take_slot(clock.now + 30, "m")
     assert caught.value.code == "timeout"
+
+
+def test_shared_database_limiter_failure_releases_its_probe() -> None:
+    class BrokenDatabase:
+        calls = 0
+
+        def model_rate_slot(self, *_args: Any) -> float:
+            self.calls += 1
+            raise RuntimeError("database unavailable")
+
+    database = BrokenDatabase()
+    gate = ModelGate(make_settings(), database=cast(Database, database))
+    gate._breakers["m"] = openrouter._Breaker(state=openrouter._HALF_OPEN, probing=True)
+
+    with pytest.raises(ModelUnavailable) as caught:
+        gate.take_slot(time.monotonic() + 1, "m")
+
+    assert caught.value.code == "rate_limited"
+    assert database.calls == 2  # one failed reservation and a best-effort ticket cleanup
+    assert not gate._breakers["m"].probing
 
 
 def test_a_trickled_reply_inside_the_deadline_is_read(fake: OpenRouterFake) -> None:
