@@ -128,6 +128,8 @@ class FixedQueries(Protocol):
         self, customer_id: str, start: date | None, end: date | None, *, date_fields: Sequence[str]
     ) -> list[FixedRow]: ...
 
+    def count_invoices(self, customer_id: str, start: date | None, end: date | None) -> list[FixedRow]: ...
+
     def extreme_value(
         self,
         customer_id: str,
@@ -472,6 +474,46 @@ _COUNT_DOCUMENTS = text(
     """
 )
 
+_COUNT_INVOICES = text(
+    """
+    WITH in_scope AS (
+        SELECT i.document_id, ev.value_id,
+               i.label = 'verified' AND i.check_status = 'passed' AND coalesce(ev.verified, false) AS verified
+        FROM invoices i
+        JOIN documents d ON d.customer_id = i.customer_id AND d.id = i.document_id
+        LEFT JOIN LATERAL (
+            SELECT v.id AS value_id, v.label = 'verified' AS verified
+            FROM extracted_values v
+            WHERE v.customer_id = i.customer_id AND v.document_id = i.document_id
+              AND v.record_key <> 'card' AND v.record_key NOT LIKE 'line:%'
+              AND v.region IS NOT NULL
+            ORDER BY array_position(ARRAY['invoice_number', 'total_amount', 'invoice_date', 'seller_name',
+                                          'buyer_name']::text[], v.field), v.page_no, v.id
+            LIMIT 1
+        ) ev ON true
+        WHERE i.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
+          AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))
+          AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt
+            WHERE dt.customer_id = :customer_id AND dt.tag_id = ANY(CAST(:s_tags AS uuid[]))
+            GROUP BY dt.document_id HAVING count(DISTINCT dt.tag_id) = cardinality(CAST(:s_tags AS uuid[]))))
+          AND (CAST(:s_doc_types AS text[]) IS NULL OR d.doc_type = ANY(CAST(:s_doc_types AS text[])))
+          AND (CAST(:s_detected_type AS text) IS NULL OR d.detected_type = CAST(:s_detected_type AS text))
+          AND (CAST(:s_documents AS uuid[]) IS NULL OR d.id = ANY(CAST(:s_documents AS uuid[])))
+          AND (CAST(:s_from AS date) IS NULL AND CAST(:s_to AS date) IS NULL
+            OR coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)
+            BETWEEN coalesce(CAST(:s_from AS date), '-infinity')
+            AND coalesce(CAST(:s_to AS date), 'infinity'))
+          AND (CAST(:start AS date) IS NULL OR (i.invoice_date >= CAST(:start AS date)
+            AND i.invoice_date < CAST(:end AS date)))
+    )
+    SELECT NULL::text AS name, count(*) AS number, count(*) AS records, bool_and(verified) AS verified,
+           ARRAY[]::text[] AS metric_ids, ARRAY[]::text[] AS group_ids,
+           array_remove(array_agg(value_id::text ORDER BY document_id), NULL) AS date_ids
+    FROM in_scope
+    HAVING count(*) > 0
+    """
+)
+
 _VALUE_REFS = text(
     """
     SELECT v.id::text AS value_id, v.document_id::text AS document_id, d.display_name,
@@ -541,6 +583,15 @@ class PgFixedQueries:
         self, customer_id: str, start: date | None, end: date | None, *, date_fields: Sequence[str]
     ) -> list[FixedRow]:
         return self._run(customer_id, _COUNT_DOCUMENTS, _params(customer_id, date_fields, start, end))
+
+    def count_invoices(self, customer_id: str, start: date | None, end: date | None) -> list[FixedRow]:
+        if (start is None) != (end is None):
+            raise ValueError("start and end go together")
+        return self._run(
+            customer_id,
+            _COUNT_INVOICES,
+            {"customer_id": customer_id, "start": start, "end": end},
+        )
 
     def extreme_value(
         self,
