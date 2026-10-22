@@ -574,29 +574,6 @@ td.num {
   }
 }
 
-/* The grid's container: the same edges as the header and toolbar. */
-.container {
-  width: 100%;
-  max-width: var(--content-max);
-  margin-inline: auto;
-  padding-inline: var(--margin);
-}
-
-/* A screen's toolbar zone, 48px: its title and view tabs first, at most three
-   actions, the one primary at the end. */
-.app-toolbar {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-height: var(--toolbar-h);
-  min-width: 0;
-}
-
-.app-toolbar > :first-child {
-  min-width: 0;
-  margin-inline-end: auto;
-}
-
 /* The document screen: the page and its panels use a big screen's width. */
 .page.page-wide {
   max-width: 120rem;
@@ -764,11 +741,6 @@ td.num {
   border-right-color: transparent;
   border-radius: 50%;
   animation: spin 800ms linear infinite;
-}
-
-.btn-secondary {
-  background: var(--surface);
-  border-color: var(--border-strong);
 }
 
 .btn-primary {

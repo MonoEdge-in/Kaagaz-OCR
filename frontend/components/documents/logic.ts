@@ -258,6 +258,7 @@ export type UploadState =
   | { kind: "waiting" }
   | { kind: "sending"; fraction: number }
   | { kind: "offline"; fraction: number }
+  | { kind: "offline"; fraction: number }
   | { kind: "saving" }
   | { kind: "reading"; documentId: string; document: DocumentSummary }
   | { kind: "done"; documentId: string; document?: DocumentSummary }
@@ -280,6 +281,8 @@ export function uploadStateText(state: UploadState): string {
     // Changed on purpose (scan states, 16 Oct 2026): the brief's words, Uploading then Scanning.
     case "sending":
       return "Uploading";
+    case "offline":
+      return "Waiting for connection";
     case "offline":
       return "Waiting for connection";
     case "saving":
@@ -313,6 +316,7 @@ export function sessionChangedMessage(caught: unknown): string | null {
   return caught instanceof ApiError && caught.code === "session_changed" ? caught.message : null;
 }
 
+/** The words for an upload that failed permanently. Transient connection loss resumes automatically. */
 /** The words for an upload that failed permanently. Transient connection loss resumes automatically. */
 export function uploadErrorText(caught: unknown, online: boolean): string {
   if (!online) {

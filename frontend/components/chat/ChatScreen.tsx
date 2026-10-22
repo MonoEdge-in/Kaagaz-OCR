@@ -31,7 +31,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useEffectEvent, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Toast } from "@/components/admin/Toast";
 import type { Notice } from "@/components/admin/Toast";
@@ -169,6 +169,8 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
   );
   const autoQuestion =
     new URLSearchParams(initialSearch).get("send") === "1" ? questionFromSearch(initialSearch) : null;
+  const autoQuestion =
+    new URLSearchParams(initialSearch).get("send") === "1" ? questionFromSearch(initialSearch) : null;
   const [activeId, setActiveId] = useState<string | null>(restoreId);
   // The documents the next question may use (scope.ts): one document when the
   // viewer's "Ask about this document" opened chat, else restored from the conversation.
@@ -187,9 +189,13 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
   );
   // A picked-up question that failed goes back into the box.
   // Or a question from an ordinary ?q= link, waiting for Send.
+  // Or a question from an ordinary ?q= link, waiting for Send.
   const [draft, setDraft] = useState<string | undefined>(() =>
     resumed?.outcome && "error" in resumed.outcome
       ? resumed.question
+      : autoQuestion
+        ? undefined
+        : (questionFromSearch(initialSearch) ?? undefined),
       : autoQuestion
         ? undefined
         : (questionFromSearch(initialSearch) ?? undefined),
@@ -232,6 +238,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
 
   // Only the latest conversation opened may fill the thread.
   const openRequest = useRef(0);
+  const autoQuestionSent = useRef(false);
   const autoQuestionSent = useRef(false);
   // False once the screen is gone: an answer then waits in askStore.ts for the next one.
   const alive = useRef(false);

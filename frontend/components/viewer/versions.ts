@@ -10,6 +10,15 @@ type WithVersions = Pick<DocumentDetail, "id" | "versions">;
 
 const STILL_READING: readonly DocumentStatus[] = ["received", "clean"];
 
+/**
+ * The detail with a polled summary laid over it, while the document is read. The summary's
+ * `versions` is the family's count (as in the list, GET /documents/{id}/summary), so the
+ * detail keeps its own list: a number there made every version lookup throw.
+ */
+export function withSummary<T extends WithVersions>(detail: T, summary: object): T {
+  return { ...detail, ...summary, versions: detail.versions };
+}
+
 /** Oldest first. O(V log V) for V versions. */
 export function sortedVersions(versions: readonly DocumentVersion[]): DocumentVersion[] {
   return [...versions].sort((a, b) => a.version_no - b.version_no);

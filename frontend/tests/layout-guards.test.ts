@@ -380,14 +380,6 @@ describe("layout guards", () => {
       "components/operator/Operator.module.css: .menu: overscroll-behavior",
       // Changed on purpose (Read clearly, 19 Oct 2026): a wide table in the clean copy, sideways only.
       "components/viewer/ReadClearly.module.css: .tableBox: overscroll-behavior-x",
-      // Changed on purpose (UI rebuild, 20 Oct 2026): the new kit's drawer body, and its table and tab row sideways.
-      "components/ui/Drawer/Drawer.module.css: .body: overscroll-behavior",
-      "components/ui/Table/Table.module.css: .wrap: overscroll-behavior-x",
-      "components/ui/Tabs/Tabs.module.css: .tabs: overscroll-behavior-x",
-      "app/kit/kit.module.css: .states: overscroll-behavior-x", // the dev-only kit sheet's button table
-      // The handoff's tab row and table box, sideways only (app/styles/components.css).
-      "app/styles/components.css: .k-tabs: overscroll-behavior-x",
-      "app/styles/components.css: .k-table-wrap: overscroll-behavior-x",
     ];
     const found = everyRule(/overscroll-behavior/).flatMap(({ rule, name }) =>
       [...rule.body.matchAll(/(overscroll-behavior[-\w]*):/g)].map((match) => `${name}: ${match[1]}`),
@@ -469,20 +461,11 @@ describe("layout guards", () => {
       // Changed on purpose (MonoEdge design system, 16 Oct 2026): a busy button's spinner.
       'app/globals.css: .btn[aria-busy="true"]::after',
       "components/documents/Documents.module.css: .readMeter:indeterminate",
-      // Changed on purpose (UI rebuild, 20 Oct 2026): the new kit's work in progress, each stopped under
-      // reduced motion by globals.css: a busy button, Reading's dots and bar, the working line, a
-      // skeleton, and an upload stage with no number to show.
+      // Changed on purpose (UI rebuild, 20 Oct 2026): the kit's busy button, stopped under reduced
+      // motion by globals.css.
       "components/ui/Button/Button.module.css: .loading::before",
-      "components/ui/StatusBadge/StatusBadge.module.css: .reading::after",
-      "components/ui/StatusBadge/StatusBadge.module.css: .dots i",
-      "components/ui/AnswerCard/AnswerCard.module.css: .dots i",
-      "components/ui/Skeleton/Skeleton.module.css: .skel::after",
-      "components/ui/StageProgress/StageProgress.module.css: .moving > i",
-      // The handoff's own classes (app/styles/components.css): the same four kinds of work in progress.
+      // The handoff's busy button (app/styles/components.css).
       "app/styles/components.css: .k-btn.is-loading::before",
-      "app/styles/components.css: .k-status--reading::after",
-      "app/styles/components.css: .k-dots i",
-      "app/styles/components.css: .k-skel::after",
     ];
     const found = everyRule(/animation(-iteration-count)?:[^;]*\binfinite\b/).map(({ name }) => name);
     expect(found.filter((entry) => !allowed.includes(entry))).toEqual([]);

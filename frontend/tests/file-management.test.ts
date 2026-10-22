@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { fakeUploadServer } from "./fake-upload-server";
 import type {
   ActivityEntry,
   Dashboard,
@@ -618,29 +619,19 @@ describe("departments (F1, F2)", () => {
     expect(reorder(departmentsOf(FOLDERS), LAND, -1)).toEqual([]);
   });
 
+  // Changed on purpose (resumable uploads, cfc18ee3): read from the upload session's start.
   it("sends the department with an upload only when no folder is named", async () => {
-    const sent: FormData[] = [];
-    class FakeXhr {
-      upload = {};
-      status = 201;
-      responseText = "{}";
-      onload: (() => void) | null = null;
-      open() {}
-      setRequestHeader() {}
-      send(form: FormData) {
-        sent.push(form);
-        this.onload?.();
-      }
-    }
-    vi.stubGlobal("XMLHttpRequest", FakeXhr);
+    const server = fakeUploadServer();
     const file = new File(["x"], "a.pdf");
     await api.uploadDocument(file, "u1", () => undefined, undefined, undefined, undefined, undefined, LAND);
     await api.uploadDocument(file, "u1", () => undefined, OLD, undefined, undefined, undefined, LAND);
     await api.uploadVersion("d1", file, "u1", () => undefined, undefined, undefined, "Mutation 1234 added");
-    expect(sent[0]?.get("department_id")).toBe(LAND);
-    expect(sent[1]?.get("department_id")).toBeNull();
-    expect(sent[1]?.get("folder_id")).toBe(OLD);
-    expect(sent[2]?.get("version_note")).toBe("Mutation 1234 added");
+    vi.unstubAllGlobals();
+    const [top, inFolder, version] = server.starts;
+    expect(top?.department_id).toBe(LAND);
+    expect(inFolder).not.toHaveProperty("department_id");
+    expect(inFolder?.folder_id).toBe(OLD);
+    expect(version?.version_note).toBe("Mutation 1234 added");
   });
 
   it("asks an admin for a department with its order", async () => {

@@ -3,7 +3,6 @@
 // server checks again and wins (a word chat reads its own way is refused only there).
 // Words are the user's text: shown as text only, never logged.
 
-import type { UploadEntry } from "@/components/documents/uploadQueue";
 import { ApiError } from "@/lib/api";
 import type { Answer, MyWord, WordSaved } from "@/lib/types";
 

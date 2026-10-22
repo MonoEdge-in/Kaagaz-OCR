@@ -39,7 +39,6 @@ import { RadioPill, Segmented } from "@/components/ui/Segmented/Segmented";
 import { useSharedUploads } from "@/components/shell/Uploads";
 import { Toast } from "@/components/ui/Toast";
 import { VersionNoteDialog } from "@/components/versions/VersionNoteDialog";
-import { UploadWords } from "@/components/words/UploadWords";
 import {
   ApiError,
   listDocuments,
@@ -670,8 +669,6 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
                 </Dropzone>
               ) : null}
 
-              {!library.trash && <UploadWords entries={uploads.entries} settled={uploads.settled} />}
-
               {/* F5: inside a folder, its subfolders first, as tiles with their file counts. */}
               {current && !library.trash && <FolderTiles folders={current.children} library={library} />}
 
@@ -705,23 +702,44 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
                           <button type="submit" className={`k-btn k-btn--primary ${styles.searchGo}`}>
                             Search
                           </button>
+                          {/* SoW 19 Oct: where to search, the order and List or Grid, in one menu at
+                              the search bar's end (a native popover: Esc or a click outside closes it). */}
+                          <button
+                            type="button"
+                            className={styles.more}
+                            popoverTarget="documents-view-options"
+                            aria-haspopup="dialog"
+                            title="View options"
+                          >
+                            <Icon name="more" size={18} />
+                            <span className="visually-hidden">View options</span>
+                          </button>
                         </div>
                       </form>
-                      <div className={styles.listTools}>
+                      <div
+                        id="documents-view-options"
+                        popover="auto"
+                        role="dialog"
+                        aria-label="View options"
+                        className={`motion-pop ${styles.morePanel}`}
+                      >
                         {!library.trash && (
-                          <RadioPill<SearchMode>
-                            label="Search in"
-                            name="documents-search-mode"
-                            options={SEARCH_MODES.map((choice) => ({ value: choice.mode, label: choice.label }))}
-                            value={mode}
-                            onChange={setModeChoice}
-                          />
+                          <div className={styles.moreGroup}>
+                            <span className={styles.moreLabel}>Search in</span>
+                            <RadioPill<SearchMode>
+                              label="Search in"
+                              name="documents-search-mode"
+                              options={SEARCH_MODES.map((choice) => ({ value: choice.mode, label: choice.label }))}
+                              value={mode}
+                              onChange={setModeChoice}
+                            />
+                          </div>
                         )}
-                        <span className={styles.toolsEnd}>
-                          <span className={`k-select-wrap ${styles.sort}`}>
-                            <label htmlFor="documents-sort" className="visually-hidden">
-                              {FILES_TEXT.sortLabel}
-                            </label>
+                        <div className={styles.moreGroup}>
+                          <label htmlFor="documents-sort" className={styles.moreLabel}>
+                            {FILES_TEXT.sortLabel}
+                          </label>
+                          <span className="k-select-wrap">
                             <select
                               id="documents-sort"
                               className={`k-select ${styles.sortSelect}`}
@@ -736,7 +754,10 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
                             </select>
                             <KitIcon name="chev-down" size="sm" className="k-ic" />
                           </span>
-                          {/* F5: List or Grid, remembered per person. */}
+                        </div>
+                        {/* F5: List or Grid, remembered per person. */}
+                        <div className={styles.moreGroup}>
+                          <span className={styles.moreLabel}>{FILES_TEXT.showAs}</span>
                           <Segmented
                             label={FILES_TEXT.showAs}
                             options={[
@@ -746,7 +767,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
                             value={viewMode}
                             onChange={chooseView}
                           />
-                        </span>
+                        </div>
                       </div>
                     </div>
                   )}

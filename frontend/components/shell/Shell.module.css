@@ -244,11 +244,6 @@
   gap: var(--space-4);
 }
 
-.drawerMenu {
-  flex: 1;
-  min-height: 100%;
-}
-
 .links {
   display: flex;
   flex-direction: column;

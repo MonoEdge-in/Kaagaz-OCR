@@ -17,7 +17,7 @@ import type { UploadReader, UploadReading as Reading } from "@/lib/types";
 
 export const DYNAMIC = "dynamic"; // the server's id for Dynamic in readers
 
-/** One <option> of the select (not lib/types ReaderOption, which is what the server sends). */
+/** One <option> of the select. */
 export interface ReaderChoice {
   id: string;
   label: string;

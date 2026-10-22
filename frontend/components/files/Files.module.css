@@ -77,40 +77,6 @@
   overflow-wrap: anywhere;
 }
 
-/* List or Grid: a two-button segmented control, the pressed one filled. */
-.switch {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  margin: 0;
-  padding: 0;
-  border: 0;
-}
-
-.switch > span {
-  font-size: var(--fs-sm);
-  color: var(--text-secondary);
-}
-
-.switchButtons {
-  display: inline-flex;
-}
-
-.switchButtons > :global(.btn) {
-  border-radius: 0;
-}
-
-.switchButtons > :global(.btn) + :global(.btn) {
-  margin-inline-start: -1px;
-}
-
-.switchButtons > :global(.btn)[aria-pressed="true"] {
-  background: var(--accent-subtle);
-  border-color: var(--accent);
-  color: var(--accent);
-  font-weight: 700;
-}
-
 /* The document page's Details tab: one term and its value a row, pickers inline. */
 .details {
   display: grid;

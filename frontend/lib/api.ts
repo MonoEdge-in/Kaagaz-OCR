@@ -47,6 +47,7 @@ import type {
   MyStory,
   MyWord,
   OrganizationWord,
+  OrganizationWord,
   OperatorMe,
   OperatorModel,
   OperatorMoveOffer,
@@ -358,6 +359,7 @@ export function uploadDocument(
   onSent?: () => void,
   departmentId?: string, // F2: used by the server when no folder is named
   onWaiting?: (waiting: boolean) => void,
+  onWaiting?: (waiting: boolean) => void,
 ): Promise<UploadResult> {
   return resumableUpload(file, {
     file_name: file.name, file_size: file.size, user_id: userId, folder_id: folderId,
@@ -378,6 +380,7 @@ export function uploadVersion(
   reading?: UploadReading,
   onSent?: () => void,
   versionNote?: string, // V9: optional, at most 200 characters
+  onWaiting?: (waiting: boolean) => void,
   onWaiting?: (waiting: boolean) => void,
 ): Promise<UploadResult> {
   return resumableUpload(file, {
@@ -426,6 +429,7 @@ async function retryWhileOffline<T>(work: () => Promise<T>, onWaiting?: (waiting
 function putPart(url: string, body: Blob, onProgress: (loaded: number) => void): Promise<void> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
+    xhr.open("PUT", url);
     xhr.open("PUT", url);
     xhr.withCredentials = true;
     xhr.setRequestHeader("X-Requested-With", "kaagaz");
@@ -576,6 +580,11 @@ export const getMyWordsOnPage = (documentId: string, page: number) =>
   request<{ items: MySpot[] }>("GET", `/documents/${encodeURIComponent(documentId)}/my-words${query({ page })}`);
 export const deleteMyWord = (id: string, userId: string) =>
   request<void>("DELETE", `/me/words/${encodeURIComponent(id)}${query({ user_id: userId })}`);
+export const listOrganizationWords = () => request<{ items: OrganizationWord[] }>("GET", "/organization/words");
+export const suggestOrganizationWord = (word: string, meaning: string, userId: string) =>
+  request<{ item: OrganizationWord }>("POST", "/organization/words", { word, meaning, user_id: userId });
+export const decideOrganizationWord = (id: string, decision: "approve" | "reject", userId: string) =>
+  request<{ item: OrganizationWord }>("POST", `/organization/words/${encodeURIComponent(id)}/decision`, { decision, user_id: userId });
 export const listOrganizationWords = () => request<{ items: OrganizationWord[] }>("GET", "/organization/words");
 export const suggestOrganizationWord = (word: string, meaning: string, userId: string) =>
   request<{ item: OrganizationWord }>("POST", "/organization/words", { word, meaning, user_id: userId });
@@ -759,8 +768,6 @@ export const getEnsembleEstimate = (id: string, scope: EnsembleScope, wordKeys: 
   request<EnsembleEstimate>("GET", `${doc(id)}/ensemble/estimate${query({ scope, word_keys: wordKeys })}`);
 export const startEnsemble = (id: string, scope: EnsembleScope, wordKeys: string[] = []) =>
   request<EnsembleRun>("POST", `${doc(id)}/ensemble`, { scope, word_keys: wordKeys });
-/** The document's latest run; 404 when it has none. */
-export const getEnsemble = (id: string) => request<EnsembleRun>("GET", `${doc(id)}/ensemble`);
 const run = (id: string, runId: string) => `${doc(id)}/ensemble/${encodeURIComponent(runId)}`;
 export const stopEnsemble = (id: string, runId: string) => request<EnsembleRun>("POST", `${run(id, runId)}/stop`);
 export const retryEnsemble = (id: string, runId: string) => request<EnsembleRun>("POST", `${run(id, runId)}/retry`);

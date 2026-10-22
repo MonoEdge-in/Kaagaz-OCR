@@ -14,6 +14,8 @@
 // is followed through GET /api/batches/{id} (lib/poll.ts back-off) while it is
 // read. After a reload the tray comes back for the drops of the last 24 hours;
 // selecting the same file again resumes its saved parts, including on another device.
+// read. After a reload the tray comes back for the drops of the last 24 hours;
+// selecting the same file again resumes its saved parts, including on another device.
 // A new version of a document ("Upload new version") goes through the same
 // queue, with no batch. The outcome, including "already uploaded" and any error, stays next
 // to its file until "Clear finished"; a duplicate whose earlier copy is in
@@ -104,6 +106,7 @@ import type { Shown, Stage, StageTimes } from "./uploadStages";
 import { WrapName } from "./WrapName";
 import styles from "./Documents.module.css";
 
+type Start = (onProgress: (fraction: number) => void, onSent: () => void, onWaiting: (waiting: boolean) => void) => Promise<UploadResult>;
 type Start = (onProgress: (fraction: number) => void, onSent: () => void, onWaiting: (waiting: boolean) => void) => Promise<UploadResult>;
 
 /** What one round of following the batches brought back. */
@@ -229,6 +232,8 @@ export function useUploads(onUploaded: () => void) {
   async function send(key: string, start: Start, follow: boolean) {
     const times: StageTimes = { startedAt: null, sentAt: null, repliedAt: null };
     let fraction = 0;
+    const times: StageTimes = { startedAt: null, sentAt: null, repliedAt: null };
+    let fraction = 0;
     dispatch({ type: "change", key, change: { state: { kind: "sending", fraction: 0 }, times } });
     try {
       const result = await start(
@@ -240,6 +245,12 @@ export function useUploads(onUploaded: () => void) {
         () => {
           times.sentAt = performance.now();
           dispatch({ type: "change", key, change: { state: { kind: "saving" }, times: { ...times } } });
+        },
+        (waiting) => {
+          if (!waiting) times.startedAt = fraction > 0 ? performance.now() : null;
+          if (waiting) update(key, { kind: "offline", fraction });
+          else if (times.sentAt !== null) update(key, { kind: "saving" });
+          else update(key, { kind: "sending", fraction });
         },
         (waiting) => {
           if (!waiting) times.startedAt = fraction > 0 ? performance.now() : null;
@@ -316,6 +327,8 @@ export function useUploads(onUploaded: () => void) {
       };
       const start: Start = (onProgress, onSent, onWaiting) =>
         uploadDocument(file, userId, onProgress, folderId, reading, batchId, onSent, departmentId, onWaiting);
+      const start: Start = (onProgress, onSent, onWaiting) =>
+        uploadDocument(file, userId, onProgress, folderId, reading, batchId, onSent, departmentId, onWaiting);
       return { entry, file, start };
     });
     dispatch({ type: "add", entries: added.map((item) => item.entry) });
@@ -348,6 +361,8 @@ export function useUploads(onUploaded: () => void) {
       ],
     });
     if (!problem) {
+      const start: Start = (onProgress, onSent, onWaiting) =>
+        uploadVersion(of.id, file, userId, onProgress, reading, onSent, note, onWaiting);
       const start: Start = (onProgress, onSent, onWaiting) =>
         uploadVersion(of.id, file, userId, onProgress, reading, onSent, note, onWaiting);
       kept.current.set(key, start);
@@ -887,19 +902,24 @@ export function UploadStatus({
   onOpenChange,
   ...tray
 }: Omit<Parameters<typeof BatchTray>[0], "onHide"> & { open: boolean; onOpenChange: (open: boolean) => void }) {
-  const now = useTick();
   const id = useId();
   const toggle = useRef<HTMLButtonElement>(null);
-  const text = statusBarText(tray.entries, tray.views, now);
   const shown = tray.entries.length > 0 || tray.tooMany;
+  // The time left counts down only while a file is sending or being read; settled, the line
+  // stays still instead of redrawing on the shared tick.
+  const busy = tray.entries.some(isBusy);
   function hide() {
     onOpenChange(false);
     toggle.current?.focus();
   }
   return (
     <InStatusBar>
-      <p className={styles.barLine} aria-live="polite" title={text || undefined}>
-        {text}
+      <p className={styles.barLine} aria-live="polite">
+        {busy ? (
+          <TickingLine entries={tray.entries} views={tray.views} />
+        ) : (
+          <LineText text={statusBarText(tray.entries, tray.views, 0)} />
+        )}
       </p>
       {shown && (
         <button
@@ -922,9 +942,20 @@ export function UploadStatus({
             if (event.key === "Escape") hide();
           }}
         >
-          <BatchTray {...tray} onHide={hide} />
+          {/* Drawn only while open: closed, nobody sees its rows redraw. */}
+          {open && <BatchTray {...tray} onHide={hide} />}
         </div>
       )}
     </InStatusBar>
   );
+}
+
+function TickingLine({ entries, views }: { entries: UploadEntry[]; views: Record<string, BatchView> }) {
+  const now = useTick();
+  return <LineText text={statusBarText(entries, views, now)} />;
+}
+
+/** The line's words, the whole of them in the tooltip when the bar cuts them. */
+function LineText({ text }: { text: string }) {
+  return <span title={text || undefined}>{text}</span>;
 }
