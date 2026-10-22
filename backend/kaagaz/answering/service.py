@@ -806,6 +806,8 @@ class AnswerService:
 
     def _run_plan(self, fixed: FixedQueries, customer_id: str, plan: FixedPlan) -> list[FixedRow]:
         if plan.aggregate == "count":
+            if plan.invoice_count:
+                return fixed.count_invoices(customer_id, plan.start, plan.end)
             return fixed.count_documents(customer_id, plan.start, plan.end, date_fields=plan.date_fields)
         if plan.metric is None:
             return []
@@ -1533,6 +1535,8 @@ def _fixed_sentence(plan: FixedPlan, top: Sequence[FixedRow]) -> str | None:
     period = describe_range(plan.start, plan.end) if plan.start and plan.end else ""
     number = indian_number(top[0].number)
     if plan.aggregate == "count":
+        if plan.invoice_count:
+            return f"{number} {'invoice is' if top[0].number == 1 else 'invoices are'} present{f' {period}' if period else ''}."
         documents = "1 document is" if top[0].number == 1 else f"{number} documents are"
         return f"{documents} dated {period}." if period else f"{documents} dated."
     metric = _words(plan.metric or "")
