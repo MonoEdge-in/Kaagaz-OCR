@@ -6,10 +6,11 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { NO_ANSWER_STATUS, UNCHECKED_TEXT } from "@/components/chat/answer";
 import { Icon } from "@/components/ui/Icon";
 import { ApiError, documentQuestions } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
-import type { DocumentQuestion } from "@/lib/types";
+import type { Answer, DocumentQuestion } from "@/lib/types";
 import styles from "@/components/activity/Activity.module.css";
 
 export const QUESTIONS_TEXT = {
@@ -21,6 +22,14 @@ export const QUESTIONS_TEXT = {
   noAnswer: "No answer was saved.",
   tryAgain: "Try again",
 };
+
+function answerText(answer: Answer | null): string {
+  if (!answer) return QUESTIONS_TEXT.noAnswer;
+  if (answer.status === "not_found") return NO_ANSWER_STATUS;
+  if (answer.status === "unchecked") return UNCHECKED_TEXT;
+  const text = answer.sentences.map((sentence) => sentence.text.trim()).filter(Boolean).join(" ");
+  return text || QUESTIONS_TEXT.noAnswer;
+}
 
 export function QuestionsPanel({ documentId, initial }: { documentId: string; initial?: DocumentQuestion[] }) {
   const [items, setItems] = useState<DocumentQuestion[] | null>(initial ?? null);
@@ -70,7 +79,7 @@ export function QuestionsPanel({ documentId, initial }: { documentId: string; in
       {items.map((item) => (
         <li key={item.id} className={styles.row}>
           <span className={styles.what}>{item.question}</span>
-          <span className={styles.meta}>{item.answer ?? QUESTIONS_TEXT.noAnswer}</span>
+          <span className={styles.meta}>{answerText(item.answer)}</span>
           <span className={styles.meta}>
             <time dateTime={item.asked_at}>{formatDateTime(item.asked_at)}</time>
             {" · "}

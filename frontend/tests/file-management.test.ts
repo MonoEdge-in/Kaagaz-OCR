@@ -838,7 +838,22 @@ describe("the document page (P1, P2)", () => {
     const html = render(
       createElement(QuestionsPanel, {
         documentId: "d3",
-        initial: [{ id: "m1", conversation_id: "c1", question: "Who owns <b>44</b>?", answer: "Ramesh Shinde.", asked_at: "2026-10-17T09:00:00Z" }],
+        initial: [{
+          id: "m1",
+          conversation_id: "c1",
+          question: "Who owns <b>44</b>?",
+          answer: {
+            status: "answered",
+            label: "verified",
+            sentences: [{ text: "Ramesh Shinde.", citations: [] }],
+            citations: [],
+            closest_documents: [],
+            route: "search",
+            normalized_question: "Who owns 44?",
+            model_used: false,
+          },
+          asked_at: "2026-10-17T09:00:00Z",
+        }],
       }),
     );
     expect(html).toContain("Who owns &lt;b&gt;44&lt;/b&gt;?");
