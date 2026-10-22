@@ -91,7 +91,14 @@ import { FILES_TEXT } from "@/components/files/words";
 import { VersionBanner } from "@/components/versions/VersionBanner";
 import { VersionsPanel } from "@/components/versions/VersionsPanel";
 import { VERSION_TEXT } from "@/components/versions/words";
-import { documentActivity, getDocument, getDocumentSummary, getPageReadings } from "@/lib/api";
+import {
+  ApiError,
+  documentActivity,
+  getDocument,
+  getDocumentSummary,
+  getPageReadings,
+  resolveReview,
+} from "@/lib/api";
 import { formatDate, formatDateTime, typeLabel } from "@/lib/format";
 import { progressSignature } from "@/lib/poll";
 import { markReceived } from "@/lib/timeLeft";
@@ -175,6 +182,9 @@ export function DocumentView({
   const [adding, setAdding] = useState<{ text: string; region: Region } | null>(null);
   const opener = useRef<HTMLElement | null>(null);
   const [allValues, setAllValues] = useState(false); // "Show all N" pressed
+  const [verifying, setVerifying] = useState<string | "all" | null>(null);
+  const [verifyProgress, setVerifyProgress] = useState(0);
+  const [verifyNotice, setVerifyNotice] = useState<{ text: string; failed: boolean } | null>(null);
   // Word-level review: on or off, the word being reviewed, the export dialog.
   const [reviewing, setReviewing] = useState(false);
   const [currentFlag, setCurrentFlag] = useState<string | null>(null);
@@ -401,6 +411,11 @@ export function DocumentView({
   const position = versionPosition(detail);
   const note = versionNote(detail);
   const readingNote = valuesNote(detail.status, detail.values.length);
+  const canVerifyValues =
+    canReview(me.user.role) &&
+    detail.status === "ready" &&
+    detail.deleted_at === null;
+  const pendingValues = detail.values.filter((value) => value.label === "needs_review");
   // About six values, then "Show all N"; a Ready to verify value and the one highlighted always show.
   const shownValues =
     allValues || detail.values.length <= FIRST_VALUES
@@ -420,14 +435,72 @@ export function DocumentView({
     setReloads((n) => n + 1);
   };
 
+  const verifyValue = async (value: ExtractedValue) => {
+    if (!canVerifyValues || verifying !== null || value.label !== "needs_review") return;
+    setVerifying(value.id);
+    setVerifyNotice(null);
+    try {
+      await resolveReview(value.id, "typed", false, value.value);
+      setVerifyNotice({ text: `Verified ${fieldText(value.field)}.`, failed: false });
+    } catch (error) {
+      setVerifyNotice({
+        text: error instanceof ApiError ? error.message : "Could not verify this value. Check your connection, then try again.",
+        failed: true,
+      });
+    } finally {
+      setVerifying(null);
+      setReloads((n) => n + 1);
+    }
+  };
+
+  const verifyAllValues = async () => {
+    if (!canVerifyValues || verifying !== null || pendingValues.length === 0) return;
+    const total = pendingValues.length;
+    let completed = 0;
+    setVerifying("all");
+    setVerifyProgress(0);
+    setVerifyNotice(null);
+    try {
+      for (const value of pendingValues) {
+        await resolveReview(value.id, "typed", false, value.value);
+        completed += 1;
+        setVerifyProgress(completed);
+      }
+      setVerifyNotice({ text: `Verified all ${total} values.`, failed: false });
+    } catch (error) {
+      const reason = error instanceof ApiError ? error.message : "Check your connection, then try again.";
+      setVerifyNotice({ text: `Verified ${completed} of ${total}. ${reason}`, failed: true });
+    } finally {
+      setVerifying(null);
+      setReloads((n) => n + 1);
+    }
+  };
+
   const values = (
     <section className={styles.values} aria-labelledby="values-heading">
-      <h2 id="values-heading" className={styles.valuesHeading}>
-        Values found
-        {detail.values.length > 0 ? (
-          <span className={`${styles.count} tabular`}>{detail.values.length}</span>
-        ) : null}
-      </h2>
+      <div className={styles.valuesHeader}>
+        <h2 id="values-heading" className={styles.valuesHeading}>
+          Values found
+          {detail.values.length > 0 ? (
+            <span className={`${styles.count} tabular`}>{detail.values.length}</span>
+          ) : null}
+        </h2>
+        {canVerifyValues && pendingValues.length > 0 && (
+          <button
+            type="button"
+            className="btn btn-quiet"
+            onClick={() => void verifyAllValues()}
+            disabled={verifying !== null}
+          >
+            {verifying === "all" ? `Verifying ${verifyProgress} of ${pendingValues.length}…` : `Verify all ${pendingValues.length}`}
+          </button>
+        )}
+      </div>
+      {verifyNotice && (
+        <p className={verifyNotice.failed ? "error-text" : "muted"} role={verifyNotice.failed ? "alert" : "status"}>
+          {verifyNotice.text}
+        </p>
+      )}
       {readingNote && <p className="muted">{readingNote}</p>}
       {detail.values.length === 0 ? (
         !readingNote && <p className="muted">{untilRead(detail.status, "No values were found in this document.")}</p>
@@ -494,6 +567,17 @@ export function DocumentView({
                     </td>
                     <td role="cell" className={styles.labelCell}>
                       <LabelBadge label={value.label} confidence={value.confidence ?? null} />
+                      {canVerifyValues && value.label === "needs_review" && (
+                        <button
+                          type="button"
+                          className="btn btn-quiet"
+                          onClick={() => void verifyValue(value)}
+                          disabled={verifying !== null}
+                        >
+                          {verifying === value.id ? "Verifying…" : "Verify"}
+                          <span className="visually-hidden">{` ${fieldText(value.field)} on page ${value.region.page}`}</span>
+                        </button>
+                      )}
                       <div className={styles.reason}>
                         {reasonText(value.label_reason)}
                         {value.votes && <div className={styles.pageNote}>{voteText(value.votes)}</div>}

@@ -17,7 +17,7 @@ import { browserStore, markersOf, markerText, pickableWords, readShowMyWords, sp
 import { viewerBody, wordFromText, writeShowMyWords } from "./spots";
 import type { Marker, ViewerWordBody } from "./spots";
 import { DuplicateDialog, WordFields } from "./WordParts";
-import { draftOk, failedState, retryBody, savedState } from "./words";
+import { draftOk, failedState, retryBody } from "./words";
 import type { Choice, Existing, WordDraft } from "./words";
 import styles from "./Words.module.css";
 
@@ -149,7 +149,8 @@ export function AddMeaningDialog({ documentId, userId, text, region, onClose, on
     setBusy(true);
     setProblem(null);
     try {
-      onSaved(savedState(await addMyWord(body)).message);
+      await addMyWord(body);
+      onSaved("Saved to My words and sent to your organization for approval. Once approved, it applies to this document.");
     } catch (caught) {
       const state = failedState(caught);
       if (state.kind === "ask") setAsking({ body, existing: state.existing });
@@ -181,7 +182,7 @@ export function AddMeaningDialog({ documentId, userId, text, region, onClose, on
       <ActionDialog title="Add meaning" onClose={onClose} onClosed={onClosed}>
         <form onSubmit={submit} noValidate className="stack">
           <p className="muted">
-            Saved to My words, for you only, and marked on this spot. Chat uses it for your questions.
+            Saved to My words for you, marked on this spot, and sent for organization approval. Once approved, it applies to this document.
           </p>
           {picks.length > 1 && (
             <fieldset className={styles.picks}>

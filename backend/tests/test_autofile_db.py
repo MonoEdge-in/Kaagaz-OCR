@@ -141,23 +141,31 @@ def test_r2_r9_r13_a_new_upload_goes_into_a_new_invoices_folder_its_uploader_own
     read(db, customer, document)
 
     assert state(db, customer, document) == ("filed", "Invoices")
-    [(folder, name, parent, key, owner)] = folders(db, customer)
-    assert (name, parent, key, owner) == ("Invoices", None, "type:invoice", admin)
+    by_name = {row[1]: row for row in folders(db, customer)}
+    department, invoices = by_name["Accounts and HR"], by_name["Invoices"]
+    assert (department[2], department[3], department[4]) == (None, None, admin)
+    assert (invoices[2], invoices[3], invoices[4]) == (department[0], f"type:invoice:{department[0]}", admin)
     assert view(db, customer, document) == "filed"
     assert audit(db, customer) == [  # no actor: Kaagaz did it; ids only
         ("folder.create", None, {"parent_id": None, "auto": True}),
-        ("document.autofile", None, {"folder_id": folder}),
+        ("folder.create", None, {"parent_id": department[0], "auto": True}),
+        ("document.autofile", None, {"folder_id": invoices[0]}),
     ]
 
 
 def test_r9_a_folder_of_that_name_is_adopted_whatever_its_letter_case(db: Database) -> None:
     customer, admin = organisation(db)
     with db.customer(customer) as conn:
-        mine = insert_folder(conn, customer, admin, "invoices")
+        department = create_folder(
+            conn, customer, name="Finance", parent_id=None, created_by=admin, kind="department"
+        )
+        mine = insert_folder(conn, customer, admin, "invoices", parent_id=department.id)
     document = upload(db, customer, admin)
     read(db, customer, document)
     assert state(db, customer, document) == ("filed", "invoices")
-    assert [(f[0], f[3]) for f in folders(db, customer)] == [(mine, "type:invoice")]
+    assert [(f[0], f[3]) for f in folders(db, customer) if f[0] == mine] == [
+        (mine, f"type:invoice:{department.id}")
+    ]
     assert [row[0] for row in audit(db, customer)] == ["document.autofile"]  # no folder made
 
 
@@ -165,7 +173,9 @@ def test_r10_a_renamed_and_moved_type_folder_is_still_used(db: Database) -> None
     customer, admin = organisation(db)
     first = upload(db, customer, admin)
     read(db, customer, first)
-    [(invoices, *_)] = folders(db, customer)
+    invoices = next(
+        f[0] for f in folders(db, customer) if f[3] is not None and f[3].startswith("type:invoice:")
+    )
     with db.customer(customer) as conn:
         archive = create_folder(conn, customer, name="Archive", parent_id=None, created_by=admin)
     with db.customer(customer) as conn:
@@ -176,14 +186,14 @@ def test_r10_a_renamed_and_moved_type_folder_is_still_used(db: Database) -> None
     read(db, customer, second)
 
     assert state(db, customer, second) == ("filed", "Bills 2026")
-    assert [f[1] for f in folders(db, customer)] == ["Archive", "Bills 2026"]
+    assert [f[1] for f in folders(db, customer)] == ["Accounts and HR", "Archive", "Bills 2026"]
 
 
 def test_r10_a_deleted_type_folder_takes_its_key_and_the_next_file_makes_a_new_one(db: Database) -> None:
     customer, admin = organisation(db)
     first = upload(db, customer, admin)
     read(db, customer, first)
-    [(old, *_)] = folders(db, customer)
+    old = next(f[0] for f in folders(db, customer) if f[3] is not None and f[3].startswith("type:invoice:"))
     person_moves(db, customer, first, None)
     with db.customer(customer) as conn:
         delete_folder(conn, customer, old)
@@ -191,7 +201,9 @@ def test_r10_a_deleted_type_folder_takes_its_key_and_the_next_file_makes_a_new_o
     second = upload(db, customer, admin)
     read(db, customer, second)
 
-    [(new, name, *_)] = folders(db, customer)
+    new, name, *_ = next(
+        f for f in folders(db, customer) if f[3] is not None and f[3].startswith("type:invoice:")
+    )
     assert (name, new != old) == ("Invoices", True)
     assert state(db, customer, first) == (None, None)  # the person's move ended its state
 
@@ -300,28 +312,36 @@ def test_r3_a_person_moving_it_while_it_is_read_wins_even_to_not_in_a_folder(db:
     assert [f[1] for f in folders(db, customer)] == ["Mine"]
 
 
-def test_r12_a_folder_of_that_name_filing_another_type_is_a_clash(db: Database) -> None:
+def test_r12_a_child_name_taken_by_another_type_keeps_the_file_in_its_department(db: Database) -> None:
     customer, admin = organisation(db)
     receipt = upload(db, customer, admin)
     read(db, customer, receipt, "receipt")
-    [(receipts, *_)] = folders(db, customer)
+    receipts = next(
+        f[0] for f in folders(db, customer) if f[3] is not None and f[3].startswith("type:receipt:")
+    )
     with db.customer(customer) as conn:
         rename_folder(conn, customer, receipts, name="Invoices")  # still files receipts
     invoice = upload(db, customer, admin)
     ready(db, customer, invoice)
-    assert file(db, customer, invoice) == "clash"
-    assert (state(db, customer, invoice), view(db, customer, invoice)) == (("skipped", None), "not_filed")
+    assert file(db, customer, invoice) == "filed"
+    assert (state(db, customer, invoice), view(db, customer, invoice)) == (
+        ("filed", "Accounts and HR"),
+        "filed",
+    )
 
 
 def test_r13_with_no_uploader_a_folder_is_used_or_adopted_but_never_made(db: Database) -> None:
     customer, admin = organisation(db)
     nobody = upload(db, customer, None)
     ready(db, customer, nobody)
-    assert file(db, customer, nobody) == "no_owner"
+    assert file(db, customer, nobody) == "no_department"
     assert (state(db, customer, nobody), folders(db, customer)) == (("skipped", None), [])
 
     with db.customer(customer) as conn:
-        insert_folder(conn, customer, admin, "Invoices")
+        department = create_folder(
+            conn, customer, name="Finance", parent_id=None, created_by=admin, kind="department"
+        )
+        insert_folder(conn, customer, admin, "Invoices", parent_id=department.id)
     adopted = upload(db, customer, None)
     read(db, customer, adopted)
     assert state(db, customer, adopted) == ("filed", "Invoices")
@@ -403,7 +423,7 @@ def test_race_two_invoices_filed_at_once_make_one_invoices_folder(db: Database) 
             second = pool.submit(_file_as, db, customer, b, session)
             wait_until_blocked(db, application_name=session)  # on the tree lock
         assert second.result(timeout=10) == "filed"
-    assert [f[1] for f in folders(db, customer)] == ["Invoices"]
+    assert [f[1] for f in folders(db, customer)] == ["Accounts and HR", "Invoices"]
     assert state(db, customer, b) == ("filed", "Invoices")
 
 
@@ -428,7 +448,9 @@ def test_race_filing_waits_for_a_folder_move_and_a_folder_delete_without_a_deadl
     customer, admin = organisation(db)
     first = upload(db, customer, admin)
     read(db, customer, first)
-    [(invoices, *_)] = folders(db, customer)
+    invoices = next(
+        f[0] for f in folders(db, customer) if f[3] is not None and f[3].startswith("type:invoice:")
+    )
     with db.customer(customer) as conn:
         archive = create_folder(conn, customer, name="Archive", parent_id=None, created_by=admin)
     moved, after_delete = upload(db, customer, admin), upload(db, customer, admin)
@@ -453,7 +475,11 @@ def test_race_filing_waits_for_a_folder_move_and_a_folder_delete_without_a_deadl
             third = pool.submit(_file_as, db, customer, after_delete, session)
             wait_until_blocked(db, application_name=session)
         assert third.result(timeout=10) == "filed"
-    assert [(f[1], f[2]) for f in folders(db, customer)] == [("Archive", None), ("Invoices", None)]
+    assert {(f[1], f[2]) for f in folders(db, customer)} == {
+        ("Accounts and HR", None),
+        ("Archive", None),
+        ("Invoices", "Accounts and HR"),
+    }
 
 
 def test_race_a_trash_while_filing_waits_leaves_it_unfiled(db: Database) -> None:
@@ -483,15 +509,18 @@ def test_r16_undo_moves_the_family_back_keeps_the_folder_and_names_who(db: Datab
     member = api.sign_in(customer)  # any user of the organisation, not only its uploader
     document = upload(db, customer, admin)
     read(db, customer, document)
-    [(invoices, *_)] = folders(db, customer)
+    invoices = next(
+        f[0] for f in folders(db, customer) if f[3] is not None and f[3].startswith("type:invoice:")
+    )
+    department = next(f[0] for f in folders(db, customer) if f[1] == "Accounts and HR")
 
     reply = _undo(member.client, document)
 
     assert reply.status_code == 200, reply.text
-    assert (reply.json()["folder_id"], reply.json()["autofile"]) == (None, None)
-    assert state(db, customer, document) == (None, None)
-    assert [f[0] for f in folders(db, customer)] == [invoices]  # the folder stays
-    assert audit(db, customer)[-1] == ("document.autofile_undo", member.user_id, {"folder_id": invoices})
+    assert (reply.json()["folder_id"], reply.json()["autofile"]) == (department, None)
+    assert state(db, customer, document) == (None, "Accounts and HR")
+    assert {f[0] for f in folders(db, customer)} == {invoices, department}  # the folders stay
+    assert audit(db, customer)[-1] == ("document.autofile_undo", member.user_id, {"folder_id": department})
     again = _undo(member.client, document)
     assert (again.status_code, again.json()["error"]["code"]) == (409, "already_moved")
 
@@ -525,7 +554,9 @@ def test_stale_flag_a_deleted_folder_of_a_filed_family_in_trash_is_not_filed_any
     member = api.sign_in(customer)
     document = upload(db, customer, admin)
     read(db, customer, document)
-    [(invoices, *_)] = folders(db, customer)
+    invoices = next(
+        f[0] for f in folders(db, customer) if f[3] is not None and f[3].startswith("type:invoice:")
+    )
     with db.customer(customer) as conn:
         trash_document(conn, customer, document, by=admin, now=NOW)
     with db.customer(customer) as conn:

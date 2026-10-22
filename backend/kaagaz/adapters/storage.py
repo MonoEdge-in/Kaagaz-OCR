@@ -27,6 +27,7 @@ his call too; here it does, so a delete leaves nothing of the customer's
 file behind.
 """
 
+import tempfile
 import uuid
 from typing import IO, Any
 
@@ -74,6 +75,13 @@ def _canonical_id(value: str) -> str:
 
 def _document_prefix(customer_id: str, document_id: str) -> str:
     return f"customers/{_canonical_id(customer_id)}/documents/{_canonical_id(document_id)}/"
+
+
+def resumable_key(customer_id: str, user_id: str, session_id: str) -> str:
+    return (
+        f"customers/{_canonical_id(customer_id)}/uploads/{_canonical_id(user_id)}/"
+        f"{_canonical_id(session_id)}/content"
+    )
 
 
 def original_key(customer_id: str, document_id: str) -> str:
@@ -160,6 +168,111 @@ class S3Storage:
                 if not response.get("IsTruncated") or not token:
                     break
                 arguments["ContinuationToken"] = token
+
+    def start_resumable(self, customer_id: str, user_id: str, session_id: str) -> tuple[str, str]:
+        key = resumable_key(customer_id, user_id, session_id)
+        try:
+            result = self._client.create_multipart_upload(Bucket=self._bucket, Key=key)
+            return key, str(result["UploadId"])
+        except _ANY_ERROR as error:
+            raise BackendUnavailable("storage") from error
+
+    def upload_resumable_part(self, key: str, upload_id: str, part_number: int, body: bytes) -> None:
+        try:
+            self._client.upload_part(
+                Bucket=self._bucket,
+                Key=key,
+                UploadId=upload_id,
+                PartNumber=part_number,
+                Body=body,
+            )
+        except _ANY_ERROR as error:
+            raise BackendUnavailable("storage") from error
+
+    def resumable_parts(self, key: str, upload_id: str) -> list[tuple[int, int, str]]:
+        result: list[tuple[int, int, str]] = []
+        marker = 0
+        try:
+            while True:
+                page = self._client.list_parts(
+                    Bucket=self._bucket,
+                    Key=key,
+                    UploadId=upload_id,
+                    PartNumberMarker=marker,
+                )
+                result.extend(
+                    (int(part["PartNumber"]), int(part["Size"]), str(part["ETag"]))
+                    for part in page.get("Parts", [])
+                )
+                if not page.get("IsTruncated"):
+                    return result
+                marker = int(page.get("NextPartNumberMarker", 0))
+                if marker <= 0:
+                    raise BackendUnavailable("storage")
+        except BackendUnavailable:
+            raise
+        except _ANY_ERROR as error:
+            raise BackendUnavailable("storage") from error
+
+    def complete_resumable(self, key: str, upload_id: str, parts: list[tuple[int, str]]) -> None:
+        try:
+            self._client.complete_multipart_upload(
+                Bucket=self._bucket,
+                Key=key,
+                UploadId=upload_id,
+                MultipartUpload={
+                    "Parts": [{"PartNumber": number, "ETag": etag} for number, etag in parts]
+                },
+            )
+        except _ANY_ERROR as error:
+            if isinstance(error, ClientError) and _error_code(error) == "NoSuchUpload":
+                try:
+                    self._client.head_object(Bucket=self._bucket, Key=key)
+                    return  # The complete reply was lost; this session already produced its temp object.
+                except _ANY_ERROR as head_error:
+                    raise BackendUnavailable("storage") from head_error
+            raise BackendUnavailable("storage") from error
+
+    def resumable_complete(self, key: str) -> bool:
+        try:
+            self._client.head_object(Bucket=self._bucket, Key=key)
+            return True
+        except ClientError as error:
+            if _is_missing(error):
+                return False
+            raise BackendUnavailable("storage") from error
+        except _UNREACHABLE as error:
+            raise BackendUnavailable("storage") from error
+
+    def open_resumable(self, key: str) -> IO[bytes]:
+        spool = tempfile.SpooledTemporaryFile(max_size=1024 * 1024)
+        try:
+            body = self._client.get_object(Bucket=self._bucket, Key=key)["Body"]
+            try:
+                while chunk := body.read(64 * 1024):
+                    spool.write(chunk)
+            finally:
+                body.close()
+            spool.seek(0)
+            return spool
+        except _ANY_ERROR as error:
+            spool.close()
+            raise BackendUnavailable("storage") from error
+
+    def delete_resumable(self, key: str) -> None:
+        try:
+            self._client.delete_object(Bucket=self._bucket, Key=key)
+        except _ANY_ERROR as error:
+            raise BackendUnavailable("storage") from error
+
+    def abort_resumable(self, key: str, upload_id: str) -> None:
+        try:
+            self._client.abort_multipart_upload(Bucket=self._bucket, Key=key, UploadId=upload_id)
+        except ClientError as error:
+            if _error_code(error) != "NoSuchUpload":
+                raise BackendUnavailable("storage") from error
+        except _UNREACHABLE as error:
+            raise BackendUnavailable("storage") from error
 
     # --- Quarantine --------------------------------------------------------
 

@@ -374,6 +374,14 @@
   font-size: var(--fs-lg);
 }
 
+.valuesHeader {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
 /* The handoff's tab count (.k-tab-count): mono figures in a small sunken pill. */
 .count {
   display: inline-flex;

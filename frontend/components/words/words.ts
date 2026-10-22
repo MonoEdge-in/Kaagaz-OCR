@@ -153,7 +153,9 @@ export function understoodNotes(answer: Pick<Answer, "understood_words">): strin
   return words
     .filter((w) => typeof w?.word === "string" && typeof w?.meaning === "string" && w.word && w.meaning)
     .slice(0, MAX_NOTES)
-    .map((w: { word: string; meaning: string }) => `Understood '${w.word}' as '${w.meaning}' (your word)`);
+    .map((w: { word: string; meaning: string; origin?: string }) =>
+      `Understood '${w.word}' as '${w.meaning}' (${w.origin === "organization" ? "organization word" : "your word"})`,
+    );
 }
 
 // sent: the last request, to send again after the duplicate question.

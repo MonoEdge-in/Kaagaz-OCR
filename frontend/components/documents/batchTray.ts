@@ -68,6 +68,7 @@ export function rowKind(entry: Pick<UploadEntry, "state">): RowKind {
       return "already";
     case "waiting":
     case "sending":
+    case "offline":
     case "saving":
       return "sending";
     case "reading": {
@@ -223,7 +224,7 @@ export function statusBarText(
   views: Readonly<Record<string, Pick<BatchView, "time_left" | "documents">>>,
   now: number,
 ): string {
-  const sending = entries.filter((entry) => ["waiting", "sending", "saving"].includes(entry.state.kind));
+  const sending = entries.filter((entry) => ["waiting", "sending", "offline", "saving"].includes(entry.state.kind));
   const parts: string[] = [];
   const [one] = sending;
   if (sending.length === 1 && one) parts.push(`Uploading ${one.name}${one.pages ? ` · ${counted(one.pages, "page")}` : ""}`);
@@ -310,7 +311,7 @@ export function batchFraction(
     const { state } = entry;
     const kind = uploadKind(entry.name);
     if (kind === null) continue;
-    const moving = state.kind === "sending" || state.kind === "saving";
+    const moving = state.kind === "sending" || state.kind === "offline" || state.kind === "saving";
     const unknown = state.kind === "reading" && !stored.has(state.documentId);
     if (!moving && !unknown && state.kind !== "waiting") continue;
     const pages = estimatePages(kind, entry.size, entry.pages ?? null);

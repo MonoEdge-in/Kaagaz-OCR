@@ -107,18 +107,20 @@ Why some choices:
   ``already_moved``. One ``document.autofile_undo`` audit row names the folder.
 """
 
+import hashlib
+import math
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from os.path import splitext
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, cast
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import Connection, RowMapping
 from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import FormData, UploadFile
@@ -150,6 +152,7 @@ from kaagaz.db import audit, autofile, listing, trash
 from kaagaz.db import chat as chat_sql
 from kaagaz.db import folders as folders_sql
 from kaagaz.db import tags as tags_sql
+from kaagaz.db import upload_sessions as upload_sessions_sql
 from kaagaz.db import versions as versions_sql
 from kaagaz.db.documents import (
     EnsembleRunning,
@@ -174,6 +177,23 @@ from kaagaz.reading.ocr import GEMINI
 from kaagaz.settings import Settings
 
 router = APIRouter()
+
+_UPLOAD_PART_BYTES = 8 * 1024 * 1024
+class ResumableUploadStart(BaseModel):
+    file_name: str
+    file_size: int
+    fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    user_id: str
+    folder_id: str | None = None
+    department_id: str | None = None
+    batch_id: str | None = None
+    read_mode: str | None = None
+    read_model: str | None = None
+    version_document_id: str | None = None
+    version_note: str | None = None
+    resume_session_id: str | None = None
+
+    model_config = ConfigDict(extra="forbid")
 
 Context = Annotated[AppContext, Depends(get_context)]
 
@@ -655,6 +675,201 @@ async def upload_version(
             _accept_version, context, user, upload, policy, str(document_id), asked, note
         )
     return JSONResponse(body, status_code=200 if body["duplicate"] else 201)
+
+
+@router.post("/documents/upload-sessions/candidates")
+def resumable_candidates(body: ResumableUploadStart, user: User, context: Context) -> dict[str, Any]:
+    """Find this user's pending same-name, same-size uploads; the browser verifies saved chunks."""
+    _same_user(body.user_id, user)
+    policy = _upload_policy(context, user)
+    if body.file_size <= 0 or body.file_size > policy.largest_limit:
+        raise ApiError(413, "too_large", over_every_limit_message(policy.largest_limit))
+    filename = display_name(body.file_name)
+    with context.db.customer(user.customer_id) as conn:
+        return {"candidates": upload_sessions_sql.candidates(
+            conn, user.customer_id, user.user_id, filename, body.file_size, body.fingerprint
+        )}
+
+
+@router.post("/documents/upload-sessions")
+def create_resumable_session(body: ResumableUploadStart, user: User, context: Context) -> dict[str, Any]:
+    _same_user(body.user_id, user)
+    policy = _upload_policy(context, user)
+    if body.file_size <= 0 or body.file_size > policy.largest_limit:
+        raise ApiError(413, "too_large", over_every_limit_message(policy.largest_limit))
+    count = math.ceil(body.file_size / _UPLOAD_PART_BYTES)
+    if count > 10_000:
+        raise ApiError(413, "too_large")
+    if body.resume_session_id:
+        session_id = str(uuid.UUID(body.resume_session_id))
+        with context.db.customer(user.customer_id) as conn:
+            row = upload_sessions_sql.get(conn, user.customer_id, user.user_id, session_id)
+        if row is None or row["file_size"] != body.file_size or cast(
+            dict[str, Any], row["metadata"]
+        ).get("filename") != display_name(body.file_name) or cast(
+            dict[str, Any], row["metadata"]
+        ).get("fingerprint") != body.fingerprint:
+            raise ApiError(404, "not_found")
+        return {"id": session_id, "part_size": _UPLOAD_PART_BYTES, "part_count": count}
+
+    folder_id = _form_uuid(body.folder_id)
+    department_id = _form_uuid(body.department_id)
+    if folder_id is None and department_id is not None:
+        folder_id = _department(context, user, department_id)
+    batch_id = _form_uuid(body.batch_id)
+    asked = _Asked(body.read_mode, body.read_model)
+    check_shape(asked.mode)
+    if body.version_document_id is not None:
+        try:
+            target_id = str(uuid.UUID(body.version_document_id))
+        except ValueError:
+            raise ApiError(400, "bad_request") from None
+        with context.db.customer(user.customer_id) as conn:
+            target = listing.get_document(conn, user.customer_id, target_id)
+        if target is None:
+            raise ApiError(404, "not_found")
+        if target["deleted_at"] is not None:
+            raise ApiError(409, "in_trash", "This document is in the Trash. Restore it first.")
+    if (
+        folder_id is not None
+        or batch_id is not None
+        or asked != _Asked()
+        or context.settings.ocr_engine == GEMINI
+    ):
+        with context.db.customer(user.customer_id) as conn:
+            _checked_reading(conn, user, context.settings, asked)
+            if folder_id is not None and not folders_sql.folder_path(conn, user.customer_id, folder_id):
+                raise ApiError(404, "not_found")
+            if batch_id is not None and listing.batch_size(
+                conn, user.customer_id, batch_id, user_id=user.user_id
+            ) >= context.settings.max_files_per_batch:
+                raise ApiError(409, "batch_full")
+
+    session_id = str(uuid.uuid4())
+    storage_key, upload_id = context.storage.start_resumable(user.customer_id, user.user_id, session_id)
+    metadata = {
+        "filename": display_name(body.file_name),
+        "fingerprint": body.fingerprint,
+        "folder_id": folder_id,
+        "batch_id": batch_id,
+        "read_mode": asked.mode,
+        "read_model": asked.model,
+        "version_document_id": body.version_document_id,
+        "version_note": clean_note(body.version_note),
+        "parts": {},
+    }
+    try:
+        with context.db.customer(user.customer_id) as conn:
+            upload_sessions_sql.create(
+                conn,
+                customer_id=user.customer_id,
+                user_id=user.user_id,
+                session_id=session_id,
+                storage_key=storage_key,
+                storage_upload_id=upload_id,
+                file_size=body.file_size,
+                part_count=count,
+                metadata=metadata,
+            )
+    except Exception:
+        context.storage.abort_resumable(storage_key, upload_id)
+        raise
+    return {"id": session_id, "part_size": _UPLOAD_PART_BYTES, "part_count": count}
+
+
+@router.put("/documents/upload-sessions/{session_id}/parts/{part_number}")
+async def upload_resumable_part(
+    session_id: uuid.UUID, part_number: int, request: Request, user: User, context: Context
+) -> Response:
+    with context.db.customer(user.customer_id) as conn:
+        session = upload_sessions_sql.get(conn, user.customer_id, user.user_id, str(session_id))
+    if session is None:
+        raise ApiError(404, "not_found")
+    count, size = int(session["part_count"]), int(session["file_size"])
+    if part_number < 1 or part_number > count:
+        raise ApiError(400, "bad_request")
+    expected = _UPLOAD_PART_BYTES if part_number < count else size - _UPLOAD_PART_BYTES * (count - 1)
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > expected:
+            raise ApiError(413, "too_large")
+        body.extend(chunk)
+    if len(body) != expected:
+        raise ApiError(400, "bad_request", "The upload part was incomplete.")
+    digest = hashlib.sha256(body).hexdigest()
+    await run_in_threadpool(
+        context.storage.upload_resumable_part,
+        str(session["storage_key"]), str(session["storage_upload_id"]), part_number, bytes(body),
+    )
+    with context.db.customer(user.customer_id) as conn:
+        upload_sessions_sql.set_part_hash(
+            conn, user.customer_id, user.user_id, str(session_id), part_number, digest
+        )
+    return Response(status_code=204)
+
+
+@router.post("/documents/upload-sessions/{session_id}/complete")
+def complete_resumable_upload(session_id: uuid.UUID, user: User, context: Context) -> JSONResponse:
+    with context.db.customer(user.customer_id) as conn:
+        session = upload_sessions_sql.get(conn, user.customer_id, user.user_id, str(session_id))
+    if session is None:
+        raise ApiError(404, "not_found")
+    metadata = cast(dict[str, Any], session["metadata"])
+    if not context.storage.resumable_complete(str(session["storage_key"])):
+        parts = context.storage.resumable_parts(
+            str(session["storage_key"]), str(session["storage_upload_id"])
+        )
+        hashes = metadata.get("parts", {})
+        count, size = int(session["part_count"]), int(session["file_size"])
+        if [part[0] for part in parts] != list(range(1, count + 1)) or len(hashes) != count:
+            raise ApiError(409, "upload_incomplete", "Upload is incomplete. Reconnect and try again.")
+        fingerprint = hashlib.sha256(
+            "".join(hashes[str(number)] for number in range(1, count + 1)).encode()
+        ).hexdigest()
+        if fingerprint != metadata.get("fingerprint"):
+            raise ApiError(
+                409, "upload_mismatch", "The selected file differs from the saved upload. Start it again."
+            )
+        if any(
+            part[1] != (_UPLOAD_PART_BYTES if part[0] < count else size - _UPLOAD_PART_BYTES * (count - 1))
+            for part in parts
+        ):
+            raise ApiError(409, "upload_incomplete")
+        context.storage.complete_resumable(
+            str(session["storage_key"]),
+            str(session["storage_upload_id"]),
+            [(number, etag) for number, _, etag in parts],
+        )
+    stream = context.storage.open_resumable(str(session["storage_key"]))
+    try:
+        upload = UploadFile(filename=str(metadata["filename"]), file=stream)
+        policy = _upload_policy(context, user)
+        asked = _Asked(metadata.get("read_mode"), metadata.get("read_model"))
+        if metadata.get("version_document_id"):
+            result = _accept_version(
+                context,
+                user,
+                upload,
+                policy,
+                str(metadata["version_document_id"]),
+                asked,
+                metadata.get("version_note"),
+            )
+        else:
+            result = _accept(
+                context, user, upload, policy, metadata.get("folder_id"), metadata.get("batch_id"), asked
+            )
+    except ApiError:
+        context.storage.delete_resumable(str(session["storage_key"]))
+        with context.db.customer(user.customer_id) as conn:
+            upload_sessions_sql.delete(conn, user.customer_id, user.user_id, str(session_id))
+        raise
+    finally:
+        stream.close()
+    context.storage.delete_resumable(str(session["storage_key"]))
+    with context.db.customer(user.customer_id) as conn:
+        upload_sessions_sql.delete(conn, user.customer_id, user.user_id, str(session_id))
+    return JSONResponse(result, status_code=200 if result["duplicate"] else 201)
 
 
 def _document_or_404(conn: Connection, user: CurrentUser, document_id: uuid.UUID) -> RowMapping:

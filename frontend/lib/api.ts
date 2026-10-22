@@ -46,6 +46,7 @@ import type {
   MySpot,
   MyStory,
   MyWord,
+  OrganizationWord,
   OperatorMe,
   OperatorModel,
   OperatorMoveOffer,
@@ -356,15 +357,12 @@ export function uploadDocument(
   batchId?: string,
   onSent?: () => void,
   departmentId?: string, // F2: used by the server when no folder is named
+  onWaiting?: (waiting: boolean) => void,
 ): Promise<UploadResult> {
-  const form = new FormData();
-  if (folderId) form.append("folder_id", folderId);
-  else if (departmentId) form.append("department_id", departmentId);
-  appendReading(form, reading);
-  if (batchId) form.append("batch_id", batchId);
-  form.append("user_id", userId);
-  form.append("file", file);
-  return sendForm("/api/documents", form, onProgress, onSent);
+  return resumableUpload(file, {
+    file_name: file.name, file_size: file.size, user_id: userId, folder_id: folderId,
+    department_id: departmentId, batch_id: batchId, ...readingBody(reading),
+  }, onProgress, onSent, onWaiting);
 }
 
 /**
@@ -380,67 +378,127 @@ export function uploadVersion(
   reading?: UploadReading,
   onSent?: () => void,
   versionNote?: string, // V9: optional, at most 200 characters
+  onWaiting?: (waiting: boolean) => void,
 ): Promise<UploadResult> {
-  const form = new FormData();
-  appendReading(form, reading);
-  if (versionNote) form.append("version_note", versionNote);
-  form.append("user_id", userId);
-  form.append("file", file);
-  return sendForm(`/api/documents/${documentId}/versions`, form, onProgress, onSent);
+  return resumableUpload(file, {
+    file_name: file.name, file_size: file.size, user_id: userId,
+    version_document_id: documentId, version_note: versionNote, ...readingBody(reading),
+  }, onProgress, onSent, onWaiting);
 }
 
-/** The reading's form fields (feature 26). */
-function appendReading(form: FormData, reading: UploadReading | undefined): void {
-  if (reading?.read_mode) form.append("read_mode", reading.read_mode);
-  if (reading?.read_model) form.append("read_model", reading.read_model);
+type ResumableStart = {
+  file_name: string; file_size: number; fingerprint: string; user_id: string; folder_id?: string; department_id?: string;
+  batch_id?: string; read_mode?: string; read_model?: string; version_document_id?: string; version_note?: string;
+};
+const UPLOAD_PART_BYTES = 8 * 1024 * 1024;
+
+function readingBody(reading?: UploadReading): Pick<ResumableStart, "read_mode" | "read_model"> {
+  return { read_mode: reading?.read_mode, read_model: reading?.read_model };
 }
 
-/**
- * The bytes sent so far never go backwards (a browser may report a lower count
- * after a retry), and xhr.upload.onload says the last byte has gone: from then
- * until the reply the server is saving the file (PRD 5 U10).
- */
-function sendForm(
-  url: string,
-  form: FormData,
-  onProgress: (fraction: number) => void,
-  onSent?: () => void,
-): Promise<UploadResult> {
+async function digest(blob: Blob): Promise<string> {
+  const bytes = new Uint8Array(await crypto.subtle.digest("SHA-256", await blob.arrayBuffer()));
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function waitForNetwork(delay: number): Promise<void> {
+  if (navigator.onLine) return new Promise((resolve) => window.setTimeout(resolve, delay));
+  return new Promise((resolve) => window.addEventListener("online", () => resolve(), { once: true }));
+}
+
+async function retryWhileOffline<T>(work: () => Promise<T>, onWaiting?: (waiting: boolean) => void): Promise<T> {
+  let delay = 1000;
+  for (;;) {
+    try { return await work(); }
+    catch (error) {
+      const transient = error instanceof ApiError
+        ? error.status === 0 || error.status === 429 || error.status >= 500
+        : error instanceof TypeError;
+      if (!transient) throw error;
+      onWaiting?.(true);
+      await waitForNetwork(delay);
+      onWaiting?.(false);
+      delay = Math.min(delay * 2, 15000);
+    }
+  }
+}
+
+function putPart(url: string, body: Blob, onProgress: (loaded: number) => void): Promise<void> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    let highest = 0;
-    xhr.open("POST", url);
+    xhr.open("PUT", url);
     xhr.withCredentials = true;
     xhr.setRequestHeader("X-Requested-With", "kaagaz");
-    xhr.upload.onprogress = (event) => {
-      if (!event.lengthComputable || event.total <= 0) return;
-      const fraction = Math.min(1, event.loaded / event.total);
-      if (fraction <= highest) return;
-      highest = fraction;
-      onProgress(fraction);
+    xhr.upload.onprogress = (event) => { if (event.lengthComputable) onProgress(event.loaded); };
+    xhr.onload = async () => {
+      if (xhr.status >= 200 && xhr.status < 300) resolve();
+      else if (xhr.status === 0) reject(new ApiError(0, "network", "Could not reach the server."));
+      else reject(noticeSessionEnd(await errorFrom(new Response(xhr.responseText, {
+        status: xhr.status, headers: { "Content-Type": "application/json" },
+      }))));
     };
-    xhr.upload.onload = () => onSent?.();
-    xhr.onload = () => {
-      let body: unknown = null;
-      try {
-        body = JSON.parse(xhr.responseText);
-      } catch {
-        body = null;
-      }
-      if (xhr.status >= 200 && xhr.status < 300) {
-        resolve(body as UploadResult);
-        return;
-      }
-      const error = (body as { error?: { code?: string; message?: string } } | null)?.error;
-      reject(
-        noticeSessionEnd(
-          new ApiError(xhr.status, error?.code ?? "error", error?.message ?? "Upload failed."),
-        ),
-      );
-    };
-    xhr.onerror = () => reject(new ApiError(0, "network", "Could not reach the server."));
-    xhr.send(form);
+    xhr.onerror = () => reject(new TypeError("Network error"));
+    xhr.onabort = () => reject(new TypeError("Upload interrupted"));
+    xhr.send(body);
   });
+}
+
+async function resumableUpload(
+  file: File, metadata: Omit<ResumableStart, "fingerprint">, onProgress: (fraction: number) => void,
+  onSent?: () => void, onWaiting?: (waiting: boolean) => void,
+): Promise<UploadResult> {
+  const partCount = Math.ceil(file.size / UPLOAD_PART_BYTES);
+  const partHashes: string[] = [];
+  for (let number = 0; number < partCount; number++) {
+    const start = number * UPLOAD_PART_BYTES;
+    partHashes.push(await digest(file.slice(start, Math.min(start + UPLOAD_PART_BYTES, file.size))));
+  }
+  const fingerprint = await digest(new Blob([partHashes.join("")]));
+  const identified = { ...metadata, fingerprint };
+  const { candidates } = await retryWhileOffline(
+    () => request<{ candidates: { id: string; parts: Record<string, string> }[] }>(
+      "POST", "/documents/upload-sessions/candidates", identified,
+    ),
+    onWaiting,
+  );
+  let resumeId: string | undefined;
+  let savedParts: Record<string, string> = {};
+  for (const candidate of candidates) {
+    let matches = true;
+    for (const [number, expected] of Object.entries(candidate.parts)) {
+      const index = Number(number) - 1;
+      if (index < 0 || index >= partHashes.length || partHashes[index] !== expected) {
+        matches = false; break;
+      }
+    }
+    if (matches) { resumeId = candidate.id; savedParts = candidate.parts; break; }
+  }
+  const session = await retryWhileOffline(
+    () => request<{ id: string; part_size: number; part_count: number }>(
+      "POST", "/documents/upload-sessions", { ...identified, resume_session_id: resumeId },
+    ),
+    onWaiting,
+  );
+  let sent = 0;
+  for (let number = 1; number <= session.part_count; number++) {
+    const start = (number - 1) * session.part_size;
+    const part = file.slice(start, Math.min(start + session.part_size, file.size));
+    const hash = partHashes[number - 1];
+    if (savedParts[String(number)] !== hash) {
+      await retryWhileOffline(() => putPart(
+        `/api/documents/upload-sessions/${session.id}/parts/${number}`,
+        part,
+        (loaded) => onProgress(Math.min(1, (sent + loaded) / file.size)),
+      ), onWaiting);
+    }
+    sent += part.size;
+    onProgress(Math.min(1, sent / file.size));
+  }
+  onSent?.();
+  return retryWhileOffline(
+    () => request<UploadResult>("POST", `/documents/upload-sessions/${session.id}/complete`, {}),
+    onWaiting,
+  );
 }
 
 // --- folders and tags ------------------------------------------------------------
@@ -518,6 +576,11 @@ export const getMyWordsOnPage = (documentId: string, page: number) =>
   request<{ items: MySpot[] }>("GET", `/documents/${encodeURIComponent(documentId)}/my-words${query({ page })}`);
 export const deleteMyWord = (id: string, userId: string) =>
   request<void>("DELETE", `/me/words/${encodeURIComponent(id)}${query({ user_id: userId })}`);
+export const listOrganizationWords = () => request<{ items: OrganizationWord[] }>("GET", "/organization/words");
+export const suggestOrganizationWord = (word: string, meaning: string, userId: string) =>
+  request<{ item: OrganizationWord }>("POST", "/organization/words", { word, meaning, user_id: userId });
+export const decideOrganizationWord = (id: string, decision: "approve" | "reject", userId: string) =>
+  request<{ item: OrganizationWord }>("POST", `/organization/words/${encodeURIComponent(id)}/decision`, { decision, user_id: userId });
 
 // --- review --------------------------------------------------------------------
 

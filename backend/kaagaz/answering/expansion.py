@@ -6,10 +6,9 @@ or next to here and all on hybrid.py's word list: the glossary's Marathi and Hin
 equivalents and the user's own words share the ``:g`` OR arm (``word_query``); the
 question's sound keys are the ``:sk`` arm (``hybrid.sound_query``, unchanged).
 
-**Whose words.** ``PgWords.words`` reads the asking user's words inside
-``Database.user`` (the RESTRICTIVE ``own_user_only`` policy: another user's row never
-comes back, whatever the SQL says), at most ``user_words.MAX_WORDS`` rows, once per
-question. Nothing is cached across questions or users.
+**Whose words.** ``PgWords.words`` reads the asking user's private words and approved
+customer-shared words inside ``Database.user``. Customer RLS scopes the shared rows;
+private rows remain under ``own_user_only``. Nothing is cached across questions or users.
 
 **Matching** (``expand``). Forward: a word whose parts (``_parts``: folded runs of
 letters, marks and digits) are in the question one after another; a single Latin word
@@ -52,7 +51,7 @@ from kaagaz.answering import glossary
 from kaagaz.answering.hinglish import STOP_WORDS
 from kaagaz.answering.words_text import fold
 from kaagaz.chunking.script import SOUND_KEY_MIN, ascii_digits, sound_key
-from kaagaz.db import user_words
+from kaagaz.db import organization_words, user_words
 from kaagaz.db.engine import Database
 
 MAX_WORDS_USED = 10  # words expanded per question (council: at most 10 words, 30 meanings)
@@ -65,10 +64,11 @@ _ID = re.compile(r"[0-9a-z]+(?:[-/.,][0-9a-z]+)*")  # as the gate reads numbers 
 
 @dataclass(frozen=True, slots=True)
 class PersonalWord:
-    """One of the asking user's words, as stored."""
+    """One personal or organization word available to the asking user."""
 
     word: str
     meaning: str
+    origin: str = "personal"
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,15 +81,16 @@ class Used:
     asked: frozenset[str]
     terms: tuple[str, ...]
     numbers: tuple[str, ...] = ()  # the numbers and ids of what was searched for
+    origin: str = "personal"
 
 
 @dataclass(frozen=True, slots=True)
 class Expansion:
     used: tuple[Used, ...] = ()
 
-    def understood(self) -> tuple[tuple[str, str], ...]:
-        """The answer's ``understood_words``: each (word, meaning) used, once, in order."""
-        return tuple(dict.fromkeys((used.word, used.meaning) for used in self.used))
+    def understood(self) -> tuple[tuple[str, str, str], ...]:
+        """Each (word, meaning, origin) used, once, in order."""
+        return tuple(dict.fromkeys((used.word, used.meaning, used.origin) for used in self.used))
 
     def numbers(self) -> list[str]:
         """Every used word's numbers and ids, once: asked like the question's own."""
@@ -119,21 +120,32 @@ NO_EXPANSION = Expansion()
 
 
 class WordSource(Protocol):
-    def words(self, customer_id: str, user_id: str) -> Sequence[PersonalWord]:
-        """The user's own words, at most user_words.MAX_WORDS."""
+    def words(
+        self, customer_id: str, user_id: str, *, document_id: str | None = None
+    ) -> Sequence[PersonalWord]:
+        """Private words plus approved organization words."""
         ...
 
 
 class PgWords:
-    """``WordSource`` over PostgreSQL, inside ``Database.user``: one indexed read."""
+    """``WordSource`` over PostgreSQL, inside ``Database.user``: two indexed reads."""
 
     def __init__(self, db: Database) -> None:
         self._db = db
 
-    def words(self, customer_id: str, user_id: str) -> list[PersonalWord]:
+    def words(self, customer_id: str, user_id: str, *, document_id: str | None = None) -> list[PersonalWord]:
         with self._db.user(customer_id, user_id) as conn:
             rows = user_words.list_words(conn, customer_id, user_id)
-        return [PersonalWord(row.word, row.meaning) for row in rows]
+            shared = organization_words.approved(conn, customer_id, document_id=document_id)
+        personal = [PersonalWord(row.word, row.meaning) for row in rows]
+        seen = {(fold(row.word), fold(row.meaning)) for row in personal}
+        words = personal.copy()
+        for row in shared:
+            key = (fold(row.word), fold(row.meaning))
+            if key not in seen:
+                words.append(PersonalWord(row.word, row.meaning, "organization"))
+                seen.add(key)
+        return words
 
 
 def expand(question: str, words: Sequence[PersonalWord]) -> Expansion:
@@ -162,7 +174,7 @@ def expand(question: str, words: Sequence[PersonalWord]) -> Expansion:
         numbers = tuple(
             t for t in _ID.findall(ascii_digits(searched).casefold()) if any(c.isdigit() for c in t)
         )
-        used.append(Used(item.word, item.meaning, span, terms, numbers))
+        used.append(Used(item.word, item.meaning, span, terms, numbers, item.origin))
     return Expansion(tuple(used))
 
 

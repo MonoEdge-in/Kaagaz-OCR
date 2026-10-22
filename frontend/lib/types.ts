@@ -228,7 +228,7 @@ export interface BatchView {
 export interface DocumentSearch {
   documents: FoundDocument[];
   story_matches?: unknown; // checked by lib/storyMatches.ts before use
-  understood_words?: { word: string; meaning: string }[]; // Q2: this person's own words used
+  understood_words?: { word: string; meaning: string; origin?: "personal" | "organization" }[];
 }
 
 /** How well a question tells a story the user wrote again (S3): never a score. */
@@ -687,7 +687,7 @@ export interface Answer {
   normalized_question: string;
   model_used: boolean;
   rewritten_question?: string | null; // PRD 3 H1: what a follow-up was searched as; missing before PRD 3
-  understood_words?: { word: string; meaning: string }[]; // my words chat used (A3); missing before it
+  understood_words?: { word: string; meaning: string; origin?: "personal" | "organization" }[];
   // PRD 5 F6, missing before it: "Not found in the readable text. 2 pages couldn't be read: ..."
   // on a not-found answer, or "Part of this text was hard to read." on an answer that needs
   // review; null otherwise. The pages it names, and how many there are in all.
@@ -774,6 +774,17 @@ export interface MySpot {
   meaning: string;
   page_no: number;
   region: Region;
+}
+
+export interface OrganizationWord {
+  id: string;
+  word: string;
+  meaning: string;
+  status: "pending" | "approved" | "rejected";
+  submitted_by: string;
+  created_at: string;
+  document_id: string | null;
+  page_no: number | null;
 }
 
 /** POST /me/words: 201 created, 200 already there or replaced. */
