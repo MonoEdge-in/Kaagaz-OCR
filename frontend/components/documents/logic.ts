@@ -258,7 +258,6 @@ export type UploadState =
   | { kind: "waiting" }
   | { kind: "sending"; fraction: number }
   | { kind: "offline"; fraction: number }
-  | { kind: "offline"; fraction: number }
   | { kind: "saving" }
   | { kind: "reading"; documentId: string; document: DocumentSummary }
   | { kind: "done"; documentId: string; document?: DocumentSummary }
@@ -281,8 +280,6 @@ export function uploadStateText(state: UploadState): string {
     // Changed on purpose (scan states, 16 Oct 2026): the brief's words, Uploading then Scanning.
     case "sending":
       return "Uploading";
-    case "offline":
-      return "Waiting for connection";
     case "offline":
       return "Waiting for connection";
     case "saving":
@@ -317,10 +314,10 @@ export function sessionChangedMessage(caught: unknown): string | null {
 }
 
 /** The words for an upload that failed permanently. Transient connection loss resumes automatically. */
-/** The words for an upload that failed permanently. Transient connection loss resumes automatically. */
 export function uploadErrorText(caught: unknown, online: boolean): string {
   if (!online) {
-    return "Upload paused. It will resume when the connection returns.";
+    // A failed row: it does not resume by itself (a paused one is the "offline" state instead).
+    return "Not uploaded: no internet connection. Choose the file again when you're back online.";
   }
   return caught instanceof ApiError ? caught.message : "Upload failed. Check your connection, then try again.";
 }
