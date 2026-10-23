@@ -568,17 +568,6 @@ export function DocumentView({
                     </td>
                     <td role="cell" className={styles.labelCell}>
                       <LabelBadge label={value.label} confidence={value.confidence ?? null} />
-                      {canVerifyValues && value.label === "needs_review" && (
-                        <button
-                          type="button"
-                          className="btn btn-quiet"
-                          onClick={() => void verifyValue(value)}
-                          disabled={verifying !== null}
-                        >
-                          {verifying === value.id ? "Verifying…" : "Verify"}
-                          <span className="visually-hidden">{` ${fieldText(value.field)} on page ${value.region.page}`}</span>
-                        </button>
-                      )}
                       <div className={styles.reason}>
                         {reasonText(value.label_reason)}
                         {value.votes && <div className={styles.pageNote}>{voteText(value.votes)}</div>}

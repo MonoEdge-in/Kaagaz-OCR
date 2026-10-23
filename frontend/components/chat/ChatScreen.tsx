@@ -169,8 +169,6 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
   );
   const autoQuestion =
     new URLSearchParams(initialSearch).get("send") === "1" ? questionFromSearch(initialSearch) : null;
-  const autoQuestion =
-    new URLSearchParams(initialSearch).get("send") === "1" ? questionFromSearch(initialSearch) : null;
   const [activeId, setActiveId] = useState<string | null>(restoreId);
   // The documents the next question may use (scope.ts): one document when the
   // viewer's "Ask about this document" opened chat, else restored from the conversation.
@@ -189,13 +187,9 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
   );
   // A picked-up question that failed goes back into the box.
   // Or a question from an ordinary ?q= link, waiting for Send.
-  // Or a question from an ordinary ?q= link, waiting for Send.
   const [draft, setDraft] = useState<string | undefined>(() =>
     resumed?.outcome && "error" in resumed.outcome
       ? resumed.question
-      : autoQuestion
-        ? undefined
-        : (questionFromSearch(initialSearch) ?? undefined),
       : autoQuestion
         ? undefined
         : (questionFromSearch(initialSearch) ?? undefined),
@@ -238,7 +232,6 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
 
   // Only the latest conversation opened may fill the thread.
   const openRequest = useRef(0);
-  const autoQuestionSent = useRef(false);
   const autoQuestionSent = useRef(false);
   // False once the screen is gone: an answer then waits in askStore.ts for the next one.
   const alive = useRef(false);
@@ -584,14 +577,15 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
 
   // Home submitted this question before navigating here. Consume the marker before
   // sending, so a refresh cannot submit the same question a second time.
+  const askOnce = useEffectEvent((question: string) => onAsk(question));
   useEffect(() => {
     if (!autoQuestion || !hydrated || askOff || resumed || pending !== null || autoQuestionSent.current) return;
     autoQuestionSent.current = true;
     showInUrl(null);
-    void onAsk(autoQuestion).then((sent) => {
+    void askOnce(autoQuestion).then((sent) => {
       if (!sent) setDraft(autoQuestion);
     });
-  }, [autoQuestion, hydrated, askOff, resumed, pending, onAsk]);
+  }, [autoQuestion, hydrated, askOff, resumed, pending]);
 
   const rename = async (id: string, title: string): Promise<boolean> => {
     try {

@@ -47,7 +47,6 @@ import type {
   MyStory,
   MyWord,
   OrganizationWord,
-  OrganizationWord,
   OperatorMe,
   OperatorModel,
   OperatorMoveOffer,
@@ -359,11 +358,10 @@ export function uploadDocument(
   onSent?: () => void,
   departmentId?: string, // F2: used by the server when no folder is named
   onWaiting?: (waiting: boolean) => void,
-  onWaiting?: (waiting: boolean) => void,
 ): Promise<UploadResult> {
   return resumableUpload(file, {
     file_name: file.name, file_size: file.size, user_id: userId, folder_id: folderId,
-    department_id: departmentId, batch_id: batchId, ...readingBody(reading),
+    department_id: folderId ? undefined : departmentId, batch_id: batchId, ...readingBody(reading),
   }, onProgress, onSent, onWaiting);
 }
 
@@ -380,7 +378,6 @@ export function uploadVersion(
   reading?: UploadReading,
   onSent?: () => void,
   versionNote?: string, // V9: optional, at most 200 characters
-  onWaiting?: (waiting: boolean) => void,
   onWaiting?: (waiting: boolean) => void,
 ): Promise<UploadResult> {
   return resumableUpload(file, {
@@ -405,19 +402,26 @@ async function digest(blob: Blob): Promise<string> {
 }
 
 function waitForNetwork(delay: number): Promise<void> {
-  if (navigator.onLine) return new Promise((resolve) => window.setTimeout(resolve, delay));
+  if (navigator.onLine !== false) return new Promise((resolve) => setTimeout(resolve, delay));
   return new Promise((resolve) => window.addEventListener("online", () => resolve(), { once: true }));
 }
 
+/** A busy or failing server (429, 5xx) is asked this many more times, then the row fails with Retry. */
+const SERVER_RETRIES = 4;
+
+/**
+ * Waits out a lost connection, however long; a busy or failing server only SERVER_RETRIES
+ * times more (about 30 s), so a server error never leaves a row "waiting" for ever.
+ */
 async function retryWhileOffline<T>(work: () => Promise<T>, onWaiting?: (waiting: boolean) => void): Promise<T> {
   let delay = 1000;
+  let serverTries = 0;
   for (;;) {
     try { return await work(); }
     catch (error) {
-      const transient = error instanceof ApiError
-        ? error.status === 0 || error.status === 429 || error.status >= 500
-        : error instanceof TypeError;
-      if (!transient) throw error;
+      const lost = error instanceof ApiError ? error.status === 0 : error instanceof TypeError;
+      const busy = error instanceof ApiError && (error.status === 429 || error.status >= 500);
+      if (!lost && !(busy && serverTries++ < SERVER_RETRIES)) throw error;
       onWaiting?.(true);
       await waitForNetwork(delay);
       onWaiting?.(false);
@@ -429,7 +433,6 @@ async function retryWhileOffline<T>(work: () => Promise<T>, onWaiting?: (waiting
 function putPart(url: string, body: Blob, onProgress: (loaded: number) => void): Promise<void> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open("PUT", url);
     xhr.open("PUT", url);
     xhr.withCredentials = true;
     xhr.setRequestHeader("X-Requested-With", "kaagaz");
@@ -451,6 +454,13 @@ async function resumableUpload(
   file: File, metadata: Omit<ResumableStart, "fingerprint">, onProgress: (fraction: number) => void,
   onSent?: () => void, onWaiting?: (waiting: boolean) => void,
 ): Promise<UploadResult> {
+  // The bytes never go backwards, even when a part is sent again after a lost connection.
+  let shown = 0;
+  const report = (fraction: number) => {
+    if (fraction <= shown) return;
+    shown = fraction;
+    onProgress(fraction);
+  };
   const partCount = Math.ceil(file.size / UPLOAD_PART_BYTES);
   const partHashes: string[] = [];
   for (let number = 0; number < partCount; number++) {
@@ -492,11 +502,11 @@ async function resumableUpload(
       await retryWhileOffline(() => putPart(
         `/api/documents/upload-sessions/${session.id}/parts/${number}`,
         part,
-        (loaded) => onProgress(Math.min(1, (sent + loaded) / file.size)),
+        (loaded) => report(Math.min(1, (sent + loaded) / file.size)),
       ), onWaiting);
     }
     sent += part.size;
-    onProgress(Math.min(1, sent / file.size));
+    report(Math.min(1, sent / file.size));
   }
   onSent?.();
   return retryWhileOffline(
@@ -580,11 +590,6 @@ export const getMyWordsOnPage = (documentId: string, page: number) =>
   request<{ items: MySpot[] }>("GET", `/documents/${encodeURIComponent(documentId)}/my-words${query({ page })}`);
 export const deleteMyWord = (id: string, userId: string) =>
   request<void>("DELETE", `/me/words/${encodeURIComponent(id)}${query({ user_id: userId })}`);
-export const listOrganizationWords = () => request<{ items: OrganizationWord[] }>("GET", "/organization/words");
-export const suggestOrganizationWord = (word: string, meaning: string, userId: string) =>
-  request<{ item: OrganizationWord }>("POST", "/organization/words", { word, meaning, user_id: userId });
-export const decideOrganizationWord = (id: string, decision: "approve" | "reject", userId: string) =>
-  request<{ item: OrganizationWord }>("POST", `/organization/words/${encodeURIComponent(id)}/decision`, { decision, user_id: userId });
 export const listOrganizationWords = () => request<{ items: OrganizationWord[] }>("GET", "/organization/words");
 export const suggestOrganizationWord = (word: string, meaning: string, userId: string) =>
   request<{ item: OrganizationWord }>("POST", "/organization/words", { word, meaning, user_id: userId });
