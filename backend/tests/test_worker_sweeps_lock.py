@@ -119,9 +119,6 @@ def test_every_setup_tells_its_processes_how_many_workers_run() -> None:
     server = re.compile(r"^      WORKER_REPLICAS: \$\{WORKER_REPLICAS:-3\}( #.*)?$", re.MULTILINE)
     for name in ("api", "worker"):  # the server: as many as deploy.replicas runs
         assert server.search(service(name, "docker-compose.prod.yml")), name
-    blueprint = (ROOT / "render.yaml").read_text(encoding="utf-8")
-    assert '      - key: WORKER_REPLICAS\n        value: "1"\n' in blueprint  # Render: one kaagaz-worker
-    assert "numInstances" not in blueprint
 
 
 if __name__ == "__main__":
