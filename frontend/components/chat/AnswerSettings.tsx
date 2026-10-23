@@ -1,9 +1,9 @@
 "use client";
 
 // Answer settings (features 25-27), at the right of the composer's toolbar beside
-// Send: a quiet button naming the pick ("Thinking · High") that opens a small panel
-// (ComposerMenu.tsx) with which model answers and how hard it thinks (High, Medium,
-// Low), from what the organisation allows, capped by the effective Ask level (AI
+// Send: a quiet button naming the pick ("Precision") that opens a small panel
+// (ComposerMenu.tsx) with which model answers and its AI engine (Swift is Medium,
+// Precision is High; Low is not offered here), from what the organisation allows, capped by the effective Ask level (AI
 // settings, spec 17 Oct 2026). Hidden when there is only one choice. One model answers
 // (Tushar, 16 Oct 2026, one model in Ask): "Answered by" is one choice of radio buttons.
 // Changed on purpose (spec 17 Oct 2026): org users never see a model's name, so the
@@ -12,16 +12,16 @@
 import { useId } from "react";
 import type { ChatOptions, ThinkingLevel } from "@/lib/types";
 import { ComposerMenu } from "./ComposerMenu";
-import { agentTier, chooseAgent, LEVEL_NAMES, pickSummary } from "./logic";
+import { agentTier, askLevels, chooseAgent, LEVEL_NAMES, pickSummary } from "./logic";
 import type { AnswerPick } from "./logic";
 import styles from "./Chat.module.css";
 
-/** Strongest first, as the segments read left to right. */
-const LEVEL_ORDER: ThinkingLevel[] = ["high", "medium", "low"];
+/** Swift first, then Precision (SoW 19 Oct 2026; Low is not offered in Ask). */
+const LEVEL_ORDER: ThinkingLevel[] = ["medium", "high"];
 
 const LEVEL_HINTS: Record<ThinkingLevel, string> = {
   high: "Thinks longest, best for tricky questions.",
-  medium: "Balanced.",
+  medium: "Quick and balanced, for most questions.",
   low: "Fastest.",
 };
 
@@ -37,7 +37,7 @@ export function AnswerSettings({
   onPick: (pick: AnswerPick) => void;
 }) {
   const id = useId();
-  const shown = LEVEL_ORDER.filter((level) => options.levels.includes(level));
+  const shown = LEVEL_ORDER.filter((level) => askLevels(options).includes(level));
 
   return (
     <ComposerMenu label={pickSummary(options, pick)} name="Answer settings" title="Answer settings" end>
@@ -59,9 +59,9 @@ export function AnswerSettings({
             ))}
           </fieldset>
         ) : null}
-        {options.levels.length > 1 ? (
+        {shown.length > 1 ? (
           <fieldset className={styles.menuGroup}>
-            <legend>Thinking</legend>
+            <legend>AI engine</legend>
             <div className={styles.segments}>
               {shown.map((level) => (
                 <label key={level} className={styles.segment}>

@@ -34,7 +34,9 @@ describe("answer settings", () => {
     expect(hasChoices(null)).toBe(false);
     expect(hasChoices(options({ agents: [FLASH], levels: ["low"] }))).toBe(false);
     expect(hasChoices(options({ agents: [], levels: ["low"] }))).toBe(false);
-    expect(hasChoices(options({ agents: [FLASH], levels: ["low", "medium"] }))).toBe(true);
+    // Changed on purpose (SoW 19 Oct 2026): Low is not offered in Ask, so Low and Swift alone are one choice.
+    expect(hasChoices(options({ agents: [FLASH], levels: ["low", "medium"] }))).toBe(false);
+    expect(hasChoices(options({ agents: [FLASH], levels: ["medium", "high"] }))).toBe(true);
     expect(hasChoices(options({ levels: ["low"] }))).toBe(true);
   });
 
@@ -45,14 +47,25 @@ describe("answer settings", () => {
     expect(choiceBody(allowed, pick)).toBeUndefined();
     expect(choiceBody(null, null)).toBeUndefined();
     // Changed on purpose (spec 17 Oct 2026): org users never see a model's name.
-    expect(pickSummary(allowed, pick)).toBe("Standard · Medium");
-    expect(pickSummary(options({ agents: [FLASH] }), pick)).toBe("Thinking · Medium");
+    // Changed on purpose (SoW 19 Oct 2026): Medium is Swift, and one model shows the engine alone.
+    expect(pickSummary(allowed, pick)).toBe("Standard · Swift");
+    expect(pickSummary(options({ agents: [FLASH] }), pick)).toBe("Swift");
+  });
+
+  // SoW 19 Oct 2026: Ask does not offer Low; an organisation defaulting to Low starts on Swift,
+  // and Swift is then sent, since it is not the organisation's own level.
+  it("start on Swift over a Low default, and send it", () => {
+    const allowed = options({ default_level: "low" });
+    const pick = defaultPick(allowed);
+    expect(pick.level).toBe("medium");
+    expect(choiceBody(allowed, pick)).toEqual({ agents: [FLASH.id], thinking: "medium" });
+    expect(defaultPick(options({ default_level: "low", levels: ["low"] })).level).toBe("low");
   });
 
   it("send the model by id and the level once changed", () => {
     const allowed = options();
     const pick = chooseAgent(defaultPick(allowed), SONNET.id);
-    expect(choiceBody(allowed, pick)).toEqual({ agents: [SONNET.id], thinking: "low" });
+    expect(choiceBody(allowed, pick)).toEqual({ agents: [SONNET.id], thinking: "medium" });
     expect(choiceBody(allowed, { ...defaultPick(allowed), level: "high" })).toEqual({
       agents: [FLASH.id],
       thinking: "high",
@@ -70,7 +83,7 @@ describe("answer settings", () => {
       agents: [FLASH.id],
       thinking: "low",
     });
-    expect(pickSummary(allowed, pick)).toBe("Careful 2 · High"); // spec 17 Oct 2026: tiers, never names
+    expect(pickSummary(allowed, pick)).toBe("Careful 2 · Precision"); // spec 17 Oct 2026: tiers, never names
   });
 
   // Changed on purpose (chat composer, 16 Oct 2026): a quiet button beside Send opens a popover
@@ -87,30 +100,31 @@ describe("answer settings", () => {
     expect(html).toContain(`<div id="${target}" popover="auto" role="dialog" aria-label="Answer settings"`);
     expect(html).toContain('<span class="visually-hidden">Answer settings: </span>');
     // Changed on purpose (spec 17 Oct 2026): the models are tiers, never their names.
-    expect(html).toContain(">Standard · Low<"); // the button names the pick
+    expect(html).toContain(">Standard · Swift<"); // the button names the pick
     expect(html.match(/<input type="radio" name="[^"]+-model"/g)).toHaveLength(2);
     expect(html).toContain("/>Standard</label>");
     expect(html).toContain("/>Careful</label>");
     expect(html).not.toMatch(/Gemini|Claude|Sonnet|Flash/);
-    expect(html).toContain(">High<");
+    expect(html).toContain(">Precision<");
     expect(html).not.toContain('type="checkbox"');
     expect(html).not.toMatch(MONEY);
     const shown = html.replace(/<[^>]*>/g, " "); // the text a person sees, not the ids it sends
     expect(shown).not.toMatch(/\bmodel\b|google\/|anthropic\//i); // names only, never ids or the word
   });
 
-  it("show Thinking as High, Medium, Low segments, each with its hint, the chosen one's shown", () => {
+  // Changed on purpose (SoW 19 Oct 2026): "AI engine", Swift then Precision; no Low.
+  it("show the AI engine as Swift and Precision segments, each with its hint, the chosen one's shown", () => {
     const allowed = options({ levels: ["low", "medium", "high"] });
     const html = renderToStaticMarkup(
       createElement(AnswerSettings, { options: allowed, pick: { agents: [FLASH.id], level: "medium" }, locked: false, onPick: () => {} }),
     );
     const segments = [...html.matchAll(/aria-describedby="([^"]+)" name="[^"]+-level"[^>]*\/>(\w+)<\/label>/g)];
-    expect(segments.map((match) => match[2])).toEqual(["High", "Medium", "Low"]); // strongest first
+    expect(segments.map((match) => match[2])).toEqual(["Swift", "Precision"]);
     for (const [, hint] of segments) expect(html).toContain(`<p id="${hint}"`);
     expect(html).toMatch(/<p id="[^"]+-high" class="[^"]+" hidden="">Thinks longest, best for tricky questions\.<\/p>/);
-    expect(html).toMatch(/<p id="[^"]+-medium" class="[^"]+">Balanced\.<\/p>/);
-    expect(html).toMatch(/<p id="[^"]+-low" class="[^"]+" hidden="">Fastest\.<\/p>/);
-    expect(html).toMatch(/<legend>Thinking<\/legend>/);
+    expect(html).toMatch(/<p id="[^"]+-medium" class="[^"]+">Quick and balanced, for most questions\.<\/p>/);
+    expect(html).not.toMatch(/-low"|>Low</);
+    expect(html).toMatch(/<legend>AI engine<\/legend>/);
   });
 
   // Changed on purpose (Tushar, 16 Oct 2026, one model in Ask): even with Ensemble allowed,
@@ -123,7 +137,7 @@ describe("answer settings", () => {
     expect(html).not.toContain('type="checkbox"');
     expect(html.match(/<input type="radio" name="[^"]+-model"/g)).toHaveLength(4);
     expect(html.match(/name="[^"]+-model" checked=""/g)).toHaveLength(1);
-    expect(html).toContain(">High<");
+    expect(html).toContain(">Precision<");
     expect(html).not.toMatch(/answer together|agree|answers alone|Up to \d/i);
     // Changed on purpose (chat composer, 16 Oct 2026): the panel is named, so its legend is for screen readers only.
     expect(html).toMatch(/<fieldset[^>]*><legend class="visually-hidden">Answer settings<\/legend>/);

@@ -269,7 +269,12 @@ export function askAboutHref(documentId: string): string {
 // what the organisation allows (GET /chat/options). No price or cost ever: names
 // and levels only. Kept in React state only; a reload starts from the defaults.
 
-export const LEVEL_NAMES: Record<ThinkingLevel, string> = { low: "Low", medium: "Medium", high: "High" };
+// Changed on purpose (SoW 19 Oct 2026): Ask calls Medium "Swift" and High "Precision", and does
+// not offer Low (the admin's AI settings still name all three).
+export const LEVEL_NAMES: Record<ThinkingLevel, string> = { low: "Low", medium: "Swift", high: "Precision" };
+
+/** The levels Ask offers: the organisation's, without Low. */
+export const askLevels = (options: ChatOptions): ThinkingLevel[] => options.levels.filter((level) => level !== "low");
 
 export interface AnswerPick {
   agents: string[]; // model ids, in the order picked; [] for the organisation's default
@@ -279,12 +284,14 @@ export interface AnswerPick {
 /** The organisation's defaults: its default model (none listed: the server's), its level. */
 export function defaultPick(options: ChatOptions): AnswerPick {
   const main = options.agents.find((agent) => agent.default);
-  return { agents: main ? [main.id] : [], level: options.default_level };
+  // Low is not offered in Ask: an organisation whose default is Low starts on Swift, when allowed.
+  const level = options.default_level === "low" && options.levels.includes("medium") ? "medium" : options.default_level;
+  return { agents: main ? [main.id] : [], level };
 }
 
 /** Answer settings are shown only when there is something to choose. */
 export function hasChoices(options: ChatOptions | null): options is ChatOptions {
-  return options !== null && (options.agents.length > 1 || options.levels.length > 1);
+  return options !== null && (options.agents.length > 1 || askLevels(options).length > 1);
 }
 
 /** One model answers in Ask (Tushar, 16 Oct 2026): picking one replaces the last; every
@@ -293,12 +300,14 @@ export function chooseAgent(pick: AnswerPick, id: string): AnswerPick {
   return { ...pick, agents: [id] };
 }
 
-/** The chip: "Standard · High". Changed on purpose (spec 17 Oct 2026): org users never see a
- * model's name, so the model is its tier (shown only when there is more than one), then the level. */
+/** The chip: "Standard · Precision". Changed on purpose (spec 17 Oct 2026): org users never see a
+ * model's name, so the model is its tier (shown only when there is more than one), then the
+ * engine (SoW 19 Oct 2026: the engine alone with one model, and no Low). */
 export function pickSummary(options: ChatOptions, pick: AnswerPick): string {
   const index = options.agents.findIndex((agent) => agent.id === pick.agents[0]);
-  const tier = options.agents.length > 1 && index >= 0 ? agentTier(options, index) : "Thinking";
-  return `${tier} · ${LEVEL_NAMES[pick.level]}`;
+  const tier = options.agents.length > 1 && index >= 0 ? agentTier(options, index) : null;
+  const engine = askLevels(options).includes(pick.level) ? LEVEL_NAMES[pick.level] : null;
+  return [tier, engine].filter(Boolean).join(" · ") || LEVEL_NAMES[pick.level];
 }
 
 /** A model's neutral name for org users: the default is "Standard", the others "Careful" (then "Careful 2"…). */
@@ -313,7 +322,8 @@ export function agentTier(options: ChatOptions, index: number): string {
 export function choiceBody(options: ChatOptions | null, pick: AnswerPick | null): AnswerChoice | undefined {
   if (options === null || pick === null) return undefined;
   const usual = defaultPick(options);
-  if (pick.level === usual.level && pick.agents.join(",") === usual.agents.join(",")) return undefined;
+  // The organisation's own level, not Ask's starting one: Swift over a Low default is sent.
+  if (pick.level === options.default_level && pick.agents.join(",") === usual.agents.join(",")) return undefined;
   return { ...(pick.agents.length > 0 ? { agents: pick.agents.slice(0, 1) } : {}), thinking: pick.level };
 }
 
