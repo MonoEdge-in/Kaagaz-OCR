@@ -10,10 +10,10 @@ pytestmark = pytest.mark.db
 fresh = base.fresh
 
 
-def test_0043_up_down_up(fresh: tuple[str, Database]) -> None:
+def test_0046_up_down_up(fresh: tuple[str, Database]) -> None:
     url, db = fresh
-    migrate(url, "0042")
-    at_0042 = base._schema(db)
+    migrate(url, "0045")
+    at_0045 = base._schema(db)
     migrate(url, "head")
     at_head = base._schema(db)
     assert {
@@ -26,7 +26,7 @@ def test_0043_up_down_up(fresh: tuple[str, Database]) -> None:
     assert {"kaagaz_model_rate_slot", "kaagaz_op_model_rates", "kaagaz_op_set_model_rate"} <= base._names(
         at_head, "functions"
     )
-    base._downgrade(url, "0042")
-    assert base._schema(db) == at_0042
+    base._downgrade(url, "0045")
+    assert base._schema(db) == at_0045
     migrate(url, "head")
     assert base._schema(db) == at_head

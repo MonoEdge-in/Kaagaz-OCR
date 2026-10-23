@@ -41,7 +41,7 @@ The sign-in idle timeout (0040): the same for one organisation's hours (two colu
 File management (0041): version suggestions the app reads, adds and decides, never deletes
 (they go with their document).
 
-Shared OpenRouter scheduling and limits (0043): request tickets, fair-turn state and RPM
+Shared OpenRouter scheduling and limits (0046): request tickets, fair-turn state and RPM
 overrides are customer scoped, RLS protected, and only reachable through the narrow app or
 operator functions.
 """
@@ -118,7 +118,7 @@ FROM_0039 = {"org_feature_switches": (False, False, False, False)}
 FROM_0040 = {"org_session_settings": (False, False, False, False)}
 # Changed on purpose (PRD 1, 0041): version suggestions are read, added and decided, never deleted.
 FROM_0041 = {"version_suggestions": (True, True, True, False)}
-# Shared OpenRouter RPM (0043): these rows are only accessed by the scheduler and operator
+# Shared OpenRouter RPM (0046): these rows are only accessed by the scheduler and operator
 # functions, never with direct table rights from the app.
 FROM_0043 = {
     "model_rate_waiters": (False, False, False, False),
@@ -186,7 +186,7 @@ OWNER_RIGHTS = {
     # 0019, the second sweep a day after a purge: ids only, and its org.swept row.
     "kaagaz_purged_ids_to_sweep": ("SETOF uuid", EMPTY_PATH),
     "kaagaz_customer_swept": ("boolean", EMPTY_PATH),
-    # 0043, the shared scheduler's single admission function.
+    # 0046, the shared scheduler's single admission function.
     "kaagaz_model_rate_slot": ("double precision", EMPTY_PATH),
 }
 # The platform operator's (0015): only kaagaz_operator may run these, never the app.
@@ -364,7 +364,7 @@ OPERATOR_RIGHTS = {
     # Changed on purpose (0040): the sign-in idle timeout, and its write (step-up).
     "kaagaz_op_session_timeout": ("TABLE(org_hours integer, platform_hours integer)", EMPTY_PATH),
     "kaagaz_op_set_session_timeout": ("text", EMPTY_PATH),
-    # 0043: operator-only read/write for customer and user RPM overrides.
+    # 0046: operator-only read/write for customer and user RPM overrides.
     "kaagaz_op_model_rates": (
         "TABLE(org_rpm integer, user_id uuid, email text, user_rpm integer)",
         EMPTY_PATH,
