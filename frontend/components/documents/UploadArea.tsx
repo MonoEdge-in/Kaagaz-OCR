@@ -120,6 +120,9 @@ const canRetry = (caught: unknown) =>
 // The reading picked in "Read with" during this visit; null: the organisation's default.
 let sessionReader: string | null = null;
 
+/** Failed rounds in a row before the tray stops asking about a batch (about 50 s). */
+const MAX_FAILED_ROUNDS = 10;
+
 /** The upload queue: add files, watch them go, clear the finished ones. */
 export function useUploads(onUploaded: () => void) {
   const { me } = useSession();
@@ -182,6 +185,9 @@ export function useUploads(onUploaded: () => void) {
     return [...ids];
   }, [queue.entries, stored, views, restored]);
 
+  // A batch that keeps failing (not a lost connection: the poller waits those out while
+  // offline) is asked at most this many rounds in a row, not every few seconds for ever.
+  const failedRounds = useRef(0);
   const poll = usePoll<Followed>({
     load: () =>
       Promise.allSettled(following.map((id) => getBatch(id))).then((results) => {
@@ -193,7 +199,8 @@ export function useUploads(onUploaded: () => void) {
         });
         return round;
       }),
-    onResult: ({ views: answers, gone }) => {
+    onResult: ({ views: answers, gone, failed }) => {
+      failedRounds.current = failed ? failedRounds.current + 1 : 0;
       for (const view of answers) {
         dispatch({ type: "batch", batchId: view.id, documents: view.documents, add: restored.has(view.id) });
       }
@@ -202,7 +209,8 @@ export function useUploads(onUploaded: () => void) {
     },
     onFailure: () => undefined, // it keeps trying; the rows show what they have
     again: (round) =>
-      round.failed || round.views.some((view) => view.documents.some((document) => beingRead(document.status))),
+      (round.failed && failedRounds.current < MAX_FAILED_ROUNDS) ||
+      round.views.some((view) => view.documents.some((document) => beingRead(document.status))),
     signature: (round) => JSON.stringify(round.views.map((view) => [view.id, progressSignature(view.documents)])),
   });
   // Driven by the list, not by send(): the poll reads the task of the last render, so it
