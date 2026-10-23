@@ -342,6 +342,26 @@
   min-width: 0;
 }
 
+/* A PDF's viewer (PdfDocumentViewer): every page in one scroll, so it needs a set height of
+   its own (a min-height alone leaves the viewer's own heights nothing to resolve against); in
+   the sticky column it fills the column. */
+.pdfPane {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  height: min(80dvh, 56rem);
+  overflow: hidden;
+  border-radius: var(--k-r-4);
+  background: var(--k-surface);
+}
+
+@media (min-width: 1024px) and (min-height: 36rem) {
+  .pdfPane {
+    height: auto;
+    min-height: 0;
+  }
+}
+
 /* The page on the sunken ground, as the handoff's viewer pane. */
 .viewer {
   padding: var(--space-3);

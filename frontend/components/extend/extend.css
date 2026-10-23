@@ -1,0 +1,90 @@
+/* Tailwind for the extend-hq/ui PDF viewer only (components/extend), loaded with the viewer.
+   - No preflight (Tailwind's global reset), so no other screen changes.
+   - Utilities only for the classes found in this folder and the viewer wrapper
+     (source(none) plus @source), and unlayered, so they win over the app's element rules
+     (button, input) inside the viewer.
+   - shadcn's colour names map onto the Kaagaz tokens through private --x-* names: its own
+     names (--accent, --border, --background) would clash with the app's.
+   - dark: follows the app's theme (data-theme on <html>, else the system). */
+
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" source(none);
+@import "tw-animate-css";
+@source "./";
+@source "../viewer/PdfDocumentViewer.tsx";
+
+@custom-variant dark {
+  &:where([data-theme="dark"], [data-theme="dark"] *) {
+    @slot;
+  }
+  @media (prefers-color-scheme: dark) {
+    &:where(:root:not([data-theme="light"]) *) {
+      @slot;
+    }
+  }
+}
+
+@theme inline {
+  --color-background: var(--x-background);
+  --color-foreground: var(--x-foreground);
+  --color-muted: var(--x-muted);
+  --color-muted-foreground: var(--x-muted-foreground);
+  --color-accent: var(--x-accent);
+  --color-accent-foreground: var(--x-accent-foreground);
+  --color-popover: var(--x-popover);
+  --color-popover-foreground: var(--x-popover-foreground);
+  --color-primary: var(--x-primary);
+  --color-primary-foreground: var(--x-primary-foreground);
+  --color-secondary: var(--x-secondary);
+  --color-secondary-foreground: var(--x-secondary-foreground);
+  --color-destructive: var(--x-destructive);
+  --color-border: var(--x-border);
+  --color-input: var(--x-input);
+  --color-ring: var(--x-ring);
+  --color-sidebar: var(--x-background);
+  --color-viewer-bar: var(--viewer-bar);
+  --color-viewer-bar-ink: var(--viewer-bar-ink);
+  --color-viewer-bar-field: var(--viewer-bar-field);
+  --radius-sm: var(--k-r-2);
+  --radius-md: var(--k-r-3);
+  --radius-lg: var(--k-r-4);
+  --font-sans: var(--k-font-body);
+  --font-mono: var(--k-font-mono);
+}
+
+:root {
+  --x-background: var(--k-surface);
+  --x-foreground: var(--k-ink);
+  --x-muted: var(--k-sunken);
+  --x-muted-foreground: var(--k-ink-muted);
+  --x-accent: var(--k-sunken);
+  --x-accent-foreground: var(--k-ink);
+  --x-popover: var(--k-raised);
+  --x-popover-foreground: var(--k-ink);
+  --x-primary: var(--k-accent);
+  --x-primary-foreground: var(--k-accent-ink);
+  --x-secondary: var(--k-sunken);
+  --x-secondary-foreground: var(--k-ink);
+  --x-destructive: var(--k-danger);
+  --x-border: var(--k-rule);
+  --x-input: var(--k-rule-strong);
+  --x-ring: var(--k-focus);
+}
+
+/* What preflight would have set for the viewer's parts: hairlines in the border colour. The
+   menus and popovers render outside the viewer (in <body>), so [data-slot] covers them too. */
+:where(.extend-ui, .extend-ui *, [data-slot], [data-slot] *) {
+  border-color: var(--x-border);
+}
+
+/* And preflight's reset of buttons and fields, else the browser's own grey, bevelled buttons
+   show under the utilities. */
+:where(.extend-ui, [data-slot]) :where(button, input),
+:where(button, input):where([data-slot]) {
+  margin: 0;
+  padding: 0;
+  border: 0 solid;
+  background-color: transparent;
+  color: inherit;
+  font: inherit;
+}

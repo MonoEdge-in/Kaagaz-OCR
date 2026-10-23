@@ -168,6 +168,11 @@
   font-size: var(--fs-sm);
 }
 
+/* The same line under the PDF viewer (PdfDocumentViewer), off its edges. */
+.pdfNote {
+  padding: var(--space-2) var(--space-3);
+}
+
 .failed {
   display: flex;
   flex-direction: column;

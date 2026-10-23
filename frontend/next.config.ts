@@ -6,13 +6,16 @@ const backend = process.env.BACKEND_URL ?? "http://localhost:8000";
 
 // Everything comes from this app: Next.js's inline scripts and styles, the
 // PDF.js worker (a file under /_next, or a blob: one), page images drawn from
-// data: and blob: URLs, and PDF.js's fonts from data: URLs.
+// data: and blob: URLs, and PDF.js's fonts from data: URLs. The PDF viewer's
+// engine is WebAssembly (served from /_next, compiled under 'wasm-unsafe-eval',
+// which allows no JavaScript eval) and Print frames the file from a blob: URL.
 const CSP = [
   "default-src 'self'",
-  "script-src 'self' 'unsafe-inline'",
+  "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'",
   "style-src 'self' 'unsafe-inline'",
   "worker-src 'self' blob:",
   "img-src 'self' data: blob:",
+  "frame-src 'self' blob:",
   "font-src 'self' data:",
   "connect-src 'self'",
   "object-src 'none'",
