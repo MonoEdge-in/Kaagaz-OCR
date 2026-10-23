@@ -74,6 +74,7 @@ import {
   withSummary,
 } from "@/components/viewer/versions";
 import { LabelBadge } from "@/components/viewer/LabelBadge";
+import { PdfDocumentViewer } from "@/components/viewer/PdfDocumentViewer";
 import { fieldText, reasonText, voteText } from "@/components/viewer/labels";
 import { lowResolutionText, untilRead } from "@/components/viewer/panels";
 import type { Spot } from "@/components/viewer/panels";
@@ -617,7 +618,30 @@ export function DocumentView({
               <span>{lowResolution}</span>
             </p>
           )}
-          {page ? (
+          {/* SoW 19 Oct 2026: a PDF in extend-hq/ui's viewer, every page in one scroll; photos
+              and sheets keep PageViewer. */}
+          {page && detail.detected_type === "pdf" ? (
+            <div className={styles.pdfPane}>
+              <PdfDocumentViewer
+                key={detail.id}
+                document={detail}
+                pageNo={page.page_no}
+                onPageChange={changePage}
+                highlights={highlightsOf(selection)}
+                highlightNote={highlightNote}
+                download={download}
+                marks={words.markers}
+                activeMark={words.activeId}
+                readingMarks={readingMarks}
+                onMark={showMark}
+                hotMark={hotMark}
+                onHotMark={setHotMark}
+                flags={openFlags}
+                activeFlag={reviewing ? currentFlag : null}
+                onFlag={startReview}
+              />
+            </div>
+          ) : page ? (
             <PageViewer
               document={detail}
               page={page}

@@ -73,6 +73,11 @@
 
   /* The page itself stays white paper in both themes */
   --paper: #ffffff;
+  /* The PDF viewer's bar (components/extend): dark in both themes, as the browser's own PDF
+     viewer; its words 11:1 on it, its page and zoom fields a shade darker. */
+  --viewer-bar: #323639;
+  --viewer-bar-ink: #f1f3f4;
+  --viewer-bar-field: #202124;
   --paper-frame: var(--bg-subdued);
   /* The sign-in figure's text bars and rule on the white page, kept in dark */
   --paper-bar: #e8eaed;
