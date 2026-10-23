@@ -60,6 +60,10 @@ ORG_ROUTES = {
     # Changed on purpose (0040): one organisation's sign-in idle timeout.
     ("GET", f"{ORGS}/{ANY_ID}/session-timeout"),
     ("PUT", f"{ORGS}/{ANY_ID}/session-timeout"),
+    # Changed on purpose (#212, 21 Oct 2026): one organisation's model call rates.
+    ("GET", f"{ORGS}/{ANY_ID}/model-rates"),
+    ("PUT", f"{ORGS}/{ANY_ID}/model-rates"),
+    ("PUT", f"{ORGS}/{ANY_ID}/users/{ANY_ID}/model-rate"),
 }
 ORG_ROW = {
     "customer_id": CID,

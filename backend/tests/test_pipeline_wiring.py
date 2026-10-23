@@ -172,7 +172,9 @@ class GeminiEngineWiringTest(unittest.TestCase):
 
         class GeminiEngine:
             @classmethod
-            def from_settings(cls, settings: Settings, *, pool: RapidOcrPool) -> ThreadNoting:
+            def from_settings(
+                cls, settings: Settings, *, pool: RapidOcrPool, db: Database | None = None
+            ) -> ThreadNoting:
                 built.append((settings, pool))
                 return engine
 
