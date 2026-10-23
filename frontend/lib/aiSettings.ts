@@ -81,12 +81,17 @@ export const effectiveOf = (settings: AiSettings | null, task: AiTask): TaskLeve
   return found.available ? found.effective : CHOICES[task][0]; // switched off: none / off
 };
 
+// The parts of a screen that mount together (the shell's upload queue, the document page, its
+// word review) share one request; one that mounts after it has answered asks again.
+let asking: Promise<AiSettings> | null = null;
+const askSettings = () => (asking ??= getAiSettings().finally(() => (asking = null)));
+
 /** Asked once per screen that uses a task; null until it answers, or when it fails. */
 export function useAiSettings(): AiSettings | null {
   const [settings, setSettings] = useState<AiSettings | null>(null);
   useEffect(() => {
     let cancelled = false;
-    getAiSettings().then(
+    askSettings().then(
       (result) => !cancelled && setSettings(result),
       () => undefined, // unknown: nothing is capped here, the server still is
     );
