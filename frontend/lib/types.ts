@@ -140,6 +140,14 @@ export interface VersionSuggestion {
   reasons?: string | string[] | null;
 }
 
+/** GET /api/chat/ready-questions: Home's questions for this person, their own habits first;
+ * ``ready`` when the answer waits made, so pressing it answers at once. */
+export interface ReadyQuestion {
+  text: string;
+  yours: boolean;
+  ready: boolean;
+}
+
 /** GET /api/dashboard (D1, D2). */
 export interface Dashboard {
   tiles: {

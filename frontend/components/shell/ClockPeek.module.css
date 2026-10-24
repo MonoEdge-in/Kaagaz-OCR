@@ -1,12 +1,13 @@
-/* The clock beside the brand: hidden until it peeks, then a round face whose hands sweep to
-   the time, and the time beside it. It keeps its place, so the brand never moves. */
+/* The clock at the brand's right (24 Oct 2026): hidden until it peeks, then the face eases in,
+   its hands sweep a quarter turn to the time, and the time slides in after them; leaving, all
+   of it eases back. It keeps its place, so the brand never moves. */
 
 .clock {
+  flex: none;
   display: inline-flex;
   align-items: center;
-  gap: var(--space-2);
-  margin-inline-start: var(--space-3);
-  vertical-align: middle;
+  gap: var(--space-1);
+  margin-inline-start: var(--space-2);
   opacity: 0;
   transform: translateX(-6px) scale(0.9);
   transform-origin: left center;
@@ -39,7 +40,7 @@
   background: var(--accent);
 }
 
-/* Each hand stands on the centre and turns from 12. */
+/* Each hand stands on the centre and turns from 12; hidden, a quarter turn short of the time. */
 .hand {
   position: absolute;
   left: calc(50% - 1px);
@@ -47,8 +48,12 @@
   width: 2px;
   border-radius: 1px;
   background: var(--accent);
-  transform: rotate(var(--turn, 0deg));
+  transform: rotate(calc(var(--turn, 0deg) - 90deg));
   transform-origin: 50% 100%;
+}
+
+.clock[data-shown] .hand {
+  transform: rotate(var(--turn, 0deg));
 }
 
 .hour {
@@ -61,10 +66,17 @@
 
 .time {
   color: var(--text-secondary);
-  font-size: var(--fs-sm);
+  font-size: 12px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+  opacity: 0;
+  transform: translateX(-4px);
+}
+
+.clock[data-shown] .time {
+  opacity: 1;
+  transform: none;
 }
 
 @media (prefers-reduced-motion: no-preference) {
@@ -74,5 +86,18 @@
 
   .hand {
     transition: transform var(--motion-calm) var(--ease-out);
+  }
+
+  .time {
+    transition: opacity var(--motion-calm) var(--ease-out), transform var(--motion-calm) var(--ease-out);
+  }
+
+  /* In: the face, then the hands, then the time; out: the time first, then the rest. */
+  .clock[data-shown] .hand {
+    transition-delay: 60ms;
+  }
+
+  .clock[data-shown] .time {
+    transition-delay: 140ms;
   }
 }

@@ -35,7 +35,8 @@ describe("the clock beside the brand", () => {
     expect(html).not.toContain("data-shown");
   });
 
-  it("sits beside the sidebar's brand, never in the narrow header", () => {
+  it("sits at the right of the sidebar's brand on one row, never in the narrow header", () => {
+    expect(css("components/shell/Shell.module.css")).toMatch(/\.brand \{[^}]*display: flex;[^}]*flex-wrap: nowrap;/);
     const shell = read("components/shell/AppShell.tsx");
     expect(shell).toMatch(/<div className=\{styles\.brand\}>\s*<Wordmark href="\/dashboard" \/>\s*<ClockPeek \/>/);
     expect(shell.match(/<ClockPeek \/>/g)).toHaveLength(1);
@@ -45,7 +46,10 @@ describe("the clock beside the brand", () => {
     const text = css("components/shell/ClockPeek.module.css");
     expect(text).toMatch(/\.clock \{[^}]*opacity: 0;[^}]*transform: translateX\(-6px\) scale\(0\.9\);[^}]*pointer-events: none;/);
     expect(text).toMatch(/\.clock\[data-shown\] \{\s*opacity: 1;\s*transform: none;/);
-    expect(text).toMatch(/\.hand \{[^}]*transform: rotate\(var\(--turn, 0deg\)\);/);
+    // Changed on purpose (24 Oct 2026, smoother): hidden a quarter turn short, sweeping in after the face.
+    expect(text).toMatch(/\.hand \{[^}]*transform: rotate\(calc\(var\(--turn, 0deg\) - 90deg\)\);/);
+    expect(text).toMatch(/\.clock\[data-shown\] \.hand \{\s*transform: rotate\(var\(--turn, 0deg\)\);/);
+    expect(text).toMatch(/\.clock\[data-shown\] \.time \{\s*transition-delay: 140ms;/);
     const calm = text.slice(text.indexOf("@media (prefers-reduced-motion: no-preference)"));
     expect(calm).toMatch(/\.clock \{\s*transition: opacity var\(--motion-calm\) var\(--ease-out\), transform var\(--motion-calm\) var\(--ease-out\);/);
   });
