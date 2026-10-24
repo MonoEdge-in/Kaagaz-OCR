@@ -1145,6 +1145,16 @@ def test_not_found_while_the_model_is_down_is_unavailable() -> None:
         assert (answer.status, answer.unavailable) == ("not_found", False)
 
 
+def test_a_reply_the_model_gave_but_could_not_use_is_no_outage() -> None:
+    """KZ-006 (24 Oct 2026, "jalna lands"): a reply too long for its budget, malformed or
+    refused came from a model that was up, so the answer is never "busy"."""
+    question = "What is the GST number of INV-1042?"
+    for code in ("output_truncated", "invalid_output", "blocked", "answer_shape"):
+        model = FakeModel(chat_error=ModelOutputError(code))
+        answer = service(pieces=[INVOICE], model=model)[0].answer(A, question)
+        assert (answer.status, answer.unavailable) == ("not_found", False), code
+
+
 def test_a_missing_question_vector_is_no_outage_when_words_found_pieces() -> None:
     """Never stuck (17 Oct 2026): the word and typo search found pieces, so a model that could
     not embed the question is not "busy"; the draft's own not found stands."""
