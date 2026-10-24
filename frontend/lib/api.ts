@@ -15,6 +15,7 @@ import type {
   AiDefaults,
   AiSettings,
   AiTask,
+  AnswerQualityReply,
   AiValues,
   AnswerChoice,
   BatchView,
@@ -671,6 +672,12 @@ export const getStats = () => request<Stats>("GET", "/admin/stats");
 /** Documents that failed or can't be read (PRD 3 Z1); Retry is reprocessDocument. */
 export const listFailed = (params: { limit?: number; offset?: number } = {}) =>
   request<{ items: FailedDocument[]; total: number }>("GET", `/admin/failed${query(params)}`);
+/** Answer quality (PRD 6 F2): Not useful answers given after the notice, and weekly counts. */
+export const getAnswerQuality = (params: { status: "open" | "handled"; weeks: number; limit: number; offset: number }) =>
+  request<AnswerQualityReply>("GET", `/admin/answer-quality${query(params)}`);
+/** Mark as handled, or open it again (Undo). */
+export const setAnswerHandled = (id: string, handled: boolean) =>
+  request<{ id: string; handled_at: string | null }>("PUT", `/admin/answer-quality/${id}/handled`, { handled });
 /** AI use from `from` to `to` (YYYY-MM-DD, both included; the server's default when left out), for one user when given. */
 export type UsageParams = { from?: string; to?: string; user_id?: string };
 export const getAdminUsage = (params: UsageParams = {}) =>

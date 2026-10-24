@@ -86,10 +86,13 @@ export const AnswerView = memo(function AnswerView({
   message,
   question,
   onAskAll,
+  readOnly = false,
 }: {
   message: Message;
   question: string | null;
   onAskAll?: () => void;
+  /** Someone else's answer (the admin's Answer quality page, PRD 6 F2): no rating, no Most relevant. */
+  readOnly?: boolean;
 }) {
   // The source a chip is pointed at or focused: its card lights up (UI quality council, 15 Oct 2026).
   const [hot, setHot] = useState<number | null>(null);
@@ -156,7 +159,7 @@ export const AnswerView = memo(function AnswerView({
       ) : null}
     </>
   );
-  const feedback = (
+  const feedback = readOnly ? null : (
     <div className={styles.answerFooter}>
       <FeedbackControls messageId={message.id} initial={message.feedback} />
     </div>
@@ -205,7 +208,7 @@ export const AnswerView = memo(function AnswerView({
             {mentioned}
           </SourcesBar>
         ) : null}
-        <div>
+        <div hidden={readOnly}>
           <h3 className={styles.subheading}>Next steps</h3>
           <ul className={styles.nextSteps}>
             {onAskAll ? (
@@ -303,7 +306,7 @@ export const AnswerView = memo(function AnswerView({
                       hot={hot === citation.n}
                       terms={terms}
                       pinned={top}
-                      onPin={() => putOnTop(target, index + 1)}
+                      onPin={readOnly ? undefined : () => putOnTop(target, index + 1)}
                     />
                   </li>
                 );
@@ -323,7 +326,7 @@ export const AnswerView = memo(function AnswerView({
                         doc={doc}
                         terms={terms}
                         pinned={top}
-                        onPin={() => putOnTop(target, sources.length + index + 1)}
+                        onPin={readOnly ? undefined : () => putOnTop(target, sources.length + index + 1)}
                       />
                     </li>
                   );
