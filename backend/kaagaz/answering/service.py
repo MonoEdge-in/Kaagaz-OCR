@@ -835,8 +835,6 @@ class AnswerService:
         period = describe_range(plan.start, plan.end) if plan.start and plan.end else ""
         said = (_words(metric).removeprefix("total "), period, "invoice" if plan.invoices else "record")
         told = tell(figures, *said, ranking=ranking)
-        if ranking and told.total is not None:
-            return None  # the rule holds: the ranking follows, with its own word marks
         if not told.lines:
             return _not_found("fixed_query", shown, [], model_used=False, reason="notfound_fixed_no_sentence")
         citations = [
@@ -846,6 +844,8 @@ class AnswerService:
         hard = {c.ref_id for c in citations if c.hard_to_read}
         if hard:
             told = tell(figures, *said, hard, ranking=ranking)  # the same records, in the same order
+        if ranking and told.total is not None:
+            return None  # the rule holds, no listed figure hard to read: the ranking follows
         verified = told.total is not None and not hard and all(c.label == "verified" for c in citations)
         return Answer(
             status="answered",

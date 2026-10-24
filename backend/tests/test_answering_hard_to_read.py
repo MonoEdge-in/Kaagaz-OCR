@@ -9,6 +9,7 @@ tests/test_answering_hard_to_read_db.py.
 
 import uuid
 from collections.abc import Sequence
+from datetime import date
 from typing import Any
 
 import pytest
@@ -38,6 +39,7 @@ from tests.test_answering_golden import (
     assert_well_formed,
     invoice_record,
     register,
+    value,
 )
 
 INVOICE_12 = FlaggedPage(str(uuid.uuid4()), "Invoice_12.pdf", 3, "unreadable")
@@ -227,12 +229,22 @@ def test_f6_a_cited_value_with_an_unsure_word_makes_a_fixed_answer_need_review()
     assert plain.reading_note is None and not any(c.hard_to_read for c in plain.citations)
 
 
-def test_c2_a_ranking_the_numbers_rule_lets_through_asks_for_word_marks_once() -> None:
-    """PRD 6 C2: the rule's own check needs no word marks when the ranking follows."""
-    reading = FakeReading()
-    answer = ask("Kiska profit sabse jyada tha last month?", reading)
-    assert answer.sentences[0].text == "Sharma Traders had the highest profit, 1,20,000, in August 2026."
-    assert len(reading.asked_marks) == 1
+def test_c2_a_hard_to_read_figure_of_any_party_withholds_the_ranking() -> None:
+    """PRD 6 C2: Patil's 70,000 sits on an unsure word, Mehta's 80,000 is clean: still no ranking."""
+    box = {"kind": "box", "page": 1, "box": [0.5, 0.2, 0.7, 0.3]}  # INSIDE is in it
+    records = [
+        [value(doc, "party_name", party, region=box), value(doc, "profit", text, number=n, region=box),
+         value(doc, "date", "10/08/2026", day=date(2026, 8, 10), region=box)]
+        for doc, party, text, n in [("patil.jpg", "Patil", "70,000", 70000),
+                                    ("mehta.jpg", "Mehta", "80,000", 80000)]
+    ]  # fmt: skip
+    marks = [WordMark(records[0][0].ref.document_id, INSIDE)]
+    answer = ask("Kiska profit sabse jyada tha last month?", FakeReading(marks=marks), records=records)
+    assert answer.sentences[0].text == (
+        "1 of the 2 profit figures is not verified yet, so I haven't compared the parties' profit"
+        " in August 2026."
+    )
+    assert answer.label == "needs_review"
 
 
 # --- a saved answer, shown later -------------------------------------------------------------
