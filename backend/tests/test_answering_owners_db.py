@@ -182,11 +182,94 @@ def test_without_an_owning_word_or_a_known_name_the_other_routes_answer(keyed: D
     assert not ask(keyed, c, "Land owned by Krishna Sohoni")["documents"]  # not in this company's keys
 
 
+MAP = [("plot_number", "12"), ("length", "45.5 m"), ("road_width", "9 m"), ("dimension", "30 m")]
+MAP += [("boundary_east", "46"), ("boundary_west", "Nala"), ("scale", "1:500")]
+
+
+def test_a_maps_measurements_are_quoted_as_printed_and_a_missing_one_never_worked_out(
+    keyed: Database,
+) -> None:
+    c, _ = new_customer(keyed)
+    seven_twelve = add_land(keyed, c, "7/12 Kusgaon.pdf", [(V, None)], survey="45/2", printed=MAP)
+    question = "What is the length, width and area of survey 45/2?"
+
+    answer = ask(keyed, c, question)
+
+    assert (answer["status"], answer["route"], answer["label"]) == ("answered", "fixed_query", "verified")
+    assert [s["text"] for s in answer["sentences"]] == [  # decision 2's final check kept every figure
+        "The length of Survey 45/2, plot 12 is printed as 45.5 m.",
+        "The width of Survey 45/2, plot 12 is not printed on the map, so none is worked out.",
+        "The area of Survey 45/2, plot 12 is not printed on the map, so none is worked out.",
+    ]  # never 45.5 m times a width, nor a width from the scale
+    by_n = {c["n"]: c for c in answer["citations"]}
+    assert [by_n[n]["snippet"] for n in answer["sentences"][0]["citations"]] == [
+        "land_survey_number: 45/2",
+        "land_plot_number: 12",
+        "land_length: 45.5 m",
+    ]
+    assert [(d["document_id"], d["why"]) for d in answer["documents"]] == [
+        (seven_twelve, "owners Nikhil Varde, shares not printed")
+    ]
+    numbers_allowed(answer, question)
+
+    road = ask(keyed, c, "Road width of plot 12?")
+    assert [s["text"] for s in road["sentences"]] == [
+        "The road width of Survey 45/2, plot 12 is printed as 9 m."
+    ]
+    numbers_allowed(road, "Road width of plot 12?")
+
+    drawn = ask(keyed, c, "Show the map of survey 45/2")
+    assert [s["text"] for s in drawn["sentences"]] == [
+        "The map values printed for Survey 45/2, plot 12: length 45.5 m; road width 9 m;"
+        " other measurements 30 m; scale 1:500; east neighbour 46; west neighbour Nala."
+    ]
+    numbers_allowed(drawn, "Show the map of survey 45/2")
+
+
+def test_the_neighbours_by_side_and_the_records_printing_it_as_a_neighbour(keyed: Database) -> None:
+    c, _ = new_customer(keyed)
+    add_land(keyed, c, "7/12 45.pdf", survey="45/2", printed=MAP)
+    west = [("boundary_west", "४५/२")]
+    beside = add_land(keyed, c, "7/12 46.pdf", survey="46", printed=west, label="needs_review")
+    elsewhere = add_land(keyed, c, "7/12 47.pdf", survey="47", printed=[("boundary_west", "46")])
+    question = "Which survey numbers border 45/2?"
+
+    answer = ask(keyed, c, question)
+
+    assert [s["text"] for s in answer["sentences"]] == [
+        "The neighbours printed for Survey 45/2, plot 12: 46 on the east and Nala on the west.",
+        "Survey 46 prints ४५/२ as its west neighbour.",
+    ]
+    assert [d["why"] for d in answer["documents"][1:]] == ["values printed on its map"]
+    assert answer["documents"][1]["document_id"] == beside
+    assert answer["label"] == "needs_review"  # the other record's values are not verified
+    assert elsewhere not in json.dumps(answer)
+    numbers_allowed(answer, question)
+
+    lone = ask(keyed, c, "Which survey numbers border 47?")
+    assert [s["text"] for s in lone["sentences"]] == [
+        "The neighbours printed for Survey 47: 46 on the west.",
+    ]
+
+
+def test_the_land_facts_switch_off_leaves_map_questions_to_the_other_routes(keyed: Database) -> None:
+    c, _ = new_customer(keyed)
+    add_land(keyed, c, "7/12.pdf", survey="45/2", printed=MAP)
+    assert ask(keyed, c, "Show the map of survey 45/2")["route"] == "fixed_query"
+    with switched_off(keyed, "land_facts"):
+        answer = ask(keyed, c, "Show the map of survey 45/2")
+    assert answer["route"] != "fixed_query" and not answer["documents"]
+
+
 # Each statement: the condition its B-tree index must serve, and its own parameters.
 _PLANS: dict[str, tuple[str, dict[str, Any]]] = {
     "_RESOLVE": ("latin = ANY", {"candidates": ["nikhil varde", "pune"]}),
     "_OWNED": ("latin = ANY", {"people": ["nikhil varde"], "fields": list(owners.OWNING)}),
     "_KEYED": ("latin = ANY", {"kind": "place", "keys": ["pune"], "fields": ["land_district"]}),
+    "_KEYED neighbours": (
+        "latin = ANY",
+        {"kind": "property", "keys": ["45/2"], "fields": ["land_boundary_east"]},
+    ),
     "_SHARES_AS_PRINTED": ("document_id = ANY", {"fields": ["land_share"]}),
 }
 # A company with 2,000 land records, each with one owner in one of 200 villages, so the planner
@@ -233,7 +316,8 @@ def test_each_statement_uses_its_b_tree_index_under_row_level_security(
         )
         conn.execute(text("SET LOCAL enable_seqscan = off"))
         bound = {"customer_id": bulk, "documents": list(documents.scalars()), **params, **EVERYTHING.params()}
-        plan = "\n".join(conn.execute(text("EXPLAIN " + getattr(owners, name).text), bound).scalars())
+        statement = getattr(owners, name.split()[0]).text
+        plan = "\n".join(conn.execute(text("EXPLAIN " + statement), bound).scalars())
     index = [
         line for line in plan.splitlines() if line.strip().startswith("Index Cond:") and condition in line
     ]

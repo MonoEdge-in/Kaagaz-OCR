@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy import text
 
 from kaagaz.db.engine import Database
+from kaagaz.extraction.land import value_key
 from kaagaz.extraction.links import normalise_identifier
 from tests.db_support import insert_document
 
@@ -35,12 +36,14 @@ def add_land(
     places: Sequence[tuple[str, str]] = (),
     survey: str | None = None,
     unowned: str | None = None,
+    printed: Sequence[tuple[str, str]] = (),
     label: str = "verified",
     **document: Any,
 ) -> str:
     """One land document with one property, ``land:1``: its owners (name, share as printed),
     buyers and sellers as parties, its places ((level, name)), survey number and unowned
-    share, each value with its own box on page 1, and the keys #245 writes for them."""
+    share, its map values ((name, text): ("length", "45.5 m"), ("boundary_east", "46")), each
+    value with its own box on page 1, and the keys #245 writes for them."""
     values: list[dict[str, Any]] = []
     keys: list[dict[str, Any]] = []
 
@@ -64,6 +67,9 @@ def add_land(
         value("land:1", "land_survey_number", survey, "property")
     if unowned is not None:
         value("land:1", "land_unowned_share", unowned)
+    for name, said in printed:
+        keyed = value_key(f"land_{name}", said)
+        value("land:1", f"land_{name}", said, None if keyed is None else keyed[0])
     with db.customer(customer) as conn:
         document_id = insert_document(conn, customer, display_name=title, **document)
         conn.execute(_VALUE, [{**row, "c": customer, "d": document_id, "label": label} for row in values])
