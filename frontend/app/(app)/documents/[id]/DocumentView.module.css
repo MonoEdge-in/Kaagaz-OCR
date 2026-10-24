@@ -638,7 +638,7 @@
 .tabs {
   flex: 1 1 auto;
   min-width: 0;
-  gap: var(--space-3);
+  gap: var(--space-1);
   border-bottom: 0;
   font-size: 1rem;
 }
