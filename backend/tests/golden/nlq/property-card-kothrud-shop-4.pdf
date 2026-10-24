@@ -1,0 +1,63 @@
+%PDF-1.7
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [9 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Length 367 >>
+stream
+/CIDInit /ProcSet findresource begin 12 dict begin begincmap
+/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def
+/CMapName /Adobe-Identity-UCS def /CMapType 2 def
+1 begincodespacerange <0000> <FFFF> endcodespacerange
+2 beginbfrange <0020> <007E> <0020> <0900> <097F> <0900> endbfrange
+endcmap CMapName currentdict /CMap defineresource pop end end
+endstream
+endobj
+5 0 obj
+<< /Type /FontDescriptor /FontName /KaagazDevanagari /Flags 4 /FontBBox [0 -200 1000 900] /ItalicAngle 0 /Ascent 900 /Descent -200 /CapHeight 700 /StemV 80 >>
+endobj
+6 0 obj
+<< /Type /Font /Subtype /CIDFontType2 /BaseFont /KaagazDevanagari /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor 5 0 R /CIDToGIDMap /Identity /DW 600 >>
+endobj
+7 0 obj
+<< /Type /Font /Subtype /Type0 /BaseFont /KaagazDevanagari /Encoding /Identity-H /DescendantFonts [6 0 R] /ToUnicode 4 0 R >>
+endobj
+8 0 obj
+<< /Length 575 >>
+stream
+BT /F2 10 Tf 1 0 0 1 50 760 Tm <00500052004F00500045005200540059002000430041005200440020002F0020092E093E0932092E0924094D0924093E0020092A0924094D09300915> Tj ET
+BT /F1 10 Tf 1 0 0 1 50 738 Tm (City Survey \(CTS\) No. 1187, Kothrud, Pune city) Tj ET
+BT /F1 10 Tf 1 0 0 1 50 716 Tm (Unit: Shop 4, ground floor   Area: 22.5 sq m) Tj ET
+BT /F1 10 Tf 1 0 0 1 50 694 Tm (Holder: Ketaki Mhaskar) Tj ET
+BT /F2 10 Tf 1 0 0 1 50 672 Tm <0927093E09300915003A0020091509470924091509400020092E094D0939093809150930> Tj ET
+BT /F1 10 Tf 1 0 0 1 50 650 Tm (Entry certified on 07/07/2026) Tj ET
+
+endstream
+endobj
+9 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612.0 792.0] /Rotate 0 /Contents 8 0 R /Resources << /Font << /F1 3 0 R /F2 7 0 R >> >> >>
+endobj
+xref
+0 10
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000121 00000 n 
+0000000218 00000 n 
+0000000636 00000 n 
+0000000810 00000 n 
+0000001021 00000 n 
+0000001162 00000 n 
+0000001788 00000 n 
+trailer
+<< /Size 10 /Root 1 0 R >>
+startxref
+1938
+%%EOF
