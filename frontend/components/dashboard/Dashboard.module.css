@@ -361,6 +361,14 @@ a.total:hover {
   text-align: right;
 }
 
+/* Recent and Activity keep one height and scroll inside, so a long list never stretches the page. */
+.scroll {
+  max-height: 28rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  position: relative;
+}
+
 .empty {
   padding: 20px;
 }
