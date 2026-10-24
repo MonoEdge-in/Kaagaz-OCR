@@ -14,6 +14,8 @@ job runs:
   back (``Deferred``, FAIR_SHARE_DEFER_SECONDS 30) without counting an attempt, and
   the worker takes the next one. So one customer's batch of 50 never blocks
   another customer's work.
+* ``ReadingCap`` holds one of the platform's reading slots, ``kaagaz.reading:<n>``, for the
+  whole job, under the super admin's live documents-at-once cap (package S, 0053).
 * Each sweep between jobs takes ``kaagaz.sweep:<name>`` (``sweep_lock``), so with
   WORKER_REPLICAS copies only one runs it at a time (Q3).
 
@@ -128,3 +130,64 @@ class FairShare:
 
     def _keys(self, customer_id: str) -> list[str]:
         return [f"kaagaz.fair:{customer_id}:{slot}" for slot in range(self._max_active)]
+
+
+# Package S: how long a job waits while the platform reads its most documents at once.
+PLATFORM_BUSY_DEFER_SECONDS = 15
+PLATFORM_BUSY = "platform_busy"
+_GATE = "kaagaz.reading:gate"
+_LOCK = text("SELECT pg_advisory_lock(hashtextextended(:key, 0))")
+
+
+class ReadingCap:
+    """Documents read at the same time on the whole platform (package S, 0053): the super
+    admin's ``documents_at_once``, read before every job, never above ``most``
+    (WORKER_REPLICAS). ``slot(job)`` holds one of ``most`` session advisory locks,
+    ``kaagaz.reading:<n>``, for the block, or raises Deferred(15, "platform_busy").
+
+    A worker takes ``kaagaz.reading:gate`` (so two admissions never count at once), tries
+    every slot, and keeps one only when fewer than the cap are held by others; then lets the
+    gate go. Counting the held slots, not using the first ``cap`` of them, keeps a lowered cap
+    true while slots above it are still held. As with ``first_free_lock``, the locks live on
+    a connection of its own in AUTOCOMMIT: a worker that dies closes it, and PostgreSQL lets
+    its slot go, so a dead worker never holds one. O(most) statements per job."""
+
+    def __init__(self, engine: Engine, most: int, at_once: Callable[[str], int | None]) -> None:
+        """``at_once(customer_id)`` reads the live value (None: ``most``) inside the job's
+        customer's transaction."""
+        if most < 1:
+            raise ValueError("most must be at least 1")
+        self._engine = engine
+        self._keys = [f"kaagaz.reading:{slot}" for slot in range(most)]
+        self._at_once = at_once
+
+    @contextmanager
+    def slot(self, job: Job) -> Iterator[None]:
+        cap = min(len(self._keys), self._at_once(job.customer_id) or len(self._keys))
+        with unavailable():
+            conn = self._engine.connect().execution_options(isolation_level="AUTOCOMMIT")
+        try:
+            held = None
+            try:
+                with unavailable():
+                    conn.execute(_LOCK, {"key": _GATE})
+                    free = [key for key in self._keys if conn.execute(_TRY_LOCK, {"key": key}).scalar_one()]
+                    if len(self._keys) - len(free) < cap:
+                        held = free[0]
+                    for key in [*free, _GATE]:
+                        if key != held:
+                            conn.execute(_UNLOCK, {"key": key})
+            except BaseException:
+                conn.invalidate()  # a lock may still be held: dropping the connection lets all go
+                raise
+            if held is None:
+                raise Deferred(PLATFORM_BUSY_DEFER_SECONDS, PLATFORM_BUSY)
+            try:
+                yield
+            finally:
+                try:
+                    conn.execute(_UNLOCK, {"key": held})
+                except SQLAlchemyError:
+                    conn.invalidate()  # the connection broke: dropping it lets the lock go
+        finally:
+            conn.close()

@@ -71,7 +71,9 @@ until it is told to stop:
   has a key problem, and for 30 s when its customer already has
   MAX_ACTIVE_PER_CUSTOMER documents being read in any copy of the worker (the
   fair-share slots, kaagaz/jobs/fair_share.py), so one customer's batch never
-  blocks another's. The worker then takes the next job.
+  blocks another's. The worker then takes the next job. It is handed back for 15 s too
+  while the platform already reads the super admin's most documents at once (package S,
+  0053; at most WORKER_REPLICAS), the reading slots, kaagaz/jobs/fair_share.py ReadingCap.
 
 Logs are JSON lines holding ids, codes and counts only: never file names,
 document text or an exception's message (it could quote a document). An
@@ -98,6 +100,7 @@ from datetime import UTC, datetime, timedelta
 from types import FrameType
 from typing import TYPE_CHECKING
 
+from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
 from kaagaz.adapters.queue import SqsQueue
@@ -112,7 +115,7 @@ from kaagaz.db.engine import Database, make_engine
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import Job
 from kaagaz.jobs.catalog import RefreshCatalog, Refreshed, last_refreshed, refresh
-from kaagaz.jobs.fair_share import FairShare, SweepLock, first_free_lock, no_lock, sweep_lock
+from kaagaz.jobs.fair_share import FairShare, ReadingCap, SweepLock, first_free_lock, no_lock, sweep_lock
 from kaagaz.jobs.ports import LeaseLost, QueueSetupError, WorkQueue
 from kaagaz.jobs.purge import (
     CustomerStorage,
@@ -720,6 +723,14 @@ def run_until_stopped(worker: RunsJobs, stop: threading.Event, *, pause_seconds:
             stop.wait(pause_seconds)
 
 
+def _documents_at_once(db: Database, customer_id: str) -> int | None:
+    """The super admin's documents-at-once cap (package S, 0053; None: WORKER_REPLICAS), read
+    for each job in its customer's transaction: one statement."""
+    with db.customer(customer_id) as conn:
+        value = conn.execute(text("SELECT documents_at_once FROM platform_ai_settings")).scalar_one()
+        return None if value is None else int(value)
+
+
 def _scanning_on(db: Database, customer_id: str) -> bool:
     """The Scanning with AI switch (0038) and the job's organisation's own (0039), read for
     each job: one statement."""
@@ -792,6 +803,14 @@ def _serve(settings: Settings) -> None:
     gate = process_gate(settings, database=db)  # the one every model client of this process shares
     reports = start_reader_reports(stop, db, gate.status, socket.gethostname())
     fair_share = FairShare(functools.partial(first_free_lock, db.engine), settings.max_active_per_customer)
+    reading = ReadingCap(db.engine, settings.worker_replicas, functools.partial(_documents_at_once, db))
+
+    @contextlib.contextmanager
+    def slots(job: Job) -> Iterator[None]:
+        """The customer's fair-share slot, then one of the platform's reading slots (package S)."""
+        with fair_share.slot(job), reading.slot(job):
+            yield
+
     jobs = job_worker(
         queue,
         dispatch(processor, ensemble),
@@ -803,7 +822,7 @@ def _serve(settings: Settings) -> None:
         record_attempt=documents.record_attempt,
         admit=admission(
             lambda: gate.status()[0],
-            fair_share.slot,
+            slots,
             stop.is_set,
             functools.partial(_scanning_on, db) if settings.ocr_engine == GEMINI else lambda _customer: True,
         ),

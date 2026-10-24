@@ -9,8 +9,11 @@ save is kept in memory."""
 
 import functools
 import sys
+import threading
+import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from dataclasses import replace
 from typing import Any, cast
 from unittest import mock
 
@@ -240,26 +243,69 @@ def test_sp1_a_ledger_that_cannot_be_saved_never_fails_the_job(
     assert system.totals(job).status == "ready"
 
 
+class _Counting(ScriptedReader):
+    """Notes the most pages being read at once."""
+
+    def __init__(self, pages: dict[int, PageRead | Exception]) -> None:
+        super().__init__(pages)
+        self.lock, self.now, self.most = threading.Lock(), 0, 0
+
+    def read_page(self, image: Any, *, page_no: int) -> PageRead:
+        with self.lock:
+            self.now += 1
+            self.most = max(self.most, self.now)
+        try:
+            time.sleep(0.05)
+            return super().read_page(image, page_no=page_no)
+        finally:
+            with self.lock:
+                self.now -= 1
+
+
+def test_each_job_reads_at_most_the_super_admins_pages_at_once(ledger: _Ledger) -> None:
+    """Package S (0053): the value ``job_reading`` gives at the job's start, for that job only."""
+    reader = _Counting({page: page_read(TOTAL) for page in range(1, 5)})
+    job_reading = _Reading(USER)
+    settings = make_settings(page_image_dpi=72, ocr_dpi=72, ocr_engine="gemini", ocr_page_concurrency=4)
+    system = gemini_rig(
+        reader, checker=FakeChecker(), job_reading=job_reading, usage=_scopes(ledger), settings=settings
+    )
+    job_reading.reading = replace(job_reading.reading, pages_at_once=1)
+    assert system.totals(system.run(make_pdf([SCANNED] * 4))).status == "ready"
+    assert reader.most == 1
+    job_reading.reading, reader.most = replace(job_reading.reading, pages_at_once=None), 0
+    assert system.totals(system.run(make_pdf([SCANNED] * 3))).status == "ready"
+    assert reader.most > 1  # the next job: OCR_PAGE_CONCURRENCY again
+
+
 # The wiring: keyless makes no query and keeps no ledger.
 
 
 class _Conn:
-    def __init__(self, user: str | None) -> None:
-        self.user = user
+    def __init__(self, user: str | None, pages: int | None) -> None:
+        self.user, self.pages = user, pages
+        self.asked = ""
 
-    def execute(self, statement: object, params: dict[str, str]) -> "_Conn":
-        assert "read_requested_by" in str(statement)
+    def execute(self, statement: object, params: dict[str, str] | None = None) -> "_Conn":
+        self.asked = str(statement)
+        assert "read_requested_by" in self.asked or "pages_at_once" in self.asked
         return self
 
     def scalar_one_or_none(self) -> str | None:
+        assert "read_requested_by" in self.asked
         return self.user
+
+    def scalar_one(self) -> int | None:
+        assert "pages_at_once" in self.asked
+        return self.pages
 
 
 class _Db:
-    """A database that answers the job's one query: who asked for the reading."""
+    """A database that answers the job's queries: who asked for the reading and, with the
+    Gemini reader, the super admin's pages at once (package S)."""
 
-    def __init__(self, user: str | None = None) -> None:
-        self.conn = _Conn(user)
+    def __init__(self, user: str | None = None, pages: int | None = None) -> None:
+        self.conn = _Conn(user, pages)
         self.customers: list[str] = []
 
     @contextmanager
@@ -285,7 +331,7 @@ def test_keyless_builds_no_job_reading_and_no_ledger() -> None:
 
 
 def test_with_the_gemini_reader_each_job_resolves_its_model_for_prompt_g2() -> None:
-    db = _Db(USER)
+    db = _Db(USER, pages=2)
     processor = _built(db, make_settings(ocr_engine="gemini"))
     assert processor._job_reading is not None and processor._usage is not None
     # Changed on purpose (features 25-27, 15 Oct 2026): the job reads the whole Reading
@@ -293,7 +339,8 @@ def test_with_the_gemini_reader_each_job_resolves_its_model_for_prompt_g2() -> N
     scan = models.Reading("single", models.Agent(CLAUDE, "google-vertex", "Claude"), thinking="low")
     with mock.patch.object(models, "resolve_scan", return_value=scan) as resolve:
         reading = processor._job_reading(CUSTOMER, "doc-1")
-    assert reading == JobReading(USER, CLAUDE, "google-vertex", reading=scan)
+    # Package S (0053): the super admin's pages at once, read at the job's start.
+    assert reading == JobReading(USER, CLAUDE, "google-vertex", reading=scan, pages_at_once=2)
     assert db.customers == [CUSTOMER]
     (call,) = resolve.call_args_list
     assert call.args[1:] == (CUSTOMER, "doc-1")
