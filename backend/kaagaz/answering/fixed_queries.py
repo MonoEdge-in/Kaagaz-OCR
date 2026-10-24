@@ -43,6 +43,11 @@ Rules shared by every query (never a guess, CLAUDE.md never-do 6):
   ambiguous for every customer with invoices, and "total amount" questions would
   stop reaching a fixed query (PRD 2 plan conflict 1). The invoice's own total is
   its ``document`` record's.
+* A sheet row with a value reading total, grand total, net total or sub total (any case, or
+  एकूण, कुल, एकुण) is the sheet's printed total, never a record (PRD 6 C2): the highest, the
+  lowest and a party's sum leave it out, and ``figures`` returns it marked, beside its sheet's
+  matching rows, so no total is added up over them (answering/totals.py). It is decided when
+  asked, so values already stored need no migration.
 * The date filter is ``[start, end)`` on the record's own date value. No
   date candidates means no date filter.
 * Party names are grouped ignoring case and repeated spaces; the name shown
@@ -53,7 +58,8 @@ cited value (PRD 3 edge case 10), whatever its own reading label says.
 
 Every row carries the values it used (``values``, at most
 ``MAX_CITED_VALUES``, each with its page and region) for the citations, and
-``verified`` over *every* value used, cited or not.
+``verified`` over *every* value used, cited or not; a highest or lowest also carries
+``unsure``, every value compared (any row's, shown or not) that is not verified (C2).
 
 A total is not summed here (PRD 6 C, answering/totals.py): ``figures`` lists every
 record the question matches: an ``invoices`` row (dated by ``invoice_date``) when
@@ -105,6 +111,9 @@ class FixedRow:
     records: int  # how many records went into it
     verified: bool  # every value used is verified
     values: list[ValueRef]  # the values cited, at most MAX_CITED_VALUES
+    # Highest and lowest (PRD 6 C2): every value compared, of any row, that is not verified
+    # (at most MAX_CITED_VALUES), the same on each row.
+    unsure: tuple[ValueRef, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +126,8 @@ class Figure:
     verified: bool  # that one figure is verified, and its invoice's check did not fail
     dated: bool  # it has the one readable date a date range needs (True without a range)
     date_verified: bool  # that date is verified (True without a range)
+    grouped: bool = True  # it names one party, as a ranking by party needs (True without one)
+    printed_total: bool = False  # C2: a sheet's printed total row, never a record
 
 
 class FixedQueries(Protocol):
@@ -146,6 +157,7 @@ class FixedQueries(Protocol):
         end: date | None,
         *,
         invoices: bool,
+        group_fields: Sequence[str] = (),
     ) -> list[Figure]: ...
 
     def count_documents(
@@ -222,6 +234,12 @@ _TOP_GROUP = text(
               SELECT 1 FROM extracted_values o
               WHERE o.customer_id = :customer_id AND o.document_id = v.document_id
                 AND o.field = v.field AND o.record_key = 'document'))
+          AND NOT EXISTS (SELECT 1 FROM extracted_values t
+              WHERE t.customer_id = :customer_id AND t.document_id = v.document_id
+                AND t.record_key = v.record_key AND t.record_key LIKE 'sheet:%'
+                AND (regexp_replace(lower(t.value_text), '[^a-z]+', '', 'g')
+                       IN ('total', 'grandtotal', 'nettotal', 'subtotal')
+                     OR btrim(t.value_text, ' :.-') IN ('एकूण', 'कुल', 'एकुण')))
         GROUP BY v.document_id, v.record_key
         HAVING count(*) = 1 AND bool_and(v.value_number IS NOT NULL)
     ), grp AS (
@@ -283,11 +301,19 @@ _TOP_GROUP = text(
                g.value_id AS group_id, g.name,
                lower(regexp_replace(btrim(g.name), '[[:space:]]+', ' ', 'g')) AS name_key,
                dt.value_id AS date_id,
-               m.verified AND g.verified AND coalesce(dt.verified, true) AS verified
+               m.verified AND g.verified AND coalesce(dt.verified, true) AS verified,
+               m.verified AS metric_verified, g.verified AS group_verified,
+               coalesce(dt.verified, true) AS date_verified
         FROM metric m
         JOIN grp g ON g.document_id = m.document_id AND g.record_key = m.record_key
         LEFT JOIN dated dt ON dt.document_id = m.document_id AND dt.record_key = m.record_key
         WHERE cardinality(CAST(:date_fields AS text[])) = 0 OR dt.value_id IS NOT NULL
+    ), unsure AS (  -- C2: every value compared that is not verified, whichever party it is
+        SELECT (array_agg(u.id ORDER BY (CASE WHEN CAST(:descending AS boolean) THEN -1 ELSE 1 END)
+                   * u.amount, u.id))[1:CAST(:cap AS integer)] AS ids
+        FROM (SELECT r.metric_id::text AS id, r.amount FROM records r WHERE NOT r.metric_verified
+              UNION ALL SELECT r.group_id::text, r.amount FROM records r WHERE NOT r.group_verified
+              UNION ALL SELECT r.date_id::text, r.amount FROM records r WHERE NOT r.date_verified) u
     )
     SELECT (array_agg(r.name ORDER BY r.amount DESC, r.document_id, r.record_key))[1] AS name,
            sum(r.amount) AS number, count(*) AS records,
@@ -295,7 +321,8 @@ _TOP_GROUP = text(
            array_agg(r.metric_id::text ORDER BY r.amount DESC, r.document_id, r.record_key) AS metric_ids,
            array_agg(r.group_id::text ORDER BY r.amount DESC, r.document_id, r.record_key) AS group_ids,
            array_remove(array_agg(r.date_id::text ORDER BY r.amount DESC, r.document_id, r.record_key),
-                        NULL) AS date_ids
+                        NULL) AS date_ids,
+           (SELECT ids FROM unsure) AS unsure_ids
     FROM records r
     GROUP BY r.name_key
     ORDER BY (CASE WHEN CAST(:descending AS boolean) THEN -1 ELSE 1 END) * sum(r.amount), r.name_key
@@ -305,7 +332,9 @@ _TOP_GROUP = text(
 
 # PRD 6 C: every record a total question matches, one row each, with its one figure or why it
 # has none (the module docstring). A sheet's rows are left out when the document's own record
-# holds the metric (an invoice counts once); page, line and card records never match.
+# holds the metric (an invoice counts once); page, line and card records never match. C2: a
+# sheet's printed total row comes marked, only beside its sheet's matching rows; ``grouped``:
+# the record names one party (``group_fields``, a ranking's), or none is asked.
 _FIGURES = text(
     """
     WITH tables AS (
@@ -357,7 +386,14 @@ _FIGURES = text(
                coalesce(bool_and(v.label = 'verified') FILTER (
                    WHERE v.field = ANY(CAST(:date_fields AS text[]))), false) AS date_verified,
                (array_agg(v.id ORDER BY array_position(ARRAY['invoice_number', 'total_amount', 'invoice_date',
-                   'seller_name', 'buyer_name']::text[], v.field), v.page_no, v.id))[1] AS first_id
+                   'seller_name', 'buyer_name']::text[], v.field), v.page_no, v.id))[1] AS first_id,
+               count(*) FILTER (WHERE v.field = ANY(CAST(:group_fields AS text[]))) AS parties,
+               coalesce(bool_and(btrim(v.value_text) <> '') FILTER (
+                   WHERE v.field = ANY(CAST(:group_fields AS text[]))), false) AS named,
+               bool_or(v.record_key LIKE 'sheet:%'
+                   AND (regexp_replace(lower(v.value_text), '[^a-z]+', '', 'g')
+                       IN ('total', 'grandtotal', 'nettotal', 'subtotal')
+                     OR btrim(v.value_text, ' :.-') IN ('एकूण', 'कुल', 'एकुण'))) AS printed_total
         FROM extracted_values v
         WHERE v.customer_id = :customer_id
           AND ((v.document_id, split_part(v.record_key, ':row:', 1)) IN (
@@ -371,15 +407,27 @@ _FIGURES = text(
     ), matching AS (
         SELECT r.document_id, r.record_key, t.display_name, r.printed, r.figure_id, r.amount,
                r.figure_verified, r.first_id, r.dates = 1 AND r.day IS NOT NULL AS dated, r.day,
-               r.date_verified
+               r.date_verified, r.printed_total,
+               cardinality(CAST(:group_fields AS text[])) = 0 OR (r.parties = 1 AND r.named) AS grouped
         FROM records r
         JOIN tables t ON t.document_id = r.document_id AND t.part = split_part(r.record_key, ':row:', 1)
         UNION ALL
         SELECT i.document_id, 'document', i.display_name, coalesce(r.printed, 0), r.figure_id, r.amount,
                coalesce(r.figure_verified, false), r.first_id, i.invoice_date IS NOT NULL, i.invoice_date,
-               coalesce(r.dates = 1 AND r.date_verified AND r.day = i.invoice_date, false)
+               coalesce(r.dates = 1 AND r.date_verified AND r.day = i.invoice_date, false), false,
+               cardinality(CAST(:group_fields AS text[])) = 0 OR coalesce(r.parties = 1 AND r.named, false)
         FROM invoiced i
         LEFT JOIN records r ON r.document_id = i.document_id AND r.record_key = 'document'
+    ), kept AS (
+        SELECT m.* FROM matching m
+        WHERE NOT m.printed_total AND (CAST(:start AS date) IS NULL OR NOT m.dated
+           OR (m.day >= CAST(:start AS date) AND m.day < CAST(:end AS date)))
+    ), listed AS (  -- C2: the printed total row of a sheet, beside its rows that match
+        SELECT * FROM kept
+        UNION ALL
+        SELECT m.* FROM matching m
+        WHERE m.printed_total AND (m.document_id, split_part(m.record_key, ':row:', 1)) IN (
+            SELECT k.document_id, split_part(k.record_key, ':row:', 1) FROM kept k)
     )
     SELECT m.printed, CASE WHEN m.printed = 1 THEN m.figure_id ELSE m.first_id END AS value_id,
            CASE WHEN m.printed = 1 THEN m.amount END AS amount,
@@ -387,10 +435,9 @@ _FIGURES = text(
                SELECT 1 FROM invoices f WHERE f.customer_id = :customer_id
                AND f.document_id = m.document_id AND f.check_status = 'failed') AS verified,
            CAST(:start AS date) IS NULL OR m.dated AS dated,
-           CAST(:start AS date) IS NULL OR (m.dated AND m.date_verified) AS date_verified
-    FROM matching m
-    WHERE CAST(:start AS date) IS NULL OR NOT m.dated
-       OR (m.day >= CAST(:start AS date) AND m.day < CAST(:end AS date))
+           CAST(:start AS date) IS NULL OR (m.dated AND m.date_verified) AS date_verified,
+           m.grouped, m.printed_total
+    FROM listed m
     ORDER BY m.day, m.display_name, m.document_id, length(m.record_key), m.record_key
     """
 )
@@ -424,6 +471,12 @@ _EXTREME_VALUE = text(
               SELECT 1 FROM extracted_values o
               WHERE o.customer_id = :customer_id AND o.document_id = v.document_id
                 AND o.field = v.field AND o.record_key = 'document'))
+          AND NOT EXISTS (SELECT 1 FROM extracted_values t
+              WHERE t.customer_id = :customer_id AND t.document_id = v.document_id
+                AND t.record_key = v.record_key AND t.record_key LIKE 'sheet:%'
+                AND (regexp_replace(lower(t.value_text), '[^a-z]+', '', 'g')
+                       IN ('total', 'grandtotal', 'nettotal', 'subtotal')
+                     OR btrim(t.value_text, ' :.-') IN ('एकूण', 'कुल', 'एकुण')))
         GROUP BY v.document_id, v.record_key
         HAVING count(*) = 1 AND bool_and(v.value_number IS NOT NULL)
     ), dated AS (
@@ -454,16 +507,26 @@ _EXTREME_VALUE = text(
         HAVING count(*) = 1 AND bool_and(v.value_date IS NOT NULL AND (
             CAST(:start AS date) IS NULL
             OR (v.value_date >= CAST(:start AS date) AND v.value_date < CAST(:end AS date))))
+    ), compared AS (
+        SELECT m.document_id, m.record_key, m.value_id, m.amount, m.verified,
+               dt.value_id AS date_id, coalesce(dt.verified, true) AS date_verified
+        FROM metric m
+        LEFT JOIN dated dt ON dt.document_id = m.document_id AND dt.record_key = m.record_key
+        WHERE cardinality(CAST(:date_fields AS text[])) = 0 OR dt.value_id IS NOT NULL
+    ), unsure AS (  -- C2: every value compared that is not verified, not only the one shown
+        SELECT (array_agg(u.id ORDER BY (CASE WHEN CAST(:descending AS boolean) THEN -1 ELSE 1 END)
+                   * u.amount, u.id))[1:CAST(:cap AS integer)] AS ids
+        FROM (SELECT c.value_id::text AS id, c.amount FROM compared c WHERE NOT c.verified
+              UNION ALL SELECT c.date_id::text, c.amount FROM compared c WHERE NOT c.date_verified) u
     )
-    SELECT NULL::text AS name, m.amount AS number, 1 AS records,
-           m.verified AND coalesce(dt.verified, true) AS verified,
-           ARRAY[m.value_id::text] AS metric_ids, ARRAY[]::text[] AS group_ids,
-           array_remove(ARRAY[dt.value_id::text], NULL) AS date_ids
-    FROM metric m
-    LEFT JOIN dated dt ON dt.document_id = m.document_id AND dt.record_key = m.record_key
-    WHERE cardinality(CAST(:date_fields AS text[])) = 0 OR dt.value_id IS NOT NULL
-    ORDER BY (CASE WHEN CAST(:descending AS boolean) THEN -1 ELSE 1 END) * m.amount,
-             m.document_id, m.record_key
+    SELECT NULL::text AS name, c.amount AS number, 1 AS records,
+           c.verified AND c.date_verified AS verified,
+           ARRAY[c.value_id::text] AS metric_ids, ARRAY[]::text[] AS group_ids,
+           array_remove(ARRAY[c.date_id::text], NULL) AS date_ids,
+           (SELECT ids FROM unsure) AS unsure_ids
+    FROM compared c
+    ORDER BY (CASE WHEN CAST(:descending AS boolean) THEN -1 ELSE 1 END) * c.amount,
+             c.document_id, c.record_key
     LIMIT :limit
     """
 )
@@ -609,6 +672,7 @@ class PgFixedQueries:
     ) -> list[FixedRow]:
         params = _params(customer_id, date_fields, start, end)
         params.update(metric=metric, group_fields=list(group_fields), descending=descending, limit=_TOP_ROWS)
+        params.update(cap=MAX_CITED_VALUES)
         return self._run(customer_id, _TOP_GROUP, params)
 
     def figures(
@@ -620,10 +684,12 @@ class PgFixedQueries:
         end: date | None,
         *,
         invoices: bool,
+        group_fields: Sequence[str] = (),
     ) -> list[Figure]:
-        """Every matching record, by date then document; ``invoices``: the question names them."""
+        """Every matching record, by date then document, and the printed total rows of their
+        sheets; ``invoices``: the question names them; ``group_fields``: a ranking's parties."""
         params = _params(customer_id, date_fields, start, end)
-        params.update(metric=metric, invoices=invoices)
+        params.update(metric=metric, invoices=invoices, group_fields=list(group_fields))
         with self._db.customer(customer_id) as conn:
             rows = conn.execute(_FIGURES, params | self._scope.params()).all()
             ids = [str(row.value_id) for row in rows if row.value_id is not None]
@@ -636,6 +702,8 @@ class PgFixedQueries:
                 verified=bool(row.verified),
                 dated=bool(row.dated),
                 date_verified=bool(row.date_verified),
+                grouped=bool(row.grouped),
+                printed_total=bool(row.printed_total),
             )
             for row in rows
         ]
@@ -664,16 +732,17 @@ class PgFixedQueries:
         descending: bool,
     ) -> list[FixedRow]:
         params = _params(customer_id, date_fields, start, end)
-        params.update(metric=metric, descending=descending, limit=_TOP_ROWS)
+        params.update(metric=metric, descending=descending, limit=_TOP_ROWS, cap=MAX_CITED_VALUES)
         return self._run(customer_id, _EXTREME_VALUE, params)
 
     def _run(self, customer_id: str, query: TextClause, params: dict[str, Any]) -> list[FixedRow]:
         with self._db.customer(customer_id) as conn:
             aggregates = conn.execute(query, params | self._scope.params()).all()
             cited = [_cited_ids(row.metric_ids, row.group_ids, row.date_ids) for row in aggregates]
-            refs = _value_refs(
-                conn, customer_id, [value_id for ids in cited for value_id in ids], self._scope
-            )
+            # Highest and lowest only: the compared values not verified (the counts have none).
+            unsure = [row._mapping.get("unsure_ids") or [] for row in aggregates]
+            wanted = {value_id for ids in [*cited, *unsure] for value_id in ids}
+            refs = _value_refs(conn, customer_id, list(wanted), self._scope)
         return [
             FixedRow(
                 group=None if row.name is None else str(row.name),
@@ -681,8 +750,9 @@ class PgFixedQueries:
                 records=int(row.records),
                 verified=bool(row.verified),
                 values=[refs[value_id] for value_id in ids if value_id in refs],
+                unsure=tuple(refs[value_id] for value_id in doubts if value_id in refs),
             )
-            for row, ids in zip(aggregates, cited, strict=True)
+            for row, ids, doubts in zip(aggregates, cited, unsure, strict=True)
         ]
 
 
