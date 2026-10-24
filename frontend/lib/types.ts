@@ -1438,6 +1438,26 @@ export interface BoardReply {
   items: BoardRow[];
 }
 
+/** PRD 6 F3: one organisation's replies in one ended ISO week (week: its Monday). Counts only;
+ * null is a count the server hid (under 10, or what would give one away). */
+export interface AnswerWeekRow {
+  organisation_id: string;
+  week: string;
+  replies: number;
+  answered: number | null;
+  not_found: number | null;
+  clarify: number | null;
+  rated: number;
+  useful: number | null;
+}
+
+/** GET /operator/answer-weeks?weeks= */
+export interface AnswerWeeksReply {
+  from: string;
+  to: string;
+  organisations: AnswerWeekRow[];
+}
+
 // --- Word-level review and Ensemble after the scan (scan review UX rules, 16 Oct 2026;
 // backend/kaagaz/api/routers/word_review.py and ensemble.py, views.run_json) ---
 

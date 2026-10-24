@@ -16,6 +16,7 @@ import type {
   AiSettings,
   AiTask,
   AnswerQualityReply,
+  AnswerWeeksReply,
   AiValues,
   AnswerChoice,
   BatchView,
@@ -783,6 +784,8 @@ export const getOperatorInsights = (days: number) =>
 export const getOperatorQuality = (days: number) => request<QualityReply>("GET", `/operator/quality${query({ days })}`);
 /** Compare models (F4): observational, not an A/B test. */
 export const getModelBoard = (days: number) => request<BoardReply>("GET", `/operator/model-board${query({ days })}`);
+/** PRD 6 F3: replies per organisation and ended week (1 to 12); hidden counts come as null. */
+export const getAnswerWeeks = (weeks: number) => request<AnswerWeeksReply>("GET", `/operator/answer-weeks${query({ weeks })}`);
 
 // --- word-level review and Ensemble after the scan (routers/word_review.py, ensemble.py) ---
 

@@ -1,8 +1,8 @@
 "use client";
 
 // /operator: nine tabs, Overview (the default) and Quality (operator insights,
-// council 11 Oct 2026), Organisations, Models (with Compare models under the
-// catalogue), AI spend (model choice), Activity and Health, as the admin
+// council 11 Oct 2026; Answers by week under it, PRD 6 F3), Organisations,
+// Models (with Compare models under the catalogue), AI spend (model choice), Activity and Health, as the admin
 // screen's tabs (Tabs.tsx): one line that scrolls sideways, arrow keys, Home and End
 // move between them, and on a phone the seven tabs are one select. Only the open tab is mounted,
 // so each loads when opened. Needs attention opens an organisation in
@@ -16,6 +16,7 @@ import { Tabs, tabId, tabSelectId } from "@/components/admin/Tabs";
 import { getTestModel } from "@/lib/api";
 import type { TestModel } from "@/lib/types";
 import { ActivityView } from "./ActivityView";
+import { AnswerWeeksView } from "./AnswerWeeks";
 import { FeatureSwitchesView, TestModelBanner } from "./FeatureSwitches";
 import { HealthView } from "./HealthView";
 import { ModelBoard } from "./ModelBoard";
@@ -86,7 +87,12 @@ export function OperatorConsole() {
       <TestModelBanner testModel={testModel} onChanged={reloadTestModel} />
       <Tabs<TabId> prefix="operator" label="Platform sections" tabs={OPERATOR_TABS} active={active} onChange={choose}>
         {active === "overview" && <OverviewView openOrg={openOrg} openTab={openTab} />}
-        {active === "quality" && <QualityView />}
+        {active === "quality" && (
+          <>
+            <QualityView />
+            <AnswerWeeksView />
+          </>
+        )}
         {active === "orgs" && <OrganisationsView initialSearch={orgSearch} />}
         {active === "models" && (
           <>

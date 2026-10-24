@@ -17,7 +17,7 @@ import type {
   Region,
   ThinkingLevel,
 } from "@/lib/types";
-import { citationRegion } from "./answer";
+import { citationRegion, linkWords } from "./answer";
 
 // --- Grouping the conversation list by day ------------------------------------
 
@@ -170,13 +170,15 @@ export interface PageJump {
  * The chips beside a source card's main link (PRD 3 H4): one for each later
  * page its spots run onto ("Page 16"), then one for a value's label on another
  * page ("Label, page 15"). Each opens that page with its spot highlighted, or
- * without one when the spot is gone. O(regions).
+ * without one when the spot is gone, and the asker's words (`terms`) lit, as
+ * citationLink does (package H). O(regions).
  */
-export function pageJumps(citation: Citation): PageJump[] {
+export function pageJumps(citation: Citation, terms: readonly string[] = []): PageJump[] {
   const word = placeWord(citation);
+  const words = linkWords(...terms);
   const jump = (text: string, page_no: number, regions: Region[]): PageJump => ({
     text,
-    href: pageLink(citation.document_id, page_no, citationRegion({ regions, page_no })),
+    href: pageLink(citation.document_id, page_no, citationRegion({ regions, page_no }), { words }),
   });
   const pages = new Set(citation.regions.map((region) => region.page));
   pages.delete(citation.page_no);
