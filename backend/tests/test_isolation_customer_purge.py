@@ -67,6 +67,7 @@ NO_ACTION_TO_USERS = {table for table, _ in NOT_CASCADING}
 GONE_FIRST = {
     *[(table, "users") for table in ("pages", "ensemble_runs", "ensemble_readings", "word_changes")],
     ("ai_task_settings", "users"),
+    ("learning_removals", "users"),  # 0051, PRD 6 F3: cascades from its document, SET NULL to its admin
 }
 
 

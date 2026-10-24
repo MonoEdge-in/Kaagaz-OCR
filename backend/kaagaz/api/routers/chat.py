@@ -237,6 +237,20 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
             Pin(row["document_id"], int(row["page_no"]), bool(row["same"]), str(row["question"]))
             for row in chat_sql.pins_for(conn, user.customer_id, user.user_id, conversation_id)
         ]
+        # What Kaagaz learned (PRD 6 F3, answering/pins.py): this customer's Useful and
+        # Wrong documents marks; lifts decides which apply to this question and to whom.
+        pins += [
+            Pin(
+                row["document_id"],
+                int(row["page_no"]),
+                False,
+                str(row["question"]),
+                kind="useful" if row["useful"] else "wrong",
+                user_id=str(row["user_id"]),
+                own=bool(row["own"]),
+            )
+            for row in chat_sql.learned_for(conn, user.customer_id, user.user_id)
+        ]
         if not ai_settings.switch_on(conn, "ask", user.customer_id):  # switched off (0038, 0039)
             raise ApiError(403, "feature_off", FEATURE_OFF)
         try:

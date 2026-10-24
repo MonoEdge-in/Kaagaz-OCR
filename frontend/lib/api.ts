@@ -64,6 +64,7 @@ import type {
   PasswordReset,
   PlatformEvent,
   PlatformHealth,
+  LearnedDocument,
   QualityReply,
   ReasonCode,
   ReviewChoice,
@@ -678,6 +679,9 @@ export const getAnswerQuality = (params: { status: "open" | "handled"; weeks: nu
 /** Mark as handled, or open it again; `seen` is the given_at shown (409 when rated again since). */
 export const setAnswerHandled = (id: string, handled: boolean, seen: string) =>
   request<{ id: string; handled_at: string | null }>("PUT", `/admin/answer-quality/${id}/handled`, { handled, seen });
+/** What Kaagaz learned (PRD 6 F3), and Remove on one document. */
+export const listLearned = () => request<{ items: LearnedDocument[] }>("GET", "/admin/learned");
+export const removeLearned = (documentId: string) => request<void>("DELETE", `/admin/learned/${documentId}`);
 /** AI use from `from` to `to` (YYYY-MM-DD, both included; the server's default when left out), for one user when given. */
 export type UsageParams = { from?: string; to?: string; user_id?: string };
 export const getAdminUsage = (params: UsageParams = {}) =>
