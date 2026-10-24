@@ -69,6 +69,9 @@ def test_the_base_file_runs_only_the_app_and_its_stand_ins() -> None:
     ]
     shared = re.findall(r"^  ([a-z_]+):", backend, re.MULTILINE)
     assert shared == ["image", "build", "env_file", "environment"]
+    # infra/ec2/deploy.sh builds and migrates a commit's images beside the running :local ones.
+    assert "\n  image: kaagaz-backend:${KAAGAZ_TAG:-local}\n" in backend
+    assert has(service("frontend"), "image: kaagaz-frontend:${KAAGAZ_TAG:-local}")
     assert "networks" not in keys(service("worker"))
 
 
