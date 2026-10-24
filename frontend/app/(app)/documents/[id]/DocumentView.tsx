@@ -134,7 +134,7 @@ import type {
   WordFlag,
 } from "@/lib/types";
 import { usePoll } from "@/lib/usePoll";
-import { AttentionPanel, CardPanel, InvoicePanel, RelatedPanel, attentionCount } from "./DocumentPanels";
+import { AttentionPanel, InvoicePanel, RelatedPanel, attentionCount } from "./DocumentPanels";
 import { DocumentMenu } from "./DocumentMenu";
 import { PageProblems } from "./PageProblems";
 import { ReadAgain } from "./ReadAgain";
@@ -142,7 +142,7 @@ import { ReviewPanel } from "./ReviewPanel";
 import { StoryPanel } from "./StoryPanel";
 import { ScriptText, SummaryCard } from "./SummaryCard";
 import styles from "./DocumentView.module.css";
-import { ExportDialog, SummaryBar, useEnsembleStart, useWordReview } from "./WordReview";
+import { ExportDialog, SummaryBar, documentMoreItems, useEnsembleStart, useWordReview } from "./WordReview";
 
 export interface DocumentViewProps {
   documentId: string;
@@ -427,6 +427,16 @@ export function DocumentView({
     setTab("attention");
     if (first) toWord(first.word_key);
   };
+  // A word box pressed on the page (24 Oct 2026): with Text open, its line is shown there;
+  // otherwise it starts checking that word, as before.
+  const pressFlag = (flag: WordFlag) => {
+    if (tab === "scanned") {
+      choose(selectSpot(flag.region, null));
+      setAnnouncement(`Showing the line with this word on page ${flag.region.page}.`);
+      return;
+    }
+    startReview(flag);
+  };
   const exitReview = () => {
     setReviewing(false);
     const word = currentFlag;
@@ -696,7 +706,7 @@ export function DocumentView({
                 onHotMark={setHotMark}
                 flags={openFlags}
                 activeFlag={reviewing ? currentFlag : null}
-                onFlag={startReview}
+                onFlag={pressFlag}
                 wordBoxes={wordBoxes}
                 wordHits={wordHits}
               />
@@ -718,7 +728,7 @@ export function DocumentView({
               onHotMark={setHotMark}
               flags={pageFlags}
               activeFlag={reviewing ? currentFlag : null}
-              onFlag={startReview}
+              onFlag={pressFlag}
               wordBoxes={wordBoxes}
               wordHits={wordHits}
             />
@@ -900,6 +910,11 @@ export function DocumentView({
                 readAgain={canReprocess(me.user.role, detail)}
                 onReadAgain={() => setReadAgainKey((n) => n + 1)}
                 onChanged={reloadWith}
+                more={documentMoreItems(review.status, {
+                  onEnsemble: (scope) => void ensemble.ask(scope),
+                  onExport: () => setExporting(true),
+                  download,
+                })}
               />
             </div>
           </header>
@@ -910,7 +925,6 @@ export function DocumentView({
               shownTab === "overview" ? (
                 <>
                   <DetailsPanel detail={detail} onSaved={reloadWith} />
-                  <CardPanel {...panel} />
                   {values}
                   <InvoicePanel {...panel} />
                   <RelatedPanel detail={detail} />
@@ -930,23 +944,26 @@ export function DocumentView({
                 />
               ) : shownTab === "attention" ? (
                 <>
-                  {page && (
-                    <PageProblems
-                      key={`${page.page_no}:${reloads}`}
-                      documentId={detail.id}
-                      page={page}
-                      userId={me.user.id}
-                      canFix={canReview(me.user.role) && detail.deleted_at === null}
-                      canUpload={detail.deleted_at === null}
-                      onReadAgain={(reply) => {
-                        merge(reply);
-                        readingAgain.current = true;
-                        poll.later();
-                      }}
-                      onKept={keepPage}
-                    />
-                  )}
                   <AttentionPanel
+                    fix={
+                      page && (
+                        <PageProblems
+                          key={`${page.page_no}:${reloads}`}
+                          inline
+                          documentId={detail.id}
+                          page={page}
+                          userId={me.user.id}
+                          canFix={canReview(me.user.role) && detail.deleted_at === null}
+                          canUpload={detail.deleted_at === null}
+                          onReadAgain={(reply) => {
+                            merge(reply);
+                            readingAgain.current = true;
+                            poll.later();
+                          }}
+                          onKept={keepPage}
+                        />
+                      )
+                    }
                     status={detail.status}
                     pages={detail.pages}
                     current={page?.page_no ?? null}

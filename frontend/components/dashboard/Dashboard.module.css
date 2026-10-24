@@ -197,7 +197,7 @@ a.action:focus-visible {
 .uploadTo > * {
   flex-wrap: nowrap;
   gap: var(--space-3);
-  padding-inline-start: var(--space-4);
+  padding-inline-start: 0; /* lined up with the card's title and text (24 Oct 2026) */
 }
 
 .uploadTo label {

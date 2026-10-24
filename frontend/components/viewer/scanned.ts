@@ -145,6 +145,29 @@ export function visibleText(text: string): string {
 }
 
 /** True when the line's box centre is in the cited box (which covers every quoted line), or it is the same cell. */
+/** The line that holds a spot pressed on the page (24 Oct 2026: press a box, see its text):
+ * on its page, the line its box overlaps most, a cell only itself; -1 for none. O(n). */
+export function lineHolding(lines: readonly Pick<ReadLine, "region">[], region: Region | null): number {
+  if (region === null) return -1;
+  let best = -1;
+  let most = 0;
+  lines.forEach((line, index) => {
+    if (line.region.page !== region.page) return;
+    if (line.region.kind === "cell" || region.kind === "cell") {
+      if (sameRegion(line.region, region)) best = index;
+      return;
+    }
+    const [x0, y0, x1, y1] = line.region.box;
+    const [rx0, ry0, rx1, ry1] = region.box;
+    const area = Math.max(0, Math.min(x1, rx1) - Math.max(x0, rx0)) * Math.max(0, Math.min(y1, ry1) - Math.max(y0, ry0));
+    if (area > most) {
+      most = area;
+      best = index;
+    }
+  });
+  return best;
+}
+
 export function lineMarked(line: Pick<ReadLine, "region">, region: Region | null): boolean {
   if (region === null || line.region.page !== region.page) return false;
   if (line.region.kind === "cell" || region.kind === "cell") return sameRegion(line.region, region);

@@ -8,7 +8,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ReviewPanel } from "@/app/(app)/documents/[id]/ReviewPanel";
-import { ExportDialog, SummaryBar } from "@/app/(app)/documents/[id]/WordReview";
+import { ExportDialog, SummaryBar, documentMoreItems } from "@/app/(app)/documents/[id]/WordReview";
 import type { WordReview } from "@/app/(app)/documents/[id]/WordReview";
 import { FlagText } from "@/components/review/FlagText";
 import * as words from "@/components/review/wordReview";
@@ -407,7 +407,13 @@ describe("Ensemble", () => {
     expect(none).toContain(">No words need a look<");
     expect(none).not.toContain("Run Ensemble on flagged words");
     expect(none).not.toContain(">Check");
-    expect(none).toContain("Run Ensemble on full document"); // quietly, in More
+    // Changed on purpose (Tushar, 24 Oct 2026, "put these in 3 dots"): Ensemble on the full
+    // document, Export and Download original are in the document's "⋯" menu, not a menu here.
+    expect(none).not.toContain("Run Ensemble on full document");
+    const status_ = status({ flagged: 0, reviewed: 0, remaining: 0, summary: "Scan complete · 14 pages · 2,431 words · Nothing flagged" });
+    const items = documentMoreItems(status_, { onEnsemble: () => undefined, onExport: () => undefined, download: "/f" });
+    expect(items.map((item) => item.label)).toEqual(["Run Ensemble on full document", "Export", "Download original"]);
+    expect(items.every((item) => item.hint.length > 0)).toBe(true);
   });
 
   it("says Everything is checked, with no count beside it, once every word is settled", () => {

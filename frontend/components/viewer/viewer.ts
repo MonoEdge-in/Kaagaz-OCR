@@ -53,7 +53,9 @@ export function splitAfterKey(current: number, key: string): number | null {
  */
 export function tabsThatFit(rem: number | null, long: boolean): number {
   if (rem === null) return 4;
-  const [four, three] = long ? [28, 22] : [24, 18];
+  // Changed on purpose (24 Oct 2026): the tabs are targets with their own padding (#301), about
+  // 1rem wider each, so a row of four needs about 4rem more and a tab never shows cut off.
+  const [four, three] = long ? [32, 25] : [28, 21];
   return rem >= four ? 4 : rem >= three ? 3 : 2;
 }
 

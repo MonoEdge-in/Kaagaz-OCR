@@ -1318,7 +1318,7 @@
   margin: 2px var(--space-2) 0;
   padding: 2px;
   border: 1px solid var(--border-strong);
-  border-radius: var(--k-r-2);
+  border-radius: var(--k-r-pill); /* a rounded switch, as every other control (24 Oct 2026) */
   background: var(--surface-2);
 }
 
@@ -1332,18 +1332,25 @@
   height: calc(var(--control-h) - 6px);
   padding: 0 var(--space-3);
   white-space: nowrap; /* "Medium" on one line in the narrower one-model panel */
-  border-radius: 1px;
+  border-radius: var(--k-r-pill);
   color: var(--fg-muted);
   font-size: var(--fs-sm);
   font-weight: 600;
   cursor: pointer;
 }
 
+/* The chosen engine: a raised white pill in the accent (24 Oct 2026: no square outline). */
 .segment:has(input:checked) {
   background: var(--surface);
-  color: var(--fg);
-  outline: 1px solid var(--control-edge);
-  outline-offset: -1px;
+  color: var(--accent);
+  font-weight: 600;
+  box-shadow: var(--k-shadow-1);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .segment:hover {
+    color: var(--fg);
+  }
 }
 
 .segment:has(input:focus-visible) {

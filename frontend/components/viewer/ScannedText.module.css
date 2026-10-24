@@ -169,3 +169,23 @@
   margin: 0;
   overflow-wrap: anywhere;
 }
+
+/* The line holding the box pressed on the page (24 Oct 2026): lit in the selection's tint,
+   with the accent edge, and it flashes in once so the eye finds it. */
+.held {
+  border-inline-start-color: var(--accent);
+  background: var(--bg-selected);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .held {
+    animation: held-in var(--motion-calm) var(--ease-out) both;
+  }
+}
+
+@keyframes held-in {
+  from {
+    opacity: 0.4;
+    transform: translateX(-4px);
+  }
+}

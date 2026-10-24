@@ -14,33 +14,25 @@
 // heading that says so.
 
 import Link from "next/link";
-import { useState } from "react";
-import type { CSSProperties } from "react";
+import type { ReactNode } from "react";
 import table from "@/components/documents/Table.module.css";
 import { Icon } from "@/components/ui/Icon";
-import { LabelBadge } from "@/components/viewer/LabelBadge";
 import { labelBadgeClass, labelIcon } from "@/components/viewer/labels";
 import {
   INVOICE_FIELDS,
   LINE_FIELDS,
   MONEY_LINE_FIELDS,
-  cardSections,
   checkChip,
-  groupByName,
   groupLinks,
   invoiceSpot,
-  languagesText,
   linkText,
-  noCardText,
-  spotNote,
   untilRead,
 } from "@/components/viewer/panels";
-import type { CardItem, Spot } from "@/components/viewer/panels";
+import type { Spot } from "@/components/viewer/panels";
 import { fieldText } from "@/components/viewer/labels";
 import { ALL_CLEAR, attentionPages } from "@/components/viewer/pageProblems";
 import type { AttentionPage } from "@/components/viewer/pageProblems";
 import { markChipText, markName, marksOnPage } from "@/components/viewer/readingMarks";
-import { valueAt } from "@/components/viewer/scanned";
 import { sameRegion } from "@/components/viewer/selection";
 import { WhatWasRead } from "@/components/viewer/WhatWasRead";
 import { docTypeLabel } from "@/lib/format";
@@ -81,109 +73,6 @@ function ReadAt({ detail, value }: { detail: DocumentDetail; value: ExtractedVal
   if (!value) return null;
   return (
     <WhatWasRead value={value} page={detail.pages.find((p) => p.page_no === value.region.page)} />
-  );
-}
-
-/** Rows a role shows before "Show all" (Tushar, 24 Oct 2026: a long card hid the rest of the panel). */
-export const CARD_ROWS = 4;
-
-/** One role ("Owner") captioned once with its count, one row per value: the value (its Latin
- * spelling smaller under it) and its page at the end; four rows, then "Show all". */
-function CardGroup({ name, items, active, onShow }: { name: string; items: CardItem[] } & Omit<PanelProps, "detail">) {
-  const [all, setAll] = useState(false);
-  const shown = all ? items : items.slice(0, CARD_ROWS);
-  return (
-    <div className={styles.cardGroup}>
-      <p className={styles.cardCaption}>
-        {name}
-        {items.length > 1 && <span className={styles.cardCount}>{items.length}</span>}
-      </p>
-      <ul className={styles.cardList}>
-        {shown.map((item, index) => (
-          <li key={item.key} className={styles.cardRow} style={{ "--i": index } as CSSProperties}>
-            <span className={styles.cardValue}>
-              <SpotButton spot={item} text={item.text} active={active} onShow={onShow} />
-              {item.sub && (
-                <span className={styles.cardLatin} lang="en">
-                  {item.sub}
-                </span>
-              )}
-            </span>
-            <span className={styles.cardPage}>{spotNote(item)}</span>
-          </li>
-        ))}
-      </ul>
-      {items.length > CARD_ROWS && (
-        <button type="button" className={styles.cardMore} aria-expanded={all} onClick={() => setAll(!all)}>
-          {all ? "Show fewer" : `Show all ${items.length}`}
-        </button>
-      )}
-    </div>
-  );
-}
-
-export function CardPanel({ detail, active, onShow }: PanelProps) {
-  const card = detail.card;
-  const sections = card === null ? [] : cardSections(card, detail.values);
-  const readings = sections.flatMap((section) =>
-    section.items.flatMap((item) => {
-      const value = valueAt(detail.values, item.region);
-      return value ? [{ item, value }] : [];
-    }),
-  );
-  return (
-    <section className={styles.panel} aria-labelledby="card-heading">
-      <h2 id="card-heading" className={styles.valuesHeading}>
-        Document card
-      </h2>
-      {card === null ? (
-        <p className="muted">{noCardText(detail.status)}</p>
-      ) : (
-        <>
-          <p className={styles.pageNote}>
-            <LabelBadge label="needs_review" /> Picked by the AI. Check each one on its page.
-          </p>
-          <dl className={styles.facts}>
-            <div className={styles.factRow}>
-              <dt>Type</dt>
-              <dd>{docTypeLabel(card.doc_type)}</dd>
-            </div>
-            <div className={styles.factRow}>
-              <dt>Languages</dt>
-              <dd>{languagesText(card.languages)}</dd>
-            </div>
-          </dl>
-          {/* The AI summary is at the top of the panel now (SummaryCard.tsx), shown once. */}
-          {sections.map((section) => (
-            <div key={section.heading}>
-              <h3 className={styles.panelHeading}>{section.heading}</h3>
-              {groupByName(section.items).map((group) => (
-                <CardGroup key={group.name} name={group.name} items={group.items} active={active} onShow={onShow} />
-              ))}
-            </div>
-          ))}
-          {/* Tushar, 24 Oct 2026: every "What was read" in one closed section at the end. */}
-          {readings.length > 0 && (
-            <details className={styles.readAll}>
-              <summary>What the AI read, value by value</summary>
-              <ul className={styles.panelList}>
-                {readings.map(({ item, value }) => (
-                  <li key={item.key}>
-                    <span className={styles.fieldCell}>{item.name}: </span>
-                    <bdi dir="auto">{item.text}</bdi>
-                    <WhatWasRead
-                      value={value}
-                      page={detail.pages.find((p) => p.page_no === value.region.page)}
-                      open
-                    />
-                  </li>
-                ))}
-              </ul>
-            </details>
-          )}
-        </>
-      )}
-    </section>
   );
 }
 
@@ -312,7 +201,10 @@ export function AttentionPanel({
   onMark,
   hot = null,
   onHot = () => undefined,
+  fix = null,
 }: {
+  /** The shown page's fix (PageProblems inline), under its reasons: one box (24 Oct 2026). */
+  fix?: ReactNode;
   status: DocumentStatus;
   pages: PageSummary[];
   current: number | null; // the page shown
@@ -361,6 +253,7 @@ export function AttentionPanel({
                   <li key={line}>{line}</li>
                 ))}
               </ul>
+              {item.pageNo === current ? fix : null}
               {item.pageNo === current && shownMarks.length > 0 && (
                 <ul className={styles.markChips} aria-label={`Marks on page ${item.pageNo}`}>
                   {shownMarks.map((mark, index) => {
