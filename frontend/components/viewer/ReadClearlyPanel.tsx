@@ -23,6 +23,9 @@ import { Toast } from "@/components/ui/Toast";
 import { ApiError, getClearCopy, translatePage } from "@/lib/api";
 import type { ClearCopy, PageTranslation, ReadLine, Region, TranslateLanguage } from "@/lib/types";
 import {
+  CLEAN_COPY,
+  COPIED,
+  COPY_BLOCKED,
   LANGUAGES,
   LEFT_OUT,
   MAX_TRANSLATE_PAGES,

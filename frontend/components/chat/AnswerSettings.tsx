@@ -21,8 +21,8 @@ const LEVEL_ORDER: ThinkingLevel[] = ["medium", "high"];
 
 // Plain words (25 Oct 2026): what each does for the person asking.
 const LEVEL_HINTS: Record<ThinkingLevel, string> = {
-  high: "Thinks longest, best for tricky questions.",
-  medium: "Quick and balanced, for most questions.",
+  high: "Precision: slower, more careful answers for important questions.",
+  medium: "Swift: quick answers for everyday questions.",
   low: "Fastest.",
 };
 
