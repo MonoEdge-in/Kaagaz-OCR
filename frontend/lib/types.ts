@@ -808,6 +808,34 @@ export interface Message {
 /** What went wrong on Not useful (PRD 6 F1; backend db/chat.py REASONS). */
 export type ReasonCode = "wrong_documents" | "document_missing" | "wrong_figure" | "did_not_understand" | "other";
 
+/** One answer marked Not useful after the notice, on the admin's Answer quality page (PRD 6 F2). */
+export interface AnswerQualityItem {
+  id: string; // the feedback's id: Mark as handled names it
+  message_id: string;
+  asked_by: string;
+  question: string | null;
+  answer: Answer; // as it may be shown now (sources gone since lose their words)
+  reason_codes: ReasonCode[];
+  reason: string | null;
+  given_at: string;
+  handled_at: string | null;
+}
+
+/** Useful and Not useful in one week, from its Monday (India time). */
+export interface WeekCounts {
+  week: string;
+  useful: number;
+  not_useful: number;
+}
+
+/** GET /admin/answer-quality: one page of items, newest first, and each week of the period, newest first. */
+export interface AnswerQualityReply {
+  from: string;
+  weeks: WeekCounts[];
+  items: AnswerQualityItem[];
+  total: number;
+}
+
 export interface ChatResponse {
   conversation_id: string;
   question: Message;
