@@ -696,7 +696,6 @@ export function DocumentView({
                 flags={openFlags}
                 activeFlag={reviewing ? currentFlag : null}
                 onFlag={startReview}
-                wordBoxes={wordBoxes}
               />
             </div>
           ) : page ? (

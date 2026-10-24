@@ -113,8 +113,7 @@ describe("answer settings", () => {
   });
 
   // Changed on purpose (SoW 19 Oct 2026): "AI engine", Swift then Precision; no Low.
-  // Changed on purpose (plain words, 25 Oct 2026): both hints are shown, saying what each is for.
-  it("show the AI engine as Swift and Precision segments, each with its hint, both shown", () => {
+  it("show the AI engine as Swift and Precision segments, each with its hint, the chosen one's shown", () => {
     const allowed = options({ levels: ["low", "medium", "high"] });
     const html = renderToStaticMarkup(
       createElement(AnswerSettings, { options: allowed, pick: { agents: [FLASH.id], level: "medium" }, locked: false, onPick: () => {} }),
@@ -122,8 +121,8 @@ describe("answer settings", () => {
     const segments = [...html.matchAll(/aria-describedby="([^"]+)" name="[^"]+-level"[^>]*\/>(\w+)<\/label>/g)];
     expect(segments.map((match) => match[2])).toEqual(["Swift", "Precision"]);
     for (const [, hint] of segments) expect(html).toContain(`<p id="${hint}"`);
-    expect(html).toMatch(/<p id="[^"]+-high" class="[^"]+">Precision: slower, more careful answers for important questions\.<\/p>/);
-    expect(html).toMatch(/<p id="[^"]+-medium" class="[^"]+">Swift: quick answers for everyday questions\.<\/p>/);
+    expect(html).toMatch(/<p id="[^"]+-high" class="[^"]+" hidden="">Thinks longest, best for tricky questions\.<\/p>/);
+    expect(html).toMatch(/<p id="[^"]+-medium" class="[^"]+">Quick and balanced, for most questions\.<\/p>/);
     expect(html).not.toMatch(/-low"|>Low</);
     expect(html).toMatch(/<legend>AI engine<\/legend>/);
   });
