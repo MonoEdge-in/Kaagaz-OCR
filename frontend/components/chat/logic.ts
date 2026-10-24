@@ -287,9 +287,40 @@ export interface AnswerPick {
  * whenever the organisation allows it (Tushar, 25 Oct 2026), else its own level. */
 export function defaultPick(options: ChatOptions): AnswerPick {
   const main = options.agents.find((agent) => agent.default);
-  // Low is not offered in Ask: an organisation whose default is Low starts on Swift, when allowed.
-  const level = options.default_level === "low" && options.levels.includes("medium") ? "medium" : options.default_level;
+  const level = options.levels.includes("medium") ? "medium" : options.default_level;
   return { agents: main ? [main.id] : [], level };
+}
+
+/** A pick saved earlier, if the organisation still allows it (its level and its model); else null. */
+export function usablePick(options: ChatOptions, pick: unknown): AnswerPick | null {
+  if (typeof pick !== "object" || pick === null) return null;
+  const { agents, level } = pick as Partial<AnswerPick>;
+  if (!Array.isArray(agents) || !agents.every((id) => typeof id === "string")) return null;
+  if (typeof level !== "string" || !askLevels(options).includes(level as ThinkingLevel)) return null;
+  const known = new Set(options.agents.map((agent) => agent.id));
+  return agents.every((id) => known.has(id)) ? { agents: agents.slice(0, 1), level: level as ThinkingLevel } : null;
+}
+
+const PICK_KEY = "kaagaz.ask.pick";
+
+/** The pick this browser kept (Tushar, 25 Oct 2026: Swift or Precision stays chosen across tabs
+ * and reloads), or null; storage refused (private mode) reads as nothing kept. */
+export function loadPick(): unknown {
+  try {
+    const raw = window.localStorage.getItem(PICK_KEY);
+    return raw === null ? null : JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+/** Keep the pick in this browser; storage refused is ignored (the pick still holds in this tab). */
+export function savePick(pick: AnswerPick): void {
+  try {
+    window.localStorage.setItem(PICK_KEY, JSON.stringify({ agents: pick.agents, level: pick.level }));
+  } catch {
+    // shortcut: private mode keeps the pick in this tab only, which is today's behaviour
+  }
 }
 
 /** Answer settings are shown only when there is something to choose. */
