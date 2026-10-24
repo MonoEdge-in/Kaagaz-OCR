@@ -36,25 +36,31 @@ export const DASHBOARD_TEXT = {
   askLabel: "Ask about your documents",
   askPlaceholder: "Ask anything, e.g. “Kiska bill sabse zyada tha last month?”",
   ask: "Ask",
-  reviewQueue: "Review queue",
-  reviewLine: "values need a second look. Answers that use them say “Ready to verify” until they are checked.",
-  reviewClear: "Nothing waits for a second look. New values to check show here.",
+  // Home made clear (24 Oct 2026): what the page is for, then one card per next step.
+  lead: "Ask anything about your documents, or start with one of the steps below.",
+  tryThese: "Try",
+  steps: "What you can do",
+  checkLine: "The AI was not fully sure about these. A quick look makes every answer that uses them trusted.",
+  checkClear: "Every value has been checked. New ones show here.",
   openReview: "Open Review",
-  libraryPanel: "Your library",
-  libraryLine: "documents, each with its source page. Ask about any of them in English or Hinglish.",
-  openDocuments: "Open documents",
   uploadDocuments: "Upload documents",
-  uploadAutofile: "Kaagaz files them",
+  uploadLine: "PDFs, photos and scans. Kaagaz reads each page and files it for you.",
+  chooseFiles: "Choose files",
+  browseLine: "Every document with its source page. Search or ask about any of them.",
+  openDocuments: "Open documents",
 };
 
-/** "4 versions and 23 values are waiting for you."; `values` is null for a member, who has no Review. */
-export function waitingText(versions: number, values: number | null): string {
-  const parts: string[] = [];
-  if (versions > 0) parts.push(`${formatNumber(versions)} ${versions === 1 ? "version" : "versions"}`);
-  if (values !== null && values > 0) parts.push(`${formatNumber(values)} ${values === 1 ? "value" : "values"}`);
-  if (parts.length === 0) return "Everything is up to date.";
-  const one = parts.length === 1 && (versions === 1 || values === 1);
-  return `${parts.join(" and ")} ${one ? "is" : "are"} waiting for you.`;
+/** The Review card's title: "Check 39 values"; null while the count loads. */
+export function checkTitle(values: number | null): string {
+  if (values === null) return "Check values";
+  if (values === 0) return "Nothing to check";
+  return `Check ${formatNumber(values)} ${values === 1 ? "value" : "values"}`;
+}
+
+/** The library card's title: "Browse 9 documents"; null while the count loads. */
+export function browseTitle(documents: number | null): string {
+  if (documents === null) return "Browse documents";
+  return `Browse ${formatNumber(documents)} ${documents === 1 ? "document" : "documents"}`;
 }
 
 /** "Tuesday · 20 Oct 2026 · Wakad Realty", in India time. */
@@ -73,12 +79,11 @@ const SUGGESTIONS: Partial<Record<DocType, string>> = {
   receipt: "How much did we pay to each party this month?",
   register: "Which register entry has the largest amount?",
 };
-const ANY_SUGGESTION = "What did we upload this week?";
-
-/** Up to three questions to ask with one press, for the most common kinds first. */
+/** Up to three questions to ask with one press, for the most common kinds first. Only questions
+ * about what documents say: Ask cannot tell when a document came (Recent documents shows that). */
 export function suggestedQuestions(types: readonly { doc_type: DocType | null }[]): string[] {
   const picked = types.map((row) => (row.doc_type ? SUGGESTIONS[row.doc_type] : undefined)).filter((q): q is string => !!q);
-  return [...new Set([...picked, ANY_SUGGESTION])].slice(0, 3);
+  return [...new Set(picked)].slice(0, 3);
 }
 
 /** "pdf" from "Rent Agreement.pdf"; "DOC" when the name has none. Upper case, at most 4 letters. */

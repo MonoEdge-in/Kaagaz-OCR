@@ -1,0 +1,78 @@
+/* The clock beside the brand: hidden until it peeks, then a round face whose hands sweep to
+   the time, and the time beside it. It keeps its place, so the brand never moves. */
+
+.clock {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-inline-start: var(--space-3);
+  vertical-align: middle;
+  opacity: 0;
+  transform: translateX(-6px) scale(0.9);
+  transform-origin: left center;
+  pointer-events: none;
+}
+
+.clock[data-shown] {
+  opacity: 1;
+  transform: none;
+}
+
+.face {
+  position: relative;
+  flex: none;
+  width: var(--badge-h);
+  height: var(--badge-h);
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+  background: var(--bg-selected);
+}
+
+.face::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 4px;
+  height: 4px;
+  margin: auto;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+/* Each hand stands on the centre and turns from 12. */
+.hand {
+  position: absolute;
+  left: calc(50% - 1px);
+  bottom: 50%;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+  transform: rotate(var(--turn, 0deg));
+  transform-origin: 50% 100%;
+}
+
+.hour {
+  height: 6px;
+}
+
+.minute {
+  height: 9px;
+}
+
+.time {
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .clock {
+    transition: opacity var(--motion-calm) var(--ease-out), transform var(--motion-calm) var(--ease-out);
+  }
+
+  .hand {
+    transition: transform var(--motion-calm) var(--ease-out);
+  }
+}

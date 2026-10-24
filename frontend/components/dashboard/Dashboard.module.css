@@ -7,36 +7,41 @@
   gap: 28px;
 }
 
-/* --- The welcome --------------------------------------------------------------------- */
-
-.hero {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(460px, 100%), 1fr));
-  gap: 28px;
-  align-items: stretch;
-}
+/* --- The welcome (24 Oct 2026: what the page is for, then Ask, the one main action) ---- */
 
 .welcome {
   display: flex;
   flex-direction: column;
-  justify-content: center;
-  gap: 22px;
+  gap: var(--space-4);
   min-width: 0;
-  padding: var(--space-2) 0;
+  padding-block: var(--space-4) var(--space-2);
+}
+
+.today {
+  margin: 0;
+  color: var(--k-ink-muted);
+  font-size: var(--fs-sm);
 }
 
 .greeting {
-  max-width: 15ch;
   margin: 0;
-  font-size: clamp(2.25rem, 1.6rem + 2.4vw, 3.5rem);
-  overflow-wrap: normal;
+  font-size: clamp(2rem, 1.5rem + 1.8vw, 3rem);
+  overflow-wrap: anywhere;
+}
+
+.lead {
+  max-width: 60ch;
+  margin: 0;
+  color: var(--k-ink-muted);
+  font-size: 1.0625rem;
+  line-height: 1.5;
 }
 
 .ask {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  max-width: 620px;
+  max-width: 720px;
   padding: 6px 6px 6px 22px;
   border: 1px solid var(--k-card-edge);
   border-radius: var(--k-r-pill);
@@ -68,108 +73,90 @@
   color: var(--k-ink-faint);
 }
 
-/* --- The panel beside it, and Upload ---------------------------------------------------- */
-
-.side {
-  display: grid;
-  grid-template-rows: 1fr auto auto;
-  gap: 14px;
-  min-width: 0;
+.tryRow {
+  align-items: center;
 }
 
-.panel {
+.tryLabel {
+  color: var(--k-ink-muted);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+/* --- The next steps: one card each, a sentence and a button that says where it goes ---- */
+
+.actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr));
+  gap: var(--space-4);
+}
+
+.action {
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
-  gap: 28px;
-  min-height: 260px;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: 24px;
+  border: 1px solid var(--k-card-edge);
+  border-radius: var(--k-r-4);
+  background: var(--k-surface);
+  box-shadow: var(--k-shadow-1);
+  color: var(--k-ink);
   text-decoration: none;
-  background-image: radial-gradient(var(--k-accent-line) 1.2px, transparent 1.6px);
-  background-size: 18px 18px;
 }
 
-.panel:focus-visible {
+a.action:focus-visible {
   outline: 2px solid var(--k-focus);
   outline-offset: 3px;
 }
 
-.panelHead {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
+.actionIcon {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: var(--k-r-3);
+  background: var(--k-accent-soft);
+  color: var(--k-accent);
 }
 
-/* The handoff's pixel mark, drawn by the page's own dots: a small square of the ink. */
-.pixels {
-  width: 51px;
-  height: 36px;
-  background-image: radial-gradient(var(--k-accent-ink) 2.4px, transparent 2.6px);
-  background-size: 9px 9px;
-  opacity: 0.9;
+.actionTitle {
+  font: 600 1.25rem/1.25 var(--k-font-body);
 }
 
-.panelLabel {
-  font: 500 0.875rem var(--k-font-body);
-  color: var(--k-accent-ink);
-  opacity: 0.8;
-}
-
-.panelBody {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  color: var(--k-accent-ink);
-}
-
-.panelNumber {
-  font-family: var(--k-font-display);
-  font-stretch: var(--k-display-stretch);
-  font-size: 88px;
-  font-weight: 600;
-  line-height: 0.9;
-  letter-spacing: -0.04em;
-}
-
-.panelLine {
-  max-width: 36ch;
+.actionText {
+  flex: 1;
+  color: var(--k-ink-muted);
   font-size: 15px;
   line-height: 1.5;
-  opacity: 0.92;
 }
 
-.panelButton {
-  align-self: flex-start;
+.actionGo {
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
-  min-height: 40px;
-  padding: 0 18px;
-  border-radius: var(--k-r-pill);
-  background: var(--k-accent-ink);
   color: var(--k-accent);
-  font: 500 1rem var(--k-font-body);
+  font-weight: 600;
 }
 
-.upload {
-  justify-content: space-between;
-  background: var(--k-surface);
-  border-color: var(--k-card-edge);
-  box-shadow: var(--k-shadow-1);
+/* Values wait: the card in the accent, so the next step reads first. */
+.actionWaiting {
+  border-color: var(--k-accent);
+  background: var(--k-accent);
+  color: var(--k-accent-ink);
 }
 
-.uploadWords {
-  display: inline-flex;
-  gap: 10px;
-  align-items: center;
+.actionWaiting .actionIcon {
+  background: var(--k-accent-ink);
 }
 
-.uploadWhere {
-  text-transform: none;
-  letter-spacing: 0;
-  font-family: var(--k-font-body);
-  font-weight: 400;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.actionWaiting .actionText,
+.actionWaiting .actionGo {
+  color: var(--k-accent-ink);
+}
+
+.choose {
+  align-self: flex-start;
 }
 
 /* Where the upload goes, on one row under Upload (SoW 19 Oct): a small label, then the
@@ -389,5 +376,57 @@ a.total:hover {
 
   .recentMeta .when {
     display: none;
+  }
+}
+
+/* One entrance on load (24 Oct 2026): the welcome, then each next step in turn; a card
+   lifts to the mouse and gives a little when pressed. Motion only where it is welcome. */
+@media (prefers-reduced-motion: no-preference) {
+  .welcome > * {
+    animation: home-rise var(--motion-calm) var(--ease-out) both;
+  }
+
+  .welcome > :nth-child(2) {
+    animation-delay: 40ms;
+  }
+
+  .welcome > :nth-child(3) {
+    animation-delay: 80ms;
+  }
+
+  .welcome > :nth-child(n + 4) {
+    animation-delay: 120ms;
+  }
+
+  .action {
+    animation: home-rise var(--motion-calm) var(--ease-out) both;
+    animation-delay: calc(var(--i, 0) * 70ms + 180ms);
+    transition: transform var(--t-fast) var(--ease);
+  }
+
+  .actionGo :global(svg) {
+    transition: transform var(--t-fast) var(--ease);
+  }
+}
+
+@media (hover: hover) and (pointer: fine) {
+  a.action:hover {
+    box-shadow: var(--k-shadow-2);
+    transform: translateY(-2px);
+  }
+
+  a.action:hover .actionGo :global(svg) {
+    transform: translateX(3px);
+  }
+}
+
+a.action:active {
+  transform: scale(0.99);
+}
+
+@keyframes home-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
   }
 }
