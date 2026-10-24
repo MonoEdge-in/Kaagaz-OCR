@@ -434,6 +434,7 @@ const ACTION_WORDS: Record<string, string> = {
   "document.tags": "Changed a document's tags",
   "document.reprocess": "Asked to read a document again",
   "document.read_upgrade": "Read a document again after an upgrade",
+  "document.land_facts": "Read a land record's owners and places again", // PRD 6 D3
   "document.page_accept": "Kept a page as it was read",
   "document_story.saved": "Saved a document's story",
   "document_story.deleted": "Deleted a document's story",
