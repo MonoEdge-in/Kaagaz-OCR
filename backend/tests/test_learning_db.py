@@ -12,6 +12,7 @@ from kaagaz.answering.hinglish import normalise
 from kaagaz.answering.pins import LIFT_LEARNED, Pin, lifts
 from kaagaz.db import chat as chat_sql
 from kaagaz.db.engine import Database
+from tests.test_ai_settings_db import switched_off
 from tests.test_api_support import CSRF, Api, Signed, answer_json
 
 pytestmark = pytest.mark.db
@@ -132,3 +133,18 @@ def test_a_wrong_documents_stop_never_falls_off_the_cap_and_the_cap_is_logged(
     assert sorted(pin.kind for pin in _learned(pins) if pin.document_id == x) == ["useful", "useful", "wrong"]
     assert x not in lifts(pins, WORDS)  # A's stop still holds for everyone
     assert [r.getMessage() for r in caplog.records if r.name == "kaagaz.db.chat"] == ["learned marks capped"]
+
+
+def test_the_learning_and_clarify_switches_off_reach_the_answer(db: Database) -> None:
+    """PRD 6 integration (0052): ``nlq_learning`` off reads no learned marks; ``nlq_clarify`` off
+    asks the answer for no plan; one switch statement either way."""
+    api = Api(db)
+    admin = api.new_admin()
+    ravi = api.sign_in(admin.customer_id)
+    _cited(api, admin.customer_id)
+    _rate(api, ravi, {"rating": "up"})
+    with switched_off(db, "nlq_learning"), switched_off(db, "nlq_clarify"):
+        _, pins = _ask(api, ravi)
+    assert (_learned(pins), api.answers.clarifies[-1]) == ([], False)
+    _, pins = _ask(api, ravi)
+    assert (len(_learned(pins)), api.answers.clarifies[-1]) == (1, True)

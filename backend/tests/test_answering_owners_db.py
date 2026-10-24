@@ -16,7 +16,7 @@ from kaagaz.answering.service import AnswerService
 from kaagaz.db.engine import Database
 from kaagaz.search.scope import EVERYTHING
 from tests.db_support import new_customer
-from tests.land_support import add_land, ensure_value_keys
+from tests.land_support import add_land
 from tests.settings_factory import make_settings
 from tests.test_ai_settings_db import switched_off
 
@@ -30,7 +30,6 @@ _NUMBER = re.compile(r"\d+(?:[.,/]\d+)*")
 
 @pytest.fixture
 def keyed(db: Database) -> Database:
-    ensure_value_keys(db)
     return db
 
 
@@ -212,7 +211,6 @@ _BULK = (
 
 @pytest.fixture(scope="module")
 def bulk(db: Database) -> str:
-    ensure_value_keys(db)
     c, _ = new_customer(db)
     with db.customer(c) as conn:
         for statement in _BULK:

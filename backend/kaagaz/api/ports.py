@@ -28,9 +28,7 @@ class ApiStorage(BlobStorage, Protocol):
 
     def start_resumable(self, customer_id: str, user_id: str, session_id: str) -> tuple[str, str]: ...
 
-    def upload_resumable_part(
-        self, key: str, upload_id: str, part_number: int, body: bytes
-    ) -> None: ...
+    def upload_resumable_part(self, key: str, upload_id: str, part_number: int, body: bytes) -> None: ...
 
     def resumable_parts(self, key: str, upload_id: str) -> list[tuple[int, int, str]]: ...
 
@@ -71,6 +69,7 @@ class Answers(Protocol):
         choice: ChatChoice | None = None,
         pins: Sequence[Pin] = (),
         pending: Pending | None = None,
+        clarify: bool = True,
     ) -> AnswerLike:
         """``question`` is the stripped question text; ``scope`` is resolved for this customer;
         ``history`` is the conversation's earlier turns, oldest first; ``user_id`` is the
@@ -78,7 +77,8 @@ class Answers(Protocol):
         (PRD 5 M3), its documents still live, for the follow-up rewrite only; ``choice`` who
         drafts the answer, checked for this customer (features 25-27); ``pins`` the asker's
         own Most relevant picks (``kaagaz.db.chat.pins_for``); ``pending`` the open clarify
-        this answers, read from the stored message (PRD 6 B1, ``clarify.reply_to``)."""
+        this answers, read from the stored message (PRD 6 B1, ``clarify.reply_to``); ``clarify``
+        False (the ``nlq_clarify`` switch is off, 0052): no plan and no clarifying question."""
         ...
 
     def remember(self, turns: Sequence[Turn], memory: Memory, cited: Sequence[str]) -> Memory | None:

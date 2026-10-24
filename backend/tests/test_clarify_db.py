@@ -9,13 +9,12 @@ from sqlalchemy import text
 from kaagaz.answering import clarify
 from kaagaz.answering.clarify import Entity, Pending, PgVocabulary, after_reply
 from kaagaz.db.engine import Database
-from tests.db_support import ensure_value_keys, insert_document, insert_key, new_customer
+from tests.db_support import insert_document, insert_key, new_customer
 
 pytestmark = pytest.mark.db
 
 
 def test_the_scope_narrows_the_vocabulary_and_a_property_pick_stays_live(db: Database) -> None:
-    ensure_value_keys(db)
     customer, _ = new_customer(db)
     with db.customer(customer) as conn:
         mine, other = insert_document(conn, customer), insert_document(conn, customer)
@@ -35,7 +34,6 @@ def test_the_scope_narrows_the_vocabulary_and_a_property_pick_stays_live(db: Dat
 
 
 def test_the_vocabulary_is_aggregated_once_and_read_through_indexes_under_rls(db: Database) -> None:
-    ensure_value_keys(db)
     customer, _ = new_customer(db)
     with db.customer(customer) as conn:
         document = insert_document(conn, customer)

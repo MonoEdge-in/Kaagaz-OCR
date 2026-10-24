@@ -1,6 +1,5 @@
-"""Land values and their ``value_keys`` rows exactly as #245 defines them (PRD 6 E's tests). Until
-package D1's migration is on this branch's base, ``ensure_value_keys`` creates the same table,
-keys, CHECKs, indexes, policy and grants in the test database (else it does nothing)."""
+"""Land values and their ``value_keys`` rows exactly as #245 and migration 0049 define them (PRD 6
+E's tests)."""
 
 import json
 import uuid
@@ -11,34 +10,8 @@ from sqlalchemy import text
 
 from kaagaz.db.engine import Database
 from kaagaz.extraction.links import normalise_identifier
-from tests.db_support import APP_ROLE, insert_document
+from tests.db_support import insert_document
 
-_VALUE_KEYS = (
-    """
-    CREATE TABLE value_keys (
-        customer_id uuid NOT NULL,
-        value_id uuid NOT NULL,
-        document_id uuid NOT NULL,
-        kind text NOT NULL CHECK (kind IN ('person', 'place', 'property')),
-        place_level text NULL CHECK (place_level IN ('village', 'taluka', 'district', 'city')),
-        latin text NOT NULL CHECK (length(latin) BETWEEN 1 AND 200),
-        sound text NOT NULL CHECK (length(sound) <= 400),
-        created_at timestamptz NOT NULL DEFAULT now(),
-        PRIMARY KEY (customer_id, value_id),
-        CHECK ((kind = 'place') = (place_level IS NOT NULL)),
-        FOREIGN KEY (customer_id, value_id) REFERENCES extracted_values (customer_id, id) ON DELETE CASCADE,
-        FOREIGN KEY (customer_id, document_id) REFERENCES documents (customer_id, id) ON DELETE CASCADE
-    )
-    """,
-    "CREATE INDEX value_keys_latin ON value_keys (customer_id, kind, latin)",
-    "CREATE INDEX value_keys_sound ON value_keys (customer_id, kind, sound)",
-    "CREATE INDEX value_keys_document ON value_keys (customer_id, document_id)",
-    "ALTER TABLE value_keys ENABLE ROW LEVEL SECURITY",
-    "CREATE POLICY customer_only ON value_keys USING (customer_id = kaagaz_current_customer())"
-    " WITH CHECK (customer_id = kaagaz_current_customer())",
-    f"GRANT SELECT, INSERT ON value_keys TO {APP_ROLE}",
-    f"GRANT UPDATE (latin, sound) ON value_keys TO {APP_ROLE}",
-)
 _VALUE = text(
     "INSERT INTO extracted_values (id, customer_id, document_id, record_key, field, value_text,"
     " value_raw, page_no, region, reader, label, label_reason)"
@@ -49,13 +22,6 @@ _KEY = text(
     "INSERT INTO value_keys (customer_id, value_id, document_id, kind, place_level, latin, sound)"
     " VALUES (:c, :id, :d, :kind, :level, :latin, '')"
 )
-
-
-def ensure_value_keys(db: Database) -> None:
-    with db.engine.begin() as conn:  # the owner, as a migration: schema only, no customer's rows
-        if conn.execute(text("SELECT to_regclass('public.value_keys')")).scalar() is None:
-            for statement in _VALUE_KEYS:
-                conn.execute(text(statement))
 
 
 def add_land(

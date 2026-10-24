@@ -154,6 +154,7 @@ class FakeAnswers:
     histories: list[list[Turn]] = field(default_factory=list)  # the earlier turns each question got
     unavailable: bool = False  # KZ-006: not found while the model was down
     resumed: list[Pending] = field(default_factory=list)  # PRD 6 B1: each clarify answered
+    clarifies: list[bool] = field(default_factory=list)  # PRD 6 (0052): the nlq_clarify switch each got
 
     def answer(
         self,
@@ -167,8 +168,10 @@ class FakeAnswers:
         choice: ChatChoice | None = None,
         pins: Sequence[Pin] = (),
         pending: Pending | None = None,
+        clarify: bool = True,
     ) -> _FixedAnswer:
         self.asked.append((customer_id, question))
+        self.clarifies.append(clarify)
         self.pins.append(list(pins))
         self.histories.append(list(history))
         self.choices.append(choice)

@@ -537,6 +537,7 @@ class AnswerService:
         choice: ChatChoice | None = None,
         pins: Sequence[Pin] = (),
         pending: Pending | None = None,
+        clarify: bool = True,
     ) -> Answer:
         """Answer ``question`` for ``customer_id`` only, from documents inside ``scope``;
         ``history`` is the conversation's earlier turns, oldest first; ``user_id``, the
@@ -548,14 +549,17 @@ class AnswerService:
         (answering/pins.py; ``kaagaz.db.chat.pins_for``). A ``choice`` with no agent
         (``models.NO_MODEL``: the asker's Ask setting is None, 0038) answers as with the model
         off: no model call at all, the lines found quoted. ``pending``: the stored clarify
-        this answers (step 18, ``clarify.reply_to``), whose question is answered instead."""
+        this answers (step 18, ``clarify.reply_to``), whose question is answered instead;
+        ``clarify`` False (the ``nlq_clarify`` switch, 0052): no plan, so no clarify."""
         if choice is not None and not choice.agents:
             keyless = copy.copy(self)  # shallow: the same ports, without the model clients
             keyless._model = keyless._translator = None
             return keyless._respond(
-                customer_id, question, scope, history, user_id, memory, None, pins, pending
+                customer_id, question, scope, history, user_id, memory, None, pins, pending, clarify
             )
-        return self._respond(customer_id, question, scope, history, user_id, memory, choice, pins, pending)
+        return self._respond(
+            customer_id, question, scope, history, user_id, memory, choice, pins, pending, clarify
+        )
 
     def _respond(
         self,
@@ -568,6 +572,7 @@ class AnswerService:
         choice: ChatChoice | None,
         pins: Sequence[Pin],
         pending: Pending | None,
+        clarify: bool = True,
     ) -> Answer:
         """``answer``'s work, timed by it."""
         if scope.matches_nothing:
@@ -587,7 +592,7 @@ class AnswerService:
         done = Rewritten(None, (), None)
         # CX6: the aspects are asked for, even on a first question, when they can be searched.
         most = self._settings.query_aspects_max if whole is None and self._widens() else 0
-        planned = self._vocabulary is not None  # step 18: the plan, on every question
+        planned = clarify and self._vocabulary is not None  # step 18: the plan, on every question
         if self._model is not None and (recent or remembered or most or planned):
             done = rewrite_and_plan(
                 self._model,

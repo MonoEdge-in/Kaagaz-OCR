@@ -8,7 +8,7 @@ from sqlalchemy import text
 
 from kaagaz.answering.clarify import Entity, Pending, PgVocabulary, after_reply, outcome
 from kaagaz.db.engine import Database
-from tests.db_support import ensure_value_keys, insert_document, insert_key, new_customer
+from tests.db_support import insert_document, insert_key, new_customer
 
 pytestmark = pytest.mark.db
 
@@ -18,7 +18,6 @@ ASKED = [Entity("person", "Nikhil"), Entity("place", "Puny"), Entity("place", "P
 def company(db: Database, *printed: tuple[str, str]) -> tuple[str, str]:
     """A company with one live document printing each (kind, name), Punewadi only in Trash and
     Pimpri only on an older version; its id and its live document."""
-    ensure_value_keys(db)
     customer, _ = new_customer(db)
     with db.customer(customer) as conn:
         document = insert_document(conn, customer)

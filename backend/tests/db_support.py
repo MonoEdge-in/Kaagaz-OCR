@@ -198,44 +198,7 @@ def library_rows_seen(db: Database, customer_id: str, library: dict[str, str]) -
         )
 
 
-# PRD 6 B1: #245's value_keys until package D's migration 0049 lands, as 0049 makes it (table,
-# keys, CHECKs, indexes, policy and grants; the same as E's tests/land_support.py). Remove at integration.
-_VALUE_KEYS = [
-    """
-    CREATE TABLE value_keys (
-        customer_id uuid NOT NULL,
-        value_id uuid NOT NULL,
-        document_id uuid NOT NULL,
-        kind text NOT NULL CHECK (kind IN ('person', 'place', 'property')),
-        place_level text NULL CHECK (place_level IN ('village', 'taluka', 'district', 'city')),
-        latin text NOT NULL CHECK (length(latin) BETWEEN 1 AND 200),
-        sound text NOT NULL CHECK (length(sound) <= 400),
-        created_at timestamptz NOT NULL DEFAULT now(),
-        PRIMARY KEY (customer_id, value_id),
-        CHECK ((kind = 'place') = (place_level IS NOT NULL)),
-        FOREIGN KEY (customer_id, value_id) REFERENCES extracted_values (customer_id, id) ON DELETE CASCADE,
-        FOREIGN KEY (customer_id, document_id) REFERENCES documents (customer_id, id) ON DELETE CASCADE
-    )
-    """,
-    "CREATE INDEX value_keys_latin ON value_keys (customer_id, kind, latin)",
-    "CREATE INDEX value_keys_sound ON value_keys (customer_id, kind, sound)",
-    "CREATE INDEX value_keys_document ON value_keys (customer_id, document_id)",
-    "ALTER TABLE value_keys ENABLE ROW LEVEL SECURITY",
-    "CREATE POLICY customer_only ON value_keys USING (customer_id = kaagaz_current_customer())"
-    " WITH CHECK (customer_id = kaagaz_current_customer())",
-    f"GRANT SELECT, INSERT ON value_keys TO {APP_ROLE}",
-    f"GRANT UPDATE (latin, sound) ON value_keys TO {APP_ROLE}",
-]
 _LAND_FIELDS = {"person": "land_owner_name", "place": "land_village", "property": "land_survey_number"}
-
-
-def ensure_value_keys(db: Database) -> None:
-    """Make ``value_keys`` (#245) once, as the owner, unless a migration already has. O(1)."""
-    with db.engine.begin() as conn:
-        conn.execute(text("SELECT pg_advisory_xact_lock(245)"))
-        if conn.execute(text("SELECT to_regclass('public.value_keys')")).scalar() is None:
-            for statement in _VALUE_KEYS:
-                conn.execute(text(statement))
 
 
 _KEY = text(

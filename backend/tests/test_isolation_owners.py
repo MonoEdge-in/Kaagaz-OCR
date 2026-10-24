@@ -14,7 +14,7 @@ from kaagaz.answering.service import AnswerService
 from kaagaz.db.engine import Database
 from kaagaz.search.scope import EVERYTHING
 from tests.db_support import new_customer
-from tests.land_support import add_land, ensure_value_keys
+from tests.land_support import add_land
 from tests.settings_factory import make_settings
 from tests.test_answering_owners_db import NOW
 
@@ -24,7 +24,6 @@ QUESTION = "Which land is owned by Nikhil Varde in Pune?"
 
 
 def test_the_same_owner_in_two_companies_gets_each_only_its_own_record(db: Database) -> None:
-    ensure_value_keys(db)
     (a, _), (b, _), (c, _) = new_customer(db), new_customer(db), new_customer(db)
     a_land = add_land(db, a, "A.pdf", [("Nikhil Varde", "60%")], places=[("district", "Pune")])
     b_land = add_land(db, b, "B.pdf", [("Nikhil Varde", "40%")], places=[("district", "Pune")])
@@ -41,7 +40,6 @@ def test_the_same_owner_in_two_companies_gets_each_only_its_own_record(db: Datab
 
 
 def test_the_queries_given_another_companys_keys_and_ids_find_nothing(db: Database) -> None:
-    ensure_value_keys(db)
     (a, _), (b, _) = new_customer(db), new_customer(db)
     a_land = add_land(db, a, "A.pdf", [("Krishna Sohoni", "50%")], places=[("village", "Kusgaon")])
     queries, keys = PgOwners(db), ["krishna sohoni", "kusgaon"]

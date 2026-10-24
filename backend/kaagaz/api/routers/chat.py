@@ -275,6 +275,9 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
             Pin(row["document_id"], int(row["page_no"]), bool(row["same"]), str(row["question"]))
             for row in chat_sql.pins_for(conn, user.customer_id, user.user_id, conversation_id)
         ]
+        switched = ai_settings.switches(conn, user.customer_id)  # 0038, 0039; PRD 6's in 0052
+        if not switched["ask"]:
+            raise ApiError(403, "feature_off", FEATURE_OFF)
         # What Kaagaz learned (PRD 6 F3, answering/pins.py): this customer's Useful and
         # Wrong documents marks; lifts decides which apply to this question and to whom.
         pins += [
@@ -288,9 +291,8 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
                 own=bool(row["own"]),
             )
             for row in chat_sql.learned_for(conn, user.customer_id, user.user_id)
+            if switched["nlq_learning"]
         ]
-        if not ai_settings.switch_on(conn, "ask", user.customer_id):  # switched off (0038, 0039)
-            raise ApiError(403, "feature_off", FEATURE_OFF)
         try:
             agents = _first_allowed(conn, user.customer_id, body.agents, context)
             choice = _choice(conn, user, agents, body.thinking, context)
@@ -319,6 +321,7 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
             choice=choice,
             pins=pins,
             pending=pending,
+            clarify=switched["nlq_clarify"],
         )
         if reply.unavailable:  # KZ-006: an outage is never "not found"; nothing is stored
             raise ApiError(503, "backend_unavailable", headers={"Retry-After": "60"})
