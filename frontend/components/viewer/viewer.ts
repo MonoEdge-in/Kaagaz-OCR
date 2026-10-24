@@ -46,6 +46,17 @@ export function splitAfterKey(current: number, key: string): number | null {
   return null;
 }
 
+/**
+ * Document panel UX (25 Oct 2026): how many of the panel's tabs fit a tab row `rem` wide
+ * beside More, four at most, two at least (More is then its icon alone); `long` when Needs
+ * attention, the longest tab, is among them. Four until the row is measured.
+ */
+export function tabsThatFit(rem: number | null, long: boolean): number {
+  if (rem === null) return 4;
+  const [four, three] = long ? [28, 22] : [24, 18];
+  return rem >= four ? 4 : rem >= three ? 3 : 2;
+}
+
 /** The next zoom step in or out; stays put at either end. */
 export function stepZoom(current: number, direction: "in" | "out"): number {
   const index = ZOOM_STEPS.findIndex((step) => step >= current - 1e-9);

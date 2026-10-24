@@ -34,10 +34,18 @@
 // Your words (package H): a link with ?words= lights every line of the page holding one,
 // with a note, "Show your words" and "Next page with your words" under the page (YourWords.tsx).
 
+// Document panel UX (25 Oct 2026): the panel answers, in order, what is this (the name, one
+// status in words, the AI summary and its key facts), can I trust it (one status line, its
+// counts under More details) and what can I do (Ask, the one primary; Download and Clean
+// copy in one quiet row; the rest in the "…" menu). At most four tabs show, the rest under
+// More. On a phone the same column comes first, above the page. This replaces the breadcrumb,
+// title row and meta line described above.
+
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { CSSProperties, KeyboardEvent, ReactNode, RefObject } from "react";
 import { tabAfterKey } from "@/components/admin/logic";
+import { RowMenu } from "@/components/admin/RowMenu";
 import { useMediaQuery } from "@/components/chat/hooks";
 import { linkWords } from "@/components/chat/answer";
 import { askAboutHref } from "@/components/chat/logic";
@@ -46,10 +54,12 @@ import libraryStyles from "@/components/documents/Library.module.css";
 import { ALL_DOCUMENTS, libraryHref } from "@/components/documents/libraryQuery";
 import { FILED_HERE_TEXT } from "@/components/documents/batchTray";
 import { UNDERSTANDING_TEXT } from "@/components/documents/logic";
-import { StatusChip } from "@/components/documents/StatusChip";
 import { TimeLeft } from "@/components/documents/TimeLeft";
 import { AutofileNote } from "@/components/documents/UploadArea";
 import { Icon } from "@/components/ui/Icon";
+import { Icon as KIcon } from "@/components/ui/Icon/Icon";
+import type { KIconName } from "@/components/ui/Icon/Icon";
+import { Toast } from "@/components/ui/Toast";
 import { PageViewer } from "@/components/viewer/PageViewer";
 import {
   DRAG_THRESHOLD_PX,
@@ -58,7 +68,9 @@ import {
   bringPageForSpot,
   splitAfterDrag,
   splitAfterKey,
+  tabsThatFit,
 } from "@/components/viewer/viewer";
+import { CLEAN_COPY } from "@/components/viewer/clearCopy";
 import { ReadClearlyPanel } from "@/components/viewer/ReadClearlyPanel";
 import { ScannedTextPanel } from "@/components/viewer/ScannedTextPanel";
 import { valueAt } from "@/components/viewer/scanned";
@@ -91,7 +103,7 @@ import { flagDomId, trustText } from "@/components/review/wordReview";
 import { Timeline } from "@/components/activity/Timeline";
 import { ACTIVITY_TEXT } from "@/components/activity/words";
 import { DetailsPanel } from "@/components/files/DetailsPanel";
-import { LabelChip } from "@/components/files/LabelChip";
+import { LABEL_DESCRIPTIONS, labelName } from "@/components/files/labels";
 import { QUESTIONS_TEXT, QuestionsPanel } from "@/components/files/QuestionsPanel";
 import { FILES_TEXT } from "@/components/files/words";
 import { VersionBanner } from "@/components/versions/VersionBanner";
@@ -105,7 +117,8 @@ import {
   getPageReadings,
   resolveReview,
 } from "@/lib/api";
-import { formatDate, formatDateTime, typeLabel } from "@/lib/format";
+import { formatDate, formatDateTime, statusChip, typeLabel } from "@/lib/format";
+import type { StatusTone } from "@/lib/format";
 import { progressSignature } from "@/lib/poll";
 import { markReceived } from "@/lib/timeLeft";
 import { decodeRegion } from "@/lib/regions";
@@ -127,6 +140,7 @@ import { PageProblems } from "./PageProblems";
 import { ReadAgain } from "./ReadAgain";
 import { ReviewPanel } from "./ReviewPanel";
 import { StoryPanel } from "./StoryPanel";
+import { ScriptText, SummaryCard } from "./SummaryCard";
 import styles from "./DocumentView.module.css";
 import { ExportDialog, SummaryBar, useEnsembleStart, useWordReview } from "./WordReview";
 
@@ -142,6 +156,9 @@ const FIRST_VALUES = 6; // shown before "Show all N"
 // Said after "Highlighted: <field>" when the spot came in a link (a source card, a search
 // hit or a review item), not from a pick on this screen.
 const FROM_LINK = ", from the link you opened";
+// The status under the title: its words (lib/format.ts statusChip) with an icon.
+const STATUS_ICONS: Record<StatusTone, KIconName> = { ready: "check-circle", working: "clock", neutral: "info", danger: "alert" };
+const DETAILS_ID = "document-details"; // More details: the kind, pages, counts, tags and versions
 
 type Loaded =
   | { attempt: number; detail: DocumentDetail }
@@ -181,6 +198,8 @@ export function DocumentView({
   const [hotMark, setHotMark] = useState<number | null>(null); // DD7: the mark pointed at
   const [readAgainKey, setReadAgainKey] = useState(0); // Read again picked from the menu: its question
   const [announcement, setAnnouncement] = useState("");
+  const [toast, setToast] = useState<string | null>(null); // "Owner saved.", "Download started."
+  const [moreOpen, setMoreOpen] = useState(false); // the status line's More details
   const viewerRef = useRef<HTMLElement>(null);
   // Set when a poll sees reading end: the next detail says what was found ("again": after Read again).
   const settling = useRef<"read" | "again" | null>(null);
@@ -360,23 +379,26 @@ export function DocumentView({
     setAdding({ text, region });
   };
   const hasScannedText = page !== undefined && page.unit !== "cells";
+  const attention = attentionCount(detail.pages);
   // File management P1 (Changed on purpose, PRD 1 screens): Details (was Overview), Text (was
   // Scanned text), and Questions, Versions and Activity; Needs attention and My words stay.
+  // Document panel UX (25 Oct 2026): Needs attention only with something in it (or while
+  // reviewing); the first four show, the rest are under More (PanelTabs).
   const tabs: TabItem[] = [
     { id: "overview", label: FILES_TEXT.details },
-    { id: "attention", label: "Needs attention", count: attentionCount(detail.pages) },
+    ...(attention > 0 || reviewing ? [{ id: "attention" as const, label: "Needs attention", count: attention || undefined }] : []),
     ...(hasScannedText ? [{ id: "scanned" as const, label: "Text" }] : []),
-    ...(hasScannedText ? [{ id: "clear" as const, label: "Read clearly" }] : []),
     { id: "questions", label: QUESTIONS_TEXT.heading },
+    ...(hasScannedText ? [{ id: "clear" as const, label: CLEAN_COPY }] : []),
     { id: "versions", label: VERSION_TEXT.versions, count: detail.versions.length },
     { id: "activity", label: ACTIVITY_TEXT.heading },
     { id: "words", label: "My words" },
   ];
-  // Read clearly's Translate uses AI, so it follows Ask: hidden while Ask is off, at None or unknown.
+  // The clean copy's Translate uses AI, so it follows Ask: hidden while Ask is off, at None or unknown.
   const askLevel = effectiveOf(aiSettings, "ask");
   const openClear = () => {
     setTab("clear");
-    document.getElementById(tabId("clear"))?.scrollIntoView({ block: "nearest" });
+    document.getElementById(TAB_BAR_ID)?.scrollIntoView({ block: "nearest" });
   };
   const chosenTab = tabChoice && tabChoice.linkKey === linkKey ? tabChoice.tab : scannedParam === "1" ? "scanned" : "overview";
   const tab = tabs.some((each) => each.id === chosenTab) ? chosenTab : "overview";
@@ -420,6 +442,15 @@ export function DocumentView({
       ? ` · ${detail.page_count} ${detail.page_count === 1 ? "page" : "pages"}`
       : "";
   const trail = detail.folder ? folderTrail(detail.folder) : [];
+  // "Back to Land & Legal": the folder it is filed in, else Documents, or Trash.
+  const folder = trail.at(-1);
+  const back =
+    detail.deleted_at !== null
+      ? { href: "/documents?trash=1", name: "Trash" }
+      : folder
+        ? { href: libraryHref({ ...ALL_DOCUMENTS, folderId: folder.id }), name: folder.name }
+        : { href: "/documents", name: "documents" };
+  const chip = statusChip(detail.status);
   // Trash means deleted: no download from there, only Restore (the Trash view).
   const download = detail.deleted_at === null ? downloadHref(detail) : null;
   const position = versionPosition(detail);
@@ -445,7 +476,7 @@ export function DocumentView({
     ? `Highlighted: ${fieldText(highlighted.field)}${fromLink ? FROM_LINK : ""}`
     : undefined;
   const reloadWith = (message: string) => {
-    setAnnouncement(message);
+    setToast(message); // its own live region reads it out
     setReloads((n) => n + 1);
   };
 
@@ -635,6 +666,7 @@ export function DocumentView({
       <p className="visually-hidden" aria-live="polite">
         {announcement}
       </p>
+      <Toast message={toast} onClose={() => setToast(null)} />
       <div ref={layoutRef} className={styles.layout} style={{ "--split": `${split}%` } as CSSProperties}>
         <section ref={viewerRef} id="document-page" className={styles.viewer} aria-label="Page">
           {lowResolution && !page?.problems?.length && (
@@ -703,80 +735,86 @@ export function DocumentView({
         </section>
         <SplitHandle split={split} onSplit={setSplit} layout={layoutRef} />
         <div className={styles.panels}>
-          {/* desktop/DocumentPage.html: the name, its place and its actions head the pane beside the page. */}
           <header className={styles.header}>
-            {/* DD2: where it is filed, as a path: Documents / Folder / name. */}
-            <nav aria-label="Breadcrumb" className={styles.crumbs}>
-              <ol>
-                <li>
-                  <Link href={detail.deleted_at === null ? "/documents" : "/documents?trash=1"}>
-                    {detail.deleted_at === null ? "Documents" : "Trash"}
-                  </Link>
-                </li>
-                {trail.map((folder) => (
-                  <li key={folder.id}>
-                    <Link href={libraryHref({ ...ALL_DOCUMENTS, folderId: folder.id })}>{folder.name}</Link>
-                  </li>
-                ))}
-                <li aria-current="page" title={detail.display_name}>
-                  <span className="mono">{detail.display_name}</span>
-                </li>
-              </ol>
-            </nav>
-            {/* DD2: one row. The title and its status; then Download, Ask (the one primary), the menu. */}
-            <div className={styles.titleRow}>
-              <h1 className={styles.title}>{detail.display_name}</h1>
-              <StatusChip status={detail.status} />
-              {/* File management P1: the label chip and "Version N of M" beside the name. */}
-              {detail.sensitivity && <LabelChip label={detail.sensitivity} />}
-              <span className={styles.meta}>
-                {versionText({ number: detail.version_no, total: Math.max(detail.versions.length, 1) })}
+            {/* What is this: back to where it is filed, the name, one status in words. */}
+            <Link href={back.href} className={styles.back}>
+              <Icon name="chevron-left" />
+              <span>
+                Back to <ScriptText text={back.name} />
               </span>
-              <div className={styles.headActions}>
-                {download && (
-                  <a className={`btn ${styles.download}`} href={download} download>
-                    <Icon name="download" />
-                    <span className="narrow-hide">Download original</span>
-                  </a>
-                )}
-                {hasScannedText && (
-                  <button type="button" className="btn" onClick={openClear}>
-                    <Icon name="scan-text" />
-                    Read clearly
-                  </button>
-                )}
-                {usedInChat(detail) && (
-                  <Link className={`btn btn-primary ${styles.ask}`} href={askAboutHref(detail.id)}>
-                    <Icon name="chat" />
-                    Ask about this document
-                  </Link>
-                )}
-                <DocumentMenu
-                  buttonRef={menuButton}
-                  detail={detail}
-                  readAgain={canReprocess(me.user.role, detail)}
-                  onReadAgain={() => setReadAgainKey((n) => n + 1)}
-                  onChanged={reloadWith}
-                />
-              </div>
-            </div>
-            <div className={styles.status}>
-              {/* D4 / DD2: a ready document is its badge alone; other states keep the server's words. */}
-              {detail.status !== "ready" && <span>{detail.status_message}</span>}
-              {detail.status === "ready" && detail.understanding === true && <span>{UNDERSTANDING_TEXT}</span>}
+            </Link>
+            <h1 className={styles.title}>
+              <ScriptText text={detail.display_name} />
+            </h1>
+            <p className={styles.state}>
+              <span className={styles.stateItem}>
+                <KIcon name={STATUS_ICONS[chip.tone]} size="sm" />
+                {chip.text}
+              </span>
+              {detail.status !== "ready" && <span className={styles.meta}>{detail.status_message}</span>}
+              {detail.status === "ready" && detail.understanding === true && <span className={styles.meta}>{UNDERSTANDING_TEXT}</span>}
               <TimeLeft document={detail} />
+              {/* File management P1: the label, quiet, with a lock when it is kept close. */}
+              {detail.sensitivity && (
+                <span className={styles.stateItem} title={LABEL_DESCRIPTIONS[detail.sensitivity]}>
+                  {(detail.sensitivity === "confidential" || detail.sensitivity === "restricted") && <KIcon name="lock" size="sm" />}
+                  <span className="visually-hidden">Label: </span>
+                  {labelName(detail.sensitivity)}
+                </span>
+              )}
+              {position && <span className={styles.meta}>{versionText(position)}</span>}
+            </p>
+            <AutofileNote
+              document={detail}
+              name={detail.display_name}
+              filed={FILED_HERE_TEXT}
+              folderHref={null}
+              onUndone={() => setReloads((n) => n + 1)}
+            />
+            {readAgainKey > 0 && (
+              <ReadAgain
+                key={readAgainKey}
+                documentId={detail.id}
+                fixes={detail.reviewer_fixes}
+                pages={detail.page_count}
+                readModel={detail.read_model}
+                reading={beingRead(detail.status)}
+                onStarted={(reply) => {
+                  merge(reply);
+                  readingAgain.current = true;
+                  poll.later();
+                }}
+                onClosed={() => menuButton.current?.focus()}
+              />
+            )}
+            <SummaryCard detail={detail} active={selection?.region ?? null} onShow={showSpot} />
+            {/* Can I trust it: one status line; the counts and this document's facts under More details. */}
+            {detail.status !== "rejected" && (
+              <SummaryBar
+                documentId={detail.id}
+                review={review}
+                scanning={detail.status_message}
+                reviewing={reviewing}
+                reviewRef={reviewButton}
+                onReview={() => startReview()}
+                onEnsemble={(scope) => void ensemble.ask(scope)}
+                ensembleBusy={ensemble.busy}
+                ensembleError={ensemble.error}
+                onExport={() => setExporting(true)}
+                download={download}
+                say={setAnnouncement}
+                detailsId={DETAILS_ID}
+                detailsOpen={moreOpen}
+                onDetails={() => setMoreOpen(!moreOpen)}
+              />
+            )}
+            <div id={DETAILS_ID} className={styles.status} hidden={!moreOpen && detail.status !== "rejected"}>
               <span className={styles.meta}>
                 {typeLabel(detail.detected_type)}
                 <span className="mono">{pagesText}</span>
               </span>
+              {review.status?.summary && <span className={`${styles.meta} tabular`}>{trustText(review.status)}</span>}
               {trail.length === 0 && <span className={styles.meta}>Not in a folder</span>}
-              <AutofileNote
-                document={detail}
-                name={detail.display_name}
-                filed={FILED_HERE_TEXT}
-                folderHref={null}
-                onUndone={() => setReloads((n) => n + 1)}
-              />
               {detail.tags.length > 0 && (
                 <div className={styles.placeItem}>
                   <span className={styles.placeLabel} id="document-tags-label">
@@ -815,22 +853,6 @@ export function DocumentView({
                   </ol>
                 </nav>
               )}
-              {readAgainKey > 0 && (
-                <ReadAgain
-                  key={readAgainKey}
-                  documentId={detail.id}
-                  fixes={detail.reviewer_fixes}
-                  pages={detail.page_count}
-                  readModel={detail.read_model}
-                  reading={beingRead(detail.status)}
-                  onStarted={(reply) => {
-                    merge(reply);
-                    readingAgain.current = true;
-                    poll.later();
-                  }}
-                  onClosed={() => menuButton.current?.focus()}
-                />
-              )}
             </div>
             {note && <p className={styles.note}>{note}</p>}
             {detail.newer_version && (
@@ -849,25 +871,37 @@ export function DocumentView({
                 </span>
               </p>
             )}
+            {/* What can I do: Ask, the one primary; then one quiet row; the rest in the menu. */}
+            {usedInChat(detail) && (
+              <Link className={`btn btn-primary ${styles.ask}`} href={askAboutHref(detail.id)}>
+                <Icon name="chat" />
+                Ask about this document
+              </Link>
+            )}
+            <div className={styles.headActions}>
+              {download && (
+                <a className="btn btn-quiet" href={download} download onClick={() => setToast("Download started.")}>
+                  <Icon name="download" />
+                  Download
+                </a>
+              )}
+              {hasScannedText && (
+                <button type="button" className="btn btn-quiet" onClick={openClear}>
+                  <Icon name="scan-text" />
+                  {CLEAN_COPY}
+                </button>
+              )}
+              <DocumentMenu
+                buttonRef={menuButton}
+                detail={detail}
+                readAgain={canReprocess(me.user.role, detail)}
+                onReadAgain={() => setReadAgainKey((n) => n + 1)}
+                onChanged={reloadWith}
+              />
+            </div>
           </header>
           {/* File management V6, V7: a suggestion that this is a new version of another document. */}
           <VersionBanner detail={detail} onChanged={reloadWith} />
-          {detail.status !== "rejected" && (
-            <SummaryBar
-              documentId={detail.id}
-              review={review}
-              scanning={detail.status_message}
-              reviewing={reviewing}
-              reviewRef={reviewButton}
-              onReview={() => startReview()}
-              onEnsemble={(scope) => void ensemble.ask(scope)}
-              ensembleBusy={ensemble.busy}
-              ensembleError={ensemble.error}
-              onExport={() => setExporting(true)}
-              download={download}
-              say={setAnnouncement}
-            />
-          )}
           <PanelTabs tabs={tabs} active={tab} onChange={setTab}>
             {(shownTab) =>
               shownTab === "overview" ? (
@@ -990,12 +1024,14 @@ type TabId = "overview" | "attention" | "scanned" | "clear" | "questions" | "ver
 type TabItem = { id: TabId; label: string; count?: number };
 const tabId = (id: TabId) => `document-tab-${id}`;
 const tabPanelId = (id: TabId) => `document-panel-${id}`;
+const TAB_BAR_ID = "document-tabs";
 
 /**
  * The panels' tabs (UI audit DD6), the MonoEdge tabs: role="tablist" of role="tab"
  * buttons (roving tabindex; Left/Right, Home/End), the bold width kept (data-label),
- * the count in tabular figures; one row that scrolls sideways, never wraps. Every
- * panel reserves the same least height, and only the open one is drawn.
+ * the count in tabular figures. Every panel reserves the same least height, and only the
+ * open one is drawn. Document panel UX (25 Oct 2026): as many as fit show, four at most
+ * (tabsThatFit), the open one always among them; the rest are under More, so the row never runs off.
  */
 function PanelTabs({
   tabs,
@@ -1008,9 +1044,14 @@ function PanelTabs({
   onChange: (id: TabId) => void;
   children: (tab: TabId) => ReactNode;
 }) {
+  const bar = useRef<HTMLDivElement>(null);
+  const room = useTabRoom(bar, tabs.some((item) => item.id === "attention"));
+  const at = tabs.findIndex((item) => item.id === active);
+  const shown = at >= room ? [...tabs.slice(0, room - 1), ...tabs.slice(at, at + 1)] : tabs.slice(0, room);
+  const more = tabs.filter((item) => !shown.includes(item));
   function onKeyDown(event: KeyboardEvent<HTMLButtonElement>, index: number) {
-    const next = tabAfterKey(index, event.key, tabs.length);
-    const to = next === null ? undefined : tabs[next];
+    const next = tabAfterKey(index, event.key, shown.length);
+    const to = next === null ? undefined : shown[next];
     if (!to) return;
     event.preventDefault();
     onChange(to.id);
@@ -1020,28 +1061,38 @@ function PanelTabs({
   useTabMotion(list, active);
   return (
     <>
-      <div ref={list} role="tablist" aria-label="About this document" className={`tabs ${styles.tabs}`}>
-        {tabs.map((item, index) => (
-          <button
-            key={item.id}
-            type="button"
-            role="tab"
-            id={tabId(item.id)}
-            className="tab"
-            aria-selected={item.id === active}
-            aria-controls={tabPanelId(item.id)}
-            tabIndex={item.id === active ? 0 : -1}
-            onClick={() => onChange(item.id)}
-            onKeyDown={(event) => onKeyDown(event, index)}
-          >
-            <span data-label={item.label}>{item.label}</span>
-            {item.count !== undefined && (
-              <span className={`tab-count ${styles.tabCount}`} data-zero={item.count === 0 ? "true" : undefined}>
-                {item.count.toLocaleString("en-IN")}
-              </span>
-            )}
-          </button>
-        ))}
+      <div ref={bar} id={TAB_BAR_ID} className={styles.tabBar}>
+        <div ref={list} role="tablist" aria-label="About this document" className={`tabs ${styles.tabs}`}>
+          {shown.map((item, index) => (
+            <button
+              key={item.id}
+              type="button"
+              role="tab"
+              id={tabId(item.id)}
+              className="tab"
+              aria-selected={item.id === active}
+              aria-controls={tabPanelId(item.id)}
+              tabIndex={item.id === active ? 0 : -1}
+              onClick={() => onChange(item.id)}
+              onKeyDown={(event) => onKeyDown(event, index)}
+            >
+              <span data-label={item.label}>{item.label}</span>
+              {item.count !== undefined && (
+                <span className={`tab-count ${styles.tabCount}`} data-zero={item.count === 0 ? "true" : undefined}>
+                  {item.count.toLocaleString("en-IN")}
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
+        <RowMenu
+          name="the other tabs"
+          compact={room < 3}
+          items={more.map((item) => ({
+            label: item.count === undefined ? item.label : `${item.label} ${item.count.toLocaleString("en-IN")}`,
+            onSelect: () => onChange(item.id),
+          }))}
+        />
       </div>
       <div
         role="tabpanel"
@@ -1143,6 +1194,21 @@ function usePageMarks(documentId: string, page: PageSummary | undefined, version
 }
 
 const NO_MARKS: ReadingMark[] = [];
+
+/** How many tabs fit the tab row (tabsThatFit), from its width in rem; four until it is measured. */
+function useTabRoom(bar: RefObject<HTMLDivElement | null>, long: boolean): number {
+  const [width, setWidth] = useState<number | null>(null);
+  useEffect(() => {
+    const element = bar.current;
+    if (!element) return;
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry) setWidth(entry.contentRect.width / parseFloat(getComputedStyle(document.documentElement).fontSize));
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [bar]);
+  return tabsThatFit(width, long);
+}
 
 /**
  * Package H: the lines holding the link's words on every page, and every page with one;

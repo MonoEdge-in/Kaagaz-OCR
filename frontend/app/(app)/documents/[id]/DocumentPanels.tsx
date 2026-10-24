@@ -104,12 +104,7 @@ export function CardPanel({ detail, active, onShow }: PanelProps) {
               <dd>{languagesText(card.languages)}</dd>
             </div>
           </dl>
-          {card.summary && (
-            <>
-              <h3 className={styles.panelHeading}>AI summary, check the pages</h3>
-              <p className={styles.summary}>{card.summary}</p>
-            </>
-          )}
+          {/* The AI summary is at the top of the panel now (SummaryCard.tsx), shown once. */}
           {cardSections(card, detail.values).map((section) => (
             <div key={section.heading}>
               <h3 className={styles.panelHeading}>{section.heading}</h3>

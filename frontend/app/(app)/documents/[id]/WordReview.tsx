@@ -46,7 +46,6 @@ import {
   runText,
   statusLine,
   stopRun,
-  trustText,
 } from "@/components/review/wordReview";
 import { InStatusBar } from "@/components/shell/StatusBar";
 import { Icon } from "@/components/ui/Icon";
@@ -232,19 +231,22 @@ export interface SummaryBarProps {
   onExport(): void;
   download: string | null;
   say(message: string): void;
+  detailsId: string; // the document's own facts and counts (DocumentView), opened with these
+  detailsOpen: boolean;
+  onDetails(): void;
 }
 
 /**
  * The status line (document panel UX, 25 Oct 2026; was the scan card): one true thing from
  * the review's own counts (statusLine), with one button to the first word to check. The
- * counts and the Ensemble and Export actions wait under More details, closed at first.
- * The check draws in once, when the line turns to "Everything is checked".
+ * document's facts and counts and the Ensemble and Export actions wait under More details,
+ * closed at first. The check draws in once, when the line turns to "Everything is checked".
  */
 export function SummaryBar(props: SummaryBarProps) {
   const { documentId, review, scanning, reviewing, reviewRef, onReview, onEnsemble, ensembleBusy, ensembleError } = props;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [open, setOpen] = useState(false);
+  const open = props.detailsOpen;
   const toolsId = useId();
   const status = review.status;
   const line = status ? statusLine(status, scanning) : null;
@@ -314,8 +316,8 @@ export function SummaryBar(props: SummaryBarProps) {
           type="button"
           className={`btn btn-quiet ${styles.toggle}`}
           aria-expanded={open}
-          aria-controls={toolsId}
-          onClick={() => setOpen(!open)}
+          aria-controls={`${props.detailsId} ${toolsId}`}
+          onClick={props.onDetails}
         >
           More details
           <KIcon name="chev-down" size="sm" className={styles.chevron} />
@@ -383,7 +385,6 @@ export function SummaryBar(props: SummaryBarProps) {
         )}
       </div>
       <div id={toolsId} className={styles.details} data-open={open || undefined} hidden={!open}>
-        {ready && <p className={`${styles.line} tabular`}>{trustText(status)}</p>}
         <div className={styles.actions}>
           {!active && ensembleShown && (status.remaining > 0 || !ready) && (
           <span className={styles.ensemble}>

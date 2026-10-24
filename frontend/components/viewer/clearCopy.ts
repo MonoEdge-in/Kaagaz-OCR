@@ -6,6 +6,8 @@
 import type { ReadLine, ReadingMark, TranslateLanguage } from "@/lib/types";
 import { lineMarked, notSure, visibleText } from "./scanned";
 
+/** The clean copy's one name: its tab, its heading and its button (document panel UX, 25 Oct 2026; was "Read clearly"). */
+export const CLEAN_COPY = "Clean copy";
 export const NOT_SURE_TIP = "Not read for sure — check the original";
 export const TRANSLATION_LABEL = "Translation — the original text is above";
 export const TRANSLATING = "Translating…";
