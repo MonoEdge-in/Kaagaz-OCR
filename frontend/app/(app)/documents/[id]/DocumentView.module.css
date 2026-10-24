@@ -510,10 +510,39 @@
   flex-direction: column;
   gap: var(--space-4);
   padding: var(--space-6);
+  font-size: 1rem; /* document panel UX: 16px body text, inherited also when stacked */
   border: 1px solid var(--k-card-edge);
   border-radius: var(--k-r-5);
   background: var(--k-surface);
   box-shadow: var(--k-shadow-1);
+}
+
+/* Document panel UX (25 Oct 2026): every button in the panel in sentence case (the global
+   .btn is mono capitals), 44px tall; a press gives a little, a mouse lifts it 1px. */
+.panels :global(.btn) {
+  min-height: var(--h-lg);
+  font-family: var(--k-font-body);
+  font-size: 1rem;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .panels :global(.btn) {
+    transition: transform var(--motion-quick) var(--ease-out);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) and (hover: hover) and (pointer: fine) {
+  .panels :global(.btn):hover {
+    transform: translateY(-1px);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .panels :global(.btn):active {
+    transform: scale(0.98);
+  }
 }
 
 /* Stacked (below 1024px), as phone/PhoneDocument.html: the name and its actions first, then

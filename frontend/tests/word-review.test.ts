@@ -384,28 +384,42 @@ describe("Ensemble", () => {
     expect(html).not.toContain(">Review flagged words<");
   });
 
+  // Changed on purpose (document panel UX, 25 Oct 2026): the scan card is one status line with
+  // Check it; the counts and Ensemble wait under More details, closed at first.
   it("is not offered when the API does not allow it after the scan", () => {
     const html = bar(status({ ensemble: { allowed: false, reason: "Only reviewers and admins can run Ensemble.", run: null } }));
     expect(html).not.toContain("Run Ensemble on flagged words");
-    expect(html).toContain(">Continue review<");
+    expect(html).toContain(">Check them<");
   });
 
-  it("puts the primary last, and says Nothing flagged without a nag", () => {
+  it("says one thing, with Check it first and the counts and Ensemble under a closed More details", () => {
     const html = bar(status());
-    expect(html).toContain("Scan complete · 14 pages · 2,431 words · 12 flagged for review");
-    expect(html.indexOf("Run Ensemble on flagged words")).toBeLessThan(html.indexOf(">Continue review<"));
+    expect(html).toContain(">8 words need a look<");
+    expect(html).toMatch(/<button[^>]*aria-expanded="false" aria-controls="[^"]+"[^>]*>More details/);
+    const details = html.slice(html.indexOf('hidden=""'));
+    expect(details).toContain("14 pages · 2,431 words · 4 of 12 checked");
+    expect(details).toContain("Run Ensemble on flagged words");
+    expect(words.trustText(status())).toBe("14 pages · 2,431 words · 4 of 12 checked · Last change 16 Oct 2026, 10:42 am");
+    expect(html.indexOf(">Check them<")).toBeLessThan(html.indexOf("Run Ensemble on flagged words"));
+    expect(html).not.toContain("btn-primary"); // Ask is the panel's one primary
     const none = bar(status({ flagged: 0, reviewed: 0, remaining: 0, summary: "Scan complete · 14 pages · 2,431 words · Nothing flagged" }));
-    expect(none).toContain("Nothing flagged");
+    expect(none).toContain(">No words need a look<");
     expect(none).not.toContain("Run Ensemble on flagged words");
-    expect(none).not.toContain(">Review flagged words<");
+    expect(none).not.toContain(">Check");
     expect(none).toContain("Run Ensemble on full document"); // quietly, in More
   });
 
-  it("says Verified and removes the review action once every flagged word is settled", () => {
+  it("says Everything is checked, with no count beside it, once every word is settled", () => {
     const html = bar(status({ reviewed: 8, resolved: 4, remaining: 0 }));
-    expect(html).toContain("Verified. All 12 flagged words are reviewed or resolved. Document ready to export.");
-    expect(html).not.toContain(">Review flagged words<");
-    expect(html).not.toContain(">Continue review<");
+    const line = /<p[^>]*data-clear="true"[^>]*>([\s\S]*?)<\/p>/.exec(html)?.[1]?.replace(/<[^>]*>/g, "");
+    expect(line).toBe("Everything is checked");
+    expect(html).not.toContain(">Check");
+    // Never a count of words still to check beside it: the line comes from the same count.
+    for (const remaining of [0, 1, 5]) {
+      const said = words.statusLine(status({ remaining }), "Scanning").text;
+      expect(said === "Everything is checked").toBe(remaining === 0);
+      if (said === "Everything is checked") expect(said).not.toMatch(/\d/);
+    }
   });
 });
 
