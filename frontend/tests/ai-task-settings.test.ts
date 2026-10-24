@@ -224,7 +224,8 @@ describe("where tasks are used", () => {
     expect(html.replace(/<[^>]*>/g, " ")).not.toMatch(MODELS);
     expect(html).not.toMatch(/gemini|claude/i); // not even in an attribute
     // Changed on purpose (Tushar, 25 Oct 2026): Ask starts on Swift, whatever the default level.
-    expect(html).toContain(">Standard · Swift<");
+    // Changed on purpose (24 Oct 2026): the chip is the engine alone; the quality is in the Ask bar.
+    expect(html).toContain(">Swift<");
   });
 
   it("Ensemble's controls go when the effective Ensemble is off", () => {

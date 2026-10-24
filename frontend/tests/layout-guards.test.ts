@@ -785,4 +785,13 @@ describe("the document screen (boards 2, 3 and 6)", () => {
     expect(view).toContain("highlightNote={highlightNote}");
     expect(view).toContain('`Highlighted: ${fieldText(highlighted.field)}${fromLink ? FROM_LINK : ""}`');
   });
+
+  // Tushar, 24 Oct 2026 ("alignment issue"): the search box lines up with New conversation.
+  it("lines the conversation search box up with New conversation, the label with the rows", () => {
+    const CHAT_CSS = "components/chat/Chat.module.css";
+    expect(rulesFor(CHAT_CSS, ".listSearch").find((rule) => rule.at === "")?.body).not.toMatch(/padding/);
+    expect(rulesFor(CHAT_CSS, ".listSearch > label").find((rule) => rule.at === "")?.body).toMatch(
+      /padding-inline:\s*var\(--space-3\);/,
+    );
+  });
 });
