@@ -813,7 +813,6 @@ export function DocumentView({
                 {typeLabel(detail.detected_type)}
                 <span className="mono">{pagesText}</span>
               </span>
-              {review.status?.summary && <span className={`${styles.meta} tabular`}>{trustText(review.status)}</span>}
               {trail.length === 0 && <span className={styles.meta}>Not in a folder</span>}
               {detail.tags.length > 0 && (
                 <div className={styles.placeItem}>
