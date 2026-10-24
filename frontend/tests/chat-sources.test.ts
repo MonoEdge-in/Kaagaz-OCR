@@ -173,7 +173,8 @@ describe("Also in", () => {
     const html = render(
       message({ status: "not_found", label: null, sentences: [], citations: [], closest_documents: [{ id: "d9", display_name: "Bill 9.pdf" }] }),
     );
-    expect(html).toMatch(/<a class="[^"]*source[^"]* [^"]*documentRow[^"]*" title="Bill 9.pdf" href="\/documents\/d9">/);
+    // Changed on purpose (package H, 24 Oct 2026): the row opens with the question's words lit.
+    expect(html).toMatch(/<a class="[^"]*source[^"]* [^"]*documentRow[^"]*" title="Bill 9.pdf" href="\/documents\/d9\?words=grand\+total">/);
   });
 });
 

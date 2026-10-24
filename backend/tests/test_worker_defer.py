@@ -225,6 +225,25 @@ class FairShareTest(unittest.TestCase):
             },
         )
 
+    def test_a_platform_busy_hand_back_waits_before_the_next_turn_and_others_do_not(self) -> None:
+        """Package S: idle copies under a lowered documents-at-once cap pause on the stop
+        event's wait instead of spinning on the queue; a customer_busy hand-back is as before."""
+
+        @contextmanager
+        def platform_busy(job: Job) -> Iterator[None]:
+            raise Deferred(15, "platform_busy")
+            yield
+
+        waits: list[float] = []
+        run = Run(A1, admit=admission(working, platform_busy, pause=waits.append))
+        self.assertTrue(run.worker.run_once())
+        self.assertEqual((waits, run.ran), ([2.0], []))
+        locks = MemoryLocks()
+        hold_slots(locks, CUSTOMER_B, 2)
+        run = Run(B1, admit=admission(working, fair_share(locks).slot, pause=waits.append))
+        run.worker.run_once()
+        self.assertEqual(waits, [2.0])
+
 
 class KeyProblemNoAttemptTest(unittest.TestCase):
     """test_key_problem_no_attempt: a key problem is a person's fix, never a try."""

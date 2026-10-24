@@ -16,7 +16,10 @@ import {
   breakdowns,
   kpiTiles,
 } from "@/components/admin/logic";
+import { QUALITY_TEXT } from "@/components/admin/AnswerQualityPanel";
+import { LEARNED_TEXT } from "@/components/admin/LearnedList";
 import { UsageReportView } from "@/components/admin/UsagePanel";
+import { FEEDBACK_NOTICE, REASONS as FEEDBACK_REASONS } from "@/components/chat/answer";
 import { DUPLICATE_READER_NOTE, readAgainWarning, readerOptions } from "@/components/documents/readers";
 import { REASON_FILTERS } from "@/components/review/review";
 import { REASON_FILTER_TEXT, reasonText, voteText } from "@/components/viewer/labels";
@@ -133,6 +136,11 @@ function shownTexts(): string[] {
       describeTarget,
     ),
     ...[12, 1, null].map(readAgainWarning),
+    // PRD 6 F1, F2: Useful and Not useful, and the admin's Answer quality page.
+    FEEDBACK_NOTICE,
+    ...FEEDBACK_REASONS.map((reason) => reason.label),
+    ...Object.values(QUALITY_TEXT),
+    ...Object.values(LEARNED_TEXT), // PRD 6 F3
   ];
   for (const confidence of [null, Number.NaN, 0, 0.62, 0.8999, 0.9, 0.97, 1]) {
     for (const origin of ["ocr", "cell", "text_layer", null] as const) texts.push(confidenceText(confidence, origin));
@@ -205,7 +213,7 @@ describe("technical words on user and admin screens", () => {
   it("are in none of the words for the audit actions the backend writes", () => {
     const root = join(__dirname, "..", "..", "backend", "kaagaz");
     const files = readdirSync(root, { recursive: true, encoding: "utf8" }).filter((file) => file.endsWith(".py"));
-    const actions = /"((?:auth|user|user_word|document|document_story|folder|tag|review|chat|settings|customer)\.[a-z_]+)"/g;
+    const actions = /"((?:auth|user|user_word|document|document_story|folder|tag|review|chat|settings|customer|feedback|learning)\.[a-z_]+)"/g;
     for (const file of files) {
       for (const [, action = ""] of readFileSync(join(root, file), "utf8").matchAll(actions)) {
         expect(describeAction(action), action).not.toMatch(TECHNICAL);

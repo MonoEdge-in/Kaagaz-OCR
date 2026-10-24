@@ -45,7 +45,7 @@ Aggregate = Literal["highest", "lowest", "total", "count"]
 
 _HIGHEST = frozenset({"highest", "most", "maximum", "max", "largest", "biggest", "top"})
 _LOWEST = frozenset({"lowest", "least", "minimum", "min", "smallest"})
-_TOTAL = frozenset({"total", "sum"})
+_TOTAL = frozenset({"total", "sum", "calculate"})  # "calculate": PRD 6 Example 3 (C2)
 _COUNT = frozenset({"count"})
 
 # Topic word -> concept; concept -> candidate fields, in the spec's order.
@@ -70,8 +70,8 @@ _GROUP_WORDS = frozenset(
 _GROUP_FIELDS = ("party_name", "name", "customer_name", "vendor")
 _DATE_FIELDS = ("invoice_date", "date", "bill_date", "month")
 _THINGS = frozenset({"invoice", "invoices", "document", "documents", "files", "file"})
-# Topic words that add nothing to a fixed query.
-_FILLER = frozenset({"value", "overall", "all", "made", "earned", "got", "number", "data"})
+# Topic words that add nothing to a fixed query ("filed", "filled": PRD 6 Example 3, C2).
+_FILLER = frozenset({"value", "overall", "all", "made", "earned", "got", "number", "data", "filed", "filled"})
 # Every field a plan can use: the only ones the fields query looks for.
 FIELDS = (*(f for fields in _METRIC_FIELDS.values() for f in fields), *_GROUP_FIELDS, *_DATE_FIELDS)
 
@@ -84,7 +84,9 @@ class FixedPlan:
     date_fields: tuple[str, ...]  # empty: no date filter (and never for count)
     start: date | None
     end: date | None
-    invoice_count: bool = False
+    # The question names invoices: a count or a total reads the rows of the invoices table
+    # (#228, PRD 6 C).
+    invoices: bool = False
 
 
 def plan_fixed(
@@ -103,7 +105,8 @@ def plan_fixed(
     metric_concepts = {_METRIC_WORDS[word] for word in words if word in _METRIC_WORDS}
     group_asked = any(word in _GROUP_WORDS for word in words)
     things_asked = any(word in _THINGS for word in words)
-    invoice_count = aggregate == "count" and ("invoice" in words or "invoices" in words)
+    invoices = "invoice" in words or "invoices" in words
+    invoice_count = aggregate == "count" and invoices
     known = _HIGHEST | _LOWEST | _TOTAL | _COUNT | set(_METRIC_WORDS) | _GROUP_WORDS | _THINGS | _FILLER
     if any(word not in known for word in normalised.keywords):
         return None
@@ -136,7 +139,9 @@ def plan_fixed(
         group_fields = _present(_GROUP_FIELDS, available)
         if not group_fields:
             return None
-    return FixedPlan(aggregate, metric, group_fields, date_fields, start, end)
+    return FixedPlan(
+        aggregate, metric, group_fields, date_fields, start, end, aggregate == "total" and invoices
+    )
 
 
 def metric_asked(normalised: NormalisedQuestion) -> tuple[str, tuple[str, ...]] | None:

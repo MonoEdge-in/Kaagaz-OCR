@@ -41,6 +41,7 @@ export const TABS = [
   { id: "ai", label: "AI settings" },
   { id: "activity", label: "Activity" },
   { id: "numbers", label: "Numbers" },
+  { id: "quality", label: "Answer quality" }, // PRD 6 F2
   { id: "usage", label: "Usage" },
   { id: "failed", label: "Failed documents" },
 ] as const;
@@ -413,6 +414,7 @@ const TARGET_WORDS: Record<string, string> = {
   user_word: "Word",
   message: "Chat",
   conversation: "Chat",
+  feedback: "Answer",
   customer: "Settings",
 };
 
@@ -434,6 +436,7 @@ const ACTION_WORDS: Record<string, string> = {
   "document.tags": "Changed a document's tags",
   "document.reprocess": "Asked to read a document again",
   "document.read_upgrade": "Read a document again after an upgrade",
+  "document.land_facts": "Read a land record's owners and places again", // PRD 6 D3
   "document.page_accept": "Kept a page as it was read",
   "document_story.saved": "Saved a document's story",
   "document_story.deleted": "Deleted a document's story",
@@ -453,6 +456,10 @@ const ACTION_WORDS: Record<string, string> = {
   "chat.ask": "Asked a question",
   "chat.rename": "Renamed a conversation",
   "chat.delete": "Deleted a conversation",
+  // PRD 6 F2: Answer quality.
+  "feedback.handled": "Marked a Not useful answer as handled",
+  "feedback.reopened": "Opened a Not useful answer again",
+  "learning.remove": "Removed what Kaagaz learned about a document", // PRD 6 F3
   "review.resolve": "Corrected a value",
   "user.create": "Added a user",
   "user.update": "Changed a user",

@@ -129,7 +129,9 @@ class Database:
         """Wait for and reserve a shared OpenRouter slot; return a delay or -1 past deadline.
 
         The security-definer function checks the supplied customer/user pair and updates the
-        one platform scheduler atomically, across API and worker processes.
+        one platform scheduler atomically, across API and worker processes. The platform RPM is
+        the super admin's (``platform_ai_settings.model_rpm``, 0053), read at every call, never
+        above ``platform_rpm`` (MODEL_RPM); ``platform_rpm`` itself while none is set.
         """
         import uuid
 
@@ -145,7 +147,10 @@ class Database:
             "budget": wait_budget,
             "platform_rpm": platform_rpm,
         }
-        statement = text("SELECT kaagaz_model_rate_slot(:request, :customer, :user, :budget, :platform_rpm)")
+        statement = text(
+            "SELECT kaagaz_model_rate_slot(:request, :customer, :user, :budget,"
+            " least(CAST(:platform_rpm AS integer), (SELECT p.model_rpm FROM platform_ai_settings p)))"
+        )
         if customer_id is not None and user_id is not None:
             with self.user(customer_id, user_id) as conn:
                 return float(conn.execute(statement, params).scalar_one())

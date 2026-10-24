@@ -13,6 +13,7 @@ from PIL import Image, ImageDraw
 from kaagaz.db.engine import Database, make_engine
 from kaagaz.extraction.card import CARD_PROMPT_HASH
 from kaagaz.extraction.invoice import INVOICE_PROMPT_HASH
+from kaagaz.extraction.land import LAND_PROMPT_HASH
 from kaagaz.extraction.understanding import model_config
 from kaagaz.ingestion import sniff
 from kaagaz.pipeline import DocumentProcessor, build_processor
@@ -87,6 +88,7 @@ class RunConfigTest(unittest.TestCase):
             {
                 "card_prompt": CARD_PROMPT_HASH,
                 "invoice_prompt": INVOICE_PROMPT_HASH,  # PR 6: which invoice prompt read the windows
+                "land_prompt": LAND_PROMPT_HASH,  # Changed on purpose (PRD 6 D2): which land prompt
                 "model_context_tokens": 6000,
                 "card_max_chars": 9000,
                 "card_max_tokens": 900,

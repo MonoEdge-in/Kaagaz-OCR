@@ -44,6 +44,9 @@ File management (0041): version suggestions the app reads, adds and decides, nev
 Shared OpenRouter scheduling and limits (0046): request tickets, fair-turn state and RPM
 overrides are customer scoped, RLS protected, and only reachable through the narrow app or
 operator functions.
+
+Land facts (0049, #245): the company vocabulary ``value_keys``, read and added, only its
+spellings written again, never deleted by the app (a key goes with its value).
 """
 
 import re
@@ -128,6 +131,11 @@ FROM_0043 = {
     "user_model_rate_overrides": (False, False, False, False),
     "model_rate_state": (False, False, False, False),
 }
+# Land facts (0049): a key is read and added; only its spellings are written again (UPDATES_0049).
+FROM_0049 = {"value_keys": (True, True, False, False)}
+UPDATES_0049 = {"value_keys": {"latin", "sound"}}
+# PRD 6 F3 (0051): an admin's Remove on What Kaagaz learned is added, never changed or deleted.
+FROM_0051 = {"learning_removals": (True, True, False, False)}
 UPDATES_0030 = {
     "word_changes": {"applied", "undone_at", "undone_by"},
     "ensemble_runs": {
@@ -375,6 +383,18 @@ OPERATOR_RIGHTS = {
         EMPTY_PATH,
     ),
     "kaagaz_op_set_model_rate": ("text", EMPTY_PATH),
+    # 0053, package S: the platform's speed controls (numbers only), and their write (step-up).
+    "kaagaz_op_speed": (
+        "TABLE(model_rpm integer, documents_at_once integer, pages_at_once integer)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_op_set_speed": ("text", EMPTY_PATH),
+    # 0051, PRD 6 F3, read-only: answers and ratings per organisation and ended ISO week, counts only.
+    "kaagaz_op_answer_weeks": (
+        "TABLE(customer_id uuid, week date, replies bigint, answered bigint, not_found bigint,"
+        " clarify bigint, rated bigint, useful bigint)",
+        EMPTY_PATH,
+    ),
 }
 # The only tables without customer_id: the customers themselves, alembic's own, the
 # platform operator's (0015), the workers' reader status (0022) and the model catalogue
@@ -419,6 +439,8 @@ def test_every_customer_table_has_row_level_security_and_the_customer_only_polic
         | set(FROM_0040)
         | set(FROM_0041)  # Changed on purpose (PRD 1, 0041)
         | set(FROM_0043)
+        | set(FROM_0049)
+        | set(FROM_0051)
     )
 
     with db.system() as conn:
@@ -483,6 +505,8 @@ def test_every_customer_table_is_granted_to_the_app_role(db: Database) -> None:
         | FROM_0040
         | FROM_0041  # Changed on purpose (PRD 1, 0041)
         | FROM_0043
+        | FROM_0049
+        | FROM_0051
     ).items():
         assert granted[table] == expected, table
 
@@ -538,6 +562,12 @@ def test_the_app_may_update_only_the_undo_and_progress_columns_of_word_review(db
     """0030: never a change's word, texts, who or when, so the history can't be rewritten;
     never a run's scope, pages or models, nor a reading's outcome or readings."""
     assert {table: _updatable(db, table) for table in UPDATES_0030} == UPDATES_0030
+
+
+def test_the_app_may_update_only_the_spellings_of_a_value_key(db: Database) -> None:
+    """0049: never a key's value, document, kind or place level, so a key can't be moved to
+    another value or document."""
+    assert {table: _updatable(db, table) for table in UPDATES_0049} == UPDATES_0049
 
 
 def test_the_app_writes_only_the_refresh_columns_of_the_model_catalogue(db: Database) -> None:
@@ -615,6 +645,7 @@ def test_every_foreign_key_between_customer_tables_matches_the_customer_on_both_
         | set(FROM_0036)
         | set(FROM_0038)
         | set(FROM_0041)  # Changed on purpose (PRD 1, 0041)
+        | set(FROM_0049)
         | {"pages", "model_usage", "documents"}  # documents.owner_id (0041)
     )
     for name, _table, _parent, columns, parent_columns in between:
@@ -688,7 +719,13 @@ def test_the_operator_role_has_no_table_rights_and_its_tables_no_grants_and_no_p
 # that could name or point at a person or content. Counts named in the plural
 # (``documents``, ``active_users_7d``) are numbers and allowed; an id other than the
 # organisation's, a name, an e-mail or a bare person or content column is not.
-INSIGHT_READERS = ("kaagaz_op_daily", "kaagaz_op_org_health", "kaagaz_op_quality", "kaagaz_op_model_board")
+INSIGHT_READERS = (
+    "kaagaz_op_daily",
+    "kaagaz_op_org_health",
+    "kaagaz_op_quality",
+    "kaagaz_op_model_board",
+    "kaagaz_op_answer_weeks",  # 0051, PRD 6 F3
+)
 ENABLED = "o.id = p_operator AND NOT o.disabled AND o.totp_enabled_at IS NOT NULL"
 _PERSON_OR_CONTENT = re.compile(
     r"(^|_)id$|email|name|^(user|document|conversation|message|batch|folder|tag|text|answer|question)$"

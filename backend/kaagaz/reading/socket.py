@@ -94,6 +94,26 @@ def waiting(on_wait: Callable[[], None]) -> Iterator[None]:
         _ON_WAIT.reset(token)
 
 
+_PAGES_AT_ONCE: contextvars.ContextVar[int | None] = contextvars.ContextVar("pages_at_once", default=None)
+
+
+@contextlib.contextmanager
+def pages_at_once(most: int | None) -> Iterator[None]:
+    """Inside the block, a read reads at most ``most`` pages at once, never more than its
+    pool's size (the super admin's live value for one job, package S, 0053); None: the
+    pool's size."""
+    token = _PAGES_AT_ONCE.set(most)
+    try:
+        yield
+    finally:
+        _PAGES_AT_ONCE.reset(token)
+
+
+def pages_in_flight(size: int) -> int:
+    """The most pages read at once with ``size`` threads: the lower of it and ``pages_at_once``'s."""
+    return min(size, _PAGES_AT_ONCE.get() or size)
+
+
 class Reader(Protocol):
     @property
     def name(self) -> str: ...  # read-only: the image reader's is its engine's
@@ -215,6 +235,8 @@ class PagesInOrder:
         self._pool = pool
         self._window: deque[_Page] = deque()
         self._on_wait = _ON_WAIT.get()  # the read's heartbeat while it waits (``waiting``)
+        # The most pages read at once: the pool's size, or lower (``pages_at_once``).
+        self._size = 0 if pool is None else pages_in_flight(pool.size)
 
     def __enter__(self) -> Self:
         return self
@@ -250,7 +272,7 @@ class PagesInOrder:
             return
         added = False
         try:
-            while len(self._running()) >= self._pool.size or len(self._window) >= 2 * self._pool.size:
+            while len(self._running()) >= self._size or len(self._window) >= 2 * self._size:
                 self._wait_any()
             # A copy of this thread's context: the page thread bills its calls to the same
             # usage scope (kaagaz.ai.usage, SP1).

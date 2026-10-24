@@ -24,6 +24,7 @@
 // and scrolled to the middle of the frame, then into view, with a short pulse. Words
 // flagged for review (scan review UX rules, section 2) are a third layer: each a button
 // with its band's underline and glyph ("?" Check, "!" Review) and its words as its name.
+// The lines holding your words (package H, YourWords.tsx) are drawn under the spot.
 
 import dynamic from "next/dynamic";
 import Image from "next/image";
@@ -96,6 +97,8 @@ export interface PageViewerProps {
   onFlag?: (flag: WordFlag) => void;
   /** A crop's tallest size (the review panel zooms its crop with it). */
   cropMaxHeight?: number;
+  /** Package H: the lines holding your words, drawn under the spot on the full page. */
+  wordBoxes?: Region[];
 }
 
 export function PageViewer({
@@ -119,6 +122,7 @@ export function PageViewer({
   activeFlag = null,
   onFlag,
   cropMaxHeight = CROP_MAX_HEIGHT,
+  wordBoxes = [],
 }: PageViewerProps) {
   const isCrop = crop !== undefined;
   const { ref: measureRef, box, near } = useObservedBox(isCrop);
@@ -355,6 +359,20 @@ export function PageViewer({
           onFailed={IGNORE}
         />
       ) : null}
+      {crop
+        ? null
+        : regionsOnPage(wordBoxes, page.page_no).map((region, index) => {
+            if (region.kind !== "box") return null;
+            const px = markerRect(region.box, width, height);
+            return (
+              <div
+                key={`word-${index}`}
+                className={styles.word}
+                aria-hidden="true"
+                style={{ left: px.left, top: px.top, width: px.width, height: px.height }}
+              />
+            );
+          })}
       {boxes.map((region, index) => {
         const px = markerRect(region.box, width, height);
         return (

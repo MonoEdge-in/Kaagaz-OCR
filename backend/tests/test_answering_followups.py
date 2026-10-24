@@ -53,8 +53,9 @@ def test_the_fixed_query_plan_runs_on_the_rewrite() -> None:
     assert answer["rewritten_question"] == "Kiska profit sabse kam tha last month?"
     said = [s["text"] for s in answer["sentences"]]
     assert said == ["Mehta Textiles had the lowest profit, 80,000, in August 2026."]
+    # Changed on purpose (PRD 6 C2, 24 Oct 2026): the numbers rule is checked first ("figures").
     assert (fixed.calls, retriever.calls, [kind for kind, _ in model.calls]) == (
-        ["top_group"],
+        ["figures", "top_group"],
         [],
         ["rewrite"],
     )

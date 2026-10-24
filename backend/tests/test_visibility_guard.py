@@ -16,7 +16,7 @@ from types import ModuleType
 
 from sqlalchemy import TextClause
 
-from kaagaz.answering import exhaustive, fixed_queries, hard_to_read, unchecked
+from kaagaz.answering import clarify, exhaustive, fixed_queries, hard_to_read, owners, unchecked
 from kaagaz.db import admin, listing, models, pipeline_store, review, usage
 from kaagaz.db.visibility import LISTED, LIVE, LIVE_CURRENT, TRASHED_LISTED
 from kaagaz.search import hybrid, indexing, story_search
@@ -24,8 +24,10 @@ from kaagaz.search import hybrid, indexing, story_search
 MODULES: tuple[ModuleType, ...] = (
     hybrid,
     story_search,
+    clarify,
     exhaustive,
     fixed_queries,
+    owners,
     unchecked,
     hard_to_read,
     review,
@@ -60,14 +62,22 @@ FILTERED: dict[tuple[ModuleType, str], str] = {
     (exhaustive, "_MENTIONS"): LIVE_CURRENT,
     # Story matches (S3): the family's current version of a story, read and out of Trash.
     (story_search, "_STORIES"): LIVE_CURRENT,
+    # Clarifying questions (PRD 6 B1): names and places only of the documents chat may cite.
+    (clarify, "_CANDIDATES"): LIVE_CURRENT,
+    (clarify, "_NEAR"): LIVE_CURRENT,  # B2: the places of a district
     # The numbers in answers: the same, in every CTE.
     (fixed_queries, "_AVAILABLE_FIELDS"): LIVE_CURRENT,
     (fixed_queries, "_TOP_GROUP"): LIVE_CURRENT,
-    (fixed_queries, "_TOTAL"): LIVE_CURRENT,
+    (fixed_queries, "_FIGURES"): LIVE_CURRENT,  # PRD 6 C: the records behind a total
     (fixed_queries, "_EXTREME_VALUE"): LIVE_CURRENT,
     (fixed_queries, "_COUNT_DOCUMENTS"): LIVE_CURRENT,
     (fixed_queries, "_COUNT_INVOICES"): LIVE_CURRENT,  # #228: the invoices table's rows
     (fixed_queries, "_VALUE_REFS"): LIVE_CURRENT,
+    # Owner and place questions (PRD 6 E): the same, for each key and value they read.
+    (owners, "_RESOLVE"): LIVE_CURRENT,
+    (owners, "_OWNED"): LIVE_CURRENT,
+    (owners, "_KEYED"): LIVE_CURRENT,
+    (owners, "_SHARES_AS_PRINTED"): LIVE_CURRENT,
     # The documents an unchecked figure points to (decided 30 Sep 2026): the same.
     (unchecked, "_CARD_DOCUMENTS"): LIVE_CURRENT,
     # The pages a not-found answer names as not read well (PRD 5 F6): the same.
@@ -120,6 +130,7 @@ BY_ID: dict[tuple[ModuleType, str], str] = {
         "_SELECT",
     ): "get_document: the detail, the file and the pages open any version, in Trash or not",
     (listing, "_VERSIONS"): "family_versions: the detail lists every version of its family, in Trash or not",
+    (listing, "_WORD_LINES"): "word_lines: your words on a page of the document the detail opens, as it does",
     (
         pipeline_store,
         "_LOCK_LINKED",

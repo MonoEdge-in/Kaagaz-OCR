@@ -937,6 +937,22 @@ class PgDocuments:
                 {"a": attempt, "m": max_attempts, "c": customer_id, "d": document_id},
             )
 
+    def still_waiting(self, customer_id: str, document_id: str) -> None:
+        """A job handed back while the platform reads its most documents at once (package S,
+        0053): a write on its document still in progress (the touch trigger moves updated_at),
+        at most every 10 minutes, well inside the stuck sweep's QUEUE_LEASE_SECONDS x
+        JOB_MAX_ATTEMPTS, so the sweep never takes a waiting document for one no job holds
+        (kaagaz/jobs/revive.py). Nothing else changes. One indexed statement."""
+        with unavailable(), self._db.customer(customer_id) as conn:
+            conn.execute(
+                text(
+                    "UPDATE documents SET attempts = attempts"
+                    " WHERE customer_id = :c AND id = :d AND status IN ('received', 'clean')"
+                    " AND updated_at < now() - interval '10 minutes'"
+                ),
+                {"c": customer_id, "d": document_id},
+            )
+
     def mark_exhausted(self, customer_id: str, document_id: str, *, now: datetime, max_attempts: int) -> None:
         """The queue's last delivery of this document's job came: mark it failed
         with ``retries_exhausted``, so it does not show "Reading…" for good.

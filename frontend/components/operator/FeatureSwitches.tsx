@@ -44,6 +44,9 @@ export const FEATURE_NAMES: Record<string, string> = {
   my_words: "My words",
   self_signup: "Self sign-up",
   version_spotting: "Version spotting", // File management V8
+  land_facts: "Land records", // PRD 6
+  nlq_clarify: "Clarifying questions",
+  nlq_learning: "Learning from Useful",
 };
 
 export const featureName = (feature: string) => FEATURE_NAMES[feature] ?? feature;

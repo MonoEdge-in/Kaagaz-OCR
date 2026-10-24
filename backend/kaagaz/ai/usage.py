@@ -50,6 +50,7 @@ KINDS = (
     "ensemble_scan",
     "ensemble_chat",
     "translate",  # Read clearly's page translation (19 Oct 2026)
+    "land",  # PRD 6 D2 and D3: the land windows, on upload and in the land-facts re-read
 )
 
 _log = logging.getLogger(__name__)

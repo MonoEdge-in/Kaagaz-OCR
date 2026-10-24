@@ -1,4 +1,4 @@
-"""Conversations, their messages and the thumbs up or down on answers.
+"""Conversations, their messages and Useful or Not useful on answers.
 
 Why here: the SQL for chat in one place. Every function takes a connection
 from ``Database.customer(customer_id)`` and filters on ``customer_id`` too.
@@ -16,10 +16,13 @@ changes nothing.
 """
 
 import json
+import logging
 from collections.abc import Mapping, Sequence
 from typing import Any
 
 from sqlalchemy import Connection, RowMapping, text
+
+logger = logging.getLogger(__name__)
 
 CONVERSATION_LIST_LIMIT = 50
 QUESTIONS_SHOWN = 50
@@ -236,6 +239,39 @@ def messages_with_feedback(
     )
 
 
+def openings(conn: Connection, customer_id: str, conversation_id: str) -> list[str | None]:
+    """PRD 6 A: the stored opening of each of the conversation's answers, oldest first (None
+    for an answer without one), so a line is never used twice in it. One query on
+    (conversation_id, created_at), O(M log M) for its M messages."""
+    return list(
+        conn.execute(
+            text(
+                "SELECT m.answer ->> 'opening' FROM messages m"
+                " WHERE m.customer_id = :c AND m.conversation_id = :conv AND m.role = 'assistant'"
+                " ORDER BY m.created_at, m.id"
+            ),
+            {"c": customer_id, "conv": conversation_id},
+        ).scalars()
+    )
+
+
+def newest_message(conn: Connection, customer_id: str, conversation_id: str) -> str | None:
+    """The conversation's newest message id, read after locking the conversation's row for the
+    rest of the transaction, so concurrent replies to one clarify are taken one at a time."""
+    params = {"c": customer_id, "conv": conversation_id}
+    conn.execute(
+        text("SELECT id FROM conversations WHERE customer_id = :c AND id = :conv FOR NO KEY UPDATE"), params
+    )
+    newest = conn.execute(
+        text(
+            "SELECT m.id::text FROM messages m WHERE m.customer_id = :c AND m.conversation_id = :conv"
+            " ORDER BY m.created_at DESC, m.role, m.id DESC LIMIT 1"
+        ),
+        params,
+    ).scalar()
+    return None if newest is None else str(newest)
+
+
 def recent_messages(
     conn: Connection, customer_id: str, conversation_id: str, limit: int
 ) -> Sequence[RowMapping]:
@@ -245,7 +281,7 @@ def recent_messages(
     return (
         conn.execute(
             text(
-                "SELECT m.role, m.text, m.answer, m.scope FROM messages m"
+                "SELECT m.id, m.role, m.text, m.answer, m.scope FROM messages m"
                 " WHERE m.customer_id = :c AND m.conversation_id = :conv"
                 " ORDER BY m.created_at DESC, m.role, m.id DESC LIMIT :n"
             ),
@@ -366,6 +402,57 @@ def pins_for(
     )
 
 
+LEARN_LIMIT = 200  # PRD 6 F3: the newest Useful marks a question reads (Wrong documents: all)
+LEARN_DAYS = 90  # PRD 6 F3: a Useful or Wrong documents mark older than this teaches no more
+
+# PRD 6 F3 (answering/pins.py): each cited page of an answered message rated Useful, or Not
+# useful for wrong documents, in the last :days days, on a live current document that no
+# admin removed since (learning_removals). Every person's in the customer (RLS and :c).
+MARKS = (
+    "SELECT f.user_id, f.rating, f.created_at, c.document_id, c.page_no, d.display_name,"
+    " coalesce(m.answer ->> 'normalized_question', '') AS question"
+    " FROM feedback f"
+    " JOIN messages m ON m.customer_id = f.customer_id AND m.id = f.message_id"
+    " CROSS JOIN LATERAL (SELECT DISTINCT CAST(e ->> 'document_id' AS uuid) AS document_id,"
+    " CAST(e ->> 'page_no' AS integer) AS page_no FROM jsonb_array_elements(CASE WHEN"
+    " jsonb_typeof(m.answer -> 'citations') = 'array' THEN m.answer -> 'citations' ELSE '[]' END) e"
+    " WHERE e ->> 'document_id' ~ '^[0-9a-f-]{36}$' AND e ->> 'page_no' ~ '^[0-9]{1,6}$') c"
+    " JOIN documents d ON d.customer_id = f.customer_id AND d.id = c.document_id"
+    " AND d.deleted_at IS NULL AND d.is_current"
+    " WHERE f.customer_id = :c AND f.created_at >= now() - make_interval(days => :days)"
+    " AND m.answer ->> 'status' = 'answered'"
+    " AND (f.rating = 'up' OR 'wrong_documents' = ANY (f.reason_codes))"
+    " AND NOT EXISTS (SELECT 1 FROM learning_removals r WHERE r.customer_id = f.customer_id"
+    " AND r.document_id = c.document_id AND r.removed_at >= f.created_at)"
+)
+# Every Wrong documents mark (never capped, so a stop never lapses), then the newest Useful
+# ones, one more than LEARN_LIMIT so learned_for can tell when the cap cut the window short.
+_LEARNED_SQL = (
+    "SELECT * FROM (SELECT x.document_id::text AS document_id, x.page_no, x.question, false AS useful,"
+    " x.user_id::text AS user_id, x.user_id = CAST(:u AS uuid) AS own, x.created_at FROM ({marks}) x"
+    " WHERE x.rating = 'down') w"
+    " UNION ALL SELECT * FROM (SELECT x.document_id::text, x.page_no, x.question, true, x.user_id::text,"
+    " x.user_id = CAST(:u AS uuid), x.created_at FROM ({marks}) x WHERE x.rating = 'up'"
+    " ORDER BY x.created_at DESC, x.document_id, x.page_no LIMIT :n) u"
+)
+_LEARNED = text(_LEARNED_SQL.format(marks=MARKS))  # fixed fragments only, as db/models.py's
+
+
+def learned_for(conn: Connection, customer_id: str, user_id: str) -> list[RowMapping]:
+    """PRD 6 F3: every Wrong documents mark (MARKS) and the newest LEARN_LIMIT Useful ones (more
+    in the window: logged, a code only); ``useful``, ``user_id`` and ``own`` say whose. One query."""
+    params = {"c": customer_id, "u": user_id, "days": LEARN_DAYS, "n": LEARN_LIMIT + 1}
+    rows = conn.execute(_LEARNED, params).mappings().all()
+    useful = sorted((row for row in rows if row["useful"]), key=lambda row: row["created_at"], reverse=True)
+    if len(useful) > LEARN_LIMIT:
+        logger.warning("learned marks capped", extra={"code": "learn_limit"})
+    return [row for row in rows if not row["useful"]] + useful[:LEARN_LIMIT]
+
+
+# PRD 6 F1: what went wrong, the boxes on Not useful, in the form's order (0050's CHECK).
+REASONS = ("wrong_documents", "document_missing", "wrong_figure", "did_not_understand", "other")
+
+
 def upsert_feedback(
     conn: Connection,
     customer_id: str,
@@ -374,21 +461,35 @@ def upsert_feedback(
     *,
     rating: str,
     reason: str | None,
+    reason_codes: Sequence[str] = (),
+    notice_shown: bool = False,
 ) -> bool:
     """Rate an assistant message in one of this user's conversations. One rating per
-    (message, user): a second vote replaces the first. False if there is no such
+    (message, user): a second vote replaces the first, with its reasons and whether the
+    notice was shown, and opens it again (no handled mark). False if there is no such
     message for this user."""
     stored = conn.execute(
         text(
-            "INSERT INTO feedback (customer_id, message_id, user_id, rating, reason)"
-            " SELECT m.customer_id, m.id, :u, :rating, :reason"
+            "INSERT INTO feedback"
+            " (customer_id, message_id, user_id, rating, reason, reason_codes, notice_shown)"
+            " SELECT m.customer_id, m.id, :u, :rating, :reason, CAST(:codes AS text[]), :notice"
             " FROM messages m JOIN conversations cv"
             " ON cv.customer_id = m.customer_id AND cv.id = m.conversation_id"
             " WHERE m.customer_id = :c AND m.id = :m AND m.role = 'assistant' AND cv.user_id = :u"
             " ON CONFLICT (message_id, user_id)"
-            " DO UPDATE SET rating = EXCLUDED.rating, reason = EXCLUDED.reason, created_at = now()"
+            " DO UPDATE SET rating = EXCLUDED.rating, reason = EXCLUDED.reason,"
+            " reason_codes = EXCLUDED.reason_codes, notice_shown = EXCLUDED.notice_shown,"
+            " handled_at = NULL, handled_by = NULL, created_at = now()"
             " RETURNING id"
         ),
-        {"c": customer_id, "m": message_id, "u": user_id, "rating": rating, "reason": reason},
+        {
+            "c": customer_id,
+            "m": message_id,
+            "u": user_id,
+            "rating": rating,
+            "reason": reason,
+            "codes": list(reason_codes),
+            "notice": notice_shown,
+        },
     ).first()
     return stored is not None

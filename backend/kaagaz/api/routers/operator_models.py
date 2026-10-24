@@ -38,6 +38,10 @@ writes its own audit rows.
   organisation's admins and members stay signed in with no activity, 1 to 24 hours; the
   organisation's, else the platform's, else none (``default_hours``: SESSION_HOURS, the
   session's own end, which stays the cap) (0040).
+* ``GET`` and ``PUT`` {model_rpm, documents_at_once, pages_at_once, code} ``/operator/speed``
+  (PUT with a fresh code): the platform's model requests a minute, documents read at once and
+  pages of one document read at once, each null for the server's setting and never above it
+  (``most``: MODEL_RPM, WORKER_REPLICAS, OCR_PAGE_CONCURRENCY) (package S, 0053).
 * ``GET``, ``POST`` {scan_model, chat_model, note, code} and ``DELETE`` {code}
   ``/operator/test-model`` (POST and DELETE with a fresh code): the platform test model, one
   allowed model for every organisation's scanning and answering, and its undo (every
@@ -162,10 +166,23 @@ Feature = Literal[
     "my_words",
     "self_signup",
     "version_spotting",
+    "land_facts",  # PRD 6 (0052)
+    "nlq_clarify",
+    "nlq_learning",
 ]
 # Sign-up makes a new organisation: one has no switch of its own for it (0039).
 OrgFeature = Literal[
-    "scan_ai", "ask", "ensemble", "autofile", "cost_saving", "review", "my_words", "version_spotting"
+    "scan_ai",
+    "ask",
+    "ensemble",
+    "autofile",
+    "cost_saving",
+    "review",
+    "my_words",
+    "version_spotting",
+    "land_facts",
+    "nlq_clarify",
+    "nlq_learning",
 ]
 
 
@@ -176,6 +193,18 @@ class TimeoutBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     hours: Annotated[int, Field(strict=True, ge=1, le=24)] | None
+    code: str = Field(min_length=1, max_length=MAX_CODE)
+
+
+class SpeedBody(BaseModel):
+    """The speed controls (package S, 0053), each null for the server's setting and never above
+    it (the route checks). Strict: 1.5, "3" and true are refused."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    model_rpm: Annotated[int, Field(strict=True, ge=1)] | None
+    documents_at_once: Annotated[int, Field(strict=True, ge=1)] | None
+    pages_at_once: Annotated[int, Field(strict=True, ge=1)] | None
     code: str = Field(min_length=1, max_length=MAX_CODE)
 
 
@@ -457,6 +486,56 @@ def set_org_session_timeout(
         )
     _refuse(db, operator, outcome, step_up)
     return get_org_session_timeout(customer_id, operator, db, context)
+
+
+_SPEED_WORDS = {
+    "model_rpm": "model requests per minute",
+    "documents_at_once": "documents read at the same time",
+    "pages_at_once": "pages of one document read at the same time",
+}
+
+
+def _speed_most(settings: Settings) -> dict[str, int]:
+    """The most this server allows for each speed control, set when it is deployed."""
+    return {
+        "model_rpm": settings.model_rpm,
+        "documents_at_once": settings.worker_replicas,
+        "pages_at_once": settings.ocr_page_concurrency,
+    }
+
+
+@router.get("/speed")
+def get_speed(operator: OperatorSession, db: OperatorDb, context: Context) -> dict[str, Any]:
+    """Each speed control: the saved value (null: the server's setting) and the server's own."""
+    with db.operator() as conn:
+        row = models_sql.speed(conn, operator.operator_id)
+    if row is None:  # the operator was disabled meanwhile
+        raise ApiError(401, "not_signed_in")
+    return {name: {"value": row[name], "most": most} for name, most in _speed_most(context.settings).items()}
+
+
+@router.put("/speed")
+def set_speed(body: SpeedBody, operator: OperatorSession, db: OperatorDb, context: Context) -> dict[str, Any]:
+    """Set all three (null: the server's setting), each at most the server's own (400 before a
+    code is used up), with a fresh code; the next admission, job or page uses them."""
+    for name, most in _speed_most(context.settings).items():
+        value = getattr(body, name)
+        if value is not None and value > most:
+            raise ApiError(
+                400, "bad_request", f"The most this server allows for {_SPEED_WORDS[name]} is {most}."
+            )
+    step_up = _step_up(db, context, operator, body.code)
+    with db.operator() as conn:
+        outcome = models_sql.set_speed(
+            conn,
+            operator.operator_id,
+            body.model_rpm,
+            body.documents_at_once,
+            body.pages_at_once,
+            step=step_up.step,
+        )
+    _refuse(db, operator, outcome, step_up)
+    return get_speed(operator, db, context)
 
 
 def _timeout(db: OperatorDatabase, operator: CurrentOperator, customer_id: str | None) -> RowMapping:

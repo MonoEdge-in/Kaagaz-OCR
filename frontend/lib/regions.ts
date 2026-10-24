@@ -255,17 +255,19 @@ export function decodeRegion(text: string | null | undefined): Region | null {
 
 /**
  * The document page link that source cards and review items open. `scanned`
- * opens the page's Scanned text panel too (?scanned=1).
+ * opens the page's Scanned text panel too (?scanned=1); `words`, the asker's key
+ * words (package H, ?words=krishna+maval), lights the lines holding them.
  */
 export function pageLink(
   documentId: string,
   pageNo: number,
   region?: Region,
-  options: { scanned?: boolean } = {},
+  options: { scanned?: boolean; words?: readonly string[] } = {},
 ): string {
   const params = new URLSearchParams({ page: String(pageNo) });
   if (region) params.set("region", encodeRegion(region));
   if (options.scanned) params.set("scanned", "1");
+  if (options.words?.length) params.set("words", options.words.join(" "));
   return `/documents/${encodeURIComponent(documentId)}?${params.toString()}`;
 }
 

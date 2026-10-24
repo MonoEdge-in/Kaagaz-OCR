@@ -103,6 +103,7 @@ _DOCUMENT_COLUMNS = frozenset(
         "name_key",
         "text_minhash",
         "text_bands",
+        "updated_at",  # package S: a document last written long ago (the stuck sweep's clock)
     }
 )
 
@@ -196,6 +197,41 @@ def library_rows_seen(db: Database, customer_id: str, library: dict[str, str]) -
                 {"d": library["document"], "t": library["tag"]},
             ),
         )
+
+
+_LAND_FIELDS = {"person": "land_owner_name", "place": "land_village", "property": "land_survey_number"}
+
+
+_KEY = text(
+    "WITH v AS (INSERT INTO extracted_values (customer_id, document_id, record_key, field, value_text,"
+    " value_raw, page_no, region, reader, label, label_reason) VALUES (:c, :d, 'land:1', :f, :v, :v, 1,"
+    " CAST(:box AS jsonb), 'gemini', 'needs_review', 'single_reader') RETURNING id)"
+    " INSERT INTO value_keys (customer_id, value_id, document_id, kind, place_level, latin, sound)"
+    " SELECT :c, v.id, :d, :k, :level, :latin, :sound FROM v"
+)
+
+
+def insert_key(
+    conn: Connection,
+    customer_id: str,
+    document_id: str,
+    kind: str,
+    printed: str,
+    place_level: str = "village",
+) -> None:
+    """One land value printed as ``printed`` and its ``value_keys`` row, as #245 keys it (a
+    place at ``place_level``), all of one land record. O(1)."""
+    from kaagaz.answering.clarify import latin_key
+    from kaagaz.chunking.script import sound_keys
+    from kaagaz.extraction.links import normalise_identifier
+
+    # #245: a property's key is links.normalise_identifier ("survey45/2"), never a Latin spelling.
+    latin = normalise_identifier(printed) if kind == "property" else latin_key(printed)
+    level = place_level if kind == "place" else None
+    sound = "" if kind == "property" else " ".join(key for _, key in sound_keys(latin))
+    box = '{"kind": "box", "page": 1, "box": [0.1, 0.2, 0.3, 0.25]}'
+    named = {"k": kind, "f": _LAND_FIELDS[kind], "v": printed, "level": level, "latin": latin, "sound": sound}
+    conn.execute(_KEY, {"c": customer_id, "d": document_id, "box": box, **named})
 
 
 def new_trashed_document(db: Database, customer_id: str, *, deleted_at: datetime) -> str:

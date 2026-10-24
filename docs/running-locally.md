@@ -551,7 +551,7 @@ The demo users are `admin@`, `reviewer@` and `member@` on `sharma-traders.exampl
 
 **19. Search, "not found" and the claim check**
 - Check: ask a question that is not about a number, with a typo in a word from a document; then ask "What is the weather in Delhi?".
-- Expect: the first gives `route:"search"` with `kind:"piece"` citations (exact words, typo-tolerant and, with a model, meaning search are merged). The second gives `status:"not_found"`, the text "I couldn't find this in your documents." and a list of closest documents. With a model on, any sentence citing nothing, or with a number that is not in its evidence, is dropped, and links and markup are stripped.
+- Expect: the first gives `route:"search"` with `kind:"piece"` citations (exact words, typo-tolerant and, with a model, meaning search are merged). The second gives `status:"not_found"`, the text "Nothing matches every part of this. These are the closest documents." and a list of closest documents. With a model on, any sentence citing nothing, or with a number that is not in its evidence, is dropped, and links and markup are stripped.
 - Tests: `test_search_db.py`, `test_search_fuse.py`, `test_answering_golden.py` (`test_ten_unanswerable_questions_are_all_not_found`, `test_prompt_injection_in_evidence_changes_nothing`), `test_answering_verify.py`, `test_answering_sanitize.py`.
 
 **20. Answer labels**
@@ -560,8 +560,8 @@ The demo users are `admin@`, `reviewer@` and `member@` on `sharma-traders.exampl
 - Tests: `test_answering_golden.py` (`test_one_unverified_value_makes_the_answer_needs_review`), `test_answering_fixed_queries_db.py`.
 
 **21. Conversations and feedback**
-- Check: `curl -b <jar> $API/conversations`, then `$API/conversations/<id>`; ask again with `"conversation_id":"<id>"`; `curl -i -b <jar> -H "$H" -H "$J" -d '{"rating":"down","reason":"wrong total"}' $API/messages/<answer message id>/feedback`.
-- Expect: conversations list newest first and belong to their user only (a colleague gets `404`); the follow-up lands in the same conversation; feedback gives `204`, a second vote replaces the first, and the reason is stored as typed. On screen the URL becomes `/chat?c=<id>` and a reload brings the conversation back.
+- Check: `curl -b <jar> $API/conversations`, then `$API/conversations/<id>`; ask again with `"conversation_id":"<id>"`; `curl -i -b <jar> -H "$H" -H "$J" -d '{"rating":"down","reason":"wrong total","reason_codes":["wrong_figure"],"notice_shown":true}' $API/messages/<answer message id>/feedback`.
+- Expect: conversations list newest first and belong to their user only (a colleague gets `404`); the follow-up lands in the same conversation; feedback gives `204`, a second vote replaces the first, and the reason and its codes are stored as sent; the 21st rating in a minute gets `429`. On screen the buttons say Useful and Not useful, and Not useful asks "What went wrong?" with the admin notice above Send. On screen the URL becomes `/chat?c=<id>` and a reload brings the conversation back.
 - Tests: `test_api_chat.py`; `frontend/tests/chat-logic.test.ts`, `chat-answer.test.ts`.
 
 **22. Answers with a model**
@@ -585,6 +585,8 @@ The demo users are `admin@`, `reviewer@` and `member@` on `sharma-traders.exampl
 - Check: `curl -b <admin jar> "$API/admin/audit?limit=10"` and `$API/admin/stats`.
 - Expect: the audit log newest first, with names and actions such as `auth.login`, `document.upload`, `chat.ask`, `review.resolve`, `user.create`; the stats count documents by status, questions, answers found and not found, feedback and open review items, for this customer only.
 - Tests: `test_api_admin.py`.
+- Answer quality (PRD 6 F2): `curl -b <admin jar> "$API/admin/answer-quality?status=open&weeks=4"`, then `curl -b <admin jar> -X PUT -H "$H" -H "$J" -d '{"handled":true,"seen":"<given_at>"}' $API/admin/answer-quality/<id>/handled`. Expect only Not useful answers given after the notice, with who asked, the question, the answer, the reasons and the date, and weekly Useful and Not useful counts; handled moves it to `status=handled` and writes `feedback.handled` with ids only; a member or reviewer gets `403`, another company's id `404`. Tests: `test_api_answer_quality.py`, `test_isolation_feedback.py`; `frontend/tests/admin-answer-quality.test.ts`.
+- What Kaagaz learned (PRD 6 F3): mark an answer Useful, ask again on the same words, then `curl -b <admin jar> $API/admin/learned` and `curl -b <admin jar> -X DELETE -H "$H" $API/admin/learned/<document id>`. Expect the cited document with how many people marked it, then `204` and a `learning.remove` audit row; the operator's `GET $API/operator/answer-weeks?weeks=4` gives counts per organisation and ended week only. Tests: `test_learning_db.py`, `test_answering_pins.py`, `test_operator_answer_weeks_db.py`; `frontend/tests/admin-learned.test.ts`.
 
 **26. Customer separation**
 - Check: `login admin@mehta-textiles.example`, then use its jar to `GET $API/documents/<a Sharma document id>`, `POST $API/review/<a Sharma value id>` and `PATCH $API/admin/users/<a Sharma user id>`; in the database, `SQL "BEGIN; SET LOCAL ROLE kaagaz_app; SELECT count(*) FROM documents; COMMIT;"`.
@@ -666,6 +668,7 @@ The made-up golden documents in `backend/tests/golden/docs/` serve these checks 
 - Check: with the model on, `docker compose exec -T api python -m kaagaz.cli reembed`, twice; then `docker compose exec -T -e MODEL_ENABLED=false api python -m kaagaz.cli reembed`.
 - Expect: one line per customer, `customer <id>: N documents, C cleared, E embedded`; the second run embeds 0. With the model off, `error: reembed needs the model: set MODEL_ENABLED=true` and exit code 2. `--customer-id <id>` does one customer; `--all` makes every vector again.
 - Tests: `test_reembed_db.py`, `test_indexing_db.py`.
+- Land facts (PRD 6 D3): `python -m kaagaz.cli land-facts --count` (no model), `--keys-only` (no model), `--sample 20 --customer-id <id> --max-usd 1` (prints each document's calls, tokens and `cost_usd` and the estimate for all eligible documents), then `--all --max-usd <approved>` only once the sample's cost is approved. A second run reads nothing again. Tests: `test_land_facts_cli_db.py`, `test_isolation_land_facts.py`.
 
 **40. Document card, related documents, invoice and low-resolution panels**
 - Check (screen): with the model on, open `textile-invoice.pdf` from the golden documents; click a card item and an invoice cell. Open a document that shares its invoice or PO number with another (feature 33), and a photo scanned under `LOW_RES_DPI`.

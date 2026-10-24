@@ -17,9 +17,13 @@ from sqlalchemy import text
 
 from kaagaz.answering import fixed_queries
 from kaagaz.answering.dates import date_range, mentions_date
-from kaagaz.answering.fixed_queries import MAX_CITED_VALUES, PgFixedQueries
+from kaagaz.answering.fixed_queries import MAX_CITED_VALUES, Figure, PgFixedQueries
+from kaagaz.answering.format import indian_number
 from kaagaz.answering.hinglish import normalise
 from kaagaz.answering.intent import FIELDS, FixedPlan, plan_fixed
+from kaagaz.answering.service import Answer, AnswerService
+from kaagaz.answering.totals import PRINTED_TOTAL
+from kaagaz.chunking.rows import pieces_from_rows
 from kaagaz.db.engine import Database
 from kaagaz.extraction.labelled import values_from_lines
 from kaagaz.extraction.parsing import parse_amount, parse_date
@@ -28,6 +32,8 @@ from kaagaz.extraction.values import ExtractedValue
 from kaagaz.reading.spans import BoxLocation, CellLocation, Span, location_to_json
 from kaagaz.search.scope import EVERYTHING
 from tests.db_support import insert_document, new_customer
+from tests.settings_factory import make_settings
+from tests.test_answering_intent import EXAMPLE_3
 
 pytestmark = pytest.mark.db
 
@@ -216,22 +222,31 @@ def test_documents_that_are_not_ready_are_left_out(db: Database) -> None:
     add_values(db, customer, failed, row(2, "Sharma Traders", 10, date(2026, 8, 3)))
     fixed = PgFixedQueries(db)
     assert fixed.top_group(customer, "profit", PARTIES, DATES, *AUGUST, True) == []
-    assert fixed.total(customer, "profit", (), None, None) == []
+    assert fixed.figures(customer, "profit", (), None, None, invoices=False) == []
     assert fixed.count_documents(customer, None, None, date_fields=DATES) == []
 
 
+def summed(figures: list[Figure]) -> tuple[Decimal, int]:
+    """What the answer would add up (kaagaz/answering/totals.py): the figures' sum, and how many."""
+    return sum((f.amount for f in figures if f.amount is not None), Decimal(0)), len(figures)
+
+
 def test_total_inside_a_month_and_overall(db: Database, register: Any) -> None:
+    # Changed on purpose (PRD 6 C, 24 Oct 2026): the query lists each matching record's figure,
+    # and code adds them up; each cites its figure (it was one sum citing figures and dates).
     customer, _, values = register
     fixed = PgFixedQueries(db)
-    [august] = fixed.total(customer, "profit", DATES, *AUGUST)
-    assert (august.group, august.number, august.records, august.verified) == (None, Decimal(200000), 3, True)
+    august = fixed.figures(customer, "profit", DATES, *AUGUST, invoices=False)
+    assert summed(august) == (Decimal(200000), 3)
+    assert all(f.verified and f.dated and f.date_verified and f.printed == 1 for f in august)
     august_keys = {"sheet:1:row:2", "sheet:1:row:3", "sheet:1:row:4"}
-    cited = {ref.value_id for ref in august.values}
-    assert cited == {v["id"] for v in values if v["key"] in august_keys and v["field"] in {"profit", "date"}}
-    [overall] = fixed.total(customer, "profit", (), None, None)
-    assert (overall.number, overall.records) == (Decimal(320000), 5)
-    assert {ref.field for ref in overall.values} == {"profit"}
-    assert fixed.total(customer, "profit", DATES, date(2025, 1, 1), date(2026, 1, 1)) == []
+    cited = {f.value.value_id for f in august if f.value is not None}
+    assert cited == {v["id"] for v in values if v["key"] in august_keys and v["field"] == "profit"}
+    assert [f.amount for f in august] == [Decimal(70000), Decimal(80000), Decimal(50000)]  # by date
+    overall = fixed.figures(customer, "profit", (), None, None, invoices=False)
+    assert summed(overall) == (Decimal(320000), 5)
+    assert {f.value.field for f in overall if f.value is not None} == {"profit"}
+    assert fixed.figures(customer, "profit", DATES, date(2025, 1, 1), date(2026, 1, 1), invoices=False) == []
 
 
 def test_extreme_value(db: Database, register: Any) -> None:
@@ -279,16 +294,16 @@ def test_a_field_name_is_only_ever_a_value(db: Database, register: Any) -> None:
     customer, _, _ = register
     fixed = PgFixedQueries(db)
     hostile = "profit' OR '1'='1"
-    assert fixed.total(customer, hostile, (), None, None) == []
+    assert fixed.figures(customer, hostile, (), None, None, invoices=False) == []
     assert fixed.top_group(customer, "profit", [hostile], (), None, None, True) == []
 
 
 def test_start_and_end_go_together(db: Database) -> None:
     customer, _ = new_customer(db)
     with pytest.raises(ValueError, match="together"):
-        PgFixedQueries(db).total(customer, "profit", DATES, date(2026, 8, 1), None)
+        PgFixedQueries(db).figures(customer, "profit", DATES, date(2026, 8, 1), None, invoices=False)
     with pytest.raises(ValueError, match="date fields"):
-        PgFixedQueries(db).total(customer, "profit", (), *AUGUST)
+        PgFixedQueries(db).figures(customer, "profit", (), *AUGUST, invoices=False)
 
 
 # --- a labelled invoice's values count once per document ------------------------------
@@ -369,12 +384,14 @@ def test_an_invoice_total_printed_on_two_pages_is_counted_once(db: Database) -> 
     values = add_invoice(db, customer)
     fixed = PgFixedQueries(db)
 
-    [august] = fixed.total(customer, "total_amount", DATES, *AUGUST)
-    assert (august.number, august.records) == (Decimal(1180), 1)
-    first_page = {v["id"] for v in values if v["key"] == "document" and v["field"] != "party_name"}
-    assert {ref.value_id for ref in august.values} == first_page - ids(values, "invoice_number")
-    [overall] = fixed.total(customer, "total_amount", (), None, None)
-    assert (overall.number, overall.records) == (Decimal(1180), 1)
+    # Changed on purpose (PRD 6 C, 24 Oct 2026): one record, citing its figure (it was a sum
+    # citing the figure and the date).
+    [august] = fixed.figures(customer, "total_amount", DATES, *AUGUST, invoices=False)
+    assert (august.amount, august.printed, august.dated) == (Decimal(1180), 1, True)
+    first_page = {v["id"] for v in values if v["key"] == "document" and v["field"] == "total_amount"}
+    assert august.value is not None and {august.value.value_id} == first_page
+    overall = fixed.figures(customer, "total_amount", (), None, None, invoices=False)
+    assert summed(overall) == (Decimal(1180), 1)
 
 
 def test_top_group_counts_an_invoice_once(db: Database) -> None:
@@ -402,7 +419,7 @@ def test_count_documents_takes_an_invoices_date_from_its_document_record(db: Dat
 
     # The same answer as the total: the invoice is not in August at all.
     assert fixed.count_documents(customer, *AUGUST, date_fields=DATES) == []
-    assert fixed.total(customer, "total_amount", DATES, *AUGUST) == []
+    assert fixed.figures(customer, "total_amount", DATES, *AUGUST, invoices=False) == []
     [july] = fixed.count_documents(customer, date(2026, 7, 1), date(2026, 8, 1), date_fields=DATES)
     assert (july.number, july.records) == (Decimal(1), 1)
     assert [ref.value_text for ref in july.values] == ["12/07/2026"]
@@ -414,9 +431,9 @@ def test_a_register_column_named_total_amount_still_sums_every_row(db: Database)
     add_register(db, customer)
     fixed = PgFixedQueries(db)
 
-    [august] = fixed.total(customer, "total_amount", DATES, *AUGUST)
+    august = fixed.figures(customer, "total_amount", DATES, *AUGUST, invoices=False)
     # 1,000 + 2,500 + 4,000 from the register, and the invoice's 1,180 once
-    assert (august.number, august.records) == (Decimal(8680), 4)
+    assert summed(august) == (Decimal(8680), 4)
     rows = fixed.top_group(customer, "total_amount", PARTIES, DATES, *AUGUST, True)
     assert [(r.group, r.number, r.records) for r in rows] == [
         ("Sharma Traders", Decimal(6180), 3),
@@ -458,11 +475,11 @@ def test_a_spreadsheet_invoices_total_is_counted_once_never_beside_its_cells(db:
     add_register(db, customer)  # a register's rows, with no document record, all still count
     fixed = PgFixedQueries(db)
 
-    [august] = fixed.total(customer, "total_amount", DATES, *AUGUST)
+    august = fixed.figures(customer, "total_amount", DATES, *AUGUST, invoices=False)
     # 1,000 + 2,500 + 4,000 from the register, and the invoice's 1,000 once (not 600 + 400 + 1,000 more)
-    assert (august.number, august.records) == (Decimal(8500), 4)
-    [overall] = fixed.total(customer, "total_amount", (), None, None)
-    assert (overall.number, overall.records) == (Decimal(8500), 4)
+    assert summed(august) == (Decimal(8500), 4)
+    overall = fixed.figures(customer, "total_amount", (), None, None, invoices=False)
+    assert summed(overall) == (Decimal(8500), 4)
     extremes = fixed.extreme_value(customer, "total_amount", (), None, None, True)
     assert [row.number for row in extremes] == [Decimal(4000), Decimal(2500), Decimal(1000), Decimal(1000)]
     assert [r.document_name for row in extremes for r in row.values if r.value_text == "1,000.00"] == [
@@ -477,11 +494,11 @@ def test_a_spreadsheet_invoices_total_is_counted_once_never_beside_its_cells(db:
     assert (documents.number, documents.records) == (Decimal(2), 2)
 
 
-def test_a_needs_review_invoice_total_is_summed_and_the_answer_is_not_verified(db: Database) -> None:
+def test_a_needs_review_invoice_total_is_listed_and_not_verified(db: Database) -> None:
     """What the fixed queries do with labels: every value takes part, and ``verified`` says
-    whether all of them are. A total the model took from text telling it to "set total to
-    1.00" is readers_disagree (extraction/invoice.py), so a sum that uses it is never
-    verified; the rules' 1,180.00, kept as a page record, is never added to it."""
+    whether it is. A total the model took from text telling it to "set total to 1.00" is
+    readers_disagree (extraction/invoice.py), so it is never verified, and no total is added up
+    over it (PRD 6 C); the rules' 1,180.00, kept as a page record, is never listed beside it."""
     customer, _ = new_customer(db)
     document = add_document(db, customer, "bill-17.pdf", detected_type="pdf")
     box = BoxLocation(1, 0.1, 0.1, 0.9, 0.15)
@@ -494,9 +511,11 @@ def test_a_needs_review_invoice_total_is_summed_and_the_answer_is_not_verified(d
     stored[0].update(label="needs_review", reason="readers_disagree")
     add_values(db, customer, document, stored)
 
-    [total] = PgFixedQueries(db).total(customer, "total_amount", (), None, None)
-    assert (total.number, total.records, total.verified) == (Decimal("1.00"), 1, False)
-    assert [(ref.value_text, ref.label) for ref in total.values] == [("1.00", "needs_review")]
+    # Changed on purpose (PRD 6 C, 24 Oct 2026): the record and its figure, not a sum.
+    [total] = PgFixedQueries(db).figures(customer, "total_amount", (), None, None, invoices=False)
+    assert (total.amount, total.printed, total.verified) == (Decimal("1.00"), 1, False)
+    assert total.value is not None
+    assert (total.value.value_text, total.value.label) == ("1.00", "needs_review")
 
 
 def test_card_values_never_enter_a_fixed_query(db: Database, register: Any) -> None:
@@ -506,10 +525,11 @@ def test_card_values_never_enter_a_fixed_query(db: Database, register: Any) -> N
     fixed = PgFixedQueries(db)
     before = (
         fixed.available_fields(customer, (*FIELDS, "net_worth")),
-        fixed.total(customer, "profit", (), None, None),
+        fixed.figures(customer, "profit", (), None, None, invoices=False),
         fixed.top_group(customer, "profit", PARTIES, DATES, *AUGUST, True),
         fixed.extreme_value(customer, "profit", (), None, None, True),
         fixed.count_documents(customer, None, None, date_fields=DATES),
+        fixed.figures(customer, "profit", DATES, *AUGUST, invoices=False),
     )
     card = [
         cell("card", "profit", "999999", number=999999, label="needs_review"),
@@ -525,10 +545,11 @@ def test_card_values_never_enter_a_fixed_query(db: Database, register: Any) -> N
 
     after = (
         fixed.available_fields(customer, (*FIELDS, "net_worth")),
-        fixed.total(customer, "profit", (), None, None),
+        fixed.figures(customer, "profit", (), None, None, invoices=False),
         fixed.top_group(customer, "profit", PARTIES, DATES, *AUGUST, True),
         fixed.extreme_value(customer, "profit", (), None, None, True),
         fixed.count_documents(customer, None, None, date_fields=DATES),
+        fixed.figures(customer, "profit", DATES, *AUGUST, invoices=False),
     )
     assert after == before
     assert "net_worth" not in after[0]
@@ -557,10 +578,10 @@ def test_invoice_line_amounts_are_never_used_and_total_amount_still_plans(db: Da
 
     available = fixed.available_fields(customer, (*FIELDS, "invoice_number", "description"))
     assert available == {"party_name", "invoice_number", "invoice_date", "total_amount"}
-    assert fixed.total(customer, "amount", (), None, None) == []
+    assert fixed.figures(customer, "amount", (), None, None, invoices=False) == []
     assert fixed.extreme_value(customer, "amount", (), None, None, True) == []
-    [august] = fixed.total(customer, "total_amount", DATES, *AUGUST)
-    assert (august.number, august.records) == (Decimal(1180), 1)
+    august = fixed.figures(customer, "total_amount", DATES, *AUGUST, invoices=False)
+    assert summed(august) == (Decimal(1180), 1)
     normalised = normalise("Total amount in August 2026?")
     plan = plan_fixed(
         normalised,
@@ -629,9 +650,10 @@ def add_invoice_row(
     label: str = "verified",
     check_status: str = "passed",
     document_status: str = "ready",
+    extra: list[dict[str, Any]] | None = None,
 ) -> str:
     """A ready invoice document, its invoices row and its invoice number value (with a box, so it
-    can be cited). Returns the value's id."""
+    can be cited), and the ``extra`` values of its document record. Returns the value's id."""
     number = f"INV-{uuid.uuid4().hex[:6]}"
     document = add_document(db, customer, f"{number}.pdf", status=document_status, detected_type="pdf")
     value_id = str(uuid.uuid4())
@@ -647,7 +669,7 @@ def add_invoice_row(
         "label": label,
         "reason": "readers_agree" if label == "verified" else "single_reader",
     }
-    add_values(db, customer, document, [value])
+    add_values(db, customer, document, [value, *(extra or [])])
     reasons = "{total_mismatch}" if check_status == "failed" else "{}"
     with db.customer(customer) as conn:
         conn.execute(
@@ -708,3 +730,368 @@ def test_count_invoices_needs_start_and_end_together(db: Database) -> None:
     customer, _ = new_customer(db)
     with pytest.raises(ValueError, match="start and end go together"):
         PgFixedQueries(db).count_invoices(customer, date(2026, 8, 1), None)
+
+
+# --- the numbers rule over invoices (PRD 6 C) --------------------------------------------------------
+
+SEPTEMBER = (date(2026, 9, 1), date(2026, 10, 1))
+TOTAL_PROFIT = "Total profit of invoices in September 2026?"
+IN_SEPTEMBER = "so I haven't added up the profit in September 2026."
+
+
+def september_invoice(db: Database, customer: str, day: int | None, profit: int | None, **row: Any) -> str:
+    """An invoice dated ``day`` September 2026 (None: no date read), printing ``profit`` (None:
+    none) in its document record. Returns its invoice number value's id."""
+    extra = []
+    if day is not None:
+        extra.append(cell("document", "invoice_date", f"{day}/09/2026", column=2, day=date(2026, 9, day)))
+    if profit is not None:
+        extra.append(cell("document", "profit", indian_number(profit), column=3, number=profit))
+    return add_invoice_row(db, customer, None if day is None else date(2026, 9, day), extra=extra, **row)
+
+
+def ask_total(db: Database, customer: str, question: str = TOTAL_PROFIT) -> Answer:
+    service = AnswerService(db=db, model=None, settings=make_settings(), clock=lambda: NOW)
+    return service.answer(customer, question)
+
+
+def test_fourteen_september_invoices_three_printing_a_profit_give_no_total(db: Database) -> None:
+    """PRD 6 Example 3: every September invoice is listed, the 3 figures as printed, and no total."""
+    customer, _ = new_customer(db)
+    for day in range(1, 12):
+        september_invoice(db, customer, day, None)
+    for day, profit in [(26, 31000), (12, 18400), (19, 9250)]:
+        september_invoice(db, customer, day, profit)
+    add_invoice_row(db, customer, date(2026, 8, 30), extra=[cell("document", "profit", "5,000", number=5000)])
+    register = add_document(db, customer, "profit-register.xlsx")  # not an invoice: never matched here
+    add_values(db, customer, register, row(2, "Sharma Traders", 70000, date(2026, 9, 3)))
+
+    answer = ask_total(db, customer)
+
+    assert (answer.status, answer.route, answer.label) == ("answered", "fixed_query", "needs_review")
+    lines = [s.text for s in answer.sentences]
+    assert lines[0] == f"11 of the 14 invoices have no profit I can add, {IN_SEPTEMBER}"
+    assert [line.split(": ", 1)[1] for line in lines[1:4]] == ["18,400.", "9,250.", "31,000."]  # by date
+    assert all(line.endswith(": no profit printed.") for line in lines[4:]) and len(lines) == 15
+    assert [c.snippet for c in answer.citations[:3]] == ["profit: 18,400", "profit: 9,250", "profit: 31,000"]
+    assert all(c.snippet.startswith("invoice_number: INV-") for c in answer.citations[3:])
+    assert "profit-register.xlsx" not in str(answer.to_json()) and "5,000" not in str(answer.to_json())
+    # PRD 6 C2: the example's own words reach the same rule, and the same answer.
+    example = ask_total(db, customer, EXAMPLE_3)
+    assert [s.text for s in example.sentences] == lines and example.route == "fixed_query"
+
+
+def test_september_invoices_all_printing_a_verified_profit_give_the_total(db: Database) -> None:
+    customer, _ = new_customer(db)
+    for day, profit in [(26, 31000), (12, 18400), (19, 9250)]:
+        september_invoice(db, customer, day, profit)
+
+    answer = ask_total(db, customer)
+
+    assert [s.text.split(": ", 1)[-1] for s in answer.sentences] == [
+        "The total profit in September 2026 was 58,650, from 3 invoices.",
+        "18,400.",
+        "9,250.",
+        "31,000.",
+    ]
+    assert answer.label == "verified"
+    figures = PgFixedQueries(db).figures(customer, "profit", ("invoice_date",), *SEPTEMBER, invoices=True)
+    assert summed(figures) == (Decimal(58650), 3)
+    assert all(f.verified and f.dated and f.date_verified for f in figures)
+    september_invoice(db, customer, 30, 1000, check_status="failed")  # its figure is never verified
+    failed = ask_total(db, customer)
+    assert failed.sentences[0].text == f"1 of the 4 profit figures is not verified yet, {IN_SEPTEMBER}"
+    assert failed.sentences[4].text.endswith(": 1,000, not verified yet.")
+
+
+def test_an_undated_invoice_in_a_dated_question_withholds_the_total(db: Database) -> None:
+    customer, _ = new_customer(db)
+    september_invoice(db, customer, 12, 18400)
+    september_invoice(db, customer, 19, 9250)
+    september_invoice(db, customer, None, 5000)
+
+    answer = ask_total(db, customer)
+
+    assert answer.sentences[0].text == f"1 of the 3 invoices has no date I can read, {IN_SEPTEMBER}"
+    assert answer.sentences[3].text.endswith(": 5,000, no date I can read.")
+    assert "32,650" not in str(answer.to_json())
+
+
+def test_a_register_row_without_the_figure_is_a_record_that_prints_none(db: Database) -> None:
+    """A row is a record: a register row that leaves the profit empty matches, with no figure."""
+    customer, _ = new_customer(db)
+    document = add_document(db, customer, "profit-register.xlsx")
+    blank = [v for v in row(3, "Mehta Textiles", None, date(2026, 8, 15)) if v["field"] != "profit"]
+    add_values(db, customer, document, [*row(2, "Sharma Traders", 70000, date(2026, 8, 1)), *blank])
+    other = add_document(db, customer, "staff.xlsx")  # holds no profit: none of its rows match
+    add_values(db, customer, other, [cell("sheet:1:row:2", "date", "2026-08-02", day=date(2026, 8, 2))])
+
+    figures = PgFixedQueries(db).figures(customer, "profit", DATES, *AUGUST, invoices=False)
+
+    assert [(f.amount, f.printed) for f in figures] == [(Decimal(70000), 1), (None, 0)]
+    assert figures[1].value is not None and figures[1].value.document_id == document
+
+
+# --- PRD 6 C2: a sheet's printed total, a party's sum, and what a highest rests on ----------------
+
+_PIECE = text(
+    "INSERT INTO pieces (customer_id, document_id, seq, page_from, page_to, text, regions, label)"
+    " VALUES (:c, :d, :seq, :page, :page, :text, CAST(:regions AS jsonb), :label)"
+)
+HEADER = ("Party Name", "Total Amount", "Date")
+AUG_ROWS = [("Sharma Traders", "1,000", "03/08/2026"), ("Mehta Textiles", "2,500", "10/08/2026")]
+
+
+def add_sheet(db: Database, customer: str, sheet: list[tuple[str, ...]], name: str = "ledger.xlsx") -> None:
+    """A spreadsheet as the pipeline stores it: its values (values_from_cells) and one piece per row."""
+    document = add_document(db, customer, name)
+    spans = [
+        Span(text=text_, raw=text_, location=CellLocation(1, r, c))
+        for r, cells in enumerate(sheet, start=1)
+        for c, text_ in enumerate(cells, start=1)
+        if text_
+    ]
+    add_values(db, customer, document, as_stored(values_from_cells(spans)))
+    pieces = pieces_from_rows(customer, document, spans)
+    params = [
+        {"c": customer, "d": document, "seq": seq, "page": p.page_from, "text": p.text, "label": p.label,
+         "regions": json.dumps(p.regions())}
+        for seq, p in enumerate(pieces)
+    ]  # fmt: skip
+    with db.customer(customer) as conn:
+        conn.execute(_PIECE, params)
+
+
+def ask(db: Database, customer: str, question: str) -> Answer:
+    return AnswerService(db=db, model=None, settings=make_settings(), clock=lambda: NOW).answer(
+        customer, question
+    )
+
+
+@pytest.mark.parametrize(
+    ("label", "day", "printed"),
+    [(label, "", True) for label in (
+        "Total", "GRAND TOTAL", "Sub-Total:", "Net Total", "Total Rs.", "Total Amount", "Totals",
+        "Grand Total (Rs)", "एकूण", "कुल", "एकुण", "कुल योग", "योग", "एकूण रक्कम")]
+    + [("Total", "31/08/2026", True), ("Total Traders", "20/08/2026", False),
+       ("Totally Fresh Foods", "", False), ("कुलकर्णी", "", False)],
+)  # fmt: skip
+def test_a_sheets_printed_total_row_is_never_a_record(
+    db: Database, label: str, day: str, printed: bool
+) -> None:
+    customer, _ = new_customer(db)
+    figure = "3,500" if printed else "9,000"  # a printed total adds up its sheet's other rows
+    add_sheet(db, customer, [HEADER, *AUG_ROWS, (label, figure, day)])
+    fixed = PgFixedQueries(db)
+    figures = fixed.figures(customer, "total_amount", (), None, None, invoices=False)
+    assert [(f.amount, f.printed_total) for f in figures] == [
+        (Decimal(1000), False),
+        (Decimal(2500), False),
+        (parse_amount(figure), printed),
+    ]
+    highest = fixed.extreme_value(customer, "total_amount", (), None, None, True)
+    ranked = fixed.top_group(customer, "total_amount", PARTIES, (), None, None, True)
+    if printed:
+        assert [row.number for row in highest] == [2500, 1000]
+        assert [(row.group, row.number) for row in ranked] == [
+            ("Mehta Textiles", Decimal(2500)),
+            ("Sharma Traders", Decimal(1000)),
+        ]
+    else:  # one that does not add up, or only starts like a total word, is a record (doubtful or not)
+        doubtful = label == "Total Traders"  # Changed on purpose (PRD 6 C2): never the highest shown
+        assert figures[2].looks_total is doubtful
+        assert [row.number for row in highest] == ([2500, 1000] if doubtful else [9000, 2500, 1000])
+
+
+def test_a_ledger_with_a_total_row_never_gives_its_double(db: Database) -> None:
+    """On a real database, rows of 1,000 and 2,500 and a Total row of 3,500 were summed to 7,000."""
+    customer, _ = new_customer(db)
+    add_sheet(db, customer, [HEADER, *AUG_ROWS, ("Total Rs.", "3,500", "")])
+    asked = ["Total amount?", "Who had the highest amount?", "What was the highest amount?"]
+    answers = [ask(db, customer, question) for question in asked]
+
+    lines = ["ledger.xlsx, its printed total: 3,500.", "ledger.xlsx: 1,000.", "ledger.xlsx: 2,500."]
+    assert [s.text for s in answers[0].sentences] == [PRINTED_TOTAL, *lines]
+    assert answers[0].label == "needs_review" and answers[0].citations[0].snippet == "total_amount: 3,500"
+    assert answers[1].sentences[0].text == "Mehta Textiles had the highest total amount, 2,500."
+    assert answers[2].sentences[0].text == "The highest total amount was 2,500."
+    for answer in answers:
+        said = json.dumps(answer.to_json())
+        assert answer.route == "fixed_query" and "7,000" not in said and "7000" not in said
+
+
+@pytest.mark.parametrize("unheaded", ["", "तपशील"])
+def test_a_total_label_in_a_column_with_no_usable_header_is_still_seen(db: Database, unheaded: str) -> None:
+    """The label's cell is never a value (no field name), but the row's piece holds it."""
+    customer, _ = new_customer(db)
+    sheet = [(unheaded, "Party Name", "Total Amount"), ("1", *AUG_ROWS[0][:2]), ("2", *AUG_ROWS[1][:2])]
+    add_sheet(db, customer, [*sheet, ("Total", "", "3,500")])
+    answer = ask(db, customer, "Total amount?")
+    assert [s.text for s in answer.sentences] == [
+        PRINTED_TOTAL,
+        "ledger.xlsx, its printed total: 3,500.",
+        "ledger.xlsx: 1,000.",
+        "ledger.xlsx: 2,500.",
+    ]
+    assert "7,000" not in json.dumps(answer.to_json())
+
+
+def test_with_a_range_the_printed_total_of_the_whole_sheet_is_left_out(db: Database) -> None:
+    customer, _ = new_customer(db)
+    september = ("Gupta Stores", "4,000", "05/09/2026")
+    add_sheet(db, customer, [HEADER, *AUG_ROWS, september, ("Total", "7,500", "")])
+    answer = ask(db, customer, "Total amount in August 2026?")
+    assert [s.text for s in answer.sentences] == [
+        "The total amount in August 2026 was 3,500, from 2 records.",
+        "ledger.xlsx: 1,000.",
+        "ledger.xlsx: 2,500.",
+    ]
+    assert "7,500" not in json.dumps(answer.to_json())
+
+
+def test_a_highest_is_never_verified_beside_an_amount_that_is_not_one_number(db: Database) -> None:
+    customer, _ = new_customer(db)
+    add_sheet(db, customer, [HEADER, *AUG_ROWS, ("Gupta Stores", "12,0O0", "20/08/2026")])
+    answer = ask(db, customer, "What was the highest amount?")
+    assert [s.text for s in answer.sentences] == [
+        "The highest total amount was 2,500.",
+        "Some of the values behind this are not verified yet.",
+    ]
+    assert answer.label == "needs_review"
+    assert [answer.citations[n - 1].snippet for n in answer.sentences[1].citations] == [
+        "total_amount: 12,0O0"
+    ]
+
+
+def test_a_row_that_reads_like_a_total_but_does_not_add_up_is_listed_never_dropped(db: Database) -> None:
+    customer, other = new_customer(db)[0], new_customer(db)[0]
+    add_sheet(db, customer, [HEADER, *AUG_ROWS, ("Total Solutions Pvt Ltd", "9,000", "")])
+    add_sheet(db, other, [HEADER[:2], *(r[:2] for r in AUG_ROWS), ("Total Solutions Pvt Ltd", "9,000")])
+
+    in_august = ask(db, customer, "Total amount in August 2026?")
+    assert in_august.sentences[0].text == (
+        "1 of the 3 records reads like a total, so I haven't added up the amount in August 2026."
+    )
+    lines = [s.text for s in in_august.sentences]
+    assert "ledger.xlsx: 9,000, reads like a total, no date I can read." in lines
+    ranked = ask(db, other, "Who had the highest amount?")
+    highest = ask(db, other, "What was the highest amount?")
+    assert ranked.sentences[0].text == (
+        "1 of the 3 records reads like a total, so I haven't compared the parties' amount."
+    )
+    # Changed on purpose (PRD 6 C2, 24 Oct 2026): it is left out, and why (it was the 9,000 shown).
+    assert [s.text for s in highest.sentences] == [
+        "The highest total amount was 2,500.",
+        "A row that reads like a total is left out of this.",
+    ]
+    for answer in (in_august, ranked, highest):
+        assert answer.label == "needs_review"
+
+
+def test_a_highest_never_shows_a_sub_total(db: Database) -> None:
+    customer, _ = new_customer(db)
+    amounts = ["1,000", "2,500", "Sub total", "4,000", "1,000", "Sub total", "Grand total"]
+    figures = ["1,000", "2,500", "3,500", "4,000", "1,000", "5,000", "8,500"]
+    sheet = [("Trader" if a[0].isdigit() else a, f, "") for a, f in zip(amounts, figures, strict=True)]
+    add_sheet(db, customer, [HEADER, *sheet])
+    answer = ask(db, customer, "What was the highest amount?")
+    assert [s.text for s in answer.sentences] == [
+        "The highest total amount was 4,000.",
+        "Rows that read like a total are left out of this.",
+    ]
+    assert [answer.citations[n - 1].snippet for n in answer.sentences[1].citations] == [
+        "total_amount: 5,000",
+        "total_amount: 3,500",
+    ]
+    assert answer.label == "needs_review"
+
+
+def test_a_highest_under_a_range_is_never_verified_beside_a_record_with_no_date(db: Database) -> None:
+    customer, _ = new_customer(db)
+    undated = [v for v in row(4, "Gupta Stores", 50000, date(2026, 8, 31)) if v["field"] != "date"]
+    rows = [*row(2, "Sharma Traders", 70000, date(2026, 8, 1)), *row(3, "Mehta", 80000, date(2026, 8, 15))]
+    add_values(db, customer, add_document(db, customer, "profit-register.xlsx"), [*rows, *undated])
+    answer = ask(db, customer, "What was the highest profit in August 2026?")
+    assert [s.text for s in answer.sentences] == [
+        "The highest profit was 80,000, in August 2026.",
+        "Some of the values behind this are not verified yet.",
+    ]
+    assert answer.label == "needs_review"
+    assert [answer.citations[n - 1].snippet for n in answer.sentences[1].citations] == ["profit: 50000"]
+
+
+def test_a_partys_sum_needs_every_record_to_print_a_verified_figure(db: Database, register: Any) -> None:
+    customer, document, _ = register
+    question = "Kiska profit sabse jyada tha last month?"
+    shown = ask(db, customer, question)
+    assert [s.text for s in shown.sentences] == [
+        "Sharma Traders had the highest profit, 1,20,000, in August 2026."
+    ]
+    assert shown.label == "verified"
+
+    blank = [v for v in row(7, "Gupta Stores", None, date(2026, 8, 20)) if v["field"] != "profit"]
+    add_values(db, customer, document, blank)
+    withheld = ask(db, customer, question)
+
+    assert withheld.sentences[0].text == (
+        "1 of the 4 records has no profit I can add, so I haven't compared the parties' profit"
+        " in August 2026."
+    )
+    assert [s.text for s in withheld.sentences[1:]] == [
+        "profit-register.xlsx: 70000.",
+        "profit-register.xlsx: 80000.",
+        "profit-register.xlsx: 50000.",
+        "profit-register.xlsx: no profit printed.",
+    ]
+    assert withheld.label == "needs_review" and "1,20,000" not in json.dumps(withheld.to_json())
+
+
+def test_a_partys_sum_is_never_grouped_by_a_party_name_not_verified(db: Database) -> None:
+    customer, _ = new_customer(db)
+    rows = [
+        *row(2, "Sharma Traders", 70000, date(2026, 8, 1)),
+        *row(3, "Sharrna Traders", 40000, date(2026, 8, 2), party_label="needs_review"),
+        *row(4, "Mehta Textiles", 80000, date(2026, 8, 15)),
+    ]
+    add_values(db, customer, add_document(db, customer, "profit-register.xlsx"), rows)
+    answer = ask(db, customer, "Kiska profit sabse jyada tha last month?")
+    assert answer.sentences[0].text == (
+        "1 of the 3 party names is not verified yet, so I haven't compared the parties' profit"
+        " in August 2026."
+    )
+    assert answer.sentences[2].text == "profit-register.xlsx: 40000, party not verified yet."
+
+
+def test_the_rule_and_the_ranking_see_the_same_sheet_rows(db: Database) -> None:
+    """A party in the document's own record (no profit there) leaves the rows' parties in place."""
+    customer, _ = new_customer(db)
+    rows = [
+        *row(2, "Sharma Traders", 70000, date(2026, 8, 1)),
+        *row(3, "Mehta Textiles", 80000, date(2026, 8, 15)),
+    ]
+    own = cell("document", "party_name", "Sharma Traders", column=9)
+    add_values(db, customer, add_document(db, customer, "profit-register.xlsx"), [*rows, own])
+    answer = ask(db, customer, "Kiska profit sabse jyada tha last month?")
+    assert answer.sentences[0].text == "Mehta Textiles had the highest profit, 80,000, in August 2026."
+
+
+def test_a_highest_is_verified_only_when_every_value_compared_is(db: Database) -> None:
+    customer, _ = new_customer(db)
+    document = add_document(db, customer, "profit-register.xlsx")
+    rows = [
+        *row(2, "Sharma Traders", 70000, date(2026, 8, 1)),
+        *row(3, "Mehta Textiles", 80000, date(2026, 8, 15)),
+        *row(4, "Gupta Stores", 50000, date(2026, 8, 31), profit_label="needs_review"),
+    ]
+    add_values(db, customer, document, rows)
+
+    [highest, *_] = PgFixedQueries(db).extreme_value(customer, "profit", DATES, *AUGUST, True)
+    assert (highest.number, highest.verified) == (Decimal(80000), True)
+    assert {ref.value_id for ref in highest.unsure} == {v["id"] for v in rows if v["label"] != "verified"}
+    answer = ask(db, customer, "What was the highest profit in August 2026?")
+    assert [s.text for s in answer.sentences] == [
+        "The highest profit was 80,000, in August 2026.",
+        "Some of the values behind this are not verified yet.",
+    ]
+    assert answer.label == "needs_review"
+    assert [answer.citations[n - 1].snippet for n in answer.sentences[1].citations] == ["profit: 50000"]

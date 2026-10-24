@@ -71,7 +71,7 @@ _DOCUMENTS_BY_STATUS = (
 _COUNTS = (
     "SELECT m.questions_total, m.answered, m.not_found, m.verified_answers,"
     " m.needs_review_answers, f.feedback_up, f.feedback_down, r.open_review_items"
-    " FROM (SELECT count(*) AS questions_total,"
+    " FROM (SELECT count(*) FILTER (WHERE answer ->> 'status' IS DISTINCT FROM 'clarify') AS questions_total,"
     " count(*) FILTER (WHERE answer ->> 'status' = 'answered') AS answered,"
     " count(*) FILTER (WHERE answer ->> 'status' = 'not_found') AS not_found,"
     " count(*) FILTER (WHERE answer ->> 'label' = 'verified') AS verified_answers,"

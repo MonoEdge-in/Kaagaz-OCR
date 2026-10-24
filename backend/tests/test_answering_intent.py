@@ -48,19 +48,49 @@ def test_count_invoices_needs_a_date_field() -> None:
     assert plan is None  # "aaye" is a topic word the router does not know
     plan = _plan("Pichle mahine kitne bill the?", fields)
     # Changed on purpose (#228, restored 24 Oct 2026): "bill" is an invoice, so it counts invoices.
-    assert plan == FixedPlan("count", None, (), ("invoice_date", "date"), *AUGUST, invoice_count=True)
+    assert plan == FixedPlan("count", None, (), ("invoice_date", "date"), *AUGUST, invoices=True)
     assert _plan("How many invoices last month?", {"total_amount"}) is None
 
 
 def test_how_many_invoices_needs_no_field_without_a_date() -> None:
     """#228: with no date, the invoices themselves are counted, whatever fields exist."""
     assert _plan("How many invoices are there?", set()) == FixedPlan(
-        "count", None, (), (), None, None, invoice_count=True
+        "count", None, (), (), None, None, invoices=True
+    )
+
+
+def test_a_total_over_invoices_reads_the_invoices() -> None:
+    """PRD 6 C: "invoices" or "bills" in a total question: the invoices table's rows are matched."""
+    fields = {"profit", "invoice_date"}
+    assert _plan("Total profit of invoices last month?", fields) == FixedPlan(
+        "total", "profit", (), ("invoice_date",), *AUGUST, invoices=True
+    )
+    assert _plan("Total profit last month?", fields) == FixedPlan(
+        "total", "profit", (), ("invoice_date",), *AUGUST
     )
     assert _plan("How many documents last month?", {"invoice_date"}) == FixedPlan(
         "count", None, (), ("invoice_date",), *AUGUST
     )
     assert _plan("How many invoices with data?", set()) is not None  # "data" adds nothing
+
+
+EXAMPLE_3 = "Calculate the Profit filed in all the invoices filled in month of September"
+
+
+def test_prd_6_example_3_as_written_is_a_total_over_the_invoices() -> None:
+    """PRD 6 C2: "calculate" asks for a total; "filed" and "filled" add nothing."""
+    fields = {"profit", "invoice_date", "party_name"}
+    september = (date(2026, 9, 1), date(2026, 10, 1))
+    assert _plan(EXAMPLE_3, fields) == FixedPlan(
+        "total", "profit", (), ("invoice_date",), *september, invoices=True
+    )
+    # Another unknown word still takes the search route, and "calculate" alone asks no total of nothing.
+    assert _plan(EXAMPLE_3.replace("all the", "all the GST"), fields) is None
+    assert _plan("Calculate the Profit filed by Sharma in month of September", fields) is None
+    assert _plan("Which forms were filled in September?", fields) is None
+    assert _plan("Calculate the highest profit last month", REGISTER) == FixedPlan(
+        "highest", "profit", (), ("date",), *AUGUST
+    )
 
 
 def test_every_party_and_date_candidate_is_passed_on() -> None:
