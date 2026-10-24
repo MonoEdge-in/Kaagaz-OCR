@@ -192,3 +192,26 @@ describe("lib/motion.ts", () => {
     expect(barFrames({ left: 10, width: 40 }, { left: 90, width: 0 })).toBeNull();
   });
 });
+
+// Changed on purpose (Tushar, 24 Oct 2026): interactive buttons and tabs across the platform.
+// Every button gives a little when pressed, the main one lifts to a mouse, and each tab has
+// its own hover, press and chosen tint; only transform moves, so the guards above still hold.
+describe("buttons and tabs answer the pointer", () => {
+  const globals = css("app/globals.css");
+  it("presses every button family, never a disabled one", () => {
+    expect(globals).toMatch(/\.btn \{[^}]*transition: transform var\(--t-fast\) var\(--ease\);/);
+    expect(globals).toMatch(/\.btn:active:not\(:disabled, \[aria-disabled="true"\]\) \{\s*transform: scale\(0\.97\);/);
+    expect(globals).toMatch(/\.btn-primary:hover \{[^}]*transform: translateY\(-1px\);/);
+    expect(css("app/styles/components.css")).toMatch(/\.k-btn:active:not\(:disabled, \.is-disabled\) \{ transform: scale\(0\.97\); \}/);
+    expect(css("components/ui/Button/Button.module.css")).toMatch(/\.btn:active:not\(:disabled\) \{\s*transform: scale\(0\.97\);/);
+  });
+
+  it("gives each tab a hover, a press and a chosen tint, in the app and the admin", () => {
+    for (const file of ["app/globals.css", "components/admin/Admin.module.css"]) {
+      const text = css(file);
+      expect(text).toMatch(/\.tab:hover \{\s*background: var\(--bg-hover\);/);
+      expect(text).toMatch(/\.tab:active \{\s*transform: translateY\(1px\);/);
+      expect(text).toMatch(/\.tab\[aria-selected="true"\] \{\s*background: var\(--bg-selected\);\s*color: var\(--accent\);/);
+    }
+  });
+});

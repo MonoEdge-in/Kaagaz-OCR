@@ -23,8 +23,11 @@
 .k-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 40px; padding: 0 18px; border-radius: var(--k-r-pill); border: 1px solid var(--k-rule-strong); background: var(--k-surface); color: var(--k-ink); font: 500 0.9375rem/1.2 var(--k-font-body); cursor: pointer; text-decoration: none; white-space: nowrap; }
 .k-root .k-btn { color: var(--k-ink); }
 .k-btn:hover, .k-btn.is-hover { background: var(--k-sunken); }
+/* A press answers at once (24 Oct 2026), as the app's .btn. */
+.k-btn { transition: transform var(--t-fast) var(--ease); }
+.k-btn:active:not(:disabled, .is-disabled) { transform: scale(0.97); }
 .k-btn--primary, .k-root .k-btn--primary { background: var(--k-accent); border-color: var(--k-accent); color: var(--k-accent-ink); font-size: 1rem; }
-.k-btn--primary:hover, .k-btn--primary.is-hover { background: var(--k-accent-hover); border-color: var(--k-accent-hover); }
+.k-btn--primary:hover, .k-btn--primary.is-hover { background: var(--k-accent-hover); border-color: var(--k-accent-hover); transform: translateY(-1px); }
 
 .k-btn:disabled, .k-btn.is-disabled { background: var(--k-sunken); border-color: var(--k-sunken); color: var(--k-ink-faint); cursor: not-allowed; }
 .k-btn--sm { min-height: 32px; padding: 0 13px; gap: 6px; }
@@ -46,6 +49,8 @@
 .k-chip { display: inline-flex; align-items: center; gap: 6px; min-height: 34px; padding: 0 14px; border: 1px solid var(--k-rule); border-radius: var(--k-r-pill); background: var(--k-surface); color: var(--k-ink); font: 500 13px/1 var(--k-font-body); cursor: pointer; white-space: nowrap; }
 .k-root .k-chip { color: var(--k-ink); }
 .k-chip:hover { border-color: var(--k-rule-strong); }
+.k-chip { transition: transform var(--t-fast) var(--ease); }
+.k-chip:active { transform: scale(0.97); }
 .k-chip.is-on, .k-chip[aria-pressed="true"] { border-color: var(--k-accent); background: var(--k-accent-soft); color: var(--k-accent-soft-ink); }
 
 .k-chip-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }

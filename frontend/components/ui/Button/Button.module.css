@@ -22,6 +22,13 @@
   background: var(--k-sunken);
   color: var(--k-ink);
 }
+/* A press answers at once (24 Oct 2026), as the app's .btn. */
+.btn {
+  transition: transform var(--t-fast) var(--ease);
+}
+.btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
 .btn:focus-visible {
   outline: 2px solid var(--k-focus);
   outline-offset: 2px;
