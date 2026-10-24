@@ -8,7 +8,7 @@
 // readers' vote in plain words ("2 of 3 readers read …", voteText). A main reader's line
 // flagged for review carries its band (FlagText.tsx, scan review UX rules, section 2).
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { FlagText } from "@/components/review/FlagText";
 import { ApiError, getPageReadings } from "@/lib/api";
 import type { ExtractedValue, PageReadings, PageSummary, Region, WordFlag } from "@/lib/types";
@@ -20,6 +20,7 @@ import {
   FIRST_LINES,
   confidenceText,
   emptyState,
+  lineHolding,
   lineMarked,
   MAIN_READER,
   notSure,
@@ -75,8 +76,10 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
 
   const current = loaded && loaded.key === key ? loaded : null;
   const readers = current && "readings" in current ? current.readings.readers : [];
-  const reader = readers.find((r) => r.role === role) ?? readers[0];
-  const hasSecond = readers.some((r) => r.role === "second");
+  // The checker is offered only when it read text (24 Oct 2026): on a scan it never has any
+  // ("This page is a scan, so it carries no text of its own"), so only the main reader shows.
+  const hasSecond = readers.some((r) => r.role === "second" && r.lines.length > 0);
+  const reader = readers.find((r) => r.role === (hasSecond ? role : "first")) ?? readers[0];
   let load: PanelLoad = { status: "loading" };
   if (current) {
     load = "httpStatus" in current ? { status: "error", httpStatus: current.httpStatus } : { status: "ready", reader };
@@ -87,7 +90,15 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
   const truncated = reader ? truncatedText(reader) : null;
   const lines = reader?.lines ?? [];
   const listKey = `${key}:${reader?.role ?? ""}`;
-  const shown = allFor === listKey ? lines : lines.slice(0, FIRST_LINES);
+  // A box pressed on the page (active): its line is shown, lit and scrolled to (24 Oct 2026).
+  const holding = lineHolding(lines, active);
+  const shown = allFor === listKey || holding >= FIRST_LINES ? lines : lines.slice(0, FIRST_LINES);
+  const rows = useRef<(HTMLLIElement | null)[]>([]);
+  useEffect(() => {
+    if (holding < 0) return;
+    const calm = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    rows.current[holding]?.scrollIntoView({ block: "nearest", behavior: calm ? "auto" : "smooth" });
+  }, [holding, active]);
 
   return (
     <section
@@ -164,7 +175,14 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
                 const flag =
                   reader?.role === "first" ? flags.find((each) => sameRegion(each.region, line.region)) : undefined;
                 return (
-                  <li key={index} className={marked ? `${styles.line} ${styles.cited}` : styles.line}>
+                  <li
+                    key={index}
+                    ref={(element) => {
+                      rows.current[index] = element;
+                    }}
+                    className={[styles.line, marked ? styles.cited : "", index === holding ? styles.held : ""].join(" ")}
+                    aria-current={index === holding ? "true" : undefined}
+                  >
                     <div className={styles.lineRow}>
                       <button
                         type="button"

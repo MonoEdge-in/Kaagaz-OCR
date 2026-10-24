@@ -52,9 +52,27 @@ export interface RowMenuProps {
   /** The document screen's menu (DD2): Read again first when `readAgain`. */
   place?: "list" | "document";
   readAgain?: boolean;
+  /** The document screen's other actions (24 Oct 2026: Ensemble, Export, Download original),
+   * after the menu's own, each with one plain line; disabled ones say why. */
+  more?: readonly MoreItem[];
 }
 
-export function RowMenu({ item, canForever, onPick, toggleRef, place = "list", readAgain = false }: RowMenuProps) {
+export interface MoreItem {
+  label: string;
+  hint: string;
+  onSelect(): void;
+  disabledReason?: string | null;
+}
+
+export function RowMenu({
+  item,
+  canForever,
+  onPick,
+  toggleRef,
+  place = "list",
+  readAgain = false,
+  more = [],
+}: RowMenuProps) {
   const [open, setOpen] = useState(false);
   const [at, setAt] = useState<{ top: number; left: number } | null>(null);
   const button = useRef<HTMLButtonElement | null>(null);
@@ -147,7 +165,7 @@ export function RowMenu({ item, canForever, onPick, toggleRef, place = "list", r
     onPick(action);
   }
 
-  if (entries.length === 0) return null;
+  if (entries.length === 0 && more.length === 0) return null;
   const name = `More actions for ${item.display_name}`;
   return (
     <>
@@ -225,6 +243,30 @@ export function RowMenu({ item, canForever, onPick, toggleRef, place = "list", r
                     </span>
                   </button>
                 )}
+              </li>
+            ))}
+            {more.map((extra, index) => (
+              <li key={extra.label} role="none">
+                <button
+                  role="menuitem"
+                  tabIndex={-1}
+                  type="button"
+                  className={styles.menuItem}
+                  aria-disabled={extra.disabledReason ? true : undefined}
+                  aria-describedby={`${menuId}-more-${index}`}
+                  onClick={() => {
+                    if (extra.disabledReason) return;
+                    close(true);
+                    extra.onSelect();
+                  }}
+                >
+                  <span className={styles.menuWords}>
+                    {extra.label}
+                    <span id={`${menuId}-more-${index}`} className={styles.menuHint}>
+                      {extra.disabledReason ?? extra.hint}
+                    </span>
+                  </span>
+                </button>
               </li>
             ))}
           </ul>,

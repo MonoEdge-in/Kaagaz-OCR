@@ -9,7 +9,6 @@ import { join } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { CardPanel } from "@/app/(app)/documents/[id]/DocumentPanels";
 import { LONG_SUMMARY, MAX_FACTS, SUMMARY_TEXT, SummaryCard } from "@/app/(app)/documents/[id]/SummaryCard";
 import { statusLine } from "@/components/review/wordReview";
 import { tabsThatFit } from "@/components/viewer/viewer";
@@ -52,8 +51,6 @@ describe("the summary at the top of the panel", () => {
     expect(head.indexOf("<SummaryCard")).toBeLessThan(head.indexOf("btn btn-primary ${styles.ask}"));
     // Not under Details any more.
     expect(read("app/(app)/documents/[id]/DocumentPanels.tsx")).not.toContain("card.summary");
-    const details = renderToStaticMarkup(createElement(CardPanel, { detail: detail({ values: [] }), active: null, onShow: () => undefined }));
-    expect(details).not.toContain("Daregaon");
     expect(summary(detail()).match(/Daregaon/g)).toHaveLength(1);
   });
 
@@ -125,7 +122,9 @@ describe("the panel's words and controls", () => {
       for (const long of [false, true]) expect(tabsThatFit(rem, long)).toBeLessThanOrEqual(4);
     }
     // 320px: the row is 18rem; with Needs attention only two fit, beside More's icon.
-    expect([tabsThatFit(18, false), tabsThatFit(18, true), tabsThatFit(25, false), tabsThatFit(25, true)]).toEqual([3, 2, 4, 3]);
+    // Changed on purpose (24 Oct 2026): padded tabs need about 1rem more each (#301).
+    expect([tabsThatFit(21, false), tabsThatFit(21, true), tabsThatFit(28, false), tabsThatFit(28, true)]).toEqual([3, 2, 4, 3]);
+    expect([tabsThatFit(25, true), tabsThatFit(32, true), tabsThatFit(20, false)]).toEqual([3, 4, 2]);
     const view = read(VIEW);
     expect(view).toContain("const shown = at >= room ? [...tabs.slice(0, room - 1), ...tabs.slice(at, at + 1)] : tabs.slice(0, room);");
     expect(view).toContain("{shown.map((item, index) => (");
@@ -208,66 +207,11 @@ describe("motion", () => {
   });
 });
 
-// Changed on purpose (Tushar, 24 Oct 2026): "minimize these and take them to the bottom". Each
-// value is one line with its page beside it; every "What was read" sits in one closed section
-// at the card's end, open inside so one click shows them all.
-describe("the document card's reading details", () => {
-  const read72 = { ...verified, second_reading: null, confidence: null, label_reason: null, votes: null } as unknown as ExtractedValue;
-  const html = renderToStaticMarkup(
-    createElement(CardPanel, { detail: detail({ values: [read72] }), active: null, onShow: () => undefined }),
-  );
-
-  // Changed on purpose (24 Oct 2026, later): the page is at the row's end (the card's rows, below).
-  it("puts the page beside each value, not on a line of its own", () => {
-    const panels = read("app/(app)/documents/[id]/DocumentPanels.tsx");
-    expect(panels).toContain("<span className={styles.cardPage}>{spotNote(item)}</span>");
-    expect(panels).not.toContain("<div className={styles.pageNote}>{spotNote(item)}</div>");
-  });
-
-  it("gathers every What was read in one closed section after the last group", () => {
-    expect(html.match(/What the AI read/g)).toHaveLength(1);
-    expect(html.indexOf("What the AI read")).toBeGreaterThan(html.lastIndexOf("<h3"));
-    expect(html).toMatch(/<details class="[^"]+"><summary>What the AI read, value by value<\/summary>/);
-    expect(html.match(/<details[^>]* open="">/g)).toHaveLength(1); // the survey number's reading, open inside
-  });
-});
-
-// Changed on purpose (Tushar, 24 Oct 2026): "decrease the card's length, good size, good
-// animation". One caption per role with its count, one row per value (the Devanagari name,
-// its Latin spelling smaller under it, the page small at the end), four rows then "Show all".
-describe("the document card's rows", () => {
-  const owner = (i: number) => ({
-    role: "owner",
-    field: "land_owner_name",
-    name: `मालक ${i}`,
-    name_latin: `malak ${i}`,
-    page: 1,
-    region: at(0.1 + i / 100),
-  });
-  const many = card({ parties: [1, 2, 3, 4, 5, 6].map(owner), identifiers: [] });
-  const html = renderToStaticMarkup(
-    createElement(CardPanel, { detail: detail({ card: many, values: [] }), active: null, onShow: () => undefined }),
-  );
-
-  it("captions a role once, with how many there are", () => {
-    expect(html.match(/>Owner</g)).toHaveLength(1);
-    expect(html).toMatch(/<span class="[^"]*cardCount[^"]*">6<\/span>/);
-  });
-
-  it("puts the Latin spelling on its own smaller line, and the page at the row's end", () => {
-    expect(html).toMatch(/मालक 1<span class="visually-hidden">[^<]*<\/span><\/button><span class="[^"]*cardLatin[^"]*" lang="en">malak 1<\/span>/);
-    expect(html).not.toContain("मालक 1 (malak 1)");
-    expect(html).toMatch(/<span class="[^"]*cardPage[^"]*">Page 1<\/span>/);
-  });
-
-  it("shows four rows, then a real button for the rest", () => {
-    expect(html.match(/cardRow/g)).toHaveLength(4); // the rows, in a list called cardList
-    expect(html).toMatch(/<button type="button" class="[^"]*cardMore[^"]*" aria-expanded="false">Show all 6<\/button>/);
-  });
-
-  it("rises each row in once, one after another, only where motion is welcome", () => {
-    const text = css(VIEW_CSS);
-    const calm = text.slice(text.indexOf("@media (prefers-reduced-motion: no-preference)"));
-    expect(calm).toMatch(/\.cardRow \{[^}]*animation: rise-in var\(--motion-calm\) var\(--ease-out\) both;[^}]*animation-delay: calc\(var\(--i, 0\) \* 30ms\);/);
+// Changed on purpose (Tushar, 24 Oct 2026, "remove document card fully"): the Document card is
+// gone from Details; its facts live in the AI summary at the top (SummaryCard).
+describe("the Details tab without the Document card", () => {
+  it("never shows the Document card", () => {
+    expect(read(VIEW)).not.toContain("<CardPanel");
+    expect(read("app/(app)/documents/[id]/DocumentPanels.tsx")).not.toContain("Document card");
   });
 });

@@ -15,8 +15,7 @@
 
 import { useCallback, useEffect, useId, useState } from "react";
 import type { RefObject } from "react";
-import { RowMenu } from "@/components/admin/RowMenu";
-import type { RowMenuItem } from "@/components/admin/RowMenu";
+import type { MoreItem } from "@/components/documents/DocumentActions";
 import { ActionDialog } from "@/components/documents/ActionDialog";
 import libraryStyles from "@/components/documents/Library.module.css";
 import {
@@ -290,16 +289,6 @@ export function SummaryBar(props: SummaryBarProps) {
     } else setError(result.message);
   };
 
-  const more: RowMenuItem[] = [
-    ...(ensembleShown && !active
-      ? [{ label: ENSEMBLE_DOCUMENT, onSelect: () => onEnsemble("document"), disabledReason: waitReason }]
-      : []),
-    { label: EXPORT_LABEL, onSelect: props.onExport, disabledReason: ready ? null : EXPORT_WAIT },
-    ...(props.download
-      ? [{ label: DOWNLOAD_LABEL, onSelect: () => downloadFile(props.download ?? "") }]
-      : []),
-  ];
-
   return (
     <section className={styles.bar} aria-label="Status">
       <div className={styles.statusRow}>
@@ -408,7 +397,6 @@ export function SummaryBar(props: SummaryBarProps) {
             )}
           </span>
           )}
-          <RowMenu name="this document" items={more} />
         </div>
       </div>
       {active && (
@@ -418,6 +406,42 @@ export function SummaryBar(props: SummaryBarProps) {
       )}
     </section>
   );
+}
+
+/** The document's "⋯" menu items from the review (24 Oct 2026: one menu, no "More" of its own):
+ * Run Ensemble on full document (when the API allows it, else disabled with its reason while
+ * scanning), Export (disabled until scanning finishes) and Download original. */
+export function documentMoreItems(
+  status: ReviewStatus | null,
+  actions: { onEnsemble(scope: EnsembleScope): void; onExport(): void; download: string | null },
+): MoreItem[] {
+  if (!status) return [];
+  const ready = status.status === "ready";
+  const run = status.ensemble.run;
+  const active = run !== null && runActive(run);
+  const shown = status.ensemble.allowed || (!ready && status.ensemble.reason !== null && status.can_review);
+  const waitReason = status.ensemble.allowed ? null : status.ensemble.reason;
+  return [
+    ...(shown && !active
+      ? [
+          {
+            label: ENSEMBLE_DOCUMENT,
+            hint: "Read every page again with several readers and compare them.",
+            onSelect: () => actions.onEnsemble("document"),
+            disabledReason: waitReason,
+          },
+        ]
+      : []),
+    {
+      label: EXPORT_LABEL,
+      hint: "Save the document, after saying what is still unchecked.",
+      onSelect: actions.onExport,
+      disabledReason: ready ? null : EXPORT_WAIT,
+    },
+    ...(actions.download
+      ? [{ label: DOWNLOAD_LABEL, hint: "Save the file exactly as it was uploaded.", onSelect: () => downloadFile(actions.download ?? "") }]
+      : []),
+  ];
 }
 
 /** The original file, as the header's Download original link does (a download, never a page change). */
