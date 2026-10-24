@@ -24,6 +24,10 @@ export function chosenAfter(messages: readonly Message[]): Map<string, string | 
   return chosen;
 }
 
+/** Typed words answer the open clarify only as a short name (the server's rule, clarify.py
+ * answers_clarify): at most 60 characters and no question mark; else a new question. */
+export const answersClarify = (text: string): boolean => text.length <= 60 && !text.trimEnd().endsWith("?");
+
 /** Devanagari text is marked Marathi, so it is read and shaped as such. */
 export const langOf = (text: string): string | undefined => (/[ऀ-ॿ]/.test(text) ? "mr" : undefined);
 
