@@ -16,7 +16,7 @@ from types import ModuleType
 
 from sqlalchemy import TextClause
 
-from kaagaz.answering import exhaustive, fixed_queries, hard_to_read, owners, unchecked
+from kaagaz.answering import clarify, exhaustive, fixed_queries, hard_to_read, owners, unchecked
 from kaagaz.db import admin, listing, models, pipeline_store, review, usage
 from kaagaz.db.visibility import LISTED, LIVE, LIVE_CURRENT, TRASHED_LISTED
 from kaagaz.search import hybrid, indexing, story_search
@@ -24,6 +24,7 @@ from kaagaz.search import hybrid, indexing, story_search
 MODULES: tuple[ModuleType, ...] = (
     hybrid,
     story_search,
+    clarify,
     exhaustive,
     fixed_queries,
     owners,
@@ -61,6 +62,8 @@ FILTERED: dict[tuple[ModuleType, str], str] = {
     (exhaustive, "_MENTIONS"): LIVE_CURRENT,
     # Story matches (S3): the family's current version of a story, read and out of Trash.
     (story_search, "_STORIES"): LIVE_CURRENT,
+    # Clarifying questions (PRD 6 B1): names and places only of the documents chat may cite.
+    (clarify, "_CANDIDATES"): LIVE_CURRENT,
     # The numbers in answers: the same, in every CTE.
     (fixed_queries, "_AVAILABLE_FIELDS"): LIVE_CURRENT,
     (fixed_queries, "_TOP_GROUP"): LIVE_CURRENT,

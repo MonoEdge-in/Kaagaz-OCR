@@ -261,7 +261,7 @@ def recent_messages(
     return (
         conn.execute(
             text(
-                "SELECT m.role, m.text, m.answer, m.scope FROM messages m"
+                "SELECT m.id, m.role, m.text, m.answer, m.scope FROM messages m"
                 " WHERE m.customer_id = :c AND m.conversation_id = :conv"
                 " ORDER BY m.created_at DESC, m.role, m.id DESC LIMIT :n"
             ),

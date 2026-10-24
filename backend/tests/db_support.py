@@ -198,6 +198,54 @@ def library_rows_seen(db: Database, customer_id: str, library: dict[str, str]) -
         )
 
 
+# PRD 6 B1: #245's value_keys until package D's migration 0049 lands. Remove at integration.
+_VALUE_KEYS = [
+    "CREATE TABLE value_keys (customer_id uuid NOT NULL, value_id uuid NOT NULL, document_id uuid NOT NULL,"
+    " kind text NOT NULL CHECK (kind IN ('person', 'place', 'property')),"
+    " place_level text NULL CHECK (place_level IN ('village', 'taluka', 'district', 'city')),"
+    " latin text NOT NULL CHECK (char_length(latin) BETWEEN 1 AND 200),"
+    " sound text NOT NULL CHECK (char_length(sound) <= 400), created_at timestamptz NOT NULL DEFAULT now(),"
+    " PRIMARY KEY (customer_id, value_id), CHECK ((kind = 'place') = (place_level IS NOT NULL)),"
+    " FOREIGN KEY (customer_id, value_id) REFERENCES extracted_values (customer_id, id) ON DELETE CASCADE,"
+    " FOREIGN KEY (customer_id, document_id) REFERENCES documents (customer_id, id) ON DELETE CASCADE)",
+    "ALTER TABLE value_keys ENABLE ROW LEVEL SECURITY",
+    "CREATE POLICY customer_only ON value_keys USING (customer_id = kaagaz_current_customer())"
+    " WITH CHECK (customer_id = kaagaz_current_customer())",
+    f"GRANT SELECT, INSERT ON value_keys TO {APP_ROLE}",
+]
+_LAND_FIELDS = {"person": "land_owner_name", "place": "land_village", "property": "land_survey_number"}
+
+
+def ensure_value_keys(db: Database) -> None:
+    """Make ``value_keys`` (#245) once, as the owner, unless a migration already has. O(1)."""
+    with db.engine.begin() as conn:
+        conn.execute(text("SELECT pg_advisory_xact_lock(245)"))
+        if conn.execute(text("SELECT to_regclass('public.value_keys')")).scalar() is None:
+            for statement in _VALUE_KEYS:
+                conn.execute(text(statement))
+
+
+_KEY = text(
+    "WITH v AS (INSERT INTO extracted_values (customer_id, document_id, record_key, field, value_text,"
+    " value_raw, page_no, region, reader, label, label_reason) VALUES (:c, :d, 'land:1', :f, :v, :v, 1,"
+    " CAST(:box AS jsonb), 'gemini', 'needs_review', 'single_reader') RETURNING id)"
+    " INSERT INTO value_keys (customer_id, value_id, document_id, kind, place_level, latin, sound)"
+    " SELECT :c, v.id, :d, :k, :level, :latin, :sound FROM v"
+)
+
+
+def insert_key(conn: Connection, customer_id: str, document_id: str, kind: str, printed: str) -> None:
+    """One land value printed as ``printed`` and its ``value_keys`` row, as #245 keys it. O(1)."""
+    from kaagaz.answering.clarify import latin_key
+    from kaagaz.chunking.script import sound_keys
+
+    latin, level = latin_key(printed), "village" if kind == "place" else None
+    sound = "" if kind == "property" else " ".join(key for _, key in sound_keys(latin))
+    box = '{"kind": "box", "page": 1, "box": [0.1, 0.2, 0.3, 0.25]}'
+    named = {"k": kind, "f": _LAND_FIELDS[kind], "v": printed, "level": level, "latin": latin, "sound": sound}
+    conn.execute(_KEY, {"c": customer_id, "d": document_id, "box": box, **named})
+
+
 def new_trashed_document(db: Database, customer_id: str, *, deleted_at: datetime) -> str:
     """One document already in Trash since ``deleted_at``, in its own transaction. O(1)."""
     with db.customer(customer_id) as conn:

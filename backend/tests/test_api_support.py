@@ -33,6 +33,7 @@ from fastapi.testclient import TestClient as TestClient
 from sqlalchemy import RowMapping, text
 
 from kaagaz.ai.client import ModelClient
+from kaagaz.answering.clarify import Pending
 from kaagaz.answering.memory import Memory
 from kaagaz.answering.pins import Pin
 from kaagaz.answering.rewrite import Turn
@@ -151,6 +152,7 @@ class FakeAnswers:
     choices: list[ChatChoice | None] = field(default_factory=list)  # features 25-27: who drafts each
     pins: list[list[Pin]] = field(default_factory=list)  # the Most relevant picks each question got
     unavailable: bool = False  # KZ-006: not found while the model was down
+    resumed: list[Pending] = field(default_factory=list)  # PRD 6 B1: each clarify answered
 
     def answer(
         self,
@@ -163,12 +165,14 @@ class FakeAnswers:
         memory: Memory,
         choice: ChatChoice | None = None,
         pins: Sequence[Pin] = (),
+        pending: Pending | None = None,
     ) -> _FixedAnswer:
         self.asked.append((customer_id, question))
         self.pins.append(list(pins))
         self.choices.append(choice)
         self.scopes.append(scope)
         self.memories.append(memory)
+        self.resumed += [pending] if pending is not None else []
         return _FixedAnswer(self.reply, self.unavailable)
 
     def remember(self, turns: Sequence[Turn], memory: Memory, cited: Sequence[str]) -> Memory | None:

@@ -12,6 +12,7 @@ import pytest
 from sqlalchemy import text
 
 from kaagaz.ai.client import ModelUnavailable
+from kaagaz.answering import rewrite
 from kaagaz.answering.draft import SYSTEM_PROMPT
 from kaagaz.answering.service import AnswerService
 from kaagaz.db.engine import Database
@@ -80,6 +81,8 @@ class DraftModel:
         deadline: float | None = None,
         temperature: float | None = None,
     ) -> dict[str, Any]:
+        if system == rewrite.SYSTEM_PROMPT:  # Changed on purpose (PRD 6 B1): the plan's call, no plan
+            return {"question": "What is the grand total of INV-1042?"}
         assert system == SYSTEM_PROMPT
         self.prompts.append(user)
         found = [n for n, (_, body) in blocks(user).items() if self.wanted in body]

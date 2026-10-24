@@ -493,6 +493,7 @@ class _NoAnswers:
         memory: Any,
         choice: Any = None,
         pins: Any = (),
+        pending: Any = None,
     ) -> AnswerLike:
         raise AssertionError("not used here")
 
