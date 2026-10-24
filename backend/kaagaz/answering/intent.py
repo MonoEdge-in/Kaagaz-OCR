@@ -113,7 +113,7 @@ def plan_fixed(
     date_fields: tuple[str, ...] = ()
     if date_range is not None or (aggregate == "count" and not invoice_count):
         date_fields = _present(_DATE_FIELDS, available)
-        if (date_range is not None or aggregate == "count") and not date_fields:
+        if not date_fields:
             return None
 
     if aggregate == "count":

@@ -486,7 +486,6 @@ _COUNT_INVOICES = text(
             FROM extracted_values v
             WHERE v.customer_id = i.customer_id AND v.document_id = i.document_id
               AND v.record_key <> 'card' AND v.record_key NOT LIKE 'line:%'
-              AND v.region IS NOT NULL
             ORDER BY array_position(ARRAY['invoice_number', 'total_amount', 'invoice_date', 'seller_name',
                                           'buyer_name']::text[], v.field), v.page_no, v.id
             LIMIT 1
