@@ -288,3 +288,18 @@ def test_text_past_the_last_window_is_unread_and_the_run_says_so() -> None:
         job, _content = system.read()
         (done,) = system.runs.for_document(job.customer_id, job.document_id)
         assert done.totals is not None and done.totals.config["land_truncated"] == truncated
+
+
+def test_the_land_facts_switch_off_reads_no_land_windows() -> None:
+    """PRD 6 integration (0052): with ``land_facts`` off the land record gets its card only,
+    the switch asked once for the job."""
+    asked: list[str] = []
+
+    def land_on(customer_id: str) -> bool:
+        asked.append(customer_id)
+        return False
+
+    chat = FakeChat(CARD, REPLIES["seven_twelve"])
+    _job, content = rig(SPANS, chat, land_on=land_on).read()
+    assert not [v for v in content.values if v.field.startswith("land_")]
+    assert (len(asked), len(chat.calls)) == (1, 1)  # the card's call only

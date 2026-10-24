@@ -822,6 +822,7 @@ class DocumentProcessor:
         ocr_page_concurrency: int = 1,
         cost_saving: tuple[int, float] = (HARD_LINES_MAX, HARD_SHARE),
         index_seconds: float | None = None,
+        land_on: Callable[[str], bool] | None = None,
     ) -> None:
         """``embed(customer_id, document_id, on_batch=...)`` gives the saved pieces their vectors;
         failing with one of ``model_errors`` is logged and skipped, never a failed document.
@@ -860,7 +861,8 @@ class DocumentProcessor:
         (COST_SAVING_HARD_LINES_MAX, COST_SAVING_HARD_SHARE) for ``careful_pages``.
         ``index_seconds`` (MODEL_TIMEOUT_SECONDS): how long the job's own indexing may go on
         before it hands the vectors left to the worker's EmbedMissing (never stuck, 17 Oct
-        2026); None, until done."""
+        2026); None, until done. ``land_on(customer_id)``: the ``land_facts`` switch (PRD 6,
+        0052), asked once a job that has a chat model; None (tests with fakes) asks nothing."""
         if runs is not None and (clock is None or timer is None):
             raise ValueError("runs need a clock and a timer")
         if max_check_crops < 0:
@@ -869,6 +871,7 @@ class DocumentProcessor:
             raise ValueError("a chat model needs its model_budget")
         self._gate = gate
         self._statuses = statuses
+        self._land_on = land_on
         self._documents = documents
         self._socket = socket
         self._prepare = prepare
@@ -1302,6 +1305,7 @@ class DocumentProcessor:
                 spans=spans,
                 invoice_windows=None if budget is None else budget.invoice_windows,
                 on_windows=windows,
+                with_land=chat is not None and (self._land_on is None or self._land_on(job.customer_id)),
             )
         run.model_calls = understanding.model_calls
         run.model_error = understanding.error_code
@@ -2113,7 +2117,7 @@ def build_processor(
 
     from kaagaz.ai.client import ModelOutputError, ModelUnavailable
     from kaagaz.ai.usage import usage_scope
-    from kaagaz.db import models
+    from kaagaz.db import ai_settings, models
     from kaagaz.db.documents import PgDocuments
     from kaagaz.db.engine import unavailable
     from kaagaz.db.page_reads import PgPageReads
@@ -2168,6 +2172,10 @@ def build_processor(
 
         job_reading = read_job
 
+    def land_on(customer_id: str) -> bool:
+        with unavailable(), db.customer(customer_id) as conn:
+            return ai_settings.switch_on(conn, "land_facts", customer_id)
+
     return DocumentProcessor(
         gate=ScanGate(storage, scanner, storage, documents),
         statuses=documents,
@@ -2210,6 +2218,7 @@ def build_processor(
         ocr_page_concurrency=settings.ocr_page_concurrency,
         cost_saving=(settings.cost_saving_hard_lines_max, settings.cost_saving_hard_share),
         index_seconds=settings.model_timeout_seconds,
+        land_on=land_on if model is not None else None,
     )
 
 

@@ -18,6 +18,7 @@ from kaagaz.search.scope import EVERYTHING
 from tests.db_support import new_customer
 from tests.land_support import add_land, ensure_value_keys
 from tests.settings_factory import make_settings
+from tests.test_ai_settings_db import switched_off
 
 pytestmark = pytest.mark.db
 
@@ -239,3 +240,13 @@ def test_each_statement_uses_its_b_tree_index_under_row_level_security(
         line for line in plan.splitlines() if line.strip().startswith("Index Cond:") and condition in line
     ]
     assert index and "Seq Scan" not in plan, plan
+
+
+def test_the_land_facts_switch_off_leaves_owner_questions_to_the_other_routes(keyed: Database) -> None:
+    """PRD 6 integration (0052): the super admin's switch off, no owner route and no record listed."""
+    c, _ = new_customer(keyed)
+    add_land(keyed, c, "7/12.pdf", [(V, "50%")], places=[PUNE])
+    assert ask(keyed, c, "Which land is owned by Nikhil Varde?")["route"] == "fixed_query"
+    with switched_off(keyed, "land_facts"):
+        answer = ask(keyed, c, "Which land is owned by Nikhil Varde?")
+    assert answer["route"] != "fixed_query" and not answer["documents"]

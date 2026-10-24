@@ -161,9 +161,11 @@ def understand(
     spans: Sequence[Span],
     invoice_windows: WindowSettings | None = None,
     on_windows: Callable[[str], None] | None = None,
+    with_land: bool = True,
 ) -> Understanding:
     """The card for this document, or none, then its invoice or land windows (the module
-    docstring). ``spans`` are the spans the rule values were read from."""
+    docstring). ``spans`` are the spans the rule values were read from; ``with_land`` False (the
+    ``land_facts`` switch is off, 0052) reads no land windows."""
     rules = list(rule_values)
     if chat is None or not reader.norm:
         return Understanding(DocumentFacts(), rules, [], None, 0, None)
@@ -192,7 +194,7 @@ def understand(
             num_ctx=num_ctx,
             beat=lambda done, total: beat(2 + done, 2 + total),
         )
-    elif invoice_windows is not None and reads_land(card.facts.doc_type, card.values):
+    elif with_land and invoice_windows is not None and reads_land(card.facts.doc_type, card.values):
         if on_windows is not None:
             on_windows("land")
         land = read_land(

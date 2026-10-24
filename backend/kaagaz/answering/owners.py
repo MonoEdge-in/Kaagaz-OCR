@@ -34,6 +34,7 @@ from kaagaz.answering.fixed_queries import ValueRef
 from kaagaz.answering.hinglish import STOP_WORDS
 from kaagaz.answering.sanitize import clean_text
 from kaagaz.chunking.script import fold_digits, latin_spelling, spaced_words
+from kaagaz.db import ai_settings
 from kaagaz.db.engine import Database
 from kaagaz.extraction.links import normalise_identifier
 from kaagaz.search.scope import Scope
@@ -203,8 +204,12 @@ class PgOwners:
             return list(conn.execute(query, {"customer_id": customer_id, **params, **scope.params()}))
 
     def resolve(self, customer_id: str, candidates: Sequence[str], scope: Scope) -> list[tuple[str, str]]:
-        rows = self._rows(customer_id, _RESOLVE, {"candidates": list(candidates)}, scope)
-        return [(str(row.kind), str(row.latin)) for row in rows]
+        """Nothing while the ``land_facts`` switch is off (0052): the other routes answer."""
+        with self._db.customer(customer_id) as conn:
+            if not ai_settings.switch_on(conn, "land_facts", customer_id):
+                return []
+            params = {"customer_id": customer_id, "candidates": list(candidates), **scope.params()}
+            return [(str(row.kind), str(row.latin)) for row in conn.execute(_RESOLVE, params)]
 
     def owned(self, customer_id: str, people: Sequence[str], scope: Scope) -> list[tuple[str, str, bool]]:
         rows = self._rows(customer_id, _OWNED, {"people": list(people), "fields": list(OWNING)}, scope)

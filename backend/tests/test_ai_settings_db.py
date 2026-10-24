@@ -217,6 +217,7 @@ def test_a_feature_switch_takes_a_fresh_code_and_is_audited(db: Database) -> Non
     assert [item["feature"] for item in listed] == [
         "scan_ai", "ask", "ensemble", "autofile", "cost_saving", "review", "my_words", "self_signup",
         "version_spotting",  # Changed on purpose (PRD 1, 0041)
+        "land_facts", "nlq_clarify", "nlq_learning",  # Changed on purpose (PRD 6, 0052)
     ]  # fmt: skip
     assert all(item["enabled"] and item["organisations_using"] >= 0 for item in listed)
     wrong = client.put(
@@ -253,7 +254,7 @@ def test_a_feature_switch_takes_a_fresh_code_and_is_audited(db: Database) -> Non
 
 # --- per-organisation feature switches (0039) -------------------------------------------------------
 
-# Changed on purpose (PRD 1, 0041): version_spotting.
+# Changed on purpose (PRD 1, 0041): version_spotting; (PRD 6, 0052): the last three.
 ORG_FEATURES = [
     "scan_ai",
     "ask",
@@ -263,6 +264,9 @@ ORG_FEATURES = [
     "review",
     "my_words",
     "version_spotting",
+    "land_facts",
+    "nlq_clarify",
+    "nlq_learning",
 ]
 
 
