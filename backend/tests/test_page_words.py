@@ -126,6 +126,20 @@ class WordRegionsTest(unittest.TestCase):
         self.assertEqual(len(boxes), MAX_BOXES)
         self.assertEqual(pages, list(range(1, MAX_BOXES + 6)))
 
+    def test_a_sheet_rows_cells_come_back_as_cells_by_the_same_rules(self) -> None:
+        # The viewer's sheet grid lights these cells: one piece per row (chunking/rows.py),
+        # one cell region each; numbers only whole, short words skipped, as on a page.
+        def cell(sheet: int, row: int, column: int) -> dict[str, Any]:
+            return {"kind": "cell", "page": sheet, "row": row, "column": column}
+
+        pieces = [
+            ("A: INV-1042 | B: 1,042 | C: Krishna", None, [cell(1, 2, 1), cell(1, 2, 2), cell(1, 2, 3)]),
+            ("A: INV-2001 | B: 3,042 | C: 1043", None, [cell(1, 3, 1), cell(1, 3, 2), cell(1, 3, 3)]),
+            ("A: Krishana", None, [cell(2, 1, 1)]),
+        ]
+        words = clean_words(["1,042", "krishna", "ab"])
+        self.assertEqual(word_regions(pieces, words), ([cell(1, 2, 2), cell(1, 2, 3), cell(2, 1, 1)], [1, 2]))
+
 
 if __name__ == "__main__":
     unittest.main()

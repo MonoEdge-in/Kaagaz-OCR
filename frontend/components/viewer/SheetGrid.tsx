@@ -3,7 +3,9 @@
 // A spreadsheet page (one sheet) as a grid of cells from getSheetCells, with the
 // highlighted cells marked in colour and in words, and the first one scrolled
 // into view inside the grid (the page itself does not jump). My words in a cell
-// get a dashed outline and their number (ViewerWords.tsx).
+// get a dashed outline and their number (ViewerWords.tsx). Your words (package H,
+// ?words=): the cells GET /documents/{id}/words lit, by the page highlight's own
+// rules on the server, are underlined in its green and say so to screen readers.
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ApiError, getSheetCells } from "@/lib/api";
@@ -23,6 +25,8 @@ export interface SheetGridProps {
   crop?: CellRegion;
   marks?: Marker[];
   activeMark?: string | null;
+  /** Your words' regions (YourWords.tsx); only this sheet's cells are lit. */
+  wordCells?: Region[];
 }
 
 interface Loaded {
@@ -31,8 +35,9 @@ interface Loaded {
   error: string | null;
 }
 
-export function SheetGrid({ documentId, page, highlights, crop, marks = [], activeMark = null }: SheetGridProps) {
+export function SheetGrid({ documentId, page, highlights, crop, marks = [], activeMark = null, wordCells = [] }: SheetGridProps) {
   const marked = highlightedCells(highlights, page.page_no);
+  const lit = highlightedCells(wordCells, page.page_no);
   const mine = markedCells(marks);
   const focus = crop ?? highlights.find(
     (r): r is CellRegion => r.kind === "cell" && r.page === page.page_no,
@@ -144,12 +149,14 @@ export function SheetGrid({ documentId, page, highlights, crop, marks = [], acti
                     const here = mine.get(k);
                     const numbers = here?.map((mark) => mark.n);
                     const active = here?.some((mark) => mark.id === activeMark);
-                    const classes = [hit && styles.cellHit, here && styles.cellMine, active && styles.cellMineActive];
+                    const word = lit.has(k);
+                    const classes = [hit && styles.cellHit, word && styles.cellWord, here && styles.cellMine, active && styles.cellMineActive];
                     return (
                       <td key={k} data-cell={k} id={here ? markerId(here[0]?.id ?? "") : undefined}
                         className={classes.filter(Boolean).join(" ") || undefined}>
                         {cell.text}
                         {hit ? <span className="visually-hidden"> (highlighted)</span> : null}
+                        {word ? <span className="visually-hidden"> (your words)</span> : null}
                         {numbers ? (
                           <span className={styles.cellMineNumber}>
                             <span className="visually-hidden"> (my word </span>

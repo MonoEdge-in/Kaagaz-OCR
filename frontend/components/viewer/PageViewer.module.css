@@ -368,6 +368,14 @@
   background: var(--bg-subdued);
 }
 
+/* Your words in a cell (package H): the page lines' green, its text underlined, so it sits
+   with the spot's and my words' outlines and never moves the grid;
+   before .cellHit, so the cited spot's fill wins. */
+.cellWord {
+  background: color-mix(in srgb, var(--words-on-paper) 14%, transparent);
+  text-decoration: underline 3px var(--words-on-paper);
+}
+
 .cellHit {
   background: var(--hl-fill);
   outline: 2px solid var(--hl-border);

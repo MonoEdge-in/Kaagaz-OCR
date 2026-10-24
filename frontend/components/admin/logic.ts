@@ -357,8 +357,8 @@ export function breakdowns(stats: Stats): Breakdown[] {
         ["Not found in the documents", stats.not_found],
         ["Answers labelled Verified", stats.verified_answers],
         ["Answers labelled Ready to verify", stats.needs_review_answers],
-        ["Thumbs up", stats.feedback_up],
-        ["Thumbs down", stats.feedback_down],
+        ["Useful", stats.feedback_up],
+        ["Not useful", stats.feedback_down],
       ]),
     },
     {
