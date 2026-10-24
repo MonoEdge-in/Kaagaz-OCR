@@ -719,6 +719,28 @@ def page_marks(conn: Connection, customer_id: str, document_id: str, page_no: in
     return conn.execute(_PAGE_MARKS, params).mappings().all()
 
 
+# Your words on the page (package H): the document by id as the detail opens it (any
+# version, in Trash or not), and its pieces' text, Latin spelling and regions in seq order
+# (the index pieces_document), for kaagaz/search/page_words.py. No row: no such document;
+# one row of NULLs: a document with no pieces.
+_WORD_LINES = text(
+    "SELECT p.text, p.text_latin, p.regions FROM documents d"
+    " LEFT JOIN pieces p ON p.customer_id = :c AND p.document_id = d.id"
+    " WHERE d.customer_id = :c AND d.id = :d ORDER BY p.seq"
+)
+
+
+def word_lines(
+    conn: Connection, customer_id: str, document_id: str
+) -> list[tuple[str, str | None, list[Any]]] | None:
+    """(text, text_latin, regions) of every piece of the document, None when there is no
+    such document for this customer. One statement: O(log N + the document's pieces)."""
+    rows = conn.execute(_WORD_LINES, {"c": customer_id, "d": document_id}).all()
+    if not rows:
+        return None
+    return [(str(row[0]), row[1], list(row[2])) for row in rows if row[0] is not None]
+
+
 # Read clearly (19 Oct 2026): the whole document's main reader lines (its first role) in one
 # unpacking, page by page in stored order, under a document-wide cap: at most
 # CLEAR_COPY_LINES lines and about CLEAR_COPY_TEXT characters (one line over leaves the
