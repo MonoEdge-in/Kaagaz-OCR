@@ -361,6 +361,33 @@ def test_a_map_pages_values_are_read_as_printed_and_never_given_a_number() -> No
     assert "Never work out a side from where a neighbour is drawn." in prompt
 
 
+def test_a_map_values_label_text_is_the_readers_and_kept_for_map_fields_only() -> None:
+    """0054: the label's text as the reader read it where it was located, never the model's
+    wording; none for a field that is not a map value, nor for a label longer than 80."""
+    long_label = "Side " + "x" * 80
+    dashed = "Side A\N{EN DASH}B"  # the reader's dash, as printed
+    spans = lines("Survey No: 45/2", "Length: 45.5 m", "East: 46", f"{dashed}: 14 m", f"{long_label} 9 m")
+    record = {
+        **_quoted(
+            survey_number=("Survey No", "45/2"), length=("Length", "45.5 m"), boundary_east=("East", "46")
+        ),
+        "dimensions": [
+            {"label_quote": "Side A-B", "value_quote": "14 m"},  # the model's hyphen, the reader's dash
+            {"label_quote": long_label, "value_quote": "9 m"},
+        ],
+    }
+    understanding = run(FakeChat(CARD, {"records": [record]}), spans)
+    assert [
+        (v.field, v.value_text, v.label_text) for v in understanding.quoted_values if v.record_key == "land:1"
+    ] == [
+        ("land_survey_number", "45/2", None),  # not a map value
+        ("land_length", "45.5 m", "Length"),
+        ("land_boundary_east", "46", "East"),
+        ("land_dimension", "14 m", dashed),
+        ("land_dimension", "9 m", None),  # too long to be kept
+    ]
+
+
 def test_two_plots_of_one_survey_stay_two_properties() -> None:
     plot_12, plot_13 = ("Survey No: 45/2", "Plot No: 12", "Length: 40 m"), ("Survey No: 45/2", "Plot No: 13")
     spans = lines(*plot_12, *plot_13, "Length: 25 m")
@@ -389,6 +416,7 @@ def test_a_dimension_the_checker_reads_differently_or_cannot_read_needs_review()
     found.add(Window(0, 100, ""), {"records": [record]})
     (value,) = found.values()
     assert value.label_location == label_box  # which side it is: its label's own spot
+    assert value.label_text == "North side"  # and its text there (0054)
     agree = label_quoted([value], None, {box: "30 m"}, checked={box})
     differ = label_quoted([value], None, {box: "38 m"}, checked={box})
     unread = label_quoted([value], None, {}, checked=set())
