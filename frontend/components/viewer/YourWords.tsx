@@ -2,14 +2,19 @@
 
 // Your words on the page (package H, 24 Oct 2026): a link from an Ask answer or a search
 // result carries the asker's key words (?words=, linkWords), and the page lights every line
-// holding one (GET /documents/{id}/pages/{n}/words), drawn under the cited spot in their own
-// colour (PageViewer's .word). Under the page: "Highlighted: your words (krishna, maval) on this
-// page" and "Show your words" (pressed while they show), only on a page holding them; "Next
-// page with your words" while another page holds them. A page with none and no other shows
-// nothing. The words are plain text, Devanagari marked lang="mr".
+// holding one, drawn under the cited spot in their own colour (PageViewer's .word). The lines
+// of every page come in one request a document (GET /documents/{id}/words, loadDocumentWords),
+// kept while the pages change, so "Next page with your words" keeps its place and the focus.
+// Under the page: "Highlighted: your words (krishna, maval) on this page" and "Show your
+// words" (pressed while they show), only on a page holding them; "Next page with your words"
+// while another page holds them. Pressed, it moves to that page; when that page has no next,
+// the focus goes to its "Show your words". A page with none and no other shows nothing. The
+// words are plain text, Devanagari marked lang="mr".
 
+import { useEffect, useRef } from "react";
 import { scriptParts } from "@/components/chat/answer";
-import type { PageWords } from "@/lib/types";
+import { getDocumentWords } from "@/lib/api";
+import type { DocumentWords } from "@/lib/types";
 import styles from "./PageViewer.module.css";
 
 export const SHOW_WORDS = "Show your words";
@@ -25,6 +30,21 @@ export function nextWordsPage(pages: readonly number[], current: number): number
   return pages.find((page) => page > current) ?? pages.find((page) => page !== current) ?? null;
 }
 
+// The last request only (one document, words and reload): asked again for the same, it is
+// that one, never a new one. Never more than one kept; a failed one is forgotten.
+let last: { key: string; loading: Promise<DocumentWords> } | null = null;
+
+export function loadDocumentWords(documentId: string, words: readonly string[], version: number): Promise<DocumentWords> {
+  const key = `${documentId}:${version}:${words.join(" ")}`;
+  if (last?.key === key) return last.loading;
+  const asked = { key, loading: getDocumentWords(documentId, words) };
+  last = asked;
+  asked.loading.catch(() => {
+    if (last === asked) last = null;
+  });
+  return asked.loading;
+}
+
 export function YourWords({
   words,
   found,
@@ -34,17 +54,23 @@ export function YourWords({
   onPage,
 }: {
   words: readonly string[];
-  /** This page's answer; null until it comes (or when it could not be loaded). */
-  found: PageWords | null;
+  /** The document's lines holding the words; null until they come (or when they could not be loaded). */
+  found: DocumentWords | null;
   pageNo: number;
   on: boolean;
   onToggle: () => void;
   onPage: (pageNo: number) => void;
 }) {
-  if (words.length === 0 || !found) return null;
-  const here = found.page_no === pageNo && found.boxes.some((region) => region.kind === "box");
-  const next = nextWordsPage(found.pages, pageNo);
-  if (!here && next === null) return null;
+  const here = !!found && found.boxes.some((region) => region.kind === "box" && region.page === pageNo);
+  const next = found ? nextWordsPage(found.pages, pageNo) : null;
+  const toggle = useRef<HTMLButtonElement>(null);
+  const moved = useRef(false); // "Next page with your words" was pressed
+  useEffect(() => {
+    // The page reached has no next: its button is gone, so the focus goes to the toggle.
+    if (moved.current && next === null) toggle.current?.focus();
+    moved.current = false;
+  }, [pageNo, next]);
+  if (words.length === 0 || !found || (!here && next === null)) return null;
   return (
     <div className={styles.yourWords}>
       {here && on ? (
@@ -62,13 +88,20 @@ export function YourWords({
       ) : null}
       <div className={styles.wordChips}>
         {here ? (
-          <button type="button" className={styles.wordChip} aria-pressed={on} onClick={onToggle}>
+          <button ref={toggle} type="button" className={styles.wordChip} aria-pressed={on} onClick={onToggle}>
             <span className={styles.wordSwatch} aria-hidden="true" />
             {SHOW_WORDS}
           </button>
         ) : null}
         {next !== null ? (
-          <button type="button" className={styles.wordChip} onClick={() => onPage(next)}>
+          <button
+            type="button"
+            className={styles.wordChip}
+            onClick={() => {
+              moved.current = true;
+              onPage(next);
+            }}
+          >
             {NEXT_WORDS_PAGE}
           </button>
         ) : null}

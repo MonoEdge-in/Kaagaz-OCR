@@ -5,7 +5,15 @@ import unittest
 from typing import Any
 
 from kaagaz.chunking.script import latin_spelling
-from kaagaz.search.page_words import MAX_WORD_CHARS, MAX_WORDS, Matcher, clean_words, segments, word_regions
+from kaagaz.search.page_words import (
+    MAX_BOXES,
+    MAX_WORD_CHARS,
+    MAX_WORDS,
+    Matcher,
+    clean_words,
+    segments,
+    word_regions,
+)
 
 
 def box(page: int, top: float) -> dict[str, Any]:
@@ -95,7 +103,7 @@ class SegmentsTest(unittest.TestCase):
 
 
 class WordRegionsTest(unittest.TestCase):
-    def test_the_open_pages_lines_and_every_page_with_one(self) -> None:
+    def test_every_pages_lines_and_every_page_with_one(self) -> None:
         pieces = [
             (
                 "Invoice\nBuyer: Krishna Sohoni\nSeller: Nikhil Varde",
@@ -103,15 +111,20 @@ class WordRegionsTest(unittest.TestCase):
                 [box(1, 0.1), box(1, 0.2), box(1, 0.3)],
             ),
             ("Village Maval", None, [box(2, 0.1)]),
-            ("खरेदीदार कृष्ण", latin_spelling("खरेदीदार कृष्ण"), [box(3, 0.4)]),
+            ("खरेदीदार कृष्ण", latin_spelling("खरेदीदार कृष्ण"), [box(3, 0.5)]),
             ("Name: Krishna | Village: Pune", None, [box(4, 0.1), box(4, 0.5)]),
             ("Krishna\nunpaired", None, [box(5, 0.1)]),
         ]
         words = clean_words(["krishna", "maval"])
-        self.assertEqual(word_regions(pieces, words, 1), ([box(1, 0.2)], [1, 2, 3, 4]))
-        self.assertEqual(word_regions(pieces, words, 4), ([box(4, 0.1)], [1, 2, 3, 4]))
-        self.assertEqual(word_regions(pieces, words, 6), ([], [1, 2, 3, 4]))
-        self.assertEqual(word_regions(pieces, [], 1), ([], []))
+        lit = [box(1, 0.2), box(2, 0.1), box(3, 0.5), box(4, 0.1)]
+        self.assertEqual(word_regions(pieces, words), (lit, [1, 2, 3, 4]))
+        self.assertEqual(word_regions(pieces, []), ([], []))
+
+    def test_at_most_max_boxes_and_still_every_page(self) -> None:
+        pieces = [("Krishna", None, [box(page, 0.1)]) for page in range(1, MAX_BOXES + 6)]
+        boxes, pages = word_regions(pieces, ["krishna"])
+        self.assertEqual(len(boxes), MAX_BOXES)
+        self.assertEqual(pages, list(range(1, MAX_BOXES + 6)))
 
 
 if __name__ == "__main__":

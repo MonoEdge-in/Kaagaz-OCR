@@ -63,7 +63,7 @@ import { ReadClearlyPanel } from "@/components/viewer/ReadClearlyPanel";
 import { ScannedTextPanel } from "@/components/viewer/ScannedTextPanel";
 import { valueAt } from "@/components/viewer/scanned";
 import { WhatWasRead } from "@/components/viewer/WhatWasRead";
-import { YourWords } from "@/components/viewer/YourWords";
+import { YourWords, loadDocumentWords } from "@/components/viewer/YourWords";
 import { useTabMotion } from "@/lib/motion";
 import { effectiveOf, useAiSettings } from "@/lib/aiSettings";
 import { AddMeaningDialog, PageWordsList, useViewerWords } from "@/components/words/ViewerWords";
@@ -103,7 +103,6 @@ import {
   getDocument,
   getDocumentSummary,
   getPageReadings,
-  getPageWords,
   resolveReview,
 } from "@/lib/api";
 import { formatDate, formatDateTime, typeLabel } from "@/lib/format";
@@ -114,9 +113,9 @@ import { useSession } from "@/lib/session";
 import type {
   DocumentDetail,
   DocumentSummary,
+  DocumentWords,
   ExtractedValue,
   PageSummary,
-  PageWords,
   ReadingMark,
   Region,
   WordFlag,
@@ -277,7 +276,7 @@ export function DocumentView({
   const markedPage = shown && selection ? shown.pages.find((p) => p.page_no === selection.pageNo) : undefined;
   const readingMarks = usePageMarks(documentId, markedPage, reloads);
   const yourWords = linkWords(wordsParam);
-  const wordsFound = usePageWords(documentId, selection ? selection.pageNo : null, yourWords);
+  const wordsFound = useDocumentWords(documentId, yourWords, reloads);
   const [wordsOn, setWordsOn] = useState(true);
 
   // While it loads, only the skeleton (SoW 19 Oct: "Back to documents" flashed for half a second).
@@ -1133,18 +1132,19 @@ function usePageMarks(documentId: string, page: PageSummary | undefined, version
 const NO_MARKS: ReadingMark[] = [];
 
 /**
- * Package H: the lines of the page shown that hold the link's words, and every page with
- * one; asked once a page (one statement on the server). null until they come, with no
- * words, and if they can't be loaded (the page shows as it would without them).
+ * Package H: the lines holding the link's words on every page, and every page with one;
+ * asked once a document, words and reload (loadDocumentWords), never per page, and kept
+ * while the pages change (a PDF's scroll changes them page by page). null until they come,
+ * with no words, and if they can't be loaded (the page shows as it would without them).
  */
-function usePageWords(documentId: string, pageNo: number | null, words: readonly string[]): PageWords | null {
+function useDocumentWords(documentId: string, words: readonly string[], version: number): DocumentWords | null {
   const wanted = words.join(" ");
-  const key = pageNo === null || wanted === "" ? null : `${documentId}:${pageNo}:${wanted}`;
-  const [loaded, setLoaded] = useState<{ key: string; found: PageWords } | null>(null);
+  const key = wanted === "" ? null : `${documentId}:${version}:${wanted}`;
+  const [loaded, setLoaded] = useState<{ key: string; found: DocumentWords } | null>(null);
   useEffect(() => {
-    if (key === null || pageNo === null) return;
+    if (key === null) return;
     let cancelled = false;
-    getPageWords(documentId, pageNo, wanted.split(" ")).then(
+    loadDocumentWords(documentId, wanted.split(" "), version).then(
       (found) => {
         if (!cancelled) setLoaded({ key, found });
       },
@@ -1153,7 +1153,7 @@ function usePageWords(documentId: string, pageNo: number | null, words: readonly
     return () => {
       cancelled = true;
     };
-  }, [documentId, pageNo, key, wanted]);
+  }, [documentId, key, wanted, version]);
   return loaded && loaded.key === key ? loaded.found : null;
 }
 

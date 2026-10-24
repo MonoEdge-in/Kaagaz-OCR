@@ -30,8 +30,8 @@ without its column name. A piece whose lines and cells both fail to pair with it
 is left out: its spot is unknown. ``pieces.text_latin`` pairs the same way; without it
 (a mostly English piece) a line with Devanagari letters is spelled here.
 
-Only regions leave this module, never text. Time: O(T) for the document's T characters to
-split them, then each different word is matched once (cached).
+Only regions leave this module, never text, at most ``MAX_BOXES``. Time: O(T) for the
+document's T characters to split them, then each different word is matched once (cached).
 """
 
 import re
@@ -48,6 +48,7 @@ from kaagaz.search.story_match import QueryWord, WordMatcher
 MAX_WORDS = 8
 MAX_WORD_CHARS = 40
 MIN_WORD_CHARS = 3
+MAX_BOXES = 2000  # regions in one reply, in the pieces' order; every page is still listed
 # A letter, digit or Devanagari sign, but not the danda (U+0964, U+0965).
 _CHAR = "[\\wऀ-ॣ०-ॿ]"
 _TOKEN = re.compile(f"{_CHAR}+(?:(?:(?<=[0-9])[,.](?=[0-9])|[/-]){_CHAR}+)*")
@@ -116,10 +117,11 @@ def segments(text: str, count: int) -> list[str] | None:
 
 
 def word_regions(
-    pieces: Iterable[tuple[str, str | None, Sequence[Any]]], words: Sequence[str], page_no: int
+    pieces: Iterable[tuple[str, str | None, Sequence[Any]]], words: Sequence[str]
 ) -> tuple[list[dict[str, Any]], list[int]]:
-    """The regions on ``page_no`` of the lines holding ``words``, in the pieces' order, and
-    every page with such a line, ascending. ``pieces``: (text, text_latin, regions)."""
+    """The regions of the lines holding ``words`` on every page, in the pieces' order, at most
+    ``MAX_BOXES``, and every page with such a line, ascending. ``pieces``: (text,
+    text_latin, regions)."""
     if not words:
         return [], []
     matcher = Matcher(words)
@@ -134,6 +136,6 @@ def word_regions(
         for index, (line, region) in enumerate(zip(lines, regions, strict=True)):
             if matcher.holds(line, None if latin is None else latin[index]):
                 pages.add(region["page"])
-                if region["page"] == page_no:
+                if len(boxes) < MAX_BOXES:
                     boxes.append(region)
     return boxes, sorted(pages)

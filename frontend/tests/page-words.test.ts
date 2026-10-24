@@ -15,9 +15,15 @@ import { AnswerView } from "@/components/chat/AnswerView";
 import { DocumentRow } from "@/components/chat/SourceCard";
 import { citationLink, documentLink, linkWords, markParts, matchTerms } from "@/components/chat/answer";
 import { resultView } from "@/components/documents/insideSearch";
-import { NEXT_WORDS_PAGE, SHOW_WORDS, YourWords, nextWordsPage, wordsNoteText } from "@/components/viewer/YourWords";
-import { getPageWords } from "@/lib/api";
-import type { Answer, Citation, FoundDocument, PageWords } from "@/lib/types";
+import {
+  NEXT_WORDS_PAGE,
+  SHOW_WORDS,
+  YourWords,
+  loadDocumentWords,
+  nextWordsPage,
+  wordsNoteText,
+} from "@/components/viewer/YourWords";
+import type { Answer, Citation, DocumentWords, FoundDocument } from "@/lib/types";
 
 const ROOT = join(__dirname, "..");
 const read = (path: string) => readFileSync(join(ROOT, path), "utf8");
@@ -114,18 +120,29 @@ describe("a link into the viewer carries the asker's words", () => {
     expect(resultView(found).href).not.toContain("words=");
   });
 
-  it("is asked back for the page as at most 8 words", async () => {
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ page_no: 2, boxes: [], pages: [] }), { status: 200 }));
+  it("is asked once a document and words, never again as the pages change (package H review)", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ boxes: [], pages: [] }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
-    await getPageWords("d1", 2, ["krishna", "maval"]);
+    // Each page the viewer shows (a PDF's scroll changes it page by page) asks as the screen does.
+    for (let page = 1; page <= 12; page += 1) await loadDocumentWords("d1", ["krishna", "maval"], 0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String((fetchMock.mock.calls[0] as unknown[])[0])).toContain("/documents/d1/words?w=krishna&w=maval");
+    await loadDocumentWords("d1", ["krishna", "maval"], 1); // read again: asked anew
+    await loadDocumentWords("d2", ["krishna", "maval"], 1);
+    await loadDocumentWords("d2", ["krishna", "maval"], 1);
     vi.unstubAllGlobals();
-    expect(String((fetchMock.mock.calls[0] as unknown[])[0])).toContain("/documents/d1/pages/2/words?w=krishna&w=maval");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    // The screen's hook takes no page: it asks per document, words and reload only.
+    const view = read("app/(app)/documents/[id]/DocumentView.tsx");
+    expect(view).toContain("useDocumentWords(documentId, yourWords, reloads)");
+    expect(view).toMatch(/\}, \[documentId, key, wanted, version\]\);/);
   });
 });
 
 describe("under the page: the note, the toggle and the next page", () => {
-  const box = { kind: "box" as const, page: 2, box: [0.1, 0.2, 0.9, 0.25] as [number, number, number, number] };
-  const found = (boxes: PageWords["boxes"], pages: number[]): PageWords => ({ page_no: 2, boxes, pages });
+  const on = (page: number) => ({ kind: "box" as const, page, box: [0.1, 0.2, 0.9, 0.25] as [number, number, number, number] });
+  const box = on(2);
+  const found = (boxes: DocumentWords["boxes"], pages: number[]): DocumentWords => ({ boxes, pages });
   const render = (props: Partial<Parameters<typeof YourWords>[0]>) =>
     renderToStaticMarkup(
       createElement(YourWords, {
@@ -156,11 +173,24 @@ describe("under the page: the note, the toggle and the next page", () => {
   it("shows nothing extra on a page with no match, only the way to one that has", () => {
     expect(render({ found: found([], []) })).toBe("");
     expect(render({ words: [] })).toBe("");
-    const elsewhere = render({ found: found([], [5]) });
+    const elsewhere = render({ found: found([on(5)], [5]) });
     expect(text(elsewhere)).not.toContain("Highlighted");
     expect(elsewhere).not.toContain(SHOW_WORDS);
     expect(text(elsewhere)).toContain(NEXT_WORDS_PAGE);
     expect([nextWordsPage([1, 2, 5], 2), nextWordsPage([1, 2], 2), nextWordsPage([2], 2)]).toEqual([5, 1, null]);
+  });
+
+  it("keeps the result and the focused Next button in place as the page changes (package H review)", () => {
+    const both = found([on(2), on(5)], [2, 5]);
+    const buttons = (html: string) => [...html.matchAll(/<button[^>]*>[\s\S]*?<\/button>/g)].map((m) => text(m[0]).trim());
+    // Page 2, then page 5 reached by Next: the same result, Next still the last button of the row.
+    expect(buttons(render({ found: both, pageNo: 2 }))).toEqual([SHOW_WORDS, NEXT_WORDS_PAGE]);
+    expect(buttons(render({ found: both, pageNo: 5 }))).toEqual([SHOW_WORDS, NEXT_WORDS_PAGE]);
+    expect(buttons(render({ found: both, pageNo: 3 }))).toEqual([NEXT_WORDS_PAGE]);
+    // A page reached with no next: the focus goes to its toggle (no DOM in these tests: the source).
+    const source = read("components/viewer/YourWords.tsx");
+    expect(source).toContain("if (moved.current && next === null) toggle.current?.focus();");
+    expect(source).toMatch(/<button ref=\{toggle\}/);
   });
 
   it("marks Devanagari words as Marathi", () => {

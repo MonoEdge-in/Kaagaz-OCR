@@ -61,7 +61,7 @@ import type {
   OrganisationCreated,
   PageReadings,
   PageSummary,
-  PageWords,
+  DocumentWords,
   PageTranslation,
   PasswordReset,
   PlatformEvent,
@@ -328,8 +328,8 @@ export const acceptPage = (id: string, pageNo: number) =>
 export const getPageReadings = (id: string, pageNo: number) =>
   request<PageReadings>("GET", `/documents/${id}/pages/${pageNo}/readings`);
 /** Your words on the page (package H): the boxes of the lines holding them, and every page with one. */
-export const getPageWords = (id: string, pageNo: number, words: readonly string[]) =>
-  request<PageWords>("GET", `/documents/${id}/pages/${pageNo}/words${query({ w: words })}`);
+export const getDocumentWords = (id: string, words: readonly string[]) =>
+  request<DocumentWords>("GET", `/documents/${id}/words${query({ w: words })}`);
 /** Read clearly: every page's lines in one request (no AI). */
 export const getClearCopy = (id: string) => request<ClearCopy>("GET", `/documents/${id}/clear-copy`);
 /** Read clearly: one page in English, Hindi or Marathi (follows Ask: 403 feature_off when off). */
