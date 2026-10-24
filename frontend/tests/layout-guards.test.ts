@@ -794,4 +794,16 @@ describe("the document screen (boards 2, 3 and 6)", () => {
       /padding-inline:\s*var\(--space-3\);/,
     );
   });
+
+  // Tushar, 24 Oct 2026 ("round the edges"): the conversation pane is a rounded card, not a
+  // square strip with a hairline, and its scrollbar stays inside the corners.
+  it("rounds the conversation pane like the other panels", () => {
+    const CHAT_CSS = "components/chat/Chat.module.css";
+    const pane = rulesFor(CHAT_CSS, ".pane").find((rule) => rule.at === "")?.body ?? "";
+    expect(pane).toMatch(/border-radius:\s*var\(--k-r-4\);/);
+    expect(pane).not.toMatch(/border-inline-end/);
+    expect(rulesFor(CHAT_CSS, ".pane::-webkit-scrollbar-track").find((rule) => rule.at === "")?.body).toMatch(
+      /margin-block:\s*var\(--k-r-4\);/,
+    );
+  });
 });
