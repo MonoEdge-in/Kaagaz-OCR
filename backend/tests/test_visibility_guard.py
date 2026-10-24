@@ -66,6 +66,7 @@ FILTERED: dict[tuple[ModuleType, str], str] = {
     (fixed_queries, "_TOTAL"): LIVE_CURRENT,
     (fixed_queries, "_EXTREME_VALUE"): LIVE_CURRENT,
     (fixed_queries, "_COUNT_DOCUMENTS"): LIVE_CURRENT,
+    (fixed_queries, "_COUNT_INVOICES"): LIVE_CURRENT,  # #228: the invoices table's rows
     (fixed_queries, "_VALUE_REFS"): LIVE_CURRENT,
     # The documents an unchecked figure points to (decided 30 Sep 2026): the same.
     (unchecked, "_CARD_DOCUMENTS"): LIVE_CURRENT,
