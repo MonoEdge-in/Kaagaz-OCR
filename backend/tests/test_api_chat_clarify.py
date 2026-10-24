@@ -5,6 +5,7 @@ import uuid
 from typing import Any
 
 import pytest
+from sqlalchemy import text
 
 from kaagaz.api.routers.chat import CLARIFY_GONE, answer_text
 from kaagaz.db.engine import Database
@@ -62,3 +63,30 @@ def test_only_the_open_clarify_is_answered_by_its_own_live_stored_choices(db: Da
     assert (pending.question, pending.picked, pending.turn) == ("Land in Puny?", ("Pune",), 1)
     assert [asked for _, asked in api.answers.asked] == ["Land in Puny?", "Pune"]
     assert reply(["c1"]).status_code == 409  # answered: no longer open
+
+
+@pytest.mark.db
+def test_a_did_you_mean_pick_is_suggested_for_review_and_typed_words_answer_too(db: Database) -> None:  # B2
+    api = Api(db)
+    signed = api.new_signed()
+    clarify = _clarify(api.add_document(signed.customer_id, name="pune.pdf", uploaded_by=signed.user_id))
+    api.answers.reply = {**clarify, "resume": {**clarify["resume"], "confirm": True}}
+    first = signed.client.post("/api/chat", json={"question": "Land in Puny?"}, headers=CSRF).json()
+    conversation = first["conversation_id"]
+
+    def reply(message: str, choices: list[str], question: str = "") -> Any:
+        body: dict[str, Any] = {"conversation_id": conversation, "question": question}
+        body["reply"] = {"message_id": message, "choice_ids": choices}
+        return signed.client.post("/api/chat", json=body, headers=CSRF).json()
+
+    second = reply(first["answer"]["id"], ["c1"])  # the answer is a clarify again
+    typed = reply(second["answer"]["id"], [], "Pimpri")
+
+    assert (typed["question"]["text"], api.answers.resumed[-1].typed) == ("Pimpri", "Pimpri")
+    with db.customer(signed.customer_id) as conn:
+        rows = conn.execute(
+            text("SELECT word, meaning, status, submitted_by FROM organization_word_suggestions")
+        )
+        suggested = [tuple(map(str, row)) for row in rows]
+    assert suggested == [("Puny", "Pune", "pending", signed.user_id)]  # once: never for typed words
+    assert api.audit_actions(signed.customer_id).count("organization_word.suggested") == 1

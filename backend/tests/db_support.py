@@ -234,12 +234,20 @@ _KEY = text(
 )
 
 
-def insert_key(conn: Connection, customer_id: str, document_id: str, kind: str, printed: str) -> None:
-    """One land value printed as ``printed`` and its ``value_keys`` row, as #245 keys it. O(1)."""
+def insert_key(
+    conn: Connection,
+    customer_id: str,
+    document_id: str,
+    kind: str,
+    printed: str,
+    place_level: str = "village",
+) -> None:
+    """One land value printed as ``printed`` and its ``value_keys`` row, as #245 keys it (a
+    place at ``place_level``), all of one land record. O(1)."""
     from kaagaz.answering.clarify import latin_key
     from kaagaz.chunking.script import sound_keys
 
-    latin, level = latin_key(printed), "village" if kind == "place" else None
+    latin, level = latin_key(printed), place_level if kind == "place" else None
     sound = "" if kind == "property" else " ".join(key for _, key in sound_keys(latin))
     box = '{"kind": "box", "page": 1, "box": [0.1, 0.2, 0.3, 0.25]}'
     named = {"k": kind, "f": _LAND_FIELDS[kind], "v": printed, "level": level, "latin": latin, "sound": sound}

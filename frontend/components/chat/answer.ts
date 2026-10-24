@@ -79,6 +79,7 @@ export function answerStatusText(answer: Answer | null): string {
     return ["Answer ready.", ...said].filter(Boolean).join(" ");
   }
   if (!answer || answer.status === "not_found") return NO_ANSWER_STATUS;
+  if (answer.status === "clarify") return answer.clarify?.question ?? NO_ANSWER_STATUS; // PRD 6 B2
   const first = answer.status === "unchecked" ? UNCHECKED_TEXT : answer.sentences[0]?.text.trim();
   return ["Answer ready.", first].filter(Boolean).join(" ");
 }

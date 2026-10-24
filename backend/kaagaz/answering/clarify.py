@@ -4,7 +4,8 @@ keys) per person, place or property value, read in one statement through ``LIVE_
 the customer filter under row level security. A label (the value as printed) that is empty, over
 ``MAX_CHOICE_CHARS`` or reads like instructions is never a candidate.
 
-Tiers, word by word (PROVISIONAL): match is the same spelling or the same sound key of
+Tiers, word by word (PROVISIONAL): match is the same spelling, a confirmed spelling (an approved
+organisation word, decision 6; a "Did you mean" pick suggests one, B2) or the same sound key of
 ``SOUND_MATCH_MIN``+ letters ("Krishana" is Krishna, "पुणे" is Pune); close is the same first
 letter and at most one edit
 (Damerau-Levenshtein) for 4 to 6 letters, two for 7+, or a trigram similarity of
@@ -12,6 +13,8 @@ letter and at most one edit
 or a digit: as written only. One match resolves; several, or close only, ask (decision 13: one
 question a turn, ``MAX_CHOICES`` and "Something else", ``MAX_TURNS`` turns, then an open list);
 none is searched as typed. A missing subject is asked only when nothing narrows the question.
+Places (B2) may be picked several at once, or "All of these"; "between A and B" offers the
+company's places in A's and B's districts when known, else its newest (decision 11).
 Time: one statement, O(V log V) over V live keys; then O(c * w * l^2) in Python.
 """
 
@@ -22,7 +25,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
-from sqlalchemy import text
+from sqlalchemy import RowMapping, text
 
 from kaagaz.answering.evidence import looks_like_instructions
 from kaagaz.answering.rewrite import Plan
@@ -38,6 +41,9 @@ MAX_CANDIDATES, MAX_CHOICES, MAX_CHOICE_CHARS, MAX_TURNS = 10, 6, 80, 2
 SOUND_MATCH_MIN, EXACT_ONLY_MAX, CLOSE_SIMILARITY = 4, 3, 0.5
 OTHER = {"id": "other", "label": "Something else", "kind": "other"}
 MISSING: dict[Kind, str] = {"property": "Which property do you mean?", "person": "Which person do you mean?"}
+MISSING["place"] = "Which places should I look in?"
+ALL = {"id": "all", "label": "All of these", "kind": "all"}
+_BETWEEN = re.compile(r"\bbetween\s+(.+?)\s+and\s+(.+?)(?=[?.!,]|$)", re.IGNORECASE)
 _WORD = re.compile(r"[a-z0-9]+")
 
 
@@ -55,6 +61,7 @@ class Entry:
     latin: str
     label: str
     documents: tuple[str, ...]
+    aliased: bool = False  # a confirmed spelling of the typed name
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +75,8 @@ class Pending:
     assumptions: tuple[str, ...]
     turn: int
     picked: tuple[str, ...]
+    confirm: bool = False  # a "Did you mean" pick: its spelling is suggested to the company (B2)
+    typed: str | None = None  # the words typed instead of a pick (B2)
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,10 +94,14 @@ class Vocabulary(Protocol):
         """Each entity's best MAX_CANDIDATES entries of its kind, best (then newest) first."""
         ...
 
+    def near(self, customer_id: str, districts: Sequence[str]) -> list[Entry]:
+        """The newest places sharing a land record with one of ``districts`` (``latin_key``s)."""
+        ...
+
 
 _CANDIDATES = text(
-    "WITH typed AS (SELECT * FROM unnest(CAST(:n AS int[]), CAST(:kinds AS text[]),"
-    " CAST(:latins AS text[]), CAST(:sounds AS text[])) AS t(n, kind, latin, sound)),"
+    "WITH typed AS (SELECT * FROM unnest(CAST(:n AS int[]), CAST(:kinds AS text[]), CAST(:latins AS text[]),"
+    " CAST(:sounds AS text[]), CAST(:folds AS text[])) AS t(n, kind, latin, sound, fold)),"
     " vocabulary AS (SELECT k.kind, k.latin, min(k.sound) AS sound, max(d.created_at) AS newest,"
     " (array_agg(v.value_text ORDER BY d.created_at DESC, v.id))[1] AS label,"
     " array_agg(DISTINCT k.document_id::text) AS documents FROM value_keys k"
@@ -96,11 +109,28 @@ _CANDIDATES = text(
     " AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
     " JOIN extracted_values v ON v.customer_id = k.customer_id AND v.id = k.value_id"
     " WHERE k.customer_id = :c AND k.kind = ANY(CAST(:kinds AS text[])) GROUP BY k.kind, k.latin)"
-    " SELECT t.n, w.kind, w.latin, w.label, w.documents FROM typed t CROSS JOIN LATERAL ("
-    " SELECT x.* FROM vocabulary x WHERE x.kind = t.kind ORDER BY x.latin = t.latin DESC,"
+    " SELECT t.n, w.kind, w.latin, w.label, w.documents, w.aliased FROM typed t CROSS JOIN LATERAL ("
+    " SELECT x.*, EXISTS (SELECT 1 FROM organization_word_suggestions o WHERE o.customer_id = :c"
+    " AND o.status = 'approved' AND o.document_id IS NULL AND o.word_fold = t.fold"
+    " AND o.meaning_fold = x.latin) AS aliased FROM vocabulary x WHERE x.kind = t.kind"
+    " ORDER BY x.latin = t.latin DESC, aliased DESC,"
     " string_to_array(x.latin, ' ') && string_to_array(t.latin, ' ') DESC,"
     " string_to_array(x.sound, ' ') && string_to_array(t.sound, ' ') DESC,"
     " word_similarity(t.latin, x.latin) DESC, x.newest DESC, x.latin LIMIT :most) w ORDER BY t.n"
+)
+_NEAR = text(
+    "SELECT k.kind, k.latin, (array_agg(v.value_text ORDER BY d.created_at DESC, v.id))[1] AS label,"
+    " array_agg(DISTINCT k.document_id::text) AS documents, false AS aliased FROM value_keys k"
+    " JOIN documents d ON d.customer_id = k.customer_id AND d.id = k.document_id"
+    " AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
+    " JOIN extracted_values v ON v.customer_id = k.customer_id AND v.id = k.value_id"
+    " WHERE k.customer_id = :c AND k.kind = 'place' AND k.place_level <> 'district'"
+    " AND k.latin <> ALL(CAST(:districts AS text[])) AND EXISTS ("
+    " SELECT 1 FROM value_keys z JOIN extracted_values zv ON zv.customer_id = z.customer_id"
+    " AND zv.id = z.value_id WHERE z.customer_id = :c AND z.document_id = k.document_id"
+    " AND z.place_level = 'district' AND z.latin = ANY(CAST(:districts AS text[]))"
+    " AND zv.record_key = v.record_key)"
+    " GROUP BY k.kind, k.latin ORDER BY max(d.created_at) DESC, k.latin LIMIT :most"
 )
 
 
@@ -116,13 +146,22 @@ class PgVocabulary:
         sounds = [" ".join(map(sound_key, _WORD.findall(latin))) for latin in latins]
         kinds, most = [entity.kind for entity in entities], MAX_CANDIDATES
         params = {"c": customer_id, "n": list(range(len(entities))), "kinds": kinds, "most": most}
-        params |= {"latins": latins, "sounds": sounds}
+        folds = [" ".join(clean_text(entity.as_typed).casefold().split()) for entity in entities]
+        params |= {"latins": latins, "sounds": sounds, "folds": folds}
         if entities:
             with self._db.customer(customer_id) as conn:
                 for row in conn.execute(_CANDIDATES, params).mappings():
-                    entry = Entry(row["kind"], row["latin"], row["label"], tuple(sorted(row["documents"])))
-                    found[int(row["n"])].append(entry)
+                    found[int(row["n"])].append(_entry(row))
         return found
+
+    def near(self, customer_id: str, districts: Sequence[str]) -> list[Entry]:
+        with self._db.customer(customer_id) as conn:
+            rows = conn.execute(_NEAR, {"c": customer_id, "districts": list(districts), "most": MAX_CHOICES})
+            return [_entry(row) for row in rows.mappings()]
+
+
+def _entry(row: RowMapping) -> Entry:
+    return Entry(row["kind"], row["latin"], row["label"], tuple(sorted(row["documents"])), row["aliased"])
 
 
 def latin_key(typed: str) -> str:
@@ -173,7 +212,7 @@ def _word_tier(word: str, words: Sequence[str]) -> str | None:
 
 def tier(typed: str, entry: Entry) -> str | None:
     """ "match", "close" or None for ``typed`` (a ``latin_key``) and ``entry``."""
-    if typed == entry.latin:
+    if entry.aliased or typed == entry.latin:
         return "match"
     tiers = [_word_tier(word, _WORD.findall(entry.latin)) for word in _WORD.findall(typed)]
     if not tiers or None in tiers:
@@ -185,7 +224,7 @@ def outcome(entity: Entity, entries: Sequence[Entry]) -> tuple[str, tuple[Entry,
     """("one" | "several" | "close" | "none", the entries) for ``entity``."""
     typed = latin_key(entity.as_typed)
     kept = [entry for entry in entries if usable(entry)]
-    same = [entry for entry in kept if entry.latin == typed]
+    same = [entry for entry in kept if entry.aliased or entry.latin == typed]
     matched = same[:1] or [entry for entry in kept if tier(typed, entry) == "match"]
     if matched:
         return ("one" if len(matched) == 1 else "several"), tuple(matched[:MAX_CHOICES])
@@ -196,6 +235,16 @@ def outcome(entity: Entity, entries: Sequence[Entry]) -> tuple[str, tuple[Entry,
 def first_step(vocabulary: Vocabulary, customer_id: str, question: str, plan: Plan, narrowed: bool) -> Step:
     """Turn 1 for ``plan``; ``narrowed``: the scope narrows the question on its own."""
     entities = [Entity("person", p.as_typed) for p in plan.people] + [Entity("place", p) for p in plan.places]
+    between = _BETWEEN.search(question)
+    ends = {end.casefold() for end in between.groups()} if between else set()
+    if between and len(ends & {place.casefold() for place in plan.places}) == 2:  # decision 11
+        found = vocabulary.near(customer_id, [latin_key(end) for end in ends])
+        found = found or vocabulary.candidates(customer_id, [Entity("place", "")])[0]
+        phrase, rest = between[0], [entity for entity in entities if entity.as_typed.casefold() not in ends]
+        asked = f'"{phrase[0].upper()}{phrase[1:]}" could cover a few places in your documents.'
+        asked += " Which should I look in?"
+        if found := [entry for entry in found if usable(entry)][:MAX_CHOICES]:
+            return _asking(question, (), asked, found, Entity("place", phrase), rest, 1)
     missing = [] if entities or plan.period or narrowed else [k for k in MISSING if k in plan.missing]
     if not missing:
         return next_step(vocabulary, customer_id, question, entities, (), 1)
@@ -208,15 +257,19 @@ def first_step(vocabulary: Vocabulary, customer_id: str, question: str, plan: Pl
 
 def after_reply(vocabulary: Vocabulary | None, customer_id: str, pending: Pending) -> Step:
     """The picks checked again (one gone since is dropped) and put in the question; then the rest."""
-    labels = list(pending.picked)
-    if vocabulary is not None:
+    labels, rest = list(pending.picked), list(pending.remaining)
+    if vocabulary is not None and labels:
         found = vocabulary.candidates(customer_id, [Entity(pending.kind, label) for label in labels])
         labels = [label for label, entries in zip(labels, found, strict=True) if _live(label, entries)]
-    question = put(pending.question, pending.as_typed, _joined(labels)) if labels else pending.question
+    elif pending.typed:  # B2: typed instead of picked, it is checked as a name of its own
+        labels, rest = [pending.typed], [Entity(pending.kind, pending.typed), *rest]
+    prefix = "in " if (pending.as_typed or "").casefold().startswith("between") else ""  # decision 11
+    question = (
+        put(pending.question, pending.as_typed, prefix + _joined(labels)) if labels else pending.question
+    )
     if vocabulary is None:
         return Step(question, pending.assumptions)
-    turn = pending.turn + 1
-    return next_step(vocabulary, customer_id, question, pending.remaining, pending.assumptions, turn)
+    return next_step(vocabulary, customer_id, question, rest, pending.assumptions, pending.turn + 1)
 
 
 def next_step(
@@ -234,7 +287,8 @@ def next_step(
         elif result in ("several", "close") and turn <= MAX_TURNS:
             asked = f"Did you mean {label}?" if len(chosen) == 1 else "Did you mean one of these?"
             asked = f"Which {typed} do you mean?" if result == "several" else asked
-            return _asking(question, said, asked, chosen, entity, entities[index + 1 :], turn)
+            rest, confirm = entities[index + 1 :], result == "close" and len(chosen) == 1
+            return _asking(question, said, asked, chosen, entity, rest, turn, confirm)
         elif result == "several":
             listed = _joined([clean_text(entry.label) for entry in chosen])
             said = (*said, f"I looked for every {typed} in your documents: {listed}.")
@@ -242,35 +296,52 @@ def next_step(
 
 
 def _asking(
-    question: str, said: Said, asked: str, entries: Sequence[Entry], about: Entity, rest: Any, turn: int
+    question: str,
+    said: Said,
+    asked: str,
+    entries: Sequence[Entry],
+    about: Entity,
+    rest: Any,
+    turn: int,
+    confirm: bool = False,
 ) -> Step:
-    """The clarify to store and show (decision 13), and its resume state."""
+    """The clarify to store and show (decision 13; places several at once, B2), and its resume
+    state; ``confirm``: a "Did you mean" whose pick confirms a spelling."""
     choices: list[dict[str, Any]] = []
     for entry in entries:
         if (label := clean_text(entry.label)) not in (choice["label"] for choice in choices):
             pick = {"id": f"c{len(choices) + 1}", "label": label, "kind": "pick"}
             choices.append({**pick, "document_ids": list(entry.documents)})
-    clarify = {"id": str(uuid.uuid4()), "question": asked, "choices": [*choices, OTHER], "multi": False}
+    multi = about.kind == "place" and len(choices) > 1
+    choices += [ALL, OTHER] if multi else [OTHER]
+    clarify = {"id": str(uuid.uuid4()), "question": asked, "choices": choices, "multi": multi}
     resume: dict[str, Any] = {"question": question, "kind": about.kind, "as_typed": about.as_typed or None}
-    resume |= {"remaining": [[e.kind, e.as_typed] for e in rest], "assumptions": list(said)}
+    resume |= {
+        "remaining": [[e.kind, e.as_typed] for e in rest],
+        "assumptions": list(said),
+        "confirm": confirm,
+    }
     _log.info("clarify asked", extra={"code": f"clarify_{about.kind}"})
     return Step(question, said, {**clarify, "turn": turn}, resume)
 
 
-def reply_to(answer: Mapping[str, Any], choice_ids: Sequence[str]) -> Pending | None:
-    """The stored clarify ``answer`` answered by ``choice_ids`` (its resume state as ``_asking``
-    stored it); None when it is no clarify, or an id is not one of its picks (or several are,
-    for a single choice)."""
+def reply_to(
+    answer: Mapping[str, Any], choice_ids: Sequence[str], typed: str | None = None
+) -> Pending | None:
+    """The stored clarify ``answer`` answered by ``choice_ids`` ("all": every pick) or by the
+    ``typed`` words (its resume state as ``_asking`` stored it); None when it is no clarify, or
+    an id is not one of its picks (or several are, for a single choice)."""
     clarify, resume = answer.get("clarify") or {}, answer.get("resume") or {}
     picks = {c["id"]: c["label"] for c in clarify.get("choices", []) if c.get("kind") == "pick"}
-    chosen = list(dict.fromkeys(choice_ids))
-    if answer.get("status") != "clarify" or not chosen or not set(chosen) <= set(picks):
+    every = "all" in choice_ids and clarify.get("multi")
+    chosen = list(picks) if every else list(dict.fromkeys(choice_ids))
+    if answer.get("status") != "clarify" or not (typed or chosen) or not set(chosen) <= set(picks):
         return None
     if len(chosen) > 1 and not clarify["multi"]:
         return None
     rest = tuple(Entity(kind, name) for kind, name in resume["remaining"])
-    fields = {**resume, "remaining": rest, "assumptions": tuple(resume["assumptions"])}
-    return Pending(**fields, turn=clarify["turn"], picked=tuple(picks[i] for i in chosen))
+    fields = {**resume, "remaining": rest, "assumptions": tuple(resume["assumptions"]), "typed": typed}
+    return Pending(**fields, turn=clarify["turn"], picked=() if typed else tuple(picks[i] for i in chosen))
 
 
 def put(question: str, as_typed: str | None, said: str) -> str:

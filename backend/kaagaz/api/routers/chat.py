@@ -59,18 +59,19 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from kaagaz.ai.client import ModelOutputError, ModelUnavailable
 from kaagaz.ai.usage import usage_scope
-from kaagaz.answering.clarify import MAX_CHOICES, Pending, reply_to
+from kaagaz.answering.clarify import MAX_CHOICES, Pending, latin_key, reply_to
 from kaagaz.answering.memory import NO_MEMORY, Memory, from_row, live
 from kaagaz.answering.pins import Pin
 from kaagaz.answering.rewrite import Turn
 from kaagaz.answering.voice import SOFT_NOTHING, numbers, opening, soft_line, unsupported
+from kaagaz.answering.words_text import WordTextError, check_meaning, check_word
 from kaagaz.api.auth import FEATURE_OFF, CurrentUser, User
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.middleware import RateLimiter
 from kaagaz.api.names import clean_name
 from kaagaz.api.views import answer_with_source_states, cited_document_ids, conversation_summary, message
-from kaagaz.db import ai_settings, audit
+from kaagaz.db import ai_settings, audit, organization_words
 from kaagaz.db import chat as chat_sql
 from kaagaz.db.models import (
     LEVELS,
@@ -83,6 +84,7 @@ from kaagaz.db.models import (
     strongest_chat,
     usable_chat_models,
 )
+from kaagaz.db.organization_words import Suggestion
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.search.scope import EVERYTHING, ScopeBody, resolve
 from kaagaz.settings import MODEL_ID
@@ -109,15 +111,17 @@ def chat_limits(per_minute: int) -> RateLimiter:
 ModelId = Annotated[str, StringConstraints(max_length=257, pattern=f"^{MODEL_ID.pattern}$")]
 ChoiceId = Annotated[str, StringConstraints(pattern=r"^(c[1-9]|all)$")]
 CLARIFY_GONE = "That question is no longer open. Ask again."
+SUGGESTED = "organization_word.suggested"
 
 
 class ReplyBody(BaseModel):
-    """PRD 6 B1: the picked choices' ids; the choices are the stored message's, never the client's."""
+    """PRD 6 B1: the picked choices' ids; the choices are the stored message's, never the client's.
+    None picked (B2): ``question`` holds the words typed instead."""
 
     model_config = ConfigDict(extra="forbid")
 
     message_id: uuid.UUID
-    choice_ids: list[ChoiceId] = Field(min_length=1, max_length=MAX_CHOICES + 1)
+    choice_ids: list[ChoiceId] = Field(default_factory=list, max_length=MAX_CHOICES + 1)
 
 
 class AskBody(BaseModel):
@@ -204,7 +208,7 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
     if not chat_limits(context.settings.chat_questions_per_minute).allow(user.user_id):
         raise ApiError(429, "rate_limited", TOO_MANY_QUESTIONS, headers={"Retry-After": "60"})
     question = body.question.strip()
-    if not question and body.reply is None:
+    if not question and (body.reply is None or not body.reply.choice_ids):
         raise ApiError(400, "bad_request", "Type a question first.")
     if body.reply is not None and body.conversation_id is None:
         raise ApiError(409, "conflict", CLARIFY_GONE)
@@ -227,8 +231,8 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
             if chosen is None:
                 chosen = _saved_scope(recent)
             if body.reply is not None:
-                pending = _pending(recent, body.reply)
-                question = ", ".join(pending.picked)
+                pending = _pending(recent, body.reply, question)
+                question = ", ".join(pending.picked) or question
         scope = (
             EVERYTHING
             if chosen is None
@@ -319,6 +323,8 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
                     "thinking": choice.thinking,
                 },
             )
+            if pending is not None:
+                _suggest(conn, user, pending)
         spend.conversation_id = conversation_id  # committed: the ledger row may name it
     if summary_due(turns + 1, summary_turn, context.settings.chat_summary_every):
         background.add_task(
@@ -475,15 +481,37 @@ def _write_memory(
         )
 
 
-def _pending(recent: Sequence[RowMapping], reply: ReplyBody) -> Pending:
-    """The open clarify (the newest message) answered by ``reply``; 409 if not open or not its own."""
+def _pending(recent: Sequence[RowMapping], reply: ReplyBody, question: str) -> Pending:
+    """The open clarify (the newest message) answered by ``reply``, or by the typed ``question``
+    when nothing is picked; 409 if not open or not its own."""
     newest = recent[0] if recent else None
     if newest is None or newest["role"] != "assistant" or str(newest["id"]) != str(reply.message_id):
         raise ApiError(409, "conflict", CLARIFY_GONE)
-    found = reply_to(newest["answer"] or {}, reply.choice_ids)
+    found = reply_to(newest["answer"] or {}, reply.choice_ids, None if reply.choice_ids else question)
     if found is None:
         raise ApiError(409, "conflict", CLARIFY_GONE)
     return found
+
+
+def _suggest(conn: Connection, user: CurrentUser, pending: Pending) -> None:
+    """Decision 6 (PRD 6 B2): a "Did you mean" pick ("Puny" meant Pune) is submitted to the
+    organisation-words review as a pending suggestion, never straight to the company; its meaning
+    is the name's Latin spelling, which the vocabulary matches once a reviewer approves it."""
+    if not (pending.confirm and pending.as_typed and len(pending.picked) == 1):
+        return
+    try:
+        word, meaning = check_word(pending.as_typed).word, check_meaning(latin_key(pending.picked[0]).title())
+    except WordTextError:  # not a word the review takes (a number, a long phrase): nothing to suggest
+        return
+    texts: dict[str, Any] = {"word": word.text, "word_fold": word.fold, "meaning": meaning.text}
+    texts["meaning_fold"] = meaning.fold
+    row = organization_words.submit(conn, user.customer_id, user.user_id, **texts)
+    if isinstance(row, Suggestion):  # None: already pending or approved; or the company's limit
+        details = {"status": "pending", "source": "clarify"}
+        target = {"target_type": "organization_word_suggestion", "target_id": row.id}
+        audit.record(
+            conn, user.customer_id, actor_user_id=user.user_id, action=SUGGESTED, details=details, **target
+        )
 
 
 def _history(recent: Sequence[RowMapping]) -> list[Turn]:

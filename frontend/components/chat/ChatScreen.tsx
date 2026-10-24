@@ -64,11 +64,13 @@ import {
   STORY_NOTE_CHAT,
   storyStatusText,
 } from "@/lib/storyMatches";
-import type { ChatOptions, ConversationSummary, Message } from "@/lib/types";
+import type { ChatOptions, ClarifyReply, ConversationSummary, Message } from "@/lib/types";
 import { answerCardId, answerStatusText, ASKING_STATUS, LOADED_STATUS, questionsByAnswer } from "./answer";
 import { AnswerSettings } from "./AnswerSettings";
 import { askInFlight, resumable, resumedConversation, settleAsk, startAsk } from "./askStore";
 import { AnswerView } from "./AnswerView";
+import { answerDomId, chosenAfter, openClarify, pickedText } from "./clarify";
+import { ClarifyView } from "./ClarifyView";
 import { ConversationList } from "./ConversationList";
 import { scrollBehavior } from "./hooks";
 import {
@@ -218,6 +220,9 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
   const mode: ChatMode =
     chosenMode ??
     (hydrated ? startMode(readMode(tabStorage()), documentFromSearch(initialSearch), restoreId) : "documents");
+  // PRD 6 B2: the open clarifying question, which the composer answers until it is left.
+  const [leftClarify, setLeftClarify] = useState<string | null>(null);
+  const asking = mode === "documents" ? openClarify(messages, leftClarify) : null;
   const [search, setSearch] = useState<StorySearchState>({ kind: "idle" });
   const [searchRequests] = useState(latestOnly);
   const searchAbort = useRef<AbortController | null>(null);
@@ -525,10 +530,12 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
     }
   };
 
-  /** `only`: ask about these documents this once (A4 "Search all documents", A5's examples). */
-  const onAsk = async (question: string, only?: ChosenScope): Promise<boolean> => {
+  /** `only`: ask about these documents this once (A4 "Search all documents", A5's examples).
+   * `chose`: the clarify choices tapped; typed words answer the open clarify too (PRD 6 B2). */
+  const onAsk = async (question: string, only?: ChosenScope, chose?: ClarifyReply): Promise<boolean> => {
     const plan = sendPlan(mode);
     if (!plan.chat) return searchStories(question);
+    const answering = chose ?? (asking ? { message_id: asking.id, choice_ids: [] } : undefined);
     const asked = only ? chooseScope(scope, only) : scope;
     if (only) setScope(asked);
     setPending(question);
@@ -550,13 +557,15 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
     }
     // Kept outside this screen (askStore.ts), so leaving Ask never drops it.
     const entry = startAsk(question, activeId, () =>
-      ask(question, activeId ?? undefined, sentScope(asked), choiceBody(chatOptions, answerPick)),
+      ask(question, activeId ?? undefined, sentScope(asked), choiceBody(chatOptions, answerPick), answering),
     );
     try {
       const reply = await entry.done;
       if (!alive.current) return true; // the next chat screen shows it
       settleAsk(entry);
       setMessages((current) => [...current, reply.question, reply.answer]);
+      // Only after a tapped choice does focus move, to the reply; typing keeps it in the box.
+      if (chose) requestAnimationFrame(() => document.getElementById(answerDomId(reply.answer.id))?.focus());
       setScope((current) => answeredScope(current, reply.question));
       const answerStatus = answerStatusText(reply.answer.answer);
       const now = updateSlot({ type: "answered", token, answerId: reply.answer.id });
@@ -620,7 +629,10 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
   };
 
   const questions = questionsByAnswer(messages);
+  const chosen = chosenAfter(messages);
   const busy = pending !== null;
+  const choose = (message: Message, ids: string[]) =>
+    void onAsk(pickedText(message, ids), undefined, { message_id: message.id, choice_ids: ids });
   const place = storyPlace(slot);
   const storyCards = (question?: string) =>
     slot?.matches ? (
@@ -791,12 +803,23 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
                   </div>
                 ) : (
                   <Fragment key={message.id}>
-                    <div className={styles.answerWrap}>
-                      <AnswerView
-                        message={message}
-                        question={questions.get(message.id) ?? null}
-                        onAskAll={message === askAllFor ? askAll : undefined}
-                      />
+                    <div className={styles.answerWrap} id={answerDomId(message.id)} tabIndex={-1}>
+                      {message.answer?.status === "clarify" ? (
+                        <ClarifyView
+                          message={message}
+                          open={message === asking}
+                          chosen={chosen.get(message.id)}
+                          busy={busy}
+                          onChoose={choose}
+                          onOther={() => inputRef.current?.focus()}
+                        />
+                      ) : (
+                        <AnswerView
+                          message={message}
+                          question={questions.get(message.id) ?? null}
+                          onAskAll={message === askAllFor ? askAll : undefined}
+                        />
+                      )}
                     </div>
                     {place.at === "answer" && place.answerId === message.id ? storyCards() : null}
                   </Fragment>
@@ -827,6 +850,11 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
               draft={draft}
               inputRef={inputRef}
               texts={MODE_TEXTS[mode]}
+              answering={
+                asking?.answer?.clarify
+                  ? { question: asking.answer.clarify.question, onLeave: () => setLeftClarify(asking.id) }
+                  : null
+              }
               tools={
                 <>
                   <ModeSwitch mode={mode} locked={modeLockedText(busy)} onChange={chooseMode} />

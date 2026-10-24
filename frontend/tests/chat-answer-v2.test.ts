@@ -231,7 +231,9 @@ describe("layout rules for the answer card (build spec, 320px)", () => {
     expect(body(".chip")).toMatch(/overflow-wrap:\s*break-word/);
     expect(body(".chipRow")).toMatch(/flex-wrap:\s*wrap/);
     expect(body(".chipRow")).toMatch(/gap:\s*var\(--space-2\)/);
-    expect(css).toMatch(/@media \(pointer: coarse\)\s*\{\s*\.chip\s*\{\s*min-height:\s*var\(--h-lg\);/); // 44px
+    // Changed on purpose (PRD 6 integration, 24 Oct 2026): one chip for answers and clarify (B),
+    // one control tall: --control-h is 44px on touch by itself.
+    expect(body(".chip")).toMatch(/min-height:\s*var\(--control-h\)/);
     expect(read("components/chat/AnswerView.tsx")).not.toMatch(/className=\{?["`][^"`]*\bbtn\b[^"`]*chip|chip[^"`]*\bbtn\b/);
   });
 

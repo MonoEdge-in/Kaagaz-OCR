@@ -26,6 +26,7 @@ import type {
   BoardReply,
   ChatOptions,
   ChatResponse,
+  ClarifyReply,
   ClearCopy,
   Conversation,
   ConversationSummary,
@@ -543,13 +544,21 @@ export const createTag = (name: string) => request<Tag>("POST", "/tags", { name 
 /**
  * Left out, `scope` stays the conversation's last one (PRD 3 H2); {} is every document.
  * `choice`: the composer's answer settings (features 25-27); left out, the organisation's.
+ * `reply`: the open clarifying question this answers (PRD 6 B2).
  */
-export const ask = (question: string, conversationId?: string, scope?: ScopeBody, choice?: AnswerChoice) =>
+export const ask = (
+  question: string,
+  conversationId?: string,
+  scope?: ScopeBody,
+  choice?: AnswerChoice,
+  reply?: ClarifyReply,
+) =>
   request<ChatResponse>("POST", "/chat", {
     question,
     ...(conversationId ? { conversation_id: conversationId } : {}),
     ...(scope ? { scope } : {}),
     ...(choice ?? {}),
+    ...(reply ? { reply } : {}),
   });
 /** The answer settings the organisation allows (features 25-27): names and levels, never prices. */
 export const getChatOptions = () => request<ChatOptions>("GET", "/chat/options");
