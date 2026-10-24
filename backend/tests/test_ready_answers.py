@@ -55,6 +55,7 @@ def test_a_ready_answer_is_kept_for_ten_minutes_and_the_oldest_go_first() -> Non
 @pytest.fixture(autouse=True)
 def _empty() -> None:
     ready.READY = ReadyAnswers()
+    ready.SHOWN = ready.ShownQuestions()
 
 
 def _land_record(api: Api, customer_id: str) -> str:
@@ -132,3 +133,23 @@ def test_a_persons_own_habits_come_first_and_follow_ups_are_left_out(db: Databas
     someone_else = api.sign_in(signed.customer_id)
     theirs = someone_else.client.get("/api/chat/ready-questions").json()["items"]
     assert habit not in [item["text"] for item in theirs]
+
+
+@pytest.mark.db
+def test_home_keeps_the_same_questions_until_one_is_used(db: Database) -> None:
+    """Tushar, 24 Oct 2026: "if the user uses a recommended question, only then update them"."""
+    api = Api(db)
+    signed = api.new_signed()
+    _land_record(api, signed.customer_id)
+    shown = [item["text"] for item in signed.client.get("/api/chat/ready-questions").json()["items"]]
+    assert shown == [LAND]
+
+    habit = "What is the area of survey 72?"
+    for _ in range(2):  # a new habit, but no shown question used: the list stays
+        signed.client.post("/api/chat", json={"question": habit}, headers=CSRF)
+    still = [item["text"] for item in signed.client.get("/api/chat/ready-questions").json()["items"]]
+    assert still == [LAND]
+
+    signed.client.post("/api/chat", json={"question": LAND}, headers=CSRF)  # one is used
+    after = signed.client.get("/api/chat/ready-questions").json()["items"]
+    assert [(item["text"], item["yours"]) for item in after] == [(habit, True), (LAND, True)]

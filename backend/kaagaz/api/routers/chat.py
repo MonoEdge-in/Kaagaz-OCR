@@ -370,6 +370,8 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
             if pending is not None:
                 _suggest(conn, user, pending)
         spend.conversation_id = conversation_id  # committed: the ledger row may name it
+    if fresh:
+        ready.SHOWN.used(user.customer_id, user.user_id, question)  # Home's list changes only now
     if summary_due(turns + 1, summary_turn, context.settings.chat_summary_every):
         background.add_task(
             _remember, context, user.customer_id, user.user_id, conversation_id, summary_turn, turns + 1
@@ -440,7 +442,10 @@ def ready_questions(user: User, context: Context, background: BackgroundTasks) -
     ready}]}``, their own most-asked first; any whose answer is not ready yet is made after
     the reply, so a press a moment later answers at once."""
     with context.db.customer(user.customer_id) as conn:
-        picked = ready.questions(conn, user.customer_id, user.user_id)
+        # The same questions on every visit until one is used (ready.ShownQuestions).
+        picked = ready.SHOWN.get(user.customer_id, user.user_id) or ready.questions(
+            conn, user.customer_id, user.user_id
+        )
         inputs = _home_inputs(conn, user, context)
         made_from = ready.stamp(conn, user.customer_id)
     keys = (
@@ -448,6 +453,7 @@ def ready_questions(user: User, context: Context, background: BackgroundTasks) -
         if inputs is None
         else {q: ready.key(user.customer_id, user.user_id, q, inputs, made_from) for q, _ in picked}
     )
+    ready.SHOWN.keep(user.customer_id, user.user_id, picked)
     cold = [q for q, _ in picked if q in keys and ready.READY.claim(keys[q])]
     if cold and inputs is not None:
         background.add_task(_make_ready, context, user, cold, inputs, keys)

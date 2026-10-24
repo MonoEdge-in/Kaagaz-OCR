@@ -142,4 +142,40 @@ class ReadyAnswers:
             self._making.discard(at)
 
 
+class ShownQuestions:
+    """Each person's questions as Home last showed them (Tushar, 24 Oct 2026: "update them only
+    after the user uses one"): the same list on every visit until they ask one of them fresh,
+    then made again from their habits. An empty list is never kept, so questions come as soon
+    as documents do. Oldest people dropped past MAX_ENTRIES; thread-safe."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._kept: OrderedDict[tuple[str, str], list[tuple[str, bool]]] = OrderedDict()
+
+    def get(self, customer_id: str, user_id: str) -> list[tuple[str, bool]] | None:
+        with self._lock:
+            found = self._kept.get((customer_id, user_id))
+            if found is not None:
+                self._kept.move_to_end((customer_id, user_id))
+            return found
+
+    def keep(self, customer_id: str, user_id: str, shown: list[tuple[str, bool]]) -> None:
+        if not shown:
+            return
+        with self._lock:
+            self._kept[(customer_id, user_id)] = shown
+            self._kept.move_to_end((customer_id, user_id))
+            while len(self._kept) > MAX_ENTRIES:
+                self._kept.popitem(last=False)
+
+    def used(self, customer_id: str, user_id: str, question: str) -> None:
+        """They asked ``question``: when it is one Home showed them, the list is made again."""
+        asked = same_question(question)
+        with self._lock:
+            shown = self._kept.get((customer_id, user_id)) or []
+            if any(same_question(text) == asked for text, _ in shown):
+                del self._kept[(customer_id, user_id)]
+
+
 READY = ReadyAnswers()
+SHOWN = ShownQuestions()
