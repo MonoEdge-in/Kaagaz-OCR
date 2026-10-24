@@ -791,23 +791,24 @@ describe("the dashboard (D1)", () => {
 // --- P1, P2: the document page ---------------------------------------------------------
 
 describe("the document page (P1, P2)", () => {
+  // Changed on purpose (document panel UX, 25 Oct 2026): the owner and the label are read-only
+  // text with a Change button; the picker and the label's description show once it is pressed.
   it("shows Details with the owner and label pickers, the department path, type, date, author and last updated", () => {
-    const html = render(
-      createElement(DetailsPanel, {
-        detail: detail(),
-        onSaved: () => undefined,
-        people: [
-          { id: "u-priya", name: "Priya" },
-          { id: "u-anita", name: "Anita" },
-        ],
-      }),
-    );
+    const people = [
+      { id: "u-priya", name: "Priya" },
+      { id: "u-anita", name: "Anita" },
+    ];
+    const html = render(createElement(DetailsPanel, { detail: detail(), onSaved: () => undefined, people }));
     for (const words of ["Owner", "Label", "Department", "Type", "Document date", "Author", "Last updated", "Pages"]) {
       expect(html).toContain(`>${words}<`);
     }
     expect(html).toContain("Land &amp; Legal / Land records / Survey 44, Wakad");
-    expect(html).toContain('<option value="restricted">Restricted</option>');
-    expect(html).toContain(LABEL_DESCRIPTIONS.confidential);
+    expect(html).not.toContain("<select");
+    expect(html.match(/>Change<span class="visually-hidden"> (Owner|Label)<\/span>/g)).toHaveLength(2);
+    const label = render(createElement(DetailsPanel, { detail: detail(), onSaved: () => undefined, people, changing: "label" }));
+    expect(label).toContain('<option value="restricted">Restricted</option>');
+    expect(label).toContain(LABEL_DESCRIPTIONS.confidential);
+    expect(label).toContain(">Cancel<");
     expect(html).toContain("Land record");
     expect(html).toContain("12 Jun 2026");
     expect(html).toContain(" · Anita");
@@ -815,9 +816,12 @@ describe("the document page (P1, P2)", () => {
 
   it("puts the label chip, Version N of M and the tabs on the page, and logs only the Download button", () => {
     const view = read("app/(app)/documents/[id]/DocumentView.tsx");
-    const title = view.slice(view.indexOf("<div className={styles.titleRow}>"), view.indexOf("<div className={styles.status}>"));
-    expect(title).toContain("<LabelChip label={detail.sensitivity} />");
-    expect(title).toContain("versionText({ number: detail.version_no");
+    // Changed on purpose (document panel UX, 25 Oct 2026): the label is quiet text with a lock
+    // under the title, and "Version N of M" shows only when there is more than one version.
+    const title = view.slice(view.indexOf("<p className={styles.state}>"), view.indexOf("</p>", view.indexOf("<p className={styles.state}>")));
+    expect(title).toContain("{labelName(detail.sensitivity)}");
+    expect(title).toContain('<KIcon name="lock" size="sm" />');
+    expect(title).toContain("{position && <span className={styles.meta}>{versionText(position)}</span>}");
     for (const tab of ['label: FILES_TEXT.details', 'label: "Text"', "label: QUESTIONS_TEXT.heading", "label: VERSION_TEXT.versions", "label: ACTIVITY_TEXT.heading"]) {
       expect(view).toContain(tab);
     }

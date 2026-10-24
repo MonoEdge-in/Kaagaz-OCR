@@ -56,6 +56,7 @@ export const FILES_TEXT = {
   lastUpdated: "Last updated",
   pages: "Pages",
   notFiled: "Not in a department",
+  change: "Change",
   saving: "Saving…",
   saved: (what: string) => `${what} saved.`,
   // F1: the admin Departments tab.

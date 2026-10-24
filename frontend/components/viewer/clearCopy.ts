@@ -6,6 +6,8 @@
 import type { ReadLine, ReadingMark, TranslateLanguage } from "@/lib/types";
 import { lineMarked, notSure, visibleText } from "./scanned";
 
+/** The clean copy's one name: its tab, its heading and its button (document panel UX, 25 Oct 2026; was "Read clearly"). */
+export const CLEAN_COPY = "Clean copy";
 export const NOT_SURE_TIP = "Not read for sure — check the original";
 export const TRANSLATION_LABEL = "Translation — the original text is above";
 export const TRANSLATING = "Translating…";
@@ -143,6 +145,15 @@ export function translateFailure(code: string | undefined): { text: string; retr
 
 /** "Page 1 of 4". */
 export const pageOf = (pageNo: number, total: number) => `Page ${pageNo} of ${total}`;
+
+// The clean copy's Text tab words (document panel UX, 25 Oct 2026).
+/** The one heading over a page: "Page 1" when there is one, else "Page 2 of 4". */
+export const pageTitle = (pageNo: number, total: number) => (total === 1 ? `Page ${pageNo}` : pageOf(pageNo, total));
+export const OPENED_NOTE = "The line you opened";
+export const WIDE_NOTE = "Scroll sideways to see all columns";
+export const SHOW_IN = "Show the text in";
+export const COPIED = "Copied";
+export const COPY_BLOCKED = "Copying is blocked here. Select the text and copy it instead.";
 
 /** The whole copy as plain text, for Copy all: each page under its "Page 1 of 4". */
 export function copyText(pages: readonly { page_no: number; lines: readonly ReadLine[] }[]): string {

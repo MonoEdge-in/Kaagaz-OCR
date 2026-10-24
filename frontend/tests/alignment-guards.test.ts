@@ -75,6 +75,8 @@ const handoffHeights = (file: string, body: string) =>
 /** Not controls in a row of controls, each with its reason ("file: selector"). */
 const ALLOWED = new Map<string, string>([
   ["app/(app)/documents/[id]/DocumentView.module.css: .valueButton", "a value is a word in a table cell: the 24px WCAG target, 44px on touch"],
+  // Changed on purpose (document panel UX, 25 Oct 2026): the panel's one primary is its largest target.
+  ["app/(app)/documents/[id]/DocumentView.module.css: .ask", "Ask about this document, the one primary: full width, 48px"],
   ["components/chat/Chat.module.css: .openLink", "a link in a source card's text: the 24px target, 44px on touch"],
   ["components/viewer/ScannedText.module.css: .lineButton", "a scanned line, as tall as its text (tests/layout-guards.test.ts)"],
   ["app/login/login.module.css: .chip", "the sign-in page's drawing of a citation number, not a control"],
