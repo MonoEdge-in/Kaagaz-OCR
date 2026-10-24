@@ -146,6 +146,15 @@ describe("answer settings", () => {
     const screen = readFileSync("components/chat/ChatScreen.tsx", "utf8");
     expect(screen).toMatch(/<div className=\{styles\.subbarEnd\}>\s*\{mode === "documents" && hasQualityChoice\(chatOptions\) && answerPick \? \(\s*<QualityPicker/);
     expect(readFileSync("components/chat/AnswerSettings.tsx", "utf8")).not.toMatch(/-model|options\.agents/);
+    // Wide screens too (Tushar, 24 Oct 2026): the bar shows there with only the picker, not hidden.
+    const css = readFileSync("components/chat/Chat.module.css", "utf8");
+    const wide = css.slice(css.indexOf("@media (min-width: 1024px) {\n  .screen {"));
+    expect(wide).toMatch(/grid-template-areas:\s*"pane subbar"\s*"pane thread";/);
+    expect(wide).toMatch(/\.subbar \.subbarList,\s*\.subbar \.subbarNew \{\s*display: none;/);
+    expect(wide).toMatch(/\.subbar:not\(:has\(\.quality\)\) \{\s*display: none;/);
+    expect(wide.slice(0, wide.indexOf("\n}\n"))).not.toMatch(/\.subbar \{\s*display: none;/);
+    expect(screen).toContain("className={styles.subbarList}");
+    expect(screen).toContain("className={`btn ${styles.subbarNew}`}");
   });
 
   // Changed on purpose (SoW 19 Oct 2026): "AI engine", Swift then Precision; no Low.
