@@ -207,3 +207,27 @@ describe("motion", () => {
     expect(css(VIEW_CSS)).toMatch(/@keyframes rise-in \{\s*from \{\s*opacity: 0;\s*transform: translateY\(6px\);/);
   });
 });
+
+// Changed on purpose (Tushar, 24 Oct 2026): "minimize these and take them to the bottom". Each
+// value is one line with its page beside it; every "What was read" sits in one closed section
+// at the card's end, open inside so one click shows them all.
+describe("the document card's reading details", () => {
+  const read72 = { ...verified, second_reading: null, confidence: null, label_reason: null, votes: null } as unknown as ExtractedValue;
+  const html = renderToStaticMarkup(
+    createElement(CardPanel, { detail: detail({ values: [read72] }), active: null, onShow: () => undefined }),
+  );
+
+  it("puts the page beside each value, not on a line of its own", () => {
+    const panels = read("app/(app)/documents/[id]/DocumentPanels.tsx");
+    expect(panels).toContain("<span className={styles.pageInline}>{spotNote(item)}</span>");
+    expect(panels).not.toContain("<div className={styles.pageNote}>{spotNote(item)}</div>");
+    expect(css(VIEW_CSS)).toMatch(/\.pageInline \{[^}]*font-size: var\(--fs-sm\);/);
+  });
+
+  it("gathers every What was read in one closed section after the last group", () => {
+    expect(html.match(/What the AI read/g)).toHaveLength(1);
+    expect(html.indexOf("What the AI read")).toBeGreaterThan(html.lastIndexOf("<h3"));
+    expect(html).toMatch(/<details class="[^"]+"><summary>What the AI read, value by value<\/summary>/);
+    expect(html.match(/<details[^>]* open="">/g)).toHaveLength(1); // the survey number's reading, open inside
+  });
+});
