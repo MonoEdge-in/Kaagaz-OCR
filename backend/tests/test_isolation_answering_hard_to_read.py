@@ -49,4 +49,6 @@ def test_b_never_sees_as_unreadable_pages_or_word_marks(db: Database) -> None:
     assert a_answer.reading_note == (
         "Not found in the readable text. 1 page to check: Sharma Register.jpg page 1."
     )
-    assert [mark.document_id for mark in reading.word_marks(a, [a_doc])] == [a_doc]
+    # Changed on purpose (ca9bb36, council 16 Oct 2026): an unreadable page is also one mark over
+    # the whole page, so A's page has two marks: the word's and the page's.
+    assert [mark.document_id for mark in reading.word_marks(a, [a_doc])] == [a_doc, a_doc]

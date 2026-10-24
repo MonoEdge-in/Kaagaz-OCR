@@ -186,6 +186,11 @@ OWNER_RIGHTS = {
     # 0019, the second sweep a day after a purge: ids only, and its org.swept row.
     "kaagaz_purged_ids_to_sweep": ("SETOF uuid", EMPTY_PATH),
     "kaagaz_customer_swept": ("boolean", EMPTY_PATH),
+    # 0045, the expired upload sweep: ids and storage keys of expired sessions only.
+    "kaagaz_expired_upload_sessions": (
+        "TABLE(customer_id uuid, id uuid, storage_key text, storage_upload_id text)",
+        EMPTY_PATH,
+    ),
     # 0046, the shared scheduler's single admission function.
     "kaagaz_model_rate_slot": ("double precision", EMPTY_PATH),
 }

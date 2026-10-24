@@ -98,7 +98,9 @@ def test_the_sweep_gives_ids_only_and_writes_each_vector_on_its_authors_row(db: 
     done = embed_missing_stories(db, model, limit=32, customer_id=a1.customer_id)
 
     assert (done.found, done.written) == (2, 2)
-    assert sorted(model.calls[0]) == sorted(texts[:2])  # never B's story
+    # Changed on purpose (6c412fe, 11 Oct 2026: one call and one usage scope per story): two
+    # calls of one text each, A's two stories, never B's.
+    assert sorted(model.calls) == sorted([words] for words in texts[:2])
     assert _vector(db, a1, document) == axis(0)  # each row has its own text's vector
     assert _vector(db, a2, document) == axis(1)
     assert _vector(db, b1, b_document) is None  # another customer's pass: untouched

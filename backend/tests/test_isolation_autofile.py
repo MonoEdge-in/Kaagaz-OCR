@@ -42,10 +42,18 @@ def test_one_customers_type_folder_is_never_used_for_another_customers_file(db: 
     read(db, a, a_doc)
     read(db, b, b_doc)
 
-    [(a_folder, _, _, a_key, a_owner)] = folders(db, a)
-    [(b_folder, _, _, b_key, b_owner)] = folders(db, b)
-    assert a_folder != b_folder and a_key == b_key == "type:invoice"  # the same key in each customer
-    assert (a_owner, b_owner) == (a_admin, b_admin)
+    # Changed on purpose (#217, 21 Oct 2026: department-first auto-filing): each customer's
+    # Invoices folder is made inside its own new "Accounts and HR" department, and its key
+    # names that department (type:invoice:<department id>), so the two keys differ too.
+    a_department, a_invoices = folders(db, a)  # by name
+    b_department, b_invoices = folders(db, b)
+    for department, invoices, admin in (
+        (a_department, a_invoices, a_admin),
+        (b_department, b_invoices, b_admin),
+    ):
+        assert department[1:] == ("Accounts and HR", None, None, admin)
+        assert invoices[1:] == ("Invoices", department[0], f"type:invoice:{department[0]}", admin)
+    assert a_department[0] != b_department[0] and a_invoices[0] != b_invoices[0]
     assert (state(db, a, a_doc), state(db, b, b_doc)) == (("filed", "Invoices"),) * 2
 
 
@@ -60,8 +68,11 @@ def test_one_customers_invoices_and_party_folders_never_count_for_another(db: Da
     b_bill = bill(db, b, b_admin, ("Mehta Textiles", MEHTA))
 
     assert path(db, a, a_bill) == ("Invoices", "Mehta Textiles")
-    assert path(db, b, b_bill) == (None, "Invoices")
-    assert [f[3] for f in folders(db, b)] == ["type:invoice"]
+    # Changed on purpose (#217, 21 Oct 2026: department-first auto-filing): B's Invoices is
+    # inside B's own "Accounts and HR" department; still no party folder for B.
+    assert path(db, b, b_bill) == ("Accounts and HR", "Invoices")
+    department, invoices = folders(db, b)  # by name: only these two, no Mehta Textiles
+    assert (department[3], invoices[3]) == (None, f"type:invoice:{department[0]}")
 
 
 def test_filing_named_with_the_wrong_customer_changes_nothing(db: Database) -> None:
