@@ -605,7 +605,8 @@
   position: fixed;
   z-index: var(--z-dropdown);
   min-width: 13rem;
-  max-width: calc(100% - 16px); /* of the window: a fixed box's containing block */
+  /* of the window: a fixed box's containing block; 22rem keeps each item's line short */
+  max-width: min(22rem, calc(100% - 16px));
   margin: 0;
   padding: var(--space-1);
   list-style: none;
@@ -622,16 +623,31 @@
   gap: var(--space-2);
   width: 100%;
   min-height: var(--control-h);
-  padding: 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
   border: 0;
   border-radius: var(--k-r-2);
   background: transparent;
   color: var(--text-primary);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-base);
   font-weight: 600;
   text-align: start;
   text-decoration: none;
   cursor: pointer;
+}
+
+/* An item's words over its plain line (plain words, 25 Oct 2026). */
+.menuWords {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.menuHint {
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  font-weight: 400;
+  line-height: 1.4;
 }
 
 .menuItem:hover {

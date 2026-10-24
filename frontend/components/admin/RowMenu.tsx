@@ -17,7 +17,10 @@ export interface RowMenuItem {
   label: string;
   onSelect: () => void;
   destructive?: boolean;
-  /** Shown under the action, which then does nothing: why it can't be used yet. */
+  /** One plain line under the label: what happens, and to whom (plain words, 25 Oct 2026). */
+  description?: string;
+  /** Shown under the action in place of its description, and the action then does nothing:
+   * why it can't be used yet. */
   disabledReason?: string | null;
 }
 
@@ -83,23 +86,35 @@ export function RowMenu({ name, items, compact = false }: { name: string; items:
           if (event.newState === "open") event.currentTarget.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
         }}
       >
-        {items.map((item) => (
-          <button
-            key={item.label}
-            type="button"
-            role="menuitem"
-            className={item.destructive ? `${styles.rowMenuItem} ${styles.rowMenuDanger}` : styles.rowMenuItem}
-            aria-disabled={item.disabledReason ? true : undefined}
-            onClick={(event) => {
-              if (item.disabledReason) return;
-              event.currentTarget.closest<HTMLElement>("[popover]")?.hidePopover();
-              item.onSelect();
-            }}
-          >
-            {item.label}
-            {item.disabledReason && <span className={styles.rowMenuHint}>{item.disabledReason}</span>}
-          </button>
-        ))}
+        {items.map((item, index) => {
+          // The line under the label: why it can't be used yet, else what it does. The label
+          // names the item; the line is read as its description.
+          const hint = item.disabledReason || item.description;
+          const hintId = `${id}-hint-${index}`;
+          return (
+            <button
+              key={item.label}
+              type="button"
+              role="menuitem"
+              className={item.destructive ? `${styles.rowMenuItem} ${styles.rowMenuDanger}` : styles.rowMenuItem}
+              aria-label={hint ? item.label : undefined}
+              aria-describedby={hint ? hintId : undefined}
+              aria-disabled={item.disabledReason ? true : undefined}
+              onClick={(event) => {
+                if (item.disabledReason) return;
+                event.currentTarget.closest<HTMLElement>("[popover]")?.hidePopover();
+                item.onSelect();
+              }}
+            >
+              {item.label}
+              {hint && (
+                <span id={hintId} className={styles.rowMenuHint}>
+                  {hint}
+                </span>
+              )}
+            </button>
+          );
+        })}
       </div>
     </>
   );

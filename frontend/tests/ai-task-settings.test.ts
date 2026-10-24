@@ -276,7 +276,10 @@ describe("one organisation's feature switches (0039)", () => {
   });
 
   it("opens from the organisation's Manage menu, saying it is for this organisation only", () => {
-    expect(read("components/operator/OrganisationsView.tsx")).toContain('{ label: "Feature switches", onSelect: onSwitches }');
+    // Changed on purpose (plain words, 25 Oct 2026): each Manage item has a line saying what it does.
+    expect(read("components/operator/OrganisationsView.tsx")).toContain(
+      '{ label: "Feature switches", description: MENU_HELP.switches, onSelect: onSwitches }',
+    );
     const html = renderToStaticMarkup(createElement(OrgFeatureSwitchesDialog, { org: ORG, onClose: () => {} }));
     expect(html).toContain("Feature switches for Sharma Traders");
     expect(html).toContain("Each switch turns a feature on or off for this organisation only.");
