@@ -1,7 +1,10 @@
 # The EC2 server only (Deployment PRD, WP-B), laid over docker-compose.yml.
 # Laptops never use this file.
 #
-#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml <command>
+#
+# Deploys go through infra/ec2/deploy.sh, never `up -d --build` by hand: that
+# would rebuild kaagaz-*:local, the live images, and run migrate with them.
 #
 # What it changes:
 #   - Only caddy publishes ports (80 and 443). Every other port is cleared with
