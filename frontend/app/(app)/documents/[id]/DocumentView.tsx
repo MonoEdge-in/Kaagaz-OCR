@@ -31,12 +31,15 @@
 // flagged words marked on the page and in Scanned text, and review mode: the Needs
 // attention tab becomes the review panel (ReviewPanel.tsx); leaving it puts focus back
 // on the word on the page.
+// Your words (package H): a link with ?words= lights every line of the page holding one,
+// with a note, "Show your words" and "Next page with your words" under the page (YourWords.tsx).
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { CSSProperties, KeyboardEvent, ReactNode, RefObject } from "react";
 import { tabAfterKey } from "@/components/admin/logic";
 import { useMediaQuery } from "@/components/chat/hooks";
+import { linkWords } from "@/components/chat/answer";
 import { askAboutHref } from "@/components/chat/logic";
 import { downloadHref, folderTrail } from "@/components/documents/library";
 import libraryStyles from "@/components/documents/Library.module.css";
@@ -60,6 +63,7 @@ import { ReadClearlyPanel } from "@/components/viewer/ReadClearlyPanel";
 import { ScannedTextPanel } from "@/components/viewer/ScannedTextPanel";
 import { valueAt } from "@/components/viewer/scanned";
 import { WhatWasRead } from "@/components/viewer/WhatWasRead";
+import { YourWords } from "@/components/viewer/YourWords";
 import { useTabMotion } from "@/lib/motion";
 import { effectiveOf, useAiSettings } from "@/lib/aiSettings";
 import { AddMeaningDialog, PageWordsList, useViewerWords } from "@/components/words/ViewerWords";
@@ -99,6 +103,7 @@ import {
   getDocument,
   getDocumentSummary,
   getPageReadings,
+  getPageWords,
   resolveReview,
 } from "@/lib/api";
 import { formatDate, formatDateTime, typeLabel } from "@/lib/format";
@@ -111,6 +116,7 @@ import type {
   DocumentSummary,
   ExtractedValue,
   PageSummary,
+  PageWords,
   ReadingMark,
   Region,
   WordFlag,
@@ -130,6 +136,7 @@ export interface DocumentViewProps {
   pageParam: string | null;
   regionParam: string | null;
   scannedParam: string | null;
+  wordsParam: string | null;
 }
 
 const FIRST_VALUES = 6; // shown before "Show all N"
@@ -155,6 +162,7 @@ export function DocumentView({
   pageParam,
   regionParam,
   scannedParam,
+  wordsParam,
 }: DocumentViewProps) {
   const { me } = useSession();
   const aiSettings = useAiSettings();
@@ -268,6 +276,9 @@ export function DocumentView({
   const stickyViewer = useMediaQuery(STICKY_VIEWER_QUERY);
   const markedPage = shown && selection ? shown.pages.find((p) => p.page_no === selection.pageNo) : undefined;
   const readingMarks = usePageMarks(documentId, markedPage, reloads);
+  const yourWords = linkWords(wordsParam);
+  const wordsFound = usePageWords(documentId, selection ? selection.pageNo : null, yourWords);
+  const [wordsOn, setWordsOn] = useState(true);
 
   // While it loads, only the skeleton (SoW 19 Oct: "Back to documents" flashed for half a second).
   if (!current) {
@@ -402,6 +413,7 @@ export function DocumentView({
     });
   };
   const panel = { detail, active: selection?.region ?? null, onShow: showSpot };
+  const wordBoxes = wordsOn && wordsFound ? wordsFound.boxes : NO_REGIONS;
 
   const pagesText =
     detail.page_count !== null
@@ -639,6 +651,7 @@ export function DocumentView({
                 flags={openFlags}
                 activeFlag={reviewing ? currentFlag : null}
                 onFlag={startReview}
+                wordBoxes={wordBoxes}
               />
             </div>
           ) : page ? (
@@ -659,10 +672,21 @@ export function DocumentView({
               flags={pageFlags}
               activeFlag={reviewing ? currentFlag : null}
               onFlag={startReview}
+              wordBoxes={wordBoxes}
             />
           ) : (
             <p className={styles.noPages}>No pages to show yet.</p>
           )}
+          {page ? (
+            <YourWords
+              words={yourWords}
+              found={wordsFound}
+              pageNo={page.page_no}
+              on={wordsOn}
+              onToggle={() => setWordsOn((on) => !on)}
+              onPage={changePage}
+            />
+          ) : null}
         </section>
         <SplitHandle split={split} onSplit={setSplit} layout={layoutRef} />
         <div className={styles.panels}>
@@ -1107,3 +1131,30 @@ function usePageMarks(documentId: string, page: PageSummary | undefined, version
 }
 
 const NO_MARKS: ReadingMark[] = [];
+
+/**
+ * Package H: the lines of the page shown that hold the link's words, and every page with
+ * one; asked once a page (one statement on the server). null until they come, with no
+ * words, and if they can't be loaded (the page shows as it would without them).
+ */
+function usePageWords(documentId: string, pageNo: number | null, words: readonly string[]): PageWords | null {
+  const wanted = words.join(" ");
+  const key = pageNo === null || wanted === "" ? null : `${documentId}:${pageNo}:${wanted}`;
+  const [loaded, setLoaded] = useState<{ key: string; found: PageWords } | null>(null);
+  useEffect(() => {
+    if (key === null || pageNo === null) return;
+    let cancelled = false;
+    getPageWords(documentId, pageNo, wanted.split(" ")).then(
+      (found) => {
+        if (!cancelled) setLoaded({ key, found });
+      },
+      () => undefined,
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [documentId, pageNo, key, wanted]);
+  return loaded && loaded.key === key ? loaded.found : null;
+}
+
+const NO_REGIONS: Region[] = [];

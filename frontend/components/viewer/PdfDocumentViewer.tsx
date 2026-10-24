@@ -4,7 +4,7 @@
 // (components/extend), every page in one scroll, with its pages sidebar, zoom, fit, rotate and
 // search, and Highlights, Print and Download added here (Download is the screen's own address,
 // so the download is logged as from the header). On each page it draws what
-// PageViewer draws: the highlighted spot, my words, reading problems and flagged words, each
+// PageViewer draws: the highlighted spot, your words (under it), my words, reading problems and flagged words, each
 // in PageViewer's own style and doing what it does there. Highlights off hides the spot and
 // the marks (flagged words stay: they are the review's targets). Photos and sheets keep
 // PageViewer.
@@ -31,6 +31,7 @@ import styles from "./PageViewer.module.css";
 
 /** How long a scroll the screen asked for takes to settle (a smooth scroll across pages). */
 const STEERING_MS = 1000;
+const NO_WORDS: Region[] = []; // a stable default, so the overlay is not made again each render
 
 export interface PdfDocumentViewerProps {
   document: { id: string; display_name: string };
@@ -51,6 +52,8 @@ export interface PdfDocumentViewerProps {
   flags?: WordFlag[];
   activeFlag?: string | null;
   onFlag?: (flag: WordFlag) => void;
+  /** Package H: the lines holding your words, drawn under the spot. */
+  wordBoxes?: Region[];
 }
 
 /**
@@ -102,6 +105,7 @@ export function PdfDocumentViewer({
   flags = [],
   activeFlag = null,
   onFlag,
+  wordBoxes = NO_WORDS,
 }: PdfDocumentViewerProps) {
   const viewer = useRef<PDFViewerHandle>(null);
   const [showHighlights, setShowHighlights] = useState(true);
@@ -150,6 +154,12 @@ export function PdfDocumentViewer({
       const problems = marksOnPage(readingMarks, pageNumber);
       return (
         <>
+          {showHighlights &&
+            wordBoxes.map((region, index) =>
+              region.kind === "box" && region.page === pageNumber ? (
+                <div key={`word-${index}`} className={styles.word} aria-hidden="true" style={place(region.box)} />
+              ) : null,
+            )}
           {showHighlights &&
             highlights.map((region, index) =>
               region.kind === "box" && region.page === pageNumber ? (
@@ -212,7 +222,7 @@ export function PdfDocumentViewer({
         </>
       );
     },
-    [showHighlights, highlights, marks, activeMark, flags, activeFlag, onFlag, readingMarks, hotMark, onHotMark, onMark],
+    [showHighlights, wordBoxes, highlights, marks, activeMark, flags, activeFlag, onFlag, readingMarks, hotMark, onHotMark, onMark],
   );
 
   return (

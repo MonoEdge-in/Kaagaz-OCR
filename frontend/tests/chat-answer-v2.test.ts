@@ -159,7 +159,8 @@ describe("a v2 not-found answer", () => {
     const html = render(notFound(5));
     expect(text(html)).toContain(`Sure. ${NOT_FOUND_CLOSEST_TEXT}`);
     expect(listItems(html)).toBe(5);
-    expect(html).toContain('href="/documents/c0"');
+    // Changed on purpose (package H, 24 Oct 2026): a closest document opens with the question's words lit.
+    expect(html).toContain('href="/documents/c0?words=highest+total"');
     expect(text(html)).toContain("Mentions godown");
     expect(text(html)).toContain("Next steps");
     expect(text(html)).not.toMatch(/sorry|couldn't/i);
