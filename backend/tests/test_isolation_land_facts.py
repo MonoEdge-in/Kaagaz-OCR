@@ -1,13 +1,18 @@
 """Land facts across customers (0049, #245): company B can never read, write or link company
 A's land values or their keys, even with A's ids, and even when both companies have an
 owner of the same name. Row level security and the (customer_id, id) foreign keys each
-refuse; the control, B's own rows, always works."""
+refuse; the control, B's own rows, always works. The keys' writer and the land-facts command
+run as B never touch A's documents (D2, D3)."""
+
+import io
 
 import pytest
 from sqlalchemy import Connection, text
 from sqlalchemy.exc import DBAPIError, ProgrammingError
 
+from kaagaz.db import value_keys
 from kaagaz.db.engine import Database
+from kaagaz.jobs import land_facts
 from tests.db_support import insert_document, new_customer, violation
 
 pytestmark = pytest.mark.db
@@ -140,3 +145,45 @@ def test_deleting_bs_value_takes_only_bs_key(db: Database) -> None:
         assert conn.execute(text("SELECT count(*) FROM value_keys")).scalar_one() == 0
     with db.customer(a["customer"]) as conn:
         assert _keys_by_name(conn) == [(a["customer"], a["value"])]
+
+
+def test_keying_as_b_never_writes_a_key_for_as_values_or_document(db: Database) -> None:
+    """kaagaz.db.value_keys (D2): B's session, given A's value and document ids, keys nothing."""
+    a, b = _company(db), _company(db)
+    with db.customer(a["customer"]) as conn:
+        conn.execute(
+            text("UPDATE value_keys SET latin = 'stale', sound = '' WHERE value_id = :v"), {"v": a["value"]}
+        )
+    with db.customer(b["customer"]) as conn:
+        assert value_keys.key_values(conn, b["customer"], [a["value"]]) == 0
+        assert value_keys.key_document(conn, b["customer"], a["document"]) == 0
+        assert value_keys.key_values(conn, a["customer"], [a["value"]]) == 0  # A's customer id: RLS hides it
+        assert value_keys.key_document(conn, b["customer"], b["document"]) == 1  # the control
+    with db.customer(a["customer"]) as conn:
+        latin = conn.execute(text("SELECT latin FROM value_keys WHERE value_id = :v"), {"v": a["value"]})
+        assert latin.scalar_one() == "stale"
+
+
+def test_the_land_facts_command_for_b_never_counts_reads_or_keys_as_documents(db: Database) -> None:
+    """D3: run for B, even when B's session is handed A's document id, A's land record is not
+    eligible, counted or keyed; the control, B's own, is."""
+    a, b = _company(db), _company(db)
+    with db.customer(a["customer"]) as conn:
+        conn.execute(
+            text("UPDATE value_keys SET latin = 'stale', sound = '' WHERE value_id = :v"), {"v": a["value"]}
+        )
+    with db.customer(b["customer"]) as conn:
+        assert land_facts.eligible(conn, b["customer"]) == [b["document"]]
+    out = io.StringIO()
+    land_facts.keys_only(db, [b["customer"]], out)
+    land_facts.count(db, [b["customer"]], out)
+    assert out.getvalue() == f"customer {b['customer']}: 1 documents, 1 keys\n" + (
+        f"customer {b['customer']}: 1 eligible documents, 0 characters\n"
+    )
+    with db.customer(a["customer"]) as conn:
+        latin = conn.execute(text("SELECT latin FROM value_keys WHERE value_id = :v"), {"v": a["value"]})
+        assert latin.scalar_one() == "stale"
+        audits = conn.execute(
+            text("SELECT count(*) FROM audit_log WHERE action = :a"), {"a": land_facts.ACTION}
+        )
+        assert audits.scalar_one() == 0

@@ -666,6 +666,7 @@ The made-up golden documents in `backend/tests/golden/docs/` serve these checks 
 - Check: with the model on, `docker compose exec -T api python -m kaagaz.cli reembed`, twice; then `docker compose exec -T -e MODEL_ENABLED=false api python -m kaagaz.cli reembed`.
 - Expect: one line per customer, `customer <id>: N documents, C cleared, E embedded`; the second run embeds 0. With the model off, `error: reembed needs the model: set MODEL_ENABLED=true` and exit code 2. `--customer-id <id>` does one customer; `--all` makes every vector again.
 - Tests: `test_reembed_db.py`, `test_indexing_db.py`.
+- Land facts (PRD 6 D3): `python -m kaagaz.cli land-facts --count` (no model), `--keys-only` (no model), `--sample 20 --customer-id <id> --max-usd 1` (prints each document's calls, tokens and `cost_usd` and the estimate for all eligible documents), then `--all --max-usd <approved>` only once the sample's cost is approved. A second run reads nothing again. Tests: `test_land_facts_cli_db.py`, `test_isolation_land_facts.py`.
 
 **40. Document card, related documents, invoice and low-resolution panels**
 - Check (screen): with the model on, open `textile-invoice.pdf` from the golden documents; click a card item and an invoice cell. Open a document that shares its invoice or PO number with another (feature 33), and a photo scanned under `LOW_RES_DPI`.
