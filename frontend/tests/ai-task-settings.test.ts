@@ -141,7 +141,8 @@ describe("the admin's AI settings tab", () => {
 
   it("says a task switched off for everyone is turned off, instead of its controls", () => {
     const html = form("organisation");
-    expect(html).toContain(`>Auto-filing</legend><p class="muted">${FEATURE_OFF}</p>`);
+    // Changed on purpose (plain words, 25 Oct 2026): a "What's this?" under each task's name.
+    expect(html).toMatch(new RegExp(`>Auto-filing</legend><span[\\s\\S]*?</span></span><p class="muted">${FEATURE_OFF}</p>`));
   });
 
   it("shows the Save bar only when something changed, and saves only what changed", () => {
@@ -162,7 +163,8 @@ describe("the member's AI settings", () => {
 
   it("shows a locked task's value with Set by your admin., and the others can use the organisation's setting", () => {
     const html = form("member");
-    expect(html).toMatch(/>Ask<\/legend><p[^>]*><strong>Low<\/strong><\/p><p class="hint">Set by your admin\.<\/p>/);
+    // Changed on purpose (plain words, 25 Oct 2026): a "What's this?" under each task's name.
+    expect(html).toMatch(/>Ask<\/legend><span[\s\S]*?<\/span><\/span><p[^>]*><strong>Low<\/strong><\/p><p class="hint">Set by your admin\.<\/p>/);
     // mine null: the organisation's setting is used, and the levels wait.
     expect(html).toMatch(/<input type="checkbox" checked=""\/>Use the organisation&#x27;s setting/);
     expect(html).toMatch(/<input type="radio" disabled=""[^>]*checked="" value="high"\/>/);
@@ -221,7 +223,8 @@ describe("where tasks are used", () => {
     );
     expect(html.replace(/<[^>]*>/g, " ")).not.toMatch(MODELS);
     expect(html).not.toMatch(/gemini|claude/i); // not even in an attribute
-    expect(html).toContain(">Standard · Precision<"); // Changed on purpose (SoW 19 Oct 2026): High is Precision
+    // Changed on purpose (Tushar, 25 Oct 2026): Ask starts on Swift, whatever the default level.
+    expect(html).toContain(">Standard · Swift<");
   });
 
   it("Ensemble's controls go when the effective Ensemble is off", () => {
@@ -276,7 +279,10 @@ describe("one organisation's feature switches (0039)", () => {
   });
 
   it("opens from the organisation's Manage menu, saying it is for this organisation only", () => {
-    expect(read("components/operator/OrganisationsView.tsx")).toContain('{ label: "Feature switches", onSelect: onSwitches }');
+    // Changed on purpose (plain words, 25 Oct 2026): each Manage item has a line saying what it does.
+    expect(read("components/operator/OrganisationsView.tsx")).toContain(
+      '{ label: "Feature switches", description: MENU_HELP.switches, onSelect: onSwitches }',
+    );
     const html = renderToStaticMarkup(createElement(OrgFeatureSwitchesDialog, { org: ORG, onClose: () => {} }));
     expect(html).toContain("Feature switches for Sharma Traders");
     expect(html).toContain("Each switch turns a feature on or off for this organisation only.");

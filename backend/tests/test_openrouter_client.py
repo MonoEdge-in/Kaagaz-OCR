@@ -1290,3 +1290,17 @@ def test_a_schema_goes_out_with_no_max_items_and_nothing_else_changed() -> None:
         return [dropped(item) for item in value] if isinstance(value, list) else value
 
     assert sent == dropped(CARD_SCHEMA)
+
+
+def test_a_page_translation_goes_out_with_no_min_or_max_items(fake: OpenRouterFake) -> None:
+    """Read clearly's translation asks for one line per line with minItems and maxItems; the
+    request carries neither (Anthropic refuses minItems, Vertex maxItems), and the line count
+    is checked after the reply (page_translate)."""
+    from kaagaz.answering.page_translate import translate_page
+
+    fake.script("completions", json_reply({"lines": ["Sale deed", "Item"]}))
+    found = translate_page(_client(fake.url, Clock()), ("openrouter-test", "d", "1"), ["विक्री", "वस्तू"], "en")
+    assert found.lines == ["Sale deed", "Item"]
+    (body,) = fake.bodies()
+    sent = json.dumps(body["response_format"])
+    assert '"lines"' in sent and "minItems" not in sent and "maxItems" not in sent

@@ -8,6 +8,8 @@ import { join } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { AnswerWeeksScreen, HIDDEN } from "@/components/operator/AnswerWeeks";
+import type { AnswerWeeksData } from "@/components/operator/AnswerWeeks";
 import { ModelBoardScreen } from "@/components/operator/ModelBoard";
 import type { BoardData } from "@/components/operator/ModelBoard";
 import { OperatorConsole } from "@/components/operator/OperatorConsole";
@@ -15,7 +17,7 @@ import { OverviewScreen, downloadCsv, overviewCsv, shownState } from "@/componen
 import type { LoadState, OverviewData } from "@/components/operator/OverviewView";
 import { QualityScreen } from "@/components/operator/QualityView";
 import type { QualityData } from "@/components/operator/QualityView";
-import type { BoardRow, InsightDay, InsightsReply, OrgInsight, Organisation, PlatformHealth, QualityRow } from "@/lib/types";
+import type { AnswerWeekRow, BoardRow, InsightDay, InsightsReply, OrgInsight, Organisation, PlatformHealth, QualityRow } from "@/lib/types";
 
 const read = (path: string) => readFileSync(join(__dirname, "..", path), "utf8");
 const LOADED_AT = Date.parse("2026-10-11T10:00:00Z");
@@ -522,6 +524,8 @@ describe("Quality", () => {
       expect(html).toContain("Upload to ready, slowest 5%</dt>");
       expect(html).toContain("10 minutes");
       expect(html).toContain("not always better");
+      expect(html).toContain(">Useful</dt>"); // the product's words (PRD 6 F1)
+      expect(html).not.toMatch(/thumbs/i);
     });
 
     it("captions the per-organisation table and rates too few as too few", () => {
@@ -707,5 +711,69 @@ describe("Compare models", () => {
     it("keeps decoration hidden and never a canvas", () => {
       expectDecorationHidden(html);
     });
+  });
+});
+
+const weeksHtml = (state: LoadState<AnswerWeeksData>) =>
+  renderToStaticMarkup(createElement(AnswerWeeksScreen, { weeks: 4, onWeeks: noop, state, onRetry: noop }));
+
+const week = (id: string, monday: string, changes: Partial<AnswerWeekRow> = {}): AnswerWeekRow => ({
+  organisation_id: id,
+  week: monday,
+  replies: 40,
+  answered: 25,
+  not_found: 10,
+  clarify: 0,
+  rated: 22,
+  useful: 12,
+  ...changes,
+});
+
+const weeksData = (organisations: AnswerWeekRow[]): AnswerWeeksData => ({
+  reply: { from: "2026-09-28", to: "2026-10-18", organisations },
+  names: new Map([["org-a", "Asha Traders"], ["org-b", "Bharat Mills"]]),
+  loadedAt: LOADED_AT,
+});
+
+describe("Answers by week (PRD 6 F3)", () => {
+  it("sits under Quality, loads with the skeleton only (Quality keeps the status line) and fails with Try again", () => {
+    expect(read("components/operator/OperatorConsole.tsx")).toMatch(/<QualityView \/>\s*<AnswerWeeksView \/>/);
+    const loading = weeksHtml(LOADING);
+    expect(loading).toContain("Answers by week");
+    expect(loading).not.toContain('role="status"');
+    expect(loading).toMatch(/class="delayed[^"]*" aria-hidden="true"/);
+    const failed = weeksHtml(FAILED);
+    expect(failed).toContain("Could not load the answers by week.");
+    expect(failed).toContain("Try again");
+    expect(failed).toMatch(/<h2 id="answer-weeks-heading" tabindex="-1"/);
+  });
+
+  it("says when no organisation had a reply", () => {
+    const html = weeksHtml(ready(weeksData([])));
+    expect(html).toContain("No replies in these weeks.");
+    expect(html).not.toContain("<table");
+  });
+
+  it("lists each organisation's weeks in a captioned table, by name then week", () => {
+    const html = weeksHtml(ready(weeksData([week("org-b", "2026-10-12"), week("org-a", "2026-10-12"), week("org-a", "2026-10-05")])));
+    expect(html).toMatch(/<caption[^>]*>Answers per organisation and week<\/caption>/);
+    for (const label of ["Organisation", "Week of", "Replies", "Answered", "Not found", "Clarify", "Rated", "Useful"]) {
+      expect(html, label).toContain(`>${label}</th>`);
+    }
+    const order = [...html.matchAll(/<tr role="row"><td[^>]*>([^<]*)<\/td><td[^>]*>([^<]*)</g)].map((m) => `${m[1]} ${m[2]}`);
+    expect(order).toEqual(["Asha Traders 5 Oct 2026", "Asha Traders 12 Oct 2026", "Bharat Mills 12 Oct 2026"]);
+    expect(html).toContain('data-label="Useful" class="num">12</td>');
+  });
+
+  it("says Hidden (under 10) for a count the server hid, never a number worked out here", () => {
+    const hidden = week("org-a", "2026-10-12", { replies: 31, answered: null, not_found: null, clarify: null, rated: 15, useful: null });
+    const html = weeksHtml(ready(weeksData([hidden])));
+    expect(HIDDEN).toBe("Hidden (under 10)");
+    for (const label of ["Answered", "Not found", "Clarify", "Useful"]) {
+      expect(html, label).toContain(`data-label="${label}" class="num">Hidden (under 10)</td>`);
+    }
+    expect(html).toContain('data-label="Replies" class="num">31</td>');
+    expect(html).toContain('data-label="Rated" class="num">15</td>');
+    expect(html).not.toMatch(/class="num">(0|16)<\/td>/); // never 0, never 31 - 15
   });
 });

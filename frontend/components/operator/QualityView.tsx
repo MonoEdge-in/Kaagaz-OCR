@@ -187,7 +187,7 @@ function Answers({ row }: { row: QualityRow }) {
             label: "Sources per answer",
             value: perAnswer === null ? rateText(null, row.answers) : formatNumber(Math.round(perAnswer * 10) / 10),
           },
-          { label: "Thumbs up", value: rateText(row.feedback_up, row.feedback), note: of(row.feedback, "ratings") },
+          { label: "Useful", value: rateText(row.feedback_up, row.feedback), note: of(row.feedback, "ratings") },
         ]}
       />
     </>

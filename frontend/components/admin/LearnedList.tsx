@@ -19,14 +19,16 @@ import styles from "./Admin.module.css";
 export const LEARNED_TEXT = {
   heading: "What Kaagaz learned",
   intro:
-    "Documents in answers people marked Useful. Kaagaz puts them one place higher for similar questions: for the person who marked them, and for everyone once 2 or more people have.",
+    "Documents in answers people marked Useful. Kaagaz puts them one place higher for similar questions: for the person who marked them, and for everyone once 2 or more people have marked the same page for similar questions.",
   empty: "Nothing learned yet.",
   loading: "Loading what Kaagaz learned…",
   failed: "Could not load what Kaagaz learned.",
   removed: "Removed. Kaagaz no longer puts this document higher.",
 } as const;
 
-export const peopleText = (n: number) => `${n} ${n === 1 ? "person" : "people"}`;
+// Per document, on any page and any question: the server counts so (db/answer_quality.py
+// learned), while the lift for everyone counts per page and per question's words (pins.py).
+export const peopleText = (n: number) => `${n} ${n === 1 ? "person" : "people"}, on any question`;
 
 export function LearnedList() {
   const [attempt, setAttempt] = useState(0);

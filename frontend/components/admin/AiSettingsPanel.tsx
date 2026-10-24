@@ -21,6 +21,7 @@ import {
   MEMBERS_CAN_CHANGE,
   NOT_ALLOWED,
   SET_BY_ADMIN,
+  TASK_HELP,
   TASK_NAMES,
   USE_ORGANISATION,
   aiSaveErrorText,
@@ -30,6 +31,7 @@ import {
 } from "@/lib/aiSettings";
 import type { MineDraft, OrgDraft } from "@/lib/aiSettings";
 import type { TaskLevel, AiSettings, AiTaskSetting } from "@/lib/types";
+import { WhatsThis } from "@/components/ui/WhatsThis";
 import { Toast } from "./Toast";
 import type { Notice } from "./Toast";
 import styles from "./Admin.module.css";
@@ -203,6 +205,7 @@ function TaskGroup({ task, children }: { task: AiTaskSetting; children: ReactNod
   return (
     <fieldset className={styles.settingsGroup}>
       <legend className={styles.settingsLegend}>{TASK_NAMES[task.task]}</legend>
+      <WhatsThis topic={TASK_NAMES[task.task]} text={TASK_HELP[task.task]} />
       {task.available ? children : <p className="muted">{FEATURE_OFF}</p>}
     </fieldset>
   );
