@@ -59,7 +59,7 @@ export function OrgModelRates({ org, onClose, onSaved }: { org: Organisation; on
 
   return (
     <ActionDialog title={`OpenRouter request limits · ${org.name}`} onClose={onClose} canClose={(way) => canCloseDialog({ busy }, way)} onClosed={() => document.getElementById(orgAiFocusId(org.id))?.focus()}>
-      {!rates && !problem && <p className="muted" role="status">Loading request limits…</p>}
+      {!rates && !problem && <p className="muted delayed" role="status">Loading request limits…</p>}
       {problem && <p className="error-text" role="alert">{problem}</p>}
       {problem && !rates && <button type="button" className="btn" onClick={() => { setProblem(null); setAttempt((value) => value + 1); }}>Try again</button>}
       {rates && (

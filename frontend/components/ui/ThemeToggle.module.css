@@ -73,8 +73,10 @@
   }
 }
 
-.option:hover {
-  color: var(--k-ink);
+@media (hover: hover) and (pointer: fine) {
+  .option:hover {
+    color: var(--k-ink);
+  }
 }
 
 .option:has(.radio:checked) {

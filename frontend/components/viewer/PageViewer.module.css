@@ -58,7 +58,7 @@
   overflow: auto;
   padding: var(--space-3);
   border: 1px solid var(--border);
-  border-radius: var(--k-r-2);
+  border-radius: var(--k-r-4);
   background: var(--bg-subdued);
   scrollbar-gutter: stable both-edges;
   overscroll-behavior-x: contain; /* a sideways swipe pans the page, never goes back */
@@ -253,7 +253,7 @@
   min-height: var(--control-h); /* 44px on touch */
   padding: var(--space-1) var(--space-3);
   border: 1px solid var(--k-rule-strong);
-  border-radius: var(--k-r-2);
+  border-radius: var(--k-r-pill);
   background: var(--k-surface);
   color: var(--k-ink);
   font: inherit;
@@ -264,8 +264,10 @@
   cursor: pointer;
 }
 
-.wordChip:hover {
-  background: var(--k-sunken);
+@media (hover: hover) and (pointer: fine) {
+  .wordChip:hover {
+    background: var(--bg-hover);
+  }
 }
 
 .wordChip[aria-pressed="false"] .wordSwatch {
@@ -423,7 +425,7 @@
   max-height: 70dvh;
   overflow: auto;
   border: 1px solid var(--border);
-  border-radius: var(--k-r-2);
+  border-radius: var(--k-r-4);
   background: var(--bg-surface);
   overscroll-behavior-x: contain; /* a sideways swipe pans the sheet, never goes back; the wheel runs on (DD1) */
 }
@@ -499,8 +501,10 @@
   right: min(0px, calc(50% - 12px));
 }
 
-.problem:hover {
-  box-shadow: 0 0 0 1px var(--paper), 0 0 0 3px var(--mine-on-paper);
+@media (hover: hover) and (pointer: fine) {
+  .problem:hover {
+    box-shadow: 0 0 0 1px var(--paper), 0 0 0 3px var(--mine-on-paper);
+  }
 }
 
 /* Focus (2.4.7, 1.4.11): the page is paper white in both themes, so the global ring
@@ -558,7 +562,7 @@
   max-width: 20rem;
   padding: var(--space-2) var(--space-3);
   border: 1px solid var(--border-strong);
-  border-radius: var(--k-r-2);
+  border-radius: var(--k-r-3);
   background: var(--bg-surface);
   font-size: var(--fs-sm);
   pointer-events: none;
@@ -667,4 +671,12 @@
 .flag:focus-visible {
   outline: 2px solid var(--mine-on-paper);
   outline-offset: 2px;
+}
+
+/* UI council (24 Oct 2026): on a phone the frame's padding halves and no gutter is kept. */
+@media (max-width: 639.98px) {
+  .frame {
+    padding: var(--space-1);
+    scrollbar-gutter: auto;
+  }
 }

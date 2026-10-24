@@ -137,7 +137,7 @@
 
 @media (hover: hover) and (pointer: fine) {
   .item:hover:not(:disabled) {
-    background: var(--k-sunken);
+    background: var(--bg-hover);
   }
 }
 
@@ -484,8 +484,10 @@
   cursor: pointer;
 }
 
-.cite:hover {
-  background: var(--accent-soft);
+@media (hover: hover) and (pointer: fine) {
+  .cite:hover {
+    background: var(--accent-soft);
+  }
 }
 
 /* On touch, a chip in a sentence gets a 44px tap area that does not move the text. */
@@ -574,9 +576,11 @@
   text-decoration: none;
 }
 
-.docChip:hover {
-  background: var(--surface-2);
-  color: var(--fg);
+@media (hover: hover) and (pointer: fine) {
+  .docChip:hover {
+    background: var(--bg-hover);
+    color: var(--fg);
+  }
 }
 
 .docChip svg {
@@ -677,7 +681,7 @@
   min-height: var(--control-h); /* 44px on touch */
   padding: var(--space-1) var(--space-3);
   border: 1px solid var(--border-strong);
-  border-radius: 2px;
+  border-radius: var(--k-r-pill);
   background: var(--surface);
   color: var(--fg);
   font: inherit;
@@ -690,8 +694,10 @@
   cursor: pointer;
 }
 
-.chip:hover {
-  background: var(--surface-2);
+@media (hover: hover) and (pointer: fine) {
+  .chip:hover {
+    background: var(--bg-hover);
+  }
 }
 
 .chip svg {
@@ -1092,7 +1098,7 @@
   border-radius: 0;
   background: transparent;
   color: var(--fg);
-  font-size: var(--fs-base);
+  font-size: var(--fs-field);
   line-height: 1.55;
   resize: none;
 }
@@ -1156,7 +1162,7 @@
 
 .tool:hover,
 .tool:has(+ .menu:popover-open) {
-  background: var(--surface-2);
+  background: var(--bg-hover);
   color: var(--fg);
 }
 
@@ -1277,7 +1283,7 @@
   gap: var(--space-3);
   min-height: var(--control-h);
   padding: var(--space-1) var(--space-2);
-  border-radius: var(--k-r-2);
+  border-radius: var(--k-r-3);
   font-size: var(--fs-sm);
   overflow-wrap: anywhere;
   cursor: pointer;
@@ -1285,7 +1291,7 @@
 
 .menuOption:hover,
 .menuOption:has(input:focus-visible) {
-  background: var(--surface-2);
+  background: var(--bg-hover);
 }
 
 .menuOption:has(input:checked) {
@@ -1358,6 +1364,14 @@
   outline-offset: 2px;
 }
 
+.segment {
+  transition: transform var(--t-fast) var(--ease);
+}
+
+.segment:active {
+  transform: scale(0.97);
+}
+
 /* The native radio covers the segment, invisible, for the keyboard and screen readers. */
 .segment input {
   position: absolute;
@@ -1404,7 +1418,7 @@
   gap: var(--space-2) var(--space-3);
   padding: var(--space-2) var(--space-3);
   border: 1px solid var(--danger-fg);
-  border-radius: var(--k-r-2);
+  border-radius: var(--k-r-4);
   background: var(--danger-bg);
   color: var(--danger-fg);
 }
@@ -1458,7 +1472,7 @@
   min-height: var(--h-lg);
   padding: var(--space-3);
   border: 1px solid var(--border);
-  border-radius: var(--k-r-2);
+  border-radius: var(--k-r-4);
   background: var(--bg-surface);
   color: var(--text-primary);
   font: inherit;
@@ -1499,7 +1513,7 @@
    summary one control tall, its chevron turning when open (transform only). */
 .sourcesBar {
   border: 1px solid var(--border);
-  border-radius: var(--k-r-2);
+  border-radius: var(--k-r-4);
   background: var(--surface);
 }
 
@@ -1518,8 +1532,10 @@
   display: none;
 }
 
-.sourcesSummary:hover {
-  background: var(--bg-hover);
+@media (hover: hover) and (pointer: fine) {
+  .sourcesSummary:hover {
+    background: var(--bg-hover);
+  }
 }
 
 .sourcesChevron {
@@ -1578,4 +1594,22 @@
   gap: var(--space-1);
   margin: var(--space-2) 0 0;
   padding-inline-start: var(--space-4);
+}
+
+/* UI council (24 Oct 2026): on a small phone Send is its icon, so the toolbar is never crushed;
+   its words stay for screen readers. */
+@media (max-width: 479.98px) {
+  .send {
+    width: var(--control-h);
+    padding-inline: 0;
+  }
+
+  .send > span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
 }

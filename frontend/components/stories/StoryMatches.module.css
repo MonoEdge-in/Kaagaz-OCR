@@ -41,7 +41,7 @@
   padding: var(--space-3);
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: var(--k-r-2);
+  border-radius: var(--k-r-4);
 }
 
 /* The one strong match: larger, with its own edge. */

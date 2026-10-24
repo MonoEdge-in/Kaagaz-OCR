@@ -11,7 +11,9 @@
 
 .k-nav-item { display: flex; align-items: center; gap: 12px; min-height: 42px; padding: 8px 14px; border-radius: var(--k-r-pill); color: var(--k-nav-ink); text-decoration: none; font-weight: 500; position: relative; }
 .k-root .k-nav-item { color: var(--k-nav-ink); }
-.k-root .k-nav-item:hover { background: var(--k-sunken); color: var(--k-nav-ink-strong); }
+@media (hover: hover) and (pointer: fine) {
+  .k-root .k-nav-item:hover { background: var(--bg-hover); color: var(--k-nav-ink-strong); }
+}
 .k-root .k-nav-item.is-active { background: var(--k-nav-active); color: var(--k-nav-ink-strong); font-weight: 600; box-shadow: var(--k-shadow-1); }
 .k-nav-item.is-active .k-ic { color: var(--k-nav-accent); }
 .k-nav-count { margin-left: auto; font-family: var(--k-font-mono); font-size: 11px; padding: 2px 8px; border-radius: var(--k-r-pill); background: var(--k-review-soft); color: var(--k-review); font-weight: 500; }
@@ -22,12 +24,13 @@
 /* ---------- 5. Buttons: pills, mono caps ---------- */
 .k-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 40px; padding: 0 18px; border-radius: var(--k-r-pill); border: 1px solid var(--k-rule-strong); background: var(--k-surface); color: var(--k-ink); font: 500 0.9375rem/1.2 var(--k-font-body); cursor: pointer; text-decoration: none; white-space: nowrap; }
 .k-root .k-btn { color: var(--k-ink); }
-.k-btn:hover, .k-btn.is-hover { background: var(--k-sunken); }
+.k-btn:hover, .k-btn.is-hover { background: var(--bg-hover); }
 /* A press answers at once (24 Oct 2026), as the app's .btn. */
 .k-btn { transition: transform var(--t-fast) var(--ease); }
 .k-btn:active:not(:disabled, .is-disabled) { transform: scale(0.97); }
 .k-btn--primary, .k-root .k-btn--primary { background: var(--k-accent); border-color: var(--k-accent); color: var(--k-accent-ink); font-size: 1rem; }
-.k-btn--primary:hover, .k-btn--primary.is-hover { background: var(--k-accent-hover); border-color: var(--k-accent-hover); transform: translateY(-1px); }
+.k-btn--primary:hover, .k-btn--primary.is-hover { background: var(--k-accent-hover); border-color: var(--k-accent-hover); }
+@media (hover: hover) and (pointer: fine) { .k-btn--primary:hover { transform: translateY(-1px); } }
 
 .k-btn:disabled, .k-btn.is-disabled { background: var(--k-sunken); border-color: var(--k-sunken); color: var(--k-ink-faint); cursor: not-allowed; }
 .k-btn--sm { min-height: 32px; padding: 0 13px; gap: 6px; }
@@ -48,7 +51,9 @@
 /* ---------- 7. Chips, labels, badges: all pills ---------- */
 .k-chip { display: inline-flex; align-items: center; gap: 6px; min-height: 34px; padding: 0 14px; border: 1px solid var(--k-rule); border-radius: var(--k-r-pill); background: var(--k-surface); color: var(--k-ink); font: 500 13px/1 var(--k-font-body); cursor: pointer; white-space: nowrap; }
 .k-root .k-chip { color: var(--k-ink); }
-.k-chip:hover { border-color: var(--k-rule-strong); }
+@media (hover: hover) and (pointer: fine) {
+  .k-chip:hover { border-color: var(--k-rule-strong); }
+}
 .k-chip { transition: transform var(--t-fast) var(--ease); }
 .k-chip:active { transform: scale(0.97); }
 .k-chip.is-on, .k-chip[aria-pressed="true"] { border-color: var(--k-accent); background: var(--k-accent-soft); color: var(--k-accent-soft-ink); }
@@ -100,7 +105,9 @@
 .k-bulk { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 8px 10px 8px 22px; background: var(--k-inverse-bg); color: var(--k-inverse-ink); border-radius: var(--k-r-pill); box-shadow: var(--k-shadow-2); }
 .k-bulk .k-btn { background: transparent; color: var(--k-inverse-ink); border-color: var(--k-inverse-line); }
 .k-root .k-bulk .k-btn { color: var(--k-inverse-ink); }
-.k-bulk .k-btn:hover { background: var(--k-inverse-line); }
+@media (hover: hover) and (pointer: fine) {
+  .k-bulk .k-btn:hover { background: var(--k-inverse-line); }
+}
 
 /* ---------- 11. Banners, toasts, dialog, drawer, menu ---------- */
 .k-banner { display: flex; gap: 14px; align-items: flex-start; padding: 16px 20px; border-radius: var(--k-r-4); border: 1px solid var(--k-card-edge); background: var(--k-surface); }
@@ -127,7 +134,9 @@
 .k-question { align-self: flex-end; max-width: 72%; background: var(--k-accent); color: var(--k-accent-ink); border-radius: 22px 22px 6px 22px; padding: 13px 20px; font-size: 15px; }
 
 .k-suggest { display: inline-flex; align-items: center; min-height: 36px; padding: 0 16px; border: 1px solid var(--k-rule); border-radius: var(--k-r-pill); background: var(--k-surface); font-size: 13px; color: var(--k-ink); cursor: pointer; text-align: left; }
-.k-suggest:hover { border-color: var(--k-accent); color: var(--k-accent); }
+@media (hover: hover) and (pointer: fine) {
+  .k-suggest:hover { border-color: var(--k-accent); color: var(--k-accent); }
+}
 
 /* ---------- 15. Viewer ---------- */
 
@@ -188,7 +197,7 @@ a.k-blue-panel {
   .k-select option:hover,
   .k-select option:focus-visible {
     outline: none;
-    background: var(--k-sunken);
+    background: var(--bg-hover);
   }
 
   select.input option:checked,
@@ -198,3 +207,6 @@ a.k-blue-panel {
     font-weight: 600;
   }
 }
+
+/* UI council (24 Oct 2026): every kit control is a 44px target on touch. */
+@media (pointer: coarse) { .k-btn, .k-btn--sm, .k-chip, .k-suggest { min-height: var(--h-lg); } }

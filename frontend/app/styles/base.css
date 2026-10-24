@@ -28,7 +28,9 @@
 :where(.k-root) :is(h1, h2, h3, h4, p) { margin: 0; }
 :where(.k-root) :is(h1, h2, h3, h4) { color: inherit; font-family: inherit; }
 :where(.k-root) a { color: var(--k-accent); text-underline-offset: 3px; }
-:where(.k-root) a:hover { color: var(--k-accent-hover); }
+@media (hover: hover) and (pointer: fine) {
+  :where(.k-root) a:hover { color: var(--k-accent-hover); }
+}
 :where(.k-root) :focus-visible, :where(.k-root) .is-focus { outline: 2px solid var(--k-focus); outline-offset: 2px; }
 :where(.k-root) button { font: inherit; color: inherit; }
 :where(.k-root) :is(ul, ol) { margin: 0; padding: 0; }

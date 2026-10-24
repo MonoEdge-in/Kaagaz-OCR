@@ -117,7 +117,7 @@
 
 @media (hover: hover) and (pointer: fine) {
   .treeLink:hover {
-    background: var(--bg-subdued);
+    background: var(--bg-hover);
     color: var(--text-primary);
   }
 }
@@ -313,7 +313,7 @@
   max-width: 34rem;
   padding: var(--space-3) var(--space-4);
   border: 1px solid var(--border);
-  border-radius: var(--k-r-2);
+  border-radius: var(--k-r-4);
   background: var(--bg-surface);
 }
 
@@ -374,8 +374,10 @@
   display: none;
 }
 
-.filterToggle:hover {
-  border-color: var(--k-rule-strong);
+@media (hover: hover) and (pointer: fine) {
+  .filterToggle:hover {
+    border-color: var(--k-rule-strong);
+  }
 }
 
 .filters[open] > .filterToggle {
@@ -584,7 +586,7 @@
 .tag {
   display: inline-block;
   padding: 0 var(--space-2);
-  border-radius: var(--k-r-2);
+  border-radius: var(--k-r-pill);
   background: var(--bg-subdued);
   color: var(--text-primary);
   font-size: var(--fs-sm);
@@ -611,7 +613,7 @@
   padding: var(--space-1);
   list-style: none;
   border: 1px solid var(--border-strong);
-  border-radius: var(--k-r-2);
+  border-radius: var(--k-r-4);
   background: var(--bg-surface);
   text-align: start;
   white-space: normal;
@@ -625,7 +627,7 @@
   min-height: var(--control-h);
   padding: var(--space-2) var(--space-3);
   border: 0;
-  border-radius: var(--k-r-2);
+  border-radius: var(--k-r-3);
   background: transparent;
   color: var(--text-primary);
   font-size: var(--fs-base);
@@ -650,9 +652,11 @@
   line-height: 1.4;
 }
 
-.menuItem:hover {
-  background: var(--bg-subdued);
-  color: var(--text-primary);
+@media (hover: hover) and (pointer: fine) {
+  .menuItem:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
 }
 
 .menuItem.danger,

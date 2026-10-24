@@ -171,7 +171,7 @@
   margin: var(--space-1) 0;
   padding: var(--space-3) var(--space-4);
   border: 1px solid var(--border-strong);
-  border-radius: var(--k-r-2);
+  border-radius: var(--k-r-4);
   background: var(--bg-surface);
   color: var(--text-primary);
   font-size: var(--fs-sm);
@@ -235,7 +235,7 @@
   margin: 0;
   padding: var(--space-3) var(--space-4);
   border: 1px solid var(--success);
-  border-radius: var(--k-r-2);
+  border-radius: var(--k-r-4);
 }
 
 .word {

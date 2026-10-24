@@ -19,7 +19,7 @@
   height: 100%;
   padding: var(--space-3);
   border: 1px solid var(--border-strong);
-  border-radius: var(--k-r-2);
+  border-radius: var(--k-r-4);
   background: var(--bg-surface);
   color: var(--text-primary);
   text-decoration: none;
@@ -54,7 +54,7 @@
   min-width: 0;
   padding: var(--space-3);
   border: 1px solid var(--border);
-  border-radius: var(--k-r-2);
+  border-radius: var(--k-r-4);
   background: var(--bg-surface);
 }
 
@@ -140,7 +140,7 @@
   display: flex;
   flex-direction: column;
   border: 1px solid var(--border);
-  border-radius: var(--k-r-2);
+  border-radius: var(--k-r-4);
   background: var(--bg-surface);
 }
 
@@ -173,4 +173,21 @@
 
 .departmentForm > :global(.field) {
   flex: 1 1 14rem;
+}
+
+/* A file card lifts to a mouse and gives when pressed (24 Oct 2026, UI council). */
+@media (prefers-reduced-motion: no-preference) {
+  .card {
+    transition: transform var(--t-fast) var(--ease);
+  }
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .card:hover {
+    transform: translateY(-2px);
+  }
+}
+
+.card:active {
+  transform: scale(0.99);
 }

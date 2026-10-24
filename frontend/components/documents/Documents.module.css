@@ -17,7 +17,7 @@
 
 .drop {
   border: 1px dashed var(--border-strong);
-  border-radius: var(--k-r-2);
+  border-radius: var(--k-r-5);
   background: var(--bg-surface);
 }
 
@@ -65,7 +65,7 @@
   justify-content: center;
   gap: var(--space-2);
   border: 1px dashed var(--accent);
-  border-radius: var(--k-r-2);
+  border-radius: var(--k-r-5);
   background: var(--bg-selected);
   text-align: center;
   pointer-events: none;
@@ -211,13 +211,15 @@
   align-items: flex-start;
   padding: var(--space-3);
   border: 1px solid var(--border);
-  border-radius: var(--k-r-2);
+  border-radius: var(--k-r-4);
   background: var(--bg-surface);
 }
 
 /* Hover changes colour only: nothing moves under the pointer. */
-.upload:hover {
-  border-color: var(--border-strong);
+@media (hover: hover) and (pointer: fine) {
+  .upload:hover {
+    border-color: var(--border-strong);
+  }
 }
 
 .upload[data-state="error"] {
@@ -267,7 +269,7 @@
   align-items: center;
   padding: 0 var(--space-2);
   border: 1px solid var(--border-strong);
-  border-radius: var(--k-r-2);
+  border-radius: var(--k-r-pill);
 }
 
 .upload[data-state="error"] .badge {
@@ -357,7 +359,7 @@
   outline: none;
   background: transparent;
   color: var(--k-ink);
-  font: 400 var(--fs-base) var(--k-font-body);
+  font: 400 var(--fs-field) var(--k-font-body);
 }
 
 .searchInput::placeholder {
@@ -409,7 +411,7 @@
 
 .more:hover,
 .more:has(+ :popover-open) {
-  background: var(--k-sunken);
+  background: var(--bg-hover);
   color: var(--k-ink);
 }
 
@@ -493,8 +495,10 @@
   color: var(--k-inverse-ink);
 }
 
-.selectionBar:not([data-idle]) :global(.btn):hover {
-  background: var(--k-inverse-line);
+@media (hover: hover) and (pointer: fine) {
+  .selectionBar:not([data-idle]) :global(.btn):hover {
+    background: var(--k-inverse-line);
+  }
 }
 
 .selectionBar:not([data-idle]) :global(.btn-quiet) {
@@ -646,7 +650,7 @@ table.docs tbody tr[data-selected="true"] .selectHit input {
   gap: var(--space-3);
   padding: var(--space-3) var(--space-4);
   border: 1px solid var(--critical);
-  border-radius: var(--k-r-2);
+  border-radius: var(--k-r-4);
   background: var(--bg-surface);
   color: var(--critical);
 }
@@ -678,13 +682,13 @@ table.docs tbody tr[data-selected="true"] .selectHit input {
 
 .skeletonRow {
   height: 104px;
-  border-radius: var(--k-r-2);
+  border-radius: var(--k-r-4);
 }
 
 @container docs-list (min-width: 36rem) {
   .skeletonRow {
     height: 48px;
-    border-radius: var(--k-r-2);
+    border-radius: var(--k-r-4);
   }
 }
 
@@ -724,7 +728,7 @@ table.docs {
   border-spacing: 0;
   background: var(--bg-surface);
   border: 1px solid var(--border);
-  border-radius: var(--k-r-2);
+  border-radius: var(--k-r-4);
   font-variant-numeric: tabular-nums;
 }
 
@@ -768,8 +772,10 @@ table.docs > tbody > tr {
   overflow-wrap: break-word;
 }
 
-.name:hover {
-  color: var(--text-primary);
+@media (hover: hover) and (pointer: fine) {
+  .name:hover {
+    color: var(--text-primary);
+  }
 }
 
 .name > * {
@@ -854,8 +860,10 @@ table.docs > tbody > tr {
   cursor: pointer;
 }
 
-.sortButton:hover {
-  color: var(--accent);
+@media (hover: hover) and (pointer: fine) {
+  .sortButton:hover {
+    color: var(--accent);
+  }
 }
 
 .sortMark {
@@ -1156,7 +1164,7 @@ table.docs > tbody > tr {
     width: min(20rem, 80cqi);
     padding: var(--space-3);
     border: 1px solid var(--border-strong);
-    border-radius: var(--k-r-2);
+    border-radius: var(--k-r-4);
     background: var(--bg-surface);
     text-align: start;
   }
@@ -1297,7 +1305,7 @@ table.docs > tbody > tr {
   table.docs {
     background: transparent;
     border: 0;
-    border-radius: 0;
+    border-radius: var(--k-r-4);
   }
 
   /* The header row stays for screen readers; the cards show no header. */
@@ -1322,7 +1330,7 @@ table.docs > tbody > tr {
     align-items: flex-start;
     background: var(--bg-surface);
     border: 1px solid var(--border);
-    border-radius: var(--k-r-2);
+    border-radius: var(--k-r-4);
     padding: var(--space-3) var(--space-4);
   }
 
@@ -1426,7 +1434,7 @@ table.docs > tbody > tr {
   min-width: 0;
   padding: var(--space-3) var(--space-4);
   border: 1px solid var(--border);
-  border-radius: var(--k-r-2);
+  border-radius: var(--k-r-4);
   background: var(--bg-surface);
 }
 
@@ -1571,7 +1579,7 @@ table.docs > tbody > tr {
   margin-inline-start: auto;
   padding-inline: var(--space-2);
   border: 1px solid var(--border-strong);
-  border-radius: var(--k-r-2);
+  border-radius: var(--k-r-pill);
   background: transparent;
   color: var(--text-primary);
   font-weight: 600;
@@ -1581,8 +1589,10 @@ table.docs > tbody > tr {
   -webkit-tap-highlight-color: transparent;
 }
 
-.barToggle:hover {
-  background: var(--bg-hover);
+@media (hover: hover) and (pointer: fine) {
+  .barToggle:hover {
+    background: var(--bg-hover);
+  }
 }
 
 .barToggle[aria-expanded="true"] {
@@ -1604,7 +1614,7 @@ table.docs > tbody > tr {
   overflow-anchor: auto;
   padding: var(--space-4);
   border: 1px solid var(--border-strong);
-  border-radius: var(--k-r-2);
+  border-radius: var(--k-r-4);
   background: var(--bg-surface);
   color: var(--text-primary);
   font-size: var(--fs-base);
@@ -1649,4 +1659,12 @@ table.docs > tbody > tr {
 .busyLabel[data-busy="true"] > :first-child,
 .busyLabel[data-busy="false"] > :last-child {
   visibility: hidden;
+}
+
+/* UI council (24 Oct 2026): on a phone's cards a name may take two lines. */
+@media (max-width: 35.98rem) {
+  .name > span {
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+  }
 }
