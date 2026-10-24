@@ -19,6 +19,10 @@
   field that disagree with E4's are kept, under their own lines' keys. A window that fails
   (the model down or its reply unusable) gives no E4 values at all: labelled.py's
   values stay, the card stays, and ``error_code`` is ``"model_"`` plus the code.
+* **Land windows** (PRD 6 D2): for a land record, or a contract with a survey or khata
+  number, ``land.read_land`` reads the same windows instead; its values are quoted values,
+  and the card owners they repeat are dropped. A failed window gives none, with its code.
+  ``on_windows("invoice")`` or ``("land")`` comes before either's first call (billing).
 * A card value whose field the rule values or the E4 values already have is
   dropped (PROVISIONAL, plan conflict 15), so nothing is counted twice (bug B2 of
   PRD 1), and its item leaves the card JSON too (council fix 10); with the
@@ -61,6 +65,7 @@ from kaagaz.extraction.invoice import (
     read_invoice,
     rule_values_left,
 )
+from kaagaz.extraction.land import LAND_PROMPT_HASH, LandExtraction, read_land, reads_land, without_owners
 from kaagaz.extraction.links import link_identifiers
 from kaagaz.extraction.quotes import ReaderText
 from kaagaz.extraction.values import DocumentFacts, ExtractedValue, LinkIdentifier
@@ -97,6 +102,7 @@ def model_config(settings: "Settings") -> dict[str, Any]:
     return {
         "card_prompt": CARD_PROMPT_HASH,
         "invoice_prompt": INVOICE_PROMPT_HASH,
+        "land_prompt": LAND_PROMPT_HASH,
         "model_context_tokens": settings.model_context_tokens,
         "card_max_chars": settings.card_max_chars,
         "card_max_tokens": settings.model_card_max_tokens,
@@ -116,25 +122,30 @@ class Understanding:
     model_calls: int  # the card and the invoice windows called
     error_code: str | None  # "model_<code>" when a call failed
     invoice: InvoiceExtraction | None = None  # the invoice windows' reading, when they were read
+    land: LandExtraction | None = None  # the land windows' reading, when they were read
 
     @property
     def quotes_returned(self) -> int:
-        return self._card("quotes_returned") + (self.invoice.quotes.returned if self.invoice else 0)
+        return self._count("quotes_returned", "returned")
 
     @property
     def dropped_quotes(self) -> int:
-        return self._card("dropped_quotes") + (self.invoice.quotes.dropped if self.invoice else 0)
+        return self._count("dropped_quotes", "dropped")
 
     @property
     def loose_quotes(self) -> int:
-        return self._card("loose_quotes") + (self.invoice.quotes.loose if self.invoice else 0)
+        return self._count("loose_quotes", "loose")
 
     @property
     def ambiguous_quotes(self) -> int:
-        return self._card("ambiguous_quotes") + (self.invoice.quotes.ambiguous if self.invoice else 0)
+        return self._count("ambiguous_quotes", "ambiguous")
 
-    def _card(self, name: str) -> int:
-        return 0 if self.counts is None else int(getattr(self.counts, name))
+    def _count(self, card: str, windows: str) -> int:
+        """The card's count of ``card`` plus the invoice's and land windows' of ``windows``."""
+        total = 0 if self.counts is None else int(getattr(self.counts, card))
+        for reading in (self.invoice, self.land):
+            total += 0 if reading is None else int(getattr(reading.quotes, windows))
+        return total
 
 
 def understand(
@@ -149,9 +160,10 @@ def understand(
     beat: Callable[[int, int], None],
     spans: Sequence[Span],
     invoice_windows: WindowSettings | None = None,
+    on_windows: Callable[[str], None] | None = None,
 ) -> Understanding:
-    """The card for this document, or none, then its invoice windows (the module docstring).
-    ``spans`` are the spans the rule values were read from."""
+    """The card for this document, or none, then its invoice or land windows (the module
+    docstring). ``spans`` are the spans the rule values were read from."""
     rules = list(rule_values)
     if chat is None or not reader.norm:
         return Understanding(DocumentFacts(), rules, [], None, 0, None)
@@ -166,7 +178,10 @@ def understand(
     card = locate_card(reply, reader, model=chat.chat_model, run_id=run_id)
     beat(2, 2)
     invoice: InvoiceExtraction | None = None
+    land: LandExtraction | None = None
     if invoice_windows is not None and card.facts.doc_type == "invoice":
+        if on_windows is not None:
+            on_windows("invoice")
         invoice = read_invoice(
             chat,
             reader,
@@ -177,12 +192,20 @@ def understand(
             num_ctx=num_ctx,
             beat=lambda done, total: beat(2 + done, 2 + total),
         )
+    elif invoice_windows is not None and reads_land(card.facts.doc_type, card.values):
+        if on_windows is not None:
+            on_windows("land")
+        land = read_land(
+            chat, reader, invoice_windows, num_ctx, lambda done, total: beat(2 + done, 2 + total)
+        )
     e4 = [] if invoice is None else invoice.values
+    found = [] if land is None else land.values
     rules = rule_values_left(rules, e4, spans)
     card = without_fields(card, {value.field for value in rules} | {value.field for value in e4})
-    calls = 1 + (0 if invoice is None else invoice.model_calls)
-    window_error = None if invoice is None else invoice.error_code
-    return Understanding(card.facts, rules, card.values + e4, card.counts, calls, window_error, invoice)
+    calls = 1 + sum(reading.model_calls for reading in (invoice, land) if reading is not None)
+    window_error = next((r.error_code for r in (invoice, land) if r is not None and r.error_code), None)
+    quoted = without_owners(card.values, found) + e4 + found
+    return Understanding(card.facts, rules, quoted, card.counts, calls, window_error, invoice, land)
 
 
 def document_links(facts: DocumentFacts, values: Sequence[ExtractedValue]) -> tuple[LinkIdentifier, ...]:

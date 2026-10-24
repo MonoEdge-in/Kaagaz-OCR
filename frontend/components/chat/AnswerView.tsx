@@ -3,7 +3,7 @@
 // One answer card. In order: what a follow-up was searched for ("Searching for: …",
 // PRD 3 H1) and how the question was understood (only when that differs), the
 // sentences with citation chips (each moves to its source card), the source cards,
-// and "Was this helpful?". No Verified or Needs review label, badge or edge in Ask
+// and Useful or Not useful (PRD 6 F1). No Verified or Needs review label, badge or edge in Ask
 // (Tushar, 16 Oct 2026): checking values is the Review screen's, kept apart.
 // "Not found" is a real answer: a neutral card that says so and lists the closest
 // documents. "Unchecked" (a figure only in values not confirmed yet) gives no number,
@@ -86,10 +86,13 @@ export const AnswerView = memo(function AnswerView({
   message,
   question,
   onAskAll,
+  readOnly = false,
 }: {
   message: Message;
   question: string | null;
   onAskAll?: () => void;
+  /** Someone else's answer (the admin's Answer quality page, PRD 6 F2): no rating, no Most relevant. */
+  readOnly?: boolean;
 }) {
   // The source a chip is pointed at or focused: its card lights up (UI quality council, 15 Oct 2026).
   const [hot, setHot] = useState<number | null>(null);
@@ -156,7 +159,7 @@ export const AnswerView = memo(function AnswerView({
       ) : null}
     </>
   );
-  const feedback = (
+  const feedback = readOnly ? null : (
     <div className={styles.answerFooter}>
       <FeedbackControls messageId={message.id} initial={message.feedback} />
     </div>
@@ -205,7 +208,7 @@ export const AnswerView = memo(function AnswerView({
             {mentioned}
           </SourcesBar>
         ) : null}
-        <div>
+        <div hidden={readOnly}>
           <h3 className={styles.subheading}>Next steps</h3>
           <ul className={styles.nextSteps}>
             {onAskAll ? (
@@ -303,7 +306,7 @@ export const AnswerView = memo(function AnswerView({
                       hot={hot === citation.n}
                       terms={terms}
                       pinned={top}
-                      onPin={() => putOnTop(target, index + 1)}
+                      onPin={readOnly ? undefined : () => putOnTop(target, index + 1)}
                     />
                   </li>
                 );
@@ -323,7 +326,7 @@ export const AnswerView = memo(function AnswerView({
                         doc={doc}
                         terms={terms}
                         pinned={top}
-                        onPin={() => putOnTop(target, sources.length + index + 1)}
+                        onPin={readOnly ? undefined : () => putOnTop(target, sources.length + index + 1)}
                       />
                     </li>
                   );

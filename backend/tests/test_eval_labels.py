@@ -468,7 +468,7 @@ QUOTE_COUNTS = {
     "textile_invoice": (2, 30, 0),
     "textile_invoice_mismatched": (2, 30, 0),
     "hindi_retail_bill": (2, 11, 0),
-    "marathi_land_record": (1, 4, 0),
+    "marathi_land_record": (2, 4, 0),  # Changed on purpose (PRD 6 D2): the land window is one more call
     "bank_statement": (1, 0, 0),
     "broken_font_pdf": (1, 0, 0),
     "report": (1, 1, 0),

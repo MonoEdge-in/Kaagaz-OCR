@@ -15,6 +15,7 @@ import type {
   AiDefaults,
   AiSettings,
   AiTask,
+  AnswerQualityReply,
   AiValues,
   AnswerChoice,
   BatchView,
@@ -63,7 +64,9 @@ import type {
   PasswordReset,
   PlatformEvent,
   PlatformHealth,
+  LearnedDocument,
   QualityReply,
+  ReasonCode,
   ReviewChoice,
   ReviewItem,
   ReviewList,
@@ -571,10 +574,18 @@ export const deleteConversation = (id: string) => request<void>("DELETE", `/conv
 /** "Most relevant" (ranked sources, 16 Oct 2026): this source on top of the answer, kept as relevance feedback. */
 export const pinSource = (messageId: string, pin: SourcePin, previousRank: number) =>
   request<void>("POST", `/messages/${messageId}/pin`, { ...pin, previous_rank: previousRank });
-export const sendFeedback = (messageId: string, rating: "up" | "down", reason?: string) =>
+/** Useful or Not useful (PRD 6 F1). `notUseful` comes from the Not useful form, which shows
+ * the admin notice above Send (FeedbackControls.tsx), so the server is told it was shown. */
+export const sendFeedback = (
+  messageId: string,
+  rating: "up" | "down",
+  notUseful?: { reason?: string; codes: ReasonCode[] },
+) =>
   request<void>("POST", `/messages/${messageId}/feedback`, {
     rating,
-    ...(reason ? { reason } : {}),
+    ...(notUseful
+      ? { reason_codes: notUseful.codes, notice_shown: true, ...(notUseful.reason ? { reason: notUseful.reason } : {}) }
+      : {}),
   });
 
 // --- my words (only the signed-in user's) -------------------------------------
@@ -662,6 +673,15 @@ export const getStats = () => request<Stats>("GET", "/admin/stats");
 /** Documents that failed or can't be read (PRD 3 Z1); Retry is reprocessDocument. */
 export const listFailed = (params: { limit?: number; offset?: number } = {}) =>
   request<{ items: FailedDocument[]; total: number }>("GET", `/admin/failed${query(params)}`);
+/** Answer quality (PRD 6 F2): Not useful answers given after the notice, and weekly counts. */
+export const getAnswerQuality = (params: { status: "open" | "handled"; weeks: number; limit: number; offset: number }) =>
+  request<AnswerQualityReply>("GET", `/admin/answer-quality${query(params)}`);
+/** Mark as handled, or open it again; `seen` is the given_at shown (409 when rated again since). */
+export const setAnswerHandled = (id: string, handled: boolean, seen: string) =>
+  request<{ id: string; handled_at: string | null }>("PUT", `/admin/answer-quality/${id}/handled`, { handled, seen });
+/** What Kaagaz learned (PRD 6 F3), and Remove on one document. */
+export const listLearned = () => request<{ items: LearnedDocument[] }>("GET", "/admin/learned");
+export const removeLearned = (documentId: string) => request<void>("DELETE", `/admin/learned/${documentId}`);
 /** AI use from `from` to `to` (YYYY-MM-DD, both included; the server's default when left out), for one user when given. */
 export type UsageParams = { from?: string; to?: string; user_id?: string };
 export const getAdminUsage = (params: UsageParams = {}) =>

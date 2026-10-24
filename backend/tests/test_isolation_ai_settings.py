@@ -281,6 +281,27 @@ def test_a_level_a_model_does_not_accept_is_refused_for_its_area(db: Database) -
     assert set_org(db, operator, customer, thinking).code == "level_not_supported"
 
 
+def test_a_model_with_no_thinking_levels_takes_any_level_for_an_organisation_and_the_platform(
+    db: Database, platform: str
+) -> None:
+    # 0048 (Tushar, 18 Oct 2026): a model that lists no levels has one mode and takes any level.
+    customer, _ = new_customer(db)
+    scan, answer = catalog_model(db), chat_model(db)  # catalog_model's accept no levels
+    as_owner(db, "UPDATE model_catalog SET efforts = '{}' WHERE id = :m", {"m": answer})
+    choice = ops.AiChoice([scan], scan, [answer], answer, "high", ["low", "high"], "high", False)
+    assert set_org(db, platform, customer, choice).code == "done"
+    assert set_defaults(db, platform, choice) == "done"
+    # A model whose levels leave out the one asked for is still refused, in each area.
+    low_only = chat_model(db)
+    as_owner(db, "UPDATE model_catalog SET efforts = ARRAY['low'] WHERE id = :m", {"m": low_only})
+    for refused in (
+        ops.AiChoice([low_only], low_only, [answer], answer, "high", ["low"], "low", False),
+        ops.AiChoice([scan], scan, [low_only], low_only, "low", ["low", "high"], "high", False),
+    ):
+        assert set_org(db, platform, customer, refused).code == "level_not_supported"
+        assert set_defaults(db, platform, refused) == "level_not_supported"
+
+
 def test_both_saves_need_a_fresh_code(db: Database, platform: str) -> None:
     customer, _ = new_customer(db)
     model = catalog_model(db)
@@ -456,15 +477,21 @@ def test_a_mode_revoked_after_upload_reads_single_and_a_junk_reader_is_never_use
     reading = _scan(db, customer, document)
     # Changed on purpose (Ensemble after the scan, 16 Oct 2026): an old Ensemble document is
     # read by its lead alone, so neither other nor outsider is ever read.
+    # Changed on purpose (18 Oct 2026 rule; 0048): catalog_model's lead lists no thinking
+    # levels, so it reads with none and says so (no_thinking_levels).
     assert (reading.mode, reading.lead.model, reading.others, reading.notes) == (
         "single",
         lead,
         (),
-        ("ensemble_after_scan",),
+        ("no_thinking_levels", "ensemble_after_scan"),
     )
     assert set_org(db, operator, customer, ops.AiChoice([lead, other], lead), ensemble=False).code == "done"
     revoked = _scan(db, customer, document)
-    assert (revoked.mode, revoked.others, revoked.notes) == ("single", (), ("ensemble_after_scan",))
+    assert (revoked.mode, revoked.others, revoked.notes) == (
+        "single",
+        (),
+        ("no_thinking_levels", "ensemble_after_scan"),
+    )
 
 
 def test_one_scanning_model_saves_with_cost_saving_and_ensemble_saved_off(db: Database) -> None:

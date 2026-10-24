@@ -774,12 +774,6 @@
   gap: var(--space-2);
 }
 
-.feedbackQuestion {
-  margin-inline-end: var(--space-1);
-  font-size: var(--fs-sm);
-  color: var(--fg-muted);
-}
-
 .vote[aria-pressed="true"],
 .vote[aria-pressed="true"]:hover {
   background: var(--accent-soft);
@@ -792,6 +786,75 @@
   flex-direction: column;
   gap: var(--space-2);
   max-width: 30rem;
+  min-width: 0;
+}
+
+.reasonSet {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+/* PRD 6 layout rules: the reasons wrap, 8px apart; each chip shrinks and its words wrap. */
+.reasonChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+/* A reason is a chip, not a .btn: sentence case, the body font, its box a checkbox. */
+.reasonChip {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: 100%;
+  min-width: 0;
+  min-height: var(--control-min);
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-full);
+  background: var(--surface);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: var(--fs-sm);
+  line-height: 1.25;
+  overflow-wrap: break-word;
+  cursor: pointer;
+}
+
+.reasonChip span {
+  min-width: 0;
+}
+
+.reasonChip input {
+  flex: none;
+  margin: 0;
+}
+
+.reasonChip:has(input:checked) {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.reasonChip:has(input:focus-visible) {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.reasonCount {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+}
+
+.reasonNotice {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+  overflow-wrap: break-word;
 }
 
 /* --- Composer ------------------------------------------------------------------ */
