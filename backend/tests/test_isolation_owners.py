@@ -50,3 +50,19 @@ def test_the_queries_given_another_companys_keys_and_ids_find_nothing(db: Databa
     assert queries.owned(b, keys[:1], EVERYTHING) == []
     assert queries.keyed(b, "place", keys[1:], EVERYTHING) == []
     assert queries.shares(b, [a_land], EVERYTHING) == []
+
+
+def test_a_map_question_finds_only_its_own_companys_map_values(db: Database) -> None:
+    (a, _), (b, _) = new_customer(db), new_customer(db)
+    printed = [("length", "45.5 m"), ("boundary_east", "46")]
+    a_land = add_land(db, a, "A.pdf", survey="45/2", printed=printed)
+    answers, queries = (
+        AnswerService(db=db, model=None, settings=make_settings(), clock=lambda: NOW),
+        PgOwners(db),
+    )
+
+    assert answers.answer(a, "Length of survey 45/2?").to_json()["documents"][0]["document_id"] == a_land
+    for_b = answers.answer(b, "Length of survey 45/2?").to_json()
+    assert not for_b["documents"] and a_land not in json.dumps(for_b) and "45.5" not in json.dumps(for_b)
+    assert queries.keyed(b, "property", ["46"], EVERYTHING, ["land_boundary_east"]) == []
+    assert queries.keyed(a, "property", ["46"], EVERYTHING, ["land_boundary_east"]) == [(a_land, "land:1")]

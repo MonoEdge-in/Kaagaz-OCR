@@ -4,6 +4,7 @@ each statement's plan under the app role."""
 
 import json
 import re
+import uuid
 from collections import Counter
 from datetime import UTC, datetime
 from typing import Any
@@ -182,11 +183,171 @@ def test_without_an_owning_word_or_a_known_name_the_other_routes_answer(keyed: D
     assert not ask(keyed, c, "Land owned by Krishna Sohoni")["documents"]  # not in this company's keys
 
 
+MAP = [("plot_number", "12"), ("length", "45.5 m"), ("road_width", "9 m"), ("dimension", "30 m")]
+MAP += [("boundary_east", "46"), ("boundary_west", "Nala"), ("scale", "1:500")]
+
+
+def test_a_maps_measurements_are_quoted_as_printed_and_a_missing_one_never_worked_out(
+    keyed: Database,
+) -> None:
+    c, _ = new_customer(keyed)
+    seven_twelve = add_land(keyed, c, "7/12 Kusgaon.pdf", [(V, None)], survey="45/2", printed=MAP)
+    question = "What is the length, width and area of survey 45/2?"
+
+    answer = ask(keyed, c, question)
+
+    assert (answer["status"], answer["route"], answer["label"]) == ("answered", "fixed_query", "verified")
+    assert [s["text"] for s in answer["sentences"]] == [  # decision 2's final check kept every figure
+        "The length of Survey 45/2, plot 12 is printed as 45.5 m.",
+        "The width of Survey 45/2, plot 12 is not printed on the map, so none is worked out.",
+        "The area of Survey 45/2, plot 12 is not printed on the map, so none is worked out.",
+    ]  # never 45.5 m times a width, nor a width from the scale
+    by_n = {c["n"]: c for c in answer["citations"]}
+    assert [by_n[n]["snippet"] for n in answer["sentences"][0]["citations"]] == [
+        "land_survey_number: 45/2",
+        "land_plot_number: 12",
+        "land_length: 45.5 m",
+    ]
+    assert [(d["document_id"], d["why"]) for d in answer["documents"]] == [
+        (seven_twelve, "owners Nikhil Varde, shares not printed")
+    ]
+    numbers_allowed(answer, question)
+
+    road = ask(keyed, c, "Road width of plot 12?")
+    assert [s["text"] for s in road["sentences"]] == [
+        "The road width of Survey 45/2, plot 12 is printed as 9 m."
+    ]
+    numbers_allowed(road, "Road width of plot 12?")
+
+    drawn = ask(keyed, c, "Show the map of survey 45/2")
+    assert [s["text"] for s in drawn["sentences"]] == [
+        "The map values printed for Survey 45/2, plot 12: length 45.5 m; road width 9 m;"
+        " other measurements 30 m; scale 1:500; east neighbour 46; west neighbour Nala."
+    ]
+    numbers_allowed(drawn, "Show the map of survey 45/2")
+
+
+def test_the_neighbours_by_side_and_the_records_printing_it_as_a_neighbour(keyed: Database) -> None:
+    c, _ = new_customer(keyed)
+    add_land(keyed, c, "7/12 45.pdf", survey="45/2", printed=MAP)
+    west = [("boundary_west", "४५/२")]
+    beside = add_land(keyed, c, "7/12 46.pdf", survey="46", printed=west, label="needs_review")
+    elsewhere = add_land(keyed, c, "7/12 47.pdf", survey="47", printed=[("boundary_west", "46")])
+    question = "Which survey numbers border 45/2?"
+
+    answer = ask(keyed, c, question)
+
+    assert [s["text"] for s in answer["sentences"]] == [
+        "The neighbours printed for Survey 45/2, plot 12: 46 on the east and Nala on the west.",
+        "Survey 46 prints ४५/२ as its west neighbour.",
+    ]
+    assert [d["why"] for d in answer["documents"][1:]] == ["values printed on its map"]
+    assert answer["documents"][1]["document_id"] == beside
+    assert answer["label"] == "needs_review"  # the other record's values are not verified
+    assert elsewhere not in json.dumps(answer)
+    numbers_allowed(answer, question)
+
+    lone = ask(keyed, c, "Which survey numbers border 47?")
+    assert [s["text"] for s in lone["sentences"]] == [
+        "The neighbours printed for Survey 47: 46 on the west.",
+    ]
+
+
+def test_a_plot_number_is_never_a_survey_number_of_the_same_digits(keyed: Database) -> None:
+    c, _ = new_customer(keyed)
+    plot = add_land(keyed, c, "Layout.pdf", [(V, None)], survey="45/2", printed=[("plot_number", "12")])
+    survey = add_land(keyed, c, "7/12 12.pdf", [("Ketaki Mhaskar", None)], survey="12")
+
+    for question, only in (
+        ("Length of survey 12?", survey),
+        ("Length of plot 12?", plot),
+        ("Who owns survey 12?", survey),
+        ("Who owns plot 12?", plot),
+    ):
+        answer = ask(keyed, c, question)
+        assert [d["document_id"] for d in answer["documents"]] == [only], question
+    both = ask(keyed, c, "Show the map of 12")  # no word says which: either kind
+    assert sorted(d["document_id"] for d in both["documents"]) == sorted([plot, survey])
+
+
+_DIMENSION = text(
+    "INSERT INTO extracted_values (id, customer_id, document_id, record_key, field, value_text,"
+    " value_raw, page_no, region, reader, label, label_reason)"
+    " VALUES (:id, :c, :d, 'land:1', 'land_dimension', :said, :said, 1, CAST(:region AS jsonb), 'test',"
+    " 'verified', 'readers_agree')"
+)
+
+
+def test_measurements_on_one_page_are_listed_top_to_bottom_then_left_to_right(keyed: Database) -> None:
+    c, _ = new_customer(keyed)
+    document = add_land(keyed, c, "Sketch.pdf", survey="45/2")
+    # Their ids sort the other way round, so only the boxes can give this order.
+    spots = [("f", "12 m", 0.6, 0.1), ("e", "30 m", 0.1, 0.1), ("0", "14 m", 0.1, 0.5)]
+    with keyed.customer(c) as conn:
+        for first, said, left, top in spots:
+            value_id = first + uuid.uuid4().hex[1:]
+            region = json.dumps({"kind": "box", "page": 1, "box": [left, top, left + 0.1, top + 0.02]})
+            conn.execute(_DIMENSION, {"id": value_id, "c": c, "d": document, "said": said, "region": region})
+
+    answer = ask(keyed, c, "What are the dimensions of survey 45/2?")
+
+    assert [s["text"] for s in answer["sentences"]] == [
+        "The map values printed for Survey 45/2: other measurements 30 m, 12 m and 14 m."
+    ]
+
+
+def test_a_figure_with_no_spot_on_the_page_is_never_shown(keyed: Database) -> None:
+    """Decision 2's final check: a value whose region is unusable cannot be cited, so the
+    sentence quoting it is dropped, and the other figures stay."""
+    c, _ = new_customer(keyed)
+    add_land(keyed, c, "7/12.pdf", survey="45/2", printed=[("length", "45.5 m"), ("road_width", "9 m")])
+    with keyed.customer(c) as conn:
+        conn.execute(
+            text(
+                "UPDATE extracted_values SET region = '{}' WHERE customer_id = :c AND field = 'land_length'"
+            ),
+            {"c": c},
+        )
+    question = "What is the length and road width of survey 45/2?"
+
+    answer = ask(keyed, c, question)
+
+    assert [s["text"] for s in answer["sentences"]] == ["The road width of Survey 45/2 is printed as 9 m."]
+    assert "45.5" not in json.dumps(answer)
+    numbers_allowed(answer, question)
+
+
+def test_a_record_known_by_its_khata_number_alone_is_named_and_cited_by_it(keyed: Database) -> None:
+    c, _ = new_customer(keyed)
+    add_land(keyed, c, "8-A 118.pdf", [(V, None)], printed=[("khata_number", "118")])
+
+    answer = ask(keyed, c, "What is the area of khata 118?")
+
+    assert [s["text"] for s in answer["sentences"]] == [
+        "The area of Khata 118 is not printed on the map, so none is worked out."
+    ]
+    by_n = {c["n"]: c for c in answer["citations"]}
+    assert [by_n[n]["snippet"] for n in answer["sentences"][0]["citations"]] == ["land_khata_number: 118"]
+
+
+def test_the_land_facts_switch_off_leaves_map_questions_to_the_other_routes(keyed: Database) -> None:
+    c, _ = new_customer(keyed)
+    add_land(keyed, c, "7/12.pdf", survey="45/2", printed=MAP)
+    assert ask(keyed, c, "Show the map of survey 45/2")["route"] == "fixed_query"
+    with switched_off(keyed, "land_facts"):
+        answer = ask(keyed, c, "Show the map of survey 45/2")
+    assert answer["route"] != "fixed_query" and not answer["documents"]
+
+
 # Each statement: the condition its B-tree index must serve, and its own parameters.
 _PLANS: dict[str, tuple[str, dict[str, Any]]] = {
     "_RESOLVE": ("latin = ANY", {"candidates": ["nikhil varde", "pune"]}),
     "_OWNED": ("latin = ANY", {"people": ["nikhil varde"], "fields": list(owners.OWNING)}),
     "_KEYED": ("latin = ANY", {"kind": "place", "keys": ["pune"], "fields": ["land_district"]}),
+    "_KEYED neighbours": (
+        "latin = ANY",
+        {"kind": "property", "keys": ["45/2"], "fields": ["land_boundary_east"]},
+    ),
     "_SHARES_AS_PRINTED": ("document_id = ANY", {"fields": ["land_share"]}),
 }
 # A company with 2,000 land records, each with one owner in one of 200 villages, so the planner
@@ -233,7 +394,8 @@ def test_each_statement_uses_its_b_tree_index_under_row_level_security(
         )
         conn.execute(text("SET LOCAL enable_seqscan = off"))
         bound = {"customer_id": bulk, "documents": list(documents.scalars()), **params, **EVERYTHING.params()}
-        plan = "\n".join(conn.execute(text("EXPLAIN " + getattr(owners, name).text), bound).scalars())
+        statement = getattr(owners, name.split()[0]).text
+        plan = "\n".join(conn.execute(text("EXPLAIN " + statement), bound).scalars())
     index = [
         line for line in plan.splitlines() if line.strip().startswith("Index Cond:") and condition in line
     ]

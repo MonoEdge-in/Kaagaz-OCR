@@ -22,8 +22,8 @@ from kaagaz.extraction.card import RESERVED_KEY_FACT_FIELDS
 from kaagaz.extraction.invoice import Window, WindowSettings
 from kaagaz.extraction.labels import label_quoted
 from kaagaz.extraction.quotes import reader_text
-from kaagaz.extraction.understanding import Understanding, understand
-from kaagaz.extraction.values import ExtractedValue
+from kaagaz.extraction.understanding import Understanding, document_links, understand
+from kaagaz.extraction.values import ExtractedValue, LinkIdentifier
 from kaagaz.reading.spans import BoxLocation, Span
 from tests.fakes import FakeChat
 from tests.test_extraction_card import RUN, fact
@@ -254,7 +254,7 @@ def test_land_fields_are_never_card_or_fixed_query_fields_and_the_prompt_is_pinn
     assert understanding.counts is not None and understanding.counts.reserved_fields == 1
     text = land.LAND_SYSTEM_PROMPT + "\n" + json.dumps(land.LAND_SCHEMA, sort_keys=True)
     assert hashlib.sha256(text.encode("utf-8")).hexdigest() == land.LAND_PROMPT_HASH
-    assert land.LAND_PROMPT_HASH == "675433ce845b6761b8bf616fd83fe3cd3e26cbe36399283e9b0204a067fd82dc"
+    assert land.LAND_PROMPT_HASH == "1fbfe5f28f0c9a147d1fe02a30c4223d724876501a3ca7edccc03dbd81940ec8"
 
 
 def test_in_the_pipeline_the_windows_are_billed_as_land_and_labelled(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -303,3 +303,128 @@ def test_the_land_facts_switch_off_reads_no_land_windows() -> None:
     _job, content = rig(SPANS, chat, land_on=land_on).read()
     assert not [v for v in content.values if v.field.startswith("land_")]
     assert (len(asked), len(chat.calls)) == (1, 1)  # the card's call only
+
+
+# --- map values (a map page of a land record or deed, or a map on its own) -----------
+
+MAP_SPANS = lines(
+    "7/12 Extract", "Village: Kusgaon", "Survey No: 45/2", "Plot No: 12", "Length: 45.5 m", "Width: 12'6\"",
+    "Road width: 9 m", "North side: 30 m", "South side: 30.5 m", "East: 46", "West: Nala", "Scale 1:500",
+)  # fmt: skip
+
+
+def _quoted(**fields: tuple[str | None, str]) -> dict[str, Any]:
+    """One reply record of these (label, value) fields, every other field null, no parties."""
+    quoted = {name: {"label_quote": label, "value_quote": value} for name, (label, value) in fields.items()}
+    return {**dict.fromkeys(land.PROPERTY_FIELDS), **quoted, "parties": [], "dimensions": []}
+
+
+MAP_FIELDS = {
+    "survey_number": ("Survey No", "45/2"), "village": ("Village", "Kusgaon"),
+    "plot_number": ("Plot No", "12"), "length": ("Length", "45.5 m"), "width": ("Width", "12'6\""),
+    "road_width": ("Road width", "9 m"),
+    "boundary_east": ("East", "46"), "boundary_west": ("West", "Nala"), "scale": ("Scale", "1:500"),
+}  # fmt: skip
+MAP_REPLY = {
+    "records": [
+        {
+            **_quoted(**MAP_FIELDS),
+            "dimensions": [
+                {"label_quote": "North side", "value_quote": "30 m"},
+                {"label_quote": "South side", "value_quote": "30.5 m"},
+                {"label_quote": "Side A-B", "value_quote": "14 m"},  # not printed: dropped
+            ],
+        }
+    ]
+}
+
+
+def test_a_map_pages_values_are_read_as_printed_and_never_given_a_number() -> None:
+    understanding = run(FakeChat(CARD, MAP_REPLY), MAP_SPANS)
+    assert shown(understanding.quoted_values) == [
+        ("land:1", "land_survey_number", "45/2", None),
+        ("land:1", "land_village", "Kusgaon", None),
+        ("land:1", "land_plot_number", "12", None),
+        ("land:1", "land_length", "45.5 m", None),
+        ("land:1", "land_width", "12'6\"", None),
+        ("land:1", "land_road_width", "9 m", None),
+        ("land:1", "land_boundary_east", "46", None),
+        ("land:1", "land_boundary_west", "Nala", None),
+        ("land:1", "land_scale", "1:500", None),
+        ("land:1", "land_dimension", "30 m", None),  # a measurement may repeat on a property
+        ("land:1", "land_dimension", "30.5 m", None),
+    ]  # no area: none is printed, and none is worked out from the length and the width
+    reading = understanding.land
+    assert reading is not None and reading.quotes.dropped == 1
+    prompt = " ".join(land.LAND_SYSTEM_PROMPT.split())
+    assert "Copy a measurement exactly as printed with its unit. Never measure the drawing" in prompt
+    assert "Never work out a side from where a neighbour is drawn." in prompt
+
+
+def test_two_plots_of_one_survey_stay_two_properties() -> None:
+    plot_12, plot_13 = ("Survey No: 45/2", "Plot No: 12", "Length: 40 m"), ("Survey No: 45/2", "Plot No: 13")
+    spans = lines(*plot_12, *plot_13, "Length: 25 m")
+    reader = reader_text(spans)
+    merge = land._Merge(reader)
+    plots = [
+        _quoted(survey_number=("Survey No", "45/2"), plot_number=("Plot No", plot), length=("Length", length))
+        for plot, length in (("12", "40 m"), ("13", "25 m"))
+    ]
+    merge.add(Window(0, len(reader.norm), reader.text, 0, len(spans) - 1), {"records": plots})
+    found = [(v.record_key, v.field, v.location) for v in merge.values() if v.field != "land_survey_number"]
+    assert found == [
+        ("land:1", "land_plot_number", spans[1].location),
+        ("land:1", "land_length", spans[2].location),
+        ("land:2", "land_plot_number", spans[4].location),
+        ("land:2", "land_length", spans[5].location),
+    ]
+
+
+def test_a_dimension_the_checker_reads_differently_or_cannot_read_needs_review() -> None:
+    """Text along an edge or rotated: the checker's reading of the value's own box decides."""
+    label_box, box = BoxLocation(1, 0.1, 0.3, 0.3, 0.33), BoxLocation(1, 0.4, 0.3, 0.5, 0.33)
+    spans = [Span(said, said, at, origin="ocr") for said, at in (("North side", label_box), ("30 m", box))]
+    found = land._Merge(reader_text(spans))
+    record = {**_quoted(), "dimensions": [{"label_quote": "North side", "value_quote": "30 m"}]}
+    found.add(Window(0, 100, ""), {"records": [record]})
+    (value,) = found.values()
+    assert value.label_location == label_box  # which side it is: its label's own spot
+    agree = label_quoted([value], None, {box: "30 m"}, checked={box})
+    differ = label_quoted([value], None, {box: "38 m"}, checked={box})
+    unread = label_quoted([value], None, {}, checked=set())
+    assert [(v.label, v.label_reason) for v in agree] == [("verified", "readers_agree")]
+    assert [(v.label, v.label_reason) for v in differ] == [("needs_review", "readers_disagree")]
+    assert [v.label for v in unread] == ["needs_review"]
+
+
+def test_a_neighbours_number_and_a_plot_number_are_property_keys_a_road_is_none() -> None:
+    assert land.value_key("land_boundary_east", "४६") == ("property", None, "46", "")
+    assert land.value_key("land_plot_number", "Plot 12") == ("property", None, "plot12", "")
+    assert land.value_key("land_boundary_west", "Nala") is None
+    assert land.value_key("land_length", "45.5 m") is None
+    assert land.value_key("land_dimension", "30 m") is None
+
+
+def _survey(number: str) -> dict[str, str]:
+    return {"kind": "survey_number", "value_quote": number}
+
+
+def test_a_712_with_a_map_page_links_to_its_sale_deed_and_never_to_a_neighbour() -> None:
+    """D5 links from the card's own survey number; a neighbour printed on the map links nothing."""
+    deed_spans = lines("Sale Deed", "Survey No: 45/2", "Buyer: Ketaki Mhaskar")
+    deed_card = card_reply(doc_type="contract", identifiers=[_survey("45/2")])
+    deed_reply = {"records": [_quoted(survey_number=("Survey No", "45/2"))]}
+    other_spans = lines("Survey No: 46", "East: 47")
+    other_card = card_reply(doc_type="land_record", identifiers=[_survey("46")])
+    other_reply = {"records": [_quoted(survey_number=("Survey No", "46"), boundary_east=("East", "47"))]}
+    links = []
+    for card, reply, spans in (
+        (CARD, MAP_REPLY, MAP_SPANS),
+        (deed_card, deed_reply, deed_spans),
+        (other_card, other_reply, other_spans),
+    ):
+        understanding = run(FakeChat(card, reply), spans)
+        links.append(document_links(understanding.facts, understanding.quoted_values))
+    seven_twelve, deed, neighbour = links
+    assert seven_twelve == deed == (LinkIdentifier("survey_number", "45/2"),)
+    assert neighbour == (LinkIdentifier("survey_number", "46"),)  # the 7/12's East neighbour, not linked
