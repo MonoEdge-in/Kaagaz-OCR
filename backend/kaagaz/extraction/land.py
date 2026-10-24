@@ -30,7 +30,10 @@ printed ("50%", "1/3", "0.40 H.R."), with a number only for a printed percentage
 labelled by ``labels.label_quoted``: Verified only when the checker reads their own box alike.
 A map's values (``MAP_NAMES``, ``land_dimension``, which may repeat on one property) are kept as
 printed with their unit, never measured from the drawing, converted or worked out; a neighbour
-(``land_boundary_*``) only for a side printed in words.
+(``land_boundary_*``) only for a side printed in words. A map value (``LABELLED_FIELDS``) keeps
+its label's text (``label_text``, 0054) as the reader read it where the label was located,
+``clean_text``, at most ``MAX_LABEL_TEXT`` characters (a longer one is not kept), never the
+model's wording.
 A card ``owner_name`` value a land owner or buyer repeats is dropped (``without_owners``;
 the card JSON keeps it, for the Documents filters).
 
@@ -52,6 +55,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from kaagaz.ai.client import ModelOutputError, ModelUnavailable, estimate_tokens, input_token_budget
+from kaagaz.answering.sanitize import clean_text
 from kaagaz.chunking.script import fold_digits, latin_spelling, sound_keys
 from kaagaz.extraction.invoice import (  # the invoice windows' own rules, reused as they are
     _FIELD_SCHEMA,
@@ -101,6 +105,11 @@ LAND_FIELDS = (
     frozenset(PROPERTY_FIELDS.values()) | frozenset(PARTY_FIELDS.values()) | {SHARE_FIELD, DIMENSION_FIELD}
 )
 SHARE_FIELDS = frozenset({SHARE_FIELD, "land_unowned_share"})
+# A map's values that keep their label's text (0054), at most MAX_LABEL_TEXT characters.
+LABELLED_FIELDS = frozenset(
+    {DIMENSION_FIELD, *BOUNDARY_FIELDS, "land_length", "land_width", "land_road_width", "land_scale"}
+)
+MAX_LABEL_TEXT = 80
 # value_keys (0049): each keyed field's kind and place level.
 KEY_KINDS: Mapping[str, tuple[str, str | None]] = {
     **dict.fromkeys(PARTY_FIELDS.values(), ("person", None)),
@@ -400,16 +409,12 @@ class _Merge:
         for name, (spot, label) in fields.items():
             kept = self._kept(spot)
             if kept is not None and name not in record.fields:  # the first window's value wins
-                record.fields[name] = (
-                    kept,
-                    None if label is None or label.location == kept.location else label,
-                )
+                record.fields[name] = (kept, label)
                 self.owner[kept.start] = record
         for spot, label in dimensions:
             kept = self._kept(spot)
             if kept is not None:
-                own_label = None if label is None or label.location == kept.location else label
-                record.dimensions.append((kept, own_label))
+                record.dimensions.append((kept, label))
                 self.owner[kept.start] = record
         for role, name_spot, kept_share in parties:
             kept_name = self._kept(name_spot)
@@ -479,8 +484,16 @@ class _Merge:
 
 
 def _value(record_key: str, stored: str, found: Found, label: Found | None = None) -> ExtractedValue:
-    value = located_value(found, record_key=record_key, field=stored, label=label)
-    return replace(value, value_number=value_number(stored, value.value_text))
+    """The value at ``found``; its label's spot only when it sits apart from the value, and for a
+    map value the label's text as the reader read it (the module docstring)."""
+    apart = None if label is None or label.location == found.location else label
+    value = located_value(found, record_key=record_key, field=stored, label=apart)
+    said = clean_text(label.text) if label is not None and stored in LABELLED_FIELDS else ""
+    return replace(
+        value,
+        value_number=value_number(stored, value.value_text),
+        label_text=said if 0 < len(said) <= MAX_LABEL_TEXT else None,
+    )
 
 
 def _same_text(text: str) -> str:
