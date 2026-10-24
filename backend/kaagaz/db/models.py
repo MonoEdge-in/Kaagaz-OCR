@@ -46,7 +46,7 @@ ledger rows, the model_usage_period index) and one for the settings.
 
 import math
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from sqlalchemy import Connection, RowMapping, text
@@ -185,12 +185,16 @@ class Reading:
 @dataclass(frozen=True, slots=True)
 class ChatChoice:
     """Who drafts one answer (C3): ``agents`` the lead first, then the others in the
-    asker's order; ``thinking`` the level every one of them is called at."""
+    asker's order; ``thinking`` the level every one of them is called at. ``backups``
+    (24 Oct 2026, never "busy"): other usable chat models that take the level, tried in turn
+    when a one-agent draft's model is down; not part of the choice's identity."""
 
     agents: list[Agent]
     thinking: str
+    backups: tuple[Agent, ...] = field(default=(), compare=False)
 
 
+MAX_BACKUPS = 2  # models tried after the chosen one is down, at most
 NO_MODEL = ChatChoice([], "none")  # Ask set to None (AI settings, 0038): quoting only, no model
 
 
@@ -449,4 +453,8 @@ def resolve_chat(
     if level not in levels or not accepted or (len(chosen) > 1 and level == "high"):
         raise AiNotAllowed("thinking_not_allowed")
     chosen.sort(key=lambda agent: agent.model != default)  # stable: the rest keep their order
-    return ChatChoice(chosen, level)
+    picked = {agent.model for agent in chosen}
+    backups = tuple(_agent(row, settings) for row in rows if row["id"] not in picked and _takes(row, level))[
+        :MAX_BACKUPS
+    ]
+    return ChatChoice(chosen, level, backups)

@@ -708,6 +708,8 @@ export interface ListedDocument {
 }
 
 export interface Answer {
+  /** KZ-006 (24 Oct 2026): every model was down; said as such, never as "not found". */
+  outage?: boolean;
   // "unchecked": the figure asked for is only in unchecked card values, so no
   // number is given; closest_documents says where.
   status: "answered" | "not_found" | "unchecked" | "clarify";
@@ -721,7 +723,9 @@ export interface Answer {
   sentences: AnswerSentence[];
   citations: Citation[];
   closest_documents: { id: string; display_name: string }[];
-  route: "fixed_query" | "search";
+  route: "fixed_query" | "search" | "small_talk"; // small_talk: "hi", "what can you do" (24 Oct 2026)
+  /** Questions to ask with one press: after small talk, or when nothing was close (24 Oct 2026). */
+  suggestions?: string[];
   normalized_question: string;
   model_used: boolean;
   rewritten_question?: string | null; // PRD 3 H1: what a follow-up was searched as; missing before PRD 3

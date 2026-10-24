@@ -1,6 +1,9 @@
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { askInFlight, resumable, resumedConversation, settleAsk, startAsk } from "@/components/chat/askStore";
+import { askInFlight, resumable, resumedConversation, settleAsk, startAsk, stopAsk } from "@/components/chat/askStore";
+import { STOPPED_STATUS } from "@/components/chat/answer";
+import { STOP_TEXT } from "@/components/chat/QuestionBox";
 import type { ChatResponse } from "@/lib/types";
 
 // Tushar, 16 Oct 2026: a question sent, then Documents opened and Ask again, had
@@ -74,5 +77,31 @@ describe("the question on its way (askStore.ts)", () => {
     expect(screen).toContain("startAsk(question, activeId");
     expect(screen).toContain("resumable(askInFlight(), initialSearch)");
     expect(screen).not.toMatch(/await ask\(/);
+  });
+});
+
+// Stop (Tushar, 24 Oct 2026): while an answer is on its way, Send becomes Stop; pressed, the
+// request is cancelled in the browser, and it ends as stopped, never as an error.
+describe("stopping a question on its way", () => {
+  it("cancels the request and marks it stopped", async () => {
+    let seen: AbortSignal | null = null;
+    const entry = startAsk("Q", C, (signal) => {
+      seen = signal;
+      return new Promise<ChatResponse>((_, reject) => signal.addEventListener("abort", () => reject(new Error("aborted"))));
+    });
+    stopAsk(entry);
+    await expect(entry.done).rejects.toThrow("aborted");
+    expect(entry.stopped).toBe(true);
+    expect((seen as AbortSignal | null)?.aborted).toBe(true);
+  });
+
+  it("shows Stop in Send's place only while the answer is on its way, and says it stopped", () => {
+    const box = readFileSync(join(__dirname, "..", "components/chat/QuestionBox.tsx"), "utf8");
+    expect(box).toMatch(/\{pending && onStop \? \(\s*<button type="button" className=\{`btn \$\{styles\.send\} \$\{styles\.stop\}`\} onClick=\{onStop\}>/);
+    expect(STOP_TEXT).toBe("Stop");
+    const screen = readFileSync(join(__dirname, "..", "components/chat/ChatScreen.tsx"), "utf8");
+    expect(screen).toContain("onStop={busy ? () => asking_.current && stopAsk(asking_.current) : undefined}");
+    expect(screen).toContain("if (entry.stopped) {");
+    expect(STOPPED_STATUS).toBe("Stopped. Your question is back in the box.");
   });
 });

@@ -19,6 +19,7 @@ from kaagaz.answering.evidence import Translated, number_evidence
 from kaagaz.answering.expansion import NO_EXPANSION, Expansion
 from kaagaz.answering.service import AnswerService, topic_terms
 from kaagaz.answering.verify import verify
+from kaagaz.db.models import Agent, ChatChoice
 from kaagaz.search.scope import Scope
 from kaagaz.settings import CHAT_OVERHEAD_TOKENS, Settings
 from tests.settings_factory import make_settings
@@ -613,3 +614,22 @@ def test_a_model_answer_keeps_at_most_max_sentences() -> None:
     raw = [{"text": f"Sentence {n}.", "evidence": [1]} for n in range(draft.MAX_SENTENCES + 2)]
     parsed = draft._parse({"status": "answered", "sentences": raw})
     assert [s.text for s in parsed.sentences] == [f"Sentence {n}." for n in range(draft.MAX_SENTENCES)]
+
+
+def test_a_swift_answer_reads_at_most_the_swift_cap_and_precision_keeps_the_whole_budget() -> None:
+    """Faster Swift (24 Oct 2026): ANSWER_SWIFT_INPUT_TOKENS caps a Swift or Low answer's
+    documents, so a scope over it is searched; Precision still reads it whole."""
+    agent = Agent("fake-chat", "google-vertex", "Fake")
+    capped = dataclasses.replace(SETTINGS, answer_swift_input_tokens=20)
+    for thinking, whole in (("medium", False), ("low", False), ("high", True)):
+        retriever, context = Fused(OFFER_LETTER), FakeContext(OFFER_LETTER)
+        answers(retriever, context, Routed(LEAVES), capped).answer(
+            A, "How many leaves do I get?", choice=ChatChoice([agent], thinking)
+        )
+        assert (not retriever.calls) is whole, thinking
+    retriever, context = Fused(OFFER_LETTER), FakeContext(OFFER_LETTER)
+    off = dataclasses.replace(SETTINGS, answer_swift_input_tokens=0)  # 0: no cap
+    answers(retriever, context, Routed(LEAVES), off).answer(
+        A, "How many leaves do I get?", choice=ChatChoice([agent], "medium")
+    )
+    assert retriever.calls == []

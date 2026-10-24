@@ -9,7 +9,7 @@ import pytest
 from sqlalchemy import text
 
 from kaagaz.answering import ready
-from kaagaz.answering.ready import MAX_ENTRIES, TTL_SECONDS, ReadyAnswers, same_question
+from kaagaz.answering.ready import MAX_ENTRIES, SHOWN_SECONDS, TTL_SECONDS, ReadyAnswers, same_question
 from kaagaz.db.engine import Database
 from tests.test_api_support import CSRF, Api
 
@@ -33,7 +33,7 @@ def test_two_askings_of_one_question_are_the_same_question() -> None:
     assert ready.key("c", "u", "a b", (1,), "s") != ready.key("c", "u", "a b", (1,), "s2")
 
 
-def test_a_ready_answer_is_kept_for_ten_minutes_and_the_oldest_go_first() -> None:
+def test_a_ready_answer_is_kept_for_a_day_and_the_oldest_go_first() -> None:
     clock = Clock()
     kept = ReadyAnswers(clock)
     assert kept.claim(("a",)) is True
@@ -153,3 +153,37 @@ def test_home_keeps_the_same_questions_until_one_is_used(db: Database) -> None:
     signed.client.post("/api/chat", json={"question": LAND}, headers=CSRF)  # one is used
     after = signed.client.get("/api/chat/ready-questions").json()["items"]
     assert [(item["text"], item["yours"]) for item in after] == [(habit, True), (LAND, True)]
+
+
+def test_homes_list_stays_a_day_at_most_and_goes_once_one_is_used() -> None:
+    """Tushar, 24 Oct 2026: no new questions until one is used, and 24 hours."""
+    clock = Clock()
+    shown = ready.ShownQuestions(clock)
+    shown.keep("c", "u", [("Who owns 72?", True)])
+    clock.now = SHOWN_SECONDS - 1
+    shown.keep("c", "u", [("Who owns 72?", True)])  # shown again: its day does not restart
+    assert shown.get("c", "u") == [("Who owns 72?", True)]
+    clock.now = SHOWN_SECONDS + 1
+    assert shown.get("c", "u") is None
+    shown.keep("c", "u", [("Who owns 72?", True)])
+    shown.used("c", "u", "  who OWNS 72? ")
+    assert shown.get("c", "u") is None
+    shown.keep("c", "u", [])  # nothing to show is never kept
+    assert shown.get("c", "u") is None
+
+
+@pytest.mark.db
+def test_a_question_about_one_document_is_never_a_habit(db: Database) -> None:
+    """The screenshot of 24 Oct 2026: "What is this document about?" was asked about one
+    document, so it cannot be answered for all of them."""
+    api = Api(db)
+    signed = api.new_signed()
+    deed = _land_record(api, signed.customer_id)
+    for _ in range(2):
+        signed.client.post(
+            "/api/chat",
+            json={"question": "What is this document about?", "scope": {"document_ids": [deed]}},
+            headers=CSRF,
+        )
+    items = signed.client.get("/api/chat/ready-questions").json()["items"]
+    assert [item["text"] for item in items] == [LAND]

@@ -95,23 +95,24 @@ export function Dashboard() {
     };
   }, [attempt, reviewer]);
 
-  // Home's questions; their answers are made just after the first reply, so one more look
-  // a little later shows them ready (READY_AGAIN_MS).
+  // Home's questions; their answers are made just after the first reply, so Home looks again
+  // at READY_LOOKS until every one is ready, and offers each only once it is.
   useEffect(() => {
     let cancelled = false;
     let again: number | undefined;
-    const load = (last: boolean) =>
+    const load = (look: number) =>
       getReadyQuestions().then(
         (reply) => {
           if (cancelled) return;
           setQuestions(reply.items);
-          if (!last && reply.items.some((item) => !item.ready)) again = window.setTimeout(() => void load(true), READY_AGAIN_MS);
+          const wait = READY_LOOKS[look];
+          if (wait !== undefined && reply.items.some((item) => !item.ready)) again = window.setTimeout(() => void load(look + 1), wait);
         },
         () => {
           if (!cancelled) setQuestions([]); // the card says what to do instead
         },
       );
-    void load(false);
+    void load(0);
     return () => {
       cancelled = true;
       window.clearTimeout(again);
@@ -139,8 +140,7 @@ export function Dashboard() {
 
   return (
     <div className={`page ${styles.page}`}>
-      <div className={`k-dotfield ${styles.hero}`}>
-      <section className={styles.welcome} aria-labelledby="home-greeting">
+      <section className={`k-dotfield ${styles.welcome}`} aria-labelledby="home-greeting">
         <p className={styles.today}>{todayLine(new Date(), me.customer.name)}</p>
         <h1 id="home-greeting" className={`k-display ${styles.greeting}`}>
           {greeting(me.user.display_name, new Date().getHours())}
@@ -166,9 +166,8 @@ export function Dashboard() {
             <Icon name="external" size="sm" />
           </button>
         </form>
+        <ReadyQuestions questions={questions} />
       </section>
-      <QuestionsCard questions={questions} />
-      </div>
 
       <HomeActions
         reviewer={reviewer}
@@ -216,44 +215,30 @@ export function Dashboard() {
   );
 }
 
-/** One more look for ready answers, this long after Home's questions first came. */
-export const READY_AGAIN_MS = 12_000;
+/** How long Home waits before each further look for ready answers (the first comes at once). */
+export const READY_LOOKS = [12_000, 40_000];
 
-/** Beside the welcome (24 Oct 2026): this person's usual questions, else ones that suit their
- * library, each a link to Ask; "Ready" when its answer waits made, so it opens at once.
- * ``null`` while they load. Exported for the render test. */
-export function QuestionsCard({ questions }: { questions: ReadyQuestion[] | null }) {
-  const yours = questions?.some((item) => item.yours) ?? false;
+/** Under Ask (Tushar, 24 Oct 2026): this person's usual questions, else ones that suit their
+ * library, each offered only once its answer is ready, so a press answers in under a second;
+ * nothing while none is. Exported for the render test. */
+export function ReadyQuestions({ questions }: { questions: ReadyQuestion[] | null }) {
+  const ready = (questions ?? []).filter((item) => item.ready);
+  if (ready.length === 0) return null;
+  const yours = ready.some((item) => item.yours);
   return (
-    <section className={styles.questions} aria-labelledby="home-questions">
-      <h2 id="home-questions" className={styles.questionsTitle}>
-        {yours ? DASHBOARD_TEXT.yourQuestions : DASHBOARD_TEXT.questionsToTry}
-      </h2>
-      {questions !== null && questions.length === 0 ? (
-        <p className={styles.questionsLine}>{DASHBOARD_TEXT.questionsEmpty}</p>
-      ) : (
-        <>
-          <p className={styles.questionsLine}>{DASHBOARD_TEXT.questionsLine}</p>
-          <ul className={styles.questionList}>
-            {(questions ?? []).map((item, index) => (
-              <li key={item.text} style={{ "--i": index } as CSSProperties}>
-                <Link className={styles.question} href={askHref(item.text)}>
-                  <span className={styles.questionText}>{item.text}</span>
-                  {item.ready ? (
-                    <span className={styles.ready}>
-                      <Icon name="check-circle" size="sm" />
-                      {DASHBOARD_TEXT.ready}
-                    </span>
-                  ) : (
-                    <span className={styles.readying}>{DASHBOARD_TEXT.readying}</span>
-                  )}
-                </Link>
-              </li>
-            ))}
-          </ul>
-        </>
-      )}
-    </section>
+    <div className={styles.readyRow}>
+      <span className={styles.readyLabel}>{yours ? DASHBOARD_TEXT.yourQuestions : DASHBOARD_TEXT.questionsToTry}</span>
+      <ul className={styles.readyList}>
+        {ready.map((item, index) => (
+          <li key={item.text} style={{ "--i": index } as CSSProperties}>
+            <Link className={`k-suggest ${styles.readyQuestion}`} href={askHref(item.text)}>
+              <Icon name="check-circle" size="sm" />
+              {item.text}
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
