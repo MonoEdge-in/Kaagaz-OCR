@@ -155,6 +155,7 @@ class FakeAnswers:
     unavailable: bool = False  # KZ-006: not found while the model was down
     resumed: list[Pending] = field(default_factory=list)  # PRD 6 B1: each clarify answered
     clarifies: list[bool] = field(default_factory=list)  # PRD 6 (0052): the nlq_clarify switch each got
+    cited: list[list[str]] = field(default_factory=list)  # PRD 6 B: the earlier answers' documents each got
 
     def answer(
         self,
@@ -169,8 +170,10 @@ class FakeAnswers:
         pins: Sequence[Pin] = (),
         pending: Pending | None = None,
         clarify: bool = True,
+        cited: Sequence[str] = (),
     ) -> _FixedAnswer:
         self.asked.append((customer_id, question))
+        self.cited.append(list(cited))
         self.clarifies.append(clarify)
         self.pins.append(list(pins))
         self.histories.append(list(history))
