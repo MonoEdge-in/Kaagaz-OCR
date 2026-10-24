@@ -35,12 +35,13 @@ export function peeking(wallMs: number): boolean {
 }
 
 export function ClockPeek() {
-  const tick = useTick(); // 0 on the server and before the first tick: hidden
+  const tick = useTick(); // 0 on the server and before the first tick: nothing to show yet
   const wall = tick === 0 ? null : performance.timeOrigin + tick;
-  const now = wall !== null && peeking(wall) ? new Date(wall) : null;
+  const now = wall === null ? null : new Date(wall);
+  // Always the time now, so it eases out as it came in; only data-shown changes.
   const hands = now ? clockHands(now) : { hour: 0, minute: 0 };
   return (
-    <span className={styles.clock} aria-hidden="true" data-shown={now ? "" : undefined}>
+    <span className={styles.clock} aria-hidden="true" data-shown={wall !== null && peeking(wall) ? "" : undefined}>
       <span className={styles.face}>
         <span className={`${styles.hand} ${styles.hour}`} style={{ "--turn": `${hands.hour}deg` } as CSSProperties} />
         <span className={`${styles.hand} ${styles.minute}`} style={{ "--turn": `${hands.minute}deg` } as CSSProperties} />

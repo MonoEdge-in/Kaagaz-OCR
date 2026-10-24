@@ -8,8 +8,8 @@ import { join } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { HomeActions } from "@/components/dashboard/Dashboard";
-import { browseTitle, checkTitle, DASHBOARD_TEXT, suggestedQuestions } from "@/components/dashboard/words";
+import { HomeActions, QuestionsCard, READY_AGAIN_MS } from "@/components/dashboard/Dashboard";
+import { browseTitle, checkTitle, DASHBOARD_TEXT } from "@/components/dashboard/words";
 
 const ROOT = join(__dirname, "..");
 const read = (path: string) => readFileSync(join(ROOT, path), "utf8");
@@ -63,19 +63,44 @@ describe("the home screen's next steps", () => {
     const calm = text.slice(text.indexOf("@media (prefers-reduced-motion: no-preference)"));
     expect(calm).toMatch(/\.action \{[^}]*animation: home-rise var\(--motion-calm\) var\(--ease-out\) both;/);
     expect(text).toMatch(/@keyframes home-rise \{\s*from \{\s*opacity: 0;\s*transform: translateY\(8px\);/);
-    expect(text).toMatch(/@media \(hover: hover\) and \(pointer: fine\) \{\s*a\.action:hover \{[^}]*transform: translateY\(-2px\);/);
+    expect(text).toMatch(/@media \(hover: hover\) and \(pointer: fine\) \{[^@]*a\.action:hover \{[^}]*transform: translateY\(-2px\);/);
   });
 });
 
-// Changed on purpose (24 Oct 2026): "What did we upload this week?" was offered to Ask, which
-// reads what documents say, not when they came, so it always answered "Nothing matches".
-describe("the questions Home offers to Ask", () => {
-  it("offers only questions about what documents say", () => {
-    expect(suggestedQuestions([{ doc_type: "land_record" }, { doc_type: "invoice" }])).toEqual([
-      "Who are the owners named in the land records?",
-      "Which invoice had the largest total last month?",
+// Changed on purpose (24 Oct 2026, later): Home's questions come from the server
+// (answering/ready.py), the person's own habits first, each "Ready" once its answer waits made,
+// and sit beside the welcome instead of a row of chips under Ask.
+describe("the questions beside the welcome", () => {
+  const card = (questions: Parameters<typeof QuestionsCard>[0]["questions"]) =>
+    renderToStaticMarkup(createElement(QuestionsCard, { questions }));
+
+  it("lists the person's own questions as theirs, each a link to Ask, Ready or getting ready", () => {
+    const html = card([
+      { text: "What is the total for Shinde?", yours: true, ready: true },
+      { text: "Who are the owners named in the land records?", yours: false, ready: false },
     ]);
-    expect(suggestedQuestions([])).toEqual([]);
+    expect(html).toContain(">Your usual questions</h2>");
+    expect(html).toContain('href="/chat?q=What%20is%20the%20total%20for%20Shinde%3F&amp;send=1"');
+    expect(html.match(/>Ready</g)).toHaveLength(1);
+    expect(html).toContain(">Getting ready<");
+    expect(html.match(/style="--i:\d"/g)).toEqual(['style="--i:0"', 'style="--i:1"']);
+  });
+
+  it("offers questions to try when none are the person's, and says what to do when there are none", () => {
+    expect(card([{ text: "Who are the owners named in the land records?", yours: false, ready: true }])).toContain(
+      ">Questions to try</h2>",
+    );
+    expect(card([])).toContain(DASHBOARD_TEXT.questionsEmpty);
+  });
+
+  it("looks once more for ready answers, and no longer builds questions on the screen", () => {
+    expect(READY_AGAIN_MS).toBe(12_000);
+    const home = read("components/dashboard/Dashboard.tsx");
+    expect(home).toContain("getReadyQuestions()");
+    expect(home).not.toContain("suggestedQuestions");
     expect(read("components/dashboard/words.ts")).not.toContain("What did we upload");
+    const text = css(HOME_CSS);
+    const calm = text.slice(text.indexOf("@media (prefers-reduced-motion: no-preference)"));
+    expect(calm).toMatch(/\.ready \{\s*animation: home-pop var\(--motion-calm\) var\(--ease-out\) both;/);
   });
 });
