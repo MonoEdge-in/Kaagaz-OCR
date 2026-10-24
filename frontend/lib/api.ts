@@ -79,6 +79,8 @@ import type {
   SessionTimeout,
   SheetCells,
   SourcePin,
+  Speed,
+  SpeedName,
   Stats,
   Tag,
   TaskLevel,
@@ -846,6 +848,11 @@ export const getSessionTimeout = (orgId?: string) => request<SessionTimeout>("GE
 /** Set it, with a fresh code (step-up); null: the default, or follow the platform. */
 export const setSessionTimeout = (hours: number | null, code: string, orgId?: string) =>
   request<SessionTimeout>("PUT", timeoutPath(orgId), { hours, code });
+
+/** Operator: the speed controls (package S, 0053); saving needs a fresh code, null: the server's setting. */
+export const getSpeed = () => request<Speed>("GET", "/operator/speed");
+export const setSpeed = (values: Record<SpeedName, number | null>, code: string) =>
+  request<Speed>("PUT", "/operator/speed", { ...values, code });
 
 /** Operator: the platform-wide test model. */
 export const getTestModel = () => request<TestModel>("GET", "/operator/test-model");

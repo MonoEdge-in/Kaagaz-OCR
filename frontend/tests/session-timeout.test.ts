@@ -19,7 +19,8 @@ afterEach(() => vi.unstubAllGlobals());
 
 describe("Timeout setup", () => {
   it("is the tab after Feature switches", () => {
-    expect(OPERATOR_TABS.map((tab) => tab.label).slice(-2)).toEqual(["Feature switches", "Timeout setup"]);
+    // Changed on purpose (0053): Speed comes after it.
+    expect(OPERATOR_TABS.map((tab) => tab.label).slice(-3, -1)).toEqual(["Feature switches", "Timeout setup"]);
   });
 
   it("explains itself and offers 1 to 24 hours plus no idle limit", () => {
