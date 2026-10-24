@@ -12,7 +12,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 PROD = "docker-compose.prod.yml"
-PROD_COMMAND = "docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build"
+PROD_COMMAND = "docker compose -f docker-compose.yml -f docker-compose.prod.yml <command>"
 LOGGING = 'x-logging: &logging\n  driver: json-file\n  options:\n    max-size: "20m"\n    max-file: "5"\n'
 ONE_SHOT = {"migrate"}  # runs once per deploy and exits
 CLEARED = {"postgres", "seaweedfs", "elasticmq", "clamav", "api", "frontend"}
@@ -69,12 +69,17 @@ def test_the_base_file_runs_only_the_app_and_its_stand_ins() -> None:
     ]
     shared = re.findall(r"^  ([a-z_]+):", backend, re.MULTILINE)
     assert shared == ["image", "build", "env_file", "environment"]
+    # infra/ec2/deploy.sh builds and migrates a commit's images beside the running :local ones.
+    assert "\n  image: kaagaz-backend:${KAAGAZ_TAG:-local}\n" in backend
+    assert has(service("frontend"), "image: kaagaz-frontend:${KAAGAZ_TAG:-local}")
     assert "networks" not in keys(service("worker"))
 
 
 def test_the_prod_file_covers_every_service_and_adds_only_caddy() -> None:
     text = (ROOT / PROD).read_text(encoding="utf-8")
     assert PROD_COMMAND in text
+    # A hand `up -d --build` would rebuild the live :local images (infra/ec2/deploy.sh, #246).
+    assert "# Deploys go through infra/ec2/deploy.sh, never `up -d --build` by hand" in text
     assert services(PROD) == [*services("docker-compose.yml"), "caddy"]
     assert re.findall(r"^([a-z-]+):", text, re.MULTILINE) == ["x-logging", "services", "volumes"]
     assert re.search(r"^volumes:\n  caddy-data:\n  caddy-config:\n\Z", text, re.MULTILINE)
