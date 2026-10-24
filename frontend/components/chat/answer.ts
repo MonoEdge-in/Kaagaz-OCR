@@ -11,6 +11,7 @@ import type {
   Citation,
   Mentions,
   Message,
+  ReasonCode,
   Region,
   RelatedDocument,
   SourcePin,
@@ -28,6 +29,16 @@ export const ASKING_STATUS = "Looking through your documents…";
 export const LOADED_STATUS = "Conversation loaded.";
 export const NO_ANSWER_STATUS = "No answer found in your documents.";
 export const MAX_REASON_LENGTH = 500;
+// PRD 6 F1: what went wrong on Not useful, in the server's order (db/chat.py REASONS).
+export const REASONS: readonly { code: ReasonCode; label: string }[] = [
+  { code: "wrong_documents", label: "Wrong documents" },
+  { code: "document_missing", label: "A document is missing" },
+  { code: "wrong_figure", label: "Wrong figure" },
+  { code: "did_not_understand", label: "Didn't understand me" },
+  { code: "other", label: "Other" },
+];
+// Decision 7 (24 Oct 2026): said above Send, so only feedback given after it reaches the admin.
+export const FEEDBACK_NOTICE = "Your company admin can see this answer, your question, your reason and your name.";
 
 /** Citation number to its source card. */
 export function citationMap(answer: Pick<Answer, "citations">): Map<number, Citation> {
@@ -208,7 +219,7 @@ export function restoreAfterFailure(current: string, sent: string): string {
   return current === "" ? sent : current;
 }
 
-/** A down vote's reason: optional, trimmed, at most 500 characters. */
+/** A Not useful reason: optional, trimmed, at most 500 characters. */
 export function cleanReason(text: string): string | undefined {
   const reason = text.trim();
   return reason ? reason.slice(0, MAX_REASON_LENGTH) : undefined;

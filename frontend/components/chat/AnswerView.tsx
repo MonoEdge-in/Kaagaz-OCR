@@ -3,7 +3,7 @@
 // One answer card. In order: what a follow-up was searched for ("Searching for: …",
 // PRD 3 H1) and how the question was understood (only when that differs), the
 // sentences with citation chips (each moves to its source card), the source cards,
-// and "Was this helpful?". No Verified or Needs review label, badge or edge in Ask
+// and Useful or Not useful (PRD 6 F1). No Verified or Needs review label, badge or edge in Ask
 // (Tushar, 16 Oct 2026): checking values is the Review screen's, kept apart.
 // "Not found" is a real answer: a neutral card that says so and lists the closest
 // documents. "Unchecked" (a figure only in values not confirmed yet) gives no number,

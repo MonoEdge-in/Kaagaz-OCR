@@ -150,6 +150,7 @@ class FakeAnswers:
     summarised: list[tuple[list[Turn], Memory, list[str]]] = field(default_factory=list)
     choices: list[ChatChoice | None] = field(default_factory=list)  # features 25-27: who drafts each
     pins: list[list[Pin]] = field(default_factory=list)  # the Most relevant picks each question got
+    histories: list[list[Turn]] = field(default_factory=list)  # the earlier turns each question got
     unavailable: bool = False  # KZ-006: not found while the model was down
 
     def answer(
@@ -166,6 +167,7 @@ class FakeAnswers:
     ) -> _FixedAnswer:
         self.asked.append((customer_id, question))
         self.pins.append(list(pins))
+        self.histories.append(list(history))
         self.choices.append(choice)
         self.scopes.append(scope)
         self.memories.append(memory)
