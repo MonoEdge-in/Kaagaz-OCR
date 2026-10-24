@@ -80,6 +80,11 @@
   is current. A customer that is not active is skipped and named.
   Each customer's calls are billed to it as "embed", with no user (SP1). Prints ids
   and counts only.
+* ``land-facts (--count | --sample N --customer-id ID | --all | --keys-only) [--customer-id ID]
+  [--max-usd USD]``: owners, shares and places of the stored land records read again (PRD 6
+  D3, ``kaagaz.jobs.land_facts``). ``--count`` and ``--keys-only`` call no model; ``--sample``
+  and ``--all`` need ``--max-usd``, a hard stop, and are billed as ``land``; ``--all`` only
+  once the sample's cost is approved. Ids, counts and dollars only.
 * ``scan-times [--customer-id ID] [--last N]``: the last N ready runs (5), one line each,
   ids and seconds only: upload to Ready, queued, the run to Ready, and its steps (preparing,
   reading, Careful, card, map, checker, from the run's config), then how long after Ready
@@ -136,11 +141,12 @@ from kaagaz.db.engine import Database, make_engine
 from kaagaz.ingestion import sniff
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.spool import HEAD_SIZE
-from kaagaz.jobs import catalog
+from kaagaz.jobs import catalog, land_facts
 from kaagaz.jobs.purge import CustomerStorage, purge_customer
 from kaagaz.preparing.page_checks import BlankMeasure, measure_blank
 from kaagaz.preparing.pages import PreparedPages, prepare_pages
 from kaagaz.reading.ocr import PATH_PAGE, PATH_WORDS, READER_PROMPT_VERSION, MeteredOcrEngine, PageRead
+from kaagaz.reading.rapid_pool import shared_pool
 from kaagaz.reading.route import RouteDecision
 from kaagaz.reading.socket import NoReader
 from kaagaz.reading.spans import ReadError, Span
@@ -245,6 +251,17 @@ def _parser() -> argparse.ArgumentParser:
     reembed = commands.add_parser("reembed", help="embed pieces again after a model or recipe change")
     reembed.add_argument("--customer-id", help="one customer only (default: every customer)")
     reembed.add_argument("--all", action="store_true", help="embed every piece again, not only stale ones")
+
+    land = commands.add_parser("land-facts", help="read owners, shares and places of land records again")
+    mode = land.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--count", action="store_true", help="eligible documents and characters (no model)")
+    mode.add_argument("--sample", type=int, metavar="N", help="read N documents of --customer-id again")
+    mode.add_argument("--all", action="store_true", help="read every eligible document again (approved)")
+    mode.add_argument(
+        "--keys-only", action="store_true", help="key the land values already stored (no model)"
+    )
+    land.add_argument("--customer-id", help="one customer only (default: every customer)")
+    land.add_argument("--max-usd", type=float, help="never start a document that could pass this spend")
 
     times = commands.add_parser("scan-times", help="how long the last documents took, step by step")
     times.add_argument("--customer-id", help="one customer only (default: every customer)")
@@ -530,6 +547,47 @@ def _reembed(db: Database, model: ModelClient, customer_id: str | None, every: b
             f"customer {customer}: {len(documents)} documents, {cleared} cleared, {written} embedded,"
             f" {stories} stories\n"
         )
+
+
+def _land_facts(
+    db: Database,
+    args: argparse.Namespace,
+    settings: Settings,
+    model: ModelClient | None,
+    storage: CustomerStorage | None,
+    out: TextIO,
+) -> None:
+    """land-facts: the mode's checks, then ``kaagaz.jobs.land_facts``."""
+    if args.customer_id is not None:
+        try:
+            uuid.UUID(args.customer_id)
+        except ValueError:
+            raise CliError("the customer id is not valid") from None
+    customers = land_facts.customers_of(db, args.customer_id, indexing.customer_ids)
+    if args.count:
+        land_facts.count(db, customers, out)
+        return
+    if args.keys_only:
+        land_facts.keys_only(db, customers, out)
+        return
+    if args.sample is not None and (args.customer_id is None or args.sample < 1):
+        raise CliError("--sample N needs N of at least 1 and --customer-id")
+    if args.max_usd is None or args.max_usd <= 0:
+        raise CliError("--sample and --all need --max-usd, more than 0")
+    chat = model or build_model_client(
+        settings, chat_timeout_seconds=settings.model_extract_timeout_seconds, db=db
+    )
+    if chat is None:
+        raise CliError("land-facts needs the model: set MODEL_ENABLED=true")
+    if storage is None:
+        from kaagaz.adapters.storage import S3Storage
+
+        storage = S3Storage(settings)
+    checker = shared_pool(settings.cpu_workers) if settings.ocr_engine == "gemini" else None
+    land_facts.reread(
+        db, chat, settings, customers, max_usd=args.max_usd, out=out, storage=storage, checker=checker,
+        sample=args.sample,
+    )  # fmt: skip
 
 
 def _scan_times(db: Database, customer_id: str | None, last: int, out: TextIO) -> None:
@@ -1041,6 +1099,8 @@ def main(
             if model is None:
                 raise CliError("reembed needs the model: set MODEL_ENABLED=true")
             _reembed(db, model, args.customer_id, args.all, stdout)
+        elif args.command == "land-facts":
+            _land_facts(db, args, settings or Settings.from_env(env), model, storage, stdout)
         elif args.command == "scan-times":
             _scan_times(db, args.customer_id, args.last, stdout)
         elif args.command == "cost-saving":
