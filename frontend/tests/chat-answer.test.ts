@@ -119,7 +119,7 @@ describe("answer texts", () => {
   // the Verified / Needs review line over an answer, is gone.
   it("uses the agreed not found sentence", () => {
     // Changed on purpose (UI audit, 16 Oct 2026): A4, calm words, no "couldn't".
-    expect(NOT_FOUND_TEXT).toBe("Not found in the documents searched.");
+    expect(NOT_FOUND_TEXT).toBe("Nothing in your documents matches this yet."); // PRD 6 decision 9
   });
 });
 
@@ -321,7 +321,7 @@ describe("pages that couldn't be read (PRD 5 F6, U7)", () => {
     };
     const html = renderToStaticMarkup(createElement(AnswerView, { message, question: "total?" }));
     // Changed on purpose (UI audit, 16 Oct 2026): A4.
-    expect(html).toContain("Not found in the documents searched.");
+    expect(html).toContain("Nothing in your documents matches this yet."); // PRD 6 decision 9
     expect(html).toContain("Not found in the readable text.");
     expect(html).toContain('href="/documents/d1?page=3"');
     expect(html).toContain("and 1 more");

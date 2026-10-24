@@ -704,7 +704,8 @@ _GONE = ("in_trash", "deleted")
 
 def cited_document_ids(answer: Mapping[str, Any] | None) -> list[str]:
     """Every document a saved answer points at: its citations, closest and related
-    documents, and the documents of the pages that couldn't be read it names (PRD 5 F6)."""
+    documents, the documents of the pages that couldn't be read it names (PRD 5 F6), and
+    those it lists (PRD 6 A, ``documents``)."""
     if not answer:
         return []
     ids = [str(each["document_id"]) for each in answer.get("citations", []) if each.get("document_id")]
@@ -720,6 +721,7 @@ def cited_document_ids(answer: Mapping[str, Any] | None) -> list[str]:
         for each in (answer.get("mentions") or {}).get("documents", [])
         if each.get("document_id")
     ]
+    ids += [str(each["document_id"]) for each in answer.get("documents") or [] if each.get("document_id")]
     return ids
 
 
@@ -731,7 +733,7 @@ def answer_with_source_states(answer: Mapping[str, Any], states: Mapping[str, st
       deleted loses its snippet and its highlight regions: Trash means deleted,
       so its words and its place on the page must not show any more.
     * A sentence whose every citation is gone is replaced by ``GONE_SENTENCE``.
-    * Closest, related and "Also mentions" documents that are gone are left out.
+    * Closest, related, "Also mentions" and listed (PRD 6 A) documents that are gone are left out.
     * PRD 5 F6: a page that couldn't be read, of a document that is gone, is left out
       of ``unreadable_pages``, its count and the note, so a deleted document's name
       never shows again (the note is written again from the pages left).
@@ -768,6 +770,12 @@ def answer_with_source_states(answer: Mapping[str, Any], states: Mapping[str, st
     shown = {**answer, "citations": citations, "sentences": sentences, "closest_documents": closest}
     if "related_documents" in answer:
         shown["related_documents"] = related
+    if "documents" in answer:
+        shown["documents"] = [
+            each
+            for each in answer.get("documents") or []
+            if states.get(str(each.get("document_id"))) not in (None, *_GONE)
+        ]
     if answer.get("mentions"):
         # "Also mentions": a gone document leaves the list and the count.
         listed = answer["mentions"].get("documents", [])

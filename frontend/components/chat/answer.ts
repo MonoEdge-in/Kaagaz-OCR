@@ -16,8 +16,10 @@ import type {
   SourcePin,
 } from "@/lib/types";
 
-// Calm, no "couldn't" (UI audit A4, 16 Oct 2026); the card's next steps follow it.
-export const NOT_FOUND_TEXT = "Not found in the documents searched.";
+// PRD 6 decision 9 (24 Oct 2026): the server's words exactly (backend/kaagaz/answering/voice.py,
+// a test reads both); no "sorry", no "couldn't". The closest documents and next steps follow.
+export const NOT_FOUND_CLOSEST_TEXT = "Nothing matches every part of this. These are the closest documents.";
+export const NOT_FOUND_TEXT = "Nothing in your documents matches this yet.";
 // An "unchecked" answer (a figure only in values not confirmed yet): no number, no
 // Review wording (Tushar, 16 Oct 2026); the documents follow it.
 export const UNCHECKED_TEXT = "This figure is in these documents. Open them to see it.";

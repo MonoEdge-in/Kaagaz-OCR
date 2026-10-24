@@ -97,7 +97,7 @@ from kaagaz.extraction.parsing import _INDIAN, _WESTERN
 from kaagaz.reading.spans import BoxLocation, location_from_json, location_to_json
 from kaagaz.search.scope import Scope
 
-CLOSEST_DOCUMENTS = 3
+CLOSEST_DOCUMENTS = 5  # PRD 6 decision 9
 RELATED_DOCUMENTS = 5  # "Also in" under an answer's sources (Tushar, 16 Oct 2026)
 
 # How the gate passed: a score, the English keywords, or only with the glossary's, a
@@ -608,15 +608,29 @@ def _value(token: str) -> Decimal | None:
     return Decimal(token.replace(",", ""))
 
 
-def closest_documents(hits: Sequence[Hit]) -> list[dict[str, str]]:
-    """The distinct documents of the top hits, best first, at most ``CLOSEST_DOCUMENTS``."""
-    seen: dict[str, str] = {}
+def closest_documents(hits: Sequence[Hit], keywords: Sequence[str]) -> list[dict[str, Any]]:
+    """The distinct documents of the hits close to the question, best first, at most
+    ``CLOSEST_DOCUMENTS`` (PRD 6 decision 9): a hit is close when it holds a keyword as a
+    whole word or token, through the glossary, or by sound, or the typo list found it
+    (``fuzzy_score``); never by meaning alone. ``words``: the keywords without a digit it
+    holds, for its "why" (never shown by ``Answer.to_json``). O(h * k * t)."""
+    seen: dict[str, dict[str, Any]] = {}
     for hit in hits:
-        if hit.document_id not in seen:
-            seen[hit.document_id] = hit.document_name
+        if hit.document_id in seen:
+            continue
+        folded, words = ascii_digits(hit.text).casefold(), word_text(hit.text)
+        held = [k for k in keywords if (has_token(k, folded) if _DIGIT.search(k) else has_word(k, words))]
+        near = glossary.sound_words(folded)
+        if (
+            held
+            or hit.fuzzy_score is not None
+            or any(glossary.present(k, folded) or glossary.sounds_like(k, near) for k in keywords)
+        ):
+            plain = [k for k in held if not _DIGIT.search(k)]
+            seen[hit.document_id] = {"id": hit.document_id, "display_name": hit.document_name, "words": plain}
         if len(seen) == CLOSEST_DOCUMENTS:
             break
-    return [{"id": document_id, "display_name": name} for document_id, name in seen.items()]
+    return list(seen.values())
 
 
 def related_documents(

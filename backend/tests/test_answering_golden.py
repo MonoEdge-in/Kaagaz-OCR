@@ -60,7 +60,12 @@ ANSWER_KEYS = {
     "unreadable_pages",
     "unreadable_page_count",
     "related_documents",  # "Also in" (Tushar, 16 Oct 2026)
+    "version",  # PRD 6 A, answer contract v2
+    "opening",
+    "documents",
+    "assumptions",
 }
+DOCUMENT_KEYS = {"document_id", "title", "why", "citations"}  # PRD 6 A
 CITATION_KEYS = {
     "n",
     "kind",
@@ -527,6 +532,15 @@ def assert_well_formed(answer: Answer) -> None:
     data = answer.to_json()
     assert set(data) == ANSWER_KEYS
     assert data["route"] in {"fixed_query", "search"}
+    # PRD 6 A: v2, the opening is the API's, nothing assumed yet; at most 10 documents listed,
+    # each citing only its own sources and saying why in words, never a digit (decision 2).
+    assert (data["version"], data["opening"], data["assumptions"]) == (2, None, [])
+    assert len(data["documents"]) <= 10
+    for doc in data["documents"]:
+        assert set(doc) == DOCUMENT_KEYS and doc["title"]
+        assert not any(ch.isdigit() for ch in doc["why"])
+        owners = {c["document_id"] for c in data["citations"] if c["n"] in doc["citations"]}
+        assert owners <= {doc["document_id"]}
     for doc in data["closest_documents"]:
         assert set(doc) == {"id", "display_name"}
     if data["status"] == "not_found":
@@ -1178,11 +1192,13 @@ def test_the_answer_prompt_and_schema_are_pinned() -> None:
     pinned = SYSTEM_PROMPT + "\n" + json.dumps(ANSWER_SCHEMA, sort_keys=True)
     assert hashlib.sha256(pinned.encode("utf-8")).hexdigest() == ANSWER_PROMPT_HASH
     # Changed on purpose in PR C (fix/s2-xlang-answer): rule 7, evidence in any language; and in
-    # PRD 5 PR 3: rules 8 to 10 (CX7, answers that combine) and 11 (M2, the cards).
-    assert ANSWER_PROMPT_HASH == "e199829c7fd2eabdb08ecf3e9c8bd06ad7c21a6449ed7ee2a6f671f7f0463340"
+    # PRD 5 PR 3: rules 8 to 10 (CX7, answers that combine) and 11 (M2, the cards); and in PRD 6 A
+    # (24 Oct 2026): rule 12 and maxItems 3, at most 3 short sentences.
+    assert ANSWER_PROMPT_HASH == "eb69ce60e8d9e56a002acd8720c2bdea62272a272e4f16977b2273e7f3d30d75"
     assert "Answer in English. A quote keeps the script it is written in." in SYSTEM_PROMPT  # PRD 3 H3
+    assert "12. Answer in at most 3 short sentences." in SYSTEM_PROMPT
     sentences = ANSWER_SCHEMA["properties"]["sentences"]
-    assert (sentences.get("maxItems"), sentences["items"]["properties"]["text"].get("maxLength")) == (5, 300)
+    assert (sentences.get("maxItems"), sentences["items"]["properties"]["text"].get("maxLength")) == (3, 300)
 
 
 def test_the_prompt_says_evidence_may_be_in_any_language_and_names_none() -> None:

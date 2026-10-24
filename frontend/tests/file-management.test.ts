@@ -871,7 +871,7 @@ describe("the document page (P1, P2)", () => {
         normalized_question: "",
         model_used: false,
       }),
-    ).toBe("Not found in the documents searched.");
+    ).toBe("Nothing in your documents matches this yet."); // PRD 6 decision 9
     expect(
       questionAnswerText({
         status: "unchecked",
