@@ -1175,8 +1175,9 @@ def test_each_answer_logs_one_timing_line_of_codes_and_numbers(caplog: pytest.Lo
     service(model=FakeModel(nothing))[0].answer(A, QUESTION)
     service()[0].answer(A, "Kiska profit sabse jyada tha last month?")
     lines = [r.getMessage() for r in caplog.records if r.name == "kaagaz.answering.timing"]
-    stages = r" rewrite_ms=\d+ embed_ms=\d+ search_ms=\d+ widen_ms=\d+ draft_ms=\d+ verify_ms=\d+"
-    stages += r" limiter_wait_ms=\d+ total_ms=\d+"
+    # Changed on purpose (Ask speed, 24 Oct 2026): overlap and overlap_ms, step 19's early search.
+    stages = r" overlap=0 rewrite_ms=\d+ embed_ms=\d+ search_ms=\d+ widen_ms=\d+ draft_ms=\d+ verify_ms=\d+"
+    stages += r" overlap_ms=0 limiter_wait_ms=\d+ total_ms=\d+"
     expected = [
         r"route=search status=answered outcome=(verified|needs_review)",
         "route=search status=not_found outcome=notfound_model",

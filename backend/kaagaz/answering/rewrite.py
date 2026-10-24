@@ -210,8 +210,12 @@ def rewrite_and_plan(
     aspects_max: int = 0,
     budget: int | None = None,
     plan: bool = False,
+    deadline: float | None = None,
 ) -> Rewritten:
-    """``rewrite``, and the question's plan from the same call (PRD 6 B1) when ``plan``."""
+    """``rewrite``, and the question's plan from the same call (PRD 6 B1) when ``plan``.
+    ``deadline`` (on ``time.monotonic()``, a first question's ANSWER_PLAN_TIMEOUT_SECONDS): a
+    call not done by then gives no rewrite, aspects or plan, code ``plan_timeout``; None, the
+    model's own timeout."""
     user, past, kept = _message(question, history, memory, aspects_max, budget, plan)
     try:
         reply = model.chat_json(
@@ -220,9 +224,11 @@ def rewrite_and_plan(
             schema=SCHEMA,
             max_tokens=MAX_REPLY_TOKENS,
             temperature=REWRITE_TEMPERATURE,
+            deadline=deadline,
         )
-    except ModelUnavailable:
-        return _fallback("rewrite_model_down")
+    except ModelUnavailable as error:
+        timed_out = deadline is not None and error.code == "timeout"
+        return _fallback("plan_timeout" if timed_out else "rewrite_model_down")
     except ModelOutputError:
         return _fallback("rewrite_bad_output")
     raw, listed = reply.get("question"), reply.get("aspects", [])

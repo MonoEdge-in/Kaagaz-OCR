@@ -108,6 +108,13 @@ The steps (docs/architecture.md):
     rewrite call runs on every question and gives the plan; an unclear name is asked (status
     ``clarify``), a resolved one put in the question. ``pending``: a stored clarify answered,
     with no second rewrite. No plan: every step above as before.
+19. Ask speed (24 Oct 2026): a first question's rewrite and plan call (no history, no memory)
+    ends within ANSWER_PLAN_TIMEOUT_SECONDS, else it is answered with no plan or aspects (code
+    ``plan_timeout``); a follow-up's keeps the model's timeout, its search needs the rewrite.
+    Without whole documents, the first question's words, embedding and search (no aspects) run
+    beside that call (``_overlapped``), each database step in its own transaction; they are used
+    only when the call asks no clarify, leaves the question as it was and lists no aspects, so
+    the answer is the one the steps above give one after another.
 
 No source, no answer: an answered result always has at least one sentence,
 every sentence cites at least one source (but step 13's count, which sums up its cited
@@ -119,9 +126,11 @@ Every not-found answer logs one line, "answer not found", with a fixed reason
 code only (``_not_found``'s ``reason``). Every answer also logs one INFO line on its own
 logger, ``kaagaz.answering.timing`` (ask precision PR 1a, D): the route, the status, the
 not-found reason or the label, whole 0/1, the aspect count, and the milliseconds of each
-stage (rewrite, embed, search, widen, draft, verify; time.monotonic), of the model
-limiter's waits (``LIMITER_WAIT``, summed over parallel drafts) and in all. Codes and
-numbers only.
+stage (rewrite, embed, search, widen, draft, verify; time.monotonic, wall time on the
+answer's thread, adding up to the total), of the model limiter's waits (``LIMITER_WAIT``,
+summed over parallel drafts and step 19's overlap) and in all. ``overlap`` is 1 when step
+19's early search was used; ``overlap_ms``, the time it took, used or not, inside
+``rewrite_ms``. Codes and numbers only.
 
 Time: one ``available_fields`` query only for a question with an aggregate
 word and no unknown topic word, then either one fixed query or one search
@@ -136,7 +145,7 @@ import logging
 import re
 import time
 from collections.abc import Callable, Iterator, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextvars import ContextVar, copy_context
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime
@@ -414,6 +423,8 @@ class _Timing:
     reason: str | None = None  # the not-found reason code
     pinned: int = 0  # hits a Most relevant pick moved up (answering/pins.py)
     degraded: bool = False  # the model was down for the question's vector or its draft (KZ-006)
+    overlap: bool = False  # step 19's early search was used
+    overlap_ms: float = 0.0  # the time it took, beside the plan call
 
     def lap(self, stage: str) -> None:
         now = time.monotonic()
@@ -422,6 +433,18 @@ class _Timing:
 
 
 _TIMING: ContextVar[_Timing | None] = ContextVar("answer_timing", default=None)
+
+
+@dataclass(frozen=True, slots=True)
+class _Early:
+    """Step 19's early search (``AnswerService._early``): the asker's words, the question's
+    vector and hits, whether the model was down for the vector (KZ-006), and how long it took."""
+
+    expansion: Expansion
+    vector: list[float] | None
+    hits: Sequence[Hit]
+    degraded: bool
+    ms: float
 
 
 def _timing() -> _Timing:
@@ -446,15 +469,17 @@ def _timed[**P](answer: Callable[P, Answer]) -> Callable[P, Answer]:
             _TIMING.reset(token)
             LIMITER_WAIT.reset(waits)
         _timing_log.info(
-            "answer timing route=%s status=%s outcome=%s whole=%d aspects=%d pinned=%d %s"
-            " limiter_wait_ms=%.0f total_ms=%.0f",
+            "answer timing route=%s status=%s outcome=%s whole=%d aspects=%d pinned=%d overlap=%d %s"
+            " overlap_ms=%.0f limiter_wait_ms=%.0f total_ms=%.0f",
             result.route,
             result.status,
             timing.reason or result.label,
             timing.whole,
             timing.aspects,
             timing.pinned,
+            timing.overlap,
             " ".join(f"{stage}_ms={timing.ms.get(stage, 0.0):.0f}" for stage in _STAGES),
+            timing.overlap_ms,
             waited[0] * 1000,
             (timing.last - timing.start) * 1000,
         )
@@ -591,11 +616,15 @@ class AnswerService:
         recent = history[-turns:] if turns else ()
         remembered = prompt_text(memory)
         done = Rewritten(None, (), None)
+        early: Future[_Early] | None = None
         # CX6: the aspects are asked for, even on a first question, when they can be searched.
         most = self._settings.query_aspects_max if whole is None and self._widens() else 0
         planned = clarify and self._vocabulary is not None  # step 18: the plan, on every question
         if self._model is not None and (recent or remembered or most or planned):
-            done = rewrite_and_plan(
+            first = not (recent or remembered)  # step 19: a first question's call has its deadline
+            plan_time = self._settings.answer_plan_timeout_seconds
+            rewriting = partial(
+                rewrite_and_plan,
                 self._model,
                 question,
                 recent,
@@ -604,7 +633,12 @@ class AnswerService:
                 aspects_max=most,
                 budget=self._rewrite_budget,
                 plan=planned,
+                deadline=time.monotonic() + plan_time if first else None,
             )
+            if first and whole is None:
+                done, early = self._overlapped(rewriting, customer_id, question, scope, user_id)
+            else:
+                done = rewriting()
             if not (recent or remembered or most):
                 done = Rewritten(None, (), done.plan)  # called for the plan alone
         timing = _timing()
@@ -614,9 +648,44 @@ class AnswerService:
         narrowed = replace(scope, timezone=EVERYTHING.timezone) != EVERYTHING  # any filter at all
         if done.plan is not None and vocabulary is not None:
             step = first_step(vocabulary, customer_id, step.question, done.plan, narrowed)
+        kept = early if step.question == question else None  # step 19: searched the question as asked
         return self._step_answer(
-            customer_id, step, question, scope, user_id, whole, done.aspects, choice, pins
+            customer_id, step, question, scope, user_id, whole, done.aspects, choice, pins, kept
         )
+
+    def _overlapped(
+        self,
+        rewriting: Callable[[], Rewritten],
+        customer_id: str,
+        question: str,
+        scope: Scope,
+        user_id: str | None,
+    ) -> tuple[Rewritten, Future[_Early]]:
+        """Step 19: the rewrite and plan call, with ``_early`` beside it on a thread of its own,
+        in a copy of the context (billing, the rate scope, the limiter's waits, as ``_ensemble``);
+        both are done when this returns. The early search's failure is raised only where it is
+        used (``_answer``), as the same step would raise it there."""
+        with ThreadPoolExecutor(max_workers=1) as pool:  # leaving it joins the thread
+            early = pool.submit(copy_context().run, self._early, customer_id, question, scope, user_id)
+            done = rewriting()
+        if early.exception() is None:
+            _timing().overlap_ms = early.result().ms
+        return done, early
+
+    def _early(self, customer_id: str, question: str, scope: Scope, user_id: str | None) -> _Early:
+        """Step 19: the asker's words (``_expansion``), then the question's vector and hits as
+        ``_search_answer`` gets them with no aspects; nothing with nothing to search. On its own
+        thread: its own timing, so the answer's laps are the answer thread's only."""
+        start = time.monotonic()
+        _TIMING.set(_Timing(start, start))  # this thread's copy of the context only
+        expansion = self._expansion(customer_id, question, scope, user_id)
+        _, query_text, spoken = _searched_as(question, normalise(question))
+        vector: list[float] | None = None
+        hits: Sequence[Hit] = ()
+        if query_text:
+            vector = self._embed_all([spoken])[0]
+            hits = self._hits(customer_id, query_text, vector, [], scope, expansion)
+        return _Early(expansion, vector, hits, _timing().degraded, (time.monotonic() - start) * 1000)
 
     def _step_answer(
         self,
@@ -629,15 +698,17 @@ class AnswerService:
         aspects: Sequence[str],
         choice: ChatChoice | None,
         pins: Sequence[Pin],
+        early: Future[_Early] | None = None,
     ) -> Answer:
-        """The clarify ``step`` asks, else the answer to its question (``_respond``'s end)."""
+        """The clarify ``step`` asks, else the answer to its question (``_respond``'s end);
+        ``early``: step 19's search of that question, when there was one."""
         asked = step.question
         rewritten = asked if asked != question and len(asked) <= MAX_QUESTION else None
         if step.clarify is not None:  # no search, no draft
             asking = Answer("clarify", None, [], [], [], "search", asked, True, rewritten)
             return replace(asking, clarify=step.clarify, resume=step.resume)
         answer = self._checked(
-            self._answer(customer_id, asked, scope, user_id, whole, aspects, choice, pins), asked
+            self._answer(customer_id, asked, scope, user_id, whole, aspects, choice, pins, early), asked
         )
         # KZ-006: an answer found without the model stays answered; a not found may be the outage.
         unavailable = answer.status == "not_found" and _timing().degraded
@@ -821,9 +892,11 @@ class AnswerService:
         aspects: Sequence[str] = (),
         choice: ChatChoice | None = None,
         pins: Sequence[Pin] = (),
+        early: Future[_Early] | None = None,
     ) -> Answer:
         """``whole``: every piece of the scope (CX5), or None to search; ``aspects``: CX6's;
-        ``choice``: who drafts and ``pins``, the asker's picks (``answer``)."""
+        ``choice``: who drafts and ``pins``, the asker's picks (``answer``); ``early``: step
+        19's search of ``question``."""
         normalised = normalise(question)
         # "Hinglish understood as" is shown only when there was Hinglish to understand.
         shown = normalised.english if normalised.hinglish else question.strip()
@@ -845,20 +918,26 @@ class AnswerService:
         unchecked = self._unchecked_answer(customer_id, normalised, shown, scope)
         if unchecked is not None:
             return unchecked
-        # My words: read once, for this question and this user only, never cached.
-        document_id = (
-            scope.document_ids[0] if scope.document_ids is not None and len(scope.document_ids) == 1 else None
+        found = None if early is None else early.result()  # read beside the plan call (step 19)
+        expansion = (
+            self._expansion(customer_id, question, scope, user_id) if found is None else found.expansion
         )
-        words = () if user_id is None else self._words.words(customer_id, user_id, document_id=document_id)
-        expansion = expand(question, words) if words else NO_EXPANSION
         answer = self._search_answer(
-            customer_id, question, normalised, shown, scope, expansion, whole, aspects, choice, pins
+            customer_id, question, normalised, shown, scope, expansion, whole, aspects, choice, pins, found
         )
         if not expansion.used:
             return answer
         # The note, and never verified whatever passed (council 3 Oct 2026, A3).
         label = None if answer.label is None else "needs_review"
         return replace(answer, label=label, understood_words=expansion.understood())
+
+    def _expansion(self, customer_id: str, question: str, scope: Scope, user_id: str | None) -> Expansion:
+        """My words: read once, for this question and this user only, never cached."""
+        document_id = (
+            scope.document_ids[0] if scope.document_ids is not None and len(scope.document_ids) == 1 else None
+        )
+        words = () if user_id is None else self._words.words(customer_id, user_id, document_id=document_id)
+        return expand(question, words) if words else NO_EXPANSION
 
     def _unchecked_answer(
         self, customer_id: str, normalised: NormalisedQuestion, shown: str, scope: Scope
@@ -1156,13 +1235,9 @@ class AnswerService:
         aspects: Sequence[str] = (),
         choice: ChatChoice | None = None,
         pins: Sequence[Pin] = (),
+        early: _Early | None = None,
     ) -> Answer:
-        # Romanised question words and fillers (ahe, kiti) say nothing about the topic: they
-        # are left out of every step below, never out of normalise (PR 2b-2).
-        normalised = replace(normalised, keywords=glossary.content_words(normalised.keywords))
-        query_text = " ".join(normalised.keywords) or normalised.english
-        if not query_text and has_other_script_letters(question):
-            query_text = question.strip()  # typed in another script: searched as asked (council 4 Oct)
+        normalised, query_text, spoken = _searched_as(question, normalised)
         if not query_text:
             return _not_found("search", shown, [], model_used=False, reason="notfound_empty_question")
         numbers = _numbers(question, normalised.keywords, expansion)
@@ -1173,13 +1248,20 @@ class AnswerService:
         if whole is not None:
             evidence = number_evidence(whole)  # CX5: every piece, in reading order
         else:
-            # A question in another script is embedded as asked (W3): its Latin spelling means
-            # little. Its aspects (CX6) are embedded with it, in one call.
-            spoken = question if has_other_script_letters(question) else normalised.english
-            vector, *meanings = self._embed_all([spoken, *aspects])
-            _timing().lap("embed")
-            extra = [(_search_text(text), meaning) for text, meaning in zip(aspects, meanings, strict=True)]
-            hits = self._hits(customer_id, query_text, vector, extra, scope, expansion)
+            if early is not None and not aspects:  # step 19: the same embedding and search, done early
+                vector, hits = early.vector, early.hits
+                extra: list[tuple[str, list[float] | None]] = []
+                timing = _timing()
+                timing.degraded, timing.overlap = timing.degraded or early.degraded, True
+                timing.lap("embed")
+            else:
+                # Its aspects (CX6) are embedded with the question, in one call.
+                vector, *meanings = self._embed_all([spoken, *aspects])
+                _timing().lap("embed")
+                extra = [
+                    (_search_text(text), meaning) for text, meaning in zip(aspects, meanings, strict=True)
+                ]
+                hits = self._hits(customer_id, query_text, vector, extra, scope, expansion)
             if hits:  # never stuck (17 Oct 2026): found by words and typos, a missing vector is no outage
                 _timing().degraded = False
             translated = self._translated_search(
@@ -1639,6 +1721,20 @@ def _numbers(question: str, keywords: Sequence[str], expansion: Expansion) -> li
     """The numbers asked: the question's own (``numbers_asked``), then those of what the
     user's words were searched as ("my plot" meaning "gat 47" asks 47). O(q)."""
     return list(dict.fromkeys([*numbers_asked(question, keywords), *expansion.numbers()]))
+
+
+def _searched_as(question: str, normalised: NormalisedQuestion) -> tuple[NormalisedQuestion, str, str]:
+    """``normalised`` with its content words only, the text searched ("": nothing to search) and
+    the text embedded. Romanised question words and fillers (ahe, kiti) say nothing about the
+    topic: they are left out of every step after, never out of normalise (PR 2b-2). A question
+    typed in another script is searched (council 4 Oct) and embedded (W3) as asked: its Latin
+    spelling means little."""
+    normalised = replace(normalised, keywords=glossary.content_words(normalised.keywords))
+    query_text = " ".join(normalised.keywords) or normalised.english
+    if not query_text and has_other_script_letters(question):
+        query_text = question.strip()
+    spoken = question if has_other_script_letters(question) else normalised.english
+    return normalised, query_text, spoken
 
 
 def _search_text(aspect: str) -> str:
