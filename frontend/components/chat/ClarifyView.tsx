@@ -40,7 +40,7 @@ export function ClarifyView({
     if (!busy && ids.length > 0) onChoose(message, ids);
   };
   const question = (
-    <p id={id} className={styles.plain}>
+    <p id={id} className={styles.plain} lang={langOf(clarify.question)}>
       {clarify.question}
     </p>
   );
@@ -67,7 +67,9 @@ export function ClarifyView({
     return (
       <div className={`motion-rise ${styles.answerCard}`}>
         <fieldset className={styles.choices} aria-disabled={disabled}>
-          <legend className={styles.plain}>{clarify.question}</legend>
+          <legend className={styles.plain} lang={langOf(clarify.question)}>
+            {clarify.question}
+          </legend>
           {picks.map((choice) => (
             <label key={choice.id} className={styles.chip}>
               <input

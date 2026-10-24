@@ -28,7 +28,7 @@ from typing import Any, Literal, Protocol
 from sqlalchemy import RowMapping, text
 
 from kaagaz.answering.evidence import looks_like_instructions
-from kaagaz.answering.rewrite import Plan
+from kaagaz.answering.rewrite import MAX_ENTITY_CHARS, Plan
 from kaagaz.answering.sanitize import clean_text
 from kaagaz.chunking.script import latin_spelling, sound_key
 from kaagaz.db.engine import Database
@@ -360,6 +360,12 @@ def reply_to(
     rest = tuple(Entity(kind, name) for kind, name in resume["remaining"])
     fields = {**resume, "remaining": rest, "assumptions": tuple(resume["assumptions"]), "typed": typed}
     return Pending(**fields, turn=clarify["turn"], picked=() if typed else tuple(picks[i] for i in chosen))
+
+
+def answers_clarify(typed: str) -> bool:
+    """Typed words answer the open clarify (B2) only as a short name: at most MAX_ENTITY_CHARS and
+    no question mark; anything longer, or a question, is a new question that leaves it."""
+    return 0 < len(typed) <= MAX_ENTITY_CHARS and not typed.rstrip().endswith("?")
 
 
 def put(question: str, as_typed: str | None, said: str) -> str:

@@ -8,7 +8,7 @@ import { createElement, createRef } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { answerStatusText } from "@/components/chat/answer";
-import { chosenAfter, langOf, openClarify, pickedText } from "@/components/chat/clarify";
+import { answersClarify, chosenAfter, langOf, openClarify, pickedText } from "@/components/chat/clarify";
 import { ClarifyView } from "@/components/chat/ClarifyView";
 import { QuestionBox } from "@/components/chat/QuestionBox";
 import { MODE_TEXTS } from "@/lib/chatMode";
@@ -87,6 +87,12 @@ describe("the thread around it", () => {
       ["m4", null],
     ]);
     expect([langOf("Pune"), langOf("पुणे")]).toEqual([undefined, "mr"]);
+    // Review 3: typed words answer it only as a short name; a question or long text is a new question.
+    expect([answersClarify("Pimpri"), answersClarify("Whose land is it?"), answersClarify("x ".repeat(31))]).toEqual([
+      true,
+      false,
+      false,
+    ]);
     expect(answerStatusText(clarifying("m2").answer)).toBe("Did you mean Pune?");
   });
 
@@ -101,9 +107,27 @@ describe("the thread around it", () => {
         answering: { question: "Did you mean Pune?", onLeave: () => undefined },
       }),
     );
-    expect(html).toContain("Answering: Did you mean Pune?</span>");
+    expect(html).toContain("Answering: <span>Did you mean Pune?</span></span>");
     expect(html).toContain(">Ask something else</button>");
     expect(html.indexOf("Answering:")).toBeLessThan(html.indexOf("<textarea"));
+  });
+
+  it("marks a Devanagari question as Marathi in the card, the legend and the composer", () => {
+    const asked = "पुणे म्हणायचे होते का?"; // review 9
+    expect(view(clarifying("m1", { question: asked }), true)).toMatch(/<p id="[^"]+" class="[^"]+" lang="mr">/);
+    const places = { question: asked, multi: true, choices: [pick(1, "Maval"), pick(2, "Panvel"), ALL, OTHER] };
+    expect(view(clarifying("m1", places), true)).toContain(`lang="mr">${asked}</legend>`);
+    const box = renderToStaticMarkup(
+      createElement(QuestionBox, {
+        pending: false,
+        error: null,
+        onAsk: async () => true,
+        inputRef: createRef<HTMLTextAreaElement>(),
+        texts: MODE_TEXTS.documents,
+        answering: { question: asked, onLeave: () => undefined },
+      }),
+    );
+    expect(box).toContain(`Answering: <span lang="mr">${asked}</span>`);
   });
 });
 

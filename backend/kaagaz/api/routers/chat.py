@@ -59,7 +59,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from kaagaz.ai.client import ModelOutputError, ModelUnavailable
 from kaagaz.ai.usage import usage_scope
-from kaagaz.answering.clarify import MAX_CHOICES, Pending, latin_key, reply_to
+from kaagaz.answering.clarify import MAX_CHOICES, Pending, answers_clarify, latin_key, reply_to
 from kaagaz.answering.memory import NO_MEMORY, Memory, from_row, live
 from kaagaz.answering.pins import Pin
 from kaagaz.answering.rewrite import Turn
@@ -208,9 +208,12 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
     if not chat_limits(context.settings.chat_questions_per_minute).allow(user.user_id):
         raise ApiError(429, "rate_limited", TOO_MANY_QUESTIONS, headers={"Retry-After": "60"})
     question = body.question.strip()
-    if not question and (body.reply is None or not body.reply.choice_ids):
+    answering = body.reply
+    if not question and (answering is None or not answering.choice_ids):
         raise ApiError(400, "bad_request", "Type a question first.")
-    if body.reply is not None and body.conversation_id is None:
+    if answering is not None and not answering.choice_ids and not answers_clarify(question):
+        answering = None  # B2: a long or question-like text is a new question; the clarify is left
+    if answering is not None and body.conversation_id is None:
         raise ApiError(409, "conflict", CLARIFY_GONE)
     conversation_id = None if body.conversation_id is None else str(body.conversation_id)
     chosen = body.scope
@@ -230,8 +233,8 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
             earlier = chat_sql.openings(conn, user.customer_id, conversation_id)
             if chosen is None:
                 chosen = _saved_scope(recent)
-            if body.reply is not None:
-                pending = _pending(recent, body.reply, question)
+            if answering is not None:
+                pending = _pending(recent, answering, question)
                 question = ", ".join(pending.picked) or question
         scope = (
             EVERYTHING
@@ -288,8 +291,8 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
             elif chat_sql.get_conversation(conn, user.customer_id, conversation_id, user.user_id) is None:
                 raise ApiError(404, "not_found")
             # PRD 6 B1: checked again under the conversation's lock, so two replies never both answer it.
-            if body.reply and chat_sql.newest_message(conn, user.customer_id, conversation_id) != str(
-                body.reply.message_id
+            if answering and chat_sql.newest_message(conn, user.customer_id, conversation_id) != str(
+                answering.message_id
             ):
                 raise ApiError(409, "conflict", CLARIFY_GONE)
             asked = chat_sql.add_message(

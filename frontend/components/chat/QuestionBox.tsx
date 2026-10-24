@@ -16,6 +16,7 @@ import type { ReactNode, RefObject } from "react";
 import { Icon } from "@/components/ui/Icon";
 import type { ModeTexts } from "@/lib/chatMode";
 import { cleanQuestion, MAX_QUESTION_LENGTH, restoreAfterFailure, sendsOnKey } from "./answer";
+import { langOf } from "./clarify";
 import { useMediaQuery } from "./hooks";
 import styles from "./Chat.module.css";
 
@@ -127,7 +128,9 @@ export function QuestionBox({
       ) : null}
       {answering ? (
         <p className={styles.answering}>
-          <span className={styles.chipText}>Answering: {answering.question}</span>
+          <span className={styles.chipText}>
+            Answering: <span lang={langOf(answering.question)}>{answering.question}</span>
+          </span>
           <span aria-hidden="true">·</span>
           <button type="button" className={styles.answeringLeave} onClick={answering.onLeave}>
             Ask something else

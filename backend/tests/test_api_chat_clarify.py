@@ -84,6 +84,14 @@ def test_a_did_you_mean_pick_is_suggested_for_review_and_typed_words_answer_too(
     typed = reply(second["answer"]["id"], [], "Pimpri")
 
     assert (typed["question"]["text"], api.answers.resumed[-1].typed) == ("Pimpri", "Pimpri")
+    resumed = len(api.answers.resumed)  # review 3: a question, or long words, is a new question
+    for words in ("What is the total of invoice 42?", "x " * 40):
+        api.answers.reply = {**clarify, "resume": {**clarify["resume"], "confirm": True}}
+        opened = signed.client.post(
+            "/api/chat", json={"question": "Land in Puny?", "conversation_id": conversation}, headers=CSRF
+        )
+        asked = reply(opened.json()["answer"]["id"], [], words)
+        assert (asked["question"]["text"], len(api.answers.resumed)) == (words.strip(), resumed)
     with db.customer(signed.customer_id) as conn:
         rows = conn.execute(
             text("SELECT word, meaning, status, submitted_by FROM organization_word_suggestions")

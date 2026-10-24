@@ -69,7 +69,7 @@ import { answerCardId, answerStatusText, ASKING_STATUS, LOADED_STATUS, questions
 import { AnswerSettings } from "./AnswerSettings";
 import { askInFlight, resumable, resumedConversation, settleAsk, startAsk } from "./askStore";
 import { AnswerView } from "./AnswerView";
-import { answerDomId, chosenAfter, openClarify, pickedText } from "./clarify";
+import { answerDomId, answersClarify, chosenAfter, openClarify, pickedText } from "./clarify";
 import { ClarifyView } from "./ClarifyView";
 import { ConversationList } from "./ConversationList";
 import { scrollBehavior } from "./hooks";
@@ -535,7 +535,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
   const onAsk = async (question: string, only?: ChosenScope, chose?: ClarifyReply): Promise<boolean> => {
     const plan = sendPlan(mode);
     if (!plan.chat) return searchStories(question);
-    const answering = chose ?? (asking ? { message_id: asking.id, choice_ids: [] } : undefined);
+    const answering = chose ?? (asking && answersClarify(question) ? { message_id: asking.id, choice_ids: [] } : undefined);
     const asked = only ? chooseScope(scope, only) : scope;
     if (only) setScope(asked);
     setPending(question);
