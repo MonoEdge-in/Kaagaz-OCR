@@ -1313,6 +1313,8 @@ class DocumentProcessor:
                 "ambiguous_quotes": understanding.ambiguous_quotes,
                 "summary_dropped": understanding.counts.summary_dropped,
             }
+        if understanding.land is not None:  # PRD 6 D2: text past the last land window, unread
+            run.quote_config["land_truncated"] = int(understanding.land.truncated)
         return understanding
 
     def _map(self, job: Job, run: _Run, pieces: list[Piece], *, ask: bool = True) -> DocumentMap:

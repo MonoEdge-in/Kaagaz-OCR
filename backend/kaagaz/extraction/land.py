@@ -5,7 +5,8 @@ survey or khata number. They are read as the invoice's windows are (``invoice.wi
 ``WindowSettings``): one call per window, its text fenced and escaped as untrusted data
 (``land_prompt``), the reply quotes only (``LAND_SCHEMA``, PRD 2 D2's quote rule). A reply cut
 at its budget is asked again as two halves of its window, up to ``2 * max_windows`` calls; a
-model error gives no land values at all (``error_code``), and the card stays.
+model error gives no land values at all (``error_code``), and the card stays. Text past the
+last of ``max_windows`` windows is not read: ``truncated`` says so, and the run keeps it.
 
 **Locating**, inside the window only: a property's fields after their label, a party's name
 from the previous name on (from the window's start when listed out of order), its share
@@ -168,6 +169,7 @@ class LandExtraction:
     quotes: QuoteCounts
     model_calls: int
     error_code: str | None = None  # "model_<code>" when a call failed; values is then empty
+    truncated: bool = False  # text was left after the last window (EXTRACT_MAX_WINDOWS), unread
 
 
 def reads_land(doc_type: str | None, card_values: Sequence[ExtractedValue]) -> bool:
@@ -193,7 +195,7 @@ def read_land(
     max_windows, max_tokens = cut.max_windows, cut.max_tokens
     budget = input_token_budget(num_ctx=num_ctx, max_tokens=max_tokens, system=LAND_SYSTEM_PROMPT)
     wording = estimate_tokens(land_prompt(Window(0, 0, ""), 2 * max_windows, 2 * max_windows))
-    parts, _truncated = windows(
+    parts, truncated = windows(
         reader,
         chars=cut.chars,
         overlap=cut.overlap,
@@ -226,10 +228,10 @@ def read_land(
                 ]
                 planned += 1
                 continue
-            return LandExtraction([], QuoteCounts(), calls, f"model_{error.code}")
+            return LandExtraction([], QuoteCounts(), calls, f"model_{error.code}", truncated)
         beat(calls, planned)
         merge.add(part, answer)
-    return LandExtraction(merge.values(), merge.quotes, calls)
+    return LandExtraction(merge.values(), merge.quotes, calls, truncated=truncated)
 
 
 def value_number(field: str, text: str) -> Decimal | None:
