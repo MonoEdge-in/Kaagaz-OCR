@@ -61,7 +61,7 @@ export function YourWords({
   onToggle: () => void;
   onPage: (pageNo: number) => void;
 }) {
-  const here = !!found && found.boxes.some((region) => region.kind === "box" && region.page === pageNo);
+  const here = !!found && found.boxes.some((region) => region.page === pageNo); // a line, or a sheet's cell
   const next = found ? nextWordsPage(found.pages, pageNo) : null;
   const toggle = useRef<HTMLButtonElement>(null);
   const moved = useRef(false); // "Next page with your words" was pressed

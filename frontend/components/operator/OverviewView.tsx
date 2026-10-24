@@ -50,8 +50,8 @@ export const AI_OFF = "AI is off on this server";
 /** ready with refreshing: the last figures, shown while Refresh reloads the same period. */
 export type LoadState<T> = { kind: "loading" } | { kind: "error"; message: string } | { kind: "ready"; data: T; refreshing?: boolean };
 
-export interface Loaded<T> {
-  days: InsightPeriod;
+export interface Loaded<T, P extends number = InsightPeriod> {
+  days: P; // the period: days, or weeks on Answers by week
   attempt: number;
   state: LoadState<T>;
 }
@@ -62,15 +62,15 @@ export interface Loaded<T> {
  * buttons, sort and focus stay); otherwise loading (the first load, a new period, or
  * Try again after an error). A reply for an older period or attempt is never shown.
  */
-export function shownState<T>(loaded: Loaded<T> | null, days: InsightPeriod, attempt: number): LoadState<T> {
+export function shownState<T, P extends number = InsightPeriod>(loaded: Loaded<T, P> | null, days: P, attempt: number): LoadState<T> {
   if (loaded === null || loaded.days !== days) return { kind: "loading" };
   if (loaded.attempt === attempt) return loaded.state;
   return loaded.state.kind === "ready" ? { ...loaded.state, refreshing: true } : { kind: "loading" };
 }
 
 /** Loads once per period and per attempt (Refresh, Try again), never on a timer. `load` is a module-level function. */
-export function useLoad<T>(days: InsightPeriod, attempt: number, load: (days: InsightPeriod) => Promise<T>): LoadState<T> {
-  const [loaded, setLoaded] = useState<Loaded<T> | null>(null);
+export function useLoad<T, P extends number = InsightPeriod>(days: P, attempt: number, load: (days: P) => Promise<T>): LoadState<T> {
+  const [loaded, setLoaded] = useState<Loaded<T, P> | null>(null);
   useEffect(() => {
     let cancelled = false;
     load(days).then(

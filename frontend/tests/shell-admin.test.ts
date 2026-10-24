@@ -280,7 +280,7 @@ describe("kpiTiles and breakdowns", () => {
     verified_answers: 25,
     needs_review_answers: 5,
     feedback_up: 7,
-    feedback_down: 0,
+    feedback_down: 2,
     open_review_items: 3,
     older_versions: 12,
     in_trash: 4,
@@ -306,7 +306,8 @@ describe("kpiTiles and breakdowns", () => {
       "Not found in the documents",
       "Answers labelled Verified",
       "Answers labelled Ready to verify", // Changed on purpose (Tushar, 16 Oct 2026: Ready to verify)
-      "Thumbs up",
+      "Useful", // the product's words (PRD 6 F1), never "Thumbs up"
+      "Not useful",
     ]);
     // Plain words, no "OCR" (UI quality council, 15 Oct 2026).
     expect(pages?.rows).toEqual([
