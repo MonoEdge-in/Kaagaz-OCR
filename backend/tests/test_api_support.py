@@ -33,6 +33,7 @@ from fastapi.testclient import TestClient as TestClient
 from sqlalchemy import RowMapping, text
 
 from kaagaz.ai.client import ModelClient
+from kaagaz.answering.clarify import Pending
 from kaagaz.answering.memory import Memory
 from kaagaz.answering.pins import Pin
 from kaagaz.answering.rewrite import Turn
@@ -99,6 +100,31 @@ class ApiFakeStorage(MemoryStorage):
             return False
         return True
 
+    # The resumable upload calls (ApiStorage): no test here starts a resumable upload.
+    def start_resumable(self, customer_id: str, user_id: str, session_id: str) -> tuple[str, str]:
+        raise AssertionError("not used here")
+
+    def upload_resumable_part(self, key: str, upload_id: str, part_number: int, body: bytes) -> None:
+        raise AssertionError("not used here")
+
+    def resumable_parts(self, key: str, upload_id: str) -> list[tuple[int, int, str]]:
+        raise AssertionError("not used here")
+
+    def complete_resumable(self, key: str, upload_id: str, parts: list[tuple[int, str]]) -> None:
+        raise AssertionError("not used here")
+
+    def resumable_complete(self, key: str) -> bool:
+        raise AssertionError("not used here")
+
+    def open_resumable(self, key: str) -> Any:
+        raise AssertionError("not used here")
+
+    def delete_resumable(self, key: str) -> None:
+        raise AssertionError("not used here")
+
+    def abort_resumable(self, key: str, upload_id: str) -> None:
+        raise AssertionError("not used here")
+
 
 class ApiFakeQueue(MemoryQueue):
     def __init__(self) -> None:
@@ -150,7 +176,11 @@ class FakeAnswers:
     summarised: list[tuple[list[Turn], Memory, list[str]]] = field(default_factory=list)
     choices: list[ChatChoice | None] = field(default_factory=list)  # features 25-27: who drafts each
     pins: list[list[Pin]] = field(default_factory=list)  # the Most relevant picks each question got
+    histories: list[list[Turn]] = field(default_factory=list)  # the earlier turns each question got
     unavailable: bool = False  # KZ-006: not found while the model was down
+    resumed: list[Pending] = field(default_factory=list)  # PRD 6 B1: each clarify answered
+    clarifies: list[bool] = field(default_factory=list)  # PRD 6 (0052): the nlq_clarify switch each got
+    cited: list[list[str]] = field(default_factory=list)  # PRD 6 B: the earlier answers' documents each got
 
     def answer(
         self,
@@ -163,12 +193,19 @@ class FakeAnswers:
         memory: Memory,
         choice: ChatChoice | None = None,
         pins: Sequence[Pin] = (),
+        pending: Pending | None = None,
+        clarify: bool = True,
+        cited: Sequence[str] = (),
     ) -> _FixedAnswer:
         self.asked.append((customer_id, question))
+        self.cited.append(list(cited))
+        self.clarifies.append(clarify)
         self.pins.append(list(pins))
+        self.histories.append(list(history))
         self.choices.append(choice)
         self.scopes.append(scope)
         self.memories.append(memory)
+        self.resumed += [pending] if pending is not None else []
         return _FixedAnswer(self.reply, self.unavailable)
 
     def remember(self, turns: Sequence[Turn], memory: Memory, cited: Sequence[str]) -> Memory | None:

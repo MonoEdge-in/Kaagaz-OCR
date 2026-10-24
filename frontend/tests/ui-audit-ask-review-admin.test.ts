@@ -125,7 +125,10 @@ describe("Ask (A1 to A6)", () => {
     );
     expect(html).not.toContain('class="field'); // the global field label is all caps
     expect(html).toContain('aria-label="Actions for GST bills"');
-    expect(html).toMatch(/role="menuitem"[^>]*>Rename<\/button><button[^>]*role="menuitem"[^>]*>Delete<\/button>/);
+    // Changed on purpose (plain words, 25 Oct 2026): each item has a line under it saying what it does.
+    expect(html).toMatch(
+      /role="menuitem"[^>]*>Rename<span[^>]*>Give this conversation a new name\.<\/span><\/button><button[^>]*role="menuitem"[^>]*>Delete<span[^>]*>[^<]+<\/span><\/button>/,
+    );
     expect(html).toMatch(/aria-label="Refresh conversations" title="Refresh conversations"/);
   });
 

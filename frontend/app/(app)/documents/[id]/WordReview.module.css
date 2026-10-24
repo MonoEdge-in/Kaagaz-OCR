@@ -9,11 +9,7 @@
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-3) var(--space-6);
-  padding: var(--space-3) var(--space-4);
-  border: 1px solid var(--border);
-  border-radius: var(--k-r-2);
-  background: var(--bg-surface);
+  gap: var(--space-2) var(--space-6);
   contain: layout style;
 }
 
@@ -35,14 +31,94 @@
   margin: 0;
 }
 
-.summary {
+/* The status line (document panel UX, 25 Oct 2026): one sentence with its icon, Check it,
+   and More details at the end; under it, the details, closed at first. */
+.statusRow {
+  display: flex;
+  flex: 1 1 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  min-width: 0;
+}
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  margin-inline-end: auto;
+  font-size: 1rem;
   font-weight: 600;
+}
+
+.status[data-clear] {
+  color: var(--success);
+}
+
+.statusIcon {
+  flex: none;
+}
+
+.chevron {
+  flex: none;
+}
+
+.toggle[aria-expanded="true"] .chevron {
+  transform: rotate(180deg);
+}
+
+.details {
+  display: flex;
+  flex: 1 1 100%;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  padding-block-start: var(--space-3);
+  border-block-start: 1px solid var(--border);
+}
+
+.details[hidden] {
+  display: none;
+}
+
+.stop {
+  align-self: flex-start;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .chevron {
+    transition: transform var(--motion-quick) var(--ease-out);
+  }
+
+  .details[data-open] {
+    animation: open-in var(--motion-quick) var(--ease-out);
+  }
+
+  /* The check draws in once, when the line has just turned to "Everything is checked". */
+  .status[data-changed] .statusIcon path {
+    stroke-dasharray: 21;
+    animation: draw-check var(--motion-draw) var(--ease-out) both;
+  }
+}
+
+@keyframes open-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+@keyframes draw-check {
+  from {
+    stroke-dashoffset: 21;
+  }
 }
 
 .line {
   margin: 0;
   color: var(--text-secondary);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-base);
 }
 
 /* The live region stays in the page (so its words are read out) and takes no space while empty. */
@@ -127,6 +203,11 @@
     padding: var(--space-4) var(--space-4) max(var(--space-4), env(safe-area-inset-bottom));
     border-block-start: 1px solid var(--border-strong);
     background: var(--bg-surface);
+  }
+}
+
+@media (max-width: 767.98px) and (prefers-reduced-motion: no-preference) {
+  .review {
     --motion-y: 16px;
     animation: motion-in var(--t-med) var(--ease);
   }
@@ -225,10 +306,8 @@
 }
 
 .fieldLabel {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  font-size: var(--fs-base);
+  font-weight: 500;
   color: var(--text-secondary);
 }
 

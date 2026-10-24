@@ -30,7 +30,8 @@ Then (D2, D3, A1, A7, A9):
 * A key fact's field must match ``^[a-z][a-z0-9_]{0,62}$`` (dropped otherwise,
   ``bad_fields``) and must not be a reserved name (``RESERVED_KEY_FACT_FIELDS``,
   A1(a): the invoice, party, identifier and date fields, and the fields fixed
-  queries add up or group by). Metric names such as profit and sales stay.
+  queries add up or group by), nor start with ``land_``, the land reading's (PRD 6 D2).
+  Metric names such as profit and sales stay.
 * Fields: a party's comes from ``PARTY_FIELDS`` by role (PROVISIONAL mapping),
   the date's is ``document_date`` (PROVISIONAL: D3 names none), and a repeated
   party or key-fact field gets ``_2``, ``_3``... within 63 characters. An
@@ -130,6 +131,7 @@ MAX_PARTIES, MAX_IDENTIFIERS = 20, 30  # security amendment A7
 MAX_FIELD_CHARS = 63
 MAX_CARD_BYTES = 60_000  # PROVISIONAL: under the 64 KiB CHECK on documents.card, with room to spare
 MAX_CARD_CHECKS = 8192  # council fix 8, PROVISIONAL: candidate spots all of one card's searches check
+LAND_FIELD_PREFIX = "land_"  # extraction.land's fields (PRD 6 D2): never a card key fact's
 
 # PR 6's E4 names, stored and as the model gives them (plan 3.8), including the line fields.
 _INVOICE_FIELDS = (
@@ -258,7 +260,8 @@ CARD_SYSTEM_PROMPT = (
     "  receipt: proof that a payment was received;\n"
     "  bank_statement: a bank's list of the transactions of one account;\n"
     "  land_record: a record of land or property and who holds it, such as a 7/12 extract or a "
-    "property card;\n"
+    "property card, or a map, sketch or naksha of land plots, such as a village map, a survey or gat "
+    "sketch or a plot layout;\n"
     "  contract: an agreement between parties, such as a lease, a deed or an order;\n"
     "  register: a list kept over time, such as a stock, sales, cash or attendance register;\n"
     "  form: a filled-in application or government form;\n"
@@ -271,7 +274,8 @@ CARD_SYSTEM_PROMPT = (
     "- identifiers: numbers that identify the document or an account, at most 30. Each has kind and "
     "value_quote, the number as written. kind is invoice_number, po_number (a purchase order), "
     "challan_number (a delivery or payment challan), gstin, pan, survey_number (a land survey or gat "
-    "number), khata_number, account_number, reference_number or other.\n"
+    "number of the document's own land, never a neighbour's printed on a map), khata_number, "
+    "account_number, reference_number or other.\n"
     "- document_date: the date the document was made, as value_quote, or null.\n"
     "- key_facts: other important values, such as a balance, an area or a profit. Each has field (its "
     'name), label_quote (the words just before the value that name it, or "" when there are none) '
@@ -599,7 +603,7 @@ class _Card:
             if not _FIELD.fullmatch(name):
                 self._bad += 1
                 continue
-            if name in RESERVED_KEY_FACT_FIELDS:
+            if name in RESERVED_KEY_FACT_FIELDS or name.startswith(LAND_FIELD_PREFIX):
                 self._reserved += 1
                 continue
             label, found = find_labelled(

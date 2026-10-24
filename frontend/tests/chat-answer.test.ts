@@ -119,7 +119,7 @@ describe("answer texts", () => {
   // the Verified / Needs review line over an answer, is gone.
   it("uses the agreed not found sentence", () => {
     // Changed on purpose (UI audit, 16 Oct 2026): A4, calm words, no "couldn't".
-    expect(NOT_FOUND_TEXT).toBe("Not found in the documents searched.");
+    expect(NOT_FOUND_TEXT).toBe("Nothing in your documents matches this yet."); // PRD 6 decision 9
   });
 });
 
@@ -321,7 +321,7 @@ describe("pages that couldn't be read (PRD 5 F6, U7)", () => {
     };
     const html = renderToStaticMarkup(createElement(AnswerView, { message, question: "total?" }));
     // Changed on purpose (UI audit, 16 Oct 2026): A4.
-    expect(html).toContain("Not found in the documents searched.");
+    expect(html).toContain("Nothing in your documents matches this yet."); // PRD 6 decision 9
     expect(html).toContain("Not found in the readable text.");
     expect(html).toContain('href="/documents/d1?page=3"');
     expect(html).toContain("and 1 more");
@@ -390,8 +390,11 @@ describe("a chip lights its source card", () => {
 });
 
 // Tushar, 16 Oct 2026: "In Ask I don't want to show Needs review in the response."
-// Review is its own feature; Ask shows no label, badge, dashed edge or Review link.
-describe("no Needs review in Ask", () => {
+// Changed on purpose (PRD 6 A, 24 Oct 2026, decision 1): labels come back in Ask, in the
+// product's words (Verified, Ready to verify), beside each figure and total of an answer in
+// contract v2 only (chat-answer-v2.test.ts). Answers saved before it, source cards and
+// document rows still show none, and Ask never says "Needs review" nor links to Review.
+describe("labels in Ask: only beside a v2 answer's figures", () => {
   const LABEL_WORDS = /needs review|verified|review|not fully checked|Check page/i;
   // The words a person sees or hears (class names such as "previewSkeleton" left out),
   // and no badge or label edge in the markup.
@@ -417,7 +420,7 @@ describe("no Needs review in Ask", () => {
     feedback: null,
   });
 
-  it("renders no label for a needs-review, a verified or an unchecked answer", () => {
+  it("renders no label for a needs-review, a verified or an unchecked answer saved before v2", () => {
     for (const message of [answered("needs_review"), answered("verified"), answered("needs_review", "unchecked")]) {
       noLabel(renderToStaticMarkup(createElement(AnswerView, { message, question: "total?" })));
     }
@@ -425,7 +428,8 @@ describe("no Needs review in Ask", () => {
       createElement(AnswerView, { message: answered("needs_review", "unchecked"), question: "profit?" }),
     );
     expect(unchecked).toContain(UNCHECKED_TEXT);
-    expect(unchecked).toContain('href="/documents/d1"');
+    // Changed on purpose (package H, 24 Oct 2026): the document opens with the question's words lit.
+    expect(unchecked).toContain('href="/documents/d1?words=profit+total"');
   });
 
   it("renders no label on a source card, live or deleted", () => {
@@ -436,11 +440,11 @@ describe("no Needs review in Ask", () => {
     }
   });
 
-  it("chat components never use LabelBadge or say Needs review", () => {
+  it("only the answer card uses LabelBadge, and no chat component says Needs review", () => {
     const dir = join(__dirname, "../components/chat");
     for (const name of readdirSync(dir).filter((file) => /\.tsx?$/.test(file))) {
       const code = readFileSync(join(dir, name), "utf8").replace(/^\s*(\/\/|\*|\/\*).*$/gm, "");
-      expect(code, name).not.toContain("LabelBadge");
+      if (name !== "AnswerView.tsx") expect(code, name).not.toContain("LabelBadge");
       expect(code, name).not.toMatch(/["'`][^"'`]*needs review[^"'`]*["'`]/i);
       expect(code, name).not.toContain("/review");
     }

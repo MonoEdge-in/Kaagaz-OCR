@@ -273,6 +273,54 @@ def test_members_cannot_resolve(db: Database) -> None:
     assert _stored(db, reviewer.customer_id, value_id)[3] == "needs_review"
 
 
+@pytest.mark.db
+def test_verify_and_verify_all_from_the_document_view(db: Database) -> None:
+    """Issue #224: the document view's Verify and Verify all send each value still Ready to
+    verify as typed, unchanged, one POST each. Each keeps its text and gets one
+    review.resolve audit row; a verified value and the older version are left alone."""
+    api, reviewer, older, older_value = _setup(db)
+    customer_id = reviewer.customer_id
+    with db.customer(customer_id) as conn:
+        conn.execute(text("UPDATE documents SET is_current = false WHERE id = :d"), {"d": older})
+    current = api.add_document(customer_id, name="kirana bill v2.pdf", family_id=older, version_no=2)
+    api.add_page(customer_id, current)
+    pending = [
+        api.add_value(customer_id, current, value="1,200", raw="1,200"),
+        api.add_value(customer_id, current, field_name="invoice_date", value="12/08/2026", raw="12/O8/2026"),
+    ]
+    verified = api.add_value(
+        customer_id, current, field_name="gstin", label="verified", reason="readers_agree"
+    )
+    admin = api.sign_in(customer_id, "admin")
+    audit_before = len(api.audit_rows(customer_id))
+
+    for signed, value_id, shown in ((reviewer, pending[0], "1,200"), (admin, pending[1], "12/08/2026")):
+        reply = signed.client.post(
+            f"/api/review/{value_id}",
+            json={"choice": "typed", "value": shown, "remember": False},
+            headers=CSRF,
+        )
+        assert reply.status_code == 200
+        assert (reply.json()["value"]["value"], reply.json()["value"]["label"]) == (shown, "verified")
+
+    assert _stored(db, customer_id, pending[0]) == ("1,200", Decimal(1200), None, "verified", "corrected")
+    assert _stored(db, customer_id, pending[1])[2:] == (date(2026, 8, 12), "verified", "corrected")
+    assert _stored(db, customer_id, verified) == ("1,200", None, None, "verified", "readers_agree")
+    assert _stored(db, customer_id, older_value) == ("1,200", None, None, "needs_review", "readers_disagree")
+    assert _writes(db, customer_id) == (2, 0)  # two correction rows, nothing remembered
+    details = {"choice": "typed", "remember": False, "document_id": current}
+    assert api.audit_rows(customer_id)[audit_before:] == [
+        ("review.resolve", "extracted_value", pending[0], details),
+        ("review.resolve", "extracted_value", pending[1], details),
+    ]
+    # The detail, read again as after a page reload, still shows both as Verified.
+    labels = {
+        value["id"]: value["label"]
+        for value in reviewer.client.get(f"/api/documents/{current}").json()["values"]
+    }
+    assert labels == {pending[0]: "verified", pending[1]: "verified", verified: "verified"}
+
+
 # --- only a value that needs review can be resolved -----------------------------------
 
 

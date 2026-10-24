@@ -69,6 +69,8 @@ is rewritten with (0: no rewrite).
 Two optional settings (council 4 Oct 2026): `ANSWER_TRANSLATE_QUESTION` (false when
 unset) also searches an English or Romanised question in the script of its scans, with
 one model call that times out after `MODEL_TRANSLATE_TIMEOUT_SECONDS` (20, PROVISIONAL).
+`ANSWER_PLAN_TIMEOUT_SECONDS` (4 when unset, 1 to 60): a first question's rewrite and plan
+call ends by then, and the question is answered without its plan (code `plan_timeout`).
 One more (council 5 Oct 2026, PROVISIONAL): `OCR_DPI_RULE` (`fixed` when unset) draws each
 scan page at `OCR_DPI`; `text_height` draws it at the DPI its text needs, `OCR_DPI` at most;
 `text_height_no_scan_cap` is the same without the scan cap, for the accuracy test.
@@ -208,7 +210,7 @@ docs/runbooks/prd5-cpu-server-switch.md.
    for the last 5 documents read: `dc exec -T worker python -m kaagaz.cli scan-times --last 5`.
 
 **RapidOCR, the fallback.** If Gemini misbehaves, set `OCR_ENGINE=rapidocr` in
-`.env` and restart both: `dc up -d api worker`. Change it back the same way.
+`.env` and restart both: `dc up -d --no-deps api worker`. Change it back the same way.
 
 ### Production on EC2
 
@@ -285,11 +287,11 @@ Lambda's `INSTANCE_ID` and `WAKE_TOKEN` live only in the Lambda console.
 
 **What runs by itself.** `kaagaz-deploy.timer` runs `infra/ec2/deploy.sh` 2
 minutes after boot and every 5 minutes: when `origin/production` has a new
-commit it rebuilds and starts everything (migrations included; 1 to 2 minutes
-of downtime), otherwise it starts anything that is down. Each run logs one line,
-the commit and `deployed`, `unchanged` or `failed`
-(`journalctl -u kaagaz-deploy -n 50`); a failed build is tried again on the
-next run. After a good deploy it removes build cache unused for 7 days
+commit it deploys it (Deploys and rollback, below; 1 to 2 minutes of downtime
+while the app restarts), otherwise it starts anything that is down. Each run
+logs one line, the commit and `deployed`, `unchanged`, `held`, `failed` or
+`rolled back to <commit>` (`journalctl -u kaagaz-deploy -n 50`); a failed build
+or migration is tried again on the next run. After a good deploy it removes build cache unused for 7 days
 (`docker builder prune --filter until=168h`, never volumes), and before a build
 with under 20 GB free on `/` it logs `low disk: ...` and does the same first;
 `docker system df` shows what is left. `kaagaz-pgdump.timer` writes `~/backups/kaagaz-YYYYMMDD.dump` (mode
@@ -297,6 +299,57 @@ with under 20 GB free on `/` it logs `low disk: ...` and does the same first;
 server was stopped then. Data Lifecycle Manager takes a daily EBS snapshot at
 20:30 UTC (02:00 IST), keeping 7. Restore from a snapshot (the whole disk) or
 a dump (section 6). Logs: `dc logs --since 1h <service>`.
+
+**Deploys and rollback** (#246, ADR 0052). A new commit goes live in four steps,
+and the site keeps serving the old release until step 3:
+
+1. Build `kaagaz-backend:<commit>` and `kaagaz-frontend:<commit>`. A failed
+   build changes nothing.
+2. `alembic upgrade head` in a throwaway container from the new image
+   (`KAAGAZ_TAG=<commit> dc run --rm -T migrate`). A failed migration changes
+   no container and logs `migrate failed; site still on <commit>`.
+3. Point `kaagaz-backend:local` and `kaagaz-frontend:local` (what `dc` runs) at
+   the new images, start every service but `migrate` with `--no-deps`, and wait
+   up to 3 minutes for api to be healthy.
+4. If it is not, point `:local` back at the previous images and start those
+   (`<commit> rolled back to <previous>`). That commit is held: the timer logs
+   `<commit> held` and never tries it again; the next commit on `production`
+   deploys as usual.
+
+`~/.kaagaz-images` holds the live commit, then the one to roll back to, and is
+what `:local` must point at: every timer run puts `:local` back on the live
+images (undoing a hand `dc build`) before starting anything that is down.
+`~/.kaagaz-deployed` holds the live commit too, written only once api is
+healthy, and `~/.kaagaz-rolled-back` the held commit. The live and previous
+images are kept; older commit images are removed after a good deploy. On the
+first deploy with this flow, if api is healthy, the running `:local` images are
+named after the commit in `~/.kaagaz-deployed`; otherwise the log says there is
+no previous release to roll back to yet.
+
+To roll back by hand, as `ubuntu`: `~/kaagaz/infra/ec2/deploy.sh --rollback`.
+It starts the previous images, waits for api to be healthy, holds the commit
+the checkout is on, and prints `<commit> rolled back to <previous>`; run it
+again to go forward. It never runs a downgrade migration, so the older code runs
+on the newer schema: this is safe only while migrations only add columns and
+tables (ADR 0052, M1). A rollback also uses the checkout's compose files and
+Caddyfile, those of the newest commit, so every release must keep them working
+for the release before it.
+
+**Never start the app with a plain `dc up -d`** on the server: it runs
+`migrate` with `:local`, and after a rollback over a migration that older image
+fails on the newer database and leaves api, worker and frontend stopped (until
+#246 PR 1 lets `migrate` accept a database ahead of the code). Use
+`dc up -d --no-deps <service>`, and never `dc up --build` or `dc build`.
+
+If `migrate` fails: the site is still on the old release, and every 5 minutes
+the timer tries again. Read the error with `journalctl -u kaagaz-deploy -n 50`.
+Fix it in a PR, never by hand on the server. Before any `alembic stamp` (Vrushit's
+decision), take a backup (`~/kaagaz/infra/ec2/pgdump.sh`) and check
+`alembic_version` against the real schema: on 24 Oct 2026 the row said 0042
+while 0043 to 0045 were already applied, so `upgrade` failed with
+`DuplicateTable`. For each migration after the stamped one, check that the
+tables it creates exist (`SELECT to_regclass('public.<table>')`), then stamp
+the last one that is fully there.
 
 **Releases** (EC2 PRD section 6).
 
@@ -551,7 +604,7 @@ The demo users are `admin@`, `reviewer@` and `member@` on `sharma-traders.exampl
 
 **19. Search, "not found" and the claim check**
 - Check: ask a question that is not about a number, with a typo in a word from a document; then ask "What is the weather in Delhi?".
-- Expect: the first gives `route:"search"` with `kind:"piece"` citations (exact words, typo-tolerant and, with a model, meaning search are merged). The second gives `status:"not_found"`, the text "I couldn't find this in your documents." and a list of closest documents. With a model on, any sentence citing nothing, or with a number that is not in its evidence, is dropped, and links and markup are stripped.
+- Expect: the first gives `route:"search"` with `kind:"piece"` citations (exact words, typo-tolerant and, with a model, meaning search are merged). The second gives `status:"not_found"`, the text "Nothing matches every part of this. These are the closest documents." and a list of closest documents. With a model on, any sentence citing nothing, or with a number that is not in its evidence, is dropped, and links and markup are stripped.
 - Tests: `test_search_db.py`, `test_search_fuse.py`, `test_answering_golden.py` (`test_ten_unanswerable_questions_are_all_not_found`, `test_prompt_injection_in_evidence_changes_nothing`), `test_answering_verify.py`, `test_answering_sanitize.py`.
 
 **20. Answer labels**
@@ -560,8 +613,8 @@ The demo users are `admin@`, `reviewer@` and `member@` on `sharma-traders.exampl
 - Tests: `test_answering_golden.py` (`test_one_unverified_value_makes_the_answer_needs_review`), `test_answering_fixed_queries_db.py`.
 
 **21. Conversations and feedback**
-- Check: `curl -b <jar> $API/conversations`, then `$API/conversations/<id>`; ask again with `"conversation_id":"<id>"`; `curl -i -b <jar> -H "$H" -H "$J" -d '{"rating":"down","reason":"wrong total"}' $API/messages/<answer message id>/feedback`.
-- Expect: conversations list newest first and belong to their user only (a colleague gets `404`); the follow-up lands in the same conversation; feedback gives `204`, a second vote replaces the first, and the reason is stored as typed. On screen the URL becomes `/chat?c=<id>` and a reload brings the conversation back.
+- Check: `curl -b <jar> $API/conversations`, then `$API/conversations/<id>`; ask again with `"conversation_id":"<id>"`; `curl -i -b <jar> -H "$H" -H "$J" -d '{"rating":"down","reason":"wrong total","reason_codes":["wrong_figure"],"notice_shown":true}' $API/messages/<answer message id>/feedback`.
+- Expect: conversations list newest first and belong to their user only (a colleague gets `404`); the follow-up lands in the same conversation; feedback gives `204`, a second vote replaces the first, and the reason and its codes are stored as sent; the 21st rating in a minute gets `429`. On screen the buttons say Useful and Not useful, and Not useful asks "What went wrong?" with the admin notice above Send. On screen the URL becomes `/chat?c=<id>` and a reload brings the conversation back.
 - Tests: `test_api_chat.py`; `frontend/tests/chat-logic.test.ts`, `chat-answer.test.ts`.
 
 **22. Answers with a model**
@@ -585,6 +638,8 @@ The demo users are `admin@`, `reviewer@` and `member@` on `sharma-traders.exampl
 - Check: `curl -b <admin jar> "$API/admin/audit?limit=10"` and `$API/admin/stats`.
 - Expect: the audit log newest first, with names and actions such as `auth.login`, `document.upload`, `chat.ask`, `review.resolve`, `user.create`; the stats count documents by status, questions, answers found and not found, feedback and open review items, for this customer only.
 - Tests: `test_api_admin.py`.
+- Answer quality (PRD 6 F2): `curl -b <admin jar> "$API/admin/answer-quality?status=open&weeks=4"`, then `curl -b <admin jar> -X PUT -H "$H" -H "$J" -d '{"handled":true,"seen":"<given_at>"}' $API/admin/answer-quality/<id>/handled`. Expect only Not useful answers given after the notice, with who asked, the question, the answer, the reasons and the date, and weekly Useful and Not useful counts; handled moves it to `status=handled` and writes `feedback.handled` with ids only; a member or reviewer gets `403`, another company's id `404`. Tests: `test_api_answer_quality.py`, `test_isolation_feedback.py`; `frontend/tests/admin-answer-quality.test.ts`.
+- What Kaagaz learned (PRD 6 F3): mark an answer Useful, ask again on the same words, then `curl -b <admin jar> $API/admin/learned` and `curl -b <admin jar> -X DELETE -H "$H" $API/admin/learned/<document id>`. Expect the cited document with how many people marked it, then `204` and a `learning.remove` audit row; the operator's `GET $API/operator/answer-weeks?weeks=4` gives counts per organisation and ended week only. Tests: `test_learning_db.py`, `test_answering_pins.py`, `test_operator_answer_weeks_db.py`; `frontend/tests/admin-learned.test.ts`.
 
 **26. Customer separation**
 - Check: `login admin@mehta-textiles.example`, then use its jar to `GET $API/documents/<a Sharma document id>`, `POST $API/review/<a Sharma value id>` and `PATCH $API/admin/users/<a Sharma user id>`; in the database, `SQL "BEGIN; SET LOCAL ROLE kaagaz_app; SELECT count(*) FROM documents; COMMIT;"`.
@@ -666,6 +721,7 @@ The made-up golden documents in `backend/tests/golden/docs/` serve these checks 
 - Check: with the model on, `docker compose exec -T api python -m kaagaz.cli reembed`, twice; then `docker compose exec -T -e MODEL_ENABLED=false api python -m kaagaz.cli reembed`.
 - Expect: one line per customer, `customer <id>: N documents, C cleared, E embedded`; the second run embeds 0. With the model off, `error: reembed needs the model: set MODEL_ENABLED=true` and exit code 2. `--customer-id <id>` does one customer; `--all` makes every vector again.
 - Tests: `test_reembed_db.py`, `test_indexing_db.py`.
+- Land facts (PRD 6 D3): `python -m kaagaz.cli land-facts --count` (no model), `--keys-only` (no model), `--sample 20 --customer-id <id> --max-usd 1` (prints each document's calls, tokens and `cost_usd` and the estimate for all eligible documents), then `--all --max-usd <approved>` only once the sample's cost is approved. A second run reads nothing again. Tests: `test_land_facts_cli_db.py`, `test_isolation_land_facts.py`.
 
 **40. Document card, related documents, invoice and low-resolution panels**
 - Check (screen): with the model on, open `textile-invoice.pdf` from the golden documents; click a card item and an invoice cell. Open a document that shares its invoice or PO number with another (feature 33), and a photo scanned under `LOW_RES_DPI`.
@@ -720,7 +776,7 @@ Use the golden `monthly-report.pdf` (20 pages, "$12,000" runs from page 15 to pa
 
 **49. The golden run**
 - Needs: the whole stack with the model on (`OPENROUTER_API_KEY` set, `MODEL_ENABLED=true`), the API and database on this machine, and `.env` loaded in a shell in `backend/`. It is never run in CI.
-- Check: `.venv/Scripts/python.exe -m scripts.run_golden --git-sha "$(git rev-parse HEAD)" --runs 3`. For the precision baseline add `--set golden|xlang|romanised --json golden-base.json` (one set per run); later runs add `--compare golden-base.json`.
+- Check: `.venv/Scripts/python.exe -m scripts.run_golden --git-sha "$(git rev-parse HEAD)" --runs 3`. For the precision baseline add `--set golden|xlang|romanised --json golden-base.json` (one set per run); later runs add `--compare golden-base.json`. The NLQ set (`--set nlq`, PRD 6) is run twice, once with the server at `ANSWER_WHOLE_DOC_TOKENS=0` and once at the default, each with its own `--json`.
 - Expect: it makes a new "Golden Test Co" customer, uploads the 7 golden documents and asks the 30 questions 3 times. Then a header (git SHA, date, models, settings, the questions' sha256), a row per question, each run's totals and slices, "The model wrote N of M search-route answers" (N must be above 0), and the WORST RUN line with Wilson intervals. The password comes from `KAAGAZ_ADMIN_PASSWORD` or is made up, and is never printed. Record the worst run in docs/architecture.md, Decisions.
 - Tests: `test_golden_questions.py`, `test_golden_scoring.py`, `test_golden_runner.py`.
 
@@ -782,43 +838,3 @@ docker compose -p kaagaz-drill up -d
 4. Clean up: `docker compose -p kaagaz-drill down -v`, `rm -r ../kaagaz-backup`, then `docker compose up -d` brings back the main stack.
 
 For a real restore on a new laptop, run the same commands without `-p kaagaz-drill`, and skip step 4: otherwise a later plain `docker compose up` starts an empty stack, and step 4 deletes the restored data.
-
-## 7. Deploy on Render
-
-`render.yaml` is a Render Blueprint: the same images and commands as `docker-compose.yml`, in Render's `singapore` region. **Staging and demos only.** Render's regions are Oregon, Ohio, Virginia, Frankfurt and Singapore, none in India, and documents keep identity numbers as read (docs/architecture.md, Decisions), so real customer documents on Render wait for Vrushit's decision. Every service is on a paid plan (free instances have no disk, no pre-deploy command and receive no private traffic), so the cost is his call too. `backend/tests/test_render_blueprint.py` keeps the commands, images and settings the same as compose.
-
-| Compose | Render | Plan (a starting point, not measured) |
-|---|---|---|
-| `frontend` | `kaagaz-frontend`, web service | `0.5c-512mb` |
-| `api` | `kaagaz-api`, web service, health check `/api/health` | `1c-2g` |
-| `migrate` | the api's pre-deploy command, before every deploy | the api's |
-| `worker` | `kaagaz-worker`, background worker | `2c-4g` |
-| `postgres` | `kaagaz-db`, Render Postgres 17, private network only | `1c-2g` |
-| `seaweedfs` | `kaagaz-seaweedfs`, private service, 10 GB disk at `/data` | `0.5c-512mb` |
-| `elasticmq` | `kaagaz-elasticmq`, private service, queues in memory | `0.5c-512mb` |
-| `clamav` | `kaagaz-clamav`, private service, 2 GB disk for signatures | `2c-4g`: clamd needs about 2 GB |
-
-The web app reaches the api at its public https address (`BACKEND_URL`, built in): a private address would need `http://` joined to a hostname, which a Blueprint cannot do.
-
-**Steps.**
-
-1. In the Render Dashboard: New, Blueprint, then this repository (or a fork) and its branch. Render makes the services, the database and the `kaagaz-settings` group. `SESSION_SECRET`, `TOTP_ENCRYPTION_KEY` and both storage keys are random values Render makes (`generateValue`); the worker and SeaweedFS copy them from the api. No secret is typed in or written in the file.
-2. The first deploy of the api and the worker stops with the name of a missing setting: expected. In Environment Groups, `kaagaz-settings`, add the settings from `.env.example` (the names are listed above the group in `render.yaml`) with Add from .env. Pasting the whole file is safe: a value set on the service itself always wins over a group, and the start commands build the queue and storage URLs.
-3. Manual Deploy `kaagaz-api` (its pre-deploy command runs `alembic upgrade head` and makes the bucket), then `kaagaz-worker`.
-4. The first customer, from the api's Shell page: `KAAGAZ_ADMIN_PASSWORD='<12+ characters>' python -m kaagaz.cli create-customer --name "<name>" --admin-email <e-mail> --admin-name "<name>"` (feature 27). For a demo, `seed-demo` works the same way (section 3).
-5. Check: `https://<kaagaz-api address>/api/health` gives `200` with every part `ok`; open the `kaagaz-frontend` address and sign in; then features 5, 8, 18 and 37 of section 5. ClamAV's first start takes minutes; scans retry meanwhile.
-
-**Amazon S3 or Cloudflare R2 instead of SeaweedFS.** Delete `kaagaz-seaweedfs` and both `SEAWEEDFS_HOST` entries from `render.yaml`. On the api, change the two storage keys from `generateValue: true` to `sync: false` and enter the provider's key; the worker copies them. In `kaagaz-settings` set `STORAGE_BUCKET`, `STORAGE_REGION` and `STORAGE_ENDPOINT_URL` (R2: `https://<account id>.r2.cloudflarestorage.com`; Amazon S3: delete it). The pre-deploy command makes the bucket if the key may; otherwise make it first.
-
-**Turning the model on.** Change both `MODEL_ENABLED` values to `"true"` (and both `OCR_ENGINE` values to `gemini`, for Gemini scans) in `render.yaml` (a dashboard change would be put back by the next Blueprint sync). In `kaagaz-settings`, set `OPENROUTER_API_KEY` (section 1), then redeploy the api and the worker and run `python -m kaagaz.cli reembed` from the api's Shell (feature 39).
-
-**Backups.** Render keeps point-in-time recovery for a paid database (the past 3 days on a Hobby workspace, 7 on Pro), database exports for 7 days (the database's Recovery page), and a daily snapshot of each disk for at least 7 days. The database and the files are copied at different times, so restoring both can leave a document whose rows and file don't match. For a matching pair, as in section 6: suspend the api and the worker, export the database, copy `/data` off `kaagaz-seaweedfs` (scp over SSH, from Render's disk docs), then resume them. Restoring an export needs `kaagaz_app` made first and keeps owners and grants, as in section 6. The queue is never backed up: before a deploy or restart of `kaagaz-elasticmq`, wait until no document is still being read.
-
-**Check before use.** Not stated in Render's docs, so try each on a first deploy:
-- Migration 0001 runs `CREATE ROLE` and `CREATE EXTENSION vector, pg_trgm`. Render lists both extensions but not what its database user may do. If the pre-deploy log says permission denied, stop and ask Vrushit.
-- Search needs pgvector 0.8 or later (`hnsw.iterative_scan`); Render does not say its version. Feature 37 fails if it is older.
-- `BACKEND_URL` copies the api's `RENDER_EXTERNAL_URL` when the web app is built. If it comes out empty, set it on `kaagaz-frontend` by hand and Save, rebuild, and deploy.
-- Whether the pre-deploy command runs in a shell; `render.yaml` starts it with `/bin/sh -c` to be safe.
-- Add from .env on a group (Render documents it on a service's Environment page; failing that, add the lines one by one).
-- ClamAV and SeaweedFS writing to a fresh Render disk.
-- R2's region and bucket creation through `STORAGE_REGION`.

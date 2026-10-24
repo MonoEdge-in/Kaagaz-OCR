@@ -20,6 +20,7 @@ from kaagaz.answering.service import AnswerService
 from kaagaz.db.engine import Database
 from tests.db_support import new_customer
 from tests.settings_factory import make_settings
+from tests.test_answering_fixed_queries_db import add_invoice_row, ask_total, september_invoice
 from tests.test_answering_neighbours_db import add, near
 
 pytestmark = pytest.mark.db
@@ -144,7 +145,8 @@ def test_fixed_queries_for_b_find_nothing_even_with_as_field_names(db: Database)
     assert fixed.available_fields(a, FIELDS) == {"party_name", "profit", "date"}
     assert fixed.available_fields(b, FIELDS) == set()
     assert fixed.top_group(b, "profit", ["party_name"], ["date"], *august, True) == []
-    assert fixed.total(b, "profit", [], None, None) == []
+    assert fixed.figures(b, "profit", [], None, None, invoices=False) == []
+    assert fixed.figures(b, "profit", ["date"], *august, invoices=True) == []
     assert fixed.extreme_value(b, "profit", [], None, None, True) == []
     assert fixed.count_documents(b, None, None, date_fields=["date"]) == []
 
@@ -157,3 +159,37 @@ def test_b_never_gets_as_pieces_as_neighbours(db: Database) -> None:
 
     assert near(db, a, [the_hit]) == [before.piece_id, after.piece_id]
     assert near(db, b, [the_hit]) == []
+
+
+def test_b_never_counts_as_invoices(db: Database) -> None:
+    """#228's invoice count reads the invoices table: still only the asker's own rows."""
+    a, _ = new_customer(db)
+    b, _ = new_customer(db)
+    add_invoice_row(db, a, date(2026, 8, 5))
+    add_invoice_row(db, a, date(2026, 8, 6))
+    fixed = PgFixedQueries(db)
+
+    [counted] = fixed.count_invoices(a, None, None)
+    assert counted.number == 2
+    assert fixed.count_invoices(b, None, None) == []
+    assert fixed.count_invoices(b, date(2026, 8, 1), date(2026, 9, 1)) == []
+
+
+def test_bs_invoices_never_enter_as_total_or_its_list(db: Database) -> None:
+    """PRD 6 C: a total over invoices, and the list behind it, are the asker's own only."""
+    a, _ = new_customer(db)
+    b, _ = new_customer(db)
+    september_invoice(db, a, 12, 18400)
+    september_invoice(db, a, 19, 9250)
+    september_invoice(db, b, 15, 77777)
+    september_invoice(db, b, None, 5000)  # B's undated invoice never withholds A's total
+
+    for_a, for_b = ask_total(db, a).to_json(), ask_total(db, b).to_json()
+
+    assert for_a["sentences"][0]["text"] == "The total profit in September 2026 was 27,650, from 2 invoices."
+    assert len(for_a["sentences"]) == 3 and for_a["label"] == "verified"
+    assert for_b["sentences"][0]["text"].startswith("1 of the 2 invoices has no date I can read")
+    for mine, theirs in ((for_a, for_b), (for_b, for_a)):
+        assert len({c["document_id"] for c in mine["citations"]}) == 2
+        assert not _mentions(mine, {c["ref_id"]: c["document_id"] for c in theirs["citations"]})
+    assert "77,777" not in json.dumps(for_a) and "18,400" not in json.dumps(for_b)

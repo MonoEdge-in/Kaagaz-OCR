@@ -86,9 +86,15 @@
   align-items: center;
 }
 
+/* Document panel UX (25 Oct 2026): 14px terms at least; the value is read-only text with a
+   small Change beside it. */
 .details dt {
-  font-size: var(--fs-sm);
+  font-size: var(--fs-base);
   color: var(--text-secondary);
+}
+
+.change {
+  padding-inline: var(--space-2);
 }
 
 .details dd {
@@ -122,7 +128,7 @@
 .labelHelp {
   flex: 1 1 100%;
   margin: 0;
-  font-size: var(--fs-sm);
+  font-size: var(--fs-base);
   color: var(--text-secondary);
 }
 

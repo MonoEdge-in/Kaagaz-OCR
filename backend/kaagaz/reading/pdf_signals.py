@@ -48,7 +48,7 @@ import math
 import re
 import unicodedata
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import pypdfium2.raw as pdfium_c
 
@@ -272,8 +272,12 @@ def _look(textpage: Any, index: int, char: str, crop: tuple[float, ...]) -> tupl
     if all(alpha == 0 for _, alpha in colours):
         return _HIDDEN
     # Fill or stroke, each as it shows on white paper; a see-through one is always checked on the page.
-    shown = [tuple(255 - (255 - c) * alpha // 255 for c in rgb) for rgb, alpha in colours if alpha]
-    darkest: tuple[int, int, int] = min(shown, key=relative_luminance)  # type: ignore[arg-type]
+    shown = [
+        cast(tuple[int, int, int], tuple(255 - (255 - c) * alpha // 255 for c in rgb))  # three in, three out
+        for rgb, alpha in colours
+        if alpha
+    ]
+    darkest = min(shown, key=relative_luminance)
     opaque = all(alpha == 255 for _, alpha in colours if alpha)
     return None if opaque and contrast_ratio(relative_luminance(darkest), 1.0) >= LIGHT_CONTRAST else darkest
 
@@ -333,8 +337,9 @@ def _share(image: Any, box: WordBox, scale: tuple[float, float], test: Any) -> f
     y0, y1 = max(0, math.floor(box.top * scale[1])), min(image.height, math.ceil(box.bottom * scale[1]))
     if x1 <= x0 or y1 <= y0:
         return 0.0
-    total = (x1 - x0) * (y1 - y0)
-    return sum(count for count, pixel in image.crop((x0, y0, x1, y1)).getcolors(total) if test(pixel)) / total
+    total: int = (x1 - x0) * (y1 - y0)
+    counted: list[tuple[int, Any]] = image.crop((x0, y0, x1, y1)).getcolors(total)  # (count, pixel)
+    return sum(count for count, pixel in counted if test(pixel)) / total
 
 
 def words_left_visible(

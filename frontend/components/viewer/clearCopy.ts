@@ -6,10 +6,14 @@
 import type { ReadLine, ReadingMark, TranslateLanguage } from "@/lib/types";
 import { lineMarked, notSure, visibleText } from "./scanned";
 
+/** The clean copy's one name: its tab, its heading and its button (document panel UX, 25 Oct 2026; was "Read clearly"). */
+export const CLEAN_COPY = "Clean copy";
 export const NOT_SURE_TIP = "Not read for sure — check the original";
 export const TRANSLATION_LABEL = "Translation — the original text is above";
 export const TRANSLATING = "Translating…";
-export const BUSY = "The translation service is busy right now. The exact text is still here; try again in a minute.";
+export const BUSY = "Translation isn't available right now. Try again in a minute.";
+export const UNUSABLE = "This page can't be translated. The exact text is above.";
+export const TOO_LONG = "This page is too long to translate in one go. The exact text is above.";
 export const LEFT_OUT = "This document is long, so the clean copy stops here. The rest is on the page images.";
 export const MAX_TRANSLATE_PAGES = 20; // "Translate all pages" asks for at most this many
 export const TRANSLATE_AT_ONCE = 3; // requests in flight at a time
@@ -132,8 +136,24 @@ export function parts(line: ReadLine, marks: readonly ReadingMark[]): Part[] {
   return out;
 }
 
+/** What a failed translation says, by the reply's error code; Try again only when busy. */
+export function translateFailure(code: string | undefined): { text: string; retry: boolean } {
+  if (code === "page_too_long") return { text: TOO_LONG, retry: false };
+  if (code === "translation_unusable") return { text: UNUSABLE, retry: false };
+  return { text: BUSY, retry: true };
+}
+
 /** "Page 1 of 4". */
 export const pageOf = (pageNo: number, total: number) => `Page ${pageNo} of ${total}`;
+
+// The clean copy's Text tab words (document panel UX, 25 Oct 2026).
+/** The one heading over a page: "Page 1" when there is one, else "Page 2 of 4". */
+export const pageTitle = (pageNo: number, total: number) => (total === 1 ? `Page ${pageNo}` : pageOf(pageNo, total));
+export const OPENED_NOTE = "The line you opened";
+export const WIDE_NOTE = "Scroll sideways to see all columns";
+export const SHOW_IN = "Show the text in";
+export const COPIED = "Copied";
+export const COPY_BLOCKED = "Copying is blocked here. Select the text and copy it instead.";
 
 /** The whole copy as plain text, for Copy all: each page under its "Page 1 of 4". */
 export function copyText(pages: readonly { page_no: number; lines: readonly ReadLine[] }[]): string {

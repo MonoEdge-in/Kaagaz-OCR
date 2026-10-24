@@ -188,6 +188,16 @@ describe("source cards", () => {
     // The label's spot can be missing (an invalid region, or the document is in Trash).
     expect(opens(pageJumps(citation(value))[0]!.href)).toEqual(["/documents/doc-1", "2", null]);
   });
+
+  it("carries the asker's words on every chip, as the main link does (package H)", () => {
+    const later: Region = { kind: "box", page: 4, box: [0.1, 0.1, 0.5, 0.2] };
+    const first: Region = { kind: "box", page: 3, box: [0.1, 0.8, 0.5, 0.9] };
+    const label: Region = { kind: "box", page: 2, box: [0.1, 0.9, 0.3, 0.95] };
+    const cited = citation({ kind: "value", page_from: 3, page_to: 4, regions: [first, later], label_page_no: 2, label_regions: [label] });
+    const jumps = pageJumps(cited, ["grand", "total", "the"]);
+    expect(jumps.map((jump) => new URL(jump.href, "http://x").searchParams.get("words"))).toEqual(["grand total", "grand total"]);
+    expect(pageJumps(cited).map((jump) => new URL(jump.href, "http://x").searchParams.has("words"))).toEqual([false, false]);
+  });
 });
 
 describe("a question that could not be sent", () => {

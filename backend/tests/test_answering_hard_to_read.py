@@ -9,6 +9,7 @@ tests/test_answering_hard_to_read_db.py.
 
 import uuid
 from collections.abc import Sequence
+from datetime import date
 from typing import Any
 
 import pytest
@@ -38,6 +39,7 @@ from tests.test_answering_golden import (
     assert_well_formed,
     invoice_record,
     register,
+    value,
 )
 
 INVOICE_12 = FlaggedPage(str(uuid.uuid4()), "Invoice_12.pdf", 3, "unreadable")
@@ -225,6 +227,77 @@ def test_f6_a_cited_value_with_an_unsure_word_makes_a_fixed_answer_need_review()
     assert [c.hard_to_read for c in marked.citations if c.ref_id == total.value_id] == [True]
     assert (marked.label, marked.reading_note) == ("needs_review", HARD_TO_READ_NOTE)
     assert plain.reading_note is None and not any(c.hard_to_read for c in plain.citations)
+
+
+def test_c2_a_hard_to_read_figure_of_any_party_withholds_the_ranking() -> None:
+    """PRD 6 C2: Patil's 70,000 sits on an unsure word, Mehta's 80,000 is clean: still no ranking."""
+    box = {"kind": "box", "page": 1, "box": [0.5, 0.2, 0.7, 0.3]}  # INSIDE is in it
+    records = [
+        [value(doc, "party_name", party, region=box), value(doc, "profit", text, number=n, region=box),
+         value(doc, "date", "10/08/2026", day=date(2026, 8, 10), region=box)]
+        for doc, party, text, n in [("patil.jpg", "Patil", "70,000", 70000),
+                                    ("mehta.jpg", "Mehta", "80,000", 80000)]
+    ]  # fmt: skip
+    marks = [WordMark(records[0][0].ref.document_id, INSIDE)]
+    answer = ask("Kiska profit sabse jyada tha last month?", FakeReading(marks=marks), records=records)
+    assert answer.sentences[0].text == (
+        "1 of the 2 profit figures is not verified yet, so I haven't compared the parties' profit"
+        " in August 2026."
+    )
+    assert answer.label == "needs_review"
+
+
+def _bills(count: int) -> list[Record]:
+    """``count`` scanned bills of August 2026, one party each; INSIDE is in each profit's box only."""
+    party, profit, day = (
+        {"kind": "box", "page": 1, "box": box}
+        for box in ([0.1, 0.2, 0.3, 0.3], [0.5, 0.2, 0.7, 0.3], [0.1, 0.5, 0.3, 0.6])
+    )
+    return [
+        [value(f"bill-{n}.jpg", "party_name", f"Party {n}", region=party),
+         value(f"bill-{n}.jpg", "profit", f"{n},000", number=n * 1000, region=profit),
+         value(f"bill-{n}.jpg", "date", "10/08/2026", day=date(2026, 8, 10), region=day)]
+        for n in range(1, count + 1)
+    ]  # fmt: skip
+
+
+TOTAL = "What was the total profit in August 2026?"
+RANKING = "Kiska profit sabse jyada tha last month?"
+
+
+@pytest.mark.parametrize(
+    ("question", "head"),
+    [(TOTAL, "1 of the 25 profit figures is not verified yet, so I haven't added up the profit"
+              " in August 2026. 20 are listed here; 5 more are not."),
+     (RANKING, "1 of the 25 profit figures is not verified yet, so I haven't compared the parties' profit"
+               " in August 2026. 20 are listed here; 5 more are not.")],
+)  # fmt: skip
+def test_c_a_hard_to_read_figure_past_the_listed_records_still_withholds_the_answer(
+    question: str, head: str
+) -> None:
+    """Record 23 of 25 is never listed (MAX_CITED_VALUES is 20), yet its figure is checked."""
+    bills = _bills(25)
+    reading = FakeReading(marks=[WordMark(bills[22][1].ref.document_id, INSIDE)])
+    answer = ask(question, reading, records=bills)
+    assert answer.sentences[0].text == head
+    assert (answer.label, answer.reading_note) == ("needs_review", HARD_TO_READ_NOTE)
+    assert "bill-23.jpg" not in {c.document_name for c in answer.citations}
+    assert len(reading.asked_marks) == 1 and len(set(reading.asked_marks[0])) == 25  # one statement
+
+
+@pytest.mark.parametrize(
+    ("question", "head"),
+    [(TOTAL, "The total profit in August 2026 was 3,25,000, from 25 records."
+              " 20 are listed here; 5 more are not."),
+     (RANKING, "Party 25 had the highest profit, 25,000, in August 2026.")],
+)  # fmt: skip
+def test_c_with_no_hard_to_read_figure_a_total_or_ranking_is_as_before(question: str, head: str) -> None:
+    bills = _bills(25)
+    for marks in ([], [WordMark(bills[22][0].ref.document_id, BELOW)]):  # none, or one off every value
+        answer = ask(question, FakeReading(marks=marks), records=bills)
+        assert answer.sentences[0].text == head
+        assert (answer.label, answer.reading_note) == ("verified", None)
+        assert not any(c.hard_to_read for c in answer.citations)
 
 
 # --- a saved answer, shown later -------------------------------------------------------------

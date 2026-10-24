@@ -19,6 +19,7 @@ import styles from "./Chat.module.css";
 /** Swift first, then Precision (SoW 19 Oct 2026; Low is not offered in Ask). */
 const LEVEL_ORDER: ThinkingLevel[] = ["medium", "high"];
 
+// Plain words (25 Oct 2026): what each does for the person asking.
 const LEVEL_HINTS: Record<ThinkingLevel, string> = {
   high: "Thinks longest, best for tricky questions.",
   medium: "Quick and balanced, for most questions.",
@@ -76,9 +77,10 @@ export function AnswerSettings({
                 </label>
               ))}
             </div>
-            {/* Each level's hint describes its radio; the chosen one's is shown. */}
+            {/* Each level's hint describes its radio; both are shown, so the choice is clear
+                before it is made (plain words, 25 Oct 2026). */}
             {shown.map((level) => (
-              <p key={level} id={`${id}-${level}`} className={styles.menuHint} hidden={pick.level !== level}>
+              <p key={level} id={`${id}-${level}`} className={styles.menuHint}>
                 {LEVEL_HINTS[level]}
               </p>
             ))}

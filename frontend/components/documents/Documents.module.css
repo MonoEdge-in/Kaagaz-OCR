@@ -385,12 +385,10 @@
   }
 }
 
-/* A label you can always see (MonoEdge design system, 16 Oct 2026), set small above the pill. */
+/* A label you can always see (MonoEdge design system, 16 Oct 2026), above the pill, sentence case. */
 .searchLabel {
   color: var(--k-ink-muted);
-  font: 500 11px var(--k-font-mono);
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
+  font: 500 0.875rem var(--k-font-body);
 }
 
 /* The search bar's More (SoW 19 Oct): a round quiet button at the pill's end. */
@@ -451,9 +449,7 @@
 
 .moreLabel {
   color: var(--k-ink-muted);
-  font: 500 11px var(--k-font-mono);
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
+  font: 500 0.875rem var(--k-font-body);
 }
 
 /* The handoff's Sort select, as a pill the height of the pills beside it. */

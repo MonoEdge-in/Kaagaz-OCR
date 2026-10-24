@@ -219,7 +219,7 @@ class Settings:
     # pages of a document are read at a time and RapidOCR work runs on cpu_workers threads
     # (G8). At most max_check_crops values of a document are read again by the CPU checker
     # (V1). Production RPM admission is shared by API and worker processes in PostgreSQL
-    # (migration 0043); model_rpm is its 1,200 RPM ceiling and the isolated-tool fallback.
+    # (migration 0046); model_rpm is its 1,200 RPM ceiling and the isolated-tool fallback.
     # Pages are read locally once the reader has been down for
     # reader_outage_fallback_minutes (Q7).
     # Fast scan (council 16 Oct 2026): a Dynamic document of at most careful_early_max_pages
@@ -333,6 +333,10 @@ class Settings:
     # the translation call has its own timeout (TRANSLATE_TIMEOUT_SECONDS when unset).
     answer_translate_question: bool
     model_translate_timeout_seconds: float
+    # Ask speed (24 Oct 2026): a first question's rewrite and plan call must end within this many
+    # seconds, 1 to 60; past it the question is answered without its plan and aspects. A
+    # follow-up's call keeps MODEL_TIMEOUT_SECONDS. Optional: 4 when unset.
+    answer_plan_timeout_seconds: float
     # PRD 5 context and memory (sections CX and M; council 9 Oct 2026). Optional: unset is
     # the PRD's value, so an older .env keeps working. model_context_tokens is the chat
     # model's context window (M1), the one every budget uses. The chat's documents are given
@@ -609,6 +613,7 @@ class Settings:
             answer_translate_question=env.optional("ANSWER_TRANSLATE_QUESTION") is not None
             and env.boolean("ANSWER_TRANSLATE_QUESTION"),
             model_translate_timeout_seconds=translate_timeout,
+            answer_plan_timeout_seconds=env.number_in("ANSWER_PLAN_TIMEOUT_SECONDS", 1.0, 60.0, default=4.0),
             model_context_tokens=model_context_tokens,
             answer_whole_doc_tokens=whole_doc_tokens,
             topic_max_per_doc=env.at_least("TOPIC_MAX_PER_DOC", 1, default=40),

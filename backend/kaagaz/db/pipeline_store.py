@@ -72,7 +72,8 @@ the save, like a piece's (kaagaz.search.indexing). ``_check_map`` checks them ag
 the pieces before the transaction opens (CX4): a bug upstream stops the save before any
 statement, like the card-label check. Word review (0030): after the values, each word
 change still in force is written again into the new values and pieces
-(``word_review.reapply``), so a read again never silently undoes a person's text.
+(``word_review.reapply``), so a read again never silently undoes a person's text. Then the
+land values' keys (``value_keys.key_document``, 0049) from their text as it now stands.
 
 Cost per save: one family lock, 1 update, 1 read of the earlier pages' "Keep as is",
 7 deletes; per SAVE_CHUNK rows, one batched insert of pages, one of pieces and one of
@@ -93,7 +94,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import Connection, text
 
 from kaagaz.chunking.piece import Piece
-from kaagaz.db import word_review
+from kaagaz.db import value_keys, word_review
 from kaagaz.db.engine import Database, unavailable
 from kaagaz.db.runs import is_run_open
 from kaagaz.db.sqlstate import retry_on_deadlock
@@ -203,22 +204,23 @@ _VALUE_COLUMNS = (
     "label_page_no",
     "label_region",
     "votes",
+    "label_text",
 )
 _INSERT_VALUES = text(
     "INSERT INTO extracted_values (customer_id, document_id, record_key, field, value_text, value_raw,"
     " second_reading, value_number, value_date, page_no, region, reader, confidence, label, label_reason,"
-    " label_page_no, label_region, votes)"
+    " label_page_no, label_region, votes, label_text)"
     " SELECT :c, :d, record_key, field, value_text, value_raw, second_reading, value_number, value_date,"
     " page_no, CAST(region AS jsonb), reader, confidence, label, label_reason, label_page_no,"
-    " CAST(label_region AS jsonb), CAST(votes AS jsonb)"
+    " CAST(label_region AS jsonb), CAST(votes AS jsonb), label_text"
     " FROM unnest(CAST(:record_key AS text[]), CAST(:field AS text[]), CAST(:value_text AS text[]),"
     " CAST(:value_raw AS text[]), CAST(:second_reading AS text[]), CAST(:value_number AS numeric[]),"
     " CAST(:value_date AS date[]), CAST(:page_no AS integer[]), CAST(:region AS text[]),"
     " CAST(:reader AS text[]), CAST(:confidence AS double precision[]), CAST(:label AS text[]),"
     " CAST(:label_reason AS text[]), CAST(:label_page_no AS integer[]), CAST(:label_region AS text[]),"
-    " CAST(:votes AS text[]))"
+    " CAST(:votes AS text[]), CAST(:label_text AS text[]))"
     " AS v(record_key, field, value_text, value_raw, second_reading, value_number, value_date, page_no,"
-    " region, reader, confidence, label, label_reason, label_page_no, label_region, votes)"
+    " region, reader, confidence, label, label_reason, label_page_no, label_region, votes, label_text)"
 )
 _INSERT_INVOICE = text(
     "INSERT INTO invoices (customer_id, document_id, invoice_number, invoice_date, seller_name,"
@@ -371,6 +373,7 @@ class PgPipelineStore:
                 # A person's word changes, written again into the new rows (0030), so a
                 # read again of another page never undoes their text.
                 word_review.reapply(conn, customer_id, document_id)
+                value_keys.key_document(conn, customer_id, document_id)  # the company vocabulary (0049)
                 if content.invoice is not None:
                     _insert_invoice(conn, ids, content.invoice)
                 _replace_links(conn, ids, family_id, content.links)
@@ -629,4 +632,5 @@ def _value_row(value: ExtractedValue, reader: str) -> tuple[object, ...]:
         None if label is None else label.page,
         None if label is None else json.dumps(location_to_json(label)),
         None if value.votes is None else json.dumps(value.votes),  # Ensemble's vote (F27)
+        value.label_text,
     )

@@ -32,7 +32,7 @@ from kaagaz.settings import Settings
 TASKS = ("scan", "ask", "ensemble", "autofile")
 FEATURES = (
     "scan_ai", "ask", "ensemble", "autofile", "cost_saving", "review", "my_words", "self_signup",
-    "version_spotting",
+    "version_spotting", "land_facts", "nlq_clarify", "nlq_learning",  # PRD 6 (0052)
 )  # fmt: skip
 STEPS = ("none", "low", "high", "max")  # scan and ask
 SWITCH = ("off", "on")  # ensemble and autofile

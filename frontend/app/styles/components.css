@@ -1,7 +1,8 @@
 /* The handoff's component classes the screens use (design/kaagaz-ui-handoff/styles/kaagaz.css,
    sections 4 to 15), so a screen can be built with the handoff's own markup. Copied as they
    are, but with no colour transitions (the motion rules move only transform and opacity) and
-   the banner icon lined up without a 1px nudge. The rest of the handoff's classes were
+   the banner icon lined up without a 1px nudge, and buttons in sentence case in the body face
+   (readable type, 25 Oct 2026; they were 12px mono capitals). The rest of the handoff's classes were
    removed on 22 Oct 2026 as unused; take them from kaagaz.css when a screen needs one. */
 
 /* ---------- 4. App shell ---------- */
@@ -19,15 +20,15 @@
 .k-side-foot strong { color: var(--k-nav-ink-strong); font-weight: 600; font-size: 13px; }
 
 /* ---------- 5. Buttons: pills, mono caps ---------- */
-.k-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 40px; padding: 0 18px; border-radius: var(--k-r-pill); border: 1px solid var(--k-rule-strong); background: var(--k-surface); color: var(--k-ink); font: 500 12px/1 var(--k-font-mono); letter-spacing: 0.08em; text-transform: uppercase; cursor: pointer; text-decoration: none; white-space: nowrap; }
+.k-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 40px; padding: 0 18px; border-radius: var(--k-r-pill); border: 1px solid var(--k-rule-strong); background: var(--k-surface); color: var(--k-ink); font: 500 0.9375rem/1.2 var(--k-font-body); cursor: pointer; text-decoration: none; white-space: nowrap; }
 .k-root .k-btn { color: var(--k-ink); }
 .k-btn:hover, .k-btn.is-hover { background: var(--k-sunken); }
-.k-btn--primary, .k-root .k-btn--primary { background: var(--k-accent); border-color: var(--k-accent); color: var(--k-accent-ink); font-weight: 600; }
+.k-btn--primary, .k-root .k-btn--primary { background: var(--k-accent); border-color: var(--k-accent); color: var(--k-accent-ink); font-size: 1rem; }
 .k-btn--primary:hover, .k-btn--primary.is-hover { background: var(--k-accent-hover); border-color: var(--k-accent-hover); }
 
 .k-btn:disabled, .k-btn.is-disabled { background: var(--k-sunken); border-color: var(--k-sunken); color: var(--k-ink-faint); cursor: not-allowed; }
-.k-btn--sm { min-height: 32px; padding: 0 13px; font-size: 11px; gap: 6px; }
-.k-btn--lg { min-height: 48px; padding: 0 24px; font-size: 13px; }
+.k-btn--sm { min-height: 32px; padding: 0 13px; gap: 6px; }
+.k-btn--lg { min-height: 48px; padding: 0 24px; font-size: 1rem; }
 
 .k-btn.is-loading::before { content: ""; width: 14px; height: 14px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: k-spin 1.2s linear infinite; }
 
@@ -78,7 +79,7 @@
 
 .k-tab-count { font: 500 11px/1 var(--k-font-mono); padding: 3px 7px; border-radius: var(--k-r-pill); background: var(--k-sunken); color: var(--k-ink-muted); }
 
-.k-tree-group { font-family: var(--k-font-mono); font-size: 10px; letter-spacing: .16em; text-transform: uppercase; color: var(--k-ink-muted); padding: 16px 10px 6px; }
+.k-tree-group { font-family: var(--k-font-body); font-size: 0.875rem; font-weight: 500; color: var(--k-ink-muted); padding: 16px 10px 6px; }
 
 .k-seg { display: inline-flex; gap: 2px; padding: 3px; border-radius: var(--k-r-pill); background: var(--k-sunken); }
 .k-seg button { border: 0; background: none; padding: 0 14px; min-height: 34px; border-radius: var(--k-r-pill); display: inline-flex; align-items: center; gap: 6px; font: 500 13px var(--k-font-body); color: var(--k-ink-muted); cursor: pointer; }

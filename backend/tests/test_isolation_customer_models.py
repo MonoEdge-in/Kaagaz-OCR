@@ -62,6 +62,9 @@ USAGE_COLUMNS = [
     "reasoning_tokens",
     "cost_usd",
     "cost_estimated",
+    # Changed on purpose (4bdf63b, 11 Oct 2026: a spend total says when part of its cost is
+    # not known): bool_or(cost_usd IS NULL), still no user and no document.
+    "cost_part_unknown",
 ]
 
 

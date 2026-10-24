@@ -15,7 +15,7 @@ SCOPED = [
     *((hybrid, name) for name in ("_WORD", "_FUZZY", "_MEANING", "_MEANING_EXACT", "_NEIGHBOURS")),
     *(
         (fixed_queries, name)
-        for name in ("_AVAILABLE_FIELDS", "_TOP_GROUP", "_TOTAL", "_EXTREME_VALUE", "_COUNT_DOCUMENTS")
+        for name in ("_AVAILABLE_FIELDS", "_TOP_GROUP", "_FIGURES", "_EXTREME_VALUE", "_COUNT_DOCUMENTS")
     ),
     (fixed_queries, "_VALUE_REFS"),
     (unchecked, "_CARD_DOCUMENTS"),

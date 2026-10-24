@@ -114,9 +114,10 @@ describe("flat, square, hairline", () => {
     expect(found).toEqual([]);
   });
 
-  it("writes labels 11px, bold, upper case, 0.08em apart", () => {
+  // Changed on purpose (readable type, 25 Oct 2026): labels were 11px bold capitals, 0.08em apart.
+  it("writes labels in sentence case, 14px, medium, in the secondary text colour", () => {
     const css = noComments(read("components/admin/Admin.module.css"));
-    expect(css).toMatch(/\.tileLabel,\s*\.usageTileHead \{\s*font-size: 11px;\s*font-weight: 700;\s*letter-spacing: 0\.08em;\s*text-transform: uppercase;/);
+    expect(css).toMatch(/\.tileLabel,\s*\.usageTileHead \{\s*font-size: var\(--fs-base\);\s*font-weight: 500;\s*color: var\(--text-secondary\);\s*\}/);
   });
 });
 
@@ -214,7 +215,10 @@ describe("misclicks", () => {
       /\.menuSeparator \{[^}]*margin: var\(--space-2\) 0;/,
     );
     // Changed on purpose (UI audit, 16 Oct 2026): AD2, a row's menu lists the destructive action last, under a hairline, 16px down.
-    expect(read("components/admin/UsersPanel.tsx")).toContain('{ label: "Disable", onSelect: () => setConfirming("disable"), destructive: true }');
+    // Changed on purpose (plain words, 25 Oct 2026): each item has a line saying what it does.
+    expect(read("components/admin/UsersPanel.tsx")).toContain(
+      '{ label: "Disable", description: USER_MENU_HELP.disable, onSelect: () => setConfirming("disable"), destructive: true }',
+    );
     expect(noComments(read("components/admin/Admin.module.css"))).toMatch(
       /\.rowMenuDanger \{\s*margin-top: var\(--space-4\);\s*border-top: 1px solid var\(--border\);/,
     );

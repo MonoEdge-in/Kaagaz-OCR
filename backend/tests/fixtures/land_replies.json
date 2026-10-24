@@ -1,0 +1,29 @@
+{
+  "seven_twelve": {"records": [{
+    "survey_number": {"label_quote": "Survey No", "value_quote": "45/2"}, "khata_number": {"label_quote": "Khata No", "value_quote": "118"},
+    "village": {"label_quote": "Village", "value_quote": "Kusgaon"}, "taluka": {"label_quote": "Taluka", "value_quote": "Maval"},
+    "district": {"label_quote": "District", "value_quote": "Pune"}, "city": null,
+    "area": {"label_quote": "Area", "value_quote": "0.40 H.R."}, "unowned_share": null,
+    "parties": [
+      {"role": "owner", "name_quote": "Nikhil Varde", "share_quote": "50%"},
+      {"role": "owner", "name_quote": "कृष्ण सोहोनी", "share_quote": "1/3"},
+      {"role": "owner", "name_quote": "Asha Rao", "share_quote": null},
+      {"role": "owner", "name_quote": "Nobody Madeup", "share_quote": "10%"}
+    ]
+  }]},
+  "unowned": {"records": [{
+    "survey_number": {"label_quote": "Survey No", "value_quote": "45/2"}, "khata_number": null, "village": null,
+    "taluka": null, "district": null, "city": null, "area": null,
+    "unowned_share": {"label_quote": "Unallotted", "value_quote": "20%"},
+    "parties": [{"role": "owner", "name_quote": "Nikhil Varde", "share_quote": "50%"}]
+  }]},
+  "second_window": {"records": [{
+    "survey_number": {"label_quote": "Survey No", "value_quote": "45/2"}, "khata_number": null, "village": null,
+    "taluka": null, "district": null, "city": null, "area": null, "unowned_share": null,
+    "parties": [
+      {"role": "owner", "name_quote": "Nikhil Varde", "share_quote": "50%"},
+      {"role": "owner", "name_quote": "Asha Rao", "share_quote": null},
+      {"role": "buyer", "name_quote": "Ravi Kale", "share_quote": null}
+    ]
+  }]}
+}

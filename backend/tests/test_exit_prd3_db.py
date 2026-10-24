@@ -166,7 +166,11 @@ def test_step_4_a_folder_scope_cites_only_that_folder_and_its_total_too(world: W
         assert seen(everywhere) - seen(inside) or everywhere["sentences"] != inside["sentences"], question
     total = world.ask("What is the total amount?", scope=scope)["answer"]["answer"]
     assert total["route"] == "fixed_query"
-    assert [s["text"] for s in total["sentences"]] == ["The total amount was 11,800, from 1 record."]
+    # Changed on purpose (PRD 6 C): the total with its working, one line a record.
+    assert [s["text"] for s in total["sentences"]] == [
+        "The total amount was 11,800, from 1 record.",
+        "document: 11,800.00.",
+    ]
 
 
 def test_step_5_the_ceos_salary_is_not_found_and_names_the_closest_documents(world: World) -> None:

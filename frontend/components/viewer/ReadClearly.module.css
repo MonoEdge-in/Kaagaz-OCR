@@ -1,6 +1,8 @@
 /* Read clearly: a calm reading view. Large, clear text in the body font (with Devanagari
    fallbacks), neutral colours only, flat and square (MonoEdge design system). A wide table
-   scrolls inside its own box, so the page never scrolls sideways. */
+   scrolls inside its own box, so the page never scrolls sideways. Document panel UX (25 Oct
+   2026): one quiet row of actions; the text and its language control grouped under a hairline;
+   one heading a page; the line opened lit like the spot on the page (--hl-fill). */
 
 .panel {
   display: flex;
@@ -15,13 +17,13 @@
 
 .heading {
   margin: 0;
-  font-size: var(--fs-base);
+  font-size: var(--fs-lg);
 }
 
 .note {
   margin: 0;
   color: var(--text-secondary);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-base);
 }
 
 .tools {
@@ -31,27 +33,44 @@
   gap: var(--space-2);
 }
 
+.jump {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-inline-start: auto;
+  font-size: var(--fs-base);
+}
+
+.jump select {
+  width: auto;
+}
+
+/* The text and its control, one group. */
+.reader {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  padding-block-start: var(--space-3);
+  border-block-start: 1px solid var(--border);
+}
+
 .languages {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-2) var(--space-4);
-  margin: 0;
-  padding: 0;
-  border: none;
+  gap: var(--space-2) var(--space-3);
 }
 
-.languages legend {
-  float: left;
-  margin-inline-end: var(--space-2);
+/* The segmented control's options: 44px targets, 16px words. */
+.languages button {
+  min-height: var(--h-lg);
+  font-size: 1rem;
+}
+
+.label {
   font-weight: 600;
-}
-
-.languages label {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-height: var(--control-h);
+  font-size: var(--fs-base);
 }
 
 .skeleton {
@@ -62,36 +81,41 @@
 .copy {
   font-family: var(--font-sans);
   font-size: 1.125rem;
-  line-height: 1.75;
+  line-height: 1.7;
   color: var(--text-primary);
   overflow-wrap: anywhere;
 }
 
 .page + .page {
-  margin-top: var(--space-5);
+  margin-top: var(--space-6);
 }
 
 .page p,
-.page h3,
+.page h4,
 .page ul {
   margin: 0 0 var(--space-2);
 }
 
-.page h3 {
-  font-size: 1.375rem;
-}
-
-.pageBreak {
+/* The page's one heading; the document's own headings keep their weight, a size up only. */
+.pageTitle {
+  margin: 0 0 var(--space-3);
   padding-bottom: var(--space-1);
   border-bottom: 1px solid var(--border);
-  color: var(--text-secondary);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-lg);
+}
+
+.page h4 {
+  font-size: 1.1875rem;
+  font-weight: 600;
 }
 
 .line {
+  position: relative;
+  isolation: isolate;
   display: inline;
   padding: 0;
   border: none;
+  border-radius: var(--k-r-1);
   background: none;
   color: inherit;
   font: inherit;
@@ -100,9 +124,38 @@
   cursor: pointer;
 }
 
-.line:hover,
-.line[aria-pressed="true"] {
+.line:hover {
   background: var(--bg-subdued);
+}
+
+/* The line opened: the page's own highlight colour, behind the words. */
+.line[aria-pressed="true"]::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  background: var(--hl-fill);
+  box-shadow: 0 0 0 1px var(--hl-border);
+}
+
+.opened {
+  margin-inline-start: var(--space-2);
+  color: var(--text-secondary);
+  font-size: var(--fs-base);
+  font-weight: 500;
+}
+
+/* "Label: value": the label in medium weight, the value in regular, in two columns. */
+.pair {
+  display: inline-grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
+  gap: 0 var(--space-3);
+  width: 100%;
+}
+
+.pairLabel {
+  font-weight: 500;
 }
 
 .unsure {
@@ -111,24 +164,62 @@
   text-underline-offset: 0.2em;
 }
 
+.tableWrap {
+  min-width: 0;
+  margin-bottom: var(--space-3);
+}
+
 .tableBox {
   position: relative;
   max-width: 100%;
-  margin-bottom: var(--space-2);
   overflow-x: auto;
   overscroll-behavior-x: contain;
+}
+
+/* Wider than the panel: an edge at the end says there is more. */
+.tableBox[data-wide] {
+  box-shadow: inset -12px 0 10px -10px var(--border-strong);
+}
+
+.wideNote {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+  margin: var(--space-1) 0 0;
+  color: var(--text-secondary);
+  font-size: var(--fs-base);
+}
+
+/* Open wide: the same dialog, as wide as the window allows. */
+:global(dialog):has(.wideTable) {
+  width: min(100% - 2 * var(--space-4), 72rem);
+}
+
+.wideTable {
+  padding: var(--space-4);
 }
 
 .table {
   border-collapse: collapse;
 }
 
+/* Whole words in every cell: a column is never squeezed to a letter or two (the copy's
+   overflow-wrap: anywhere stops here); the frame scrolls instead. */
 .table th,
 .table td {
+  min-width: 6rem;
   padding: var(--space-1) var(--space-2);
   border: 1px solid var(--border);
   text-align: start;
   vertical-align: top;
+  overflow-wrap: normal;
+  word-break: keep-all;
+}
+
+.table th {
+  background: var(--bg-subdued);
+  font-weight: 600;
 }
 
 .translation {
@@ -138,9 +229,17 @@
   background: var(--bg-subdued);
 }
 
-.label {
-  font-weight: 600;
-  font-size: var(--fs-sm);
+/* The line opened breathes twice when it is lit, then stays still. */
+@media (prefers-reduced-motion: no-preference) {
+  .line[aria-pressed="true"]::before {
+    animation: breathe var(--motion-calm) var(--ease-out) 4 alternate;
+  }
+}
+
+@keyframes breathe {
+  to {
+    opacity: 0.4;
+  }
 }
 
 @media print {
@@ -155,5 +254,10 @@
 
   .tableBox {
     overflow: visible;
+  }
+
+  .wideNote,
+  .opened {
+    display: none;
   }
 }

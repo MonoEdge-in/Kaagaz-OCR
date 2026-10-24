@@ -1,0 +1,62 @@
+%PDF-1.7
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [9 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Length 367 >>
+stream
+/CIDInit /ProcSet findresource begin 12 dict begin begincmap
+/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def
+/CMapName /Adobe-Identity-UCS def /CMapType 2 def
+1 begincodespacerange <0000> <FFFF> endcodespacerange
+2 beginbfrange <0020> <007E> <0020> <0900> <097F> <0900> endbfrange
+endcmap CMapName currentdict /CMap defineresource pop end end
+endstream
+endobj
+5 0 obj
+<< /Type /FontDescriptor /FontName /KaagazDevanagari /Flags 4 /FontBBox [0 -200 1000 900] /ItalicAngle 0 /Ascent 900 /Descent -200 /CapHeight 700 /StemV 80 >>
+endobj
+6 0 obj
+<< /Type /Font /Subtype /CIDFontType2 /BaseFont /KaagazDevanagari /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor 5 0 R /CIDToGIDMap /Identity /DW 600 >>
+endobj
+7 0 obj
+<< /Type /Font /Subtype /Type0 /BaseFont /KaagazDevanagari /Encoding /Identity-H /DescendantFonts [6 0 R] /ToUnicode 4 0 R >>
+endobj
+8 0 obj
+<< /Length 860 >>
+stream
+BT /F2 10 Tf 1 0 0 1 50 760 Tm <0917093E093500200928092E09410928093E00200938093E09240020092C093E0930093E002009090924093E0930093E> Tj ET
+BT /F2 10 Tf 1 0 0 1 50 738 Tm <0917093E0935003A00200939093F0902091C0935092109400020002000200924093E093209410915093E003A0020092E0941093309360940002000200020091C093F0932094D0939093E003A0020092A094109230947> Tj ET
+BT /F2 10 Tf 1 0 0 1 50 716 Tm <09380930094D0935094700200915094D0930092E093E090209150020003100320020002000200915094D093709470924094D0930003A00200031002E00320035002009390947002E09060930002E> Tj ET
+BT /F2 10 Tf 1 0 0 1 50 694 Tm <092D094B09170935091F093E0926093E0930003A00200928093F0916093F0932002009350930094D09260947> Tj ET
+BT /F2 10 Tf 1 0 0 1 50 672 Tm <092B09470930092B093E093000200915094D0930092E093E090209150020003300390032003000200926093F0928093E09020915002000300032002F00300035002F0032003000320036> Tj ET
+
+endstream
+endobj
+9 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612.0 792.0] /Rotate 0 /Contents 8 0 R /Resources << /Font << /F1 3 0 R /F2 7 0 R >> >> >>
+endobj
+xref
+0 10
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000121 00000 n 
+0000000218 00000 n 
+0000000636 00000 n 
+0000000810 00000 n 
+0000001021 00000 n 
+0000001162 00000 n 
+0000002073 00000 n 
+trailer
+<< /Size 10 /Root 1 0 R >>
+startxref
+2223
+%%EOF

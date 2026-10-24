@@ -17,7 +17,7 @@ import type {
   Region,
   ThinkingLevel,
 } from "@/lib/types";
-import { citationRegion } from "./answer";
+import { citationRegion, linkWords } from "./answer";
 
 // --- Grouping the conversation list by day ------------------------------------
 
@@ -170,13 +170,15 @@ export interface PageJump {
  * The chips beside a source card's main link (PRD 3 H4): one for each later
  * page its spots run onto ("Page 16"), then one for a value's label on another
  * page ("Label, page 15"). Each opens that page with its spot highlighted, or
- * without one when the spot is gone. O(regions).
+ * without one when the spot is gone, and the asker's words (`terms`) lit, as
+ * citationLink does (package H). O(regions).
  */
-export function pageJumps(citation: Citation): PageJump[] {
+export function pageJumps(citation: Citation, terms: readonly string[] = []): PageJump[] {
   const word = placeWord(citation);
+  const words = linkWords(...terms);
   const jump = (text: string, page_no: number, regions: Region[]): PageJump => ({
     text,
-    href: pageLink(citation.document_id, page_no, citationRegion({ regions, page_no })),
+    href: pageLink(citation.document_id, page_no, citationRegion({ regions, page_no }), { words }),
   });
   const pages = new Set(citation.regions.map((region) => region.page));
   pages.delete(citation.page_no);
@@ -267,7 +269,7 @@ export function askAboutHref(documentId: string): string {
 // --- Answer settings (features 25-27) ------------------------------------------
 // Which models answer and how hard they think, picked by name in the composer from
 // what the organisation allows (GET /chat/options). No price or cost ever: names
-// and levels only. Kept in React state only; a reload starts from the defaults.
+// and levels only. Kept in this browser (loadPick, savePick), so tabs and reloads keep it.
 
 // Changed on purpose (SoW 19 Oct 2026): Ask calls Medium "Swift" and High "Precision", and does
 // not offer Low (the admin's AI settings still name all three).
@@ -281,7 +283,8 @@ export interface AnswerPick {
   level: ThinkingLevel;
 }
 
-/** The organisation's defaults: its default model (none listed: the server's), its level. */
+/** Where Ask starts: the organisation's default model (none listed: the server's), on Swift
+ * whenever the organisation allows it (Tushar, 25 Oct 2026), else its own level. */
 export function defaultPick(options: ChatOptions): AnswerPick {
   const main = options.agents.find((agent) => agent.default);
   // Low is not offered in Ask: an organisation whose default is Low starts on Swift, when allowed.

@@ -28,6 +28,7 @@ audit rows.
   ``org_feature_switches`` and ``set_org_feature_switch`` (0039): one organisation's.
 * ``session_timeout`` and ``set_session_timeout`` (0040): the sign-in idle timeout, the
   platform's and one organisation's.
+* ``speed`` and ``set_speed`` (0053): the platform's speed controls.
 * ``current_test_model``, ``set_test_model`` and ``clear_test_model`` (0038): the platform
   test model, one model for every organisation's scanning and answering, and its undo.
 
@@ -244,6 +245,28 @@ def set_session_timeout(
     ``missing``, ``deleting``, ``step_up`` or ``signed_out``."""
     params = {"o": operator_id, "c": customer_id, "h": hours, "step": step}
     statement = text("SELECT kaagaz_op_set_session_timeout(:o, :c, :h, :step)")
+    return str(conn.execute(statement, params).scalar_one())
+
+
+def speed(conn: Connection, operator_id: str) -> RowMapping | None:
+    """The platform's speed controls (package S, 0053): model_rpm, documents_at_once and
+    pages_at_once, each None for the server's setting. None for an operator who is not enabled."""
+    return conn.execute(text("SELECT * FROM kaagaz_op_speed(:o)"), {"o": operator_id}).mappings().first()
+
+
+def set_speed(
+    conn: Connection,
+    operator_id: str,
+    model_rpm: int | None,
+    documents_at_once: int | None,
+    pages_at_once: int | None,
+    *,
+    step: int,
+) -> str:
+    """Set all three (None: the server's setting), ``step`` of a fresh code required; audited.
+    ``done``, ``unchanged``, ``step_up`` or ``signed_out``."""
+    params = {"o": operator_id, "r": model_rpm, "d": documents_at_once, "p": pages_at_once, "step": step}
+    statement = text("SELECT kaagaz_op_set_speed(:o, :r, :d, :p, :step)")
     return str(conn.execute(statement, params).scalar_one())
 
 

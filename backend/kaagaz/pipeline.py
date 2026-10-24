@@ -31,7 +31,7 @@ The steps, in order, for one (customer, document):
 6. Pieces for search (kaagaz.chunking) and the rule values for fixed queries
    (kaagaz.extraction). Then the model stage (PRD 2 D1 to D6,
    ``extraction.understanding``), when a chat model is set: the document card
-   (and PR 6's invoice windows), with the heartbeat and progress
+   (and PR 6's invoice windows, or PRD 6's land windows), with the heartbeat and progress
    "understanding i of n" after each call and after its searches. The card
    gives the document's type, languages, summary, date and card JSON; with the
    model off or down there is none, the languages come from the pieces (L2),
@@ -246,8 +246,9 @@ from kaagaz.extraction.labels import (
     label_values,
     spot_unsure,
 )
+from kaagaz.extraction.land import value_number
 from kaagaz.extraction.learned import LearnedCorrection, apply_learned
-from kaagaz.extraction.parsing import parse_amount, parse_date
+from kaagaz.extraction.parsing import parse_date
 from kaagaz.extraction.quotes import reader_text
 from kaagaz.extraction.spreadsheet import values_from_cells
 from kaagaz.extraction.understanding import (
@@ -287,7 +288,7 @@ from kaagaz.reading.page_quality import (
     grade,
 )
 from kaagaz.reading.route import RouteDecision
-from kaagaz.reading.socket import NoReader, OnPage, waiting
+from kaagaz.reading.socket import NoReader, OnPage, pages_at_once, pages_in_flight, waiting
 from kaagaz.reading.spans import (
     DIRECT_ORIGINS,
     BoxLocation,
@@ -676,12 +677,15 @@ class JobReading:
     ``kaagaz.db.models.resolve``'s, None when no model reads the scans (RapidOCR).
     ``reading`` is ``kaagaz.db.models.resolve_scan``'s whole answer (features 25-27: the
     mode, Careful, Ensemble's other models, the thinking level and why anything fell back);
-    None with no model, or from a caller that knows the model only."""
+    None with no model, or from a caller that knows the model only. ``pages_at_once`` is the
+    super admin's pages of one document read at once (package S, 0053), read at the job's
+    start; None: OCR_PAGE_CONCURRENCY."""
 
     user_id: str | None
     model: str | None = None
     provider: str | None = None
     reading: "Reading | None" = None
+    pages_at_once: int | None = None
 
 
 class UsageScopes(Protocol):
@@ -821,6 +825,7 @@ class DocumentProcessor:
         ocr_page_concurrency: int = 1,
         cost_saving: tuple[int, float] = (HARD_LINES_MAX, HARD_SHARE),
         index_seconds: float | None = None,
+        land_on: Callable[[str], bool] | None = None,
     ) -> None:
         """``embed(customer_id, document_id, on_batch=...)`` gives the saved pieces their vectors;
         failing with one of ``model_errors`` is logged and skipped, never a failed document.
@@ -859,7 +864,8 @@ class DocumentProcessor:
         (COST_SAVING_HARD_LINES_MAX, COST_SAVING_HARD_SHARE) for ``careful_pages``.
         ``index_seconds`` (MODEL_TIMEOUT_SECONDS): how long the job's own indexing may go on
         before it hands the vectors left to the worker's EmbedMissing (never stuck, 17 Oct
-        2026); None, until done."""
+        2026); None, until done. ``land_on(customer_id)``: the ``land_facts`` switch (PRD 6,
+        0052), asked once a job that has a chat model; None (tests with fakes) asks nothing."""
         if runs is not None and (clock is None or timer is None):
             raise ValueError("runs need a clock and a timer")
         if max_check_crops < 0:
@@ -868,6 +874,7 @@ class DocumentProcessor:
             raise ValueError("a chat model needs its model_budget")
         self._gate = gate
         self._statuses = statuses
+        self._land_on = land_on
         self._documents = documents
         self._socket = socket
         self._prepare = prepare
@@ -962,8 +969,10 @@ class DocumentProcessor:
         """The job's model and who it is billed to (``job_reading``), then everything else
         inside its usage scope: scan, or upgrade when no user asked (SP1)."""
         run.model = self._ocr_model
+        at_once = None
         if self._job_reading is not None:
             reading = self._job_reading(job.customer_id, job.document_id)
+            at_once = reading.pages_at_once
             run.user_id = reading.user_id
             if reading.model is not None:
                 run.model, run.provider = reading.model, reading.provider
@@ -972,7 +981,7 @@ class DocumentProcessor:
         run.models = frozenset(
             model for model in (run.model, *(agent.model for agent in extra if agent is not None)) if model
         )
-        with self._billed(job, run, "scan" if run.user_id is not None else "upgrade"):
+        with self._billed(job, run, "scan" if run.user_id is not None else "upgrade"), pages_at_once(at_once):
             self._read_and_save(job, record, heartbeat, run)
 
     def _read_and_save(self, job: Job, record: DocumentRecord, heartbeat: Heartbeat, run: _Run) -> None:
@@ -1170,7 +1179,11 @@ class DocumentProcessor:
         step, ``outcome`` (done, pending_retry or failed), its seconds since ``started`` on the
         timer and its code; ids only. Done is INFO, the others WARNING."""
         seconds = None if started is None else round(max(0.0, self._timer() - started), 3)
-        extra = {"customer_id": job.customer_id, "document_id": job.document_id, "step": step}
+        extra: dict[str, object] = {
+            "customer_id": job.customer_id,
+            "document_id": job.document_id,
+            "step": step,
+        }
         extra |= {"outcome": outcome, "seconds": seconds, "code": code, "sqlstate": sqlstate}
         _log.log(
             logging.INFO if outcome == "done" else logging.WARNING, message or f"step {outcome}", extra=extra
@@ -1273,17 +1286,15 @@ class DocumentProcessor:
     ) -> Understanding:
         """The model stage (``extraction.understanding``), and its numbers on the run.
         With no chat model it is today's result: no card, and the rule values as they are.
-        Its calls are billed as card until ``understand`` beats 2 (the card is done), then
-        as invoice (its windows, SP1)."""
+        Its calls are billed as card until ``understand`` starts its invoice or land windows,
+        then as invoice or land (SP1)."""
         stage = contextlib.ExitStack()
-        billed_as = "card"
+
+        def windows(kind: str) -> None:
+            stage.close()
+            stage.enter_context(self._billed(job, run, kind))
 
         def beat(done: int, total: int) -> None:
-            nonlocal billed_as
-            if done >= 2 and billed_as == "card":
-                billed_as = "invoice"
-                stage.close()
-                stage.enter_context(self._billed(job, run, "invoice"))
             heartbeat()
             self._progress(job, run, "understanding", done, total)
 
@@ -1302,6 +1313,8 @@ class DocumentProcessor:
                 beat=beat,
                 spans=spans,
                 invoice_windows=None if budget is None else budget.invoice_windows,
+                on_windows=windows,
+                with_land=chat is not None and (self._land_on is None or self._land_on(job.customer_id)),
             )
         run.model_calls = understanding.model_calls
         run.model_error = understanding.error_code
@@ -1313,6 +1326,8 @@ class DocumentProcessor:
                 "ambiguous_quotes": understanding.ambiguous_quotes,
                 "summary_dropped": understanding.counts.summary_dropped,
             }
+        if understanding.land is not None:  # PRD 6 D2: text past the last land window, unread
+            run.quote_config["land_truncated"] = int(understanding.land.truncated)
         return understanding
 
     def _map(self, job: Job, run: _Run, pieces: list[Piece], *, ask: bool = True) -> DocumentMap:
@@ -1768,7 +1783,7 @@ class DocumentProcessor:
         return rates(
             history,
             None if self._ocr_meter is None else self._ocr_meter.name,
-            pages_at_once=self._ocr_page_concurrency,
+            pages_at_once=pages_in_flight(self._ocr_page_concurrency),  # the job's own (package S)
             scanned=detected_type in _PHOTO_TYPES,
         )
 
@@ -2049,9 +2064,9 @@ def _points_at(location: Location) -> bool:
 
 
 def _with_parsed(value: ExtractedValue) -> ExtractedValue:
-    return replace(
-        value, value_number=parse_amount(value.value_text), value_date=parse_date(value.value_text)
-    )
+    """Its number (a land share's only when a printed percentage, ``land.value_number``) and date."""
+    text = value.value_text
+    return replace(value, value_number=value_number(value.field, text), value_date=parse_date(text))
 
 
 def _check_crop(page: Image.Image, box: BoxLocation) -> Image.Image:
@@ -2111,7 +2126,7 @@ def build_processor(
 
     from kaagaz.ai.client import ModelOutputError, ModelUnavailable
     from kaagaz.ai.usage import usage_scope
-    from kaagaz.db import models
+    from kaagaz.db import ai_settings, models
     from kaagaz.db.documents import PgDocuments
     from kaagaz.db.engine import unavailable
     from kaagaz.db.page_reads import PgPageReads
@@ -2153,6 +2168,7 @@ def build_processor(
     job_reading: Callable[[str, str], JobReading] | None = None
     if gemini or model is not None:
         requested_by = text("SELECT read_requested_by FROM documents WHERE customer_id = :c AND id = :d")
+        pages_at_once_sql = text("SELECT pages_at_once FROM platform_ai_settings")
 
         def read_job(customer_id: str, document_id: str) -> JobReading:
             with unavailable(), db.customer(customer_id) as conn:
@@ -2162,9 +2178,16 @@ def build_processor(
                     return JobReading(user_id)
                 # Features 25-27 (S2): the worker's own check of the mode and every model, now.
                 scan = models.resolve_scan(conn, customer_id, document_id, settings=settings)
-            return JobReading(user_id, scan.lead.model, scan.lead.provider, reading=scan)
+                at_once = conn.execute(pages_at_once_sql).scalar_one()  # package S, 0053
+            return JobReading(
+                user_id, scan.lead.model, scan.lead.provider, reading=scan, pages_at_once=at_once
+            )
 
         job_reading = read_job
+
+    def land_on(customer_id: str) -> bool:
+        with unavailable(), db.customer(customer_id) as conn:
+            return ai_settings.switch_on(conn, "land_facts", customer_id)
 
     return DocumentProcessor(
         gate=ScanGate(storage, scanner, storage, documents),
@@ -2208,6 +2231,7 @@ def build_processor(
         ocr_page_concurrency=settings.ocr_page_concurrency,
         cost_saving=(settings.cost_saving_hard_lines_max, settings.cost_saving_hard_share),
         index_seconds=settings.model_timeout_seconds,
+        land_on=land_on if model is not None else None,
     )
 
 

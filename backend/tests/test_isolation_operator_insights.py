@@ -116,7 +116,9 @@ def test_each_organisation_gets_its_own_numbers_and_nothing_planted_comes_out(db
         [daily] = of(rows["daily"], customer)
         counts = ("uploads", "sign_ins", "questions", "corrections", "runs", "scan_pages")
         assert [daily[key] for key in counts] == [size] * len(counts), customer
-        assert daily["cost_usd"] == size * Decimal("0.25")
+        # Changed on purpose (24 Oct 2026): _plant writes one model_usage row (size calls, 0.25 in
+        # all) and cost_usd sums the rows' cost, so it is 0.25, not size * 0.25; both rows is 0.50.
+        assert daily["cost_usd"] == Decimal("0.25")
         health = one(rows["health"], "customer_id", customer)
         assert (health["active_users_7d"], health["answers_30d"], health["open_review"]) == (1, size, 1)
         quality = one(rows["quality"], "customer_id", customer)

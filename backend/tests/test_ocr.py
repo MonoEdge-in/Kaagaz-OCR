@@ -16,6 +16,7 @@ from unittest import mock
 from PIL import Image, ImageDraw, ImageFont
 from rapidocr import LangRec, ModelType, OCRVersion
 
+from kaagaz.db.engine import Database
 from kaagaz.ingestion import sniff
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.reading import ocr, wiring
@@ -574,7 +575,9 @@ class GeminiFactoryTest(unittest.TestCase):
 
         class GeminiEngine:
             @classmethod
-            def from_settings(cls, settings: Settings, *, pool: RapidOcrPool) -> PageEngine:
+            def from_settings(
+                cls, settings: Settings, *, pool: RapidOcrPool, db: Database | None = None
+            ) -> PageEngine:
                 return factory(settings, pool=pool)
 
         module.__dict__["GeminiEngine"] = GeminiEngine

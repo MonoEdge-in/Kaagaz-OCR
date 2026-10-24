@@ -9,6 +9,7 @@ API calls, nothing more.
 from collections.abc import Sequence
 from typing import Any, Protocol
 
+from kaagaz.answering.clarify import Pending
 from kaagaz.answering.memory import Memory
 from kaagaz.answering.pins import Pin
 from kaagaz.answering.rewrite import Turn
@@ -27,9 +28,7 @@ class ApiStorage(BlobStorage, Protocol):
 
     def start_resumable(self, customer_id: str, user_id: str, session_id: str) -> tuple[str, str]: ...
 
-    def upload_resumable_part(
-        self, key: str, upload_id: str, part_number: int, body: bytes
-    ) -> None: ...
+    def upload_resumable_part(self, key: str, upload_id: str, part_number: int, body: bytes) -> None: ...
 
     def resumable_parts(self, key: str, upload_id: str) -> list[tuple[int, int, str]]: ...
 
@@ -56,6 +55,9 @@ class ApiQueue(JobQueue, Protocol):
 class AnswerLike(Protocol):
     def to_json(self) -> dict[str, Any]: ...
 
+    @property
+    def unavailable(self) -> bool: ...
+
 
 class Answers(Protocol):
     def answer(
@@ -69,13 +71,20 @@ class Answers(Protocol):
         memory: Memory,
         choice: ChatChoice | None = None,
         pins: Sequence[Pin] = (),
+        pending: Pending | None = None,
+        clarify: bool = True,
+        cited: Sequence[str] = (),
     ) -> AnswerLike:
         """``question`` is the stripped question text; ``scope`` is resolved for this customer;
         ``history`` is the conversation's earlier turns, oldest first; ``user_id`` is the
         asker, whose own words (My words) only may help; ``memory`` is the conversation's
         (PRD 5 M3), its documents still live, for the follow-up rewrite only; ``choice`` who
         drafts the answer, checked for this customer (features 25-27); ``pins`` the asker's
-        own Most relevant picks (``kaagaz.db.chat.pins_for``)."""
+        own Most relevant picks (``kaagaz.db.chat.pins_for``); ``pending`` the open clarify
+        this answers, read from the stored message (PRD 6 B1, ``clarify.reply_to``); ``clarify``
+        False (the ``nlq_clarify`` switch is off, 0052): no plan and no clarifying question;
+        ``cited`` the documents this conversation's earlier answers cite, newest turn first, read
+        from its stored messages (PRD 6 B: a missing subject offers their names first)."""
         ...
 
     def remember(self, turns: Sequence[Turn], memory: Memory, cited: Sequence[str]) -> Memory | None:

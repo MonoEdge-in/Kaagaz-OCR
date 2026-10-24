@@ -19,7 +19,8 @@ afterEach(() => vi.unstubAllGlobals());
 
 describe("Timeout setup", () => {
   it("is the tab after Feature switches", () => {
-    expect(OPERATOR_TABS.map((tab) => tab.label).slice(-2)).toEqual(["Feature switches", "Timeout setup"]);
+    // Changed on purpose (0053): Speed comes after it.
+    expect(OPERATOR_TABS.map((tab) => tab.label).slice(-3, -1)).toEqual(["Feature switches", "Timeout setup"]);
   });
 
   it("explains itself and offers 1 to 24 hours plus no idle limit", () => {
@@ -62,7 +63,8 @@ describe("Timeout setup", () => {
 describe("one organisation's session timeout", () => {
   it("opens from the Manage menu, hidden while the organisation is being deleted", () => {
     const view = read("components/operator/OrganisationsView.tsx");
-    expect(view).toContain('{ label: "Session timeout", onSelect: onTimeout }');
+    // Changed on purpose (plain words, 25 Oct 2026): each Manage item has a line saying what it does.
+    expect(view).toContain('{ label: "Session timeout", description: MENU_HELP.timeout, onSelect: onTimeout }');
     // In the same list as AI settings and Feature switches, which a deleting organisation skips.
     expect(view.indexOf('org.status === "deleting"')).toBeLessThan(view.indexOf('label: "Session timeout"'));
     const html = renderToStaticMarkup(createElement(OrgSessionTimeoutDialog, { org: ORG, onClose: () => {} }));

@@ -18,7 +18,9 @@ The steps (docs/architecture.md):
 3. ``intent.plan_fixed``: a fixed query, only when every part resolves.
 4. **Fixed route**: run the query; the sentence is a template filled only
    from the query's result (numbers written the Indian way). Citations are
-   the values used. No rows: not found.
+   the values used. No rows: not found. A highest or lowest resting on a value
+   not verified, shown or only compared, says so and cites it; a total, and a party's
+   sum, follow the numbers rule (PRD 6 C and C2, totals.py).
    **Unchecked**: no plan because no checked value holds the figure, but an
    unchecked card value does: no number, a calm line saying it is in these
    documents, and the documents where it appears (status ``unchecked``, answering/unchecked.py).
@@ -97,6 +99,24 @@ The steps (docs/architecture.md):
     a count, not while the model is down), the other documents in scope holding the
     question's key terms (Jalna, जालना) as whole words, from one word-index statement; the
     answer's text, label and verify never see them.
+17. Owners and places (PRD 6 E, kaagaz/answering/owners.py): a question naming people, places or a
+    property the company's land values hold, with an owning or share word (or a property with a map
+    word: its map values and neighbours as printed), is answered first, from
+    fixed queries over ``value_keys``: code-built sentences and one ``documents`` line a record
+    (answer contract v2), every figure a cited value as printed.
+18. Clarify (PRD 6 B1, clarify.py): with the model and a vocabulary port (as ``context``), the
+    rewrite call runs on every question and gives the plan; an unclear name is asked (status
+    ``clarify``), a resolved one put in the question. ``pending``: a stored clarify answered,
+    with no second rewrite. No plan: every step above as before.
+19. Ask speed (24 Oct 2026): a first question's rewrite and plan call (no history, no memory)
+    ends within ANSWER_PLAN_TIMEOUT_SECONDS, else it is answered with no plan or aspects (code
+    ``plan_timeout``); a follow-up's keeps the model's timeout, its search needs the rewrite.
+    Without whole documents, the first question's words, embedding and search (no aspects) run
+    beside that call (``_overlapped``), each database step in its own transaction; they are used
+    only when the call asks no clarify, leaves the question as it was and lists no aspects, so
+    the answer is the one the steps above give one after another. A call that would be for the
+    plan alone is not made when the scope's vocabulary has no key (``Vocabulary.any_keys``):
+    with no name to resolve or offer, step 18 could change nothing.
 
 No source, no answer: an answered result always has at least one sentence,
 every sentence cites at least one source (but step 13's count, which sums up its cited
@@ -108,9 +128,11 @@ Every not-found answer logs one line, "answer not found", with a fixed reason
 code only (``_not_found``'s ``reason``). Every answer also logs one INFO line on its own
 logger, ``kaagaz.answering.timing`` (ask precision PR 1a, D): the route, the status, the
 not-found reason or the label, whole 0/1, the aspect count, and the milliseconds of each
-stage (rewrite, embed, search, widen, draft, verify; time.monotonic), of the model
-limiter's waits (``LIMITER_WAIT``, summed over parallel drafts) and in all. Codes and
-numbers only.
+stage (rewrite, embed, search, widen, draft, verify; time.monotonic, wall time on the
+answer's thread, adding up to the total), of the model limiter's waits (``LIMITER_WAIT``,
+summed over parallel drafts and step 19's overlap) and in all. ``overlap`` is 1 when step
+19's early search was used; ``overlap_ms``, the time it took, used or not, inside
+``rewrite_ms``. Codes and numbers only.
 
 Time: one ``available_fields`` query only for a question with an aggregate
 word and no unknown topic word, then either one fixed query or one search
@@ -125,7 +147,7 @@ import logging
 import re
 import time
 from collections.abc import Callable, Iterator, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextvars import ContextVar, copy_context
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime
@@ -144,7 +166,8 @@ from kaagaz.ai.client import (
 )
 from kaagaz.ai.openrouter import LIMITER_WAIT
 from kaagaz.ai.usage import billed_as
-from kaagaz.answering import glossary
+from kaagaz.answering import glossary, voice
+from kaagaz.answering.clarify import Pending, PgVocabulary, Step, Vocabulary, after_reply, first_step
 from kaagaz.answering.dates import date_range, describe_range, mentions_date
 from kaagaz.answering.draft import (
     ANSWER_PROMPT_HASH,
@@ -200,17 +223,21 @@ from kaagaz.answering.hard_to_read import (
     FlaggedPage,
     PgReadingQuality,
     ReadingQuality,
+    WordMark,
     hard_to_read,
     not_found_note,
 )
 from kaagaz.answering.hinglish import NormalisedQuestion, normalise
 from kaagaz.answering.intent import FixedPlan, metric_asked, plan_fixed
 from kaagaz.answering.memory import NO_MEMORY, Memory, allowed_tokens, prompt_text, summarise
+from kaagaz.answering.owners import PgOwners, owner_ask
+from kaagaz.answering.owners import reply as owners_reply
 from kaagaz.answering.pins import Pin, lifts, pinned_first
+from kaagaz.answering.rewrite import MAX_QUESTION, Rewritten, Turn, rewrite_and_plan
 from kaagaz.answering.rewrite import MAX_REPLY_TOKENS as REWRITE_REPLY_TOKENS
 from kaagaz.answering.rewrite import SYSTEM_PROMPT as REWRITE_PROMPT
-from kaagaz.answering.rewrite import Turn, rewrite
 from kaagaz.answering.sanitize import clean_snippet, clean_text
+from kaagaz.answering.totals import tell
 from kaagaz.answering.translate import target_scripts, translate
 from kaagaz.answering.unchecked import PgUncheckedValues, UncheckedValues, unchecked_sentence
 from kaagaz.answering.verify import numbers_in, unchecked_cross_script, verify
@@ -229,7 +256,7 @@ _STAGES = ("rewrite", "embed", "search", "widen", "draft", "verify")
 
 # "unchecked": the figure asked for exists only as unchecked card values, so no
 # number is given (kaagaz/answering/unchecked.py).
-Status = Literal["answered", "not_found", "unchecked"]
+Status = Literal["answered", "not_found", "unchecked", "clarify"]
 Route = Literal["fixed_query", "search"]
 _MAX_NAME = 100  # a party name longer than this is cut in the sentence
 _REPLY_TOKENS = 1024  # PROVISIONAL: a draft's reply budget (num_predict), kept free of evidence
@@ -307,7 +334,7 @@ class Answer:
     label: str | None  # None when not found
     sentences: list[AnswerSentence]
     citations: list[Citation]
-    closest_documents: list[dict[str, str]]  # {"id", "display_name"}
+    closest_documents: list[dict[str, Any]]  # {"id", "display_name"}, and "words" (never in to_json)
     route: Route
     normalized_question: str
     model_used: bool
@@ -325,13 +352,26 @@ class Answer:
     # scope holding the question's key terms (``AnswerService._mentioned``); in to_json only
     # when there is one, so answers without it keep their shape.
     mentions: dict[str, Any] | None = None
+    # PRD 6 A, answer contract v2 (``_shaped``): the documents listed under the answer, each
+    # {document_id, title, why, citations}, and what was assumed. The opening is the API's.
+    documents: list[dict[str, Any]] = field(default_factory=list)
+    assumptions: list[str] = field(default_factory=list)
     # KZ-006: not found while the model was down, so "not found" may be wrong; the route
     # answers 503 instead. Never in to_json.
     unavailable: bool = False
+    # Decision 2's final check (``_checked``), never in to_json: the full text behind each
+    # citation (its snippet is cut), and the numbers a fixed query gave a code-written sentence.
+    backing: dict[int, str] = field(default_factory=dict)
+    vouched: frozenset[str] = frozenset()
+    # PRD 6 B1 (answer contract v2): the question to ask instead of an answer, with what
+    # answering it needs (kept on the server), and what was assumed; in to_json only when set.
+    clarify: dict[str, Any] | None = None
+    resume: dict[str, Any] | None = None
 
     def to_json(self) -> dict[str, Any]:
         """The ``Answer`` of frontend/lib/types.ts, exactly; ``agents``, ``agent_ids``,
-        ``agents_asked``, ``agreement`` and ``thinking`` only with a ``team``."""
+        ``agents_asked``, ``agreement`` and ``thinking`` only with a ``team``. ``opening`` is
+        None here: only the API knows the conversation and the asker (routers/chat.py)."""
         team = (
             {}
             if self.team is None
@@ -344,8 +384,12 @@ class Answer:
             }
         )
         return {
+            "version": 2,
             "status": self.status,
             "label": self.label,
+            "opening": None,
+            "documents": [dict(document) for document in self.documents],
+            "assumptions": list(self.assumptions),
             "sentences": [{"text": s.text, "citations": list(s.citations)} for s in self.sentences],
             "citations": [citation.to_json() for citation in self.citations],
             "closest_documents": [
@@ -365,6 +409,7 @@ class Answer:
             "related_documents": [dict(doc) for doc in self.related_documents],
             **team,
             **({} if self.mentions is None else {"mentions": self.mentions}),
+            **({"clarify": self.clarify, "resume": self.resume} if self.clarify else {}),
         }
 
 
@@ -381,6 +426,8 @@ class _Timing:
     reason: str | None = None  # the not-found reason code
     pinned: int = 0  # hits a Most relevant pick moved up (answering/pins.py)
     degraded: bool = False  # the model was down for the question's vector or its draft (KZ-006)
+    overlap: bool = False  # step 19's early search was used
+    overlap_ms: float = 0.0  # the time it took, beside the plan call
 
     def lap(self, stage: str) -> None:
         now = time.monotonic()
@@ -389,6 +436,18 @@ class _Timing:
 
 
 _TIMING: ContextVar[_Timing | None] = ContextVar("answer_timing", default=None)
+
+
+@dataclass(frozen=True, slots=True)
+class _Early:
+    """Step 19's early search (``AnswerService._early``): the asker's words, the question's
+    vector and hits, whether the model was down for the vector (KZ-006), and how long it took."""
+
+    expansion: Expansion
+    vector: list[float] | None
+    hits: Sequence[Hit]
+    degraded: bool
+    ms: float
 
 
 def _timing() -> _Timing:
@@ -413,15 +472,17 @@ def _timed[**P](answer: Callable[P, Answer]) -> Callable[P, Answer]:
             _TIMING.reset(token)
             LIMITER_WAIT.reset(waits)
         _timing_log.info(
-            "answer timing route=%s status=%s outcome=%s whole=%d aspects=%d pinned=%d %s"
-            " limiter_wait_ms=%.0f total_ms=%.0f",
+            "answer timing route=%s status=%s outcome=%s whole=%d aspects=%d pinned=%d overlap=%d %s"
+            " overlap_ms=%.0f limiter_wait_ms=%.0f total_ms=%.0f",
             result.route,
             result.status,
             timing.reason or result.label,
             timing.whole,
             timing.aspects,
             timing.pinned,
+            timing.overlap,
             " ".join(f"{stage}_ms={timing.ms.get(stage, 0.0):.0f}" for stage in _STAGES),
+            timing.overlap_ms,
             waited[0] * 1000,
             (timing.last - timing.start) * 1000,
         )
@@ -456,6 +517,7 @@ class AnswerService:
         context: Context | None = None,
         exhaustive: Exhaustive | None = None,
         mentions: Mentions | None = None,
+        vocabulary: Vocabulary | None = None,
     ) -> None:
         self._model = model
         self._translator = translator if settings.answer_translate_question else None
@@ -488,6 +550,8 @@ class AnswerService:
         self._context: Context | None = pg if retriever is None else context
         self._exhaustive: Exhaustive | None = PgExhaustive(db) if retriever is None else exhaustive
         self._mentions: Mentions | None = PgExhaustive(db) if retriever is None else mentions
+        self._owners = PgOwners(db) if retriever is None else None
+        self._vocabulary: Vocabulary | None = PgVocabulary(db) if retriever is None else vocabulary
 
     @_timed
     def answer(
@@ -501,6 +565,9 @@ class AnswerService:
         memory: Memory = NO_MEMORY,
         choice: ChatChoice | None = None,
         pins: Sequence[Pin] = (),
+        pending: Pending | None = None,
+        clarify: bool = True,
+        cited: Sequence[str] = (),
     ) -> Answer:
         """Answer ``question`` for ``customer_id`` only, from documents inside ``scope``;
         ``history`` is the conversation's earlier turns, oldest first; ``user_id``, the
@@ -511,12 +578,20 @@ class AnswerService:
         MODEL_CHAT. ``pins``: the asker's Most relevant picks that may move a hit up
         (answering/pins.py; ``kaagaz.db.chat.pins_for``). A ``choice`` with no agent
         (``models.NO_MODEL``: the asker's Ask setting is None, 0038) answers as with the model
-        off: no model call at all, the lines found quoted."""
+        off: no model call at all, the lines found quoted. ``pending``: the stored clarify
+        this answers (step 18, ``clarify.reply_to``), whose question is answered instead;
+        ``clarify`` False (the ``nlq_clarify`` switch, 0052): no plan, so no clarify. ``cited``:
+        the documents the conversation's earlier answers cite, newest turn first (a missing
+        subject's choices, ``clarify.first_step``)."""
         if choice is not None and not choice.agents:
             keyless = copy.copy(self)  # shallow: the same ports, without the model clients
             keyless._model = keyless._translator = None
-            return keyless._respond(customer_id, question, scope, history, user_id, memory, None, pins)
-        return self._respond(customer_id, question, scope, history, user_id, memory, choice, pins)
+            return keyless._respond(
+                customer_id, question, scope, history, user_id, memory, None, pins, pending, clarify, cited
+            )
+        return self._respond(
+            customer_id, question, scope, history, user_id, memory, choice, pins, pending, clarify, cited
+        )
 
     def _respond(
         self,
@@ -528,21 +603,38 @@ class AnswerService:
         memory: Memory,
         choice: ChatChoice | None,
         pins: Sequence[Pin],
+        pending: Pending | None,
+        clarify: bool = True,
+        cited: Sequence[str] = (),
     ) -> Answer:
         """``answer``'s work, timed by it."""
         if scope.matches_nothing:
             return _not_found("search", question.strip(), [], model_used=False, reason="notfound_empty_scope")
         whole = self._whole(customer_id, scope)
         _timing().lap("search")
+        # Step 18: the names of the scope's documents only, when it names them.
+        vocabulary = None if self._vocabulary is None else self._vocabulary.within(scope.document_ids)
+        if pending is not None:  # step 18: its picks checked again, then the names left; no rewrite
+            step = after_reply(vocabulary, customer_id, pending)
+            return self._step_answer(
+                customer_id, step, pending.question, scope, user_id, whole, (), choice, pins
+            )
         turns = self._settings.chat_history_turns
         recent = history[-turns:] if turns else ()
         remembered = prompt_text(memory)
-        rewritten: str | None = None
-        aspects: tuple[str, ...] = ()
+        done = Rewritten(None, (), None)
+        early: Future[_Early] | None = None
         # CX6: the aspects are asked for, even on a first question, when they can be searched.
         most = self._settings.query_aspects_max if whole is None and self._widens() else 0
-        if self._model is not None and (recent or remembered or most):
-            rewritten, aspects = rewrite(
+        planned = clarify and self._vocabulary is not None  # step 18: the plan, on every question
+        alone = self._model is not None and planned and not (recent or remembered or most)
+        if alone and vocabulary is not None and not vocabulary.any_keys(customer_id):
+            planned = False  # step 19: a call for the plan alone, with no name it could check or offer
+        if self._model is not None and (recent or remembered or most or planned):
+            first = not (recent or remembered)  # step 19: a first question's call has its deadline
+            plan_time = self._settings.answer_plan_timeout_seconds
+            rewriting = partial(
+                rewrite_and_plan,
                 self._model,
                 question,
                 recent,
@@ -550,18 +642,181 @@ class AnswerService:
                 allowed=allowed_tokens(memory),
                 aspects_max=most,
                 budget=self._rewrite_budget,
+                plan=planned,
+                deadline=time.monotonic() + plan_time if first else None,
             )
+            if first and whole is None:
+                done, early = self._overlapped(rewriting, customer_id, question, scope, user_id)
+            else:
+                done = rewriting()
+            if not (recent or remembered or most):
+                done = Rewritten(None, (), done.plan)  # called for the plan alone
         timing = _timing()
         timing.lap("rewrite")
-        timing.whole, timing.aspects = whole is not None, len(aspects)
-        asked = rewritten or question
-        answer = self._answer(customer_id, asked, scope, user_id, whole, aspects, choice, pins)
+        timing.whole, timing.aspects = whole is not None, len(done.aspects)
+        step = Step(done.question or question, ())
+        narrowed = replace(scope, timezone=EVERYTHING.timezone) != EVERYTHING  # any filter at all
+        if done.plan is not None and vocabulary is not None:
+            step = first_step(vocabulary, customer_id, step.question, done.plan, narrowed, cited)
+        return self._step_answer(
+            customer_id, step, question, scope, user_id, whole, done.aspects, choice, pins, kept
+        )
+
+    def _overlapped(
+        self,
+        rewriting: Callable[[], Rewritten],
+        customer_id: str,
+        question: str,
+        scope: Scope,
+        user_id: str | None,
+    ) -> tuple[Rewritten, Future[_Early]]:
+        """Step 19: the rewrite and plan call, with ``_early`` beside it on a thread of its own,
+        in a copy of the context (billing, the rate scope, the limiter's waits, as ``_ensemble``);
+        both are done when this returns. The early search's failure is raised only where it is
+        used (``_answer``), as the same step would raise it there."""
+        with ThreadPoolExecutor(max_workers=1) as pool:  # leaving it joins the thread
+            early = pool.submit(copy_context().run, self._early, customer_id, question, scope, user_id)
+            done = rewriting()
+        if early.exception() is None:
+            _timing().overlap_ms = early.result().ms
+        return done, early
+
+    def _early(self, customer_id: str, question: str, scope: Scope, user_id: str | None) -> _Early:
+        """Step 19: the asker's words (``_expansion``), then the question's vector and hits as
+        ``_search_answer`` gets them with no aspects; nothing with nothing to search. On its own
+        thread: its own timing, so the answer's laps are the answer thread's only."""
+        start = time.monotonic()
+        _TIMING.set(_Timing(start, start))  # this thread's copy of the context only
+        expansion = self._expansion(customer_id, question, scope, user_id)
+        _, query_text, spoken = _searched_as(question, normalise(question))
+        vector: list[float] | None = None
+        hits: Sequence[Hit] = ()
+        if query_text:
+            vector = self._embed_all([spoken])[0]
+            hits = self._hits(customer_id, query_text, vector, [], scope, expansion)
+        return _Early(expansion, vector, hits, _timing().degraded, (time.monotonic() - start) * 1000)
+
+    def _step_answer(
+        self,
+        customer_id: str,
+        step: Step,
+        question: str,
+        scope: Scope,
+        user_id: str | None,
+        whole: Sequence[Hit] | None,
+        aspects: Sequence[str],
+        choice: ChatChoice | None,
+        pins: Sequence[Pin],
+        early: Future[_Early] | None = None,
+    ) -> Answer:
+        """The clarify ``step`` asks, else the answer to its question (``_respond``'s end);
+        ``early``: step 19's search of that question, when there was one."""
+        asked = step.question
+        rewritten = asked if asked != question and len(asked) <= MAX_QUESTION else None
+        if step.clarify is not None:  # no search, no draft
+            asking = Answer("clarify", None, [], [], [], "search", asked, True, rewritten)
+            return replace(asking, clarify=step.clarify, resume=step.resume)
+        answer = self._checked(
+            self._answer(customer_id, asked, scope, user_id, whole, aspects, choice, pins, early), asked
+        )
         # KZ-006: an answer found without the model stays answered; a not found may be the outage.
         unavailable = answer.status == "not_found" and _timing().degraded
         answer = self._unreadable(customer_id, answer, scope)
         if not unavailable:
-            answer = self._mentioned(customer_id, asked, answer, scope)
-        return replace(answer, rewritten_question=rewritten, unavailable=unavailable)
+            answer = self._shaped(
+                customer_id, asked, self._mentioned(customer_id, asked, answer, scope), scope
+            )
+        said = [*answer.assumptions, *step.assumptions]
+        return replace(answer, rewritten_question=rewritten, unavailable=unavailable, assumptions=said)
+
+    def _checked(self, answer: Answer, question: str) -> Answer:
+        """Decision 2's final check (PRD 6 A, voice.py) over every sentence, whoever wrote it:
+        each number and fraction word must be the question's, a page of a source it cites, in
+        the full text or the name of a source it cites (a figure as printed), or one the fixed
+        query that wrote the sentence gave (``vouched``). A sentence that fails is dropped and
+        its reason code logged, never its text; none left is not found. O(s * t)."""
+        if answer.status != "answered":
+            return answer
+        asked = voice.numbers(question) | answer.vouched
+        by_n = {citation.n: citation for citation in answer.citations}
+        kept: list[AnswerSentence] = []
+        for sentence in answer.sentences:
+            allowed = set(asked)
+            for c in (by_n[n] for n in sentence.citations if n in by_n):
+                allowed |= voice.numbers(f"{answer.backing.get(c.n, c.snippet)}\n{c.document_name}")
+                allowed |= {str(page) for page in (c.page_no, *range(c.page_from, c.page_to + 1))}
+            reason = voice.unsupported(sentence.text, allowed)
+            if reason is None:
+                kept.append(sentence)
+            else:
+                _log.info("answer text dropped", extra={"code": f"final_check:sentence:{reason}"})
+        if len(kept) == len(answer.sentences):
+            return answer
+        if not kept:
+            closest, used = answer.closest_documents, answer.model_used
+            return _not_found(
+                answer.route,
+                answer.normalized_question,
+                closest,
+                model_used=used,
+                reason="notfound_final_check",
+            )
+        # The sources still cited, numbered from 1 again in order, as every answer's are.
+        cited = sorted({n for sentence in kept for n in sentence.citations if n in by_n})
+        new = {old: index for index, old in enumerate(cited, start=1)}
+        return replace(
+            answer,
+            sentences=[AnswerSentence(s.text, [new[n] for n in s.citations if n in new]) for s in kept],
+            citations=[replace(by_n[old], n=n) for old, n in new.items()],
+            backing={new[old]: text for old, text in answer.backing.items() if old in new},
+        )
+
+    def _shaped(self, customer_id: str, question: str, answer: Answer, scope: Scope) -> Answer:
+        """Contract v2's ``documents`` (PRD 6 A): at most MAX_DOCUMENTS, each with its title
+        and why (voice.py, from its card and the question) and the citations that are its. An
+        answer's are the documents it cites, in order, but a count of documents (step 13),
+        whose lines name each document with its pages already; a not-found or unchecked
+        answer's are its closest documents, citing nothing. One statement for the cards."""
+        if answer.status == "answered" and answer.sentences and not answer.sentences[0].citations:
+            return answer  # step 13's count
+        if answer.documents:
+            return answer  # step 17 listed its records itself (owners.py)
+        rows: dict[str, tuple[str, list[Citation]]] = {}
+        for c in answer.citations if answer.status == "answered" else []:
+            rows.setdefault(c.document_id, (c.document_name, []))[1].append(c)
+        for doc in answer.closest_documents if answer.status != "answered" else []:
+            rows.setdefault(str(doc["id"]), (str(doc["display_name"]), []))
+        listed = list(rows.items())[: voice.MAX_DOCUMENTS]
+        if not listed:
+            return answer
+        found = self._context.cards(customer_id, [d for d, _ in listed], scope) if self._context else {}
+        normalised = normalise(question)
+        keywords = [
+            k for k in glossary.content_words(normalised.keywords) if not any(ch.isdigit() for ch in k)
+        ]
+        closest = {str(doc["id"]): list(doc.get("words") or []) for doc in answer.closest_documents}
+        fallback = {"answered": "", "unchecked": "The figure appears here"}.get(
+            answer.status, "Close to your words"
+        )
+        documents = []
+        for document_id, (name, cited) in listed:
+            card = found.get(document_id, ("", None))[1]
+            text = word_text(" ".join(answer.backing.get(c.n, c.snippet) for c in cited))
+            words = closest.get(document_id) or [k for k in keywords if has_word(k, text)]
+            fields = [c.snippet.partition(":")[0] for c in cited if c.kind == "value"]
+            said = voice.why(question, card, fields=fields, words=words, dated=mentions_date(normalised))
+            reason = voice.unsupported(said, voice.numbers(question))
+            if reason is not None:  # decision 2: never shown; why is written without digits
+                _log.info("answer text dropped", extra={"code": f"final_check:why:{reason}"})
+            documents.append(
+                {
+                    "document_id": document_id,
+                    "title": voice.title(name, card),
+                    "why": (said if reason is None else "") or fallback,
+                    "citations": [c.n for c in cited],
+                }
+            )
+        return replace(answer, documents=documents)
 
     def _mentioned(self, customer_id: str, question: str, answer: Answer, scope: Scope) -> Answer:
         """ "Also mentions" (Tushar, 17 Oct 2026): every other document in ``scope`` that holds
@@ -636,6 +891,23 @@ class AnswerService:
             for citation in citations
         ]
 
+    def _hard_values(self, customer_id: str, values: Sequence[ValueRef]) -> set[str]:
+        """F6 for every figure a total or a ranking compares, listed or not (PRD 6 C): the ids
+        of the values whose spot holds a word mark. One statement for all their documents' word
+        marks; each value is checked against its own document's marks only."""
+        if self._reading is None or not values:
+            return set()
+        marks: dict[str, list[WordMark]] = {}
+        for mark in self._reading.word_marks(customer_id, [value.document_id for value in values]):
+            marks.setdefault(mark.document_id, []).append(mark)
+        return {
+            value.value_id
+            for value in values
+            if hard_to_read(
+                value.document_id, valid_regions([value.region]), marks.get(value.document_id, [])
+            )
+        }
+
     def _answer(
         self,
         customer_id: str,
@@ -646,12 +918,18 @@ class AnswerService:
         aspects: Sequence[str] = (),
         choice: ChatChoice | None = None,
         pins: Sequence[Pin] = (),
+        early: Future[_Early] | None = None,
     ) -> Answer:
         """``whole``: every piece of the scope (CX5), or None to search; ``aspects``: CX6's;
-        ``choice``: who drafts and ``pins``, the asker's picks (``answer``)."""
+        ``choice``: who drafts and ``pins``, the asker's picks (``answer``); ``early``: step
+        19's search of ``question``."""
         normalised = normalise(question)
         # "Hinglish understood as" is shown only when there was Hinglish to understand.
         shown = normalised.english if normalised.hinglish else question.strip()
+        if self._owners is not None:
+            owned = self._owners_answer(self._owners, customer_id, question, shown, scope)
+            if owned is not None:
+                return owned
         query = exhaustive_query(question)
         if query is not None and self._exhaustive is not None:
             counted = self._exhaustive_answer(self._exhaustive, customer_id, *query, shown, scope)
@@ -666,20 +944,26 @@ class AnswerService:
         unchecked = self._unchecked_answer(customer_id, normalised, shown, scope)
         if unchecked is not None:
             return unchecked
-        # My words: read once, for this question and this user only, never cached.
-        document_id = (
-            scope.document_ids[0] if scope.document_ids is not None and len(scope.document_ids) == 1 else None
+        found = None if early is None else early.result()  # read beside the plan call (step 19)
+        expansion = (
+            self._expansion(customer_id, question, scope, user_id) if found is None else found.expansion
         )
-        words = () if user_id is None else self._words.words(customer_id, user_id, document_id=document_id)
-        expansion = expand(question, words) if words else NO_EXPANSION
         answer = self._search_answer(
-            customer_id, question, normalised, shown, scope, expansion, whole, aspects, choice, pins
+            customer_id, question, normalised, shown, scope, expansion, whole, aspects, choice, pins, found
         )
         if not expansion.used:
             return answer
         # The note, and never verified whatever passed (council 3 Oct 2026, A3).
         label = None if answer.label is None else "needs_review"
         return replace(answer, label=label, understood_words=expansion.understood())
+
+    def _expansion(self, customer_id: str, question: str, scope: Scope, user_id: str | None) -> Expansion:
+        """My words: read once, for this question and this user only, never cached."""
+        document_id = (
+            scope.document_ids[0] if scope.document_ids is not None and len(scope.document_ids) == 1 else None
+        )
+        words = () if user_id is None else self._words.words(customer_id, user_id, document_id=document_id)
+        return expand(question, words) if words else NO_EXPANSION
 
     def _unchecked_answer(
         self, customer_id: str, normalised: NormalisedQuestion, shown: str, scope: Scope
@@ -707,6 +991,58 @@ class AnswerService:
 
     # --- fixed route --------------------------------------------------------
 
+    def _owners_answer(
+        self, source: PgOwners, customer_id: str, question: str, shown: str, scope: Scope
+    ) -> Answer | None:
+        """Step 17 (kaagaz/answering/owners.py): not found, offering the records that match only
+        part of it, when none matches all; None when it asks no such thing or no record matches."""
+        ask = owner_ask(question, partial(source.resolve, customer_id, scope=scope))
+        found = None if ask is None else owners_reply(source, customer_id, ask, scope)
+        if found is None:
+            return None
+        if not found.answered:
+            return _not_found(
+                "fixed_query", shown, found.closest, model_used=False, reason="notfound_owners_part"
+            )
+        citations: list[Citation] = []
+        numbered: dict[str, int] = {}
+        spotless: set[str] = set()  # the numbers of values with no spot, never vouched for
+
+        def cite(refs: Sequence[ValueRef]) -> list[int]:
+            for ref in refs:
+                regions = valid_regions([ref.region])
+                if not regions:  # its printed label (0054) is its own text too
+                    spotless.update(voice.numbers(f"{ref.value_text}\n{ref.label_text or ''}"))
+                elif ref.value_id not in numbered:  # never shown without its spot
+                    numbered[ref.value_id] = len(citations) + 1
+                    citations.append(_value_citation(len(citations) + 1, ref, regions))
+            return list(dict.fromkeys(numbered[ref.value_id] for ref in refs if ref.value_id in numbered))
+
+        sentences = [AnswerSentence(text, cite(refs)) for text, refs in found.sentences]
+        documents = [
+            {"document_id": document_id, "title": title, "why": why, "citations": cite(refs)}
+            for document_id, title, why, refs in found.documents
+        ]
+        citations = self._marked(customer_id, citations, {c.n: c.regions for c in citations})
+        hard = any(c.hard_to_read for c in citations)
+        verified = all(c.label == "verified" for c in citations) and not hard
+        return Answer(
+            status="answered",
+            label="verified" if verified else "needs_review",
+            sentences=sentences,
+            citations=citations,
+            closest_documents=[],
+            route="fixed_query",
+            normalized_question=shown,
+            model_used=False,
+            reading_note=HARD_TO_READ_NOTE if hard else None,
+            documents=documents,
+            # Decision 2: owners.py writes these sentences: counts of the records listed and
+            # values quoted as printed, so the final check keeps their numbers; a value with no
+            # spot is not cited, so its figure must be in no sentence the check keeps.
+            vouched=frozenset().union(*(voice.numbers(text) for text, _ in found.sentences)) - spotless,
+        )
+
     def _exhaustive_answer(
         self,
         source: Exhaustive,
@@ -730,6 +1066,7 @@ class AnswerService:
         citations: list[Citation] = []
         lines: dict[int, list[dict[str, Any]]] = {}
         listed: list[AnswerSentence] = []
+        counted: set[int] = {total}  # decision 2: the count, and each listed document's pages
         for hits in documents:
             usable = number_evidence(hits)
             if not usable:
@@ -739,9 +1076,12 @@ class AnswerService:
             citations.append(_piece_citation(n, first, [said]))
             lines[n] = first.regions
             name = clean_text(first.hit.document_name)[:_MAX_NAME].strip()
-            listed.append(AnswerSentence(document_sentence(name, pages_with(hits, term)), [n]))
+            pages = pages_with(hits, term)
+            counted |= {*pages, len(pages)}
+            listed.append(AnswerSentence(document_sentence(name, pages), [n]))
         if not total or not citations or not said:
             return None
+        counted |= {len(citations), total - len(citations)}
         citations = self._marked(customer_id, citations, lines)
         hard = any(c.hard_to_read for c in citations)
         head = count_sentence(said, total, kinds)
@@ -759,9 +1099,15 @@ class AnswerService:
             normalized_question=shown,
             model_used=False,
             reading_note=HARD_TO_READ_NOTE if hard else None,
+            vouched=frozenset(str(number) for number in counted),
         )
 
     def _fixed_answer(self, customer_id: str, plan: FixedPlan, shown: str, fixed: FixedQueries) -> Answer:
+        if plan.aggregate == "total" or plan.group_fields:
+            # PRD 6 C2: a party's sum, like a total, only when the numbers rule holds.
+            listed = self._total_answer(customer_id, plan, shown, fixed)
+            if listed is not None:
+                return listed
         rows = self._run_plan(fixed, customer_id, plan)
         if not rows:
             return _not_found("fixed_query", shown, [], model_used=False, reason="notfound_fixed_no_rows")
@@ -770,47 +1116,123 @@ class AnswerService:
         sentence = _fixed_sentence(plan, top)
         if not cited or sentence is None:
             return _not_found("fixed_query", shown, [], model_used=False, reason="notfound_fixed_no_sentence")
+        # PRD 6 C2: every value compared that is not verified is cited too, after the answer's own.
+        seen = {value.value_id for value, _ in cited}
+        doubted = [(v, valid_regions([v.region])) for v in (*top[0].unsure, *top[0].totals)]
+        doubted = [(v, regions) for v, regions in doubted if v.value_id not in seen]
+        shown_n = len(cited)
+        cited += [(value, regions) for value, regions in doubted if regions][:MAX_CITED_VALUES]
         citations = [
-            Citation(
-                n=index,
-                kind="value",
-                ref_id=value.value_id,
-                document_id=value.document_id,
-                document_name=value.document_name,
-                detected_type=value.detected_type,
-                page_no=value.page_no,
-                regions=regions,
-                snippet=clean_snippet(f"{value.field}: {value.value_text}"),
-                label=value.label,
-                page_from=value.page_no,
-                page_to=value.page_no,
-                label_page_no=value.label_page_no,
-                label_regions=valid_regions([value.label_region] if value.label_region else []),
-            )
-            for index, (value, regions) in enumerate(cited, start=1)
+            _value_citation(index, value, regions) for index, (value, regions) in enumerate(cited, start=1)
         ]
         citations = self._marked(customer_id, citations, {c.n: c.regions for c in citations})
         hard = any(c.hard_to_read for c in citations)
-        verified = all(row.verified for row in top) and all(c.label == "verified" for c in citations)
+        verified = (
+            all(row.verified for row in top)
+            and not top[0].unsure
+            and not top[0].totals
+            and all(c.label == "verified" for c in citations)
+        )
+        sentences = [AnswerSentence(text=sentence, citations=[c.n for c in citations[:shown_n]])]
+        doubts, totalish = {v.value_id for v in top[0].unsure}, {v.value_id for v in top[0].totals}
+        unsure = [
+            c.n
+            for c in citations
+            if c.ref_id not in totalish and (c.label != "verified" or c.ref_id in doubts)
+        ]
+        looks = [c.n for c in citations if c.ref_id in totalish]
+        if not verified and plan.aggregate != "count" and unsure:
+            # PRD 6 C: the answer itself says so, beside the label, citing only what it is about.
+            sentences.append(AnswerSentence("Some of the values behind this are not verified yet.", unsure))
+        if looks:  # C2: left out of the comparison, and why
+            said = (
+                "A row that reads like a total is" if len(looks) == 1 else "Rows that read like a total are"
+            )
+            sentences.append(AnswerSentence(f"{said} left out of this.", looks))
+        # Decision 2: the template's own inputs, the query's result and how many records gave it,
+        # the dates asked and the names it groups by (package C narrows totals, decision 10).
+        period = describe_range(plan.start, plan.end) if plan.start and plan.end else ""
+        given = [
+            period,
+            str(top[0].number),
+            str(sum(row.records for row in top)),
+            *(r.group or "" for r in top),
+        ]
         return Answer(
             status="answered",
             label="verified" if verified and not hard else "needs_review",
-            sentences=[AnswerSentence(text=sentence, citations=[c.n for c in citations])],
+            sentences=sentences,
             citations=citations,
             closest_documents=[],
             route="fixed_query",
             normalized_question=shown,
             model_used=False,
             reading_note=HARD_TO_READ_NOTE if hard else None,
+            vouched=frozenset().union(*map(voice.numbers, given)),
+        )
+
+    def _total_answer(
+        self, customer_id: str, plan: FixedPlan, shown: str, fixed: FixedQueries
+    ) -> Answer | None:
+        """A total, or every matching record and why there is none (PRD 6 C, answering/totals.py),
+        written in code. Verified only for a total whose every cited value is, and no figure of
+        any record hard to read, listed or not. Two statements, and one for the word marks of
+        every record's document (F6). For a highest or lowest by party
+        (C2), the same records and reasons (``ranking``), or None when the rule holds and the
+        ranking may be shown."""
+        metric = plan.metric or ""
+        ranking = plan.aggregate != "total"
+        figures = fixed.figures(
+            customer_id,
+            metric,
+            plan.date_fields,
+            plan.start,
+            plan.end,
+            invoices=plan.invoices,
+            group_fields=plan.group_fields,
+        )
+        if not figures:
+            return _not_found("fixed_query", shown, [], model_used=False, reason="notfound_fixed_no_rows")
+        period = describe_range(plan.start, plan.end) if plan.start and plan.end else ""
+        said = (_words(metric).removeprefix("total "), period, "invoice" if plan.invoices else "record")
+        told = tell(figures, *said, ranking=ranking)
+        if not told.lines:
+            return _not_found("fixed_query", shown, [], model_used=False, reason="notfound_fixed_no_sentence")
+        citations = [
+            _value_citation(n, value, regions) for n, (_, value, regions) in enumerate(told.lines, start=1)
+        ]
+        hard = self._hard_values(customer_id, [figure.value for figure in figures if figure.value])
+        citations = [replace(c, hard_to_read=c.ref_id in hard) for c in citations]
+        if hard:
+            told = tell(figures, *said, hard, ranking=ranking)  # the same records, in the same order
+        if ranking and told.total is not None:
+            return None  # the rule holds, no listed figure hard to read: the ranking follows
+        verified = told.total is not None and not hard and all(c.label == "verified" for c in citations)
+        return Answer(
+            status="answered",
+            label="verified" if verified else "needs_review",
+            sentences=[
+                AnswerSentence(told.head, [c.n for c in citations]),  # it sums up the lines below
+                *(AnswerSentence(text, [n]) for n, (text, _, _) in enumerate(told.lines, start=1)),
+            ],
+            citations=citations,
+            closest_documents=[],
+            route="fixed_query",
+            normalized_question=shown,
+            model_used=False,
+            reading_note=HARD_TO_READ_NOTE if hard else None,
+            # Decision 2: every number here is code's (totals.tell: figures as printed, a total
+            # only under decision 10's rule, counts of the lines shown), so the final check keeps them.
+            vouched=frozenset().union(*map(voice.numbers, [told.head, *(text for text, _, _ in told.lines)])),
         )
 
     def _run_plan(self, fixed: FixedQueries, customer_id: str, plan: FixedPlan) -> list[FixedRow]:
         if plan.aggregate == "count":
+            if plan.invoices:
+                return fixed.count_invoices(customer_id, plan.start, plan.end)
             return fixed.count_documents(customer_id, plan.start, plan.end, date_fields=plan.date_fields)
         if plan.metric is None:
             return []
-        if plan.aggregate == "total":
-            return fixed.total(customer_id, plan.metric, plan.date_fields, plan.start, plan.end)
         descending = plan.aggregate == "highest"
         if plan.group_fields:
             return fixed.top_group(
@@ -840,13 +1262,9 @@ class AnswerService:
         aspects: Sequence[str] = (),
         choice: ChatChoice | None = None,
         pins: Sequence[Pin] = (),
+        early: _Early | None = None,
     ) -> Answer:
-        # Romanised question words and fillers (ahe, kiti) say nothing about the topic: they
-        # are left out of every step below, never out of normalise (PR 2b-2).
-        normalised = replace(normalised, keywords=glossary.content_words(normalised.keywords))
-        query_text = " ".join(normalised.keywords) or normalised.english
-        if not query_text and has_other_script_letters(question):
-            query_text = question.strip()  # typed in another script: searched as asked (council 4 Oct)
+        normalised, query_text, spoken = _searched_as(question, normalised)
         if not query_text:
             return _not_found("search", shown, [], model_used=False, reason="notfound_empty_question")
         numbers = _numbers(question, normalised.keywords, expansion)
@@ -857,13 +1275,20 @@ class AnswerService:
         if whole is not None:
             evidence = number_evidence(whole)  # CX5: every piece, in reading order
         else:
-            # A question in another script is embedded as asked (W3): its Latin spelling means
-            # little. Its aspects (CX6) are embedded with it, in one call.
-            spoken = question if has_other_script_letters(question) else normalised.english
-            vector, *meanings = self._embed_all([spoken, *aspects])
-            _timing().lap("embed")
-            extra = [(_search_text(text), meaning) for text, meaning in zip(aspects, meanings, strict=True)]
-            hits = self._hits(customer_id, query_text, vector, extra, scope, expansion)
+            if early is not None and not aspects:  # step 19: the same embedding and search, done early
+                vector, hits = early.vector, early.hits
+                extra: list[tuple[str, list[float] | None]] = []
+                timing = _timing()
+                timing.degraded, timing.overlap = timing.degraded or early.degraded, True
+                timing.lap("embed")
+            else:
+                # Its aspects (CX6) are embedded with the question, in one call.
+                vector, *meanings = self._embed_all([spoken, *aspects])
+                _timing().lap("embed")
+                extra = [
+                    (_search_text(text), meaning) for text, meaning in zip(aspects, meanings, strict=True)
+                ]
+                hits = self._hits(customer_id, query_text, vector, extra, scope, expansion)
             if hits:  # never stuck (17 Oct 2026): found by words and typos, a missing vector is no outage
                 _timing().degraded = False
             translated = self._translated_search(
@@ -875,8 +1300,14 @@ class AnswerService:
                 hits = translated.hits
             evidence = number_evidence(hits)
         hits_only = list(evidence)  # the search's own hits, before widening adds to the list
-        # Only usable evidence counts as close: an instruction-like piece is not.
-        closest = closest_documents([item.hit for item in evidence])
+
+        # Only usable evidence counts as close: an instruction-like piece is not. A whole
+        # document's pieces are in reading order, so its closest come from a search (``_closest``).
+        def closest() -> list[dict[str, Any]]:
+            return self._closest(
+                customer_id, query_text, scope, expansion, normalised.keywords, hits_only, whole
+            )
+
         gate = enough_evidence(evidence, normalised.keywords, min_score, numbers, expansion)
         if whole is not None:
             # CX5: only the numbers asked must be there; the keyword rule would turn away an
@@ -887,7 +1318,7 @@ class AnswerService:
             passed = gate is not None or scored
         _timing().lap("search")
         if not passed:
-            return _not_found("search", shown, closest, model_used=False, reason="notfound_gate")
+            return _not_found("search", shown, closest(), model_used=False, reason="notfound_gate")
         if whole is None:
             # Most relevant picks (answering/pins.py): after the gate, so a pick never decides
             # whether there is an answer; only a hit that passes on its own moves up.
@@ -924,7 +1355,7 @@ class AnswerService:
         kept = _kept(draft, texts)
         if not kept:
             why = why if draft.status != "answered" else "notfound_verify_dropped_all"
-            return _not_found("search", shown, closest, model_used=model_used, reason=why)
+            return _not_found("search", shown, closest(), model_used=model_used, reason=why)
 
         renumber: dict[int, int] = {}
         for sentence in kept:
@@ -978,12 +1409,13 @@ class AnswerService:
             label="verified" if verified else "needs_review",
             sentences=[AnswerSentence(s.text, [renumber[n] for n in s.evidence]) for s in kept],
             citations=citations,
-            closest_documents=closest,
+            closest_documents=[] if whole is not None else closest(),
             route="search",
             normalized_question=shown,
             model_used=model_used,
             reading_note=HARD_TO_READ_NOTE if hard else None,
             team=team,
+            backing={new: by_n[old].hit.text for old, new in renumber.items()},
             related_documents=(
                 []
                 if whole is not None
@@ -992,6 +1424,26 @@ class AnswerService:
                 )
             ),
         )
+
+    def _closest(
+        self,
+        customer_id: str,
+        query_text: str,
+        scope: Scope,
+        expansion: Expansion,
+        keywords: Sequence[str],
+        evidence: Sequence[Evidence],
+        whole: Sequence[Hit] | None,
+    ) -> list[dict[str, Any]]:
+        """Decision 9: the documents close to the question (``closest_documents``: by words,
+        typos or sound, never meaning alone). From the search's hits; with a whole document
+        (CX5) from a search by words and typos (no vector), never its reading order: one
+        statement more, only for a not-found answer."""
+        if whole is None:
+            return closest_documents([item.hit for item in evidence], keywords)
+        limit = max(1, min(self._settings.answer_max_evidence, MAX_LIMIT))
+        hits = self._retriever.search(customer_id, query_text, None, limit, scope, expansion)
+        return closest_documents([item.hit for item in number_evidence(hits)], keywords)
 
     def _translated_search(
         self,
@@ -1298,6 +1750,20 @@ def _numbers(question: str, keywords: Sequence[str], expansion: Expansion) -> li
     return list(dict.fromkeys([*numbers_asked(question, keywords), *expansion.numbers()]))
 
 
+def _searched_as(question: str, normalised: NormalisedQuestion) -> tuple[NormalisedQuestion, str, str]:
+    """``normalised`` with its content words only, the text searched ("": nothing to search) and
+    the text embedded. Romanised question words and fillers (ahe, kiti) say nothing about the
+    topic: they are left out of every step after, never out of normalise (PR 2b-2). A question
+    typed in another script is searched (council 4 Oct) and embedded (W3) as asked: its Latin
+    spelling means little."""
+    normalised = replace(normalised, keywords=glossary.content_words(normalised.keywords))
+    query_text = " ".join(normalised.keywords) or normalised.english
+    if not query_text and has_other_script_letters(question):
+        query_text = question.strip()
+    spoken = question if has_other_script_letters(question) else normalised.english
+    return normalised, query_text, spoken
+
+
 def _search_text(aspect: str) -> str:
     """An aspect as the search reads it: its keywords, as the question's (``normalise``)."""
     return " ".join(glossary.content_words(normalise(aspect).keywords)) or aspect
@@ -1432,15 +1898,17 @@ def _quoted_through_glossary(
 
 
 def _not_found(
-    route: Route, shown: str, closest: list[dict[str, str]], *, model_used: bool, reason: str
+    route: Route, shown: str, closest: list[dict[str, Any]], *, model_used: bool, reason: str
 ) -> Answer:
     """A not-found answer, and one log line with its fixed ``reason`` code (never the
     question or page text): notfound_empty_scope, notfound_fixed_no_rows,
     notfound_fixed_no_sentence, notfound_empty_question, notfound_gate (no evidence
     passed), notfound_model (the model said so), notfound_model_error:<code> (it failed
     and the quoted lines held nothing), notfound_no_model (the same, model off),
-    notfound_verify_dropped_all (the checker kept no sentence); ":date" after the
-    last two: a date question, never quoted."""
+    notfound_verify_dropped_all (the checker kept no sentence), notfound_final_check (PRD 6
+    decision 2's check kept none); ":date" after notfound_model_error and notfound_no_model: a
+    date question, never quoted; notfound_owners_part (land records match only part of an
+    owner question)."""
     _log.info("answer not found", extra={"code": reason})
     _timing().reason = reason
     return Answer(
@@ -1509,6 +1977,25 @@ def _focus(item: Evidence, sentences: Sequence[str]) -> list[dict[str, Any]]:
     return used
 
 
+def _value_citation(n: int, value: ValueRef, regions: list[dict[str, Any]]) -> Citation:
+    return Citation(
+        n=n,
+        kind="value",
+        ref_id=value.value_id,
+        document_id=value.document_id,
+        document_name=value.document_name,
+        detected_type=value.detected_type,
+        page_no=value.page_no,
+        regions=regions,
+        snippet=clean_snippet(f"{value.field}: {value.value_text}"),
+        label=value.label,
+        page_from=value.page_no,
+        page_to=value.page_no,
+        label_page_no=value.label_page_no,
+        label_regions=valid_regions([value.label_region] if value.label_region else []),
+    )
+
+
 def _cited_values(rows: Sequence[FixedRow]) -> list[tuple[ValueRef, list[dict[str, Any]]]]:
     """The values behind the rows, each once, with a valid region, at most MAX_CITED_VALUES.
 
@@ -1533,14 +2020,12 @@ def _fixed_sentence(plan: FixedPlan, top: Sequence[FixedRow]) -> str | None:
     period = describe_range(plan.start, plan.end) if plan.start and plan.end else ""
     number = indian_number(top[0].number)
     if plan.aggregate == "count":
+        if plan.invoices:
+            invoices = "1 invoice is" if top[0].number == 1 else f"{number} invoices are"
+            return f"{invoices} present {period}." if period else f"{invoices} present."
         documents = "1 document is" if top[0].number == 1 else f"{number} documents are"
         return f"{documents} dated {period}." if period else f"{documents} dated."
     metric = _words(plan.metric or "")
-    if plan.aggregate == "total":
-        metric = metric.removeprefix("total ")
-        records = sum(row.records for row in top)
-        counted = "1 record" if records == 1 else f"{indian_number(records)} records"
-        return f"The total {metric}{' ' + period if period else ''} was {number}, from {counted}."
     after = f", {period}" if period else ""
     if not plan.group_fields:
         return f"The {plan.aggregate} {metric} was {number}{after}."

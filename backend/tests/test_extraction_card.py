@@ -314,7 +314,7 @@ class SchemaAndPromptTest(unittest.TestCase):
         change is seen in review and the stored card says which prompt made it."""
         text = CARD_SYSTEM_PROMPT + "\n" + json.dumps(CARD_SCHEMA, sort_keys=True)
         self.assertEqual(CARD_PROMPT_HASH, hashlib.sha256(text.encode("utf-8")).hexdigest())
-        self.assertEqual(CARD_PROMPT_HASH, "f376d2713bfd2b188c49f22ced263e805c286f8bc44ba7a6d4529d3408f9ba3a")
+        self.assertEqual(CARD_PROMPT_HASH, "ae182246f863dd68680ac02f1a0f80b1ab2e560ed640663e20df2087d8c15069")
 
     def test_the_prompt_fits_the_system_prompt_room_the_start_up_check_keeps(self) -> None:
         """Council fix 7: settings keeps MAX_SYSTEM_PROMPT_TOKENS for the system prompt."""

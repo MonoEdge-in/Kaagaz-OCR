@@ -109,9 +109,7 @@
 }
 
 .panelLabel {
-  font: 500 11px var(--k-font-mono);
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
+  font: 500 0.875rem var(--k-font-body);
   color: var(--k-accent-ink);
   opacity: 0.8;
 }
@@ -149,9 +147,7 @@
   border-radius: var(--k-r-pill);
   background: var(--k-accent-ink);
   color: var(--k-accent);
-  font: 600 12px var(--k-font-mono);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  font: 500 1rem var(--k-font-body);
 }
 
 .upload {
@@ -187,9 +183,7 @@
 .uploadTo label {
   flex: none;
   color: var(--k-ink-muted);
-  font: 500 11px var(--k-font-mono);
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
+  font: 500 0.875rem var(--k-font-body);
 }
 
 .uploadTo select {

@@ -121,8 +121,8 @@ def test_the_fixed_queries_count_only_the_current_version_of_documents_not_in_tr
     library = _library(db)
     customer, fixed = library.customer, PgFixedQueries(db)
 
-    [total] = fixed.total(customer, "profit", DATES, *AUGUST)
-    assert (total.number, total.records) == (Decimal(200), 1)
+    [figure] = fixed.figures(customer, "profit", DATES, *AUGUST, invoices=False)
+    assert (figure.amount, figure.printed) == (Decimal(200), 1)
     [top] = fixed.top_group(customer, "profit", PARTIES, DATES, *AUGUST, True)
     assert (top.group, top.number) == ("Sharma Traders", Decimal(200))
     assert [row.number for row in fixed.extreme_value(customer, "profit", DATES, *AUGUST, True)] == [
@@ -130,7 +130,8 @@ def test_the_fixed_queries_count_only_the_current_version_of_documents_not_in_tr
     ]
     [count] = fixed.count_documents(customer, *AUGUST, date_fields=DATES)
     assert count.number == Decimal(1)
-    cited = {ref.document_id for row in (total, top, count) for ref in row.values}
+    cited = {ref.document_id for row in (top, count) for ref in row.values}
+    cited |= {figure.value.document_id} if figure.value is not None else set()
     assert cited == {library.documents["current"]}
     asked = ("party_name", "profit", "date", "old_only", "current_only", "binned_only", "gstin")
     assert fixed.available_fields(customer, asked) == {

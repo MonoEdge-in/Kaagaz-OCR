@@ -173,7 +173,8 @@ describe("Also in", () => {
     const html = render(
       message({ status: "not_found", label: null, sentences: [], citations: [], closest_documents: [{ id: "d9", display_name: "Bill 9.pdf" }] }),
     );
-    expect(html).toMatch(/<a class="[^"]*source[^"]* [^"]*documentRow[^"]*" title="Bill 9.pdf" href="\/documents\/d9">/);
+    // Changed on purpose (package H, 24 Oct 2026): the row opens with the question's words lit.
+    expect(html).toMatch(/<a class="[^"]*source[^"]* [^"]*documentRow[^"]*" title="Bill 9.pdf" href="\/documents\/d9\?words=grand\+total">/);
   });
 });
 
@@ -196,7 +197,11 @@ describe("Also mentions (Tushar, 17 Oct 2026)", () => {
     expect(html).toContain(">Pages 2, 5<");
     expect(html).toContain("Village <mark>Jalna</mark>");
     expect(html).toContain("<mark>जालना</mark>");
-    expect(html).toContain('href="/documents/satbara?page=2"');
+    // Changed on purpose (package H): it opens with the terms lit, as a citation's link does.
+    const href = /href="(\/documents\/satbara\?[^"]*)"/.exec(html)?.[1]?.replace(/&amp;/g, "&") ?? "";
+    const url = new URL(href, "http://x");
+    expect(url.searchParams.get("page")).toBe("2");
+    expect(url.searchParams.get("words")).toBe("jalna जालना");
     expect(html).toContain("and 12 more");
     expect(html).toContain(">2 · Also in 1 document · Mentioned in 14 more documents<");
     expect(html).not.toMatch(/Needs review|Review|₹|cost|price/i);

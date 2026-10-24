@@ -16,7 +16,13 @@ import {
   breakdowns,
   kpiTiles,
 } from "@/components/admin/logic";
+import { QUALITY_TEXT } from "@/components/admin/AnswerQualityPanel";
+import { USER_MENU_HELP } from "@/components/admin/UsersPanel";
+import { LEARNED_TEXT } from "@/components/admin/LearnedList";
 import { UsageReportView } from "@/components/admin/UsagePanel";
+import { FEEDBACK_NOTICE, REASONS as FEEDBACK_REASONS } from "@/components/chat/answer";
+import { ACTION_HELP } from "@/components/documents/library";
+import { flaggedWords } from "@/components/documents/logic";
 import { DUPLICATE_READER_NOTE, readAgainWarning, readerOptions } from "@/components/documents/readers";
 import { REASON_FILTERS } from "@/components/review/review";
 import { REASON_FILTER_TEXT, reasonText, voteText } from "@/components/viewer/labels";
@@ -29,6 +35,7 @@ import {
   readerHeading,
   secondReaderNote,
 } from "@/components/viewer/scanned";
+import { HINTS, TASK_HELP } from "@/lib/aiSettings";
 import type {
   DocumentStatus,
   LabelReason,
@@ -83,7 +90,9 @@ const STATUSES = Object.keys({
   failed: 1,
 } satisfies Record<DocumentStatus, 1>) as DocumentStatus[];
 
-const TECHNICAL = /gemini|claude|openrouter|google\/|\bOCR\b|\bDPI\b|\d+\s?%|tokens?\b|\bmodel\b/i;
+// Changed on purpose (plain words, 25 Oct 2026): "flagged", "extraction", "pipeline" and "RPM" too.
+const TECHNICAL =
+  /gemini|claude|openrouter|google\/|\bOCR\b|\bDPI\b|\d+\s?%|tokens?\b|\bmodel\b|\bflagged\b|\bextract(?:ion|ed)\b|\bpipeline\b|\bRPM\b/i;
 
 const line = (confidence: number | null): ReadLine => ({
   text: "x",
@@ -133,6 +142,17 @@ function shownTexts(): string[] {
       describeTarget,
     ),
     ...[12, 1, null].map(readAgainWarning),
+    // PRD 6 F1, F2: Useful and Not useful, and the admin's Answer quality page.
+    FEEDBACK_NOTICE,
+    ...FEEDBACK_REASONS.map((reason) => reason.label),
+    ...Object.values(QUALITY_TEXT),
+    ...Object.values(LEARNED_TEXT), // PRD 6 F3
+    // Plain words (25 Oct 2026): the menus' lines, the AI settings' explanations, the scan counts.
+    ...Object.values(USER_MENU_HELP),
+    ...Object.values(ACTION_HELP),
+    ...Object.values(TASK_HELP),
+    ...Object.values(HINTS).flatMap((hints) => Object.values(hints)),
+    ...[[0, 0], [12, 0], [1, 2]].map(([flagged = 0, pages = 0]) => flaggedWords(flagged, pages)),
   ];
   for (const confidence of [null, Number.NaN, 0, 0.62, 0.8999, 0.9, 0.97, 1]) {
     for (const origin of ["ocr", "cell", "text_layer", null] as const) texts.push(confidenceText(confidence, origin));
@@ -205,7 +225,7 @@ describe("technical words on user and admin screens", () => {
   it("are in none of the words for the audit actions the backend writes", () => {
     const root = join(__dirname, "..", "..", "backend", "kaagaz");
     const files = readdirSync(root, { recursive: true, encoding: "utf8" }).filter((file) => file.endsWith(".py"));
-    const actions = /"((?:auth|user|user_word|document|document_story|folder|tag|review|chat|settings|customer)\.[a-z_]+)"/g;
+    const actions = /"((?:auth|user|user_word|document|document_story|folder|tag|review|chat|settings|customer|feedback|learning)\.[a-z_]+)"/g;
     for (const file of files) {
       for (const [, action = ""] of readFileSync(join(root, file), "utf8").matchAll(actions)) {
         expect(describeAction(action), action).not.toMatch(TECHNICAL);

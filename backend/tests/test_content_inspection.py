@@ -417,7 +417,8 @@ class SecurityReviewBounds(unittest.TestCase):
 
     def test_the_readers_decompress_as_before_outside_a_check(self) -> None:
         big = b"0" * (content._MAX_DECODED_BYTES + 1)
-        self.assertEqual(pdftypes.zlib.decompress(zlib.compress(big)), big)
+        # pdftypes does not re-export zlib; content.py replaced it there, which is what is tested.
+        self.assertEqual(pdftypes.zlib.decompress(zlib.compress(big)), big)  # type: ignore[attr-defined]
 
 
 def lying_zip(name: str, data: bytes, declared: int) -> bytes:

@@ -242,7 +242,8 @@ def test_cx5_whole_document_mode_gives_every_piece_in_reading_order() -> None:
     assert sorted(c.page_no for c in answer.citations) == [4, 9, 18]
     # No search, no aspects, no topics, sections or neighbours: every piece is there already.
     assert (retriever.calls, retriever.fused, model.rewrites) == ([], [], [])
-    assert context.calls == ["whole", "cards"]
+    # Changed on purpose (PRD 6 A, 24 Oct 2026): the cards once more, for the listed documents' titles.
+    assert context.calls == ["whole", "cards", "cards"]
 
 
 def test_cx5_a_budget_of_0_turns_whole_document_mode_off() -> None:
@@ -281,7 +282,7 @@ def test_cx5_an_english_question_about_a_marathi_document_is_answered_never_veri
     answer = answers(Fused([WITNESS]), context, model).answer(A, "Who is the witness?")
 
     assert answer.status == "answered" and [s.text for s in answer.sentences] == [NAMED]
-    assert answer.label == "needs_review" and context.calls == ["whole", "cards"]
+    assert answer.label == "needs_review" and context.calls == ["whole", "cards", "cards"]  # PRD 6 A
     asked = answers(Fused([WITNESS]), FakeContext([WITNESS]), Routed(cites((NAMED, WITNESS.text))))
     assert asked.answer(A, "Who is the witness of deed 48?").status == "not_found"  # no 48 in it
 
@@ -340,9 +341,11 @@ def test_cx6_aspects_are_asked_on_a_first_question_and_searched_with_it_in_one_e
 
     (prompt,) = model.rewrites
     assert prompt.endswith("Aspects: at most 6.") and "<memory>" not in prompt
-    # One embed call: the question and its aspects, each as plain text.
+    # One embed call: the question and its aspects, each as plain text. Changed on purpose (Ask
+    # speed, 24 Oct 2026): the question alone first, beside the plan call (service step 19), and
+    # unused, as the call listed aspects.
     texts = ["how many leaves do i get", "holidays", "casual leave", "maternity leave"]  # normalised
-    assert model.embedded == [texts]
+    assert model.embedded == [texts[:1], texts]
     (extra,) = retriever.fused
     assert [text for text, _ in extra] == ["holidays", "casual leave", "maternity leave"]
     assert all(vector is not None for _, vector in extra)
@@ -391,7 +394,7 @@ def test_cx6_order_is_hits_then_topic_and_section_pieces_then_neighbours() -> No
         near.text,
     ]
     assert 'neighbour="yes"' in model.drafted[0].split(LEAVE_POLICY.text)[1]
-    assert context.calls == ["topics", "sections", "cards"]
+    assert context.calls == ["topics", "sections", "cards", "cards"]  # PRD 6 A: the listed documents' titles
     assert "casual leave" in context.terms and "leave" in context.terms  # "leaves" without its s
 
 

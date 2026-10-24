@@ -1,5 +1,6 @@
 """The document routes: list, upload, a new version, detail and its summary, rename or move,
-the original file, page images, each page's scanned text, spreadsheet cells, and
+the original file, page images, each page's scanned text and the lines holding a search's
+words (``get_document_words``), spreadsheet cells, and
 Trash (move to Trash, restore, delete forever).
 
 Why some choices:
@@ -174,11 +175,14 @@ from kaagaz.ingestion.policy import UploadPolicy, limits_by_type
 from kaagaz.ingestion.ports import BlobNotFound, Job, JobQueue, UnknownFamily, UnknownFolder
 from kaagaz.ingestion.service import UploadResult, UploadService
 from kaagaz.reading.ocr import GEMINI
+from kaagaz.search import page_words
 from kaagaz.settings import Settings
 
 router = APIRouter()
 
 _UPLOAD_PART_BYTES = 8 * 1024 * 1024
+
+
 class ResumableUploadStart(BaseModel):
     file_name: str
     file_size: int
@@ -194,6 +198,7 @@ class ResumableUploadStart(BaseModel):
     resume_session_id: str | None = None
 
     model_config = ConfigDict(extra="forbid")
+
 
 Context = Annotated[AppContext, Depends(get_context)]
 
@@ -686,9 +691,11 @@ def resumable_candidates(body: ResumableUploadStart, user: User, context: Contex
         raise ApiError(413, "too_large", over_every_limit_message(policy.largest_limit))
     filename = display_name(body.file_name)
     with context.db.customer(user.customer_id) as conn:
-        return {"candidates": upload_sessions_sql.candidates(
-            conn, user.customer_id, user.user_id, filename, body.file_size, body.fingerprint
-        )}
+        return {
+            "candidates": upload_sessions_sql.candidates(
+                conn, user.customer_id, user.user_id, filename, body.file_size, body.fingerprint
+            )
+        }
 
 
 @router.post("/documents/upload-sessions")
@@ -704,11 +711,12 @@ def create_resumable_session(body: ResumableUploadStart, user: User, context: Co
         session_id = str(uuid.UUID(body.resume_session_id))
         with context.db.customer(user.customer_id) as conn:
             row = upload_sessions_sql.get(conn, user.customer_id, user.user_id, session_id)
-        if row is None or row["file_size"] != body.file_size or cast(
-            dict[str, Any], row["metadata"]
-        ).get("filename") != display_name(body.file_name) or cast(
-            dict[str, Any], row["metadata"]
-        ).get("fingerprint") != body.fingerprint:
+        if (
+            row is None
+            or row["file_size"] != body.file_size
+            or cast(dict[str, Any], row["metadata"]).get("filename") != display_name(body.file_name)
+            or cast(dict[str, Any], row["metadata"]).get("fingerprint") != body.fingerprint
+        ):
             raise ApiError(404, "not_found")
         return {"id": session_id, "part_size": _UPLOAD_PART_BYTES, "part_count": count}
 
@@ -740,14 +748,16 @@ def create_resumable_session(body: ResumableUploadStart, user: User, context: Co
             _checked_reading(conn, user, context.settings, asked)
             if folder_id is not None and not folders_sql.folder_path(conn, user.customer_id, folder_id):
                 raise ApiError(404, "not_found")
-            if batch_id is not None and listing.batch_size(
-                conn, user.customer_id, batch_id, user_id=user.user_id
-            ) >= context.settings.max_files_per_batch:
+            if (
+                batch_id is not None
+                and listing.batch_size(conn, user.customer_id, batch_id, user_id=user.user_id)
+                >= context.settings.max_files_per_batch
+            ):
                 raise ApiError(409, "batch_full")
 
     session_id = str(uuid.uuid4())
     storage_key, upload_id = context.storage.start_resumable(user.customer_id, user.user_id, session_id)
-    metadata = {
+    metadata: dict[str, object] = {
         "filename": display_name(body.file_name),
         "fingerprint": body.fingerprint,
         "folder_id": folder_id,
@@ -799,7 +809,10 @@ async def upload_resumable_part(
     digest = hashlib.sha256(body).hexdigest()
     await run_in_threadpool(
         context.storage.upload_resumable_part,
-        str(session["storage_key"]), str(session["storage_upload_id"]), part_number, bytes(body),
+        str(session["storage_key"]),
+        str(session["storage_upload_id"]),
+        part_number,
+        bytes(body),
     )
     with context.db.customer(user.customer_id) as conn:
         upload_sessions_sql.set_part_hash(
@@ -840,32 +853,30 @@ def complete_resumable_upload(session_id: uuid.UUID, user: User, context: Contex
             str(session["storage_upload_id"]),
             [(number, etag) for number, _, etag in parts],
         )
-    stream = context.storage.open_resumable(str(session["storage_key"]))
-    try:
-        upload = UploadFile(filename=str(metadata["filename"]), file=stream)
-        policy = _upload_policy(context, user)
-        asked = _Asked(metadata.get("read_mode"), metadata.get("read_model"))
-        if metadata.get("version_document_id"):
-            result = _accept_version(
-                context,
-                user,
-                upload,
-                policy,
-                str(metadata["version_document_id"]),
-                asked,
-                metadata.get("version_note"),
-            )
-        else:
-            result = _accept(
-                context, user, upload, policy, metadata.get("folder_id"), metadata.get("batch_id"), asked
-            )
-    except ApiError:
-        context.storage.delete_resumable(str(session["storage_key"]))
-        with context.db.customer(user.customer_id) as conn:
-            upload_sessions_sql.delete(conn, user.customer_id, user.user_id, str(session_id))
-        raise
-    finally:
-        stream.close()
+    with context.storage.open_resumable(str(session["storage_key"])) as stream:
+        try:
+            upload = UploadFile(filename=str(metadata["filename"]), file=stream)
+            policy = _upload_policy(context, user)
+            asked = _Asked(metadata.get("read_mode"), metadata.get("read_model"))
+            if metadata.get("version_document_id"):
+                result = _accept_version(
+                    context,
+                    user,
+                    upload,
+                    policy,
+                    str(metadata["version_document_id"]),
+                    asked,
+                    metadata.get("version_note"),
+                )
+            else:
+                result = _accept(
+                    context, user, upload, policy, metadata.get("folder_id"), metadata.get("batch_id"), asked
+                )
+        except ApiError:
+            context.storage.delete_resumable(str(session["storage_key"]))
+            with context.db.customer(user.customer_id) as conn:
+                upload_sessions_sql.delete(conn, user.customer_id, user.user_id, str(session_id))
+            raise
     context.storage.delete_resumable(str(session["storage_key"]))
     with context.db.customer(user.customer_id) as conn:
         upload_sessions_sql.delete(conn, user.customer_id, user.user_id, str(session_id))
@@ -1361,6 +1372,33 @@ def get_page_readings(document_id: uuid.UUID, page_no: int, user: User, context:
         rows = listing.page_readings(conn, customer_id, target, page_no)
         marks = listing.page_marks(conn, customer_id, target, page_no)  # PRD 5 U3
     return page_readings(page_no, rows, marks)
+
+
+@router.get("/documents/{document_id}/words")
+def get_document_words(
+    document_id: uuid.UUID,
+    user: User,
+    context: Context,
+    w: Annotated[list[str] | None, Query(max_length=page_words.MAX_WORDS)] = None,
+) -> dict[str, Any]:
+    """Your words on the page (package H): the regions of the document's lines that hold the
+    words (``w``, at most 8, cleaned by ``page_words.clean_words``; at most
+    ``page_words.MAX_BOXES``), and every page with such a line. Asked once a document and
+    words: the viewer keeps it while its pages change. Who may ask is who may see the page
+    image: another customer's id and a rejected file are 404, a family in Trash 409
+    ``in_trash`` (T1). Regions and page numbers only, never text. One statement."""
+    words = page_words.clean_words(w or [])
+    with context.db.customer(user.customer_id) as conn:
+        found = listing.word_lines(conn, user.customer_id, str(document_id))
+    if found is None:
+        raise ApiError(404, "not_found")
+    in_trash, status, pieces = found
+    if in_trash:
+        raise ApiError(409, "in_trash", "This document is in the Trash. Restore it first.")
+    if status == "rejected":
+        raise ApiError(404, "not_found")
+    boxes, pages = page_words.word_regions(pieces, words)
+    return {"boxes": boxes, "pages": pages}
 
 
 @router.get("/documents/{document_id}/pages/{page_no}/cells")

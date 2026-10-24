@@ -5,14 +5,14 @@ robin order, then active users within an organisation. The platform spaces admis
 1,200 RPM. Optional organisation and user overrides only lower that allowance. Expired
 tickets are removed so a crashed process cannot hold up the queue.
 
-Revision ID: 0043
-Revises: 0042
+Revision ID: 0046
+Revises: 0045
 """
 
 from alembic import op
 
-revision = "0043"
-down_revision = "0042"
+revision = "0046"
+down_revision = "0045"
 branch_labels = None
 depends_on = None
 

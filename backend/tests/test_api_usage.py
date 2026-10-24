@@ -165,7 +165,7 @@ def test_sp1_a_search_calls_no_model_and_bills_nothing(monkeypatch: pytest.Monke
     monkeypatch.setattr(search, "resolve", lambda *args, **kwargs: EVERYTHING)
     monkeypatch.setattr(search, "narrow", lambda conn, customer, scope, asked: scope)
     monkeypatch.setattr(search, "search_documents", lambda *args, **kwargs: [])
-    monkeypatch.setattr(PgWords, "words", lambda *args: [])
+    monkeypatch.setattr(PgWords, "words", lambda self, customer_id, user_id, *, document_id=None: [])
 
     reply = search.search_inside_documents(
         search.SearchParams(q="total"), user, _context(ledger, _BillingEmbedder())

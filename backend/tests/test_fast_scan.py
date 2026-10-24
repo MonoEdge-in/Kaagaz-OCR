@@ -390,9 +390,9 @@ class PicturesAtOnceTest(unittest.TestCase):
         both = threading.Barrier(2, timeout=WAIT)  # one by one, the first never gets past it
         put = system.page_images.put_page_image
 
-        def put_together(customer_id: str, document_id: str, page_no: int, data: bytes) -> None:
+        def put_together(customer_id: str, document_id: str, page_no: int, png: bytes) -> None:
             both.wait()
-            put(customer_id, document_id, page_no, data)
+            put(customer_id, document_id, page_no, png)
 
         system.page_images.put_page_image = put_together  # type: ignore[method-assign]
         doc = system.upload.accept(PIPELINE_CUSTOMER, io.BytesIO(PDF_BYTES)).document_id

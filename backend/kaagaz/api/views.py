@@ -12,6 +12,7 @@ from typing import Any, cast
 
 from sqlalchemy import Connection, RowMapping
 
+from kaagaz.answering.clarify import without_resume
 from kaagaz.answering.hard_to_read import FlaggedPage, not_found_note
 from kaagaz.api.auth import CurrentUser
 from kaagaz.db import audit
@@ -597,7 +598,7 @@ def clear_copy(
     """``ClearCopy`` (Read clearly, 19 Oct 2026): every page with its lines and marks, from
     ``listing.clear_copy``. The lines stop at CLEAR_COPY_LINES or CLEAR_COPY_TEXT for the
     whole document, or after a line cut in SQL; then ``truncated``. O(lines + marks)."""
-    pages = {n: {"page_no": n, "lines": [], "marks": []} for n in page_numbers}
+    pages: dict[int, dict[str, Any]] = {n: {"page_no": n, "lines": [], "marks": []} for n in page_numbers}
     truncated, used, count = False, 0, 0
     for row in rows:
         if count == CLEAR_COPY_LINES or used + len(row["text"]) > CLEAR_COPY_TEXT:
@@ -684,7 +685,7 @@ def message(
         "role": row["role"],
         "text": row["text"],
         "created_at": iso(row["created_at"]),
-        "answer": row["answer"],
+        "answer": None if row["answer"] is None else without_resume(row["answer"]),
         "scope": row["scope"],  # a question's ScopeBody (PRD 3 H2), None when it had none
         "feedback": feedback,
         "pin": None
@@ -704,7 +705,8 @@ _GONE = ("in_trash", "deleted")
 
 def cited_document_ids(answer: Mapping[str, Any] | None) -> list[str]:
     """Every document a saved answer points at: its citations, closest and related
-    documents, and the documents of the pages that couldn't be read it names (PRD 5 F6)."""
+    documents, the documents of the pages that couldn't be read it names (PRD 5 F6), and
+    those it lists (PRD 6 A, ``documents``)."""
     if not answer:
         return []
     ids = [str(each["document_id"]) for each in answer.get("citations", []) if each.get("document_id")]
@@ -720,7 +722,14 @@ def cited_document_ids(answer: Mapping[str, Any] | None) -> list[str]:
         for each in (answer.get("mentions") or {}).get("documents", [])
         if each.get("document_id")
     ]
+    ids += [str(each["document_id"]) for each in answer.get("documents") or [] if each.get("document_id")]
+    ids += [str(each) for choice in _choices(answer) for each in choice.get("document_ids", [])]  # PRD 6 B1
     return ids
+
+
+def _choices(answer: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    clarify = answer.get("clarify")
+    return list(clarify.get("choices", [])) if isinstance(clarify, Mapping) else []
 
 
 def answer_with_source_states(answer: Mapping[str, Any], states: Mapping[str, str]) -> dict[str, Any]:
@@ -731,7 +740,7 @@ def answer_with_source_states(answer: Mapping[str, Any], states: Mapping[str, st
       deleted loses its snippet and its highlight regions: Trash means deleted,
       so its words and its place on the page must not show any more.
     * A sentence whose every citation is gone is replaced by ``GONE_SENTENCE``.
-    * Closest, related and "Also mentions" documents that are gone are left out.
+    * Closest, related, "Also mentions" and listed (PRD 6 A) documents that are gone are left out.
     * PRD 5 F6: a page that couldn't be read, of a document that is gone, is left out
       of ``unreadable_pages``, its count and the note, so a deleted document's name
       never shows again (the note is written again from the pages left).
@@ -765,9 +774,25 @@ def answer_with_source_states(answer: Mapping[str, Any], states: Mapping[str, st
         for each in answer.get("related_documents", [])
         if states.get(str(each.get("document_id"))) not in (None, *_GONE)
     ]
-    shown = {**answer, "citations": citations, "sentences": sentences, "closest_documents": closest}
+    shown = {
+        **without_resume(answer),
+        "citations": citations,
+        "sentences": sentences,
+        "closest_documents": closest,
+    }
     if "related_documents" in answer:
         shown["related_documents"] = related
+    if "documents" in answer:
+        shown["documents"] = [
+            each
+            for each in answer.get("documents") or []
+            if states.get(str(each.get("document_id"))) not in (None, *_GONE)
+        ]
+    if answer.get("clarify"):  # PRD 6 B1: a choice whose every document is gone is no choice
+        alive = {document for document, state in states.items() if state not in _GONE}
+        documents = [set(map(str, c.get("document_ids", []))) for c in _choices(answer)]
+        live = [c for c, d in zip(_choices(answer), documents, strict=True) if not d or d & alive]
+        shown["clarify"] = {**answer["clarify"], "choices": live}
     if answer.get("mentions"):
         # "Also mentions": a gone document leaves the list and the count.
         listed = answer["mentions"].get("documents", [])

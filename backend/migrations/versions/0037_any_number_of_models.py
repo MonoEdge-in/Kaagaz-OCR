@@ -78,7 +78,7 @@ REPLACE = "    CREATE OR REPLACE FUNCTION public."
 
 def _body(signature: str, old: str, new: str | None) -> str:
     """0026's ``signature`` as CREATE OR REPLACE, with ``old`` replaced by ``new`` (None: as 0026)."""
-    body = _OLD.FUNCTIONS[signature]
+    body: str = _OLD.FUNCTIONS[signature]
     if body.count(CREATE) != 1 or body.count(old) != 1:
         raise RuntimeError(f"0026's {signature} is not the text 0037 replaces")
     body = body.replace(CREATE, REPLACE)

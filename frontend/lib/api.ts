@@ -15,6 +15,8 @@ import type {
   AiDefaults,
   AiSettings,
   AiTask,
+  AnswerQualityReply,
+  AnswerWeeksReply,
   AiValues,
   AnswerChoice,
   BatchView,
@@ -26,6 +28,7 @@ import type {
   BoardReply,
   ChatOptions,
   ChatResponse,
+  ClarifyReply,
   ClearCopy,
   Conversation,
   ConversationSummary,
@@ -59,11 +62,14 @@ import type {
   OrganisationCreated,
   PageReadings,
   PageSummary,
+  DocumentWords,
   PageTranslation,
   PasswordReset,
   PlatformEvent,
   PlatformHealth,
+  LearnedDocument,
   QualityReply,
+  ReasonCode,
   ReviewChoice,
   ReviewItem,
   ReviewList,
@@ -74,6 +80,8 @@ import type {
   SessionTimeout,
   SheetCells,
   SourcePin,
+  Speed,
+  SpeedName,
   Stats,
   Tag,
   TaskLevel,
@@ -322,6 +330,9 @@ export const acceptPage = (id: string, pageNo: number) =>
 /** What each reader read on one page, as read (the viewer's Scanned text panel only). */
 export const getPageReadings = (id: string, pageNo: number) =>
   request<PageReadings>("GET", `/documents/${id}/pages/${pageNo}/readings`);
+/** Your words on the page (package H): the boxes of the lines holding them, and every page with one. */
+export const getDocumentWords = (id: string, words: readonly string[]) =>
+  request<DocumentWords>("GET", `/documents/${id}/words${query({ w: words })}`);
 /** Read clearly: every page's lines in one request (no AI). */
 export const getClearCopy = (id: string) => request<ClearCopy>("GET", `/documents/${id}/clear-copy`);
 /** Read clearly: one page in English, Hindi or Marathi (follows Ask: 403 feature_off when off). */
@@ -402,7 +413,9 @@ async function digest(blob: Blob): Promise<string> {
 }
 
 function waitForNetwork(delay: number): Promise<void> {
-  if (navigator.onLine !== false) return new Promise((resolve) => setTimeout(resolve, delay));
+  // No navigator (Node 20, where CI runs the tests) reads as online; a browser always has one.
+  const online = typeof navigator === "undefined" || navigator.onLine !== false;
+  if (online) return new Promise((resolve) => setTimeout(resolve, delay));
   return new Promise((resolve) => window.addEventListener("online", () => resolve(), { once: true }));
 }
 
@@ -543,13 +556,21 @@ export const createTag = (name: string) => request<Tag>("POST", "/tags", { name 
 /**
  * Left out, `scope` stays the conversation's last one (PRD 3 H2); {} is every document.
  * `choice`: the composer's answer settings (features 25-27); left out, the organisation's.
+ * `reply`: the open clarifying question this answers (PRD 6 B2).
  */
-export const ask = (question: string, conversationId?: string, scope?: ScopeBody, choice?: AnswerChoice) =>
+export const ask = (
+  question: string,
+  conversationId?: string,
+  scope?: ScopeBody,
+  choice?: AnswerChoice,
+  reply?: ClarifyReply,
+) =>
   request<ChatResponse>("POST", "/chat", {
     question,
     ...(conversationId ? { conversation_id: conversationId } : {}),
     ...(scope ? { scope } : {}),
     ...(choice ?? {}),
+    ...(reply ? { reply } : {}),
   });
 /** The answer settings the organisation allows (features 25-27): names and levels, never prices. */
 export const getChatOptions = () => request<ChatOptions>("GET", "/chat/options");
@@ -571,10 +592,18 @@ export const deleteConversation = (id: string) => request<void>("DELETE", `/conv
 /** "Most relevant" (ranked sources, 16 Oct 2026): this source on top of the answer, kept as relevance feedback. */
 export const pinSource = (messageId: string, pin: SourcePin, previousRank: number) =>
   request<void>("POST", `/messages/${messageId}/pin`, { ...pin, previous_rank: previousRank });
-export const sendFeedback = (messageId: string, rating: "up" | "down", reason?: string) =>
+/** Useful or Not useful (PRD 6 F1). `notUseful` comes from the Not useful form, which shows
+ * the admin notice above Send (FeedbackControls.tsx), so the server is told it was shown. */
+export const sendFeedback = (
+  messageId: string,
+  rating: "up" | "down",
+  notUseful?: { reason?: string; codes: ReasonCode[] },
+) =>
   request<void>("POST", `/messages/${messageId}/feedback`, {
     rating,
-    ...(reason ? { reason } : {}),
+    ...(notUseful
+      ? { reason_codes: notUseful.codes, notice_shown: true, ...(notUseful.reason ? { reason: notUseful.reason } : {}) }
+      : {}),
   });
 
 // --- my words (only the signed-in user's) -------------------------------------
@@ -662,6 +691,15 @@ export const getStats = () => request<Stats>("GET", "/admin/stats");
 /** Documents that failed or can't be read (PRD 3 Z1); Retry is reprocessDocument. */
 export const listFailed = (params: { limit?: number; offset?: number } = {}) =>
   request<{ items: FailedDocument[]; total: number }>("GET", `/admin/failed${query(params)}`);
+/** Answer quality (PRD 6 F2): Not useful answers given after the notice, and weekly counts. */
+export const getAnswerQuality = (params: { status: "open" | "handled"; weeks: number; limit: number; offset: number }) =>
+  request<AnswerQualityReply>("GET", `/admin/answer-quality${query(params)}`);
+/** Mark as handled, or open it again; `seen` is the given_at shown (409 when rated again since). */
+export const setAnswerHandled = (id: string, handled: boolean, seen: string) =>
+  request<{ id: string; handled_at: string | null }>("PUT", `/admin/answer-quality/${id}/handled`, { handled, seen });
+/** What Kaagaz learned (PRD 6 F3), and Remove on one document. */
+export const listLearned = () => request<{ items: LearnedDocument[] }>("GET", "/admin/learned");
+export const removeLearned = (documentId: string) => request<void>("DELETE", `/admin/learned/${documentId}`);
 /** AI use from `from` to `to` (YYYY-MM-DD, both included; the server's default when left out), for one user when given. */
 export type UsageParams = { from?: string; to?: string; user_id?: string };
 export const getAdminUsage = (params: UsageParams = {}) =>
@@ -748,6 +786,8 @@ export const getOperatorInsights = (days: number) =>
 export const getOperatorQuality = (days: number) => request<QualityReply>("GET", `/operator/quality${query({ days })}`);
 /** Compare models (F4): observational, not an A/B test. */
 export const getModelBoard = (days: number) => request<BoardReply>("GET", `/operator/model-board${query({ days })}`);
+/** PRD 6 F3: replies per organisation and ended week (1 to 12); hidden counts come as null. */
+export const getAnswerWeeks = (weeks: number) => request<AnswerWeeksReply>("GET", `/operator/answer-weeks${query({ weeks })}`);
 
 // --- word-level review and Ensemble after the scan (routers/word_review.py, ensemble.py) ---
 
@@ -813,6 +853,11 @@ export const getSessionTimeout = (orgId?: string) => request<SessionTimeout>("GE
 /** Set it, with a fresh code (step-up); null: the default, or follow the platform. */
 export const setSessionTimeout = (hours: number | null, code: string, orgId?: string) =>
   request<SessionTimeout>("PUT", timeoutPath(orgId), { hours, code });
+
+/** Operator: the speed controls (package S, 0053); saving needs a fresh code, null: the server's setting. */
+export const getSpeed = () => request<Speed>("GET", "/operator/speed");
+export const setSpeed = (values: Record<SpeedName, number | null>, code: string) =>
+  request<Speed>("PUT", "/operator/speed", { ...values, code });
 
 /** Operator: the platform-wide test model. */
 export const getTestModel = () => request<TestModel>("GET", "/operator/test-model");

@@ -106,6 +106,76 @@
   }
 }
 
+/* Your words (package H): each line holding a word asked or searched for, a light green tint
+   with a solid green underline, so it is never colour alone and never looks like the amber
+   spot. Drawn before the spot, which keeps its fill and ring on top. */
+.word,
+.wordSwatch {
+  background: color-mix(in srgb, var(--words-on-paper) 14%, transparent);
+  border-bottom: 3px solid var(--words-on-paper);
+  border-radius: var(--k-r-1);
+}
+
+.word {
+  position: absolute;
+  pointer-events: none;
+}
+
+.wordSwatch {
+  flex: none;
+  width: 1.25em;
+  height: 0.875em;
+}
+
+/* Under the page: the note, then its chips (their own class, never .btn), wrapping at 320px. */
+.yourWords {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.wordsNote {
+  overflow-wrap: break-word;
+}
+
+.wordChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.wordChip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  min-height: var(--control-h); /* 44px on touch */
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--k-rule-strong);
+  border-radius: var(--k-r-2);
+  background: var(--k-surface);
+  color: var(--k-ink);
+  font: inherit;
+  font-size: var(--fs-sm);
+  line-height: 1.25;
+  text-align: start;
+  overflow-wrap: break-word;
+  cursor: pointer;
+}
+
+.wordChip:hover {
+  background: var(--k-sunken);
+}
+
+.wordChip[aria-pressed="false"] .wordSwatch {
+  opacity: 0.4;
+}
+
 /* My words (B2): a dashed outline with no fill and a number, so it is never
    colour alone and never looks like the highlight or "needs review". */
 .mine {
@@ -296,6 +366,14 @@
   font-weight: 600;
   font-size: var(--fs-sm);
   background: var(--bg-subdued);
+}
+
+/* Your words in a cell (package H): the page lines' green, its text underlined, so it sits
+   with the spot's and my words' outlines and never moves the grid;
+   before .cellHit, so the cited spot's fill wins. */
+.cellWord {
+  background: color-mix(in srgb, var(--words-on-paper) 14%, transparent);
+  text-decoration: underline 3px var(--words-on-paper);
 }
 
 .cellHit {

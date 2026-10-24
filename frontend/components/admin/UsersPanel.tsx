@@ -4,10 +4,11 @@
 // under it, so neither is squeezed) with each account's status, changing a
 // role, and each row's other actions in one menu (UI audit AD2, 16 Oct 2026):
 // disabling or enabling an account, unlocking it, resetting its password or its
-// 2FA, each that takes something away asked first in a dialog. "Add user" opens
+// two-step sign-in, each that takes something away asked first in a dialog. Each menu item
+// has one plain line under it saying what it does (USER_MENU_HELP). "Add user" opens
 // the form in a side panel (AD3), with a password field across it and Generate.
 // What happened shows in a toast in the corner. An admin cannot disable themselves, drop
-// their own admin role or reset their own 2FA; the controls for that are not
+// their own admin role or reset their own two-step sign-in; the controls for that are not
 // shown, and the server refuses it anyway. An admin may allow a member or
 // reviewer to delete forever (asked first; needs the admin's own two-step
 // sign-in), and stop it again.
@@ -230,17 +231,29 @@ const CONFIRM_TEXT: Record<Confirming, (name: string) => string> = {
   password: (name) =>
     `Reset ${name}'s password? They are signed out everywhere and must choose a new one.`,
   "2fa": (name) =>
-    `Reset ${name}'s 2FA? They are signed out and set up the app again at their next ` +
-    "sign-in.",
+    `Reset ${name}'s two-step sign-in? They are signed out, and can sign in with their password, then set it up again.`,
   forever: allowForeverQuestion,
 };
 
+// Plain words (25 Oct 2026): the confirm button says the menu item's own verb, and the
+// toast says it was done ("Disable", then "disabled.").
 const CONFIRM_BUTTON: Record<Confirming, string> = {
-  disable: "Yes, disable",
-  password: "Yes, reset",
-  "2fa": "Yes, reset",
-  forever: "Yes, allow",
+  disable: "Disable",
+  password: "Reset password",
+  "2fa": "Reset two-step sign-in",
+  forever: "Allow Delete forever",
 };
+
+/** What each item in a user's menu does, in one plain line under it (plain words, 25 Oct 2026). */
+export const USER_MENU_HELP = {
+  unlock: "Lets them try to sign in again now, without waiting for the lock to end.",
+  enable: "Lets them sign in again.",
+  stopForever: "Takes back their right to delete documents in Trash permanently.",
+  allowForever: "Lets them delete any document in Trash permanently. Deleted documents can't be recovered.",
+  password: "Makes a one-time password for you to give them. They are signed out, then choose their own when they sign in.",
+  twoStep: "For a lost phone: turns off their two-step sign-in and signs them out, so they can set it up again.",
+  disable: "Signs them out and stops them signing in until you enable them again.",
+} as const;
 
 function UserRow({
   user,
@@ -285,9 +298,9 @@ function UserRow({
     act(() => updateUser(user.id, changes), done);
 
   const confirmed = (kind: Confirming) => {
-    if (kind === "disable") return change({ disabled: true }, "account disabled.");
+    if (kind === "disable") return change({ disabled: true }, "disabled.");
     if (kind === "forever") return act(() => setDeleteForever(user.id, true), "Delete forever allowed.");
-    if (kind === "2fa") return act(() => resetUser2fa(user.id), "2FA reset.");
+    if (kind === "2fa") return act(() => resetUser2fa(user.id), "two-step sign-in reset.");
     return act(async () => {
       const reset = await resetUserPassword(user.id);
       onPasswordReset({ name: user.display_name, password: reset.temporary_password });
@@ -301,20 +314,32 @@ function UserRow({
   const selectId = `role-${user.id}`;
   // AD2: one menu per row. Safe actions first; the one that takes something away last, apart.
   const items: RowMenuItem[] = [
-    ...(can.unlock ? [{ label: "Unlock", onSelect: () => void act(() => unlockUser(user.id), "unlocked.") }] : []),
+    ...(can.unlock
+      ? [{ label: "Unlock", description: USER_MENU_HELP.unlock, onSelect: () => void act(() => unlockUser(user.id), "unlocked.") }]
+      : []),
     ...(can.toggleDisabled && user.disabled
-      ? [{ label: "Enable", onSelect: () => void change({ disabled: false }, "account enabled.") }]
+      ? [{ label: "Enable", description: USER_MENU_HELP.enable, onSelect: () => void change({ disabled: false }, "enabled.") }]
       : []),
     ...(forever.kind === "stop"
-      ? [{ label: "Stop Delete forever", onSelect: () => void act(() => setDeleteForever(user.id, false), "Delete forever stopped.") }]
+      ? [
+          {
+            label: "Stop Delete forever",
+            description: USER_MENU_HELP.stopForever,
+            onSelect: () => void act(() => setDeleteForever(user.id, false), "Delete forever stopped."),
+          },
+        ]
       : []),
     ...(forever.kind === "allow"
-      ? [{ label: "Allow Delete forever", onSelect: () => setConfirming("forever"), disabledReason: reason }]
+      ? [{ label: "Allow Delete forever", description: USER_MENU_HELP.allowForever, onSelect: () => setConfirming("forever"), disabledReason: reason }]
       : []),
-    ...(can.resetPassword ? [{ label: "Reset password", onSelect: () => setConfirming("password") }] : []),
-    ...(can.reset2fa ? [{ label: "Reset 2FA", onSelect: () => setConfirming("2fa") }] : []),
+    ...(can.resetPassword
+      ? [{ label: "Reset password", description: USER_MENU_HELP.password, onSelect: () => setConfirming("password") }]
+      : []),
+    ...(can.reset2fa
+      ? [{ label: "Reset two-step sign-in", description: USER_MENU_HELP.twoStep, onSelect: () => setConfirming("2fa") }]
+      : []),
     ...(can.toggleDisabled && !user.disabled
-      ? [{ label: "Disable", onSelect: () => setConfirming("disable"), destructive: true }]
+      ? [{ label: "Disable", description: USER_MENU_HELP.disable, onSelect: () => setConfirming("disable"), destructive: true }]
       : []),
   ];
   return (

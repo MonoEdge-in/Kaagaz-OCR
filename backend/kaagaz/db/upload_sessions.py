@@ -2,6 +2,7 @@
 
 import json
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import Connection, text
 
@@ -41,15 +42,19 @@ def create(
     )
 
 
-def get(conn: Connection, customer_id: str, user_id: str, session_id: str) -> dict[str, object] | None:
-    row = conn.execute(
-        text(
-            "SELECT id, customer_id, user_id, storage_key, storage_upload_id, file_size, part_count, metadata"
-            " FROM upload_sessions WHERE customer_id = :customer AND user_id = :user AND id = :id"
-            " AND expires_at > now()"
-        ),
-        {"customer": customer_id, "user": user_id, "id": session_id},
-    ).mappings().one_or_none()
+def get(conn: Connection, customer_id: str, user_id: str, session_id: str) -> dict[str, Any] | None:
+    row = (
+        conn.execute(
+            text(
+                "SELECT id, customer_id, user_id, storage_key, storage_upload_id, file_size, part_count,"
+                " metadata FROM upload_sessions WHERE customer_id = :customer AND user_id = :user"
+                " AND id = :id AND expires_at > now()"
+            ),
+            {"customer": customer_id, "user": user_id, "id": session_id},
+        )
+        .mappings()
+        .one_or_none()
+    )
     return None if row is None else dict(row)
 
 

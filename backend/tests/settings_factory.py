@@ -102,6 +102,7 @@ _BASE: dict[str, Any] = {
     "chat_history_turns": 3,
     "answer_translate_question": False,
     "model_translate_timeout_seconds": 20.0,
+    "answer_plan_timeout_seconds": 4.0,
     "model_context_tokens": 200_000,
     "answer_whole_doc_tokens": 120_000,
     "topic_max_per_doc": 40,

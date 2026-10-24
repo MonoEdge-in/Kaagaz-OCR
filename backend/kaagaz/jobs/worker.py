@@ -112,7 +112,8 @@ def database_unreachable(error: Exception) -> bool:
 def retry_delay(attempt: int) -> int:
     """Seconds before a retryable failure's next try: 60 doubling each attempt, at most 900
     (SQS's longest delay). O(1)."""
-    return min(RETRY_FIRST_SECONDS * 2 ** max(0, attempt - 1), RETRY_MOST_SECONDS)
+    doubling: int = 2 ** max(0, attempt - 1)  # a whole number: the power is never negative
+    return min(RETRY_FIRST_SECONDS * doubling, RETRY_MOST_SECONDS)
 
 
 class JobFailed(Exception):

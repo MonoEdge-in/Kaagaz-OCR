@@ -19,6 +19,8 @@ import styles from "./Operator.module.css";
 
 export interface ManageItem {
   label: string;
+  /** One plain line under the label: what happens, and to whom (plain words, 25 Oct 2026). */
+  description: string;
   onSelect(): void;
   danger?: boolean;
 }
@@ -134,6 +136,9 @@ export function ManageMenu({
     item.onSelect();
   }
 
+  // The label names the item; the line under it is read as its description. Labels are
+  // unique in one menu (they are the keys too), so they make the line's id.
+  const hintId = (item: ManageItem) => `${menuId}-${item.label.replace(/\W+/g, "-")}`;
   const entry = (item: ManageItem) => (
     <button
       key={item.label}
@@ -141,9 +146,14 @@ export function ManageMenu({
       role="menuitem"
       tabIndex={-1}
       className={item.danger ? `${styles.menuItem} ${styles.menuDanger}` : styles.menuItem}
+      aria-label={item.label}
+      aria-describedby={hintId(item)}
       onClick={() => choose(item)}
     >
-      {item.label}
+      <span>{item.label}</span>
+      <span id={hintId(item)} className={styles.menuHint}>
+        {item.description}
+      </span>
     </button>
   );
 

@@ -563,6 +563,12 @@ export interface SheetCells {
   rows: { row: number; cells: { column: number; text: string }[] }[];
 }
 
+/** GET /documents/{id}/words (package H): the lines holding the words on every page (at most 2,000), and every page with one. */
+export interface DocumentWords {
+  boxes: Region[];
+  pages: number[];
+}
+
 /** GET /documents/{id}/pages/{n}/readings: what each reader read on one page, as read. */
 export interface PageReadings {
   page_no: number;
@@ -600,7 +606,6 @@ export interface PageTranslation {
   page_no: number;
   language: TranslateLanguage;
   lines: string[]; // plain text only, through visibleText
-  truncated: boolean; // only the first lines of a long page were translated
   cached: boolean;
 }
 
@@ -675,10 +680,25 @@ export interface AnswerSentence {
   citations: number[];
 }
 
+/** PRD 6 A: a document listed under an answer. `why` is code-written words, never a digit;
+ * `citations` are its sources' numbers (none for a not-found answer's closest document). */
+export interface ListedDocument {
+  document_id: string;
+  title: string;
+  why: string;
+  citations: number[];
+}
+
 export interface Answer {
   // "unchecked": the figure asked for is only in unchecked card values, so no
   // number is given; closest_documents says where.
-  status: "answered" | "not_found" | "unchecked";
+  status: "answered" | "not_found" | "unchecked" | "clarify";
+  // PRD 6 A, answer contract v2 (24 Oct 2026); all four missing on answers saved before it,
+  // which render as they did. The opening and assumptions are code-written lines.
+  version?: 2;
+  opening?: string | null;
+  documents?: ListedDocument[];
+  assumptions?: string[];
   label: Label | null; // null when not found
   sentences: AnswerSentence[];
   citations: Citation[];
@@ -704,6 +724,24 @@ export interface Answer {
   agents_asked?: number;
   agreement?: "agreed" | "not_confirmed" | null;
   thinking?: ThinkingLevel;
+  // PRD 6 B (answer contract v2), absent on older answers: the question asked instead of an
+  // answer (status "clarify").
+  clarify?: Clarify;
+}
+
+/** A clarifying question (PRD 6 B): choices by server id; "other" sends nothing. */
+export interface Clarify {
+  id: string;
+  question: string;
+  choices: { id: string; label: string; detail?: string; kind: "pick" | "other" | "all"; document_ids?: string[] }[];
+  multi: boolean;
+  turn: number;
+}
+
+/** POST /chat's `reply`: the open clarify answered by its choices' ids (none: the typed words). */
+export interface ClarifyReply {
+  message_id: string;
+  choice_ids: string[];
 }
 
 export type ThinkingLevel = "low" | "medium" | "high";
@@ -801,8 +839,47 @@ export interface Message {
   created_at: string;
   answer: Answer | null; // set for assistant messages only
   scope?: ScopeBody | null; // the scope a question used (PRD 3 H2); null when it had none
-  feedback: "up" | "down" | null;
+  feedback: "up" | "down" | null; // Useful or Not useful (PRD 6 F1)
   pin?: SourcePin | null; // the source this person put on top of the answer; missing on a new reply
+}
+
+/** What went wrong on Not useful (PRD 6 F1; backend db/chat.py REASONS). */
+export type ReasonCode = "wrong_documents" | "document_missing" | "wrong_figure" | "did_not_understand" | "other";
+
+/** One answer marked Not useful after the notice, on the admin's Answer quality page (PRD 6 F2). */
+export interface AnswerQualityItem {
+  id: string; // the feedback's id: Mark as handled names it
+  message_id: string;
+  asked_by: string;
+  question: string | null;
+  answer: Answer; // as it may be shown now (sources gone since lose their words)
+  reason_codes: ReasonCode[];
+  reason: string | null;
+  given_at: string;
+  handled_at: string | null;
+}
+
+/** Useful and Not useful in one week, from its Monday (India time). */
+export interface WeekCounts {
+  week: string;
+  useful: number;
+  not_useful: number;
+}
+
+/** GET /admin/learned (PRD 6 F3): a document Useful marks lift now; no question, no name. */
+export interface LearnedDocument {
+  document_id: string;
+  document_name: string;
+  people: number;
+  last_marked_at: string;
+}
+
+/** GET /admin/answer-quality: one page of items, newest first, and each week of the period, newest first. */
+export interface AnswerQualityReply {
+  from: string;
+  weeks: WeekCounts[];
+  items: AnswerQualityItem[];
+  total: number;
 }
 
 export interface ChatResponse {
@@ -1360,6 +1437,26 @@ export interface BoardReply {
   items: BoardRow[];
 }
 
+/** PRD 6 F3: one organisation's replies in one ended ISO week (week: its Monday). Counts only;
+ * null is a count the server hid (under 10, or what would give one away). */
+export interface AnswerWeekRow {
+  organisation_id: string;
+  week: string;
+  replies: number;
+  answered: number | null;
+  not_found: number | null;
+  clarify: number | null;
+  rated: number;
+  useful: number | null;
+}
+
+/** GET /operator/answer-weeks?weeks= */
+export interface AnswerWeeksReply {
+  from: string;
+  to: string;
+  organisations: AnswerWeekRow[];
+}
+
 // --- Word-level review and Ensemble after the scan (scan review UX rules, 16 Oct 2026;
 // backend/kaagaz/api/routers/word_review.py and ensemble.py, views.run_json) ---
 
@@ -1496,6 +1593,11 @@ export interface SessionTimeout {
   platform_hours?: number | null;
   default_hours: number;
 }
+
+/** GET /operator/speed (package S, 0053): each speed control's saved value (null: the server's
+ * setting) and the most this server allows, set when it is deployed. */
+export type SpeedName = "model_rpm" | "documents_at_once" | "pages_at_once";
+export type Speed = Record<SpeedName, { value: number | null; most: number }>;
 
 /** GET /operator/test-model: the whole platform on one model for a test, or not. */
 export interface TestModel {

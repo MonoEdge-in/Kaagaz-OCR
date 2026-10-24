@@ -41,6 +41,7 @@ export const TABS = [
   { id: "ai", label: "AI settings" },
   { id: "activity", label: "Activity" },
   { id: "numbers", label: "Numbers" },
+  { id: "quality", label: "Answer quality" }, // PRD 6 F2
   { id: "usage", label: "Usage" },
   { id: "failed", label: "Failed documents" },
 ] as const;
@@ -133,8 +134,8 @@ export interface StatusPart {
 }
 
 /**
- * The status column: Active, "Locked until 14:05" or Disabled, then "2FA on"
- * or "2FA off" (off is only worth saying for an admin, who can turn it on for
+ * The status column: Active, "Locked until 14:05" or Disabled, then "Two-step on"
+ * or "Two-step off" (off is only worth saying for an admin, who can turn it on for
  * the admin screen), then "Temporary password" until the user sets their own.
  */
 export function userStatus(user: AdminUser, now: number): StatusPart[] {
@@ -143,8 +144,9 @@ export function userStatus(user: AdminUser, now: number): StatusPart[] {
   else if (user.locked_until !== null && isLocked(user, now)) {
     parts.push({ text: lockedUntilText(user.locked_until), tone: "danger" });
   } else parts.push({ text: "Active", tone: "ready" });
-  if (user.totp_enabled) parts.push({ text: "2FA on", tone: "neutral" });
-  else if (user.role === "admin") parts.push({ text: "2FA off", tone: "neutral" });
+  // Plain words (25 Oct 2026): "Two-step", as the rest of the product says, not "2FA".
+  if (user.totp_enabled) parts.push({ text: "Two-step on", tone: "neutral" });
+  else if (user.role === "admin") parts.push({ text: "Two-step off", tone: "neutral" });
   if (user.must_change_password) parts.push({ text: "Temporary password", tone: "neutral" });
   if (user.can_delete_forever) parts.push({ text: "Can delete forever", tone: "neutral" });
   return parts;
@@ -338,7 +340,7 @@ export function breakdowns(stats: Stats): Breakdown[] {
     rows.filter(([, n]) => n > 0).map(([label, n]) => ({ label, value: formatNumber(n) }));
   return [
     {
-      title: "Pipeline",
+      title: "Not ready yet", // plain words (25 Oct 2026): it was "Pipeline"
       none: "Nothing is waiting or being read.",
       rows: kept([
         ["Waiting for the virus check", by.received ?? 0],
@@ -356,8 +358,8 @@ export function breakdowns(stats: Stats): Breakdown[] {
         ["Not found in the documents", stats.not_found],
         ["Answers labelled Verified", stats.verified_answers],
         ["Answers labelled Ready to verify", stats.needs_review_answers],
-        ["Thumbs up", stats.feedback_up],
-        ["Thumbs down", stats.feedback_down],
+        ["Useful", stats.feedback_up],
+        ["Not useful", stats.feedback_down],
       ]),
     },
     {
@@ -413,6 +415,7 @@ const TARGET_WORDS: Record<string, string> = {
   user_word: "Word",
   message: "Chat",
   conversation: "Chat",
+  feedback: "Answer",
   customer: "Settings",
 };
 
@@ -434,6 +437,7 @@ const ACTION_WORDS: Record<string, string> = {
   "document.tags": "Changed a document's tags",
   "document.reprocess": "Asked to read a document again",
   "document.read_upgrade": "Read a document again after an upgrade",
+  "document.land_facts": "Read a land record's owners and places again", // PRD 6 D3
   "document.page_accept": "Kept a page as it was read",
   "document_story.saved": "Saved a document's story",
   "document_story.deleted": "Deleted a document's story",
@@ -453,6 +457,10 @@ const ACTION_WORDS: Record<string, string> = {
   "chat.ask": "Asked a question",
   "chat.rename": "Renamed a conversation",
   "chat.delete": "Deleted a conversation",
+  // PRD 6 F2: Answer quality.
+  "feedback.handled": "Marked a Not useful answer as handled",
+  "feedback.reopened": "Opened a Not useful answer again",
+  "learning.remove": "Removed what Kaagaz learned about a document", // PRD 6 F3
   "review.resolve": "Corrected a value",
   "user.create": "Added a user",
   "user.update": "Changed a user",
@@ -460,14 +468,14 @@ const ACTION_WORDS: Record<string, string> = {
   "auth.admin_login": "Signed in to admin",
   "auth.login_failed": "Sign-in failed",
   "auth.locked": "Account locked after wrong passwords",
-  "auth.enrol": "Set up 2FA",
-  "auth.totp_on": "Turned on 2FA",
-  "auth.totp_off": "Turned off 2FA",
+  "auth.enrol": "Set up two-step sign-in",
+  "auth.totp_on": "Turned on two-step sign-in",
+  "auth.totp_off": "Turned off two-step sign-in",
   "auth.password_change": "Changed their password",
   "auth.logout_everywhere": "Signed out everywhere",
   "user.unlock": "Unlocked a user",
   "user.reset_password": "Reset a user's password",
-  "user.reset_totp": "Reset a user's 2FA",
+  "user.reset_totp": "Reset a user's two-step sign-in",
   "user.delete_forever_on": "Allowed a user to delete forever",
   "user.delete_forever_off": "Stopped a user deleting forever",
   // Feature 28: auto-filing.

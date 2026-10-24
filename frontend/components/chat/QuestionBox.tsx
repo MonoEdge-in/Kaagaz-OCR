@@ -16,6 +16,7 @@ import type { ReactNode, RefObject } from "react";
 import { Icon } from "@/components/ui/Icon";
 import type { ModeTexts } from "@/lib/chatMode";
 import { cleanQuestion, MAX_QUESTION_LENGTH, restoreAfterFailure, sendsOnKey } from "./answer";
+import { langOf } from "./clarify";
 import { useMediaQuery } from "./hooks";
 import styles from "./Chat.module.css";
 
@@ -39,9 +40,12 @@ export function QuestionBox({
   texts,
   tools,
   settings,
+  answering,
 }: {
   pending: boolean;
   texts: ModeTexts;
+  /** PRD 6 B2: the open clarifying question the box answers, and how to ask something else instead. */
+  answering?: { question: string; onLeave: () => void } | null;
   tools?: ReactNode; // the toolbar's left: the mode and scope chips
   settings?: ReactNode; // beside Send: the answer settings
   /** Why the last question could not be sent, or null. */
@@ -121,6 +125,17 @@ export function QuestionBox({
             Try again
           </button>
         </div>
+      ) : null}
+      {answering ? (
+        <p className={styles.answering}>
+          <span className={styles.chipText}>
+            Answering: <span lang={langOf(answering.question)}>{answering.question}</span>
+          </span>
+          <span aria-hidden="true">·</span>
+          <button type="button" className={styles.answeringLeave} onClick={answering.onLeave}>
+            Ask something else
+          </button>
+        </p>
       ) : null}
       <label htmlFor={INPUT_ID} className="visually-hidden">
         {texts.label}

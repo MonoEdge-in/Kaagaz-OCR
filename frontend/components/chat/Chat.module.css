@@ -98,13 +98,11 @@
   gap: var(--space-1);
 }
 
-/* "Today", "This week": the handoff's mono group heading (.k-tree-group). */
+/* "Today", "This week": the handoff's group heading (.k-tree-group), sentence case at 14px. */
 .groupTitle {
   margin: 0;
   padding-inline: var(--space-3);
-  font: 500 10px/1.4 var(--k-font-mono);
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
+  font: 500 0.875rem/1.4 var(--k-font-body);
   color: var(--k-ink-muted);
 }
 
@@ -235,9 +233,7 @@
 }
 
 .listSearch > label {
-  font: 500 10px/1.4 var(--k-font-mono);
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
+  font: 500 0.875rem/1.4 var(--k-font-body);
   color: var(--k-ink-muted);
 }
 
@@ -587,6 +583,161 @@
   flex: none;
 }
 
+/* PRD 6 A (24 Oct 2026): the opening, and the documents listed under an answer. Nothing here
+   may push the card wider than a 320px screen: text wraps between words, flex children that
+   hold text may shrink, and a figure never splits mid-number. */
+.opening {
+  margin: 0;
+  font-weight: 600;
+  overflow-wrap: break-word;
+}
+
+.docList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.docItem {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+
+.docTitle {
+  min-width: 0;
+  margin: 0;
+  font-weight: 600;
+  overflow-wrap: break-word;
+}
+
+.docWhy {
+  min-width: 0;
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+  overflow-wrap: break-word;
+}
+
+.docFigures {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.figure {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* A chip is its own control, never .btn: sentence case, the body font, wrapping in its row. */
+.chipRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+/* PRD 6 B2: a clarifying question's choices, chips of their own (never .btn): a wrapping row,
+   each as wide as its words up to the card, long names wrapping inside it. */
+.choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  border: 0;
+}
+
+.choices legend {
+  margin-bottom: var(--space-2);
+  padding: 0;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  min-height: var(--control-h); /* 44px on touch */
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: 2px;
+  background: var(--surface);
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--fs-sm);
+  line-height: 1.25;
+  text-align: start;
+  text-transform: none;
+  overflow-wrap: break-word;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.chip:hover {
+  background: var(--surface-2);
+}
+
+.chip svg {
+  flex: none;
+}
+
+.chip[aria-disabled="true"],
+.choices[aria-disabled="true"] .chip {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.chipText {
+  min-width: 0;
+  overflow-wrap: break-word;
+}
+
+.chipDetail {
+  color: var(--fg-muted);
+}
+
+/* The composer while a clarifying question is open: "Answering: … · Ask something else". */
+.answering {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1);
+  min-width: 0;
+  margin: 0;
+  padding-inline: var(--space-4);
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+}
+
+/* One control tall: --control-h is 44px on touch. */
+.answeringLeave {
+  min-height: var(--control-h);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 /* Pending: a skeleton card while the answer is worked out. */
 .pendingText {
   margin: 0;
@@ -774,12 +925,6 @@
   gap: var(--space-2);
 }
 
-.feedbackQuestion {
-  margin-inline-end: var(--space-1);
-  font-size: var(--fs-sm);
-  color: var(--fg-muted);
-}
-
 .vote[aria-pressed="true"],
 .vote[aria-pressed="true"]:hover {
   background: var(--accent-soft);
@@ -792,6 +937,75 @@
   flex-direction: column;
   gap: var(--space-2);
   max-width: 30rem;
+  min-width: 0;
+}
+
+.reasonSet {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+/* PRD 6 layout rules: the reasons wrap, 8px apart; each chip shrinks and its words wrap. */
+.reasonChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+/* A reason is a chip, not a .btn: sentence case, the body font, its box a checkbox. */
+.reasonChip {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: 100%;
+  min-width: 0;
+  min-height: var(--control-min);
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-full);
+  background: var(--surface);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: var(--fs-sm);
+  line-height: 1.25;
+  overflow-wrap: break-word;
+  cursor: pointer;
+}
+
+.reasonChip span {
+  min-width: 0;
+}
+
+.reasonChip input {
+  flex: none;
+  margin: 0;
+}
+
+.reasonChip:has(input:checked) {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.reasonChip:has(input:focus-visible) {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.reasonCount {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+}
+
+.reasonNotice {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+  overflow-wrap: break-word;
 }
 
 /* --- Composer ------------------------------------------------------------------ */
