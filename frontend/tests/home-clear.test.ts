@@ -105,3 +105,18 @@ describe("the ready questions under Ask", () => {
     expect(calm).toMatch(/\.readyList > li \{\s*animation: home-pop var\(--motion-calm\) var\(--ease-out\) both;/);
   });
 });
+
+
+// 24 Oct 2026: a rewrite once dropped the Ask box's own rules and left a bare input. Every
+// class the welcome uses must have its rule, and the Ask box is the wide framed pill.
+describe("the welcome's styles", () => {
+  it("styles every class the welcome and the Ask box use", () => {
+    const home = read("components/dashboard/Dashboard.tsx");
+    const text = css(HOME_CSS);
+    const used = [...home.matchAll(/styles\.(\w+)/g)].map((match) => match[1]);
+    for (const name of new Set(used)) expect(text, name).toMatch(new RegExp(String.raw`\.${name}\b[^{]*\{`));
+    expect(text).toMatch(/\.ask \{[^}]*border-radius: var\(--k-r-pill\);[^}]*box-shadow: var\(--k-shadow-2\);/);
+    expect(text).toMatch(/\.askInput \{[^}]*flex: 1;[^}]*border: 0;/);
+    expect(text).toMatch(/\.ask:focus-within \{[^}]*outline: 3px solid var\(--k-accent-soft\);/);
+  });
+});

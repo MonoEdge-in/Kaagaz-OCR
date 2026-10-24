@@ -161,7 +161,7 @@ export function Dashboard() {
             value={question}
             onChange={(event) => setQuestion(event.target.value)}
           />
-          <button type="submit" className="k-btn k-btn--primary">
+          <button type="submit" className={`k-btn k-btn--primary ${styles.askButton}`}>
             {DASHBOARD_TEXT.ask}
             <Icon name="external" size="sm" />
           </button>
