@@ -56,6 +56,10 @@ optional expectations (``nlq_problems`` checks them): ``documents`` {expected, n
 ``clarify`` {choices, pick} or null (no question may be asked), ``figure`` {document, field,
 as_printed, page, label}, ``no_total`` {allowed: null or the permitted total's text} and
 ``soft_not_found`` {closest}, and an item ``scope`` {document} ("Ask about this document").
+``nlq_score`` marks them on a stored reply as pure functions, and a field a reply does not
+have yet (packages A to C add them) counts as absent, never an error: a reply that asks back
+(``clarify``) is the outcome **clarified**, counted like abstained and never wrong.
+``nlq_metrics`` gives each expectation's (count, of); ``compare`` gates each one too.
 
 Time is O(q) per file and O(s + h) per answer, in its characters and hits.
 """
@@ -123,6 +127,8 @@ NLQ_QUESTIONS = 150  # at least, so a 0.95 bar's Wilson interval is narrow enoug
 # Items per expectation, at least: "clarify" expects a question, "no_clarify" forbids one.
 NLQ_MINIMUMS = {"documents": 80, "clarify": 30, "no_clarify": 40, "figure": 60, "no_total": 150}
 NLQ_MINIMUMS |= {"soft_not_found": 25, "scope": 15}
+MAX_CLARIFY_TURNS = 2  # PRD 6: at most 2 clarifying turns for one question
+MAX_NEWLY_FAILED = 2  # compare: questions an expectation may newly fail (no_total: none)
 LABELS = (None, "verified", "needs_review")
 
 
@@ -132,6 +138,7 @@ class Outcome(StrEnum):
     ABSTAINED = "abstained"
     CORRECT_NOT_FOUND = "correct not-found"
     MISSED_NOT_FOUND = "missed not-found"
+    CLARIFIED = "clarified"  # it asked back: counted like abstained, never wrong
 
 
 @dataclass(frozen=True, slots=True)
@@ -365,9 +372,11 @@ def score(question: Question, answer: Mapping[str, Any], cited: Sequence[Hit] = 
     """Mark the ``Answer`` JSON, with its citations as ``cited`` hits. Only status
     "answered" counts as an answer: "unchecked" gives no figure, so it is abstained for
     an answer, and claims one exists, so it is a miss for a not-found question."""
-    answered = answer.get("status") == "answered"
+    answered = answer.get("status") == "answered" and clarify_of(answer) is None
     text = answer_text(answer)
-    if question.kind == "not_found":
+    if clarify_of(answer) is not None:
+        outcome = Outcome.CLARIFIED
+    elif question.kind == "not_found":
         found = answer.get("status") == "not_found"
         outcome = Outcome.CORRECT_NOT_FOUND if found else Outcome.MISSED_NOT_FOUND
     elif not answered:
@@ -492,7 +501,7 @@ def category(marked: Score) -> str:
         return "wrong_verified"
     if marked.outcome in (Outcome.WRONG, Outcome.MISSED_NOT_FOUND):
         return "wrong"
-    return "abstained" if marked.outcome == Outcome.ABSTAINED else "right"
+    return "abstained" if marked.outcome in (Outcome.ABSTAINED, Outcome.CLARIFIED) else "right"
 
 
 def worst_score(runs: Sequence[Score]) -> Score:
@@ -542,15 +551,24 @@ def compare(
     question is {"outcome": a ``category``, "verified": bool}. Gives each changed question
     ("id: old -> new"), the failures, and McNemar's p (reported, never a failure). It fails
     a question that moved into wrong or wrong_verified, more than MAX_NEWLY_ABSTAINED right
-    to abstained, and verified_coverage down by more than MAX_VERIFIED_COVERAGE_DROP questions."""
+    to abstained, and verified_coverage down by more than MAX_VERIFIED_COVERAGE_DROP questions.
+    A question's "expect" ({expectation: passed}, the NLQ set) gates each expectation too:
+    more than MAX_NEWLY_FAILED questions newly failing it fails, any one for no_total and
+    clarify_turns."""
     changed: list[str] = []
     failures: list[str] = []
     abstained = base_only = now_only = 0
     covered = {"base": 0, "now": 0}
+    newly: dict[str, int] = {}
     for qid in sorted(set(base) & set(now)):
         old, new = base[qid]["outcome"], now[qid]["outcome"]
         for name, run in (("base", base), ("now", now)):
             covered[name] += run[qid]["outcome"] == "right" and bool(run[qid]["verified"])
+        was, now_passed = base[qid].get("expect") or {}, now[qid].get("expect") or {}
+        for name in sorted(set(was) & set(now_passed)):
+            if was[name] and not now_passed[name]:
+                newly[name] = newly.get(name, 0) + 1
+                changed.append(f"{qid}: {name} passed -> failed")
         base_only += old == "right" and new != "right"
         now_only += old != "right" and new == "right"
         if old == new:
@@ -566,6 +584,10 @@ def compare(
             f"verified_coverage fell from {covered['base']} to {covered['now']} questions,"
             f" at most {MAX_VERIFIED_COVERAGE_DROP} fewer"
         )
+    for name, count in sorted(newly.items()):
+        limit = 0 if name in ("no_total", "clarify_turns") else MAX_NEWLY_FAILED
+        if count > limit:
+            failures.append(f"{count} questions newly fail {name}, at most {limit}")
     return changed, failures, mcnemar(base_only, now_only)
 
 
@@ -689,3 +711,301 @@ def numerals(text: str) -> list[tuple[str, bool]]:
 def phrase_in(wanted: str, text: str) -> bool:
     """``wanted`` in ``text`` as a whole phrase, any case and spacing ("Pune" is not in "Puneri")."""
     return _holds_value(wanted, Decimal(0), text)
+
+
+# --- NLQ: one reply (PRD 6 package G) ----------------------------------------------------------
+
+# A share or rate in words, which no printed figure backs unless printed so.
+_FRACTION = re.compile(
+    r"\b(?:half|halves|(?:one|two|three|four)[- ](?:thirds?|quarters?|fifths?|tenths?)"
+    r"|(?:ten|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)(?:[- ][a-z]+)?[- ]per ?cent)\b"
+)
+_BARE = re.compile(
+    r"(?:no|not found(?: in the documents searched)?|i couldn't find this in your documents)\.?"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class NlqScore:
+    """One reply's NLQ expectations; None (or 0) where the question has none."""
+
+    documents: tuple[int, int, int] | None = None  # expected and listed, expected, listed
+    unwanted: int = 0  # documents of expect.documents.not listed
+    clarify_expected: bool | None = None
+    asked: bool = False  # the first reply asked back
+    choices_right: bool = False  # with every expected choice
+    figure: bool | None = None
+    violations: tuple[str, ...] | None = None  # no_total's
+    soft: bool | None = None
+    clarify_turns: int = 0  # replies that asked back, counted by the runner
+
+    def passed(self) -> dict[str, bool]:
+        """Each expectation the question has: passed or not (the paired gate reads these)."""
+        marks = {"clarify_turns": self.clarify_turns <= MAX_CLARIFY_TURNS}
+        if self.documents is not None:
+            marks["documents"] = self.documents[0] == self.documents[1] and not self.unwanted
+        if self.clarify_expected is not None:
+            marks["clarify"] = self.asked == self.clarify_expected and (self.choices_right or not self.asked)
+        if self.figure is not None:
+            marks["figure"] = self.figure
+        if self.violations is not None:
+            marks["no_total"] = not self.violations
+        if self.soft is not None:
+            marks["soft_not_found"] = self.soft
+        return marks
+
+
+def _dicts(value: Any) -> list[Mapping[str, Any]]:
+    return [each for each in value if isinstance(each, Mapping)] if isinstance(value, list) else []
+
+
+def clarify_of(answer: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """The reply's clarifying question (PRD 6: ``clarify``, or kind "clarify"); None when it
+    does not ask back. Today's replies never do."""
+    clarify = answer.get("clarify")
+    if isinstance(clarify, Mapping):
+        return clarify
+    return {} if answer.get("kind") == "clarify" else None
+
+
+def choice_labels(clarify: Mapping[str, Any]) -> list[str]:
+    """Its choices' labels: a choice is a text, or {"id", "label"} (council: choices by id)."""
+    choices = clarify.get("choices")
+    items = choices if isinstance(choices, list) else []
+    labels = [choice.get("label") if isinstance(choice, Mapping) else choice for choice in items]
+    return [label for label in labels if isinstance(label, str)]
+
+
+def listed_documents(answer: Mapping[str, Any], names: Mapping[str, str]) -> list[str]:
+    """The documents a reply lists, as file names (``names``: document id -> name; "?" for
+    another): PRD 6's ``documents``, else today's cited and closest documents."""
+    if isinstance(answer.get("documents"), list):
+        ids = [doc.get("id") for doc in _dicts(answer["documents"])]
+    else:
+        ids = [c.get("document_id") for c in _dicts(answer.get("citations"))]
+        ids += [doc.get("id") for doc in _dicts(answer.get("closest_documents"))]
+    return list(dict.fromkeys(names.get(str(i), "?") for i in ids))
+
+
+def said(answer: Mapping[str, Any]) -> list[tuple[str, str]]:
+    """Every text the reply writes, as (field, text): the opening, sentences, each document's
+    why, assumptions, the clarifying question and the total. Printed figures and the
+    clarify choices (names from the documents) are not in it."""
+    total, clarify = answer.get("total"), clarify_of(answer) or {}
+    found = [("opening", answer.get("opening")), ("clarify", clarify.get("question"))]
+    found += [("sentences", s.get("text")) for s in _dicts(answer.get("sentences"))]
+    found += [("why", doc.get("why")) for doc in _dicts(answer.get("documents"))]
+    assumptions = answer.get("assumptions")
+    found += [("assumptions", a) for a in assumptions] if isinstance(assumptions, list) else []
+    found += [("total", total.get("as_text"))] if isinstance(total, Mapping) else []
+    return [(where, text) for where, text in found if isinstance(text, str) and text.strip()]
+
+
+def _printed(answer: Mapping[str, Any], names: Mapping[str, str]) -> list[str]:
+    """What the reply shows as printed: figures with their page, cited snippets, and the
+    documents' names (their display names)."""
+    found = [str(c.get("snippet", "")) for c in _dicts(answer.get("citations"))]
+    found += [str(c.get("document_name", "")) for c in _dicts(answer.get("citations"))]
+    found += [str(doc.get("display_name", "")) for doc in _dicts(answer.get("closest_documents"))]
+    found += listed_documents(answer, names)
+    for doc in _dicts(answer.get("documents")):
+        shown = _dicts(doc.get("figures"))
+        found += [str(f.get("as_printed", "")) for f in shown if isinstance(f.get("page"), int)]
+    return found
+
+
+def _counts(answer: Mapping[str, Any], names: Mapping[str, str]) -> set[str]:
+    """Counts a reply may state: the documents it lists, those with and without each figure,
+    and its choices."""
+    docs = _dicts(answer.get("documents"))
+    counts = {len(listed_documents(answer, names)), len(choice_labels(clarify_of(answer) or {}))}
+    for name in {f.get("field") for doc in docs for f in _dicts(doc.get("figures"))}:
+        holding = sum(any(f.get("field") == name for f in _dicts(doc.get("figures"))) for doc in docs)
+        counts |= {holding, len(docs) - holding}
+    return {str(count) for count in counts}
+
+
+def _total_problem(total: Mapping[str, Any], allowed: Any) -> str | None:
+    """None when the reply's total is permitted: the expected total, the code's sum of its
+    working, every figure in it printed with its page and Verified."""
+    if allowed is None:
+        return "a total where none is permitted"
+    working = _dicts(total.get("working"))
+    values = [numerals(str(f.get("as_printed", ""))) for f in working]
+    want = numerals(str(allowed))[0][0]
+    if not working or any(
+        len(v) != 1 or "/" in v[0][0] or not isinstance(f.get("page"), int) or f.get("label") != "verified"
+        for v, f in zip(values, working, strict=True)
+    ):
+        return "a total whose working is not printed, Verified figures"
+    shown = [value for value, _ in numerals(str(total.get("as_text", "")))]
+    if sum(Decimal(v[0][0]) for v in values) != Decimal(want) or shown != [want]:
+        return f"a total that is not {allowed}, the sum of its working"
+    return None
+
+
+def no_total_violations(question: Question, answer: Mapping[str, Any], names: Mapping[str, str]) -> list[str]:
+    """The numbers rule (PRD 6): every number the reply writes is printed (a figure with its
+    page, a cited snippet, a document's name), the permitted total, a count of what it lists,
+    a page number, or in the question; a day, month or year of a printed date counts as
+    printed (an assumed year comes from one), never as a percent. Each other number, and
+    each share in words, is a violation: "<value> in <field>".
+    ponytail: a number past a snippet's 300-character cut reads as unprinted for today's
+    replies; PRD 6 replies carry their figures."""
+    printed = _printed(answer, names)
+    wholes = {value for text in printed for value, _ in numerals(text)}
+    parts = {part for value in wholes for part in value.split("/")}
+    asked = {part for value, _ in numerals(question.question) for part in (value, *value.split("/"))}
+    counts, wrong = _counts(answer, names), []
+    total = answer.get("total")
+    if isinstance(total, Mapping):
+        problem = _total_problem(total, (question.nlq.get("no_total") or {}).get("allowed"))
+        wrong += [] if problem is None else [problem]
+        wholes |= set() if problem else {value for value, _ in numerals(str(total.get("as_text", "")))}
+    seen = " ".join(printed).casefold()
+    for where, text in said(answer):
+        for value, percent in numerals(text):
+            plain = not percent and "/" not in value and (value in parts or value in counts)
+            if not (value in wholes or value in asked or plain):
+                wrong.append(f"{value}{'%' if percent else ''} in {where}")
+        wrong += [f"{m[0]} in {where}" for m in _FRACTION.finditer(text.casefold()) if m[0] not in seen]
+    return wrong
+
+
+def figure_right(figure: Mapping[str, Any], answer: Mapping[str, Any], names: Mapping[str, str]) -> bool:
+    """The printed figure shown exactly (the same numbers), on its document and page, with
+    its label when one is expected: as a PRD 6 document's figure, or in today's reply as a
+    sentence citing that document's page."""
+    want, page, label = numerals(str(figure["as_printed"])), figure["page"], figure.get("label")
+    for doc in _dicts(answer.get("documents")):
+        if names.get(str(doc.get("id"))) == figure["document"] and any(
+            numerals(str(f.get("as_printed", ""))) == want
+            and f.get("page") == page
+            and label in (None, f.get("label"))
+            for f in _dicts(doc.get("figures"))
+        ):
+            return True
+    cited = {c.get("n"): c for c in _dicts(answer.get("citations"))}
+    for sentence in _dicts(answer.get("sentences")):
+        held = numerals(str(sentence.get("text", "")))
+        refs = sentence.get("citations")
+        for c in [cited[n] for n in refs if n in cited] if isinstance(refs, list) and want else []:
+            low = c.get("page_from") or c.get("page_no")
+            high = c.get("page_to") or low
+            on_page = isinstance(low, int) and isinstance(high, int) and low <= page <= high
+            if (
+                all(w in held for w in want)
+                and on_page
+                and names.get(str(c.get("document_id"))) == figure["document"]
+            ):
+                return label in (None, c.get("label"))
+    return False
+
+
+def soft_right(
+    soft: Mapping[str, Any], answer: Mapping[str, Any], names: Mapping[str, str], asker: str
+) -> bool:
+    """PRD 6's soft rejection: status not_found, written text that names the asker and is
+    never a bare refusal, and every expected closest document among its documents."""
+    texts = [text for _, text in said(answer)]
+    if answer.get("status") != "not_found" or clarify_of(answer) is not None or not texts:
+        return False
+    if not phrase_in(asker, " ".join(texts)) or any(_BARE.fullmatch(t.strip().casefold()) for t in texts):
+        return False
+    shown = _dicts(answer.get("closest_documents")) + _dicts(answer.get("documents"))
+    return set(soft["closest"]) <= {names.get(str(doc.get("id"))) for doc in shown}
+
+
+def nlq_score(
+    question: Question,
+    first: Mapping[str, Any],
+    final: Mapping[str, Any],
+    names: Mapping[str, str],
+    asker: str,
+    clarify_turns: int = 0,
+) -> NlqScore:
+    """Mark the NLQ expectations: clarify on the ``first`` reply, the rest on the ``final``
+    one (after the runner answered any question back). ``asker`` is the first name."""
+    nlq, asked = question.nlq, clarify_of(first)
+    want = nlq.get("clarify")
+    found = None
+    if "documents" in nlq:
+        listed, expected = listed_documents(final, names), nlq["documents"]["expected"]
+        found = (sum(name in listed for name in expected), len(expected), len(listed))
+    labels = choice_labels(asked or {})
+    return NlqScore(
+        documents=found,
+        unwanted=sum(
+            name in listed_documents(final, names) for name in (nlq.get("documents") or {}).get("not", [])
+        ),
+        clarify_expected=None if "clarify" not in nlq else want is not None,
+        asked=asked is not None,
+        choices_right=want is not None
+        and all(any(phrase_in(c, got) for got in labels) for c in want["choices"]),
+        figure=None if "figure" not in nlq else figure_right(nlq["figure"], final, names),
+        violations=None if "no_total" not in nlq else tuple(no_total_violations(question, final, names)),
+        soft=None if "soft_not_found" not in nlq else soft_right(nlq["soft_not_found"], final, names, asker),
+        clarify_turns=clarify_turns,
+    )
+
+
+def worst_nlq(runs: Sequence[NlqScore]) -> NlqScore:
+    """A question's NLQ marks at their worst over the runs: the lowest document recall (the
+    most listed on a tie), any run failing a mark fails it."""
+    docs = [run.documents for run in runs if run.documents is not None]
+    expected = runs[0].clarify_expected
+    return NlqScore(
+        documents=min(docs, key=lambda d: (d[0] / d[1], -d[2])) if docs else None,
+        unwanted=max(run.unwanted for run in runs),
+        clarify_expected=expected,
+        asked=all(run.asked for run in runs) if expected else any(run.asked for run in runs),
+        choices_right=all(run.choices_right for run in runs),
+        figure=None if runs[0].figure is None else all(run.figure for run in runs),
+        violations=None
+        if runs[0].violations is None
+        else tuple(dict.fromkeys(v for run in runs for v in run.violations or ())),
+        soft=None if runs[0].soft is None else all(run.soft for run in runs),
+        clarify_turns=max(run.clarify_turns for run in runs),
+    )
+
+
+def nlq_metrics(scored: Sequence[NlqScore]) -> dict[str, tuple[int, int]]:
+    """Each expectation as (count, of): documents recall and precision over the documents
+    expected and listed (micro), and per item; clarify asked with the right choices when
+    expected, and asked when not (the bar wants it low); figure, no_total (items with no
+    violation), soft_not_found and clarify_turns per item."""
+    docs = [s.documents for s in scored if s.documents is not None]
+
+    def rate(name: str) -> tuple[int, int]:
+        marks = [s.passed()[name] for s in scored if name in s.passed()]
+        return (sum(marks), len(marks))
+
+    expected = [s for s in scored if s.clarify_expected]
+    unexpected = [s for s in scored if s.clarify_expected is False]
+    return {
+        "documents_recall": (sum(d[0] for d in docs), sum(d[1] for d in docs)),
+        "documents_precision": (sum(d[0] for d in docs), sum(d[2] for d in docs)),
+        "documents": rate("documents"),
+        "clarify_asked": (sum(s.asked and s.choices_right for s in expected), len(expected)),
+        "clarify_unneeded": (sum(s.asked for s in unexpected), len(unexpected)),
+        "figure": rate("figure"),
+        "no_total": rate("no_total"),
+        "soft_not_found": rate("soft_not_found"),
+        "clarify_turns": rate("clarify_turns"),
+    }
+
+
+def opening_problems(openings: Sequence[str | None], asker: str) -> list[str]:
+    """One chat's openings, reply by reply (None: it has none). PRD 6: the first names the
+    asker; none is repeated, over 12 words or holds an emoji."""
+    found = (
+        [] if openings and openings[0] and phrase_in(asker, openings[0]) else ["no name on the first reply"]
+    )
+    seen: set[str] = set()
+    for n, text in enumerate(openings, start=1):
+        key = " ".join((text or "").casefold().split())
+        found += [f"reply {n} repeats an opening"] if key and key in seen else []
+        found += [f"reply {n}'s opening is over 12 words"] if len(key.split()) > 12 else []
+        found += [f"reply {n}'s opening has an emoji"] if any(ord(ch) > 0xFFFF for ch in key) else []
+        seen.add(key)
+    return found
