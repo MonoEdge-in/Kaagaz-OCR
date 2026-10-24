@@ -654,21 +654,44 @@
   min-width: 0;
 }
 
+/* PRD 6 B2: a clarifying question's choices, chips of their own (never .btn): a wrapping row,
+   each as wide as its words up to the card, long names wrapping inside it. */
+.choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  border: 0;
+}
+
+.choices legend {
+  margin-bottom: var(--space-2);
+  padding: 0;
+}
+
 .chip {
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
   flex: 0 1 auto;
+  min-width: 0;
   max-width: 100%;
-  min-height: var(--h-md);
+  min-height: var(--control-h); /* 44px on touch */
   padding: var(--space-1) var(--space-3);
   border: 1px solid var(--border-strong);
   border-radius: 2px;
+  background: var(--surface);
   color: var(--fg);
   font: inherit;
   font-size: var(--fs-sm);
+  line-height: 1.25;
+  text-align: start;
+  text-transform: none;
   overflow-wrap: break-word;
   text-decoration: none;
+  cursor: pointer;
 }
 
 .chip:hover {
@@ -679,10 +702,44 @@
   flex: none;
 }
 
-@media (pointer: coarse) {
-  .chip {
-    min-height: var(--h-lg); /* 44px */
-  }
+.chip[aria-disabled="true"],
+.choices[aria-disabled="true"] .chip {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.chipText {
+  min-width: 0;
+  overflow-wrap: break-word;
+}
+
+.chipDetail {
+  color: var(--fg-muted);
+}
+
+/* The composer while a clarifying question is open: "Answering: … · Ask something else". */
+.answering {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1);
+  min-width: 0;
+  margin: 0;
+  padding-inline: var(--space-4);
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+}
+
+/* One control tall: --control-h is 44px on touch. */
+.answeringLeave {
+  min-height: var(--control-h);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
 }
 
 /* Pending: a skeleton card while the answer is worked out. */

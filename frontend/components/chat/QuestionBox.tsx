@@ -39,9 +39,12 @@ export function QuestionBox({
   texts,
   tools,
   settings,
+  answering,
 }: {
   pending: boolean;
   texts: ModeTexts;
+  /** PRD 6 B2: the open clarifying question the box answers, and how to ask something else instead. */
+  answering?: { question: string; onLeave: () => void } | null;
   tools?: ReactNode; // the toolbar's left: the mode and scope chips
   settings?: ReactNode; // beside Send: the answer settings
   /** Why the last question could not be sent, or null. */
@@ -121,6 +124,15 @@ export function QuestionBox({
             Try again
           </button>
         </div>
+      ) : null}
+      {answering ? (
+        <p className={styles.answering}>
+          <span className={styles.chipText}>Answering: {answering.question}</span>
+          <span aria-hidden="true">·</span>
+          <button type="button" className={styles.answeringLeave} onClick={answering.onLeave}>
+            Ask something else
+          </button>
+        </p>
       ) : null}
       <label htmlFor={INPUT_ID} className="visually-hidden">
         {texts.label}

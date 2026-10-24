@@ -51,6 +51,27 @@ def test_b_is_never_offered_as_names_or_places_even_identical_ones(db: Database)
     assert len(vocabulary.candidates(a, [Entity("property", "")])[0]) == 2
 
 
+def test_a_confirmed_spelling_and_a_districts_places_are_one_companys_own(db: Database) -> None:  # B2
+    approve = (
+        "INSERT INTO organization_word_suggestions (customer_id, submitted_by, word, word_fold, meaning,"
+        " meaning_fold, status, decided_by, decided_at) VALUES (:c, :u, 'Puny', 'puny', 'Pune', 'pune',"
+        " 'approved', :u, now())"
+    )
+    companies = [company(db, ("place", "Pune"), ("place", "Maval")) for _ in range(2)]
+    (a, a_document), (b, _) = companies
+    with db.customer(a) as conn:
+        user = conn.execute(text("SELECT id FROM users LIMIT 1")).scalar_one()
+        conn.execute(text(approve), {"c": a, "u": user})  # A confirms "Puny" as Pune
+        insert_key(conn, a, a_document, "place", "Pune", "district")
+    vocabulary = PgVocabulary(db)
+
+    (a_places,), (b_places,) = (vocabulary.candidates(c, [Entity("place", "Puny")]) for c in (a, b))
+
+    assert (outcome(ASKED[1], a_places)[0], outcome(ASKED[1], b_places)[0]) == ("one", "close")
+    assert [(e.label, e.documents) for e in vocabulary.near(a, ["pune"])] == [("Maval", (a_document,))]
+    assert vocabulary.near(b, ["pune"]) == []  # B prints no district: never A's places
+
+
 def test_a_pick_moved_to_trash_since_is_dropped_when_it_is_answered(db: Database) -> None:
     customer, document = company(db, ("place", "Pune"))
     pending = Pending("Land in Puny?", "place", "Puny", (), (), 1, ("Pune",))

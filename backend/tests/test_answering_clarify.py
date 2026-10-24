@@ -27,19 +27,26 @@ def plan(people: Sequence[str] = (), places: Sequence[str] = (), missing: Sequen
     return {"asks": "documents", "people": named, "places": [*places], "period": "", "missing": [*missing]}
 
 
-def entry(kind: str, printed: str) -> Entry:
-    return Entry(kind, latin_key(printed), printed, ("d1",))
+def entry(kind: str, printed: str, aliased: bool = False) -> Entry:
+    return Entry(kind, latin_key(printed), printed, ("d1",), aliased)
 
 
 class FakeVocabulary:
-    """Every entry of the kind is a candidate, in the list's order (the statement's)."""
+    """Every entry of the kind is a candidate, in the list's order (the statement's); ``nearby``
+    are the places in the districts asked about."""
 
     def __init__(self, *entries: Entry) -> None:
         self.entries, self.calls = list(entries), 0
+        self.nearby: list[Entry] = []
+        self.districts: list[str] = []
 
     def candidates(self, customer_id: str, entities: Sequence[Entity]) -> list[list[Entry]]:
         self.calls += 1
         return [[e for e in self.entries if e.kind == entity.kind] for entity in entities]
+
+    def near(self, customer_id: str, districts: Sequence[str]) -> list[Entry]:
+        self.districts = sorted(districts)
+        return self.nearby
 
 
 class PlanModel(FakeModel):
@@ -129,6 +136,52 @@ def test_the_tiers(kind: Kind, typed: str, printed: list[str], expected: str) ->
 
 def test_a_swap_is_one_edit_and_the_distance_stops_at_its_bound() -> None:
     assert (distance("krishna", "krihsna", 2), distance("abcdefgh", "a", 2)) == (1, 3)
+
+
+def test_a_confirmed_spelling_matches_and_only_a_did_you_mean_pick_confirms_one() -> None:  # B2
+    assert outcome(Entity("place", "Puny"), [entry("place", "Pune", aliased=True)])[0] == "one"
+    assert asked(PUNY, plan(places=["Puny"]), entry("place", "Pune"))["resume"]["confirm"] is True
+    people = (entry("person", "Nikhil Varde"), entry("person", "Nikhil Desai"))
+    assert asked("Land of Nikhil?", plan(people=["Nikhil"]), *people)["resume"]["confirm"] is False
+
+
+def test_places_are_picked_several_at_once_or_all_of_these() -> None:  # B2
+    camps = (entry("place", "Pune City"), entry("place", "Pune Camp"))
+    stored = asked("Land in Pune?", plan(places=["Pune"]), *camps)
+    shown = stored["clarify"]
+    assert (shown["multi"], [c["kind"] for c in shown["choices"]]) == (True, ["pick", "pick", "all", "other"])
+    assert [c["label"] for c in shown["choices"][2:]] == ["All of these", "Something else"]
+    every, both = reply_to(stored, ["all"]), reply_to(stored, ["c2", "c1"])
+    assert every is not None and every.picked == ("Pune City", "Pune Camp")
+    assert both is not None and both.picked == ("Pune Camp", "Pune City")
+    missing = asked("Which land is mine?", plan(missing=["place"]), *camps)["clarify"]
+    assert (missing["question"], missing["multi"]) == ("Which places should I look in?", True)
+
+
+def test_between_two_places_offers_the_places_of_their_districts() -> None:  # decision 11
+    question = "Land owned by Nikhil between Pune and Mumbai?"
+    model = PlanModel(question, plan(people=["Nikhil"], places=["Pune", "Mumbai"]))
+    places = [entry("place", "Maval"), entry("place", "Panvel")]
+    answers, _, vocabulary = service(model, entry("person", "Nikhil Varde"), *places)
+    vocabulary.nearby = places
+
+    between = answers.answer(A, question).to_json()
+
+    words = '"Between Pune and Mumbai" could cover a few places in your documents. Which should I look in?'
+    assert (between["clarify"]["question"], between["clarify"]["multi"]) == (words, True)
+    assert vocabulary.districts == ["mumbai", "pune"]
+    picked = reply_to(between, ["c1", "c2"])
+    answered = answers.answer(A, "", pending=picked).to_json()
+    assert answered["rewritten_question"] == "Land owned by Nikhil Varde in Maval and Panvel?"
+
+
+def test_words_typed_instead_of_a_pick_are_checked_as_a_name() -> None:  # B2
+    model = PlanModel(PUNY, plan(places=["Puny"]))
+    answers = service(model, entry("place", "Pune"), entry("place", "Pimpri"))[0]
+    typed = reply_to(answers.answer(A, PUNY).to_json(), [], "pimpri")
+    assert typed is not None and (typed.typed, typed.picked) == ("pimpri", ())
+    answered = answers.answer(A, "", pending=typed).to_json()
+    assert answered["rewritten_question"] == "Tell me the property owned in pimpri"
 
 
 def test_puny_asks_did_you_mean_pune_and_the_pick_answers_with_no_second_rewrite() -> None:
