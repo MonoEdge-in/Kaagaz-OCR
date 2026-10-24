@@ -28,7 +28,9 @@
   padding: var(--space-6) var(--space-3) var(--space-6) var(--space-4);
   /* Its own surface, a rounded card on the ground like the Documents panels, so it never runs
      into the thread (SoW 19 Oct; Tushar, 24 Oct 2026: "round the edges"). */
-  margin: var(--space-3) 0 var(--space-3) var(--space-3);
+  /* Its left edge lines up with the top bar's search (Shell.module.css .header: 40px from
+     1024px, the only width the pane shows at). Tushar, 24 Oct 2026: "this alignment also". */
+  margin: var(--space-3) 0 var(--space-3) 40px;
   background: var(--k-surface);
   border: 1px solid var(--k-card-edge);
   border-radius: var(--k-r-4);
@@ -70,7 +72,7 @@
   .screen {
     grid-template-areas: "pane thread";
     grid-template-rows: minmax(0, 1fr);
-    grid-template-columns: 292px minmax(0, 1fr); /* 280px of card, and its 12px margin */
+    grid-template-columns: 320px minmax(0, 1fr); /* 280px of card, and its 40px margin */
   }
 
   .pane {
