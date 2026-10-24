@@ -90,6 +90,11 @@
   --mine-on-paper: #204494; /* my words markers: pages are paper white in both themes */
   --illegible-on-paper: #9e2219; /* PRD 5 U3 (V8): "couldn't read" marks, the same in dark */
   --words-on-paper: #1b7a4b; /* package H: the lines holding your words, the light --success, the same in dark */
+  /* 24 Oct 2026: each further word its own highlighter, paper-fixed too, each at least 4.5:1 on white,
+     never the blue of the cited spot or My words. */
+  --words-on-paper-2: #a35c00;
+  --words-on-paper-3: #6a3fb5;
+  --words-on-paper-4: #b0285c;
 
   /* The select's caret in --text-muted (an image cannot read a token). */
   --select-caret: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2 4l4 4 4-4' fill='none' stroke='%23646B74' stroke-width='1.5'/%3E%3C/svg%3E");

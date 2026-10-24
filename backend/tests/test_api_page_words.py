@@ -80,7 +80,15 @@ def test_every_pages_lines_holding_the_words_and_every_page_with_one(db: Databas
 
     # Latin and Devanagari: "krishna" lights कृष्ण on page 2; page 3 holds none.
     found = words(signed, deed, "krishna", "maval")
-    assert found == {"boxes": [box(1, 0.2), box(1, 0.5), box(2, 0.1)], "pages": [1, 2]}
+    assert found["boxes"] == [box(1, 0.2), box(1, 0.5), box(2, 0.1)]
+    assert found["pages"] == [1, 2]
+    # Changed on purpose (24 Oct 2026): which word lit each line (its colour), and each word's
+    # lines and pages; the asker's own words come back, never the document's text.
+    assert found["hits"] == [0, 1, 0]
+    assert found["found"] == [
+        {"word": "krishna", "lines": 2, "pages": [1, 2]},
+        {"word": "maval", "lines": 1, "pages": [1]},
+    ]
 
 
 @pytest.mark.parametrize(
@@ -107,7 +115,7 @@ def test_more_than_eight_words_is_refused_and_no_words_light_nothing(db: Databas
     deed = sale_deed(api, signed.customer_id)
     nine = "&".join(f"w=word{n}" for n in range(9))
     assert signed.client.get(f"/api/documents/{deed}/words?{nine}").status_code == 400
-    assert words(signed, deed, "the", "kiti") == {"boxes": [], "pages": []}
+    assert words(signed, deed, "the", "kiti") == {"boxes": [], "hits": [], "pages": [], "found": []}
 
 
 @pytest.mark.parametrize(

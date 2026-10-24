@@ -436,6 +436,7 @@ export function DocumentView({
   };
   const panel = { detail, active: selection?.region ?? null, onShow: showSpot };
   const wordBoxes = wordsOn && wordsFound ? wordsFound.boxes : NO_REGIONS;
+  const wordHits = wordsFound?.hits ?? NO_HITS;
 
   const pagesText =
     detail.page_count !== null
@@ -697,6 +698,7 @@ export function DocumentView({
                 activeFlag={reviewing ? currentFlag : null}
                 onFlag={startReview}
                 wordBoxes={wordBoxes}
+                wordHits={wordHits}
               />
             </div>
           ) : page ? (
@@ -718,6 +720,7 @@ export function DocumentView({
               activeFlag={reviewing ? currentFlag : null}
               onFlag={startReview}
               wordBoxes={wordBoxes}
+              wordHits={wordHits}
             />
           ) : (
             <p className={styles.noPages}>No pages to show yet.</p>
@@ -1237,3 +1240,4 @@ function useDocumentWords(documentId: string, words: readonly string[], version:
 }
 
 const NO_REGIONS: Region[] = [];
+const NO_HITS: number[] = [];

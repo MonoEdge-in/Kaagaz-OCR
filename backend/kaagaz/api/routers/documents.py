@@ -1383,10 +1383,12 @@ def get_document_words(
 ) -> dict[str, Any]:
     """Your words on the page (package H): the regions of the document's lines that hold the
     words (``w``, at most 8, cleaned by ``page_words.clean_words``; at most
-    ``page_words.MAX_BOXES``), and every page with such a line. Asked once a document and
+    ``page_words.MAX_BOXES``), which word lit each, every page with such a line, and each
+    word's lines and pages (``page_words.word_finds``). Asked once a document and
     words: the viewer keeps it while its pages change. Who may ask is who may see the page
     image: another customer's id and a rejected file are 404, a family in Trash 409
-    ``in_trash`` (T1). Regions and page numbers only, never text. One statement."""
+    ``in_trash`` (T1). Regions, page numbers and the asker's own words only, never the
+    document's text. One statement."""
     words = page_words.clean_words(w or [])
     with context.db.customer(user.customer_id) as conn:
         found = listing.word_lines(conn, user.customer_id, str(document_id))
@@ -1397,8 +1399,7 @@ def get_document_words(
         raise ApiError(409, "in_trash", "This document is in the Trash. Restore it first.")
     if status == "rejected":
         raise ApiError(404, "not_found")
-    boxes, pages = page_words.word_regions(pieces, words)
-    return {"boxes": boxes, "pages": pages}
+    return page_words.word_finds(pieces, words)
 
 
 @router.get("/documents/{document_id}/pages/{page_no}/cells")

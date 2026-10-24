@@ -28,10 +28,12 @@ import { fileUrl } from "@/lib/api";
 import type { ReadingMark, Region, WordFlag } from "@/lib/types";
 import { markName, marksOnPage } from "./readingMarks";
 import styles from "./PageViewer.module.css";
+import { wordColour } from "./YourWords";
 
 /** How long a scroll the screen asked for takes to settle (a smooth scroll across pages). */
 const STEERING_MS = 1000;
 const NO_WORDS: Region[] = []; // a stable default, so the overlay is not made again each render
+const NO_HITS: number[] = [];
 
 export interface PdfDocumentViewerProps {
   document: { id: string; display_name: string };
@@ -54,6 +56,8 @@ export interface PdfDocumentViewerProps {
   onFlag?: (flag: WordFlag) => void;
   /** Package H: the lines holding your words, drawn under the spot. */
   wordBoxes?: Region[];
+  /** For each of wordBoxes, its word: the colour it is drawn in. */
+  wordHits?: readonly number[];
 }
 
 /**
@@ -106,6 +110,7 @@ export function PdfDocumentViewer({
   activeFlag = null,
   onFlag,
   wordBoxes = NO_WORDS,
+  wordHits = NO_HITS,
 }: PdfDocumentViewerProps) {
   const viewer = useRef<PDFViewerHandle>(null);
   const [showHighlights, setShowHighlights] = useState(true);
@@ -157,7 +162,13 @@ export function PdfDocumentViewer({
           {showHighlights &&
             wordBoxes.map((region, index) =>
               region.kind === "box" && region.page === pageNumber ? (
-                <div key={`word-${index}`} className={styles.word} aria-hidden="true" style={place(region.box)} />
+                <div
+                  key={`word-${index}`}
+                  className={styles.word}
+                  data-word={wordColour(wordHits[index])}
+                  aria-hidden="true"
+                  style={place(region.box)}
+                />
               ) : null,
             )}
           {showHighlights &&
@@ -222,7 +233,7 @@ export function PdfDocumentViewer({
         </>
       );
     },
-    [showHighlights, wordBoxes, highlights, marks, activeMark, flags, activeFlag, onFlag, readingMarks, hotMark, onHotMark, onMark],
+    [showHighlights, wordBoxes, wordHits, highlights, marks, activeMark, flags, activeFlag, onFlag, readingMarks, hotMark, onHotMark, onMark],
   );
 
   return (

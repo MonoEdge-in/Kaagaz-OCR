@@ -21,7 +21,10 @@ import {
   YourWords,
   loadDocumentWords,
   nextWordsPage,
-  wordsNoteText,
+  WORDS_HEADING,
+  pagesText,
+  wordColour,
+  wordWhereText,
 } from "@/components/viewer/YourWords";
 import type { Answer, Citation, DocumentWords, FoundDocument } from "@/lib/types";
 
@@ -142,7 +145,17 @@ describe("a link into the viewer carries the asker's words", () => {
 describe("under the page: the note, the toggle and the next page", () => {
   const on = (page: number) => ({ kind: "box" as const, page, box: [0.1, 0.2, 0.9, 0.25] as [number, number, number, number] });
   const box = on(2);
-  const found = (boxes: DocumentWords["boxes"], pages: number[]): DocumentWords => ({ boxes, pages });
+  // Changed on purpose (24 Oct 2026): the server says which word lit each line and where each
+  // word is; the legend under the page shows them (the old one-line note is gone).
+  const found = (boxes: DocumentWords["boxes"], pages: number[], hits: number[] = boxes.map(() => 0)): DocumentWords => ({
+    boxes,
+    pages,
+    hits,
+    found: [
+      { word: "krishna", lines: hits.filter((hit) => hit === 0).length, pages: [...new Set(boxes.filter((_, i) => hits[i] === 0).map((b) => b.page))] },
+      { word: "maval", lines: hits.filter((hit) => hit === 1).length, pages: [...new Set(boxes.filter((_, i) => hits[i] === 1).map((b) => b.page))] },
+    ],
+  });
   const render = (props: Partial<Parameters<typeof YourWords>[0]>) =>
     renderToStaticMarkup(
       createElement(YourWords, {
@@ -158,23 +171,25 @@ describe("under the page: the note, the toggle and the next page", () => {
 
   it("says which words are lit, with a pressed toggle and the next page with them", () => {
     const html = render({});
-    expect(text(html)).toContain("Highlighted: your words (krishna, maval) on this page");
-    expect(wordsNoteText(["krishna"])).toBe("Highlighted: your words (krishna) on this page");
+    expect(text(html)).toContain(WORDS_HEADING);
+    expect(text(html)).toContain("krishna 1 line on this page");
+    expect(text(html)).toContain("maval not in this document");
     expect(html).toMatch(new RegExp(`<button type="button" class="[^"]*wordChip[^"]*" aria-pressed="true">[\\s\\S]*?${SHOW_WORDS}</button>`));
     expect(text(html)).toContain(NEXT_WORDS_PAGE);
   });
 
   it("turned off: no note, the toggle not pressed", () => {
     const html = render({ on: false });
-    expect(text(html)).not.toContain("Highlighted: your words");
+    expect(text(html)).not.toContain(WORDS_HEADING);
     expect(html).toContain('aria-pressed="false"');
   });
 
   it("shows nothing extra on a page with no match, only the way to one that has", () => {
-    expect(render({ found: found([], []) })).toBe("");
+    // Changed on purpose (24 Oct 2026): words in no line are said plainly, not left unexplained.
+    expect(text(render({ found: found([], []) }))).toContain("krishna not in this document");
     expect(render({ words: [] })).toBe("");
     const elsewhere = render({ found: found([on(5)], [5]) });
-    expect(text(elsewhere)).not.toContain("Highlighted");
+    expect(text(elsewhere)).toContain("krishna on page 5");
     expect(elsewhere).not.toContain(SHOW_WORDS);
     expect(text(elsewhere)).toContain(NEXT_WORDS_PAGE);
     expect([nextWordsPage([1, 2, 5], 2), nextWordsPage([1, 2], 2), nextWordsPage([2], 2)]).toEqual([5, 1, null]);
@@ -194,13 +209,56 @@ describe("under the page: the note, the toggle and the next page", () => {
   });
 
   it("marks Devanagari words as Marathi", () => {
-    expect(render({ words: ["कृष्ण", "maval"] })).toContain('<span lang="mr">कृष्ण</span>');
+    const marathi = found([box], [2]);
+    marathi.found = [{ word: "कृष्ण", lines: 1, pages: [2] }];
+    expect(render({ words: ["कृष्ण", "maval"], found: marathi })).toContain('<span lang="mr">कृष्ण</span>');
   });
 
   it("counts a sheet's lit cells as on the page, so a spreadsheet gets the note and toggle", () => {
     const html = render({ found: found([{ kind: "cell", page: 2, row: 3, column: 2 }], [2]) });
-    expect(text(html)).toContain("Highlighted: your words (krishna, maval) on this page");
+    expect(text(html)).toContain("krishna 1 line on this page");
     expect(text(html)).toContain(SHOW_WORDS);
+  });
+
+  it("colours each word, and says where each one is, with a jump to its page", () => {
+    const html = render({ found: found([on(2), on(5), on(7)], [2, 5, 7], [0, 0, 1]), pageNo: 2 });
+    expect(html.match(/data-word="0"/g)).toHaveLength(1);
+    expect(html.match(/data-word="1"/g)).toHaveLength(1);
+    expect(text(html)).toContain("krishna 1 line on this page");
+    expect(text(html)).toContain("maval on page 7");
+    // Next goes to page 5; maval's own jump goes further, to 7 (never two buttons to one page).
+    expect(html).toMatch(/<button type="button" class="[^"]*legendJump[^"]*">Page 7<span class="visually-hidden">, where maval is<\/span><\/button>/);
+    expect([wordColour(undefined), wordColour(0), wordColour(5)]).toEqual(["0", "0", "1"]);
+    expect([pagesText([3]), pagesText([3, 5]), pagesText([2, 5, 7, 9]), pagesText([1, 2, 3, 4, 5, 6])]).toEqual([
+      "page 3",
+      "pages 3 and 5",
+      "pages 2, 5, 7 and 9",
+      "pages 1, 2, 3 and 3 more",
+    ]);
+    expect(wordWhereText({ word: "x", lines: 0, pages: [] }, 0)).toBe("not in this document");
+    expect(wordWhereText({ word: "x", lines: 3, pages: [1] }, 2)).toBe("2 lines on this page");
+  });
+
+  it("draws each word's lines in its own paper colour, sweeping in only where motion is welcome", () => {
+    const css = read("components/viewer/PageViewer.module.css").replace(/\/\*[\s\S]*?\*\//g, "");
+    for (const [n, token] of [["1", "2"], ["2", "3"], ["3", "4"]]) {
+      expect(css).toContain(`.word[data-word="${n}"],\n.wordSwatch[data-word="${n}"] {\n  background: color-mix(in srgb, var(--words-on-paper-${token}) 14%, transparent);`);
+    }
+    const calm = css.slice(css.indexOf("@media (prefers-reduced-motion: no-preference)"));
+    expect(calm).toMatch(/\.word \{\s*animation: word-sweep var\(--motion-calm\) var\(--ease-out\) both;/);
+    const globals = read("app/globals.css");
+    for (const hex of ["a35c00", "6a3fb5", "b0285c"]) {
+      const channel = (part: string) => {
+        const value = parseInt(part, 16) / 255;
+        return value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+      };
+      const ink = 0.2126 * channel(hex.slice(0, 2)) + 0.7152 * channel(hex.slice(2, 4)) + 0.0722 * channel(hex.slice(4));
+      expect(globals).toContain(`#${hex};`);
+      expect((1 + 0.05) / (ink + 0.05)).toBeGreaterThanOrEqual(4.5); // readable against the white page
+    }
+    for (const file of ["components/viewer/PageViewer.tsx", "components/viewer/PdfDocumentViewer.tsx"]) {
+      expect(read(file)).toContain("data-word={wordColour(wordHits[index])}");
+    }
   });
 });
 
