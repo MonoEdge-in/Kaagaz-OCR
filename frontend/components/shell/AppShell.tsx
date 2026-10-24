@@ -32,6 +32,7 @@ import { currentPageName, isCurrent, isSearchShortcut, navLinks, reviewCountText
 import { ShellMenu } from "./ShellMenu";
 import { StatusBarSlot } from "./StatusBar";
 import { SHELL_UPLOAD_INPUT_ID, UploadsProvider } from "./Uploads";
+import { ClockPeek } from "./ClockPeek";
 import { Wordmark } from "./Wordmark";
 import styles from "./Shell.module.css";
 
@@ -155,6 +156,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         <div className={styles.sidebar}>
           <div className={styles.brand}>
             <Wordmark href="/dashboard" />
+            <ClockPeek />
           </div>
           {menu}
           <div className={styles.sideFoot}>
