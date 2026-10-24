@@ -2,7 +2,6 @@
 // and the small pure functions behind it (tests/file-management.test.ts).
 
 import { formatNumber } from "@/lib/format";
-import type { DocType } from "@/lib/types";
 
 export const DASHBOARD_TEXT = {
   title: "Home",
@@ -38,7 +37,12 @@ export const DASHBOARD_TEXT = {
   ask: "Ask",
   // Home made clear (24 Oct 2026): what the page is for, then one card per next step.
   lead: "Ask anything about your documents, or start with one of the steps below.",
-  tryThese: "Try",
+  yourQuestions: "Your usual questions",
+  questionsToTry: "Questions to try",
+  questionsLine: "Their answers wait ready, so they open at once.",
+  questionsEmpty: "Upload your first documents, and questions about them show here.",
+  ready: "Ready",
+  readying: "Getting ready",
   steps: "What you can do",
   checkLine: "The AI was not fully sure about these. A quick look makes every answer that uses them trusted.",
   checkClear: "Every value has been checked. New ones show here.",
@@ -68,22 +72,6 @@ export function todayLine(now: Date, organisation: string): string {
   const day = new Intl.DateTimeFormat("en-IN", { weekday: "long", timeZone: "Asia/Kolkata" }).format(now);
   const date = new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "short", year: "numeric", timeZone: "Asia/Kolkata" }).format(now);
   return `${day} · ${date} · ${organisation}`;
-}
-
-// Questions across all the documents, by the kinds the library holds most of (no AI makes them).
-const SUGGESTIONS: Partial<Record<DocType, string>> = {
-  invoice: "Which invoice had the largest total last month?",
-  bank_statement: "What were the bank charges last month?",
-  contract: "Which agreements end in the next three months?",
-  land_record: "Who are the owners named in the land records?",
-  receipt: "How much did we pay to each party this month?",
-  register: "Which register entry has the largest amount?",
-};
-/** Up to three questions to ask with one press, for the most common kinds first. Only questions
- * about what documents say: Ask cannot tell when a document came (Recent documents shows that). */
-export function suggestedQuestions(types: readonly { doc_type: DocType | null }[]): string[] {
-  const picked = types.map((row) => (row.doc_type ? SUGGESTIONS[row.doc_type] : undefined)).filter((q): q is string => !!q);
-  return [...new Set(picked)].slice(0, 3);
 }
 
 /** "pdf" from "Rent Agreement.pdf"; "DOC" when the name has none. Upper case, at most 4 letters. */

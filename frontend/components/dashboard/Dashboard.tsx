@@ -29,10 +29,10 @@ import { useSharedUploads } from "@/components/shell/Uploads";
 import { Icon } from "@/components/ui/Icon/Icon";
 import type { KIconName } from "@/components/ui/Icon/Icon";
 import { LabelChip } from "@/components/ui/LabelChip/LabelChip";
-import { ApiError, getDashboard, listFolders, listReview } from "@/lib/api";
+import { ApiError, getDashboard, getReadyQuestions, listFolders, listReview } from "@/lib/api";
 import { docTypeLabel, formatDateTime, formatNumber, formatRelative } from "@/lib/format";
 import { useSession } from "@/lib/session";
-import type { ActivityEntry, Dashboard as DashboardData, Folder } from "@/lib/types";
+import type { ActivityEntry, Dashboard as DashboardData, Folder, ReadyQuestion } from "@/lib/types";
 import {
   DASHBOARD_TEXT,
   barShares,
@@ -41,7 +41,6 @@ import {
   extensionOf,
   filesText,
   greeting,
-  suggestedQuestions,
   thisWeekText,
   todayLine,
 } from "./words";
@@ -59,6 +58,7 @@ export function Dashboard() {
   const [reviewTotal, setReviewTotal] = useState<number | null>(null);
   const [department, setDepartment] = useState<string | null | undefined>(undefined);
   const [question, setQuestion] = useState("");
+  const [questions, setQuestions] = useState<ReadyQuestion[] | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const { uploads, setTrayOpen } = useSharedUploads(() => setAttempt((n) => n + 1));
   const departments = useMemo(() => departmentsOf(folders), [folders]);
@@ -95,6 +95,29 @@ export function Dashboard() {
     };
   }, [attempt, reviewer]);
 
+  // Home's questions; their answers are made just after the first reply, so one more look
+  // a little later shows them ready (READY_AGAIN_MS).
+  useEffect(() => {
+    let cancelled = false;
+    let again: number | undefined;
+    const load = (last: boolean) =>
+      getReadyQuestions().then(
+        (reply) => {
+          if (cancelled) return;
+          setQuestions(reply.items);
+          if (!last && reply.items.some((item) => !item.ready)) again = window.setTimeout(() => void load(true), READY_AGAIN_MS);
+        },
+        () => {
+          if (!cancelled) setQuestions([]); // the card says what to do instead
+        },
+      );
+    void load(false);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(again);
+    };
+  }, []);
+
   function onChoose(event: ChangeEvent<HTMLInputElement>) {
     const files = Array.from(event.target.files ?? []);
     event.target.value = "";
@@ -114,11 +137,10 @@ export function Dashboard() {
     if (text) router.push(askHref(text));
   }
 
-  const suggestions = data ? suggestedQuestions(data.by_type) : [];
-
   return (
     <div className={`page ${styles.page}`}>
-      <section className={`k-dotfield ${styles.welcome}`} aria-labelledby="home-greeting">
+      <div className={`k-dotfield ${styles.hero}`}>
+      <section className={styles.welcome} aria-labelledby="home-greeting">
         <p className={styles.today}>{todayLine(new Date(), me.customer.name)}</p>
         <h1 id="home-greeting" className={`k-display ${styles.greeting}`}>
           {greeting(me.user.display_name, new Date().getHours())}
@@ -144,17 +166,9 @@ export function Dashboard() {
             <Icon name="external" size="sm" />
           </button>
         </form>
-        {suggestions.length > 0 && (
-          <div className={`k-chip-row ${styles.tryRow}`}>
-            <span className={styles.tryLabel}>{DASHBOARD_TEXT.tryThese}</span>
-            {suggestions.map((text) => (
-              <Link key={text} className="k-suggest" href={askHref(text)}>
-                {text}
-              </Link>
-            ))}
-          </div>
-        )}
       </section>
+      <QuestionsCard questions={questions} />
+      </div>
 
       <HomeActions
         reviewer={reviewer}
@@ -199,6 +213,47 @@ export function Dashboard() {
       )}
       {loaded !== null && <DashboardBody data={loaded.data} now={loaded.at} />}
     </div>
+  );
+}
+
+/** One more look for ready answers, this long after Home's questions first came. */
+export const READY_AGAIN_MS = 12_000;
+
+/** Beside the welcome (24 Oct 2026): this person's usual questions, else ones that suit their
+ * library, each a link to Ask; "Ready" when its answer waits made, so it opens at once.
+ * ``null`` while they load. Exported for the render test. */
+export function QuestionsCard({ questions }: { questions: ReadyQuestion[] | null }) {
+  const yours = questions?.some((item) => item.yours) ?? false;
+  return (
+    <section className={styles.questions} aria-labelledby="home-questions">
+      <h2 id="home-questions" className={styles.questionsTitle}>
+        {yours ? DASHBOARD_TEXT.yourQuestions : DASHBOARD_TEXT.questionsToTry}
+      </h2>
+      {questions !== null && questions.length === 0 ? (
+        <p className={styles.questionsLine}>{DASHBOARD_TEXT.questionsEmpty}</p>
+      ) : (
+        <>
+          <p className={styles.questionsLine}>{DASHBOARD_TEXT.questionsLine}</p>
+          <ul className={styles.questionList}>
+            {(questions ?? []).map((item, index) => (
+              <li key={item.text} style={{ "--i": index } as CSSProperties}>
+                <Link className={styles.question} href={askHref(item.text)}>
+                  <span className={styles.questionText}>{item.text}</span>
+                  {item.ready ? (
+                    <span className={styles.ready}>
+                      <Icon name="check-circle" size="sm" />
+                      {DASHBOARD_TEXT.ready}
+                    </span>
+                  ) : (
+                    <span className={styles.readying}>{DASHBOARD_TEXT.readying}</span>
+                  )}
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </section>
   );
 }
 

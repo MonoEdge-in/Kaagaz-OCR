@@ -208,7 +208,12 @@
 }
 
 /* The brand at the sidebar's head, the handoff's .k-brand. */
+/* The brand and, at its right, the clock that peeks (24 Oct 2026): one row, never wrapped. */
 .brand {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  min-width: 0;
   padding: 2px var(--space-2) 26px;
 }
 

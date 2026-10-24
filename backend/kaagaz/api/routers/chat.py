@@ -74,6 +74,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from kaagaz.ai.client import ModelOutputError, ModelUnavailable
 from kaagaz.ai.usage import usage_scope
+from kaagaz.answering import ready
 from kaagaz.answering.clarify import MAX_CHOICES, Pending, answers_clarify, latin_key, reply_to
 from kaagaz.answering.memory import NO_MEMORY, Memory, from_row, live
 from kaagaz.answering.pins import Pin
@@ -270,34 +271,21 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
             if chosen is None
             else resolve(conn, user.customer_id, chosen, timezone=context.settings.timezone)
         )
-        # Most relevant picks (answering/pins.py): the asker's own only, live documents only.
-        pins = [
-            Pin(row["document_id"], int(row["page_no"]), bool(row["same"]), str(row["question"]))
-            for row in chat_sql.pins_for(conn, user.customer_id, user.user_id, conversation_id)
-        ]
-        switched = ai_settings.switches(conn, user.customer_id)  # 0038, 0039; PRD 6's in 0052
-        if not switched["ask"]:
-            raise ApiError(403, "feature_off", FEATURE_OFF)
-        # What Kaagaz learned (PRD 6 F3, answering/pins.py): this customer's Useful and
-        # Wrong documents marks; lifts decides which apply to this question and to whom.
-        pins += [
-            Pin(
-                row["document_id"],
-                int(row["page_no"]),
-                False,
-                str(row["question"]),
-                kind="useful" if row["useful"] else "wrong",
-                user_id=str(row["user_id"]),
-                own=bool(row["own"]),
+        pins, switched, choice = _inputs(conn, user, context, conversation_id, body.agents, body.thinking)
+        # Home's questions (answering/ready.py): a fresh question about everything may have its
+        # answer ready, made with these same inputs from these same documents.
+        fresh = conversation_id is None and answering is None and chosen is None
+        ready_key = (
+            ready.key(
+                user.customer_id,
+                user.user_id,
+                question,
+                (pins, switched, choice),
+                ready.stamp(conn, user.customer_id),
             )
-            for row in chat_sql.learned_for(conn, user.customer_id, user.user_id)
-            if switched["nlq_learning"]
-        ]
-        try:
-            agents = _first_allowed(conn, user.customer_id, body.agents, context)
-            choice = _choice(conn, user, agents, body.thinking, context)
-        except AiNotAllowed as refused:
-            raise ApiError(403, refused.code, NOT_ALLOWED[refused.code]) from None
+            if fresh
+            else None
+        )
     saved = None if chosen is None else chosen.model_dump(mode="json")
     # json.dumps writes ", " and ": " as jsonb's text does, so this is the CHECK's length.
     if saved is not None and len(json.dumps(saved).encode()) > MAX_SCOPE_BYTES:
@@ -311,7 +299,8 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
         kind="chat",
         conversation_id=conversation_id,
     ) as spend:
-        reply = context.answers.answer(
+        kept = None if ready_key is None else ready.READY.get(ready_key)
+        reply = kept or context.answers.answer(
             user.customer_id,
             question,
             scope=scope,
@@ -381,11 +370,140 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
             if pending is not None:
                 _suggest(conn, user, pending)
         spend.conversation_id = conversation_id  # committed: the ledger row may name it
+    if fresh:
+        ready.SHOWN.used(user.customer_id, user.user_id, question)  # Home's list changes only now
     if summary_due(turns + 1, summary_turn, context.settings.chat_summary_every):
         background.add_task(
             _remember, context, user.customer_id, user.user_id, conversation_id, summary_turn, turns + 1
         )
     return {"conversation_id": conversation_id, "question": message(asked), "answer": message(answered)}
+
+
+def _inputs(
+    conn: Connection,
+    user: CurrentUser,
+    context: AppContext,
+    conversation_id: str | None,
+    agents: list[str] | None,
+    thinking: str | None,
+) -> tuple[list[Pin], dict[str, bool], ChatChoice]:
+    """What an answer is made with besides its question: the asker's picks and what Kaagaz
+    learned, the switches, and who drafts it. Ask off, or a model not allowed: ApiError."""
+    # Most relevant picks (answering/pins.py): the asker's own only, live documents only.
+    pins = [
+        Pin(row["document_id"], int(row["page_no"]), bool(row["same"]), str(row["question"]))
+        for row in chat_sql.pins_for(conn, user.customer_id, user.user_id, conversation_id)
+    ]
+    switched = ai_settings.switches(conn, user.customer_id)  # 0038, 0039; PRD 6's in 0052
+    if not switched["ask"]:
+        raise ApiError(403, "feature_off", FEATURE_OFF)
+    # What Kaagaz learned (PRD 6 F3, answering/pins.py): this customer's Useful and
+    # Wrong documents marks; lifts decides which apply to this question and to whom.
+    pins += [
+        Pin(
+            row["document_id"],
+            int(row["page_no"]),
+            False,
+            str(row["question"]),
+            kind="useful" if row["useful"] else "wrong",
+            user_id=str(row["user_id"]),
+            own=bool(row["own"]),
+        )
+        for row in chat_sql.learned_for(conn, user.customer_id, user.user_id)
+        if switched["nlq_learning"]
+    ]
+    try:
+        agents = _first_allowed(conn, user.customer_id, agents, context)
+        choice = _choice(conn, user, agents, thinking, context)
+    except AiNotAllowed as refused:
+        raise ApiError(403, refused.code, NOT_ALLOWED[refused.code]) from None
+    return pins, switched, choice
+
+
+# Home asks on Swift unless the asker kept Precision (components/chat/logic.ts defaultPick).
+READY_THINKING = "medium"
+Inputs = tuple[list[Pin], dict[str, bool], ChatChoice]
+
+
+def _home_inputs(conn: Connection, user: CurrentUser, context: AppContext) -> Inputs | None:
+    """``_inputs`` for a question asked from Home: Swift when allowed, else the
+    organisation's own level; None when this person cannot ask."""
+    for thinking in (READY_THINKING, None):
+        try:
+            return _inputs(conn, user, context, None, None, thinking)
+        except ApiError:
+            continue
+    return None
+
+
+@router.get("/chat/ready-questions")
+def ready_questions(user: User, context: Context, background: BackgroundTasks) -> dict[str, Any]:
+    """Home's questions for this person (answering/ready.py): ``{items: [{text, yours,
+    ready}]}``, their own most-asked first; any whose answer is not ready yet is made after
+    the reply, so a press a moment later answers at once."""
+    with context.db.customer(user.customer_id) as conn:
+        # The same questions on every visit until one is used (ready.ShownQuestions).
+        picked = ready.SHOWN.get(user.customer_id, user.user_id) or ready.questions(
+            conn, user.customer_id, user.user_id
+        )
+        inputs = _home_inputs(conn, user, context)
+        made_from = ready.stamp(conn, user.customer_id)
+    keys = (
+        {}
+        if inputs is None
+        else {q: ready.key(user.customer_id, user.user_id, q, inputs, made_from) for q, _ in picked}
+    )
+    ready.SHOWN.keep(user.customer_id, user.user_id, picked)
+    cold = [q for q, _ in picked if q in keys and ready.READY.claim(keys[q])]
+    if cold and inputs is not None:
+        background.add_task(_make_ready, context, user, cold, inputs, keys)
+    return {
+        "items": [
+            {
+                "text": q,
+                "yours": yours,
+                "ready": q in keys and q not in cold and ready.READY.get(keys[q]) is not None,
+            }
+            for q, yours in picked
+        ]
+    }
+
+
+def _make_ready(
+    context: AppContext,
+    user: CurrentUser,
+    asked: list[str],
+    inputs: Inputs,
+    keys: dict[str, tuple[str, ...]],
+) -> None:
+    """After the reply: each question's answer as Ask would make it fresh, kept when it
+    answered. It runs after the response is sent, so a failure is logged as its code only,
+    and the question is answered the usual way when pressed."""
+    pins, switched, choice = inputs
+    for question in asked:
+        try:
+            with usage_scope(context.db, customer_id=user.customer_id, user_id=user.user_id, kind="chat"):
+                reply = context.answers.answer(
+                    user.customer_id,
+                    question,
+                    scope=EVERYTHING,
+                    history=[],
+                    user_id=user.user_id,
+                    memory=NO_MEMORY,
+                    choice=choice,
+                    pins=pins,
+                    pending=None,
+                    clarify=switched["nlq_clarify"],
+                    cited=[],
+                )
+        except (SQLAlchemyError, BackendUnavailable, ModelUnavailable, ModelOutputError) as error:
+            logger.warning("ready answer not made", extra={"code": type(error).__name__})
+            ready.READY.release(keys[question])
+            continue
+        if reply.unavailable or reply.to_json().get("status") not in ("answered", "unchecked"):
+            ready.READY.release(keys[question])
+        else:
+            ready.READY.put(keys[question], reply)
 
 
 @router.get("/chat/options")

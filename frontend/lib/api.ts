@@ -21,6 +21,7 @@ import type {
   AnswerChoice,
   BatchView,
   Dashboard,
+  ReadyQuestion,
   DocumentCompare,
   DocumentQuestion,
   Person,
@@ -276,6 +277,8 @@ export const updateDocument = (
 
 /** D1, D2: the home screen in one request. */
 export const getDashboard = () => request<Dashboard>("GET", "/dashboard");
+/** Home's questions for this person, each with its answer ready or being made. */
+export const getReadyQuestions = () => request<{ items: ReadyQuestion[] }>("GET", "/chat/ready-questions");
 /** The company's active people, for the owner picker and the Owner filter. */
 export const listPeople = () => request<{ items: Person[] }>("GET", "/people");
 /** V6 Make it version N: the document joins the candidate's family, with an optional note (V9). */
