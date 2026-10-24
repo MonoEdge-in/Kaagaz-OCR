@@ -249,8 +249,17 @@ def outcome(entity: Entity, entries: Sequence[Entry]) -> tuple[str, tuple[Entry,
     return ("close", tuple(close)) if close else ("none", ())
 
 
-def first_step(vocabulary: Vocabulary, customer_id: str, question: str, plan: Plan, narrowed: bool) -> Step:
-    """Turn 1 for ``plan``; ``narrowed``: the scope narrows the question on its own."""
+def first_step(
+    vocabulary: Vocabulary,
+    customer_id: str,
+    question: str,
+    plan: Plan,
+    narrowed: bool,
+    cited: Sequence[str] = (),
+) -> Step:
+    """Turn 1 for ``plan``; ``narrowed``: the scope narrows the question on its own. A missing
+    subject offers the entries of the documents ``cited`` by the chat's earlier answers first
+    (newest turn first; asked only with no scope, so all in it), then the company's newest."""
     entities = [Entity("person", p.as_typed) for p in plan.people] + [Entity("place", p) for p in plan.places]
     between = _BETWEEN.search(question)
     ends = {end.casefold() for end in between.groups()} if between else set()
@@ -265,11 +274,25 @@ def first_step(vocabulary: Vocabulary, customer_id: str, question: str, plan: Pl
     missing = [] if entities or plan.period or narrowed else [k for k in MISSING if k in plan.missing]
     if not missing:
         return next_step(vocabulary, customer_id, question, entities, (), 1)
-    newest = vocabulary.candidates(customer_id, [Entity(kind, "") for kind in missing])
-    for kind, entries in zip(missing, newest, strict=True):
-        if found := [entry for entry in entries if usable(entry)][:MAX_CHOICES]:
+    asked_for = [Entity(kind, "") for kind in missing]
+    newest = vocabulary.candidates(customer_id, asked_for)
+    chats = vocabulary.within(cited).candidates(customer_id, asked_for) if cited else [[] for _ in missing]
+    for kind, chat, entries in zip(missing, chats, newest, strict=True):
+        if found := _chat_first(cited, chat, entries):
             return _asking(question, (), MISSING[kind], found, Entity(kind, ""), (), 1)
     return Step(question, ())
+
+
+def _chat_first(cited: Sequence[str], chat: Sequence[Entry], newest: Sequence[Entry]) -> list[Entry]:
+    """``chat``'s usable entries by the turn citing them (``cited``, newest first), then ``newest``'s,
+    once each, at most MAX_CHOICES."""
+    turn = {document: n for n, document in enumerate(cited)}
+    ranked = sorted(chat, key=lambda entry: min(turn.get(d, len(turn)) for d in entry.documents))
+    kept: dict[str, Entry] = {}
+    for entry in [*ranked, *newest]:
+        if usable(entry):
+            kept.setdefault(entry.latin, entry)
+    return list(kept.values())[:MAX_CHOICES]
 
 
 def after_reply(vocabulary: Vocabulary | None, customer_id: str, pending: Pending) -> Step:
