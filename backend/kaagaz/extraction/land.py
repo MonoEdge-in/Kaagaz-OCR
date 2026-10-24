@@ -5,7 +5,8 @@ survey or khata number. They are read as the invoice's windows are (``invoice.wi
 ``WindowSettings``): one call per window, its text fenced and escaped as untrusted data
 (``land_prompt``), the reply quotes only (``LAND_SCHEMA``, PRD 2 D2's quote rule). A reply cut
 at its budget is asked again as two halves of its window, up to ``2 * max_windows`` calls; a
-model error gives no land values at all (``error_code``), and the card stays.
+model error gives no land values at all (``error_code``), and the card stays. Text past the
+last of ``max_windows`` windows is not read: ``truncated`` says so, and the run keeps it.
 
 **Locating**, inside the window only: a property's fields after their label, a party's name
 from the previous name on (from the window's start when listed out of order), its share
@@ -13,8 +14,11 @@ between its name and the next name. The stored text is the reader's at the match
 not found or longer than ``MAX_TEXT_CHARS`` is dropped and counted; one on a spot a value took
 already is a repeat from an overlapping window, never counted again.
 
-**Merging.** A record with the survey (else khata) number of a property kept before, or a spot
-a kept value took, is that property again: its new fields and parties are added, a field's
+**Merging.** A reply's records are searched in order, each from where the one before ended (from
+the window's start only for a quote not found after it), so a second property's place or owner
+is never the first's. A record with the survey (else khata) number of a property kept before is
+that property again; one with a new number is always a new property; one with neither and a
+spot a kept value took is that value's property. Its new fields and parties are added, a field's
 first value winning. A record of parties alone continues the property listed last before it
 (PROVISIONAL: a window can begin inside a list of owners). Properties are ``land:1..n`` by
 their first spot, parties ``land:{p}:party:1..m`` by their name's.
@@ -165,6 +169,7 @@ class LandExtraction:
     quotes: QuoteCounts
     model_calls: int
     error_code: str | None = None  # "model_<code>" when a call failed; values is then empty
+    truncated: bool = False  # text was left after the last window (EXTRACT_MAX_WINDOWS), unread
 
 
 def reads_land(doc_type: str | None, card_values: Sequence[ExtractedValue]) -> bool:
@@ -190,7 +195,7 @@ def read_land(
     max_windows, max_tokens = cut.max_windows, cut.max_tokens
     budget = input_token_budget(num_ctx=num_ctx, max_tokens=max_tokens, system=LAND_SYSTEM_PROMPT)
     wording = estimate_tokens(land_prompt(Window(0, 0, ""), 2 * max_windows, 2 * max_windows))
-    parts, _truncated = windows(
+    parts, truncated = windows(
         reader,
         chars=cut.chars,
         overlap=cut.overlap,
@@ -223,10 +228,10 @@ def read_land(
                 ]
                 planned += 1
                 continue
-            return LandExtraction([], QuoteCounts(), calls, f"model_{error.code}")
+            return LandExtraction([], QuoteCounts(), calls, f"model_{error.code}", truncated)
         beat(calls, planned)
         merge.add(part, answer)
-    return LandExtraction(merge.values(), merge.quotes, calls)
+    return LandExtraction(merge.values(), merge.quotes, calls, truncated=truncated)
 
 
 def value_number(field: str, text: str) -> Decimal | None:
@@ -302,9 +307,11 @@ class _Merge:
         self.by_identity: dict[str, _Record] = {}
         self.quotes = QuoteCounts()
         self.window_checks = Checks(MAX_WINDOW_CHECKS)
+        self.cursor = 0  # where the reply's next record is searched from
 
     def add(self, window: Window, answer: Mapping[str, Any]) -> None:
         self.window_checks = Checks(MAX_WINDOW_CHECKS)  # this reply's budget
+        self.cursor = window.start
         items = [item for item in answer.get("records") or [] if isinstance(item, dict)]
         for item in items[:MAX_REPLY_RECORDS]:
             self._record(window, item)
@@ -327,19 +334,19 @@ class _Merge:
         for name in PROPERTY_FIELDS:
             quotes = _field_quotes(item.get(name))
             if quotes is not None:
-                label, value = find_labelled(
-                    self.reader, *quotes, start=window.start, end=window.end, checks=self._checks()
-                )
-                fields[name] = (value, label)
+                fields[name] = self._labelled(window, quotes)
         parties = self._parties(window, [p for p in item.get("parties") or [] if isinstance(p, dict)])
         identity = next(
             (normalise_identifier(spot.text) for n in _IDENTITY if (spot := fields.get(n, (None, None))[0])),
             None,
         )
         spots = [spot.start for spot, _ in fields.values() if spot] + [n.start for _, n, _ in parties if n]
-        record = (self.by_identity.get(identity) if identity else None) or next(
-            (self.owner[spot] for spot in spots if spot in self.owner), None
-        )
+        ends = [spot.end for spot, _ in fields.values() if spot] + [n.end for _, n, _ in parties if n]
+        self.cursor = max([self.cursor, *ends])
+        if identity:  # its own number decides: never another property's spots
+            record = self.by_identity.get(identity)
+        else:
+            record = next((self.owner[spot] for spot in spots if spot in self.owner), None)
         if record is None and spots and not any(spot for spot, _ in fields.values()):
             record = self._continued(min(spots))
         new = record is None
@@ -364,6 +371,16 @@ class _Merge:
             if identity:
                 self.by_identity[identity] = record
 
+    def _labelled(self, window: Window, quotes: tuple[str | None, str]) -> tuple[Found | None, Found | None]:
+        """(value, label) found after the record before, else anywhere in the window."""
+        for start in (self.cursor, window.start):
+            label, value = find_labelled(
+                self.reader, *quotes, start=start, end=window.end, checks=self._checks()
+            )
+            if value is not None:
+                break
+        return value, label
+
     def _continued(self, start: int) -> _Record | None:
         """The property listed last before ``start``, which a record of parties alone continues."""
         before = [record for record in self.records if record.first() < start]
@@ -376,7 +393,7 @@ class _Merge:
         share between its name and the next one. The shares are counted here, the names by
         the caller."""
         named: list[tuple[str, Found | None, object]] = []
-        cursor = window.start
+        cursor = self.cursor
         for item in items[:MAX_REPLY_PARTIES]:
             quote, role = item.get("name_quote"), item.get("role")
             name = None
