@@ -21,8 +21,9 @@ relational division of the tags scope; records naming only some are offered, nev
 as printed, never added, subtracted or derived, the unowned share only where printed.
 
 **Map questions** ("show the map of survey 45/2", "the length of plot 12", "which survey numbers
-border 45/2"): a map, measurement or border word and a property, with no owning or share word.
-``_KEYED`` finds the records of that survey, khata or plot number (and, for borders, those
+border 45/2"): a map or border word, or a measure asked as one ("the area of", "how wide"), and
+a property, with no owning or share word. ``_KEYED`` finds the records of that survey, khata or
+plot number, as the word before it says ("plot 12" is never survey 12; and, for borders, those
 printing it as a neighbour, a ``land_boundary_*`` key); ``_SHARES_AS_PRINTED`` gives their map
 values. Each is quoted as printed with its unit and cited; one asked for and not printed is
 said to be not printed, never worked out from the others, the drawing or the scale.
@@ -69,27 +70,35 @@ _MEASURES = {
     "land_scale": "scale",
 }
 _SIDES = {f"land_boundary_{side}": side for side in SIDES}
-_FIELDS = (*_ROLES, _SHARE, _UNOWNED, _SURVEY, _PLOT, *_PLACES, *_MEASURES, *_SIDES)
+_KHATA = "land_khata_number"
+_FIELDS = (*_ROLES, _SHARE, _UNOWNED, _SURVEY, _PLOT, _KHATA, *_PLACES, *_MEASURES, *_SIDES)
 
 _OWN = frozenset({"own", "owns", "owned", "owner", "owners", "ownership", "belong", "belongs", "bought"})
 _OWN |= {"malik", "maalik", "malak"}
 _SHARES = frozenset({"share", "shares", "percentage", "percent", "hissa", "unowned", "unallotted"})
 _UNOWNED_WORDS = frozenset({"unowned", "unallotted", "rest", "remaining"})
 _MEASURE_WORDS = {
-    **dict.fromkeys(("length", "long"), "land_length"),
-    **dict.fromkeys(("width", "wide", "breadth"), "land_width"),
+    "length": "land_length",
+    **dict.fromkeys(("width", "breadth", "wide"), "land_width"),
     "area": "land_area",
     **dict.fromkeys(("road", "frontage"), "land_road_width"),
     "scale": "land_scale",
 }
+_SIZE_WORDS = frozenset({"size", "dimension", "dimensions", "measurement", "measurements", "sides"})
 _BORDER_WORDS = frozenset(
     {"border", "borders", "bordering", "boundary", "boundaries", "adjoining", "adjacent"}
 )
 _BORDER_WORDS |= {"neighbour", "neighbours", "neighbor", "neighbors"}
-_MAP_WORDS = frozenset({"map", "maps", "naksha", "sketch", "layout", "dimension", "dimensions", "size"})
-_MAP_WORDS |= {"measurement", "measurements", "sides"}
+_MAP_WORDS = frozenset({"map", "maps", "naksha", "sketch", "layout"})
+_JOINS = frozenset({"and", "or", "the"})  # inside a run of measures: "the length and the width of"
+# The word before a number says which kind of number it is: "plot 12" is never survey 12.
+_NUMBER_WORDS = {
+    **dict.fromkeys(("plot", "lot"), _PLOT),
+    **dict.fromkeys(("survey", "gat"), "land_survey_number"),
+    "khata": "land_khata_number",
+}
 _FRAME = _OWN | _SHARES | _UNOWNED_WORDS | STOP_WORDS | {"land", "property", "properties", "survey", "plot"}
-_FRAME |= {*_MEASURE_WORDS, *_BORDER_WORDS, *_MAP_WORDS}
+_FRAME |= {*_MEASURE_WORDS, *_SIZE_WORDS, *_BORDER_WORDS, *_MAP_WORDS}
 _LAND_WORDS = frozenset(
     {"survey", "plot", "gat", "khata", "land", "property", "map", "maps", "naksha", "sketch"}
 )
@@ -107,6 +116,28 @@ class OwnerAsk:
     measures: tuple[str, ...] = ()  # the map values asked for by name (``_MEASURES``' fields)
     borders: bool = False  # the neighbours by side
     drawn: bool = False  # the map itself: every value printed on it
+    within: tuple[str, ...] = ()  # the property fields the numbers were named as; () any of them
+
+
+def _measures_asked(words: Sequence[str]) -> tuple[tuple[str, ...], bool]:
+    """The map values asked for as a measure: the run of measure words just before "of" ("the
+    length, width and road width of", "area of") or "how wide", never "which area is" or "which
+    road is"; and whether a size word was ("size of", "dimensions of"). O(n)."""
+    picked: list[int] = []
+    for i, word in enumerate(words):
+        if word == "of":
+            j = i - 1
+            while j >= 0 and (words[j] in _MEASURE_WORDS or words[j] in _SIZE_WORDS or words[j] in _JOINS):
+                picked.append(j)
+                j -= 1
+        elif word == "wide" and i and words[i - 1] == "how":
+            picked.append(i)
+    fields = (
+        _MEASURE_WORDS[words[i]]
+        for i in sorted(picked)
+        if words[i] in _MEASURE_WORDS and not (words[i] == "width" and words[i - 1] in ("road", "frontage"))
+    )
+    return tuple(dict.fromkeys(fields)), any(words[i] in _SIZE_WORDS for i in picked)
 
 
 def owner_ask(question: str, resolve: Callable[[list[str]], list[tuple[str, str]]]) -> OwnerAsk | None:
@@ -115,38 +146,38 @@ def owner_ask(question: str, resolve: Callable[[list[str]], list[tuple[str, str]
     about properties only. O(n) for n words."""
     words = [word.casefold() for word in spaced_words(fold_digits(question))]
     owning, shares = bool(_OWN.intersection(words)), bool(_SHARES.intersection(words))
-    measures = tuple(
-        dict.fromkeys(
-            _MEASURE_WORDS[word]
-            for before, word in zip(["", *words], words, strict=False)
-            if word in _MEASURE_WORDS and not (word == "width" and before in ("road", "frontage"))
-        )
-    )
-    borders, drawn = bool(_BORDER_WORDS.intersection(words)), bool(_MAP_WORDS.intersection(words))
+    measures, sized = _measures_asked(words)
+    borders, drawn = bool(_BORDER_WORDS.intersection(words)), sized or bool(_MAP_WORDS.intersection(words))
     # A map question names the land ("survey 45/2", "plot 12", "the map"): "the size of invoice 12"
     # is never one, even where a survey 12 is keyed.
     mapped = (bool(measures) or borders or drawn) and bool(_LAND_WORDS.intersection(words))
     if not owning and not shares and not mapped:
         return None
     at: dict[str, int] = {}  # each candidate, and where it first starts in the question
+    named_as: dict[str, str | None] = {}  # a number's field, by the word before it
     for start in range(len(words)):
         for run in (words[start : start + size] for size in range(1, _MAX_RUN + 1)):
             if not all(word in _FRAME for word in run):
                 at.setdefault(" ".join(latin_spelling(" ".join(run)).split()), start)
         if any(ch.isdigit() for ch in words[start]):
-            at.setdefault(normalise_identifier(words[start]), start)
+            number = normalise_identifier(words[start])
+            at.setdefault(number, start)
+            named_as.setdefault(number, _NUMBER_WORDS.get(words[start - 1]) if start else None)
     found = set(resolve(list(at)))
     people, places, properties = (
         tuple(sorted((key for k, key in found if k == kind), key=at.__getitem__)) for kind in _KINDS
     )
+    kinds = [named_as.get(key) for key in properties]
+    within = () if None in kinds else tuple(dict.fromkeys(str(kind) for kind in kinds))
     unowned = bool(_UNOWNED_WORDS.intersection(words))
     if not owning and not shares:
-        return (
-            OwnerAsk(properties=properties, measures=measures, borders=borders, drawn=drawn)
-            if properties
-            else None
+        mapping = OwnerAsk(
+            properties=properties, measures=measures, borders=borders, drawn=drawn, within=within
         )
-    return OwnerAsk(people, places, properties, shares, unowned) if people or places or properties else None
+        return mapping if properties else None
+    if not (people or places or properties):
+        return None
+    return OwnerAsk(people, places, properties, shares, unowned, within=within)
 
 
 _RESOLVE = text(
@@ -309,6 +340,7 @@ class _Land:
     survey: ValueRef | None = None
     unowned: ValueRef | None = None
     plot: ValueRef | None = None
+    khata: ValueRef | None = None
     printed: dict[str, list[tuple[ValueRef, str | None]]] = field(default_factory=dict)  # map values, keys
 
     def owning(self) -> list[_Party]:
@@ -336,8 +368,8 @@ def reply(source: PgOwners, customer_id: str, ask: OwnerAsk, scope: Scope) -> Re
         return _map_reply(source, customer_id, ask, scope)
     owned = source.owned(customer_id, ask.people, scope) if ask.people else []
     keyed = [
-        source.keyed(customer_id, kind, keys, scope)
-        for kind, keys in (("place", ask.places), ("property", ask.properties))
+        source.keyed(customer_id, kind, keys, scope, fields)
+        for kind, keys, fields in (("place", ask.places, ()), ("property", ask.properties, ask.within))
         if keys
     ]
     within = set.intersection(*(set(records) for records in keyed)) if keyed else None
@@ -392,6 +424,8 @@ def _lands(values: Sequence[tuple[str, str | None, ValueRef]]) -> dict[tuple[str
             land.unowned = land.unowned or ref
         elif ref.field == _PLOT:
             land.plot = land.plot or ref
+        elif ref.field == _KHATA:
+            land.khata = land.khata or ref
         elif ref.field in _MEASURES or ref.field in _SIDES:
             land.printed.setdefault(ref.field, []).append((ref, latin))
     for spot, party in parties.items():
@@ -482,7 +516,7 @@ def _map_reply(source: PgOwners, customer_id: str, ask: OwnerAsk, scope: Scope) 
     """A map question about ``ask.properties``: each record's map values as printed and cited, or
     that one asked for is not printed (never worked out); with ``borders``, also the records that
     print one of them as a neighbour. None when no record holds them."""
-    own = source.keyed(customer_id, "property", ask.properties, scope)[:MAX_LISTED]
+    own = source.keyed(customer_id, "property", ask.properties, scope, ask.within)[:MAX_LISTED]
     beside: list[tuple[str, str]] = []
     if ask.borders:
         printing = source.keyed(customer_id, "property", ask.properties, scope, tuple(_SIDES))
@@ -558,13 +592,16 @@ def _beside_lines(land: _Land, ask: OwnerAsk) -> list[tuple[str, Cited]]:
 
 
 def _named(land: _Land) -> tuple[str, Cited]:
-    """A record named by its survey and plot numbers as printed, with the values that name it."""
+    """A record named by its survey (else khata) and plot numbers as printed, with the values
+    that name it; a record with none of them is "this land record" and cites nothing."""
     plot = None if land.plot is None else clean_text(land.plot.value_text)
-    if land.survey is not None:
-        name = f"Survey {clean_text(land.survey.value_text)}" + ("" if plot is None else f", plot {plot}")
+    number = land.survey or land.khata
+    if number is not None:
+        kind = "Survey" if number is land.survey else "Khata"
+        name = f"{kind} {clean_text(number.value_text)}" + ("" if plot is None else f", plot {plot}")
     else:
         name = "this land record" if plot is None else f"Plot {plot}"
-    return name, [ref for ref in (land.survey, land.plot) if ref is not None]
+    return name, [ref for ref in (number, land.plot) if ref is not None]
 
 
 def _document(land: _Land, people: Sequence[str]) -> tuple[str, str, str, Cited]:

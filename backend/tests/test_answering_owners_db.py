@@ -252,6 +252,36 @@ def test_the_neighbours_by_side_and_the_records_printing_it_as_a_neighbour(keyed
     ]
 
 
+def test_a_plot_number_is_never_a_survey_number_of_the_same_digits(keyed: Database) -> None:
+    c, _ = new_customer(keyed)
+    plot = add_land(keyed, c, "Layout.pdf", [(V, None)], survey="45/2", printed=[("plot_number", "12")])
+    survey = add_land(keyed, c, "7/12 12.pdf", [("Ketaki Mhaskar", None)], survey="12")
+
+    for question, only in (
+        ("Length of survey 12?", survey),
+        ("Length of plot 12?", plot),
+        ("Who owns survey 12?", survey),
+        ("Who owns plot 12?", plot),
+    ):
+        answer = ask(keyed, c, question)
+        assert [d["document_id"] for d in answer["documents"]] == [only], question
+    both = ask(keyed, c, "Show the map of 12")  # no word says which: either kind
+    assert sorted(d["document_id"] for d in both["documents"]) == sorted([plot, survey])
+
+
+def test_a_record_known_by_its_khata_number_alone_is_named_and_cited_by_it(keyed: Database) -> None:
+    c, _ = new_customer(keyed)
+    add_land(keyed, c, "8-A 118.pdf", [(V, None)], printed=[("khata_number", "118")])
+
+    answer = ask(keyed, c, "What is the area of khata 118?")
+
+    assert [s["text"] for s in answer["sentences"]] == [
+        "The area of Khata 118 is not printed on the map, so none is worked out."
+    ]
+    by_n = {c["n"]: c for c in answer["citations"]}
+    assert [by_n[n]["snippet"] for n in answer["sentences"][0]["citations"]] == ["land_khata_number: 118"]
+
+
 def test_the_land_facts_switch_off_leaves_map_questions_to_the_other_routes(keyed: Database) -> None:
     c, _ = new_customer(keyed)
     add_land(keyed, c, "7/12.pdf", survey="45/2", printed=MAP)
