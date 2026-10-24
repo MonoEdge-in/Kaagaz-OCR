@@ -273,8 +273,6 @@ class FakeFixedQueries:
             key = " ".join(party.ref.value_text.casefold().split())
             groups.setdefault(key, []).append([s for s in (amount, party, dated) if s is not None])
         rows = []
-        compared = [s.ref for used in groups.values() for trio in used for s in trio]
-        unsure = tuple(ref for ref in compared if ref.label != "verified")[:MAX_CITED_VALUES]
         for used in groups.values():
             refs = [s.ref for trio in used for s in trio]
             rows.append(
@@ -284,7 +282,6 @@ class FakeFixedQueries:
                     records=len(used),
                     verified=all(ref.label == "verified" for ref in refs),
                     values=refs[:MAX_CITED_VALUES],
-                    unsure=unsure,
                 )
             )
         rows.sort(key=lambda row: -row.number if descending else row.number)
@@ -326,6 +323,7 @@ class FakeFixedQueries:
                     dated=start is None or day is not None,
                     date_verified=start is None or date_label == "verified",
                     grouped=not group_fields or (party is not None and bool(party.ref.value_text.strip())),
+                    party_verified=party is None or party.ref.label == "verified",
                 )
             )
         return found
@@ -623,8 +621,8 @@ def test_a_tie_names_every_party_and_cites_each() -> None:
 
 
 def test_one_unverified_value_makes_the_answer_needs_review() -> None:
-    # Changed on purpose (PRD 6 C2, 24 Oct 2026): a profit not verified withholds the ranking (it
-    # was shown, needs review); a party name not verified is shown, needs review, as before.
+    # Changed on purpose (PRD 6 C2, 24 Oct 2026): a profit, or a party name, not verified
+    # withholds the ranking (it was shown, needs review).
     records = [register_row(2, "Sharma Traders", 120000, date(2026, 8, 10), label="needs_review")]
     answer = service(records=records)[0].answer(A, "Kiska profit sabse jyada tha last month?")
     assert (answer.status, answer.label) == ("answered", "needs_review")
@@ -638,13 +636,9 @@ def test_one_unverified_value_makes_the_answer_needs_review() -> None:
     named[0] = dataclasses.replace(named[0], ref=dataclasses.replace(named[0].ref, label="needs_review"))
     answer = service(records=[named])[0].answer(A, "Kiska profit sabse jyada tha last month?")
     assert answer.label == "needs_review"
-    # PRD 6 C: the answer says so in words too, citing the value that is not verified.
     assert [s.text for s in answer.sentences] == [
-        "Sharma Traders had the highest profit, 1,20,000, in August 2026.",
-        "Some of the values behind this are not verified yet.",
-    ]
-    assert [answer.citations[n - 1].snippet for n in answer.sentences[1].citations] == [
-        "party_name: Sharma Traders"
+        "The one party name is not verified yet, so I haven't compared the parties' profit in August 2026.",
+        "profit-register.xlsx: 120000, party not verified yet.",
     ]
     assert_well_formed(answer)
 

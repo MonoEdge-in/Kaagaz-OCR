@@ -794,9 +794,10 @@ class AnswerService:
             and all(c.label == "verified" for c in citations)
         )
         sentences = [AnswerSentence(text=sentence, citations=[c.n for c in citations[:shown_n]])]
-        if not verified and plan.aggregate != "count":
-            # PRD 6 C: the answer itself says so, beside the label.
-            unsure = [c.n for c in citations if c.label != "verified"] or [c.n for c in citations]
+        doubts = {value.value_id for value in top[0].unsure}
+        unsure = [c.n for c in citations if c.label != "verified" or c.ref_id in doubts]
+        if not verified and plan.aggregate != "count" and unsure:
+            # PRD 6 C: the answer itself says so, beside the label, citing only what it is about.
             sentences.append(AnswerSentence("Some of the values behind this are not verified yet.", unsure))
         return Answer(
             status="answered",
@@ -834,6 +835,8 @@ class AnswerService:
         period = describe_range(plan.start, plan.end) if plan.start and plan.end else ""
         said = (_words(metric).removeprefix("total "), period, "invoice" if plan.invoices else "record")
         told = tell(figures, *said, ranking=ranking)
+        if ranking and told.total is not None:
+            return None  # the rule holds: the ranking follows, with its own word marks
         if not told.lines:
             return _not_found("fixed_query", shown, [], model_used=False, reason="notfound_fixed_no_sentence")
         citations = [
@@ -843,8 +846,6 @@ class AnswerService:
         hard = {c.ref_id for c in citations if c.hard_to_read}
         if hard:
             told = tell(figures, *said, hard, ranking=ranking)  # the same records, in the same order
-        if ranking and told.total is not None:
-            return None
         verified = told.total is not None and not hard and all(c.label == "verified" for c in citations)
         return Answer(
             status="answered",

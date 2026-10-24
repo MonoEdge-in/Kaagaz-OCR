@@ -14,8 +14,9 @@ nothing to point at is counted, never listed. Time O(r log r) in the r records.
 PRD 6 C2: a sheet's printed total row is never a record. When the records include a sheet that
 prints its own total, no total is added up: the head says so (PRINTED_TOTAL), and the printed
 total comes first, as printed and cited. ``ranking``: the same rule for a highest or lowest by
-party, before any party's sum is shown: every record must also name one party, and a printed
-total is left out.
+party, before any party's sum is shown: every record must also name one party, verified, and a
+printed total is left out. With a date range asked, a printed total is not listed (it covers the
+whole sheet, not the range): the sheet's rows in range are added up as any records.
 """
 
 from collections.abc import Collection, Sequence
@@ -66,6 +67,7 @@ def tell(
     lacking = sum(figure.amount is None for figure, _, _ in rows)
     nameless = sum(not figure.grouped for figure, _, _ in rows)
     unverified = sum(figure.amount is not None and not checked for figure, _, checked in rows)
+    names = sum(figure.grouped and not figure.party_verified for figure, _, _ in rows)
     dates = sum(figure.dated and not figure.date_verified for figure, _, _ in rows)
     if undated:
         why = f"{_of(undated, n, noun)} {_verb(undated, 'has', 'have')} no date I can read"
@@ -75,6 +77,8 @@ def tell(
         why = f"{_of(nameless, n, noun)} {_verb(nameless, 'has', 'have')} no party I can read"
     elif unverified:
         why = f"{_of(unverified, n, metric + ' figure')} {_verb(unverified, 'is', 'are')} not verified yet"
+    elif names:  # a party's sum grouped by a name not verified could add up another party's
+        why = f"{_of(names, n, 'party name')} {_verb(names, 'is', 'are')} not verified yet"
     elif dates:
         why = f"{_of(dates, n, noun + ' date')} {_verb(dates, 'is', 'are')} not verified yet"
     else:
@@ -126,6 +130,8 @@ def _line(figure: Figure, value: ValueRef, metric: str, checked: bool) -> str:
         notes.append("not verified yet")
     if not figure.grouped:
         notes.append("no party I can read")
+    elif not figure.party_verified:
+        notes.append("party not verified yet")
     record = not figure.printed_total  # a printed total is not a record: its date is never asked
     if record and not figure.dated:
         notes.append("no date I can read")
