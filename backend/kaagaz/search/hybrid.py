@@ -107,7 +107,9 @@ after the index); fine at this size, a per-customer partition is the upgrade.
 
 import math
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -134,6 +136,9 @@ FUZZY_THRESHOLD = 0.3
 # Every search statement is cancelled after this long (PROVISIONAL). A meaning
 # list that runs out of time is dropped; the word and fuzzy lists still answer.
 STATEMENT_TIMEOUT_MS = 3000
+# A fused search (search_translated: CX6's aspects, the translation) runs at most this many
+# texts' lists at once, each on its own pooled connection (Ask speed, 24 Oct 2026).
+SEARCH_FAN_OUT = 4
 # PostgreSQL's SQLSTATE for a statement cancelled by statement_timeout.
 _QUERY_CANCELED = "57014"
 # The sound query (sound_query): at most this many terms, and prefix matching only for
@@ -630,7 +635,7 @@ def search(
 
 
 def search_translated(
-    conn: Connection,
+    begin: Callable[[], AbstractContextManager[Connection]],
     *,
     customer_id: str,
     query_text: str,
@@ -645,21 +650,32 @@ def search_translated(
     """``search`` for the question and for each (text, embedding) of ``translations``, every
     list fused (the module docstring), and each piece a list of the question itself found,
     with its own meaning score (None: no meaning list of the question found it). The
-    user's own words (``expansion``) go with the question only. O(t) times ``search``'s
-    cost for t translations."""
+    user's own words (``expansion``) go with the question only. ``begin`` opens one
+    ``Database.customer(customer_id)`` transaction: each text's lists run in one of their own,
+    SEARCH_FAN_OUT at once (Ask speed, 24 Oct 2026), so no connection is shared across threads;
+    they are fused in the texts' order, the question's first, so the ranking is the one they
+    give one after another. The details, in one more. O(t) times ``search``'s cost for t
+    translations, over about t / SEARCH_FAN_OUT of its time."""
     if not 1 <= limit <= MAX_LIMIT:
         raise ValueError("limit must be between 1 and 100")
     if scope.matches_nothing:
         return [], {}
-    owners: dict[str, str] = {}
-    asked = _lists(conn, customer_id, query_text, embedding, recipe, ef_search, scope, expansion, owners)
-    lists = [*zip(_KINDS, asked, strict=True)]
-    for text_, vector in translations:
-        found = _lists(conn, customer_id, text_, vector, recipe, ef_search, scope, NO_EXPANSION, owners)
-        lists += zip(_KINDS, found, strict=True)
+    texts = [(query_text, embedding, expansion), *((t, v, NO_EXPANSION) for t, v in translations)]
+
+    def lists(text_: str, vector: list[float] | None, words: Expansion) -> tuple[Ranked, Ranked, Ranked]:
+        with begin() as conn:
+            return _lists(conn, customer_id, text_, vector, recipe, ef_search, scope, words, {})
+
+    with ThreadPoolExecutor(min(SEARCH_FAN_OUT, len(texts))) as pool:
+        futures = [pool.submit(lists, *each) for each in texts]
+    found = [future.result() for future in futures]  # the first failure in the texts' order is raised
+    asked = found[0]
     meaning = dict(asked[2])
     original = {piece_id: meaning.get(piece_id) for ranked in asked for piece_id, _ in ranked}
-    return _hits(conn, customer_id, fuse_lists(lists)[:limit]), original
+    fused = fuse_lists([pair for ranked in found for pair in zip(_KINDS, ranked, strict=True)])
+    with begin() as conn:
+        conn.execute(_SET_SEARCH, {"ms": str(STATEMENT_TIMEOUT_MS)})
+        return _hits(conn, customer_id, fused[:limit]), original
 
 
 @dataclass(frozen=True, slots=True)
