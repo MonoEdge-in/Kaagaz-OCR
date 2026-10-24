@@ -813,7 +813,9 @@ class FakeGeminiModule:
 
         class GeminiEngine(ScriptedReader):
             @classmethod
-            def from_settings(cls, settings: Settings, *, pool: RapidOcrPool) -> ScriptedReader:
+            def from_settings(
+                cls, settings: Settings, *, pool: RapidOcrPool, db: Database | None = None
+            ) -> ScriptedReader:
                 outer.built.append(pool)
                 return cls({})
 
