@@ -30,6 +30,10 @@ without its column name. A piece whose lines and cells both fail to pair with it
 is left out: its spot is unknown. ``pieces.text_latin`` pairs the same way; without it
 (a mostly English piece) a line with Devanagari letters is spelled here.
 
+Which word lit each line, and each word's lines and pages (``word_finds``, 24 Oct 2026),
+so the viewer can colour each word and say where it is, and say plainly when a word is not in
+the document: the asker's own words come back, never the document's.
+
 Only regions leave this module, never text, at most ``MAX_BOXES``. Time: O(T) for the
 document's T characters to split them, then each different word is matched once (cached).
 """
@@ -83,24 +87,32 @@ def clean_words(raw: Iterable[str]) -> list[str]:
 
 
 class Matcher:
-    """Whether a line holds one of ``words`` (cleaned), each different word decided once."""
+    """Which of ``words`` (cleaned) a line holds, as bits (bit i is word i), each different
+    word of the document decided once."""
 
     def __init__(self, words: Sequence[str]) -> None:
-        self._exact = frozenset(words)
+        self._index = {word: bit for bit, word in enumerate(words)}
         self._near = WordMatcher([QueryWord(_latin(word)) for word in words])
-        self._seen: dict[str, bool] = {}
+        self._seen: dict[str, int] = {}
 
-    def holds(self, line: str, latin_line: str | None) -> bool:
+    def held(self, line: str, latin_line: str | None) -> int:
         """``latin_line``: the line's Latin spelling, None to spell it here. O(len(line))."""
-        if any(word in self._exact for word in _words(line)):
-            return True
+        held = 0
+        for word in _words(line):
+            if word in self._index:
+                held |= 1 << self._index[word]
         if latin_line is None:
             latin_line = latin_spelling(line) if has_devanagari_letters(line) else line
-        return any(self._matches(word) for word in _words(latin_line))
+        for word in _words(latin_line):
+            held |= self._mask(word)
+        return held
 
-    def _matches(self, word: str) -> bool:
+    def holds(self, line: str, latin_line: str | None) -> bool:
+        return self.held(line, latin_line) != 0
+
+    def _mask(self, word: str) -> int:
         if word not in self._seen:
-            self._seen[word] = self._near.masks(word)[0] != 0
+            self._seen[word] = self._near.masks(word)[0]
         return self._seen[word]
 
 
@@ -116,26 +128,48 @@ def segments(text: str, count: int) -> list[str] | None:
     return None
 
 
-def word_regions(
+def word_finds(
     pieces: Iterable[tuple[str, str | None, Sequence[Any]]], words: Sequence[str]
-) -> tuple[list[dict[str, Any]], list[int]]:
-    """The regions of the lines holding ``words`` on every page, in the pieces' order, at most
-    ``MAX_BOXES``, and every page with such a line, ascending. ``pieces``: (text,
-    text_latin, regions)."""
-    if not words:
-        return [], []
-    matcher = Matcher(words)
+) -> dict[str, Any]:
+    """``boxes``: the regions of the lines holding ``words`` on every page, in the pieces'
+    order, at most ``MAX_BOXES``; ``hits``: for each box, the first of ``words`` its line holds
+    (its colour); ``pages``: every page with such a line, ascending; ``found``: for each word,
+    in order, how many lines hold it and on which pages (0 and none: not in the document).
+    ``pieces``: (text, text_latin, regions)."""
     boxes: list[dict[str, Any]] = []
+    hits: list[int] = []
     pages: set[int] = set()
-    for text, text_latin, raw in pieces:
+    lines_of = [0] * len(words)
+    pages_of: list[set[int]] = [set() for _ in words]
+    matcher = Matcher(words)
+    for text, text_latin, raw in pieces if words else ():
         regions = valid_regions(raw)
         lines = segments(text, len(regions)) if len(regions) == len(raw) else None
         if lines is None:
             continue
         latin = segments(text_latin, len(regions)) if text_latin is not None else None
         for index, (line, region) in enumerate(zip(lines, regions, strict=True)):
-            if matcher.holds(line, None if latin is None else latin[index]):
-                pages.add(region["page"])
-                if len(boxes) < MAX_BOXES:
-                    boxes.append(region)
-    return boxes, sorted(pages)
+            held = matcher.held(line, None if latin is None else latin[index])
+            if not held:
+                continue
+            pages.add(region["page"])
+            for bit in range(len(words)):
+                if held >> bit & 1:
+                    lines_of[bit] += 1
+                    pages_of[bit].add(region["page"])
+            if len(boxes) < MAX_BOXES:
+                boxes.append(region)
+                hits.append((held & -held).bit_length() - 1)
+    found = [
+        {"word": word, "lines": lines_of[bit], "pages": sorted(pages_of[bit])}
+        for bit, word in enumerate(words)
+    ]
+    return {"boxes": boxes, "hits": hits, "pages": sorted(pages), "found": found}
+
+
+def word_regions(
+    pieces: Iterable[tuple[str, str | None, Sequence[Any]]], words: Sequence[str]
+) -> tuple[list[dict[str, Any]], list[int]]:
+    """``word_finds``' boxes and pages."""
+    finds = word_finds(pieces, words)
+    return finds["boxes"], finds["pages"]

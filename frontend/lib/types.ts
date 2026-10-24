@@ -575,6 +575,16 @@ export interface SheetCells {
 export interface DocumentWords {
   boxes: Region[];
   pages: number[];
+  /** For each box, the first of the words its line holds: its colour (24 Oct 2026). */
+  hits?: number[];
+  /** Each word as the server cleaned it, in order: how many lines hold it, on which pages. */
+  found?: WordFound[];
+}
+
+export interface WordFound {
+  word: string;
+  lines: number;
+  pages: number[];
 }
 
 /** GET /documents/{id}/pages/{n}/readings: what each reader read on one page, as read. */

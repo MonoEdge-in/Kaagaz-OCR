@@ -12,6 +12,7 @@ from kaagaz.search.page_words import (
     Matcher,
     clean_words,
     segments,
+    word_finds,
     word_regions,
 )
 
@@ -139,6 +140,41 @@ class WordRegionsTest(unittest.TestCase):
         ]
         words = clean_words(["1,042", "krishna", "ab"])
         self.assertEqual(word_regions(pieces, words), ([cell(1, 2, 2), cell(1, 2, 3), cell(2, 1, 1)], [1, 2]))
+
+
+class WordFindsTest(unittest.TestCase):
+    """24 Oct 2026: which word lit each line (its colour), and where each word is, so the
+    viewer can say "krishna: 2 lines, pages 1 and 3" and "sohoni: not in this document"."""
+
+    def test_each_box_names_its_first_word_and_each_word_says_where_it_is(self) -> None:
+        pieces = [
+            ("Buyer: Krishna Sohoni\nVillage Maval", None, [box(1, 0.2), box(1, 0.6)]),
+            ("Maval taluka, Krishna", None, [box(2, 0.1)]),
+            ("खरेदीदार कृष्ण", latin_spelling("खरेदीदार कृष्ण"), [box(3, 0.5)]),
+        ]
+        words = clean_words(["krishna", "maval", "varde"])
+        finds = word_finds(pieces, words)
+        self.assertEqual(finds["boxes"], [box(1, 0.2), box(1, 0.6), box(2, 0.1), box(3, 0.5)])
+        self.assertEqual(finds["hits"], [0, 1, 0, 0])  # a line with both takes the first word's colour
+        self.assertEqual(finds["pages"], [1, 2, 3])
+        self.assertEqual(
+            finds["found"],
+            [
+                {"word": "krishna", "lines": 3, "pages": [1, 2, 3]},
+                {"word": "maval", "lines": 2, "pages": [1, 2]},
+                {"word": "varde", "lines": 0, "pages": []},
+            ],
+        )
+
+    def test_no_words_finds_nothing(self) -> None:
+        nothing = {"boxes": [], "hits": [], "pages": [], "found": []}
+        self.assertEqual(word_finds([("Krishna", None, [box(1, 0.1)])], []), nothing)
+
+    def test_the_counts_cover_every_line_past_max_boxes(self) -> None:
+        pieces = [("Krishna", None, [box(page, 0.1)]) for page in range(1, MAX_BOXES + 6)]
+        finds = word_finds(pieces, ["krishna"])
+        self.assertEqual((len(finds["boxes"]), len(finds["hits"])), (MAX_BOXES, MAX_BOXES))
+        self.assertEqual(finds["found"][0]["lines"], MAX_BOXES + 5)
 
 
 if __name__ == "__main__":

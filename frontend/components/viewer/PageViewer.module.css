@@ -116,9 +116,105 @@
   border-radius: var(--k-r-1);
 }
 
+/* Each further word its own highlighter (24 Oct 2026), the first keeping the green above. */
+.word[data-word="1"],
+.wordSwatch[data-word="1"] {
+  background: color-mix(in srgb, var(--words-on-paper-2) 14%, transparent);
+  border-bottom-color: var(--words-on-paper-2);
+}
+
+.word[data-word="2"],
+.wordSwatch[data-word="2"] {
+  background: color-mix(in srgb, var(--words-on-paper-3) 14%, transparent);
+  border-bottom-color: var(--words-on-paper-3);
+}
+
+.word[data-word="3"],
+.wordSwatch[data-word="3"] {
+  background: color-mix(in srgb, var(--words-on-paper-4) 14%, transparent);
+  border-bottom-color: var(--words-on-paper-4);
+}
+
 .word {
   position: absolute;
   pointer-events: none;
+  transform-origin: left center;
+}
+
+/* A marker's sweep when the lines are first lit, left to right. */
+@media (prefers-reduced-motion: no-preference) {
+  .word {
+    animation: word-sweep var(--motion-calm) var(--ease-out) both;
+  }
+}
+
+@keyframes word-sweep {
+  from {
+    opacity: 0;
+    transform: scaleX(0.3);
+  }
+}
+
+/* Under the page (24 Oct 2026): each word with its colour and where it is, so the asker sees
+   which word was found where, and plainly when one is not in the document. */
+.wordsHeading {
+  margin: 0;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.wordLegend {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.legendRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  font-size: var(--fs-sm);
+}
+
+.legendWord {
+  font-weight: 600;
+  overflow-wrap: break-word;
+}
+
+.legendWhere {
+  color: var(--text-secondary);
+}
+
+.legendRow[data-missing] .legendWord {
+  color: var(--text-secondary);
+  text-decoration: line-through;
+}
+
+.legendRow[data-missing] .wordSwatch {
+  opacity: 0.35;
+}
+
+.legendJump {
+  min-height: var(--control-h);
+  padding: 0 var(--space-2);
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .legendJump:hover {
+    text-decoration: underline;
+  }
 }
 
 .wordSwatch {

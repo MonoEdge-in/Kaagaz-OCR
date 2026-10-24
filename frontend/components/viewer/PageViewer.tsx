@@ -47,6 +47,7 @@ import { useObservedBox } from "./useObservedBox";
 import type { ViewRect } from "./canvasPlan";
 import { ZOOM_STEPS, centerScroll, fitPageSize, focusZoom, pageMode, stepZoom, visibleRect, wheelZoom } from "./viewer";
 import styles from "./PageViewer.module.css";
+import { wordColour } from "./YourWords";
 
 // PDF.js needs the browser, so its component never renders on the server.
 const PdfPage = dynamic(() => import("./PdfPage"), {
@@ -99,6 +100,8 @@ export interface PageViewerProps {
   cropMaxHeight?: number;
   /** Package H: the lines holding your words, drawn under the spot on the full page. */
   wordBoxes?: Region[];
+  /** For each of wordBoxes, its word (24 Oct 2026): the colour it is drawn in. */
+  wordHits?: readonly number[];
 }
 
 export function PageViewer({
@@ -123,6 +126,7 @@ export function PageViewer({
   onFlag,
   cropMaxHeight = CROP_MAX_HEIGHT,
   wordBoxes = [],
+  wordHits = [],
 }: PageViewerProps) {
   const isCrop = crop !== undefined;
   const { ref: measureRef, box, near } = useObservedBox(isCrop);
@@ -361,13 +365,14 @@ export function PageViewer({
       ) : null}
       {crop
         ? null
-        : regionsOnPage(wordBoxes, page.page_no).map((region, index) => {
-            if (region.kind !== "box") return null;
+        : wordBoxes.map((region, index) => {
+            if (region.kind !== "box" || region.page !== page.page_no) return null;
             const px = markerRect(region.box, width, height);
             return (
               <div
                 key={`word-${index}`}
                 className={styles.word}
+                data-word={wordColour(wordHits[index])}
                 aria-hidden="true"
                 style={{ left: px.left, top: px.top, width: px.width, height: px.height }}
               />

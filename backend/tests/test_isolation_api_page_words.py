@@ -28,7 +28,13 @@ def test_b_never_gets_a_boxes_and_a_document_is_not_found_for_b(db: Database) ->
     assert "0.2" not in other.text and "pages" not in other.text
 
     # B's own document with A's words: only B's lines, never A's.
-    assert words(b, b_deed, "krishna", "maval", "sohoni") == {"boxes": [], "pages": []}
+    nothing = [{"word": word, "lines": 0, "pages": []} for word in ("krishna", "maval", "sohoni")]
+    assert words(b, b_deed, "krishna", "maval", "sohoni") == {
+        "boxes": [],
+        "hits": [],
+        "pages": [],
+        "found": nothing,
+    }
     assert words(b, b_deed, "varde")["boxes"] == [box(1, 0.7)]
 
     assert api.client().get(path).status_code == 401
