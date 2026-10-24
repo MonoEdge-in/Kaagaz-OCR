@@ -49,6 +49,9 @@ class FakeVocabulary:
         self.calls += 1
         return [[e for e in self.entries if e.kind == entity.kind] for entity in entities]
 
+    def any_keys(self, customer_id: str) -> bool:
+        return bool(self.entries or self.nearby)
+
     def near(self, customer_id: str, districts: Sequence[str]) -> list[Entry]:
         self.districts = sorted(districts)
         return self.nearby

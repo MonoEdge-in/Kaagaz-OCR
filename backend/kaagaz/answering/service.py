@@ -114,7 +114,9 @@ The steps (docs/architecture.md):
     Without whole documents, the first question's words, embedding and search (no aspects) run
     beside that call (``_overlapped``), each database step in its own transaction; they are used
     only when the call asks no clarify, leaves the question as it was and lists no aspects, so
-    the answer is the one the steps above give one after another.
+    the answer is the one the steps above give one after another. A call that would be for the
+    plan alone is not made when the scope's vocabulary has no key (``Vocabulary.any_keys``):
+    with no name to resolve or offer, step 18 could change nothing.
 
 No source, no answer: an answered result always has at least one sentence,
 every sentence cites at least one source (but step 13's count, which sums up its cited
@@ -620,6 +622,9 @@ class AnswerService:
         # CX6: the aspects are asked for, even on a first question, when they can be searched.
         most = self._settings.query_aspects_max if whole is None and self._widens() else 0
         planned = clarify and self._vocabulary is not None  # step 18: the plan, on every question
+        alone = self._model is not None and planned and not (recent or remembered or most)
+        if alone and vocabulary is not None and not vocabulary.any_keys(customer_id):
+            planned = False  # step 19: a call for the plan alone, with no name it could check or offer
         if self._model is not None and (recent or remembered or most or planned):
             first = not (recent or remembered)  # step 19: a first question's call has its deadline
             plan_time = self._settings.answer_plan_timeout_seconds

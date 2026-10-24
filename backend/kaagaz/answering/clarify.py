@@ -104,6 +104,10 @@ class Vocabulary(Protocol):
         """The vocabulary of ``documents`` only (the chat's scope names them); None: every one."""
         ...
 
+    def any_keys(self, customer_id: str) -> bool:
+        """False only when there is no key at all, so ``candidates`` and ``near`` find nothing."""
+        ...
+
 
 _CANDIDATES = text(
     "WITH typed AS (SELECT * FROM unnest(CAST(:n AS int[]), CAST(:kinds AS text[]), CAST(:latins AS text[]),"
@@ -143,6 +147,13 @@ _NEAR = text(
 )
 
 
+# Ask speed (24 Oct 2026): whether the vocabulary has any key in scope, from value_keys_document.
+_ANY_KEYS = text(
+    "SELECT EXISTS (SELECT 1 FROM value_keys k WHERE k.customer_id = :c"
+    " AND (CAST(:scoped AS uuid[]) IS NULL OR k.document_id = ANY(CAST(:scoped AS uuid[]))))"
+)
+
+
 class PgVocabulary:
     """The vocabulary in PostgreSQL: one statement in one ``Database.customer`` transaction."""
 
@@ -166,6 +177,10 @@ class PgVocabulary:
                 for row in conn.execute(_CANDIDATES, params).mappings():
                     found[int(row["n"])].append(_entry(row))
         return found
+
+    def any_keys(self, customer_id: str) -> bool:
+        with self._db.customer(customer_id) as conn:
+            return bool(conn.execute(_ANY_KEYS, {"c": customer_id, "scoped": self._documents}).scalar_one())
 
     def near(self, customer_id: str, districts: Sequence[str]) -> list[Entry]:
         with self._db.customer(customer_id) as conn:

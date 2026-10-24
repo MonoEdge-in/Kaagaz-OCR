@@ -78,3 +78,11 @@ def test_a_pick_moved_to_trash_since_is_dropped_when_it_is_answered(db: Database
     with db.customer(customer) as conn:
         conn.execute(text("UPDATE documents SET deleted_at = now() WHERE id = :d"), {"d": document})
     assert after_reply(PgVocabulary(db), customer, pending).question == "Land in Puny?"
+
+
+def test_any_keys_sees_one_companys_own_keys_only(db: Database) -> None:  # Ask speed, 24 Oct 2026
+    a, a_document = company(db, ("person", "Nikhil Varde"))
+    b, _ = new_customer(db)  # no key at all
+    vocabulary = PgVocabulary(db)
+    assert vocabulary.any_keys(a) and vocabulary.within([a_document]).any_keys(a)  # the control
+    assert not vocabulary.any_keys(b) and not vocabulary.within([a_document]).any_keys(b)
