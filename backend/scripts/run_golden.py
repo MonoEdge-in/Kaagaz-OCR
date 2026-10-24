@@ -2,8 +2,8 @@
 
     cd backend
     python -m scripts.run_golden --git-sha "$(git rev-parse HEAD)" [--api http://127.0.0.1:8000]
-        [--set golden|xlang|romanised] [--docs DIR] [--runs 3] [--agents ID,ID] [--thinking low|medium|high]
-        [--json RUN.json] [--compare BASE.json]
+        [--set golden|xlang|romanised|nlq] [--docs DIR] [--runs 3] [--agents ID,ID]
+        [--thinking low|medium|high] [--json RUN.json] [--compare BASE.json]
 
 Run it with the stack's settings loaded in the shell, as for ``kaagaz.cli``
 (docs/running-locally.md), and the model on for a real baseline. Never in CI.
@@ -13,7 +13,8 @@ any document in ``--docs`` or question that differs from what is committed (a
 changed file means a new baseline). Then it creates a customer "Golden Test Co"
 with ``kaagaz.cli create-customer``, signs in as its admin (the password from
 ``KAAGAZ_ADMIN_PASSWORD``, or made with ``secrets.token_urlsafe``; never
-printed), uploads the documents and waits until they are ready. It asks every
+printed), uploads the documents and waits until they are ready and no longer being
+understood (``understanding`` false: their card and map are done). It asks every
 question ``--runs`` times through POST /api/chat, a follow-up in its
 question's conversation, and prints a row per question, each run's totals and
 slices, and the worst run with Wilson intervals. The header shows this shell's
@@ -41,6 +42,19 @@ reads such a file of the same set (the baseline) and applies the paired gate
 (golden_scoring's ``compare``): it lists every changed question and exits 1 when the gate
 fails.
 
+``nlq`` (PRD 6 package G) is questions_nlq.json over the made-up documents in nlq/, each
+run with a customer of its own (admin ASKER), so no run learns from another. A reply that
+asks back gets the expected pick, by its choice's label, as the next question (a stub until
+package B names a reply field), at most MAX_CLARIFY_TURNS times. The NLQ expectations
+(golden_scoring's ``nlq_score``) and each chat's openings go in the report and ``--compare``.
+The set fits whole-document mode, so run it with the server at ANSWER_WHOLE_DOC_TOKENS=0
+(search alone) and at its default; ``--compare`` refuses a baseline of the other mode.
+
+A 429 or 503 is retried after its Retry-After (at most RETRY_CAP seconds), RETRIES times.
+Each run prints its chat requests and the customer's AI use (GET /api/admin/usage). The
+header and report record the settings and their sha256, ANSWER_PROMPT_HASH and the set's
+and the scorer's sha256.
+
 ``--agents`` and ``--thinking`` (features 25-27, council 15 Oct 2026, C14) send every
 question with those answer models (comma-separated ids, the first leads) and that thinking
 level, as the composer's Answer settings do; the organisation must be allowed them (the
@@ -50,14 +64,15 @@ A command line report, so it writes to standard output, not to the log.
 """
 
 import argparse
+import hashlib
 import io
 import json
 import os
 import secrets
 import sys
 import time
-from collections.abc import Callable, Collection, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Collection, Mapping, Sequence
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from http.client import HTTPConnection, HTTPException, HTTPSConnection
 from pathlib import Path
@@ -76,6 +91,8 @@ LOCAL = {"localhost", "127.0.0.1", "::1"}
 DONE = {"ready", "rejected", "needs_reader", "failed"}  # statuses a document stays in
 CHAT_TIMEOUT = 600.0  # seconds: one answer may wait on the model
 CALL_TIMEOUT = 30.0  # seconds, for every other call; an upload gets 4 times this
+RETRIES, RETRY_CAP = 5, 120.0  # a 429 or 503: tries again, and the longest Retry-After waited (s)
+ASKER = "Tanvi"  # the NLQ customer's admin's first name (made up)
 
 Row = tuple[scoring.Question, scoring.Score, bool | None]
 
@@ -89,6 +106,18 @@ class QuestionSet:
     check: Callable[[Any, Collection[str]], list[str]]
     all_ready: bool  # every document must be ready before a question is asked
     spellings: bool = False  # items with spellings, each asked as its own question
+    nlq: bool = False  # PRD 6: a customer per run, clarify replies, the NLQ expectations
+
+
+@dataclass(slots=True)
+class Asked:
+    """One run: its rows, and for the NLQ set each question's marks (in the rows' order)
+    and each chat's opening problems (by its first question's id)."""
+
+    rows: list[Row] = field(default_factory=list)
+    nlq: list[scoring.NlqScore] = field(default_factory=list)
+    openings: dict[str, list[str]] = field(default_factory=dict)
+    requests: int = 0  # POST /api/chat calls, the replies to questions back included
 
 
 SETS = {
@@ -117,6 +146,15 @@ SETS = {
         all_ready=True,
         spellings=True,
     ),
+    "nlq": QuestionSet(
+        "questions_nlq.json",
+        scoring.NLQ_SHA256,
+        GOLDEN / "nlq",
+        GOLDEN / "nlq" / "documents.sha256",
+        scoring.nlq_problems,
+        all_ready=True,
+        nlq=True,
+    ),
 }
 
 
@@ -125,12 +163,14 @@ class GoldenError(Exception):
 
 
 class Http:
-    """JSON over one connection per call; it keeps the session cookie it is given."""
+    """JSON over one connection per call; it keeps the session cookie it is given, and
+    waits out a 429 or 503 (``Retry-After``, at most RETRY_CAP seconds) up to RETRIES times."""
 
-    def __init__(self, base: str) -> None:
+    def __init__(self, base: str, sleep: Callable[[float], None] = time.sleep) -> None:
         parts = urlsplit(base)
         self._https, self._host, self._port = parts.scheme == "https", parts.hostname or "", parts.port
         self._cookie = ""
+        self._sleep = sleep
 
     def call(
         self,
@@ -141,7 +181,7 @@ class Http:
         files: tuple[str, bytes] | None = None,
         timeout: float = CALL_TIMEOUT,
     ) -> Any:
-        headers = {CSRF_HEADER: CSRF_VALUE, "Cookie": self._cookie}
+        headers = {CSRF_HEADER: CSRF_VALUE}
         data = None if body is None else json.dumps(body).encode()
         headers["Content-Type"] = "application/json"
         if files is not None:
@@ -156,10 +196,23 @@ class Http:
                 + f"\r\n--{boundary}--\r\n".encode()
             )
             headers["Content-Type"] = f"multipart/form-data; boundary={boundary}"
+        for attempt in range(RETRIES + 1):
+            status, wait, reply = self._send(method, path, data, headers, timeout)
+            if status not in (429, 503) or attempt == RETRIES:
+                break
+            self._sleep(min(RETRY_CAP, float(wait) if wait.isdigit() else RETRY_CAP))
+        if status >= 400:
+            raise GoldenError(f"{method} {path} answered HTTP {status}")
+        return json.loads(reply) if reply else {}
+
+    def _send(
+        self, method: str, path: str, data: bytes | None, headers: dict[str, str], timeout: float
+    ) -> tuple[int, str, bytes]:
+        """One request: its status, Retry-After ("" when none) and body."""
         connect = HTTPSConnection if self._https else HTTPConnection
         connection = connect(self._host, self._port, timeout=timeout)
         try:
-            connection.request(method, path, body=data, headers=headers)
+            connection.request(method, path, body=data, headers={**headers, "Cookie": self._cookie})
             response = connection.getresponse()
             reply = response.read()
         finally:
@@ -167,9 +220,7 @@ class Http:
         for cookie in response.headers.get_all("Set-Cookie") or []:
             if cookie.startswith(f"{SESSION_COOKIE}="):
                 self._cookie = cookie.split(";", 1)[0]
-        if response.status >= 400:
-            raise GoldenError(f"{method} {path} answered HTTP {response.status}")
-        return json.loads(reply) if reply else {}
+        return response.status, (response.headers.get("Retry-After") or "").strip(), reply
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -218,9 +269,26 @@ def load_golden(
     return [scoring.question_from(item) for item in items], documents
 
 
+SETTINGS_USED = "model_enabled model_chat model_embed ocr_engine answer_max_evidence"
+SETTINGS_USED += " answer_min_evidence_score answer_whole_doc_tokens timezone"
+
+
+def settings_used(settings: Settings) -> dict[str, Any]:
+    """The settings a run depends on: the header's, for the report and its sha256."""
+    return {name.upper(): getattr(settings, name) for name in SETTINGS_USED.split()}
+
+
+def fingerprint(settings: Settings) -> str:
+    return hashlib.sha256(
+        json.dumps(settings_used(settings), sort_keys=True, default=str).encode()
+    ).hexdigest()
+
+
 def header(out: TextIO, settings: Settings, api: str, sha: str, questions: str = "questions.json") -> None:
     out.write(f"Golden run {datetime.now(UTC).isoformat(timespec='seconds')}  git {sha}  api {api}\n")
     out.write(f"{questions} sha256 {scoring.file_sha256(GOLDEN / questions)}\n")
+    out.write(f"scorer sha256 {scoring.file_sha256(Path(scoring.__file__))}  ANSWER_PROMPT_HASH")
+    out.write(f" {ANSWER_PROMPT_HASH}  settings sha256 {fingerprint(settings)}\n")
     out.write(
         f"MODEL_ENABLED={settings.model_enabled} MODEL_CHAT={settings.model_chat}"
         f" MODEL_EMBED={settings.model_embed} OCR_ENGINE={settings.ocr_engine}"
@@ -230,11 +298,11 @@ def header(out: TextIO, settings: Settings, api: str, sha: str, questions: str =
     )
 
 
-def sign_in(api: Http, password: str, out: TextIO) -> None:
+def sign_in(api: Http, password: str, out: TextIO, admin_name: str = "Golden admin") -> None:
     """A new "Golden Test Co" and its admin, made by ``kaagaz.cli``, then signed in."""
-    email = f"golden-{datetime.now(UTC):%Y%m%d%H%M%S}@golden-test.example"
+    email = f"golden-{datetime.now(UTC):%Y%m%d%H%M%S}-{secrets.token_hex(3)}@golden-test.example"
     made = io.StringIO()
-    argv = ["create-customer", "--name", CUSTOMER, "--admin-email", email, "--admin-name", "Golden admin"]
+    argv = ["create-customer", "--name", CUSTOMER, "--admin-email", email, "--admin-name", admin_name]
     if cli.main(argv, environ={**os.environ, cli.ADMIN_ENV_VAR: password}, out=made, ask=None) != 0:
         raise GoldenError("kaagaz.cli create-customer failed (its message is above)")
     out.write(f"{CUSTOMER}: {made.getvalue().strip()}, admin {email}\n")
@@ -244,16 +312,19 @@ def sign_in(api: Http, password: str, out: TextIO) -> None:
 def upload(
     api: Http, documents: dict[str, bytes], wait_minutes: float, out: TextIO, all_ready: bool = True
 ) -> dict[str, str]:
-    """Upload every document and wait until none is still being read. {document id: file name}.
-    Without ``all_ready``, only none ready stops the run; the others are listed."""
+    """Upload every document and wait until none is still being read or understood (its card
+    and map). {document id: file name}. Without ``all_ready``, only none ready stops the run;
+    the others are listed."""
     names = {}
     for name, data in documents.items():
         reply = api.call("POST", "/api/documents", files=(name, data), timeout=4 * CALL_TIMEOUT)
         names[reply["document"]["id"]] = name
     deadline = time.monotonic() + wait_minutes * 60
     while True:  # at least one look, however short the wait
-        status = {i: api.call("GET", f"/api/documents/{i}")["status"] for i in names}
-        if set(status.values()) <= DONE or time.monotonic() > deadline:
+        seen = {i: api.call("GET", f"/api/documents/{i}") for i in names}
+        status = {i: document["status"] for i, document in seen.items()}
+        understanding = sorted(names[i] for i, document in seen.items() if document.get("understanding"))
+        if (set(status.values()) <= DONE and not understanding) or time.monotonic() > deadline:
             break
         time.sleep(5)
     not_ready = {names[i]: s for i, s in status.items() if s != "ready"}
@@ -261,6 +332,8 @@ def upload(
         raise GoldenError(f"documents not ready after {wait_minutes} minutes: {not_ready}")
     if not_ready:
         out.write(f"NOT READY, their questions are still asked: {not_ready}\n")
+    if understanding:
+        out.write(f"WARNING: still being understood after {wait_minutes} minutes: {understanding}\n")
     out.write(f"{len(names) - len(not_ready)} documents ready\n\n")
     return names
 
@@ -283,37 +356,77 @@ def ask_all(
     names: dict[str, str],
     out: TextIO,
     choice: dict[str, Any] | None = None,
-) -> list[Row]:
-    """``choice``: the answer settings sent with every question (``agents``, ``thinking``)."""
+    nlq: bool = False,
+) -> Asked:
+    """``choice``: the answer settings sent with every question (``agents``, ``thinking``).
+    ``nlq``: answer questions back (``pick_choice``), ask in a question's ``scope`` and mark
+    the NLQ expectations and each chat's openings."""
     conversations: dict[str, str] = {}
-    rows: list[Row] = []
+    chats: dict[str, str] = {}  # conversation id: its first question's id
+    openings: dict[str, list[str | None]] = {}
+    ids = {name: i for i, name in names.items()}
+    asked = Asked()
     searched = modelled = 0
     out.write(f"{'id':<5} {'outcome':<21} {'label':<13} {'route':<12} {'recall':<6} answer\n")
     for question in questions:
         body: dict[str, Any] = {"question": question.question, **(choice or {})}
         if question.follow_up_of is not None:
             body["conversation_id"] = conversations[question.follow_up_of]
-        reply = api.call("POST", "/api/chat", body, timeout=CHAT_TIMEOUT)
-        conversations[question.id] = reply["conversation_id"]
-        answer = reply["answer"]["answer"]
-        if answer["route"] == "search":
+        scope = question.nlq.get("scope")
+        if nlq and scope is not None:
+            body["scope"] = {"document_ids": [ids[scope["document"]]]}
+        replies = [api.call("POST", "/api/chat", body, timeout=CHAT_TIMEOUT)]
+        conversation = conversations[question.id] = replies[0]["conversation_id"]
+        while nlq and len(replies) <= scoring.MAX_CLARIFY_TURNS:
+            label = pick_choice(replies[-1]["answer"]["answer"], question.nlq.get("clarify"))
+            if label is None:
+                break
+            again = {"question": label, "conversation_id": conversation, **(choice or {})}
+            replies.append(api.call("POST", "/api/chat", again, timeout=CHAT_TIMEOUT))
+        asked.requests += len(replies)
+        first, answer = replies[0]["answer"]["answer"], replies[-1]["answer"]["answer"]
+        route = answer.get("route")
+        if route == "search":
             searched += 1
             modelled += answer.get("model_used") is True
         cited = hits(answer, names)
         marked = scoring.score(question, answer, cited)
-        counted = scoring.counts_for_recall(question, answer["route"])
-        recall = scoring.recall_hit(question, cited) if counted else None
-        rows.append((question, marked, recall))
-        flag = " WRONG-VERIFIED" if marked.wrong_verified else ""
+        recall = scoring.recall_hit(question, cited) if scoring.counts_for_recall(question, route) else None
+        asked.rows.append((question, marked, recall))
+        flag, failed = " WRONG-VERIFIED" if marked.wrong_verified else "", ""
+        if nlq:
+            backs = sum(scoring.clarify_of(reply["answer"]["answer"]) is not None for reply in replies)
+            asked.nlq.append(scoring.nlq_score(question, first, answer, names, ASKER, backs))
+            failed = " ".join(f"FAILS {name}" for name, ok in asked.nlq[-1].passed().items() if not ok)
+            chat = chats.setdefault(conversation, question.id)
+            openings.setdefault(chat, []).extend(
+                reply["answer"]["answer"].get("opening") for reply in replies
+            )
         out.write(
             f"{question.id:<5} {marked.outcome.value + flag:<21} {answer.get('label') or '-':<13}"
-            f" {answer['route']:<12} {'-' if recall is None else 'hit' if recall else 'miss':<6}"
-            f" {scoring.answer_text(answer)[:70]}\n"
+            f" {route or '-':<12} {'-' if recall is None else 'hit' if recall else 'miss':<6}"
+            f" {scoring.answer_text(answer)[:70]}{' ' if failed else ''}{failed}\n"
         )
     out.write(f"The model wrote {modelled} of {searched} search-route answers.\n")
     if searched and not modelled:
         out.write("WARNING: the model was off or down, so this is not a model-on baseline.\n")
-    return rows
+    asked.openings = {chat: scoring.opening_problems(said, ASKER) for chat, said in openings.items()}
+    return asked
+
+
+def pick_choice(answer: Mapping[str, Any], expected: Any) -> str | None:
+    """The label to send back when the reply asks back: the offered choice that holds the
+    expected pick, or that the pick holds; None when it does not ask, no pick is expected
+    or none fits. ponytail: sent as the next question's text until package B names the
+    reply field (a choice id)."""
+    clarify = scoring.clarify_of(answer)
+    if clarify is None or not isinstance(expected, Mapping):
+        return None
+    pick = str(expected["pick"])
+    fits = [
+        c for c in scoring.choice_labels(clarify) if scoring.phrase_in(pick, c) or scoring.phrase_in(c, pick)
+    ]
+    return fits[0] if fits else None
 
 
 def answer_settings(agents: str | None, thinking: str | None) -> dict[str, Any]:
@@ -347,27 +460,58 @@ def write_metrics(out: TextIO, rates: dict[str, Any]) -> None:
         out.write(f"  {name:<24} {rate['count']}/{rate['of']} [{low:.2f}, {high:.2f}]\n")
 
 
-def report(set_name: str, settings: Settings, sha: str, runs: Sequence[Sequence[Row]]) -> dict[str, Any]:
+def write_usage(api: Http, out: TextIO, asked: Asked, questions: int) -> None:
+    """The run's chat requests, and the customer's AI use this month (GET /api/admin/usage):
+    model calls and tokens, in all and by kind. With a customer per run, that is the run's."""
+    usage = api.call("GET", "/api/admin/usage")
+
+    def use(group: Mapping[str, Any]) -> str:
+        calls, tokens_in, tokens_out = (
+            group.get(key, 0) for key in ("calls", "input_tokens", "output_tokens")
+        )
+        return f"{calls} model calls, {tokens_in} tokens in, {tokens_out} out"
+
+    out.write(f"{questions} questions, {asked.requests} chat requests; the customer's AI use: ")
+    out.write(f"{use(usage.get('totals') or {})}\n")
+    out.writelines(f"  {group.get('kind')}: {use(group)}\n" for group in usage.get("by_kind") or [])
+
+
+def report(
+    set_name: str, settings: Settings, sha: str, runs: Sequence[Sequence[Row]], nlq: Sequence[Asked] = ()
+) -> dict[str, Any]:
     """The --json report: each question's worst run over ``runs`` (each run's rows, in
-    the same order), its precision numbers overall and per slice, and the worst-run totals."""
+    the same order), its precision numbers overall and per slice, and the worst-run totals;
+    for the NLQ set (``nlq``, each run's marks) each expectation's numbers, the openings and
+    each question's expectations passed at its worst run."""
     worst = [
         (question, scoring.worst_score([run[i][1] for run in runs]))
         for i, (question, _, _) in enumerate(runs[0])
     ]
     slices = sorted({name for question, _ in worst for name in question.slices})
     total = scoring.worst([scoring.totals(run) for run in runs])
+    marks = [scoring.worst_nlq([one.nlq[i] for one in nlq]) for i in range(len(worst))] if nlq else []
+    chats: dict[str, list[str]] = {}
+    for one in nlq:
+        for chat, problems in one.openings.items():
+            known = chats.setdefault(chat, [])
+            known += [problem for problem in problems if problem not in known]
 
     def rates(numbers: dict[str, tuple[int, int]]) -> dict[str, Any]:
         return {
             name: {"count": n, "of": of, "wilson": scoring.wilson(n, of)} for name, (n, of) in numbers.items()
         }
 
+    expect = {"openings": (sum(not p for p in chats.values()), len(chats))} if nlq else {}
     return {
         "set": set_name,
         "git_sha": sha,
         "MODEL_CHAT": settings.model_chat,
         "MODEL_EMBED": settings.model_embed,
         "ANSWER_PROMPT_HASH": ANSWER_PROMPT_HASH,
+        "settings": settings_used(settings),
+        "settings_sha256": fingerprint(settings),
+        "questions_sha256": SETS[set_name].sha256,
+        "scorer_sha256": scoring.file_sha256(Path(scoring.__file__)),
         "runs": len(runs),
         "totals": {
             **{outcome.value: n for outcome, n in total.outcomes.items()},
@@ -380,15 +524,30 @@ def report(set_name: str, settings: Settings, sha: str, runs: Sequence[Sequence[
             name: rates(scoring.metrics([r for r in worst if name in r[0].slices])) for name in slices
         },
         "questions": {
-            question.id: {"outcome": scoring.category(marked), "verified": marked.verified}
-            for question, marked in worst
+            question.id: {
+                "outcome": scoring.category(marked),
+                "verified": marked.verified,
+                **({"expect": marks[i].passed()} if marks else {}),
+            }
+            for i, (question, marked) in enumerate(worst)
         },
+        **(
+            {"nlq_metrics": rates({**scoring.nlq_metrics(marks), **expect}), "openings": chats} if nlq else {}
+        ),
     }
 
 
 def check_against(base: dict[str, Any], now: dict[str, Any], out: TextIO) -> bool:
-    """--compare: the paired gate against the baseline report; True when it holds."""
+    """--compare: the paired gate against the baseline report; True when it holds. A
+    baseline in the other ANSWER_WHOLE_DOC_TOKENS mode fails it; other settings that differ
+    are listed."""
     changed, failures, p = scoring.compare(base["questions"], now["questions"])
+    was, made = base.get("settings") or {}, now.get("settings") or {}
+    mode = "ANSWER_WHOLE_DOC_TOKENS"
+    if mode in was and was[mode] != made.get(mode):
+        failures.insert(0, f"the baseline ran at {mode}={was[mode]}, this run at {made.get(mode)}")
+    differ = sorted(name for name in was if name != mode and was[name] != made.get(name))
+    out.writelines(f"WARNING: {name} was {was[name]}, now {made.get(name)}\n" for name in differ)
     out.write(f"\nCompared with the baseline (git {base.get('git_sha')}): {len(changed)} changed\n")
     out.writelines(f"  {line}\n" for line in changed)
     out.write(f"McNemar exact p {p:.4f} (reported, not a gate)\n")
@@ -409,24 +568,31 @@ def main(argv: Sequence[str] | None = None, out: TextIO = sys.stdout) -> int:
         if base is not None and base.get("set") != args.question_set:
             raise GoldenError(f"--compare is a report of {base.get('set')!r}, not {args.question_set!r}")
         header(out, settings, args.api, args.git_sha, chosen.questions)
-        api = Http(args.api)
-        sign_in(api, os.environ.get(cli.ADMIN_ENV_VAR) or secrets.token_urlsafe(24), out)
-        names = upload(api, documents, args.wait_minutes, out, chosen.all_ready)
+        password = os.environ.get(cli.ADMIN_ENV_VAR) or secrets.token_urlsafe(24)
         choice = answer_settings(args.agents, args.thinking)
         if choice:
             out.write(f"Answer settings: {json.dumps(choice)}\n\n")
-        runs: list[list[Row]] = []
+        api, names, asked = Http(args.api), {}, []
         for run in range(1, args.runs + 1):
+            if run == 1 or chosen.nlq:  # the NLQ set: a customer per run, so no run learns from another
+                api = Http(args.api)
+                sign_in(api, password, out, f"{ASKER} Karandikar" if chosen.nlq else "Golden admin")
+                names = upload(api, documents, args.wait_minutes, out, chosen.all_ready)
             out.write(f"Run {run} of {args.runs}\n")
-            runs.append(ask_all(api, questions, names, out, choice))
-            write_totals(out, f"run {run}", scoring.totals(runs[-1]))
-            for name, total in scoring.by_slice(runs[-1]).items():
+            asked.append(ask_all(api, questions, names, out, choice, chosen.nlq))
+            write_totals(out, f"run {run}", scoring.totals(asked[-1].rows))
+            for name, total in scoring.by_slice(asked[-1].rows).items():
                 write_totals(out, f"  {name}", total)
+            write_usage(api, out, asked[-1], len(questions))
             out.write("\n")
+        runs = [one.rows for one in asked]
         write_totals(out, "WORST RUN", scoring.worst([scoring.totals(rows) for rows in runs]))
-        made = report(args.question_set, settings, args.git_sha, runs)
+        made = report(args.question_set, settings, args.git_sha, runs, asked if chosen.nlq else ())
         out.write("Precision, each question at its worst run:\n")
         write_metrics(out, made["metrics"])
+        if chosen.nlq:
+            out.write("NLQ expectations, each question at its worst run (PRD 6 bars):\n")
+            write_metrics(out, made["nlq_metrics"])
         if args.json_path is not None:
             args.json_path.write_text(json.dumps(made, indent=2) + "\n", encoding="utf-8")
         if base is not None and not check_against(base, made, out):

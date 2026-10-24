@@ -3,21 +3,27 @@ is not run here."""
 
 import contextlib
 import io
+import json
 import shutil
 import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 from kaagaz.answering.draft import ANSWER_PROMPT_HASH
-from scripts.golden_scoring import Hit, score
+from scripts.golden_scoring import Hit, NlqScore, Outcome, Question, question_from, score
 from scripts.run_golden import (
     GOLDEN,
+    RETRIES,
+    RETRY_CAP,
     SETS,
+    Asked,
     GoldenError,
     Http,
     _parser,
     answer_settings,
+    ask_all,
     check_against,
     check_local,
     header,
@@ -178,3 +184,152 @@ class PrecisionReportTest(unittest.TestCase):
         self.assertFalse(check_against(base, worse, out))
         self.assertIn(f"  {profit.id}: abstained -> wrong\n", out.getvalue())
         self.assertIn(f"GATE FAILED: {profit.id} moved into wrong\n", out.getvalue())
+
+
+# PRD 6 package G: the NLQ set's runner against a fake API (no stack, no model).
+ASKS = {
+    "kind": "clarify",
+    "status": "answered",
+    "opening": "Good evening, Tanvi.",
+    "clarify": {
+        "question": "Which places?",
+        "choices": [{"id": "c1", "label": "Maval, Pune"}, {"id": "c2", "label": "Thane"}],
+    },
+}
+ANSWERS = {
+    "status": "answered",
+    "label": "verified",
+    "route": "search",
+    "model_used": True,
+    "opening": "Sure.",
+}
+ANSWERS |= {"sentences": [{"text": "Survey 45/2 at Kusgaon.", "citations": []}], "citations": []}
+
+
+def nlq_item(pick: str = "Maval") -> Question:
+    expect = {
+        "kind": "text",
+        "value": "45/2",
+        "document": "k.pdf",
+        "pages": [1],
+        "clarify": {"choices": ["Maval"], "pick": pick},
+    }
+    return question_from(
+        {
+            "id": "n1",
+            "question": "Land between Pune and Mumbai?",
+            "split": "dev",
+            "tags": [],
+            "expect": expect,
+        }
+    )
+
+
+class ChatApi(Http):
+    """Replies to POST /api/chat in turn (the last one again once they run out), keeping what was sent."""
+
+    def __init__(self, replies: list[dict[str, Any]]) -> None:
+        super().__init__("http://127.0.0.1:1")
+        self.replies, self.sent = replies, list[Any]()
+
+    def call(self, method: str, path: str, body: Any = None, **kwargs: Any) -> Any:
+        self.sent.append(body)
+        return {
+            "conversation_id": "c1",
+            "answer": {"answer": self.replies[min(len(self.sent), len(self.replies)) - 1]},
+        }
+
+
+class NlqRunnerTest(unittest.TestCase):
+    def test_a_question_back_is_answered_by_its_choices_label(self) -> None:
+        api = ChatApi([ASKS, ANSWERS])
+        asked = ask_all(api, [nlq_item()], {"d1": "k.pdf"}, io.StringIO(), nlq=True)
+        self.assertEqual(api.sent[1], {"question": "Maval, Pune", "conversation_id": "c1"})
+        self.assertEqual((asked.requests, asked.rows[0][1].outcome), (2, Outcome.RIGHT))
+        self.assertEqual(asked.nlq[0].passed(), {"clarify_turns": True, "clarify": True})
+        self.assertEqual(asked.openings, {"n1": []})
+
+    def test_a_third_question_back_is_a_violation(self) -> None:
+        api = ChatApi([ASKS])
+        asked = ask_all(api, [nlq_item()], {}, io.StringIO(), nlq=True)
+        self.assertEqual((len(api.sent), asked.nlq[0].clarify_turns), (3, 3))
+        self.assertFalse(asked.nlq[0].passed()["clarify_turns"])
+        self.assertEqual(asked.rows[0][1].outcome, Outcome.CLARIFIED)
+        self.assertEqual(asked.openings["n1"], ["reply 2 repeats an opening", "reply 3 repeats an opening"])
+
+    def test_a_pick_not_offered_stops_the_chat(self) -> None:
+        api = ChatApi([ASKS, ANSWERS])
+        asked = ask_all(api, [nlq_item("Panvel")], {}, io.StringIO(), nlq=True)
+        self.assertEqual((len(api.sent), asked.rows[0][1].outcome), (1, Outcome.CLARIFIED))
+        self.assertEqual(
+            ask_all(ChatApi([ASKS, ANSWERS]), [nlq_item()], {}, io.StringIO()).requests, 1
+        )  # not nlq
+
+    def test_a_429_or_503_is_retried_after_its_retry_after(self) -> None:
+        slept: list[float] = []
+
+        class Api(Http):
+            def __init__(self, replies: list[tuple[int, str, bytes]]) -> None:
+                super().__init__("http://127.0.0.1:1", sleep=slept.append)
+                self.replies = replies
+
+            def _send(self, *args: Any) -> tuple[int, str, bytes]:
+                return self.replies.pop(0)
+
+        self.assertEqual(
+            Api([(429, "7", b""), (503, "", b""), (200, "", b'{"ok": 1}')]).call("GET", "/x"), {"ok": 1}
+        )
+        self.assertEqual(slept, [7.0, RETRY_CAP])
+        with self.assertRaisesRegex(GoldenError, "answered HTTP 429"):
+            Api([(429, "999", b"")] * (RETRIES + 1)).call("GET", "/x")
+        self.assertEqual(slept[2:], [RETRY_CAP] * RETRIES)
+
+    def test_upload_waits_until_no_document_is_being_understood(self) -> None:
+        looks = [{"status": "ready", "understanding": True}, {"status": "ready", "understanding": False}]
+
+        class Api(Http):
+            def call(self, method: str, path: str, body: Any = None, **kwargs: Any) -> Any:
+                return {"document": {"id": "a"}} if method == "POST" else looks.pop(0)
+
+        with mock.patch("scripts.run_golden.time.sleep") as sleep:
+            self.assertEqual(
+                upload(Api("http://127.0.0.1:1"), {"a.pdf": b"a"}, 1, io.StringIO()), {"a": "a.pdf"}
+            )
+        self.assertEqual((looks, sleep.call_count), ([], 1))
+
+    def test_each_nlq_run_has_a_customer_of_its_own_and_the_report_carries_the_expectations(self) -> None:
+        def asked(api: Any, questions: list[Question], *args: Any) -> Asked:
+            return Asked(
+                [(q, score(q, {}), None) for q in questions], [NlqScore() for _ in questions], {"n1": []}, 1
+            )
+
+        settings = make_settings(model_chat=GEMINI_CHAT, model_embed=GEMINI_EMBED, database_url=LOCAL_DB)
+        made: dict[str, Any] = {}
+        for question_set, customers in (("nlq", 2), ("golden", 1)):
+            with (
+                tempfile.TemporaryDirectory() as folder,
+                mock.patch("scripts.run_golden.Settings.from_env", return_value=settings),
+                mock.patch("scripts.run_golden.sign_in") as sign_in,
+                mock.patch("scripts.run_golden.upload", return_value={}),
+                mock.patch("scripts.run_golden.ask_all", side_effect=asked),
+                mock.patch("scripts.run_golden.write_usage"),
+            ):
+                path = Path(folder) / "run.json"
+                argv = ["--git-sha", "abc", "--set", question_set, "--runs", "2", "--json", str(path)]
+                self.assertEqual(main(argv, out=io.StringIO()), 0)
+                made[question_set] = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(sign_in.call_count, customers, question_set)
+        nlq = made["nlq"]
+        self.assertEqual(
+            (nlq["settings"]["ANSWER_WHOLE_DOC_TOKENS"], nlq["questions_sha256"]),
+            (120000, SETS["nlq"].sha256),
+        )
+        self.assertEqual(nlq["questions"]["n001"]["expect"], {"clarify_turns": True})
+        self.assertEqual(nlq["nlq_metrics"]["openings"]["count"], 1)
+        self.assertNotIn("nlq_metrics", made["golden"])
+        other = {**nlq, "settings": {**nlq["settings"], "ANSWER_WHOLE_DOC_TOKENS": 0}}
+        out = io.StringIO()
+        self.assertFalse(check_against(other, nlq, out))
+        self.assertIn(
+            "GATE FAILED: the baseline ran at ANSWER_WHOLE_DOC_TOKENS=0, this run at 120000", out.getvalue()
+        )
