@@ -5,12 +5,19 @@ Every function takes a connection from ``Database.customer(customer_id)`` and fi
 ``customer_id`` too. Only Not useful rows given after the notice (``notice_shown``,
 decision 7) are listed or may be marked handled; a Useful row, an older one, or another
 company's id matches nothing.
+
+What Kaagaz learned (PRD 6 F3): the documents Useful marks lift now (``kaagaz.db.chat``
+MARKS), each with how many people marked them; Remove stops the marks given before it.
 """
 
 from collections.abc import Sequence
 from datetime import datetime
 
 from sqlalchemy import Connection, RowMapping, text
+
+from kaagaz.db.chat import LEARN_DAYS, MARKS
+
+LEARNED_LIMIT = 100
 
 # Not useful after the notice, newest first, with who asked, the question (the user
 # message written with the answer, so the same created_at) and the answer. The window
@@ -96,3 +103,32 @@ def rated_again(conn: Connection, customer_id: str, feedback_id: str, seen: date
         {"c": customer_id, "id": feedback_id, "seen": seen},
     ).first()
     return found is not None
+
+
+_LEARNED_SQL = (
+    "SELECT x.document_id::text AS document_id, x.display_name, count(DISTINCT x.user_id) AS people,"
+    " max(x.created_at) AS last_marked_at FROM ({marks}) x WHERE x.rating = 'up'"
+    " GROUP BY x.document_id, x.display_name ORDER BY last_marked_at DESC, x.document_id LIMIT :n"
+)
+_LEARNED = text(_LEARNED_SQL.format(marks=MARKS))  # fixed fragments only, as db/models.py's
+
+
+def learned(conn: Connection, customer_id: str) -> Sequence[RowMapping]:
+    """The documents Useful marks lift now, newest mark first, at most LEARNED_LIMIT:
+    ``document_id``, ``display_name``, ``people`` (who marked them) and ``last_marked_at``."""
+    params = {"c": customer_id, "days": LEARN_DAYS, "n": LEARNED_LIMIT}
+    return conn.execute(_LEARNED, params).mappings().all()
+
+
+def remove_learning(conn: Connection, customer_id: str, document_id: str, admin_id: str) -> bool:
+    """Remove: marks on this customer's document given before now teach no more. False when
+    there is no such document."""
+    added = conn.execute(
+        text(
+            "INSERT INTO learning_removals (customer_id, document_id, removed_by)"
+            " SELECT d.customer_id, d.id, :u FROM documents d WHERE d.customer_id = :c AND d.id = :d"
+            " RETURNING id"
+        ),
+        {"c": customer_id, "d": document_id, "u": admin_id},
+    ).first()
+    return added is not None

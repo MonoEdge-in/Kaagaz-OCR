@@ -13,6 +13,9 @@ each read is one read-only ``kaagaz_op_*`` function (``kaagaz.db.operator_insigh
   ``organisations`` are F3 rows (``QUALITY_KEYS``; the platform's ``organisation_id`` is null).
 * ``GET /operator/model-board?days=``: ``BOARD_REPLY_KEYS``; ``items`` are F4 rows
   (``BOARD_KEYS``).
+* ``GET /operator/answer-weeks?weeks=`` (PRD 6 F3, 1 to 12, 4 by default): ``from``, ``to``
+  and ``organisations``, rows of ``ANSWER_WEEK_KEYS`` per organisation and ended ISO week
+  (0051's ``kaagaz_op_answer_weeks``): counts only, outcomes NULL below K with their complement.
 
 Organisation rows say ``organisation_id`` for the function's ``customer_id``. Decimals are
 sent as numbers, NULL (suppressed below K, or not known) as null. Never a user, document,
@@ -135,6 +138,9 @@ QUALITY_KEYS = frozenset(
         "corrections_typed",
     }
 )
+ANSWER_WEEK_KEYS = frozenset(
+    {"organisation_id", "week", "replies", "answered", "not_found", "clarify", "rated", "useful"}
+)
 BOARD_REPLY_KEYS = frozenset({"from", "to", "ai_enabled", "items"})
 BOARD_KEYS = frozenset(
     {
@@ -227,6 +233,28 @@ def get_model_board(
         "to": end.isoformat(),
         "ai_enabled": ai_enabled(context.settings),
         "items": [_row(row, BOARD_KEYS) for row in rows],
+    }
+
+
+@router.get("/answer-weeks")
+def get_answer_weeks(
+    operator: OperatorSession,
+    db: OperatorDb,
+    context: Context,
+    weeks: Annotated[int, Query(ge=1, le=12)] = 4,
+) -> dict[str, Any]:
+    """PRD 6 F3: the last ``weeks`` whole ISO weeks that have ended, Monday to Sunday in
+    TIMEZONE; never this week, so a count is never read twice while it grows."""
+    zone = context.settings.timezone
+    today = context.clock().astimezone(ZoneInfo(zone)).date()
+    monday = today - timedelta(days=today.weekday() + 7 * weeks)
+    with db.operator() as conn:
+        rows = insights_sql.answer_weeks(conn, operator.operator_id, monday, weeks, zone)
+        _check_signed_in(conn, operator.operator_id, rows)
+    return {
+        "from": monday.isoformat(),
+        "to": (monday + timedelta(days=7 * weeks - 1)).isoformat(),
+        "organisations": [_row(row, ANSWER_WEEK_KEYS) for row in rows],
     }
 
 

@@ -69,6 +69,19 @@ def model_board(
     )
 
 
+def answer_weeks(
+    conn: Connection, operator_id: str, monday: date, weeks: int, zone: str
+) -> Sequence[RowMapping]:
+    """PRD 6 F3 (0051): one row per organisation and ended ISO week from ``monday``: replies,
+    answered, not found, clarify, rated and Useful, an outcome NULL unless it and its
+    complement reach K."""
+    return _rows(
+        conn,
+        "SELECT * FROM kaagaz_op_answer_weeks(:o, :monday, :weeks, :zone)",
+        {"o": operator_id, "monday": monday, "weeks": weeks, "zone": zone},
+    )
+
+
 def _rows(conn: Connection, sql: str, params: Mapping[str, Any]) -> Sequence[RowMapping]:
     """The timeout lasts until this transaction ends (set_config(..., true))."""
     conn.execute(_SET_TIMEOUT, {"ms": str(INSIGHTS_TIMEOUT_MS)})

@@ -22,6 +22,7 @@ import { AiSettingsPanel } from "./AiSettingsPanel";
 import { AnswerQualityPanel } from "./AnswerQualityPanel";
 import { DepartmentsPanel } from "./DepartmentsPanel";
 import { FailedPanel } from "./FailedPanel";
+import { LearnedList } from "./LearnedList";
 import { TABS, adminGate } from "./logic";
 import type { TabId } from "./logic";
 import { NumbersPanel } from "./NumbersPanel";
@@ -97,7 +98,12 @@ export function AdminView({ twoStep }: { twoStep: ReactNode }) {
         {active === "numbers" && <NumbersPanel />}
         {active === "usage" && <UsagePanel />}
         {active === "failed" && <FailedPanel />}
-        {active === "quality" && <AnswerQualityPanel />}
+        {active === "quality" && (
+          <div className={styles.panelStack}>
+            <AnswerQualityPanel />
+            <LearnedList />
+          </div>
+        )}
       </Tabs>
     </div>
   );

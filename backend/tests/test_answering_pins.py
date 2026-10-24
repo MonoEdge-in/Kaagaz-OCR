@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from kaagaz.answering.evidence import Evidence, enough_evidence, number_evidence
-from kaagaz.answering.pins import LIFT_OTHER, LIFT_SAME, Pin, lifts, pinned_first
+from kaagaz.answering.pins import LIFT_LEARNED, LIFT_OTHER, LIFT_SAME, Pin, lifts, pinned_first
 from kaagaz.answering.service import AnswerService
 from tests.test_answering_golden import (
     NOW,
@@ -141,3 +141,40 @@ def test_the_timing_line_counts_the_hits_a_pick_moved(caplog: pytest.LogCaptureF
     lines = [r.getMessage() for r in caplog.records if r.name == "kaagaz.answering.timing"]
     assert [" pinned=1 " in lines[0], " pinned=0 " in lines[1]] == [True, True]
     assert "deed" not in " ".join(lines)
+
+
+# PRD 6 F3: what Kaagaz learns from Useful and Wrong documents.
+def useful(user: str, *, own: bool = False, document: str = "d", question: str = QUESTION) -> Pin:
+    return Pin(document, 1, False, question, kind="useful", user_id=user, own=own)
+
+
+def wrong(user: str, *, own: bool = False, document: str = "d") -> Pin:
+    return Pin(document, 1, False, QUESTION, kind="wrong", user_id=user, own=own)
+
+
+def test_my_useful_lifts_the_page_one_place_for_my_later_questions_on_the_same_words() -> None:
+    assert LIFT_LEARNED == 1
+    assert lifts([useful("me", own=True)], KEYWORDS) == {"d": {1: LIFT_LEARNED}}
+    assert lifts([useful("me", own=True, question="What is the rent of the Pune flat?")], KEYWORDS) == {}
+    evidence = number_evidence(deeds())
+    mark = useful("me", own=True, document=evidence[-1].hit.document_id)
+    ordered, moved = pinned_first(evidence, lifts([mark], KEYWORDS), alone)
+    assert names(ordered)[-2:] == ["deed-e.pdf", "deed-d.pdf"] and moved == 1  # one place, never a piece more
+
+
+def test_another_persons_useful_lifts_for_everyone_only_once_two_people_marked_it() -> None:
+    assert lifts([useful("ravi")], KEYWORDS) == {}
+    assert lifts([useful("ravi"), useful("ravi")], KEYWORDS) == {}  # one person twice is still one
+    assert lifts([useful("ravi"), useful("asha")], KEYWORDS) == {"d": {1: LIFT_LEARNED}}
+    assert lifts([useful("ravi"), useful("me", own=True)], KEYWORDS) == {"d": {1: LIFT_LEARNED}}
+
+
+def test_wrong_documents_stops_learned_lifts_on_those_words_but_never_a_pick() -> None:
+    assert lifts([useful("me", own=True), wrong("me", own=True)], KEYWORDS) == {}
+    # Someone else's Wrong documents stops the lift for everyone, not my own.
+    everyone = [useful("ravi"), useful("asha"), wrong("kiran")]
+    assert lifts(everyone, KEYWORDS) == {}
+    assert lifts([*everyone, useful("me", own=True)], KEYWORDS) == {"d": {1: LIFT_LEARNED}}
+    assert lifts([useful("me", own=True), wrong("me", own=True, document="other")], KEYWORDS) == {"d": {1: 1}}
+    pick = Pin("d", 1, same_conversation=True)
+    assert lifts([pick, wrong("me", own=True)], KEYWORDS) == {"d": {1: LIFT_SAME}}

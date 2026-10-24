@@ -75,3 +75,30 @@ def test_b_admin_never_lists_counts_or_marks_a_not_useful_answers(db: Database) 
     with db.customer(a_admin.customer_id) as conn:
         assert conn.execute(text("SELECT handled_at FROM feedback")).scalar_one() is None
     assert not [row for row in api.audit_rows(b_admin.customer_id) if row[0].startswith("feedback.")]
+
+
+def test_b_never_gets_a_lifts_nor_sees_or_removes_what_a_taught(db: Database) -> None:
+    """PRD 6 F3: two of A's people mark the same answer's document Useful; B asks the same
+    question and gets none of A's marks (so no lift), sees none of them in What Kaagaz
+    learned, and Remove on A's document is 404 with A's learning untouched."""
+    api = Api(db)
+    a_admin, b_admin = api.new_admin("Sharma Traders"), api.new_admin("Mehta Textiles")
+    document = api.add_document(a_admin.customer_id, name="sharma-secret.pdf")
+    citation = {"n": 1, "document_id": document, "document_name": "sharma-secret.pdf", "page_no": 1}
+    api.answers.reply = {**api.answers.reply, "citations": [citation]}
+    for a_member in (api.sign_in(a_admin.customer_id), api.sign_in(a_admin.customer_id)):
+        answer = a_member.client.post("/api/chat", json={"question": "total?"}, headers=CSRF).json()["answer"]
+        path = f"/api/messages/{answer['id']}/feedback"
+        assert a_member.client.post(path, json={"rating": "up"}, headers=CSRF).status_code == 204
+    assert len(a_admin.client.get("/api/admin/learned").json()["items"]) == 1
+
+    b_member = api.sign_in(b_admin.customer_id)
+    assert b_member.client.post("/api/chat", json={"question": "total?"}, headers=CSRF).status_code == 200
+    assert [pin for pin in api.answers.pins[-1] if pin.kind != "pick"] == []
+    seen = b_admin.client.get("/api/admin/learned")
+    assert seen.json()["items"] == [] and "sharma" not in seen.text
+    removed = b_admin.client.delete(f"/api/admin/learned/{document}", headers=CSRF)
+    assert removed.status_code == 404
+    assert len(a_admin.client.get("/api/admin/learned").json()["items"]) == 1
+    with db.customer(a_admin.customer_id) as conn:
+        assert conn.execute(text("SELECT count(*) FROM learning_removals")).scalar_one() == 0

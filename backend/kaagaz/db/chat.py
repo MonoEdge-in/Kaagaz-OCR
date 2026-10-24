@@ -16,10 +16,13 @@ changes nothing.
 """
 
 import json
+import logging
 from collections.abc import Mapping, Sequence
 from typing import Any
 
 from sqlalchemy import Connection, RowMapping, text
+
+logger = logging.getLogger(__name__)
 
 CONVERSATION_LIST_LIMIT = 50
 QUESTIONS_SHOWN = 50
@@ -364,6 +367,53 @@ def pins_for(
         .mappings()
         .all()
     )
+
+
+LEARN_LIMIT = 200  # PRD 6 F3: the newest Useful marks a question reads (Wrong documents: all)
+LEARN_DAYS = 90  # PRD 6 F3: a Useful or Wrong documents mark older than this teaches no more
+
+# PRD 6 F3 (answering/pins.py): each cited page of an answered message rated Useful, or Not
+# useful for wrong documents, in the last :days days, on a live current document that no
+# admin removed since (learning_removals). Every person's in the customer (RLS and :c).
+MARKS = (
+    "SELECT f.user_id, f.rating, f.created_at, c.document_id, c.page_no, d.display_name,"
+    " coalesce(m.answer ->> 'normalized_question', '') AS question"
+    " FROM feedback f"
+    " JOIN messages m ON m.customer_id = f.customer_id AND m.id = f.message_id"
+    " CROSS JOIN LATERAL (SELECT DISTINCT CAST(e ->> 'document_id' AS uuid) AS document_id,"
+    " CAST(e ->> 'page_no' AS integer) AS page_no FROM jsonb_array_elements(CASE WHEN"
+    " jsonb_typeof(m.answer -> 'citations') = 'array' THEN m.answer -> 'citations' ELSE '[]' END) e"
+    " WHERE e ->> 'document_id' ~ '^[0-9a-f-]{36}$' AND e ->> 'page_no' ~ '^[0-9]{1,6}$') c"
+    " JOIN documents d ON d.customer_id = f.customer_id AND d.id = c.document_id"
+    " AND d.deleted_at IS NULL AND d.is_current"
+    " WHERE f.customer_id = :c AND f.created_at >= now() - make_interval(days => :days)"
+    " AND m.answer ->> 'status' = 'answered'"
+    " AND (f.rating = 'up' OR 'wrong_documents' = ANY (f.reason_codes))"
+    " AND NOT EXISTS (SELECT 1 FROM learning_removals r WHERE r.customer_id = f.customer_id"
+    " AND r.document_id = c.document_id AND r.removed_at >= f.created_at)"
+)
+# Every Wrong documents mark (never capped, so a stop never lapses), then the newest Useful
+# ones, one more than LEARN_LIMIT so learned_for can tell when the cap cut the window short.
+_LEARNED_SQL = (
+    "SELECT * FROM (SELECT x.document_id::text AS document_id, x.page_no, x.question, false AS useful,"
+    " x.user_id::text AS user_id, x.user_id = CAST(:u AS uuid) AS own, x.created_at FROM ({marks}) x"
+    " WHERE x.rating = 'down') w"
+    " UNION ALL SELECT * FROM (SELECT x.document_id::text, x.page_no, x.question, true, x.user_id::text,"
+    " x.user_id = CAST(:u AS uuid), x.created_at FROM ({marks}) x WHERE x.rating = 'up'"
+    " ORDER BY x.created_at DESC, x.document_id, x.page_no LIMIT :n) u"
+)
+_LEARNED = text(_LEARNED_SQL.format(marks=MARKS))  # fixed fragments only, as db/models.py's
+
+
+def learned_for(conn: Connection, customer_id: str, user_id: str) -> list[RowMapping]:
+    """PRD 6 F3: every Wrong documents mark (MARKS) and the newest LEARN_LIMIT Useful ones (more
+    in the window: logged, a code only); ``useful``, ``user_id`` and ``own`` say whose. One query."""
+    params = {"c": customer_id, "u": user_id, "days": LEARN_DAYS, "n": LEARN_LIMIT + 1}
+    rows = conn.execute(_LEARNED, params).mappings().all()
+    useful = sorted((row for row in rows if row["useful"]), key=lambda row: row["created_at"], reverse=True)
+    if len(useful) > LEARN_LIMIT:
+        logger.warning("learned marks capped", extra={"code": "learn_limit"})
+    return [row for row in rows if not row["useful"]] + useful[:LEARN_LIMIT]
 
 
 # PRD 6 F1: what went wrong, the boxes on Not useful, in the form's order (0050's CHECK).
