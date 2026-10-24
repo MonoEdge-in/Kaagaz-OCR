@@ -31,7 +31,7 @@ The steps, in order, for one (customer, document):
 6. Pieces for search (kaagaz.chunking) and the rule values for fixed queries
    (kaagaz.extraction). Then the model stage (PRD 2 D1 to D6,
    ``extraction.understanding``), when a chat model is set: the document card
-   (and PR 6's invoice windows), with the heartbeat and progress
+   (and PR 6's invoice windows, or PRD 6's land windows), with the heartbeat and progress
    "understanding i of n" after each call and after its searches. The card
    gives the document's type, languages, summary, date and card JSON; with the
    model off or down there is none, the languages come from the pieces (L2),
@@ -246,8 +246,9 @@ from kaagaz.extraction.labels import (
     label_values,
     spot_unsure,
 )
+from kaagaz.extraction.land import value_number
 from kaagaz.extraction.learned import LearnedCorrection, apply_learned
-from kaagaz.extraction.parsing import parse_amount, parse_date
+from kaagaz.extraction.parsing import parse_date
 from kaagaz.extraction.quotes import reader_text
 from kaagaz.extraction.spreadsheet import values_from_cells
 from kaagaz.extraction.understanding import (
@@ -1273,17 +1274,15 @@ class DocumentProcessor:
     ) -> Understanding:
         """The model stage (``extraction.understanding``), and its numbers on the run.
         With no chat model it is today's result: no card, and the rule values as they are.
-        Its calls are billed as card until ``understand`` beats 2 (the card is done), then
-        as invoice (its windows, SP1)."""
+        Its calls are billed as card until ``understand`` starts its invoice or land windows,
+        then as invoice or land (SP1)."""
         stage = contextlib.ExitStack()
-        billed_as = "card"
+
+        def windows(kind: str) -> None:
+            stage.close()
+            stage.enter_context(self._billed(job, run, kind))
 
         def beat(done: int, total: int) -> None:
-            nonlocal billed_as
-            if done >= 2 and billed_as == "card":
-                billed_as = "invoice"
-                stage.close()
-                stage.enter_context(self._billed(job, run, "invoice"))
             heartbeat()
             self._progress(job, run, "understanding", done, total)
 
@@ -1302,6 +1301,7 @@ class DocumentProcessor:
                 beat=beat,
                 spans=spans,
                 invoice_windows=None if budget is None else budget.invoice_windows,
+                on_windows=windows,
             )
         run.model_calls = understanding.model_calls
         run.model_error = understanding.error_code
@@ -2049,9 +2049,9 @@ def _points_at(location: Location) -> bool:
 
 
 def _with_parsed(value: ExtractedValue) -> ExtractedValue:
-    return replace(
-        value, value_number=parse_amount(value.value_text), value_date=parse_date(value.value_text)
-    )
+    """Its number (a land share's only when a printed percentage, ``land.value_number``) and date."""
+    text = value.value_text
+    return replace(value, value_number=value_number(value.field, text), value_date=parse_date(text))
 
 
 def _check_crop(page: Image.Image, box: BoxLocation) -> Image.Image:
