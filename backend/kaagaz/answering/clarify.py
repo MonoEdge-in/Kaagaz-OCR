@@ -32,6 +32,7 @@ from kaagaz.answering.rewrite import Plan
 from kaagaz.answering.sanitize import clean_text
 from kaagaz.chunking.script import latin_spelling, sound_key
 from kaagaz.db.engine import Database
+from kaagaz.extraction.links import normalise_identifier
 
 _log = logging.getLogger(__name__)
 
@@ -45,6 +46,7 @@ MISSING["place"] = "Which places should I look in?"
 ALL = {"id": "all", "label": "All of these", "kind": "all"}
 _BETWEEN = re.compile(r"\bbetween\s+(.+?)\s+and\s+(.+?)(?=[?.!,]|$)", re.IGNORECASE)
 _WORD = re.compile(r"[a-z0-9]+")
+_LETTER = r"[\w\u0900-\u097F]"  # a letter, digit or Devanagari sign: a word goes on
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,17 +100,23 @@ class Vocabulary(Protocol):
         """The newest places sharing a land record with one of ``districts`` (``latin_key``s)."""
         ...
 
+    def within(self, documents: Sequence[str] | None) -> "Vocabulary":
+        """The vocabulary of ``documents`` only (the chat's scope names them); None: every one."""
+        ...
+
 
 _CANDIDATES = text(
     "WITH typed AS (SELECT * FROM unnest(CAST(:n AS int[]), CAST(:kinds AS text[]), CAST(:latins AS text[]),"
     " CAST(:sounds AS text[]), CAST(:folds AS text[])) AS t(n, kind, latin, sound, fold)),"
-    " vocabulary AS (SELECT k.kind, k.latin, min(k.sound) AS sound, max(d.created_at) AS newest,"
+    " vocabulary AS MATERIALIZED (SELECT k.kind, k.latin, min(k.sound) AS sound, max(d.created_at) AS newest,"
     " (array_agg(v.value_text ORDER BY d.created_at DESC, v.id))[1] AS label,"
     " array_agg(DISTINCT k.document_id::text) AS documents FROM value_keys k"
     " JOIN documents d ON d.customer_id = k.customer_id AND d.id = k.document_id"
     " AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
     " JOIN extracted_values v ON v.customer_id = k.customer_id AND v.id = k.value_id"
-    " WHERE k.customer_id = :c AND k.kind = ANY(CAST(:kinds AS text[])) GROUP BY k.kind, k.latin)"
+    " WHERE k.customer_id = :c AND k.kind = ANY(CAST(:kinds AS text[]))"
+    " AND (CAST(:scoped AS uuid[]) IS NULL OR k.document_id = ANY(CAST(:scoped AS uuid[])))"
+    " GROUP BY k.kind, k.latin)"
     " SELECT t.n, w.kind, w.latin, w.label, w.documents, w.aliased FROM typed t CROSS JOIN LATERAL ("
     " SELECT x.*, EXISTS (SELECT 1 FROM organization_word_suggestions o WHERE o.customer_id = :c"
     " AND o.status = 'approved' AND o.document_id IS NULL AND o.word_fold = t.fold"
@@ -125,7 +133,8 @@ _NEAR = text(
     " AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
     " JOIN extracted_values v ON v.customer_id = k.customer_id AND v.id = k.value_id"
     " WHERE k.customer_id = :c AND k.kind = 'place' AND k.place_level <> 'district'"
-    " AND k.latin <> ALL(CAST(:districts AS text[])) AND EXISTS ("
+    " AND k.latin <> ALL(CAST(:districts AS text[]))"
+    " AND (CAST(:scoped AS uuid[]) IS NULL OR k.document_id = ANY(CAST(:scoped AS uuid[]))) AND EXISTS ("
     " SELECT 1 FROM value_keys z JOIN extracted_values zv ON zv.customer_id = z.customer_id"
     " AND zv.id = z.value_id WHERE z.customer_id = :c AND z.document_id = k.document_id"
     " AND z.place_level = 'district' AND z.latin = ANY(CAST(:districts AS text[]))"
@@ -137,15 +146,19 @@ _NEAR = text(
 class PgVocabulary:
     """The vocabulary in PostgreSQL: one statement in one ``Database.customer`` transaction."""
 
-    def __init__(self, db: Database) -> None:
-        self._db = db
+    def __init__(self, db: Database, documents: Sequence[str] | None = None) -> None:
+        self._db, self._documents = db, None if documents is None else list(documents)
+
+    def within(self, documents: Sequence[str] | None) -> "PgVocabulary":
+        return PgVocabulary(self._db, documents)
 
     def candidates(self, customer_id: str, entities: Sequence[Entity]) -> list[list[Entry]]:
         found: list[list[Entry]] = [[] for _ in entities]
-        latins = [latin_key(entity.as_typed) for entity in entities]
+        latins = [latin_key(entity.as_typed, entity.kind) for entity in entities]
         sounds = [" ".join(map(sound_key, _WORD.findall(latin))) for latin in latins]
         kinds, most = [entity.kind for entity in entities], MAX_CANDIDATES
         params = {"c": customer_id, "n": list(range(len(entities))), "kinds": kinds, "most": most}
+        params["scoped"] = self._documents
         folds = [" ".join(clean_text(entity.as_typed).casefold().split()) for entity in entities]
         params |= {"latins": latins, "sounds": sounds, "folds": folds}
         if entities:
@@ -156,7 +169,8 @@ class PgVocabulary:
 
     def near(self, customer_id: str, districts: Sequence[str]) -> list[Entry]:
         with self._db.customer(customer_id) as conn:
-            rows = conn.execute(_NEAR, {"c": customer_id, "districts": list(districts), "most": MAX_CHOICES})
+            params = {"c": customer_id, "districts": list(districts), "most": MAX_CHOICES}
+            rows = conn.execute(_NEAR, {**params, "scoped": self._documents})
             return [_entry(row) for row in rows.mappings()]
 
 
@@ -164,8 +178,11 @@ def _entry(row: RowMapping) -> Entry:
     return Entry(row["kind"], row["latin"], row["label"], tuple(sorted(row["documents"])), row["aliased"])
 
 
-def latin_key(typed: str) -> str:
-    """#245's ``latin`` of a typed name: ``latin_spelling``, casefolded, spaces collapsed."""
+def latin_key(typed: str, kind: str = "person") -> str:
+    """#245's ``latin`` of a typed name: ``latin_spelling``, casefolded, spaces collapsed; of a
+    property, ``links.normalise_identifier``."""
+    if kind == "property":
+        return normalise_identifier(clean_text(typed))
     return " ".join(latin_spelling(clean_text(typed)).casefold().split())
 
 
@@ -222,12 +239,12 @@ def tier(typed: str, entry: Entry) -> str | None:
 
 def outcome(entity: Entity, entries: Sequence[Entry]) -> tuple[str, tuple[Entry, ...]]:
     """("one" | "several" | "close" | "none", the entries) for ``entity``."""
-    typed = latin_key(entity.as_typed)
+    typed = latin_key(entity.as_typed, entity.kind)
     kept = [entry for entry in entries if usable(entry)]
     same = [entry for entry in kept if entry.aliased or entry.latin == typed]
     matched = same[:1] or [entry for entry in kept if tier(typed, entry) == "match"]
     if matched:
-        return ("one" if len(matched) == 1 else "several"), tuple(matched[:MAX_CHOICES])
+        return ("one" if len(matched) == 1 else "several"), tuple(matched)
     close = [entry for entry in kept if tier(typed, entry) == "close"][:MAX_CHOICES]
     return ("close", tuple(close)) if close else ("none", ())
 
@@ -282,7 +299,7 @@ def next_step(
     for index, (entity, entries) in enumerate(zip(entities, found, strict=True)):
         result, chosen = outcome(entity, entries)
         typed, label = clean_text(entity.as_typed), clean_text(chosen[0].label) if chosen else ""
-        if result == "one" and latin_key(typed) != chosen[0].latin:
+        if result == "one" and latin_key(typed, entity.kind) != chosen[0].latin:
             question, said = put(question, entity.as_typed, label), (*said, f"I took {typed} as {label}.")
         elif result in ("several", "close") and turn <= MAX_TURNS:
             asked = f"Did you mean {label}?" if len(chosen) == 1 else "Did you mean one of these?"
@@ -290,8 +307,7 @@ def next_step(
             rest, confirm = entities[index + 1 :], result == "close" and len(chosen) == 1
             return _asking(question, said, asked, chosen, entity, rest, turn, confirm)
         elif result == "several":
-            listed = _joined([clean_text(entry.label) for entry in chosen])
-            said = (*said, f"I looked for every {typed} in your documents: {listed}.")
+            said = (*said, f"I looked for every {typed} in your documents: {_listed(chosen)}.")
     return Step(question, said)
 
 
@@ -309,6 +325,8 @@ def _asking(
     state; ``confirm``: a "Did you mean" whose pick confirms a spelling."""
     choices: list[dict[str, Any]] = []
     for entry in entries:
+        if len(choices) == MAX_CHOICES:
+            break
         if (label := clean_text(entry.label)) not in (choice["label"] for choice in choices):
             pick = {"id": f"c{len(choices) + 1}", "label": label, "kind": "pick"}
             choices.append({**pick, "document_ids": list(entry.documents)})
@@ -345,15 +363,27 @@ def reply_to(
 
 
 def put(question: str, as_typed: str | None, said: str) -> str:
-    """``question`` with ``as_typed`` (ignoring case) made ``said``, else ``said`` added at its end."""
-    at = -1 if as_typed is None else question.casefold().find(as_typed.casefold())
-    if as_typed is None or at < 0:
+    """``question`` with ``as_typed`` (as a whole word, ignoring case) made ``said``, else ``said``
+    added at its end: "Ram" is never the start of "Ramnagar", nor राम of रामा."""
+    word = f"(?<!{_LETTER}){re.escape(as_typed)}(?!{_LETTER})" if as_typed else None
+    found = re.search(word, question, re.IGNORECASE) if word else None
+    if found is None:
         return f"{question.rstrip(' ?.')} {said}"
-    return question[:at] + said + question[at + len(as_typed) :]
+    return question[: found.start()] + said + question[found.end() :]
 
 
 def _live(label: str, entries: Sequence[Entry]) -> bool:
-    return any(entry.latin == latin_key(label) and usable(entry) for entry in entries)
+    return any(entry.latin == latin_key(label, entry.kind) and usable(entry) for entry in entries)
+
+
+def _listed(entries: Sequence[Entry]) -> str:
+    """The first MAX_CHOICES labels, and how many more ("and others" when the statement's
+    MAX_CANDIDATES may have left some out), so an open list never claims to be whole."""
+    labels = [clean_text(entry.label) for entry in entries[:MAX_CHOICES]]
+    more = len(entries) - len(labels)
+    if not more:
+        return _joined(labels)
+    return f"{', '.join(labels)} and {'others' if len(entries) >= MAX_CANDIDATES else f'{more} more'}"
 
 
 def _joined(labels: Sequence[str]) -> str:

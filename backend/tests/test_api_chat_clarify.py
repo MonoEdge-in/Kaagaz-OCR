@@ -8,6 +8,7 @@ import pytest
 from sqlalchemy import text
 
 from kaagaz.api.routers.chat import CLARIFY_GONE, answer_text
+from kaagaz.db import admin
 from kaagaz.db.engine import Database
 from tests.test_api_support import CSRF, Api, answer_json
 
@@ -90,3 +91,56 @@ def test_a_did_you_mean_pick_is_suggested_for_review_and_typed_words_answer_too(
         suggested = [tuple(map(str, row)) for row in rows]
     assert suggested == [("Puny", "Pune", "pending", signed.user_id)]  # once: never for typed words
     assert api.audit_actions(signed.customer_id).count("organization_word.suggested") == 1
+
+
+@pytest.mark.db
+def test_the_resume_state_never_leaves_and_a_clarify_is_no_question_in_the_counts(db: Database) -> None:
+    api = Api(db)  # review 1 and 6
+    signed = api.new_signed()
+    document = api.add_document(signed.customer_id, name="pune.pdf", uploaded_by=signed.user_id)
+    api.answers.reply = _clarify(document)
+    body = {"question": "Land in Puny?", "scope": {"document_ids": [document]}}
+    asked = signed.client.post("/api/chat", json=body, headers=CSRF).json()
+    api.answers.reply = answer_json()
+    reply = {"message_id": asked["answer"]["id"], "choice_ids": ["c1"]}
+    signed.client.post(
+        "/api/chat", json={"conversation_id": asked["conversation_id"], "reply": reply}, headers=CSRF
+    )
+
+    items = signed.client.get(f"/api/documents/{document}/questions").json()["items"]
+
+    shown = [("resume" in item["answer"], item["answer"]["status"]) for item in items]
+    assert shown == [(False, "answered"), (False, "clarify")]
+    with db.customer(signed.customer_id) as conn:
+        assert admin.stats(conn, signed.customer_id)["questions_total"] == 1  # one question, clarified once
+
+
+@pytest.mark.db
+def test_two_replies_at_once_never_both_answer_one_clarify(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    api = Api(db)  # review 8
+    signed = api.new_signed()
+    api.answers.reply = _clarify(
+        api.add_document(signed.customer_id, name="pune.pdf", uploaded_by=signed.user_id)
+    )
+    asked = signed.client.post("/api/chat", json={"question": "Land in Puny?"}, headers=CSRF).json()
+    api.answers.reply = answer_json()
+    reply = {"message_id": asked["answer"]["id"], "choice_ids": ["c1"]}
+    body = {"conversation_id": asked["conversation_id"], "reply": reply}
+    answer, raced = api.answers.answer, list[int]()
+
+    def racing(*args: Any, **kwargs: Any) -> Any:  # the other reply lands while this one is answered
+        if not raced:
+            raced.append(0)
+            raced[0] = signed.client.post("/api/chat", json=body, headers=CSRF).status_code
+        return answer(*args, **kwargs)
+
+    monkeypatch.setattr(api.answers, "answer", racing)
+    first = signed.client.post("/api/chat", json=body, headers=CSRF)
+
+    assert (raced, first.status_code, first.json()["error"]["message"]) == ([200], 409, CLARIFY_GONE)
+    with db.customer(signed.customer_id) as conn:
+        assert (
+            conn.execute(text("SELECT count(*) FROM messages")).scalar_one() == 4
+        )  # one question, one reply

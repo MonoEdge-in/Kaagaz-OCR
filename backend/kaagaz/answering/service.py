@@ -574,8 +574,10 @@ class AnswerService:
             return _not_found("search", question.strip(), [], model_used=False, reason="notfound_empty_scope")
         whole = self._whole(customer_id, scope)
         _timing().lap("search")
+        # Step 18: the names of the scope's documents only, when it names them.
+        vocabulary = None if self._vocabulary is None else self._vocabulary.within(scope.document_ids)
         if pending is not None:  # step 18: its picks checked again, then the names left; no rewrite
-            step = after_reply(self._vocabulary, customer_id, pending)
+            step = after_reply(vocabulary, customer_id, pending)
             return self._step_answer(
                 customer_id, step, pending.question, scope, user_id, whole, (), choice, pins
             )
@@ -604,8 +606,8 @@ class AnswerService:
         timing.whole, timing.aspects = whole is not None, len(done.aspects)
         step = Step(done.question or question, ())
         narrowed = replace(scope, timezone=EVERYTHING.timezone) != EVERYTHING  # any filter at all
-        if done.plan is not None and self._vocabulary is not None:
-            step = first_step(self._vocabulary, customer_id, step.question, done.plan, narrowed)
+        if done.plan is not None and vocabulary is not None:
+            step = first_step(vocabulary, customer_id, step.question, done.plan, narrowed)
         return self._step_answer(
             customer_id, step, question, scope, user_id, whole, done.aspects, choice, pins
         )
