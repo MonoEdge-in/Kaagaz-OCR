@@ -17,7 +17,9 @@ operators are not used under row level security, 0011): ``_RESOLVE``; ``_OWNED``
 owned together: grouped by record, ``count(DISTINCT latin)`` against how many were named, the
 relational division of the tags scope; records naming only some are offered, never mixed in);
 ``_KEYED`` (in places, at any level; a survey or khata number the same way); and
-``_SHARES_AS_PRINTED``, every land value of the records found with its spot: a share is quoted
+``_SHARES_AS_PRINTED``, every land value of the records found with its spot, in reading order
+(page, then the stored box's top and left, ``reading/spans.location_to_json``, or a cell's row
+and column): a share is quoted
 as printed, never added, subtracted or derived, the unowned share only where printed.
 
 **Map questions** ("show the map of survey 45/2", "the length of plot 12", "which survey numbers
@@ -273,7 +275,8 @@ _SHARES_AS_PRINTED = text(
         BETWEEN coalesce(CAST(:s_from AS date), '-infinity')
         AND coalesce(CAST(:s_to AS date), 'infinity'))
       AND v.document_id = ANY(CAST(:documents AS uuid[])) AND v.field = ANY(CAST(:fields AS text[]))
-    ORDER BY v.document_id, length(v.record_key), v.record_key, v.page_no, v.id
+    ORDER BY v.document_id, length(v.record_key), v.record_key, v.page_no,
+      v.region -> 'box' -> 1, v.region -> 'box' -> 0, v.region -> 'row', v.region -> 'column', v.id
     """
 )
 

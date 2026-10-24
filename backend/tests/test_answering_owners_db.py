@@ -4,6 +4,7 @@ each statement's plan under the app role."""
 
 import json
 import re
+import uuid
 from collections import Counter
 from datetime import UTC, datetime
 from typing import Any
@@ -267,6 +268,32 @@ def test_a_plot_number_is_never_a_survey_number_of_the_same_digits(keyed: Databa
         assert [d["document_id"] for d in answer["documents"]] == [only], question
     both = ask(keyed, c, "Show the map of 12")  # no word says which: either kind
     assert sorted(d["document_id"] for d in both["documents"]) == sorted([plot, survey])
+
+
+_DIMENSION = text(
+    "INSERT INTO extracted_values (id, customer_id, document_id, record_key, field, value_text,"
+    " value_raw, page_no, region, reader, label, label_reason)"
+    " VALUES (:id, :c, :d, 'land:1', 'land_dimension', :said, :said, 1, CAST(:region AS jsonb), 'test',"
+    " 'verified', 'readers_agree')"
+)
+
+
+def test_measurements_on_one_page_are_listed_top_to_bottom_then_left_to_right(keyed: Database) -> None:
+    c, _ = new_customer(keyed)
+    document = add_land(keyed, c, "Sketch.pdf", survey="45/2")
+    # Their ids sort the other way round, so only the boxes can give this order.
+    spots = [("f", "12 m", 0.6, 0.1), ("e", "30 m", 0.1, 0.1), ("0", "14 m", 0.1, 0.5)]
+    with keyed.customer(c) as conn:
+        for first, said, left, top in spots:
+            value_id = first + uuid.uuid4().hex[1:]
+            region = json.dumps({"kind": "box", "page": 1, "box": [left, top, left + 0.1, top + 0.02]})
+            conn.execute(_DIMENSION, {"id": value_id, "c": c, "d": document, "said": said, "region": region})
+
+    answer = ask(keyed, c, "What are the dimensions of survey 45/2?")
+
+    assert [s["text"] for s in answer["sentences"]] == [
+        "The map values printed for Survey 45/2: other measurements 30 m, 12 m and 14 m."
+    ]
 
 
 def test_a_record_known_by_its_khata_number_alone_is_named_and_cited_by_it(keyed: Database) -> None:
