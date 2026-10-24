@@ -26,6 +26,7 @@
 .greeting {
   margin: 0;
   font-size: clamp(2rem, 1.5rem + 1.8vw, 3rem);
+  line-height: 1.2; /* room for Devanagari vowel marks on a two-line name */
   overflow-wrap: anywhere;
 }
 
@@ -70,7 +71,7 @@
   outline: none;
   background: transparent;
   color: var(--k-ink);
-  font: 400 1rem var(--k-font-body);
+  font: 400 var(--fs-field) var(--k-font-body);
 }
 
 .askInput::placeholder {
@@ -236,9 +237,11 @@ a.action:focus-visible {
   border-inline-end: 0;
 }
 
-a.total:hover {
-  background: var(--k-ground);
-  color: var(--k-ink);
+@media (hover: hover) and (pointer: fine) {
+  a.total:hover {
+    background: var(--k-ground);
+    color: var(--k-ink);
+  }
 }
 
 .eyebrowRow {
@@ -306,9 +309,11 @@ a.total:hover {
   text-decoration: none;
 }
 
-.department:hover {
-  border-color: var(--k-rule-strong);
-  color: var(--k-ink);
+@media (hover: hover) and (pointer: fine) {
+  .department:hover {
+    border-color: var(--k-rule-strong);
+    color: var(--k-ink);
+  }
 }
 
 .departmentName {
@@ -364,9 +369,11 @@ a.total:hover {
   text-decoration: none;
 }
 
-.recentLink:hover {
-  color: var(--k-accent);
-  text-decoration: underline;
+@media (hover: hover) and (pointer: fine) {
+  .recentLink:hover {
+    color: var(--k-accent);
+    text-decoration: underline;
+  }
 }
 
 .recentMeta {
@@ -433,7 +440,7 @@ a.total:hover {
 
   .action {
     animation: home-rise var(--motion-calm) var(--ease-out) both;
-    animation-delay: calc(var(--i, 0) * 70ms + 180ms);
+    animation-delay: calc(var(--i, 0) * 40ms + 80ms);
     transition: transform var(--t-fast) var(--ease);
   }
 

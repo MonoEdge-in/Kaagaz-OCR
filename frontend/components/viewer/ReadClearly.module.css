@@ -11,7 +11,7 @@
   min-width: 0;
   padding: var(--space-3);
   border: 1px solid var(--border);
-  border-radius: var(--k-r-2);
+  border-radius: var(--k-r-4);
   background: var(--bg-surface);
 }
 
@@ -124,8 +124,10 @@
   cursor: pointer;
 }
 
-.line:hover {
-  background: var(--bg-subdued);
+@media (hover: hover) and (pointer: fine) {
+  .line:hover {
+    background: var(--bg-hover);
+  }
 }
 
 /* The line opened: the page's own highlight colour, behind the words. */

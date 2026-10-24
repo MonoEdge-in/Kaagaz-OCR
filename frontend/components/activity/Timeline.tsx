@@ -78,7 +78,7 @@ export function Timeline({
   }
   if (items === null) {
     return (
-      <p className="muted" role="status">
+      <p className="muted delayed" role="status">
         {ACTIVITY_TEXT.loading}
       </p>
     );

@@ -279,8 +279,10 @@
   font-size: var(--fs-lg);
 }
 
-.form :global(.input):hover {
-  border-bottom-color: var(--text-primary);
+@media (hover: hover) and (pointer: fine) {
+  .form :global(.input):hover {
+    border-bottom-color: var(--text-primary);
+  }
 }
 
 .form :global(.input):focus-visible {

@@ -54,7 +54,7 @@ export function CompareView({ documentId, withId }: { documentId: string; withId
         </div>
       )}
       {data === null && error === null && (
-        <p className="muted" role="status">
+        <p className="muted delayed" role="status">
           {VERSION_TEXT.loading}
         </p>
       )}

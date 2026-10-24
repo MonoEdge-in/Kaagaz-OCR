@@ -206,7 +206,7 @@ export function Dashboard() {
         </div>
       )}
       {data === null && error === null && (
-        <p className="k-muted" role="status">
+        <p className="k-muted delayed" role="status">
           {DASHBOARD_TEXT.loading}
         </p>
       )}
