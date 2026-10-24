@@ -41,6 +41,7 @@ import {
   cardId,
   citationLink,
   citationMap,
+  documentLink,
   figureOf,
   isPinned,
   listedDocuments,
@@ -112,7 +113,7 @@ function Script({ text }: { text: string }) {
 /** PRD 6 A: the documents a v2 answer lists, each with its title and why, the figures its
  * sources print with their labels beside them, and the pages to open (a closest document,
  * citing nothing, opens at its start); then how many more are in Sources. */
-function DocumentList({ answer }: { answer: Answer }) {
+function DocumentList({ answer, terms }: { answer: Answer; terms: readonly string[] }) {
   const { documents, more } = listedDocuments(answer);
   if (documents.length === 0) return null;
   return (
@@ -149,13 +150,13 @@ function DocumentList({ answer }: { answer: Answer }) {
               <div className={styles.chipRow}>
                 {pages.length > 0 ? (
                   pages.map((c) => (
-                    <Link key={c.n} className={styles.chip} href={citationLink(c)}>
+                    <Link key={c.n} className={styles.chip} href={citationLink(c, terms)}>
                       <Icon name="open" size={16} />
                       Page {c.page_no}
                     </Link>
                   ))
                 ) : (
-                  <Link className={styles.chip} href={`/documents/${encodeURIComponent(doc.document_id)}`}>
+                  <Link className={styles.chip} href={documentLink(doc.document_id, terms)}>
                     <Icon name="open" size={16} />
                     Open
                   </Link>
@@ -213,6 +214,8 @@ export const AnswerView = memo(function AnswerView({
   }
 
   const reading = questionReading(question, answer);
+  // The question's words, marked in the sources and carried by every link into the viewer (package H).
+  const terms = matchTerms(question, reading.searchingFor, answer.normalized_question);
   const v2 = answer.version === 2;
   const opening =
     v2 && answer.opening ? (
@@ -220,7 +223,7 @@ export const AnswerView = memo(function AnswerView({
         <Script text={answer.opening} />
       </p>
     ) : null;
-  const listed = v2 ? <DocumentList answer={answer} /> : null;
+  const listed = v2 ? <DocumentList answer={answer} terms={terms} /> : null;
   const assumed =
     v2 && answer.assumptions && answer.assumptions.length > 0 ? (
       <p className={styles.understood}>{answer.assumptions.join(" ")}</p>
@@ -279,7 +282,7 @@ export const AnswerView = memo(function AnswerView({
         <ul className={styles.sources}>
           {answer.closest_documents.map((doc) => (
             <li key={doc.id}>
-              <DocumentRow id={doc.id} name={doc.display_name} />
+              <DocumentRow id={doc.id} name={doc.display_name} terms={terms} />
             </li>
           ))}
         </ul>
@@ -363,7 +366,6 @@ export const AnswerView = memo(function AnswerView({
   }
 
   const cards = citationMap(answer);
-  const terms = matchTerms(question, reading.searchingFor, answer.normalized_question);
   const sources = rankedSources(answer.citations, pin);
   // The source put on top is the first, when it is one of them (rankedSources).
   const pinnedFirst = sources[0] && isPinned(pin, sources[0].document_id, sources[0].page_no, sources[0].ref_id);

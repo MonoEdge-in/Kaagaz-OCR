@@ -89,6 +89,7 @@
   --hl-halo: #1f1a14; /* dark ink: the outer highlight ring, the same in both themes */
   --mine-on-paper: #204494; /* my words markers: pages are paper white in both themes */
   --illegible-on-paper: #9e2219; /* PRD 5 U3 (V8): "couldn't read" marks, the same in dark */
+  --words-on-paper: #1b7a4b; /* package H: the lines holding your words, the light --success, the same in dark */
 
   /* The select's caret in --text-muted (an image cannot read a token). */
   --select-caret: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2 4l4 4 4-4' fill='none' stroke='%23646B74' stroke-width='1.5'/%3E%3C/svg%3E");

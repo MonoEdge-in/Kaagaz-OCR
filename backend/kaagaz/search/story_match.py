@@ -238,6 +238,10 @@ class _Matcher:
         return matched | alternative, exact, matched
 
 
+# Step 2's rule for the words of a page too (your words on the page, kaagaz/search/page_words.py).
+WordMatcher = _Matcher
+
+
 def form_matches(form: str, story_word: str) -> bool:
     """Step 2 for one word and one story word, both as text (tests and probes)."""
     return _Matcher([QueryWord(form, _alternatives(form))]).masks(story_word)[0] == 1

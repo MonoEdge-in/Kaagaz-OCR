@@ -1,6 +1,6 @@
 """The document routes: list, upload, a new version, detail and its summary, rename or move,
 the original file, page images, each page's scanned text and the lines holding a search's
-words (``get_page_words``), spreadsheet cells, and
+words (``get_document_words``), spreadsheet cells, and
 Trash (move to Trash, restore, delete forever).
 
 Why some choices:
@@ -1365,21 +1365,19 @@ def get_page_readings(document_id: uuid.UUID, page_no: int, user: User, context:
     return page_readings(page_no, rows, marks)
 
 
-@router.get("/documents/{document_id}/pages/{page_no}/words")
-def get_page_words(
+@router.get("/documents/{document_id}/words")
+def get_document_words(
     document_id: uuid.UUID,
-    page_no: int,
     user: User,
     context: Context,
     w: Annotated[list[str] | None, Query(max_length=page_words.MAX_WORDS)] = None,
 ) -> dict[str, Any]:
-    """Your words on the page (package H): the regions of this page's lines that hold the
-    words (``w``, at most 8, cleaned by ``page_words.clean_words``), and every page with
-    such a line. Who may ask is who may see the page image: another customer's id and a
-    rejected file are 404, a family in Trash 409 ``in_trash`` (T1). Regions and page
-    numbers only, never text. One statement."""
-    if page_no < 1:
-        raise ApiError(404, "not_found")
+    """Your words on the page (package H): the regions of the document's lines that hold the
+    words (``w``, at most 8, cleaned by ``page_words.clean_words``; at most
+    ``page_words.MAX_BOXES``), and every page with such a line. Asked once a document and
+    words: the viewer keeps it while its pages change. Who may ask is who may see the page
+    image: another customer's id and a rejected file are 404, a family in Trash 409
+    ``in_trash`` (T1). Regions and page numbers only, never text. One statement."""
     words = page_words.clean_words(w or [])
     with context.db.customer(user.customer_id) as conn:
         found = listing.word_lines(conn, user.customer_id, str(document_id))
@@ -1390,8 +1388,8 @@ def get_page_words(
         raise ApiError(409, "in_trash", "This document is in the Trash. Restore it first.")
     if status == "rejected":
         raise ApiError(404, "not_found")
-    boxes, pages = page_words.word_regions(pieces, words, page_no)
-    return {"page_no": page_no, "boxes": boxes, "pages": pages}
+    boxes, pages = page_words.word_regions(pieces, words)
+    return {"boxes": boxes, "pages": pages}
 
 
 @router.get("/documents/{document_id}/pages/{page_no}/cells")

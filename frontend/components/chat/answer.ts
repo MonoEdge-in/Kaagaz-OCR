@@ -243,9 +243,28 @@ export function citationSource(citation: Pick<Citation, "source_state">): "live"
   }
 }
 
-/** "Open page": the document screen at the cited page, with the spot highlighted. */
-export function citationLink(citation: Citation): string {
-  return pageLink(citation.document_id, citation.page_no, citationRegion(citation));
+/** "Open page": the document screen at the cited page, with the spot highlighted, and the
+ * asker's words (`terms`, matchTerms) lit there too (package H, linkWords). */
+export function citationLink(citation: Citation, terms: readonly string[] = []): string {
+  return pageLink(citation.document_id, citation.page_no, citationRegion(citation), { words: linkWords(...terms) });
+}
+
+/** A document opened at its start (a closest document), the asker's words lit (package H). */
+export function documentLink(documentId: string, terms: readonly string[] = []): string {
+  const words = linkWords(...terms);
+  const base = `/documents/${encodeURIComponent(documentId)}`;
+  return words.length > 0 ? `${base}?${new URLSearchParams({ words: words.join(" ") }).toString()}` : base;
+}
+
+export const MAX_LINK_WORDS = 8;
+export const MAX_LINK_WORD_CHARS = 40;
+
+/** Package H: the words a link into the viewer carries, and the viewer reads back from it: the
+ * texts' matchTerms (never a stop word), the first MAX_LINK_WORDS, each at most 40 characters. */
+export function linkWords(...texts: (string | null | undefined)[]): string[] {
+  return matchTerms(...texts)
+    .slice(0, MAX_LINK_WORDS)
+    .map((word) => word.slice(0, MAX_LINK_WORD_CHARS));
 }
 
 /**
@@ -337,13 +356,16 @@ const UNMARKED = new Set(
   ).split(" "),
 );
 
+// A word: letters, marks and digits, "-" or "/" inside it, and "," or "." between two digits,
+// so "1,042", "1,04,200", "7/12" and "INV-1042" stay whole (package H review: never "042").
+const TERM = /[\p{L}\p{M}\p{N}]+(?:(?:(?<=\p{N})[,.](?=\p{N})|[/-])[\p{L}\p{M}\p{N}]+)*/gu;
+
 /** The words to mark in a source's text: the question's and how it was read, three
  * letters or more (or digits), each once, longest first. O(n). */
 export function matchTerms(...texts: (string | null | undefined)[]): string[] {
   const words = new Set<string>();
   for (const text of texts) {
-    for (const word of (text ?? "").normalize("NFKC").toLowerCase().split(/[^\p{L}\p{M}\p{N}-]+/u)) {
-      const bare = word.replace(/^-+|-+$/g, "");
+    for (const bare of (text ?? "").normalize("NFKC").toLowerCase().match(TERM) ?? []) {
       if (bare.length >= 3 && !UNMARKED.has(bare)) words.add(bare);
     }
   }

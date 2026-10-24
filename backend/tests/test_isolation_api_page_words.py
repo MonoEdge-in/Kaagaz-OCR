@@ -18,9 +18,9 @@ def test_b_never_gets_a_boxes_and_a_document_is_not_found_for_b(db: Database) ->
     a_deed = sale_deed(api, a.customer_id)
     b_deed = api.add_document(b.customer_id, detected_type="png", name="lease.png")
     add_pieces(db, b.customer_id, b_deed, [("Tenant: Nikhil Varde", [box(1, 0.7)])])
-    path = f"/api/documents/{a_deed}/pages/1/words?w=krishna&w=maval"
+    path = f"/api/documents/{a_deed}/words?w=krishna&w=maval"
 
-    assert words(a, a_deed, 1, "krishna", "maval")["boxes"] == [box(1, 0.2), box(1, 0.5)]  # the control
+    assert words(a, a_deed, "krishna", "maval")["pages"] == [1, 2]  # the control
 
     other = b.client.get(path)
     assert other.status_code == 404
@@ -28,7 +28,7 @@ def test_b_never_gets_a_boxes_and_a_document_is_not_found_for_b(db: Database) ->
     assert "0.2" not in other.text and "pages" not in other.text
 
     # B's own document with A's words: only B's lines, never A's.
-    assert words(b, b_deed, 1, "krishna", "maval", "sohoni") == {"page_no": 1, "boxes": [], "pages": []}
-    assert words(b, b_deed, 1, "varde")["boxes"] == [box(1, 0.7)]
+    assert words(b, b_deed, "krishna", "maval", "sohoni") == {"boxes": [], "pages": []}
+    assert words(b, b_deed, "varde")["boxes"] == [box(1, 0.7)]
 
     assert api.client().get(path).status_code == 401
