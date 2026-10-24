@@ -115,7 +115,15 @@ from kaagaz.db.engine import Database, make_engine
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import Job
 from kaagaz.jobs.catalog import RefreshCatalog, Refreshed, last_refreshed, refresh
-from kaagaz.jobs.fair_share import FairShare, ReadingCap, SweepLock, first_free_lock, no_lock, sweep_lock
+from kaagaz.jobs.fair_share import (
+    PLATFORM_BUSY,
+    FairShare,
+    ReadingCap,
+    SweepLock,
+    first_free_lock,
+    no_lock,
+    sweep_lock,
+)
 from kaagaz.jobs.ports import LeaseLost, QueueSetupError, WorkQueue
 from kaagaz.jobs.purge import (
     CustomerStorage,
@@ -307,6 +315,7 @@ class MarkExhausted:
 STOPPING = "stopping"  # a job handed back by a worker that is stopping
 FEATURE_OFF = "feature_off"  # Scanning with AI switched off by the super admin (0038, 0039)
 FEATURE_OFF_DEFER_SECONDS = 60
+PLATFORM_BUSY_PAUSE_SECONDS = 2.0  # package S: an idle copy's wait after a platform_busy hand-back
 
 
 def admission(
@@ -314,6 +323,7 @@ def admission(
     slot: Admit,
     stopping: Callable[[], bool] = lambda: False,
     scanning_on: Callable[[str], bool] = lambda _customer: True,
+    pause: Callable[[float], object] = lambda _seconds: None,
 ) -> Admit:
     """The worker's ``admit`` (PRD 5 Q5): once ``stopping()`` (SIGTERM came while the queue
     was polled), the job is handed straight back for another worker (council 16 Oct 2026),
@@ -324,7 +334,9 @@ def admission(
     the job waits FEATURE_OFF_DEFER_SECONDS, uncounted; otherwise
     ``slot(job)`` (FairShare.slot) holds the customer's slot for the try, or hands the
     job back. Each hand-back is logged at debug with the job's ids and a fixed code,
-    never another customer's count. O(1) besides the slot."""
+    never another customer's count. After a ``platform_busy`` hand-back (package S) the
+    worker waits PLATFORM_BUSY_PAUSE_SECONDS on ``pause`` (the stop event's wait), so idle
+    copies under a lowered cap do not spin on the queue. O(1) besides the slot."""
 
     @contextlib.contextmanager
     def admit(job: Job) -> Iterator[None]:
@@ -340,6 +352,8 @@ def admission(
                 held.enter_context(slot(job))
             except Deferred as deferred:
                 logger.debug("job deferred", extra={**ids, "outcome": "deferred", "code": deferred.code})
+                if deferred.code == PLATFORM_BUSY:
+                    pause(PLATFORM_BUSY_PAUSE_SECONDS)
                 raise
             yield
 
@@ -830,6 +844,7 @@ def _serve(settings: Settings) -> None:
             slots,
             stop.is_set,
             functools.partial(_scanning_on, db) if settings.ocr_engine == GEMINI else lambda _customer: True,
+            stop.wait,
         ),
         mark_run_exhausted=ensemble.exhausted,
         record_run_attempt=ensemble.record_attempt,
