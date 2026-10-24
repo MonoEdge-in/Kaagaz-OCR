@@ -29,6 +29,19 @@ export function downloadHref(document: Pick<DocumentSummary, "id" | "status">): 
 export type EditAction = "rename" | "move" | "tags";
 export type RowAction = EditAction | "version" | "trash" | "restore" | "forever" | "read";
 
+/** What each action does, in one plain line under it in the menu (plain words, 25 Oct 2026). */
+export const ACTION_HELP: Record<RowAction | "download", string> = {
+  rename: "Give this document a new name.",
+  move: "Put it in another folder.",
+  tags: "Add or remove short words that help you find it.",
+  version: "Upload a newer copy. This one is kept as an earlier version.",
+  read: "Read every page again, for example after a poor first reading.",
+  download: "Save the file exactly as it was uploaded.",
+  restore: "Take it out of Trash, back with your documents.",
+  trash: "Moves it to Trash. It can be restored from there.",
+  forever: "Deletes it for good. It can't be recovered.",
+};
+
 export type MenuEntry =
   | { kind: "action"; action: RowAction; words: string; danger: boolean }
   | { kind: "download"; href: string };

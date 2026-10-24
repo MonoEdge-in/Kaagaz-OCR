@@ -415,22 +415,23 @@ export function pagesToCheck(document: Finished): number {
 /** Something to look at once it is read: the list row then ends with "Review", the tray with "Open to review". */
 export const toReview = (document: Finished) => flaggedCount(document) > 0 || pagesToCheck(document) > 0;
 
-/** After "Scan complete": "12 flagged for review · 2 pages to check", or "Nothing flagged". */
+/** After "Scan complete": "12 words to check · 2 pages to check", or "Nothing to check". */
 export function flaggedText(document: Finished): string {
   return flaggedWords(flaggedCount(document), pagesToCheck(document));
 }
 
 /**
- * The list's status line (Tushar, 16 Oct 2026: "7 flagged…" was cut short): "7 flagged",
- * "7 flagged · 2 pages to check"; and the words its Review link is read out with,
- * "7 flagged words", "7 flagged words and 2 pages to check".
+ * The list's status line (Tushar, 16 Oct 2026: "7 flagged…" was cut short): "7 to check",
+ * "7 to check · 2 pages to check"; and the words its Review link is read out with,
+ * "7 words to check", "7 words to check and 2 pages to check". Plain words (25 Oct 2026):
+ * "to check", never "flagged".
  */
 export function flaggedShort(document: Finished): { shown: string; spoken: string } {
   const flagged = flaggedCount(document);
   const pages = pagesToCheck(document);
   const check = pages > 0 ? `${counted(pages, "page")} to check` : "";
-  const words = flagged > 0 ? `${flagged} flagged` : "";
-  const spokenWords = flagged > 0 ? `${words} ${flagged === 1 ? "word" : "words"}` : "";
+  const words = flagged > 0 ? `${flagged} to check` : "";
+  const spokenWords = flagged > 0 ? `${counted(flagged, "word")} to check` : "";
   return {
     shown: [words, check].filter(Boolean).join(" · "),
     spoken: [spokenWords, check].filter(Boolean).join(" and "),
@@ -454,6 +455,6 @@ export function shortWhen(iso: string, now: number): string {
 
 /** flaggedText for counts, summed over several documents (the status bar). */
 export function flaggedWords(flagged: number, pages: number): string {
-  const parts = [flagged > 0 ? `${flagged} flagged for review` : "", pages > 0 ? `${counted(pages, "page")} to check` : ""];
-  return parts.filter(Boolean).join(" · ") || "Nothing flagged";
+  const parts = [flagged > 0 ? `${counted(flagged, "word")} to check` : "", pages > 0 ? `${counted(pages, "page")} to check` : ""];
+  return parts.filter(Boolean).join(" · ") || "Nothing to check";
 }

@@ -87,15 +87,16 @@ describe("userStatus", () => {
     ]);
   });
 
-  it("says 2FA on or off for admins", () => {
-    expect(texts(user({ role: "admin", totp_enabled: true }))).toEqual(["Active", "2FA on"]);
-    expect(texts(user({ role: "admin" }))).toEqual(["Active", "2FA off"]);
-    expect(texts(user({ role: "admin", disabled: true }))).toEqual(["Disabled", "2FA off"]);
+  // Changed on purpose (plain words, 25 Oct 2026): "Two-step", as the rest of the product, not "2FA".
+  it("says two-step on or off for admins", () => {
+    expect(texts(user({ role: "admin", totp_enabled: true }))).toEqual(["Active", "Two-step on"]);
+    expect(texts(user({ role: "admin" }))).toEqual(["Active", "Two-step off"]);
+    expect(texts(user({ role: "admin", disabled: true }))).toEqual(["Disabled", "Two-step off"]);
   });
 
-  it("says nothing about 2FA for other roles unless it is on", () => {
+  it("says nothing about two-step for other roles unless it is on", () => {
     expect(texts(user({ role: "reviewer" }))).toEqual(["Active"]);
-    expect(texts(user({ role: "member", totp_enabled: true }))).toEqual(["Active", "2FA on"]);
+    expect(texts(user({ role: "member", totp_enabled: true }))).toEqual(["Active", "Two-step on"]);
   });
 
   it("marks an account that still has a temporary password", () => {
@@ -299,7 +300,8 @@ describe("kpiTiles and breakdowns", () => {
 
   it("leaves the zeros out of the small lists, in a fixed order", () => {
     const [pipeline, questions, pages, kept] = breakdowns(stats);
-    expect(pipeline).toEqual({ title: "Pipeline", none: "Nothing is waiting or being read.", rows: [] });
+    // Changed on purpose (plain words, 25 Oct 2026): it was "Pipeline".
+    expect(pipeline).toEqual({ title: "Not ready yet", none: "Nothing is waiting or being read.", rows: [] });
     expect(questions?.rows.map((row) => row.label)).toEqual([
       "Questions asked",
       "Answered",
@@ -428,7 +430,8 @@ describe("describeAction", () => {
     for (const action of actions) {
       expect(describeAction(action), action).not.toBe(action);
     }
-    expect(describeAction("user.reset_totp")).toBe("Reset a user's 2FA");
+    // Changed on purpose (plain words, 25 Oct 2026): "two-step sign-in", not "2FA".
+    expect(describeAction("user.reset_totp")).toBe("Reset a user's two-step sign-in");
   });
 
   it("has words for every action the backend writes to the audit log", () => {
