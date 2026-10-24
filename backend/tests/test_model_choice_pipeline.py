@@ -20,7 +20,7 @@ from unittest import mock
 import pytest
 from sqlalchemy.exc import OperationalError
 
-from kaagaz import pipeline
+from kaagaz import eta
 from kaagaz.ai import usage
 from kaagaz.ai.client import ModelUnavailable
 from kaagaz.chunking.sections import MapBudget
@@ -292,7 +292,7 @@ def test_each_jobs_time_left_counts_its_own_pages_at_once(ledger: _Ledger) -> No
         settings=settings,
         ocr_page_concurrency=4,
     )
-    with mock.patch("kaagaz.pipeline.rates", wraps=pipeline.rates) as estimated:
+    with mock.patch("kaagaz.pipeline.rates", wraps=eta.rates) as estimated:
         job_reading.reading = replace(job_reading.reading, pages_at_once=1)
         system.run(make_pdf([SCANNED, SCANNED]))
         job_reading.reading = replace(job_reading.reading, pages_at_once=None)
