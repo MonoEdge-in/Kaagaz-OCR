@@ -65,9 +65,10 @@ import {
   storyStatusText,
 } from "@/lib/storyMatches";
 import type { ChatOptions, ClarifyReply, ConversationSummary, Message } from "@/lib/types";
-import { answerCardId, answerStatusText, ASKING_STATUS, LOADED_STATUS, questionsByAnswer } from "./answer";
+import { answerCardId, answerStatusText, ASKING_STATUS, LOADED_STATUS, questionsByAnswer, STOPPED_STATUS } from "./answer";
 import { AnswerSettings } from "./AnswerSettings";
-import { askInFlight, resumable, resumedConversation, settleAsk, startAsk } from "./askStore";
+import { askInFlight, resumable, resumedConversation, settleAsk, startAsk, stopAsk } from "./askStore";
+import type { InFlight } from "./askStore";
 import { AnswerView } from "./AnswerView";
 import { answerDomId, answersClarify, chosenAfter, openClarify, pickedText } from "./clarify";
 import { ClarifyView } from "./ClarifyView";
@@ -229,6 +230,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
   const [search, setSearch] = useState<StorySearchState>({ kind: "idle" });
   const [searchRequests] = useState(latestOnly);
   const searchAbort = useRef<AbortController | null>(null);
+  const asking_ = useRef<InFlight | null>(null); // the question on its way, for Stop
   // The drawer is open for the path it was opened on, so any route change closes it.
   const [listOpenOn, setListOpenOn] = useState<string | null>(null);
   const listOpen = listOpenOn !== null && listOpenOn === pathname;
@@ -567,9 +569,10 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
       });
     }
     // Kept outside this screen (askStore.ts), so leaving Ask never drops it.
-    const entry = startAsk(question, activeId, () =>
-      ask(question, activeId ?? undefined, sentScope(asked), choiceBody(chatOptions, answerPick), answering),
+    const entry = startAsk(question, activeId, (signal) =>
+      ask(question, activeId ?? undefined, sentScope(asked), choiceBody(chatOptions, answerPick), answering, signal),
     );
+    asking_.current = entry;
     try {
       const reply = await entry.done;
       if (!alive.current) return true; // the next chat screen shows it
@@ -594,11 +597,16 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
       settleAsk(entry);
       // The error is its own alert; the story cards stay, at the end of the log.
       updateSlot({ type: "failed", token });
+      if (entry.stopped) {
+        setStatus(STOPPED_STATUS); // no error: the question is back in the box to change or send
+        return false;
+      }
       setStatus("");
       setAskError(errorText(error));
       return false;
     } finally {
       setPending(null);
+      if (asking_.current === entry) asking_.current = null;
     }
   };
 
@@ -829,6 +837,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
                           message={message}
                           question={questions.get(message.id) ?? null}
                           onAskAll={message === askAllFor ? askAll : undefined}
+                          onAskQuestion={busy ? undefined : (text) => void onAsk(text)}
                         />
                       )}
                     </div>
@@ -856,6 +865,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
             ) : (
             <QuestionBox
               pending={busy || search.kind === "loading"}
+              onStop={busy ? () => asking_.current && stopAsk(asking_.current) : undefined}
               error={mode === "documents" ? askError : null}
               onAsk={onAsk}
               draft={draft}

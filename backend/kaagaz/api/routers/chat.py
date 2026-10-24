@@ -74,12 +74,12 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from kaagaz.ai.client import ModelOutputError, ModelUnavailable
 from kaagaz.ai.usage import usage_scope
-from kaagaz.answering import ready
+from kaagaz.answering import ready, small_talk
 from kaagaz.answering.clarify import MAX_CHOICES, Pending, answers_clarify, latin_key, reply_to
 from kaagaz.answering.memory import NO_MEMORY, Memory, from_row, live
 from kaagaz.answering.pins import Pin
 from kaagaz.answering.rewrite import Turn
-from kaagaz.answering.voice import SOFT_NOTHING, numbers, opening, soft_line, unsupported
+from kaagaz.answering.voice import SOFT_NOTHING, first_name, numbers, opening, soft_line, unsupported
 from kaagaz.answering.words_text import WordTextError, check_meaning, check_word
 from kaagaz.api.auth import FEATURE_OFF, CurrentUser, User
 from kaagaz.api.context import AppContext, get_context
@@ -219,6 +219,10 @@ class FeedbackBody(BaseModel):
         return self
 
 
+# KZ-006 (24 Oct 2026): every model was down, so this is no answer and no "not found" either.
+OUTAGE_LINE = "The AI is not responding right now, so this is not a written answer. Ask again in a minute."
+
+
 def answer_text(answer: dict[str, Any]) -> str:
     """The assistant message's plain text: its sentences joined, a clarify's question, or the
     not-found line (decision 9: the closest documents' when it lists any). Never the opening,
@@ -230,6 +234,8 @@ def answer_text(answer: dict[str, Any]) -> str:
     texts = []
     if answer.get("status") in ("answered", "unchecked") and isinstance(sentences, list):
         texts = [s["text"] for s in sentences if isinstance(s, dict) and isinstance(s.get("text"), str)]
+    if answer.get("outage"):
+        return OUTAGE_LINE
     return " ".join(texts) or soft_line(bool(answer.get("closest_documents")))
 
 
@@ -275,6 +281,9 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
         # Home's questions (answering/ready.py): a fresh question about everything may have its
         # answer ready, made with these same inputs from these same documents.
         fresh = conversation_id is None and answering is None and chosen is None
+        # "hi", "thanks", "what can you do" (answering/small_talk.py): answered here, no search.
+        talk = small_talk.kind(question) if answering is None else None
+        examples = [text for text, _ in ready.questions(conn, user.customer_id, user.user_id)] if talk else []
         ready_key = (
             ready.key(
                 user.customer_id,
@@ -283,7 +292,7 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
                 (pins, switched, choice),
                 ready.stamp(conn, user.customer_id),
             )
-            if fresh
+            if fresh and talk is None
             else None
         )
     saved = None if chosen is None else chosen.model_dump(mode="json")
@@ -299,25 +308,30 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
         kind="chat",
         conversation_id=conversation_id,
     ) as spend:
-        kept = None if ready_key is None else ready.READY.get(ready_key)
-        reply = kept or context.answers.answer(
-            user.customer_id,
-            question,
-            scope=scope,
-            history=history,
-            user_id=user.user_id,
-            memory=memory,
-            choice=choice,
-            pins=pins,
-            pending=pending,
-            clarify=switched["nlq_clarify"],
-            cited=_cited(recent),
-        )
-        if reply.unavailable:  # KZ-006: an outage is never "not found"; nothing is stored
-            raise ApiError(503, "backend_unavailable", headers={"Retry-After": "60"})
-        answer = reply.to_json()
-        if answer.get("version") == 2:
-            answer["opening"] = _opening(answer, question, user.display_name, earlier, context)
+        if talk is not None:
+            answer = small_talk.answer(talk, question, first_name(user.display_name), examples)
+        else:
+            kept = None if ready_key is None else ready.READY.get(ready_key)
+            reply = kept or context.answers.answer(
+                user.customer_id,
+                question,
+                scope=scope,
+                history=history,
+                user_id=user.user_id,
+                memory=memory,
+                choice=choice,
+                pins=pins,
+                pending=pending,
+                clarify=switched["nlq_clarify"],
+                cited=_cited(recent),
+            )
+            # KZ-006: an outage is never "not found": the reply says the AI is not responding
+            # (``outage``, OUTAGE_LINE) and lists the closest documents; never a "busy" error.
+            answer = reply.to_json()
+            if reply.unavailable:
+                answer["outage"] = True
+            if answer.get("version") == 2:
+                answer["opening"] = _opening(answer, question, user.display_name, earlier, context)
 
         with context.db.customer(user.customer_id) as conn:
             if conversation_id is None:
@@ -331,6 +345,17 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
                 answering.message_id
             ):
                 raise ApiError(409, "conflict", CLARIFY_GONE)
+            if (
+                answer.get("status") == "not_found"
+                and not answer.get("documents")
+                and not answer.get("outage")
+            ):
+                # Nothing close (24 Oct 2026): the best next step is a question this library answers.
+                answer["suggestions"] = [
+                    text
+                    for text, _ in ready.questions(conn, user.customer_id, user.user_id)
+                    if ready.same_question(text) != ready.same_question(question)
+                ][:3]
             asked = chat_sql.add_message(
                 conn,
                 user.customer_id,

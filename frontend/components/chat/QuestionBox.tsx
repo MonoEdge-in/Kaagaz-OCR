@@ -10,6 +10,8 @@
 // one can be typed while the answer loads. If sending fails, the question comes back
 // (unless something new was typed meanwhile) and the error offers "Try again".
 // Its label, placeholder, button and help line follow the chat mode (lib/chatMode.ts).
+// While an answer is on its way, Send becomes Stop (Tushar, 24 Oct 2026): pressed, the request
+// is cancelled and the question comes back in the box, with no error.
 
 import { useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode, RefObject } from "react";
@@ -20,6 +22,7 @@ import { langOf } from "./clarify";
 import { useMediaQuery } from "./hooks";
 import styles from "./Chat.module.css";
 
+export const STOP_TEXT = "Stop";
 const INPUT_ID = "question";
 const HINT_ID = "question-hint";
 const EMPTY_ID = "question-empty";
@@ -33,6 +36,7 @@ function fitToText(input: HTMLTextAreaElement) {
 
 export function QuestionBox({
   pending,
+  onStop,
   error,
   onAsk,
   draft,
@@ -43,6 +47,8 @@ export function QuestionBox({
   answering,
 }: {
   pending: boolean;
+  /** While the answer is on its way: stop waiting for it (askStore.ts stopAsk). */
+  onStop?: () => void;
   texts: ModeTexts;
   /** PRD 6 B2: the open clarifying question the box answers, and how to ask something else instead. */
   answering?: { question: string; onLeave: () => void } | null;
@@ -168,6 +174,12 @@ export function QuestionBox({
           <div className={styles.toolGroup}>{tools}</div>
           <div className={`${styles.toolGroup} ${styles.toolEnd}`}>
             {settings}
+            {pending && onStop ? (
+              <button type="button" className={`btn ${styles.send} ${styles.stop}`} onClick={onStop}>
+                <Icon name="close" size={16} />
+                <span>{STOP_TEXT}</span>
+              </button>
+            ) : (
             <button
               type="button"
               className={`btn btn-primary ${styles.send}`}
@@ -180,6 +192,7 @@ export function QuestionBox({
               <Icon name="send" size={16} />
               <span>{texts.button}</span>
             </button>
+            )}
           </div>
         </div>
       </div>

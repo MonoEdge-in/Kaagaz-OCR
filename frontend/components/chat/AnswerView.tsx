@@ -175,15 +175,23 @@ function DocumentList({ answer, terms }: { answer: Answer; terms: readonly strin
 
 // Memo: the chat keeps each message object as it was when a new answer arrives,
 // so old answer cards skip re-rendering (UI quality council, 15 Oct 2026).
+/** Over an answer's one-press questions (24 Oct 2026). */
+export const TRY_THESE = "Try one of these";
+/** KZ-006 (24 Oct 2026): every model was down; as routers/chat.py OUTAGE_LINE. */
+export const OUTAGE_TEXT = "The AI is not responding right now, so this is not a written answer. Ask again in a minute."
+
 export const AnswerView = memo(function AnswerView({
   message,
   question,
   onAskAll,
+  onAskQuestion,
   readOnly = false,
 }: {
   message: Message;
   question: string | null;
   onAskAll?: () => void;
+  /** Ask one of the answer's suggestions (24 Oct 2026); absent while another answer is on its way. */
+  onAskQuestion?: (question: string) => void;
   /** Someone else's answer (the admin's Answer quality page, PRD 6 F2): no rating, no Most relevant. */
   readOnly?: boolean;
 }) {
@@ -289,6 +297,43 @@ export const AnswerView = memo(function AnswerView({
       </div>
     ) : null;
 
+  // Questions to ask with one press (24 Oct 2026): after small talk, or when nothing was close.
+  const suggested = answer.suggestions ?? [];
+  const tryThese =
+    suggested.length > 0 && !readOnly ? (
+      <div className={styles.tryThese}>
+        <h3 className={styles.subheading}>{TRY_THESE}</h3>
+        <ul className={styles.tryList}>
+          {suggested.map((text) => (
+            <li key={text}>
+              <button type="button" className="k-suggest" disabled={!onAskQuestion} onClick={() => onAskQuestion?.(text)}>
+                <Script text={text} />
+              </button>
+            </li>
+          ))}
+        </ul>
+      </div>
+    ) : null;
+
+  // "hi", "thanks", "what can you do" (24 Oct 2026): a line, then any list, then questions to try.
+  if (answer.route === "small_talk") {
+    const [line, ...list] = answer.sentences;
+    return (
+      <div {...card} className={`motion-rise ${styles.answerCard}`}>
+        <span className="visually-hidden">Answer: </span>
+        <p className={styles.answerText}>{line ? <Script text={line.text} /> : null}</p>
+        {list.length > 0 ? (
+          <ul className={styles.canDo}>
+            {list.map((sentence) => (
+              <li key={sentence.text}>{sentence.text}</li>
+            ))}
+          </ul>
+        ) : null}
+        {tryThese}
+      </div>
+    );
+  }
+
   if (answer.status === "not_found") {
     const closest = v2 ? (answer.documents ?? []).length : answer.closest_documents.length;
     return (
@@ -297,9 +342,9 @@ export const AnswerView = memo(function AnswerView({
         {opening}
         <div className={styles.notFound}>
           <span className={styles.notFoundIcon}>
-            <Icon name="search-off" size={20} />
+            <Icon name={answer.outage ? "alert" : "search-off"} size={20} />
           </span>
-          <p className={styles.plain}>{notFoundText(closest)}</p>
+          <p className={styles.plain}>{answer.outage ? OUTAGE_TEXT : notFoundText(closest)}</p>
         </div>
         {listed}
         {noteText}
@@ -319,6 +364,7 @@ export const AnswerView = memo(function AnswerView({
             {mentioned}
           </SourcesBar>
         ) : null}
+        {tryThese}
         <div hidden={readOnly}>
           <h3 className={styles.subheading}>Next steps</h3>
           <ul className={styles.nextSteps}>

@@ -567,14 +567,20 @@ export const ask = (
   scope?: ScopeBody,
   choice?: AnswerChoice,
   reply?: ClarifyReply,
+  signal?: AbortSignal,
 ) =>
-  request<ChatResponse>("POST", "/chat", {
-    question,
-    ...(conversationId ? { conversation_id: conversationId } : {}),
-    ...(scope ? { scope } : {}),
-    ...(choice ?? {}),
-    ...(reply ? { reply } : {}),
-  });
+  request<ChatResponse>(
+    "POST",
+    "/chat",
+    {
+      question,
+      ...(conversationId ? { conversation_id: conversationId } : {}),
+      ...(scope ? { scope } : {}),
+      ...(choice ?? {}),
+      ...(reply ? { reply } : {}),
+    },
+    signal,
+  );
 /** The answer settings the organisation allows (features 25-27): names and levels, never prices. */
 export const getChatOptions = () => request<ChatOptions>("GET", "/chat/options");
 /**

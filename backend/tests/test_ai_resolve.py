@@ -322,6 +322,22 @@ def test_the_default_chat_model_and_level_unless_chosen() -> None:
     )
 
 
+def test_the_backups_are_the_other_usable_models_that_take_the_level() -> None:
+    """Never "busy" (24 Oct 2026): the models tried in turn when the chosen one is down."""
+    rows = [
+        row(PRO, default=True, area="chat"),
+        row(FLASH, area="chat"),
+        row(SONNET, area="chat", efforts=["low"]),  # not at medium: never a medium backup
+        row("openai/gpt-6-luna", area="chat"),  # its vendor is not approved: never a backup
+    ]
+    levels = {"chat_levels": ["low", "medium"], "chat_default_level": "medium"}
+    choice = chat(FakeConn(chat=rows, settings=levels))
+    assert choice.agents == [agent(PRO)]
+    assert choice.backups == (agent(FLASH),)
+    assert chat(FakeConn(chat=rows, settings=levels), [FLASH], "low").backups == (agent(PRO), agent(SONNET))
+    assert chat(FakeConn()).backups == ()  # MODEL_CHAT only: nothing to fall back to
+
+
 @pytest.mark.parametrize(
     ("agents", "thinking", "allowed", "code"),
     [

@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { AnswerView } from "@/components/chat/AnswerView";
+import { AnswerView, OUTAGE_TEXT, TRY_THESE } from "@/components/chat/AnswerView";
 import {
   answerCardId,
   answerStatusText,
@@ -246,5 +246,40 @@ describe("layout rules for the answer card (build spec, 320px)", () => {
     for (const selector of [".docTitle", ".docWhy", ".opening"]) {
       expect(body(selector), selector).toMatch(/overflow-wrap:\s*break-word/);
     }
+  });
+});
+
+// Never "busy", greetings and one-press questions (Tushar, 24 Oct 2026).
+describe("small talk, one-press questions and an outage", () => {
+  const talk = (sentences: string[], suggestions: string[]): Answer =>
+    v2(0, {
+      status: "answered",
+      label: null,
+      route: "small_talk",
+      sentences: sentences.map((t) => ({ text: t, citations: [] })),
+      citations: [],
+      documents: [],
+      suggestions,
+    });
+
+  it("shows small talk as a line and a list, with questions to ask, and no sources", () => {
+    const html = render(talk(["Here is what I can do for you:", "Answer questions about your documents.", "Find documents in Search."], ["Who are the owners named in the land records?"]));
+    expect(text(html)).toContain("Here is what I can do for you:");
+    expect(html.match(/<li>/g)?.length ?? 0).toBeGreaterThanOrEqual(2);
+    expect(text(html)).toContain(TRY_THESE);
+    expect(html).toMatch(/<button type="button" class="k-suggest"[^>]*>Who are the owners named in the land records\?<\/button>/);
+    expect(text(html)).not.toMatch(/Sources|Ready to verify|Next steps/);
+  });
+
+  it("offers questions under a not found with nothing close", () => {
+    const html = render(v2(0, { status: "not_found", sentences: [], citations: [], documents: [], suggestions: ["Which invoice had the largest total last month?"] }));
+    expect(text(html)).toContain(TRY_THESE);
+    expect(text(html)).toContain("Which invoice had the largest total last month?");
+  });
+
+  it("says the AI is not responding during an outage, never not found", () => {
+    const html = render(v2(0, { status: "not_found", sentences: [], citations: [], documents: [], outage: true }));
+    expect(text(html)).toContain(OUTAGE_TEXT);
+    expect(text(html)).not.toContain("Nothing in your documents matches this yet");
   });
 });
