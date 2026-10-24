@@ -801,9 +801,12 @@ export interface Message {
   created_at: string;
   answer: Answer | null; // set for assistant messages only
   scope?: ScopeBody | null; // the scope a question used (PRD 3 H2); null when it had none
-  feedback: "up" | "down" | null;
+  feedback: "up" | "down" | null; // Useful or Not useful (PRD 6 F1)
   pin?: SourcePin | null; // the source this person put on top of the answer; missing on a new reply
 }
+
+/** What went wrong on Not useful (PRD 6 F1; backend db/chat.py REASONS). */
+export type ReasonCode = "wrong_documents" | "document_missing" | "wrong_figure" | "did_not_understand" | "other";
 
 export interface ChatResponse {
   conversation_id: string;

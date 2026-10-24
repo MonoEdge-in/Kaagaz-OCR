@@ -1,6 +1,13 @@
 """POST /api/chat, GET /api/chat/options, GET /api/conversations, GET, PATCH {title}
 and DELETE /api/conversations/{id}, and POST /api/messages/{id}/feedback.
 
+Useful and Not useful (PRD 6 F1): a rating is ``up`` (Useful) or ``down`` (Not useful);
+Not useful may carry what went wrong (``reason_codes``, the boxes ticked) and up to 500
+characters, and ``notice_shown`` says the form told the person their company admin can see
+the answer, the question, the reason and their name. At most FEEDBACK_PER_MINUTE ratings a
+minute per person (429 after). The typed reason is stored and shown to the company admin
+only: never sent to a model, never in an audit row's details and never logged.
+
 A new conversation's title is its first question made short (``short_title``, UI audit
 A1, 16 Oct 2026: no model call); its owner may rename it or delete it with its messages
 (audited ``chat.rename`` / ``chat.delete``, ids only).
@@ -49,7 +56,15 @@ from collections.abc import Sequence
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Response
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 from sqlalchemy import Connection, RowMapping
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -91,6 +106,9 @@ SHORT_TITLE = 60  # characters of the first question a new conversation's title 
 NOT_FOUND_TEXT = "I couldn't find this in your documents."
 MAX_SCOPE_BYTES = 4096  # the messages.scope CHECK (migration 0006)
 TOO_MANY_QUESTIONS = "You have asked many questions in a short time. Please wait a minute and ask again."
+FEEDBACK_PER_MINUTE = 20  # PRD 6 F1: ratings a person may send a minute (issue #244)
+TOO_MANY_RATINGS = "You have sent a lot of feedback in a short time. Please wait a minute and try again."
+feedback_limits = RateLimiter(FEEDBACK_PER_MINUTE)
 
 
 @functools.cache
@@ -160,11 +178,22 @@ class PinBody(BaseModel):
     previous_rank: int = Field(ge=1, le=1000)
 
 
+ReasonCode = Literal["wrong_documents", "document_missing", "wrong_figure", "did_not_understand", "other"]
+
+
 class FeedbackBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     rating: Literal["up", "down"]
     reason: str | None = Field(default=None, max_length=500)
+    reason_codes: list[ReasonCode] = Field(default_factory=list, max_length=len(chat_sql.REASONS))
+    notice_shown: bool = False
+
+    @model_validator(mode="after")
+    def _reasons_on_down(self) -> "FeedbackBody":
+        if self.rating == "up" and (self.reason or self.reason_codes):
+            raise ValueError("reasons go with Not useful only")
+        return self
 
 
 def answer_text(answer: dict[str, Any]) -> str:
@@ -528,7 +557,9 @@ def delete_conversation(conversation_id: uuid.UUID, user: User, context: Context
 
 @router.post("/messages/{message_id}/feedback", status_code=204)
 def send_feedback(message_id: uuid.UUID, body: FeedbackBody, user: User, context: Context) -> Response:
-    reason = body.reason.strip() if body.reason else None
+    if not feedback_limits.allow(user.user_id):
+        raise ApiError(429, "rate_limited", TOO_MANY_RATINGS, headers={"Retry-After": "60"})
+    reason = (body.reason.strip() or None) if body.reason else None
     with context.db.customer(user.customer_id) as conn:
         stored = chat_sql.upsert_feedback(
             conn,
@@ -537,6 +568,8 @@ def send_feedback(message_id: uuid.UUID, body: FeedbackBody, user: User, context
             user.user_id,
             rating=body.rating,
             reason=reason,
+            reason_codes=[code for code in chat_sql.REASONS if code in body.reason_codes],
+            notice_shown=body.notice_shown,
         )
     if not stored:
         raise ApiError(404, "not_found")
