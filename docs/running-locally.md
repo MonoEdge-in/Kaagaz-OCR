@@ -585,6 +585,7 @@ The demo users are `admin@`, `reviewer@` and `member@` on `sharma-traders.exampl
 - Check: `curl -b <admin jar> "$API/admin/audit?limit=10"` and `$API/admin/stats`.
 - Expect: the audit log newest first, with names and actions such as `auth.login`, `document.upload`, `chat.ask`, `review.resolve`, `user.create`; the stats count documents by status, questions, answers found and not found, feedback and open review items, for this customer only.
 - Tests: `test_api_admin.py`.
+- Answer quality (PRD 6 F2): `curl -b <admin jar> "$API/admin/answer-quality?status=open&weeks=4"`, then `curl -b <admin jar> -X PUT -H "$H" -H "$J" -d '{"handled":true}' $API/admin/answer-quality/<id>/handled`. Expect only Not useful answers given after the notice, with who asked, the question, the answer, the reasons and the date, and weekly Useful and Not useful counts; handled moves it to `status=handled` and writes `feedback.handled` with ids only; a member or reviewer gets `403`, another company's id `404`. Tests: `test_api_answer_quality.py`, `test_isolation_feedback.py`; `frontend/tests/admin-answer-quality.test.ts`.
 
 **26. Customer separation**
 - Check: `login admin@mehta-textiles.example`, then use its jar to `GET $API/documents/<a Sharma document id>`, `POST $API/review/<a Sharma value id>` and `PATCH $API/admin/users/<a Sharma user id>`; in the database, `SQL "BEGIN; SET LOCAL ROLE kaagaz_app; SELECT count(*) FROM documents; COMMIT;"`.

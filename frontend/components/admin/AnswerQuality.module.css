@@ -1,0 +1,82 @@
+/* Admin → Answer quality (PRD 6 F2). The list is a size container: from 48rem each answer
+   is a card of two columns (who and why | question and answer); below, one column. Text
+   holders get min-width: 0 and long words break only when they cannot fit on their own. */
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.weeks {
+  max-width: 32rem;
+}
+
+.caption {
+  text-align: start;
+  font-weight: 600;
+  padding-bottom: var(--space-2);
+}
+
+.list {
+  container: quality / inline-size;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.card {
+  display: grid;
+  gap: var(--space-4);
+  min-width: 0;
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+
+@container quality (min-width: 48rem) {
+  .card {
+    grid-template-columns: 16rem minmax(0, 1fr);
+  }
+}
+
+.meta,
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.who {
+  margin: 0;
+  font-size: var(--fs-base);
+  overflow-wrap: break-word;
+}
+
+.label {
+  margin: 0;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--fg-muted);
+}
+
+.metaLine {
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+}
+
+/* What people typed: as typed, line breaks kept, never wider than the card. */
+.text {
+  margin: 0;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}

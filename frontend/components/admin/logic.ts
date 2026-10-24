@@ -41,6 +41,7 @@ export const TABS = [
   { id: "ai", label: "AI settings" },
   { id: "activity", label: "Activity" },
   { id: "numbers", label: "Numbers" },
+  { id: "quality", label: "Answer quality" }, // PRD 6 F2
   { id: "usage", label: "Usage" },
   { id: "failed", label: "Failed documents" },
 ] as const;
@@ -413,6 +414,7 @@ const TARGET_WORDS: Record<string, string> = {
   user_word: "Word",
   message: "Chat",
   conversation: "Chat",
+  feedback: "Answer",
   customer: "Settings",
 };
 
@@ -454,6 +456,9 @@ const ACTION_WORDS: Record<string, string> = {
   "chat.ask": "Asked a question",
   "chat.rename": "Renamed a conversation",
   "chat.delete": "Deleted a conversation",
+  // PRD 6 F2: Answer quality.
+  "feedback.handled": "Marked a Not useful answer as handled",
+  "feedback.reopened": "Opened a Not useful answer again",
   "review.resolve": "Corrected a value",
   "user.create": "Added a user",
   "user.update": "Changed a user",

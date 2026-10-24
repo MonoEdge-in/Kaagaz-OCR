@@ -30,6 +30,7 @@ from kaagaz.api.ports import Answers, ApiQueue, ApiStorage
 from kaagaz.api.routers import (
     admin,
     ai_settings,
+    answer_quality,
     auth,
     batches,
     chat,
@@ -118,6 +119,7 @@ def create_app(
         search.router,
         review.router,
         admin.router,
+        answer_quality.router,
         words.router,
         stories.router,
         words.router,
