@@ -1,4 +1,4 @@
-"""Conversations, their messages and the thumbs up or down on answers.
+"""Conversations, their messages and Useful or Not useful on answers.
 
 Why here: the SQL for chat in one place. Every function takes a connection
 from ``Database.customer(customer_id)`` and filters on ``customer_id`` too.
@@ -366,6 +366,10 @@ def pins_for(
     )
 
 
+# PRD 6 F1: what went wrong, the boxes on Not useful, in the form's order (0050's CHECK).
+REASONS = ("wrong_documents", "document_missing", "wrong_figure", "did_not_understand", "other")
+
+
 def upsert_feedback(
     conn: Connection,
     customer_id: str,
@@ -374,21 +378,35 @@ def upsert_feedback(
     *,
     rating: str,
     reason: str | None,
+    reason_codes: Sequence[str] = (),
+    notice_shown: bool = False,
 ) -> bool:
     """Rate an assistant message in one of this user's conversations. One rating per
-    (message, user): a second vote replaces the first. False if there is no such
+    (message, user): a second vote replaces the first, with its reasons and whether the
+    notice was shown, and opens it again (no handled mark). False if there is no such
     message for this user."""
     stored = conn.execute(
         text(
-            "INSERT INTO feedback (customer_id, message_id, user_id, rating, reason)"
-            " SELECT m.customer_id, m.id, :u, :rating, :reason"
+            "INSERT INTO feedback"
+            " (customer_id, message_id, user_id, rating, reason, reason_codes, notice_shown)"
+            " SELECT m.customer_id, m.id, :u, :rating, :reason, CAST(:codes AS text[]), :notice"
             " FROM messages m JOIN conversations cv"
             " ON cv.customer_id = m.customer_id AND cv.id = m.conversation_id"
             " WHERE m.customer_id = :c AND m.id = :m AND m.role = 'assistant' AND cv.user_id = :u"
             " ON CONFLICT (message_id, user_id)"
-            " DO UPDATE SET rating = EXCLUDED.rating, reason = EXCLUDED.reason, created_at = now()"
+            " DO UPDATE SET rating = EXCLUDED.rating, reason = EXCLUDED.reason,"
+            " reason_codes = EXCLUDED.reason_codes, notice_shown = EXCLUDED.notice_shown,"
+            " handled_at = NULL, handled_by = NULL, created_at = now()"
             " RETURNING id"
         ),
-        {"c": customer_id, "m": message_id, "u": user_id, "rating": rating, "reason": reason},
+        {
+            "c": customer_id,
+            "m": message_id,
+            "u": user_id,
+            "rating": rating,
+            "reason": reason,
+            "codes": list(reason_codes),
+            "notice": notice_shown,
+        },
     ).first()
     return stored is not None

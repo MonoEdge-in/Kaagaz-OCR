@@ -64,6 +64,7 @@ import type {
   PlatformEvent,
   PlatformHealth,
   QualityReply,
+  ReasonCode,
   ReviewChoice,
   ReviewItem,
   ReviewList,
@@ -571,10 +572,18 @@ export const deleteConversation = (id: string) => request<void>("DELETE", `/conv
 /** "Most relevant" (ranked sources, 16 Oct 2026): this source on top of the answer, kept as relevance feedback. */
 export const pinSource = (messageId: string, pin: SourcePin, previousRank: number) =>
   request<void>("POST", `/messages/${messageId}/pin`, { ...pin, previous_rank: previousRank });
-export const sendFeedback = (messageId: string, rating: "up" | "down", reason?: string) =>
+/** Useful or Not useful (PRD 6 F1). `notUseful` comes from the Not useful form, which shows
+ * the admin notice above Send (FeedbackControls.tsx), so the server is told it was shown. */
+export const sendFeedback = (
+  messageId: string,
+  rating: "up" | "down",
+  notUseful?: { reason?: string; codes: ReasonCode[] },
+) =>
   request<void>("POST", `/messages/${messageId}/feedback`, {
     rating,
-    ...(reason ? { reason } : {}),
+    ...(notUseful
+      ? { reason_codes: notUseful.codes, notice_shown: true, ...(notUseful.reason ? { reason: notUseful.reason } : {}) }
+      : {}),
   });
 
 // --- my words (only the signed-in user's) -------------------------------------

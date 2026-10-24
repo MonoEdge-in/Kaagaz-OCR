@@ -560,8 +560,8 @@ The demo users are `admin@`, `reviewer@` and `member@` on `sharma-traders.exampl
 - Tests: `test_answering_golden.py` (`test_one_unverified_value_makes_the_answer_needs_review`), `test_answering_fixed_queries_db.py`.
 
 **21. Conversations and feedback**
-- Check: `curl -b <jar> $API/conversations`, then `$API/conversations/<id>`; ask again with `"conversation_id":"<id>"`; `curl -i -b <jar> -H "$H" -H "$J" -d '{"rating":"down","reason":"wrong total"}' $API/messages/<answer message id>/feedback`.
-- Expect: conversations list newest first and belong to their user only (a colleague gets `404`); the follow-up lands in the same conversation; feedback gives `204`, a second vote replaces the first, and the reason is stored as typed. On screen the URL becomes `/chat?c=<id>` and a reload brings the conversation back.
+- Check: `curl -b <jar> $API/conversations`, then `$API/conversations/<id>`; ask again with `"conversation_id":"<id>"`; `curl -i -b <jar> -H "$H" -H "$J" -d '{"rating":"down","reason":"wrong total","reason_codes":["wrong_figure"],"notice_shown":true}' $API/messages/<answer message id>/feedback`.
+- Expect: conversations list newest first and belong to their user only (a colleague gets `404`); the follow-up lands in the same conversation; feedback gives `204`, a second vote replaces the first, and the reason and its codes are stored as sent; the 21st rating in a minute gets `429`. On screen the buttons say Useful and Not useful, and Not useful asks "What went wrong?" with the admin notice above Send. On screen the URL becomes `/chat?c=<id>` and a reload brings the conversation back.
 - Tests: `test_api_chat.py`; `frontend/tests/chat-logic.test.ts`, `chat-answer.test.ts`.
 
 **22. Answers with a model**
