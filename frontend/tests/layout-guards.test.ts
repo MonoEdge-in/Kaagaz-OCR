@@ -802,6 +802,9 @@ describe("the document screen (boards 2, 3 and 6)", () => {
     const pane = rulesFor(CHAT_CSS, ".pane").find((rule) => rule.at === "")?.body ?? "";
     expect(pane).toMatch(/border-radius:\s*var\(--k-r-4\);/);
     expect(pane).not.toMatch(/border-inline-end/);
+    // Tushar, 24 Oct 2026 ("this alignment also"): its left edge under the top bar's search.
+    expect(pane).toMatch(/margin:\s*var\(--space-3\) 0 var\(--space-3\) 40px;/);
+    expect(read("components/shell/Shell.module.css")).toContain("padding-inline: max(40px, env(safe-area-inset-left))");
     expect(rulesFor(CHAT_CSS, ".pane::-webkit-scrollbar-track").find((rule) => rule.at === "")?.body).toMatch(
       /margin-block:\s*var\(--k-r-4\);/,
     );
