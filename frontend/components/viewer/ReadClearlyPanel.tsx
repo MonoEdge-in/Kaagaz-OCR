@@ -13,7 +13,6 @@ import { createPortal } from "react-dom";
 import { ApiError, getClearCopy, translatePage } from "@/lib/api";
 import type { ClearCopy, PageTranslation, ReadLine, Region, TranslateLanguage } from "@/lib/types";
 import {
-  BUSY,
   LANGUAGES,
   LEFT_OUT,
   MAX_TRANSLATE_PAGES,
@@ -26,6 +25,7 @@ import {
   pageOf,
   pairParts,
   parts,
+  translateFailure,
 } from "./clearCopy";
 import type { Part } from "./clearCopy";
 import type { Spot } from "./panels";
@@ -42,7 +42,10 @@ export interface ReadClearlyPanelProps {
 }
 
 type Loaded = { key: string; copy: ClearCopy } | { key: string; failed: true };
-type Done = { status: "loading" } | { status: "busy" } | { status: "done"; result: PageTranslation };
+type Done =
+  | { status: "loading" }
+  | { status: "failed"; text: string; retry: boolean }
+  | { status: "done"; result: PageTranslation };
 
 export function ReadClearlyPanel({ documentId, pageNo, active, canTranslate, onShow }: ReadClearlyPanelProps) {
   const [attempt, setAttempt] = useState(0);
@@ -86,7 +89,7 @@ export function ReadClearlyPanel({ documentId, pageNo, active, canTranslate, onS
           set(page, { status: "done", result: await translatePage(documentId, page, lang) });
         } catch (error: unknown) {
           if (error instanceof ApiError && error.code === "feature_off") setSwitchedOff(true);
-          set(page, { status: "busy" });
+          set(page, { status: "failed", ...translateFailure(error instanceof ApiError ? error.code : undefined) });
         } finally {
           inFlight.current.delete(doneKey(lang, page));
         }
@@ -175,12 +178,15 @@ export function ReadClearlyPanel({ documentId, pageNo, active, canTranslate, onS
           <div className={styles.translation} lang={meta?.lang}>
             <p className={styles.label}>{TRANSLATION_LABEL}</p>
             {tr.status === "loading" && <p className={styles.note}>{TRANSLATING}</p>}
-            {tr.status === "busy" && (
+            {tr.status === "failed" && (
               <p className={styles.note}>
-                {BUSY}{" "}
-                <button type="button" className="btn btn-quiet" onClick={() => language && void translate(language, [page.page_no])}>
-                  Try again
-                </button>
+                {tr.text}
+                {tr.retry && " "}
+                {tr.retry && (
+                  <button type="button" className="btn btn-quiet" onClick={() => language && void translate(language, [page.page_no])}>
+                    Try again
+                  </button>
+                )}
               </p>
             )}
             {tr.status === "done" &&
@@ -189,9 +195,6 @@ export function ReadClearlyPanel({ documentId, pageNo, active, canTranslate, onS
                   <bdi dir="auto">{visibleText(text)}</bdi>
                 </p>
               ))}
-            {tr.status === "done" && tr.result.truncated && (
-              <p className={styles.note}>Only the first part of this page was translated.</p>
-            )}
           </div>
         )}
       </section>
