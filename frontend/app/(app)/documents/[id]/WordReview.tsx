@@ -3,12 +3,12 @@
 // Word-level review on the document screen (scan review UX rules, Tushar, 16 Oct 2026,
 // sections 3, 5 and 7). useWordReview loads the review status and the flagged words
 // together, and while an Ensemble run is queued or running asks again on the shared poll
-// steps (lib/poll.ts, never more than 5 s), stopping once it ends. The summary bar sits
-// above the document: the scan's sentence, the review progress, the run's progress
-// (aria-live, also in the status bar) or its result, and its actions with the primary
-// last: More (Run Ensemble on full document, Export, Download original), Run Ensemble
-// on flagged words (only when the API allows it; while scanning, disabled with its
-// reason) and Review flagged words. Ensemble asks first for the full document or more
+// steps (lib/poll.ts, never more than 5 s), stopping once it ends. The status line
+// (SummaryBar; document panel UX, 25 Oct 2026) says one thing and offers Check it; the
+// run's progress (aria-live, also in the status bar) or its result; under More details,
+// the counts, Run Ensemble on flagged words (only when the API allows it; while scanning,
+// disabled with its reason) and More (Run Ensemble on full document, Export, Download
+// original). Ensemble asks first for the full document or more
 // than 50 words, with the page count and time estimate. The export dialog states the
 // review status with both choices equally visible; the app has no export file, so
 // Export downloads the original and says so.
@@ -22,7 +22,6 @@ import libraryStyles from "@/components/documents/Library.module.css";
 import {
   ABOUT_ENSEMBLE,
   CHANGES_NOTE,
-  CONTINUE_LABEL,
   DOWNLOAD_LABEL,
   ENSEMBLE_DOCUMENT,
   ENSEMBLE_FLAGGED,
@@ -33,27 +32,25 @@ import {
   EXPORT_WAIT,
   KEEP_ALL,
   REVIEW_FIRST,
-  REVIEW_LABEL,
-  SHOW_FLAGS,
+  checkLabel,
   confirmText,
-  doneCount,
   failureText,
-  finishedText,
   keepAll,
   needsConfirm,
   openChanges,
-  progressText,
   resultText,
   retryLabel,
   retryRun,
   runActive,
   runEnsemble,
   runText,
+  statusLine,
   stopRun,
-  summaryText,
+  trustText,
 } from "@/components/review/wordReview";
 import { InStatusBar } from "@/components/shell/StatusBar";
 import { Icon } from "@/components/ui/Icon";
+import { Icon as KIcon } from "@/components/ui/Icon/Icon";
 import { effectiveOf, gateEnsemble, useAiSettings } from "@/lib/aiSettings";
 import { getEnsembleEstimate, getReviewStatus, listFlags } from "@/lib/api";
 import type { EnsembleEstimate, EnsembleRun, EnsembleScope, ReviewStatus, WordFlag } from "@/lib/types";
@@ -237,15 +234,31 @@ export interface SummaryBarProps {
   say(message: string): void;
 }
 
+/**
+ * The status line (document panel UX, 25 Oct 2026; was the scan card): one true thing from
+ * the review's own counts (statusLine), with one button to the first word to check. The
+ * counts and the Ensemble and Export actions wait under More details, closed at first.
+ * The check draws in once, when the line turns to "Everything is checked".
+ */
 export function SummaryBar(props: SummaryBarProps) {
   const { documentId, review, scanning, reviewing, reviewRef, onReview, onEnsemble, ensembleBusy, ensembleError } = props;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
+  const toolsId = useId();
   const status = review.status;
-  if (!status) {
+  const line = status ? statusLine(status, scanning) : null;
+  // Changed on this screen (not on load): the line turned clear, so its check draws in once.
+  const [seen, setSeen] = useState(line?.clear ?? null);
+  const [changed, setChanged] = useState(false);
+  if (line && seen !== line.clear) {
+    setSeen(line.clear);
+    setChanged(seen === false && line.clear);
+  }
+  if (!status || !line) {
     return review.failed ? (
       <div className={styles.bar} role="alert">
-        <p className={styles.text}>The flagged words could not be loaded. Nothing was changed.</p>
+        <p className={styles.text}>The words to check could not be loaded. Nothing was changed.</p>
         <div className={styles.actions}>
           <button type="button" className="btn" onClick={review.reload}>
             <Icon name="refresh" />
@@ -261,7 +274,6 @@ export function SummaryBar(props: SummaryBarProps) {
   const ready = status.status === "ready";
   const run = status.ensemble.run;
   const active = run !== null && runActive(run);
-  const done = doneCount(status);
   // Ensemble: offered when the API allows it; while scanning, shown disabled with its reason.
   const ensembleShown = status.ensemble.allowed || (!ready && status.ensemble.reason !== null && status.can_review);
   const waitReason = status.ensemble.allowed ? null : status.ensemble.reason;
@@ -287,14 +299,29 @@ export function SummaryBar(props: SummaryBarProps) {
   ];
 
   return (
-    <section className={styles.bar} aria-label="Scan summary">
-      <div className={styles.text}>
-        <p className={`${styles.summary} tabular`}>{summaryText(status, scanning)}</p>
-        {ready && status.flagged > 0 && (
-          <p className={`${styles.line} tabular`}>
-            {status.remaining === 0 ? finishedText(status.flagged) : progressText(done, status.flagged)}
-          </p>
+    <section className={styles.bar} aria-label="Status">
+      <div className={styles.statusRow}>
+        <p className={styles.status} data-clear={line.clear || undefined} data-changed={changed || undefined}>
+          <KIcon name={line.clear ? "check" : ready ? "eye" : "clock"} className={styles.statusIcon} />
+          <span className="tabular">{line.text}</span>
+        </p>
+        {ready && status.remaining > 0 && (
+          <button ref={reviewRef} type="button" className="btn" aria-pressed={reviewing} onClick={onReview}>
+            {checkLabel(status)}
+          </button>
         )}
+        <button
+          type="button"
+          className={`btn btn-quiet ${styles.toggle}`}
+          aria-expanded={open}
+          aria-controls={toolsId}
+          onClick={() => setOpen(!open)}
+        >
+          More details
+          <KIcon name="chev-down" size="sm" className={styles.chevron} />
+        </button>
+      </div>
+      <div className={styles.text}>
         <p className={`${styles.line} tabular`} aria-live="polite">
           {active ? runText(run) : ""}
         </p>
@@ -335,30 +362,30 @@ export function SummaryBar(props: SummaryBarProps) {
             {error ?? ensembleError}
           </p>
         )}
+        {active && status.can_review && (
+          <button
+            type="button"
+            className={`btn ${styles.stop}`}
+            disabled={busy}
+            onClick={() =>
+              void act(
+                () =>
+                  stopRun(documentId, run.id).then((result) => {
+                    if (result.ok) review.setRun(result.value);
+                    return result;
+                  }),
+                () => undefined,
+              )
+            }
+          >
+            Stop
+          </button>
+        )}
       </div>
-      <div className={styles.actions}>
-        <RowMenu name="this document" items={more} />
-        {active ? (
-          status.can_review && (
-            <button
-              type="button"
-              className="btn"
-              disabled={busy}
-              onClick={() =>
-                void act(
-                  () =>
-                    stopRun(documentId, run.id).then((result) => {
-                      if (result.ok) review.setRun(result.value);
-                      return result;
-                    }),
-                  () => undefined,
-                )
-              }
-            >
-              Stop
-            </button>
-          )
-        ) : ensembleShown && (status.remaining > 0 || !ready) ? (
+      <div id={toolsId} className={styles.details} data-open={open || undefined} hidden={!open}>
+        {ready && <p className={`${styles.line} tabular`}>{trustText(status)}</p>}
+        <div className={styles.actions}>
+          {!active && ensembleShown && (status.remaining > 0 || !ready) && (
           <span className={styles.ensemble}>
             <button
               type="button"
@@ -379,18 +406,9 @@ export function SummaryBar(props: SummaryBarProps) {
               </span>
             )}
           </span>
-        ) : null}
-        {ready && status.flagged > 0 && status.remaining > 0 && (
-          <button
-            ref={reviewRef}
-            type="button"
-            className="btn btn-primary"
-            aria-pressed={reviewing}
-            onClick={onReview}
-          >
-            {!status.can_review ? SHOW_FLAGS : done > 0 ? CONTINUE_LABEL : REVIEW_LABEL}
-          </button>
-        )}
+          )}
+          <RowMenu name="this document" items={more} />
+        </div>
       </div>
       {active && (
         <InStatusBar>

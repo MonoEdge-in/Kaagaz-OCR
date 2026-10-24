@@ -87,7 +87,7 @@ import { highlightsOf, initialSelection, pageChange } from "@/components/viewer/
 import { selectSpot, selectValue } from "@/components/viewer/selection";
 import type { Selection } from "@/components/viewer/selection";
 import { canReview } from "@/components/review/review";
-import { flagDomId, trustText } from "@/components/review/wordReview";
+import { flagDomId } from "@/components/review/wordReview";
 import { Timeline } from "@/components/activity/Timeline";
 import { ACTIVITY_TEXT } from "@/components/activity/words";
 import { DetailsPanel } from "@/components/files/DetailsPanel";
@@ -755,7 +755,6 @@ export function DocumentView({
                 {typeLabel(detail.detected_type)}
                 <span className="mono">{pagesText}</span>
               </span>
-              {review.status?.summary && <span className={`${styles.meta} tabular`}>{trustText(review.status)}</span>}
               {trail.length === 0 && <span className={styles.meta}>Not in a folder</span>}
               <AutofileNote
                 document={detail}

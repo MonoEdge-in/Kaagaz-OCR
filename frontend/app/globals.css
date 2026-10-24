@@ -150,6 +150,12 @@
   --t-med: 160ms;
   --t-slow: 200ms;
   --t-drawer: 220ms;
+  /* The document panel's motion (document panel UX, 25 Oct 2026): a press or a toggle, the
+     summary's one entrance, and the check drawn once when everything is checked. */
+  --motion-quick: 160ms;
+  --motion-calm: 280ms;
+  --motion-draw: 400ms;
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
 
   /* Layers: this scale only. */
   --z-base: 0;
