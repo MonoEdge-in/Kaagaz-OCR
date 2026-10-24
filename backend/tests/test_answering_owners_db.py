@@ -296,6 +296,27 @@ def test_measurements_on_one_page_are_listed_top_to_bottom_then_left_to_right(ke
     ]
 
 
+def test_a_figure_with_no_spot_on_the_page_is_never_shown(keyed: Database) -> None:
+    """Decision 2's final check: a value whose region is unusable cannot be cited, so the
+    sentence quoting it is dropped, and the other figures stay."""
+    c, _ = new_customer(keyed)
+    add_land(keyed, c, "7/12.pdf", survey="45/2", printed=[("length", "45.5 m"), ("road_width", "9 m")])
+    with keyed.customer(c) as conn:
+        conn.execute(
+            text(
+                "UPDATE extracted_values SET region = '{}' WHERE customer_id = :c AND field = 'land_length'"
+            ),
+            {"c": c},
+        )
+    question = "What is the length and road width of survey 45/2?"
+
+    answer = ask(keyed, c, question)
+
+    assert [s["text"] for s in answer["sentences"]] == ["The road width of Survey 45/2 is printed as 9 m."]
+    assert "45.5" not in json.dumps(answer)
+    numbers_allowed(answer, question)
+
+
 def test_a_record_known_by_its_khata_number_alone_is_named_and_cited_by_it(keyed: Database) -> None:
     c, _ = new_customer(keyed)
     add_land(keyed, c, "8-A 118.pdf", [(V, None)], printed=[("khata_number", "118")])

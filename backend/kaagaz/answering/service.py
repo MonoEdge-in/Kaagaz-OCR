@@ -901,11 +901,14 @@ class AnswerService:
             )
         citations: list[Citation] = []
         numbered: dict[str, int] = {}
+        spotless: set[str] = set()  # the numbers of values with no spot, never vouched for
 
         def cite(refs: Sequence[ValueRef]) -> list[int]:
             for ref in refs:
                 regions = valid_regions([ref.region])
-                if regions and ref.value_id not in numbered:  # never shown without its spot
+                if not regions:
+                    spotless.update(voice.numbers(ref.value_text))
+                elif ref.value_id not in numbered:  # never shown without its spot
                     numbered[ref.value_id] = len(citations) + 1
                     citations.append(_value_citation(len(citations) + 1, ref, regions))
             return list(dict.fromkeys(numbered[ref.value_id] for ref in refs if ref.value_id in numbered))
@@ -930,8 +933,9 @@ class AnswerService:
             reading_note=HARD_TO_READ_NOTE if hard else None,
             documents=documents,
             # Decision 2: owners.py writes these sentences: counts of the records listed and
-            # shares quoted as printed, so the final check keeps their numbers.
-            vouched=frozenset().union(*(voice.numbers(text) for text, _ in found.sentences)),
+            # values quoted as printed, so the final check keeps their numbers; a value with no
+            # spot is not cited, so its figure must be in no sentence the check keeps.
+            vouched=frozenset().union(*(voice.numbers(text) for text, _ in found.sentences)) - spotless,
         )
 
     def _exhaustive_answer(
