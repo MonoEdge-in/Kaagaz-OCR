@@ -76,6 +76,7 @@ class ExtractedValue:
     quote: QuoteMatch | None = None  # set when a model quote located the value; never stored
     # Ensemble (F27): the readers' vote on the value, plain JSON (labels.vote); None: one reader.
     votes: Mapping[str, Any] | None = None
+    label_text: str | None = None  # a map value's label as the reader read it (land.py, 0054)
 
 
 @dataclass(frozen=True, slots=True)

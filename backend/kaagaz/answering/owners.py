@@ -27,8 +27,9 @@ border 45/2"): a map or border word, or a measure asked as one ("the area of", "
 a property, with no owning or share word. ``_KEYED`` finds the records of that survey, khata or
 plot number, as the word before it says ("plot 12" is never survey 12; and, for borders, those
 printing it as a neighbour, a ``land_boundary_*`` key); ``_SHARES_AS_PRINTED`` gives their map
-values. Each is quoted as printed with its unit and cited; one asked for and not printed is
-said to be not printed, never worked out from the others, the drawing or the scale.
+values. Each is quoted as printed with its unit and cited, after its label as read ("North: 30 m",
+``label_text``, 0054; a label that reads like instructions is left out); one asked for and not
+printed is said to be not printed, never worked out from the others, the drawing or the scale.
 
 Time: at most four key statements and one for the values, O(k) index probes for k keys and
 O(v) in the values of the records found.
@@ -40,13 +41,14 @@ from typing import Any
 
 from sqlalchemy import text
 
+from kaagaz.answering.evidence import looks_like_instructions
 from kaagaz.answering.fixed_queries import ValueRef
 from kaagaz.answering.hinglish import STOP_WORDS
 from kaagaz.answering.sanitize import clean_text
 from kaagaz.chunking.script import fold_digits, latin_spelling, spaced_words
 from kaagaz.db import ai_settings
 from kaagaz.db.engine import Database
-from kaagaz.extraction.land import SIDES
+from kaagaz.extraction.land import MAX_LABEL_TEXT, SIDES
 from kaagaz.extraction.links import normalise_identifier
 from kaagaz.search.scope import Scope
 
@@ -258,7 +260,7 @@ _SHARES_AS_PRINTED = text(
     """
     SELECT v.record_key, k.latin, v.id::text AS value_id, v.document_id::text AS document_id,
            d.display_name, d.detected_type, v.page_no, v.region, v.field, v.value_text, v.label,
-           v.label_page_no, v.label_region
+           v.label_page_no, v.label_region, v.label_text
     FROM extracted_values v
     JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
     LEFT JOIN value_keys k ON k.customer_id = v.customer_id AND k.value_id = v.id
@@ -548,7 +550,7 @@ def _map_lines(land: _Land, ask: OwnerAsk) -> list[tuple[str, Cited]]:
         refs = [ref for ref, _ in land.printed.get(stored, [])]
         word, verb = _MEASURES[stored], "are" if stored == "land_dimension" else "is"
         if refs:
-            printed = _and([clean_text(ref.value_text) for ref in refs])
+            printed = _and([_printed(ref) for ref in refs])
             lines.append((f"The {word} of {name} {verb} printed as {printed}.", [*named, *refs]))
         else:
             lines.append(
@@ -557,7 +559,7 @@ def _map_lines(land: _Land, ask: OwnerAsk) -> list[tuple[str, Cited]]:
     if ask.borders:
         sides = [(side, ref) for stored, side in _SIDES.items() for ref, _ in land.printed.get(stored, [])]
         if sides:
-            listed = _and([f"{clean_text(ref.value_text)} on the {side}" for side, ref in sides])
+            listed = _and([f"{_printed(ref)} on the {side}" for side, ref in sides])
             lines.append((f"The neighbours printed for {name}: {listed}.", [*named, *(r for _, r in sides)]))
         else:
             lines.append((f"No neighbour of {name} is printed by side, so none is worked out.", named))
@@ -569,9 +571,7 @@ def _map_lines(land: _Land, ask: OwnerAsk) -> list[tuple[str, Cited]]:
             if stored in land.printed
         ]
         if parts:
-            listed = "; ".join(
-                f"{word} {_and([clean_text(r.value_text) for r in refs])}" for word, refs in parts
-            )
+            listed = "; ".join(f"{word} {_and([_printed(r) for r in refs])}" for word, refs in parts)
             cited = [*named, *(ref for _, refs in parts for ref in refs)]
             lines.append((f"The map values printed for {name}: {listed}.", cited))
         else:
@@ -590,8 +590,17 @@ def _beside_lines(land: _Land, ask: OwnerAsk) -> list[tuple[str, Cited]]:
     ]
     if not sides:
         return []
-    listed = _and([f"{clean_text(ref.value_text)} as its {side} neighbour" for side, ref in sides])
+    listed = _and([f"{_printed(ref)} as its {side} neighbour" for side, ref in sides])
     return [(f"{name[:1].upper()}{name[1:]} prints {listed}.", [*named, *(ref for _, ref in sides)])]
+
+
+def _printed(ref: ValueRef) -> str:
+    """A map value as printed, after its label as read when one is stored ("North: 30 m"); none
+    (an older row, or a label that reads like instructions: document text is untrusted) gives
+    the value alone. A label's digits are the cited value's own text (decision 2)."""
+    value = clean_text(ref.value_text)
+    label = clean_text(ref.label_text or "")[:MAX_LABEL_TEXT].strip()
+    return f"{label}: {value}" if label and not looks_like_instructions(label) else value
 
 
 def _named(land: _Land) -> tuple[str, Cited]:

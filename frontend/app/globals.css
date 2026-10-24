@@ -1,8 +1,8 @@
 /* Kaagaz in the handoff's design (design/kaagaz-ui-handoff, UI rebuild, 21 Oct
    2026). The screens' token names (--bg-page, --accent, --r-sm, ...) carry the
    handoff's values, so every screen takes its look: warm off-white paper,
-   near-black ink, MonoEdge royal blue, soft rounded surfaces, pill controls with
-   mono capitals. The handoff's own tokens (--k-*) are in app/styles/tokens.css;
+   near-black ink, MonoEdge royal blue, soft rounded surfaces, pill controls in
+   sentence case (readable type, 25 Oct 2026; they were mono capitals). The handoff's own tokens (--k-*) are in app/styles/tokens.css;
    the faces are IBM Plex Sans for text, Plex Mono for data and labels, Archivo
    for headings, all through those tokens.
 
@@ -96,13 +96,13 @@
 
   /* Type: the handoff's faces (app/layout.tsx serves them through next/font;
      app/styles/tokens.css stacks them, Plex Sans Devanagari for Hindi and
-     Marathi). Plex Sans for text and UI; Plex Mono for data and labels (.mono,
-     .readText, buttons); Archivo, set wide, for headings. */
+     Marathi). Plex Sans for text, UI, labels and buttons; Plex Mono for data (.mono,
+     .readText); Archivo, set wide, for headings. */
   --font-sans: var(--k-font-body);
   --font-mono: var(--k-font-mono);
   --font-display: var(--k-font-display);
   /* In rem, so text still grows at 200% zoom. */
-  --fs-label: 0.6875rem; /* 11px: mono capitals */
+  --fs-label: 0.6875rem; /* 11px: small mono data (a count, the status bar) */
   --fs-sm: 0.8125rem; /* 13px */
   --fs-base: 0.875rem; /* 14px, the handoff's UI size */
   --fs-lg: 1.125rem; /* 18px */
@@ -533,13 +533,14 @@ input:-webkit-autofill:focus {
   font-variant-numeric: tabular-nums;
 }
 
-/* A small label: the handoff's eyebrow, 11px mono capitals. */
+/* A small label (readable type, 25 Oct 2026): sentence case in the body face at
+   14px, the secondary text colour (4.5:1 or more in both themes). It was 11px
+   mono capitals, the hardest text to read. */
 .caps {
-  font-family: var(--font-mono);
-  font-size: var(--fs-label);
+  font-family: var(--font-sans);
+  font-size: var(--fs-base);
   font-weight: 500;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
+  color: var(--text-secondary);
 }
 
 /* Data in Plex Mono: values, IDs, numbers and scanned text.
@@ -686,11 +687,11 @@ td.num {
   border-radius: var(--r-full);
   background: var(--surface);
   color: var(--btn-fg);
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
+  /* Readable type (25 Oct 2026): sentence case in the body face, 15px, normal
+     spacing. It was 12px mono capitals spaced apart. */
+  font-family: var(--font-sans);
+  font-size: 0.9375rem;
   font-weight: 500;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
   line-height: 1.2;
   text-align: center;
   text-decoration: none;
@@ -759,7 +760,7 @@ td.num {
   --btn-fg: var(--text-onaccent);
   background: var(--accent);
   border-color: var(--accent);
-  font-weight: 600;
+  font-size: 1rem; /* 16px: the main action reads first */
 }
 
 @media (hover: hover) and (pointer: fine) {
@@ -1000,12 +1001,11 @@ select.input {
   vertical-align: middle;
 }
 
+/* A column's name (readable type, 25 Oct 2026): sentence case, 14px, the body face. */
 .table th {
-  font-family: var(--font-mono);
-  font-size: 0.65625rem;
+  font-family: var(--font-sans);
+  font-size: var(--fs-base);
   font-weight: 500;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
   color: var(--text-secondary);
   background: var(--surface);
 }

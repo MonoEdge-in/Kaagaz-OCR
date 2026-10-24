@@ -27,6 +27,7 @@ import { NameChips } from "./FolderActions";
 import { inTreeOrder, pathLabel } from "./folderTree";
 import type { FolderTree } from "./folderTree";
 import {
+  ACTION_HELP,
   documentNameProblem,
   findTagByName,
   folderNameProblem,
@@ -193,9 +194,16 @@ export function RowMenu({ item, canForever, onPick, toggleRef, place = "list", r
                     className={styles.menuItem}
                     href={entry.href}
                     download
+                    aria-label="Download original"
+                    aria-describedby={`${menuId}-download`}
                     onClick={() => close(true)}
                   >
-                    Download original
+                    <span className={styles.menuWords}>
+                      Download original
+                      <span id={`${menuId}-download`} className={styles.menuHint}>
+                        {ACTION_HELP.download}
+                      </span>
+                    </span>
                   </a>
                 ) : (
                   <button
@@ -203,10 +211,18 @@ export function RowMenu({ item, canForever, onPick, toggleRef, place = "list", r
                     tabIndex={-1}
                     type="button"
                     className={entry.danger ? `${styles.menuItem} ${styles.danger}` : styles.menuItem}
+                    aria-label={entry.words}
+                    aria-describedby={`${menuId}-${entry.action}`}
                     onClick={() => pick(entry.action)}
                   >
                     {entry.danger && <Icon name="trash" />}
-                    {entry.words}
+                    {/* The words, then one plain line saying what it does (plain words, 25 Oct 2026). */}
+                    <span className={styles.menuWords}>
+                      {entry.words}
+                      <span id={`${menuId}-${entry.action}`} className={styles.menuHint}>
+                        {ACTION_HELP[entry.action]}
+                      </span>
+                    </span>
                   </button>
                 )}
               </li>

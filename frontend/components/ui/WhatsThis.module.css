@@ -1,0 +1,33 @@
+/* "What's this?" (WhatsThis.tsx): a quiet link-like button, one control tall to tap, and the
+   sentence it opens on its own line under it. */
+
+.whatsThis {
+  display: block;
+  min-width: 0;
+}
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--control-min);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font-size: var(--fs-sm);
+  text-decoration: underline;
+  text-underline-offset: 0.18em;
+  cursor: pointer;
+}
+
+.text {
+  display: block;
+  max-width: 40rem;
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+
+.text[hidden] {
+  display: none;
+}

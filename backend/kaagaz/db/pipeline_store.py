@@ -204,22 +204,23 @@ _VALUE_COLUMNS = (
     "label_page_no",
     "label_region",
     "votes",
+    "label_text",
 )
 _INSERT_VALUES = text(
     "INSERT INTO extracted_values (customer_id, document_id, record_key, field, value_text, value_raw,"
     " second_reading, value_number, value_date, page_no, region, reader, confidence, label, label_reason,"
-    " label_page_no, label_region, votes)"
+    " label_page_no, label_region, votes, label_text)"
     " SELECT :c, :d, record_key, field, value_text, value_raw, second_reading, value_number, value_date,"
     " page_no, CAST(region AS jsonb), reader, confidence, label, label_reason, label_page_no,"
-    " CAST(label_region AS jsonb), CAST(votes AS jsonb)"
+    " CAST(label_region AS jsonb), CAST(votes AS jsonb), label_text"
     " FROM unnest(CAST(:record_key AS text[]), CAST(:field AS text[]), CAST(:value_text AS text[]),"
     " CAST(:value_raw AS text[]), CAST(:second_reading AS text[]), CAST(:value_number AS numeric[]),"
     " CAST(:value_date AS date[]), CAST(:page_no AS integer[]), CAST(:region AS text[]),"
     " CAST(:reader AS text[]), CAST(:confidence AS double precision[]), CAST(:label AS text[]),"
     " CAST(:label_reason AS text[]), CAST(:label_page_no AS integer[]), CAST(:label_region AS text[]),"
-    " CAST(:votes AS text[]))"
+    " CAST(:votes AS text[]), CAST(:label_text AS text[]))"
     " AS v(record_key, field, value_text, value_raw, second_reading, value_number, value_date, page_no,"
-    " region, reader, confidence, label, label_reason, label_page_no, label_region, votes)"
+    " region, reader, confidence, label, label_reason, label_page_no, label_region, votes, label_text)"
 )
 _INSERT_INVOICE = text(
     "INSERT INTO invoices (customer_id, document_id, invoice_number, invoice_date, seller_name,"
@@ -631,4 +632,5 @@ def _value_row(value: ExtractedValue, reader: str) -> tuple[object, ...]:
         None if label is None else label.page,
         None if label is None else json.dumps(location_to_json(label)),
         None if value.votes is None else json.dumps(value.votes),  # Ensemble's vote (F27)
+        value.label_text,
     )

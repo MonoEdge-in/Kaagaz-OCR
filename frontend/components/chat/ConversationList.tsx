@@ -194,8 +194,17 @@ export function ConversationList({
                       compact
                       name={item.title}
                       items={[
-                        { label: "Rename", onSelect: () => setRenaming({ id: item.id, title: item.title }) },
-                        { label: "Delete", onSelect: () => setDeleting(item), destructive: true },
+                        {
+                          label: "Rename",
+                          description: "Give this conversation a new name.",
+                          onSelect: () => setRenaming({ id: item.id, title: item.title }),
+                        },
+                        {
+                          label: "Delete",
+                          description: "Removes it and its answers for good. Your documents stay.",
+                          onSelect: () => setDeleting(item),
+                          destructive: true,
+                        },
                       ]}
                     />
                   </li>

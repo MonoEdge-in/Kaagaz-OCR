@@ -98,7 +98,7 @@ import { beingRead, canReprocess, loadFailure, settledText, valuesNote } from "@
 import { highlightsOf, initialSelection, pageChange } from "@/components/viewer/selection";
 import { selectSpot, selectValue } from "@/components/viewer/selection";
 import type { Selection } from "@/components/viewer/selection";
-import { canReview } from "@/components/review/review";
+import { canReview, verifiedText, verifyEach } from "@/components/review/review";
 import { flagDomId, trustText } from "@/components/review/wordReview";
 import { Timeline } from "@/components/activity/Timeline";
 import { ACTIVITY_TEXT } from "@/components/activity/words";
@@ -211,8 +211,9 @@ export function DocumentView({
   const opener = useRef<HTMLElement | null>(null);
   const [allValues, setAllValues] = useState(false); // "Show all N" pressed
   const [verifying, setVerifying] = useState<string | "all" | null>(null);
-  const [verifyProgress, setVerifyProgress] = useState(0);
-  const [verifyNotice, setVerifyNotice] = useState<{ text: string; failed: boolean } | null>(null);
+  const [verifyProgress, setVerifyProgress] = useState({ done: 0, total: 0 });
+  // After Verify all: what it says, and the ids of the values that could not be saved.
+  const [verifyNotice, setVerifyNotice] = useState<{ text: string; failed: boolean; retry?: string[] } | null>(null);
   // Word-level review: on or off, the word being reviewed, the export dialog.
   const [reviewing, setReviewing] = useState(false);
   const [currentFlag, setCurrentFlag] = useState<string | null>(null);
@@ -497,28 +498,28 @@ export function DocumentView({
     }
   };
 
-  const verifyAllValues = async () => {
-    if (!canVerifyValues || verifying !== null || pendingValues.length === 0) return;
-    const total = pendingValues.length;
-    let completed = 0;
+  // Verify all: every value still Ready to verify, or after a partial failure (Try again)
+  // only those that could not be saved and are still Ready to verify.
+  const verifyAllValues = async (values: ExtractedValue[]) => {
+    if (!canVerifyValues || verifying !== null || values.length === 0) return;
+    const total = values.length;
     setVerifying("all");
-    setVerifyProgress(0);
+    setVerifyProgress({ done: 0, total });
     setVerifyNotice(null);
-    try {
-      for (const value of pendingValues) {
-        await resolveReview(value.id, "typed", false, value.value);
-        completed += 1;
-        setVerifyProgress(completed);
-      }
-      setVerifyNotice({ text: `Verified all ${total} values.`, failed: false });
-    } catch (error) {
-      const reason = error instanceof ApiError ? error.message : "Check your connection, then try again.";
-      setVerifyNotice({ text: `Verified ${completed} of ${total}. ${reason}`, failed: true });
-    } finally {
-      setVerifying(null);
-      setReloads((n) => n + 1);
-    }
+    const failed = await verifyEach(
+      values,
+      (value) => resolveReview(value.id, "typed", false, value.value),
+      (done) => setVerifyProgress({ done, total }),
+    );
+    setVerifyNotice({
+      text: verifiedText(total, failed.length),
+      failed: failed.length > 0,
+      retry: failed.map((value) => value.id),
+    });
+    setVerifying(null);
+    setReloads((n) => n + 1);
   };
+  const retryValues = pendingValues.filter((value) => verifyNotice?.retry?.includes(value.id));
 
   const values = (
     <section className={styles.values} aria-labelledby="values-heading">
@@ -533,10 +534,12 @@ export function DocumentView({
           <button
             type="button"
             className="btn btn-quiet"
-            onClick={() => void verifyAllValues()}
+            onClick={() => void verifyAllValues(pendingValues)}
             disabled={verifying !== null}
           >
-            {verifying === "all" ? `Verifying ${verifyProgress} of ${pendingValues.length}…` : `Verify all ${pendingValues.length}`}
+            {verifying === "all"
+              ? `Verifying ${verifyProgress.done} of ${verifyProgress.total}…`
+              : `Verify all ${pendingValues.length}`}
           </button>
         )}
       </div>
@@ -544,6 +547,17 @@ export function DocumentView({
         <p className={verifyNotice.failed ? "error-text" : "muted"} role={verifyNotice.failed ? "alert" : "status"}>
           {verifyNotice.text}
         </p>
+      )}
+      {canVerifyValues && retryValues.length > 0 && (
+        <button
+          type="button"
+          className={`btn btn-quiet ${styles.showAll}`}
+          onClick={() => void verifyAllValues(retryValues)}
+          disabled={verifying !== null}
+        >
+          Try again
+          <span className="visually-hidden">{` to verify the ${retryValues.length} not saved`}</span>
+        </button>
       )}
       {readingNote && <p className="muted">{readingNote}</p>}
       {detail.values.length === 0 ? (

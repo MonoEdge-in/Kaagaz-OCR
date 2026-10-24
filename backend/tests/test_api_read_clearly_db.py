@@ -1,13 +1,16 @@
 """Read clearly (19 Oct 2026) against PostgreSQL: the clean copy has every page's lines
 with their table place and marks; customer B gets 404 and none of A's text from either
 route; translation follows Ask (403 ``feature_off`` with the switch off or the level at
-None), and a second view of a page makes no model call. The translator itself:
-test_page_translate.py (no database)."""
+None), a second view of a page makes no model call, and each failure has its own code:
+503 only when the model can't be reached. The translator itself: test_page_translate.py
+(no database)."""
 
 from typing import Any
 
 import pytest
 
+from kaagaz.ai.client import ModelOutputError, ModelUnavailable
+from kaagaz.answering.page_translate import BATCH_CHARS
 from kaagaz.db.engine import Database
 from kaagaz.db.pipeline_store import span_to_json
 from kaagaz.reading.spans import BoxLocation, Span
@@ -81,7 +84,6 @@ def test_translation_follows_ask_and_a_second_view_makes_no_model_call(db: Datab
         "page_no": 1,
         "language": "hi",
         "lines": ["बिक्री विलेख", "वस्तु"],
-        "truncated": False,
         "cached": False,
     }
     again = _translate(member, document_id, language="hi")
@@ -96,3 +98,38 @@ def test_translation_follows_ask_and_a_second_view_makes_no_model_call(db: Datab
     assert (reply.status_code, reply.json()["error"]["code"]) == (403, "feature_off")
     assert len(model.prompts) == 1
     assert member.client.get(f"/api/documents/{document_id}/clear-copy").status_code == 200  # no AI needed
+
+
+@pytest.mark.parametrize(
+    ("model", "page", "status", "code"),
+    [
+        pytest.param(
+            FakeModel(chat_error=ModelUnavailable("timeout")), 1, 503, "backend_unavailable", id="down"
+        ),
+        pytest.param(
+            FakeModel(chat_error=ModelOutputError("bad_request")),
+            1,
+            422,
+            "translation_unusable",
+            id="refused",
+        ),
+        pytest.param(
+            FakeModel(lambda system, user: {"lines": ["one"]}), 1, 422, "translation_unusable", id="shape"
+        ),
+        pytest.param(FakeModel(), 2, 422, "page_too_long", id="too long"),
+    ],
+)
+def test_each_failure_has_its_own_code(
+    db: Database, model: FakeModel, page: int, status: int, code: str
+) -> None:
+    api = Api(db, model=model)
+    member = api.new_signed()
+    document_id = api.add_document(member.customer_id, detected_type="png", name="long.png")
+    for page_no in (1, 2):
+        api.add_page(member.customer_id, document_id, page_no, unit="px")
+    spans = [_span(1, 0.1, "Sale deed"), _span(1, 0.2, "Item"), _span(2, 0.1, "a" * (BATCH_CHARS + 1))]
+    api.add_reader_output(member.customer_id, document_id, spans)
+    reply = _translate(member, document_id, page=page)
+    assert (reply.status_code, reply.json()["error"]["code"]) == (status, code)
+    assert ("retry-after" in reply.headers) == (status == 503)
+    assert "Sale deed" not in reply.text

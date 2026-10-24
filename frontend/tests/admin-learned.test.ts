@@ -30,14 +30,16 @@ describe("What Kaagaz learned", () => {
 
   it("lists each document with how many people and when, and Remove; no question, no name", () => {
     const html = view([ITEM, { ...ITEM, document_id: "doc-2", people: 1 }]);
-    expect(html).toContain("2 people");
-    expect(html).toContain("1 person");
+    // Per document, on any question: never read as the per-page, same-words count the lift uses.
+    expect(html).toContain("2 people, on any question");
+    expect(html).toContain("1 person, on any question");
+    expect(LEARNED_TEXT.intro).toContain("2 or more people have marked the same page for similar questions");
     expect(html).toContain("22 Oct 2026");
     expect([...html.matchAll(/<button[^>]*>Remove</g)]).toHaveLength(2);
     expect(html).not.toContain("<b>March");
     for (const [, href] of html.matchAll(/href="([^"]*)"/g)) expect(href).toMatch(/^\/documents\/doc-[12]$/);
     expect(html).toMatch(/data-label="Marked Useful by"/); // the cards below 48rem say what each value is
-    expect(peopleText(1)).toBe("1 person");
+    expect(peopleText(1)).toBe("1 person, on any question");
   });
 
   it("names its audit row in plain words", () => {

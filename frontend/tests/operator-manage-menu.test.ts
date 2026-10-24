@@ -40,9 +40,10 @@ describe("one Manage menu per organisation", () => {
 
   it("lists Admins, AI settings and auto-filing, then the status changes after a separator", () => {
     expect(row).toMatch(/safe=\{\[\s*\{ label: "Admins"/);
-    expect(row).toContain('{ label: "AI settings", onSelect: onModels }');
-    expect(row).toContain('{ label: "Request limits", onSelect: onModelRates }');
-    expect(row).toContain('org.autofile_granted ? "Stop auto-filing" : "Allow auto-filing"');
+    // Changed on purpose (plain words, 25 Oct 2026): each item has a line saying what it does.
+    expect(row).toContain('{ label: "AI settings", description: MENU_HELP.ai, onSelect: onModels }');
+    expect(row).toContain('{ label: "Request limits", description: MENU_HELP.limits, onSelect: onModelRates }');
+    expect(row).toMatch(/org\.autofile_granted\s*\? \{ label: "Stop auto-filing"[^}]*\}\s*: \{ label: "Allow auto-filing"/);
     expect(row).toContain("changes={CHANGES[org.status].map(");
     expect(menu).toMatch(/\{safe\.map\(entry\)\}\s*\{safe\.length > 0 && changes\.length > 0 && <div role="separator"/);
     expect(menu.indexOf('role="separator"')).toBeLessThan(menu.indexOf("{changes.map(entry)}"));

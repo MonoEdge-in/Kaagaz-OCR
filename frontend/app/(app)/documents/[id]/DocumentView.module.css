@@ -268,10 +268,10 @@
   min-width: 0;
 }
 
-/* "Tags", "Versions": sentence case, 14px. */
+/* A label (readable type, 25 Oct 2026): sentence case, 14px. It was 11px capitals. */
 .placeLabel {
   font-size: var(--fs-base);
-  font-weight: 600;
+  font-weight: 500;
   color: var(--text-secondary);
 }
 

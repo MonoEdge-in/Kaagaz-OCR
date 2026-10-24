@@ -289,11 +289,12 @@ describe("the documents list (D1, D2, D3, D6, D9, D10, D11)", () => {
 
   it("says 7 flagged in full, and names its Review link with what and where", () => {
     const counts = { pages_unreadable: 0, pages_uncertain: 0, words_unsure: 0, values_to_review: 7 };
-    expect(flaggedShort(counts)).toEqual({ shown: "7 flagged", spoken: "7 flagged words" });
-    expect(flaggedShort({ ...counts, values_to_review: 1 }).spoken).toBe("1 flagged word");
+    // Changed on purpose (plain words, 25 Oct 2026): "to check", never "flagged".
+    expect(flaggedShort(counts)).toEqual({ shown: "7 to check", spoken: "7 words to check" });
+    expect(flaggedShort({ ...counts, values_to_review: 1 }).spoken).toBe("1 word to check");
     expect(flaggedShort({ ...counts, pages_unreadable: 2 })).toEqual({
-      shown: "7 flagged · 2 pages to check",
-      spoken: "7 flagged words and 2 pages to check",
+      shown: "7 to check · 2 pages to check",
+      spoken: "7 words to check and 2 pages to check",
     });
     expect(flaggedShort({ ...counts, values_to_review: 0, pages_unreadable: 1 })).toEqual({
       shown: "1 page to check",

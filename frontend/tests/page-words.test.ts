@@ -196,6 +196,34 @@ describe("under the page: the note, the toggle and the next page", () => {
   it("marks Devanagari words as Marathi", () => {
     expect(render({ words: ["कृष्ण", "maval"] })).toContain('<span lang="mr">कृष्ण</span>');
   });
+
+  it("counts a sheet's lit cells as on the page, so a spreadsheet gets the note and toggle", () => {
+    const html = render({ found: found([{ kind: "cell", page: 2, row: 3, column: 2 }], [2]) });
+    expect(text(html)).toContain("Highlighted: your words (krishna, maval) on this page");
+    expect(text(html)).toContain(SHOW_WORDS);
+  });
+});
+
+// A spreadsheet shows cells, not a page image (package H): the full-page grid gets the same
+// regions the page lines come from (GET /documents/{id}/words, matched on the server by the
+// page's rules) and underlines this sheet's cells in the same green; never in a crop preview.
+describe("your words in a spreadsheet's cells", () => {
+  const css = read("components/viewer/PageViewer.module.css").replace(/\/\*[\s\S]*?\*\//g, "");
+  const grid = read("components/viewer/SheetGrid.tsx");
+  const viewer = read("components/viewer/PageViewer.tsx");
+
+  it("passes the words' regions to the full-page grid only, which lights this sheet's cells", () => {
+    expect(viewer.match(/wordCells=\{wordBoxes\}/g)).toHaveLength(1);
+    expect(viewer.match(/<SheetGrid[^>]*crop=/)?.[0]).not.toContain("wordCells");
+    expect(grid).toContain("const lit = highlightedCells(wordCells, page.page_no);");
+    expect(grid).toMatch(/word && styles\.cellWord/);
+    expect(grid).toContain('{word ? <span className="visually-hidden"> (your words)</span> : null}');
+  });
+
+  it("uses the words' green token, under the cited spot's fill", () => {
+    expect(css).toMatch(/\.cellWord\s*\{[^}]*text-decoration: underline 3px var\(--words-on-paper\)/);
+    expect(css.indexOf(".cellWord {")).toBeLessThan(css.indexOf(".cellHit {"));
+  });
 });
 
 describe("drawn under the spot, in their own colour, and the 320px layout", () => {
