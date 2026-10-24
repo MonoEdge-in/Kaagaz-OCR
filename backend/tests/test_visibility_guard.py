@@ -130,6 +130,7 @@ BY_ID: dict[tuple[ModuleType, str], str] = {
         "_SELECT",
     ): "get_document: the detail, the file and the pages open any version, in Trash or not",
     (listing, "_VERSIONS"): "family_versions: the detail lists every version of its family, in Trash or not",
+    (listing, "_WORD_LINES"): "word_lines: your words on a page of the document the detail opens, as it does",
     (
         pipeline_store,
         "_LOCK_LINKED",

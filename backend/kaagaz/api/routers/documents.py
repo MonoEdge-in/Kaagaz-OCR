@@ -1,5 +1,6 @@
 """The document routes: list, upload, a new version, detail and its summary, rename or move,
-the original file, page images, each page's scanned text, spreadsheet cells, and
+the original file, page images, each page's scanned text and the lines holding a search's
+words (``get_page_words``), spreadsheet cells, and
 Trash (move to Trash, restore, delete forever).
 
 Why some choices:
@@ -174,6 +175,7 @@ from kaagaz.ingestion.policy import UploadPolicy, limits_by_type
 from kaagaz.ingestion.ports import BlobNotFound, Job, JobQueue, UnknownFamily, UnknownFolder
 from kaagaz.ingestion.service import UploadResult, UploadService
 from kaagaz.reading.ocr import GEMINI
+from kaagaz.search import page_words
 from kaagaz.settings import Settings
 
 router = APIRouter()
@@ -1361,6 +1363,35 @@ def get_page_readings(document_id: uuid.UUID, page_no: int, user: User, context:
         rows = listing.page_readings(conn, customer_id, target, page_no)
         marks = listing.page_marks(conn, customer_id, target, page_no)  # PRD 5 U3
     return page_readings(page_no, rows, marks)
+
+
+@router.get("/documents/{document_id}/pages/{page_no}/words")
+def get_page_words(
+    document_id: uuid.UUID,
+    page_no: int,
+    user: User,
+    context: Context,
+    w: Annotated[list[str] | None, Query(max_length=page_words.MAX_WORDS)] = None,
+) -> dict[str, Any]:
+    """Your words on the page (package H): the regions of this page's lines that hold the
+    words (``w``, at most 8, cleaned by ``page_words.clean_words``), and every page with
+    such a line. Who may ask is who may see the page image: another customer's id and a
+    rejected file are 404, a family in Trash 409 ``in_trash`` (T1). Regions and page
+    numbers only, never text. One statement."""
+    if page_no < 1:
+        raise ApiError(404, "not_found")
+    words = page_words.clean_words(w or [])
+    with context.db.customer(user.customer_id) as conn:
+        found = listing.word_lines(conn, user.customer_id, str(document_id))
+    if found is None:
+        raise ApiError(404, "not_found")
+    in_trash, status, pieces = found
+    if in_trash:
+        raise ApiError(409, "in_trash", "This document is in the Trash. Restore it first.")
+    if status == "rejected":
+        raise ApiError(404, "not_found")
+    boxes, pages = page_words.word_regions(pieces, words, page_no)
+    return {"page_no": page_no, "boxes": boxes, "pages": pages}
 
 
 @router.get("/documents/{document_id}/pages/{page_no}/cells")
