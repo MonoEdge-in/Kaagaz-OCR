@@ -461,10 +461,8 @@
   width: 100%;
   margin-bottom: var(--space-3);
   padding: 0;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  font-size: var(--fs-base);
+  font-weight: 500;
   color: var(--text-secondary);
 }
 
@@ -565,13 +563,11 @@
   contain: layout paint style;
 }
 
-/* Labels: 11px, bold, upper case, 0.08em apart. */
+/* Labels (readable type, 25 Oct 2026): sentence case, 14px. They were 11px capitals. */
 .tileLabel,
 .usageTileHead {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  font-size: var(--fs-base);
+  font-weight: 500;
   color: var(--text-secondary);
 }
 

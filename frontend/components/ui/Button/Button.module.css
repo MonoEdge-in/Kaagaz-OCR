@@ -1,4 +1,4 @@
-/* Buttons: pills, mono caps (design/kaagaz-ui-handoff/styles/kaagaz.css, section 5). */
+/* Buttons: pills (design/kaagaz-ui-handoff/styles/kaagaz.css, section 5), in sentence case. */
 
 .btn {
   display: inline-flex;
@@ -11,9 +11,8 @@
   border: 1px solid var(--k-rule-strong);
   background: var(--k-surface);
   color: var(--k-ink);
-  font: 500 12px/1 var(--k-font-mono);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  /* Readable type (25 Oct 2026): sentence case, the body face, 15px. It was 12px mono capitals. */
+  font: 500 0.9375rem/1.2 var(--k-font-body);
   cursor: pointer;
   text-decoration: none;
   white-space: nowrap;
@@ -33,7 +32,7 @@
   background: var(--k-accent);
   border-color: var(--k-accent);
   color: var(--k-accent-ink);
-  font-weight: 600;
+  font-size: 1rem;
 }
 .primary:hover {
   background: var(--k-accent-hover);
@@ -82,13 +81,12 @@
 .sm {
   min-height: 32px;
   padding: 0 13px;
-  font-size: 11px;
   gap: 6px;
 }
 .lg {
   min-height: 48px;
   padding: 0 24px;
-  font-size: 13px;
+  font-size: 1rem;
 }
 .icon {
   width: 40px;

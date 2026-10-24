@@ -1,7 +1,7 @@
 /* Kaagaz base, copied from design/kaagaz-ui-handoff/styles/kaagaz.css section 3
    (base, type classes, focus ring, icon sizes) and section 18 (motion). Everything
    hangs off .k-root, so no current screen changes until it opts in by sitting
-   inside .k-root (the new AppShell, Step 3). Three edits:
+   inside .k-root (the new AppShell, Step 3). Four edits:
    - The element resets under .k-root (headings, links, buttons, lists) sit in
      :where(), so they weigh no more than an element, and a component's own class
      always wins. The handoff got the same by repeating ".k-root" before its
@@ -10,7 +10,9 @@
      from app/globals.css, until that file goes.
    - .k-deva names the Devanagari face next/font serves (app/layout.tsx).
    - Section 18's reduced-motion block is left out: app/globals.css already makes
-     every move instant under reduced motion, for every element. */
+     every move instant under reduced motion, for every element.
+   - .k-eyebrow and .k-tagline are sentence case in the body face at 14px
+     (readable type, 25 Oct 2026; they were 11px mono capitals). */
 
 /* ---------- 3. Base ---------- */
 .k-root, .k-root *, .k-root *::before, .k-root *::after { box-sizing: border-box; }
@@ -42,8 +44,8 @@
 .k-faint { color: var(--k-ink-faint); }
 .k-mono { font-family: var(--k-font-mono); font-size: 0.92em; letter-spacing: 0; }
 .k-num { font-family: var(--k-font-display); font-stretch: var(--k-display-stretch); font-size: var(--k-fs-36); font-weight: 600; line-height: 1; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; }
-.k-eyebrow { font-family: var(--k-font-mono); font-size: var(--k-fs-11); font-weight: 500; letter-spacing: 0.14em; text-transform: uppercase; color: var(--k-ink-muted); }
-.k-tagline { display: inline-flex; align-items: center; gap: 12px; font-family: var(--k-font-mono); font-size: 11px; font-weight: 500; letter-spacing: 0.14em; text-transform: uppercase; color: var(--k-ink-muted); }
+.k-eyebrow { font-family: var(--k-font-body); font-size: 0.875rem; font-weight: 500; color: var(--k-ink-muted); }
+.k-tagline { display: inline-flex; align-items: center; gap: 12px; font-family: var(--k-font-body); font-size: 0.875rem; font-weight: 500; color: var(--k-ink-muted); }
 .k-tagline b { color: var(--k-accent); font-weight: 500; }
 .k-tagline::after { content: none; }
 .k-tagline i { display: inline-block; width: 28px; height: 1px; background: var(--k-rule-strong); }

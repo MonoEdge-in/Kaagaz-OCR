@@ -114,9 +114,10 @@ describe("flat, square, hairline", () => {
     expect(found).toEqual([]);
   });
 
-  it("writes labels 11px, bold, upper case, 0.08em apart", () => {
+  // Changed on purpose (readable type, 25 Oct 2026): labels were 11px bold capitals, 0.08em apart.
+  it("writes labels in sentence case, 14px, medium, in the secondary text colour", () => {
     const css = noComments(read("components/admin/Admin.module.css"));
-    expect(css).toMatch(/\.tileLabel,\s*\.usageTileHead \{\s*font-size: 11px;\s*font-weight: 700;\s*letter-spacing: 0\.08em;\s*text-transform: uppercase;/);
+    expect(css).toMatch(/\.tileLabel,\s*\.usageTileHead \{\s*font-size: var\(--fs-base\);\s*font-weight: 500;\s*color: var\(--text-secondary\);\s*\}/);
   });
 });
 
