@@ -75,8 +75,10 @@
   white-space: nowrap;
 }
 
-a.wordmark:hover {
-  color: var(--fg);
+@media (hover: hover) and (pointer: fine) {
+  a.wordmark:hover {
+    color: var(--fg);
+  }
 }
 
 /* The link's target: one control tall (32 px, 44 px for touch). */

@@ -599,14 +599,14 @@ function PDFViewerPageNumberControl({
               event.currentTarget.blur()
             }
           }}
-          className="h-7 w-12 min-w-12 rounded-sm border-0 bg-viewer-bar-field px-1 text-center text-viewer-bar-ink"
+          className="h-7 w-12 min-w-12 rounded-full border-0 bg-viewer-bar-field px-1 text-center text-viewer-bar-ink"
         />
       ) : (
         <Button
           type="button"
           variant="ghost"
           size="sm"
-          className="h-7 min-w-9 rounded-sm bg-viewer-bar-field px-2 font-normal tabular-nums"
+          className="h-7 min-w-9 rounded-full bg-viewer-bar-field px-2 font-normal tabular-nums"
           aria-label={`Current page ${displayPage}. Edit page number`}
           disabled={controlsDisabled || !numPages}
           onClick={() => {
@@ -851,7 +851,7 @@ function PDFViewerSearchControl({
 // and rotate next; search, the app's own actions, and download at the end. Plain icons, no
 // circles or pills; on a narrow screen the icons wrap to a second row.
 const TOOLBAR_BUTTON =
-  "rounded-sm text-viewer-bar-ink hover:bg-white/10 hover:text-viewer-bar-ink disabled:opacity-40"
+  "rounded-full text-viewer-bar-ink hover:bg-viewer-bar-field hover:text-viewer-bar-ink disabled:opacity-40"
 function ToolbarDivider() {
   return <span aria-hidden="true" className="mx-1 h-5 w-px flex-none bg-white/20" />
 }
@@ -898,8 +898,8 @@ function PDFViewerToolbar({
   return (
     <div
       className={cn(
-        "flex min-h-12 flex-wrap items-center gap-x-1 gap-y-1 bg-viewer-bar px-2 py-1.5 text-viewer-bar-ink",
-        "[&_:is(button,a)]:rounded-sm [&_:is(button,a)]:text-viewer-bar-ink [&_:is(button,a):hover]:bg-white/10 [&_:is(button,a):hover]:text-viewer-bar-ink [&_button[aria-pressed=true]]:bg-white/10 [&_button[aria-expanded=true]]:bg-white/10"
+        "flex min-h-12 flex-wrap items-center gap-x-1 gap-y-1 border-b border-border bg-viewer-bar px-2 py-1.5 text-viewer-bar-ink",
+        "[&_:is(button,a)]:rounded-full [&_:is(button,a)]:text-viewer-bar-ink [&_:is(button,a):hover]:bg-viewer-bar-field [&_:is(button,a):hover]:text-viewer-bar-ink [&_button[aria-pressed=true]]:bg-viewer-bar-field [&_button[aria-expanded=true]]:bg-viewer-bar-field"
       )}
     >
       <TooltipProvider>
@@ -911,7 +911,7 @@ function PDFViewerToolbar({
               size="icon-sm"
               aria-label="Pages"
               aria-pressed={sidebarOpen}
-              className={cn(TOOLBAR_BUTTON, sidebarOpen && "bg-white/10")}
+              className={cn(TOOLBAR_BUTTON, sidebarOpen && "bg-viewer-bar-field")}
               disabled={controlsDisabled}
               onClick={onToggleSidebar}
             >
@@ -944,7 +944,7 @@ function PDFViewerToolbar({
             </Button>
           </ToolbarTooltip>
           <span
-            className="min-w-14 rounded-sm bg-viewer-bar-field px-2 py-1 text-center text-sm tabular-nums"
+            className="min-w-14 rounded-full bg-viewer-bar-field px-2 py-1 text-center text-sm tabular-nums"
             aria-live="polite"
           >
             {Math.round(currentZoomLevel * 100)}%

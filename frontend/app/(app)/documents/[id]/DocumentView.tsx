@@ -571,6 +571,10 @@ export function DocumentView({
         </button>
       )}
       {readingNote && <p className="muted">{readingNote}</p>}
+      {/* Said once, not on every row (Tushar, 24 Oct 2026: "minimize this"). */}
+      {detail.values.some((value) => value.label_reason === "model_chosen") && (
+        <p className={styles.valuesNote}>{AI_FOUND_NOTE}</p>
+      )}
       {detail.values.length === 0 ? (
         !readingNote && <p className="muted">{untilRead(detail.status, "No values were found in this document.")}</p>
       ) : (
@@ -617,6 +621,10 @@ export function DocumentView({
                           {`, show on page ${value.region.page}`}
                         </span>
                       </button>
+                      <span className={styles.valuePage}>
+                        Page {value.region.page}
+                        {active ? ", highlighted" : ""}
+                      </span>
                       <button
                         type="button"
                         className={`btn btn-quiet ${wordStyles.target}`}
@@ -625,10 +633,6 @@ export function DocumentView({
                         Add meaning
                         <span className="visually-hidden">{` for ${fieldText(value.field)}`}</span>
                       </button>
-                      <div className={styles.pageNote}>
-                        Page {value.region.page}
-                        {active ? ", highlighted on the page" : ""}
-                      </div>
                       <WhatWasRead
                         value={value}
                         page={detail.pages.find((p) => p.page_no === value.region.page)}
@@ -636,10 +640,12 @@ export function DocumentView({
                     </td>
                     <td role="cell" className={styles.labelCell}>
                       <LabelBadge label={value.label} confidence={value.confidence ?? null} />
-                      <div className={styles.reason}>
-                        {reasonText(value.label_reason)}
-                        {value.votes && <div className={styles.pageNote}>{voteText(value.votes)}</div>}
-                      </div>
+                      {(value.label_reason !== "model_chosen" || value.votes) && (
+                        <div className={styles.reason}>
+                          {value.label_reason !== "model_chosen" && reasonText(value.label_reason)}
+                          {value.votes && <div className={styles.pageNote}>{voteText(value.votes)}</div>}
+                        </div>
+                      )}
                       {canVerifyValues && value.label === "needs_review" && (
                         <button
                           type="button"
@@ -1256,5 +1262,7 @@ function useDocumentWords(documentId: string, words: readonly string[], version:
   return loaded && loaded.key === key ? loaded.found : null;
 }
 
+/** Said once over Values found, for the values the AI picked (24 Oct 2026: not on every row). */
+export const AI_FOUND_NOTE = "Values marked Ready to verify were found by the AI. Check each one against its page.";
 const NO_REGIONS: Region[] = [];
 const NO_HITS: number[] = [];

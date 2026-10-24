@@ -31,7 +31,7 @@
   border-spacing: 0;
   background: var(--bg-surface);
   border: 1px solid var(--border);
-  border-radius: var(--k-r-2);
+  border-radius: var(--k-r-4);
 }
 
 /* Long words break only when they cannot fit on a line of their own. */
@@ -74,7 +74,7 @@
   .reflow {
     background: transparent;
     border: 0;
-    border-radius: 0;
+    border-radius: var(--k-r-4);
   }
 
   /* The header row stays for screen readers; the cards label their own cells. */
@@ -96,7 +96,7 @@
   .reflow tbody tr {
     background: var(--bg-surface);
     border: 1px solid var(--border);
-    border-radius: var(--k-r-2);
+    border-radius: var(--k-r-4);
     padding: var(--space-3) var(--space-4);
   }
 

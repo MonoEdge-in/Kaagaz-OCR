@@ -214,7 +214,7 @@ export function AnswerQualityView({
       ) : null}
       {!reply && !error ? (
         <div className={`delayed ${styles.skeletons}`}>
-          <p className="muted" role="status">
+          <p className="muted delayed" role="status">
             {QUALITY_TEXT.loading}
           </p>
           <Skeleton className={styles.skeletonRow} />

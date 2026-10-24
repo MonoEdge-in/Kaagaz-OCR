@@ -18,9 +18,11 @@
   white-space: nowrap;
   max-width: 100%;
 }
-.btn:hover {
-  background: var(--k-sunken);
-  color: var(--k-ink);
+@media (hover: hover) and (pointer: fine) {
+  .btn:hover {
+    background: var(--bg-hover);
+    color: var(--k-ink);
+  }
 }
 /* A press answers at once (24 Oct 2026), as the app's .btn. */
 .btn {
@@ -41,9 +43,11 @@
   color: var(--k-accent-ink);
   font-size: 1rem;
 }
-.primary:hover {
-  background: var(--k-accent-hover);
-  border-color: var(--k-accent-hover);
+@media (hover: hover) and (pointer: fine) {
+  .primary:hover {
+    background: var(--k-accent-hover);
+    border-color: var(--k-accent-hover);
+  }
 }
 
 .quiet,
@@ -52,8 +56,10 @@
   background: transparent;
   color: var(--k-accent);
 }
-.quiet:hover {
-  background: var(--k-accent-soft);
+@media (hover: hover) and (pointer: fine) {
+  .quiet:hover {
+    background: var(--k-accent-soft);
+  }
 }
 
 .danger,
@@ -62,8 +68,11 @@
   border-color: var(--k-danger);
   color: var(--k-danger-ink);
 }
-.danger:hover {
-  filter: brightness(0.9);
+@media (hover: hover) and (pointer: fine) {
+  .danger:hover {
+    background: color-mix(in srgb, var(--k-danger) 85%, var(--k-ink));
+    border-color: color-mix(in srgb, var(--k-danger) 85%, var(--k-ink));
+  }
 }
 
 .dangerOutline,
@@ -72,13 +81,15 @@
   border-color: var(--k-danger);
   background: var(--k-surface);
 }
-.dangerOutline:hover {
-  background: var(--k-danger-soft);
+@media (hover: hover) and (pointer: fine) {
+  .dangerOutline:hover {
+    background: var(--k-danger-soft);
+  }
 }
 
 .btn:disabled,
 .btn:disabled:hover {
-  background: var(--k-sunken);
+  background: var(--bg-hover);
   border-color: var(--k-sunken);
   color: var(--k-ink-faint);
   cursor: not-allowed;

@@ -73,11 +73,12 @@
 
   /* The page itself stays white paper in both themes */
   --paper: #ffffff;
-  /* The PDF viewer's bar (components/extend): dark in both themes, as the browser's own PDF
-     viewer; its words 11:1 on it, its page and zoom fields a shade darker. */
-  --viewer-bar: #323639;
-  --viewer-bar-ink: #f1f3f4;
-  --viewer-bar-field: #202124;
+  /* The PDF viewer's bar (components/extend). Changed on purpose (Tushar, 24 Oct 2026: "the
+     same theme when I open a document"): the product's own surface and ink, following the
+     theme, instead of the browser's dark bar; its page and zoom fields and hovers a sunken shade. */
+  --viewer-bar: var(--k-surface);
+  --viewer-bar-ink: var(--k-ink);
+  --viewer-bar-field: var(--k-sunken);
   --paper-frame: var(--bg-subdued);
   /* The sign-in figure's text bars and rule on the white page, kept in dark */
   --paper-bar: #e8eaed;
@@ -110,6 +111,7 @@
   --fs-label: 0.6875rem; /* 11px: small mono data (a count, the status bar) */
   --fs-sm: 0.8125rem; /* 13px */
   --fs-base: 0.875rem; /* 14px, the handoff's UI size */
+  --fs-field: var(--fs-base); /* typing fields; 16px on a phone (below) */
   --fs-lg: 1.125rem; /* 18px */
   --fs-xl: 1.375rem; /* 22px */
   --fs-2xl: clamp(1.625rem, 1.4rem + 0.8vw, 1.875rem); /* 26 to 30px */
@@ -292,6 +294,8 @@
     --margin: 16px;
     --header-h: 60px;
     --bottombar-h: 56px;
+    /* UI council (24 Oct 2026): iOS zooms into a field under 16px; never on a phone. */
+    --fs-field: max(1rem, 16px);
   }
 }
 
@@ -799,8 +803,8 @@ td.num {
   .btn-destructive:hover,
   .btn-danger:hover {
     --btn-fg: var(--text-onaccent);
-    background: var(--critical);
-    border-color: var(--text-primary);
+    background: color-mix(in srgb, var(--critical) 85%, var(--fg));
+    border-color: color-mix(in srgb, var(--critical) 85%, var(--fg));
   }
 }
 
@@ -950,7 +954,7 @@ textarea.input {
   border-radius: var(--k-r-3);
   background: var(--surface);
   color: var(--fg);
-  font-size: var(--fs-base);
+  font-size: var(--fs-field);
   line-height: 1.25;
 }
 
@@ -1401,6 +1405,34 @@ dialog[open]::backdrop {
     clip: rect(0, 0, 0, 0);
     white-space: nowrap;
     border: 0;
+  }
+}
+
+/* Every toggle gives a little when pressed (24 Oct 2026, UI council): filters, chips, and the
+   pressed-state buttons, as .btn does; never a disabled one. Transform only. */
+button[aria-pressed],
+.k-chip,
+.k-suggest {
+  transition: transform var(--t-fast) var(--ease);
+}
+
+button[aria-pressed]:active:not(:disabled, [aria-disabled="true"]),
+.k-chip:active,
+.k-suggest:active {
+  transform: scale(0.97);
+}
+
+/* A <details> eases its content open instead of snapping (opacity and a 4px rise). */
+@media (prefers-reduced-motion: no-preference) {
+  details[open] > :not(summary) {
+    animation: details-in var(--t-med) var(--ease);
+  }
+}
+
+@keyframes details-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
   }
 }
 

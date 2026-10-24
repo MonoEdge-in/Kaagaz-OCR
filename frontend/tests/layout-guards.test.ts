@@ -757,7 +757,9 @@ describe("the document screen (boards 2, 3 and 6)", () => {
     expect(head).toContain("Label and reason");
     // Changed on purpose (Tushar, 16 Oct 2026: Ready to verify): the badge gets the value's confidence for its tooltip.
     expect(view).toMatch(
-      /<td role="cell" className=\{styles\.labelCell\}>\s*<LabelBadge label=\{value\.label\} confidence=\{value\.confidence \?\? null\} \/>\s*<div className=\{styles\.reason\}>/,
+      // Changed on purpose (24 Oct 2026): the AI's own reason is said once over the list, so a
+      // row shows its reason only when it is another one (or the readers' vote).
+      /<td role="cell" className=\{styles\.labelCell\}>\s*<LabelBadge label=\{value\.label\} confidence=\{value\.confidence \?\? null\} \/>\s*\{\(value\.label_reason !== "model_chosen" \|\| value\.votes\) && \(\s*<div className=\{styles\.reason\}>/,
     );
     const nowrap = rules(read(VIEW_CSS)).filter((rule) => NOWRAP.test(rule.body) && /label|reason/i.test(rule.selector));
     expect(nowrap.map((rule) => rule.selector)).toEqual([".labelCell :global(.badge)"]);
