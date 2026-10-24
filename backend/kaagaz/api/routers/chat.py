@@ -47,6 +47,7 @@ import logging
 import uuid
 from collections.abc import Sequence
 from typing import Annotated, Any, Literal
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Response
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError, field_validator
@@ -58,6 +59,7 @@ from kaagaz.ai.usage import usage_scope
 from kaagaz.answering.memory import NO_MEMORY, Memory, from_row, live
 from kaagaz.answering.pins import Pin
 from kaagaz.answering.rewrite import Turn
+from kaagaz.answering.voice import SOFT_NOTHING, numbers, opening, soft_line, unsupported
 from kaagaz.api.auth import FEATURE_OFF, CurrentUser, User
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
@@ -88,7 +90,7 @@ Context = Annotated[AppContext, Depends(get_context)]
 
 MAX_TITLE = 200
 SHORT_TITLE = 60  # characters of the first question a new conversation's title keeps
-NOT_FOUND_TEXT = "I couldn't find this in your documents."
+NOT_FOUND_TEXT = SOFT_NOTHING  # PRD 6 decision 9: the screen's words (answering/voice.py)
 MAX_SCOPE_BYTES = 4096  # the messages.scope CHECK (migration 0006)
 TOO_MANY_QUESTIONS = "You have asked many questions in a short time. Please wait a minute and ask again."
 
@@ -168,12 +170,14 @@ class FeedbackBody(BaseModel):
 
 
 def answer_text(answer: dict[str, Any]) -> str:
-    """The assistant message's plain text: its sentences joined, or the not-found line."""
+    """The assistant message's plain text: its sentences joined, or the not-found line
+    (decision 9: the closest documents' when it lists any). Never the opening, so the
+    asker's name is never in the history a rewrite reads."""
     sentences = answer.get("sentences")
     texts = []
-    if answer.get("status") == "answered" and isinstance(sentences, list):
+    if answer.get("status") in ("answered", "unchecked") and isinstance(sentences, list):
         texts = [s["text"] for s in sentences if isinstance(s, dict) and isinstance(s.get("text"), str)]
-    return " ".join(texts) or NOT_FOUND_TEXT
+    return " ".join(texts) or soft_line(bool(answer.get("closest_documents")))
 
 
 @router.post("/chat")
@@ -187,6 +191,7 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
     chosen = body.scope
     recent: Sequence[RowMapping] = []
     memory, summary_turn, turns = NO_MEMORY, 0, 0
+    earlier: list[str | None] = []  # the conversation's openings so far (PRD 6 A)
     with context.db.customer(user.customer_id) as conn:
         if conversation_id is not None:
             state = chat_sql.conversation_memory(conn, user.customer_id, conversation_id, user.user_id)
@@ -196,6 +201,7 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
             summary_turn, turns = int(state["summary_turn"]), int(state["turns"])
             pairs = max(context.settings.chat_history_turns, 1)
             recent = chat_sql.recent_messages(conn, user.customer_id, conversation_id, 2 * pairs)
+            earlier = chat_sql.openings(conn, user.customer_id, conversation_id)
             if chosen is None:
                 chosen = _saved_scope(recent)
         scope = (
@@ -241,6 +247,8 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
         if reply.unavailable:  # KZ-006: an outage is never "not found"; nothing is stored
             raise ApiError(503, "backend_unavailable", headers={"Retry-After": "60"})
         answer = reply.to_json()
+        if answer.get("version") == 2:
+            answer["opening"] = _opening(answer, question, user.display_name, earlier, context)
 
         with context.db.customer(user.customer_id) as conn:
             if conversation_id is None:
@@ -314,6 +322,26 @@ def chat_options(user: User, context: Context) -> dict[str, Any]:
         "ensemble": bool(allowed["ensemble"]) and len(rows) >= 2,
         "max_agents": MAX_AGENTS,
     }
+
+
+def _opening(
+    answer: dict[str, Any], question: str, display_name: str, earlier: list[str | None], context: AppContext
+) -> str | None:
+    """PRD 6 A: the answer's opening line (answering/voice.py), the asker's first name only on
+    a conversation's first answer, by the time of day in TIMEZONE. It never reaches a prompt.
+    Decision 2's final check runs over it too (it holds no number): failing, there is none."""
+    line = opening(
+        found=answer.get("status") != "not_found",
+        display_name=display_name,
+        earlier=earlier,
+        now=context.clock(),
+        zone=ZoneInfo(context.settings.timezone),
+    )
+    reason = None if line is None else unsupported(line, numbers(question))
+    if reason is not None:
+        logger.info("answer text dropped", extra={"code": f"final_check:opening:{reason}"})
+        return None
+    return line
 
 
 def _choice(
