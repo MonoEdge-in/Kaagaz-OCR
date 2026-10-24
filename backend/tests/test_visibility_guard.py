@@ -16,7 +16,7 @@ from types import ModuleType
 
 from sqlalchemy import TextClause
 
-from kaagaz.answering import exhaustive, fixed_queries, hard_to_read, unchecked
+from kaagaz.answering import exhaustive, fixed_queries, hard_to_read, owners, unchecked
 from kaagaz.db import admin, listing, models, pipeline_store, review, usage
 from kaagaz.db.visibility import LISTED, LIVE, LIVE_CURRENT, TRASHED_LISTED
 from kaagaz.search import hybrid, indexing, story_search
@@ -26,6 +26,7 @@ MODULES: tuple[ModuleType, ...] = (
     story_search,
     exhaustive,
     fixed_queries,
+    owners,
     unchecked,
     hard_to_read,
     review,
@@ -68,6 +69,11 @@ FILTERED: dict[tuple[ModuleType, str], str] = {
     (fixed_queries, "_COUNT_DOCUMENTS"): LIVE_CURRENT,
     (fixed_queries, "_COUNT_INVOICES"): LIVE_CURRENT,  # #228: the invoices table's rows
     (fixed_queries, "_VALUE_REFS"): LIVE_CURRENT,
+    # Owner and place questions (PRD 6 E): the same, for each key and value they read.
+    (owners, "_RESOLVE"): LIVE_CURRENT,
+    (owners, "_OWNED"): LIVE_CURRENT,
+    (owners, "_KEYED"): LIVE_CURRENT,
+    (owners, "_SHARES_AS_PRINTED"): LIVE_CURRENT,
     # The documents an unchecked figure points to (decided 30 Sep 2026): the same.
     (unchecked, "_CARD_DOCUMENTS"): LIVE_CURRENT,
     # The pages a not-found answer names as not read well (PRD 5 F6): the same.

@@ -99,6 +99,10 @@ The steps (docs/architecture.md):
     a count, not while the model is down), the other documents in scope holding the
     question's key terms (Jalna, जालना) as whole words, from one word-index statement; the
     answer's text, label and verify never see them.
+17. Owners and places (PRD 6 E, kaagaz/answering/owners.py): a question naming people, places or a
+    property the company's land values hold, with an owning or share word, is answered first, from
+    fixed queries over ``value_keys``: code-built sentences and one ``documents`` line a record
+    (answer contract v2), every figure a cited value as printed.
 
 No source, no answer: an answered result always has at least one sentence,
 every sentence cites at least one source (but step 13's count, which sums up its cited
@@ -208,6 +212,8 @@ from kaagaz.answering.hard_to_read import (
 from kaagaz.answering.hinglish import NormalisedQuestion, normalise
 from kaagaz.answering.intent import FixedPlan, metric_asked, plan_fixed
 from kaagaz.answering.memory import NO_MEMORY, Memory, allowed_tokens, prompt_text, summarise
+from kaagaz.answering.owners import PgOwners, owner_ask
+from kaagaz.answering.owners import reply as owners_reply
 from kaagaz.answering.pins import Pin, lifts, pinned_first
 from kaagaz.answering.rewrite import MAX_REPLY_TOKENS as REWRITE_REPLY_TOKENS
 from kaagaz.answering.rewrite import SYSTEM_PROMPT as REWRITE_PROMPT
@@ -504,6 +510,7 @@ class AnswerService:
         self._context: Context | None = pg if retriever is None else context
         self._exhaustive: Exhaustive | None = PgExhaustive(db) if retriever is None else exhaustive
         self._mentions: Mentions | None = PgExhaustive(db) if retriever is None else mentions
+        self._owners = PgOwners(db) if retriever is None else None
 
     @_timed
     def answer(
@@ -633,6 +640,8 @@ class AnswerService:
         answer's are its closest documents, citing nothing. One statement for the cards."""
         if answer.status == "answered" and answer.sentences and not answer.sentences[0].citations:
             return answer  # step 13's count
+        if answer.documents:
+            return answer  # step 17 listed its records itself (owners.py)
         rows: dict[str, tuple[str, list[Citation]]] = {}
         for c in answer.citations if answer.status == "answered" else []:
             rows.setdefault(c.document_id, (c.document_name, []))[1].append(c)
@@ -759,6 +768,10 @@ class AnswerService:
         normalised = normalise(question)
         # "Hinglish understood as" is shown only when there was Hinglish to understand.
         shown = normalised.english if normalised.hinglish else question.strip()
+        if self._owners is not None:
+            owned = self._owners_answer(self._owners, customer_id, question, shown, scope)
+            if owned is not None:
+                return owned
         query = exhaustive_query(question)
         if query is not None and self._exhaustive is not None:
             counted = self._exhaustive_answer(self._exhaustive, customer_id, *query, shown, scope)
@@ -813,6 +826,54 @@ class AnswerService:
         )
 
     # --- fixed route --------------------------------------------------------
+
+    def _owners_answer(
+        self, source: PgOwners, customer_id: str, question: str, shown: str, scope: Scope
+    ) -> Answer | None:
+        """Step 17 (kaagaz/answering/owners.py): not found, offering the records that match only
+        part of it, when none matches all; None when it asks no such thing or no record matches."""
+        ask = owner_ask(question, partial(source.resolve, customer_id, scope=scope))
+        found = None if ask is None else owners_reply(source, customer_id, ask, scope)
+        if found is None:
+            return None
+        if not found.answered:
+            return _not_found(
+                "fixed_query", shown, found.closest, model_used=False, reason="notfound_owners_part"
+            )
+        citations: list[Citation] = []
+        numbered: dict[str, int] = {}
+
+        def cite(refs: Sequence[ValueRef]) -> list[int]:
+            for ref in refs:
+                regions = valid_regions([ref.region])
+                if regions and ref.value_id not in numbered:  # never shown without its spot
+                    numbered[ref.value_id] = len(citations) + 1
+                    citations.append(_value_citation(len(citations) + 1, ref, regions))
+            return list(dict.fromkeys(numbered[ref.value_id] for ref in refs if ref.value_id in numbered))
+
+        sentences = [AnswerSentence(text, cite(refs)) for text, refs in found.sentences]
+        documents = [
+            {"document_id": document_id, "title": title, "why": why, "citations": cite(refs)}
+            for document_id, title, why, refs in found.documents
+        ]
+        citations = self._marked(customer_id, citations, {c.n: c.regions for c in citations})
+        hard = any(c.hard_to_read for c in citations)
+        verified = all(c.label == "verified" for c in citations) and not hard
+        return Answer(
+            status="answered",
+            label="verified" if verified else "needs_review",
+            sentences=sentences,
+            citations=citations,
+            closest_documents=[],
+            route="fixed_query",
+            normalized_question=shown,
+            model_used=False,
+            reading_note=HARD_TO_READ_NOTE if hard else None,
+            documents=documents,
+            # Decision 2: owners.py writes these sentences: counts of the records listed and
+            # shares quoted as printed, so the final check keeps their numbers.
+            vouched=frozenset().union(*(voice.numbers(text) for text, _ in found.sentences)),
+        )
 
     def _exhaustive_answer(
         self,
@@ -1660,7 +1721,8 @@ def _not_found(
     and the quoted lines held nothing), notfound_no_model (the same, model off),
     notfound_verify_dropped_all (the checker kept no sentence), notfound_final_check (PRD 6
     decision 2's check kept none); ":date" after notfound_model_error and notfound_no_model: a
-    date question, never quoted."""
+    date question, never quoted; notfound_owners_part (land records match only part of an
+    owner question)."""
     _log.info("answer not found", extra={"code": reason})
     _timing().reason = reason
     return Answer(
@@ -1729,25 +1791,6 @@ def _focus(item: Evidence, sentences: Sequence[str]) -> list[dict[str, Any]]:
     return used
 
 
-def _cited_values(rows: Sequence[FixedRow]) -> list[tuple[ValueRef, list[dict[str, Any]]]]:
-    """The values behind the rows, each once, with a valid region, at most MAX_CITED_VALUES.
-
-    Taken from the rows in turn, so every party named in a tie has a source.
-    """
-    cited: list[tuple[ValueRef, list[dict[str, Any]]]] = []
-    seen: set[str] = set()
-    for layer in zip_longest(*(row.values for row in rows)):
-        for value in layer:
-            if value is None:
-                continue
-            regions = valid_regions([value.region])
-            if value.value_id in seen or not regions:
-                continue
-            seen.add(value.value_id)
-            cited.append((value, regions))
-    return cited[:MAX_CITED_VALUES]
-
-
 def _value_citation(n: int, value: ValueRef, regions: list[dict[str, Any]]) -> Citation:
     return Citation(
         n=n,
@@ -1765,6 +1808,25 @@ def _value_citation(n: int, value: ValueRef, regions: list[dict[str, Any]]) -> C
         label_page_no=value.label_page_no,
         label_regions=valid_regions([value.label_region] if value.label_region else []),
     )
+
+
+def _cited_values(rows: Sequence[FixedRow]) -> list[tuple[ValueRef, list[dict[str, Any]]]]:
+    """The values behind the rows, each once, with a valid region, at most MAX_CITED_VALUES.
+
+    Taken from the rows in turn, so every party named in a tie has a source.
+    """
+    cited: list[tuple[ValueRef, list[dict[str, Any]]]] = []
+    seen: set[str] = set()
+    for layer in zip_longest(*(row.values for row in rows)):
+        for value in layer:
+            if value is None:
+                continue
+            regions = valid_regions([value.region])
+            if value.value_id in seen or not regions:
+                continue
+            seen.add(value.value_id)
+            cited.append((value, regions))
+    return cited[:MAX_CITED_VALUES]
 
 
 def _fixed_sentence(plan: FixedPlan, top: Sequence[FixedRow]) -> str | None:
