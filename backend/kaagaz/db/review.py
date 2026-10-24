@@ -25,8 +25,9 @@ from typing import Any
 
 from sqlalchemy import Connection, RowMapping, text
 
-from kaagaz.db import audit
-from kaagaz.extraction.parsing import parse_amount, parse_date
+from kaagaz.db import audit, value_keys
+from kaagaz.extraction.land import value_number
+from kaagaz.extraction.parsing import parse_date
 
 # One value with its document and page. On its own, by value id (``get_item``),
 # it has no Trash filter (plan 9.7): it reads back a value that ``lock_value``
@@ -223,8 +224,9 @@ def resolve_value(
 ) -> None:
     """Verify one needs-review value, already locked by the caller, as ``new_text``: the
     value changed (its number and date parsed again by the pipeline's rules), its
-    correction row, the remembered correction when asked, and one ``review.resolve`` audit
-    row, all in the caller's transaction. ``current`` has the value's id, document_id,
+    correction row, the remembered correction when asked, its company vocabulary key written
+    again (a land value's, ``value_keys``), and one ``review.resolve`` audit row, all in the
+    caller's transaction. ``current`` has the value's id, document_id,
     field, value_text and value_raw as they were before. The correction screen and word
     review (kaagaz/db/word_review.py) both verify a value only through here."""
     value_id = str(current["id"])
@@ -233,9 +235,10 @@ def resolve_value(
         customer_id,
         value_id,
         value_text=new_text,
-        value_number=parse_amount(new_text),
+        value_number=value_number(str(current["field"]), new_text),
         value_date=parse_date(new_text),
     )
+    value_keys.key_values(conn, customer_id, [value_id])
     add_correction(
         conn,
         customer_id,

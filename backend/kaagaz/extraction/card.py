@@ -30,7 +30,8 @@ Then (D2, D3, A1, A7, A9):
 * A key fact's field must match ``^[a-z][a-z0-9_]{0,62}$`` (dropped otherwise,
   ``bad_fields``) and must not be a reserved name (``RESERVED_KEY_FACT_FIELDS``,
   A1(a): the invoice, party, identifier and date fields, and the fields fixed
-  queries add up or group by). Metric names such as profit and sales stay.
+  queries add up or group by), nor start with ``land_``, the land reading's (PRD 6 D2).
+  Metric names such as profit and sales stay.
 * Fields: a party's comes from ``PARTY_FIELDS`` by role (PROVISIONAL mapping),
   the date's is ``document_date`` (PROVISIONAL: D3 names none), and a repeated
   party or key-fact field gets ``_2``, ``_3``... within 63 characters. An
@@ -130,6 +131,7 @@ MAX_PARTIES, MAX_IDENTIFIERS = 20, 30  # security amendment A7
 MAX_FIELD_CHARS = 63
 MAX_CARD_BYTES = 60_000  # PROVISIONAL: under the 64 KiB CHECK on documents.card, with room to spare
 MAX_CARD_CHECKS = 8192  # council fix 8, PROVISIONAL: candidate spots all of one card's searches check
+LAND_FIELD_PREFIX = "land_"  # extraction.land's fields (PRD 6 D2): never a card key fact's
 
 # PR 6's E4 names, stored and as the model gives them (plan 3.8), including the line fields.
 _INVOICE_FIELDS = (
@@ -599,7 +601,7 @@ class _Card:
             if not _FIELD.fullmatch(name):
                 self._bad += 1
                 continue
-            if name in RESERVED_KEY_FACT_FIELDS:
+            if name in RESERVED_KEY_FACT_FIELDS or name.startswith(LAND_FIELD_PREFIX):
                 self._reserved += 1
                 continue
             label, found = find_labelled(
