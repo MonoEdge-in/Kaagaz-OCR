@@ -273,6 +273,8 @@ class FakeFixedQueries:
             key = " ".join(party.ref.value_text.casefold().split())
             groups.setdefault(key, []).append([s for s in (amount, party, dated) if s is not None])
         rows = []
+        compared = [s.ref for used in groups.values() for trio in used for s in trio]
+        unsure = tuple(ref for ref in compared if ref.label != "verified")[:MAX_CITED_VALUES]
         for used in groups.values():
             refs = [s.ref for trio in used for s in trio]
             rows.append(
@@ -282,6 +284,7 @@ class FakeFixedQueries:
                     records=len(used),
                     verified=all(ref.label == "verified" for ref in refs),
                     values=refs[:MAX_CITED_VALUES],
+                    unsure=unsure,
                 )
             )
         rows.sort(key=lambda row: -row.number if descending else row.number)
@@ -296,9 +299,11 @@ class FakeFixedQueries:
         end: date | None,
         *,
         invoices: bool,
+        group_fields: Sequence[str] = (),
     ) -> list[Figure]:
         """PRD 6 C: with ``invoices``, every record with an invoice number, dated by invoice_date;
-        else every record of a document holding the metric; with a range, also one undated."""
+        else every record of a document holding the metric; with a range, also one undated.
+        C2: with ``group_fields``, whether each names one party."""
         self.calls.append("figures")
         records = self.records.get(customer_id, [])
         holders = {s.ref.document_id for record in records for s in record if s.ref.field == metric}
@@ -311,6 +316,7 @@ class FakeFixedQueries:
             if start is not None and end is not None and day is not None and not start <= day < end:
                 continue
             date_label = None if dated is None or day is None else dated.ref.label
+            party = _one(record, group_fields)
             found.append(
                 Figure(
                     value=(one or record[0]).ref,
@@ -319,6 +325,7 @@ class FakeFixedQueries:
                     verified=one is not None and one.number is not None and one.ref.label == "verified",
                     dated=start is None or day is not None,
                     date_verified=start is None or date_label == "verified",
+                    grouped=not group_fields or (party is not None and bool(party.ref.value_text.strip())),
                 )
             )
         return found
@@ -377,7 +384,9 @@ class FakeFixedQueries:
             verified = all(ref.label == "verified" for ref in refs)
             rows.append(FixedRow(None, amount.number, 1, verified, refs))
         rows.sort(key=lambda row: -row.number if descending else row.number)
-        return rows[:5]
+        # C2: every value compared that is not verified, closest to the answer first.
+        unsure = tuple(ref for row in rows for ref in row.values if ref.label != "verified")
+        return [dataclasses.replace(row, unsure=unsure[:MAX_CITED_VALUES]) for row in rows[:5]]
 
 
 def invoice_record(label: str = "needs_review") -> Record:
@@ -576,7 +585,9 @@ def test_the_hinglish_example_is_answered_by_a_fixed_query() -> None:
     ]
     assert data["label"] == "verified"
     assert data["model_used"] is False
-    assert fixed.calls == ["top_group"]
+    # Changed on purpose (PRD 6 C2, 24 Oct 2026): the numbers rule is checked over every record
+    # first (it was top_group alone).
+    assert fixed.calls == ["figures", "top_group"]
     # The model never writes the number; search is not even asked.
     assert model.prompts == [] and retriever.calls == []
     citations = data["citations"]
@@ -612,16 +623,29 @@ def test_a_tie_names_every_party_and_cites_each() -> None:
 
 
 def test_one_unverified_value_makes_the_answer_needs_review() -> None:
+    # Changed on purpose (PRD 6 C2, 24 Oct 2026): a profit not verified withholds the ranking (it
+    # was shown, needs review); a party name not verified is shown, needs review, as before.
     records = [register_row(2, "Sharma Traders", 120000, date(2026, 8, 10), label="needs_review")]
     answer = service(records=records)[0].answer(A, "Kiska profit sabse jyada tha last month?")
-    assert answer.status == "answered"
+    assert (answer.status, answer.label) == ("answered", "needs_review")
+    assert [s.text for s in answer.sentences] == [
+        "The one profit figure is not verified yet, so I haven't compared the parties' profit"
+        " in August 2026.",
+        "profit-register.xlsx: 120000, not verified yet.",
+    ]
+    assert_well_formed(answer)
+    named = register_row(2, "Sharma Traders", 120000, date(2026, 8, 10))
+    named[0] = dataclasses.replace(named[0], ref=dataclasses.replace(named[0].ref, label="needs_review"))
+    answer = service(records=[named])[0].answer(A, "Kiska profit sabse jyada tha last month?")
     assert answer.label == "needs_review"
     # PRD 6 C: the answer says so in words too, citing the value that is not verified.
     assert [s.text for s in answer.sentences] == [
         "Sharma Traders had the highest profit, 1,20,000, in August 2026.",
         "Some of the values behind this are not verified yet.",
     ]
-    assert [answer.citations[n - 1].snippet for n in answer.sentences[1].citations] == ["profit: 120000"]
+    assert [answer.citations[n - 1].snippet for n in answer.sentences[1].citations] == [
+        "party_name: Sharma Traders"
+    ]
     assert_well_formed(answer)
 
 

@@ -45,7 +45,7 @@ Aggregate = Literal["highest", "lowest", "total", "count"]
 
 _HIGHEST = frozenset({"highest", "most", "maximum", "max", "largest", "biggest", "top"})
 _LOWEST = frozenset({"lowest", "least", "minimum", "min", "smallest"})
-_TOTAL = frozenset({"total", "sum"})
+_TOTAL = frozenset({"total", "sum", "calculate"})  # "calculate": PRD 6 Example 3 (C2)
 _COUNT = frozenset({"count"})
 
 # Topic word -> concept; concept -> candidate fields, in the spec's order.
@@ -70,8 +70,8 @@ _GROUP_WORDS = frozenset(
 _GROUP_FIELDS = ("party_name", "name", "customer_name", "vendor")
 _DATE_FIELDS = ("invoice_date", "date", "bill_date", "month")
 _THINGS = frozenset({"invoice", "invoices", "document", "documents", "files", "file"})
-# Topic words that add nothing to a fixed query.
-_FILLER = frozenset({"value", "overall", "all", "made", "earned", "got", "number", "data"})
+# Topic words that add nothing to a fixed query ("filed", "filled": PRD 6 Example 3, C2).
+_FILLER = frozenset({"value", "overall", "all", "made", "earned", "got", "number", "data", "filed", "filled"})
 # Every field a plan can use: the only ones the fields query looks for.
 FIELDS = (*(f for fields in _METRIC_FIELDS.values() for f in fields), *_GROUP_FIELDS, *_DATE_FIELDS)
 
