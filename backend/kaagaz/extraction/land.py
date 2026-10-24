@@ -13,8 +13,11 @@ between its name and the next name. The stored text is the reader's at the match
 not found or longer than ``MAX_TEXT_CHARS`` is dropped and counted; one on a spot a value took
 already is a repeat from an overlapping window, never counted again.
 
-**Merging.** A record with the survey (else khata) number of a property kept before, or a spot
-a kept value took, is that property again: its new fields and parties are added, a field's
+**Merging.** A reply's records are searched in order, each from where the one before ended (from
+the window's start only for a quote not found after it), so a second property's place or owner
+is never the first's. A record with the survey (else khata) number of a property kept before is
+that property again; one with a new number is always a new property; one with neither and a
+spot a kept value took is that value's property. Its new fields and parties are added, a field's
 first value winning. A record of parties alone continues the property listed last before it
 (PROVISIONAL: a window can begin inside a list of owners). Properties are ``land:1..n`` by
 their first spot, parties ``land:{p}:party:1..m`` by their name's.
@@ -302,9 +305,11 @@ class _Merge:
         self.by_identity: dict[str, _Record] = {}
         self.quotes = QuoteCounts()
         self.window_checks = Checks(MAX_WINDOW_CHECKS)
+        self.cursor = 0  # where the reply's next record is searched from
 
     def add(self, window: Window, answer: Mapping[str, Any]) -> None:
         self.window_checks = Checks(MAX_WINDOW_CHECKS)  # this reply's budget
+        self.cursor = window.start
         items = [item for item in answer.get("records") or [] if isinstance(item, dict)]
         for item in items[:MAX_REPLY_RECORDS]:
             self._record(window, item)
@@ -327,19 +332,19 @@ class _Merge:
         for name in PROPERTY_FIELDS:
             quotes = _field_quotes(item.get(name))
             if quotes is not None:
-                label, value = find_labelled(
-                    self.reader, *quotes, start=window.start, end=window.end, checks=self._checks()
-                )
-                fields[name] = (value, label)
+                fields[name] = self._labelled(window, quotes)
         parties = self._parties(window, [p for p in item.get("parties") or [] if isinstance(p, dict)])
         identity = next(
             (normalise_identifier(spot.text) for n in _IDENTITY if (spot := fields.get(n, (None, None))[0])),
             None,
         )
         spots = [spot.start for spot, _ in fields.values() if spot] + [n.start for _, n, _ in parties if n]
-        record = (self.by_identity.get(identity) if identity else None) or next(
-            (self.owner[spot] for spot in spots if spot in self.owner), None
-        )
+        ends = [spot.end for spot, _ in fields.values() if spot] + [n.end for _, n, _ in parties if n]
+        self.cursor = max([self.cursor, *ends])
+        if identity:  # its own number decides: never another property's spots
+            record = self.by_identity.get(identity)
+        else:
+            record = next((self.owner[spot] for spot in spots if spot in self.owner), None)
         if record is None and spots and not any(spot for spot, _ in fields.values()):
             record = self._continued(min(spots))
         new = record is None
@@ -364,6 +369,16 @@ class _Merge:
             if identity:
                 self.by_identity[identity] = record
 
+    def _labelled(self, window: Window, quotes: tuple[str | None, str]) -> tuple[Found | None, Found | None]:
+        """(value, label) found after the record before, else anywhere in the window."""
+        for start in (self.cursor, window.start):
+            label, value = find_labelled(
+                self.reader, *quotes, start=start, end=window.end, checks=self._checks()
+            )
+            if value is not None:
+                break
+        return value, label
+
     def _continued(self, start: int) -> _Record | None:
         """The property listed last before ``start``, which a record of parties alone continues."""
         before = [record for record in self.records if record.first() < start]
@@ -376,7 +391,7 @@ class _Merge:
         share between its name and the next one. The shares are counted here, the names by
         the caller."""
         named: list[tuple[str, Found | None, object]] = []
-        cursor = window.start
+        cursor = self.cursor
         for item in items[:MAX_REPLY_PARTIES]:
             quote, role = item.get("name_quote"), item.get("role")
             name = None

@@ -161,6 +161,35 @@ def test_a_cut_reply_is_asked_again_as_two_halves() -> None:
     ]
 
 
+def _property(survey: str, *owners: str) -> dict[str, Any]:
+    """One reply record: a survey number, the village, and its owners."""
+    fields = {"survey_number": ("Survey No", survey), "village": ("Village", "Kusgaon")}
+    quoted = {name: {"label_quote": label, "value_quote": value} for name, (label, value) in fields.items()}
+    parties = [{"role": "owner", "name_quote": owner, "share_quote": None} for owner in owners]
+    return {**dict.fromkeys(land.PROPERTY_FIELDS), **quoted, "parties": parties}
+
+
+@pytest.mark.parametrize("second_owner", ["Asha Rao", "Nikhil Varde"])
+def test_two_properties_in_one_window_stay_two_even_with_the_same_owner(second_owner: str) -> None:
+    """Each record is searched from where the one before ended, and a new survey number is a
+    new property: the second one's village and owner are its own, never the first's."""
+    texts = ("Survey No: 45/2", "Village: Kusgaon", "Nikhil Varde", "Survey No: 46/1", "Village: Kusgaon")
+    spans = lines(*texts, second_owner)
+    reader = reader_text(spans)
+    merge = land._Merge(reader)
+    reply = {"records": [_property("45/2", "Nikhil Varde"), _property("46/1", second_owner)]}
+    merge.add(Window(0, len(reader.norm), reader.text, 0, len(spans) - 1), reply)
+    found = [(v.record_key, v.value_text, v.location) for v in merge.values()]
+    assert found == [
+        ("land:1", "45/2", spans[0].location),
+        ("land:1", "Kusgaon", spans[1].location),
+        ("land:1:party:1", "Nikhil Varde", spans[2].location),
+        ("land:2", "46/1", spans[3].location),
+        ("land:2", "Kusgaon", spans[4].location),
+        ("land:2:party:1", second_owner, spans[5].location),
+    ]
+
+
 def test_a_repeat_from_an_overlapping_window_is_merged_and_never_counted_again() -> None:
     reader = reader_text(SPANS)
     merge = land._Merge(reader)
