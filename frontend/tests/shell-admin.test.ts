@@ -300,7 +300,8 @@ describe("kpiTiles and breakdowns", () => {
 
   it("leaves the zeros out of the small lists, in a fixed order", () => {
     const [pipeline, questions, pages, kept] = breakdowns(stats);
-    expect(pipeline).toEqual({ title: "Pipeline", none: "Nothing is waiting or being read.", rows: [] });
+    // Changed on purpose (plain words, 25 Oct 2026): it was "Pipeline".
+    expect(pipeline).toEqual({ title: "Not ready yet", none: "Nothing is waiting or being read.", rows: [] });
     expect(questions?.rows.map((row) => row.label)).toEqual([
       "Questions asked",
       "Answered",

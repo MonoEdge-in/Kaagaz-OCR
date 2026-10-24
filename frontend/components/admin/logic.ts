@@ -340,7 +340,7 @@ export function breakdowns(stats: Stats): Breakdown[] {
     rows.filter(([, n]) => n > 0).map(([label, n]) => ({ label, value: formatNumber(n) }));
   return [
     {
-      title: "Pipeline",
+      title: "Not ready yet", // plain words (25 Oct 2026): it was "Pipeline"
       none: "Nothing is waiting or being read.",
       rows: kept([
         ["Waiting for the virus check", by.received ?? 0],

@@ -14,6 +14,7 @@ import { useEffect, useState } from "react";
 import { ActionDialog } from "@/components/documents/ActionDialog";
 import libraryStyles from "@/components/documents/Library.module.css";
 import { Toast } from "@/components/ui/Toast";
+import { WhatsThis } from "@/components/ui/WhatsThis";
 import {
   getFeatureSwitches,
   getOperatorModels,
@@ -47,6 +48,22 @@ export const FEATURE_NAMES: Record<string, string> = {
   land_facts: "Land records", // PRD 6
   nlq_clarify: "Clarifying questions",
   nlq_learning: "Learning from Useful",
+};
+
+/** What each feature does for people, in one plain sentence (plain words, 25 Oct 2026). */
+export const FEATURE_HELP: Record<string, string> = {
+  scan_ai: "Reads uploaded scans and photos with AI. While it is off, new uploads wait and are read once it is back on.",
+  ask: "Lets people ask questions about their documents and get answers that show the page they came from.",
+  ensemble: "After a scan, lets people have unsure words read again by several AI readers, keeping the reading most of them agree on.",
+  autofile: "Puts new uploads into a folder for their type, like Invoices, once the organisation's admin turns it on.",
+  cost_saving: "Reads clear pages quickly and spends extra effort only on hard-to-read words.",
+  review: "Lets people check the words the reader was unsure of, and correct or confirm them.",
+  my_words: "Lets people add their own words and what they mean, so Ask understands how they write.",
+  self_signup: "Lets a new organisation create its own account from the sign-up page.",
+  version_spotting: "Notices when an upload is a newer copy of a document already here, and offers to link the two.",
+  land_facts: "Lets Ask answer questions about land records, such as who owns a survey number.",
+  nlq_clarify: "When a question is unclear, Ask first asks which person or place was meant, with choices.",
+  nlq_learning: "Documents in answers marked Useful come up first for similar questions later.",
 };
 
 export const featureName = (feature: string) => FEATURE_NAMES[feature] ?? feature;
@@ -147,6 +164,7 @@ export function SwitchList<T extends SwitchRow>({ switches, onFlip }: { switches
           : each.organisations_using === undefined
             ? null
             : `${countText(each.organisations_using, "organisation uses", "organisations use")} this`;
+        const help = FEATURE_HELP[each.feature]; // none for an id the server adds later
         return (
           <li key={each.feature}>
             <label className={libraryStyles.check}>
@@ -162,6 +180,7 @@ export function SwitchList<T extends SwitchRow>({ switches, onFlip }: { switches
               />
               {featureName(each.feature)}
             </label>
+            {help && <WhatsThis topic={featureName(each.feature)} text={help} />}
             {note && (
               <span id={`${switchId(each.feature)}-count`} className={styles.statusNote}>
                 {note}

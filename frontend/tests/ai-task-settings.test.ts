@@ -141,7 +141,8 @@ describe("the admin's AI settings tab", () => {
 
   it("says a task switched off for everyone is turned off, instead of its controls", () => {
     const html = form("organisation");
-    expect(html).toContain(`>Auto-filing</legend><p class="muted">${FEATURE_OFF}</p>`);
+    // Changed on purpose (plain words, 25 Oct 2026): a "What's this?" under each task's name.
+    expect(html).toMatch(new RegExp(`>Auto-filing</legend><span[\\s\\S]*?</span></span><p class="muted">${FEATURE_OFF}</p>`));
   });
 
   it("shows the Save bar only when something changed, and saves only what changed", () => {
@@ -162,7 +163,8 @@ describe("the member's AI settings", () => {
 
   it("shows a locked task's value with Set by your admin., and the others can use the organisation's setting", () => {
     const html = form("member");
-    expect(html).toMatch(/>Ask<\/legend><p[^>]*><strong>Low<\/strong><\/p><p class="hint">Set by your admin\.<\/p>/);
+    // Changed on purpose (plain words, 25 Oct 2026): a "What's this?" under each task's name.
+    expect(html).toMatch(/>Ask<\/legend><span[\s\S]*?<\/span><\/span><p[^>]*><strong>Low<\/strong><\/p><p class="hint">Set by your admin\.<\/p>/);
     // mine null: the organisation's setting is used, and the levels wait.
     expect(html).toMatch(/<input type="checkbox" checked=""\/>Use the organisation&#x27;s setting/);
     expect(html).toMatch(/<input type="radio" disabled=""[^>]*checked="" value="high"\/>/);
