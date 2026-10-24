@@ -137,6 +137,15 @@ export function parts(line: ReadLine, marks: readonly ReadingMark[]): Part[] {
 /** "Page 1 of 4". */
 export const pageOf = (pageNo: number, total: number) => `Page ${pageNo} of ${total}`;
 
+// The clean copy's Text tab words (document panel UX, 25 Oct 2026).
+/** The one heading over a page: "Page 1" when there is one, else "Page 2 of 4". */
+export const pageTitle = (pageNo: number, total: number) => (total === 1 ? `Page ${pageNo}` : pageOf(pageNo, total));
+export const OPENED_NOTE = "The line you opened";
+export const WIDE_NOTE = "Scroll sideways to see all columns";
+export const SHOW_IN = "Show the text in";
+export const COPIED = "Copied";
+export const COPY_BLOCKED = "Copying is blocked here. Select the text and copy it instead.";
+
 /** The whole copy as plain text, for Copy all: each page under its "Page 1 of 4". */
 export function copyText(pages: readonly { page_no: number; lines: readonly ReadLine[] }[]): string {
   return pages
