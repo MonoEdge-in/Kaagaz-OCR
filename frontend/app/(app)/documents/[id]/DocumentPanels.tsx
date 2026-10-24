@@ -14,6 +14,8 @@
 // heading that says so.
 
 import Link from "next/link";
+import { useState } from "react";
+import type { CSSProperties } from "react";
 import table from "@/components/documents/Table.module.css";
 import { Icon } from "@/components/ui/Icon";
 import { LabelBadge } from "@/components/viewer/LabelBadge";
@@ -24,6 +26,7 @@ import {
   MONEY_LINE_FIELDS,
   cardSections,
   checkChip,
+  groupByName,
   groupLinks,
   invoiceSpot,
   languagesText,
@@ -32,7 +35,7 @@ import {
   spotNote,
   untilRead,
 } from "@/components/viewer/panels";
-import type { Spot } from "@/components/viewer/panels";
+import type { CardItem, Spot } from "@/components/viewer/panels";
 import { fieldText } from "@/components/viewer/labels";
 import { ALL_CLEAR, attentionPages } from "@/components/viewer/pageProblems";
 import type { AttentionPage } from "@/components/viewer/pageProblems";
@@ -81,6 +84,44 @@ function ReadAt({ detail, value }: { detail: DocumentDetail; value: ExtractedVal
   );
 }
 
+/** Rows a role shows before "Show all" (Tushar, 24 Oct 2026: a long card hid the rest of the panel). */
+export const CARD_ROWS = 4;
+
+/** One role ("Owner") captioned once with its count, one row per value: the value (its Latin
+ * spelling smaller under it) and its page at the end; four rows, then "Show all". */
+function CardGroup({ name, items, active, onShow }: { name: string; items: CardItem[] } & Omit<PanelProps, "detail">) {
+  const [all, setAll] = useState(false);
+  const shown = all ? items : items.slice(0, CARD_ROWS);
+  return (
+    <div className={styles.cardGroup}>
+      <p className={styles.cardCaption}>
+        {name}
+        {items.length > 1 && <span className={styles.cardCount}>{items.length}</span>}
+      </p>
+      <ul className={styles.cardList}>
+        {shown.map((item, index) => (
+          <li key={item.key} className={styles.cardRow} style={{ "--i": index } as CSSProperties}>
+            <span className={styles.cardValue}>
+              <SpotButton spot={item} text={item.text} active={active} onShow={onShow} />
+              {item.sub && (
+                <span className={styles.cardLatin} lang="en">
+                  {item.sub}
+                </span>
+              )}
+            </span>
+            <span className={styles.cardPage}>{spotNote(item)}</span>
+          </li>
+        ))}
+      </ul>
+      {items.length > CARD_ROWS && (
+        <button type="button" className={styles.cardMore} aria-expanded={all} onClick={() => setAll(!all)}>
+          {all ? "Show fewer" : `Show all ${items.length}`}
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function CardPanel({ detail, active, onShow }: PanelProps) {
   const card = detail.card;
   const sections = card === null ? [] : cardSections(card, detail.values);
@@ -116,15 +157,9 @@ export function CardPanel({ detail, active, onShow }: PanelProps) {
           {sections.map((section) => (
             <div key={section.heading}>
               <h3 className={styles.panelHeading}>{section.heading}</h3>
-              <ul className={styles.panelList}>
-                {section.items.map((item) => (
-                  <li key={item.key}>
-                    <span className={styles.fieldCell}>{item.name}: </span>
-                    <SpotButton spot={item} text={item.text} active={active} onShow={onShow} />{" "}
-                    <span className={styles.pageInline}>{spotNote(item)}</span>
-                  </li>
-                ))}
-              </ul>
+              {groupByName(section.items).map((group) => (
+                <CardGroup key={group.name} name={group.name} items={group.items} active={active} onShow={onShow} />
+              ))}
             </div>
           ))}
           {/* Tushar, 24 Oct 2026: every "What was read" in one closed section at the end. */}
