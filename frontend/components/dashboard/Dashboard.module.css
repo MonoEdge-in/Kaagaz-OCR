@@ -17,6 +17,72 @@
   padding-block: var(--space-4) var(--space-2);
 }
 
+.today {
+  margin: 0;
+  color: var(--k-ink-muted);
+  font-size: var(--fs-sm);
+}
+
+.greeting {
+  margin: 0;
+  font-size: clamp(2rem, 1.5rem + 1.8vw, 3rem);
+  overflow-wrap: anywhere;
+}
+
+.lead {
+  max-width: 60ch;
+  margin: 0;
+  color: var(--k-ink-muted);
+  font-size: 1.0625rem;
+  line-height: 1.5;
+}
+
+/* The one main action: a wide pill with the question, its icon and Ask inside. */
+.ask {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  max-width: 760px;
+  min-height: 64px;
+  padding: 8px 8px 8px 24px;
+  border: 1px solid var(--k-card-edge);
+  border-radius: var(--k-r-pill);
+  background: var(--k-surface);
+  box-shadow: var(--k-shadow-2);
+}
+
+.ask:focus-within {
+  border-color: var(--k-accent);
+  outline: 3px solid var(--k-accent-soft);
+  outline-offset: 2px;
+}
+
+.askIcon {
+  flex: none;
+  color: var(--k-accent);
+}
+
+.askInput {
+  flex: 1;
+  min-width: 0;
+  height: var(--k-touch);
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--k-ink);
+  font: 400 1rem var(--k-font-body);
+}
+
+.askInput::placeholder {
+  color: var(--k-ink-faint);
+}
+
+.askButton {
+  flex: none;
+  min-height: 48px;
+  padding-inline: 24px;
+}
+
 /* Under Ask: the questions whose answers are ready, one press from an answer. */
 .readyRow {
   display: flex;
@@ -376,6 +442,19 @@ a.total:hover {
   }
 
 
+  .ask {
+    transition: transform var(--t-fast) var(--ease);
+  }
+
+  .ask:focus-within {
+    transform: translateY(-1px);
+  }
+
+  .askButton :global(svg),
+  .readyQuestion {
+    transition: transform var(--t-fast) var(--ease);
+  }
+
   /* Each ready question pops in, one after another, as its answer becomes ready. */
   .readyList > li {
     animation: home-pop var(--motion-calm) var(--ease-out) both;
@@ -384,6 +463,15 @@ a.total:hover {
 }
 
 @media (hover: hover) and (pointer: fine) {
+  .askButton:hover :global(svg) {
+    transform: translate(2px, -2px);
+  }
+
+  .readyQuestion:hover {
+    border-color: var(--k-accent);
+    transform: translateY(-2px);
+  }
+
   a.action:hover {
     box-shadow: var(--k-shadow-2);
     transform: translateY(-2px);
@@ -396,6 +484,10 @@ a.total:hover {
 
 a.action:active {
   transform: scale(0.99);
+}
+
+.readyQuestion:active {
+  transform: scale(0.97);
 }
 
 @keyframes home-pop {
