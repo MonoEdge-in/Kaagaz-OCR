@@ -720,11 +720,11 @@ def page_marks(conn: Connection, customer_id: str, document_id: str, page_no: in
 
 
 # Your words on the page (package H): the document by id as the detail opens it (any
-# version, in Trash or not), and its pieces' text, Latin spelling and regions in seq order
-# (the index pieces_document), for kaagaz/search/page_words.py. No row: no such document;
-# one row of NULLs: a document with no pieces.
+# version, in Trash or not, which the route then refuses as the page image does), and its
+# pieces' text, Latin spelling and regions in seq order (the index pieces_document), for
+# kaagaz/search/page_words.py. No row: no such document; one row of NULL text: no pieces.
 _WORD_LINES = text(
-    "SELECT p.text, p.text_latin, p.regions FROM documents d"
+    "SELECT d.deleted_at IS NOT NULL, d.status, p.text, p.text_latin, p.regions FROM documents d"
     " LEFT JOIN pieces p ON p.customer_id = :c AND p.document_id = d.id"
     " WHERE d.customer_id = :c AND d.id = :d ORDER BY p.seq"
 )
@@ -732,13 +732,15 @@ _WORD_LINES = text(
 
 def word_lines(
     conn: Connection, customer_id: str, document_id: str
-) -> list[tuple[str, str | None, list[Any]]] | None:
-    """(text, text_latin, regions) of every piece of the document, None when there is no
-    such document for this customer. One statement: O(log N + the document's pieces)."""
+) -> tuple[bool, str, list[tuple[str, str | None, list[Any]]]] | None:
+    """Whether the document is in Trash, its status, and (text, text_latin, regions) of every
+    piece of it; None when there is no such document for this customer. One statement:
+    O(log N + the document's pieces)."""
     rows = conn.execute(_WORD_LINES, {"c": customer_id, "d": document_id}).all()
     if not rows:
         return None
-    return [(str(row[0]), row[1], list(row[2])) for row in rows if row[0] is not None]
+    pieces = [(str(row[2]), row[3], list(row[4])) for row in rows if row[2] is not None]
+    return bool(rows[0][0]), str(rows[0][1]), pieces
 
 
 # Read clearly (19 Oct 2026): the whole document's main reader lines (its first role) in one

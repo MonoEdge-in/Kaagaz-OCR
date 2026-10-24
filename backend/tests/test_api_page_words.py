@@ -12,7 +12,7 @@ from sqlalchemy import text
 from kaagaz.chunking.script import is_devanagari, latin_spelling
 from kaagaz.db import listing
 from kaagaz.db.engine import Database
-from tests.test_api_support import Api, Signed
+from tests.test_api_support import NOW, Api, Signed
 
 pytestmark = pytest.mark.db
 
@@ -110,6 +110,23 @@ def test_more_than_eight_words_is_refused_and_no_words_light_nothing(db: Databas
     assert signed.client.get(f"/api/documents/{deed}/pages/1/words?{nine}").status_code == 400
     assert words(signed, deed, 1, "the", "kiti") == {"page_no": 1, "boxes": [], "pages": []}
     assert signed.client.get(f"/api/documents/{deed}/pages/0/words?w=krishna").status_code == 404
+
+
+@pytest.mark.parametrize(
+    ("columns", "status", "code"),
+    [({"deleted_at": NOW}, 409, "in_trash"), ({"status": "rejected"}, 404, "not_found")],
+)
+def test_a_document_in_trash_or_rejected_is_refused_as_its_page_image_is(
+    db: Database, columns: dict[str, Any], status: int, code: str
+) -> None:
+    api = Api(db)
+    signed = api.new_signed()
+    document_id = api.add_document(signed.customer_id, detected_type="png", **columns)
+    add_pieces(db, signed.customer_id, document_id, [("Buyer: Krishna Sohoni", [box(1, 0.2)])])
+    reply = signed.client.get(f"/api/documents/{document_id}/pages/1/words?w=krishna")
+    assert reply.status_code == status
+    assert reply.json()["error"]["code"] == code
+    assert "0.2" not in reply.text
 
 
 def test_one_statement_on_the_pieces_index_as_the_app_role(db: Database) -> None:

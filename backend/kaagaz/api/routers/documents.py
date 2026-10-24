@@ -1375,14 +1375,20 @@ def get_page_words(
 ) -> dict[str, Any]:
     """Your words on the page (package H): the regions of this page's lines that hold the
     words (``w``, at most 8, cleaned by ``page_words.clean_words``), and every page with
-    such a line. Who may ask is who may open the document (the detail): another
-    customer's id is 404. Regions and page numbers only, never text. One statement."""
+    such a line. Who may ask is who may see the page image: another customer's id and a
+    rejected file are 404, a family in Trash 409 ``in_trash`` (T1). Regions and page
+    numbers only, never text. One statement."""
     if page_no < 1:
         raise ApiError(404, "not_found")
     words = page_words.clean_words(w or [])
     with context.db.customer(user.customer_id) as conn:
-        pieces = listing.word_lines(conn, user.customer_id, str(document_id))
-    if pieces is None:
+        found = listing.word_lines(conn, user.customer_id, str(document_id))
+    if found is None:
+        raise ApiError(404, "not_found")
+    in_trash, status, pieces = found
+    if in_trash:
+        raise ApiError(409, "in_trash", "This document is in the Trash. Restore it first.")
+    if status == "rejected":
         raise ApiError(404, "not_found")
     boxes, pages = page_words.word_regions(pieces, words, page_no)
     return {"page_no": page_no, "boxes": boxes, "pages": pages}
