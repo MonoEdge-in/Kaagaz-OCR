@@ -14,7 +14,7 @@
 .tabs {
   position: relative;
   display: flex;
-  gap: var(--space-6);
+  gap: var(--space-1);
   border-bottom: 1px solid var(--border);
   overflow-x: auto;
   overflow-y: hidden;
@@ -34,10 +34,11 @@
   align-items: center;
   gap: var(--space-2);
   height: var(--h-lg);
-  padding-inline: 0;
+  padding-inline: var(--space-3); /* interactive tabs, as app/globals.css .tab (24 Oct 2026) */
   background: none;
   border: 0;
-  border-radius: 0;
+  border-radius: var(--k-r-2);
+  transition: transform var(--t-fast) var(--ease);
   color: var(--text-secondary);
   font: inherit;
   font-weight: 500;
@@ -51,12 +52,18 @@
 
 @media (hover: hover) and (pointer: fine) {
   .tab:hover {
+    background: var(--bg-hover);
     color: var(--text-primary);
   }
 }
 
+.tab:active {
+  transform: translateY(1px);
+}
+
 .tab[aria-selected="true"] {
-  color: var(--text-primary);
+  background: var(--bg-selected);
+  color: var(--accent);
   font-weight: 700;
 }
 

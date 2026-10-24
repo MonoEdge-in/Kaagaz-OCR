@@ -369,6 +369,9 @@ describe("layout guards", () => {
       // Changed on purpose (scan review UX rules, 16 Oct 2026): the review panel is a bottom
       // sheet on a phone, above the bottom bar; its own scroll never runs on into the page.
       "app/(app)/documents/[id]/WordReview.module.css: .review: overscroll-behavior",
+      // Changed on purpose (Tushar, 24 Oct 2026): Home's Recent and Activity lists keep one height
+      // and scroll inside their cards, so a long list never stretches the page.
+      "components/dashboard/Dashboard.module.css: .scroll: overscroll-behavior",
       // Changed on purpose (MonoEdge design system, 16 Oct 2026): sideways only, the tabs, the
       // tables and the usage chart scroll in their own box and never hand the swipe to the page.
       "components/admin/Admin.module.css: .tabs: overscroll-behavior-x",

@@ -184,6 +184,11 @@
     animation-delay: calc(var(--i, 0) * 40ms + 80ms);
   }
 
+  .cardRow {
+    animation: rise-in var(--motion-calm) var(--ease-out) both;
+    animation-delay: calc(var(--i, 0) * 30ms);
+  }
+
   .summaryText[data-open],
   .status:not([hidden]) {
     animation: open-in var(--motion-quick) var(--ease-out);
@@ -638,7 +643,7 @@
 .tabs {
   flex: 1 1 auto;
   min-width: 0;
-  gap: var(--space-3);
+  gap: var(--space-1);
   border-bottom: 0;
   font-size: 1rem;
 }
@@ -767,6 +772,104 @@
 .pageNote {
   font-size: var(--fs-base);
   color: var(--text-secondary);
+}
+
+/* The card's rows (24 Oct 2026): a role captioned once with its count, then one row per
+   value, the value and its Latin spelling on the left, its page small at the end. */
+.cardGroup {
+  margin-block-start: var(--space-2);
+}
+
+.cardCaption {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-1);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.cardCount {
+  min-width: 2ch;
+  padding-inline: var(--space-2);
+  border-radius: var(--k-r-pill);
+  background: var(--bg-subdued);
+  font-size: 12px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.cardList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-block-start: 1px solid var(--k-rule);
+}
+
+.cardRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: var(--space-3);
+  padding-block: var(--space-2);
+  border-block-end: 1px solid var(--k-rule);
+}
+
+.cardValue {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.cardValue .valueButton {
+  margin-inline-end: 0;
+  text-decoration: none;
+}
+
+.cardLatin {
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.cardPage {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.cardMore {
+  min-height: var(--control-h);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .cardValue .valueButton:hover,
+  .cardMore:hover {
+    text-decoration: underline;
+    text-underline-offset: 0.18em;
+  }
+}
+
+/* The card's readings, closed, after its last group. */
+.readAll {
+  margin-block-start: var(--space-4);
+  padding-block-start: var(--space-2);
+  border-block-start: 1px solid var(--k-rule);
+}
+
+.readAll > summary {
+  padding-block: calc((var(--control-h) - 1lh) / 2);
+  color: var(--text-secondary);
+  cursor: pointer;
 }
 
 /* background-color only, so a selected row keeps its edge. */

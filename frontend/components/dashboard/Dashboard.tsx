@@ -398,7 +398,7 @@ export function DashboardBody({ data, now }: { data: DashboardData; now: number 
           {data.recent.length === 0 ? (
             <p className={`k-muted ${styles.empty}`}>{DASHBOARD_TEXT.recentEmpty}</p>
           ) : (
-            <ul className={styles.recent}>
+            <ul className={`${styles.recent} ${styles.scroll}`}>
               {data.recent.map((document) => (
                 <li key={document.id} className="k-rule-row">
                   <span className={`k-name-cell ${styles.recentName}`}>
@@ -432,7 +432,7 @@ export function DashboardBody({ data, now }: { data: DashboardData; now: number 
           {data.activity.length === 0 ? (
             <p className="k-muted">No activity yet.</p>
           ) : (
-            <ol className="k-timeline" aria-label={DASHBOARD_TEXT.activity}>
+            <ol className={`k-timeline ${styles.scroll}`} aria-label={DASHBOARD_TEXT.activity}>
               {data.activity.map((entry) => (
                 <ActivityRow key={entry.id} entry={entry} />
               ))}

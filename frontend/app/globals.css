@@ -700,6 +700,7 @@ td.num {
   -webkit-tap-highlight-color: transparent;
   touch-action: manipulation;
   cursor: pointer;
+  transition: transform var(--t-fast) var(--ease);
 }
 
 .btn svg {
@@ -721,12 +722,18 @@ td.num {
 @media (hover: hover) and (pointer: fine) {
   .btn:hover {
     background: var(--bg-hover);
+    border-color: var(--text-secondary);
     color: var(--btn-fg);
   }
 }
 
 .btn:active {
   border-color: var(--control-edge);
+}
+
+/* A press answers at once (Tushar, 24 Oct 2026): the button gives a little. */
+.btn:active:not(:disabled, [aria-disabled="true"]) {
+  transform: scale(0.97);
 }
 
 .btn:disabled,
@@ -767,6 +774,8 @@ td.num {
   .btn-primary:hover {
     background: var(--accent-hover);
     border-color: var(--accent-hover);
+    box-shadow: var(--e-1);
+    transform: translateY(-1px); /* the main action lifts to the pointer */
   }
 }
 
@@ -839,7 +848,7 @@ td.num {
 
 .tabs {
   display: flex;
-  gap: var(--space-6);
+  gap: var(--space-1);
   border-bottom: 1px solid var(--border);
   overflow-x: auto;
   scrollbar-width: none;
@@ -853,12 +862,16 @@ td.num {
   align-items: center;
   gap: var(--space-2);
   height: var(--h-lg);
-  padding-inline: 0;
+  /* Interactive tabs (Tushar, 24 Oct 2026): each one a target with its own hover, press and
+     chosen tint, top corners rounded over the bar. */
+  padding-inline: var(--space-3);
   background: none;
   border: 0;
+  border-radius: var(--r-sm);
   color: var(--text-secondary);
   white-space: nowrap;
   scroll-snap-align: start;
+  transition: transform var(--t-fast) var(--ease);
   cursor: pointer;
   user-select: none;
   -webkit-tap-highlight-color: transparent;
@@ -867,12 +880,23 @@ td.num {
 
 @media (hover: hover) and (pointer: fine) {
   .tab:hover {
+    background: var(--bg-hover);
     color: var(--text-primary);
   }
 }
 
+.tab:active {
+  transform: translateY(1px);
+}
+
+/* Inside the sideways scroll box, which would clip a ring drawn outside. */
+.tab:focus-visible {
+  outline-offset: -2px;
+}
+
 .tab[aria-selected="true"] {
-  color: var(--text-primary);
+  background: var(--bg-selected);
+  color: var(--accent);
   font-weight: 600;
 }
 
