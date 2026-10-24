@@ -11,6 +11,9 @@
   one given again since (a new reason, the same id) is 409 ``rated_again``. Audited as
   ``feedback.handled`` or ``feedback.reopened`` with ids only, never the question, the
   answer or the reason. The screen sends it once its Undo has gone, so Undo sends nothing.
+* ``GET /admin/learned`` and ``DELETE /admin/learned/{document_id}`` (PRD 6 F3): What Kaagaz
+  learned, the documents Useful marks lift now with how many people marked them (no
+  question, no name), and Remove, audited as ``learning.remove`` with the document's id.
 
 Admins only, on the router (``require_admin_session``): a member or reviewer gets 403.
 Another company's id matches no row (row level security and the customer filter): 404.
@@ -23,7 +26,7 @@ from datetime import datetime, timedelta
 from typing import Annotated, Any, Literal
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response
 from pydantic import BaseModel, ConfigDict
 
 from kaagaz.api.auth import AdminSession, require_admin_session
@@ -131,3 +134,39 @@ def set_handled(
         "id": str(feedback_id),
         "handled_at": None if row["handled_at"] is None else iso(row["handled_at"]),
     }
+
+
+@router.get("/admin/learned")
+def list_learned(user: AdminSession, context: Context) -> dict[str, Any]:
+    """What Kaagaz learned (PRD 6 F3): the documents Useful marks lift now. One statement."""
+    with context.db.customer(user.customer_id) as conn:
+        rows = quality_sql.learned(conn, user.customer_id)
+    return {
+        "items": [
+            {
+                "document_id": row["document_id"],
+                "document_name": row["display_name"],
+                "people": int(row["people"]),
+                "last_marked_at": iso(row["last_marked_at"]),
+            }
+            for row in rows
+        ]
+    }
+
+
+@router.delete("/admin/learned/{document_id}", status_code=204)
+def remove_learned(document_id: uuid.UUID, user: AdminSession, context: Context) -> Response:
+    """Remove: the document's marks given before now stop lifting it; audited
+    ``learning.remove`` with the document's id only."""
+    with context.db.customer(user.customer_id) as conn:
+        if not quality_sql.remove_learning(conn, user.customer_id, str(document_id), user.user_id):
+            raise ApiError(404, "not_found")
+        audit.record(
+            conn,
+            user.customer_id,
+            actor_user_id=user.user_id,
+            action="learning.remove",
+            target_type="document",
+            target_id=str(document_id),
+        )
+    return Response(status_code=204)

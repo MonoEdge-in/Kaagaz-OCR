@@ -134,6 +134,8 @@ FROM_0043 = {
 # Land facts (0049): a key is read and added; only its spellings are written again (UPDATES_0049).
 FROM_0049 = {"value_keys": (True, True, False, False)}
 UPDATES_0049 = {"value_keys": {"latin", "sound"}}
+# PRD 6 F3 (0051): an admin's Remove on What Kaagaz learned is added, never changed or deleted.
+FROM_0051 = {"learning_removals": (True, True, False, False)}
 UPDATES_0030 = {
     "word_changes": {"applied", "undone_at", "undone_by"},
     "ensemble_runs": {
@@ -376,6 +378,12 @@ OPERATOR_RIGHTS = {
         EMPTY_PATH,
     ),
     "kaagaz_op_set_model_rate": ("text", EMPTY_PATH),
+    # 0051, PRD 6 F3, read-only: answers and ratings per organisation and ended ISO week, counts only.
+    "kaagaz_op_answer_weeks": (
+        "TABLE(customer_id uuid, week date, replies bigint, answered bigint, not_found bigint,"
+        " clarify bigint, rated bigint, useful bigint)",
+        EMPTY_PATH,
+    ),
 }
 # The only tables without customer_id: the customers themselves, alembic's own, the
 # platform operator's (0015), the workers' reader status (0022) and the model catalogue
@@ -421,6 +429,7 @@ def test_every_customer_table_has_row_level_security_and_the_customer_only_polic
         | set(FROM_0041)  # Changed on purpose (PRD 1, 0041)
         | set(FROM_0043)
         | set(FROM_0049)
+        | set(FROM_0051)
     )
 
     with db.system() as conn:
@@ -486,6 +495,7 @@ def test_every_customer_table_is_granted_to_the_app_role(db: Database) -> None:
         | FROM_0041  # Changed on purpose (PRD 1, 0041)
         | FROM_0043
         | FROM_0049
+        | FROM_0051
     ).items():
         assert granted[table] == expected, table
 
@@ -698,7 +708,13 @@ def test_the_operator_role_has_no_table_rights_and_its_tables_no_grants_and_no_p
 # that could name or point at a person or content. Counts named in the plural
 # (``documents``, ``active_users_7d``) are numbers and allowed; an id other than the
 # organisation's, a name, an e-mail or a bare person or content column is not.
-INSIGHT_READERS = ("kaagaz_op_daily", "kaagaz_op_org_health", "kaagaz_op_quality", "kaagaz_op_model_board")
+INSIGHT_READERS = (
+    "kaagaz_op_daily",
+    "kaagaz_op_org_health",
+    "kaagaz_op_quality",
+    "kaagaz_op_model_board",
+    "kaagaz_op_answer_weeks",  # 0051, PRD 6 F3
+)
 ENABLED = "o.id = p_operator AND NOT o.disabled AND o.totp_enabled_at IS NOT NULL"
 _PERSON_OR_CONTENT = re.compile(
     r"(^|_)id$|email|name|^(user|document|conversation|message|batch|folder|tag|text|answer|question)$"

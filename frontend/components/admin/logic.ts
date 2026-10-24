@@ -459,6 +459,7 @@ const ACTION_WORDS: Record<string, string> = {
   // PRD 6 F2: Answer quality.
   "feedback.handled": "Marked a Not useful answer as handled",
   "feedback.reopened": "Opened a Not useful answer again",
+  "learning.remove": "Removed what Kaagaz learned about a document", // PRD 6 F3
   "review.resolve": "Corrected a value",
   "user.create": "Added a user",
   "user.update": "Changed a user",

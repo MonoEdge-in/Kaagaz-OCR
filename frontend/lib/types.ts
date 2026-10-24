@@ -828,6 +828,14 @@ export interface WeekCounts {
   not_useful: number;
 }
 
+/** GET /admin/learned (PRD 6 F3): a document Useful marks lift now; no question, no name. */
+export interface LearnedDocument {
+  document_id: string;
+  document_name: string;
+  people: number;
+  last_marked_at: string;
+}
+
 /** GET /admin/answer-quality: one page of items, newest first, and each week of the period, newest first. */
 export interface AnswerQualityReply {
   from: string;
