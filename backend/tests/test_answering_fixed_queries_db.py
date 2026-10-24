@@ -898,8 +898,9 @@ def test_a_sheets_printed_total_row_is_never_a_record(
             ("Sharma Traders", Decimal(1000)),
         ]
     else:  # one that does not add up, or only starts like a total word, is a record (doubtful or not)
-        assert [row.number for row in highest] == [9000, 2500, 1000]
-        assert figures[2].looks_total is (label == "Total Traders")
+        doubtful = label == "Total Traders"  # Changed on purpose (PRD 6 C2): never the highest shown
+        assert figures[2].looks_total is doubtful
+        assert [row.number for row in highest] == ([2500, 1000] if doubtful else [9000, 2500, 1000])
 
 
 def test_a_ledger_with_a_total_row_never_gives_its_double(db: Database) -> None:
@@ -978,12 +979,31 @@ def test_a_row_that_reads_like_a_total_but_does_not_add_up_is_listed_never_dropp
     assert ranked.sentences[0].text == (
         "1 of the 3 records reads like a total, so I haven't compared the parties' amount."
     )
+    # Changed on purpose (PRD 6 C2, 24 Oct 2026): it is left out, and why (it was the 9,000 shown).
     assert [s.text for s in highest.sentences] == [
-        "The highest total amount was 9,000.",
-        "Some of the values behind this are not verified yet.",
+        "The highest total amount was 2,500.",
+        "A row that reads like a total is left out of this.",
     ]
     for answer in (in_august, ranked, highest):
         assert answer.label == "needs_review"
+
+
+def test_a_highest_never_shows_a_sub_total(db: Database) -> None:
+    customer, _ = new_customer(db)
+    amounts = ["1,000", "2,500", "Sub total", "4,000", "1,000", "Sub total", "Grand total"]
+    figures = ["1,000", "2,500", "3,500", "4,000", "1,000", "5,000", "8,500"]
+    sheet = [("Trader" if a[0].isdigit() else a, f, "") for a, f in zip(amounts, figures, strict=True)]
+    add_sheet(db, customer, [HEADER, *sheet])
+    answer = ask(db, customer, "What was the highest amount?")
+    assert [s.text for s in answer.sentences] == [
+        "The highest total amount was 4,000.",
+        "Rows that read like a total are left out of this.",
+    ]
+    assert [answer.citations[n - 1].snippet for n in answer.sentences[1].citations] == [
+        "total_amount: 5,000",
+        "total_amount: 3,500",
+    ]
+    assert answer.label == "needs_review"
 
 
 def test_a_highest_under_a_range_is_never_verified_beside_a_record_with_no_date(db: Database) -> None:

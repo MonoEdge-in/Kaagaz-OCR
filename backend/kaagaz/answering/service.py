@@ -780,7 +780,8 @@ class AnswerService:
             return _not_found("fixed_query", shown, [], model_used=False, reason="notfound_fixed_no_sentence")
         # PRD 6 C2: every value compared that is not verified is cited too, after the answer's own.
         seen = {value.value_id for value, _ in cited}
-        doubted = [(v, valid_regions([v.region])) for v in top[0].unsure if v.value_id not in seen]
+        doubted = [(v, valid_regions([v.region])) for v in (*top[0].unsure, *top[0].totals)]
+        doubted = [(v, regions) for v, regions in doubted if v.value_id not in seen]
         shown_n = len(cited)
         cited += [(value, regions) for value, regions in doubted if regions][:MAX_CITED_VALUES]
         citations = [
@@ -791,14 +792,25 @@ class AnswerService:
         verified = (
             all(row.verified for row in top)
             and not top[0].unsure
+            and not top[0].totals
             and all(c.label == "verified" for c in citations)
         )
         sentences = [AnswerSentence(text=sentence, citations=[c.n for c in citations[:shown_n]])]
-        doubts = {value.value_id for value in top[0].unsure}
-        unsure = [c.n for c in citations if c.label != "verified" or c.ref_id in doubts]
+        doubts, totalish = {v.value_id for v in top[0].unsure}, {v.value_id for v in top[0].totals}
+        unsure = [
+            c.n
+            for c in citations
+            if c.ref_id not in totalish and (c.label != "verified" or c.ref_id in doubts)
+        ]
+        looks = [c.n for c in citations if c.ref_id in totalish]
         if not verified and plan.aggregate != "count" and unsure:
             # PRD 6 C: the answer itself says so, beside the label, citing only what it is about.
             sentences.append(AnswerSentence("Some of the values behind this are not verified yet.", unsure))
+        if looks:  # C2: left out of the comparison, and why
+            said = (
+                "A row that reads like a total is" if len(looks) == 1 else "Rows that read like a total are"
+            )
+            sentences.append(AnswerSentence(f"{said} left out of this.", looks))
         return Answer(
             status="answered",
             label="verified" if verified and not hard else "needs_review",

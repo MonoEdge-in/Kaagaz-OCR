@@ -351,6 +351,7 @@ def test_every_query_that_compares_or_adds_knows_a_printed_total_row() -> None:
         assert ": ((grand|net|sub)[[:space:]-]*)?totals?([^a-z]|$)'" in statement, name
         assert ": (एकूण|एकुण|कुल|योग)([[:space:]:.,;()/0-9-]|$)'" in statement, name
         assert "FROM totals x" in statement, name
+        assert "), sums AS (  -- each sheet's other rows, summed once" in statement, name  # linear
 
 
 RANKING = "Kiska profit sabse jyada tha last month?"
