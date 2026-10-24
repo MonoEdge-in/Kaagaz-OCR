@@ -51,6 +51,12 @@ gets one from its id's sha256 (``split_of``: even is dev), always the same.
 id so its spellings stay together; ``romanised_problems`` checks it. The file is frozen
 by tests/test_golden_romanised.py, and ROMANISED_SHA256 holds the same hash.
 
+``questions_nlq.json`` (PRD 6 package G) has the same entries, a split, the NLQ tags and
+optional expectations (``nlq_problems`` checks them): ``documents`` {expected, not},
+``clarify`` {choices, pick} or null (no question may be asked), ``figure`` {document, field,
+as_printed, page, label}, ``no_total`` {allowed: null or the permitted total's text} and
+``soft_not_found`` {closest}, and an item ``scope`` {document} ("Ask about this document").
+
 Time is O(q) per file and O(s + h) per answer, in its characters and hits.
 """
 
@@ -58,7 +64,7 @@ import hashlib
 import math
 import re
 from collections.abc import Collection, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import StrEnum
 from pathlib import Path
@@ -105,6 +111,19 @@ _MONEY = re.compile(r"(?:\u20B9|\brs\.?|\binr)\s*\d[\d,]*(?:\.\d+)?|\d{1,3}(?:,\
 # compare's limits per set (the plan's paired gate).
 MAX_NEWLY_ABSTAINED = 2
 MAX_VERIFIED_COVERAGE_DROP = 2
+# questions_nlq.json (PRD 6 G): frozen like the others; any edit means a new baseline.
+NLQ_SHA256 = "c47be4cb0c32ac374f5b73abac2b62845d239451990ec6c912fb54ae162055f4"
+NLQ_KEYS = ("documents", "clarify", "figure", "no_total", "soft_not_found")
+NLQ_TAGS = frozenset(
+    {"example", "co_owner", "place", "between", "date", "misspelling", "missing_subject", "same_name"}
+    | {"share", "profit", "hinglish", "trap", "opening", "scope"}
+)
+NLQ_SLICE_MINIMUM = 15  # items in every tag, split, follow_up and not_found slice (council)
+NLQ_QUESTIONS = 150  # at least, so a 0.95 bar's Wilson interval is narrow enough to read
+# Items per expectation, at least: "clarify" expects a question, "no_clarify" forbids one.
+NLQ_MINIMUMS = {"documents": 80, "clarify": 30, "no_clarify": 40, "figure": 60, "no_total": 150}
+NLQ_MINIMUMS |= {"soft_not_found": 25, "scope": 15}
+LABELS = (None, "verified", "needs_review")
 
 
 class Outcome(StrEnum):
@@ -129,6 +148,7 @@ class Question:
     distractors: tuple[Any, ...]  # expect.not: numbers or texts that make the answer wrong
     document: str | None
     pages: tuple[int, ...]
+    nlq: Mapping[str, Any] = field(default_factory=dict)  # NLQ_KEYS present, and "scope"
 
 
 @dataclass(frozen=True, slots=True)
@@ -330,6 +350,7 @@ def question_from(item: Mapping[str, Any]) -> Question:
         tuple(expect.get("not", [])),
         expect.get("document"),
         tuple(expect["pages"]),
+        {key: value for key, value in {**expect, **item}.items() if key in (*NLQ_KEYS, "scope")},
     )
 
 
@@ -546,3 +567,125 @@ def compare(
             f" at most {MAX_VERIFIED_COVERAGE_DROP} fewer"
         )
     return changed, failures, mcnemar(base_only, now_only)
+
+
+# --- NLQ: the questions file (PRD 6 package G) -------------------------------------------------
+
+# A page reference ("page 2", "pages 2 to 3"): its numbers are never a figure.
+_PAGES = re.compile(r"\b(?:pages?|pp?\.)\s*\d+(?:\s*(?:to|and|-|,)\s*\d+)*")
+# A number not inside a longer one, with "/" runs (dates, surveys, fractions) kept whole.
+_NUMERAL = re.compile(r"(?<!\d)(?<!\d[.,/])(\d[\d,]*(?:\.\d+)?(?:/\d+)*)\s*(%|per\s?cent\b)?")
+
+
+def nlq_problems(raw: Any, documents: Collection[str]) -> list[str]:
+    """``problems`` for questions_nlq.json: a split, the NLQ tags, each expectation's shape,
+    a follow-up in its question's split (no leakage), and the minimums: NLQ_QUESTIONS items,
+    NLQ_SLICE_MINIMUM in every slice and NLQ_MINIMUMS per expectation."""
+    if not isinstance(raw, list):
+        return ["the file must be a list of questions"]
+    found: list[str] = []
+    split_by_id: dict[str, Any] = {}
+    slices = dict.fromkeys([*sorted(NLQ_TAGS), *SPLITS, "follow_up", "not_found"], 0)
+    counts = dict.fromkeys(NLQ_MINIMUMS, 0)
+    for item in raw:
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+            found.append(f"not a question with an id: {item!r}")
+            continue
+        qid = item["id"]
+        mine = _question_problems(item, set(split_by_id), documents, NLQ_TAGS)
+        if qid in split_by_id:
+            mine.append("the id is used twice")
+        if item.get("split") not in SPLITS:
+            mine.append(f"split must be one of {SPLITS}")
+        elif split_by_id.get(str(item.get("follow_up_of")), item["split"]) != item["split"]:
+            mine.append("a follow-up is in its question's split")
+        mine = mine or _nlq_expect_problems(item, documents)
+        found += [f"{qid}: {problem}" for problem in mine]
+        split_by_id[qid] = item.get("split")
+        if not mine:
+            question = question_from(item)
+            for name in question.slices:
+                slices[name] += 1
+            nlq = question.nlq
+            counts["clarify"] += nlq.get("clarify") is not None
+            counts["no_clarify"] += "clarify" in nlq and nlq["clarify"] is None
+            for name in ("documents", "figure", "no_total", "soft_not_found", "scope"):
+                counts[name] += name in nlq
+    if len(raw) < NLQ_QUESTIONS:
+        found.append(f"{len(raw)} questions, at least {NLQ_QUESTIONS}")
+    found += [
+        f"{n} in slice {name}, at least {NLQ_SLICE_MINIMUM}"
+        for name, n in slices.items()
+        if n < NLQ_SLICE_MINIMUM
+    ]
+    found += [
+        f"{n} {name}, at least {NLQ_MINIMUMS[name]}" for name, n in counts.items() if n < NLQ_MINIMUMS[name]
+    ]
+    return found
+
+
+def _nlq_expect_problems(item: dict[str, Any], documents: Collection[str]) -> list[str]:
+    expect, scope, wrong = item["expect"], item.get("scope"), []
+
+    def names(value: Any, least: int = 0) -> bool:
+        return isinstance(value, list) and len(value) >= least and all(name in documents for name in value)
+
+    def texts(value: Any) -> bool:
+        return (
+            isinstance(value, list) and bool(value) and all(isinstance(t, str) and t.strip() for t in value)
+        )
+
+    docs, choose, figure = expect.get("documents", {}), expect.get("clarify"), expect.get("figure", {})
+    allowed, soft = expect.get("no_total", {}), expect.get("soft_not_found", {})
+    if "documents" in expect and not (
+        isinstance(docs, dict) and names(docs.get("expected"), 1) and names(docs.get("not", []))
+    ):
+        wrong.append("expect.documents needs expected (at least 1) and not, names from the manifest")
+    elif "documents" in expect and set(docs["expected"]) & set(docs.get("not", [])):
+        wrong.append("expect.documents lists a document as expected and not")
+    if choose is not None and not (
+        isinstance(choose, dict) and texts(choose.get("choices")) and texts([choose.get("pick")])
+    ):
+        wrong.append("expect.clarify needs choices (texts) and a pick, or is null")
+    if "figure" in expect and not (
+        isinstance(figure, dict)
+        and figure.get("document") in documents
+        and texts([figure.get("field"), figure.get("as_printed")])
+        and isinstance(figure.get("page"), int)
+        and figure["page"] >= 1
+        and figure.get("label") in LABELS
+    ):
+        wrong.append(
+            f"expect.figure needs a manifest document, field, as_printed, a page and a label in {LABELS}"
+        )
+    if "no_total" in expect and not (
+        isinstance(allowed, dict)
+        and "allowed" in allowed
+        and (allowed["allowed"] is None or len(numerals(str(allowed["allowed"]))) == 1)
+    ):
+        wrong.append("expect.no_total needs allowed: null or the permitted total's text, one number")
+    if "soft_not_found" in expect and not (isinstance(soft, dict) and names(soft.get("closest"))):
+        wrong.append("expect.soft_not_found needs closest, names from the manifest")
+    elif "soft_not_found" in expect and expect["kind"] != "not_found":
+        wrong.append("a soft not-found is a not-found question")
+    if scope is not None and (not isinstance(scope, dict) or scope.get("document") not in documents):
+        wrong.append("scope needs a document from the manifest")
+    return wrong
+
+
+def numerals(text: str) -> list[tuple[str, bool]]:
+    """Every number in ``text`` outside a page reference, as (its value, a percent?): any
+    script's digits folded, grouping and trailing zeros dropped ("Rs. 18,400.00" -> "18400");
+    a "/" run keeps its parts ("12/09/2026" -> "12/9/2026", "45/2")."""
+    plain = _PAGES.sub(" ", ascii_digits(text).casefold())
+    found = []
+    for match in _NUMERAL.finditer(plain):
+        parts = match[1].rstrip(",").split("/")
+        value = "/".join(format(Decimal(part.replace(",", "") or "0").normalize(), "f") for part in parts)
+        found.append((value, match[2] is not None))
+    return found
+
+
+def phrase_in(wanted: str, text: str) -> bool:
+    """``wanted`` in ``text`` as a whole phrase, any case and spacing ("Pune" is not in "Puneri")."""
+    return _holds_value(wanted, Decimal(0), text)
