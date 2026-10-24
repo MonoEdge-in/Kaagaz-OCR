@@ -11,6 +11,7 @@
 // folder path with the page, and its passage with the words searched for marked; "Also
 // searched: … (from your words)" names the person's own words the search used (Q2).
 
+import { linkWords } from "@/components/chat/answer";
 import { docTypeLabel } from "@/lib/format";
 import { pageLink } from "@/lib/regions";
 import type { DetectedType, DocumentSearch, FoundDocument, Sensitivity } from "@/lib/types";
@@ -83,13 +84,13 @@ export interface ResultView {
   type: string;
   snippet: string;
   pages: string;
-  href: string; // the viewer, on the first page with the spot marked
+  href: string; // the viewer, on the first page with the spot marked and the words searched lit
   version: string | null; // "v2", "v2 of 3"; null when the reply does not say
   label: Sensitivity | null;
   place: string; // "Land & Legal / Land records · Page 2"
 }
 
-export function resultView(found: FoundDocument): ResultView {
+export function resultView(found: FoundDocument, q = ""): ResultView {
   const { best } = found;
   const region = best.regions.find((spot) => spot.page === best.page_from) ?? best.regions[0];
   const pages = pagesText(best.page_from, best.page_to);
@@ -105,7 +106,7 @@ export function resultView(found: FoundDocument): ResultView {
     type: docTypeLabel(found.doc_type),
     snippet: best.snippet,
     pages,
-    href: pageLink(found.id, region?.page ?? best.page_from, region),
+    href: pageLink(found.id, region?.page ?? best.page_from, region, { words: linkWords(q) }),
     version,
     label: found.sensitivity ?? null,
     place: found.folder_path ? `${found.folder_path} · ${pages}` : pages,

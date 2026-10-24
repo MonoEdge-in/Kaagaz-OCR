@@ -101,7 +101,7 @@ export function InsideSearchResults({
       {also && <p className={libraryStyles.placeHint}>{also}</p>}
       <ol className={styles.results} aria-label={`Documents with “${q}”`}>
         {found.documents.map((document) => {
-          const view = resultView(document);
+          const view = resultView(document, q);
           return (
             <li key={view.id} className={styles.result}>
               <Link href={view.href} className={styles.resultName}>

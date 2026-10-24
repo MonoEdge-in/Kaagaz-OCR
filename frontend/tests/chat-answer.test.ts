@@ -428,7 +428,8 @@ describe("labels in Ask: only beside a v2 answer's figures", () => {
       createElement(AnswerView, { message: answered("needs_review", "unchecked"), question: "profit?" }),
     );
     expect(unchecked).toContain(UNCHECKED_TEXT);
-    expect(unchecked).toContain('href="/documents/d1"');
+    // Changed on purpose (package H, 24 Oct 2026): the document opens with the question's words lit.
+    expect(unchecked).toContain('href="/documents/d1?words=profit+total"');
   });
 
   it("renders no label on a source card, live or deleted", () => {

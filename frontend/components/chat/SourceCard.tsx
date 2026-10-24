@@ -30,6 +30,8 @@ import {
   cardId,
   citationLink,
   citationSource,
+  documentLink,
+  linkWords,
   markParts,
   matchTerms,
   mentionPages,
@@ -135,7 +137,7 @@ export const SourceCard = memo(function SourceCard({
           </p>
         )}
         <div className={styles.sourceAction}>
-          <Link href={citationLink(citation)} className={styles.openLink}>
+          <Link href={citationLink(citation, terms)} className={styles.openLink}>
             <Icon name="open" size={16} />
             {openText(citation)}
             <span className="visually-hidden">{` of ${citation.document_name}`}</span>
@@ -165,7 +167,7 @@ export function RelatedRow({
   pinned?: boolean;
   onPin?: () => void;
 }) {
-  const href = pageLink(doc.document_id, doc.page_no, doc.regions[0]);
+  const href = pageLink(doc.document_id, doc.page_no, doc.regions[0], { words: linkWords(...terms) });
   return (
     <article className={styles.source}>
       <div className={styles.sourceBody}>
@@ -224,10 +226,11 @@ export function MentionsSection({ mentions }: { mentions: Mentions }) {
   );
 }
 
-/** Not found's closest documents and an unchecked answer's: the same row, the name only. */
-export function DocumentRow({ id, name }: { id: string; name: string }) {
+/** Not found's closest documents and an unchecked answer's: the same row, the name only; it
+ * opens with the question's words lit (package H). */
+export function DocumentRow({ id, name, terms = [] }: { id: string; name: string; terms?: readonly string[] }) {
   return (
-    <Link className={`${styles.source} ${styles.documentRow}`} href={`/documents/${encodeURIComponent(id)}`} title={name}>
+    <Link className={`${styles.source} ${styles.documentRow}`} href={documentLink(id, terms)} title={name}>
       <Icon name="file" size={16} />
       <span className={styles.sourceName}>{name}</span>
     </Link>

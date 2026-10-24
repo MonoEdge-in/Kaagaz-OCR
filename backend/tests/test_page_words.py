@@ -5,7 +5,15 @@ import unittest
 from typing import Any
 
 from kaagaz.chunking.script import latin_spelling
-from kaagaz.search.page_words import MAX_WORD_CHARS, MAX_WORDS, Matcher, clean_words, segments, word_regions
+from kaagaz.search.page_words import (
+    MAX_BOXES,
+    MAX_WORD_CHARS,
+    MAX_WORDS,
+    Matcher,
+    clean_words,
+    segments,
+    word_regions,
+)
 
 
 def box(page: int, top: float) -> dict[str, Any]:
@@ -24,8 +32,14 @@ class CleanWordsTest(unittest.TestCase):
 
     def test_cleaned_casefolded_once_and_never_a_stop_word(self) -> None:
         self.assertEqual(
-            clean_words(["Krishna", "KRISHNA", "the", "kiti", "a", "<b>Maval</b>", "INV-1042"]),
-            ["krishna", "maval", "inv", "1042"],
+            clean_words(["Krishna", "KRISHNA", "the", "kiti", "a", "<b>Maval</b>", "INV-1042", "ab"]),
+            ["krishna", "maval", "inv-1042"],
+        )
+
+    def test_a_number_stays_whole_and_a_hyphenated_name_splits(self) -> None:
+        self.assertEqual(
+            clean_words(["1,042", "₹1,04,200", "7/12", "Krishna-Sohoni"]),
+            ["1042", "104200", "7/12", "krishna", "sohoni"],
         )
 
 
@@ -44,14 +58,36 @@ class MatcherTest(unittest.TestCase):
         self.assertTrue(lit(["krishana"], "खरेदीदार कृष्ण सोहोनी"))
         self.assertTrue(lit(["bhogwatdar"], "भोगवटादार"))
 
-    def test_a_near_spelling_as_search_allows_it(self) -> None:
-        self.assertTrue(lit(["kirshna"], "Buyer: Krishna Sohoni"))
+    def test_a_near_spelling_by_story_matchings_rule(self) -> None:
         self.assertTrue(lit(["sohonee"], "Buyer: Krishna Sohoni"))
+        self.assertTrue(lit(["maaval"], "Village: Maval"))
         self.assertFalse(lit(["mohan"], "Buyer: Krishna Sohoni"))
 
+    def test_short_and_near_words_never_light_another_word(self) -> None:
+        for typed, line in [
+            ("raj", "Ram"),
+            ("date", "Data"),
+            ("mohan", "Mohini"),
+            ("krishna", "Krishnamurthy"),
+        ]:
+            with self.subTest(typed=typed):
+                self.assertFalse(lit([typed], line))
+        self.assertTrue(lit(["krishana"], "Krishna"))
+        self.assertTrue(lit(["कृष्ण"], "Krishna"))
+        self.assertTrue(lit(["krishna"], "कृष्ण"))
+
     def test_a_number_only_as_written(self) -> None:
-        self.assertTrue(lit(["1042"], "Invoice INV-1042"))
-        self.assertFalse(lit(["1043"], "Invoice INV-1042"))
+        self.assertTrue(lit(["1042"], "Total 1,042"))
+        self.assertTrue(lit(["104200"], "Amount ₹1,04,200"))
+        self.assertTrue(lit(["7/12"], "7-12 extract"))
+        self.assertFalse(lit(["1043"], "Invoice INV-1043"))
+        self.assertFalse(lit(["1,042"], "Rs. 3,042"))
+        self.assertFalse(lit(["1,042"], "INV 042"))
+        self.assertFalse(lit(["₹1,04,200"], "Item 04 qty 200"))
+
+    def test_an_identifier_never_lights_every_line_of_its_prefix(self) -> None:
+        self.assertTrue(lit(["INV-1042"], "Invoice INV-1042"))
+        self.assertFalse(lit(["INV-1042"], "Invoice INV-2001"))
 
 
 class SegmentsTest(unittest.TestCase):
@@ -67,7 +103,7 @@ class SegmentsTest(unittest.TestCase):
 
 
 class WordRegionsTest(unittest.TestCase):
-    def test_the_open_pages_lines_and_every_page_with_one(self) -> None:
+    def test_every_pages_lines_and_every_page_with_one(self) -> None:
         pieces = [
             (
                 "Invoice\nBuyer: Krishna Sohoni\nSeller: Nikhil Varde",
@@ -75,15 +111,20 @@ class WordRegionsTest(unittest.TestCase):
                 [box(1, 0.1), box(1, 0.2), box(1, 0.3)],
             ),
             ("Village Maval", None, [box(2, 0.1)]),
-            ("खरेदीदार कृष्ण", latin_spelling("खरेदीदार कृष्ण"), [box(3, 0.4)]),
+            ("खरेदीदार कृष्ण", latin_spelling("खरेदीदार कृष्ण"), [box(3, 0.5)]),
             ("Name: Krishna | Village: Pune", None, [box(4, 0.1), box(4, 0.5)]),
             ("Krishna\nunpaired", None, [box(5, 0.1)]),
         ]
         words = clean_words(["krishna", "maval"])
-        self.assertEqual(word_regions(pieces, words, 1), ([box(1, 0.2)], [1, 2, 3, 4]))
-        self.assertEqual(word_regions(pieces, words, 4), ([box(4, 0.1)], [1, 2, 3, 4]))
-        self.assertEqual(word_regions(pieces, words, 6), ([], [1, 2, 3, 4]))
-        self.assertEqual(word_regions(pieces, [], 1), ([], []))
+        lit = [box(1, 0.2), box(2, 0.1), box(3, 0.5), box(4, 0.1)]
+        self.assertEqual(word_regions(pieces, words), (lit, [1, 2, 3, 4]))
+        self.assertEqual(word_regions(pieces, []), ([], []))
+
+    def test_at_most_max_boxes_and_still_every_page(self) -> None:
+        pieces = [("Krishna", None, [box(page, 0.1)]) for page in range(1, MAX_BOXES + 6)]
+        boxes, pages = word_regions(pieces, ["krishna"])
+        self.assertEqual(len(boxes), MAX_BOXES)
+        self.assertEqual(pages, list(range(1, MAX_BOXES + 6)))
 
 
 if __name__ == "__main__":

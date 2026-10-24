@@ -1,7 +1,7 @@
-"""Your words on the page (package H): GET /documents/{id}/pages/{n}/words against a real
-database. The lines of the open page that hold the words, by the four ways (same word,
-Latin spelling, sound, near spelling), and every page with one; one statement on an index
-as the app role. Customer isolation is in tests/test_isolation_api_page_words.py."""
+"""Your words on the page (package H): GET /documents/{id}/words against a real database.
+The lines of every page that hold the words, by the four ways (same word, Latin spelling,
+sound, near spelling), and every page with one; one statement on an index as the app role.
+Customer isolation is in tests/test_isolation_api_page_words.py."""
 
 import json
 from typing import Any
@@ -65,24 +65,22 @@ def sale_deed(api: Api, customer_id: str) -> str:
     return document_id
 
 
-def words(signed: Signed, document_id: str, page_no: int, *typed: str) -> dict[str, Any]:
+def words(signed: Signed, document_id: str, *typed: str) -> dict[str, Any]:
     query = "&".join(f"w={word}" for word in typed)
-    reply = signed.client.get(f"/api/documents/{document_id}/pages/{page_no}/words?{query}")
+    reply = signed.client.get(f"/api/documents/{document_id}/words?{query}")
     assert reply.status_code == 200, reply.text
     body: dict[str, Any] = reply.json()
     return body
 
 
-def test_the_open_pages_lines_holding_the_words_and_every_page_with_one(db: Database) -> None:
+def test_every_pages_lines_holding_the_words_and_every_page_with_one(db: Database) -> None:
     api = Api(db)
     signed = api.new_signed()
     deed = sale_deed(api, signed.customer_id)
 
-    first = words(signed, deed, 1, "krishna", "maval")
-    assert first == {"page_no": 1, "boxes": [box(1, 0.2), box(1, 0.5)], "pages": [1, 2]}
-    # Latin and Devanagari: "krishna" lights कृष्ण; a page with none shows nothing.
-    assert words(signed, deed, 2, "krishna")["boxes"] == [box(2, 0.1)]
-    assert words(signed, deed, 3, "krishna") == {"page_no": 3, "boxes": [], "pages": [1, 2]}
+    # Latin and Devanagari: "krishna" lights कृष्ण on page 2; page 3 holds none.
+    found = words(signed, deed, "krishna", "maval")
+    assert found == {"boxes": [box(1, 0.2), box(1, 0.5), box(2, 0.1)], "pages": [1, 2]}
 
 
 @pytest.mark.parametrize(
@@ -91,7 +89,8 @@ def test_the_open_pages_lines_holding_the_words_and_every_page_with_one(db: Data
         ("KRISHNA", 1, [box(1, 0.2)]),  # the same word, any case
         ("कृष्ण", 1, [box(1, 0.2)]),  # the same Latin spelling, Devanagari typed
         ("krishana", 2, [box(2, 0.1)]),  # the same sound
-        ("kirshna", 1, [box(1, 0.2)]),  # a near spelling
+        ("sohonee", 1, [box(1, 0.2)]),  # a near spelling
+        ("krishnamurthy", 1, []),  # never a longer name
         ("mohan", 1, []),
     ],
 )
@@ -99,7 +98,7 @@ def test_each_way_a_word_lights_a_line(db: Database, typed: str, page: int, lit:
     api = Api(db)
     signed = api.new_signed()
     deed = sale_deed(api, signed.customer_id)
-    assert words(signed, deed, page, typed)["boxes"] == lit
+    assert [region for region in words(signed, deed, typed)["boxes"] if region["page"] == page] == lit
 
 
 def test_more_than_eight_words_is_refused_and_no_words_light_nothing(db: Database) -> None:
@@ -107,9 +106,8 @@ def test_more_than_eight_words_is_refused_and_no_words_light_nothing(db: Databas
     signed = api.new_signed()
     deed = sale_deed(api, signed.customer_id)
     nine = "&".join(f"w=word{n}" for n in range(9))
-    assert signed.client.get(f"/api/documents/{deed}/pages/1/words?{nine}").status_code == 400
-    assert words(signed, deed, 1, "the", "kiti") == {"page_no": 1, "boxes": [], "pages": []}
-    assert signed.client.get(f"/api/documents/{deed}/pages/0/words?w=krishna").status_code == 404
+    assert signed.client.get(f"/api/documents/{deed}/words?{nine}").status_code == 400
+    assert words(signed, deed, "the", "kiti") == {"boxes": [], "pages": []}
 
 
 @pytest.mark.parametrize(
@@ -123,7 +121,7 @@ def test_a_document_in_trash_or_rejected_is_refused_as_its_page_image_is(
     signed = api.new_signed()
     document_id = api.add_document(signed.customer_id, detected_type="png", **columns)
     add_pieces(db, signed.customer_id, document_id, [("Buyer: Krishna Sohoni", [box(1, 0.2)])])
-    reply = signed.client.get(f"/api/documents/{document_id}/pages/1/words?w=krishna")
+    reply = signed.client.get(f"/api/documents/{document_id}/words?w=krishna")
     assert reply.status_code == status
     assert reply.json()["error"]["code"] == code
     assert "0.2" not in reply.text

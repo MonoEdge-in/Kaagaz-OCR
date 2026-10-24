@@ -563,6 +563,12 @@ export interface SheetCells {
   rows: { row: number; cells: { column: number; text: string }[] }[];
 }
 
+/** GET /documents/{id}/words (package H): the lines holding the words on every page (at most 2,000), and every page with one. */
+export interface DocumentWords {
+  boxes: Region[];
+  pages: number[];
+}
+
 /** GET /documents/{id}/pages/{n}/readings: what each reader read on one page, as read. */
 export interface PageReadings {
   page_no: number;
