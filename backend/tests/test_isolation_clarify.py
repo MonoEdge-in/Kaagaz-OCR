@@ -102,3 +102,11 @@ def test_a_missing_subject_offers_the_chats_cited_properties_of_its_own_company_
     assert choices(a) == [*gats, ("Gat 106", [new]), other]  # 45/2 is not among the newest
     assert choices(a, b_document, old) == [("Survey 45/2", [old]), *gats, other]  # never B's 99/9
     assert choices(b, old) == [("Survey 99/9", [b_document]), other]  # never A's 45/2
+
+
+def test_any_keys_sees_one_companys_own_keys_only(db: Database) -> None:  # Ask speed, 24 Oct 2026
+    a, a_document = company(db, ("person", "Nikhil Varde"))
+    b, _ = new_customer(db)  # no key at all
+    vocabulary = PgVocabulary(db)
+    assert vocabulary.any_keys(a) and vocabulary.within([a_document]).any_keys(a)  # the control
+    assert not vocabulary.any_keys(b) and not vocabulary.within([a_document]).any_keys(b)
