@@ -74,6 +74,7 @@ def figure(
     date_verified: bool = True,
     region: dict[str, object] = BOX,
     total: bool = False,
+    doubtful: bool = False,
 ) -> Figure:
     """A record of ``name`` printing ``text`` as its one figure, or none (``text`` None);
     ``total``: its sheet's printed total row instead (PRD 6 C2)."""
@@ -89,6 +90,7 @@ def figure(
         dated=dated,
         date_verified=dated and date_verified,
         printed_total=total,
+        looks_total=doubtful,
     )
 
 
@@ -169,6 +171,11 @@ def test_every_figure_printed_and_verified_gives_the_total_with_its_working() ->
         (  # a figure that cannot be pointed at: never verified, never listed
             [SHARMA, figure("INV-7 Lost.pdf", "7,000", region={})],
             ["1 of the 2 profit figures is not verified yet", SHARMA_LINE],
+        ),
+        (  # C2: a row that reads like a total but does not add up: listed, never added
+            [SHARMA, figure("ledger.xlsx", "9,000", doubtful=True), OM],
+            ["1 of the 3 invoices reads like a total", SHARMA_LINE,
+             "ledger.xlsx: 9,000, reads like a total.", OM_LINE],
         ),
         (  # two figures in one record, or one that is not a number
             [SHARMA, figure("INV-3 Twice.pdf", printed=2), figure("INV-4 Nil.pdf", "Nil")],

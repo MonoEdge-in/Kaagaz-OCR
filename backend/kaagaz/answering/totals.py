@@ -13,10 +13,12 @@ nothing to point at is counted, never listed. Time O(r log r) in the r records.
 
 PRD 6 C2: a sheet's printed total row is never a record. When the records include a sheet that
 prints its own total, no total is added up: the head says so (PRINTED_TOTAL), and the printed
-total comes first, as printed and cited. ``ranking``: the same rule for a highest or lowest by
-party, before any party's sum is shown: every record must also name one party, verified, and a
-printed total is left out. With a date range asked, a printed total is not listed (it covers the
-whole sheet, not the range): the sheet's rows in range are added up as any records.
+total comes first, as printed and cited. A row that reads like a total but does not add up is a
+record that withholds the total ("reads like a total"), before every other reason. ``ranking``:
+the same rule for a highest or lowest by party, before any party's sum is shown: every record
+must also name one party, verified, and a printed total is left out. With a date range asked, a
+printed total is not listed (it covers the whole sheet, not the range): the sheet's rows in range
+are added up as any records.
 """
 
 from collections.abc import Collection, Sequence
@@ -63,13 +65,16 @@ def tell(
         elif not ranking:
             printed.append((figure, regions, _checked(figure, regions, hard)))
     n = len(rows)
+    doubtful = sum(figure.looks_total for figure, _, _ in rows)
     undated = sum(not figure.dated for figure, _, _ in rows)
     lacking = sum(figure.amount is None for figure, _, _ in rows)
     nameless = sum(not figure.grouped for figure, _, _ in rows)
     unverified = sum(figure.amount is not None and not checked for figure, _, checked in rows)
     names = sum(figure.grouped and not figure.party_verified for figure, _, _ in rows)
     dates = sum(figure.dated and not figure.date_verified for figure, _, _ in rows)
-    if undated:
+    if doubtful:
+        why = f"{_of(doubtful, n, noun)} {_verb(doubtful, 'reads', 'read')} like a total"
+    elif undated:
         why = f"{_of(undated, n, noun)} {_verb(undated, 'has', 'have')} no date I can read"
     elif lacking:
         why = f"{_of(lacking, n, noun)} {_verb(lacking, 'has', 'have')} no {metric} I can add"
@@ -125,7 +130,7 @@ def _line(figure: Figure, value: ValueRef, metric: str, checked: bool) -> str:
         said = f"no {metric} printed"
     else:
         said = f"no {metric} I can add"  # one that is not a number, or several
-    notes = []
+    notes = ["reads like a total"] if figure.looks_total else []
     if figure.amount is not None and not checked:
         notes.append("not verified yet")
     if not figure.grouped:
