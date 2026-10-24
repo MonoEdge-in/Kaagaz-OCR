@@ -98,13 +98,11 @@
   gap: var(--space-1);
 }
 
-/* "Today", "This week": the handoff's mono group heading (.k-tree-group). */
+/* "Today", "This week": the handoff's group heading (.k-tree-group), sentence case at 14px. */
 .groupTitle {
   margin: 0;
   padding-inline: var(--space-3);
-  font: 500 10px/1.4 var(--k-font-mono);
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
+  font: 500 0.875rem/1.4 var(--k-font-body);
   color: var(--k-ink-muted);
 }
 
@@ -235,9 +233,7 @@
 }
 
 .listSearch > label {
-  font: 500 10px/1.4 var(--k-font-mono);
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
+  font: 500 0.875rem/1.4 var(--k-font-body);
   color: var(--k-ink-muted);
 }
 

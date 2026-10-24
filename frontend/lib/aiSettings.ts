@@ -24,6 +24,14 @@ export const TASK_NAMES: Record<AiTask, string> = {
   autofile: "Auto-filing",
 };
 
+/** What each setting is for, behind its "What's this?" (plain words, 25 Oct 2026). */
+export const TASK_HELP: Record<AiTask, string> = {
+  scan: "How carefully your uploaded scans and photos are read. More care is slower but makes fewer mistakes.",
+  ask: "How much care goes into answers to your questions. More care is slower but better for tricky questions.",
+  ensemble: "After a scan, lets you have the words the reader was unsure of read again by several AI readers.",
+  autofile: "Puts new uploads into a folder for their type, like Invoices, so you don't have to.",
+};
+
 export const LEVEL_NAMES: Record<TaskLevel, string> = {
   none: "None",
   low: "Low",
@@ -56,7 +64,7 @@ export const HINTS: Record<AiTask, Partial<Record<TaskLevel, string>>> = {
   },
   ensemble: {
     off: "Ensemble is not offered after a scan.",
-    on: "Run Ensemble is offered after a scan: several readings compared.",
+    on: "Run Ensemble is offered after a scan: unsure words are read again and the readings compared.",
   },
   autofile: {
     off: "New files stay where they are uploaded.",

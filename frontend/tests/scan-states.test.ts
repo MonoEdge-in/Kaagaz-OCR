@@ -109,13 +109,14 @@ describe("the words for each state (wording table)", () => {
   });
 
   // flagged = words_unsure + values_to_review; pages to check are said on their own.
-  it("says what a finished scan flagged, or Nothing flagged", () => {
-    expect(flaggedText(doc("n"))).toBe("Nothing flagged");
+  // Changed on purpose (plain words, 25 Oct 2026): "to check", never "flagged".
+  it("says what a finished scan left to check, or Nothing to check", () => {
+    expect(flaggedText(doc("n"))).toBe("Nothing to check");
     const flagged = doc("f", { words_unsure: 9, values_to_review: 3 });
-    expect([flaggedCount(flagged), flaggedText(flagged), toReview(flagged)]).toEqual([12, "12 flagged for review", true]);
+    expect([flaggedCount(flagged), flaggedText(flagged), toReview(flagged)]).toEqual([12, "12 words to check", true]);
     expect(flaggedText(doc("p", { pages_unreadable: 2 }))).toBe("2 pages to check");
-    expect(flaggedText(doc("b", { values_to_review: 1, pages_unreadable: 1 }))).toBe("1 flagged for review · 1 page to check");
-    expect(flaggedText(doc("u", { words_unsure: 4, pages_uncertain: 2 }))).toBe("4 flagged for review"); // as attentionWords
+    expect(flaggedText(doc("b", { values_to_review: 1, pages_unreadable: 1 }))).toBe("1 word to check · 1 page to check");
+    expect(flaggedText(doc("u", { words_unsure: 4, pages_uncertain: 2 }))).toBe("4 words to check"); // as attentionWords
     expect(toReview(doc("n"))).toBe(false);
   });
 
@@ -193,12 +194,12 @@ describe("one calm, fixed-height status cell", () => {
     expect(readCell).toMatch(/data-tone="ready"[^>]*>Scan complete<\/span>/);
     // Changed on purpose (Tushar, 16 Oct 2026, Documents table sans): "12 flagged" in full, then a
     // short "Review" link read out with what is to review and where; the UI's sans, no mono.
-    expect(readCell).toContain(">12 flagged</span>");
+    expect(readCell).toContain(">12 to check</span>"); // plain words, 25 Oct 2026
     expect(readCell).not.toContain("mono");
-    expect(readCell).toMatch(/<a [^>]*href="\/documents\/r"[^>]*>Review<span class="visually-hidden"> 12 flagged words in r.pdf<\/span><\/a>/);
+    expect(readCell).toMatch(/<a [^>]*href="\/documents\/r"[^>]*>Review<span class="visually-hidden"> 12 words to check in r.pdf<\/span><\/a>/);
     // Changed on purpose (UI audit, 16 Oct 2026): D4, a clean read is its badge alone; the second
     // line stays laid out (two lines above), so the row keeps its height.
-    expect(html(doc("n"))).not.toContain("Nothing flagged");
+    expect(html(doc("n"))).not.toContain("Nothing to check");
     expect(html(doc("n"))).not.toContain(">Review<");
     expect(html(read, true)).not.toContain(">Review<"); // nothing to open for review in Trash
     expect(html(queued)).toMatch(/>Queued<\/span>.*Waiting to start\./);
@@ -254,8 +255,8 @@ describe("the status bar", () => {
       entry("n", done(doc("n"))),
       entry("x", { kind: "error", message: "Too big." }),
     ];
-    expect(statusBarText(finished, {}, 0)).toBe("Scan complete · 2 documents · 12 flagged for review · 1 not uploaded");
-    expect(statusBarText([entry("n", done(doc("n")))], {}, 0)).toBe("Scan complete · 1 document · Nothing flagged");
+    expect(statusBarText(finished, {}, 0)).toBe("Scan complete · 2 documents · 12 words to check · 1 not uploaded"); // plain words, 25 Oct 2026
+    expect(statusBarText([entry("n", done(doc("n")))], {}, 0)).toBe("Scan complete · 1 document · Nothing to check");
     expect(statusBarText([entry("x", { kind: "error", message: "No." })], {}, 0)).toBe("Uploads finished · 1 not uploaded");
     for (const text of [statusBarText(finished, {}, 0), statusBarText(both, { [BATCH]: view }, 0)]) {
       expect(text).not.toMatch(BANNED);
