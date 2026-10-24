@@ -100,6 +100,31 @@ class ApiFakeStorage(MemoryStorage):
             return False
         return True
 
+    # The resumable upload calls (ApiStorage): no test here starts a resumable upload.
+    def start_resumable(self, customer_id: str, user_id: str, session_id: str) -> tuple[str, str]:
+        raise AssertionError("not used here")
+
+    def upload_resumable_part(self, key: str, upload_id: str, part_number: int, body: bytes) -> None:
+        raise AssertionError("not used here")
+
+    def resumable_parts(self, key: str, upload_id: str) -> list[tuple[int, int, str]]:
+        raise AssertionError("not used here")
+
+    def complete_resumable(self, key: str, upload_id: str, parts: list[tuple[int, str]]) -> None:
+        raise AssertionError("not used here")
+
+    def resumable_complete(self, key: str) -> bool:
+        raise AssertionError("not used here")
+
+    def open_resumable(self, key: str) -> Any:
+        raise AssertionError("not used here")
+
+    def delete_resumable(self, key: str) -> None:
+        raise AssertionError("not used here")
+
+    def abort_resumable(self, key: str, upload_id: str) -> None:
+        raise AssertionError("not used here")
+
 
 class ApiFakeQueue(MemoryQueue):
     def __init__(self) -> None:

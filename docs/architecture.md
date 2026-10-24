@@ -297,7 +297,7 @@ it; when two cost about the same, take the one with the higher `agreement`.
 ```
 setenv COST_SAVING_HARD_LINES_MAX 12
 setenv COST_SAVING_HARD_SHARE 0.4
-dc up -d worker
+dc up -d --no-deps worker   # --no-deps: never rerun migrate (#246)
 ```
 
 The limits are checked at start-up (`COST_SAVING_HARD_LINES_MAX` 1 to 60, `COST_SAVING_HARD_SHARE`

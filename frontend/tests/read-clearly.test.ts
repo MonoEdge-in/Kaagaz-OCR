@@ -6,6 +6,8 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   BUSY,
+  COPIED,
+  COPY_BLOCKED,
   LANGUAGES,
   LEFT_OUT,
   NOT_SURE_TIP,
@@ -15,6 +17,7 @@ import {
   UNUSABLE,
   blocks,
   copyText,
+  pageTitle,
   pairParts,
   parts,
   translateFailure,
@@ -146,5 +149,64 @@ describe("Read clearly: the screen", () => {
     expect(panel).toMatch(/!inFlight\.current\.has\(doneKey\(lang, page\)\)/);
     expect(panel).toMatch(/inFlight\.current\.add\(doneKey\(lang, page\)\)/);
     expect(panel).toMatch(/finally \{\s*inFlight\.current\.delete\(doneKey\(lang, page\)\);/);
+  });
+});
+
+// Document panel UX (Tushar, 25 Oct 2026): the clean copy's Text tab, readable at 320px.
+describe("the clean copy, easy to read", () => {
+  const panel = read("components/viewer/ReadClearlyPanel.tsx");
+  const css = read("components/viewer/ReadClearly.module.css").replace(/\/\*[\s\S]*?\*\//g, "");
+  const rule = (selector: string) =>
+    new RegExp(`(^|\\n)${selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} \\{([^}]*)\\}`).exec(css)?.[2] ?? "";
+
+  it("has no all-caps labels: Copy all and Print are quiet sentence-case buttons", () => {
+    expect(css).not.toMatch(/text-transform:\s*uppercase/);
+    expect(panel).toMatch(/className="btn btn-quiet"[\s\S]{0,300}>\s*Copy all\s*</);
+    expect(panel).toMatch(/className="btn btn-quiet" disabled=\{pages\.length === 0\} onClick=\{\(\) => window\.print\(\)\}>\s*Print\s*</);
+    expect([COPIED, COPY_BLOCKED]).toEqual(["Copied", "Copying is blocked here. Select the text and copy it instead."]);
+    expect(panel).toContain("<Toast message={toast} onClose={() => setToast(null)} />");
+  });
+
+  it("keeps a wide table in its own sideways frame at 320px, whole words in every cell", () => {
+    expect(rule(".tableBox")).toMatch(/position: relative;[\s\S]*max-width: 100%;[\s\S]*overflow-x: auto;/);
+    const cells = rule(".table th,\n.table td");
+    expect(cells).toMatch(/min-width: 6rem;/);
+    expect(cells).toMatch(/overflow-wrap: normal;/); // the copy's "anywhere" broke headers into letters
+    expect(cells).toMatch(/word-break: keep-all;/);
+    expect(rule(".tableBox[data-wide]")).toMatch(/box-shadow: inset/);
+    expect(WIDE_NOTE).toBe("Scroll sideways to see all columns");
+    expect(panel).toMatch(/<ActionDialog title=\{title\}[\s\S]{0,200}styles\.wideTable/);
+    expect(panel).toMatch(/>\s*Open wide\s*</);
+  });
+
+  it("gives each page one heading, and a page jump when there are several", () => {
+    expect([pageTitle(1, 1), pageTitle(2, 4)]).toEqual(["Page 1", "Page 2 of 4"]);
+    expect(panel.match(/pageTitle\(page\.page_no, pages\.length\)\}<\/h3>/g)).toHaveLength(1);
+    expect(panel).not.toContain("pageBreak");
+    expect(panel).toMatch(/\{pages\.length > 1 && \(\s*<label className=\{styles\.jump\}>\s*Go to page/);
+  });
+
+  it("marks the line opened with the page's highlight and says so", () => {
+    expect(OPENED_NOTE).toBe("The line you opened");
+    expect(panel).toContain("{pressed && <span className={styles.opened}>{OPENED_NOTE}</span>}");
+    expect(rule('.line[aria-pressed="true"]::before')).toMatch(/background: var\(--hl-fill\);/);
+    expect(read("components/viewer/PageViewer.module.css")).toContain("background: var(--hl-fill);");
+  });
+
+  it("labels the language control, marks its Devanagari options and puts it right above the text", () => {
+    expect(SHOW_IN).toBe("Show the text in");
+    expect(panel).toContain("label: <span lang={each.lang}>{each.name}</span>");
+    expect(LANGUAGES.filter((each) => /[ऀ-ॿ]/.test(each.name)).map((each) => each.lang)).toEqual(["hi", "mr"]);
+    expect(rule(".languages button")).toMatch(/min-height: var\(--h-lg\);/);
+    const group = panel.slice(panel.indexOf("<div ref={reader} className={styles.reader}>"));
+    expect(group.indexOf("<Segmented")).toBeGreaterThan(0);
+    expect(group.indexOf("<Segmented")).toBeLessThan(group.indexOf("<div className={styles.copy}>{copy}</div>"));
+    expect(panel).toContain('held.page.closest("main")?.scrollBy({ top: moved });'); // the page stays in place
+  });
+
+  it("aligns label and value lines, the label in medium weight", () => {
+    expect(rule(".pair")).toMatch(/grid-template-columns: minmax\(0, 2fr\) minmax\(0, 3fr\);/);
+    expect(rule(".pairLabel")).toMatch(/font-weight: 500;/);
+    expect(rule(".copy")).toMatch(/font-size: 1\.125rem;[\s\S]*line-height: 1\.7;/);
   });
 });

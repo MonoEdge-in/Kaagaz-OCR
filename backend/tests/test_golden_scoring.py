@@ -221,7 +221,12 @@ class PrecisionTest(unittest.TestCase):
         )
 
     def test_a_romanised_trap_is_right_only_when_every_spelling_is_not_found(self) -> None:
-        item = {"id": "r41", "spellings": ["a?", "b?"], "tags": ["trap"], "expect": {"kind": "not_found"}}
+        item: dict[str, Any] = {
+            "id": "r41",
+            "spellings": ["a?", "b?"],
+            "tags": ["trap"],
+            "expect": {"kind": "not_found"},
+        }
         item["expect"] |= {"document": "bill.pdf", "pages": [1]}
         questions = [question_from(raw) for raw in spelled_out([item])]
         self.assertEqual([q.id for q in questions], ["r41#1", "r41#2"])

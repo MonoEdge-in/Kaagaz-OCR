@@ -155,7 +155,7 @@ class PrecisionReportTest(unittest.TestCase):
         questions, _ = load_golden()
         profit, salary = questions[0], questions[2]  # 12,000 in September; not found
         right = {"status": "answered", "label": "verified", "sentences": [{"text": "It was Rs. 12,000."}]}
-        empty = {"status": "not_found", "label": None, "sentences": []}
+        empty: dict[str, Any] = {"status": "not_found", "label": None, "sentences": []}
         runs = [
             [(profit, score(profit, right), None), (salary, score(salary, empty), None)],
             [(profit, score(profit, empty), None), (salary, score(salary, empty), None)],

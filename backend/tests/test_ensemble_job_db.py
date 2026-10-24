@@ -273,6 +273,7 @@ def test_keep_writes_the_proposal_never_verifies_and_refuses_after_an_edit(db: D
         run_id = start(db, o)
         deliver(db, o, FakeReader(READ_AGAIN), run_id)
         with db.customer(o["c"]) as conn:
+            ids: dict[str, object]
             ids = dict(conn.execute(text("SELECT before_text, id FROM ensemble_readings WHERE run_id = :r"),
                                     {"r": run_id}).all())  # fmt: skip
             ensemble_sql.keep(conn, o["c"], o["d"], str(ids["4,850"]), user_id=o["u"], now=T0)

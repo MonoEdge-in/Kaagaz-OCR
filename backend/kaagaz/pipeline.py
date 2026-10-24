@@ -1179,7 +1179,11 @@ class DocumentProcessor:
         step, ``outcome`` (done, pending_retry or failed), its seconds since ``started`` on the
         timer and its code; ids only. Done is INFO, the others WARNING."""
         seconds = None if started is None else round(max(0.0, self._timer() - started), 3)
-        extra = {"customer_id": job.customer_id, "document_id": job.document_id, "step": step}
+        extra: dict[str, object] = {
+            "customer_id": job.customer_id,
+            "document_id": job.document_id,
+            "step": step,
+        }
         extra |= {"outcome": outcome, "seconds": seconds, "code": code, "sqlstate": sqlstate}
         _log.log(
             logging.INFO if outcome == "done" else logging.WARNING, message or f"step {outcome}", extra=extra

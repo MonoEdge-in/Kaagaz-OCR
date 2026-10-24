@@ -3,12 +3,16 @@
    then the tabs. Verified and Needs review differ by icon, word and edge (solid or dashed),
    never by colour alone. */
 
+/* Document panel UX (25 Oct 2026): the panel reads in one column, in this order: back, the
+   name, one status line; the summary card; the status line; Ask; one quiet row; the tabs.
+   Text 16px (1rem), secondary text 14px (--fs-base) in --text-secondary (6.6:1 on white),
+   lines under 70 characters, every target 44px (--h-lg), the 8px spacing scale. */
 .back {
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
-  min-height: var(--control-min, 32px); /* G10 */
-  font-size: var(--fs-sm);
+  min-height: var(--h-lg);
+  font-size: var(--fs-base);
   font-weight: 600;
   align-self: flex-start;
 }
@@ -16,99 +20,56 @@
 .header {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  gap: var(--space-3);
   min-width: 0;
+  max-width: 65ch;
   padding-block-end: var(--space-4);
   border-block-end: 1px solid var(--k-rule);
 }
 
-/* DD2: where it is filed, Documents / Folder / name; the name is cut to one line. */
-.crumbs ol {
-  list-style: none;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0 var(--space-1);
-  margin: 0;
-  padding: 0;
-  font-size: 13px;
-  color: var(--k-ink-muted);
-}
-
-.crumbs a {
-  color: var(--k-ink-muted);
-  text-decoration: none;
-}
-
-.crumbs a:hover {
-  color: var(--k-accent);
-  text-decoration: underline;
-}
-
-.crumbs li {
-  display: inline-flex;
-  align-items: center;
-  min-width: 0;
-  min-height: var(--control-min, 32px);
-}
-
-.crumbs li + li::before {
-  content: "/";
-  content: "/" / "";
-  margin-inline-end: var(--space-1);
-}
-
-/* The name takes the room left on the trail's line, cut short, never a line of its own. */
-.crumbs li[aria-current] {
-  flex: 1 1 0;
-  min-width: 4rem;
-}
-
-.crumbs li[aria-current] > span {
-  max-width: 24rem;
-  color: var(--k-ink);
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* DD2: the title and its status chip, then Download, Ask and the menu on the row under it
-   (desktop/DocumentPage.html: the pane is too narrow for one row). */
-.titleRow {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2) var(--space-3);
-}
-
 .title {
-  flex: 0 1 auto;
   min-width: 0;
   margin: 0;
   font-family: var(--k-font-display);
   font-stretch: var(--k-display-stretch);
-  font-size: var(--k-fs-22);
+  font-size: var(--fs-xl);
   font-weight: 600;
-  line-height: 1.15;
+  line-height: 1.25;
   letter-spacing: -0.015em;
   overflow-wrap: anywhere;
 }
 
+/* One status in words, its icon beside it; the label quiet, with a lock when kept close. */
+.state {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-4);
+  margin: 0;
+}
+
+.stateItem {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+/* The one primary: full width, 48px. */
+.ask {
+  width: 100%;
+  min-height: 48px;
+}
+
+/* Download, Clean copy and the "…" menu: one quiet row. */
 .headActions {
   display: flex;
-  flex: none;
   flex-wrap: wrap;
-  /* At 320px its one line (312px) was wider than the room (288px) and <main> scrolled
-     sideways; capped, the menu button wraps under the other two instead. */
   max-width: 100%;
   align-items: center;
   gap: var(--space-2);
-  flex-basis: 100%;
 }
 
-/* One meta line (board 12 P4): status, type and pages, Read again, the folder
-   path, the tags and the versions, wrapping as one line of items. */
+/* Under More details: the file's kind and pages, its tags and its versions. */
 .status {
   display: flex;
   flex-wrap: wrap;
@@ -116,9 +77,135 @@
   gap: var(--space-1) var(--space-4);
 }
 
+.status[hidden] {
+  display: none;
+}
+
 .meta {
-  color: var(--k-ink-muted);
-  font-size: 13px;
+  color: var(--text-secondary);
+  font-size: var(--fs-base);
+}
+
+/* The summary card, the panel's one raised surface (--k-shadow-1). */
+.summaryCard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--k-r-4);
+  background: var(--bg-page);
+  box-shadow: var(--k-shadow-1);
+}
+
+.summaryHeading {
+  margin: 0;
+  font-size: var(--fs-lg);
+}
+
+.caution,
+.summaryWaiting {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--fs-base);
+}
+
+.summaryText {
+  margin: 0;
+  font-size: 1rem;
+  line-height: 1.6;
+  overflow-wrap: break-word;
+}
+
+/* About five lines until "Show the full summary". */
+.summaryText[data-clamped] {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 5;
+  line-clamp: 5;
+  overflow: hidden;
+}
+
+.expand {
+  align-self: flex-start;
+  padding-inline: 0;
+}
+
+.chevron {
+  flex: none;
+}
+
+[aria-expanded="true"] > .chevron {
+  transform: rotate(180deg);
+}
+
+.keyFacts {
+  display: grid;
+  gap: var(--space-2);
+  margin: var(--space-1) 0 0;
+  padding-block-start: var(--space-3);
+  border-block-start: 1px solid var(--border);
+}
+
+.keyFact {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-3);
+  min-width: 0;
+}
+
+.keyFact dt {
+  flex: 0 0 9rem;
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: var(--fs-base);
+}
+
+.keyFact dd {
+  display: flex;
+  flex: 1 1 10rem;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+}
+
+/* Motion answers an action, and the summary rises in once when it first appears. */
+@media (prefers-reduced-motion: no-preference) {
+  .summaryCard,
+  .keyFact {
+    animation: rise-in var(--motion-calm) var(--ease-out) both;
+  }
+
+  .keyFact {
+    animation-delay: calc(var(--i, 0) * 40ms + 80ms);
+  }
+
+  .summaryText[data-open],
+  .status:not([hidden]) {
+    animation: open-in var(--motion-quick) var(--ease-out);
+  }
+
+  .chevron {
+    transition: transform var(--motion-quick) var(--ease-out);
+  }
+}
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+@keyframes open-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
 }
 
 /* "Read again" (ReadAgain.tsx): the button sits in the meta line; its
@@ -188,25 +275,6 @@
   color: var(--text-secondary);
 }
 
-/* A phone: the title has its own row; Download original is its icon alone
-   (globals.css .narrow-hide) and shares the next row with Ask about this document. */
-@media (max-width: 639.98px) {
-  .title {
-    flex-basis: 100%;
-  }
-
-  /* Its icon alone: a square, like the menu button at the row's end. */
-  .download {
-    width: var(--control-h);
-    margin-inline-start: 0;
-    padding-inline: 0;
-  }
-
-  .ask {
-    flex: 1 1 auto;
-  }
-}
-
 /* The versions: one small link per version, the one being viewed filled in. */
 .versions {
   list-style: none;
@@ -247,8 +315,8 @@
 
 .note {
   margin: 0;
-  font-size: 13px;
-  color: var(--k-ink-muted);
+  font-size: var(--fs-base);
+  color: var(--text-secondary);
 }
 
 .trashNotice {
@@ -455,7 +523,7 @@
 
 .reason {
   margin-block-start: var(--space-1);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-base);
   color: var(--text-secondary);
 }
 
@@ -557,16 +625,22 @@
   }
 }
 
-.tabs {
-  gap: var(--space-3);
+/* Document panel UX: the tabs that fit (four at most) and More, on one row that never runs off. */
+.tabBar {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-2);
+  min-width: 0;
   margin-block-end: var(--space-4);
-  font-size: var(--fs-sm);
+  border-block-end: 1px solid var(--border);
 }
 
-/* The status keeps its words on one line beside a long title. */
-.titleRow > :global(.status-chip) {
-  flex: none;
-  white-space: nowrap;
+.tabs {
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: var(--space-3);
+  border-bottom: 0;
+  font-size: 1rem;
 }
 
 .tabCount[data-zero] {
@@ -655,12 +729,6 @@
   list-style: none;
 }
 
-.summary {
-  margin: 0;
-  padding-inline-start: var(--space-3);
-  border-inline-start: 1px dashed var(--warning);
-}
-
 /* Why the invoice needs review, one reason a line, under its short badge. */
 .checkReasons {
   margin: 0;
@@ -697,7 +765,7 @@
 }
 
 .pageNote {
-  font-size: var(--fs-sm);
+  font-size: var(--fs-base);
   color: var(--text-secondary);
 }
 

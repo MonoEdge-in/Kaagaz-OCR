@@ -323,7 +323,7 @@ Quiet time; the site is down for about 15 minutes.
 ## Rollback
 
 * **Gemini problems** (any instance type): set `OCR_ENGINE=rapidocr` in `.env`
-  (`set_env OCR_ENGINE rapidocr`, step 4), then `dc up -d api worker`. Scans
+  (`set_env OCR_ENGINE rapidocr`, step 4), then `dc up -d --no-deps api worker` (never without `--no-deps`: it would rerun an older `migrate` after a rollback, #246). Scans
   are read by RapidOCR until it is set back. While it is in effect no checker
   reads their values again, so every scanned value shows needs review.
 * **Hardware problems:** stop the instance (step 8), set

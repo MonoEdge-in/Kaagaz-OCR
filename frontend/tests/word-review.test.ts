@@ -122,6 +122,9 @@ const bar = (shown: ReviewStatus, more: Partial<Parameters<typeof SummaryBar>[0]
       onExport: () => undefined,
       download: "/api/documents/d1/file",
       say: () => undefined,
+      detailsId: "document-details",
+      detailsOpen: false,
+      onDetails: () => undefined,
       ...more,
     }),
   );

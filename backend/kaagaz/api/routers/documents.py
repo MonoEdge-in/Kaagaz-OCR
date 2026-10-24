@@ -181,6 +181,8 @@ from kaagaz.settings import Settings
 router = APIRouter()
 
 _UPLOAD_PART_BYTES = 8 * 1024 * 1024
+
+
 class ResumableUploadStart(BaseModel):
     file_name: str
     file_size: int
@@ -196,6 +198,7 @@ class ResumableUploadStart(BaseModel):
     resume_session_id: str | None = None
 
     model_config = ConfigDict(extra="forbid")
+
 
 Context = Annotated[AppContext, Depends(get_context)]
 
@@ -688,9 +691,11 @@ def resumable_candidates(body: ResumableUploadStart, user: User, context: Contex
         raise ApiError(413, "too_large", over_every_limit_message(policy.largest_limit))
     filename = display_name(body.file_name)
     with context.db.customer(user.customer_id) as conn:
-        return {"candidates": upload_sessions_sql.candidates(
-            conn, user.customer_id, user.user_id, filename, body.file_size, body.fingerprint
-        )}
+        return {
+            "candidates": upload_sessions_sql.candidates(
+                conn, user.customer_id, user.user_id, filename, body.file_size, body.fingerprint
+            )
+        }
 
 
 @router.post("/documents/upload-sessions")
@@ -706,11 +711,12 @@ def create_resumable_session(body: ResumableUploadStart, user: User, context: Co
         session_id = str(uuid.UUID(body.resume_session_id))
         with context.db.customer(user.customer_id) as conn:
             row = upload_sessions_sql.get(conn, user.customer_id, user.user_id, session_id)
-        if row is None or row["file_size"] != body.file_size or cast(
-            dict[str, Any], row["metadata"]
-        ).get("filename") != display_name(body.file_name) or cast(
-            dict[str, Any], row["metadata"]
-        ).get("fingerprint") != body.fingerprint:
+        if (
+            row is None
+            or row["file_size"] != body.file_size
+            or cast(dict[str, Any], row["metadata"]).get("filename") != display_name(body.file_name)
+            or cast(dict[str, Any], row["metadata"]).get("fingerprint") != body.fingerprint
+        ):
             raise ApiError(404, "not_found")
         return {"id": session_id, "part_size": _UPLOAD_PART_BYTES, "part_count": count}
 
@@ -742,14 +748,16 @@ def create_resumable_session(body: ResumableUploadStart, user: User, context: Co
             _checked_reading(conn, user, context.settings, asked)
             if folder_id is not None and not folders_sql.folder_path(conn, user.customer_id, folder_id):
                 raise ApiError(404, "not_found")
-            if batch_id is not None and listing.batch_size(
-                conn, user.customer_id, batch_id, user_id=user.user_id
-            ) >= context.settings.max_files_per_batch:
+            if (
+                batch_id is not None
+                and listing.batch_size(conn, user.customer_id, batch_id, user_id=user.user_id)
+                >= context.settings.max_files_per_batch
+            ):
                 raise ApiError(409, "batch_full")
 
     session_id = str(uuid.uuid4())
     storage_key, upload_id = context.storage.start_resumable(user.customer_id, user.user_id, session_id)
-    metadata = {
+    metadata: dict[str, object] = {
         "filename": display_name(body.file_name),
         "fingerprint": body.fingerprint,
         "folder_id": folder_id,
@@ -801,7 +809,10 @@ async def upload_resumable_part(
     digest = hashlib.sha256(body).hexdigest()
     await run_in_threadpool(
         context.storage.upload_resumable_part,
-        str(session["storage_key"]), str(session["storage_upload_id"]), part_number, bytes(body),
+        str(session["storage_key"]),
+        str(session["storage_upload_id"]),
+        part_number,
+        bytes(body),
     )
     with context.db.customer(user.customer_id) as conn:
         upload_sessions_sql.set_part_hash(
@@ -842,32 +853,30 @@ def complete_resumable_upload(session_id: uuid.UUID, user: User, context: Contex
             str(session["storage_upload_id"]),
             [(number, etag) for number, _, etag in parts],
         )
-    stream = context.storage.open_resumable(str(session["storage_key"]))
-    try:
-        upload = UploadFile(filename=str(metadata["filename"]), file=stream)
-        policy = _upload_policy(context, user)
-        asked = _Asked(metadata.get("read_mode"), metadata.get("read_model"))
-        if metadata.get("version_document_id"):
-            result = _accept_version(
-                context,
-                user,
-                upload,
-                policy,
-                str(metadata["version_document_id"]),
-                asked,
-                metadata.get("version_note"),
-            )
-        else:
-            result = _accept(
-                context, user, upload, policy, metadata.get("folder_id"), metadata.get("batch_id"), asked
-            )
-    except ApiError:
-        context.storage.delete_resumable(str(session["storage_key"]))
-        with context.db.customer(user.customer_id) as conn:
-            upload_sessions_sql.delete(conn, user.customer_id, user.user_id, str(session_id))
-        raise
-    finally:
-        stream.close()
+    with context.storage.open_resumable(str(session["storage_key"])) as stream:
+        try:
+            upload = UploadFile(filename=str(metadata["filename"]), file=stream)
+            policy = _upload_policy(context, user)
+            asked = _Asked(metadata.get("read_mode"), metadata.get("read_model"))
+            if metadata.get("version_document_id"):
+                result = _accept_version(
+                    context,
+                    user,
+                    upload,
+                    policy,
+                    str(metadata["version_document_id"]),
+                    asked,
+                    metadata.get("version_note"),
+                )
+            else:
+                result = _accept(
+                    context, user, upload, policy, metadata.get("folder_id"), metadata.get("batch_id"), asked
+                )
+        except ApiError:
+            context.storage.delete_resumable(str(session["storage_key"]))
+            with context.db.customer(user.customer_id) as conn:
+                upload_sessions_sql.delete(conn, user.customer_id, user.user_id, str(session_id))
+            raise
     context.storage.delete_resumable(str(session["storage_key"]))
     with context.db.customer(user.customer_id) as conn:
         upload_sessions_sql.delete(conn, user.customer_id, user.user_id, str(session_id))

@@ -29,6 +29,8 @@ file behind.
 
 import tempfile
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import IO, Any
 
 import boto3
@@ -220,9 +222,7 @@ class S3Storage:
                 Bucket=self._bucket,
                 Key=key,
                 UploadId=upload_id,
-                MultipartUpload={
-                    "Parts": [{"PartNumber": number, "ETag": etag} for number, etag in parts]
-                },
+                MultipartUpload={"Parts": [{"PartNumber": number, "ETag": etag} for number, etag in parts]},
             )
         except _ANY_ERROR as error:
             if isinstance(error, ClientError) and _error_code(error) == "NoSuchUpload":
@@ -244,20 +244,21 @@ class S3Storage:
         except _UNREACHABLE as error:
             raise BackendUnavailable("storage") from error
 
-    def open_resumable(self, key: str) -> IO[bytes]:
-        spool = tempfile.SpooledTemporaryFile(max_size=1024 * 1024)
-        try:
-            body = self._client.get_object(Bucket=self._bucket, Key=key)["Body"]
+    @contextmanager
+    def open_resumable(self, key: str) -> Iterator[IO[bytes]]:
+        """The finished upload, spooled locally; closed when the caller's ``with`` ends."""
+        with tempfile.SpooledTemporaryFile(max_size=1024 * 1024) as spool:
             try:
-                while chunk := body.read(64 * 1024):
-                    spool.write(chunk)
-            finally:
-                body.close()
-            spool.seek(0)
-            return spool
-        except _ANY_ERROR as error:
-            spool.close()
-            raise BackendUnavailable("storage") from error
+                body = self._client.get_object(Bucket=self._bucket, Key=key)["Body"]
+                try:
+                    while chunk := body.read(64 * 1024):
+                        spool.write(chunk)
+                finally:
+                    body.close()
+                spool.seek(0)
+            except _ANY_ERROR as error:
+                raise BackendUnavailable("storage") from error
+            yield spool
 
     def delete_resumable(self, key: str) -> None:
         try:

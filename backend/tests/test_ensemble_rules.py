@@ -10,10 +10,11 @@ The job and the API against PostgreSQL: test_ensemble_job_db.py, test_api_ensemb
 """
 
 import re
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from PIL import Image
+from sqlalchemy import RowMapping
 
 from kaagaz.adapters.queue import _body, _job_from_body
 from kaagaz.api import views
@@ -50,8 +51,8 @@ def target(kind: str = LINE, box: BoxLocation = LINE_BOX, words: str = LINE_TEXT
     return ensemble_sql.Target(flag(kind, box, words), words, True, False, spot, spot_text, span)
 
 
-def _line() -> dict[str, Any]:
-    return {"page_no": 1, "text": LINE_TEXT, "region": location_to_json(LINE_BOX)}
+def _line() -> RowMapping:
+    return cast(RowMapping, {"page_no": 1, "text": LINE_TEXT, "region": location_to_json(LINE_BOX)})
 
 
 # --- the vote ------------------------------------------------------------------------------
@@ -205,7 +206,7 @@ def test_no_banned_word_and_no_exclamation_mark(words: str) -> None:
 
 
 def test_a_line_ensemble_left_unsettled_is_flagged() -> None:
-    line = {
+    line: dict[str, Any] = {
         "kind": "paragraph",
         "quality": "ok",
         "box_source": "found",

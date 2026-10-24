@@ -232,6 +232,9 @@ export interface SummaryBarProps {
   onExport(): void;
   download: string | null;
   say(message: string): void;
+  detailsId: string; // the document's own facts and counts (DocumentView), opened with these
+  detailsOpen: boolean;
+  onDetails(): void;
 }
 
 /**
