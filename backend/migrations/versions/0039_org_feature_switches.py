@@ -74,7 +74,7 @@ COUNT_EDITS = (
 
 def _platform(edits: tuple[tuple[str, str], ...]) -> str:
     """0038's platform list as CREATE OR REPLACE, with ``edits`` (none: as 0038)."""
-    body = _OLD.FUNCTIONS[PLATFORM]
+    body: str = _OLD.FUNCTIONS[PLATFORM]
     for old, _new in ((CREATE, REPLACE), *COUNT_EDITS):
         if body.count(old) != 1:
             raise RuntimeError(f"0038's {PLATFORM} is not the text 0039 replaces")

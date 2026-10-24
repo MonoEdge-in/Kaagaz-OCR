@@ -598,7 +598,7 @@ def clear_copy(
     """``ClearCopy`` (Read clearly, 19 Oct 2026): every page with its lines and marks, from
     ``listing.clear_copy``. The lines stop at CLEAR_COPY_LINES or CLEAR_COPY_TEXT for the
     whole document, or after a line cut in SQL; then ``truncated``. O(lines + marks)."""
-    pages = {n: {"page_no": n, "lines": [], "marks": []} for n in page_numbers}
+    pages: dict[int, dict[str, Any]] = {n: {"page_no": n, "lines": [], "marks": []} for n in page_numbers}
     truncated, used, count = False, 0, 0
     for row in rows:
         if count == CLEAR_COPY_LINES or used + len(row["text"]) > CLEAR_COPY_TEXT:

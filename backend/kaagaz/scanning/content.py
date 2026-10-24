@@ -205,12 +205,12 @@ class _BoundedDecompressor:
 
     def decompress(self, data: bytes, max_length: int = 0) -> bytes:
         room = self._bounds.decoded + 1
-        out = self._inner.decompress(data, room if max_length <= 0 else min(max_length, room))
+        out: bytes = self._inner.decompress(data, room if max_length <= 0 else min(max_length, room))
         self._bounds.decode(len(out))
         return out
 
     def flush(self, *args: Any) -> bytes:
-        out = self._inner.flush(*args)
+        out: bytes = self._inner.flush(*args)
         self._bounds.decode(len(out))
         return out
 
@@ -243,9 +243,11 @@ class _GuardedZlib:
         return inner if bounds is None else _BoundedDecompressor(inner, bounds)
 
 
-_PLAIN_LZW = pdftypes.lzwdecode
-_PLAIN_RL = pdftypes.rldecode
-_PLAIN_CCITT = pdftypes.ccittfaxdecode
+# The ignores here and below: pdftypes imports these names without re-exporting them, and they
+# are read and replaced in pdftypes on purpose, as that is where its decoders look them up.
+_PLAIN_LZW = pdftypes.lzwdecode  # type: ignore[attr-defined]  # pdftypes' own name, see above
+_PLAIN_RL = pdftypes.rldecode  # type: ignore[attr-defined]  # pdftypes' own name, see above
+_PLAIN_CCITT = pdftypes.ccittfaxdecode  # type: ignore[attr-defined]  # pdftypes' own name, see above
 
 
 def _guarded_lzw(data: bytes) -> bytes:
@@ -286,10 +288,10 @@ def _guarded_ccitt(data: bytes, params: Any) -> bytes:
 
 # ponytail: pdfminer's own decoders, swapped for bounded ones (they delegate unchanged
 # outside a check); if pdfminer ever renames them, the import-time names below fail loudly.
-pdftypes.zlib = _GuardedZlib()  # type: ignore[assignment]
-pdftypes.lzwdecode = _guarded_lzw
-pdftypes.rldecode = _guarded_rl
-pdftypes.ccittfaxdecode = _guarded_ccitt
+pdftypes.zlib = _GuardedZlib()  # type: ignore[assignment,attr-defined]  # a stand-in; see _PLAIN_LZW
+pdftypes.lzwdecode = _guarded_lzw  # type: ignore[attr-defined]  # pdftypes' own name, see _PLAIN_LZW
+pdftypes.rldecode = _guarded_rl  # type: ignore[attr-defined]  # pdftypes' own name, see _PLAIN_LZW
+pdftypes.ccittfaxdecode = _guarded_ccitt  # type: ignore[attr-defined]  # pdftypes' own name, see _PLAIN_LZW
 
 
 class _MeteredFile(io.BytesIO):
@@ -387,7 +389,7 @@ def _repair_walk(data: bytes, document: PDFDocument, bounds: _Bounds) -> Finding
 def _leftovers(parser: PDFParser) -> list[object]:
     """What a parse left on the parser's stacks besides the object it gave: an object
     with no "endobj" before the next one, or a dictionary never closed."""
-    values = [value for _, value in (*parser.results, *parser.curstack)]
+    values: list[object] = [value for _, value in (*parser.results, *parser.curstack)]
     for _, _, stack in parser.context:
         values.extend(value for _, value in stack)
     return values

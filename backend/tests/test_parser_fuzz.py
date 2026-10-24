@@ -22,7 +22,7 @@ import unittest
 import warnings
 import zlib
 from collections.abc import Callable
-from functools import cache
+from functools import cache, partial
 from unittest import mock
 
 from PIL import Image, ImageDraw
@@ -393,7 +393,7 @@ def failures_for(seed: str, i: int) -> tuple[list[str], bool]:
     for name, kinds, allowed, entry in ENTRY_POINTS:
         if kinds is not None and kind not in kinds:
             continue
-        error = call_with_limit(lambda entry=entry: entry(kind, data))
+        error = call_with_limit(partial(entry, kind, data))
         if error is None or isinstance(error, allowed):
             continue
         where = "a hang" if isinstance(error, Hang) else crash_site(error)

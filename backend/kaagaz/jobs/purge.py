@@ -45,7 +45,8 @@ from typing import Protocol
 
 from sqlalchemy.exc import SQLAlchemyError
 
-from kaagaz.db import customer_purge, upload_sessions as upload_sessions_sql
+from kaagaz.db import customer_purge
+from kaagaz.db import upload_sessions as upload_sessions_sql
 from kaagaz.db.documents import delete_forever
 from kaagaz.db.engine import Database, unavailable
 from kaagaz.db.trash import customer_ids_with_trash, purge_next_family

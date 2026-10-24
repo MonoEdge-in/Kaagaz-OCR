@@ -80,8 +80,13 @@ def test_a_failed_filing_still_runs_version_spotting(monkeypatch: pytest.MonkeyP
         raise ValueError("year 24 is out of range")
 
     spotted: list[str] = []
+
+    def spot(_conn: object, _customer_id: str, document_id: str) -> str:
+        spotted.append(document_id)
+        return "none"
+
     monkeypatch.setattr(autofile, "file_document", broken)
-    monkeypatch.setattr(versions, "spot", lambda _conn, _c, d: spotted.append(d) or "none")
+    monkeypatch.setattr(versions, "spot", spot)
     PgDocuments(_Db()).file_document("c1", "d1")  # type: ignore[arg-type]
     assert spotted == ["d1"]
 

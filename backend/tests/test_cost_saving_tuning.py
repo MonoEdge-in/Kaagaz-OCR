@@ -261,7 +261,7 @@ def kept(page_no: int, first: tuple[int, int]) -> dict[str, Any]:
 
 
 LIMITS_SEEN = {"cost_saving_hard_lines_max": 12, "cost_saving_hard_share": 0.4, "cost_saving_crop_pad": 0.5}
-ROWS = [
+ROWS: list[dict[str, Any]] = [
     # Read after per-page tokens: a words page, a whole page (the document's own average), one kept.
     {
         "pages_ocr": 5,

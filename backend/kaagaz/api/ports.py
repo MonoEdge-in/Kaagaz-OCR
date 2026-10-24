@@ -55,6 +55,9 @@ class ApiQueue(JobQueue, Protocol):
 class AnswerLike(Protocol):
     def to_json(self) -> dict[str, Any]: ...
 
+    @property
+    def unavailable(self) -> bool: ...
+
 
 class Answers(Protocol):
     def answer(

@@ -12,6 +12,7 @@ import pytest
 from sqlalchemy import text
 
 from kaagaz.api.routers import ensemble as router
+from kaagaz.api.routers.word_review import ENSEMBLE_OFF
 from kaagaz.db import ensemble as ensemble_sql
 from kaagaz.db.engine import Database
 from tests.settings_factory import make_settings
@@ -107,7 +108,7 @@ def test_members_an_organisation_without_the_grant_and_a_scan_still_being_read_s
     refused = start(other, scan(plain, other.customer_id))
     assert (refused.status_code, refused.json()["error"]) == (
         403,
-        {"code": "ensemble_not_allowed", "message": router.review_router.ENSEMBLE_OFF},
+        {"code": "ensemble_not_allowed", "message": ENSEMBLE_OFF},
     )
 
     with db.customer(reviewer.customer_id) as conn:

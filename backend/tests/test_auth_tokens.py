@@ -45,8 +45,9 @@ from kaagaz.db.engine import Database, make_engine
 from kaagaz.ingestion.ports import BlobNotFound
 from kaagaz.search.scope import Scope
 from kaagaz.settings import Settings, SettingsError
-from tests.fakes import MemoryQueue, MemoryStorage
+from tests.fakes import MemoryQueue
 from tests.settings_factory import make_settings
+from tests.test_api_support import ApiFakeStorage
 
 SECRET = "a-test-secret-that-is-long-enough-000000"
 UID = "11111111-1111-4111-8111-111111111111"
@@ -465,7 +466,7 @@ def test_the_test_settings_keep_the_two_keys_apart() -> None:
 # --- the dependencies: current_user, the password-change gate, the admin session ----------------------
 
 
-class _Storage(MemoryStorage):
+class _Storage(ApiFakeStorage):
     def get_page_image(self, customer_id: str, document_id: str, page_no: int) -> bytes:
         raise BlobNotFound(document_id)
 
