@@ -251,6 +251,19 @@ def test_chat_history_turns_ships_at_3_and_must_be_0_to_10() -> None:
             Settings.from_env(shipped(CHAT_HISTORY_TURNS=bad))
 
 
+def test_the_doc_gives_the_prd3_defaults_that_ship() -> None:
+    """docs/running-locally.md states the four PRD 3 defaults above (moved here from the Render
+    blueprint test when render.yaml went, 24 Oct 2026)."""
+    doc = (ENV_EXAMPLE.parent / "docs" / "running-locally.md").read_text(encoding="utf-8")
+    for name, value in (
+        ("SEARCH_EF", "100"),
+        ("SEARCH_MAX_DOCUMENTS", "20"),
+        ("ANSWER_NEIGHBOURS", "1"),
+        ("CHAT_HISTORY_TURNS", "3"),
+    ):
+        assert f"`{name}={value}`" in doc
+
+
 # PRD 5 E and U9: the queue and bulk upload settings, with the values they take when unset.
 QUEUE_DEFAULTS = {
     "WORKER_REPLICAS": ("worker_replicas", 3),
