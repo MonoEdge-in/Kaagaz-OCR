@@ -10,7 +10,18 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { modelName } from "@/components/chat/answer";
 import { AnswerSettings } from "@/components/chat/AnswerSettings";
-import { choiceBody, chooseAgent, defaultPick, hasChoices, pickSummary } from "@/components/chat/logic";
+import { QualityPicker } from "@/components/chat/QualityPicker";
+import {
+  choiceBody,
+  chooseAgent,
+  chooseQuality,
+  defaultPick,
+  hasChoices,
+  hasQualityChoice,
+  pickSummary,
+  qualityChoices,
+  qualityOf,
+} from "@/components/chat/logic";
 import type { ChatOptions } from "@/lib/types";
 
 const FLASH = { id: "google/gemini-3.8-flash", name: "Google: Gemini 3.8 Flash", default: true };
@@ -37,7 +48,12 @@ describe("answer settings", () => {
     // Changed on purpose (SoW 19 Oct 2026): Low is not offered in Ask, so Low and Swift alone are one choice.
     expect(hasChoices(options({ agents: [FLASH], levels: ["low", "medium"] }))).toBe(false);
     expect(hasChoices(options({ agents: [FLASH], levels: ["medium", "high"] }))).toBe(true);
-    expect(hasChoices(options({ levels: ["low"] }))).toBe(true);
+    // Changed on purpose (Tushar, 24 Oct 2026): the composer's button is the engine only; more
+    // than the usual model shows the Ask bar's quality picker instead.
+    expect(hasChoices(options({ levels: ["low"] }))).toBe(false);
+    expect(hasQualityChoice(options({ levels: ["low"] }))).toBe(true);
+    expect(hasQualityChoice(options({ agents: [FLASH] }))).toBe(false);
+    expect(hasQualityChoice(null)).toBe(false);
   });
 
   it("start from the organisation's default, which sends nothing", () => {
@@ -48,8 +64,9 @@ describe("answer settings", () => {
     expect(choiceBody(null, null)).toBeUndefined();
     // Changed on purpose (spec 17 Oct 2026): org users never see a model's name.
     // Changed on purpose (SoW 19 Oct 2026): Medium is Swift, and one model shows the engine alone.
-    expect(pickSummary(allowed, pick)).toBe("Standard · Swift");
-    expect(pickSummary(options({ agents: [FLASH] }), pick)).toBe("Swift");
+    // Changed on purpose (Tushar, 24 Oct 2026): the chip is the engine alone, and the quality is Off.
+    expect(pickSummary(allowed, pick)).toBe("Swift");
+    expect(qualityOf(allowed, pick)).toBe("Off");
   });
 
   // SoW 19 Oct 2026: Ask does not offer Low; an organisation defaulting to Low starts on Swift,
@@ -83,33 +100,52 @@ describe("answer settings", () => {
       agents: [FLASH.id],
       thinking: "low",
     });
-    expect(pickSummary(allowed, pick)).toBe("Careful 2 · Precision"); // spec 17 Oct 2026: tiers, never names
+    // Changed on purpose (Tushar, 24 Oct 2026): the engine in the chip, the quality by level, never names.
+    expect(pickSummary(allowed, pick)).toBe("Precision");
+    expect(qualityOf(allowed, pick)).toBe("Extra high");
   });
 
-  // Changed on purpose (chat composer, 16 Oct 2026): a quiet button beside Send opens a popover
-  // panel (was a <details> chip "Answer with:" and a select); the models are named radio buttons.
-  it("show one model as named radios in a popover panel, by name, with plain words and no money", () => {
-    const allowed = options();
-    const html = renderToStaticMarkup(
+  // Changed on purpose (Tushar, 24 Oct 2026: "its own icon, High, Extra high, Ultra, not in the
+  // chat, and an Off"): the composer's panel is the AI engine alone, and the Ask bar's quality
+  // picker offers Off (the usual model, nothing sent), then High, Extra high and Ultra.
+  it("keep the engine in the composer, and the quality in the Ask bar with Off first, no names or money", () => {
+    const allowed = options({ agents: [FLASH, SONNET, PRO, FOURTH] });
+    const panel = renderToStaticMarkup(
       createElement(AnswerSettings, { options: allowed, pick: defaultPick(allowed), locked: false, onPick: () => {} }),
     );
-    expect(html).not.toContain("<details");
-    expect(html).not.toContain("Answer with:");
-    expect(html).toMatch(/<button type="button"[^>]* popoverTarget="([^"]+)" aria-haspopup="dialog"/);
-    const target = /popoverTarget="([^"]+)"/.exec(html)?.[1];
-    expect(html).toContain(`<div id="${target}" popover="auto" role="dialog" aria-label="Answer settings"`);
-    expect(html).toContain('<span class="visually-hidden">Answer settings: </span>');
-    // Changed on purpose (spec 17 Oct 2026): the models are tiers, never their names.
-    expect(html).toContain(">Standard · Swift<"); // the button names the pick
-    expect(html.match(/<input type="radio" name="[^"]+-model"/g)).toHaveLength(2);
-    expect(html).toContain("/>Standard</label>");
-    expect(html).toContain("/>Careful</label>");
+    expect(panel).not.toContain("<details");
+    expect(panel).toMatch(/<button type="button"[^>]* popoverTarget="([^"]+)" aria-haspopup="dialog"/);
+    expect(panel).toContain('<span class="visually-hidden">Answer settings: </span>');
+    expect(panel).toContain(">Swift<"); // the button names the engine
+    expect(panel).not.toMatch(/name="[^"]+-model"|Answered by|Standard|Careful/);
+    expect(qualityChoices(allowed).map((choice) => choice.name)).toEqual(["Off", "High", "Extra high", "Ultra"]);
+    const html = renderToStaticMarkup(
+      createElement(QualityPicker, { options: allowed, pick: defaultPick(allowed), locked: false, onPick: () => {} }),
+    );
+    expect(html).toContain('<span class="visually-hidden">Answer quality: </span>');
+    expect(html).toMatch(/<legend>Answer quality<\/legend>/);
+    expect(html.match(/<input type="radio" aria-describedby="[^"]+" name="[^"]+-quality"/g)).toHaveLength(4);
+    expect(html.match(/name="[^"]+-quality" checked=""[^>]*\/><span[^>]*>Off</g)).toHaveLength(1);
     expect(html).not.toMatch(/Gemini|Claude|Sonnet|Flash/);
-    expect(html).toContain(">Precision<");
-    expect(html).not.toContain('type="checkbox"');
     expect(html).not.toMatch(MONEY);
     const shown = html.replace(/<[^>]*>/g, " "); // the text a person sees, not the ids it sends
-    expect(shown).not.toMatch(/\bmodel\b|google\/|anthropic\//i); // names only, never ids or the word
+    expect(shown).not.toMatch(/\bmodel\b|google\/|anthropic\//i);
+  });
+
+  it("send nothing for Off, and the chosen model for a quality", () => {
+    const allowed = options({ agents: [FLASH, SONNET, PRO, FOURTH], default_level: "medium" });
+    const ultra = chooseQuality(allowed, defaultPick(allowed), FOURTH.id);
+    expect(qualityOf(allowed, ultra)).toBe("Ultra");
+    expect(choiceBody(allowed, ultra)).toEqual({ agents: [FOURTH.id], thinking: "medium" });
+    const off = chooseQuality(allowed, ultra, null);
+    expect(qualityOf(allowed, off)).toBe("Off");
+    expect(choiceBody(allowed, off)).toBeUndefined();
+    // Precision stays when the quality changes.
+    expect(chooseQuality(allowed, { agents: [FLASH.id], level: "high" }, PRO.id)).toEqual({ agents: [PRO.id], level: "high" });
+    // In the Ask bar beside New, not in the composer.
+    const screen = readFileSync("components/chat/ChatScreen.tsx", "utf8");
+    expect(screen).toMatch(/<div className=\{styles\.subbarEnd\}>\s*\{mode === "documents" && hasQualityChoice\(chatOptions\) && answerPick \? \(\s*<QualityPicker/);
+    expect(readFileSync("components/chat/AnswerSettings.tsx", "utf8")).not.toMatch(/-model|options\.agents/);
   });
 
   // Changed on purpose (SoW 19 Oct 2026): "AI engine", Swift then Precision; no Low.
@@ -128,20 +164,23 @@ describe("answer settings", () => {
     expect(html).toMatch(/<legend>AI engine<\/legend>/);
   });
 
-  // Changed on purpose (Tushar, 16 Oct 2026, one model in Ask): even with Ensemble allowed,
-  // radios, one checked, every level shown, and no line about answering together.
+  // Changed on purpose (Tushar, 16 Oct 2026, one model in Ask; 24 Oct 2026, the Ask bar's quality
+  // picker): even with Ensemble allowed, radios, one checked, and no line about answering together.
   it("show radios even when the organisation allows Ensemble, with no agree wording", () => {
     const allowed = options({ agents: [FLASH, SONNET, PRO, FOURTH], ensemble: true });
     const html = renderToStaticMarkup(
-      createElement(AnswerSettings, { options: allowed, pick: defaultPick(allowed), locked: false, onPick: () => {} }),
+      createElement(QualityPicker, { options: allowed, pick: defaultPick(allowed), locked: false, onPick: () => {} }),
     );
     expect(html).not.toContain('type="checkbox"');
-    expect(html.match(/<input type="radio" name="[^"]+-model"/g)).toHaveLength(4);
-    expect(html.match(/name="[^"]+-model" checked=""/g)).toHaveLength(1);
-    expect(html).toContain(">Precision<");
+    expect(html.match(/<input type="radio" aria-describedby="[^"]+" name="[^"]+-quality"/g)).toHaveLength(4);
+    expect(html.match(/name="[^"]+-quality" checked=""/g)).toHaveLength(1);
     expect(html).not.toMatch(/answer together|agree|answers alone|Up to \d/i);
+    const panel = renderToStaticMarkup(
+      createElement(AnswerSettings, { options: allowed, pick: defaultPick(allowed), locked: false, onPick: () => {} }),
+    );
+    expect(panel).toContain(">Precision<");
     // Changed on purpose (chat composer, 16 Oct 2026): the panel is named, so its legend is for screen readers only.
-    expect(html).toMatch(/<fieldset[^>]*><legend class="visually-hidden">Answer settings<\/legend>/);
+    expect(panel).toMatch(/<fieldset[^>]*><legend class="visually-hidden">Answer settings<\/legend>/);
   });
 
   it("are locked while a question is out", () => {

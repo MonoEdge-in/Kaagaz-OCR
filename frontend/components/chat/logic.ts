@@ -323,9 +323,49 @@ export function savePick(pick: AnswerPick): void {
   }
 }
 
-/** Answer settings are shown only when there is something to choose. */
+/** The composer's engine button (Swift or Precision) shows only when there are two to choose.
+ * Changed on purpose (Tushar, 24 Oct 2026): the model choice is the Ask bar's quality picker. */
 export function hasChoices(options: ChatOptions | null): options is ChatOptions {
-  return options !== null && (options.agents.length > 1 || askLevels(options).length > 1);
+  return options !== null && askLevels(options).length > 1;
+}
+
+/** The Ask bar's quality picker shows when the organisation has more than its usual model. */
+export function hasQualityChoice(options: ChatOptions | null): options is ChatOptions {
+  return options !== null && options.agents.some((agent) => !agent.default);
+}
+
+/** The quality levels for the organisation's other models, in order (24 Oct 2026). */
+const QUALITY_NAMES = ["High", "Extra high", "Ultra"];
+
+/** The quality picker's choices: Off (the usual model, nothing sent) first, then the other
+ * models as High, Extra high, Ultra (then Ultra 2…). Never a model's name (spec 17 Oct 2026). */
+export function qualityChoices(options: ChatOptions): { id: string | null; name: string; hint: string }[] {
+  const others = options.agents.filter((agent) => !agent.default);
+  return [
+    { id: null, name: "Off", hint: "Kaagaz's usual answer, for everyday questions." },
+    ...others.map((agent, index) => ({
+      id: agent.id,
+      name: QUALITY_NAMES[index] ?? `Ultra ${index - QUALITY_NAMES.length + 2}`,
+      hint: [
+        "Reads your documents more closely.",
+        "Reads even more closely; a little slower.",
+        "The most careful answer; the slowest.",
+      ][Math.min(index, 2)] as string,
+    })),
+  ];
+}
+
+/** The quality the pick stands for: Off for the usual model (or none picked). */
+export function qualityOf(options: ChatOptions, pick: AnswerPick): string {
+  const chosen = qualityChoices(options).find((choice) => choice.id !== null && choice.id === pick.agents[0]);
+  return chosen ? chosen.name : "Off";
+}
+
+/** Off picks the usual model (nothing sent); a level picks its model. */
+export function chooseQuality(options: ChatOptions, pick: AnswerPick, id: string | null): AnswerPick {
+  if (id !== null) return chooseAgent(pick, id);
+  const usual = options.agents.find((agent) => agent.default);
+  return { ...pick, agents: usual ? [usual.id] : [] };
 }
 
 /** One model answers in Ask (Tushar, 16 Oct 2026): picking one replaces the last; every
@@ -334,22 +374,10 @@ export function chooseAgent(pick: AnswerPick, id: string): AnswerPick {
   return { ...pick, agents: [id] };
 }
 
-/** The chip: "Standard · Precision". Changed on purpose (spec 17 Oct 2026): org users never see a
- * model's name, so the model is its tier (shown only when there is more than one), then the
- * engine (SoW 19 Oct 2026: the engine alone with one model, and no Low). */
+/** The composer's chip: the engine alone ("Swift"). Changed on purpose (Tushar, 24 Oct 2026):
+ * the model's quality is the Ask bar's picker (qualityOf), not this chip. */
 export function pickSummary(options: ChatOptions, pick: AnswerPick): string {
-  const index = options.agents.findIndex((agent) => agent.id === pick.agents[0]);
-  const tier = options.agents.length > 1 && index >= 0 ? agentTier(options, index) : null;
-  const engine = askLevels(options).includes(pick.level) ? LEVEL_NAMES[pick.level] : null;
-  return [tier, engine].filter(Boolean).join(" · ") || LEVEL_NAMES[pick.level];
-}
-
-/** A model's neutral name for org users: the default is "Standard", the others "Careful" (then "Careful 2"…). */
-export function agentTier(options: ChatOptions, index: number): string {
-  const agent = options.agents[index];
-  if (!agent || agent.default) return "Standard";
-  const place = options.agents.filter((each, at) => !each.default && at <= index).length;
-  return place === 1 ? "Careful" : `Careful ${place}`;
+  return LEVEL_NAMES[pick.level];
 }
 
 /** What POST /chat sends: nothing when the pick is the organisation's default. */
