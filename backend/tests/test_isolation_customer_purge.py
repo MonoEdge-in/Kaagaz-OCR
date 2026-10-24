@@ -58,8 +58,16 @@ NOT_CASCADING = {
     # 0023: the ledger keeps its rows (SET NULL) until the customer's delete cascades them.
     ("model_usage", "users"),
     ("model_usage", "conversations"),
+    # 0043: organisation-wide word suggestions have no document; the finish deletes them (0047).
+    ("organization_word_suggestions", "users"),
 }
 NO_ACTION_TO_USERS = {table for table, _ in NOT_CASCADING}
+# Keys whose rows are gone before the finish runs: they cascade from documents, and the
+# finish refuses while a document is left (0018); or they SET NULL, as the ledger does (0038).
+GONE_FIRST = {
+    *[(table, "users") for table in ("pages", "ensemble_runs", "ensemble_readings", "word_changes")],
+    ("ai_task_settings", "users"),
+}
 
 
 class KeyStorage:
@@ -91,6 +99,13 @@ class KeyStorage:
         if self.prefixes_down:
             raise BackendUnavailable("storage")
         self._drop((f"customers/{customer_id}/", f"quarantine/{customer_id}/"))
+
+    # CustomerStorage's resumable upload parts (#222); this purge never starts an upload.
+    def abort_resumable(self, key: str, upload_id: str) -> None:
+        self.objects.pop(key, None)
+
+    def delete_resumable(self, key: str) -> None:
+        self.objects.pop(key, None)
 
     def listing(self, customer_id: str) -> list[tuple[str, bytes]]:
         prefixes = (f"customers/{customer_id}/", f"quarantine/{customer_id}/")
@@ -146,6 +161,8 @@ def _organisation(api: Api, storage: KeyStorage, label: str) -> tuple[str, str, 
             " corrected_by) VALUES (:c, :d, 'total', '1O0', '100', 'typed', :u)",
             "INSERT INTO user_words (customer_id, user_id, word, word_fold, meaning, meaning_fold,"
             " source) VALUES (:c, :u, 'Daregaon', 'daregaon', 'village', 'village', 'manual')",
+            "INSERT INTO organization_word_suggestions (customer_id, submitted_by, word, word_fold, meaning,"
+            " meaning_fold) VALUES (:c, :u, 'Daregaon', 'daregaon', 'village', 'village')",
             "INSERT INTO model_usage (customer_id, user_id, document_id, conversation_id, kind, model, calls,"
             " input_tokens, output_tokens, reasoning_tokens, cost_usd) SELECT :c, :u, :d, id, 'chat',"
             " 'google/gemini-3.1-pro-preview', 1, 10, 5, 0, 0.01 FROM conversations WHERE customer_id = :c",
@@ -198,7 +215,7 @@ def test_every_key_into_a_table_the_finish_deletes_from_cascades_or_is_listed(db
         " AND confrelid = ANY(CAST(:t AS regclass[]))",
         {"t": ["users", "customers", "folders", "tags", "conversations", "learned_corrections"]},
     )
-    assert {tuple(key) for key in keys} == NOT_CASCADING
+    assert {tuple(key) for key in keys} == NOT_CASCADING | GONE_FIRST
 
 
 def test_a_deletion_needs_a_disabled_organisation_its_exact_name_and_a_fresh_code(db: Database) -> None:
