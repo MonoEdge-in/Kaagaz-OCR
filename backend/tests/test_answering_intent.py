@@ -74,6 +74,25 @@ def test_a_total_over_invoices_reads_the_invoices() -> None:
     assert _plan("How many invoices with data?", set()) is not None  # "data" adds nothing
 
 
+EXAMPLE_3 = "Calculate the Profit filed in all the invoices filled in month of September"
+
+
+def test_prd_6_example_3_as_written_is_a_total_over_the_invoices() -> None:
+    """PRD 6 C2: "calculate" asks for a total; "filed" and "filled" add nothing."""
+    fields = {"profit", "invoice_date", "party_name"}
+    september = (date(2026, 9, 1), date(2026, 10, 1))
+    assert _plan(EXAMPLE_3, fields) == FixedPlan(
+        "total", "profit", (), ("invoice_date",), *september, invoices=True
+    )
+    # Another unknown word still takes the search route, and "calculate" alone asks no total of nothing.
+    assert _plan(EXAMPLE_3.replace("all the", "all the GST"), fields) is None
+    assert _plan("Calculate the Profit filed by Sharma in month of September", fields) is None
+    assert _plan("Which forms were filled in September?", fields) is None
+    assert _plan("Calculate the highest profit last month", REGISTER) == FixedPlan(
+        "highest", "profit", (), ("date",), *AUGUST
+    )
+
+
 def test_every_party_and_date_candidate_is_passed_on() -> None:
     fields = {"profit", "party_name", "name", "vendor", "date", "invoice_date"}
     plan = _plan("Kiska profit sabse jyada tha last month?", fields)

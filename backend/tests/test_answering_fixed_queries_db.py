@@ -22,6 +22,8 @@ from kaagaz.answering.format import indian_number
 from kaagaz.answering.hinglish import normalise
 from kaagaz.answering.intent import FIELDS, FixedPlan, plan_fixed
 from kaagaz.answering.service import Answer, AnswerService
+from kaagaz.answering.totals import PRINTED_TOTAL
+from kaagaz.chunking.rows import pieces_from_rows
 from kaagaz.db.engine import Database
 from kaagaz.extraction.labelled import values_from_lines
 from kaagaz.extraction.parsing import parse_amount, parse_date
@@ -31,6 +33,7 @@ from kaagaz.reading.spans import BoxLocation, CellLocation, Span, location_to_js
 from kaagaz.search.scope import EVERYTHING
 from tests.db_support import insert_document, new_customer
 from tests.settings_factory import make_settings
+from tests.test_answering_intent import EXAMPLE_3
 
 pytestmark = pytest.mark.db
 
@@ -747,9 +750,9 @@ def september_invoice(db: Database, customer: str, day: int | None, profit: int 
     return add_invoice_row(db, customer, None if day is None else date(2026, 9, day), extra=extra, **row)
 
 
-def ask_total(db: Database, customer: str) -> Answer:
+def ask_total(db: Database, customer: str, question: str = TOTAL_PROFIT) -> Answer:
     service = AnswerService(db=db, model=None, settings=make_settings(), clock=lambda: NOW)
-    return service.answer(customer, TOTAL_PROFIT)
+    return service.answer(customer, question)
 
 
 def test_fourteen_september_invoices_three_printing_a_profit_give_no_total(db: Database) -> None:
@@ -773,6 +776,9 @@ def test_fourteen_september_invoices_three_printing_a_profit_give_no_total(db: D
     assert [c.snippet for c in answer.citations[:3]] == ["profit: 18,400", "profit: 9,250", "profit: 31,000"]
     assert all(c.snippet.startswith("invoice_number: INV-") for c in answer.citations[3:])
     assert "profit-register.xlsx" not in str(answer.to_json()) and "5,000" not in str(answer.to_json())
+    # PRD 6 C2: the example's own words reach the same rule, and the same answer.
+    example = ask_total(db, customer, EXAMPLE_3)
+    assert [s.text for s in example.sentences] == lines and example.route == "fixed_query"
 
 
 def test_september_invoices_all_printing_a_verified_profit_give_the_total(db: Database) -> None:
@@ -824,3 +830,268 @@ def test_a_register_row_without_the_figure_is_a_record_that_prints_none(db: Data
 
     assert [(f.amount, f.printed) for f in figures] == [(Decimal(70000), 1), (None, 0)]
     assert figures[1].value is not None and figures[1].value.document_id == document
+
+
+# --- PRD 6 C2: a sheet's printed total, a party's sum, and what a highest rests on ----------------
+
+_PIECE = text(
+    "INSERT INTO pieces (customer_id, document_id, seq, page_from, page_to, text, regions, label)"
+    " VALUES (:c, :d, :seq, :page, :page, :text, CAST(:regions AS jsonb), :label)"
+)
+HEADER = ("Party Name", "Total Amount", "Date")
+AUG_ROWS = [("Sharma Traders", "1,000", "03/08/2026"), ("Mehta Textiles", "2,500", "10/08/2026")]
+
+
+def add_sheet(db: Database, customer: str, sheet: list[tuple[str, ...]], name: str = "ledger.xlsx") -> None:
+    """A spreadsheet as the pipeline stores it: its values (values_from_cells) and one piece per row."""
+    document = add_document(db, customer, name)
+    spans = [
+        Span(text=text_, raw=text_, location=CellLocation(1, r, c))
+        for r, cells in enumerate(sheet, start=1)
+        for c, text_ in enumerate(cells, start=1)
+        if text_
+    ]
+    add_values(db, customer, document, as_stored(values_from_cells(spans)))
+    pieces = pieces_from_rows(customer, document, spans)
+    params = [
+        {"c": customer, "d": document, "seq": seq, "page": p.page_from, "text": p.text, "label": p.label,
+         "regions": json.dumps(p.regions())}
+        for seq, p in enumerate(pieces)
+    ]  # fmt: skip
+    with db.customer(customer) as conn:
+        conn.execute(_PIECE, params)
+
+
+def ask(db: Database, customer: str, question: str) -> Answer:
+    return AnswerService(db=db, model=None, settings=make_settings(), clock=lambda: NOW).answer(
+        customer, question
+    )
+
+
+@pytest.mark.parametrize(
+    ("label", "day", "printed"),
+    [(label, "", True) for label in (
+        "Total", "GRAND TOTAL", "Sub-Total:", "Net Total", "Total Rs.", "Total Amount", "Totals",
+        "Grand Total (Rs)", "एकूण", "कुल", "एकुण", "कुल योग", "योग", "एकूण रक्कम")]
+    + [("Total", "31/08/2026", True), ("Total Traders", "20/08/2026", False),
+       ("Totally Fresh Foods", "", False), ("कुलकर्णी", "", False)],
+)  # fmt: skip
+def test_a_sheets_printed_total_row_is_never_a_record(
+    db: Database, label: str, day: str, printed: bool
+) -> None:
+    customer, _ = new_customer(db)
+    figure = "3,500" if printed else "9,000"  # a printed total adds up its sheet's other rows
+    add_sheet(db, customer, [HEADER, *AUG_ROWS, (label, figure, day)])
+    fixed = PgFixedQueries(db)
+    figures = fixed.figures(customer, "total_amount", (), None, None, invoices=False)
+    assert [(f.amount, f.printed_total) for f in figures] == [
+        (Decimal(1000), False),
+        (Decimal(2500), False),
+        (parse_amount(figure), printed),
+    ]
+    highest = fixed.extreme_value(customer, "total_amount", (), None, None, True)
+    ranked = fixed.top_group(customer, "total_amount", PARTIES, (), None, None, True)
+    if printed:
+        assert [row.number for row in highest] == [2500, 1000]
+        assert [(row.group, row.number) for row in ranked] == [
+            ("Mehta Textiles", Decimal(2500)),
+            ("Sharma Traders", Decimal(1000)),
+        ]
+    else:  # one that does not add up, or only starts like a total word, is a record (doubtful or not)
+        doubtful = label == "Total Traders"  # Changed on purpose (PRD 6 C2): never the highest shown
+        assert figures[2].looks_total is doubtful
+        assert [row.number for row in highest] == ([2500, 1000] if doubtful else [9000, 2500, 1000])
+
+
+def test_a_ledger_with_a_total_row_never_gives_its_double(db: Database) -> None:
+    """On a real database, rows of 1,000 and 2,500 and a Total row of 3,500 were summed to 7,000."""
+    customer, _ = new_customer(db)
+    add_sheet(db, customer, [HEADER, *AUG_ROWS, ("Total Rs.", "3,500", "")])
+    asked = ["Total amount?", "Who had the highest amount?", "What was the highest amount?"]
+    answers = [ask(db, customer, question) for question in asked]
+
+    lines = ["ledger.xlsx, its printed total: 3,500.", "ledger.xlsx: 1,000.", "ledger.xlsx: 2,500."]
+    assert [s.text for s in answers[0].sentences] == [PRINTED_TOTAL, *lines]
+    assert answers[0].label == "needs_review" and answers[0].citations[0].snippet == "total_amount: 3,500"
+    assert answers[1].sentences[0].text == "Mehta Textiles had the highest total amount, 2,500."
+    assert answers[2].sentences[0].text == "The highest total amount was 2,500."
+    for answer in answers:
+        said = json.dumps(answer.to_json())
+        assert answer.route == "fixed_query" and "7,000" not in said and "7000" not in said
+
+
+@pytest.mark.parametrize("unheaded", ["", "तपशील"])
+def test_a_total_label_in_a_column_with_no_usable_header_is_still_seen(db: Database, unheaded: str) -> None:
+    """The label's cell is never a value (no field name), but the row's piece holds it."""
+    customer, _ = new_customer(db)
+    sheet = [(unheaded, "Party Name", "Total Amount"), ("1", *AUG_ROWS[0][:2]), ("2", *AUG_ROWS[1][:2])]
+    add_sheet(db, customer, [*sheet, ("Total", "", "3,500")])
+    answer = ask(db, customer, "Total amount?")
+    assert [s.text for s in answer.sentences] == [
+        PRINTED_TOTAL,
+        "ledger.xlsx, its printed total: 3,500.",
+        "ledger.xlsx: 1,000.",
+        "ledger.xlsx: 2,500.",
+    ]
+    assert "7,000" not in json.dumps(answer.to_json())
+
+
+def test_with_a_range_the_printed_total_of_the_whole_sheet_is_left_out(db: Database) -> None:
+    customer, _ = new_customer(db)
+    september = ("Gupta Stores", "4,000", "05/09/2026")
+    add_sheet(db, customer, [HEADER, *AUG_ROWS, september, ("Total", "7,500", "")])
+    answer = ask(db, customer, "Total amount in August 2026?")
+    assert [s.text for s in answer.sentences] == [
+        "The total amount in August 2026 was 3,500, from 2 records.",
+        "ledger.xlsx: 1,000.",
+        "ledger.xlsx: 2,500.",
+    ]
+    assert "7,500" not in json.dumps(answer.to_json())
+
+
+def test_a_highest_is_never_verified_beside_an_amount_that_is_not_one_number(db: Database) -> None:
+    customer, _ = new_customer(db)
+    add_sheet(db, customer, [HEADER, *AUG_ROWS, ("Gupta Stores", "12,0O0", "20/08/2026")])
+    answer = ask(db, customer, "What was the highest amount?")
+    assert [s.text for s in answer.sentences] == [
+        "The highest total amount was 2,500.",
+        "Some of the values behind this are not verified yet.",
+    ]
+    assert answer.label == "needs_review"
+    assert [answer.citations[n - 1].snippet for n in answer.sentences[1].citations] == [
+        "total_amount: 12,0O0"
+    ]
+
+
+def test_a_row_that_reads_like_a_total_but_does_not_add_up_is_listed_never_dropped(db: Database) -> None:
+    customer, other = new_customer(db)[0], new_customer(db)[0]
+    add_sheet(db, customer, [HEADER, *AUG_ROWS, ("Total Solutions Pvt Ltd", "9,000", "")])
+    add_sheet(db, other, [HEADER[:2], *(r[:2] for r in AUG_ROWS), ("Total Solutions Pvt Ltd", "9,000")])
+
+    in_august = ask(db, customer, "Total amount in August 2026?")
+    assert in_august.sentences[0].text == (
+        "1 of the 3 records reads like a total, so I haven't added up the amount in August 2026."
+    )
+    lines = [s.text for s in in_august.sentences]
+    assert "ledger.xlsx: 9,000, reads like a total, no date I can read." in lines
+    ranked = ask(db, other, "Who had the highest amount?")
+    highest = ask(db, other, "What was the highest amount?")
+    assert ranked.sentences[0].text == (
+        "1 of the 3 records reads like a total, so I haven't compared the parties' amount."
+    )
+    # Changed on purpose (PRD 6 C2, 24 Oct 2026): it is left out, and why (it was the 9,000 shown).
+    assert [s.text for s in highest.sentences] == [
+        "The highest total amount was 2,500.",
+        "A row that reads like a total is left out of this.",
+    ]
+    for answer in (in_august, ranked, highest):
+        assert answer.label == "needs_review"
+
+
+def test_a_highest_never_shows_a_sub_total(db: Database) -> None:
+    customer, _ = new_customer(db)
+    amounts = ["1,000", "2,500", "Sub total", "4,000", "1,000", "Sub total", "Grand total"]
+    figures = ["1,000", "2,500", "3,500", "4,000", "1,000", "5,000", "8,500"]
+    sheet = [("Trader" if a[0].isdigit() else a, f, "") for a, f in zip(amounts, figures, strict=True)]
+    add_sheet(db, customer, [HEADER, *sheet])
+    answer = ask(db, customer, "What was the highest amount?")
+    assert [s.text for s in answer.sentences] == [
+        "The highest total amount was 4,000.",
+        "Rows that read like a total are left out of this.",
+    ]
+    assert [answer.citations[n - 1].snippet for n in answer.sentences[1].citations] == [
+        "total_amount: 5,000",
+        "total_amount: 3,500",
+    ]
+    assert answer.label == "needs_review"
+
+
+def test_a_highest_under_a_range_is_never_verified_beside_a_record_with_no_date(db: Database) -> None:
+    customer, _ = new_customer(db)
+    undated = [v for v in row(4, "Gupta Stores", 50000, date(2026, 8, 31)) if v["field"] != "date"]
+    rows = [*row(2, "Sharma Traders", 70000, date(2026, 8, 1)), *row(3, "Mehta", 80000, date(2026, 8, 15))]
+    add_values(db, customer, add_document(db, customer, "profit-register.xlsx"), [*rows, *undated])
+    answer = ask(db, customer, "What was the highest profit in August 2026?")
+    assert [s.text for s in answer.sentences] == [
+        "The highest profit was 80,000, in August 2026.",
+        "Some of the values behind this are not verified yet.",
+    ]
+    assert answer.label == "needs_review"
+    assert [answer.citations[n - 1].snippet for n in answer.sentences[1].citations] == ["profit: 50000"]
+
+
+def test_a_partys_sum_needs_every_record_to_print_a_verified_figure(db: Database, register: Any) -> None:
+    customer, document, _ = register
+    question = "Kiska profit sabse jyada tha last month?"
+    shown = ask(db, customer, question)
+    assert [s.text for s in shown.sentences] == [
+        "Sharma Traders had the highest profit, 1,20,000, in August 2026."
+    ]
+    assert shown.label == "verified"
+
+    blank = [v for v in row(7, "Gupta Stores", None, date(2026, 8, 20)) if v["field"] != "profit"]
+    add_values(db, customer, document, blank)
+    withheld = ask(db, customer, question)
+
+    assert withheld.sentences[0].text == (
+        "1 of the 4 records has no profit I can add, so I haven't compared the parties' profit"
+        " in August 2026."
+    )
+    assert [s.text for s in withheld.sentences[1:]] == [
+        "profit-register.xlsx: 70000.",
+        "profit-register.xlsx: 80000.",
+        "profit-register.xlsx: 50000.",
+        "profit-register.xlsx: no profit printed.",
+    ]
+    assert withheld.label == "needs_review" and "1,20,000" not in json.dumps(withheld.to_json())
+
+
+def test_a_partys_sum_is_never_grouped_by_a_party_name_not_verified(db: Database) -> None:
+    customer, _ = new_customer(db)
+    rows = [
+        *row(2, "Sharma Traders", 70000, date(2026, 8, 1)),
+        *row(3, "Sharrna Traders", 40000, date(2026, 8, 2), party_label="needs_review"),
+        *row(4, "Mehta Textiles", 80000, date(2026, 8, 15)),
+    ]
+    add_values(db, customer, add_document(db, customer, "profit-register.xlsx"), rows)
+    answer = ask(db, customer, "Kiska profit sabse jyada tha last month?")
+    assert answer.sentences[0].text == (
+        "1 of the 3 party names is not verified yet, so I haven't compared the parties' profit"
+        " in August 2026."
+    )
+    assert answer.sentences[2].text == "profit-register.xlsx: 40000, party not verified yet."
+
+
+def test_the_rule_and_the_ranking_see_the_same_sheet_rows(db: Database) -> None:
+    """A party in the document's own record (no profit there) leaves the rows' parties in place."""
+    customer, _ = new_customer(db)
+    rows = [
+        *row(2, "Sharma Traders", 70000, date(2026, 8, 1)),
+        *row(3, "Mehta Textiles", 80000, date(2026, 8, 15)),
+    ]
+    own = cell("document", "party_name", "Sharma Traders", column=9)
+    add_values(db, customer, add_document(db, customer, "profit-register.xlsx"), [*rows, own])
+    answer = ask(db, customer, "Kiska profit sabse jyada tha last month?")
+    assert answer.sentences[0].text == "Mehta Textiles had the highest profit, 80,000, in August 2026."
+
+
+def test_a_highest_is_verified_only_when_every_value_compared_is(db: Database) -> None:
+    customer, _ = new_customer(db)
+    document = add_document(db, customer, "profit-register.xlsx")
+    rows = [
+        *row(2, "Sharma Traders", 70000, date(2026, 8, 1)),
+        *row(3, "Mehta Textiles", 80000, date(2026, 8, 15)),
+        *row(4, "Gupta Stores", 50000, date(2026, 8, 31), profit_label="needs_review"),
+    ]
+    add_values(db, customer, document, rows)
+
+    [highest, *_] = PgFixedQueries(db).extreme_value(customer, "profit", DATES, *AUGUST, True)
+    assert (highest.number, highest.verified) == (Decimal(80000), True)
+    assert {ref.value_id for ref in highest.unsure} == {v["id"] for v in rows if v["label"] != "verified"}
+    answer = ask(db, customer, "What was the highest profit in August 2026?")
+    assert [s.text for s in answer.sentences] == [
+        "The highest profit was 80,000, in August 2026.",
+        "Some of the values behind this are not verified yet.",
+    ]
+    assert answer.label == "needs_review"
+    assert [answer.citations[n - 1].snippet for n in answer.sentences[1].citations] == ["profit: 50000"]

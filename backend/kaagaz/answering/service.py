@@ -19,7 +19,8 @@ The steps (docs/architecture.md):
 4. **Fixed route**: run the query; the sentence is a template filled only
    from the query's result (numbers written the Indian way). Citations are
    the values used. No rows: not found. A highest or lowest resting on a value
-   not verified says so; a total follows the numbers rule (PRD 6 C, totals.py).
+   not verified, shown or only compared, says so and cites it; a total, and a party's
+   sum, follow the numbers rule (PRD 6 C and C2, totals.py).
    **Unchecked**: no plan because no checked value holds the figure, but an
    unchecked card value does: no number, a calm line saying it is in these
    documents, and the documents where it appears (status ``unchecked``, answering/unchecked.py).
@@ -764,8 +765,11 @@ class AnswerService:
         )
 
     def _fixed_answer(self, customer_id: str, plan: FixedPlan, shown: str, fixed: FixedQueries) -> Answer:
-        if plan.aggregate == "total":
-            return self._total_answer(customer_id, plan, shown, fixed)
+        if plan.aggregate == "total" or plan.group_fields:
+            # PRD 6 C2: a party's sum, like a total, only when the numbers rule holds.
+            listed = self._total_answer(customer_id, plan, shown, fixed)
+            if listed is not None:
+                return listed
         rows = self._run_plan(fixed, customer_id, plan)
         if not rows:
             return _not_found("fixed_query", shown, [], model_used=False, reason="notfound_fixed_no_rows")
@@ -774,17 +778,39 @@ class AnswerService:
         sentence = _fixed_sentence(plan, top)
         if not cited or sentence is None:
             return _not_found("fixed_query", shown, [], model_used=False, reason="notfound_fixed_no_sentence")
+        # PRD 6 C2: every value compared that is not verified is cited too, after the answer's own.
+        seen = {value.value_id for value, _ in cited}
+        doubted = [(v, valid_regions([v.region])) for v in (*top[0].unsure, *top[0].totals)]
+        doubted = [(v, regions) for v, regions in doubted if v.value_id not in seen]
+        shown_n = len(cited)
+        cited += [(value, regions) for value, regions in doubted if regions][:MAX_CITED_VALUES]
         citations = [
             _value_citation(index, value, regions) for index, (value, regions) in enumerate(cited, start=1)
         ]
         citations = self._marked(customer_id, citations, {c.n: c.regions for c in citations})
         hard = any(c.hard_to_read for c in citations)
-        verified = all(row.verified for row in top) and all(c.label == "verified" for c in citations)
-        sentences = [AnswerSentence(text=sentence, citations=[c.n for c in citations])]
-        if not verified and plan.aggregate != "count":
-            # PRD 6 C: the answer itself says so, beside the label.
-            unsure = [c.n for c in citations if c.label != "verified"] or [c.n for c in citations]
+        verified = (
+            all(row.verified for row in top)
+            and not top[0].unsure
+            and not top[0].totals
+            and all(c.label == "verified" for c in citations)
+        )
+        sentences = [AnswerSentence(text=sentence, citations=[c.n for c in citations[:shown_n]])]
+        doubts, totalish = {v.value_id for v in top[0].unsure}, {v.value_id for v in top[0].totals}
+        unsure = [
+            c.n
+            for c in citations
+            if c.ref_id not in totalish and (c.label != "verified" or c.ref_id in doubts)
+        ]
+        looks = [c.n for c in citations if c.ref_id in totalish]
+        if not verified and plan.aggregate != "count" and unsure:
+            # PRD 6 C: the answer itself says so, beside the label, citing only what it is about.
             sentences.append(AnswerSentence("Some of the values behind this are not verified yet.", unsure))
+        if looks:  # C2: left out of the comparison, and why
+            said = (
+                "A row that reads like a total is" if len(looks) == 1 else "Rows that read like a total are"
+            )
+            sentences.append(AnswerSentence(f"{said} left out of this.", looks))
         return Answer(
             status="answered",
             label="verified" if verified and not hard else "needs_review",
@@ -797,19 +823,30 @@ class AnswerService:
             reading_note=HARD_TO_READ_NOTE if hard else None,
         )
 
-    def _total_answer(self, customer_id: str, plan: FixedPlan, shown: str, fixed: FixedQueries) -> Answer:
+    def _total_answer(
+        self, customer_id: str, plan: FixedPlan, shown: str, fixed: FixedQueries
+    ) -> Answer | None:
         """A total, or every matching record and why there is none (PRD 6 C, answering/totals.py),
         written in code. Verified only for a total whose every cited value is, none hard to
-        read. Two statements, and one for the word marks (F6)."""
+        read. Two statements, and one for the word marks (F6). For a highest or lowest by party
+        (C2), the same records and reasons (``ranking``), or None when the rule holds and the
+        ranking may be shown."""
         metric = plan.metric or ""
+        ranking = plan.aggregate != "total"
         figures = fixed.figures(
-            customer_id, metric, plan.date_fields, plan.start, plan.end, invoices=plan.invoices
+            customer_id,
+            metric,
+            plan.date_fields,
+            plan.start,
+            plan.end,
+            invoices=plan.invoices,
+            group_fields=plan.group_fields,
         )
         if not figures:
             return _not_found("fixed_query", shown, [], model_used=False, reason="notfound_fixed_no_rows")
         period = describe_range(plan.start, plan.end) if plan.start and plan.end else ""
         said = (_words(metric).removeprefix("total "), period, "invoice" if plan.invoices else "record")
-        told = tell(figures, *said)
+        told = tell(figures, *said, ranking=ranking)
         if not told.lines:
             return _not_found("fixed_query", shown, [], model_used=False, reason="notfound_fixed_no_sentence")
         citations = [
@@ -818,7 +855,9 @@ class AnswerService:
         citations = self._marked(customer_id, citations, {c.n: c.regions for c in citations})
         hard = {c.ref_id for c in citations if c.hard_to_read}
         if hard:
-            told = tell(figures, *said, hard)  # the same records, in the same order
+            told = tell(figures, *said, hard, ranking=ranking)  # the same records, in the same order
+        if ranking and told.total is not None:
+            return None  # the rule holds, no listed figure hard to read: the ranking follows
         verified = told.total is not None and not hard and all(c.label == "verified" for c in citations)
         return Answer(
             status="answered",
