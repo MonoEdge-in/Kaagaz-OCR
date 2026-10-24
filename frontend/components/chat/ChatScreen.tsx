@@ -750,6 +750,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
           icon="history"
           label="Conversations"
           showLabel
+          className={styles.subbarList}
           aria-haspopup="dialog"
           aria-expanded={listOpen}
           aria-controls={DRAWER_ID}
@@ -759,7 +760,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
           {mode === "documents" && hasQualityChoice(chatOptions) && answerPick ? (
             <QualityPicker options={chatOptions} pick={answerPick} locked={busy} onPick={choosePick} />
           ) : null}
-          <button type="button" className="btn" disabled={busy} onClick={startNew}>
+          <button type="button" className={`btn ${styles.subbarNew}`} disabled={busy} onClick={startNew}>
             <Icon name="plus" />
             New
             <span className="visually-hidden"> conversation</span>
