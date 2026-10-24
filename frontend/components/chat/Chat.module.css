@@ -225,14 +225,16 @@
   }
 }
 
+/* The box is as wide as New conversation above it; the label is inset like "Today" and the
+   rows' titles (Tushar, 24 Oct 2026: "alignment issue"). */
 .listSearch {
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
-  padding-inline: var(--space-3);
 }
 
 .listSearch > label {
+  padding-inline: var(--space-3);
   font: 500 0.875rem/1.4 var(--k-font-body);
   color: var(--k-ink-muted);
 }
@@ -1612,4 +1614,26 @@
     clip-path: inset(50%);
     white-space: nowrap;
   }
+}
+
+/* The Ask bar's right side: the quality picker, then New (24 Oct 2026). */
+.subbarEnd {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.quality {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.qualityWords {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }

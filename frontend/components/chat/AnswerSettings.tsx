@@ -6,13 +6,14 @@
 // Precision is High; Low is not offered here), from what the organisation allows, capped by the effective Ask level (AI
 // settings, spec 17 Oct 2026). Hidden when there is only one choice. One model answers
 // (Tushar, 16 Oct 2026, one model in Ask): "Answered by" is one choice of radio buttons.
-// Changed on purpose (spec 17 Oct 2026): org users never see a model's name, so the
-// models are "Standard" and "Careful" (agentTier). No price or cost here.
+// Changed on purpose (spec 17 Oct 2026): org users never see a model's name. Changed on purpose
+// (Tushar, 24 Oct 2026): the model is chosen in the Ask bar's quality picker (QualityPicker.tsx),
+// so this panel is the AI engine only. No price or cost here.
 
 import { useId } from "react";
 import type { ChatOptions, ThinkingLevel } from "@/lib/types";
 import { ComposerMenu } from "./ComposerMenu";
-import { agentTier, askLevels, chooseAgent, LEVEL_NAMES, pickSummary } from "./logic";
+import { askLevels, LEVEL_NAMES, pickSummary } from "./logic";
 import type { AnswerPick } from "./logic";
 import styles from "./Chat.module.css";
 
@@ -44,22 +45,6 @@ export function AnswerSettings({
     <ComposerMenu label={pickSummary(options, pick)} name="Answer settings" title="Answer settings" end>
       <fieldset className={styles.menuGroup} disabled={locked}>
         <legend className="visually-hidden">Answer settings</legend>
-        {options.agents.length > 1 ? (
-          <fieldset className={styles.menuGroup}>
-            <legend>Answered by</legend>
-            {options.agents.map((agent, index) => (
-              <label key={agent.id} className={styles.menuOption}>
-                <input
-                  type="radio"
-                  name={`${id}-model`}
-                  checked={pick.agents[0] === agent.id}
-                  onChange={() => onPick(chooseAgent(pick, agent.id))}
-                />
-                {agentTier(options, index)}
-              </label>
-            ))}
-          </fieldset>
-        ) : null}
         {shown.length > 1 ? (
           <fieldset className={styles.menuGroup}>
             <legend>AI engine</legend>
