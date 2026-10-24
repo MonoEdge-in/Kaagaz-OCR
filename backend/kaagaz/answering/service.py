@@ -906,8 +906,8 @@ class AnswerService:
         def cite(refs: Sequence[ValueRef]) -> list[int]:
             for ref in refs:
                 regions = valid_regions([ref.region])
-                if not regions:
-                    spotless.update(voice.numbers(ref.value_text))
+                if not regions:  # its printed label (0054) is its own text too
+                    spotless.update(voice.numbers(f"{ref.value_text}\n{ref.label_text or ''}"))
                 elif ref.value_id not in numbered:  # never shown without its spot
                     numbered[ref.value_id] = len(citations) + 1
                     citations.append(_value_citation(len(citations) + 1, ref, regions))

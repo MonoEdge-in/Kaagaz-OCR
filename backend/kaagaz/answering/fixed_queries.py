@@ -111,6 +111,7 @@ class ValueRef:
     label: str
     label_page_no: int | None = None  # where its label is, when located (PRD 2 D3, PRD 3 H4)
     label_region: dict[str, Any] | None = None
+    label_text: str | None = None  # a map value's label as read (0054); NULL before it
 
 
 @dataclass(frozen=True, slots=True)

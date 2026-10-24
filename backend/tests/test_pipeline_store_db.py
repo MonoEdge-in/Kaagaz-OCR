@@ -380,7 +380,7 @@ def test_save_writes_routes_dpi_label_spots_context_and_latin(db: Database) -> N
     base = content(customer, doc)
     page = replace(base.pages[0], route="ocr", effective_dpi=150, low_resolution=True)
     piece = replace(base.pieces[0], context_header="Invoice | 2026-08-12", text_latin="sharma")
-    value = replace(base.values[0], label_location=BoxLocation(1, 0.1, 0.38, 0.3, 0.4))
+    value = replace(base.values[0], label_location=BoxLocation(1, 0.1, 0.38, 0.3, 0.4), label_text="North")
     PgPipelineStore(db).save(
         replace(
             base, pages=[page, base.pages[1]], pieces=[piece, base.pieces[1]], values=[value, base.values[1]]
@@ -398,11 +398,16 @@ def test_save_writes_routes_dpi_label_spots_context_and_latin(db: Database) -> N
         {"context_header": "", "text_latin": None},
     ]
     spots = (
-        "SELECT label_page_no, label_region FROM extracted_values WHERE document_id = :d ORDER BY record_key"
+        "SELECT label_page_no, label_region, label_text FROM extracted_values WHERE document_id = :d"
+        " ORDER BY record_key"
     )
     assert rows(db, customer, spots, doc) == [
-        {"label_page_no": 1, "label_region": {"kind": "box", "page": 1, "box": [0.1, 0.38, 0.3, 0.4]}},
-        {"label_page_no": None, "label_region": None},
+        {
+            "label_page_no": 1,
+            "label_region": {"kind": "box", "page": 1, "box": [0.1, 0.38, 0.3, 0.4]},
+            "label_text": "North",  # 0054
+        },
+        {"label_page_no": None, "label_region": None, "label_text": None},
     ]
 
 
