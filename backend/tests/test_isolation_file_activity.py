@@ -78,14 +78,20 @@ def test_questions_stay_with_their_customer(db: Database) -> None:
 
 def test_people_lists_only_this_customers_active_users_by_name(db: Database) -> None:
     api = Api(db)
-    a, b = api.new_admin(), api.new_admin()
+    # Changed on purpose (24 Oct 2026): each customer also has the first user made with it
+    # ("Admin", new_customer), so it is listed too; and A disables the user, since with no
+    # current customer row level security hides the row and the UPDATE changed nothing.
+    (a_customer, a_first), (b_customer, b_first) = api.customer(), api.customer()
+    a, b = api.admin_sign_in(a_customer), api.admin_sign_in(b_customer)
     member = api.sign_in(a.customer_id)
     gone = api.sign_in(a.customer_id)
-    with db.system() as conn:
+    with db.customer(a.customer_id) as conn:
         conn.execute(text("UPDATE users SET disabled = true WHERE id = :u"), {"u": gone.user_id})
     reply = member.client.get("/api/people")
     assert reply.status_code == 200, reply.text
     items = reply.json()["items"]
-    assert {item["id"] for item in items} == {a.user_id, member.user_id}  # not B's, not the disabled one
+    expected = {a_first, a.user_id, member.user_id}
+    assert {item["id"] for item in items} == expected  # not B's, not the disabled one
     assert all(set(item) == {"id", "name"} for item in items)  # names only: no email or role
-    assert [item["id"] for item in b.client.get("/api/people").json()["items"]] == [b.user_id]
+    b_items = b.client.get("/api/people").json()["items"]
+    assert [item["id"] for item in b_items] == [b_first, b.user_id]  # by name: "Admin", "Test admin"
