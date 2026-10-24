@@ -146,7 +146,7 @@ from kaagaz.ai.client import (
 )
 from kaagaz.ai.openrouter import LIMITER_WAIT
 from kaagaz.ai.usage import billed_as
-from kaagaz.answering import glossary
+from kaagaz.answering import glossary, voice
 from kaagaz.answering.dates import date_range, describe_range, mentions_date
 from kaagaz.answering.draft import (
     ANSWER_PROMPT_HASH,
@@ -310,7 +310,7 @@ class Answer:
     label: str | None  # None when not found
     sentences: list[AnswerSentence]
     citations: list[Citation]
-    closest_documents: list[dict[str, str]]  # {"id", "display_name"}
+    closest_documents: list[dict[str, Any]]  # {"id", "display_name"}, and "words" (never in to_json)
     route: Route
     normalized_question: str
     model_used: bool
@@ -328,13 +328,22 @@ class Answer:
     # scope holding the question's key terms (``AnswerService._mentioned``); in to_json only
     # when there is one, so answers without it keep their shape.
     mentions: dict[str, Any] | None = None
+    # PRD 6 A, answer contract v2 (``_shaped``): the documents listed under the answer, each
+    # {document_id, title, why, citations}, and what was assumed. The opening is the API's.
+    documents: list[dict[str, Any]] = field(default_factory=list)
+    assumptions: list[str] = field(default_factory=list)
     # KZ-006: not found while the model was down, so "not found" may be wrong; the route
     # answers 503 instead. Never in to_json.
     unavailable: bool = False
+    # Decision 2's final check (``_checked``), never in to_json: the full text behind each
+    # citation (its snippet is cut), and the numbers a fixed query gave a code-written sentence.
+    backing: dict[int, str] = field(default_factory=dict)
+    vouched: frozenset[str] = frozenset()
 
     def to_json(self) -> dict[str, Any]:
         """The ``Answer`` of frontend/lib/types.ts, exactly; ``agents``, ``agent_ids``,
-        ``agents_asked``, ``agreement`` and ``thinking`` only with a ``team``."""
+        ``agents_asked``, ``agreement`` and ``thinking`` only with a ``team``. ``opening`` is
+        None here: only the API knows the conversation and the asker (routers/chat.py)."""
         team = (
             {}
             if self.team is None
@@ -347,8 +356,12 @@ class Answer:
             }
         )
         return {
+            "version": 2,
             "status": self.status,
             "label": self.label,
+            "opening": None,
+            "documents": [dict(document) for document in self.documents],
+            "assumptions": list(self.assumptions),
             "sentences": [{"text": s.text, "citations": list(s.citations)} for s in self.sentences],
             "citations": [citation.to_json() for citation in self.citations],
             "closest_documents": [
@@ -558,13 +571,104 @@ class AnswerService:
         timing.lap("rewrite")
         timing.whole, timing.aspects = whole is not None, len(aspects)
         asked = rewritten or question
-        answer = self._answer(customer_id, asked, scope, user_id, whole, aspects, choice, pins)
+        answer = self._checked(
+            self._answer(customer_id, asked, scope, user_id, whole, aspects, choice, pins), asked
+        )
         # KZ-006: an answer found without the model stays answered; a not found may be the outage.
         unavailable = answer.status == "not_found" and _timing().degraded
         answer = self._unreadable(customer_id, answer, scope)
         if not unavailable:
-            answer = self._mentioned(customer_id, asked, answer, scope)
+            answer = self._shaped(
+                customer_id, asked, self._mentioned(customer_id, asked, answer, scope), scope
+            )
         return replace(answer, rewritten_question=rewritten, unavailable=unavailable)
+
+    def _checked(self, answer: Answer, question: str) -> Answer:
+        """Decision 2's final check (PRD 6 A, voice.py) over every sentence, whoever wrote it:
+        each number and fraction word must be the question's, a page of a source it cites, in
+        the full text or the name of a source it cites (a figure as printed), or one the fixed
+        query that wrote the sentence gave (``vouched``). A sentence that fails is dropped and
+        its reason code logged, never its text; none left is not found. O(s * t)."""
+        if answer.status != "answered":
+            return answer
+        asked = voice.numbers(question) | answer.vouched
+        by_n = {citation.n: citation for citation in answer.citations}
+        kept: list[AnswerSentence] = []
+        for sentence in answer.sentences:
+            allowed = set(asked)
+            for c in (by_n[n] for n in sentence.citations if n in by_n):
+                allowed |= voice.numbers(f"{answer.backing.get(c.n, c.snippet)}\n{c.document_name}")
+                allowed |= {str(page) for page in (c.page_no, *range(c.page_from, c.page_to + 1))}
+            reason = voice.unsupported(sentence.text, allowed)
+            if reason is None:
+                kept.append(sentence)
+            else:
+                _log.info("answer text dropped", extra={"code": f"final_check:sentence:{reason}"})
+        if len(kept) == len(answer.sentences):
+            return answer
+        if not kept:
+            closest, used = answer.closest_documents, answer.model_used
+            return _not_found(
+                answer.route,
+                answer.normalized_question,
+                closest,
+                model_used=used,
+                reason="notfound_final_check",
+            )
+        # The sources still cited, numbered from 1 again in order, as every answer's are.
+        cited = sorted({n for sentence in kept for n in sentence.citations if n in by_n})
+        new = {old: index for index, old in enumerate(cited, start=1)}
+        return replace(
+            answer,
+            sentences=[AnswerSentence(s.text, [new[n] for n in s.citations if n in new]) for s in kept],
+            citations=[replace(by_n[old], n=n) for old, n in new.items()],
+            backing={new[old]: text for old, text in answer.backing.items() if old in new},
+        )
+
+    def _shaped(self, customer_id: str, question: str, answer: Answer, scope: Scope) -> Answer:
+        """Contract v2's ``documents`` (PRD 6 A): at most MAX_DOCUMENTS, each with its title
+        and why (voice.py, from its card and the question) and the citations that are its. An
+        answer's are the documents it cites, in order, but a count of documents (step 13),
+        whose lines name each document with its pages already; a not-found or unchecked
+        answer's are its closest documents, citing nothing. One statement for the cards."""
+        if answer.status == "answered" and answer.sentences and not answer.sentences[0].citations:
+            return answer  # step 13's count
+        rows: dict[str, tuple[str, list[Citation]]] = {}
+        for c in answer.citations if answer.status == "answered" else []:
+            rows.setdefault(c.document_id, (c.document_name, []))[1].append(c)
+        for doc in answer.closest_documents if answer.status != "answered" else []:
+            rows.setdefault(str(doc["id"]), (str(doc["display_name"]), []))
+        listed = list(rows.items())[: voice.MAX_DOCUMENTS]
+        if not listed:
+            return answer
+        found = self._context.cards(customer_id, [d for d, _ in listed], scope) if self._context else {}
+        normalised = normalise(question)
+        keywords = [
+            k for k in glossary.content_words(normalised.keywords) if not any(ch.isdigit() for ch in k)
+        ]
+        closest = {str(doc["id"]): list(doc.get("words") or []) for doc in answer.closest_documents}
+        fallback = {"answered": "", "unchecked": "The figure appears here"}.get(
+            answer.status, "Close to your words"
+        )
+        documents = []
+        for document_id, (name, cited) in listed:
+            card = found.get(document_id, ("", None))[1]
+            text = word_text(" ".join(answer.backing.get(c.n, c.snippet) for c in cited))
+            words = closest.get(document_id) or [k for k in keywords if has_word(k, text)]
+            fields = [c.snippet.partition(":")[0] for c in cited if c.kind == "value"]
+            said = voice.why(question, card, fields=fields, words=words, dated=mentions_date(normalised))
+            reason = voice.unsupported(said, voice.numbers(question))
+            if reason is not None:  # decision 2: never shown; why is written without digits
+                _log.info("answer text dropped", extra={"code": f"final_check:why:{reason}"})
+            documents.append(
+                {
+                    "document_id": document_id,
+                    "title": voice.title(name, card),
+                    "why": (said if reason is None else "") or fallback,
+                    "citations": [c.n for c in cited],
+                }
+            )
+        return replace(answer, documents=documents)
 
     def _mentioned(self, customer_id: str, question: str, answer: Answer, scope: Scope) -> Answer:
         """ "Also mentions" (Tushar, 17 Oct 2026): every other document in ``scope`` that holds
@@ -733,6 +837,7 @@ class AnswerService:
         citations: list[Citation] = []
         lines: dict[int, list[dict[str, Any]]] = {}
         listed: list[AnswerSentence] = []
+        counted: set[int] = {total}  # decision 2: the count, and each listed document's pages
         for hits in documents:
             usable = number_evidence(hits)
             if not usable:
@@ -742,9 +847,12 @@ class AnswerService:
             citations.append(_piece_citation(n, first, [said]))
             lines[n] = first.regions
             name = clean_text(first.hit.document_name)[:_MAX_NAME].strip()
-            listed.append(AnswerSentence(document_sentence(name, pages_with(hits, term)), [n]))
+            pages = pages_with(hits, term)
+            counted |= {*pages, len(pages)}
+            listed.append(AnswerSentence(document_sentence(name, pages), [n]))
         if not total or not citations or not said:
             return None
+        counted |= {len(citations), total - len(citations)}
         citations = self._marked(customer_id, citations, lines)
         hard = any(c.hard_to_read for c in citations)
         head = count_sentence(said, total, kinds)
@@ -762,6 +870,7 @@ class AnswerService:
             normalized_question=shown,
             model_used=False,
             reading_note=HARD_TO_READ_NOTE if hard else None,
+            vouched=frozenset(str(number) for number in counted),
         )
 
     def _fixed_answer(self, customer_id: str, plan: FixedPlan, shown: str, fixed: FixedQueries) -> Answer:
@@ -811,6 +920,15 @@ class AnswerService:
                 "A row that reads like a total is" if len(looks) == 1 else "Rows that read like a total are"
             )
             sentences.append(AnswerSentence(f"{said} left out of this.", looks))
+        # Decision 2: the template's own inputs, the query's result and how many records gave it,
+        # the dates asked and the names it groups by (package C narrows totals, decision 10).
+        period = describe_range(plan.start, plan.end) if plan.start and plan.end else ""
+        given = [
+            period,
+            str(top[0].number),
+            str(sum(row.records for row in top)),
+            *(r.group or "" for r in top),
+        ]
         return Answer(
             status="answered",
             label="verified" if verified and not hard else "needs_review",
@@ -821,6 +939,7 @@ class AnswerService:
             normalized_question=shown,
             model_used=False,
             reading_note=HARD_TO_READ_NOTE if hard else None,
+            vouched=frozenset().union(*map(voice.numbers, given)),
         )
 
     def _total_answer(
@@ -872,6 +991,9 @@ class AnswerService:
             normalized_question=shown,
             model_used=False,
             reading_note=HARD_TO_READ_NOTE if hard else None,
+            # Decision 2: every number here is code's (totals.tell: figures as printed, a total
+            # only under decision 10's rule, counts of the lines shown), so the final check keeps them.
+            vouched=frozenset().union(*map(voice.numbers, [told.head, *(text for text, _, _ in told.lines)])),
         )
 
     def _run_plan(self, fixed: FixedQueries, customer_id: str, plan: FixedPlan) -> list[FixedRow]:
@@ -945,8 +1067,14 @@ class AnswerService:
                 hits = translated.hits
             evidence = number_evidence(hits)
         hits_only = list(evidence)  # the search's own hits, before widening adds to the list
-        # Only usable evidence counts as close: an instruction-like piece is not.
-        closest = closest_documents([item.hit for item in evidence])
+
+        # Only usable evidence counts as close: an instruction-like piece is not. A whole
+        # document's pieces are in reading order, so its closest come from a search (``_closest``).
+        def closest() -> list[dict[str, Any]]:
+            return self._closest(
+                customer_id, query_text, scope, expansion, normalised.keywords, hits_only, whole
+            )
+
         gate = enough_evidence(evidence, normalised.keywords, min_score, numbers, expansion)
         if whole is not None:
             # CX5: only the numbers asked must be there; the keyword rule would turn away an
@@ -957,7 +1085,7 @@ class AnswerService:
             passed = gate is not None or scored
         _timing().lap("search")
         if not passed:
-            return _not_found("search", shown, closest, model_used=False, reason="notfound_gate")
+            return _not_found("search", shown, closest(), model_used=False, reason="notfound_gate")
         if whole is None:
             # Most relevant picks (answering/pins.py): after the gate, so a pick never decides
             # whether there is an answer; only a hit that passes on its own moves up.
@@ -994,7 +1122,7 @@ class AnswerService:
         kept = _kept(draft, texts)
         if not kept:
             why = why if draft.status != "answered" else "notfound_verify_dropped_all"
-            return _not_found("search", shown, closest, model_used=model_used, reason=why)
+            return _not_found("search", shown, closest(), model_used=model_used, reason=why)
 
         renumber: dict[int, int] = {}
         for sentence in kept:
@@ -1048,12 +1176,13 @@ class AnswerService:
             label="verified" if verified else "needs_review",
             sentences=[AnswerSentence(s.text, [renumber[n] for n in s.evidence]) for s in kept],
             citations=citations,
-            closest_documents=closest,
+            closest_documents=[] if whole is not None else closest(),
             route="search",
             normalized_question=shown,
             model_used=model_used,
             reading_note=HARD_TO_READ_NOTE if hard else None,
             team=team,
+            backing={new: by_n[old].hit.text for old, new in renumber.items()},
             related_documents=(
                 []
                 if whole is not None
@@ -1062,6 +1191,26 @@ class AnswerService:
                 )
             ),
         )
+
+    def _closest(
+        self,
+        customer_id: str,
+        query_text: str,
+        scope: Scope,
+        expansion: Expansion,
+        keywords: Sequence[str],
+        evidence: Sequence[Evidence],
+        whole: Sequence[Hit] | None,
+    ) -> list[dict[str, Any]]:
+        """Decision 9: the documents close to the question (``closest_documents``: by words,
+        typos or sound, never meaning alone). From the search's hits; with a whole document
+        (CX5) from a search by words and typos (no vector), never its reading order: one
+        statement more, only for a not-found answer."""
+        if whole is None:
+            return closest_documents([item.hit for item in evidence], keywords)
+        limit = max(1, min(self._settings.answer_max_evidence, MAX_LIMIT))
+        hits = self._retriever.search(customer_id, query_text, None, limit, scope, expansion)
+        return closest_documents([item.hit for item in number_evidence(hits)], keywords)
 
     def _translated_search(
         self,
@@ -1502,15 +1651,16 @@ def _quoted_through_glossary(
 
 
 def _not_found(
-    route: Route, shown: str, closest: list[dict[str, str]], *, model_used: bool, reason: str
+    route: Route, shown: str, closest: list[dict[str, Any]], *, model_used: bool, reason: str
 ) -> Answer:
     """A not-found answer, and one log line with its fixed ``reason`` code (never the
     question or page text): notfound_empty_scope, notfound_fixed_no_rows,
     notfound_fixed_no_sentence, notfound_empty_question, notfound_gate (no evidence
     passed), notfound_model (the model said so), notfound_model_error:<code> (it failed
     and the quoted lines held nothing), notfound_no_model (the same, model off),
-    notfound_verify_dropped_all (the checker kept no sentence); ":date" after the
-    last two: a date question, never quoted."""
+    notfound_verify_dropped_all (the checker kept no sentence), notfound_final_check (PRD 6
+    decision 2's check kept none); ":date" after notfound_model_error and notfound_no_model: a
+    date question, never quoted."""
     _log.info("answer not found", extra={"code": reason})
     _timing().reason = reason
     return Answer(
