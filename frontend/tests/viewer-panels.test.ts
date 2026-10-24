@@ -7,7 +7,6 @@ import {
   LINE_FIELDS,
   MONEY_LINE_FIELDS,
   cardSections,
-  groupByName,
   checkChip,
   checkReasonText,
   groupLinks,
@@ -116,17 +115,6 @@ describe("cardSections", () => {
       label_region: box(1, 0.7),
     });
     expect(cardSections(card, [own])[0]?.items[0]?.label).toEqual(box(1, 0.7));
-  });
-});
-
-describe("groupByName", () => {
-  it("gathers a section's items by their name, in the order each name first appears", () => {
-    const item = (key: string, name: string) => ({ key, name, text: key, region: box(1), label: null });
-    const groups = groupByName([item("a", "Owner"), item("b", "Other"), item("c", "Owner")]);
-    expect(groups.map((g) => [g.name, g.items.map((i) => i.key)])).toEqual([
-      ["Owner", ["a", "c"]],
-      ["Other", ["b"]],
-    ]);
   });
 });
 

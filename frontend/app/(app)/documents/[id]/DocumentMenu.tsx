@@ -19,6 +19,7 @@ import { deletedMessage } from "@/components/documents/logic";
 import { restoredMessage, trashQuestion } from "@/components/documents/trash";
 import { ApiError, deleteDocument, listFolders, listTags, restoreDocument } from "@/lib/api";
 import type { DocumentDetail, Folder, Tag } from "@/lib/types";
+import type { MoreItem } from "@/components/documents/DocumentActions";
 
 const failed = (caught: unknown) =>
   caught instanceof ApiError ? caught.message : "Check your internet connection, then try again.";
@@ -29,8 +30,11 @@ export function DocumentMenu({
   readAgain,
   onReadAgain,
   onChanged,
+  more,
 }: {
   buttonRef: RefObject<HTMLButtonElement | null>; // the menu's button: focus comes back to it
+  /** The review's actions (documentMoreItems), after the menu's own. */
+  more?: readonly MoreItem[];
   detail: DocumentDetail;
   readAgain: boolean; // canReprocess
   onReadAgain(): void;
@@ -110,6 +114,7 @@ export function DocumentMenu({
         canForever={false}
         place="document"
         readAgain={readAgain}
+        more={more}
         onPick={pick}
         toggleRef={holdToggle}
       />

@@ -12,6 +12,9 @@
 // UI audit DD3/DD4 (16 Oct 2026): an alert, in the Needs attention tab: its icon, a title,
 // each problem as a line (no bullets), then one row of like buttons. This is the page's
 // own Read again; the whole document's is in the document's menu.
+// One box (Tushar, 24 Oct 2026: "both wordings are the same, make one box"): `inline`, it sits
+// inside the Attention panel under its page, which already says what is wrong, so it gives
+// only the fix in one line and the buttons, with no banner, icon or title of its own.
 
 import Link from "next/link";
 import { useCallback, useReducer, useRef, useState } from "react";
@@ -40,11 +43,22 @@ export interface PageProblemsProps {
   canUpload: boolean; // out of Trash
   onReadAgain(reply: DocumentSummary): void;
   onKept(page: PageSummary): void;
+  /** Inside the Attention panel, under its page: the fix and the buttons only. */
+  inline?: boolean;
 }
 
 type Upload = { step: "sending" } | { step: "sent"; id: string; words: string } | { step: "error"; message: string };
 
-export function PageProblems({ documentId, page, userId, canFix, canUpload, onReadAgain, onKept }: PageProblemsProps) {
+export function PageProblems({
+  documentId,
+  page,
+  userId,
+  canFix,
+  canUpload,
+  onReadAgain,
+  onKept,
+  inline = false,
+}: PageProblemsProps) {
   const [state, dispatch] = useReducer(fixReducer, { step: "idle" });
   const [upload, setUpload] = useState<Upload | null>(null);
   const [askedAgain, setAskedAgain] = useState(false); // until the page is read again and the screen reloads
@@ -117,15 +131,20 @@ export function PageProblems({ documentId, page, userId, canFix, canUpload, onRe
 
   const confirming = state.step === "confirming" || state.step === "sending" ? state : null;
   return (
-    <section className={styles.problemBanner} aria-labelledby={titleId}>
-      <Icon name="alert" />
+    <section className={inline ? styles.problemInline : styles.problemBanner} aria-labelledby={titleId}>
+      {inline ? null : <Icon name="alert" />}
       <div className={styles.problemBody}>
-        <p id={titleId} className={styles.problemTitle}>
-          Page {page.page_no} is flagged for review
+        <p id={titleId} className={inline ? "visually-hidden" : styles.problemTitle}>
+          {inline ? `Fix page ${page.page_no}` : `Page ${page.page_no} is flagged for review`}
         </p>
         {problems.map((problem) => (
           <p key={problem.code} className={styles.problemNote}>
-            <span className={styles.problemSays}>{problem.says}</span> {problem.fix}
+            {inline ? null : (
+              <>
+                <span className={styles.problemSays}>{problem.says}</span>{" "}
+              </>
+            )}
+            {problem.fix}
           </p>
         ))}
         {kept && (

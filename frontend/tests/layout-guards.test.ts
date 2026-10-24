@@ -741,7 +741,8 @@ describe("the document screen (boards 2, 3 and 6)", () => {
     expect([...order].sort((a, b) => a - b)).toEqual(order);
     const panels = view.slice(view.indexOf("<PanelTabs"), view.indexOf("</PanelTabs>"));
     const overview = panels.slice(panels.indexOf('shownTab === "overview"'), panels.indexOf('shownTab === "attention"'));
-    for (const part of ["<CardPanel", "{values}", "<InvoicePanel", "<RelatedPanel", "<StoryPanel"]) expect(overview).toContain(part);
+    // Changed on purpose (24 Oct 2026): the Document card is gone from Details.
+    for (const part of ["{values}", "<InvoicePanel", "<RelatedPanel", "<StoryPanel"]) expect(overview).toContain(part);
     const attention = panels.slice(panels.indexOf('shownTab === "attention"'), panels.indexOf('shownTab === "scanned"'));
     for (const part of ["<PageProblems", "<AttentionPanel"]) expect(attention).toContain(part);
     expect(panels).toContain("<ScannedTextPanel");
