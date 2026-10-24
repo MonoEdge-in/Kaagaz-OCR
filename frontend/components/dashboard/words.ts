@@ -38,11 +38,7 @@ export const DASHBOARD_TEXT = {
   // Home made clear (24 Oct 2026): what the page is for, then one card per next step.
   lead: "Ask anything about your documents, or start with one of the steps below.",
   yourQuestions: "Your usual questions",
-  questionsToTry: "Questions to try",
-  questionsLine: "Their answers wait ready, so they open at once.",
-  questionsEmpty: "Upload your first documents, and questions about them show here.",
-  ready: "Ready",
-  readying: "Getting ready",
+  questionsToTry: "Ready to ask",
   steps: "What you can do",
   checkLine: "The AI was not fully sure about these. A quick look makes every answer that uses them trusted.",
   checkClear: "Every value has been checked. New ones show here.",

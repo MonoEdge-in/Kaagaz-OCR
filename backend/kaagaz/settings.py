@@ -348,6 +348,11 @@ class Settings:
     # memory are rewritten every chat_summary_every turns (M3).
     model_context_tokens: int
     answer_whole_doc_tokens: int
+    # Faster Swift (24 Oct 2026): a Swift or Low answer reads at most this many tokens of
+    # documents, whole documents or evidence alike (Precision keeps the full budget); 0: no cap.
+    # PROVISIONAL: 30k, from the review's estimate that a smaller prompt saves 2 to 5 s on a
+    # large scope; measure on the server's timing lines and tune.
+    answer_swift_input_tokens: int
     topic_max_per_doc: int
     topic_expand_max_pieces: int
     query_aspects_max: int
@@ -616,6 +621,7 @@ class Settings:
             answer_plan_timeout_seconds=env.number_in("ANSWER_PLAN_TIMEOUT_SECONDS", 1.0, 60.0, default=4.0),
             model_context_tokens=model_context_tokens,
             answer_whole_doc_tokens=whole_doc_tokens,
+            answer_swift_input_tokens=env.at_least("ANSWER_SWIFT_INPUT_TOKENS", 0, default=30_000),
             topic_max_per_doc=env.at_least("TOPIC_MAX_PER_DOC", 1, default=40),
             topic_expand_max_pieces=env.at_least("TOPIC_EXPAND_MAX_PIECES", 0, default=12),
             query_aspects_max=env.at_least("QUERY_ASPECTS_MAX", 0, default=6),

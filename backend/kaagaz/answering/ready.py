@@ -1,8 +1,11 @@
 """Ready answers for Home's questions (Tushar, 24 Oct 2026: "keep their response in memory so
 the response is within 0.5 s, not all questions; change them as per the user's question
 habits"). Home shows up to ``MAX_QUESTIONS`` questions for each person: the ones they ask most
-(first questions of a conversation that were answered, last ``HABIT_DAYS`` days), then ones
-that suit the kinds of documents their organisation holds most. Their answers are made in the
+(first questions of a conversation about all their documents that were answered, last
+``HABIT_DAYS`` days), then ones that suit the kinds of documents their organisation holds most.
+Home offers a question only once its answer is ready (Tushar, 24 Oct 2026: "show the question
+when the answer is ready; no new questions until the old one is used, and 24 hours"): the list
+stays until the person uses one of them or ``SHOWN_SECONDS`` pass. Answers are made in the
 background and kept in this process's memory; Ask uses one only for that exact question,
 asked fresh (no conversation, no picked documents, no clarify), by the same person, with the
 same answer settings, switches and marks, while their documents are unchanged (``stamp``).
@@ -11,7 +14,8 @@ Every other question is answered as before.
 shortcut: one API process (docker-compose runs one uvicorn), so a per-process cache is the
 whole cache; with several API processes each would warm its own, so share it (Postgres or
 Redis) before adding processes. A value changed in place without its ``updated_at`` moving
-is caught only by ``TTL_SECONDS``.
+is caught only by ``TTL_SECONDS``; a document or value added, removed or re-read changes the stamp
+at once.
 """
 
 import threading
@@ -24,7 +28,8 @@ from sqlalchemy import Connection, text
 
 MAX_QUESTIONS = 3
 HABIT_DAYS = 60
-TTL_SECONDS = 600  # a ready answer older than 10 minutes is made again
+TTL_SECONDS = 24 * 3600  # a ready answer is made again after a day, or at once when documents change
+SHOWN_SECONDS = 24 * 3600  # Home's list stays a day at most, and until one of it is used
 MAX_ENTRIES = 512  # about 3 per person: plenty of people before the oldest are dropped
 
 # Questions about what documents say, for the kinds a library holds most of (no AI makes them).
@@ -47,7 +52,8 @@ _HABITS = text(
     " WHERE c.customer_id = :c AND c.user_id = :u"
     " AND q.created_at > now() - make_interval(days => :days)"
     " AND a.answer ->> 'status' IN ('answered', 'unchecked')"
-    " AND char_length(q.text) BETWEEN 8 AND 200"
+    " AND char_length(q.text) BETWEEN 8 AND 200 AND q.scope IS NULL"  # about all documents, never one
+    " AND coalesce(a.answer ->> 'route', '') <> 'small_talk'"  # never "hi" or "what can you do"
     " AND NOT EXISTS (SELECT 1 FROM messages p WHERE p.customer_id = q.customer_id"
     " AND p.conversation_id = q.conversation_id AND p.created_at < q.created_at)"
     " GROUP BY lower(regexp_replace(btrim(q.text), '\\s+', ' ', 'g'))"
@@ -148,22 +154,31 @@ class ShownQuestions:
     then made again from their habits. An empty list is never kept, so questions come as soon
     as documents do. Oldest people dropped past MAX_ENTRIES; thread-safe."""
 
-    def __init__(self) -> None:
+    def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
+        self._clock = clock
         self._lock = threading.Lock()
-        self._kept: OrderedDict[tuple[str, str], list[tuple[str, bool]]] = OrderedDict()
+        self._kept: OrderedDict[tuple[str, str], tuple[float, list[tuple[str, bool]]]] = OrderedDict()
 
     def get(self, customer_id: str, user_id: str) -> list[tuple[str, bool]] | None:
+        """The list Home last showed this person, while it is less than SHOWN_SECONDS old."""
         with self._lock:
             found = self._kept.get((customer_id, user_id))
-            if found is not None:
-                self._kept.move_to_end((customer_id, user_id))
-            return found
+            if found is None:
+                return None
+            if self._clock() - found[0] > SHOWN_SECONDS:
+                del self._kept[(customer_id, user_id)]
+                return None
+            self._kept.move_to_end((customer_id, user_id))
+            return found[1]
 
     def keep(self, customer_id: str, user_id: str, shown: list[tuple[str, bool]]) -> None:
+        """Keep a new list (its day starts now); the same list again keeps its first time."""
         if not shown:
             return
         with self._lock:
-            self._kept[(customer_id, user_id)] = shown
+            found = self._kept.get((customer_id, user_id))
+            since = found[0] if found is not None and found[1] == shown else self._clock()
+            self._kept[(customer_id, user_id)] = (since, shown)
             self._kept.move_to_end((customer_id, user_id))
             while len(self._kept) > MAX_ENTRIES:
                 self._kept.popitem(last=False)
@@ -172,8 +187,8 @@ class ShownQuestions:
         """They asked ``question``: when it is one Home showed them, the list is made again."""
         asked = same_question(question)
         with self._lock:
-            shown = self._kept.get((customer_id, user_id)) or []
-            if any(same_question(text) == asked for text, _ in shown):
+            found = self._kept.get((customer_id, user_id))
+            if found is not None and any(same_question(text) == asked for text, _ in found[1]):
                 del self._kept[(customer_id, user_id)]
 
 

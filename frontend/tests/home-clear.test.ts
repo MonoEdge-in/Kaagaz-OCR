@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { HomeActions, QuestionsCard, READY_AGAIN_MS } from "@/components/dashboard/Dashboard";
+import { HomeActions, READY_LOOKS, ReadyQuestions } from "@/components/dashboard/Dashboard";
 import { browseTitle, checkTitle, DASHBOARD_TEXT } from "@/components/dashboard/words";
 
 const ROOT = join(__dirname, "..");
@@ -67,40 +67,41 @@ describe("the home screen's next steps", () => {
   });
 });
 
-// Changed on purpose (24 Oct 2026, later): Home's questions come from the server
-// (answering/ready.py), the person's own habits first, each "Ready" once its answer waits made,
-// and sit beside the welcome instead of a row of chips under Ask.
-describe("the questions beside the welcome", () => {
-  const card = (questions: Parameters<typeof QuestionsCard>[0]["questions"]) =>
-    renderToStaticMarkup(createElement(QuestionsCard, { questions }));
+// Changed on purpose (24 Oct 2026, later still): Home's questions sit under Ask as one-press
+// recommendations, each offered only once its answer is ready (an answer in under a second);
+// Home looks again until every one is ready.
+describe("the ready questions under Ask", () => {
+  const row = (questions: Parameters<typeof ReadyQuestions>[0]["questions"]) =>
+    renderToStaticMarkup(createElement(ReadyQuestions, { questions }));
 
-  it("lists the person's own questions as theirs, each a link to Ask, Ready or getting ready", () => {
-    const html = card([
+  it("offers only the questions whose answers are ready, each a link to Ask", () => {
+    const html = row([
       { text: "What is the total for Shinde?", yours: true, ready: true },
       { text: "Who are the owners named in the land records?", yours: false, ready: false },
     ]);
-    expect(html).toContain(">Your usual questions</h2>");
+    expect(html).toContain(">Your usual questions</span>");
     expect(html).toContain('href="/chat?q=What%20is%20the%20total%20for%20Shinde%3F&amp;send=1"');
-    expect(html.match(/>Ready</g)).toHaveLength(1);
-    expect(html).toContain(">Getting ready<");
-    expect(html.match(/style="--i:\d"/g)).toEqual(['style="--i:0"', 'style="--i:1"']);
+    expect(html).not.toContain("owners named");
+    expect(html.match(/style="--i:\d"/g)).toEqual(['style="--i:0"']);
   });
 
-  it("offers questions to try when none are the person's, and says what to do when there are none", () => {
-    expect(card([{ text: "Who are the owners named in the land records?", yours: false, ready: true }])).toContain(
-      ">Questions to try</h2>",
+  it("says Ready to ask for library questions, and shows nothing while none is ready", () => {
+    expect(row([{ text: "Who are the owners named in the land records?", yours: false, ready: true }])).toContain(
+      ">Ready to ask</span>",
     );
-    expect(card([])).toContain(DASHBOARD_TEXT.questionsEmpty);
+    expect(row([{ text: "x", yours: false, ready: false }])).toBe("");
+    expect(row(null)).toBe("");
   });
 
-  it("looks once more for ready answers, and no longer builds questions on the screen", () => {
-    expect(READY_AGAIN_MS).toBe(12_000);
+  it("looks again until every answer is ready, and sits under Ask, not in a card beside it", () => {
+    expect(READY_LOOKS).toEqual([12_000, 40_000]);
     const home = read("components/dashboard/Dashboard.tsx");
     expect(home).toContain("getReadyQuestions()");
-    expect(home).not.toContain("suggestedQuestions");
+    expect(home).toMatch(/<\/form>\s*<ReadyQuestions questions=\{questions\} \/>\s*<\/section>/);
+    expect(home).not.toContain("QuestionsCard");
     expect(read("components/dashboard/words.ts")).not.toContain("What did we upload");
     const text = css(HOME_CSS);
     const calm = text.slice(text.indexOf("@media (prefers-reduced-motion: no-preference)"));
-    expect(calm).toMatch(/\.ready \{\s*animation: home-pop var\(--motion-calm\) var\(--ease-out\) both;/);
+    expect(calm).toMatch(/\.readyList > li \{\s*animation: home-pop var\(--motion-calm\) var\(--ease-out\) both;/);
   });
 });

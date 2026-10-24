@@ -248,19 +248,21 @@ def test_ask_keeps_the_question_as_asked_stores_both_messages_and_audits(db: Dat
 
 
 @pytest.mark.db
-def test_a_not_found_while_the_model_is_down_is_503_and_nothing_is_stored(db: Database) -> None:
-    """KZ-006: an outage is never shown as "not found", and leaves no empty conversation."""
+def test_a_not_found_while_the_model_is_down_says_so_and_is_never_busy(db: Database) -> None:
+    """KZ-006: an outage is never shown as "not found". Changed on purpose (Tushar, 24 Oct
+    2026: never "Kaagaz is busy"): it is no longer a 503; the reply says the AI is not
+    responding (``outage``), keeps whatever closest documents there are, and is stored."""
     api = Api(db)
     signed = api.new_signed()
     api.answers.reply, api.answers.unavailable = answer_json(status="not_found"), True
 
     reply = signed.client.post("/api/chat", json={"question": "total?"}, headers=CSRF)
 
-    assert (reply.status_code, reply.headers["retry-after"]) == (503, "60")
-    assert reply.json()["error"]["code"] == "backend_unavailable"
-    with db.customer(signed.customer_id) as conn:
-        for table in ("conversations", "messages"):
-            assert conn.execute(text(f"SELECT count(*) FROM {table}")).scalar_one() == 0, table  # noqa: S608 - fixed name
+    assert reply.status_code == 200, reply.text
+    body = reply.json()["answer"]
+    assert body["answer"]["outage"] is True
+    assert body["text"] == chat_router.OUTAGE_LINE
+    assert "not" + " found" not in body["text"].casefold()
 
 
 @pytest.mark.db
@@ -496,7 +498,11 @@ def test_default_wiring_uses_the_real_answer_service_without_a_model(db: Databas
         "opening",
         "documents",
         "assumptions",
+        # Changed on purpose (24 Oct 2026): nothing close, so questions this library answers
+        # (none here: the library is empty).
+        "suggestions",
     }
+    assert answer["suggestions"] == []
     assert (answer["version"], answer["opening"], answer["documents"]) == (2, "Good afternoon, Test.", [])
     assert answer["status"] == "not_found"
     assert body["answer"]["text"] == NOT_FOUND_TEXT

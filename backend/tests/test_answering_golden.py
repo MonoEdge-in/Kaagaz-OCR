@@ -34,6 +34,7 @@ from kaagaz.answering.expansion import NO_EXPANSION, Expansion
 from kaagaz.answering.fixed_queries import MAX_CITED_VALUES, Figure, FixedRow, ValueRef
 from kaagaz.answering.service import Answer, AnswerService
 from kaagaz.db.engine import Database
+from kaagaz.db.models import Agent, ChatChoice
 from kaagaz.search.scope import EVERYTHING, Scope
 from kaagaz.settings import CHAT_OVERHEAD_TOKENS, MAX_SYSTEM_PROMPT_TOKENS, Settings
 from tests.settings_factory import make_settings
@@ -530,7 +531,9 @@ def service(
 def assert_well_formed(answer: Answer) -> None:
     """The properties every answer keeps, answered or not (no source, no answer)."""
     data = answer.to_json()
-    assert set(data) == ANSWER_KEYS
+    # Changed on purpose (24 Oct 2026): an outage adds ``outage`` (KZ-006, never "busy").
+    assert set(data) - {"outage"} == ANSWER_KEYS
+    assert data.get("outage", True) is True and ("outage" in data) == answer.unavailable
     assert data["route"] in {"fixed_query", "search"}
     # PRD 6 A: v2, the opening is the API's, nothing assumed yet; at most 10 documents listed,
     # each citing only its own sources and saying why in words, never a digit (decision 2).
@@ -1299,3 +1302,44 @@ def test_also_in_stops_at_five_documents() -> None:
     assert hits[0].document_id not in {
         d["document_id"] for d in related_documents(number_evidence(hits), cited, ["inv-1042"], 0.5)
     }
+
+
+# --- Never "busy" (24 Oct 2026): a chosen model that is down hands the draft to a backup ---
+
+
+class DownModel(FakeModel):
+    """FakeModel whose listed models are down (each call raises ``error``)."""
+
+    def __init__(self, down: set[str], error: Exception | None = None) -> None:
+        super().__init__()
+        self.down = down
+        self.error = error or ModelUnavailable("model_not_found")
+        self.models: list[str | None] = []
+
+    def chat_json(self, *, model: str | None = None, **kwargs: Any) -> dict[str, Any]:
+        self.models.append(model)
+        if model in self.down:
+            raise self.error
+        return super().chat_json(model=model, **kwargs)
+
+
+def _choice_with_backup() -> ChatChoice:
+    lead = Agent("google/gemini-3.8-flash", "google-vertex", "Gemini 3.8 Flash")
+    backup = Agent("google/gemini-3.7-flash", "google-vertex", "Gemini 3.7 Flash")
+    return ChatChoice([lead], "medium", (backup,))
+
+
+def test_a_chosen_model_that_is_down_hands_the_draft_to_a_backup() -> None:
+    model = DownModel({"google/gemini-3.8-flash"})
+    answer = service(model=model)[0].answer(A, QUESTION, choice=_choice_with_backup())
+    assert answer.status == "answered"
+    assert answer.unavailable is False
+    assert answer.team is not None and answer.team.agent_ids == ("google/gemini-3.7-flash",)
+    assert [m for m in model.models if m] == ["google/gemini-3.8-flash", "google/gemini-3.7-flash"]
+
+
+def test_a_reply_fault_or_a_rejected_key_is_never_retried_on_a_backup() -> None:
+    for error in (ModelOutputError("invalid_output"), ModelUnavailable("key_rejected")):
+        model = DownModel({"google/gemini-3.8-flash"}, error)
+        service(model=model)[0].answer(A, QUESTION, choice=_choice_with_backup())
+        assert "google/gemini-3.7-flash" not in model.models, error

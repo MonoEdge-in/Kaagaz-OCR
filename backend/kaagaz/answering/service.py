@@ -415,6 +415,8 @@ class Answer:
             **team,
             **({} if self.mentions is None else {"mentions": self.mentions}),
             **({"clarify": self.clarify, "resume": self.resume} if self.clarify else {}),
+            # KZ-006 (24 Oct 2026): the model was down, so this not found is no answer either way.
+            **({"outage": True} if self.unavailable else {}),
         }
 
 
@@ -615,7 +617,7 @@ class AnswerService:
         """``answer``'s work, timed by it."""
         if scope.matches_nothing:
             return _not_found("search", question.strip(), [], model_used=False, reason="notfound_empty_scope")
-        whole = self._whole(customer_id, scope)
+        whole = self._whole(customer_id, scope, self._input_cap(choice))
         _timing().lap("search")
         # Step 18: the names of the scope's documents only, when it names them.
         vocabulary = None if self._vocabulary is None else self._vocabulary.within(scope.document_ids)
@@ -725,13 +727,12 @@ class AnswerService:
         answer = self._checked(
             self._answer(customer_id, asked, scope, user_id, whole, aspects, choice, pins, early), asked
         )
-        # KZ-006: an answer found without the model stays answered; a not found may be the outage.
+        # KZ-006: an answer found without the model stays answered; a not found may be the outage,
+        # said as one (``outage``), never as "not found", with the closest documents still listed
+        # (never "busy", 24 Oct 2026).
         unavailable = answer.status == "not_found" and _timing().degraded
         answer = self._unreadable(customer_id, answer, scope)
-        if not unavailable:
-            answer = self._shaped(
-                customer_id, asked, self._mentioned(customer_id, asked, answer, scope), scope
-            )
+        answer = self._shaped(customer_id, asked, self._mentioned(customer_id, asked, answer, scope), scope)
         said = [*answer.assumptions, *step.assumptions]
         return replace(answer, rewritten_question=rewritten, unavailable=unavailable, assumptions=said)
 
@@ -857,11 +858,23 @@ class AnswerService:
         """CX6's steps can run: a context port and a fused search to search aspects with."""
         return self._context is not None and self._translated is not None
 
-    def _whole(self, customer_id: str, scope: Scope) -> Sequence[Hit] | None:
+    def _input_cap(self, choice: ChatChoice | None) -> int | None:
+        """Faster Swift (24 Oct 2026): ANSWER_SWIFT_INPUT_TOKENS for a Swift or Low answer, so
+        a quick question never sends 120k tokens to the model; None for Precision, or 0 set."""
+        cap = self._settings.answer_swift_input_tokens
+        quick = choice is not None and choice.thinking in ("low", "medium")
+        return cap if quick and cap > 0 else None
+
+    def _whole(self, customer_id: str, scope: Scope, cap: int | None = None) -> Sequence[Hit] | None:
         """CX5: every piece of ``scope``, in reading order, when the model is on and they fit
-        ANSWER_WHOLE_DOC_TOKENS, counted cautiously as the evidence is; None otherwise. The
-        port's size check (characters / 4) comes first, so a big scope reads no text."""
-        budget = self._settings.answer_whole_doc_tokens
+        ANSWER_WHOLE_DOC_TOKENS (or ``cap``, the smaller), counted cautiously as the evidence
+        is; None otherwise. The port's size check (characters / 4) comes first, so a big
+        scope reads no text."""
+        budget = (
+            self._settings.answer_whole_doc_tokens
+            if cap is None
+            else min(cap, self._settings.answer_whole_doc_tokens)
+        )
         if self._model is None or self._context is None or budget <= 0:
             return None
         pieces = self._context.whole(customer_id, scope, budget)
@@ -1568,10 +1581,12 @@ class AnswerService:
         team: Team | None = None
         if self._model is not None:
             asked = f"{question} (in English: {normalised.english})" if normalised.hinglish else question
-            seen = fit_evidence(asked, evidence, self._evidence_budget)
+            cap = self._input_cap(choice)
+            budget = self._evidence_budget if cap is None else min(cap, self._evidence_budget)
+            seen = fit_evidence(asked, evidence, budget)
             code = "evidence_too_large"  # not even the best piece fits
             if seen:
-                cards = fit_cards(asked, seen, self._cards(customer_id, scope, seen), self._evidence_budget)
+                cards = fit_cards(asked, seen, self._cards(customer_id, scope, seen), budget)
                 draft_with = partial(
                     model_draft,
                     self._model,
@@ -1679,25 +1694,33 @@ def _single(
     draft_with: Callable[..., Draft], default_model: str, choice: ChatChoice | None
 ) -> tuple[Draft | None, Team | None, str]:
     """One model's draft: the ``choice``'s one agent at its level (C7), or, with no choice,
-    MODEL_CHAT as before; (None, None, the code) when it fails."""
-    agent = None if choice is None else choice.agents[0]
-    try:
-        if choice is None or agent is None:
+    MODEL_CHAT as before; (None, None, the code) when it fails. Never "busy" (24 Oct 2026):
+    when that model is down (``_outage``), each of the choice's ``backups`` is tried in turn,
+    the answer then named by the backup that drafted it; a reply fault (too long, malformed,
+    refused) is not retried, and a rejected key fails every model alike."""
+    if choice is None or not choice.agents:
+        try:
             draft = draft_with()
-        else:
+        except (ModelUnavailable, ModelOutputError) as error:
+            return None, None, error.code
+        _log.info("answer drafted by %s with prompt %s", default_model, ANSWER_PROMPT_HASH)
+        return draft, None, ""
+    code = ""
+    for turn, agent in enumerate((choice.agents[0], *choice.backups)):
+        try:
             draft = draft_with(
                 chat_model=agent.model, thinking=agent.level(choice.thinking), provider=agent.provider
             )
-    except (ModelUnavailable, ModelOutputError) as error:
-        return None, None, error.code
-    _log.info(
-        "answer drafted by %s with prompt %s",
-        default_model if agent is None else agent.model,
-        ANSWER_PROMPT_HASH,
-    )
-    if choice is None or agent is None:
-        return draft, None, ""
-    return draft, Team((agent.name,), (agent.model,), 1, None, choice.thinking), ""
+        except (ModelUnavailable, ModelOutputError) as error:
+            code = error.code
+            if not _outage(error) or code == "key_rejected":
+                return None, None, code
+            continue
+        if turn:
+            _log.warning("answer drafted by a backup model", extra={"code": code})
+        _log.info("answer drafted by %s with prompt %s", agent.model, ANSWER_PROMPT_HASH)
+        return draft, Team((agent.name,), (agent.model,), 1, None, choice.thinking), ""
+    return None, None, code
 
 
 def _outage(result: object) -> bool:
