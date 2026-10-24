@@ -86,6 +86,7 @@ import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
+from functools import partial
 from typing import Any, Literal, Protocol
 
 from kaagaz.answering import glossary
@@ -342,19 +343,18 @@ class PgRetriever:
     ) -> Translated:
         from kaagaz.search.hybrid import search_translated
 
-        with self._db.customer(customer_id) as conn:
-            hits, original = search_translated(
-                conn,
-                customer_id=customer_id,
-                query_text=text,
-                embedding=embedding,
-                translations=translations,
-                limit=limit,
-                recipe=self._recipe,
-                ef_search=self._ef_search,
-                scope=scope,
-                expansion=expansion,
-            )
+        hits, original = search_translated(
+            partial(self._db.customer, customer_id),  # a transaction for each text, as each thread's
+            customer_id=customer_id,
+            query_text=text,
+            embedding=embedding,
+            translations=translations,
+            limit=limit,
+            recipe=self._recipe,
+            ef_search=self._ef_search,
+            scope=scope,
+            expansion=expansion,
+        )
         return Translated(hits, original)
 
     def neighbours(self, customer_id: str, hits: Sequence[Hit], scope: Scope) -> Sequence[Hit]:

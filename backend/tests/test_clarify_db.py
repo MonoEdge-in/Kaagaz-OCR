@@ -54,3 +54,21 @@ def test_the_vocabulary_is_aggregated_once_and_read_through_indexes_under_rls(db
         plan = "\n".join(conn.execute(text("EXPLAIN " + clarify._CANDIDATES.text), params).scalars())
     assert "CTE vocabulary" in plan and "Seq Scan on value_keys" not in plan, plan  # review 5
     assert any("value_keys_" in line and "Index" in line for line in plan.splitlines()), plan
+
+
+def test_any_keys_is_one_exists_read_through_an_index_under_rls(db: Database) -> None:  # Ask speed
+    customer, _ = new_customer(db)
+    with db.customer(customer) as conn:
+        document = insert_document(conn, customer)
+        for n in range(200):
+            insert_key(conn, customer, document, "person", f"Person {n}")
+    with db.engine.begin() as conn:  # the owner: fresh statistics
+        conn.execute(text("ANALYZE value_keys"))
+    for scoped in (None, [document]):
+        with db.customer(customer) as conn:
+            conn.execute(text("SET LOCAL enable_seqscan = off"))
+            params = {"c": customer, "scoped": scoped}
+            plan = "\n".join(conn.execute(text("EXPLAIN " + clarify._ANY_KEYS.text), params).scalars())
+        assert "Seq Scan on value_keys" not in plan, plan
+        assert any("value_keys_" in line and "Index" in line for line in plan.splitlines()), plan
+    assert PgVocabulary(db).any_keys(customer) and PgVocabulary(db).within([document]).any_keys(customer)

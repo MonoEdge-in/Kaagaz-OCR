@@ -341,9 +341,11 @@ def test_cx6_aspects_are_asked_on_a_first_question_and_searched_with_it_in_one_e
 
     (prompt,) = model.rewrites
     assert prompt.endswith("Aspects: at most 6.") and "<memory>" not in prompt
-    # One embed call: the question and its aspects, each as plain text.
+    # One embed call: the question and its aspects, each as plain text. Changed on purpose (Ask
+    # speed, 24 Oct 2026): the question alone first, beside the plan call (service step 19), and
+    # unused, as the call listed aspects.
     texts = ["how many leaves do i get", "holidays", "casual leave", "maternity leave"]  # normalised
-    assert model.embedded == [texts]
+    assert model.embedded == [texts[:1], texts]
     (extra,) = retriever.fused
     assert [text for text, _ in extra] == ["holidays", "casual leave", "maternity leave"]
     assert all(vector is not None for _, vector in extra)

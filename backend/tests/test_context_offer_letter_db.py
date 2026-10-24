@@ -132,7 +132,9 @@ def test_cx5_whole_document_mode_cites_pages_4_9_and_18_from_every_piece_in_orde
     (prompt,) = model.drafts
     assert blocks(prompt) == [row[2] for row in typed.pieces()]  # every piece, in seq order
     # Changed on purpose (PRD 6 B1): asked for its plan in the rewrite's call, never rewritten.
-    assert len(model.rewrites) == 1 and answer["rewritten_question"] is None
+    # Changed on purpose again (Ask speed, 24 Oct 2026): the letter gives the company no name or
+    # place keys, so a plan could change nothing and that call is not made.
+    assert model.rewrites == [] and answer["rewritten_question"] is None
 
 
 def test_cx6_with_no_whole_document_the_aspects_and_the_leave_topic_find_pages_4_9_and_18(

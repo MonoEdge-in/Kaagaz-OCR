@@ -52,6 +52,9 @@ class FakeVocabulary:
         self.calls += 1
         return [[e for e in self.entries if e.kind == entity.kind] for entity in entities]
 
+    def any_keys(self, customer_id: str) -> bool:
+        return bool(self.entries or self.nearby)
+
     def near(self, customer_id: str, districts: Sequence[str]) -> list[Entry]:
         self.districts = sorted(districts)
         return self.nearby
@@ -203,7 +206,13 @@ def test_puny_asks_did_you_mean_pune_and_the_pick_answers_with_no_second_rewrite
     assert (shown["question"], shown["multi"], shown["turn"]) == ("Did you mean Pune?", False, 1)
     choices = [(c["id"], c["label"], c["kind"]) for c in shown["choices"]]
     assert choices == [("c1", "Pune", "pick"), ("other", "Something else", "other")]
-    assert (shown["choices"][0]["document_ids"], model.calls, retriever.calls) == (["d1"], ["rewrite"], [])
+    # Changed on purpose (Ask speed, 24 Oct 2026): the question as asked was searched beside the
+    # plan call (service step 19), and that search is dropped with the clarify: still no draft.
+    assert (shown["choices"][0]["document_ids"], model.calls, len(retriever.calls)) == (
+        ["d1"],
+        ["rewrite"],
+        1,
+    )
     pending = reply_to(clarify, ["c1"])
     assert pending is not None and pending.picked == ("Pune",)
 
@@ -211,7 +220,7 @@ def test_puny_asks_did_you_mean_pune_and_the_pick_answers_with_no_second_rewrite
 
     assert model.calls == ["rewrite", "draft"]  # never rewritten again
     assert answered["rewritten_question"] == "Tell me the property owned in Pune"
-    assert "pune" in retriever.calls[0][1] and answered["status"] != "clarify"
+    assert "pune" in retriever.calls[-1][1] and answered["status"] != "clarify"  # after the early one
 
 
 def test_two_people_with_one_first_name_ask_which_and_a_sound_match_is_said() -> None:
