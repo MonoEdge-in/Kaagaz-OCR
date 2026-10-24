@@ -136,7 +136,6 @@ class FairShare:
 PLATFORM_BUSY_DEFER_SECONDS = 15
 PLATFORM_BUSY = "platform_busy"
 _GATE = "kaagaz.reading:gate"
-_LOCK = text("SELECT pg_advisory_lock(hashtextextended(:key, 0))")
 
 
 class ReadingCap:
@@ -145,14 +144,24 @@ class ReadingCap:
     (WORKER_REPLICAS). ``slot(job)`` holds one of ``most`` session advisory locks,
     ``kaagaz.reading:<n>``, for the block, or raises Deferred(15, "platform_busy").
 
-    A worker takes ``kaagaz.reading:gate`` (so two admissions never count at once), tries
-    every slot, and keeps one only when fewer than the cap are held by others; then lets the
-    gate go. Counting the held slots, not using the first ``cap`` of them, keeps a lowered cap
-    true while slots above it are still held. As with ``first_free_lock``, the locks live on
-    a connection of its own in AUTOCOMMIT: a worker that dies closes it, and PostgreSQL lets
-    its slot go, so a dead worker never holds one. O(most) statements per job."""
+    A worker tries ``kaagaz.reading:gate`` (so two admissions never count at once; never
+    waited for: a gate held elsewhere hands the job back), tries every slot, and keeps one
+    only when fewer than the cap are held by others; then lets the gate go. Counting the held
+    slots, not using the first ``cap`` of them, keeps a lowered cap true while slots above it
+    are still held. As with ``first_free_lock``, the locks live on a connection of its own in
+    AUTOCOMMIT: a worker that dies closes it, and PostgreSQL lets its slot go, so a dead
+    worker never holds one. A job handed back calls ``waiting(customer_id, document_id)``
+    first (a write on its document, so the stuck sweep leaves it alone). With the cap at
+    MAX_ACTIVE_PER_CUSTOMER or under, one customer's batch can take every slot: the others
+    wait their turn (said on the operator's confirm). O(most) statements per job."""
 
-    def __init__(self, engine: Engine, most: int, at_once: Callable[[str], int | None]) -> None:
+    def __init__(
+        self,
+        engine: Engine,
+        most: int,
+        at_once: Callable[[str], int | None],
+        waiting: Callable[[str, str], None],
+    ) -> None:
         """``at_once(customer_id)`` reads the live value (None: ``most``) inside the job's
         customer's transaction."""
         if most < 1:
@@ -160,6 +169,7 @@ class ReadingCap:
         self._engine = engine
         self._keys = [f"kaagaz.reading:{slot}" for slot in range(most)]
         self._at_once = at_once
+        self._waiting = waiting
 
     @contextmanager
     def slot(self, job: Job) -> Iterator[None]:
@@ -170,17 +180,20 @@ class ReadingCap:
             held = None
             try:
                 with unavailable():
-                    conn.execute(_LOCK, {"key": _GATE})
-                    free = [key for key in self._keys if conn.execute(_TRY_LOCK, {"key": key}).scalar_one()]
-                    if len(self._keys) - len(free) < cap:
-                        held = free[0]
-                    for key in [*free, _GATE]:
-                        if key != held:
-                            conn.execute(_UNLOCK, {"key": key})
+                    if conn.execute(_TRY_LOCK, {"key": _GATE}).scalar_one():
+                        free = [
+                            key for key in self._keys if conn.execute(_TRY_LOCK, {"key": key}).scalar_one()
+                        ]
+                        if len(self._keys) - len(free) < cap:
+                            held = free[0]
+                        for key in [*free, _GATE]:
+                            if key != held:
+                                conn.execute(_UNLOCK, {"key": key})
             except BaseException:
                 conn.invalidate()  # a lock may still be held: dropping the connection lets all go
                 raise
             if held is None:
+                self._waiting(job.customer_id, job.document_id)
                 raise Deferred(PLATFORM_BUSY_DEFER_SECONDS, PLATFORM_BUSY)
             try:
                 yield

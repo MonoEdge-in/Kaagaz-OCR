@@ -803,7 +803,12 @@ def _serve(settings: Settings) -> None:
     gate = process_gate(settings, database=db)  # the one every model client of this process shares
     reports = start_reader_reports(stop, db, gate.status, socket.gethostname())
     fair_share = FairShare(functools.partial(first_free_lock, db.engine), settings.max_active_per_customer)
-    reading = ReadingCap(db.engine, settings.worker_replicas, functools.partial(_documents_at_once, db))
+    reading = ReadingCap(
+        db.engine,
+        settings.worker_replicas,
+        functools.partial(_documents_at_once, db),
+        documents.still_waiting,
+    )
 
     @contextlib.contextmanager
     def slots(job: Job) -> Iterator[None]:

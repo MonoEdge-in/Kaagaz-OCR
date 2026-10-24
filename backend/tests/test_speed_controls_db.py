@@ -11,9 +11,12 @@ The values belong to no customer: every test that sets one puts it back.
 
 import contextlib
 import functools
+import threading
 import time
 import uuid
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -21,13 +24,16 @@ from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
 from kaagaz.api import totp
+from kaagaz.db.documents import PgDocuments
 from kaagaz.db.engine import Database
 from kaagaz.ingestion.ports import Job
+from kaagaz.jobs import fair_share
 from kaagaz.jobs.fair_share import ReadingCap
+from kaagaz.jobs.revive import revive_stuck
 from kaagaz.jobs.worker import Deferred
 from kaagaz.worker_main import _documents_at_once
 from tests import test_migration_0002_db as m0002
-from tests.db_support import migrate, new_customer
+from tests.db_support import insert_document, migrate, new_customer
 from tests.settings_factory import make_settings
 from tests.test_api_support import CSRF, Api, TestClient
 from tests.test_operator_auth_db import _Operator, _owner
@@ -109,18 +115,52 @@ def test_the_saved_rpm_never_goes_above_model_rpm(db: Database) -> None:
 
 def _cap(db: Database, most: int = 3) -> ReadingCap:
     """One worker copy's cap: its slots are its own connections."""
-    return ReadingCap(db.engine, most, functools.partial(_documents_at_once, db))
+    return ReadingCap(
+        db.engine, most, functools.partial(_documents_at_once, db), PgDocuments(db).still_waiting
+    )
+
+
+def test_a_document_waiting_under_the_cap_is_never_taken_for_stuck(db: Database) -> None:
+    """Cap 1: A's batch holds the only place while B's queued documents pass the sweep's
+    6000 s. Their hand-backs write on them, so the sweep neither queues them again (a try
+    spent, a duplicate job) nor fails them ``stuck_no_job`` while their jobs are queued."""
+    a, _ = new_customer(db)
+    b, _ = new_customer(db)
+    old = datetime.now(UTC) - timedelta(seconds=7000)
+    with db.customer(b) as conn:
+        fresh_try = insert_document(conn, b, status="received", updated_at=old)
+        last_try = insert_document(conn, b, status="clean", attempts=5, max_attempts=5, updated_at=old)
+    reader, waiter = _cap(db), _cap(db)
+    sent: list[tuple[Job, int]] = []
+    with saved(db, documents=1), reader.slot(Job(a, str(uuid.uuid4()))):
+        for document in (fresh_try, last_try):
+            with pytest.raises(Deferred) as waited, waiter.slot(Job(b, document)):
+                pass
+            assert waited.value.code == "platform_busy"
+        done = revive_stuck(
+            db,
+            lambda job, tries: sent.append((job, tries)),
+            lambda c: c != b,
+            stale_seconds=6000,
+            max_attempts=5,
+        )
+    assert (done, sent) == ([], [])
+    with db.customer(b) as conn:
+        rows = conn.execute(
+            text("SELECT status, attempts FROM documents WHERE customer_id = :c ORDER BY attempts"), {"c": b}
+        ).all()
+    assert [tuple(row) for row in rows] == [("received", 0), ("clean", 5)]
 
 
 def test_the_documents_at_once_cap_holds_across_two_workers(db: Database) -> None:
     customer, _ = new_customer(db)
     first, second = _cap(db), _cap(db)
     with saved(db, documents=1):
-        with first.slot(Job(customer, "d1")):
-            with pytest.raises(Deferred) as waited, second.slot(Job(customer, "d2")):
+        with first.slot(Job(customer, str(uuid.uuid4()))):
+            with pytest.raises(Deferred) as waited, second.slot(Job(customer, str(uuid.uuid4()))):
                 pass
             assert (waited.value.seconds, waited.value.code) == (15, "platform_busy")
-        with second.slot(Job(customer, "d2")):  # let go when the job ended
+        with second.slot(Job(customer, str(uuid.uuid4()))):  # let go when the job ended
             pass
 
 
@@ -129,11 +169,11 @@ def test_a_lowered_cap_counts_the_slots_still_held(db: Database) -> None:
     one, two, three = _cap(db), _cap(db), _cap(db)
     with saved(db, documents=2), contextlib.ExitStack() as jobs:
         first = jobs.enter_context(contextlib.ExitStack())
-        first.enter_context(one.slot(Job(customer, "d1")))  # slot 0
-        jobs.enter_context(two.slot(Job(customer, "d2")))  # slot 1
+        first.enter_context(one.slot(Job(customer, str(uuid.uuid4()))))  # slot 0
+        jobs.enter_context(two.slot(Job(customer, str(uuid.uuid4()))))  # slot 1
         _owner(db, _SET, {"r": None, "d": 1, "p": None})
         first.close()  # slot 0 is free again, slot 1 is still held
-        with pytest.raises(Deferred), three.slot(Job(customer, "d3")):
+        with pytest.raises(Deferred), three.slot(Job(customer, str(uuid.uuid4()))):
             pass
 
 
@@ -141,16 +181,16 @@ def test_the_cap_never_goes_above_worker_replicas(db: Database) -> None:
     customer, _ = new_customer(db)
     copies = [_cap(db, most=2) for _ in range(3)]
     with saved(db, documents=5), contextlib.ExitStack() as jobs:
-        jobs.enter_context(copies[0].slot(Job(customer, "d1")))
-        jobs.enter_context(copies[1].slot(Job(customer, "d2")))
-        with pytest.raises(Deferred), copies[2].slot(Job(customer, "d3")):
+        jobs.enter_context(copies[0].slot(Job(customer, str(uuid.uuid4()))))
+        jobs.enter_context(copies[1].slot(Job(customer, str(uuid.uuid4()))))
+        with pytest.raises(Deferred), copies[2].slot(Job(customer, str(uuid.uuid4()))):
             pass
 
 
 def test_a_dead_workers_slot_is_let_go(db: Database) -> None:
     customer, _ = new_customer(db)
     first, second = _cap(db), _cap(db)
-    with saved(db, documents=1), first.slot(Job(customer, "d1")):
+    with saved(db, documents=1), first.slot(Job(customer, str(uuid.uuid4()))):
         with db.engine.connect() as admin:  # the worker copy holding it crashes
             killed = admin.execute(
                 text(
@@ -160,8 +200,76 @@ def test_a_dead_workers_slot_is_let_go(db: Database) -> None:
                 {"key": "kaagaz.reading:0"},
             ).all()
         assert len(killed) == 1
-        with second.slot(Job(customer, "d2")):  # free again without waiting for the job
+        with second.slot(Job(customer, str(uuid.uuid4()))):  # free again without waiting for the job
             pass
+
+
+def _held(db: Database, *keys: str) -> int:
+    """How many of these advisory locks any session holds now."""
+    found = _owner(
+        db,
+        "SELECT count(*) FROM pg_locks l WHERE l.locktype = 'advisory' AND l.granted"
+        " AND ((l.classid::bigint << 32) | l.objid::bigint)"
+        " IN (SELECT hashtextextended(k, 0) FROM unnest(CAST(:k AS text[])) k)",
+        {"k": list(keys)},
+    )
+    return int(found[0][0])
+
+
+def test_a_gate_held_elsewhere_hands_the_job_back_at_once(db: Database) -> None:
+    customer, _ = new_customer(db)
+    with saved(db), db.engine.connect() as stalled, ThreadPoolExecutor(max_workers=1) as pool:
+        stalled.execute(text("SELECT pg_advisory_lock(hashtextextended('kaagaz.reading:gate', 0))"))
+        try:
+
+            def admit() -> str:
+                with _cap(db).slot(Job(customer, str(uuid.uuid4()))):
+                    return "read"
+
+            with pytest.raises(Deferred) as waited:
+                pool.submit(admit).result(timeout=5)  # never blocks on a stalled gate holder
+            assert waited.value.code == "platform_busy"
+        finally:
+            stalled.execute(text("SELECT pg_advisory_unlock_all()"))
+            stalled.commit()
+
+
+def _race(cap: ReadingCap, job: Job, start: threading.Barrier, done: threading.Barrier) -> bool:
+    """One worker's admission, started with the other's; True when it got the place."""
+    start.wait()
+    try:
+        with cap.slot(job):
+            done.wait()  # both have tried before the winner lets go
+            return True
+    except Deferred:
+        done.wait()
+        return False
+
+
+def test_two_workers_racing_for_the_last_place_exactly_one_wins(db: Database) -> None:
+    customer, _ = new_customer(db)
+    with saved(db, documents=1), ThreadPoolExecutor(max_workers=2) as pool:
+        for _ in range(30):
+            start, done = threading.Barrier(2), threading.Barrier(2)
+            racers = [
+                pool.submit(_race, _cap(db), Job(customer, str(uuid.uuid4())), start, done) for _ in range(2)
+            ]
+            assert sorted(racer.result(timeout=10) for racer in racers) == [False, True]
+
+
+def test_an_error_while_counting_drops_the_connection_and_every_lock_on_it(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    customer, _ = new_customer(db)
+    failing = text(
+        "SELECT CASE WHEN :key = 'kaagaz.reading:1' THEN 1 / 0 = 1"
+        " ELSE pg_try_advisory_lock(hashtextextended(:key, 0)) END"
+    )
+    monkeypatch.setattr(fair_share, "_TRY_LOCK", failing)
+    with saved(db), pytest.raises(DBAPIError), _cap(db).slot(Job(customer, str(uuid.uuid4()))):
+        pass
+    # The gate and slot 0 were taken before the error: neither is left on a pooled connection.
+    assert _held(db, "kaagaz.reading:gate", "kaagaz.reading:0") == 0
 
 
 def _operator(api: Api) -> tuple[_Operator, TestClient]:
