@@ -7,6 +7,7 @@ import {
   LINE_FIELDS,
   MONEY_LINE_FIELDS,
   cardSections,
+  groupByName,
   checkChip,
   checkReasonText,
   groupLinks,
@@ -91,9 +92,11 @@ describe("cardSections", () => {
   it("lists parties with the Latin spelling, dates and key facts, and leaves out empty sections", () => {
     const sections = cardSections(card, []);
     expect(sections.map((s) => s.heading)).toEqual(["Parties", "Dates", "Key facts"]);
+    // Changed on purpose (Tushar, 24 Oct 2026): the Latin spelling is its own smaller line.
     expect(sections[0]?.items[0]).toMatchObject({
       name: "Owner",
-      text: "शिंदे (Shinde)",
+      text: "शिंदे",
+      sub: "Shinde",
     });
     expect(sections[1]?.items[0]).toMatchObject({
       name: "Document date",
@@ -113,6 +116,17 @@ describe("cardSections", () => {
       label_region: box(1, 0.7),
     });
     expect(cardSections(card, [own])[0]?.items[0]?.label).toEqual(box(1, 0.7));
+  });
+});
+
+describe("groupByName", () => {
+  it("gathers a section's items by their name, in the order each name first appears", () => {
+    const item = (key: string, name: string) => ({ key, name, text: key, region: box(1), label: null });
+    const groups = groupByName([item("a", "Owner"), item("b", "Other"), item("c", "Owner")]);
+    expect(groups.map((g) => [g.name, g.items.map((i) => i.key)])).toEqual([
+      ["Owner", ["a", "c"]],
+      ["Other", ["b"]],
+    ]);
   });
 });
 

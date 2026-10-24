@@ -217,11 +217,11 @@ describe("the document card's reading details", () => {
     createElement(CardPanel, { detail: detail({ values: [read72] }), active: null, onShow: () => undefined }),
   );
 
+  // Changed on purpose (24 Oct 2026, later): the page is at the row's end (the card's rows, below).
   it("puts the page beside each value, not on a line of its own", () => {
     const panels = read("app/(app)/documents/[id]/DocumentPanels.tsx");
-    expect(panels).toContain("<span className={styles.pageInline}>{spotNote(item)}</span>");
+    expect(panels).toContain("<span className={styles.cardPage}>{spotNote(item)}</span>");
     expect(panels).not.toContain("<div className={styles.pageNote}>{spotNote(item)}</div>");
-    expect(css(VIEW_CSS)).toMatch(/\.pageInline \{[^}]*font-size: var\(--fs-sm\);/);
   });
 
   it("gathers every What was read in one closed section after the last group", () => {
@@ -229,5 +229,45 @@ describe("the document card's reading details", () => {
     expect(html.indexOf("What the AI read")).toBeGreaterThan(html.lastIndexOf("<h3"));
     expect(html).toMatch(/<details class="[^"]+"><summary>What the AI read, value by value<\/summary>/);
     expect(html.match(/<details[^>]* open="">/g)).toHaveLength(1); // the survey number's reading, open inside
+  });
+});
+
+// Changed on purpose (Tushar, 24 Oct 2026): "decrease the card's length, good size, good
+// animation". One caption per role with its count, one row per value (the Devanagari name,
+// its Latin spelling smaller under it, the page small at the end), four rows then "Show all".
+describe("the document card's rows", () => {
+  const owner = (i: number) => ({
+    role: "owner",
+    field: "land_owner_name",
+    name: `मालक ${i}`,
+    name_latin: `malak ${i}`,
+    page: 1,
+    region: at(0.1 + i / 100),
+  });
+  const many = card({ parties: [1, 2, 3, 4, 5, 6].map(owner), identifiers: [] });
+  const html = renderToStaticMarkup(
+    createElement(CardPanel, { detail: detail({ card: many, values: [] }), active: null, onShow: () => undefined }),
+  );
+
+  it("captions a role once, with how many there are", () => {
+    expect(html.match(/>Owner</g)).toHaveLength(1);
+    expect(html).toMatch(/<span class="[^"]*cardCount[^"]*">6<\/span>/);
+  });
+
+  it("puts the Latin spelling on its own smaller line, and the page at the row's end", () => {
+    expect(html).toMatch(/मालक 1<span class="visually-hidden">[^<]*<\/span><\/button><span class="[^"]*cardLatin[^"]*" lang="en">malak 1<\/span>/);
+    expect(html).not.toContain("मालक 1 (malak 1)");
+    expect(html).toMatch(/<span class="[^"]*cardPage[^"]*">Page 1<\/span>/);
+  });
+
+  it("shows four rows, then a real button for the rest", () => {
+    expect(html.match(/cardRow/g)).toHaveLength(4); // the rows, in a list called cardList
+    expect(html).toMatch(/<button type="button" class="[^"]*cardMore[^"]*" aria-expanded="false">Show all 6<\/button>/);
+  });
+
+  it("rises each row in once, one after another, only where motion is welcome", () => {
+    const text = css(VIEW_CSS);
+    const calm = text.slice(text.indexOf("@media (prefers-reduced-motion: no-preference)"));
+    expect(calm).toMatch(/\.cardRow \{[^}]*animation: rise-in var\(--motion-calm\) var\(--ease-out\) both;[^}]*animation-delay: calc\(var\(--i, 0\) \* 30ms\);/);
   });
 });

@@ -27,6 +27,7 @@ export interface Spot {
 export interface CardItem extends Spot {
   key: string;
   text: string;
+  sub?: string; // a party's Latin spelling, shown smaller under its name
 }
 
 const LANGUAGES: Record<string, string> = {
@@ -62,7 +63,8 @@ export function cardSections(
       items: card.parties.map((party, i) => ({
         key: `party-${i}`,
         name: fieldText(party.role),
-        text: party.name_latin ? `${party.name} (${party.name_latin})` : party.name,
+        text: party.name,
+        sub: party.name_latin ?? undefined,
         region: party.region,
         label: labelOf(values, party.field, party.region),
       })),
@@ -103,6 +105,13 @@ export function cardSections(
     },
   ];
   return sections.filter((section) => section.items.length > 0);
+}
+
+/** A section's items gathered by their name ("Owner"), in the order each name first appears. */
+export function groupByName<T extends { name: string }>(items: T[]): { name: string; items: T[] }[] {
+  const groups = new Map<string, T[]>();
+  for (const item of items) groups.set(item.name, [...(groups.get(item.name) ?? []), item]);
+  return [...groups].map(([name, grouped]) => ({ name, items: grouped }));
 }
 
 /** As links.normalise_identifier stores it: no spaces, lower case, Devanagari digits as ASCII. */
