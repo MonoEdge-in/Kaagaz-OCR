@@ -31,7 +31,7 @@ from kaagaz.ai.client import ModelOutputError, ModelUnavailable, estimate_tokens
 from kaagaz.answering.draft import ANSWER_PROMPT_HASH, ANSWER_SCHEMA, SYSTEM_PROMPT, fit_evidence, user_prompt
 from kaagaz.answering.evidence import number_evidence
 from kaagaz.answering.expansion import NO_EXPANSION, Expansion
-from kaagaz.answering.fixed_queries import MAX_CITED_VALUES, FixedRow, ValueRef
+from kaagaz.answering.fixed_queries import MAX_CITED_VALUES, Figure, FixedRow, ValueRef
 from kaagaz.answering.service import Answer, AnswerService
 from kaagaz.db.engine import Database
 from kaagaz.search.scope import EVERYTHING, Scope
@@ -287,17 +287,41 @@ class FakeFixedQueries:
         rows.sort(key=lambda row: -row.number if descending else row.number)
         return rows[:5]
 
-    def total(
-        self, customer_id: str, metric: str, date_fields: Sequence[str], start: date | None, end: date | None
-    ) -> list[FixedRow]:
-        self.calls.append("total")
-        used = list(self._matching(customer_id, metric, date_fields, start, end))
-        if not used:
-            return []
-        refs = [s.ref for _, amount, dated in used for s in (amount, dated) if s is not None]
-        number = sum((amount.number or Decimal(0) for _, amount, _ in used if amount), Decimal(0))
-        verified = all(ref.label == "verified" for ref in refs)
-        return [FixedRow(None, number, len(used), verified, refs[:MAX_CITED_VALUES])]
+    def figures(
+        self,
+        customer_id: str,
+        metric: str,
+        date_fields: Sequence[str],
+        start: date | None,
+        end: date | None,
+        *,
+        invoices: bool,
+    ) -> list[Figure]:
+        """PRD 6 C: with ``invoices``, every record with an invoice number, dated by invoice_date;
+        else every record of a document holding the metric; with a range, also one undated."""
+        self.calls.append("figures")
+        records = self.records.get(customer_id, [])
+        holders = {s.ref.document_id for record in records for s in record if s.ref.field == metric}
+        found = []
+        for record in records:
+            if not (_one(record, ["invoice_number"]) if invoices else record[0].ref.document_id in holders):
+                continue
+            one, dated = _one(record, [metric]), _one(record, ["invoice_date"] if invoices else date_fields)
+            day = None if dated is None else dated.day
+            if start is not None and end is not None and day is not None and not start <= day < end:
+                continue
+            date_label = None if dated is None or day is None else dated.ref.label
+            found.append(
+                Figure(
+                    value=(one or record[0]).ref,
+                    amount=None if one is None else one.number,
+                    printed=sum(s.ref.field == metric for s in record),
+                    verified=one is not None and one.number is not None and one.ref.label == "verified",
+                    dated=start is None or day is not None,
+                    date_verified=start is None or date_label == "verified",
+                )
+            )
+        return found
 
     def count_documents(
         self, customer_id: str, start: date | None, end: date | None, *, date_fields: Sequence[str]
@@ -592,13 +616,25 @@ def test_one_unverified_value_makes_the_answer_needs_review() -> None:
     answer = service(records=records)[0].answer(A, "Kiska profit sabse jyada tha last month?")
     assert answer.status == "answered"
     assert answer.label == "needs_review"
+    # PRD 6 C: the answer says so in words too, citing the value that is not verified.
+    assert [s.text for s in answer.sentences] == [
+        "Sharma Traders had the highest profit, 1,20,000, in August 2026.",
+        "Some of the values behind this are not verified yet.",
+    ]
+    assert [answer.citations[n - 1].snippet for n in answer.sentences[1].citations] == ["profit: 120000"]
+    assert_well_formed(answer)
 
 
 def test_total_amount_from_the_invoice() -> None:
     answer = service()[0].answer(A, "Kul rakam kitni thi pichle mahine?")
     assert_well_formed(answer)
     assert answer.route == "fixed_query"
-    assert answer.sentences[0].text == "The total amount in August 2026 was 1,20,000, from 1 record."
+    # Changed on purpose (PRD 6 C, 24 Oct 2026): a total over a figure not verified is never
+    # given; the figure is listed as printed, with why (it was "... was 1,20,000, from 1 record.").
+    assert [s.text for s in answer.sentences] == [
+        "The one amount figure is not verified yet, so I haven't added up the amount in August 2026.",
+        "bill-1042.pdf: Rs. 1,20,000, not verified yet.",
+    ]
     assert answer.label == "needs_review"  # the invoice's total is a single reading
 
 

@@ -232,7 +232,12 @@ def test_an_invoice_whose_check_failed_is_never_a_verified_total(db: Database) -
         sql += " WHERE customer_id = :c AND document_id = :d"
         conn.execute(text(sql), {"r": '{"kind": "cell"}', "c": customer, "d": document})
     answer = service.answer(customer, "What is the total amount?").to_json()
-    assert answer["sentences"][0]["text"] == "The total amount was 11,900, from 2 records."
+    # Changed on purpose (PRD 6 C, decision 10): a figure not verified withholds the total; the
+    # one without a valid spot is counted, never listed.
+    assert answer["sentences"][0]["text"] == (
+        "1 of the 2 amount figures is not verified yet, so I haven't added up the amount."
+        " 1 is listed here; 1 more is not."
+    )
     assert ([c["label"] for c in answer["citations"]], answer["label"]) == (["verified"], "needs_review")
 
 

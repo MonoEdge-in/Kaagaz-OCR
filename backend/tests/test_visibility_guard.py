@@ -63,7 +63,7 @@ FILTERED: dict[tuple[ModuleType, str], str] = {
     # The numbers in answers: the same, in every CTE.
     (fixed_queries, "_AVAILABLE_FIELDS"): LIVE_CURRENT,
     (fixed_queries, "_TOP_GROUP"): LIVE_CURRENT,
-    (fixed_queries, "_TOTAL"): LIVE_CURRENT,
+    (fixed_queries, "_FIGURES"): LIVE_CURRENT,  # PRD 6 C: the records behind a total
     (fixed_queries, "_EXTREME_VALUE"): LIVE_CURRENT,
     (fixed_queries, "_COUNT_DOCUMENTS"): LIVE_CURRENT,
     (fixed_queries, "_COUNT_INVOICES"): LIVE_CURRENT,  # #228: the invoices table's rows
