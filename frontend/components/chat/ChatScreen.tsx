@@ -83,9 +83,12 @@ import {
   documentFromSearch,
   hasChoices,
   isNearBottom,
+  loadPick,
   STILL_LOOKING_AFTER_MS,
   questionFromSearch,
+  savePick,
   starterQuestions,
+  usablePick,
 } from "./logic";
 import type { AnswerPick, Starter } from "./logic";
 import { ModeSwitch } from "./ModeSwitch";
@@ -232,12 +235,20 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
   // Answer settings (features 25-27): what the organisation allows, and this tab's pick.
   // Not loaded or failed: no chip, and the organisation's defaults answer.
   const [loadedOptions, setChatOptions] = useState<ChatOptions | null>(null);
-  const [picked, setAnswerPick] = useState<AnswerPick | null>(null); // null: nothing picked in this tab
+  const [picked, setAnswerPick] = useState<AnswerPick | null>(null); // null: nothing picked yet
+  // The pick this browser kept; read once (loadPick reads nothing on the server), and the chip
+  // shows only after the options load in the browser, so the server's render never differs.
+  const [kept] = useState<unknown>(loadPick);
+  const choosePick = useCallback((pick: AnswerPick) => {
+    savePick(pick);
+    setAnswerPick(pick);
+  }, []);
   // AI settings (spec 17 Oct 2026): the levels stop at the effective Ask level, and start from it.
   const aiSettings = useAiSettings();
   const chatOptions = loadedOptions && capChatOptions(loadedOptions, effectiveOf(aiSettings, "ask"));
   const answerPick =
-    chatOptions && (picked && chatOptions.levels.includes(picked.level) ? picked : defaultPick(chatOptions));
+    chatOptions &&
+    ((picked && usablePick(chatOptions, picked)) || usablePick(chatOptions, kept) || defaultPick(chatOptions));
   const askOff = taskOf(aiSettings, "ask")?.available === false;
 
   // Only the latest conversation opened may fill the thread.
@@ -867,7 +878,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
               }
               settings={
                 mode === "documents" && hasChoices(chatOptions) && answerPick ? (
-                  <AnswerSettings options={chatOptions} pick={answerPick} locked={busy} onPick={setAnswerPick} />
+                  <AnswerSettings options={chatOptions} pick={answerPick} locked={busy} onPick={choosePick} />
                 ) : null
               }
             />
