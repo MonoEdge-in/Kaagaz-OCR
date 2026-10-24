@@ -13,7 +13,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { AnswerView } from "@/components/chat/AnswerView";
 import { DocumentRow } from "@/components/chat/SourceCard";
-import { citationLink, documentLink, linkWords, matchTerms } from "@/components/chat/answer";
+import { citationLink, documentLink, linkWords, markParts, matchTerms } from "@/components/chat/answer";
 import { resultView } from "@/components/documents/insideSearch";
 import { NEXT_WORDS_PAGE, SHOW_WORDS, YourWords, nextWordsPage, wordsNoteText } from "@/components/viewer/YourWords";
 import { getPageWords } from "@/lib/api";
@@ -70,6 +70,16 @@ describe("a link into the viewer carries the asker's words", () => {
     expect(linkWords(many)).toHaveLength(8);
     expect(linkWords(`${"k".repeat(60)} maval`)).toEqual(["k".repeat(40), "maval"]);
     expect(linkWords(null)).toEqual([]);
+  });
+
+  it("keeps a number or an identifier whole, never its tail (package H review)", () => {
+    const words = linkWords("Was 1,042 paid on INV-1042, the ₹1,04,200 for 7/12?");
+    expect(words).toEqual(expect.arrayContaining(["1,042", "inv-1042", "1,04,200", "7/12"]));
+    expect(words).not.toEqual(expect.arrayContaining(["042"]));
+    expect(words).not.toContain("inv");
+    expect(words).not.toContain("200");
+    const marked = markParts("Rs. 3,042 and Rs. 1,042", matchTerms("1,042")).filter((part) => part.mark);
+    expect(marked.map((part) => part.text)).toEqual(["1,042"]);
   });
 
   it("from a citation, a listed document's page and a closest document", () => {

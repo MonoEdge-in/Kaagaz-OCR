@@ -91,7 +91,8 @@ def test_the_open_pages_lines_holding_the_words_and_every_page_with_one(db: Data
         ("KRISHNA", 1, [box(1, 0.2)]),  # the same word, any case
         ("कृष्ण", 1, [box(1, 0.2)]),  # the same Latin spelling, Devanagari typed
         ("krishana", 2, [box(2, 0.1)]),  # the same sound
-        ("kirshna", 1, [box(1, 0.2)]),  # a near spelling
+        ("sohonee", 1, [box(1, 0.2)]),  # a near spelling
+        ("krishnamurthy", 1, []),  # never a longer name
         ("mohan", 1, []),
     ],
 )

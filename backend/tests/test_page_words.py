@@ -24,8 +24,14 @@ class CleanWordsTest(unittest.TestCase):
 
     def test_cleaned_casefolded_once_and_never_a_stop_word(self) -> None:
         self.assertEqual(
-            clean_words(["Krishna", "KRISHNA", "the", "kiti", "a", "<b>Maval</b>", "INV-1042"]),
-            ["krishna", "maval", "inv", "1042"],
+            clean_words(["Krishna", "KRISHNA", "the", "kiti", "a", "<b>Maval</b>", "INV-1042", "ab"]),
+            ["krishna", "maval", "inv-1042"],
+        )
+
+    def test_a_number_stays_whole_and_a_hyphenated_name_splits(self) -> None:
+        self.assertEqual(
+            clean_words(["1,042", "₹1,04,200", "7/12", "Krishna-Sohoni"]),
+            ["1042", "104200", "7/12", "krishna", "sohoni"],
         )
 
 
@@ -44,14 +50,36 @@ class MatcherTest(unittest.TestCase):
         self.assertTrue(lit(["krishana"], "खरेदीदार कृष्ण सोहोनी"))
         self.assertTrue(lit(["bhogwatdar"], "भोगवटादार"))
 
-    def test_a_near_spelling_as_search_allows_it(self) -> None:
-        self.assertTrue(lit(["kirshna"], "Buyer: Krishna Sohoni"))
+    def test_a_near_spelling_by_story_matchings_rule(self) -> None:
         self.assertTrue(lit(["sohonee"], "Buyer: Krishna Sohoni"))
+        self.assertTrue(lit(["maaval"], "Village: Maval"))
         self.assertFalse(lit(["mohan"], "Buyer: Krishna Sohoni"))
 
+    def test_short_and_near_words_never_light_another_word(self) -> None:
+        for typed, line in [
+            ("raj", "Ram"),
+            ("date", "Data"),
+            ("mohan", "Mohini"),
+            ("krishna", "Krishnamurthy"),
+        ]:
+            with self.subTest(typed=typed):
+                self.assertFalse(lit([typed], line))
+        self.assertTrue(lit(["krishana"], "Krishna"))
+        self.assertTrue(lit(["कृष्ण"], "Krishna"))
+        self.assertTrue(lit(["krishna"], "कृष्ण"))
+
     def test_a_number_only_as_written(self) -> None:
-        self.assertTrue(lit(["1042"], "Invoice INV-1042"))
-        self.assertFalse(lit(["1043"], "Invoice INV-1042"))
+        self.assertTrue(lit(["1042"], "Total 1,042"))
+        self.assertTrue(lit(["104200"], "Amount ₹1,04,200"))
+        self.assertTrue(lit(["7/12"], "7-12 extract"))
+        self.assertFalse(lit(["1043"], "Invoice INV-1043"))
+        self.assertFalse(lit(["1,042"], "Rs. 3,042"))
+        self.assertFalse(lit(["1,042"], "INV 042"))
+        self.assertFalse(lit(["₹1,04,200"], "Item 04 qty 200"))
+
+    def test_an_identifier_never_lights_every_line_of_its_prefix(self) -> None:
+        self.assertTrue(lit(["INV-1042"], "Invoice INV-1042"))
+        self.assertFalse(lit(["INV-1042"], "Invoice INV-2001"))
 
 
 class SegmentsTest(unittest.TestCase):

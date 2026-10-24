@@ -356,13 +356,16 @@ const UNMARKED = new Set(
   ).split(" "),
 );
 
+// A word: letters, marks and digits, "-" or "/" inside it, and "," or "." between two digits,
+// so "1,042", "1,04,200", "7/12" and "INV-1042" stay whole (package H review: never "042").
+const TERM = /[\p{L}\p{M}\p{N}]+(?:(?:(?<=\p{N})[,.](?=\p{N})|[/-])[\p{L}\p{M}\p{N}]+)*/gu;
+
 /** The words to mark in a source's text: the question's and how it was read, three
  * letters or more (or digits), each once, longest first. O(n). */
 export function matchTerms(...texts: (string | null | undefined)[]): string[] {
   const words = new Set<string>();
   for (const text of texts) {
-    for (const word of (text ?? "").normalize("NFKC").toLowerCase().split(/[^\p{L}\p{M}\p{N}-]+/u)) {
-      const bare = word.replace(/^-+|-+$/g, "");
+    for (const bare of (text ?? "").normalize("NFKC").toLowerCase().match(TERM) ?? []) {
       if (bare.length >= 3 && !UNMARKED.has(bare)) words.add(bare);
     }
   }
