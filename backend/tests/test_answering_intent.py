@@ -47,8 +47,20 @@ def test_count_invoices_needs_a_date_field() -> None:
     plan = _plan("Pichle mahine kitne bill aaye?", fields)
     assert plan is None  # "aaye" is a topic word the router does not know
     plan = _plan("Pichle mahine kitne bill the?", fields)
-    assert plan == FixedPlan("count", None, (), ("invoice_date", "date"), *AUGUST)
+    # Changed on purpose (#228, restored 24 Oct 2026): "bill" is an invoice, so it counts invoices.
+    assert plan == FixedPlan("count", None, (), ("invoice_date", "date"), *AUGUST, invoice_count=True)
     assert _plan("How many invoices last month?", {"total_amount"}) is None
+
+
+def test_how_many_invoices_needs_no_field_without_a_date() -> None:
+    """#228: with no date, the invoices themselves are counted, whatever fields exist."""
+    assert _plan("How many invoices are there?", set()) == FixedPlan(
+        "count", None, (), (), None, None, invoice_count=True
+    )
+    assert _plan("How many documents last month?", {"invoice_date"}) == FixedPlan(
+        "count", None, (), ("invoice_date",), *AUGUST
+    )
+    assert _plan("How many invoices with data?", set()) is not None  # "data" adds nothing
 
 
 def test_every_party_and_date_candidate_is_passed_on() -> None:

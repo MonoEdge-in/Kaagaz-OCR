@@ -1536,7 +1536,8 @@ def _fixed_sentence(plan: FixedPlan, top: Sequence[FixedRow]) -> str | None:
     number = indian_number(top[0].number)
     if plan.aggregate == "count":
         if plan.invoice_count:
-            return f"{number} {'invoice is' if top[0].number == 1 else 'invoices are'} present{f' {period}' if period else ''}."
+            invoices = "1 invoice is" if top[0].number == 1 else f"{number} invoices are"
+            return f"{invoices} present {period}." if period else f"{invoices} present."
         documents = "1 document is" if top[0].number == 1 else f"{number} documents are"
         return f"{documents} dated {period}." if period else f"{documents} dated."
     metric = _words(plan.metric or "")

@@ -313,6 +313,28 @@ class FakeFixedQueries:
         verified = all(ref.label == "verified" for ref in refs)
         return [FixedRow(None, Decimal(len(refs)), len(refs), verified, refs[:MAX_CITED_VALUES])]
 
+    def count_invoices(self, customer_id: str, start: date | None, end: date | None) -> list[FixedRow]:
+        """An invoice is a record with an invoice number (a row of the invoices table), dated
+        by its own invoice_date; it cites its first value in _COUNT_INVOICES's field order."""
+        self.calls.append("count_invoices")
+        order = ("invoice_number", "total_amount", "invoice_date", "seller_name", "buyer_name")
+        refs = []
+        for record in self.records.get(customer_id, []):
+            if _one(record, ["invoice_number"]) is None:
+                continue
+            dated = _one(record, ["invoice_date"])
+            day = dated.day if dated is not None else None
+            if start is not None and end is not None and (day is None or not start <= day < end):
+                continue
+            cited = sorted(
+                (s for s in record if s.ref.field in order), key=lambda s: order.index(s.ref.field)
+            )
+            refs.append(cited[0].ref)
+        if not refs:
+            return []
+        verified = all(ref.label == "verified" for ref in refs)
+        return [FixedRow(None, Decimal(len(refs)), len(refs), verified, refs[:MAX_CITED_VALUES])]
+
     def extreme_value(
         self,
         customer_id: str,
@@ -581,10 +603,30 @@ def test_total_amount_from_the_invoice() -> None:
 
 
 def test_count_of_documents_in_a_month() -> None:
-    answer = service()[0].answer(A, "Pichle mahine kitne bill the?")
+    answer = service()[0].answer(A, "How many documents last month?")
     assert_well_formed(answer)
     assert answer.sentences[0].text == "2 documents are dated in August 2026."
     assert len(answer.citations) == 2
+
+
+def test_count_of_invoices_counts_the_invoices_themselves() -> None:
+    """Changed on purpose (#228, restored 24 Oct 2026): "bill" is an invoice, so the invoices
+    are counted, not every dated document (the register is a document, not an invoice)."""
+    for question, sentence in [
+        ("Pichle mahine kitne bill the?", "1 invoice is present in August 2026."),
+        ("How many invoices are there?", "1 invoice is present."),
+    ]:
+        answer_service, _, fixed = service()
+        answer = answer_service.answer(A, question)
+        assert_well_formed(answer)
+        assert answer.route == "fixed_query", question
+        assert fixed.calls == ["count_invoices"], question
+        assert answer.sentences[0].text == sentence, question
+        assert [(c.kind, c.document_name, c.snippet) for c in answer.citations] == [
+            ("value", "bill-1042.pdf", "invoice_number: INV-1042")
+        ], question
+    july = service()[0].answer(A, "How many invoices in July 2026?")
+    assert july.status == "not_found"  # the one invoice is dated 12 Aug
 
 
 def test_highest_single_value_with_no_date() -> None:

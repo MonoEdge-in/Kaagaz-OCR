@@ -611,3 +611,100 @@ def test_the_fields_query_finds_what_the_full_list_found_among_the_fields_asked(
     # Left out: a card's net_worth, a line's amount, a waiting, a binned and an older document's.
     assert found[customer] == {"party_name", "date", "invoice_date", "total_amount"}
     assert found[other] == {"amount"}
+
+
+# --- invoice counts: one per row of the invoices table (#228, restored 24 Oct 2026) ---------
+
+_INVOICE_ROW = text(
+    "INSERT INTO invoices (customer_id, document_id, invoice_number, invoice_date, label, check_status,"
+    " check_reasons) VALUES (:c, :d, :number, :day, :label, :status, CAST(:reasons AS text[]))"
+)
+
+
+def add_invoice_row(
+    db: Database,
+    customer: str,
+    day: date | None,
+    *,
+    label: str = "verified",
+    check_status: str = "passed",
+    document_status: str = "ready",
+) -> str:
+    """A ready invoice document, its invoices row and its invoice number value (with a box, so it
+    can be cited). Returns the value's id."""
+    number = f"INV-{uuid.uuid4().hex[:6]}"
+    document = add_document(db, customer, f"{number}.pdf", status=document_status, detected_type="pdf")
+    value_id = str(uuid.uuid4())
+    value = {
+        "id": value_id,
+        "key": "document",
+        "field": "invoice_number",
+        "text": number,
+        "number": None,
+        "day": None,
+        "page": 1,
+        "region": json.dumps({"kind": "box", "page": 1, "box": [0.1, 0.1, 0.5, 0.15]}),
+        "label": label,
+        "reason": "readers_agree" if label == "verified" else "single_reader",
+    }
+    add_values(db, customer, document, [value])
+    reasons = "{total_mismatch}" if check_status == "failed" else "{}"
+    with db.customer(customer) as conn:
+        conn.execute(
+            _INVOICE_ROW,
+            {
+                "c": customer,
+                "d": document,
+                "number": number,
+                "day": day,
+                "label": label,
+                "status": check_status,
+                "reasons": reasons,
+            },
+        )
+    return value_id
+
+
+def test_count_invoices_counts_each_invoice_inside_the_month(db: Database) -> None:
+    customer, _ = new_customer(db)
+    in_august = {
+        add_invoice_row(db, customer, date(2026, 8, 5)),
+        add_invoice_row(db, customer, date(2026, 8, 31)),
+    }
+    add_invoice_row(db, customer, date(2026, 7, 31))
+    add_invoice_row(db, customer, None)  # no date read: counted overall, never inside a month
+    fixed = PgFixedQueries(db)
+
+    [august] = fixed.count_invoices(customer, *AUGUST)
+    assert (august.number, august.records, august.verified) == (Decimal(2), 2, True)
+    assert {ref.value_id for ref in august.values} == in_august
+    [overall] = fixed.count_invoices(customer, None, None)
+    assert (overall.number, overall.records) == (Decimal(4), 4)
+    assert fixed.count_invoices(customer, date(2026, 6, 1), date(2026, 7, 1)) == []
+
+
+def test_one_invoice_not_verified_or_not_passing_its_checks_makes_the_count_unverified(db: Database) -> None:
+    for label, check_status in [
+        ("needs_review", "passed"),
+        ("verified", "failed"),
+        ("verified", "not_checked"),
+    ]:
+        customer, _ = new_customer(db)
+        add_invoice_row(db, customer, date(2026, 8, 5))
+        add_invoice_row(db, customer, date(2026, 8, 6), label=label, check_status=check_status)
+        [august] = PgFixedQueries(db).count_invoices(customer, *AUGUST)
+        assert (august.number, august.verified) == (Decimal(2), False), (label, check_status)
+
+
+def test_count_invoices_leaves_out_documents_that_are_not_ready(db: Database) -> None:
+    customer, _ = new_customer(db)
+    add_invoice_row(db, customer, date(2026, 8, 5))
+    add_invoice_row(db, customer, date(2026, 8, 6), document_status="received")
+    [august] = PgFixedQueries(db).count_invoices(customer, *AUGUST)
+    assert august.number == Decimal(1)
+
+
+def test_count_invoices_needs_start_and_end_together(db: Database) -> None:
+    customer, _ = new_customer(db)
+    with pytest.raises(ValueError, match="start and end go together"):
+        PgFixedQueries(db).count_invoices(customer, date(2026, 8, 1), None)

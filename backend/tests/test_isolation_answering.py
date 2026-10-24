@@ -20,6 +20,7 @@ from kaagaz.answering.service import AnswerService
 from kaagaz.db.engine import Database
 from tests.db_support import new_customer
 from tests.settings_factory import make_settings
+from tests.test_answering_fixed_queries_db import add_invoice_row
 from tests.test_answering_neighbours_db import add, near
 
 pytestmark = pytest.mark.db
@@ -157,3 +158,17 @@ def test_b_never_gets_as_pieces_as_neighbours(db: Database) -> None:
 
     assert near(db, a, [the_hit]) == [before.piece_id, after.piece_id]
     assert near(db, b, [the_hit]) == []
+
+
+def test_b_never_counts_as_invoices(db: Database) -> None:
+    """#228's invoice count reads the invoices table: still only the asker's own rows."""
+    a, _ = new_customer(db)
+    b, _ = new_customer(db)
+    add_invoice_row(db, a, date(2026, 8, 5))
+    add_invoice_row(db, a, date(2026, 8, 6))
+    fixed = PgFixedQueries(db)
+
+    [counted] = fixed.count_invoices(a, None, None)
+    assert counted.number == 2
+    assert fixed.count_invoices(b, None, None) == []
+    assert fixed.count_invoices(b, date(2026, 8, 1), date(2026, 9, 1)) == []
