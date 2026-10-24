@@ -6,7 +6,8 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy import text
 
-from kaagaz.answering.clarify import Entity, Pending, PgVocabulary, after_reply, outcome
+from kaagaz.answering.clarify import Entity, Pending, PgVocabulary, after_reply, first_step, outcome
+from kaagaz.answering.rewrite import Plan
 from kaagaz.db.engine import Database
 from tests.db_support import insert_document, insert_key, new_customer
 
@@ -78,3 +79,26 @@ def test_a_pick_moved_to_trash_since_is_dropped_when_it_is_answered(db: Database
     with db.customer(customer) as conn:
         conn.execute(text("UPDATE documents SET deleted_at = now() WHERE id = :d"), {"d": document})
     assert after_reply(PgVocabulary(db), customer, pending).question == "Land in Puny?"
+
+
+def test_a_missing_subject_offers_the_chats_cited_properties_of_its_own_company_only(db: Database) -> None:
+    a, _ = company(db)  # PRD 6 B: the documents cited earlier, never another company's
+    b, b_document = company(db, ("property", "Survey 99/9"))
+    with db.customer(a) as conn:
+        old = insert_document(conn, a, created_at=datetime(2026, 1, 5, tzinfo=UTC))
+        insert_key(conn, a, old, "property", "Survey 45/2")
+        new = insert_document(conn, a)
+        for n in range(101, 108):
+            insert_key(conn, a, new, "property", f"Gat {n}")
+    which = Plan("documents", (), (), None, ("property",))
+
+    def choices(customer: str, *cited: str) -> list[tuple[str, list[str]]]:
+        asked = first_step(PgVocabulary(db), customer, "What is the area?", which, False, cited).clarify
+        assert asked is not None
+        return [(c["label"], c.get("document_ids", [])) for c in asked["choices"]]
+
+    gats = [(f"Gat {n}", [new]) for n in range(101, 106)]
+    other: tuple[str, list[str]] = ("Something else", [])
+    assert choices(a) == [*gats, ("Gat 106", [new]), other]  # 45/2 is not among the newest
+    assert choices(a, b_document, old) == [("Survey 45/2", [old]), *gats, other]  # never B's 99/9
+    assert choices(b, old) == [("Survey 99/9", [b_document]), other]  # never A's 45/2

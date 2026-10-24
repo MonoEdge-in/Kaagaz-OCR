@@ -322,6 +322,7 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
             pins=pins,
             pending=pending,
             clarify=switched["nlq_clarify"],
+            cited=_cited(recent),
         )
         if reply.unavailable:  # KZ-006: an outage is never "not found"; nothing is stored
             raise ApiError(503, "backend_unavailable", headers={"Retry-After": "60"})
@@ -582,6 +583,19 @@ def _history(recent: Sequence[RowMapping]) -> list[Turn]:
             turns.append(Turn(str(row["text"]), answer))
             answer = None
     return turns[::-1]
+
+
+def _cited(recent: Sequence[RowMapping]) -> list[str]:
+    """The documents the answered answers of ``recent`` (newest first) cite, newest turn first,
+    once each: the stored messages' own, never the client's (PRD 6 B, a missing subject)."""
+    cited = (
+        str(citation["document_id"])
+        for row in recent
+        if row["role"] == "assistant" and (row["answer"] or {}).get("status") == "answered"
+        for citation in row["answer"].get("citations", [])
+        if isinstance(citation, dict) and citation.get("document_id")
+    )
+    return list(dict.fromkeys(cited))
 
 
 def _saved_scope(recent: Sequence[RowMapping]) -> ScopeBody | None:

@@ -539,6 +539,7 @@ class AnswerService:
         pins: Sequence[Pin] = (),
         pending: Pending | None = None,
         clarify: bool = True,
+        cited: Sequence[str] = (),
     ) -> Answer:
         """Answer ``question`` for ``customer_id`` only, from documents inside ``scope``;
         ``history`` is the conversation's earlier turns, oldest first; ``user_id``, the
@@ -551,15 +552,17 @@ class AnswerService:
         (``models.NO_MODEL``: the asker's Ask setting is None, 0038) answers as with the model
         off: no model call at all, the lines found quoted. ``pending``: the stored clarify
         this answers (step 18, ``clarify.reply_to``), whose question is answered instead;
-        ``clarify`` False (the ``nlq_clarify`` switch, 0052): no plan, so no clarify."""
+        ``clarify`` False (the ``nlq_clarify`` switch, 0052): no plan, so no clarify. ``cited``:
+        the documents the conversation's earlier answers cite, newest turn first (a missing
+        subject's choices, ``clarify.first_step``)."""
         if choice is not None and not choice.agents:
             keyless = copy.copy(self)  # shallow: the same ports, without the model clients
             keyless._model = keyless._translator = None
             return keyless._respond(
-                customer_id, question, scope, history, user_id, memory, None, pins, pending, clarify
+                customer_id, question, scope, history, user_id, memory, None, pins, pending, clarify, cited
             )
         return self._respond(
-            customer_id, question, scope, history, user_id, memory, choice, pins, pending, clarify
+            customer_id, question, scope, history, user_id, memory, choice, pins, pending, clarify, cited
         )
 
     def _respond(
@@ -574,6 +577,7 @@ class AnswerService:
         pins: Sequence[Pin],
         pending: Pending | None,
         clarify: bool = True,
+        cited: Sequence[str] = (),
     ) -> Answer:
         """``answer``'s work, timed by it."""
         if scope.matches_nothing:
@@ -613,7 +617,7 @@ class AnswerService:
         step = Step(done.question or question, ())
         narrowed = replace(scope, timezone=EVERYTHING.timezone) != EVERYTHING  # any filter at all
         if done.plan is not None and vocabulary is not None:
-            step = first_step(vocabulary, customer_id, step.question, done.plan, narrowed)
+            step = first_step(vocabulary, customer_id, step.question, done.plan, narrowed, cited)
         return self._step_answer(
             customer_id, step, question, scope, user_id, whole, done.aspects, choice, pins
         )
