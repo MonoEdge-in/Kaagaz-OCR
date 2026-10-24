@@ -10,7 +10,15 @@ import { fieldText, reasonText, voteText } from "./labels";
 import { CONFIDENCE_NOTE, confidenceText, notSure, routeOrigin, visibleText } from "./scanned";
 import styles from "./ScannedText.module.css";
 
-export function WhatWasRead({ value, page }: { value: ExtractedValue; page: PageSummary | undefined }) {
+export function WhatWasRead({
+  value,
+  page,
+  open = false,
+}: {
+  value: ExtractedValue;
+  page: PageSummary | undefined;
+  open?: boolean; // shown open inside the card's own closed section
+}) {
   const pageNo = value.region.page;
   const confidence = confidenceText(value.confidence, routeOrigin(page?.route));
   const scanned =
@@ -18,7 +26,7 @@ export function WhatWasRead({ value, page }: { value: ExtractedValue; page: Page
       ? pageLink(value.document_id, pageNo, value.region, { scanned: true })
       : null;
   return (
-    <details className={styles.read}>
+    <details className={styles.read} open={open}>
       <summary>
         What was read
         <span className="visually-hidden">{`: ${fieldText(value.field)}`}</span>

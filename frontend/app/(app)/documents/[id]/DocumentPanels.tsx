@@ -72,6 +72,7 @@ function SpotButton({
   );
 }
 
+
 /** The value's "What was read", when there is a value. */
 function ReadAt({ detail, value }: { detail: DocumentDetail; value: ExtractedValue | undefined }) {
   if (!value) return null;
@@ -82,6 +83,13 @@ function ReadAt({ detail, value }: { detail: DocumentDetail; value: ExtractedVal
 
 export function CardPanel({ detail, active, onShow }: PanelProps) {
   const card = detail.card;
+  const sections = card === null ? [] : cardSections(card, detail.values);
+  const readings = sections.flatMap((section) =>
+    section.items.flatMap((item) => {
+      const value = valueAt(detail.values, item.region);
+      return value ? [{ item, value }] : [];
+    }),
+  );
   return (
     <section className={styles.panel} aria-labelledby="card-heading">
       <h2 id="card-heading" className={styles.valuesHeading}>
@@ -105,21 +113,39 @@ export function CardPanel({ detail, active, onShow }: PanelProps) {
             </div>
           </dl>
           {/* The AI summary is at the top of the panel now (SummaryCard.tsx), shown once. */}
-          {cardSections(card, detail.values).map((section) => (
+          {sections.map((section) => (
             <div key={section.heading}>
               <h3 className={styles.panelHeading}>{section.heading}</h3>
               <ul className={styles.panelList}>
                 {section.items.map((item) => (
                   <li key={item.key}>
                     <span className={styles.fieldCell}>{item.name}: </span>
-                    <SpotButton spot={item} text={item.text} active={active} onShow={onShow} />
-                    <div className={styles.pageNote}>{spotNote(item)}</div>
-                    <ReadAt detail={detail} value={valueAt(detail.values, item.region)} />
+                    <SpotButton spot={item} text={item.text} active={active} onShow={onShow} />{" "}
+                    <span className={styles.pageInline}>{spotNote(item)}</span>
                   </li>
                 ))}
               </ul>
             </div>
           ))}
+          {/* Tushar, 24 Oct 2026: every "What was read" in one closed section at the end. */}
+          {readings.length > 0 && (
+            <details className={styles.readAll}>
+              <summary>What the AI read, value by value</summary>
+              <ul className={styles.panelList}>
+                {readings.map(({ item, value }) => (
+                  <li key={item.key}>
+                    <span className={styles.fieldCell}>{item.name}: </span>
+                    <bdi dir="auto">{item.text}</bdi>
+                    <WhatWasRead
+                      value={value}
+                      page={detail.pages.find((p) => p.page_no === value.region.page)}
+                      open
+                    />
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
         </>
       )}
     </section>
