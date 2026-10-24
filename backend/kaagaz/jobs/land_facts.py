@@ -20,7 +20,8 @@ sets a document back to received and keeps only remembered fixes).
   (else ``corrected``: kept, never overwritten); its ``land:%`` values are replaced (their
   keys go with them), the card owner values the land values repeat are deleted while still
   Needs review, the word changes in force are written again into the new values only,
-  the keys written and one ``document.land_facts`` audit row with the prompt hash. The
+  the keys written and one ``document.land_facts`` audit row with the prompt hash (and
+  ``truncated`` when text past the last window went unread, ``land.read_land``). The
   document stays Ready; a crash leaves the earlier state; a replay finds it done.
 * **The cap** (``max_usd``): a document is never started when what was spent plus the
   costliest document so far would pass it; a call whose cost OpenRouter did not report
@@ -250,7 +251,7 @@ def _one(
             f"document {document}: the model failed ({reading.error_code}); run land-facts again to go on"
         )
     values = _labelled(db, customer, document, reading.values, stored, settings, storage, checker)
-    outcome = _save(db, customer, document, stored, values, calls)
+    outcome = _save(db, customer, document, stored, values, calls, reading.truncated)
     out.write(
         f"document {document}: {outcome}, {len(values)} values, {calls} calls, {tokens} tokens,"
         f" cost_usd {shown}, per 1000 characters {per_1000}\n"
@@ -349,7 +350,13 @@ def _checked(value: ExtractedValue, stored: _Stored) -> bool:
 
 
 def _save(
-    db: Database, customer: str, document: str, stored: _Stored, values: list[ExtractedValue], calls: int
+    db: Database,
+    customer: str,
+    document: str,
+    stored: _Stored,
+    values: list[ExtractedValue],
+    calls: int,
+    truncated: bool,
 ) -> str:
     """The fenced transaction (the module docstring); its outcome: done, changed or corrected."""
     ids = {"c": customer, "d": document}
@@ -375,6 +382,7 @@ def _save(
             "prompt": LAND_PROMPT_HASH,
             "values": len(values),
             "calls": calls,
+            "truncated": truncated,
         }
         audit.record(conn, customer, actor_user_id=None, action=ACTION, target_type="document",
                      target_id=document, details=details)  # fmt: skip

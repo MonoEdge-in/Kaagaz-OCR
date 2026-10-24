@@ -246,3 +246,17 @@ def test_the_cap_and_an_unknown_cost_and_a_model_error_stop_the_run(db: Database
     printed = _reread(db, customer, Billed(ModelUnavailable("server_error")))
     assert f"stopped: document {third}: the model failed (model_server_error)" in printed
     assert _rows(db, customer, LAND, d=third) == []
+
+
+def test_the_audit_row_says_when_text_past_the_last_window_went_unread(db: Database) -> None:
+    customer, _user = new_customer(db)
+    document = _document(db, customer)
+    one_window = make_settings(ocr_engine="rapidocr", extract_window_chars=40, extract_window_overlap=5,
+                               extract_max_windows=1)  # fmt: skip
+    out = io.StringIO()
+    storage = MemoryStorage()
+    land_facts.reread(db, Billed(REPLY), one_window, [customer], max_usd=1.0, out=out, storage=storage,
+                      checker=None)  # fmt: skip
+    assert f"document {document}: done" in out.getvalue()
+    audited = "SELECT details ->> 'truncated' FROM audit_log WHERE action = :a"
+    assert _rows(db, customer, audited, a=land_facts.ACTION) == [("true",)]
