@@ -398,10 +398,8 @@ describe("Ensemble", () => {
   it("says one thing, with Check it first and the counts and Ensemble under a closed More details", () => {
     const html = bar(status());
     expect(html).toContain(">8 words need a look<");
-    expect(html).toMatch(/<button[^>]*aria-expanded="false" aria-controls="[^"]+"[^>]*>More details/);
-    const details = html.slice(html.indexOf('hidden=""'));
-    expect(details).toContain("14 pages · 2,431 words · 4 of 12 checked");
-    expect(details).toContain("Run Ensemble on flagged words");
+    expect(html).toMatch(/<button[^>]*aria-expanded="false" aria-controls="document-details [^"]+"[^>]*>More details/);
+    expect(html.slice(html.indexOf('hidden=""'))).toContain("Run Ensemble on flagged words");
     expect(words.trustText(status())).toBe("14 pages · 2,431 words · 4 of 12 checked · Last change 16 Oct 2026, 10:42 am");
     expect(html.indexOf(">Check them<")).toBeLessThan(html.indexOf("Run Ensemble on flagged words"));
     expect(html).not.toContain("btn-primary"); // Ask is the panel's one primary

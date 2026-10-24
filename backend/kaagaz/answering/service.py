@@ -658,6 +658,7 @@ class AnswerService:
         narrowed = replace(scope, timezone=EVERYTHING.timezone) != EVERYTHING  # any filter at all
         if done.plan is not None and vocabulary is not None:
             step = first_step(vocabulary, customer_id, step.question, done.plan, narrowed, cited)
+        kept = early if step.question == question else None  # step 19: searched the question as asked
         return self._step_answer(
             customer_id, step, question, scope, user_id, whole, done.aspects, choice, pins, kept
         )
