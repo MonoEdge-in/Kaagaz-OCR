@@ -85,6 +85,8 @@ Every value keeps its raw reading, the second reading if there is one, its page,
 
 The review queue shows only values of each family's current, ready version, out of Trash: an older version's values no longer reach any answer. A reviewer picks the first reading, the second, or types the value. The fix is logged in `corrections`. If they choose to remember it, it goes into `learned_corrections` and is applied to this customer's later documents. The original file never changes.
 
+Land facts (PRD 6 D2, `extraction/land.py`): after the card, a land record or a contract with a survey or khata number is read in the invoice's windows (billed `land`) for its properties' places and its owners, buyers and sellers with their shares as printed (a number only for a printed percentage); they are quoted values, labelled like the invoice's, and their people, places and properties are keyed in `value_keys` on every save, review resolve and word change.
+
 ## Version spotting
 
 A new upload that looks like a new version of a file already there (Phase 2 PRD 1, V1 to V8; `kaagaz/versions.py`, `kaagaz/db/versions.py`). It runs in the worker right after filing, once, on the document's first ready, while it is alone in its family, and only with the `version_spotting` switch on for the platform and the organisation.

@@ -50,7 +50,7 @@ from typing import Any
 from sqlalchemy import Connection, RowMapping, TextClause, text
 
 from kaagaz.chunking.script import is_devanagari, latin_spelling
-from kaagaz.db import audit
+from kaagaz.db import audit, value_keys
 from kaagaz.db import review as review_sql
 from kaagaz.db.trash import lock_family
 from kaagaz.extraction.flags import (
@@ -63,7 +63,8 @@ from kaagaz.extraction.flags import (
     value_flag,
     value_key,
 )
-from kaagaz.extraction.parsing import parse_amount, parse_date
+from kaagaz.extraction.land import value_number
+from kaagaz.extraction.parsing import parse_date
 
 PERSON_ACTIONS = ("confirm", "edit")
 ENSEMBLE_ACTIONS = ("resolve", "keep")
@@ -378,6 +379,7 @@ def undo_change(
                     "reason": before["reason"],
                 },
             )
+    value_keys.key_values(conn, customer_id, list(values))  # the restored texts' keys (0049)
     for entry in applied.get("pieces", []):
         if entry["id"] in pieces:
             params = {"c": customer_id, "id": entry["id"], "t": entry["before"], "latin": entry["latin"]}
@@ -528,9 +530,10 @@ def _apply(
                 details={"word_change": change_id},
             )
         else:
+            number = value_number(str(value["field"]), final)  # a land share's only as a percentage
             conn.execute(
                 _SET_VALUE_TEXT,
-                {**ids, "v": str(value["id"]), "t": final, "n": parse_amount(final), "dt": parse_date(final)},
+                {**ids, "v": str(value["id"]), "t": final, "n": number, "dt": parse_date(final)},
             )
             if mine and votes is not None:
                 conn.execute(_SET_VOTES, {**ids, "v": str(value["id"]), "votes": json.dumps(votes)})
@@ -551,6 +554,7 @@ def _apply(
             written_pieces.append(
                 {"id": str(piece["id"]), "before": old, "latin": piece["text_latin"], "after": new_piece}
             )
+    value_keys.key_values(conn, ids["c"], [str(entry["id"]) for entry in written_values])  # 0049
     return {"values": written_values, "pieces": written_pieces}
 
 
