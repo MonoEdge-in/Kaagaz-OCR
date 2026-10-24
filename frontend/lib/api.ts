@@ -675,9 +675,9 @@ export const listFailed = (params: { limit?: number; offset?: number } = {}) =>
 /** Answer quality (PRD 6 F2): Not useful answers given after the notice, and weekly counts. */
 export const getAnswerQuality = (params: { status: "open" | "handled"; weeks: number; limit: number; offset: number }) =>
   request<AnswerQualityReply>("GET", `/admin/answer-quality${query(params)}`);
-/** Mark as handled, or open it again (Undo). */
-export const setAnswerHandled = (id: string, handled: boolean) =>
-  request<{ id: string; handled_at: string | null }>("PUT", `/admin/answer-quality/${id}/handled`, { handled });
+/** Mark as handled, or open it again; `seen` is the given_at shown (409 when rated again since). */
+export const setAnswerHandled = (id: string, handled: boolean, seen: string) =>
+  request<{ id: string; handled_at: string | null }>("PUT", `/admin/answer-quality/${id}/handled`, { handled, seen });
 /** AI use from `from` to `to` (YYYY-MM-DD, both included; the server's default when left out), for one user when given. */
 export type UsageParams = { from?: string; to?: string; user_id?: string };
 export const getAdminUsage = (params: UsageParams = {}) =>

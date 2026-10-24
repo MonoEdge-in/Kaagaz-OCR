@@ -5,7 +5,7 @@
 // the answer as Ask shows it (read-only), what went wrong, their words, and when. Open or
 // Handled, over the last 4 or 12 weeks; Useful and Not useful counts for each week, as
 // numbers. Mark as handled takes the answer off the Open list at once, with Undo for 8
-// seconds (the shared Toast). Everything is shown as plain text; the only links are the
+// seconds (the shared Toast, focused); it is sent once Undo has gone. Everything is shown as plain text; the only links are the
 // answer's own source links, built from ids. Cards in one column below 48rem.
 
 import { useEffect, useRef, useState } from "react";
@@ -50,6 +50,35 @@ const PERIOD: { value: QualityWeeks; label: string }[] = [{ value: "4", label: "
 const answerMessage = (item: AnswerQualityItem): Message =>
   ({ id: item.message_id, role: "assistant", text: "", created_at: item.given_at, answer: item.answer, feedback: null });
 
+/** The reply without one item, its total one less. */
+export function withoutItem(data: AnswerQualityReply, id: string): AnswerQualityReply {
+  return { ...data, items: data.items.filter((each) => each.id !== id), total: Math.max(0, data.total - 1) };
+}
+
+/**
+ * Mark as handled or Open again, held until its Undo has gone: ``flush`` sends it (the toast
+ * closing, another one starting, or the panel closing); ``undo`` drops it, so Undo never has to
+ * put a handled time or admin back on the server. ``onFail`` hears a refusal.
+ */
+export function deferred(send: (item: AnswerQualityItem, handled: boolean) => Promise<unknown>) {
+  let waiting: { item: AnswerQualityItem; handled: boolean; onFail(caught: unknown): void } | null = null;
+  const flush = () => {
+    const now = waiting;
+    waiting = null;
+    if (now) send(now.item, now.handled).catch(now.onFail);
+  };
+  return {
+    start(item: AnswerQualityItem, handled: boolean, onFail: (caught: unknown) => void) {
+      flush();
+      waiting = { item, handled, onFail };
+    },
+    undo() {
+      waiting = null;
+    },
+    flush,
+  };
+}
+
 /** What went wrong, in the form's words: "Wrong figure, Other". */
 export function reasonsText(codes: ReasonCode[]): string {
   const label = (code: ReasonCode) => REASONS.find((reason) => reason.code === code)?.label ?? code;
@@ -89,32 +118,25 @@ export function AnswerQualityPanel() {
     headingRef.current?.focus();
   };
 
-  // The answer leaves this list at once; Undo (8 s) puts it back where it was.
+  const [queue] = useState(() => deferred((item: AnswerQualityItem, handled: boolean) => setAnswerHandled(item.id, handled, item.given_at)));
+  useEffect(() => () => queue.flush(), [queue]); // leaving the tab sends what is waiting
+
+  // The answer leaves this list at once and is sent when its Undo (8 s) has gone; Undo puts
+  // it back. A refusal (a new rating since, 409) puts it back and says so.
   const handle = (item: AnswerQualityItem) => {
-    const handled = status === "open";
     const before = reply;
-    const drop = (data: AnswerQualityReply) => ({
-      ...data,
-      items: data.items.filter((each) => each.id !== item.id),
-      total: Math.max(0, data.total - 1),
+    if (reply) setReply({ ...reply, data: withoutItem(reply.data, item.id) });
+    queue.start(item, status === "open", (caught) => {
+      setReply(before);
+      setToast({ text: retryErrorText(caught) });
     });
-    if (reply) setReply({ ...reply, data: drop(reply.data) });
-    setAnswerHandled(item.id, handled).then(
-      () =>
-        setToast({
-          text: handled ? QUALITY_TEXT.handled : QUALITY_TEXT.reopened,
-          undo: () => {
-            setAnswerHandled(item.id, !handled).then(
-              () => setReply(before),
-              (caught: unknown) => setToast({ text: retryErrorText(caught) }),
-            );
-          },
-        }),
-      (caught: unknown) => {
+    setToast({
+      text: status === "open" ? QUALITY_TEXT.handled : QUALITY_TEXT.reopened,
+      undo: () => {
+        queue.undo();
         setReply(before);
-        setToast({ text: retryErrorText(caught) });
       },
-    );
+    });
   };
 
   return (
@@ -130,7 +152,16 @@ export function AnswerQualityPanel() {
         onRetry={() => setAttempt((n) => n + 1)}
         onHandle={handle}
       />
-      <Toast message={toast?.text ?? null} onUndo={toast?.undo} onClose={() => setToast(null)} />
+      {/* Focus goes to Undo: the card that had it is gone, and Undo lasts 8 seconds. */}
+      <Toast
+        message={toast?.text ?? null}
+        onUndo={toast?.undo}
+        focusUndo
+        onClose={() => {
+          queue.flush();
+          setToast(null);
+        }}
+      />
     </>
   );
 }

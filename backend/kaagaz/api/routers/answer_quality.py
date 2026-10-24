@@ -6,9 +6,11 @@
   the notice told them), the question, the answer as it may be shown now (a source moved to
   Trash or deleted loses its words, ``answer_with_source_states``), the reasons, the typed
   reason and when it was given; and Useful and Not useful counts for each of those weeks.
-* ``PUT /admin/answer-quality/{feedback_id}/handled`` ``{handled}``: Mark as handled, or
-  open it again (the screen's Undo). Audited as ``feedback.handled`` or ``feedback.reopened``
-  with ids only, never the question, the answer or the reason.
+* ``PUT /admin/answer-quality/{feedback_id}/handled`` ``{handled, seen}``: Mark as handled,
+  or open it again, while it is still the rating the admin saw (``seen``, its ``given_at``):
+  one given again since (a new reason, the same id) is 409 ``rated_again``. Audited as
+  ``feedback.handled`` or ``feedback.reopened`` with ids only, never the question, the
+  answer or the reason. The screen sends it once its Undo has gone, so Undo sends nothing.
 
 Admins only, on the router (``require_admin_session``): a member or reviewer gets 403.
 Another company's id matches no row (row level security and the customer filter): 404.
@@ -43,6 +45,10 @@ class HandledBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     handled: bool
+    seen: datetime  # the given_at the admin saw
+
+
+RATED_AGAIN = "This answer was marked again. Reload to see the new reason."
 
 
 def first_monday(now: datetime, zone: str, weeks: int) -> datetime:
@@ -106,8 +112,10 @@ def set_handled(
 ) -> dict[str, Any]:
     with context.db.customer(user.customer_id) as conn:
         row = quality_sql.set_handled(
-            conn, user.customer_id, str(feedback_id), user.user_id, handled=body.handled
+            conn, user.customer_id, str(feedback_id), user.user_id, handled=body.handled, seen=body.seen
         )
+        if row is None and quality_sql.rated_again(conn, user.customer_id, str(feedback_id), body.seen):
+            raise ApiError(409, "rated_again", RATED_AGAIN)
         if row is None:
             raise ApiError(404, "not_found")
         audit.record(

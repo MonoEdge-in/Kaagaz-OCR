@@ -19,9 +19,11 @@ export interface ToastProps {
   message: string | null;
   onUndo?(): void;
   onClose(): void;
+  /** Move the focus to Undo when it appears: for an action that removed what had the focus. */
+  focusUndo?: boolean;
 }
 
-export function Toast({ message, onUndo, onClose }: ToastProps) {
+export function Toast({ message, onUndo, onClose, focusUndo = false }: ToastProps) {
   const [held, setHeld] = useState(false);
   const close = useEffectEvent(onClose);
   // The words last shown, kept while the toast fades out after `message` goes null.
@@ -55,8 +57,10 @@ export function Toast({ message, onUndo, onClose }: ToastProps) {
           <p>{shown}</p>
           {onUndo && (
             <button
+              key={shown}
               type="button"
               className="btn btn-quiet"
+              autoFocus={focusUndo}
               onClick={() => {
                 onUndo();
                 onClose();
