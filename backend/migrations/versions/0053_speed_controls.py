@@ -77,10 +77,10 @@ FUNCTIONS = {
         v_documents integer;
         v_pages integer;
     BEGIN
+        {_OLD._ACTOR}
         IF p_rpm NOT {RPM} OR p_documents < 1 OR p_pages < 1 THEN
             RAISE EXCEPTION 'speed setting out of range' USING ERRCODE = 'check_violation';
         END IF;
-        {_OLD._ACTOR}
         {_OLD._STEP_UP}
         SELECT p.model_rpm, p.documents_at_once, p.pages_at_once INTO v_rpm, v_documents, v_pages
         FROM public.platform_ai_settings p FOR UPDATE;

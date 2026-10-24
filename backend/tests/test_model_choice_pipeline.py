@@ -20,6 +20,7 @@ from unittest import mock
 import pytest
 from sqlalchemy.exc import OperationalError
 
+from kaagaz import pipeline
 from kaagaz.ai import usage
 from kaagaz.ai.client import ModelUnavailable
 from kaagaz.chunking.sections import MapBudget
@@ -276,6 +277,27 @@ def test_each_job_reads_at_most_the_super_admins_pages_at_once(ledger: _Ledger) 
     job_reading.reading, reader.most = replace(job_reading.reading, pages_at_once=None), 0
     assert system.totals(system.run(make_pdf([SCANNED] * 3))).status == "ready"
     assert reader.most > 1  # the next job: OCR_PAGE_CONCURRENCY again
+
+
+def test_each_jobs_time_left_counts_its_own_pages_at_once(ledger: _Ledger) -> None:
+    """Package S: the estimate assumes the pages the job really reads at once, not
+    OCR_PAGE_CONCURRENCY, once the super admin lowered it."""
+    job_reading = _Reading(USER)
+    settings = make_settings(page_image_dpi=72, ocr_dpi=72, ocr_engine="gemini", ocr_page_concurrency=4)
+    system = gemini_rig(
+        ScriptedReader({1: page_read(TOTAL), 2: page_read(TOTAL)}),
+        checker=FakeChecker(),
+        job_reading=job_reading,
+        usage=_scopes(ledger),
+        settings=settings,
+        ocr_page_concurrency=4,
+    )
+    with mock.patch("kaagaz.pipeline.rates", wraps=pipeline.rates) as estimated:
+        job_reading.reading = replace(job_reading.reading, pages_at_once=1)
+        system.run(make_pdf([SCANNED, SCANNED]))
+        job_reading.reading = replace(job_reading.reading, pages_at_once=None)
+        system.run(make_pdf([SCANNED]))
+    assert [call.kwargs["pages_at_once"] for call in estimated.call_args_list] == [1, 4]
 
 
 # The wiring: keyless makes no query and keeps no ledger.

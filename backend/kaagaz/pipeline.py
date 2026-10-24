@@ -288,7 +288,7 @@ from kaagaz.reading.page_quality import (
     grade,
 )
 from kaagaz.reading.route import RouteDecision
-from kaagaz.reading.socket import NoReader, OnPage, pages_at_once, waiting
+from kaagaz.reading.socket import NoReader, OnPage, pages_at_once, pages_in_flight, waiting
 from kaagaz.reading.spans import (
     DIRECT_ORIGINS,
     BoxLocation,
@@ -1779,7 +1779,7 @@ class DocumentProcessor:
         return rates(
             history,
             None if self._ocr_meter is None else self._ocr_meter.name,
-            pages_at_once=self._ocr_page_concurrency,
+            pages_at_once=pages_in_flight(self._ocr_page_concurrency),  # the job's own (package S)
             scanned=detected_type in _PHOTO_TYPES,
         )
 

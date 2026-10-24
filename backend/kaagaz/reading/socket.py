@@ -109,6 +109,11 @@ def pages_at_once(most: int | None) -> Iterator[None]:
         _PAGES_AT_ONCE.reset(token)
 
 
+def pages_in_flight(size: int) -> int:
+    """The most pages read at once with ``size`` threads: the lower of it and ``pages_at_once``'s."""
+    return min(size, _PAGES_AT_ONCE.get() or size)
+
+
 class Reader(Protocol):
     @property
     def name(self) -> str: ...  # read-only: the image reader's is its engine's
@@ -231,7 +236,7 @@ class PagesInOrder:
         self._window: deque[_Page] = deque()
         self._on_wait = _ON_WAIT.get()  # the read's heartbeat while it waits (``waiting``)
         # The most pages read at once: the pool's size, or lower (``pages_at_once``).
-        self._size = 0 if pool is None else min(pool.size, _PAGES_AT_ONCE.get() or pool.size)
+        self._size = 0 if pool is None else pages_in_flight(pool.size)
 
     def __enter__(self) -> Self:
         return self

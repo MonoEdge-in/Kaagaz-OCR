@@ -325,6 +325,28 @@ def test_the_operator_sets_them_with_a_fresh_code_within_the_servers_caps_audite
     assert audited[1][2]["old_model_rpm"] == 100 and audited[1][2]["new_model_rpm"] is None
 
 
+def test_a_changed_rpm_frees_the_schedulers_next_turn_and_only_then(db: Database) -> None:
+    """0053: a turn booked at the old RPM (a minute away at 1 RPM) never holds up the new one."""
+    api = Api(db)
+    operator, client = _operator(api)
+    later = "UPDATE model_rate_scheduler SET next_at = clock_timestamp() + interval '1 hour' WHERE id"
+    with saved(db):
+        _owner(db, later, {})
+        assert _put(api, operator, client, documents_at_once=1).status_code == 200
+        assert _next_turn(db) > 3500  # the RPM did not change: the booked turn stands
+        assert _put(api, operator, client, documents_at_once=1, model_rpm=600).status_code == 200
+        assert _next_turn(db) <= 0  # free at once
+
+
+def test_a_signed_out_operator_is_refused_before_any_value_is_checked(db: Database) -> None:
+    with db.engine.begin() as conn:
+        conn.execute(text("SET LOCAL ROLE kaagaz_operator"))
+        outcome = conn.execute(
+            text("SELECT kaagaz_op_set_speed(:o, 0, 0, 0, 1)"), {"o": str(uuid.uuid4())}
+        ).scalar_one()
+    assert outcome == "signed_out"
+
+
 def test_someone_who_is_not_the_operator_is_refused(db: Database) -> None:
     api = Api(db)
     admin = api.admin_sign_in(api.customer()[0])  # an organisation's admin, signed in
