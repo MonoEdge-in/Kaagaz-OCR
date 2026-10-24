@@ -18,7 +18,8 @@ The steps (docs/architecture.md):
 3. ``intent.plan_fixed``: a fixed query, only when every part resolves.
 4. **Fixed route**: run the query; the sentence is a template filled only
    from the query's result (numbers written the Indian way). Citations are
-   the values used. No rows: not found.
+   the values used. No rows: not found. A highest or lowest resting on a value
+   not verified says so; a total follows the numbers rule (PRD 6 C, totals.py).
    **Unchecked**: no plan because no checked value holds the figure, but an
    unchecked card value does: no number, a calm line saying it is in these
    documents, and the documents where it appears (status ``unchecked``, answering/unchecked.py).
@@ -211,6 +212,7 @@ from kaagaz.answering.rewrite import MAX_REPLY_TOKENS as REWRITE_REPLY_TOKENS
 from kaagaz.answering.rewrite import SYSTEM_PROMPT as REWRITE_PROMPT
 from kaagaz.answering.rewrite import Turn, rewrite
 from kaagaz.answering.sanitize import clean_snippet, clean_text
+from kaagaz.answering.totals import tell
 from kaagaz.answering.translate import target_scripts, translate
 from kaagaz.answering.unchecked import PgUncheckedValues, UncheckedValues, unchecked_sentence
 from kaagaz.answering.verify import numbers_in, unchecked_cross_script, verify
@@ -762,6 +764,8 @@ class AnswerService:
         )
 
     def _fixed_answer(self, customer_id: str, plan: FixedPlan, shown: str, fixed: FixedQueries) -> Answer:
+        if plan.aggregate == "total":
+            return self._total_answer(customer_id, plan, shown, fixed)
         rows = self._run_plan(fixed, customer_id, plan)
         if not rows:
             return _not_found("fixed_query", shown, [], model_used=False, reason="notfound_fixed_no_rows")
@@ -771,31 +775,58 @@ class AnswerService:
         if not cited or sentence is None:
             return _not_found("fixed_query", shown, [], model_used=False, reason="notfound_fixed_no_sentence")
         citations = [
-            Citation(
-                n=index,
-                kind="value",
-                ref_id=value.value_id,
-                document_id=value.document_id,
-                document_name=value.document_name,
-                detected_type=value.detected_type,
-                page_no=value.page_no,
-                regions=regions,
-                snippet=clean_snippet(f"{value.field}: {value.value_text}"),
-                label=value.label,
-                page_from=value.page_no,
-                page_to=value.page_no,
-                label_page_no=value.label_page_no,
-                label_regions=valid_regions([value.label_region] if value.label_region else []),
-            )
-            for index, (value, regions) in enumerate(cited, start=1)
+            _value_citation(index, value, regions) for index, (value, regions) in enumerate(cited, start=1)
         ]
         citations = self._marked(customer_id, citations, {c.n: c.regions for c in citations})
         hard = any(c.hard_to_read for c in citations)
         verified = all(row.verified for row in top) and all(c.label == "verified" for c in citations)
+        sentences = [AnswerSentence(text=sentence, citations=[c.n for c in citations])]
+        if not verified and plan.aggregate != "count":
+            # PRD 6 C: the answer itself says so, beside the label.
+            unsure = [c.n for c in citations if c.label != "verified"] or [c.n for c in citations]
+            sentences.append(AnswerSentence("Some of the values behind this are not verified yet.", unsure))
         return Answer(
             status="answered",
             label="verified" if verified and not hard else "needs_review",
-            sentences=[AnswerSentence(text=sentence, citations=[c.n for c in citations])],
+            sentences=sentences,
+            citations=citations,
+            closest_documents=[],
+            route="fixed_query",
+            normalized_question=shown,
+            model_used=False,
+            reading_note=HARD_TO_READ_NOTE if hard else None,
+        )
+
+    def _total_answer(self, customer_id: str, plan: FixedPlan, shown: str, fixed: FixedQueries) -> Answer:
+        """A total, or every matching record and why there is none (PRD 6 C, answering/totals.py),
+        written in code. Verified only for a total whose every cited value is, none hard to
+        read. Two statements, and one for the word marks (F6)."""
+        metric = plan.metric or ""
+        figures = fixed.figures(
+            customer_id, metric, plan.date_fields, plan.start, plan.end, invoices=plan.invoices
+        )
+        if not figures:
+            return _not_found("fixed_query", shown, [], model_used=False, reason="notfound_fixed_no_rows")
+        period = describe_range(plan.start, plan.end) if plan.start and plan.end else ""
+        said = (_words(metric).removeprefix("total "), period, "invoice" if plan.invoices else "record")
+        told = tell(figures, *said)
+        if not told.lines:
+            return _not_found("fixed_query", shown, [], model_used=False, reason="notfound_fixed_no_sentence")
+        citations = [
+            _value_citation(n, value, regions) for n, (_, value, regions) in enumerate(told.lines, start=1)
+        ]
+        citations = self._marked(customer_id, citations, {c.n: c.regions for c in citations})
+        hard = {c.ref_id for c in citations if c.hard_to_read}
+        if hard:
+            told = tell(figures, *said, hard)  # the same records, in the same order
+        verified = told.total is not None and not hard and all(c.label == "verified" for c in citations)
+        return Answer(
+            status="answered",
+            label="verified" if verified else "needs_review",
+            sentences=[
+                AnswerSentence(told.head, [c.n for c in citations]),  # it sums up the lines below
+                *(AnswerSentence(text, [n]) for n, (text, _, _) in enumerate(told.lines, start=1)),
+            ],
             citations=citations,
             closest_documents=[],
             route="fixed_query",
@@ -806,13 +837,11 @@ class AnswerService:
 
     def _run_plan(self, fixed: FixedQueries, customer_id: str, plan: FixedPlan) -> list[FixedRow]:
         if plan.aggregate == "count":
-            if plan.invoice_count:
+            if plan.invoices:
                 return fixed.count_invoices(customer_id, plan.start, plan.end)
             return fixed.count_documents(customer_id, plan.start, plan.end, date_fields=plan.date_fields)
         if plan.metric is None:
             return []
-        if plan.aggregate == "total":
-            return fixed.total(customer_id, plan.metric, plan.date_fields, plan.start, plan.end)
         descending = plan.aggregate == "highest"
         if plan.group_fields:
             return fixed.top_group(
@@ -1530,22 +1559,36 @@ def _cited_values(rows: Sequence[FixedRow]) -> list[tuple[ValueRef, list[dict[st
     return cited[:MAX_CITED_VALUES]
 
 
+def _value_citation(n: int, value: ValueRef, regions: list[dict[str, Any]]) -> Citation:
+    return Citation(
+        n=n,
+        kind="value",
+        ref_id=value.value_id,
+        document_id=value.document_id,
+        document_name=value.document_name,
+        detected_type=value.detected_type,
+        page_no=value.page_no,
+        regions=regions,
+        snippet=clean_snippet(f"{value.field}: {value.value_text}"),
+        label=value.label,
+        page_from=value.page_no,
+        page_to=value.page_no,
+        label_page_no=value.label_page_no,
+        label_regions=valid_regions([value.label_region] if value.label_region else []),
+    )
+
+
 def _fixed_sentence(plan: FixedPlan, top: Sequence[FixedRow]) -> str | None:
     """The template sentence. Every number in it comes from ``top``; None if it cannot be written."""
     period = describe_range(plan.start, plan.end) if plan.start and plan.end else ""
     number = indian_number(top[0].number)
     if plan.aggregate == "count":
-        if plan.invoice_count:
+        if plan.invoices:
             invoices = "1 invoice is" if top[0].number == 1 else f"{number} invoices are"
             return f"{invoices} present {period}." if period else f"{invoices} present."
         documents = "1 document is" if top[0].number == 1 else f"{number} documents are"
         return f"{documents} dated {period}." if period else f"{documents} dated."
     metric = _words(plan.metric or "")
-    if plan.aggregate == "total":
-        metric = metric.removeprefix("total ")
-        records = sum(row.records for row in top)
-        counted = "1 record" if records == 1 else f"{indian_number(records)} records"
-        return f"The total {metric}{' ' + period if period else ''} was {number}, from {counted}."
     after = f", {period}" if period else ""
     if not plan.group_fields:
         return f"The {plan.aggregate} {metric} was {number}{after}."

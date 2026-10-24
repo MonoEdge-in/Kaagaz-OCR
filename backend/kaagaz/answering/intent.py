@@ -84,7 +84,9 @@ class FixedPlan:
     date_fields: tuple[str, ...]  # empty: no date filter (and never for count)
     start: date | None
     end: date | None
-    invoice_count: bool = False
+    # The question names invoices: a count or a total reads the rows of the invoices table
+    # (#228, PRD 6 C).
+    invoices: bool = False
 
 
 def plan_fixed(
@@ -103,7 +105,8 @@ def plan_fixed(
     metric_concepts = {_METRIC_WORDS[word] for word in words if word in _METRIC_WORDS}
     group_asked = any(word in _GROUP_WORDS for word in words)
     things_asked = any(word in _THINGS for word in words)
-    invoice_count = aggregate == "count" and ("invoice" in words or "invoices" in words)
+    invoices = "invoice" in words or "invoices" in words
+    invoice_count = aggregate == "count" and invoices
     known = _HIGHEST | _LOWEST | _TOTAL | _COUNT | set(_METRIC_WORDS) | _GROUP_WORDS | _THINGS | _FILLER
     if any(word not in known for word in normalised.keywords):
         return None
@@ -136,7 +139,9 @@ def plan_fixed(
         group_fields = _present(_GROUP_FIELDS, available)
         if not group_fields:
             return None
-    return FixedPlan(aggregate, metric, group_fields, date_fields, start, end)
+    return FixedPlan(
+        aggregate, metric, group_fields, date_fields, start, end, aggregate == "total" and invoices
+    )
 
 
 def metric_asked(normalised: NormalisedQuestion) -> tuple[str, tuple[str, ...]] | None:

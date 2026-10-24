@@ -55,10 +55,15 @@ Every row carries the values it used (``values``, at most
 ``MAX_CITED_VALUES``, each with its page and region) for the citations, and
 ``verified`` over *every* value used, cited or not.
 
+A total is not summed here (PRD 6 C, answering/totals.py): ``figures`` lists every
+record the question matches: an ``invoices`` row (dated by ``invoice_date``) when
+it names invoices, else any record of a sheet, or a document's own record, that
+holds the metric (a row leaving it empty too); with a range, also an undated one.
+
 Each call is one transaction with two statements: the aggregate, then one
 lookup of the cited values' pages and regions (no N+1). Time is O(v) in the
 customer's values of the fields asked, through the (customer_id, field)
-index; space is O(r) in the result rows.
+index; space is O(r) in the result rows (``figures``: in the matching records).
 """
 
 from collections.abc import Sequence
@@ -102,6 +107,18 @@ class FixedRow:
     values: list[ValueRef]  # the values cited, at most MAX_CITED_VALUES
 
 
+@dataclass(frozen=True, slots=True)
+class Figure:
+    """One record a total question matches (PRD 6 C): its figure as printed, or why it has none."""
+
+    value: ValueRef | None  # its one figure; with none, its first value; None: nothing to cite
+    amount: Decimal | None  # the figure's number, only when the record holds exactly one figure
+    printed: int  # how many values of the metric the record holds
+    verified: bool  # that one figure is verified, and its invoice's check did not fail
+    dated: bool  # it has the one readable date a date range needs (True without a range)
+    date_verified: bool  # that date is verified (True without a range)
+
+
 class FixedQueries(Protocol):
     def scoped(self, scope: Scope) -> "FixedQueries":
         """The same queries over the documents inside ``scope`` only (PRD 3 H2)."""
@@ -120,9 +137,16 @@ class FixedQueries(Protocol):
         descending: bool,
     ) -> list[FixedRow]: ...
 
-    def total(
-        self, customer_id: str, metric: str, date_fields: Sequence[str], start: date | None, end: date | None
-    ) -> list[FixedRow]: ...
+    def figures(
+        self,
+        customer_id: str,
+        metric: str,
+        date_fields: Sequence[str],
+        start: date | None,
+        end: date | None,
+        *,
+        invoices: bool,
+    ) -> list[Figure]: ...
 
     def count_documents(
         self, customer_id: str, start: date | None, end: date | None, *, date_fields: Sequence[str]
@@ -279,14 +303,13 @@ _TOP_GROUP = text(
     """
 )
 
-_TOTAL = text(
+# PRD 6 C: every record a total question matches, one row each, with its one figure or why it
+# has none (the module docstring). A sheet's rows are left out when the document's own record
+# holds the metric (an invoice counts once); page, line and card records never match.
+_FIGURES = text(
     """
-    WITH metric AS (
-        SELECT v.document_id, v.record_key, (array_agg(v.id))[1] AS value_id,
-               (array_agg(v.value_number))[1] AS amount,
-               bool_and(v.label = 'verified') AND NOT EXISTS (SELECT 1 FROM invoices i
-                   WHERE i.customer_id = :customer_id AND i.document_id = v.document_id
-                   AND i.check_status = 'failed') AS verified
+    WITH tables AS (
+        SELECT DISTINCT v.document_id, split_part(v.record_key, ':row:', 1) AS part, d.display_name
         FROM extracted_values v
         JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
         WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
@@ -301,21 +324,15 @@ _TOTAL = text(
             OR coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)
             BETWEEN coalesce(CAST(:s_from AS date), '-infinity')
             AND coalesce(CAST(:s_to AS date), 'infinity'))
+          AND NOT CAST(:invoices AS boolean)
           AND v.field = :metric AND v.record_key NOT LIKE 'page:%'
           AND v.record_key <> 'card'
           AND v.record_key NOT LIKE 'line:%'
-          AND NOT (v.record_key LIKE 'sheet:%' AND EXISTS (
-              SELECT 1 FROM extracted_values o
-              WHERE o.customer_id = :customer_id AND o.document_id = v.document_id
-                AND o.field = v.field AND o.record_key = 'document'))
-        GROUP BY v.document_id, v.record_key
-        HAVING count(*) = 1 AND bool_and(v.value_number IS NOT NULL)
-    ), dated AS (
-        SELECT v.document_id, v.record_key, (array_agg(v.id))[1] AS value_id,
-               bool_and(v.label = 'verified') AS verified
-        FROM extracted_values v
-        JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
-        WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
+    ), invoiced AS (
+        SELECT i.document_id, i.invoice_date, d.display_name
+        FROM invoices i
+        JOIN documents d ON d.customer_id = i.customer_id AND d.id = i.document_id
+        WHERE i.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
           AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))
           AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt
             WHERE dt.customer_id = :customer_id AND dt.tag_id = ANY(CAST(:s_tags AS uuid[]))
@@ -327,31 +344,54 @@ _TOTAL = text(
             OR coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)
             BETWEEN coalesce(CAST(:s_from AS date), '-infinity')
             AND coalesce(CAST(:s_to AS date), 'infinity'))
-          AND v.field = ANY(CAST(:date_fields AS text[])) AND v.record_key NOT LIKE 'page:%'
-          AND v.record_key <> 'card'
-          AND v.record_key NOT LIKE 'line:%'
+          AND CAST(:invoices AS boolean)
+    ), records AS (
+        SELECT v.document_id, v.record_key,
+               count(*) FILTER (WHERE v.field = :metric) AS printed,
+               (array_agg(v.id) FILTER (WHERE v.field = :metric))[1] AS figure_id,
+               (array_agg(v.value_number) FILTER (WHERE v.field = :metric))[1] AS amount,
+               coalesce(bool_and(v.label = 'verified') FILTER (WHERE v.field = :metric), false)
+                   AS figure_verified,
+               count(*) FILTER (WHERE v.field = ANY(CAST(:date_fields AS text[]))) AS dates,
+               (array_agg(v.value_date) FILTER (WHERE v.field = ANY(CAST(:date_fields AS text[]))))[1] AS day,
+               coalesce(bool_and(v.label = 'verified') FILTER (
+                   WHERE v.field = ANY(CAST(:date_fields AS text[]))), false) AS date_verified,
+               (array_agg(v.id ORDER BY array_position(ARRAY['invoice_number', 'total_amount', 'invoice_date',
+                   'seller_name', 'buyer_name']::text[], v.field), v.page_no, v.id))[1] AS first_id
+        FROM extracted_values v
+        WHERE v.customer_id = :customer_id
+          AND ((v.document_id, split_part(v.record_key, ':row:', 1)) IN (
+                SELECT t.document_id, t.part FROM tables t)
+            OR (v.record_key = 'document' AND v.document_id IN (SELECT i.document_id FROM invoiced i)))
           AND NOT (v.record_key LIKE 'sheet:%' AND EXISTS (
               SELECT 1 FROM extracted_values o
               WHERE o.customer_id = :customer_id AND o.document_id = v.document_id
-                AND o.field = v.field AND o.record_key = 'document'))
+                AND o.field = :metric AND o.record_key = 'document'))
         GROUP BY v.document_id, v.record_key
-        HAVING count(*) = 1 AND bool_and(v.value_date IS NOT NULL AND (
-            CAST(:start AS date) IS NULL
-            OR (v.value_date >= CAST(:start AS date) AND v.value_date < CAST(:end AS date))))
-    ), records AS (
-        SELECT m.document_id, m.record_key, m.value_id AS metric_id, m.amount, dt.value_id AS date_id,
-               m.verified AND coalesce(dt.verified, true) AS verified
-        FROM metric m
-        LEFT JOIN dated dt ON dt.document_id = m.document_id AND dt.record_key = m.record_key
-        WHERE cardinality(CAST(:date_fields AS text[])) = 0 OR dt.value_id IS NOT NULL
+    ), matching AS (
+        SELECT r.document_id, r.record_key, t.display_name, r.printed, r.figure_id, r.amount,
+               r.figure_verified, r.first_id, r.dates = 1 AND r.day IS NOT NULL AS dated, r.day,
+               r.date_verified
+        FROM records r
+        JOIN tables t ON t.document_id = r.document_id AND t.part = split_part(r.record_key, ':row:', 1)
+        UNION ALL
+        SELECT i.document_id, 'document', i.display_name, coalesce(r.printed, 0), r.figure_id, r.amount,
+               coalesce(r.figure_verified, false), r.first_id, i.invoice_date IS NOT NULL, i.invoice_date,
+               coalesce(r.dates = 1 AND r.date_verified AND r.day = i.invoice_date, false)
+        FROM invoiced i
+        LEFT JOIN records r ON r.document_id = i.document_id AND r.record_key = 'document'
     )
-    SELECT NULL::text AS name, sum(r.amount) AS number, count(*) AS records,
-           bool_and(r.verified) AS verified,
-           array_agg(r.metric_id::text ORDER BY r.document_id, r.record_key) AS metric_ids,
-           ARRAY[]::text[] AS group_ids,
-           array_remove(array_agg(r.date_id::text ORDER BY r.document_id, r.record_key), NULL) AS date_ids
-    FROM records r
-    HAVING count(*) > 0
+    SELECT m.printed, CASE WHEN m.printed = 1 THEN m.figure_id ELSE m.first_id END AS value_id,
+           CASE WHEN m.printed = 1 THEN m.amount END AS amount,
+           m.printed = 1 AND m.amount IS NOT NULL AND m.figure_verified AND NOT EXISTS (
+               SELECT 1 FROM invoices f WHERE f.customer_id = :customer_id
+               AND f.document_id = m.document_id AND f.check_status = 'failed') AS verified,
+           CAST(:start AS date) IS NULL OR m.dated AS dated,
+           CAST(:start AS date) IS NULL OR (m.dated AND m.date_verified) AS date_verified
+    FROM matching m
+    WHERE CAST(:start AS date) IS NULL OR NOT m.dated
+       OR (m.day >= CAST(:start AS date) AND m.day < CAST(:end AS date))
+    ORDER BY m.day, m.display_name, m.document_id, length(m.record_key), m.record_key
     """
 )
 
@@ -571,12 +611,34 @@ class PgFixedQueries:
         params.update(metric=metric, group_fields=list(group_fields), descending=descending, limit=_TOP_ROWS)
         return self._run(customer_id, _TOP_GROUP, params)
 
-    def total(
-        self, customer_id: str, metric: str, date_fields: Sequence[str], start: date | None, end: date | None
-    ) -> list[FixedRow]:
+    def figures(
+        self,
+        customer_id: str,
+        metric: str,
+        date_fields: Sequence[str],
+        start: date | None,
+        end: date | None,
+        *,
+        invoices: bool,
+    ) -> list[Figure]:
+        """Every matching record, by date then document; ``invoices``: the question names them."""
         params = _params(customer_id, date_fields, start, end)
-        params.update(metric=metric)
-        return self._run(customer_id, _TOTAL, params)
+        params.update(metric=metric, invoices=invoices)
+        with self._db.customer(customer_id) as conn:
+            rows = conn.execute(_FIGURES, params | self._scope.params()).all()
+            ids = [str(row.value_id) for row in rows if row.value_id is not None]
+            refs = _value_refs(conn, customer_id, ids, self._scope)
+        return [
+            Figure(
+                value=None if row.value_id is None else refs.get(str(row.value_id)),
+                amount=None if row.amount is None else Decimal(row.amount),
+                printed=int(row.printed),
+                verified=bool(row.verified),
+                dated=bool(row.dated),
+                date_verified=bool(row.date_verified),
+            )
+            for row in rows
+        ]
 
     def count_documents(
         self, customer_id: str, start: date | None, end: date | None, *, date_fields: Sequence[str]
