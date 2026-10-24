@@ -606,7 +606,6 @@ export interface PageTranslation {
   page_no: number;
   language: TranslateLanguage;
   lines: string[]; // plain text only, through visibleText
-  truncated: boolean; // only the first lines of a long page were translated
   cached: boolean;
 }
 

@@ -9,7 +9,9 @@ import { lineMarked, notSure, visibleText } from "./scanned";
 export const NOT_SURE_TIP = "Not read for sure — check the original";
 export const TRANSLATION_LABEL = "Translation — the original text is above";
 export const TRANSLATING = "Translating…";
-export const BUSY = "The translation service is busy right now. The exact text is still here; try again in a minute.";
+export const BUSY = "Translation isn't available right now. Try again in a minute.";
+export const UNUSABLE = "This page can't be translated. The exact text is above.";
+export const TOO_LONG = "This page is too long to translate in one go. The exact text is above.";
 export const LEFT_OUT = "This document is long, so the clean copy stops here. The rest is on the page images.";
 export const MAX_TRANSLATE_PAGES = 20; // "Translate all pages" asks for at most this many
 export const TRANSLATE_AT_ONCE = 3; // requests in flight at a time
@@ -130,6 +132,13 @@ export function parts(line: ReadLine, marks: readonly ReadingMark[]): Part[] {
   }
   if (from < text.length || out.length === 0) out.push({ text: visibleText(text.slice(from)), unsure: false });
   return out;
+}
+
+/** What a failed translation says, by the reply's error code; Try again only when busy. */
+export function translateFailure(code: string | undefined): { text: string; retry: boolean } {
+  if (code === "page_too_long") return { text: TOO_LONG, retry: false };
+  if (code === "translation_unusable") return { text: UNUSABLE, retry: false };
+  return { text: BUSY, retry: true };
 }
 
 /** "Page 1 of 4". */
