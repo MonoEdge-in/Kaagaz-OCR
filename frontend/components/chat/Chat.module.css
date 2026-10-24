@@ -587,6 +587,104 @@
   flex: none;
 }
 
+/* PRD 6 A (24 Oct 2026): the opening, and the documents listed under an answer. Nothing here
+   may push the card wider than a 320px screen: text wraps between words, flex children that
+   hold text may shrink, and a figure never splits mid-number. */
+.opening {
+  margin: 0;
+  font-weight: 600;
+  overflow-wrap: break-word;
+}
+
+.docList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.docItem {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+
+.docTitle {
+  min-width: 0;
+  margin: 0;
+  font-weight: 600;
+  overflow-wrap: break-word;
+}
+
+.docWhy {
+  min-width: 0;
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--fg-muted);
+  overflow-wrap: break-word;
+}
+
+.docFigures {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.figure {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* A chip is its own control, never .btn: sentence case, the body font, wrapping in its row. */
+.chipRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 0 1 auto;
+  max-width: 100%;
+  min-height: var(--h-md);
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: 2px;
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--fs-sm);
+  overflow-wrap: break-word;
+  text-decoration: none;
+}
+
+.chip:hover {
+  background: var(--surface-2);
+}
+
+.chip svg {
+  flex: none;
+}
+
+@media (pointer: coarse) {
+  .chip {
+    min-height: var(--h-lg); /* 44px */
+  }
+}
+
 /* Pending: a skeleton card while the answer is worked out. */
 .pendingText {
   margin: 0;
