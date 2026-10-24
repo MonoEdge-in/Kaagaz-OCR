@@ -212,6 +212,7 @@ from kaagaz.answering.hard_to_read import (
     FlaggedPage,
     PgReadingQuality,
     ReadingQuality,
+    WordMark,
     hard_to_read,
     not_found_note,
 )
@@ -815,6 +816,23 @@ class AnswerService:
             for citation in citations
         ]
 
+    def _hard_values(self, customer_id: str, values: Sequence[ValueRef]) -> set[str]:
+        """F6 for every figure a total or a ranking compares, listed or not (PRD 6 C): the ids
+        of the values whose spot holds a word mark. One statement for all their documents' word
+        marks; each value is checked against its own document's marks only."""
+        if self._reading is None or not values:
+            return set()
+        marks: dict[str, list[WordMark]] = {}
+        for mark in self._reading.word_marks(customer_id, [value.document_id for value in values]):
+            marks.setdefault(mark.document_id, []).append(mark)
+        return {
+            value.value_id
+            for value in values
+            if hard_to_read(
+                value.document_id, valid_regions([value.region]), marks.get(value.document_id, [])
+            )
+        }
+
     def _answer(
         self,
         customer_id: str,
@@ -1074,8 +1092,9 @@ class AnswerService:
         self, customer_id: str, plan: FixedPlan, shown: str, fixed: FixedQueries
     ) -> Answer | None:
         """A total, or every matching record and why there is none (PRD 6 C, answering/totals.py),
-        written in code. Verified only for a total whose every cited value is, none hard to
-        read. Two statements, and one for the word marks (F6). For a highest or lowest by party
+        written in code. Verified only for a total whose every cited value is, and no figure of
+        any record hard to read, listed or not. Two statements, and one for the word marks of
+        every record's document (F6). For a highest or lowest by party
         (C2), the same records and reasons (``ranking``), or None when the rule holds and the
         ranking may be shown."""
         metric = plan.metric or ""
@@ -1099,8 +1118,8 @@ class AnswerService:
         citations = [
             _value_citation(n, value, regions) for n, (_, value, regions) in enumerate(told.lines, start=1)
         ]
-        citations = self._marked(customer_id, citations, {c.n: c.regions for c in citations})
-        hard = {c.ref_id for c in citations if c.hard_to_read}
+        hard = self._hard_values(customer_id, [figure.value for figure in figures if figure.value])
+        citations = [replace(c, hard_to_read=c.ref_id in hard) for c in citations]
         if hard:
             told = tell(figures, *said, hard, ranking=ranking)  # the same records, in the same order
         if ranking and told.total is not None:
