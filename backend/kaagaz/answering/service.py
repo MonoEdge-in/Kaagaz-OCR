@@ -103,6 +103,10 @@ The steps (docs/architecture.md):
     property the company's land values hold, with an owning or share word, is answered first, from
     fixed queries over ``value_keys``: code-built sentences and one ``documents`` line a record
     (answer contract v2), every figure a cited value as printed.
+18. Clarify (PRD 6 B1, clarify.py): with the model and a vocabulary port (as ``context``), the
+    rewrite call runs on every question and gives the plan; an unclear name is asked (status
+    ``clarify``), a resolved one put in the question. ``pending``: a stored clarify answered,
+    with no second rewrite. No plan: every step above as before.
 
 No source, no answer: an answered result always has at least one sentence,
 every sentence cites at least one source (but step 13's count, which sums up its cited
@@ -151,6 +155,7 @@ from kaagaz.ai.client import (
 from kaagaz.ai.openrouter import LIMITER_WAIT
 from kaagaz.ai.usage import billed_as
 from kaagaz.answering import glossary, voice
+from kaagaz.answering.clarify import Pending, PgVocabulary, Step, Vocabulary, after_reply, first_step
 from kaagaz.answering.dates import date_range, describe_range, mentions_date
 from kaagaz.answering.draft import (
     ANSWER_PROMPT_HASH,
@@ -215,9 +220,9 @@ from kaagaz.answering.memory import NO_MEMORY, Memory, allowed_tokens, prompt_te
 from kaagaz.answering.owners import PgOwners, owner_ask
 from kaagaz.answering.owners import reply as owners_reply
 from kaagaz.answering.pins import Pin, lifts, pinned_first
+from kaagaz.answering.rewrite import MAX_QUESTION, Rewritten, Turn, rewrite_and_plan
 from kaagaz.answering.rewrite import MAX_REPLY_TOKENS as REWRITE_REPLY_TOKENS
 from kaagaz.answering.rewrite import SYSTEM_PROMPT as REWRITE_PROMPT
-from kaagaz.answering.rewrite import Turn, rewrite
 from kaagaz.answering.sanitize import clean_snippet, clean_text
 from kaagaz.answering.totals import tell
 from kaagaz.answering.translate import target_scripts, translate
@@ -238,7 +243,7 @@ _STAGES = ("rewrite", "embed", "search", "widen", "draft", "verify")
 
 # "unchecked": the figure asked for exists only as unchecked card values, so no
 # number is given (kaagaz/answering/unchecked.py).
-Status = Literal["answered", "not_found", "unchecked"]
+Status = Literal["answered", "not_found", "unchecked", "clarify"]
 Route = Literal["fixed_query", "search"]
 _MAX_NAME = 100  # a party name longer than this is cut in the sentence
 _REPLY_TOKENS = 1024  # PROVISIONAL: a draft's reply budget (num_predict), kept free of evidence
@@ -345,6 +350,10 @@ class Answer:
     # citation (its snippet is cut), and the numbers a fixed query gave a code-written sentence.
     backing: dict[int, str] = field(default_factory=dict)
     vouched: frozenset[str] = frozenset()
+    # PRD 6 B1 (answer contract v2): the question to ask instead of an answer, with what
+    # answering it needs (kept on the server), and what was assumed; in to_json only when set.
+    clarify: dict[str, Any] | None = None
+    resume: dict[str, Any] | None = None
 
     def to_json(self) -> dict[str, Any]:
         """The ``Answer`` of frontend/lib/types.ts, exactly; ``agents``, ``agent_ids``,
@@ -387,6 +396,7 @@ class Answer:
             "related_documents": [dict(doc) for doc in self.related_documents],
             **team,
             **({} if self.mentions is None else {"mentions": self.mentions}),
+            **({"clarify": self.clarify, "resume": self.resume} if self.clarify else {}),
         }
 
 
@@ -478,6 +488,7 @@ class AnswerService:
         context: Context | None = None,
         exhaustive: Exhaustive | None = None,
         mentions: Mentions | None = None,
+        vocabulary: Vocabulary | None = None,
     ) -> None:
         self._model = model
         self._translator = translator if settings.answer_translate_question else None
@@ -511,6 +522,7 @@ class AnswerService:
         self._exhaustive: Exhaustive | None = PgExhaustive(db) if retriever is None else exhaustive
         self._mentions: Mentions | None = PgExhaustive(db) if retriever is None else mentions
         self._owners = PgOwners(db) if retriever is None else None
+        self._vocabulary: Vocabulary | None = PgVocabulary(db) if retriever is None else vocabulary
 
     @_timed
     def answer(
@@ -524,6 +536,7 @@ class AnswerService:
         memory: Memory = NO_MEMORY,
         choice: ChatChoice | None = None,
         pins: Sequence[Pin] = (),
+        pending: Pending | None = None,
     ) -> Answer:
         """Answer ``question`` for ``customer_id`` only, from documents inside ``scope``;
         ``history`` is the conversation's earlier turns, oldest first; ``user_id``, the
@@ -534,12 +547,15 @@ class AnswerService:
         MODEL_CHAT. ``pins``: the asker's Most relevant picks that may move a hit up
         (answering/pins.py; ``kaagaz.db.chat.pins_for``). A ``choice`` with no agent
         (``models.NO_MODEL``: the asker's Ask setting is None, 0038) answers as with the model
-        off: no model call at all, the lines found quoted."""
+        off: no model call at all, the lines found quoted. ``pending``: the stored clarify
+        this answers (step 18, ``clarify.reply_to``), whose question is answered instead."""
         if choice is not None and not choice.agents:
             keyless = copy.copy(self)  # shallow: the same ports, without the model clients
             keyless._model = keyless._translator = None
-            return keyless._respond(customer_id, question, scope, history, user_id, memory, None, pins)
-        return self._respond(customer_id, question, scope, history, user_id, memory, choice, pins)
+            return keyless._respond(
+                customer_id, question, scope, history, user_id, memory, None, pins, pending
+            )
+        return self._respond(customer_id, question, scope, history, user_id, memory, choice, pins, pending)
 
     def _respond(
         self,
@@ -551,21 +567,27 @@ class AnswerService:
         memory: Memory,
         choice: ChatChoice | None,
         pins: Sequence[Pin],
+        pending: Pending | None,
     ) -> Answer:
         """``answer``'s work, timed by it."""
         if scope.matches_nothing:
             return _not_found("search", question.strip(), [], model_used=False, reason="notfound_empty_scope")
         whole = self._whole(customer_id, scope)
         _timing().lap("search")
+        if pending is not None:  # step 18: its picks checked again, then the names left; no rewrite
+            step = after_reply(self._vocabulary, customer_id, pending)
+            return self._step_answer(
+                customer_id, step, pending.question, scope, user_id, whole, (), choice, pins
+            )
         turns = self._settings.chat_history_turns
         recent = history[-turns:] if turns else ()
         remembered = prompt_text(memory)
-        rewritten: str | None = None
-        aspects: tuple[str, ...] = ()
+        done = Rewritten(None, (), None)
         # CX6: the aspects are asked for, even on a first question, when they can be searched.
         most = self._settings.query_aspects_max if whole is None and self._widens() else 0
-        if self._model is not None and (recent or remembered or most):
-            rewritten, aspects = rewrite(
+        planned = self._vocabulary is not None  # step 18: the plan, on every question
+        if self._model is not None and (recent or remembered or most or planned):
+            done = rewrite_and_plan(
                 self._model,
                 question,
                 recent,
@@ -573,11 +595,39 @@ class AnswerService:
                 allowed=allowed_tokens(memory),
                 aspects_max=most,
                 budget=self._rewrite_budget,
+                plan=planned,
             )
+            if not (recent or remembered or most):
+                done = Rewritten(None, (), done.plan)  # called for the plan alone
         timing = _timing()
         timing.lap("rewrite")
-        timing.whole, timing.aspects = whole is not None, len(aspects)
-        asked = rewritten or question
+        timing.whole, timing.aspects = whole is not None, len(done.aspects)
+        step = Step(done.question or question, ())
+        narrowed = replace(scope, timezone=EVERYTHING.timezone) != EVERYTHING  # any filter at all
+        if done.plan is not None and self._vocabulary is not None:
+            step = first_step(self._vocabulary, customer_id, step.question, done.plan, narrowed)
+        return self._step_answer(
+            customer_id, step, question, scope, user_id, whole, done.aspects, choice, pins
+        )
+
+    def _step_answer(
+        self,
+        customer_id: str,
+        step: Step,
+        question: str,
+        scope: Scope,
+        user_id: str | None,
+        whole: Sequence[Hit] | None,
+        aspects: Sequence[str],
+        choice: ChatChoice | None,
+        pins: Sequence[Pin],
+    ) -> Answer:
+        """The clarify ``step`` asks, else the answer to its question (``_respond``'s end)."""
+        asked = step.question
+        rewritten = asked if asked != question and len(asked) <= MAX_QUESTION else None
+        if step.clarify is not None:  # no search, no draft
+            asking = Answer("clarify", None, [], [], [], "search", asked, True, rewritten)
+            return replace(asking, clarify=step.clarify, resume=step.resume)
         answer = self._checked(
             self._answer(customer_id, asked, scope, user_id, whole, aspects, choice, pins), asked
         )
@@ -588,7 +638,8 @@ class AnswerService:
             answer = self._shaped(
                 customer_id, asked, self._mentioned(customer_id, asked, answer, scope), scope
             )
-        return replace(answer, rewritten_question=rewritten, unavailable=unavailable)
+        said = [*answer.assumptions, *step.assumptions]
+        return replace(answer, rewritten_question=rewritten, unavailable=unavailable, assumptions=said)
 
     def _checked(self, answer: Answer, question: str) -> Answer:
         """Decision 2's final check (PRD 6 A, voice.py) over every sentence, whoever wrote it:

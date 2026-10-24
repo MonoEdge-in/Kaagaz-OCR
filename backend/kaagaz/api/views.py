@@ -12,6 +12,7 @@ from typing import Any, cast
 
 from sqlalchemy import Connection, RowMapping
 
+from kaagaz.answering.clarify import without_resume
 from kaagaz.answering.hard_to_read import FlaggedPage, not_found_note
 from kaagaz.api.auth import CurrentUser
 from kaagaz.db import audit
@@ -684,7 +685,7 @@ def message(
         "role": row["role"],
         "text": row["text"],
         "created_at": iso(row["created_at"]),
-        "answer": row["answer"],
+        "answer": None if row["answer"] is None else without_resume(row["answer"]),
         "scope": row["scope"],  # a question's ScopeBody (PRD 3 H2), None when it had none
         "feedback": feedback,
         "pin": None
@@ -722,7 +723,13 @@ def cited_document_ids(answer: Mapping[str, Any] | None) -> list[str]:
         if each.get("document_id")
     ]
     ids += [str(each["document_id"]) for each in answer.get("documents") or [] if each.get("document_id")]
+    ids += [str(each) for choice in _choices(answer) for each in choice.get("document_ids", [])]  # PRD 6 B1
     return ids
+
+
+def _choices(answer: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    clarify = answer.get("clarify")
+    return list(clarify.get("choices", [])) if isinstance(clarify, Mapping) else []
 
 
 def answer_with_source_states(answer: Mapping[str, Any], states: Mapping[str, str]) -> dict[str, Any]:
@@ -776,6 +783,11 @@ def answer_with_source_states(answer: Mapping[str, Any], states: Mapping[str, st
             for each in answer.get("documents") or []
             if states.get(str(each.get("document_id"))) not in (None, *_GONE)
         ]
+    if answer.get("clarify"):  # PRD 6 B1: a choice whose every document is gone is no choice
+        alive = {document for document, state in states.items() if state not in _GONE}
+        documents = [set(map(str, c.get("document_ids", []))) for c in _choices(answer)]
+        live = [c for c, d in zip(_choices(answer), documents, strict=True) if not d or d & alive]
+        shown["clarify"] = {**answer["clarify"], "choices": live}
     if answer.get("mentions"):
         # "Also mentions": a gone document leaves the list and the count.
         listed = answer["mentions"].get("documents", [])

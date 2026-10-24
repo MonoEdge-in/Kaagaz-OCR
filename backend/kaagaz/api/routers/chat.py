@@ -32,6 +32,9 @@ questions later), a background task writes a new one after the reply (``_remembe
 gives up quietly when the model fails or another reply wrote it first, and logs only the
 code of a database or model error. Neither is ever in a reply or a log.
 
+Clarifying questions (PRD 6 B1): ``reply`` answers a clarify (stored as its question) only while
+it is the conversation's newest message, by its stored choices (``clarify.reply_to``); else 409.
+
 A conversation belongs to the user who started it; anyone else, in this
 customer or another, gets "not found".
 
@@ -56,6 +59,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from kaagaz.ai.client import ModelOutputError, ModelUnavailable
 from kaagaz.ai.usage import usage_scope
+from kaagaz.answering.clarify import MAX_CHOICES, Pending, reply_to
 from kaagaz.answering.memory import NO_MEMORY, Memory, from_row, live
 from kaagaz.answering.pins import Pin
 from kaagaz.answering.rewrite import Turn
@@ -103,12 +107,24 @@ def chat_limits(per_minute: int) -> RateLimiter:
 
 
 ModelId = Annotated[str, StringConstraints(max_length=257, pattern=f"^{MODEL_ID.pattern}$")]
+ChoiceId = Annotated[str, StringConstraints(pattern=r"^(c[1-9]|all)$")]
+CLARIFY_GONE = "That question is no longer open. Ask again."
+
+
+class ReplyBody(BaseModel):
+    """PRD 6 B1: the picked choices' ids; the choices are the stored message's, never the client's."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    message_id: uuid.UUID
+    choice_ids: list[ChoiceId] = Field(min_length=1, max_length=MAX_CHOICES + 1)
 
 
 class AskBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    question: str = Field(min_length=1, max_length=1000)
+    question: str = Field(default="", max_length=1000)  # left out with a reply
+    reply: ReplyBody | None = None
     conversation_id: uuid.UUID | None = None
     scope: ScopeBody | None = None  # left out: the conversation's last scope, or everything
     # Features 25-27 (C10, S8): who drafts the answer, checked again for this customer
@@ -170,9 +186,12 @@ class FeedbackBody(BaseModel):
 
 
 def answer_text(answer: dict[str, Any]) -> str:
-    """The assistant message's plain text: its sentences joined, or the not-found line
-    (decision 9: the closest documents' when it lists any). Never the opening, so the
-    asker's name is never in the history a rewrite reads."""
+    """The assistant message's plain text: its sentences joined, a clarify's question, or the
+    not-found line (decision 9: the closest documents' when it lists any). Never the opening,
+    so the asker's name is never in the history a rewrite reads."""
+    clarify = answer.get("clarify") if answer.get("status") == "clarify" else None
+    if isinstance(clarify, dict) and isinstance(clarify.get("question"), str):
+        return str(clarify["question"])
     sentences = answer.get("sentences")
     texts = []
     if answer.get("status") in ("answered", "unchecked") and isinstance(sentences, list):
@@ -185,13 +204,16 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
     if not chat_limits(context.settings.chat_questions_per_minute).allow(user.user_id):
         raise ApiError(429, "rate_limited", TOO_MANY_QUESTIONS, headers={"Retry-After": "60"})
     question = body.question.strip()
-    if not question:
+    if not question and body.reply is None:
         raise ApiError(400, "bad_request", "Type a question first.")
+    if body.reply is not None and body.conversation_id is None:
+        raise ApiError(409, "conflict", CLARIFY_GONE)
     conversation_id = None if body.conversation_id is None else str(body.conversation_id)
     chosen = body.scope
     recent: Sequence[RowMapping] = []
     memory, summary_turn, turns = NO_MEMORY, 0, 0
     earlier: list[str | None] = []  # the conversation's openings so far (PRD 6 A)
+    pending: Pending | None = None
     with context.db.customer(user.customer_id) as conn:
         if conversation_id is not None:
             state = chat_sql.conversation_memory(conn, user.customer_id, conversation_id, user.user_id)
@@ -204,6 +226,9 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
             earlier = chat_sql.openings(conn, user.customer_id, conversation_id)
             if chosen is None:
                 chosen = _saved_scope(recent)
+            if body.reply is not None:
+                pending = _pending(recent, body.reply)
+                question = ", ".join(pending.picked)
         scope = (
             EVERYTHING
             if chosen is None
@@ -243,6 +268,7 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
             memory=memory,
             choice=choice,
             pins=pins,
+            pending=pending,
         )
         if reply.unavailable:  # KZ-006: an outage is never "not found"; nothing is stored
             raise ApiError(503, "backend_unavailable", headers={"Retry-After": "60"})
@@ -449,16 +475,27 @@ def _write_memory(
         )
 
 
+def _pending(recent: Sequence[RowMapping], reply: ReplyBody) -> Pending:
+    """The open clarify (the newest message) answered by ``reply``; 409 if not open or not its own."""
+    newest = recent[0] if recent else None
+    if newest is None or newest["role"] != "assistant" or str(newest["id"]) != str(reply.message_id):
+        raise ApiError(409, "conflict", CLARIFY_GONE)
+    found = reply_to(newest["answer"] or {}, reply.choice_ids)
+    if found is None:
+        raise ApiError(409, "conflict", CLARIFY_GONE)
+    return found
+
+
 def _history(recent: Sequence[RowMapping]) -> list[Turn]:
     """The question and answer pairs of ``recent`` (newest first), oldest first. Only an
-    answered answer gives its sentences: after "not found" the turn is its question only
-    (edge case 3). O(m) for m messages."""
+    answered answer gives its sentences, and a clarify its question: after "not found" the
+    turn is its question only (edge case 3). O(m) for m messages."""
     turns: list[Turn] = []
     answer: str | None = None
     for row in recent:  # an answer comes just before its question
         if row["role"] == "assistant":
             saved = row["answer"] or {}
-            answer = answer_text(saved) if saved.get("status") == "answered" else None
+            answer = answer_text(saved) if saved.get("status") in ("answered", "clarify") else None
         else:
             turns.append(Turn(str(row["text"]), answer))
             answer = None
