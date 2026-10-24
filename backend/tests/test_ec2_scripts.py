@@ -10,6 +10,8 @@ container; the pull request has the steps.
 import re
 from pathlib import Path
 
+from tests.test_compose_prod import PROD, services
+
 ROOT = Path(__file__).resolve().parents[2]
 EC2 = ROOT / "infra" / "ec2"
 COMPOSE_FILES = "(-f docker-compose.yml -f docker-compose.prod.yml)"
@@ -73,8 +75,49 @@ def test_every_script_runs_the_base_and_prod_files_with_no_profiles() -> None:
 def deploy_steps() -> str:
     """deploy.sh's new-commit branch, where it builds, migrates and switches."""
     script = text("deploy.sh")
-    start = script.index('\nif [[ "$target" != "$deployed" ]]; then\n')
+    start = script.index('\nif [[ "$target" != "$deployed" && "$target" != "$rolled_back" ]]; then\n')
     return script[start : script.index("\nfi\n", start)]
+
+
+def code(script: str) -> str:
+    """A script without its comment lines."""
+    return "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#"))
+
+
+SWITCH = (
+    f'  if tag_images "$target" local && {DC} up -d --no-deps "${{INFRA[@]}}" "${{APPS[@]}}" &&\n'
+    "    wait_for_api; then\n"
+)
+
+
+def test_the_service_lists_are_every_compose_service_but_migrate() -> None:
+    script = text("deploy.sh")
+    infra = re.findall(r"^INFRA=\((.*)\)$", script, re.MULTILINE)
+    apps = re.findall(r"^APPS=\((.*)\)$", script, re.MULTILINE)
+    assert apps == ["api worker frontend"] and len(infra) == 1
+    listed = infra[0].split() + apps[0].split()
+    assert sorted([*listed, "migrate"]) == sorted(
+        services(PROD)
+    )  # every service, read from the compose files
+
+
+def test_no_up_runs_migrate_through_depends_on() -> None:
+    """24 Oct 2026: an `up -d` that reaches migrate runs it with :local; after a rollback over a
+    migration that older image fails on the newer database and leaves the app stopped."""
+    lines = code(text("deploy.sh"))
+    ups = re.findall(r"up -d.*", lines)
+    assert ups == [
+        'up -d --no-deps "${APPS[@]}" && wait_for_api',  # roll_back_to
+        'up -d --no-deps "${INFRA[@]}" "${APPS[@]}" &&',  # the switch
+        'up -d --no-deps "${INFRA[@]}" "${APPS[@]}"; then',  # every other run
+    ]
+    assert not re.search(r"up -d *($|;|&&)", lines)  # no bare up -d
+    assert "--remove-orphans" not in lines  # a service the release before needs is never removed
+    # Only step 2 runs migrate, from the new image.
+    assert [line.strip() for line in re.findall(r".*migrate.*", lines)] == [
+        f'if ! KAAGAZ_TAG="$target" {DC} run --rm -T migrate; then',
+        'echo "migrate failed; site still on ${current:-the running images}" >&2',
+    ]
 
 
 def test_deploy_builds_commit_images_and_migrates_before_touching_the_app() -> None:
@@ -82,8 +125,7 @@ def test_deploy_builds_commit_images_and_migrates_before_touching_the_app() -> N
     steps = deploy_steps()
     build = steps.index(f'  if ! KAAGAZ_TAG="$target" {DC} build; then\n')
     migrate = steps.index(f'  if ! KAAGAZ_TAG="$target" {DC} run --rm -T migrate; then\n')
-    switch = steps.index(f'  if tag_images "$target" local && {DC} up -d --remove-orphans')
-    assert steps.index("git reset ") < build < migrate < switch
+    assert steps.index("git reset ") < build < migrate < steps.index(SWITCH)
     # Nothing before the migration starts, recreates or retags a running container.
     before = steps[:migrate]
     assert "up -d" not in before and "roll_back_to" not in before and 'tag_images "$target"' not in before
@@ -93,13 +135,10 @@ def test_deploy_builds_commit_images_and_migrates_before_touching_the_app() -> N
 def test_a_failed_build_or_migrate_stops_before_the_switch() -> None:
     steps = deploy_steps()
     failed_build = (
-        '  if ! KAAGAZ_TAG="$target" docker compose "${COMPOSE[@]}" build; then\n'
-        '    report "$target" failed\n'
-        "    exit 1\n"
-        "  fi\n"
+        f'  if ! KAAGAZ_TAG="$target" {DC} build; then\n    report "$target" failed\n    exit 1\n  fi\n'
     )
     failed_migrate = (
-        '  if ! KAAGAZ_TAG="$target" docker compose "${COMPOSE[@]}" run --rm -T migrate; then\n'
+        f'  if ! KAAGAZ_TAG="$target" {DC} run --rm -T migrate; then\n'
         '    echo "migrate failed; site still on ${current:-the running images}" >&2\n'
         '    report "$target" failed\n'
         "    exit 1\n"
@@ -108,12 +147,12 @@ def test_a_failed_build_or_migrate_stops_before_the_switch() -> None:
     assert failed_build in steps and failed_migrate in steps
     assert steps.index(failed_migrate) < steps.index('tag_images "$target" local')
     # Not recorded, so the next run tries the commit again; the site was never touched.
-    assert steps.index(failed_migrate) < steps.index('>"$DEPLOYED_FILE.tmp"')
+    assert steps.index(failed_migrate) < steps.index('save_state "$target"')
 
 
-def test_a_failed_health_check_rolls_back_to_the_live_images() -> None:
+def test_a_failed_health_check_holds_the_commit_and_rolls_back() -> None:
     script = text("deploy.sh")
-    assert "\nAPPS=(api worker frontend)\n" in script and "\nHEALTH_TIMEOUT_SECONDS=180\n" in script
+    assert "\nHEALTH_TIMEOUT_SECONDS=180\n" in script
     assert (
         "wait_for_api() {\n"
         "  local waited=0\n"
@@ -123,62 +162,80 @@ def test_a_failed_health_check_rolls_back_to_the_live_images() -> None:
         "    fi\n"
     ) in script
     assert "docker inspect -f '{{.State.Health.Status}}' \"$id\"" in script
-    # migrate is skipped: an older image would refuse the newer database.
     assert (
         "roll_back_to() {\n"
         f'  tag_images "$1" local && {DC} up -d --no-deps "${{APPS[@]}}" && wait_for_api\n'
         "}\n"
     ) in script
     steps = deploy_steps()
-    gate = (
-        f'  if tag_images "$target" local && {DC} up -d --remove-orphans && wait_for_api; then\n'
-        "    healthy=true\n"
-        "  fi\n"
-    )
+    # Held before the rollback starts: if the run is cut short, the next one puts :local back.
+    hold = '  printf \'%s\\n\' "$target" >"$ROLLED_BACK_FILE"\n'
     rollback = (
         '  if [[ -n "$current" ]] && roll_back_to "$current"; then\n'
         '    report "$target" "rolled back to $current"\n'
         "    exit 1\n"
         "  fi\n"
     )
-    assert gate in steps and rollback in steps
-    assert steps.index(gate) < steps.index('  if [[ "$healthy" == true ]]; then\n') < steps.index(rollback)
+    assert steps.index(SWITCH) < steps.index(hold) < steps.index(rollback)
+    assert '\nif [[ "$target" != "$deployed" && "$target" != "$rolled_back" ]]; then\n' in script
 
 
-def test_deploy_records_the_commit_only_after_the_switch() -> None:
-    """Recorded after the health check either way, so a rolled-back release is not
-    switched to again every 5 minutes."""
+def test_the_deployed_record_is_written_only_after_a_health_check_passes() -> None:
     script = text("deploy.sh")
     assert "\nDEPLOYED_FILE=/home/ubuntu/.kaagaz-deployed\n" in script
-    steps = deploy_steps()
-    record = steps.index('printf \'%s\\n\' "$target" >"$DEPLOYED_FILE.tmp"')
-    move = steps.index('mv -f "$DEPLOYED_FILE.tmp" "$DEPLOYED_FILE"')
-    assert steps.index("    healthy=true\n") < record < move
-    assert record < steps.index('report "$target" deployed') and record < steps.index("roll_back_to")
-    assert script.count('>"$DEPLOYED_FILE') == 1  # written nowhere else
-    unchanged = script.index('docker compose "${COMPOSE[@]}" up -d; then')
-    assert unchanged < script.index('report "$target" unchanged')
-
-
-def test_deploy_keeps_the_live_and_previous_images_in_the_state_file() -> None:
-    script = text("deploy.sh")
     assert "\nIMAGES_FILE=/home/ubuntu/.kaagaz-images\n" in script
-    assert '{ read -r current && read -r previous; } <"$IMAGES_FILE" || true' in script
-    assert script.count('>"$IMAGES_FILE.tmp"') == 1  # only save_images writes it
-    # The first deploy with commit tags names the running images after the deployed commit.
-    assert '[[ -z "$current" && -n "$deployed" ]] && tag_images local "$deployed"; then' in script
-    steps = deploy_steps()
-    good = steps[steps.index('  if [[ "$healthy" == true ]]; then\n') :]
-    assert good.startswith(
-        '  if [[ "$healthy" == true ]]; then\n'
-        '    if [[ "$current" != "$target" ]]; then\n'
+    assert "\nROLLED_BACK_FILE=/home/ubuntu/.kaagaz-rolled-back\n" in script
+    assert (
+        "save_state() {\n"
+        '  printf \'%s\\n%s\\n\' "$1" "$2" >"$IMAGES_FILE.tmp"\n'
+        '  mv -f "$IMAGES_FILE.tmp" "$IMAGES_FILE"\n'
+        '  printf \'%s\\n\' "$1" >"$DEPLOYED_FILE.tmp"\n'
+        '  mv -f "$DEPLOYED_FILE.tmp" "$DEPLOYED_FILE"\n'
+        "}\n"
+    ) in script
+    assert script.count('>"$DEPLOYED_FILE') == 1 and script.count('>"$IMAGES_FILE') == 1  # only there
+    # Each save_state follows a passed health check.
+    assert re.findall(r"save_state \".*", script) == [
+        'save_state "$previous" "$current"',  # --rollback, after roll_back_to (ends in wait_for_api)
+        'save_state "$current" ""',  # first run, api healthy
+        'save_state "$target" "$previous"',  # the switch passed wait_for_api
+    ]
+    rollback = script[script.index('  if ! roll_back_to "$previous"; then\n') :]
+    assert rollback.index("    exit 1\n") < rollback.index('save_state "$previous" "$current"')
+    assert (
+        '    if [[ -n "$deployed" ]] && api_healthy && tag_images local "$deployed"; then\n'
+        '      current="$deployed"\n'
+        '      save_state "$current" ""\n'
+        "    else\n"
+        '      echo "no previous release to roll back to: no $DEPLOYED_FILE, or api is not healthy" >&2\n'
+    ) in script
+    assert (
+        SWITCH + '    if [[ "$current" != "$target" ]]; then\n'
         '      previous="$current"\n'
         "    fi\n"
-        '    save_images "$target" "$previous"\n'
+        '    save_state "$target" "$previous"\n'
         '    prune_images "$target" "$previous"\n'
         "    prune_build_cache\n"
         '    report "$target" deployed\n'
+    ) in deploy_steps()
+
+
+def test_every_other_run_puts_local_back_on_the_recorded_live_images_first() -> None:
+    """Undoes a hand `dc build` and finishes a rollback that was cut short."""
+    script = text("deploy.sh")
+    assert '{ read -r current && read -r previous; } <"$IMAGES_FILE" || true' in script
+    rest = script[script.index("\n# :local follows the recorded live images") :]
+    retag = (
+        '\nif [[ -n "$current" ]] && ! tag_images "$current" local; then\n'
+        '  report "$target" failed\n'
+        "  exit 1\n"
+        "fi\n"
     )
+    up = f'\nif ! {DC} up -d --no-deps "${{INFRA[@]}}" "${{APPS[@]}}"; then\n'
+    held = (
+        '\nif [[ "$target" == "$rolled_back" && "$target" != "$deployed" ]]; then\n  report "$target" held\n'
+    )
+    assert rest.index(retag) < rest.index(up) < rest.index(held)
 
 
 def test_the_image_prune_never_removes_the_live_or_previous_images() -> None:
@@ -202,12 +259,14 @@ def test_deploy_rollback_puts_the_previous_images_back_and_never_downgrades() ->
     assert "\n  --rollback) rollback=true ;;\n" in script
     start = script.index('\nif [[ "$rollback" == true ]]; then\n  if [[ -z "$previous" ]]; then\n')
     branch = script[start : script.index("\nfi\n", script.index("  exit 0\n", start))]
-    assert branch.index('roll_back_to "$previous"') < branch.index('save_images "$previous" "$current"')
+    assert branch.index('roll_back_to "$previous"') < branch.index('save_state "$previous" "$current"')
+    # The production commit the checkout is on is held, so the timer does not deploy it again.
+    assert branch.index('git rev-parse HEAD >"$ROLLED_BACK_FILE"') < branch.index("save_state")
     assert branch.endswith('  report "$current" "rolled back to $previous"\n  exit 0')
     assert start < script.index("git fetch")  # the checkout and the database are left alone
-    assert "migrate" not in branch and "git " not in branch
-    code = "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#")).lower()
-    assert "downgrade" not in code and "alembic" not in code  # no schema change but compose's own migrate
+    assert "migrate" not in branch and "git fetch" not in branch and "git reset" not in branch
+    lines = code(script).lower()
+    assert "downgrade" not in lines and "alembic" not in lines  # no schema change but compose's own migrate
 
 
 def test_deploy_prints_one_line_per_run() -> None:
@@ -222,7 +281,9 @@ def test_deploy_prints_one_line_per_run() -> None:
         ('"$target"', "deployed"),
         ('"$target"', '"rolled back to $current"'),
         ('"$target"', "failed"),  # not healthy, and nothing to roll back to
-        ('"$target"', "failed"),  # plain up
+        ('"$target"', "failed"),  # retag to the live images
+        ('"$target"', "failed"),  # up
+        ('"$target"', "held"),  # a rolled-back commit
         ('"$target"', "unchanged"),
     ]
     assert 'printf \'%s %s\\n\' "$1" "$2"' in script
@@ -231,7 +292,8 @@ def test_deploy_prints_one_line_per_run() -> None:
     assert re.findall(r"printf .*", script) == [
         'printf \'%s %s\\n\' "$1" "$2"',
         'printf \'%s\\n%s\\n\' "$1" "$2" >"$IMAGES_FILE.tmp"',
-        'printf \'%s\\n\' "$target" >"$DEPLOYED_FILE.tmp"',
+        'printf \'%s\\n\' "$1" >"$DEPLOYED_FILE.tmp"',
+        'printf \'%s\\n\' "$target" >"$ROLLED_BACK_FILE"',
     ]
 
 
