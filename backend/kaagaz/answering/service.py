@@ -223,6 +223,7 @@ from kaagaz.answering.hard_to_read import (
     FlaggedPage,
     PgReadingQuality,
     ReadingQuality,
+    WordMark,
     hard_to_read,
     not_found_note,
 )
@@ -566,6 +567,7 @@ class AnswerService:
         pins: Sequence[Pin] = (),
         pending: Pending | None = None,
         clarify: bool = True,
+        cited: Sequence[str] = (),
     ) -> Answer:
         """Answer ``question`` for ``customer_id`` only, from documents inside ``scope``;
         ``history`` is the conversation's earlier turns, oldest first; ``user_id``, the
@@ -578,15 +580,17 @@ class AnswerService:
         (``models.NO_MODEL``: the asker's Ask setting is None, 0038) answers as with the model
         off: no model call at all, the lines found quoted. ``pending``: the stored clarify
         this answers (step 18, ``clarify.reply_to``), whose question is answered instead;
-        ``clarify`` False (the ``nlq_clarify`` switch, 0052): no plan, so no clarify."""
+        ``clarify`` False (the ``nlq_clarify`` switch, 0052): no plan, so no clarify. ``cited``:
+        the documents the conversation's earlier answers cite, newest turn first (a missing
+        subject's choices, ``clarify.first_step``)."""
         if choice is not None and not choice.agents:
             keyless = copy.copy(self)  # shallow: the same ports, without the model clients
             keyless._model = keyless._translator = None
             return keyless._respond(
-                customer_id, question, scope, history, user_id, memory, None, pins, pending, clarify
+                customer_id, question, scope, history, user_id, memory, None, pins, pending, clarify, cited
             )
         return self._respond(
-            customer_id, question, scope, history, user_id, memory, choice, pins, pending, clarify
+            customer_id, question, scope, history, user_id, memory, choice, pins, pending, clarify, cited
         )
 
     def _respond(
@@ -601,6 +605,7 @@ class AnswerService:
         pins: Sequence[Pin],
         pending: Pending | None,
         clarify: bool = True,
+        cited: Sequence[str] = (),
     ) -> Answer:
         """``answer``'s work, timed by it."""
         if scope.matches_nothing:
@@ -652,8 +657,7 @@ class AnswerService:
         step = Step(done.question or question, ())
         narrowed = replace(scope, timezone=EVERYTHING.timezone) != EVERYTHING  # any filter at all
         if done.plan is not None and vocabulary is not None:
-            step = first_step(vocabulary, customer_id, step.question, done.plan, narrowed)
-        kept = early if step.question == question else None  # step 19: searched the question as asked
+            step = first_step(vocabulary, customer_id, step.question, done.plan, narrowed, cited)
         return self._step_answer(
             customer_id, step, question, scope, user_id, whole, done.aspects, choice, pins, kept
         )
@@ -887,6 +891,23 @@ class AnswerService:
             for citation in citations
         ]
 
+    def _hard_values(self, customer_id: str, values: Sequence[ValueRef]) -> set[str]:
+        """F6 for every figure a total or a ranking compares, listed or not (PRD 6 C): the ids
+        of the values whose spot holds a word mark. One statement for all their documents' word
+        marks; each value is checked against its own document's marks only."""
+        if self._reading is None or not values:
+            return set()
+        marks: dict[str, list[WordMark]] = {}
+        for mark in self._reading.word_marks(customer_id, [value.document_id for value in values]):
+            marks.setdefault(mark.document_id, []).append(mark)
+        return {
+            value.value_id
+            for value in values
+            if hard_to_read(
+                value.document_id, valid_regions([value.region]), marks.get(value.document_id, [])
+            )
+        }
+
     def _answer(
         self,
         customer_id: str,
@@ -990,8 +1011,8 @@ class AnswerService:
         def cite(refs: Sequence[ValueRef]) -> list[int]:
             for ref in refs:
                 regions = valid_regions([ref.region])
-                if not regions:
-                    spotless.update(voice.numbers(ref.value_text))
+                if not regions:  # its printed label (0054) is its own text too
+                    spotless.update(voice.numbers(f"{ref.value_text}\n{ref.label_text or ''}"))
                 elif ref.value_id not in numbered:  # never shown without its spot
                     numbered[ref.value_id] = len(citations) + 1
                     citations.append(_value_citation(len(citations) + 1, ref, regions))
@@ -1154,8 +1175,9 @@ class AnswerService:
         self, customer_id: str, plan: FixedPlan, shown: str, fixed: FixedQueries
     ) -> Answer | None:
         """A total, or every matching record and why there is none (PRD 6 C, answering/totals.py),
-        written in code. Verified only for a total whose every cited value is, none hard to
-        read. Two statements, and one for the word marks (F6). For a highest or lowest by party
+        written in code. Verified only for a total whose every cited value is, and no figure of
+        any record hard to read, listed or not. Two statements, and one for the word marks of
+        every record's document (F6). For a highest or lowest by party
         (C2), the same records and reasons (``ranking``), or None when the rule holds and the
         ranking may be shown."""
         metric = plan.metric or ""
@@ -1179,8 +1201,8 @@ class AnswerService:
         citations = [
             _value_citation(n, value, regions) for n, (_, value, regions) in enumerate(told.lines, start=1)
         ]
-        citations = self._marked(customer_id, citations, {c.n: c.regions for c in citations})
-        hard = {c.ref_id for c in citations if c.hard_to_read}
+        hard = self._hard_values(customer_id, [figure.value for figure in figures if figure.value])
+        citations = [replace(c, hard_to_read=c.ref_id in hard) for c in citations]
         if hard:
             told = tell(figures, *said, hard, ranking=ranking)  # the same records, in the same order
         if ranking and told.total is not None:

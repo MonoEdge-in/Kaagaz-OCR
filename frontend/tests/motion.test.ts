@@ -37,9 +37,12 @@ const ms = (item: string) => {
 };
 const tokenMs = (name: string) => Number(new RegExp(`${name}:\\s*(\\d+)ms;`).exec(read("app/globals.css"))?.[1]);
 const durationOf = (item: string) => {
-  const token = /var\((--t-[\w-]+)\)/.exec(item)?.[1];
+  const token = /var\((--(?:t|motion)-[\w-]+)\)/.exec(item)?.[1];
   return token ? tokenMs(token) : ms(item);
 };
+// Changed on purpose (document panel UX, 25 Oct 2026): the check that draws in once when the
+// status line turns to "Everything is checked" moves its stroke (an SVG's dash), over 400ms.
+const DRAW = "app/(app)/documents/[id]/WordReview.module.css";
 
 // Not motion: held off for good, or a delayed show.
 const NOT_MOTION = [
@@ -69,6 +72,7 @@ describe("motion in the CSS", () => {
     for (const file of CSS) {
       for (const [, name, body] of css(file).matchAll(/@keyframes ([\w-]+)\s*\{([\s\S]*?\})\s*\}/g)) {
         if (file === "app/globals.css" && name === "appear") continue; // .delayed's 0s show
+        if (file === DRAW && name === "draw-check" && /^\s*from\s*\{\s*stroke-dashoffset:[^;]*;\s*\}$/.test(body ?? "")) continue;
         for (const [, property] of (body ?? "").matchAll(/([\w-]+)\s*:/g)) {
           if (!/^(transform|opacity)$/.test(property ?? "")) found.push(`${file}: @keyframes ${name}: ${property}`);
         }
@@ -77,17 +81,22 @@ describe("motion in the CSS", () => {
     expect(found).toEqual([]);
   });
 
-  it("runs every move in 120 to 240ms on the one --ease curve, loops aside", () => {
+  // Changed on purpose (document panel UX, 25 Oct 2026): the panel's motion tokens, 160 and 280ms
+  // on an ease-out curve, and the 400ms check drawn once (DRAW).
+  it("runs every move in 120 to 280ms on the --ease or --ease-out curve, loops and the drawn check aside", () => {
     expect(read("app/globals.css")).toMatch(/--ease: cubic-bezier\(0\.2, 0, 0\.2, 1\);/);
+    expect(read("app/globals.css")).toMatch(/--ease-out: cubic-bezier\(0\.2, 0\.8, 0\.2, 1\);/);
     expect([tokenMs("--t-fast"), tokenMs("--t-med"), tokenMs("--t-slow"), tokenMs("--t-drawer")]).toEqual([120, 160, 200, 220]);
+    expect([tokenMs("--motion-quick"), tokenMs("--motion-calm"), tokenMs("--motion-draw")]).toEqual([160, 280, 400]);
     const found: string[] = [];
     for (const file of CSS) {
       for (const { selector, value } of declarations(css(file), /^(transition|animation)$/)) {
         if (NOT_MOTION.includes(`${file}: ${selector}`) || value === "none" || LOOPS.test(value)) continue;
+        if (file === DRAW && value === "draw-check var(--motion-draw) var(--ease-out) both") continue;
         for (const item of items(value)) {
           const duration = durationOf(item);
-          const eased = /var\(--ease\)|cubic-bezier\(0\.2, 0, 0\.2, 1\)/.test(item) || /allow-discrete/.test(item);
-          if (duration === null || duration < 120 || duration > 240 || !eased) found.push(`${file}: ${selector}: ${item}`);
+          const eased = /var\(--ease(-out)?\)|cubic-bezier\(0\.2, 0, 0\.2, 1\)/.test(item) || /allow-discrete/.test(item);
+          if (duration === null || duration < 120 || duration > 280 || !eased) found.push(`${file}: ${selector}: ${item}`);
         }
       }
     }

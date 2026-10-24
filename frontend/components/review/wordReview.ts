@@ -43,9 +43,6 @@ export const IN_ENSEMBLE = "in Ensemble";
 
 // --- Summary bar (section 3) and review progress (section 4) ---
 
-export const REVIEW_LABEL = "Review flagged words";
-export const CONTINUE_LABEL = "Continue review";
-export const SHOW_FLAGS = "Show flagged words"; // a member: flags and reasons only
 export const EXIT_LABEL = "Exit review";
 export const ENSEMBLE_FLAGGED = "Run Ensemble on flagged words";
 export const ENSEMBLE_DOCUMENT = "Run Ensemble on full document";
@@ -70,16 +67,29 @@ export function finishedText(total: number): string {
     : `Verified. All ${total.toLocaleString("en-IN")} flagged words are reviewed or resolved. Document ready to export.`;
 }
 
-/** "Scanning…" until the scan is done; then the API's sentence. */
-export const summaryText = (status: ReviewStatus, scanning: string) => status.summary ?? scanning;
+/**
+ * The panel's status line (document panel UX, 25 Oct 2026): one true thing, from the counts
+ * the review itself uses (`remaining`), so "Everything is checked" never sits beside a count
+ * of words still to check. While it is read, the document's own status words.
+ */
+export function statusLine(status: ReviewStatus, scanning: string): { text: string; clear: boolean } {
+  if (status.status !== "ready") return { text: scanning, clear: false };
+  if (status.remaining > 0) {
+    return { text: `${plural(status.remaining, "word")} ${status.remaining === 1 ? "needs" : "need"} a look`, clear: false };
+  }
+  return { text: status.flagged === 0 ? "No words need a look" : "Everything is checked", clear: true };
+}
 
-/** The document header's trust signals (section 7): words, flagged, reviewed, last change. */
+/** The status line's one button: what it does, for a reviewer (check) or a member (show). */
+export const checkLabel = (status: Pick<ReviewStatus, "remaining" | "can_review">) =>
+  `${status.can_review ? "Check" : "Show"} ${status.remaining === 1 ? "it" : "them"}`;
+
+/** "More details" (section 7's trust signals, in plain words): pages, words, checked, last change. */
 export function trustText(status: ReviewStatus): string {
-  const parts = [
-    plural(status.words, "word"),
-    `${status.flagged.toLocaleString("en-IN")} flagged`,
-    `${doneCount(status).toLocaleString("en-IN")} reviewed`,
-  ];
+  const parts = [plural(status.pages, "page"), plural(status.words, "word")];
+  if (status.flagged > 0) {
+    parts.push(`${doneCount(status).toLocaleString("en-IN")} of ${status.flagged.toLocaleString("en-IN")} checked`);
+  }
   if (status.last_change_at) parts.push(`Last change ${formatDateTime(status.last_change_at)}`);
   return parts.join(" · ");
 }

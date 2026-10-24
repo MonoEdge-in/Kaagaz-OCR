@@ -9,12 +9,15 @@ import {
   LANGUAGES,
   LEFT_OUT,
   NOT_SURE_TIP,
+  TOO_LONG,
   TRANSLATING,
   TRANSLATION_LABEL,
+  UNUSABLE,
   blocks,
   copyText,
   pairParts,
   parts,
+  translateFailure,
 } from "@/components/viewer/clearCopy";
 import type { ReadLine, ReadingMark } from "@/lib/types";
 
@@ -100,12 +103,23 @@ describe("Read clearly: the screen", () => {
     expect(words).not.toMatch(/needs review/i);
     expect(words).not.toMatch(/couldn't|sorry|unfortunately|perfect|guaranteed/i);
     expect(words).not.toMatch(/\b(model|gemini|openrouter|cost|price|spend|budget)\b/i);
-    expect([TRANSLATION_LABEL, TRANSLATING, BUSY]).toEqual([
+    expect([TRANSLATION_LABEL, TRANSLATING, BUSY, UNUSABLE, TOO_LONG]).toEqual([
       "Translation — the original text is above",
       "Translating…",
-      "The translation service is busy right now. The exact text is still here; try again in a minute.",
+      "Translation isn't available right now. Try again in a minute.",
+      "This page can't be translated. The exact text is above.",
+      "This page is too long to translate in one go. The exact text is above.",
     ]);
     expect(LANGUAGES.map((each) => each.name)).toEqual(["Original", "English", "हिंदी", "मराठी"]);
+  });
+
+  it("says why a page was not translated, and offers Try again only when the service is busy", () => {
+    expect(translateFailure("backend_unavailable")).toEqual({ text: BUSY, retry: true });
+    expect(translateFailure("rate_limited")).toEqual({ text: BUSY, retry: true });
+    expect(translateFailure(undefined)).toEqual({ text: BUSY, retry: true }); // no reply at all
+    expect(translateFailure("translation_unusable")).toEqual({ text: UNUSABLE, retry: false });
+    expect(translateFailure("page_too_long")).toEqual({ text: TOO_LONG, retry: false });
+    expect(panel).toMatch(/\{tr\.retry && \(\s*<button type="button"[^\n]*\n\s*Try again/);
   });
 
   it("shows Translate only when Ask is on and above None", () => {

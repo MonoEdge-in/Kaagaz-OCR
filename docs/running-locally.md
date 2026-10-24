@@ -210,7 +210,7 @@ docs/runbooks/prd5-cpu-server-switch.md.
    for the last 5 documents read: `dc exec -T worker python -m kaagaz.cli scan-times --last 5`.
 
 **RapidOCR, the fallback.** If Gemini misbehaves, set `OCR_ENGINE=rapidocr` in
-`.env` and restart both: `dc up -d api worker`. Change it back the same way.
+`.env` and restart both: `dc up -d --no-deps api worker`. Change it back the same way.
 
 ### Production on EC2
 
@@ -287,11 +287,11 @@ Lambda's `INSTANCE_ID` and `WAKE_TOKEN` live only in the Lambda console.
 
 **What runs by itself.** `kaagaz-deploy.timer` runs `infra/ec2/deploy.sh` 2
 minutes after boot and every 5 minutes: when `origin/production` has a new
-commit it rebuilds and starts everything (migrations included; 1 to 2 minutes
-of downtime), otherwise it starts anything that is down. Each run logs one line,
-the commit and `deployed`, `unchanged` or `failed`
-(`journalctl -u kaagaz-deploy -n 50`); a failed build is tried again on the
-next run. After a good deploy it removes build cache unused for 7 days
+commit it deploys it (Deploys and rollback, below; 1 to 2 minutes of downtime
+while the app restarts), otherwise it starts anything that is down. Each run
+logs one line, the commit and `deployed`, `unchanged`, `held`, `failed` or
+`rolled back to <commit>` (`journalctl -u kaagaz-deploy -n 50`); a failed build
+or migration is tried again on the next run. After a good deploy it removes build cache unused for 7 days
 (`docker builder prune --filter until=168h`, never volumes), and before a build
 with under 20 GB free on `/` it logs `low disk: ...` and does the same first;
 `docker system df` shows what is left. `kaagaz-pgdump.timer` writes `~/backups/kaagaz-YYYYMMDD.dump` (mode
@@ -299,6 +299,57 @@ with under 20 GB free on `/` it logs `low disk: ...` and does the same first;
 server was stopped then. Data Lifecycle Manager takes a daily EBS snapshot at
 20:30 UTC (02:00 IST), keeping 7. Restore from a snapshot (the whole disk) or
 a dump (section 6). Logs: `dc logs --since 1h <service>`.
+
+**Deploys and rollback** (#246, ADR 0052). A new commit goes live in four steps,
+and the site keeps serving the old release until step 3:
+
+1. Build `kaagaz-backend:<commit>` and `kaagaz-frontend:<commit>`. A failed
+   build changes nothing.
+2. `alembic upgrade head` in a throwaway container from the new image
+   (`KAAGAZ_TAG=<commit> dc run --rm -T migrate`). A failed migration changes
+   no container and logs `migrate failed; site still on <commit>`.
+3. Point `kaagaz-backend:local` and `kaagaz-frontend:local` (what `dc` runs) at
+   the new images, start every service but `migrate` with `--no-deps`, and wait
+   up to 3 minutes for api to be healthy.
+4. If it is not, point `:local` back at the previous images and start those
+   (`<commit> rolled back to <previous>`). That commit is held: the timer logs
+   `<commit> held` and never tries it again; the next commit on `production`
+   deploys as usual.
+
+`~/.kaagaz-images` holds the live commit, then the one to roll back to, and is
+what `:local` must point at: every timer run puts `:local` back on the live
+images (undoing a hand `dc build`) before starting anything that is down.
+`~/.kaagaz-deployed` holds the live commit too, written only once api is
+healthy, and `~/.kaagaz-rolled-back` the held commit. The live and previous
+images are kept; older commit images are removed after a good deploy. On the
+first deploy with this flow, if api is healthy, the running `:local` images are
+named after the commit in `~/.kaagaz-deployed`; otherwise the log says there is
+no previous release to roll back to yet.
+
+To roll back by hand, as `ubuntu`: `~/kaagaz/infra/ec2/deploy.sh --rollback`.
+It starts the previous images, waits for api to be healthy, holds the commit
+the checkout is on, and prints `<commit> rolled back to <previous>`; run it
+again to go forward. It never runs a downgrade migration, so the older code runs
+on the newer schema: this is safe only while migrations only add columns and
+tables (ADR 0052, M1). A rollback also uses the checkout's compose files and
+Caddyfile, those of the newest commit, so every release must keep them working
+for the release before it.
+
+**Never start the app with a plain `dc up -d`** on the server: it runs
+`migrate` with `:local`, and after a rollback over a migration that older image
+fails on the newer database and leaves api, worker and frontend stopped (until
+#246 PR 1 lets `migrate` accept a database ahead of the code). Use
+`dc up -d --no-deps <service>`, and never `dc up --build` or `dc build`.
+
+If `migrate` fails: the site is still on the old release, and every 5 minutes
+the timer tries again. Read the error with `journalctl -u kaagaz-deploy -n 50`.
+Fix it in a PR, never by hand on the server. Before any `alembic stamp` (Vrushit's
+decision), take a backup (`~/kaagaz/infra/ec2/pgdump.sh`) and check
+`alembic_version` against the real schema: on 24 Oct 2026 the row said 0042
+while 0043 to 0045 were already applied, so `upgrade` failed with
+`DuplicateTable`. For each migration after the stamped one, check that the
+tables it creates exist (`SELECT to_regclass('public.<table>')`), then stamp
+the last one that is fully there.
 
 **Releases** (EC2 PRD section 6).
 

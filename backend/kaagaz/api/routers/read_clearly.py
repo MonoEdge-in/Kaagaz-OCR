@@ -8,10 +8,12 @@ in English, Hindi or Marathi.
   Who may see it is who may see the scanned text. No model call. Never logged.
 * ``POST /documents/{id}/pages/{n}/translate`` ``{language}``: that page's lines in the
   language (kaagaz.answering.page_translate), ``cached`` when a second view made no model
-  call. It uses AI, so it follows Ask: 403 ``feature_off`` while Ask is switched off for
-  the organisation (0038, 0039) or the asker's Ask level is None. The model call is
-  outside any transaction, billed to the asker as ``translate``. No model name is ever in
-  a reply.
+  call; every line or none: 503 ``backend_unavailable`` when the model can't be reached,
+  422 ``page_too_long`` past the page's cap, 422 ``translation_unusable`` for a reply that
+  could not be used. It uses AI, so it follows Ask: 403 ``feature_off`` while Ask is
+  switched off for the organisation (0038, 0039) or the asker's Ask level is None. The
+  model call is outside any transaction, billed to the asker as ``translate``. No model
+  name is ever in a reply.
 """
 
 import uuid
@@ -22,7 +24,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import Connection, RowMapping
 
 from kaagaz.ai.usage import usage_scope
-from kaagaz.answering.page_translate import translate_page
+from kaagaz.answering.page_translate import MODEL_DOWN, PAGE_TOO_LONG, NotTranslated, translate_page
 from kaagaz.api import views
 from kaagaz.api.auth import FEATURE_OFF, User, require_feature
 from kaagaz.api.context import AppContext, get_context
@@ -94,16 +96,15 @@ def translate(
     if not _limits.allow(user.user_id):
         raise ApiError(429, "rate_limited", headers={"Retry-After": "60"})
     lines = [line["text"] for line in _main_reader(page_readings(page_no, rows))["lines"]]
-    with usage_scope(
-        context.db, customer_id=customer_id, user_id=user.user_id, kind="translate", document_id=target
-    ):
-        found = translate_page(context.model, (customer_id, target, str(page_no)), lines, body.language)
-    if found is None:
-        raise ApiError(503, "backend_unavailable", headers={"Retry-After": "60"})
-    return {
-        "page_no": page_no,
-        "language": body.language,
-        "lines": found.lines,
-        "truncated": found.truncated,
-        "cached": found.cached,
-    }
+    try:
+        with usage_scope(
+            context.db, customer_id=customer_id, user_id=user.user_id, kind="translate", document_id=target
+        ):
+            found = translate_page(context.model, (customer_id, target, str(page_no)), lines, body.language)
+    except NotTranslated as error:
+        if error.code == MODEL_DOWN:
+            raise ApiError(503, "backend_unavailable", headers={"Retry-After": "60"}) from None
+        raise ApiError(
+            422, "page_too_long" if error.code == PAGE_TOO_LONG else "translation_unusable"
+        ) from None
+    return {"page_no": page_no, "language": body.language, "lines": found.lines, "cached": found.cached}

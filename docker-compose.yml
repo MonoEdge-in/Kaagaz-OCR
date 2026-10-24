@@ -11,9 +11,11 @@
 name: kaagaz-ocr
 
 # Shared by the three backend containers (migrate, api, worker): one image,
-# built from backend/Dockerfile, with a different command each.
+# built from backend/Dockerfile, with a different command each. On the server,
+# infra/ec2/deploy.sh sets KAAGAZ_TAG to a commit to build and migrate a new
+# release beside the running one; :local is always what runs.
 x-backend: &backend
-  image: kaagaz-backend:local
+  image: kaagaz-backend:${KAAGAZ_TAG:-local}
   build:
     context: ./backend
   env_file: .env
@@ -186,7 +188,7 @@ services:
       args:
         # Next.js writes the /api rewrite into the build (frontend/Dockerfile).
         BACKEND_URL: http://api:8000
-    image: kaagaz-frontend:local
+    image: kaagaz-frontend:${KAAGAZ_TAG:-local}
     ports:
       - "3000:3000"
     depends_on:

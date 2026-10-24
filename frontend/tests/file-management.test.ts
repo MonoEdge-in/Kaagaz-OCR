@@ -791,23 +791,24 @@ describe("the dashboard (D1)", () => {
 // --- P1, P2: the document page ---------------------------------------------------------
 
 describe("the document page (P1, P2)", () => {
+  // Changed on purpose (document panel UX, 25 Oct 2026): the owner and the label are read-only
+  // text with a Change button; the picker and the label's description show once it is pressed.
   it("shows Details with the owner and label pickers, the department path, type, date, author and last updated", () => {
-    const html = render(
-      createElement(DetailsPanel, {
-        detail: detail(),
-        onSaved: () => undefined,
-        people: [
-          { id: "u-priya", name: "Priya" },
-          { id: "u-anita", name: "Anita" },
-        ],
-      }),
-    );
+    const people = [
+      { id: "u-priya", name: "Priya" },
+      { id: "u-anita", name: "Anita" },
+    ];
+    const html = render(createElement(DetailsPanel, { detail: detail(), onSaved: () => undefined, people }));
     for (const words of ["Owner", "Label", "Department", "Type", "Document date", "Author", "Last updated", "Pages"]) {
       expect(html).toContain(`>${words}<`);
     }
     expect(html).toContain("Land &amp; Legal / Land records / Survey 44, Wakad");
-    expect(html).toContain('<option value="restricted">Restricted</option>');
-    expect(html).toContain(LABEL_DESCRIPTIONS.confidential);
+    expect(html).not.toContain("<select");
+    expect(html.match(/>Change<span class="visually-hidden"> (Owner|Label)<\/span>/g)).toHaveLength(2);
+    const label = render(createElement(DetailsPanel, { detail: detail(), onSaved: () => undefined, people, changing: "label" }));
+    expect(label).toContain('<option value="restricted">Restricted</option>');
+    expect(label).toContain(LABEL_DESCRIPTIONS.confidential);
+    expect(label).toContain(">Cancel<");
     expect(html).toContain("Land record");
     expect(html).toContain("12 Jun 2026");
     expect(html).toContain(" · Anita");

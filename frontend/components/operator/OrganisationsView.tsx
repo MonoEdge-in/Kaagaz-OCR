@@ -33,7 +33,7 @@ import { OrgFeatureSwitchesDialog } from "./FeatureSwitches";
 import { OrgAiSettings, orgAiFocusId } from "./OrgAiSettings";
 import { OrgModelRates } from "./OrgModelRates";
 import { OrgSessionTimeoutDialog } from "./SessionTimeout";
-import { afterDone, countText, deleteCountdown, filterOrgs, lastActivityText, operatorErrorMessage, orgStatus, searchSummary, userCounts } from "./logic";
+import { afterDone, countText, deleteCountdown, filterOrgs, GRACE_DAYS, lastActivityText, operatorErrorMessage, orgStatus, searchSummary, userCounts } from "./logic";
 import { MoreRows, useRowCap } from "@/components/admin/RowCap";
 import admin from "@/components/admin/Admin.module.css";
 import styles from "./Operator.module.css";
@@ -246,14 +246,29 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
   );
 }
 
+/** What each Manage item does, in one plain line under it (plain words, 25 Oct 2026). */
+export const MENU_HELP = {
+  admins: "See this organisation's admins. Add one, or disable, unlock or reset one's two-step sign-in.",
+  ai: "Choose which AI reads its scans and answers its questions, Ensemble and its monthly budget.",
+  switches: "Turn features on or off for this organisation only.",
+  timeout: "Choose how long its people can be idle before they are signed out.",
+  limits: "Cap how many AI requests a minute it and each of its people may send.",
+  allowAutofile: "Lets its admin turn on filing new uploads into folders by type.",
+  stopAutofile: "Turns auto-filing off here. Files already filed stay where they are.",
+  disable: "Signs all its people out now and stops its work until you enable it again.",
+  enable: "Lets this organisation's people sign in again.",
+  delete: `Deletes it with all its people and documents after ${GRACE_DAYS} days. You can cancel until then.`,
+  cancel: "Keeps it and everything in it. It stays disabled until you enable it.",
+} as const;
+
 // The changes each status allows, as the server: delete only a disabled one.
-const CHANGES: Record<Organisation["status"], { change: OrgChange; label: string; danger?: boolean }[]> = {
-  active: [{ change: "disable", label: "Disable", danger: true }],
+const CHANGES: Record<Organisation["status"], { change: OrgChange; label: string; description: string; danger?: boolean }[]> = {
+  active: [{ change: "disable", label: "Disable", description: MENU_HELP.disable, danger: true }],
   disabled: [
-    { change: "enable", label: "Enable" },
-    { change: "delete", label: "Delete", danger: true },
+    { change: "enable", label: "Enable", description: MENU_HELP.enable },
+    { change: "delete", label: "Delete", description: MENU_HELP.delete, danger: true },
   ],
-  deleting: [{ change: "cancel", label: "Cancel deletion" }],
+  deleting: [{ change: "cancel", label: "Cancel deletion", description: MENU_HELP.cancel }],
 };
 
 function OrgRow(props: {
@@ -318,19 +333,22 @@ function OrgRow(props: {
           name={org.name}
           buttonId={orgAiFocusId(org.id)}
           safe={[
-            { label: "Admins", onSelect: onAdmins },
+            { label: "Admins", description: MENU_HELP.admins, onSelect: onAdmins },
             ...(org.status === "deleting"
               ? []
               : [
-                  { label: "AI settings", onSelect: onModels },
-                  { label: "Feature switches", onSelect: onSwitches },
-                  { label: "Session timeout", onSelect: onTimeout },
-                  { label: "Request limits", onSelect: onModelRates },
-                  { label: org.autofile_granted ? "Stop auto-filing" : "Allow auto-filing", onSelect: onAutofile },
+                  { label: "AI settings", description: MENU_HELP.ai, onSelect: onModels },
+                  { label: "Feature switches", description: MENU_HELP.switches, onSelect: onSwitches },
+                  { label: "Session timeout", description: MENU_HELP.timeout, onSelect: onTimeout },
+                  { label: "Request limits", description: MENU_HELP.limits, onSelect: onModelRates },
+                  org.autofile_granted
+                    ? { label: "Stop auto-filing", description: MENU_HELP.stopAutofile, onSelect: onAutofile }
+                    : { label: "Allow auto-filing", description: MENU_HELP.allowAutofile, onSelect: onAutofile },
                 ]),
           ]}
-          changes={CHANGES[org.status].map(({ change, label, danger }) => ({
+          changes={CHANGES[org.status].map(({ change, label, description, danger }) => ({
             label,
+            description,
             danger,
             onSelect: () => onChange(change),
           }))}

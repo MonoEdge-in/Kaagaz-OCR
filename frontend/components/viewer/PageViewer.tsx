@@ -501,7 +501,9 @@ export function PageViewer({
 
   let body: ReactNode;
   if (mode === "sheet") {
-    body = <SheetGrid documentId={document.id} page={page} highlights={onThisPage} marks={marks} activeMark={activeMark} />;
+    body = (
+      <SheetGrid documentId={document.id} page={page} highlights={onThisPage} marks={marks} activeMark={activeMark} wordCells={wordBoxes} />
+    );
   } else if (mode === "none") {
     body = <div className={styles.frame}>{failed}</div>;
   } else {

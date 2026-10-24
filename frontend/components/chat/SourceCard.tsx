@@ -119,7 +119,7 @@ export const SourceCard = memo(function SourceCard({
     );
   }
   const labelText = labelPlace(citation);
-  const jumps = pageJumps(citation);
+  const jumps = pageJumps(citation, terms);
   return (
     <article id={id} className={styles.source} tabIndex={-1} aria-labelledby={headingId} data-hot={hot || undefined}>
       {number}
@@ -190,10 +190,12 @@ export function RelatedRow({
 /**
  * "Also mentions “Jalna”" (Tushar, 17 Oct 2026): every other document holding the
  * question's key terms, as the same compact rows as "Also in": the name, its pages and two
- * lines with the terms marked, opening at the page. "and N more" past the list.
+ * lines with the terms marked, opening at the page with them lit (package H, linkWords).
+ * "and N more" past the list.
  */
 export function MentionsSection({ mentions }: { mentions: Mentions }) {
   const terms = matchTerms(...mentions.terms);
+  const words = linkWords(...mentions.terms);
   const heading = `Also mentions ${mentions.terms.map((term) => `“${term}”`).join(" · ")}`;
   const more = mentions.total - mentions.documents.length;
   return (
@@ -210,7 +212,7 @@ export function MentionsSection({ mentions }: { mentions: Mentions }) {
                 <p className={styles.sourceMeta}>{mentionPages(doc.pages, doc.page_no)}</p>
                 <Marked text={doc.snippet} terms={terms} short />
                 <div className={styles.sourceAction}>
-                  <Link href={pageLink(doc.document_id, doc.page_no)} className={styles.openLink}>
+                  <Link href={pageLink(doc.document_id, doc.page_no, undefined, { words })} className={styles.openLink}>
                     <Icon name="open" size={16} />
                     Open page {doc.page_no}
                     <span className="visually-hidden">{` of ${doc.document_name}`}</span>

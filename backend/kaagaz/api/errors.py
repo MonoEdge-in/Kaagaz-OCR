@@ -63,6 +63,9 @@ MESSAGES = {
     "unsupported_type": "This kind of file is not supported.",
     "rate_limited": "Too many requests. Please wait a minute and try again.",
     "backend_unavailable": "The service is busy right now. Please try again in a minute.",
+    # Read clearly's page translation: no retry helps either.
+    "page_too_long": "This page is too long to translate in one go.",
+    "translation_unusable": "This page can't be translated.",
     "internal_error": "Something went wrong on our side.",
 }
 
