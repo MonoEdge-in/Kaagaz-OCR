@@ -18,7 +18,9 @@ record that withholds the total ("reads like a total"), before every other reaso
 the same rule for a highest or lowest by party, before any party's sum is shown: every record
 must also name one party, verified, and a printed total is left out. With a date range asked, a
 printed total is not listed (it covers the whole sheet, not the range): the sheet's rows in range
-are added up as any records.
+are added up as any records. Known limits: a record past the first MAX_CITED_VALUES listed is
+never checked for words hard to read (as in PRD 6 C), and an unlabelled bottom row printing
+only a number is still added in as a record.
 """
 
 from collections.abc import Collection, Sequence

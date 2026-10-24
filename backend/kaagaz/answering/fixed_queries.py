@@ -50,8 +50,9 @@ Rules shared by every query (never a guess, CLAUDE.md never-do 6):
   the lowest and a party's sum leave it out; ``figures`` returns it marked beside its sheet's
   matching rows when no range is asked, so no total is added up over them (answering/totals.py).
   A row that reads like a total but does not add up ("Total Solutions Pvt Ltd", a sub total) is
-  a doubtful record: never dropped, it withholds a total or a ranking (``looks_total``) and makes
-  a highest or lowest need review. Decided when asked: values already stored need no migration.
+  a doubtful record: never dropped, it withholds a total or a ranking (``looks_total``); a
+  highest or lowest leaves it out of the value shown and says so (``totals``, needs review).
+  Each sheet's other rows are summed once. Decided when asked: stored values need no migration.
   Known limit: a party named "Total ..." whose figure happens to equal the others' sum is taken
   as the sheet's total.
 * The date filter is ``[start, end)`` on the record's own date value. No
@@ -122,6 +123,7 @@ class FixedRow:
     # Highest or lowest (PRD 6 C2): every value compared, of any row, that is not verified or
     # not one number (at most MAX_CITED_VALUES), the same on each row.
     unsure: tuple[ValueRef, ...] = ()
+    totals: tuple[ValueRef, ...] = ()  # C2: compared values that read like a total, left out
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,16 +230,24 @@ _TOP_GROUP = text(
           AND lower(p.text)  -- a cell ("A: Total Rs. | C: 3,500") that is or starts with a total word
               ~ '(^|[|] )[a-z]{1,3}: ((grand|net|sub)[[:space:]-]*)?totals?([^a-z]|$)'
                 '|(^|[|] )[a-z]{1,3}: (एकूण|एकुण|कुल|योग)([[:space:]:.,;()/0-9-]|$)'
+    ), sums AS (  -- each sheet's other rows, summed once
+        SELECT t.customer_id, t.document_id, split_part(t.record_key, ':row:', 1) AS sheet,
+               sum(t.value_number) AS total
+        FROM extracted_values t
+        WHERE t.customer_id = :customer_id AND t.field = :metric AND t.record_key LIKE 'sheet:%'
+          AND t.document_id IN (SELECT l.document_id FROM labelled l)
+          AND NOT EXISTS (SELECT 1 FROM labelled x WHERE x.customer_id = :customer_id
+              AND x.document_id = t.document_id AND x.record_key = t.record_key)
+        GROUP BY t.customer_id, t.document_id, split_part(t.record_key, ':row:', 1)
     ), totals AS (  -- printed: its one figure is the sum of its sheet's other rows; else doubtful
-        SELECT l.customer_id, l.document_id, l.record_key, coalesce((
-                   SELECT sum(t.value_number) FILTER (WHERE t.record_key = l.record_key)
-                       = sum(t.value_number) FILTER (WHERE x.record_key IS NULL)
-                   FROM extracted_values t
-                   LEFT JOIN labelled x ON x.document_id = t.document_id AND x.record_key = t.record_key
-                   WHERE t.customer_id = :customer_id AND t.document_id = l.document_id AND t.field = :metric
-                     AND split_part(t.record_key, ':row:', 1) = split_part(l.record_key, ':row:', 1)
-                   HAVING count(*) FILTER (WHERE t.record_key = l.record_key) = 1), false) AS printed
+        SELECT l.customer_id, l.document_id, l.record_key,
+               coalesce(count(t.id) = 1 AND min(t.value_number) = min(s.total), false) AS printed
         FROM labelled l
+        LEFT JOIN extracted_values t ON t.customer_id = l.customer_id AND t.document_id = l.document_id
+            AND t.record_key = l.record_key AND t.field = :metric
+        LEFT JOIN sums s ON s.customer_id = l.customer_id AND s.document_id = l.document_id
+            AND s.sheet = split_part(l.record_key, ':row:', 1)
+        GROUP BY l.customer_id, l.document_id, l.record_key
     ), metric AS (
         SELECT v.document_id, v.record_key, (array_agg(v.id))[1] AS value_id,
                (array_agg(v.value_number))[1] AS amount,
@@ -366,16 +376,24 @@ _FIGURES = text(
           AND lower(p.text)  -- a cell ("A: Total Rs. | C: 3,500") that is or starts with a total word
               ~ '(^|[|] )[a-z]{1,3}: ((grand|net|sub)[[:space:]-]*)?totals?([^a-z]|$)'
                 '|(^|[|] )[a-z]{1,3}: (एकूण|एकुण|कुल|योग)([[:space:]:.,;()/0-9-]|$)'
+    ), sums AS (  -- each sheet's other rows, summed once
+        SELECT t.customer_id, t.document_id, split_part(t.record_key, ':row:', 1) AS sheet,
+               sum(t.value_number) AS total
+        FROM extracted_values t
+        WHERE t.customer_id = :customer_id AND t.field = :metric AND t.record_key LIKE 'sheet:%'
+          AND t.document_id IN (SELECT l.document_id FROM labelled l)
+          AND NOT EXISTS (SELECT 1 FROM labelled x WHERE x.customer_id = :customer_id
+              AND x.document_id = t.document_id AND x.record_key = t.record_key)
+        GROUP BY t.customer_id, t.document_id, split_part(t.record_key, ':row:', 1)
     ), totals AS (  -- printed: its one figure is the sum of its sheet's other rows; else doubtful
-        SELECT l.customer_id, l.document_id, l.record_key, coalesce((
-                   SELECT sum(t.value_number) FILTER (WHERE t.record_key = l.record_key)
-                       = sum(t.value_number) FILTER (WHERE x.record_key IS NULL)
-                   FROM extracted_values t
-                   LEFT JOIN labelled x ON x.document_id = t.document_id AND x.record_key = t.record_key
-                   WHERE t.customer_id = :customer_id AND t.document_id = l.document_id AND t.field = :metric
-                     AND split_part(t.record_key, ':row:', 1) = split_part(l.record_key, ':row:', 1)
-                   HAVING count(*) FILTER (WHERE t.record_key = l.record_key) = 1), false) AS printed
+        SELECT l.customer_id, l.document_id, l.record_key,
+               coalesce(count(t.id) = 1 AND min(t.value_number) = min(s.total), false) AS printed
         FROM labelled l
+        LEFT JOIN extracted_values t ON t.customer_id = l.customer_id AND t.document_id = l.document_id
+            AND t.record_key = l.record_key AND t.field = :metric
+        LEFT JOIN sums s ON s.customer_id = l.customer_id AND s.document_id = l.document_id
+            AND s.sheet = split_part(l.record_key, ':row:', 1)
+        GROUP BY l.customer_id, l.document_id, l.record_key
     ), tables AS (
         SELECT DISTINCT v.document_id, split_part(v.record_key, ':row:', 1) AS part, d.display_name
         FROM extracted_values v
@@ -499,16 +517,24 @@ _EXTREME_VALUE = text(
           AND lower(p.text)  -- a cell ("A: Total Rs. | C: 3,500") that is or starts with a total word
               ~ '(^|[|] )[a-z]{1,3}: ((grand|net|sub)[[:space:]-]*)?totals?([^a-z]|$)'
                 '|(^|[|] )[a-z]{1,3}: (एकूण|एकुण|कुल|योग)([[:space:]:.,;()/0-9-]|$)'
+    ), sums AS (  -- each sheet's other rows, summed once
+        SELECT t.customer_id, t.document_id, split_part(t.record_key, ':row:', 1) AS sheet,
+               sum(t.value_number) AS total
+        FROM extracted_values t
+        WHERE t.customer_id = :customer_id AND t.field = :metric AND t.record_key LIKE 'sheet:%'
+          AND t.document_id IN (SELECT l.document_id FROM labelled l)
+          AND NOT EXISTS (SELECT 1 FROM labelled x WHERE x.customer_id = :customer_id
+              AND x.document_id = t.document_id AND x.record_key = t.record_key)
+        GROUP BY t.customer_id, t.document_id, split_part(t.record_key, ':row:', 1)
     ), totals AS (  -- printed: its one figure is the sum of its sheet's other rows; else doubtful
-        SELECT l.customer_id, l.document_id, l.record_key, coalesce((
-                   SELECT sum(t.value_number) FILTER (WHERE t.record_key = l.record_key)
-                       = sum(t.value_number) FILTER (WHERE x.record_key IS NULL)
-                   FROM extracted_values t
-                   LEFT JOIN labelled x ON x.document_id = t.document_id AND x.record_key = t.record_key
-                   WHERE t.customer_id = :customer_id AND t.document_id = l.document_id AND t.field = :metric
-                     AND split_part(t.record_key, ':row:', 1) = split_part(l.record_key, ':row:', 1)
-                   HAVING count(*) FILTER (WHERE t.record_key = l.record_key) = 1), false) AS printed
+        SELECT l.customer_id, l.document_id, l.record_key,
+               coalesce(count(t.id) = 1 AND min(t.value_number) = min(s.total), false) AS printed
         FROM labelled l
+        LEFT JOIN extracted_values t ON t.customer_id = l.customer_id AND t.document_id = l.document_id
+            AND t.record_key = l.record_key AND t.field = :metric
+        LEFT JOIN sums s ON s.customer_id = l.customer_id AND s.document_id = l.document_id
+            AND s.sheet = split_part(l.record_key, ':row:', 1)
+        GROUP BY l.customer_id, l.document_id, l.record_key
     ), metric AS (
         SELECT v.document_id, v.record_key, (array_agg(v.id))[1] AS value_id,
                (array_agg(v.value_number))[1] AS amount,
@@ -570,6 +596,7 @@ _EXTREME_VALUE = text(
         HAVING count(*) = 1 AND bool_and(v.value_date IS NOT NULL)
     ), compared AS (  -- C2: one with no date to read under a range is compared as doubtful, never dropped
         SELECT m.document_id, m.record_key, m.value_id, m.amount, m.verified, m.looks_total,
+               (CASE WHEN CAST(:descending AS boolean) THEN -1 ELSE 1 END) * m.amount AS k,
                m.readable AND (cardinality(CAST(:date_fields AS text[])) = 0 OR dt.value_id IS NOT NULL)
                    AS readable,
                dt.value_id AS date_id, coalesce(dt.verified, true) AS date_verified
@@ -577,22 +604,21 @@ _EXTREME_VALUE = text(
         LEFT JOIN dated dt ON dt.document_id = m.document_id AND dt.record_key = m.record_key
         WHERE CAST(:start AS date) IS NULL OR dt.value_id IS NULL
            OR (dt.day >= CAST(:start AS date) AND dt.day < CAST(:end AS date))
-    ), unsure AS (  -- C2: every value compared not verified, or not one number; not only the one shown
-        SELECT (array_agg(u.id ORDER BY (CASE WHEN CAST(:descending AS boolean) THEN -1 ELSE 1 END)
-                   * u.amount, u.id))[1:CAST(:cap AS integer)] AS ids
-        FROM (SELECT c.value_id::text AS id, c.amount FROM compared c
+    ), unsure AS (  -- C2: every value compared not verified or not one number, and those like a total
+        SELECT (array_agg(u.id ORDER BY u.k, u.id) FILTER (WHERE NOT u.total))[1:CAST(:cap AS int)] AS ids,
+               (array_agg(u.id ORDER BY u.k, u.id) FILTER (WHERE u.total))[1:CAST(:cap AS int)] AS totals
+        FROM (SELECT c.value_id::text AS id, c.k, c.looks_total AS total FROM compared c
               WHERE NOT (c.verified AND c.readable) OR c.looks_total
-              UNION ALL SELECT c.date_id::text, c.amount FROM compared c WHERE NOT c.date_verified) u
+              UNION ALL SELECT c.date_id::text, c.k, false FROM compared c WHERE NOT c.date_verified) u
     )
     SELECT NULL::text AS name, c.amount AS number, 1 AS records,
            c.verified AND c.date_verified AS verified,
            ARRAY[c.value_id::text] AS metric_ids, ARRAY[]::text[] AS group_ids,
            array_remove(ARRAY[c.date_id::text], NULL) AS date_ids,
-           (SELECT ids FROM unsure) AS unsure_ids
+           (SELECT ids FROM unsure) AS unsure_ids, (SELECT totals FROM unsure) AS total_ids
     FROM compared c
-    WHERE c.readable
-    ORDER BY (CASE WHEN CAST(:descending AS boolean) THEN -1 ELSE 1 END) * c.amount,
-             c.document_id, c.record_key
+    WHERE c.readable AND NOT c.looks_total  -- C2: one that reads like a total is never the one shown
+    ORDER BY c.k, c.document_id, c.record_key
     LIMIT :limit
     """
 )
@@ -808,7 +834,8 @@ class PgFixedQueries:
             cited = [_cited_ids(row.metric_ids, row.group_ids, row.date_ids) for row in aggregates]
             # Highest and lowest only: the compared values not verified (the counts have none).
             unsure = [row._mapping.get("unsure_ids") or [] for row in aggregates]
-            wanted = {value_id for ids in [*cited, *unsure] for value_id in ids}
+            looks = [row._mapping.get("total_ids") or [] for row in aggregates]
+            wanted = {value_id for ids in [*cited, *unsure, *looks] for value_id in ids}
             refs = _value_refs(conn, customer_id, list(wanted), self._scope)
         return [
             FixedRow(
@@ -818,8 +845,9 @@ class PgFixedQueries:
                 verified=bool(row.verified),
                 values=[refs[value_id] for value_id in ids if value_id in refs],
                 unsure=tuple(refs[value_id] for value_id in doubts if value_id in refs),
+                totals=tuple(refs[value_id] for value_id in like if value_id in refs),
             )
-            for row, ids, doubts in zip(aggregates, cited, unsure, strict=True)
+            for row, ids, doubts, like in zip(aggregates, cited, unsure, looks, strict=True)
         ]
 
 
