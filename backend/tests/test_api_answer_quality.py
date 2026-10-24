@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy import text
 
-from kaagaz.api.routers.answer_quality import first_monday
+from kaagaz.api.routers.answer_quality import RATED_AGAIN, first_monday
 from kaagaz.db.engine import Database
 from tests.test_api_support import CSRF, Api, MovingClock, Signed, answer_json
 
@@ -57,8 +57,8 @@ def test_the_admin_sees_not_useful_answers_given_after_the_notice_with_who_asked
     assert item["reason_codes"] == ["wrong_figure", "other"]
     assert item["handled_at"] is None
     assert item["answer"]["citations"][0]["source_state"] == "live"
-    this_week = body["weeks"][0]  # newest first; every rating counts, before the notice too
-    assert (this_week["useful"], this_week["not_useful"]) == (1, 2)
+    this_week = body["weeks"][0]  # newest first; Not useful only after the notice, as the list
+    assert (this_week["useful"], this_week["not_useful"]) == (1, 1)
     assert len(body["weeks"]) == 4 and body["weeks"][0]["week"] > body["weeks"][-1]["week"]
 
     with db.customer(admin.customer_id) as conn:
@@ -75,11 +75,16 @@ def test_mark_as_handled_and_undo_move_it_between_the_filters_and_audit_ids_only
     _rated(member, "what is the total", {**NOT_USEFUL, "reason": "secret words"})
     item = admin.client.get(PATH).json()["items"][0]
 
-    done = admin.client.put(f"{PATH}/{item['id']}/handled", json={"handled": True}, headers=CSRF)
+    seen = item["given_at"]
+    done = admin.client.put(
+        f"{PATH}/{item['id']}/handled", json={"handled": True, "seen": seen}, headers=CSRF
+    )
     assert done.status_code == 200 and done.json()["handled_at"]
     assert admin.client.get(PATH).json()["total"] == 0
     assert admin.client.get(PATH, params={"status": "handled"}).json()["items"][0]["id"] == item["id"]
-    undone = admin.client.put(f"{PATH}/{item['id']}/handled", json={"handled": False}, headers=CSRF)
+    undone = admin.client.put(
+        f"{PATH}/{item['id']}/handled", json={"handled": False, "seen": seen}, headers=CSRF
+    )
     assert undone.json()["handled_at"] is None
     assert admin.client.get(PATH).json()["total"] == 1
 
@@ -98,9 +103,29 @@ def test_only_not_useful_after_the_notice_may_be_marked(db: Database) -> None:
     member = api.sign_in(admin.customer_id)
     _rated(member, "q", {"rating": "down", "reason": "old screen"})
     with db.customer(admin.customer_id) as conn:
-        old = str(conn.execute(text("SELECT id FROM feedback")).scalar_one())
-    reply = admin.client.put(f"{PATH}/{old}/handled", json={"handled": True}, headers=CSRF)
-    assert reply.status_code == 404
+        old, given = conn.execute(text("SELECT id, created_at FROM feedback")).one()
+    body = {"handled": True, "seen": given.isoformat()}
+    assert admin.client.put(f"{PATH}/{old}/handled", json=body, headers=CSRF).status_code == 404
+
+
+@pytest.mark.db
+def test_a_rating_given_again_since_the_admin_looked_is_409_and_stays_open(db: Database) -> None:
+    api = _api(db)
+    admin = api.new_admin()
+    member = api.sign_in(admin.customer_id)
+    answer = _rated(member, "what is the total", {**NOT_USEFUL, "reason": "first words"})
+    [item] = admin.client.get(PATH).json()["items"]
+    again = {**NOT_USEFUL, "reason": "second words"}
+    assert member.client.post(f"/api/messages/{answer}/feedback", json=again, headers=CSRF).status_code == 204
+
+    stale = {"handled": True, "seen": item["given_at"]}
+    reply = admin.client.put(f"{PATH}/{item['id']}/handled", json=stale, headers=CSRF)
+    assert reply.status_code == 409
+    assert reply.json()["error"] == {"code": "rated_again", "message": RATED_AGAIN}
+    [now] = admin.client.get(PATH).json()["items"]
+    assert (now["id"], now["reason"], now["handled_at"]) == (item["id"], "second words", None)
+    fresh = {"handled": True, "seen": now["given_at"]}
+    assert admin.client.put(f"{PATH}/{item['id']}/handled", json=fresh, headers=CSRF).status_code == 200
 
 
 @pytest.mark.db
@@ -130,5 +155,6 @@ def test_a_member_or_reviewer_gets_403(db: Database) -> None:
     for role in ("member", "reviewer"):
         signed = api.sign_in(admin.customer_id, role)
         assert signed.client.get(PATH).status_code == 403, role
-        reply = signed.client.put(f"{PATH}/{signed.user_id}/handled", json={"handled": True}, headers=CSRF)
+        body = {"handled": True, "seen": "2026-10-24T05:00:00+00:00"}
+        reply = signed.client.put(f"{PATH}/{signed.user_id}/handled", json=body, headers=CSRF)
         assert reply.status_code == 403, role
