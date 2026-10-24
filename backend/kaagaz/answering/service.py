@@ -261,6 +261,11 @@ Route = Literal["fixed_query", "search"]
 _MAX_NAME = 100  # a party name longer than this is cut in the sentence
 _REPLY_TOKENS = 1024  # PROVISIONAL: a draft's reply budget (num_predict), kept free of evidence
 _FENCE_TOKENS = 10  # an evidence tag and its line breaks
+# KZ-006: a draft that failed for one of these came from a model that was up (a reply too
+# long, malformed or refused, or no room for the evidence), so its not found is no outage.
+_REPLY_FAULTS = frozenset(
+    {"evidence_too_large", "output_truncated", "invalid_output", "blocked", "answer_shape"}
+)
 # Features 25-27, C7 M9: an Ensemble answer's one deadline is MODEL_TIMEOUT_SECONDS and this
 # much more from when its drafts start, for every agent's call and repair.
 ENSEMBLE_SLACK_SECONDS = 10.0
@@ -1583,7 +1588,7 @@ class AnswerService:
                     return drafted, True, seen, "notfound_model", team
             # Quoting the evidence needs no model.
             _log.warning("answer drafted without the model", extra={"code": code})
-            if code != "evidence_too_large":
+            if code not in _REPLY_FAULTS:
                 _timing().degraded = True
         why = "notfound_no_model" if self._model is None else f"notfound_model_error:{code}"
         if mentions_date(normalised):
