@@ -9,7 +9,7 @@
 // Organisations (searched by its name, the search focused), or Health or Models.
 // Feature switches (spec 17 Oct 2026) holds the platform switches and the test model;
 // while a test model runs, its banner sits above the tabs on every tab. Timeout setup (0040)
-// holds the sign-in idle timeout.
+// holds the sign-in idle timeout, Speed (0053) the platform's speed controls.
 
 import { useEffect, useState } from "react";
 import { Tabs, tabId, tabSelectId } from "@/components/admin/Tabs";
@@ -24,6 +24,7 @@ import { OrganisationsView } from "./OrganisationsView";
 import { OverviewView } from "./OverviewView";
 import { QualityView } from "./QualityView";
 import { SessionTimeoutView } from "./SessionTimeout";
+import { SpeedView } from "./SpeedControls";
 import { SpendView } from "./SpendView";
 import css from "./Insights.module.css";
 
@@ -37,6 +38,7 @@ export const OPERATOR_TABS = [
   { id: "health", label: "Health" },
   { id: "features", label: "Feature switches" },
   { id: "timeout", label: "Timeout setup" },
+  { id: "speed", label: "Speed" },
 ] as const;
 
 type TabId = (typeof OPERATOR_TABS)[number]["id"];
@@ -97,6 +99,7 @@ export function OperatorConsole() {
         {active === "health" && <HealthView />}
         {active === "features" && <FeatureSwitchesView testModel={testModel} onTestModel={reloadTestModel} />}
         {active === "timeout" && <SessionTimeoutView />}
+        {active === "speed" && <SpeedView />}
       </Tabs>
     </div>
   );

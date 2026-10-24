@@ -1569,6 +1569,11 @@ export interface SessionTimeout {
   default_hours: number;
 }
 
+/** GET /operator/speed (package S, 0053): each speed control's saved value (null: the server's
+ * setting) and the most this server allows, set when it is deployed. */
+export type SpeedName = "model_rpm" | "documents_at_once" | "pages_at_once";
+export type Speed = Record<SpeedName, { value: number | null; most: number }>;
+
 /** GET /operator/test-model: the whole platform on one model for a test, or not. */
 export interface TestModel {
   active: boolean;
