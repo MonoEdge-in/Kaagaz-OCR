@@ -39,7 +39,8 @@ nothing, or holding a number its evidence does not hold, is dropped.
 
 **The budget** (ML amendment 5). A model reply is at most
 ``MODEL_ANSWER_MAX_TOKENS`` tokens, and it is cut to ``MAX_SENTENCES``
-sentences of ``MAX_SENTENCE_CHARS`` characters (about 450 tokens).
+sentences of ``MAX_SENTENCE_CHARS`` characters (about 270 tokens). PRD 6 A (24 Oct 2026): the
+prompt asks for at most 3 short sentences; code lists the documents under them (voice.py).
 ``fit_evidence`` keeps the best-ranked evidence whose prompt fits the window
 (``estimate_tokens_cautiously``: a letter of any script but ASCII is a whole token,
 PR C): lower-ranked pieces are left out whole, never cut, and verify checks only the
@@ -69,7 +70,7 @@ from kaagaz.answering.expansion import NO_EXPANSION, Expansion
 from kaagaz.chunking.script import ascii_digits
 
 MAX_EXTRACTIVE_SENTENCES = 3
-MAX_SENTENCES = 5  # in a model answer (the schema)
+MAX_SENTENCES = 3  # in a model answer (the schema; PRD 6 A: at most 3 short sentences)
 MAX_SENTENCE_CHARS = 300  # in each of its sentences
 
 SYSTEM_PROMPT = (
@@ -98,6 +99,7 @@ SYSTEM_PROMPT = (
     "mentioned without a number.\n"
     "11. Lines between <cards> and </cards> are AI summaries of the documents, not evidence. Use "
     "them only to tell the documents apart. Never answer from them or cite them.\n"
+    "12. Answer in at most 3 short sentences.\n"
     'Reply with JSON only: {"status": "answered" or "not_found", '
     '"sentences": [{"text": "...", "evidence": [ids]}]}.'
 )

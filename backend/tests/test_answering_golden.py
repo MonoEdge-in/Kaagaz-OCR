@@ -31,7 +31,7 @@ from kaagaz.ai.client import ModelOutputError, ModelUnavailable, estimate_tokens
 from kaagaz.answering.draft import ANSWER_PROMPT_HASH, ANSWER_SCHEMA, SYSTEM_PROMPT, fit_evidence, user_prompt
 from kaagaz.answering.evidence import number_evidence
 from kaagaz.answering.expansion import NO_EXPANSION, Expansion
-from kaagaz.answering.fixed_queries import MAX_CITED_VALUES, FixedRow, ValueRef
+from kaagaz.answering.fixed_queries import MAX_CITED_VALUES, Figure, FixedRow, ValueRef
 from kaagaz.answering.service import Answer, AnswerService
 from kaagaz.db.engine import Database
 from kaagaz.search.scope import EVERYTHING, Scope
@@ -60,7 +60,12 @@ ANSWER_KEYS = {
     "unreadable_pages",
     "unreadable_page_count",
     "related_documents",  # "Also in" (Tushar, 16 Oct 2026)
+    "version",  # PRD 6 A, answer contract v2
+    "opening",
+    "documents",
+    "assumptions",
 }
+DOCUMENT_KEYS = {"document_id", "title", "why", "citations"}  # PRD 6 A
 CITATION_KEYS = {
     "n",
     "kind",
@@ -287,17 +292,46 @@ class FakeFixedQueries:
         rows.sort(key=lambda row: -row.number if descending else row.number)
         return rows[:5]
 
-    def total(
-        self, customer_id: str, metric: str, date_fields: Sequence[str], start: date | None, end: date | None
-    ) -> list[FixedRow]:
-        self.calls.append("total")
-        used = list(self._matching(customer_id, metric, date_fields, start, end))
-        if not used:
-            return []
-        refs = [s.ref for _, amount, dated in used for s in (amount, dated) if s is not None]
-        number = sum((amount.number or Decimal(0) for _, amount, _ in used if amount), Decimal(0))
-        verified = all(ref.label == "verified" for ref in refs)
-        return [FixedRow(None, number, len(used), verified, refs[:MAX_CITED_VALUES])]
+    def figures(
+        self,
+        customer_id: str,
+        metric: str,
+        date_fields: Sequence[str],
+        start: date | None,
+        end: date | None,
+        *,
+        invoices: bool,
+        group_fields: Sequence[str] = (),
+    ) -> list[Figure]:
+        """PRD 6 C: with ``invoices``, every record with an invoice number, dated by invoice_date;
+        else every record of a document holding the metric; with a range, also one undated.
+        C2: with ``group_fields``, whether each names one party."""
+        self.calls.append("figures")
+        records = self.records.get(customer_id, [])
+        holders = {s.ref.document_id for record in records for s in record if s.ref.field == metric}
+        found = []
+        for record in records:
+            if not (_one(record, ["invoice_number"]) if invoices else record[0].ref.document_id in holders):
+                continue
+            one, dated = _one(record, [metric]), _one(record, ["invoice_date"] if invoices else date_fields)
+            day = None if dated is None else dated.day
+            if start is not None and end is not None and day is not None and not start <= day < end:
+                continue
+            date_label = None if dated is None or day is None else dated.ref.label
+            party = _one(record, group_fields)
+            found.append(
+                Figure(
+                    value=(one or record[0]).ref,
+                    amount=None if one is None else one.number,
+                    printed=sum(s.ref.field == metric for s in record),
+                    verified=one is not None and one.number is not None and one.ref.label == "verified",
+                    dated=start is None or day is not None,
+                    date_verified=start is None or date_label == "verified",
+                    grouped=not group_fields or (party is not None and bool(party.ref.value_text.strip())),
+                    party_verified=party is None or party.ref.label == "verified",
+                )
+            )
+        return found
 
     def count_documents(
         self, customer_id: str, start: date | None, end: date | None, *, date_fields: Sequence[str]
@@ -310,6 +344,28 @@ class FakeFixedQueries:
         if not first_by_document:
             return []
         refs = list(first_by_document.values())
+        verified = all(ref.label == "verified" for ref in refs)
+        return [FixedRow(None, Decimal(len(refs)), len(refs), verified, refs[:MAX_CITED_VALUES])]
+
+    def count_invoices(self, customer_id: str, start: date | None, end: date | None) -> list[FixedRow]:
+        """An invoice is a record with an invoice number (a row of the invoices table), dated
+        by its own invoice_date; it cites its first value in _COUNT_INVOICES's field order."""
+        self.calls.append("count_invoices")
+        order = ("invoice_number", "total_amount", "invoice_date", "seller_name", "buyer_name")
+        refs = []
+        for record in self.records.get(customer_id, []):
+            if _one(record, ["invoice_number"]) is None:
+                continue
+            dated = _one(record, ["invoice_date"])
+            day = dated.day if dated is not None else None
+            if start is not None and end is not None and (day is None or not start <= day < end):
+                continue
+            cited = sorted(
+                (s for s in record if s.ref.field in order), key=lambda s: order.index(s.ref.field)
+            )
+            refs.append(cited[0].ref)
+        if not refs:
+            return []
         verified = all(ref.label == "verified" for ref in refs)
         return [FixedRow(None, Decimal(len(refs)), len(refs), verified, refs[:MAX_CITED_VALUES])]
 
@@ -331,7 +387,9 @@ class FakeFixedQueries:
             verified = all(ref.label == "verified" for ref in refs)
             rows.append(FixedRow(None, amount.number, 1, verified, refs))
         rows.sort(key=lambda row: -row.number if descending else row.number)
-        return rows[:5]
+        # C2: every value compared that is not verified, closest to the answer first.
+        unsure = tuple(ref for row in rows for ref in row.values if ref.label != "verified")
+        return [dataclasses.replace(row, unsure=unsure[:MAX_CITED_VALUES]) for row in rows[:5]]
 
 
 def invoice_record(label: str = "needs_review") -> Record:
@@ -474,6 +532,15 @@ def assert_well_formed(answer: Answer) -> None:
     data = answer.to_json()
     assert set(data) == ANSWER_KEYS
     assert data["route"] in {"fixed_query", "search"}
+    # PRD 6 A: v2, the opening is the API's, nothing assumed yet; at most 10 documents listed,
+    # each citing only its own sources and saying why in words, never a digit (decision 2).
+    assert (data["version"], data["opening"], data["assumptions"]) == (2, None, [])
+    assert len(data["documents"]) <= 10
+    for doc in data["documents"]:
+        assert set(doc) == DOCUMENT_KEYS and doc["title"]
+        assert not any(ch.isdigit() for ch in doc["why"])
+        owners = {c["document_id"] for c in data["citations"] if c["n"] in doc["citations"]}
+        assert owners <= {doc["document_id"]}
     for doc in data["closest_documents"]:
         assert set(doc) == {"id", "display_name"}
     if data["status"] == "not_found":
@@ -530,7 +597,9 @@ def test_the_hinglish_example_is_answered_by_a_fixed_query() -> None:
     ]
     assert data["label"] == "verified"
     assert data["model_used"] is False
-    assert fixed.calls == ["top_group"]
+    # Changed on purpose (PRD 6 C2, 24 Oct 2026): the numbers rule is checked over every record
+    # first (it was top_group alone).
+    assert fixed.calls == ["figures", "top_group"]
     # The model never writes the number; search is not even asked.
     assert model.prompts == [] and retriever.calls == []
     citations = data["citations"]
@@ -566,25 +635,66 @@ def test_a_tie_names_every_party_and_cites_each() -> None:
 
 
 def test_one_unverified_value_makes_the_answer_needs_review() -> None:
+    # Changed on purpose (PRD 6 C2, 24 Oct 2026): a profit, or a party name, not verified
+    # withholds the ranking (it was shown, needs review).
     records = [register_row(2, "Sharma Traders", 120000, date(2026, 8, 10), label="needs_review")]
     answer = service(records=records)[0].answer(A, "Kiska profit sabse jyada tha last month?")
-    assert answer.status == "answered"
+    assert (answer.status, answer.label) == ("answered", "needs_review")
+    assert [s.text for s in answer.sentences] == [
+        "The one profit figure is not verified yet, so I haven't compared the parties' profit"
+        " in August 2026.",
+        "profit-register.xlsx: 120000, not verified yet.",
+    ]
+    assert_well_formed(answer)
+    named = register_row(2, "Sharma Traders", 120000, date(2026, 8, 10))
+    named[0] = dataclasses.replace(named[0], ref=dataclasses.replace(named[0].ref, label="needs_review"))
+    answer = service(records=[named])[0].answer(A, "Kiska profit sabse jyada tha last month?")
     assert answer.label == "needs_review"
+    assert [s.text for s in answer.sentences] == [
+        "The one party name is not verified yet, so I haven't compared the parties' profit in August 2026.",
+        "profit-register.xlsx: 120000, party not verified yet.",
+    ]
+    assert_well_formed(answer)
 
 
 def test_total_amount_from_the_invoice() -> None:
     answer = service()[0].answer(A, "Kul rakam kitni thi pichle mahine?")
     assert_well_formed(answer)
     assert answer.route == "fixed_query"
-    assert answer.sentences[0].text == "The total amount in August 2026 was 1,20,000, from 1 record."
+    # Changed on purpose (PRD 6 C, 24 Oct 2026): a total over a figure not verified is never
+    # given; the figure is listed as printed, with why (it was "... was 1,20,000, from 1 record.").
+    assert [s.text for s in answer.sentences] == [
+        "The one amount figure is not verified yet, so I haven't added up the amount in August 2026.",
+        "bill-1042.pdf: Rs. 1,20,000, not verified yet.",
+    ]
     assert answer.label == "needs_review"  # the invoice's total is a single reading
 
 
 def test_count_of_documents_in_a_month() -> None:
-    answer = service()[0].answer(A, "Pichle mahine kitne bill the?")
+    answer = service()[0].answer(A, "How many documents last month?")
     assert_well_formed(answer)
     assert answer.sentences[0].text == "2 documents are dated in August 2026."
     assert len(answer.citations) == 2
+
+
+def test_count_of_invoices_counts_the_invoices_themselves() -> None:
+    """Changed on purpose (#228, restored 24 Oct 2026): "bill" is an invoice, so the invoices
+    are counted, not every dated document (the register is a document, not an invoice)."""
+    for question, sentence in [
+        ("Pichle mahine kitne bill the?", "1 invoice is present in August 2026."),
+        ("How many invoices are there?", "1 invoice is present."),
+    ]:
+        answer_service, _, fixed = service()
+        answer = answer_service.answer(A, question)
+        assert_well_formed(answer)
+        assert answer.route == "fixed_query", question
+        assert fixed.calls == ["count_invoices"], question
+        assert answer.sentences[0].text == sentence, question
+        assert [(c.kind, c.document_name, c.snippet) for c in answer.citations] == [
+            ("value", "bill-1042.pdf", "invoice_number: INV-1042")
+        ], question
+    july = service()[0].answer(A, "How many invoices in July 2026?")
+    assert july.status == "not_found"  # the one invoice is dated 12 Aug
 
 
 def test_highest_single_value_with_no_date() -> None:
@@ -1082,11 +1192,13 @@ def test_the_answer_prompt_and_schema_are_pinned() -> None:
     pinned = SYSTEM_PROMPT + "\n" + json.dumps(ANSWER_SCHEMA, sort_keys=True)
     assert hashlib.sha256(pinned.encode("utf-8")).hexdigest() == ANSWER_PROMPT_HASH
     # Changed on purpose in PR C (fix/s2-xlang-answer): rule 7, evidence in any language; and in
-    # PRD 5 PR 3: rules 8 to 10 (CX7, answers that combine) and 11 (M2, the cards).
-    assert ANSWER_PROMPT_HASH == "e199829c7fd2eabdb08ecf3e9c8bd06ad7c21a6449ed7ee2a6f671f7f0463340"
+    # PRD 5 PR 3: rules 8 to 10 (CX7, answers that combine) and 11 (M2, the cards); and in PRD 6 A
+    # (24 Oct 2026): rule 12 and maxItems 3, at most 3 short sentences.
+    assert ANSWER_PROMPT_HASH == "eb69ce60e8d9e56a002acd8720c2bdea62272a272e4f16977b2273e7f3d30d75"
     assert "Answer in English. A quote keeps the script it is written in." in SYSTEM_PROMPT  # PRD 3 H3
+    assert "12. Answer in at most 3 short sentences." in SYSTEM_PROMPT
     sentences = ANSWER_SCHEMA["properties"]["sentences"]
-    assert (sentences.get("maxItems"), sentences["items"]["properties"]["text"].get("maxLength")) == (5, 300)
+    assert (sentences.get("maxItems"), sentences["items"]["properties"]["text"].get("maxLength")) == (3, 300)
 
 
 def test_the_prompt_says_evidence_may_be_in_any_language_and_names_none() -> None:

@@ -45,6 +45,11 @@ of the summary's, so "the second seller you mentioned" may become the seller's n
 always; then the memory and summary; then the last turns, the oldest cut first, then the
 memory, until the message fits.
 
+**The plan** (PRD 6 B1, ``rewrite_and_plan``, "Plan: yes."): what the question asks, names and
+leaves out (``PLAN_SCHEMA``), checked in code: shape and caps (``plan_shape``), no instructions
+(``plan_instructions``), names and period only of tokens of this or an earlier question, never an
+answer's or the memory's (``plan_adds_facts``). A failure gives no plan, a code logged.
+
 Time: one model call; the guard is O(h + q + r) in the characters of the
 history, the question and the rewrite.
 """
@@ -75,7 +80,10 @@ _log = logging.getLogger(__name__)
 MAX_QUESTION = 300  # the messages.rewritten_question CHECK (migration 0006)
 MAX_HISTORY_CHARS = 2000
 MAX_ASPECT_CHARS = 100
-MAX_REPLY_TOKENS = 600  # 300 characters of English, the aspects and the JSON around them
+MAX_REPLY_TOKENS = 900  # 300 characters of English, the aspects, the plan and the JSON around them
+ASKS, ROLES = ("documents", "figure", "passage"), ("owner", "buyer", "seller", "any")
+MISSING = ("person", "place", "property", "period")
+MAX_PEOPLE, MAX_PLACES, MAX_ENTITY_CHARS = 4, 6, 60  # the last: a person, a place or a period as typed
 
 SYSTEM_PROMPT = (
     "You rewrite a follow-up question so it stands on its own, in English.\n"
@@ -93,13 +101,39 @@ SYSTEM_PROMPT = (
     '5. "aspects": when the user message ends with "Aspects: at most n.", up to n short search '
     "phrases for the separate things the question asks about (for How many leaves do I get?: "
     "holidays, casual leave, sick leave, maternity leave); otherwise an empty list.\n"
-    'Reply with JSON only: {"question": "...", "aspects": ["..."]}.'
+    '6. "plan": only when the user message ends with "Plan: yes.", for the question as rewritten: '
+    '"asks" is "documents", "figure" (an amount, a share or a count) or "passage" (what a document '
+    'says); "people": at most 4 people or parties it names, each {"as_typed": the name exactly as a '
+    'question typed it, "role": "owner", "buyer", "seller" or "any"}; "places": at most 6 places it '
+    'names, exactly as typed; "period": the dates it names as typed, or ""; "missing": which of '
+    '"person", "place", "property" and "period" it needs but no question names. Names come only from '
+    "the questions, never from an answer or the memory.\n"
+    'Reply with JSON only: {"question": "...", "aspects": ["..."], "plan": {...}}.'
 )
+_NAME: dict[str, Any] = {"type": "string", "maxLength": MAX_ENTITY_CHARS}
+_PERSON: dict[str, Any] = {
+    "type": "object",
+    "properties": {"as_typed": _NAME, "role": {"type": "string", "enum": list(ROLES)}},
+    "required": ["as_typed", "role"],
+}
+_MISSING: dict[str, Any] = {"type": "string", "enum": list(MISSING)}
+PLAN_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "asks": {"type": "string", "enum": list(ASKS)},
+        "people": {"type": "array", "maxItems": MAX_PEOPLE, "items": _PERSON},
+        "places": {"type": "array", "maxItems": MAX_PLACES, "items": _NAME},
+        "period": _NAME,
+        "missing": {"type": "array", "maxItems": len(MISSING), "items": _MISSING},
+    },
+    "required": ["asks", "people", "places", "period", "missing"],
+}
 SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "question": {"type": "string", "maxLength": MAX_QUESTION},
         "aspects": {"type": "array", "items": {"type": "string", "maxLength": MAX_ASPECT_CHARS}},
+        "plan": PLAN_SCHEMA,
     },
     "required": ["question"],
 }
@@ -124,6 +158,28 @@ class Turn:
     answer: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class Person:
+    as_typed: str
+    role: str
+
+
+@dataclass(frozen=True, slots=True)
+class Plan:
+    asks: str
+    people: tuple[Person, ...]
+    places: tuple[str, ...]
+    period: str | None
+    missing: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class Rewritten:
+    question: str | None  # None: the question as asked
+    aspects: tuple[str, ...]
+    plan: Plan | None  # None: not asked for, or refused (a code logged)
+
+
 def rewrite(
     model: ModelClient,
     question: str,
@@ -138,7 +194,25 @@ def rewrite(
     ``aspects_max`` aspects (the module docstring). ``memory``: ``memory.prompt_text``;
     ``allowed``: the tokens of its items (``memory.allowed_tokens``); ``budget``: the
     message's tokens at most (None: no cut)."""
-    user, past, kept = _message(question, history, memory, aspects_max, budget)
+    done = rewrite_and_plan(
+        model, question, history, memory=memory, allowed=allowed, aspects_max=aspects_max, budget=budget
+    )
+    return done.question, done.aspects
+
+
+def rewrite_and_plan(
+    model: ModelClient,
+    question: str,
+    history: Sequence[Turn],
+    *,
+    memory: str = "",
+    allowed: Collection[str] = frozenset(),
+    aspects_max: int = 0,
+    budget: int | None = None,
+    plan: bool = False,
+) -> Rewritten:
+    """``rewrite``, and the question's plan from the same call (PRD 6 B1) when ``plan``."""
+    user, past, kept = _message(question, history, memory, aspects_max, budget, plan)
     try:
         reply = model.chat_json(
             system=SYSTEM_PROMPT,
@@ -152,7 +226,7 @@ def rewrite(
     except ModelOutputError:
         return _fallback("rewrite_bad_output")
     raw, listed = reply.get("question"), reply.get("aspects", [])
-    if not set(reply) <= {"question", "aspects"} or not isinstance(raw, str) or not clean_text(raw):
+    if not set(reply) <= {"question", "aspects", "plan"} or not isinstance(raw, str) or not clean_text(raw):
         return _fallback("rewrite_shape")
     if not isinstance(listed, list):
         return _fallback("rewrite_shape")
@@ -162,14 +236,64 @@ def rewrite(
     if looks_like_instructions(rewritten):
         return _fallback("rewrite_instructions")
     aspects = _aspects(listed, question)[:aspects_max]
+    checked = checked_plan(reply.get("plan"), question, past) if plan else None
     refused = guard(rewritten, question, past, allowed if kept else frozenset())
     if refused is not None:
-        return _fallback(refused, aspects)  # search text only: the guard never judged them
-    return (None if rewritten.casefold() == question.strip().casefold() else rewritten), aspects
+        return _fallback(refused, aspects, checked)  # search text only: the guard never judged them
+    same = rewritten.casefold() == question.strip().casefold()
+    return Rewritten(None if same else rewritten, aspects, checked)
+
+
+def checked_plan(raw: Any, question: str, history: str) -> Plan | None:
+    """The plan of the reply, or None after logging why (the module docstring). ``history``:
+    ``history_text`` of the turns the call was given. O(h + q) for the token sets."""
+    plan = _plan_shape(raw)
+    if plan is None:
+        return _no_plan("plan_shape")
+    named = [*(person.as_typed for person in plan.people), *plan.places, *filter(None, [plan.period])]
+    if any(looks_like_instructions(text) for text in named):
+        return _no_plan("plan_instructions")
+    lines = (line.partition(": ") for line in history.splitlines())
+    allowed = tokens(" ".join([question, *(text for kind, _, text in lines if kind == "Question")]))
+    if any(not tokens(text) or not tokens(text) <= allowed for text in named):
+        return _no_plan("plan_adds_facts")
+    return plan
+
+
+def _plan_shape(raw: Any) -> Plan | None:
+    """``raw`` as a Plan when it has exactly ``PLAN_SCHEMA``'s keys, types, values and caps."""
+    if not isinstance(raw, dict) or set(raw) != set(PLAN_SCHEMA["required"]):
+        return None
+    people, places, missing, period = raw["people"], raw["places"], raw["missing"], raw["period"]
+    lists = _listed(people, MAX_PEOPLE) and _listed(places, MAX_PLACES) and _listed(missing, len(MISSING))
+    if not lists or raw["asks"] not in ASKS or not isinstance(period, str) or len(period) > MAX_ENTITY_CHARS:
+        return None
+    if not all(isinstance(p, dict) and set(p) == {"as_typed", "role"} and p["role"] in ROLES for p in people):
+        return None
+    texts = [p["as_typed"] for p in people] + places
+    if not all(map(_named, texts)) or any(m not in MISSING for m in missing):
+        return None
+    named = tuple(Person(clean_text(p["as_typed"]), p["role"]) for p in people)
+    where, when = tuple(map(clean_text, places)), clean_text(period) or None
+    return Plan(raw["asks"], named, where, when, tuple(dict.fromkeys(missing)))
+
+
+def _listed(value: Any, most: int) -> bool:
+    return isinstance(value, list) and len(value) <= most
+
+
+def _named(value: Any) -> bool:
+    return isinstance(value, str) and len(value) <= MAX_ENTITY_CHARS and bool(clean_text(value))
+
+
+def _no_plan(code: str) -> Plan | None:
+    """No plan, after logging why: a code only, never the text."""
+    _log.info("plan not used", extra={"code": code})
+    return None
 
 
 def _message(
-    question: str, history: Sequence[Turn], memory: str, aspects_max: int, budget: int | None
+    question: str, history: Sequence[Turn], memory: str, aspects_max: int, budget: int | None, plan: bool
 ) -> tuple[str, str, bool]:
     """M4: the user message, the history it holds and whether it holds the memory: the
     oldest turn is cut first, then the memory, until it is at most ``budget`` tokens; the
@@ -182,6 +306,8 @@ def _message(
         user = f"{fenced}<history>\n{_escape(past)}\n</history>\n\n{asked}"
         if aspects_max > 0:
             user += f"\n\nAspects: at most {aspects_max}."
+        if plan:
+            user += "\n\nPlan: yes."
         if budget is None or estimate_tokens_cautiously(user) <= budget or not (turns or memory):
             return user, past, bool(memory)
         if turns:
@@ -269,8 +395,8 @@ def _has_digit(token: str) -> bool:
     return any(ch.isdigit() for ch in token)
 
 
-def _fallback(code: str, aspects: tuple[str, ...] = ()) -> tuple[None, tuple[str, ...]]:
-    """No rewrite, and ``aspects`` (none unless given), after logging why: a code only,
-    never the text."""
+def _fallback(code: str, aspects: tuple[str, ...] = (), plan: Plan | None = None) -> Rewritten:
+    """No rewrite, and ``aspects`` and ``plan`` (none unless given), after logging why: a code
+    only, never the text."""
     _log.info("rewrite not used", extra={"code": code})
-    return None, aspects
+    return Rewritten(None, aspects, plan)

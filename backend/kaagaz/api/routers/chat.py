@@ -39,6 +39,9 @@ questions later), a background task writes a new one after the reply (``_remembe
 gives up quietly when the model fails or another reply wrote it first, and logs only the
 code of a database or model error. Neither is ever in a reply or a log.
 
+Clarifying questions (PRD 6 B1): ``reply`` answers a clarify (stored as its question) only while
+it is the conversation's newest message, by its stored choices (``clarify.reply_to``); else 409.
+
 A conversation belongs to the user who started it; anyone else, in this
 customer or another, gets "not found".
 
@@ -54,6 +57,7 @@ import logging
 import uuid
 from collections.abc import Sequence
 from typing import Annotated, Any, Literal
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Response
 from pydantic import (
@@ -70,16 +74,19 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from kaagaz.ai.client import ModelOutputError, ModelUnavailable
 from kaagaz.ai.usage import usage_scope
+from kaagaz.answering.clarify import MAX_CHOICES, Pending, answers_clarify, latin_key, reply_to
 from kaagaz.answering.memory import NO_MEMORY, Memory, from_row, live
 from kaagaz.answering.pins import Pin
 from kaagaz.answering.rewrite import Turn
+from kaagaz.answering.voice import SOFT_NOTHING, numbers, opening, soft_line, unsupported
+from kaagaz.answering.words_text import WordTextError, check_meaning, check_word
 from kaagaz.api.auth import FEATURE_OFF, CurrentUser, User
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.middleware import RateLimiter
 from kaagaz.api.names import clean_name
 from kaagaz.api.views import answer_with_source_states, cited_document_ids, conversation_summary, message
-from kaagaz.db import ai_settings, audit
+from kaagaz.db import ai_settings, audit, organization_words
 from kaagaz.db import chat as chat_sql
 from kaagaz.db.models import (
     LEVELS,
@@ -92,6 +99,7 @@ from kaagaz.db.models import (
     strongest_chat,
     usable_chat_models,
 )
+from kaagaz.db.organization_words import Suggestion
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.search.scope import EVERYTHING, ScopeBody, resolve
 from kaagaz.settings import MODEL_ID
@@ -103,7 +111,7 @@ Context = Annotated[AppContext, Depends(get_context)]
 
 MAX_TITLE = 200
 SHORT_TITLE = 60  # characters of the first question a new conversation's title keeps
-NOT_FOUND_TEXT = "I couldn't find this in your documents."
+NOT_FOUND_TEXT = SOFT_NOTHING  # PRD 6 decision 9: the screen's words (answering/voice.py)
 MAX_SCOPE_BYTES = 4096  # the messages.scope CHECK (migration 0006)
 TOO_MANY_QUESTIONS = "You have asked many questions in a short time. Please wait a minute and ask again."
 FEEDBACK_PER_MINUTE = 20  # PRD 6 F1: ratings a person may send a minute (issue #244)
@@ -119,12 +127,26 @@ def chat_limits(per_minute: int) -> RateLimiter:
 
 
 ModelId = Annotated[str, StringConstraints(max_length=257, pattern=f"^{MODEL_ID.pattern}$")]
+ChoiceId = Annotated[str, StringConstraints(pattern=r"^(c[1-9]|all)$")]
+CLARIFY_GONE = "That question is no longer open. Ask again."
+SUGGESTED = "organization_word.suggested"
+
+
+class ReplyBody(BaseModel):
+    """PRD 6 B1: the picked choices' ids; the choices are the stored message's, never the client's.
+    None picked (B2): ``question`` holds the words typed instead."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    message_id: uuid.UUID
+    choice_ids: list[ChoiceId] = Field(default_factory=list, max_length=MAX_CHOICES + 1)
 
 
 class AskBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    question: str = Field(min_length=1, max_length=1000)
+    question: str = Field(default="", max_length=1000)  # left out with a reply
+    reply: ReplyBody | None = None
     conversation_id: uuid.UUID | None = None
     scope: ScopeBody | None = None  # left out: the conversation's last scope, or everything
     # Features 25-27 (C10, S8): who drafts the answer, checked again for this customer
@@ -197,12 +219,17 @@ class FeedbackBody(BaseModel):
 
 
 def answer_text(answer: dict[str, Any]) -> str:
-    """The assistant message's plain text: its sentences joined, or the not-found line."""
+    """The assistant message's plain text: its sentences joined, a clarify's question, or the
+    not-found line (decision 9: the closest documents' when it lists any). Never the opening,
+    so the asker's name is never in the history a rewrite reads."""
+    clarify = answer.get("clarify") if answer.get("status") == "clarify" else None
+    if isinstance(clarify, dict) and isinstance(clarify.get("question"), str):
+        return str(clarify["question"])
     sentences = answer.get("sentences")
     texts = []
-    if answer.get("status") == "answered" and isinstance(sentences, list):
+    if answer.get("status") in ("answered", "unchecked") and isinstance(sentences, list):
         texts = [s["text"] for s in sentences if isinstance(s, dict) and isinstance(s.get("text"), str)]
-    return " ".join(texts) or NOT_FOUND_TEXT
+    return " ".join(texts) or soft_line(bool(answer.get("closest_documents")))
 
 
 @router.post("/chat")
@@ -210,12 +237,19 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
     if not chat_limits(context.settings.chat_questions_per_minute).allow(user.user_id):
         raise ApiError(429, "rate_limited", TOO_MANY_QUESTIONS, headers={"Retry-After": "60"})
     question = body.question.strip()
-    if not question:
+    answering = body.reply
+    if not question and (answering is None or not answering.choice_ids):
         raise ApiError(400, "bad_request", "Type a question first.")
+    if answering is not None and not answering.choice_ids and not answers_clarify(question):
+        answering = None  # B2: a long or question-like text is a new question; the clarify is left
+    if answering is not None and body.conversation_id is None:
+        raise ApiError(409, "conflict", CLARIFY_GONE)
     conversation_id = None if body.conversation_id is None else str(body.conversation_id)
     chosen = body.scope
     recent: Sequence[RowMapping] = []
     memory, summary_turn, turns = NO_MEMORY, 0, 0
+    earlier: list[str | None] = []  # the conversation's openings so far (PRD 6 A)
+    pending: Pending | None = None
     with context.db.customer(user.customer_id) as conn:
         if conversation_id is not None:
             state = chat_sql.conversation_memory(conn, user.customer_id, conversation_id, user.user_id)
@@ -225,8 +259,12 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
             summary_turn, turns = int(state["summary_turn"]), int(state["turns"])
             pairs = max(context.settings.chat_history_turns, 1)
             recent = chat_sql.recent_messages(conn, user.customer_id, conversation_id, 2 * pairs)
+            earlier = chat_sql.openings(conn, user.customer_id, conversation_id)
             if chosen is None:
                 chosen = _saved_scope(recent)
+            if answering is not None:
+                pending = _pending(recent, answering, question)
+                question = ", ".join(pending.picked) or question
         scope = (
             EVERYTHING
             if chosen is None
@@ -280,10 +318,13 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
             memory=memory,
             choice=choice,
             pins=pins,
+            pending=pending,
         )
         if reply.unavailable:  # KZ-006: an outage is never "not found"; nothing is stored
             raise ApiError(503, "backend_unavailable", headers={"Retry-After": "60"})
         answer = reply.to_json()
+        if answer.get("version") == 2:
+            answer["opening"] = _opening(answer, question, user.display_name, earlier, context)
 
         with context.db.customer(user.customer_id) as conn:
             if conversation_id is None:
@@ -292,6 +333,11 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
                 )
             elif chat_sql.get_conversation(conn, user.customer_id, conversation_id, user.user_id) is None:
                 raise ApiError(404, "not_found")
+            # PRD 6 B1: checked again under the conversation's lock, so two replies never both answer it.
+            if answering and chat_sql.newest_message(conn, user.customer_id, conversation_id) != str(
+                answering.message_id
+            ):
+                raise ApiError(409, "conflict", CLARIFY_GONE)
             asked = chat_sql.add_message(
                 conn,
                 user.customer_id,
@@ -328,6 +374,8 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
                     "thinking": choice.thinking,
                 },
             )
+            if pending is not None:
+                _suggest(conn, user, pending)
         spend.conversation_id = conversation_id  # committed: the ledger row may name it
     if summary_due(turns + 1, summary_turn, context.settings.chat_summary_every):
         background.add_task(
@@ -357,6 +405,26 @@ def chat_options(user: User, context: Context) -> dict[str, Any]:
         "ensemble": bool(allowed["ensemble"]) and len(rows) >= 2,
         "max_agents": MAX_AGENTS,
     }
+
+
+def _opening(
+    answer: dict[str, Any], question: str, display_name: str, earlier: list[str | None], context: AppContext
+) -> str | None:
+    """PRD 6 A: the answer's opening line (answering/voice.py), the asker's first name only on
+    a conversation's first answer, by the time of day in TIMEZONE. It never reaches a prompt.
+    Decision 2's final check runs over it too (it holds no number): failing, there is none."""
+    line = opening(
+        found=answer.get("status") != "not_found",
+        display_name=display_name,
+        earlier=earlier,
+        now=context.clock(),
+        zone=ZoneInfo(context.settings.timezone),
+    )
+    reason = None if line is None else unsupported(line, numbers(question))
+    if reason is not None:
+        logger.info("answer text dropped", extra={"code": f"final_check:opening:{reason}"})
+        return None
+    return line
 
 
 def _choice(
@@ -464,16 +532,49 @@ def _write_memory(
         )
 
 
+def _pending(recent: Sequence[RowMapping], reply: ReplyBody, question: str) -> Pending:
+    """The open clarify (the newest message) answered by ``reply``, or by the typed ``question``
+    when nothing is picked; 409 if not open or not its own."""
+    newest = recent[0] if recent else None
+    if newest is None or newest["role"] != "assistant" or str(newest["id"]) != str(reply.message_id):
+        raise ApiError(409, "conflict", CLARIFY_GONE)
+    found = reply_to(newest["answer"] or {}, reply.choice_ids, None if reply.choice_ids else question)
+    if found is None:
+        raise ApiError(409, "conflict", CLARIFY_GONE)
+    return found
+
+
+def _suggest(conn: Connection, user: CurrentUser, pending: Pending) -> None:
+    """Decision 6 (PRD 6 B2): a "Did you mean" pick ("Puny" meant Pune) is submitted to the
+    organisation-words review as a pending suggestion, never straight to the company; its meaning
+    is the name's Latin spelling, which the vocabulary matches once a reviewer approves it."""
+    if not (pending.confirm and pending.as_typed and len(pending.picked) == 1):
+        return
+    try:
+        word, meaning = check_word(pending.as_typed).word, check_meaning(latin_key(pending.picked[0]).title())
+    except WordTextError:  # not a word the review takes (a number, a long phrase): nothing to suggest
+        return
+    texts: dict[str, Any] = {"word": word.text, "word_fold": word.fold, "meaning": meaning.text}
+    texts["meaning_fold"] = meaning.fold
+    row = organization_words.submit(conn, user.customer_id, user.user_id, **texts)
+    if isinstance(row, Suggestion):  # None: already pending or approved; or the company's limit
+        details = {"status": "pending", "source": "clarify"}
+        target = {"target_type": "organization_word_suggestion", "target_id": row.id}
+        audit.record(
+            conn, user.customer_id, actor_user_id=user.user_id, action=SUGGESTED, details=details, **target
+        )
+
+
 def _history(recent: Sequence[RowMapping]) -> list[Turn]:
     """The question and answer pairs of ``recent`` (newest first), oldest first. Only an
-    answered answer gives its sentences: after "not found" the turn is its question only
-    (edge case 3). O(m) for m messages."""
+    answered answer gives its sentences, and a clarify its question: after "not found" the
+    turn is its question only (edge case 3). O(m) for m messages."""
     turns: list[Turn] = []
     answer: str | None = None
     for row in recent:  # an answer comes just before its question
         if row["role"] == "assistant":
             saved = row["answer"] or {}
-            answer = answer_text(saved) if saved.get("status") == "answered" else None
+            answer = answer_text(saved) if saved.get("status") in ("answered", "clarify") else None
         else:
             turns.append(Turn(str(row["text"]), answer))
             answer = None

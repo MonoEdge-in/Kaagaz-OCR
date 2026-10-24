@@ -14,6 +14,7 @@ import pytest
 from sqlalchemy import text
 
 from kaagaz.answering.unchecked import unchecked_sentence
+from kaagaz.answering.voice import SOFT_CLOSEST
 from kaagaz.api.app import create_app
 from kaagaz.api.auth import CurrentUser, current_user
 from kaagaz.api.routers import chat as chat_router
@@ -75,6 +76,10 @@ def test_answer_text_joins_sentences_or_says_not_found() -> None:
     assert answer_text(answer_json()) == "The total is 1,200."
     assert answer_text(answer_json(status="not_found")) == NOT_FOUND_TEXT
     assert answer_text({"status": "answered", "sentences": "junk"}) == NOT_FOUND_TEXT
+    # PRD 6 decision 9: the screen's words, the closest documents' when there are any.
+    assert (
+        answer_text({**answer_json(status="not_found"), "closest_documents": [{"id": "d1"}]}) == SOFT_CLOSEST
+    )
 
 
 def test_ask_is_a_plain_def_so_the_answer_is_saved_after_the_asker_leaves() -> None:
@@ -280,6 +285,34 @@ def test_follow_up_goes_into_the_same_conversation_in_order(db: Database) -> Non
     ]
 
 
+@pytest.mark.db
+def test_openings_greet_by_name_once_and_never_repeat_over_ten_answers(db: Database) -> None:
+    """PRD 6 A: an answer service that replies the same every time still gets a new opening
+    each time, the first name only on the first; the name never in a message's text (the
+    history a follow-up's rewrite reads). An answer from before v2 gets none."""
+    api = Api(db)
+    signed = api.new_signed()  # "Test member"; NOW is 15:30 in India
+    api.answers.reply = {**answer_json(), "version": 2, "opening": None, "documents": [], "assumptions": []}
+    conversation: dict[str, str] = {}
+    openings = []
+    for turn in range(10):
+        body = signed.client.post(
+            "/api/chat", json={"question": f"total {turn}?", **conversation}, headers=CSRF
+        ).json()
+        conversation = {"conversation_id": body["conversation_id"]}
+        openings.append(body["answer"]["answer"]["opening"])
+
+    assert openings[0] == "Good afternoon, Test. Here's what I found."
+    said = [line for line in openings if line]
+    assert len(said) == len(set(said)) > 1 and all("Test" not in line for line in said[1:])
+    saved = signed.client.get(f"/api/conversations/{conversation['conversation_id']}").json()["messages"]
+    assert [m["answer"]["opening"] for m in saved if m["role"] == "assistant"] == openings
+    assert not any("Test" in m["text"] for m in saved)
+    api.answers.reply = answer_json()
+    old = signed.client.post("/api/chat", json={"question": "total?"}, headers=CSRF).json()
+    assert "opening" not in old["answer"]["answer"]
+
+
 def test_a_new_conversations_title_is_its_first_question_made_short() -> None:
     assert short_title("  What is the   total\non bill 12?  ") == "What is the total on bill 12?"
     long = "Which supplier sent the most invoices in September and what was the total amount of them all"
@@ -458,8 +491,15 @@ def test_default_wiring_uses_the_real_answer_service_without_a_model(db: Databas
         "reading_note",  # PRD 5 F6: null, no page here is flagged
         "unreadable_pages",
         "unreadable_page_count",
+        "related_documents",  # "Also in" (16 Oct 2026)
+        "version",  # PRD 6 A, contract v2: the first answer greets "Test member" by name
+        "opening",
+        "documents",
+        "assumptions",
     }
+    assert (answer["version"], answer["opening"], answer["documents"]) == (2, "Good afternoon, Test.", [])
     assert answer["status"] == "not_found"
+    assert body["answer"]["text"] == NOT_FOUND_TEXT
     assert (answer["reading_note"], answer["unreadable_pages"], answer["unreadable_page_count"]) == (
         None,
         [],

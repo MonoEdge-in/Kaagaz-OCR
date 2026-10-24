@@ -675,10 +675,25 @@ export interface AnswerSentence {
   citations: number[];
 }
 
+/** PRD 6 A: a document listed under an answer. `why` is code-written words, never a digit;
+ * `citations` are its sources' numbers (none for a not-found answer's closest document). */
+export interface ListedDocument {
+  document_id: string;
+  title: string;
+  why: string;
+  citations: number[];
+}
+
 export interface Answer {
   // "unchecked": the figure asked for is only in unchecked card values, so no
   // number is given; closest_documents says where.
-  status: "answered" | "not_found" | "unchecked";
+  status: "answered" | "not_found" | "unchecked" | "clarify";
+  // PRD 6 A, answer contract v2 (24 Oct 2026); all four missing on answers saved before it,
+  // which render as they did. The opening and assumptions are code-written lines.
+  version?: 2;
+  opening?: string | null;
+  documents?: ListedDocument[];
+  assumptions?: string[];
   label: Label | null; // null when not found
   sentences: AnswerSentence[];
   citations: Citation[];
@@ -704,6 +719,24 @@ export interface Answer {
   agents_asked?: number;
   agreement?: "agreed" | "not_confirmed" | null;
   thinking?: ThinkingLevel;
+  // PRD 6 B (answer contract v2), absent on older answers: the question asked instead of an
+  // answer (status "clarify").
+  clarify?: Clarify;
+}
+
+/** A clarifying question (PRD 6 B): choices by server id; "other" sends nothing. */
+export interface Clarify {
+  id: string;
+  question: string;
+  choices: { id: string; label: string; detail?: string; kind: "pick" | "other" | "all"; document_ids?: string[] }[];
+  multi: boolean;
+  turn: number;
+}
+
+/** POST /chat's `reply`: the open clarify answered by its choices' ids (none: the typed words). */
+export interface ClarifyReply {
+  message_id: string;
+  choice_ids: string[];
 }
 
 export type ThinkingLevel = "low" | "medium" | "high";

@@ -239,6 +239,39 @@ def messages_with_feedback(
     )
 
 
+def openings(conn: Connection, customer_id: str, conversation_id: str) -> list[str | None]:
+    """PRD 6 A: the stored opening of each of the conversation's answers, oldest first (None
+    for an answer without one), so a line is never used twice in it. One query on
+    (conversation_id, created_at), O(M log M) for its M messages."""
+    return list(
+        conn.execute(
+            text(
+                "SELECT m.answer ->> 'opening' FROM messages m"
+                " WHERE m.customer_id = :c AND m.conversation_id = :conv AND m.role = 'assistant'"
+                " ORDER BY m.created_at, m.id"
+            ),
+            {"c": customer_id, "conv": conversation_id},
+        ).scalars()
+    )
+
+
+def newest_message(conn: Connection, customer_id: str, conversation_id: str) -> str | None:
+    """The conversation's newest message id, read after locking the conversation's row for the
+    rest of the transaction, so concurrent replies to one clarify are taken one at a time."""
+    params = {"c": customer_id, "conv": conversation_id}
+    conn.execute(
+        text("SELECT id FROM conversations WHERE customer_id = :c AND id = :conv FOR NO KEY UPDATE"), params
+    )
+    newest = conn.execute(
+        text(
+            "SELECT m.id::text FROM messages m WHERE m.customer_id = :c AND m.conversation_id = :conv"
+            " ORDER BY m.created_at DESC, m.role, m.id DESC LIMIT 1"
+        ),
+        params,
+    ).scalar()
+    return None if newest is None else str(newest)
+
+
 def recent_messages(
     conn: Connection, customer_id: str, conversation_id: str, limit: int
 ) -> Sequence[RowMapping]:
@@ -248,7 +281,7 @@ def recent_messages(
     return (
         conn.execute(
             text(
-                "SELECT m.role, m.text, m.answer, m.scope FROM messages m"
+                "SELECT m.id, m.role, m.text, m.answer, m.scope FROM messages m"
                 " WHERE m.customer_id = :c AND m.conversation_id = :conv"
                 " ORDER BY m.created_at DESC, m.role, m.id DESC LIMIT :n"
             ),

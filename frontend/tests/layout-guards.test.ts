@@ -670,7 +670,11 @@ describe("layout guards", () => {
     expect(lazy[0]?.body).toMatch(/contain-intrinsic-block-size:\s*auto \d+px;/);
     const chat = read("components/chat/ChatScreen.tsx");
     // Changed on purpose (UI audit, 16 Oct 2026): A4, AnswerView takes onAskAll, so its props wrap.
-    expect(chat).toMatch(/<div className=\{styles\.answerWrap\}>\s*<AnswerView\s/);
+    // Changed on purpose (PRD 6 B2): the wrapper is focusable (a reply after a tapped choice) and
+    // holds a clarifying question's card instead when the answer is one.
+    expect(chat).toMatch(
+      /<div className=\{styles\.answerWrap\} id=\{[^}]+\} tabIndex=\{-1\}>\s*\{message\.answer\?\.status === "clarify" \? \(\s*<ClarifyView[\s\S]{1,400}<AnswerView\s/,
+    );
     // Opening a conversation pins its end again after the first paint, when real heights are in.
     expect(chat).toContain("frame = requestAnimationFrame(pin);");
     // A chip pointed at re-renders two source cards, and typing a search never re-renders the list.
