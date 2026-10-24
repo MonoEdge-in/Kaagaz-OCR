@@ -774,7 +774,12 @@ def answer_with_source_states(answer: Mapping[str, Any], states: Mapping[str, st
         for each in answer.get("related_documents", [])
         if states.get(str(each.get("document_id"))) not in (None, *_GONE)
     ]
-    shown = {**answer, "citations": citations, "sentences": sentences, "closest_documents": closest}
+    shown = {
+        **without_resume(answer),
+        "citations": citations,
+        "sentences": sentences,
+        "closest_documents": closest,
+    }
     if "related_documents" in answer:
         shown["related_documents"] = related
     if "documents" in answer:

@@ -252,6 +252,23 @@ def openings(conn: Connection, customer_id: str, conversation_id: str) -> list[s
     )
 
 
+def newest_message(conn: Connection, customer_id: str, conversation_id: str) -> str | None:
+    """The conversation's newest message id, read after locking the conversation's row for the
+    rest of the transaction, so concurrent replies to one clarify are taken one at a time."""
+    params = {"c": customer_id, "conv": conversation_id}
+    conn.execute(
+        text("SELECT id FROM conversations WHERE customer_id = :c AND id = :conv FOR NO KEY UPDATE"), params
+    )
+    newest = conn.execute(
+        text(
+            "SELECT m.id::text FROM messages m WHERE m.customer_id = :c AND m.conversation_id = :conv"
+            " ORDER BY m.created_at DESC, m.role, m.id DESC LIMIT 1"
+        ),
+        params,
+    ).scalar()
+    return None if newest is None else str(newest)
+
+
 def recent_messages(
     conn: Connection, customer_id: str, conversation_id: str, limit: int
 ) -> Sequence[RowMapping]:

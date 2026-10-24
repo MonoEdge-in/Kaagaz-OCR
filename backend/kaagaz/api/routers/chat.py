@@ -287,6 +287,11 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
                 )
             elif chat_sql.get_conversation(conn, user.customer_id, conversation_id, user.user_id) is None:
                 raise ApiError(404, "not_found")
+            # PRD 6 B1: checked again under the conversation's lock, so two replies never both answer it.
+            if body.reply and chat_sql.newest_message(conn, user.customer_id, conversation_id) != str(
+                body.reply.message_id
+            ):
+                raise ApiError(409, "conflict", CLARIFY_GONE)
             asked = chat_sql.add_message(
                 conn,
                 user.customer_id,

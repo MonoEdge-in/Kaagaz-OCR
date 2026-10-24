@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 from kaagaz.answering import draft, rewrite
-from kaagaz.answering.clarify import Entity, Entry, Kind, distance, latin_key, outcome, reply_to
+from kaagaz.answering.clarify import Entity, Entry, Kind, distance, latin_key, outcome, put, reply_to
 from kaagaz.answering.memory import Memory
 from kaagaz.answering.rewrite import Turn, checked_plan, history_text, rewrite_and_plan
 from kaagaz.answering.service import AnswerService
@@ -28,17 +28,22 @@ def plan(people: Sequence[str] = (), places: Sequence[str] = (), missing: Sequen
 
 
 def entry(kind: str, printed: str, aliased: bool = False) -> Entry:
-    return Entry(kind, latin_key(printed), printed, ("d1",), aliased)
+    return Entry(kind, latin_key(printed, kind), printed, ("d1",), aliased)
 
 
 class FakeVocabulary:
     """Every entry of the kind is a candidate, in the list's order (the statement's); ``nearby``
-    are the places in the districts asked about."""
+    are the places in the districts asked about; ``scoped`` the documents it was narrowed to."""
 
     def __init__(self, *entries: Entry) -> None:
         self.entries, self.calls = list(entries), 0
         self.nearby: list[Entry] = []
         self.districts: list[str] = []
+        self.scoped: list[Sequence[str] | None] = []
+
+    def within(self, documents: Sequence[str] | None) -> "FakeVocabulary":
+        self.scoped.append(documents)
+        return self
 
     def candidates(self, customer_id: str, entities: Sequence[Entity]) -> list[list[Entry]]:
         self.calls += 1
@@ -268,3 +273,38 @@ def test_injection_in_the_history_or_the_memory_never_becomes_a_filter() -> None
     assert answers.answer(A, "And the land?", history=[turn]).status != "clarify"
     assert answers.answer(A, "And the land?", memory=Memory(names=("Pune",))).status != "clarify"
     assert vocabulary.calls == 0
+
+
+def test_a_name_is_put_in_as_a_whole_word_only() -> None:  # review 2
+    assert put("Who bought the Ramnagar plot from Ram?", "Ram", "Ram Patil") == (
+        "Who bought the Ramnagar plot from Ram Patil?"
+    )
+    assert put("रामनगर मधील रामा आणि राम?", "राम", "राम पाटील") == "रामनगर मधील रामा आणि राम पाटील?"
+    assert put("Land in Ramnagar?", "Ram", "Ram Patil") == "Land in Ramnagar Ram Patil"  # not there: added
+
+
+def test_an_open_list_says_how_many_it_leaves_out() -> None:  # review 7
+    question = "Land of Nikhil, Krishna and Shinde?"
+    names = ["Nikhil Patel", "Nikhil Desai", "Krishna Sohoni", "Krishna Patil"]
+    names += [f"{first} Shinde" for first in ("Asha", "Ravi", "Uma", "Om", "Jaya", "Lata", "Mira", "Ira")]
+    model = PlanModel(question, plan(people=["Nikhil", "Krishna", "Shinde"]))
+    answers = service(model, *(entry("person", name) for name in names))[0]
+    first = reply_to(answers.answer(A, question).to_json(), ["c1"])
+    second = reply_to(answers.answer(A, "", pending=first).to_json(), ["c1"])
+    said = answers.answer(A, "", pending=second).to_json()["assumptions"]
+    assert said == [
+        "I looked for every Shinde in your documents: Asha Shinde, Ravi Shinde, Uma Shinde, "
+        "Om Shinde, Jaya Shinde, Lata Shinde and 2 more."
+    ]
+
+
+def test_the_vocabulary_is_narrowed_to_the_scopes_documents_and_a_property_keyed_as_245_says() -> None:
+    model = PlanModel("Land owned by Nikhil?", plan(people=["Nikhil"]))  # review 4
+    answers, _, vocabulary = service(model, entry("person", "Nikhil Patel"))
+    answers.answer(A, "Land owned by Nikhil?", scope=Scope(document_ids=("d7",)))
+    answers.answer(A, "Land owned by Nikhil?")
+    assert vocabulary.scoped == [("d7",), None]
+    assert (latin_key("Survey 45/2", "property"), latin_key("Survey 45/2", "place")) == (
+        "survey45/2",
+        "survey 45/2",
+    )
