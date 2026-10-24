@@ -341,8 +341,9 @@ def test_a_sheet_that_prints_its_own_total_is_never_added_up() -> None:
 def test_every_query_that_compares_or_adds_knows_a_printed_total_row() -> None:
     for name in ("_TOP_GROUP", "_EXTREME_VALUE", "_FIGURES"):
         statement = getattr(fixed_queries, name).text
-        assert "IN ('total', 'grandtotal', 'nettotal', 'subtotal')" in statement, name
-        assert "IN ('एकूण', 'कुल', 'एकुण')" in statement, name
+        assert ": ((grand|net|sub)[[:space:]-]*)?totals?([^a-z]|$)'" in statement, name
+        assert ": (एकूण|एकुण|कुल|योग)([[:space:]:.,;()/0-9-]|$)'" in statement, name
+        assert "FROM totals x" in statement, name
 
 
 RANKING = "Kiska profit sabse jyada tha last month?"
@@ -380,6 +381,10 @@ def test_a_partys_sum_is_shown_when_every_record_prints_a_verified_figure() -> N
          "1 of the 3 records has no party I can read", "profit-register.xlsx: 50000, no party I can read."),
         (without(register_row(4, "Sharma Traders", 50000, AUG), "date"),
          "1 of the 3 records has no date I can read", "profit-register.xlsx: 50000, no date I can read."),
+        ([dataclasses.replace(s, ref=dataclasses.replace(s.ref, label="needs_review"))
+          if s.ref.field == "party_name" else s for s in register_row(4, "Sharrna Traders", 50000, AUG)],
+         "1 of the 3 party names is not verified yet",
+         "profit-register.xlsx: 50000, party not verified yet."),
     ],
 )  # fmt: skip
 def test_otherwise_no_ranking_one_reason_and_every_record_as_printed(
@@ -415,6 +420,10 @@ def test_a_highest_is_verified_only_when_every_value_compared_is() -> None:
         [], "What was the highest profit?", fixed=FakeFixedQueries({A: [top, register_row(3, "M", 8, AUG)]})
     )
     assert texts(verified) == ["The highest profit was 1,20,000."] and verified.label == "verified"
+    # A value not verified that cannot be pointed at: needs review, and no sentence citing verified ones.
+    lost = [dataclasses.replace(s, ref=dataclasses.replace(s.ref, region={})) for s in other]
+    unseen = ask([], "What was the highest profit?", fixed=FakeFixedQueries({A: [top, lost]}))
+    assert texts(unseen) == ["The highest profit was 1,20,000."] and unseen.label == "needs_review"
 
 
 def _register(rng: random.Random) -> list[Record]:
@@ -452,6 +461,7 @@ def test_whatever_the_mix_a_partys_sum_is_exact_and_only_over_verified_figures()
             sum(f is None for f in figures),
             sum(_first(r, "party_name") is None for r in records),
             sum(f is not None and f.ref.label != "verified" for f in figures),
+            sum(r[0].ref.field == "party_name" and r[0].ref.label != "verified" for r in records),
         ]
         head = answer.sentences[0].text
         if not any(reasons):  # every party's exact sum is known: the best is shown
@@ -462,8 +472,7 @@ def test_whatever_the_mix_a_partys_sum_is_exact_and_only_over_verified_figures()
                 key = " ".join(party.ref.value_text.casefold().split())
                 sums[key] = sums.get(key, Decimal(0)) + profit.number
             assert _numbers(head.replace("August 2026", "")) == [max(sums.values())], head
-            unsure = any(r[0].ref.label != "verified" for r in records)
-            assert (answer.label == "verified") is not unsure and len(answer.sentences) == 1 + unsure
+            assert answer.label == "verified" and len(answer.sentences) == 1
             shown += 1
         else:  # one reason, in counts of the records listed; never a party's sum
             assert COMPARED in head and fixed.calls == ["figures"], head

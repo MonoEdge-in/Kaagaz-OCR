@@ -227,6 +227,14 @@ def test_f6_a_cited_value_with_an_unsure_word_makes_a_fixed_answer_need_review()
     assert plain.reading_note is None and not any(c.hard_to_read for c in plain.citations)
 
 
+def test_c2_a_ranking_the_numbers_rule_lets_through_asks_for_word_marks_once() -> None:
+    """PRD 6 C2: the rule's own check needs no word marks when the ranking follows."""
+    reading = FakeReading()
+    answer = ask("Kiska profit sabse jyada tha last month?", reading)
+    assert answer.sentences[0].text == "Sharma Traders had the highest profit, 1,20,000, in August 2026."
+    assert len(reading.asked_marks) == 1
+
+
 # --- a saved answer, shown later -------------------------------------------------------------
 
 
