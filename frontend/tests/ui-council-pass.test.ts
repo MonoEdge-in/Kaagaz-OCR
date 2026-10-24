@@ -125,3 +125,30 @@ describe("the UI council's responsiveness fixes", () => {
     expect(css("components/shell/Shell.module.css")).toMatch(/@media \(max-width: 419\.98px\) \{\s*\.pageName \{\s*display: none;/);
   });
 });
+
+describe("the document page, 24 Oct 2026 (later)", () => {
+  it("keeps Values found compact and scrolling, the AI's note said once", () => {
+    const view = read("app/(app)/documents/[id]/DocumentView.tsx");
+    expect(view).toContain("<p className={styles.valuesNote}>{AI_FOUND_NOTE}</p>");
+    expect(view).toContain('{(value.label_reason !== "model_chosen" || value.votes) && (');
+    expect(view).toMatch(/<span className=\{styles\.valuePage\}>\s*Page \{value\.region\.page\}/);
+    expect(css("app/(app)/documents/[id]/DocumentView.module.css")).toMatch(/\.valuesWrap \{[^}]*max-height: 34rem;[^}]*overflow-y: auto;/);
+  });
+
+  it("gives the PDF viewer's bar the product's theme and pill controls", () => {
+    expect(css("app/globals.css")).toMatch(/--viewer-bar: var\(--k-surface\);\s*--viewer-bar-ink: var\(--k-ink\);\s*--viewer-bar-field: var\(--k-sunken\);/);
+    const viewer = read("components/extend/pdf-viewer.tsx");
+    expect(viewer).not.toContain("bg-white/10");
+    expect(viewer).toContain("[&_:is(button,a)]:rounded-full");
+  });
+});
+
+describe("the Documents list's line rhythm", () => {
+  it("gives every line after a row's first the same height, in every column", () => {
+    const text = css("components/documents/Documents.module.css");
+    const block = text.slice(text.lastIndexOf("@container docs-list (min-width: 36rem) {"));
+    expect(block).toMatch(/\.facts \{\s*margin-block-start: 0;\s*line-height: var\(--h-sm\);/);
+    expect(block).toMatch(/\.inFolder,\s*\.bandSize,\s*\.bandBy \{\s*line-height: var\(--h-sm\);/);
+    expect(text).toMatch(/\.docType \{\s*line-height: var\(--h-sm\);/);
+  });
+});

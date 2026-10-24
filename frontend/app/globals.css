@@ -73,11 +73,12 @@
 
   /* The page itself stays white paper in both themes */
   --paper: #ffffff;
-  /* The PDF viewer's bar (components/extend): dark in both themes, as the browser's own PDF
-     viewer; its words 11:1 on it, its page and zoom fields a shade darker. */
-  --viewer-bar: #323639;
-  --viewer-bar-ink: #f1f3f4;
-  --viewer-bar-field: #202124;
+  /* The PDF viewer's bar (components/extend). Changed on purpose (Tushar, 24 Oct 2026: "the
+     same theme when I open a document"): the product's own surface and ink, following the
+     theme, instead of the browser's dark bar; its page and zoom fields and hovers a sunken shade. */
+  --viewer-bar: var(--k-surface);
+  --viewer-bar-ink: var(--k-ink);
+  --viewer-bar-field: var(--k-sunken);
   --paper-frame: var(--bg-subdued);
   /* The sign-in figure's text bars and rule on the white page, kept in dark */
   --paper-bar: #e8eaed;

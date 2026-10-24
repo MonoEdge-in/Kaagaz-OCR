@@ -1668,3 +1668,28 @@ table.docs > tbody > tr {
     line-clamp: 2;
   }
 }
+
+/* One line rhythm across a row (Tushar, 24 Oct 2026: "no one alignment is good"): in the
+   table every first line is --row-line tall and every line after it var(--h-sm), so the
+   owner, "17 to check", "Land record" and "by …" sit on one row, and the size under them. */
+@container docs-list (min-width: 36rem) {
+  .facts {
+    margin-block-start: 0;
+    line-height: var(--h-sm);
+  }
+
+  .facts > * {
+    line-height: var(--h-sm);
+  }
+
+  .inFolder,
+  .bandSize,
+  .bandBy {
+    line-height: var(--h-sm);
+  }
+
+  table.docs .labelCell :global(.badge),
+  table.docs .labelCell > * {
+    vertical-align: middle;
+  }
+}
