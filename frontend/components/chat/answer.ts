@@ -9,6 +9,7 @@ import type {
   Answer,
   AnswerSentence,
   Citation,
+  ListedDocument,
   Mentions,
   Message,
   Region,
@@ -59,14 +60,80 @@ export function modelName(name: string): string {
   return name.replace(/^[^:]{1,40}:\s+/, "") || name;
 }
 
+const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
 /**
- * What the status line says when an answer arrives: its first sentence only.
- * No label (Tushar, 16 Oct 2026: no Needs review in Ask).
+ * What the status line says when an answer arrives: its first sentence only, never the
+ * opening, and for a v2 answer (PRD 6 A) how many documents it lists: "Answer ready. The
+ * total is 1,234. 2 documents."; a v2 not-found: "Nothing matches exactly. 3 closest
+ * documents." No label words. Answers from before v2 are said as they were.
  */
 export function answerStatusText(answer: Answer | null): string {
+  if (answer?.version === 2 && answer.status !== "unchecked") {
+    const { documents, more } = listedDocuments(answer);
+    const count = documents.length + more;
+    if (answer.status === "not_found") {
+      return count > 0 ? `Nothing matches exactly. ${plural(count, "closest document", "closest documents")}.` : NOT_FOUND_TEXT;
+    }
+    const said = [answer.sentences[0]?.text.trim(), count > 0 ? `${plural(count, "document", "documents")}.` : ""];
+    return ["Answer ready.", ...said].filter(Boolean).join(" ");
+  }
   if (!answer || answer.status === "not_found") return NO_ANSWER_STATUS;
   const first = answer.status === "unchecked" ? UNCHECKED_TEXT : answer.sentences[0]?.text.trim();
   return ["Answer ready.", first].filter(Boolean).join(" ");
+}
+
+/** The not-found line (decision 9): the closest documents' when it lists any. */
+export function notFoundText(closest: number): string {
+  return closest > 0 ? NOT_FOUND_CLOSEST_TEXT : NOT_FOUND_TEXT;
+}
+
+/** The DOM id of an answer card: focus moves to a new one (PRD 6 A). */
+export function answerCardId(messageId: string): string {
+  return `answer-${messageId}`;
+}
+
+export const MAX_LISTED_DOCUMENTS = 10;
+
+/** PRD 6 A: the documents listed under an answer, each with its sources, at most 10; `more`
+ * counts the other documents its sources come from (they are in Sources). O(c). */
+export function listedDocuments(answer: Pick<Answer, "documents" | "citations">): {
+  documents: (ListedDocument & { sources: Citation[] })[];
+  more: number;
+} {
+  const cards = citationMap(answer);
+  const listed = (answer.documents ?? []).slice(0, MAX_LISTED_DOCUMENTS);
+  const shown = new Set(listed.map((doc) => doc.document_id));
+  const others = new Set(answer.citations.map((c) => c.document_id).filter((id) => !shown.has(id)));
+  return {
+    documents: listed.map((doc) => ({
+      ...doc,
+      sources: doc.citations.flatMap((n) => {
+        const card = cards.get(n);
+        return card ? [card] : [];
+      }),
+    })),
+    more: others.size,
+  };
+}
+
+/** The figure a value source prints, as printed ("₹1,234.00" of "total_amount: ₹1,234.00");
+ * null for a piece of text or a source that is gone. */
+export function figureOf(citation: Citation): string | null {
+  if (citation.kind !== "value" || !citation.snippet) return null;
+  const at = citation.snippet.indexOf(": ");
+  return at >= 0 ? citation.snippet.slice(at + 2) : citation.snippet;
+}
+
+const DEVANAGARI_RUN = /([ऀ-ॿ]+(?:[\s/.,-]+[ऀ-ॿ]+)*)/u;
+
+/** `text` in runs, each Devanagari run marked `lang: "mr"` (most documents are Marathi; the
+ * build spec asks for mr or hi), so a screen reader reads it in its own voice. O(n). */
+export function scriptParts(text: string): { text: string; lang?: "mr" }[] {
+  return text
+    .split(DEVANAGARI_RUN)
+    .filter(Boolean)
+    .map((part) => (/[ऀ-ॿ]/u.test(part) ? { text: part, lang: "mr" } : { text: part }));
 }
 
 const loose = (text: string) =>

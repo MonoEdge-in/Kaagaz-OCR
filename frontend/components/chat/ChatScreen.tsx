@@ -65,7 +65,7 @@ import {
   storyStatusText,
 } from "@/lib/storyMatches";
 import type { ChatOptions, ConversationSummary, Message } from "@/lib/types";
-import { answerStatusText, ASKING_STATUS, LOADED_STATUS, questionsByAnswer } from "./answer";
+import { answerCardId, answerStatusText, ASKING_STATUS, LOADED_STATUS, questionsByAnswer } from "./answer";
 import { AnswerSettings } from "./AnswerSettings";
 import { askInFlight, resumable, resumedConversation, settleAsk, startAsk } from "./askStore";
 import { AnswerView } from "./AnswerView";
@@ -109,6 +109,11 @@ import styles from "./Chat.module.css";
 
 const DRAWER_ID = "chat-conversations";
 const HEADING = "Ask about your documents";
+
+/** PRD 6 A: focus moves to a new answer's card once it is drawn (never scrolling it). */
+function focusAnswer(messageId: string) {
+  requestAnimationFrame(() => window.document.getElementById(answerCardId(messageId))?.focus({ preventScroll: true }));
+}
 
 /** Focus the composer, but only with a mouse on a wide screen: on phones it would pop up the keyboard. */
 function focusComposerOnDesktop(input: HTMLTextAreaElement | null) {
@@ -356,6 +361,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
           load(reply.conversation_id, () => {
             setPending(null);
             setStatus(answerStatusText(reply.answer.answer));
+            focusAnswer(reply.answer.id);
           });
         },
         (error: unknown) => {
@@ -413,7 +419,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
     return () => observer.disconnect();
   }, []);
 
-  // A new answer: scroll to its first line if the person was at the end. Never moves focus.
+  // A new answer: scroll to its first line if the person was at the end. Focus is moved by focusAnswer, never here.
   useEffect(() => {
     const thread = threadRef.current;
     const log = logRef.current;
@@ -556,6 +562,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
       const now = updateSlot({ type: "answered", token, answerId: reply.answer.id });
       const count = now?.token === token ? (now.matches?.length ?? 0) : 0;
       setStatus(count > 0 ? `${answerStatus} ${storyStatusText(count)}` : answerStatus);
+      focusAnswer(reply.answer.id);
       if (activeId === null) {
         setActiveId(reply.conversation_id);
         showInUrl(reply.conversation_id);

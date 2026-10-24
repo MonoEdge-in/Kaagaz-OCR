@@ -675,10 +675,25 @@ export interface AnswerSentence {
   citations: number[];
 }
 
+/** PRD 6 A: a document listed under an answer. `why` is code-written words, never a digit;
+ * `citations` are its sources' numbers (none for a not-found answer's closest document). */
+export interface ListedDocument {
+  document_id: string;
+  title: string;
+  why: string;
+  citations: number[];
+}
+
 export interface Answer {
   // "unchecked": the figure asked for is only in unchecked card values, so no
   // number is given; closest_documents says where.
   status: "answered" | "not_found" | "unchecked";
+  // PRD 6 A, answer contract v2 (24 Oct 2026); all four missing on answers saved before it,
+  // which render as they did. The opening and assumptions are code-written lines.
+  version?: 2;
+  opening?: string | null;
+  documents?: ListedDocument[];
+  assumptions?: string[];
   label: Label | null; // null when not found
   sentences: AnswerSentence[];
   citations: Citation[];
