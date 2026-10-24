@@ -14,6 +14,7 @@ import { ApiError, getClearCopy, translatePage } from "@/lib/api";
 import type { ClearCopy, PageTranslation, ReadLine, Region, TranslateLanguage } from "@/lib/types";
 import {
   BUSY,
+  CLEAN_COPY,
   LANGUAGES,
   LEFT_OUT,
   MAX_TRANSLATE_PAGES,
@@ -203,7 +204,7 @@ export function ReadClearlyPanel({ documentId, pageNo, active, canTranslate, onS
   return (
     <section className={styles.panel} aria-labelledby="read-clearly-heading">
       <h2 id="read-clearly-heading" className={styles.heading} tabIndex={-1}>
-        Read clearly
+        {CLEAN_COPY}
       </h2>
       <p className={styles.note}>The text exactly as read, page by page. Press a line to see it on the page.</p>
       <div className={styles.tools}>

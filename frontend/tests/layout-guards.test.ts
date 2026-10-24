@@ -616,46 +616,51 @@ describe("layout guards", () => {
     const declarations = (body = "") => body.split(";").map((part) => part.trim()).filter(Boolean);
     expect(declarations(narrow[0]?.body)).toEqual(declarations(hidden));
     const view = read("app/(app)/documents/[id]/DocumentView.tsx");
-    expect(view).toMatch(/<Icon name="download" \/>\s*<span className="narrow-hide">Download original<\/span>/);
+    // Changed on purpose (document panel UX, 25 Oct 2026): Download keeps its one short word on
+    // a phone too, in the quiet row; Ask has the full width to itself.
+    expect(view).toMatch(/<Icon name="download" \/>\s*Download\s*<\/a>/);
     // Changed on purpose (UI audit, 16 Oct 2026): DD6, Scanned text is a tab beside the page, so
     // the viewer's toolbar has no Scanned text button (nor its phone-only "Text") any more.
     expect(view).not.toContain("styles.textWord");
     expect(read("components/viewer/PageViewer.tsx")).toContain('Fit<span className="narrow-hide">{fit === "page" ? " page" : " width"}</span>');
-    const phone = rules(read("app/(app)/documents/[id]/DocumentView.module.css")).filter((rule) => rule.at === "@media (max-width: 639.98px)");
-    expect(phone.find((rule) => rule.selector === ".download")?.body).toMatch(/margin-inline-start:\s*0;/);
-    expect(phone.find((rule) => rule.selector === ".ask")?.body).toMatch(/flex:\s*1 1 auto;/);
+    expect(rulesFor("app/(app)/documents/[id]/DocumentView.module.css", ".ask")[0]?.body).toMatch(/width:\s*100%;/);
   });
 
-  // Changed on purpose (UI audit, 16 Oct 2026): DD2, a breadcrumb, then one row (the title and
-  // its status, then Download, Ask and the menu with Read again), then one meta line.
-  it("puts the document's place in a breadcrumb, its title row in one line, and the rest on one meta line", () => {
+  // Changed on purpose (document panel UX, 25 Oct 2026): the panel answers what is this, can I
+  // trust it and what can I do, in that order: back to its folder, the name, one status line,
+  // the summary, the status line, Ask, then one quiet row (Download, Clean copy, the menu).
+  // The kind, pages, tags and versions wait under More details.
+  it("puts the document's place in a back link, then the name, the summary, the status line, Ask and one quiet row", () => {
     const view = read("app/(app)/documents/[id]/DocumentView.tsx");
     const between = (from: string, to: string) => view.slice(view.indexOf(from), view.indexOf(to, view.indexOf(from)));
-    const crumbs = between('<nav aria-label="Breadcrumb"', "</nav>");
-    expect(crumbs).toContain("trail.map((folder)");
-    expect(crumbs).toContain('aria-current="page"');
-    const title = between("<div className={styles.titleRow}>", "<div className={styles.status}>");
-    const row = ["<h1 className={styles.title}>", "<StatusChip", "Download original", "btn btn-primary ${styles.ask}", "<DocumentMenu"];
-    const inRow = row.map((part) => title.indexOf(part));
-    expect(inRow.every((i) => i >= 0)).toBe(true);
-    expect([...inRow].sort((a, b) => a - b)).toEqual(inRow);
-    expect(title).not.toContain("<ReadAgain"); // the whole document's Read again is in the menu (DD3)
-    // The meta line holds everything else, in reading order; no second "place" row.
-    const meta = between("<div className={styles.status}>", "{note && ");
-    const order = ["pagesText", "<AutofileNote", 'id="document-tags-label"', 'aria-label="Versions"', "<ReadAgain"];
-    const at = order.map((part) => meta.indexOf(part));
+    expect(view).not.toContain('aria-label="Breadcrumb"');
+    expect(view).toContain("name: folder.name");
+    const head = between("<header className={styles.header}>", "</header>");
+    const order = [
+      "<Link href={back.href} className={styles.back}>",
+      "<h1 className={styles.title}>",
+      "<p className={styles.state}>",
+      "<SummaryCard",
+      "<SummaryBar",
+      "btn btn-primary ${styles.ask}",
+      "<div className={styles.headActions}>",
+      "<DocumentMenu",
+    ];
+    const at = order.map((part) => head.indexOf(part));
     expect(at.every((i) => i >= 0)).toBe(true);
     expect([...at].sort((a, b) => a - b)).toEqual(at);
-    expect(view).not.toContain("styles.place}");
+    // More details holds the rest, in reading order, closed until the status line opens it.
+    const facts = between("<div id={DETAILS_ID}", "{note && ");
+    expect(facts).toContain('hidden={!moreOpen && detail.status !== "rejected"}');
+    const more = ["pagesText", "trustText(review.status)", 'id="document-tags-label"', 'aria-label="Versions"'].map((part) => facts.indexOf(part));
+    expect(more.every((i) => i >= 0)).toBe(true);
+    expect([...more].sort((a, b) => a - b)).toEqual(more);
+    expect(head).toContain("detailsOpen={moreOpen}");
     const css = "app/(app)/documents/[id]/DocumentView.module.css";
     expect(rulesFor(css, ".status")[0]?.body).toMatch(/flex-wrap:\s*wrap;/);
-    // Read again no longer pushes the rest of the line away; its question and error still take their own row.
-    expect(rulesFor(css, ".readAgain")).toEqual([]);
+    // Read again's question and error take their own row.
     expect(rulesFor(css, ".readAgainConfirm")[0]?.body).toMatch(/flex:\s*1 1 100%;/);
     expect(rulesFor(css, ".readAgainLine")[0]?.body).toMatch(/flex:\s*1 1 100%;/);
-    // On a phone the title has a row of its own, so Ask never squeezes it.
-    const phone = rules(read(css)).filter((rule) => rule.at === "@media (max-width: 639.98px)");
-    expect(phone.find((rule) => rule.selector === ".title")?.body).toMatch(/flex-basis:\s*100%;/);
   });
 
   it("paints an older chat answer only near view, never the newest four, and never on the card itself", () => {
