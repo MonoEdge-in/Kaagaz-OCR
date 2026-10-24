@@ -68,9 +68,8 @@ def test_b_admin_never_lists_counts_or_marks_a_not_useful_answers(db: Database) 
     assert all(week["not_useful"] == 0 and week["useful"] == 0 for week in seen.json()["weeks"])
     assert "sharma" not in seen.text
     for handled in (True, False):
-        reply = b_admin.client.put(
-            f"/api/admin/answer-quality/{item['id']}/handled", json={"handled": handled}, headers=CSRF
-        )
+        body = {"handled": handled, "seen": item["given_at"]}  # A's exact rating: still 404, never 409
+        reply = b_admin.client.put(f"/api/admin/answer-quality/{item['id']}/handled", json=body, headers=CSRF)
         assert reply.status_code == 404
         assert reply.json()["error"]["code"] == "not_found"
     with db.customer(a_admin.customer_id) as conn:

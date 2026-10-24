@@ -51,12 +51,13 @@ def weekly_counts(
     conn: Connection, customer_id: str, *, since: datetime, zone: str
 ) -> dict[str, tuple[int, int]]:
     """Monday of each week (in ``zone``, ISO text) with ratings since ``since``: (Useful,
-    Not useful). Every rating counts, given before the notice too: a number names no one."""
+    Not useful). Not useful counts only those given after the notice, as the list (decision
+    7); Useful carries no reason and no notice, so every one counts."""
     rows = conn.execute(
         text(
             "SELECT date_trunc('week', f.created_at AT TIME ZONE :zone)::date AS week,"
             " count(*) FILTER (WHERE f.rating = 'up') AS useful,"
-            " count(*) FILTER (WHERE f.rating = 'down') AS not_useful"
+            " count(*) FILTER (WHERE f.rating = 'down' AND f.notice_shown) AS not_useful"
             " FROM feedback f WHERE f.customer_id = :c AND f.created_at >= :since GROUP BY 1"
         ),
         {"c": customer_id, "since": since, "zone": zone},
@@ -65,10 +66,11 @@ def weekly_counts(
 
 
 def set_handled(
-    conn: Connection, customer_id: str, feedback_id: str, admin_id: str, *, handled: bool
+    conn: Connection, customer_id: str, feedback_id: str, admin_id: str, *, handled: bool, seen: datetime
 ) -> RowMapping | None:
     """Mark one Not useful answer (given after the notice) handled by this admin, or open
-    again (Undo). Handled again keeps its first time. None when there is no such row."""
+    again, only while it is still the rating the admin saw (``seen``, its ``created_at``: a new
+    rating keeps the id). Handled again keeps its first time. None when nothing changed."""
     return (
         conn.execute(
             text(
@@ -77,10 +79,20 @@ def set_handled(
                 " handled_by = CASE WHEN NOT :h THEN NULL WHEN handled_at IS NULL THEN CAST(:u AS uuid)"
                 " ELSE handled_by END"
                 " WHERE customer_id = :c AND id = :id AND rating = 'down' AND notice_shown"
+                " AND created_at = :seen"
                 " RETURNING id, message_id, handled_at"
             ),
-            {"c": customer_id, "id": feedback_id, "u": admin_id, "h": handled},
+            {"c": customer_id, "id": feedback_id, "u": admin_id, "h": handled, "seen": seen},
         )
         .mappings()
         .first()
     )
+
+
+def rated_again(conn: Connection, customer_id: str, feedback_id: str, seen: datetime) -> bool:
+    """True when this rating exists but was given again since ``seen``."""
+    found = conn.execute(
+        text("SELECT 1 FROM feedback WHERE customer_id = :c AND id = :id AND created_at <> :seen"),
+        {"c": customer_id, "id": feedback_id, "seen": seen},
+    ).first()
+    return found is not None
