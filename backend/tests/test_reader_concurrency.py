@@ -24,7 +24,7 @@ from kaagaz.reading.ocr import MeteredOcrEngine, OcrLine, PageRead
 from kaagaz.reading.ocr_dpi import FIXED, TEXT_HEIGHT
 from kaagaz.reading.pdf_reader import PdfReader
 from kaagaz.reading.route import RouteDecision
-from kaagaz.reading.socket import PagePool
+from kaagaz.reading.socket import PagePool, pages_at_once
 from kaagaz.reading.spans import BoxLocation, Span
 from kaagaz.reading.text_quality import TextLayerRules
 from tests.pdf_builder import Page, Picture, Text, make_pdf
@@ -221,6 +221,14 @@ class PdfPagesInParallelTest(unittest.TestCase):
         spans, _routes = read_pdf(pdf_reader(engine, pool), make_pdf([SCANNED] * 7))
         self.assertEqual(engine.most, 2)
         self.assertEqual([page for _text, page in texts(spans)], list(range(1, 8)))
+
+    def test_the_super_admins_pages_at_once_lowers_the_pool_and_never_raises_it(self) -> None:
+        """Package S (0053): inside ``pages_at_once``, the lower of it and the pool's size."""
+        for most, expected in ((1, 1), (2, 2), (9, 3), (None, 3)):
+            engine = TurnTakingEngine(hold=0.03)
+            with pages_at_once(most):
+                read_pdf(pdf_reader(engine, PagePool.threads(3)), make_pdf([SCANNED] * 6))
+            self.assertEqual(engine.most, expected, most)
 
     def test_concurrency_one_is_the_same_as_no_pool(self) -> None:
         data = make_pdf([SCANNED, TYPED, SCANNED])

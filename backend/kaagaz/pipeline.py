@@ -288,7 +288,7 @@ from kaagaz.reading.page_quality import (
     grade,
 )
 from kaagaz.reading.route import RouteDecision
-from kaagaz.reading.socket import NoReader, OnPage, waiting
+from kaagaz.reading.socket import NoReader, OnPage, pages_at_once, pages_in_flight, waiting
 from kaagaz.reading.spans import (
     DIRECT_ORIGINS,
     BoxLocation,
@@ -677,12 +677,15 @@ class JobReading:
     ``kaagaz.db.models.resolve``'s, None when no model reads the scans (RapidOCR).
     ``reading`` is ``kaagaz.db.models.resolve_scan``'s whole answer (features 25-27: the
     mode, Careful, Ensemble's other models, the thinking level and why anything fell back);
-    None with no model, or from a caller that knows the model only."""
+    None with no model, or from a caller that knows the model only. ``pages_at_once`` is the
+    super admin's pages of one document read at once (package S, 0053), read at the job's
+    start; None: OCR_PAGE_CONCURRENCY."""
 
     user_id: str | None
     model: str | None = None
     provider: str | None = None
     reading: "Reading | None" = None
+    pages_at_once: int | None = None
 
 
 class UsageScopes(Protocol):
@@ -966,8 +969,10 @@ class DocumentProcessor:
         """The job's model and who it is billed to (``job_reading``), then everything else
         inside its usage scope: scan, or upgrade when no user asked (SP1)."""
         run.model = self._ocr_model
+        at_once = None
         if self._job_reading is not None:
             reading = self._job_reading(job.customer_id, job.document_id)
+            at_once = reading.pages_at_once
             run.user_id = reading.user_id
             if reading.model is not None:
                 run.model, run.provider = reading.model, reading.provider
@@ -976,7 +981,7 @@ class DocumentProcessor:
         run.models = frozenset(
             model for model in (run.model, *(agent.model for agent in extra if agent is not None)) if model
         )
-        with self._billed(job, run, "scan" if run.user_id is not None else "upgrade"):
+        with self._billed(job, run, "scan" if run.user_id is not None else "upgrade"), pages_at_once(at_once):
             self._read_and_save(job, record, heartbeat, run)
 
     def _read_and_save(self, job: Job, record: DocumentRecord, heartbeat: Heartbeat, run: _Run) -> None:
@@ -1774,7 +1779,7 @@ class DocumentProcessor:
         return rates(
             history,
             None if self._ocr_meter is None else self._ocr_meter.name,
-            pages_at_once=self._ocr_page_concurrency,
+            pages_at_once=pages_in_flight(self._ocr_page_concurrency),  # the job's own (package S)
             scanned=detected_type in _PHOTO_TYPES,
         )
 
@@ -2159,6 +2164,7 @@ def build_processor(
     job_reading: Callable[[str, str], JobReading] | None = None
     if gemini or model is not None:
         requested_by = text("SELECT read_requested_by FROM documents WHERE customer_id = :c AND id = :d")
+        pages_at_once_sql = text("SELECT pages_at_once FROM platform_ai_settings")
 
         def read_job(customer_id: str, document_id: str) -> JobReading:
             with unavailable(), db.customer(customer_id) as conn:
@@ -2168,7 +2174,10 @@ def build_processor(
                     return JobReading(user_id)
                 # Features 25-27 (S2): the worker's own check of the mode and every model, now.
                 scan = models.resolve_scan(conn, customer_id, document_id, settings=settings)
-            return JobReading(user_id, scan.lead.model, scan.lead.provider, reading=scan)
+                at_once = conn.execute(pages_at_once_sql).scalar_one()  # package S, 0053
+            return JobReading(
+                user_id, scan.lead.model, scan.lead.provider, reading=scan, pages_at_once=at_once
+            )
 
         job_reading = read_job
 

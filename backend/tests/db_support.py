@@ -103,6 +103,7 @@ _DOCUMENT_COLUMNS = frozenset(
         "name_key",
         "text_minhash",
         "text_bands",
+        "updated_at",  # package S: a document last written long ago (the stuck sweep's clock)
     }
 )
 

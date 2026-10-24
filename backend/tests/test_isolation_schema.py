@@ -383,6 +383,12 @@ OPERATOR_RIGHTS = {
         EMPTY_PATH,
     ),
     "kaagaz_op_set_model_rate": ("text", EMPTY_PATH),
+    # 0053, package S: the platform's speed controls (numbers only), and their write (step-up).
+    "kaagaz_op_speed": (
+        "TABLE(model_rpm integer, documents_at_once integer, pages_at_once integer)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_op_set_speed": ("text", EMPTY_PATH),
     # 0051, PRD 6 F3, read-only: answers and ratings per organisation and ended ISO week, counts only.
     "kaagaz_op_answer_weeks": (
         "TABLE(customer_id uuid, week date, replies bigint, answered bigint, not_found bigint,"

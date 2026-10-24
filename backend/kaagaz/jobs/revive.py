@@ -11,6 +11,8 @@ UpgradeLocalReads, between jobs) runs ``revive_stuck`` every REVIVE_EVERY:
   it) for ``stale_seconds``: QUEUE_LEASE_SECONDS x JOB_MAX_ATTEMPTS, every try's lease
   (PROVISIONAL), and its customer has no fair-share slot held, so none of its jobs is being
   read. A job that waits for a slot leaves its customer busy, so a long batch is never touched.
+  A job handed back under the platform's documents-at-once cap (package S) holds no slot, so
+  its hand-back writes on its document instead (``PgDocuments.still_waiting``).
 * With a try left, one more try is counted on it, its stale progress cleared, and its job
   queued in the main lane carrying the tries before it, in one transaction (a queue that is
   down rolls the count back). Its next delivery is that try, so the count only goes up.
