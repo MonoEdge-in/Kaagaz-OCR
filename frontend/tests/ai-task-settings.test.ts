@@ -223,7 +223,8 @@ describe("where tasks are used", () => {
     );
     expect(html.replace(/<[^>]*>/g, " ")).not.toMatch(MODELS);
     expect(html).not.toMatch(/gemini|claude/i); // not even in an attribute
-    expect(html).toContain(">Standard · Precision<"); // Changed on purpose (SoW 19 Oct 2026): High is Precision
+    // Changed on purpose (Tushar, 25 Oct 2026): Ask starts on Swift, whatever the default level.
+    expect(html).toContain(">Standard · Swift<");
   });
 
   it("Ensemble's controls go when the effective Ensemble is off", () => {
