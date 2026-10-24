@@ -170,6 +170,7 @@ class LandExtraction:
     model_calls: int
     error_code: str | None = None  # "model_<code>" when a call failed; values is then empty
     truncated: bool = False  # text was left after the last window (EXTRACT_MAX_WINDOWS), unread
+    unusable: bool = False  # the failed call's reply was unusable (ModelOutputError): asking again won't help
 
 
 def reads_land(doc_type: str | None, card_values: Sequence[ExtractedValue]) -> bool:
@@ -228,7 +229,8 @@ def read_land(
                 ]
                 planned += 1
                 continue
-            return LandExtraction([], QuoteCounts(), calls, f"model_{error.code}", truncated)
+            unusable = isinstance(error, ModelOutputError)
+            return LandExtraction([], QuoteCounts(), calls, f"model_{error.code}", truncated, unusable)
         beat(calls, planned)
         merge.add(part, answer)
     return LandExtraction(merge.values(), merge.quotes, calls, truncated=truncated)

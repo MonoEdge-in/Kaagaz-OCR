@@ -25,7 +25,11 @@ sets a document back to received and keeps only remembered fixes).
   document stays Ready; a crash leaves the earlier state; a replay finds it done.
 * **The cap** (``max_usd``): a document is never started when what was spent plus the
   costliest document so far would pass it; a call whose cost OpenRouter did not report
-  stops the run (the cap cannot be kept). A model error stops it too: run it again to go on.
+  stops the run (the cap cannot be kept). A model that is down stops it too: run it again to go
+  on. A reply that is unusable (``ModelOutputError``: still cut after its halves, not the
+  schema), which asking again would only repeat, gets a ``document.land_facts`` row with the
+  prompt hash and ``failed``, its code, under the same fence: nothing else is written, the
+  document is no longer eligible, and the run goes on with the next one.
 
 Output: ids, counts and dollars only, never document text.
 """
@@ -246,10 +250,16 @@ def _one(
         spend.worst = max(spend.worst, cost)
     per_1000 = "unknown" if cost is None or not chars else f"{cost * 1000 / chars:.4f}"
     shown = "unknown" if cost is None else f"{cost:.4f}"
-    if reading.error_code is not None:
+    if reading.error_code is not None and not reading.unusable:
         raise Stop(
             f"document {document}: the model failed ({reading.error_code}); run land-facts again to go on"
         )
+    if reading.error_code is not None:
+        outcome = _failed(db, customer, document, stored, reading.error_code, calls)
+        out.write(f"document {document}: {outcome} ({reading.error_code}), {calls} calls, cost_usd {shown}\n")
+        if cost is None:
+            raise Stop(f"document {document}: a call's cost is not known, so --max-usd cannot be kept")
+        return chars
     values = _labelled(db, customer, document, reading.values, stored, settings, storage, checker)
     outcome = _save(db, customer, document, stored, values, calls, reading.truncated)
     out.write(
@@ -387,6 +397,19 @@ def _save(
         audit.record(conn, customer, actor_user_id=None, action=ACTION, target_type="document",
                      target_id=document, details=details)  # fmt: skip
     return "done"
+
+
+def _failed(db: Database, customer: str, document: str, stored: _Stored, code: str, calls: int) -> str:
+    """A reply that will not be usable: its audit row, fenced as ``_save``; failed or changed."""
+    with db.customer(customer) as conn:
+        lock_family(conn, customer, document)
+        now = conn.execute(_DOCUMENT, {"c": customer, "d": document}).first()
+        if now is None or now.run_id != stored.run_id:
+            return "changed"
+        details: dict[str, audit.DetailValue] = {"prompt": LAND_PROMPT_HASH, "failed": code, "calls": calls}
+        audit.record(conn, customer, actor_user_id=None, action=ACTION, target_type="document",
+                     target_id=document, details=details)  # fmt: skip
+    return "failed"
 
 
 def customers_of(

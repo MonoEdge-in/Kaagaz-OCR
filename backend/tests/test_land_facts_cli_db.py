@@ -17,7 +17,7 @@ from sqlalchemy import text
 
 from kaagaz import cli
 from kaagaz.ai import usage
-from kaagaz.ai.client import ModelClient, ModelUnavailable
+from kaagaz.ai.client import ModelClient, ModelOutputError, ModelUnavailable
 from kaagaz.chunking.piece import Piece
 from kaagaz.db.engine import Database
 from kaagaz.db.pipeline_store import PgPipelineStore
@@ -260,3 +260,19 @@ def test_the_audit_row_says_when_text_past_the_last_window_went_unread(db: Datab
     assert f"document {document}: done" in out.getvalue()
     audited = "SELECT details ->> 'truncated' FROM audit_log WHERE action = :a"
     assert _rows(db, customer, audited, a=land_facts.ACTION) == [("true",)]
+
+
+def test_a_reply_that_is_never_usable_is_audited_as_failed_and_the_run_goes_on(db: Database) -> None:
+    """A deterministic failure (ModelOutputError) no longer blocks every later run; a model
+    that is down still stops it (the test above)."""
+    customer, _user = new_customer(db)
+    broken, fine = _document(db, customer), _document(db, customer)
+    printed = _reread(db, customer, Billed(ModelOutputError("not_json"), REPLY))
+    assert f"document {broken}: failed (model_not_json), 1 calls" in printed
+    assert f"document {fine}: done" in printed and "stopped" not in printed
+    assert _rows(db, customer, LAND, d=broken) == []
+    audited = "SELECT target_id, details ->> 'failed' FROM audit_log WHERE action = :a ORDER BY target_id"
+    assert sorted(_rows(db, customer, audited, a=land_facts.ACTION)) == sorted(
+        [(broken, "model_not_json"), (fine, None)]
+    )
+    assert _reread(db, customer, Billed()) == ""  # neither is eligible again: no call
