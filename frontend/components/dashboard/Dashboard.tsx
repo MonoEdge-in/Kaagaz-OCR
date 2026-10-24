@@ -17,7 +17,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ChangeEvent, FormEvent } from "react";
+import type { ChangeEvent, CSSProperties, FormEvent, ReactNode } from "react";
 import { activityDocument, activitySentence } from "@/components/activity/words";
 import { askHref } from "@/components/chat/logic";
 import { ALL_DOCUMENTS, libraryHref } from "@/components/documents/libraryQuery";
@@ -36,13 +36,14 @@ import type { ActivityEntry, Dashboard as DashboardData, Folder } from "@/lib/ty
 import {
   DASHBOARD_TEXT,
   barShares,
+  browseTitle,
+  checkTitle,
   extensionOf,
   filesText,
   greeting,
   suggestedQuestions,
   thisWeekText,
   todayLine,
-  waitingText,
 } from "./words";
 import styles from "./Dashboard.module.css";
 
@@ -62,7 +63,6 @@ export function Dashboard() {
   const { uploads, setTrayOpen } = useSharedUploads(() => setAttempt((n) => n + 1));
   const departments = useMemo(() => departmentsOf(folders), [folders]);
   const chosen = department === undefined ? lastDepartment(departments) : department;
-  const chosenName = departments.find((folder) => folder.id === chosen)?.name ?? null;
 
   useEffect(() => {
     let cancelled = false;
@@ -114,100 +114,55 @@ export function Dashboard() {
     if (text) router.push(askHref(text));
   }
 
-  const versions = data?.tiles.versions_to_confirm ?? 0;
-  const values = reviewer ? reviewTotal : null;
   const suggestions = data ? suggestedQuestions(data.by_type) : [];
 
   return (
     <div className={`page ${styles.page}`}>
-      <section className={styles.hero} aria-labelledby="home-greeting">
-        <div className={`k-dotfield ${styles.welcome}`}>
-          <span className="k-tagline">
-            <b>01</b>
-            <i />
-            {todayLine(new Date(), me.customer.name)}
-          </span>
-          <h1 id="home-greeting" className={`k-display ${styles.greeting}`}>
-            {greeting(me.user.display_name, new Date().getHours())}.{" "}
-            {data && <span className="k-accent-text">{waitingText(versions, values)}</span>}
-          </h1>
-          <form className={styles.ask} onSubmit={ask} role="search">
-            <Icon name="ask" className={styles.askIcon} />
-            <label htmlFor="home-ask" className="visually-hidden">
-              {DASHBOARD_TEXT.askLabel}
-            </label>
-            <input
-              id="home-ask"
-              className={styles.askInput}
-              type="text"
-              enterKeyHint="go"
-              maxLength={1000}
-              placeholder={DASHBOARD_TEXT.askPlaceholder}
-              value={question}
-              onChange={(event) => setQuestion(event.target.value)}
-            />
-            <button type="submit" className="k-btn k-btn--primary">
-              {DASHBOARD_TEXT.ask}
-              <Icon name="external" size="sm" />
-            </button>
-          </form>
-          {suggestions.length > 0 && (
-            <div className="k-chip-row">
-              {suggestions.map((text) => (
-                <Link key={text} className="k-suggest" href={askHref(text)}>
-                  {text}
-                </Link>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <div className={styles.side}>
-          {reviewer ? (
-            <Link className={`k-blue-panel ${styles.panel}`} href="/review">
-              <span className={styles.panelHead}>
-                <span className={styles.pixels} aria-hidden="true" />
-                <span className={styles.panelLabel}>{DASHBOARD_TEXT.reviewQueue}</span>
-              </span>
-              <span className={styles.panelBody}>
-                <span className={styles.panelNumber}>{reviewTotal === null ? "…" : formatNumber(reviewTotal)}</span>
-                <span className={styles.panelLine}>
-                  {reviewTotal === 0 ? DASHBOARD_TEXT.reviewClear : DASHBOARD_TEXT.reviewLine}
-                </span>
-                <span className={styles.panelButton}>
-                  {DASHBOARD_TEXT.openReview}
-                  <Icon name="external" size="sm" />
-                </span>
-              </span>
-            </Link>
-          ) : (
-            <Link className={`k-blue-panel ${styles.panel}`} href="/documents">
-              <span className={styles.panelHead}>
-                <span className={styles.pixels} aria-hidden="true" />
-                <span className={styles.panelLabel}>{DASHBOARD_TEXT.libraryPanel}</span>
-              </span>
-              <span className={styles.panelBody}>
-                <span className={styles.panelNumber}>{data ? formatNumber(data.tiles.documents) : "…"}</span>
-                <span className={styles.panelLine}>{DASHBOARD_TEXT.libraryLine}</span>
-                <span className={styles.panelButton}>
-                  {DASHBOARD_TEXT.openDocuments}
-                  <Icon name="external" size="sm" />
-                </span>
-              </span>
-            </Link>
-          )}
-          <button type="button" className={`k-btn k-btn--lg ${styles.upload}`} onClick={() => inputRef.current?.click()}>
-            <span className={styles.uploadWords}>
-              <Icon name="upload" />
-              {DASHBOARD_TEXT.uploadDocuments}
-            </span>
-            <span className={`k-faint ${styles.uploadWhere}`}>{chosenName ? `into ${chosenName}` : DASHBOARD_TEXT.uploadAutofile}</span>
+      <section className={`k-dotfield ${styles.welcome}`} aria-labelledby="home-greeting">
+        <p className={styles.today}>{todayLine(new Date(), me.customer.name)}</p>
+        <h1 id="home-greeting" className={`k-display ${styles.greeting}`}>
+          {greeting(me.user.display_name, new Date().getHours())}
+        </h1>
+        <p className={styles.lead}>{DASHBOARD_TEXT.lead}</p>
+        <form className={styles.ask} onSubmit={ask} role="search">
+          <Icon name="ask" className={styles.askIcon} />
+          <label htmlFor="home-ask" className="visually-hidden">
+            {DASHBOARD_TEXT.askLabel}
+          </label>
+          <input
+            id="home-ask"
+            className={styles.askInput}
+            type="text"
+            enterKeyHint="go"
+            maxLength={1000}
+            placeholder={DASHBOARD_TEXT.askPlaceholder}
+            value={question}
+            onChange={(event) => setQuestion(event.target.value)}
+          />
+          <button type="submit" className="k-btn k-btn--primary">
+            {DASHBOARD_TEXT.ask}
+            <Icon name="external" size="sm" />
           </button>
-          <div className={styles.uploadTo}>
-            <DepartmentPicker departments={departments} value={chosen} onChange={pick} />
+        </form>
+        {suggestions.length > 0 && (
+          <div className={`k-chip-row ${styles.tryRow}`}>
+            <span className={styles.tryLabel}>{DASHBOARD_TEXT.tryThese}</span>
+            {suggestions.map((text) => (
+              <Link key={text} className="k-suggest" href={askHref(text)}>
+                {text}
+              </Link>
+            ))}
           </div>
-        </div>
+        )}
       </section>
+
+      <HomeActions
+        reviewer={reviewer}
+        reviewTotal={reviewTotal}
+        documents={data ? data.tiles.documents : null}
+        picker={<DepartmentPicker departments={departments} value={chosen} onChange={pick} />}
+        onUpload={() => inputRef.current?.click()}
+      />
 
       <label htmlFor="upload-input" className="visually-hidden">
         Files to upload
@@ -244,6 +199,70 @@ export function Dashboard() {
       )}
       {loaded !== null && <DashboardBody data={loaded.data} now={loaded.at} />}
     </div>
+  );
+}
+
+/** One card per next step (24 Oct 2026): Check values (a reviewer's), Upload documents with
+ * where they go, and Browse documents; each a plain sentence and a button that says where it
+ * goes. Exported for the render test. */
+export function HomeActions({
+  reviewer,
+  reviewTotal,
+  documents,
+  picker,
+  onUpload,
+}: {
+  reviewer: boolean;
+  reviewTotal: number | null;
+  documents: number | null;
+  picker: ReactNode;
+  onUpload: () => void;
+}) {
+  const waiting = reviewTotal !== null && reviewTotal > 0;
+  let index = 0;
+  const order = () => ({ "--i": index++ }) as CSSProperties;
+  return (
+    <section className={styles.actions} aria-labelledby="home-steps">
+      <h2 id="home-steps" className="visually-hidden">
+        {DASHBOARD_TEXT.steps}
+      </h2>
+      {reviewer && (
+        <Link className={`${styles.action} ${waiting ? styles.actionWaiting : ""}`} href="/review" style={order()}>
+          <span className={styles.actionIcon} aria-hidden="true">
+            <Icon name="review" />
+          </span>
+          <span className={styles.actionTitle}>{checkTitle(reviewTotal)}</span>
+          <span className={styles.actionText}>{waiting || reviewTotal === null ? DASHBOARD_TEXT.checkLine : DASHBOARD_TEXT.checkClear}</span>
+          <span className={styles.actionGo}>
+            {DASHBOARD_TEXT.openReview}
+            <Icon name="arrow-right" size="sm" />
+          </span>
+        </Link>
+      )}
+      <div className={styles.action} style={order()}>
+        <span className={styles.actionIcon} aria-hidden="true">
+          <Icon name="upload" />
+        </span>
+        <span className={styles.actionTitle}>{DASHBOARD_TEXT.uploadDocuments}</span>
+        <span className={styles.actionText}>{DASHBOARD_TEXT.uploadLine}</span>
+        <div className={styles.uploadTo}>{picker}</div>
+        <button type="button" className={`k-btn k-btn--primary ${styles.choose}`} onClick={onUpload}>
+          <Icon name="upload" size="sm" />
+          {DASHBOARD_TEXT.chooseFiles}
+        </button>
+      </div>
+      <Link className={styles.action} href="/documents" style={order()}>
+        <span className={styles.actionIcon} aria-hidden="true">
+          <Icon name="folder" />
+        </span>
+        <span className={styles.actionTitle}>{browseTitle(documents)}</span>
+        <span className={styles.actionText}>{DASHBOARD_TEXT.browseLine}</span>
+        <span className={styles.actionGo}>
+          {DASHBOARD_TEXT.openDocuments}
+          <Icon name="arrow-right" size="sm" />
+        </span>
+      </Link>
+    </section>
   );
 }
 
@@ -298,11 +317,6 @@ export function DashboardBody({ data, now }: { data: DashboardData; now: number 
         <section className="k-card" aria-labelledby="by-type-heading">
           <div className="k-card-head">
             <div className={styles.headWords}>
-              <span className="k-tagline">
-                <b>02</b>
-                <i />
-                {DASHBOARD_TEXT.library}
-              </span>
               <h2 id="by-type-heading" className="k-h2">
                 {DASHBOARD_TEXT.byType}
               </h2>
@@ -382,11 +396,6 @@ export function DashboardBody({ data, now }: { data: DashboardData; now: number 
         <section className="k-card k-card--flush" aria-labelledby="recent-heading">
           <div className="k-card-head k-card-head--bar">
             <div className={styles.headWords}>
-              <span className="k-tagline">
-                <b>03</b>
-                <i />
-                {DASHBOARD_TEXT.latest}
-              </span>
               <h2 id="recent-heading" className="k-h2">
                 {DASHBOARD_TEXT.recent}
               </h2>
