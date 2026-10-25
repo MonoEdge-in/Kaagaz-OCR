@@ -9,7 +9,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import * as panels from "@/app/(app)/documents/[id]/DocumentPanels";
 import { AttentionPanel, attentionCount } from "@/app/(app)/documents/[id]/DocumentPanels";
-import { documentMoreItems } from "@/app/(app)/documents/[id]/WordReview";
+import { documentMoreItems, textFileName } from "@/app/(app)/documents/[id]/WordReview";
 import { dataText } from "@/components/viewer/clearCopy";
 import { withFixes } from "@/components/viewer/scanned";
 import type { PageSummary, ReadLine, ReviewStatus, WordFlag } from "@/lib/types";
@@ -52,7 +52,7 @@ describe("1. the ⋯ menu: Export as Data and Download original above Move to Tr
     expect(dataText({ ...copy, truncated: true }, [])).toMatch(/Thank you\n\nThis document is long, so the clean copy stops here\./);
     const view = read("app/(app)/documents/[id]/WordReview.tsx");
     expect(view).toContain('{ type: "text/plain;charset=utf-8" }');
-    expect(view).toContain('`${detail.display_name.replace(/\\.[^.]+$/, "")}.txt`');
+    expect(view).toContain("`${textFileName(detail.display_name)}.txt`");
   });
 });
 
@@ -95,13 +95,32 @@ describe("5. Fix text: replace a [?] in the Text view", () => {
     expect(withFixes(line, [flag("[?]", "$& $1")])).toBe("spitting out $& $1 text. I was"); // typed as is
   });
 
+  it("puts each fix in its own [?] when a line has two, whichever is fixed and in any order", () => {
+    const two = { text: "[?] there any [?] tools", region: box(0, 0, 1, 0.1) };
+    const first = (text: string) => flag("[?]", text, box(0, 0.02, 0.05, 0.08));
+    const second = (text: string) => flag("[?]", text, box(0.5, 0.02, 0.6, 0.08));
+    expect(withFixes(two, [second("Foss"), first("[?]")])).toBe("[?] there any Foss tools");
+    expect(withFixes(two, [second("Foss"), first("Are")])).toBe("Are there any Foss tools");
+    expect(withFixes(two, [first("Are")])).toBe("Are there any [?] tools");
+  });
+
   it("offers Fix text on a line holding a flagged word, opening that word's review (its Edit) for a reviewer", () => {
     const panel = read("components/viewer/ScannedTextPanel.tsx");
     expect(panel).toContain("const toFix = first && onFix ? flags.find((each) => lineMarked(each, line.region)) : undefined;");
     expect(panel).toMatch(/onClick=\{\(\) => onFix\(toFix\)\}>\s*Fix text/);
     const view = read(VIEW);
     expect(view).toContain("onFix={review.status?.can_review && detail.deleted_at === null ? startReview : undefined}");
-    expect(view).toContain("fixed={review.flags.filter((flag) => flag.page_no === page.page_no)}");
+    // Review fix (25 Oct 2026): only a person's edit shows as fixed; an Ensemble proposal keeps the text as read.
+    expect(view).toContain('.map((flag) => (flag.change?.action === "edit" ? flag : { ...flag, text: flag.as_read }))}');
+  });
+
+  it("names the .txt after the document without its uploaded extension, and says it is preparing", () => {
+    expect(textFileName("Sale deed 2024.pdf")).toBe("Sale deed 2024");
+    expect(textFileName("Invoice v1.2")).toBe("Invoice v1.2");
+    expect(textFileName(".pdf")).toBe(".pdf");
+    expect(textFileName("   ")).toBe("document");
+    expect(read(VIEW)).toContain('setToast("Preparing the text file…");');
+    expect(read("app/(app)/documents/[id]/WordReview.tsx")).toContain("setTimeout(() => URL.revokeObjectURL(href), 10_000);");
   });
 });
 

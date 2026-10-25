@@ -17,6 +17,7 @@ import { useCallback, useEffect, useId, useState } from "react";
 import type { RefObject } from "react";
 import type { MoreItem } from "@/components/documents/DocumentActions";
 import { ActionDialog } from "@/components/documents/ActionDialog";
+import { ACCEPTED_EXTENSIONS } from "@/components/documents/logic";
 import libraryStyles from "@/components/documents/Library.module.css";
 import {
   ABOUT_ENSEMBLE,
@@ -457,8 +458,17 @@ function downloadFile(href: string, name = "") {
 export async function exportData(detail: Pick<DocumentDetail, "id" | "display_name" | "values">): Promise<void> {
   const copy = await getClearCopy(detail.id);
   const href = URL.createObjectURL(new Blob([dataText(copy, detail.values)], { type: "text/plain;charset=utf-8" }));
-  downloadFile(href, `${detail.display_name.replace(/\.[^.]+$/, "")}.txt`);
-  setTimeout(() => URL.revokeObjectURL(href));
+  downloadFile(href, `${textFileName(detail.display_name)}.txt`);
+  // Freed after the browser has started the save; freed at once, Firefox and Safari can drop it.
+  setTimeout(() => URL.revokeObjectURL(href), 10_000);
+}
+
+/** The .txt's name: the document's name without an uploaded file's extension ("Invoice v1.2" stays whole). */
+export function textFileName(displayName: string): string {
+  const dot = displayName.lastIndexOf(".");
+  const ext = dot > 0 ? displayName.slice(dot + 1).toLowerCase() : "";
+  const name = (ACCEPTED_EXTENSIONS as readonly string[]).includes(ext) ? displayName.slice(0, dot) : displayName;
+  return name.trim() || "document";
 }
 
 /** Section 7: the review status, and both choices equally visible. */

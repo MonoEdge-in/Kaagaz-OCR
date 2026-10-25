@@ -182,15 +182,23 @@ export function lineMarked(line: Pick<ReadLine, "region">, region: Region | null
 
 /**
  * The line as read with the words people fixed in it (Vrushit UAT, 25 Oct 2026: a "[?]" typed
- * in through Fix text): each fixed word inside the line's box has its text as read replaced,
- * once, by its text now. A word not fixed, or not in the line's text, leaves the line as read.
+ * in through Fix text). The line's flagged words, fixed or not, are walked left to right on the
+ * page, each matched to the next place its text as read appears, so a line with two "[?]" gets
+ * each fix in its own place; a word not fixed keeps its place and its text as read.
  */
 export function withFixes(
   line: Pick<ReadLine, "text" | "region">,
-  fixed: readonly Pick<WordFlag, "region" | "as_read" | "text">[],
+  words: readonly Pick<WordFlag, "region" | "as_read" | "text">[],
 ): string {
-  return fixed.reduce(
-    (text, word) => (word.text !== word.as_read && lineMarked(word, line.region) ? text.replace(word.as_read, () => word.text) : text),
-    line.text,
-  );
+  const left = (word: Pick<WordFlag, "region">) => (word.region.kind === "box" ? word.region.box[0] : 0);
+  const inLine = words.filter((word) => lineMarked(word, line.region)).sort((a, b) => left(a) - left(b));
+  let text = line.text;
+  let from = 0;
+  for (const word of inLine) {
+    const at = word.as_read === "" ? -1 : text.indexOf(word.as_read, from);
+    if (at < 0) continue;
+    text = text.slice(0, at) + word.text + text.slice(at + word.as_read.length);
+    from = at + word.text.length;
+  }
+  return text;
 }

@@ -985,7 +985,11 @@ export function DocumentView({
                     onAddMeaning={addMeaning}
                     flags={pageFlags}
                     onFix={review.status?.can_review && detail.deleted_at === null ? startReview : undefined}
-                    fixed={review.flags.filter((flag) => flag.page_no === page.page_no)}
+                    // Every flagged word holds its place; only a person's edit changes its text (an
+                    // Ensemble proposal is not shown as fixed until a person takes it).
+                    fixed={review.flags
+                      .filter((flag) => flag.page_no === page.page_no)
+                      .map((flag) => (flag.change?.action === "edit" ? flag : { ...flag, text: flag.as_read }))}
                   />
                 )
               ) : shownTab === "clear" ? (
@@ -1011,12 +1015,14 @@ export function DocumentView({
       {exporting && review.status && (
         <ExportDialog
           status={review.status}
-          onSave={() =>
+          onSave={() => {
+            // The dialog closes at once; a long document takes a moment, so say it is on its way.
+            setToast("Preparing the text file…");
             exportData(detail).then(
               () => setToast("Saved as a text file."),
               () => setToast("The text could not be saved. Check your connection, then try again."),
-            )
-          }
+            );
+          }}
           onReview={() => {
             setExporting(false);
             startReview();
