@@ -106,7 +106,8 @@ describe("the root layout", () => {
   });
 
   it("writes no data-palette for Kaagaz blue, no cookie or a tampered one", async () => {
-    for (const cookies of [{}, { [PALETTE_COOKIE]: "kaagaz" }, { [PALETTE_COOKIE]: "hotpink" }]) {
+    const jars: Record<string, string>[] = [{}, { [PALETTE_COOKIE]: "kaagaz" }, { [PALETTE_COOKIE]: "hotpink" }];
+    for (const cookies of jars) {
       expect((await html(cookies)).props["data-palette"]).toBeUndefined();
     }
   });
