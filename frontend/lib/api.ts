@@ -76,6 +76,7 @@ import type {
   ReviewReason,
   ReviewStatus,
   Role,
+  VerifyAllResult,
   ScopeBody,
   SessionTimeout,
   SheetCells,
@@ -645,6 +646,9 @@ export const resolveReview = (
     remember,
     ...(choice === "typed" ? { value } : {}),
   });
+/** Verify all on the review queue: every value its filters show, verified on the server in one call. */
+export const verifyAllReview = (filters: { document_id?: string; reason?: ReviewReason[] }) =>
+  request<VerifyAllResult>("POST", "/review/verify-all", filters);
 
 // --- admin ---------------------------------------------------------------------
 

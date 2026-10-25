@@ -959,6 +959,16 @@ export interface ReviewList {
 
 export type ReviewChoice = "first" | "second" | "typed";
 
+/** Why Verify all left a value out: nothing to verify, too long, or it left the queue meanwhile. */
+export type VerifyAllSkip = "no_reading" | "too_long" | "left_queue";
+
+/** POST /review/verify-all's reply: how many were verified, left out (and why), and still to review. */
+export interface VerifyAllResult {
+  verified: number;
+  skipped: { reason: VerifyAllSkip; count: number }[];
+  left: number;
+}
+
 export interface AdminUser {
   id: string;
   email: string;
