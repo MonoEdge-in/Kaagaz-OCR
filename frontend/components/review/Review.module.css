@@ -210,6 +210,35 @@
   color: var(--text-secondary);
 }
 
+/* "Value 2 of 856" with Verify all beside it; Verify all goes below on a narrow screen. */
+.countRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+}
+
+/* Verify all's question, as the documents list asks before a bulk action (.bulkConfirm):
+   the question on its own line, the buttons together on the next. */
+.confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+
+.confirm > :not(button) {
+  flex: 1 1 100%;
+  min-width: 0;
+}
+
+/* Only there to lock the queue while Verify all runs; the page lays out its children. */
+.lockable {
+  display: contents;
+}
+
 .skeletons {
   display: flex;
   flex-direction: column;

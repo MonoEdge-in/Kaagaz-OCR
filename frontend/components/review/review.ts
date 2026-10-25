@@ -4,7 +4,16 @@
 
 import { REASON_FILTER_TEXT, fieldText, labelText } from "@/components/viewer/labels";
 import { checkReasonText } from "@/components/viewer/panels";
-import type { LabelReason, ReviewChoice, ReviewItem, ReviewList, ReviewReason, Role } from "@/lib/types";
+import type {
+  LabelReason,
+  ReviewChoice,
+  ReviewItem,
+  ReviewList,
+  ReviewReason,
+  Role,
+  VerifyAllResult,
+  VerifyAllSkip,
+} from "@/lib/types";
 
 export const MAX_TYPED_LENGTH = 500;
 
@@ -112,6 +121,50 @@ export async function verifyEach<T>(
 export function verifiedText(total: number, failed: number): string {
   const saved = `Verified ${total - failed} of ${total}.`;
   return failed === 0 ? saved : `${saved} ${failed} could not be saved.`;
+}
+
+// --- Verify all on the review queue ----------------------------------------------------
+// One POST /review/verify-all, never a POST per value: the server verifies each value of
+// the queue the screen shows, in chunks, each one checked and audited as one resolve.
+
+/** Verify all is offered to reviewers and admins, while the queue has a value. */
+export function canVerifyAll(role: Role, total: number): boolean {
+  return canReview(role) && total > 0;
+}
+
+/** Verify all's filters: the queue's own, as queueParams sends them, without paging. */
+export function verifyAllFilters(documentId: string | undefined, reason: ReviewReason | null) {
+  return {
+    ...(documentId ? { document_id: documentId } : {}),
+    ...(reason ? { reason: [reason] } : {}),
+  };
+}
+
+/** The confirmation's question. */
+export function verifyAllQuestion(total: number): string {
+  return total === 1
+    ? "Verify this 1 value as it was read? It is recorded as verified by you."
+    : `Verify all ${total} values as they were read? Each is recorded as verified by you.`;
+}
+
+const SKIP_TEXT: Record<VerifyAllSkip, (count: number) => string> = {
+  no_reading: (n) =>
+    n === 1
+      ? "1 has no reading to verify and is still in the queue."
+      : `${n} have no reading to verify and are still in the queue.`,
+  too_long: (n) =>
+    n === 1
+      ? "1 is too long to verify here and is still in the queue."
+      : `${n} are too long to verify here and are still in the queue.`,
+  left_queue: (n) => (n === 1 ? "1 left the queue while this ran." : `${n} left the queue while this ran.`),
+};
+
+/** "Verified 840 of 856. 16 have no reading to verify and are still in the queue." */
+export function verifyAllText(result: VerifyAllResult): string {
+  const total = result.verified + result.skipped.reduce((sum, skip) => sum + skip.count, 0);
+  if (total === 0) return "Nothing was left to verify.";
+  const skipped = result.skipped.map((skip) => SKIP_TEXT[skip.reason](skip.count));
+  return [`Verified ${result.verified} of ${total}.`, ...skipped].join(" ");
 }
 
 /** The reason filter's choices, in the order the screen lists them (PRD 3 Y5, PRD 5 U6). */

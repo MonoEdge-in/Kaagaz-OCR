@@ -8,13 +8,15 @@
 // their document's name. UI audit (16 Oct 2026): a segmented control picks the view
 // (R6); "One at a time" (R3, the default) shows one card with "3 of 15", takes the
 // keys 1, 2, E, S and Enter, and moves on by itself after a save or a skip.
+// Verify all (beside "Value N of M") asks once, inline, then verifies every value the
+// filters show in one call; the queue is locked until it ends, then loads again.
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Icon } from "@/components/ui/Icon";
-import { ApiError, FEATURE_OFF, listReview } from "@/lib/api";
+import { ApiError, FEATURE_OFF, listReview, verifyAllReview } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import type { ReviewItem, ReviewList, ReviewReason } from "@/lib/types";
 import type { QueueView } from "./review";
@@ -23,6 +25,7 @@ import {
   QUEUE_VIEWS,
   appendItems,
   canReview,
+  canVerifyAll,
   focusAfterResolve,
   focusIndexAfter,
   focusProgress,
@@ -30,6 +33,9 @@ import {
   leftToReview,
   queueParams,
   resolvedMessage,
+  verifyAllFilters,
+  verifyAllQuestion,
+  verifyAllText,
   withoutItem,
 } from "./review";
 import { ReviewCard, reviewTitleId } from "./ReviewCard";
@@ -38,6 +44,7 @@ import styles from "./Review.module.css";
 const PAGE_SIZE = 20;
 const SKELETON_CARDS = [0, 1];
 const EMPTY_HEADING_ID = "review-empty-title";
+const VERIFY_ALL_RESULT_ID = "review-verify-all-result";
 
 const messageOf = (error: unknown) =>
   error instanceof ApiError ? error.message : "Check your internet connection, then try again.";
@@ -54,6 +61,7 @@ function Header() {
 }
 
 function Queue({ documentId }: { documentId?: string }) {
+  const { me } = useSession();
   const [attempt, setAttempt] = useState(0);
   const [first, setFirst] = useState<{ attempt: number; list: ReviewList } | null>(null);
   const [loadError, setLoadError] = useState<{ attempt: number; message: string } | null>(null);
@@ -66,6 +74,12 @@ function Queue({ documentId }: { documentId?: string }) {
   // Focus mode: the card shown (its place in the list) and how many were settled in this visit.
   const [index, setIndex] = useState(0);
   const [done, setDone] = useState(0);
+  // Verify all: its question open, the call running, and what it did (or why it failed).
+  const [confirmingAll, setConfirmingAll] = useState(false);
+  const [verifyingAll, setVerifyingAll] = useState(false);
+  const [allResult, setAllResult] = useState<{ text: string; failed: boolean } | null>(null);
+  // Cancel gives the focus back to Verify all.
+  const refocusVerifyAll = useRef(false);
   // The latest list, kept in step with every setList, so a resolve that lands
   // after another one works on the current queue.
   const latest = useRef<ReviewList | null>(null);
@@ -152,6 +166,7 @@ function Queue({ documentId }: { documentId?: string }) {
     const target = focusAfterResolve(current, before.value.id);
     commit(next);
     setSaved(resolvedMessage(after));
+    setAllResult(null);
     if (view === "focus") {
       setDone((n) => n + 1);
       showAt(next, current.items.findIndex((item) => item.value.id === before.value.id));
@@ -166,6 +181,37 @@ function Queue({ documentId }: { documentId?: string }) {
     // The only value left comes back: the line says why nothing moved.
     setSaved(current.total === 1 ? "This is the only value left." : "");
     showAt(current, index + 1);
+  };
+
+  // Stable, so it focuses Cancel once, when the question opens (DocumentsTable's pattern).
+  const focusOnMount = useCallback((element: HTMLButtonElement | null) => {
+    element?.focus();
+  }, []);
+
+  const cancelVerifyAll = () => {
+    refocusVerifyAll.current = true;
+    setConfirmingAll(false);
+  };
+
+  /** One call for the whole queue the filters show; then the queue loads again, from the top. */
+  const verifyAll = async () => {
+    setVerifyingAll(true);
+    setAllResult(null);
+    try {
+      const result = await verifyAllReview(verifyAllFilters(documentId, reason));
+      setAllResult({ text: verifyAllText(result), failed: false });
+    } catch (caught) {
+      setAllResult({ text: `Could not verify all the values. ${messageOf(caught)}`, failed: true });
+    } finally {
+      setVerifyingAll(false);
+      setConfirmingAll(false);
+      setSaved("");
+      setMoreError(null);
+      setIndex(0);
+      setDone(0);
+      focusNext.current = VERIFY_ALL_RESULT_ID; // focused once the new list is shown
+      setAttempt((n) => n + 1);
+    }
   };
 
   // Review switched off for the whole product: a calm note in its place.
@@ -189,11 +235,13 @@ function Queue({ documentId }: { documentId?: string }) {
             type="button"
             className="k-chip"
             aria-pressed={reason === choice.value}
-            // A "Show more" still loading belongs to the old filter: wait for it.
-            disabled={loadingMore}
+            // A "Show more" still loading belongs to the old filter: wait for it. So does Verify all.
+            disabled={loadingMore || verifyingAll}
             onClick={() => {
               if (reason === choice.value) return;
               setMoreError(null);
+              setAllResult(null);
+              setConfirmingAll(false);
               setReason(choice.value);
               setIndex(0);
               setDone(0);
@@ -223,6 +271,17 @@ function Queue({ documentId }: { documentId?: string }) {
         {announcement ? <Icon name="check-seal" size={16} /> : null}
         {announcement}
       </p>
+      {allResult ? (
+        <p
+          id={VERIFY_ALL_RESULT_ID}
+          tabIndex={-1}
+          className={allResult.failed ? "error-text" : styles.saved}
+          role={allResult.failed ? "alert" : "status"}
+        >
+          {allResult.failed ? null : <Icon name="check-seal" size={16} />}
+          {allResult.text}
+        </p>
+      ) : null}
 
       {failed && !loaded ? (
         <div className={styles.errorBanner} role="alert">
@@ -269,57 +328,112 @@ function Queue({ documentId }: { documentId?: string }) {
           </EmptyState>
         ) : (
           <>
-            <p className={`${styles.count} tabular`}>
-              {view === "focus" && shown
-                ? `Value ${focusProgress(done, at, loaded.total)}`
-                : `${loaded.total} value${loaded.total === 1 ? "" : "s"} to review.`}
-            </p>
-            {view === "focus" ? (
-              shown ? (
-                <ReviewCard key={shown.value.id} item={shown} onResolved={onResolved} onSkip={skip} />
-              ) : (
-                <p className="muted">Loading the next value…</p>
-              )
-            ) : view === "document" ? (
-              groupByDocument(loaded.items).map((group) => (
-                <section key={group.id} className={styles.group} aria-labelledby={`review-group-${group.id}`}>
-                  <h2 id={`review-group-${group.id}`} className={styles.groupHeading}>
-                    {group.name}
-                    <span className="muted">{` · ${group.items.length} shown`}</span>
-                  </h2>
-                  <div className={styles.cards}>
-                    {group.items.map((item) => (
-                      <ReviewCard key={item.value.id} item={item} onResolved={onResolved} />
-                    ))}
-                  </div>
-                </section>
-              ))
-            ) : (
-              <div className={styles.cards}>
-                {loaded.items.map((item) => (
-                  <ReviewCard key={item.value.id} item={item} onResolved={onResolved} />
-                ))}
-              </div>
-            )}
-            {moreError ? (
-              <p className="error-text" role="alert">
-                {`Could not load more values. ${moreError}`}
+            <div className={styles.countRow}>
+              <p className={`${styles.count} tabular`}>
+                {view === "focus" && shown
+                  ? `Value ${focusProgress(done, at, loaded.total)}`
+                  : `${loaded.total} value${loaded.total === 1 ? "" : "s"} to review.`}
               </p>
-            ) : null}
-            {view !== "focus" && loaded.items.length < loaded.total ? (
-              <div>
+              {canVerifyAll(me.user.role, loaded.total) && !confirmingAll ? (
+                <button
+                  ref={(element) => {
+                    if (element && refocusVerifyAll.current) {
+                      refocusVerifyAll.current = false;
+                      element.focus();
+                    }
+                  }}
+                  type="button"
+                  className="btn btn-quiet"
+                  disabled={loadingMore}
+                  onClick={() => {
+                    setAllResult(null);
+                    setConfirmingAll(true);
+                  }}
+                >
+                  <Icon name="check-seal" />
+                  {`Verify all ${loaded.total}`}
+                </button>
+              ) : null}
+            </div>
+            {confirmingAll ? (
+              <div
+                className={styles.confirm}
+                role="group"
+                aria-label="Verify all"
+                aria-describedby="review-verify-all-question"
+              >
+                <span id="review-verify-all-question">{verifyAllQuestion(loaded.total)}</span>
+                {/* [Verify all N] [Cancel]; focus starts on Cancel. */}
                 <button
                   type="button"
-                  className={`btn ${loadingMore ? styles.busy : ""}`}
-                  disabled={loadingMore}
-                  aria-busy={loadingMore || undefined}
-                  onClick={() => void loadMore()}
+                  className={`btn btn-primary ${verifyingAll ? styles.busy : ""}`}
+                  disabled={verifyingAll}
+                  aria-busy={verifyingAll || undefined}
+                  onClick={() => void verifyAll()}
                 >
-                  {loadingMore && <span className="spinner" aria-hidden="true" />}
-                  Show more
+                  {verifyingAll && <span className="spinner" aria-hidden="true" />}
+                  {`Verify all ${loaded.total}`}
                 </button>
+                <button ref={focusOnMount} type="button" className="btn" disabled={verifyingAll} onClick={cancelVerifyAll}>
+                  <Icon name="close" />
+                  Cancel
+                </button>
+                {verifyingAll ? (
+                  <span className="muted" role="status">
+                    {`Verifying ${loaded.total} value${loaded.total === 1 ? "" : "s"}…`}
+                  </span>
+                ) : null}
               </div>
             ) : null}
+            {/* Locked while Verify all runs: nothing in the queue can be pressed or focused. */}
+            <div className={styles.lockable} inert={verifyingAll} aria-busy={verifyingAll || undefined}>
+              {view === "focus" ? (
+                shown ? (
+                  <ReviewCard key={shown.value.id} item={shown} onResolved={onResolved} onSkip={skip} />
+                ) : (
+                  <p className="muted">Loading the next value…</p>
+                )
+              ) : view === "document" ? (
+                groupByDocument(loaded.items).map((group) => (
+                  <section key={group.id} className={styles.group} aria-labelledby={`review-group-${group.id}`}>
+                    <h2 id={`review-group-${group.id}`} className={styles.groupHeading}>
+                      {group.name}
+                      <span className="muted">{` · ${group.items.length} shown`}</span>
+                    </h2>
+                    <div className={styles.cards}>
+                      {group.items.map((item) => (
+                        <ReviewCard key={item.value.id} item={item} onResolved={onResolved} />
+                      ))}
+                    </div>
+                  </section>
+                ))
+              ) : (
+                <div className={styles.cards}>
+                  {loaded.items.map((item) => (
+                    <ReviewCard key={item.value.id} item={item} onResolved={onResolved} />
+                  ))}
+                </div>
+              )}
+              {moreError ? (
+                <p className="error-text" role="alert">
+                  {`Could not load more values. ${moreError}`}
+                </p>
+              ) : null}
+              {view !== "focus" && loaded.items.length < loaded.total ? (
+                <div>
+                  <button
+                    type="button"
+                    className={`btn ${loadingMore ? styles.busy : ""}`}
+                    disabled={loadingMore}
+                    aria-busy={loadingMore || undefined}
+                    onClick={() => void loadMore()}
+                  >
+                    {loadingMore && <span className="spinner" aria-hidden="true" />}
+                    Show more
+                  </button>
+                </div>
+              ) : null}
+            </div>
           </>
         )
       ) : null}
