@@ -9,7 +9,7 @@
 // each a link to that version's own id). A newer version still being read, or one
 // that failed, gets a line linking to it. A document in Trash says so.
 // Below: the page viewer and, beside it from 1024 px, the panels as tabs (DD6):
-// Overview (the document card, Values found, the invoice, related documents and the
+// Overview (the document card, Values found, related documents and the
 // user's story), Needs attention (N) (the page's reading problems as an alert, DD4,
 // then the Attention panel, U5), Scanned text (ScannedTextPanel.tsx) and My words
 // (components/words/ViewerWords.tsx). The same tabs in the same order on every load
@@ -40,6 +40,9 @@
 // copy in one quiet row; the rest in the "…" menu). At most four tabs show, the rest under
 // More. On a phone the same column comes first, above the page. This replaces the breadcrumb,
 // title row and meta line described above.
+// Vrushit UAT (25 Oct 2026): no Invoice section and no "What was read" under a value; a value
+// is one compact row (its name, the value, its page, Add meaning, then its badge) in 0.75rem;
+// Needs attention's count is a filled circle; Export as Data saves the read text as a .txt.
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -74,10 +77,8 @@ import { CLEAN_COPY } from "@/components/viewer/clearCopy";
 import { ReadClearlyPanel } from "@/components/viewer/ReadClearlyPanel";
 import { ScannedTextPanel } from "@/components/viewer/ScannedTextPanel";
 import { valueAt } from "@/components/viewer/scanned";
-import { WhatWasRead } from "@/components/viewer/WhatWasRead";
 import { YourWords, loadDocumentWords } from "@/components/viewer/YourWords";
 import { useTabMotion } from "@/lib/motion";
-import { effectiveOf, useAiSettings } from "@/lib/aiSettings";
 import { AddMeaningDialog, PageWordsList, useViewerWords } from "@/components/words/ViewerWords";
 import wordStyles from "@/components/words/Words.module.css";
 import {
@@ -134,7 +135,7 @@ import type {
   WordFlag,
 } from "@/lib/types";
 import { usePoll } from "@/lib/usePoll";
-import { AttentionPanel, InvoicePanel, RelatedPanel, attentionCount } from "./DocumentPanels";
+import { AttentionPanel, RelatedPanel, attentionCount } from "./DocumentPanels";
 import { DocumentMenu } from "./DocumentMenu";
 import { PageProblems } from "./PageProblems";
 import { ReadAgain } from "./ReadAgain";
@@ -142,7 +143,7 @@ import { ReviewPanel } from "./ReviewPanel";
 import { StoryPanel } from "./StoryPanel";
 import { ScriptText, SummaryCard } from "./SummaryCard";
 import styles from "./DocumentView.module.css";
-import { ExportDialog, SummaryBar, documentMoreItems, useEnsembleStart, useWordReview } from "./WordReview";
+import { ExportDialog, SummaryBar, documentMoreItems, exportData, useEnsembleStart, useWordReview } from "./WordReview";
 
 export interface DocumentViewProps {
   documentId: string;
@@ -181,7 +182,6 @@ export function DocumentView({
   wordsParam,
 }: DocumentViewProps) {
   const { me } = useSession();
-  const aiSettings = useAiSettings();
   const [attempt, setAttempt] = useState(0);
   // Asks again but keeps showing what is loaded until the answer comes (once reading settles).
   const [reloads, setReloads] = useState(0);
@@ -394,8 +394,6 @@ export function DocumentView({
     { id: "activity", label: ACTIVITY_TEXT.heading },
     { id: "words", label: "My words" },
   ];
-  // The clean copy's Translate uses AI, so it follows Ask: hidden while Ask is off, at None or unknown.
-  const askLevel = effectiveOf(aiSettings, "ask");
   const openClear = () => {
     setTab("clear");
     document.getElementById(TAB_BAR_ID)?.scrollIntoView({ block: "nearest" });
@@ -444,7 +442,6 @@ export function DocumentView({
       (document.getElementById(flagDomId(word ?? "")) ?? reviewButton.current)?.focus();
     });
   };
-  const panel = { detail, active: selection?.region ?? null, onShow: showSpot };
   const wordBoxes = wordsOn && wordsFound ? wordsFound.boxes : NO_REGIONS;
   const wordHits = wordsFound?.hits ?? NO_HITS;
 
@@ -633,10 +630,6 @@ export function DocumentView({
                         Add meaning
                         <span className="visually-hidden">{` for ${fieldText(value.field)}`}</span>
                       </button>
-                      <WhatWasRead
-                        value={value}
-                        page={detail.pages.find((p) => p.page_no === value.region.page)}
-                      />
                     </td>
                     <td role="cell" className={styles.labelCell}>
                       <LabelBadge label={value.label} confidence={value.confidence ?? null} />
@@ -932,7 +925,6 @@ export function DocumentView({
                 <>
                   <DetailsPanel detail={detail} onSaved={reloadWith} />
                   {values}
-                  <InvoicePanel {...panel} />
                   <RelatedPanel detail={detail} />
                   <StoryPanel documentId={detail.id} inTrash={detail.deleted_at !== null} />
                 </>
@@ -992,14 +984,14 @@ export function DocumentView({
                     onClose={() => document.getElementById(tabId("scanned"))?.focus()}
                     onAddMeaning={addMeaning}
                     flags={pageFlags}
+                    onFix={review.status?.can_review && detail.deleted_at === null ? startReview : undefined}
+                    fixed={review.flags.filter((flag) => flag.page_no === page.page_no)}
                   />
                 )
               ) : shownTab === "clear" ? (
                 <ReadClearlyPanel
                   documentId={detail.id}
-                  pageNo={page?.page_no ?? null}
                   active={selection?.region ?? null}
-                  canTranslate={askLevel !== undefined && askLevel !== "none"}
                   onShow={showLine}
                 />
               ) : shownTab === "questions" ? (
@@ -1019,7 +1011,12 @@ export function DocumentView({
       {exporting && review.status && (
         <ExportDialog
           status={review.status}
-          download={download}
+          onSave={() =>
+            exportData(detail).then(
+              () => setToast("Saved as a text file."),
+              () => setToast("The text could not be saved. Check your connection, then try again."),
+            )
+          }
           onReview={() => {
             setExporting(false);
             startReview();
@@ -1104,7 +1101,11 @@ function PanelTabs({
             >
               <span data-label={item.label}>{item.label}</span>
               {item.count !== undefined && (
-                <span className={`tab-count ${styles.tabCount}`} data-zero={item.count === 0 ? "true" : undefined}>
+                <span
+                  className={`tab-count ${styles.tabCount}`}
+                  data-zero={item.count === 0 ? "true" : undefined}
+                  data-alert={item.id === "attention" ? "true" : undefined}
+                >
                   {item.count.toLocaleString("en-IN")}
                 </span>
               )}

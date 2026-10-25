@@ -1,5 +1,5 @@
-// The words and rules of the Scanned text panel and "What was read", unit
-// tested in node (tests/viewer-scanned.test.ts). Text is shown as read.
+// The words and rules of the Scanned text panel, unit tested in node
+// (tests/viewer-scanned.test.ts). Text is shown as read, with the words people fixed.
 
 import { sameRegion } from "@/components/viewer/selection";
 import { BACKUP_ISSUES } from "@/components/viewer/viewer";
@@ -10,6 +10,7 @@ import type {
   PageSummary,
   ReadLine,
   Region,
+  WordFlag,
 } from "@/lib/types";
 
 // The same line as LOW_CONFIDENCE in backend/kaagaz/extraction/labels.py.
@@ -177,4 +178,19 @@ export function lineMarked(line: Pick<ReadLine, "region">, region: Region | null
   const y = (y0 + y1) / 2;
   const e = 1e-6;
   return x >= rx0 - e && x <= rx1 + e && y >= ry0 - e && y <= ry1 + e;
+}
+
+/**
+ * The line as read with the words people fixed in it (Vrushit UAT, 25 Oct 2026: a "[?]" typed
+ * in through Fix text): each fixed word inside the line's box has its text as read replaced,
+ * once, by its text now. A word not fixed, or not in the line's text, leaves the line as read.
+ */
+export function withFixes(
+  line: Pick<ReadLine, "text" | "region">,
+  fixed: readonly Pick<WordFlag, "region" | "as_read" | "text">[],
+): string {
+  return fixed.reduce(
+    (text, word) => (word.text !== word.as_read && lineMarked(word, line.region) ? text.replace(word.as_read, () => word.text) : text),
+    line.text,
+  );
 }

@@ -7,6 +7,8 @@
 // Ensemble (feature 27): under a main reader's line that holds a voted value, the
 // readers' vote in plain words ("2 of 3 readers read …", voteText). A main reader's line
 // flagged for review carries its band (FlagText.tsx, scan review UX rules, section 2).
+// Vrushit UAT (25 Oct 2026): a main reader's line with a flagged word offers Fix text (the
+// review's Edit), and shows the words people fixed (withFixes).
 
 import { useEffect, useRef, useState } from "react";
 import { FlagText } from "@/components/review/FlagText";
@@ -29,6 +31,7 @@ import {
   secondReaderNote,
   truncatedText,
   visibleText,
+  withFixes,
 } from "./scanned";
 import type { PanelLoad } from "./scanned";
 import { sameRegion } from "./selection";
@@ -47,12 +50,17 @@ export interface ScannedTextPanelProps {
   onAddMeaning?: (text: string, region: Region, opener: HTMLElement) => void;
   headingRef?: (heading: HTMLHeadingElement | null) => void; // to move focus to the heading
   flags?: WordFlag[]; // the page's words still flagged for review: their lines carry the band
+  // Vrushit UAT (25 Oct 2026): "how to replace the missing text?" A main reader's line holding a
+  // flagged word ([?] too) offers Fix text, which opens that word in review to edit (a reviewer).
+  onFix?: (flag: WordFlag) => void;
+  fixed?: WordFlag[]; // the page's words a person fixed: shown in their lines as fixed (withFixes)
 }
 
 type Loaded = { key: string; readings: PageReadings } | { key: string; httpStatus: number | null };
 
 export function ScannedTextPanel(props: ScannedTextPanelProps) {
-  const { documentId, page, voted = [], active, cited, onShow, onClose, onAddMeaning, headingRef, flags = [] } = props;
+  const { documentId, page, voted = [], active, cited, onShow, onClose, onAddMeaning, headingRef, flags = [], onFix, fixed = [] } =
+    props;
   const [attempt, setAttempt] = useState(0);
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [role, setRole] = useState<"first" | "second">("first");
@@ -172,8 +180,10 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
               {shown.map((line, index) => {
                 const marked = lineMarked(line, cited);
                 const meta = confidenceText(line.confidence, line.origin);
-                const flag =
-                  reader?.role === "first" ? flags.find((each) => sameRegion(each.region, line.region)) : undefined;
+                const first = reader?.role === "first";
+                const flag = first ? flags.find((each) => sameRegion(each.region, line.region)) : undefined;
+                const toFix = first && onFix ? flags.find((each) => lineMarked(each, line.region)) : undefined;
+                const text = visibleText(first ? withFixes(line, fixed) : line.text);
                 return (
                   <li
                     key={index}
@@ -191,10 +201,10 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
                         onClick={() => onShow({ name: `line ${index + 1}`, region: line.region, label: null })}
                       >
                         {flag ? (
-                          <FlagText flag={flag} text={visibleText(line.text)} />
+                          <FlagText flag={flag} text={text} />
                         ) : (
                           <bdi dir="auto" className="readText">
-                            {visibleText(line.text)}
+                            {text}
                           </bdi>
                         )}
                         {(marked || meta) && (
@@ -204,11 +214,16 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
                           </span>
                         )}
                       </button>
+                      {toFix && onFix && (
+                        <button type="button" className={`btn btn-quiet ${styles.addMeaning}`} onClick={() => onFix(toFix)}>
+                          Fix text<span className="visually-hidden">{` in line ${index + 1}`}</span>
+                        </button>
+                      )}
                       {onAddMeaning && (
                         <button
                           type="button"
                           className={`btn btn-quiet ${styles.addMeaning}`}
-                          onClick={(event) => onAddMeaning(visibleText(line.text), line.region, event.currentTarget)}
+                          onClick={(event) => onAddMeaning(text, line.region, event.currentTarget)}
                         >
                           Add meaning<span className="visually-hidden">{` for line ${index + 1}`}</span>
                         </button>

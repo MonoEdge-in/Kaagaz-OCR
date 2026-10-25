@@ -10,8 +10,8 @@
 // disabled with its reason) and More (Run Ensemble on full document, Export, Download
 // original). Ensemble asks first for the full document or more
 // than 50 words, with the page count and time estimate. The export dialog states the
-// review status with both choices equally visible; the app has no export file, so
-// Export downloads the original and says so.
+// review status with both choices equally visible; Export as Data (Vrushit UAT, 25 Oct 2026)
+// saves the text as read, page by page, and the values found as a .txt file, and says so.
 
 import { useCallback, useEffect, useId, useState } from "react";
 import type { RefObject } from "react";
@@ -50,8 +50,9 @@ import { InStatusBar } from "@/components/shell/StatusBar";
 import { Icon } from "@/components/ui/Icon";
 import { Icon as KIcon } from "@/components/ui/Icon/Icon";
 import { effectiveOf, gateEnsemble, useAiSettings } from "@/lib/aiSettings";
-import { getEnsembleEstimate, getReviewStatus, listFlags } from "@/lib/api";
-import type { EnsembleEstimate, EnsembleRun, EnsembleScope, ReviewStatus, WordFlag } from "@/lib/types";
+import { dataText } from "@/components/viewer/clearCopy";
+import { getClearCopy, getEnsembleEstimate, getReviewStatus, listFlags } from "@/lib/api";
+import type { DocumentDetail, EnsembleEstimate, EnsembleRun, EnsembleScope, ReviewStatus, WordFlag } from "@/lib/types";
 import { usePoll } from "@/lib/usePoll";
 import styles from "./WordReview.module.css";
 
@@ -434,7 +435,7 @@ export function documentMoreItems(
       : []),
     {
       label: EXPORT_LABEL,
-      hint: "Save the document, after saying what is still unchecked.",
+      hint: EXPORT_NOTE,
       onSelect: actions.onExport,
       disabledReason: ready ? null : EXPORT_WAIT,
     },
@@ -444,32 +445,46 @@ export function documentMoreItems(
   ];
 }
 
-/** The original file, as the header's Download original link does (a download, never a page change). */
-function downloadFile(href: string) {
+/** A download, never a page change: the original file (as the header's Download link), or a file made here. */
+function downloadFile(href: string, name = "") {
   const link = document.createElement("a");
   link.href = href;
-  link.download = "";
+  link.download = name;
   link.click();
+}
+
+/** Export as Data (Vrushit UAT, 25 Oct 2026): the clean copy's text and the values found (dataText), as "<name>.txt". */
+export async function exportData(detail: Pick<DocumentDetail, "id" | "display_name" | "values">): Promise<void> {
+  const copy = await getClearCopy(detail.id);
+  const href = URL.createObjectURL(new Blob([dataText(copy, detail.values)], { type: "text/plain;charset=utf-8" }));
+  downloadFile(href, `${detail.display_name.replace(/\.[^.]+$/, "")}.txt`);
+  setTimeout(() => URL.revokeObjectURL(href));
 }
 
 /** Section 7: the review status, and both choices equally visible. */
 export function ExportDialog({
   status,
-  download,
+  onSave,
   onReview,
   onClose,
 }: {
   status: ReviewStatus;
-  download: string | null;
+  onSave(): void;
   onReview(): void;
   onClose(): void;
 }) {
-  const exportButton = (label: string) =>
-    download ? (
-      <a className="btn" href={download} download onClick={() => setTimeout(onClose)}>
-        {label}
-      </a>
-    ) : null;
+  const exportButton = (label: string) => (
+    <button
+      type="button"
+      className="btn"
+      onClick={() => {
+        onSave();
+        onClose();
+      }}
+    >
+      {label}
+    </button>
+  );
   return (
     <ActionDialog title={EXPORT_LABEL} onClose={onClose}>
       <div className={libraryStyles.dialogForm}>
