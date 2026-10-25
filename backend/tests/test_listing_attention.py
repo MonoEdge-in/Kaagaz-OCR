@@ -53,9 +53,10 @@ def test_needs_attention_lists_only_documents_with_a_problem_left(db: Database) 
     assert signed.client.get("/api/documents", params={"attention": "maybe"}).status_code == 400
 
 
-def test_values_to_review_counts_only_the_values_the_review_screen_flags(db: Database) -> None:
-    """KZ-004: a card value the model chose is not flagged, so it is not counted; the chip
-    sums unsure and illegible words."""
+def test_values_to_review_counts_every_value_still_waiting(db: Database) -> None:
+    """The chip sums unsure and illegible words. Changed on purpose (QA issue #366, 25 Oct
+    2026): a card value the model chose still waits to be verified, so it is counted now (it
+    was left out under KZ-004, and the tray said "All values verified")."""
     api = Api(db)
     signed = api.new_signed("reviewer")
     c = signed.customer_id
@@ -71,6 +72,29 @@ def test_values_to_review_counts_only_the_values_the_review_screen_flags(db: Dat
     by_id = {item["id"]: item for item in signed.client.get("/api/documents").json()["items"]}
     attention = signed.client.get("/api/documents", params={"attention": "true"}).json()
 
-    assert (by_id[card]["values_to_review"], by_id[card]["words_unsure"]) == (1, 5)
-    assert by_id[only_card]["values_to_review"] == 0
-    assert [item["id"] for item in attention["items"]] == [card]
+    assert (by_id[card]["values_to_review"], by_id[card]["words_unsure"]) == (2, 5)
+    assert by_id[only_card]["values_to_review"] == 1
+    assert {item["id"] for item in attention["items"]} == {only_card, card}
+
+
+def test_values_to_review_is_what_the_review_queue_lists_for_the_document(db: Database) -> None:
+    """QA #366: one definition of a value still waiting to be verified. A value read once
+    (single_reader) is in the document's review queue, so the file list and the upload tray
+    count it too, and the file is never "All values verified" while it waits."""
+    api = Api(db)
+    signed = api.new_signed("reviewer")
+    c = signed.customer_id
+    doc = api.add_document(c, name="invoice.pdf")
+    read_page(api, c, doc)
+    api.add_value(c, doc, field_name="invoice_date", reason="single_reader")
+    api.add_value(c, doc, field_name="gstin", reason="check_failed")
+    api.add_value(c, doc, field_name="total_amount", label="verified", reason="readers_agree")
+
+    listed = {item["id"]: item for item in signed.client.get("/api/documents").json()["items"]}
+    queue = signed.client.get("/api/review", params={"document_id": doc}).json()
+    attention = signed.client.get("/api/documents", params={"attention": "true"}).json()
+
+    assert queue["total"] == 2
+    assert listed[doc]["values_to_review"] == queue["total"]
+    assert signed.client.get(f"/api/documents/{doc}").json()["values_to_review"] == 2
+    assert [item["id"] for item in attention["items"]] == [doc]

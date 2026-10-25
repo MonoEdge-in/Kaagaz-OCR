@@ -42,7 +42,7 @@ from kaagaz.chunking.context import document_part
 from kaagaz.db.documents import folder_missing
 from kaagaz.db.folders import FolderNotFound
 from kaagaz.db.visibility import LIVE_SUGGESTION
-from kaagaz.db.word_review import FLAGGED_VALUE
+from kaagaz.db.review import WAITING_VALUE
 from kaagaz.versions import name_key
 
 # File management (Q3, Q4, F5, O1 to O3): the owner and label, the version count, the
@@ -88,14 +88,14 @@ _FILE_COLUMNS = (
 # (one small JSON object, or NULL). Both subqueries use the index
 # documents_family_version on the family's few rows. PRD 5 F4: the pages read
 # unreadable or uncertain that are still on the attention list (not kept as is,
-# F5), and the values the review screen flags, each counted on the document's own
+# F5), and the values still waiting to be verified, each counted on the document's own
 # rows (the pages key, the index extracted_values_record). PRD 5 U2: the unsure and
 # illegible words on those pages. PRD 5 Q6: ``batch_ahead``, the files of the same uploader's batch (the
 # documents_batch index) uploaded before this one and still being read or waiting; 0
 # for a document in no batch. It counts this customer's own rows only, so another
 # customer's load never shows in it.
 _COLUMNS = (
-    "SELECT d.id, d.display_name, d.detected_type, d.size_bytes, d.status, d.failure_code,"  # noqa: S608 - a fixed fragment, word_review.FLAGGED_VALUE
+    "SELECT d.id, d.display_name, d.detected_type, d.size_bytes, d.status, d.failure_code,"  # noqa: S608 - a fixed fragment, review.WAITING_VALUE
     " d.page_count, d.created_at, d.uploaded_by, d.folder_id, d.deleted_at, d.family_id, d.version_no,"
     " d.attempts, d.max_attempts, d.progress, d.doc_type, d.languages, d.summary, d.read_model,"
     " u.display_name AS uploaded_by_name,"
@@ -109,11 +109,10 @@ _COLUMNS = (
     " (SELECT count(*) FROM documents b WHERE b.customer_id = d.customer_id AND b.batch_id = d.batch_id"
     " AND b.uploaded_by = d.uploaded_by AND b.deleted_at IS NULL AND b.status IN ('received', 'clean')"
     " AND (b.created_at, b.id) < (d.created_at, d.id)) AS batch_ahead,"
-    # ponytail: the review screen's values only (word_review.FLAGGED_VALUE); its model-box,
-    # unreadable-page and ensemble word flags are not counted here. Exact would need
-    # word_review.load per row.
+    # Every value still waiting to be verified (review.WAITING_VALUE, the review queue's own
+    # definition, QA #366), so "All values verified" is never said while one waits.
     " (SELECT count(*) FROM extracted_values v WHERE v.customer_id = d.customer_id"
-    f" AND v.document_id = d.id AND {FLAGGED_VALUE}) AS values_to_review,"
+    f" AND v.document_id = d.id AND {WAITING_VALUE}) AS values_to_review,"
     " (SELECT array_agg(o.uploaded_by) FROM documents o"
     " WHERE o.customer_id = d.customer_id AND o.family_id = d.family_id) AS family_uploaders,"
     # Auto-filing (feature 28), from the family's first version: filed while it is still in a
@@ -183,10 +182,10 @@ _OF_TYPE = " AND d.detected_type = :detected_type"
 # PRD 5 U2 "Needs attention": a page unreadable or uncertain still on the attention list
 # (not kept as is), or a value to review; the same rows _COLUMNS counts.
 _NEEDS_ATTENTION = (
-    " AND (EXISTS (SELECT 1 FROM pages pa WHERE pa.customer_id = :c AND pa.document_id = d.id"  # noqa: S608 - a fixed fragment, word_review.FLAGGED_VALUE
+    " AND (EXISTS (SELECT 1 FROM pages pa WHERE pa.customer_id = :c AND pa.document_id = d.id"  # noqa: S608 - a fixed fragment, review.WAITING_VALUE
     " AND pa.read_quality IN ('unreadable', 'uncertain') AND pa.accepted_at IS NULL)"
     " OR EXISTS (SELECT 1 FROM extracted_values v WHERE v.customer_id = :c"
-    f" AND v.document_id = d.id AND {FLAGGED_VALUE}))"
+    f" AND v.document_id = d.id AND {WAITING_VALUE}))"
 )
 _UPLOADED_FROM = " AND d.created_at >= :uploaded_from"
 _UPLOADED_TO = " AND d.created_at < :uploaded_to"
