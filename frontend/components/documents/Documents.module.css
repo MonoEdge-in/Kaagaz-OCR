@@ -531,6 +531,14 @@
   }
 }
 
+/* QA #370: on cards an idle bar stays where it is, after the list; stuck, it floated over
+   the cards and the search box. It sticks once a row is ticked. */
+@container docs-list (max-width: 35.98rem) {
+  .selectionBar[data-idle] {
+    position: static;
+  }
+}
+
 /* The select cell stays a table cell (no display rule); the label inside is
    the tick box's 24 px target (44 px for touch). */
 .selectAll,
@@ -1403,11 +1411,12 @@ table.docs > tbody > tr {
     flex-basis: 100%;
   }
 
-  /* File management F5: on a card the owner, label, version and date are the facts line. */
-  .ownerCell,
-  .labelCell,
-  .versionCell,
-  .docDateCell {
+  /* File management F5: on a card the owner, label, version and date are the facts line.
+     QA #370: more specific than "table.docs td" above, or the cells showed too, with a "—". */
+  table.docs .ownerCell,
+  table.docs .labelCell,
+  table.docs .versionCell,
+  table.docs .docDateCell {
     display: none;
   }
 
