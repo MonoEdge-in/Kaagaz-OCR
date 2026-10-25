@@ -67,7 +67,6 @@ import {
 import type { ChatOptions, ClarifyReply, ConversationSummary, Message } from "@/lib/types";
 import { answerCardId, answerStatusText, ASKING_STATUS, LOADED_STATUS, questionsByAnswer, STOPPED_STATUS } from "./answer";
 import { AnswerSettings } from "./AnswerSettings";
-import { QualityPicker } from "./QualityPicker";
 import { askInFlight, resumable, resumedConversation, settleAsk, startAsk, stopAsk } from "./askStore";
 import type { InFlight } from "./askStore";
 import { AnswerView } from "./AnswerView";
@@ -84,7 +83,6 @@ import {
   defaultPick,
   documentFromSearch,
   hasChoices,
-  hasQualityChoice,
   isNearBottom,
   loadPick,
   STILL_LOOKING_AFTER_MS,
@@ -750,22 +748,16 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
           icon="history"
           label="Conversations"
           showLabel
-          className={styles.subbarList}
           aria-haspopup="dialog"
           aria-expanded={listOpen}
           aria-controls={DRAWER_ID}
           onClick={() => setListOpenOn(pathname)}
         />
-        <div className={styles.subbarEnd}>
-          {mode === "documents" && hasQualityChoice(chatOptions) && answerPick ? (
-            <QualityPicker options={chatOptions} pick={answerPick} locked={busy} onPick={choosePick} />
-          ) : null}
-          <button type="button" className={`btn ${styles.subbarNew}`} disabled={busy} onClick={startNew}>
-            <Icon name="plus" />
-            New
-            <span className="visually-hidden"> conversation</span>
-          </button>
-        </div>
+        <button type="button" className="btn" disabled={busy} onClick={startNew}>
+          <Icon name="plus" />
+          New
+          <span className="visually-hidden"> conversation</span>
+        </button>
       </div>
 
       <section

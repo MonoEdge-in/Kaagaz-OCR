@@ -6,6 +6,7 @@ like clamd does. It is told how to behave per test: answer normally, refuse
 a stream over a size limit, never answer (timeout), or answer nonsense.
 """
 
+import io
 import socket
 import socketserver
 import struct
@@ -13,8 +14,11 @@ import threading
 import unittest
 
 from kaagaz.adapters.scanner import EICAR, ClamdScanner, EicarDevScanner, LayeredScanner, build_scanner
-from kaagaz.scanning.gate import ScannerError, Verdict
+from kaagaz.ingestion.ports import Job
+from kaagaz.jobs.worker import JobFailed
+from kaagaz.scanning.gate import DocumentStatus, ScanGate, ScannerError, Verdict
 from kaagaz.settings import SettingsError
+from tests.fakes import MemoryStatuses, MemoryStorage
 from tests.settings_factory import make_settings
 
 
@@ -149,6 +153,30 @@ class ClamdScannerTest(unittest.TestCase):
     def test_the_timeout_must_be_positive(self) -> None:
         with self.assertRaises(ValueError):
             ClamdScanner("127.0.0.1", 3310, timeout=0)
+
+    def test_clamd_running_out_of_time_is_retried_never_a_verdict(self) -> None:
+        """Vrushit UAT, 25 Oct 2026: MaxScanTime depends on how busy clamd is, so it is the
+        retryable ScannerError, and through the gate the file stays unscanned and unread."""
+        self.server.reply = b"stream: Heuristics.Limits.Exceeded.MaxScanTime FOUND\0"
+        with self.assertRaises(ScannerError):
+            self.scanner.scan(b"hello")
+        storage, statuses = MemoryStorage(), MemoryStatuses()
+        storage.put("cust-a", "doc-1", io.BytesIO(b"%PDF-1.7 made up"))
+        statuses.set_status("cust-a", "doc-1", DocumentStatus.RECEIVED)
+        gate = ScanGate(storage, self.scanner, storage, statuses)
+        with self.assertRaises(JobFailed) as failed:
+            gate.check(Job("cust-a", "doc-1"))
+        self.assertEqual((failed.exception.code, failed.exception.retryable), ("scanner_unavailable", True))
+        self.assertIs(statuses.get_status("cust-a", "doc-1"), DocumentStatus.RECEIVED)  # never clean
+        self.assertEqual(storage.get("cust-a", "doc-1"), b"%PDF-1.7 made up")  # not quarantined
+
+    def test_each_unscannable_reply_logs_a_fixed_reason_only(self) -> None:
+        self.server.reply = b"stream: Heuristics.Limits.Exceeded.MaxFileSize FOUND\0"
+        with self.assertLogs("kaagaz.adapters.scanner", "WARNING") as logged:
+            self.assertIs(self.scanner.scan(b"hello"), Verdict.UNSCANNABLE)
+        self.assertEqual(
+            logged.output, ["WARNING:kaagaz.adapters.scanner:virus scan unscannable: limits_exceeded"]
+        )
 
     def test_error_carries_a_code_only(self) -> None:
         self.server.reply = b"stream: something odd /tmp/secret-name.pdf\0"

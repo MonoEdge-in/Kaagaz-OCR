@@ -267,9 +267,9 @@ export function askAboutHref(documentId: string): string {
 }
 
 // --- Answer settings (features 25-27) ------------------------------------------
-// Which models answer and how hard they think, picked by name in the composer from
-// what the organisation allows (GET /chat/options). No price or cost ever: names
-// and levels only. Kept in this browser (loadPick, savePick), so tabs and reloads keep it.
+// How hard Ask works on an answer, picked in the composer from what the organisation allows
+// (GET /chat/options): Swift or Precision. No model's name, price or cost ever. Kept in this
+// browser (loadPick, savePick), so tabs and reloads keep it.
 
 // Changed on purpose (SoW 19 Oct 2026): Ask calls Medium "Swift" and High "Precision", and does
 // not offer Low (the admin's AI settings still name all three).
@@ -278,27 +278,25 @@ export const LEVEL_NAMES: Record<ThinkingLevel, string> = { low: "Low", medium: 
 /** The levels Ask offers: the organisation's, without Low. */
 export const askLevels = (options: ChatOptions): ThinkingLevel[] => options.levels.filter((level) => level !== "low");
 
+// Changed on purpose (Vrushit UAT, 25 Oct 2026): the engine alone. The Ask bar's quality picker
+// (a model by "High", "Extra high"...) is gone; Precision brings the stronger model itself.
 export interface AnswerPick {
-  agents: string[]; // model ids, in the order picked; [] for the organisation's default
   level: ThinkingLevel;
 }
 
-/** Where Ask starts: the organisation's default model (none listed: the server's), on Swift
- * whenever the organisation allows it (Tushar, 25 Oct 2026), else its own level. */
+/** Where Ask starts: Swift whenever the organisation allows it (Tushar, 25 Oct 2026), else its
+ * own level. */
 export function defaultPick(options: ChatOptions): AnswerPick {
-  const main = options.agents.find((agent) => agent.default);
-  const level = options.levels.includes("medium") ? "medium" : options.default_level;
-  return { agents: main ? [main.id] : [], level };
+  return { level: options.levels.includes("medium") ? "medium" : options.default_level };
 }
 
-/** A pick saved earlier, if the organisation still allows it (its level and its model); else null. */
+/** A pick saved earlier, if the organisation still allows its level; else null. A model kept
+ * by an older screen is ignored. */
 export function usablePick(options: ChatOptions, pick: unknown): AnswerPick | null {
   if (typeof pick !== "object" || pick === null) return null;
-  const { agents, level } = pick as Partial<AnswerPick>;
-  if (!Array.isArray(agents) || !agents.every((id) => typeof id === "string")) return null;
+  const { level } = pick as Partial<AnswerPick>;
   if (typeof level !== "string" || !askLevels(options).includes(level as ThinkingLevel)) return null;
-  const known = new Set(options.agents.map((agent) => agent.id));
-  return agents.every((id) => known.has(id)) ? { agents: agents.slice(0, 1), level: level as ThinkingLevel } : null;
+  return { level: level as ThinkingLevel };
 }
 
 const PICK_KEY = "kaagaz.ask.pick";
@@ -317,76 +315,31 @@ export function loadPick(): unknown {
 /** Keep the pick in this browser; storage refused is ignored (the pick still holds in this tab). */
 export function savePick(pick: AnswerPick): void {
   try {
-    window.localStorage.setItem(PICK_KEY, JSON.stringify({ agents: pick.agents, level: pick.level }));
+    window.localStorage.setItem(PICK_KEY, JSON.stringify({ level: pick.level }));
   } catch {
     // shortcut: private mode keeps the pick in this tab only, which is today's behaviour
   }
 }
 
-/** The composer's engine button (Swift or Precision) shows only when there are two to choose.
- * Changed on purpose (Tushar, 24 Oct 2026): the model choice is the Ask bar's quality picker. */
+/** The composer's engine button (Swift or Precision) shows only when there are two to choose. */
 export function hasChoices(options: ChatOptions | null): options is ChatOptions {
   return options !== null && askLevels(options).length > 1;
 }
 
-/** The Ask bar's quality picker shows when the organisation has more than its usual model. */
-export function hasQualityChoice(options: ChatOptions | null): options is ChatOptions {
-  return options !== null && options.agents.some((agent) => !agent.default);
-}
-
-/** The quality levels for the organisation's other models, in order (24 Oct 2026). */
-const QUALITY_NAMES = ["High", "Extra high", "Ultra"];
-
-/** The quality picker's choices: Off (the usual model, nothing sent) first, then the other
- * models as High, Extra high, Ultra (then Ultra 2…). Never a model's name (spec 17 Oct 2026). */
-export function qualityChoices(options: ChatOptions): { id: string | null; name: string; hint: string }[] {
-  const others = options.agents.filter((agent) => !agent.default);
-  return [
-    { id: null, name: "Off", hint: "Kaagaz's usual answer, for everyday questions." },
-    ...others.map((agent, index) => ({
-      id: agent.id,
-      name: QUALITY_NAMES[index] ?? `Ultra ${index - QUALITY_NAMES.length + 2}`,
-      hint: [
-        "Reads your documents more closely.",
-        "Reads even more closely; a little slower.",
-        "The most careful answer; the slowest.",
-      ][Math.min(index, 2)] as string,
-    })),
-  ];
-}
-
-/** The quality the pick stands for: Off for the usual model (or none picked). */
-export function qualityOf(options: ChatOptions, pick: AnswerPick): string {
-  const chosen = qualityChoices(options).find((choice) => choice.id !== null && choice.id === pick.agents[0]);
-  return chosen ? chosen.name : "Off";
-}
-
-/** Off picks the usual model (nothing sent); a level picks its model. */
-export function chooseQuality(options: ChatOptions, pick: AnswerPick, id: string | null): AnswerPick {
-  if (id !== null) return chooseAgent(pick, id);
-  const usual = options.agents.find((agent) => agent.default);
-  return { ...pick, agents: usual ? [usual.id] : [] };
-}
-
-/** One model answers in Ask (Tushar, 16 Oct 2026): picking one replaces the last; every
- * level stays open to it. */
-export function chooseAgent(pick: AnswerPick, id: string): AnswerPick {
-  return { ...pick, agents: [id] };
-}
-
-/** The composer's chip: the engine alone ("Swift"). Changed on purpose (Tushar, 24 Oct 2026):
- * the model's quality is the Ask bar's picker (qualityOf), not this chip. */
+/** The composer's chip: the engine ("Swift"). */
 export function pickSummary(options: ChatOptions, pick: AnswerPick): string {
   return LEVEL_NAMES[pick.level];
 }
 
-/** What POST /chat sends: nothing when the pick is the organisation's default. */
+/** What POST /chat sends. Swift (or any level but High): the organisation's default model at
+ * that level, nothing when it is the organisation's own level. Precision always sends High, so
+ * the server answers on the strongest model it allows that takes High (Vrushit UAT, 25 Oct
+ * 2026: chat.py _choice), reading more of the documents (no Swift input cap). */
 export function choiceBody(options: ChatOptions | null, pick: AnswerPick | null): AnswerChoice | undefined {
   if (options === null || pick === null) return undefined;
-  const usual = defaultPick(options);
   // The organisation's own level, not Ask's starting one: Swift over a Low default is sent.
-  if (pick.level === options.default_level && pick.agents.join(",") === usual.agents.join(",")) return undefined;
-  return { ...(pick.agents.length > 0 ? { agents: pick.agents.slice(0, 1) } : {}), thinking: pick.level };
+  if (pick.level !== "high" && pick.level === options.default_level) return undefined;
+  return { thinking: pick.level };
 }
 
 // --- UI audit, 16 Oct 2026 (A1, A5) ---------------------------------------------

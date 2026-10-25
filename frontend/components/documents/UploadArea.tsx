@@ -4,7 +4,7 @@
 // the documents screen owns) or are dropped on the dropzone. Each file is
 // checked first (kind and size, against the limits from GET /upload-limits),
 // then, just before its turn, a PDF's or TIFF's pages are counted (it stays
-// "Waiting" meanwhile), then it is sent, 3 at a time (PRD 5 Q2), with its own
+// "Waiting" meanwhile), then it is sent, 3 at a time in all (PRD 5 Q2), with its own
 // progress bar, into the folder that was being viewed when they were added.
 // Each drop is one batch (Q1): the browser makes its id, and the batch tray
 // (U1, batchTray.ts) shows one line and one bar for it, then its files in the
@@ -56,13 +56,12 @@ import { useTick } from "@/lib/tick";
 import type { BatchView, DocumentSummary, UploadLimits, UploadReader, UploadResult } from "@/lib/types";
 import { usePoll } from "@/lib/usePoll";
 import {
-  MAX_FILES_PER_BATCH,
   NOT_FILED_TEXT,
-  TOO_MANY_FILES,
   UNDONE_TEXT,
   batchFraction,
   batchStore,
   filedText,
+  inBatches,
   leftText,
   newBatchId,
   readStored,
@@ -97,21 +96,14 @@ import type { UploadState } from "./logic";
 import { checkPages } from "./pageCount";
 import { capReaders, effectiveOf, startReader, useAiSettings } from "@/lib/aiSettings";
 import { DUPLICATE_READER_NOTE, offersChoice, pickedReader, readerOptions, readingToSend } from "./readers";
-import { EMPTY_QUEUE, UPLOADS_AT_ONCE, followed, isBusy, queueReducer, runLimited } from "./uploadQueue";
-import type { UploadEntry } from "./uploadQueue";
+import { EMPTY_QUEUE, UPLOADS_AT_ONCE, askBatches, createSlots, followed, isBusy, queueReducer } from "./uploadQueue";
+import type { Followed, UploadEntry } from "./uploadQueue";
 import { NO_TIMES, jobFraction, nextShown, stageOf, valueText } from "./uploadStages";
 import type { Shown, Stage, StageTimes } from "./uploadStages";
 import { WrapName } from "./WrapName";
 import styles from "./Documents.module.css";
 
 type Start = (onProgress: (fraction: number) => void, onSent: () => void, onWaiting: (waiting: boolean) => void) => Promise<UploadResult>;
-
-/** What one round of following the batches brought back. */
-interface Followed {
-  views: BatchView[];
-  gone: string[]; // 404: not this person's batch, or none of its files was stored
-  failed: boolean; // a batch did not answer: ask again
-}
 
 /** Not sent because of the connection or the server, not because the file was refused: it can be sent again. */
 const canRetry = (caught: unknown) =>
@@ -147,7 +139,7 @@ export function useUploads(onUploaded: () => void) {
   // Drops from before a reload: every file the batch API lists gets a row.
   const [restored] = useState(() => new Set(stored.map((batch) => batch.id)));
   const [views, setViews] = useState<Record<string, BatchView>>({});
-  const [tooMany, setTooMany] = useState(false);
+  const [slots] = useState(() => createSlots(UPLOADS_AT_ONCE)); // Q2: 3 files at a time in all
 
   function chooseReader(id: string) {
     sessionReader = id;
@@ -188,17 +180,9 @@ export function useUploads(onUploaded: () => void) {
   // A batch that keeps failing (not a lost connection: the poller waits those out while
   // offline) is asked at most this many rounds in a row, not every few seconds for ever.
   const failedRounds = useRef(0);
+  const asked = useRef(new Map<string, number>()); // the round each batch was last asked in
   const poll = usePoll<Followed>({
-    load: () =>
-      Promise.allSettled(following.map((id) => getBatch(id))).then((results) => {
-        const round: Followed = { views: [], gone: [], failed: false };
-        results.forEach((result, index) => {
-          if (result.status === "fulfilled") round.views.push(result.value);
-          else if (result.reason instanceof ApiError && result.reason.status === 404) round.gone.push(following[index] ?? "");
-          else round.failed = true;
-        });
-        return round;
-      }),
+    load: () => askBatches(following, asked.current, getBatch), // one request a round, however many drops
     onResult: ({ views: answers, gone, failed }) => {
       failedRounds.current = failed ? failedRounds.current + 1 : 0;
       for (const view of answers) {
@@ -209,6 +193,7 @@ export function useUploads(onUploaded: () => void) {
     },
     onFailure: () => undefined, // it keeps trying; the rows show what they have
     again: (round) =>
+      round.skipped ||
       (round.failed && failedRounds.current < MAX_FAILED_ROUNDS) ||
       round.views.some((view) => view.documents.some((document) => beingRead(document.status))),
     signature: (round) => JSON.stringify(round.views.map((view) => [view.id, progressSignature(view.documents)])),
@@ -301,20 +286,19 @@ export function useUploads(onUploaded: () => void) {
   async function retry(key: string) {
     const start = kept.current.get(key);
     const follow = queue.entries.find((entry) => entry.key === key)?.batchId !== undefined;
-    if (start && !notSent(key)) await send(key, start, follow);
+    if (start && !notSent(key)) await slots(() => send(key, start, follow));
   }
 
   /**
-   * Queue one drop of files for upload into folderId (undefined: the top level): one
-   * batch of at most MAX_FILES_PER_BATCH files; the rest are refused and the tray says so.
+   * Queue one drop of files for upload into folderId (undefined: the top level), however
+   * many: in batches of at most MAX_FILES_PER_BATCH files (inBatches), each its own batch.
    * departmentId (File management F2): the department picked, used when no folder is named.
    */
   async function addFiles(files: File[], folderId?: string, departmentId?: string) {
     const userId = me.user.id;
     const reading = readingToSend(limits.readers, reader);
-    const batchId = newBatchId();
-    setTooMany(files.length > MAX_FILES_PER_BATCH);
-    const added = files.slice(0, MAX_FILES_PER_BATCH).map((file) => {
+    const batches = inBatches(files).map((group) => ({ batchId: newBatchId(), group }));
+    const added = batches.flatMap(({ batchId, group }) => group.map((file) => {
       nextKey.current += 1;
       const problem = validateUpload(file, limits);
       const entry: UploadEntry = {
@@ -328,13 +312,14 @@ export function useUploads(onUploaded: () => void) {
       const start: Start = (onProgress, onSent, onWaiting) =>
         uploadDocument(file, userId, onProgress, folderId, reading, batchId, onSent, departmentId, onWaiting);
       return { entry, file, start };
-    });
+    }));
     dispatch({ type: "add", entries: added.map((item) => item.entry) });
-    setStored((batches) => [{ id: batchId, at: Date.now(), already: 0, notSent: 0 }, ...batches]);
+    const at = Date.now();
+    setStored((before) => [...batches.map(({ batchId }) => ({ id: batchId, at, already: 0, notSent: 0 })), ...before]);
     const sending = added.filter((item) => item.entry.state.kind === "waiting");
     for (const { entry, start } of sending) kept.current.set(entry.key, start);
-    // A few at a time, so a big batch does not trip the rate limit.
-    await runLimited(sending, UPLOADS_AT_ONCE, ({ entry, file, start }) => checkThenSend(entry.key, file, start, true));
+    // A few at a time across every drop, so many drops do not multiply them.
+    await Promise.all(sending.map(({ entry, file, start }) => slots(() => checkThenSend(entry.key, file, start, true))));
   }
 
   /** Queue one file as the next version of a document, with its note (V9, optional). It has
@@ -362,7 +347,7 @@ export function useUploads(onUploaded: () => void) {
       const start: Start = (onProgress, onSent, onWaiting) =>
         uploadVersion(of.id, file, userId, onProgress, reading, onSent, note, onWaiting);
       kept.current.set(key, start);
-      await checkThenSend(key, file, start, false);
+      await slots(() => checkThenSend(key, file, start, false));
     }
   }
 
@@ -387,7 +372,6 @@ export function useUploads(onUploaded: () => void) {
     const busy = new Set(queue.entries.filter(isBusy).map((entry) => entry.batchId));
     dispatch({ type: "clear" });
     setStored((batches) => batches.filter((batch) => busy.has(batch.id)));
-    setTooMany(false);
   }
 
   const { entries, finished, settled } = queue;
@@ -400,7 +384,6 @@ export function useUploads(onUploaded: () => void) {
     reader: reader ?? startReader(limits.readers, scanLevel),
     views,
     stored,
-    tooMany,
     chooseReader,
     addFiles,
     addVersion,
@@ -595,14 +578,13 @@ export function Dropzone({
  * bar (pages read over all pages), then its files in the order they were dropped, so a
  * file never moves as it changes state. A new version, which has no batch, is listed after
  * them. No live region of its own: the status bar's line speaks for the uploads
- * (UploadStatus). "Up to 100 files at a time" is said as an alert. ``onHide``: the Hide
- * button of the status bar's panel.
+ * (UploadStatus). A pick of more than 100 files shows as several batches of up to 100.
+ * ``onHide``: the Hide button of the status bar's panel.
  */
 export function BatchTray({
   entries,
   views,
   stored,
-  tooMany,
   onClearFinished,
   onRestore,
   onRetry,
@@ -614,7 +596,6 @@ export function BatchTray({
   entries: UploadEntry[];
   views: Record<string, BatchView>;
   stored: StoredBatch[];
-  tooMany: boolean;
   onClearFinished: () => void;
   onRestore: (key: string, documentId: string, existingName: string) => void;
   onRetry: (key: string) => void;
@@ -623,7 +604,7 @@ export function BatchTray({
   canReread: boolean; // a reviewer or an admin: may read a document again
   onHide?: () => void;
 }) {
-  if (entries.length === 0 && !tooMany) return null;
+  if (entries.length === 0) return null;
   const settled = entries.some((entry) => !isBusy(entry));
   const batches = new Map<string, UploadEntry[]>();
   const loose: UploadEntry[] = [];
@@ -663,11 +644,6 @@ export function BatchTray({
           )}
         </span>
       </div>
-      {tooMany && (
-        <p className={`error-text ${styles.small}`} role="alert">
-          {TOO_MANY_FILES}
-        </p>
-      )}
       {[...batches].map(([id, rows]) => {
         const view = views[id] ?? null;
         const busy = rows.some(isBusy);
@@ -900,7 +876,7 @@ export function UploadStatus({
 }: Omit<Parameters<typeof BatchTray>[0], "onHide"> & { open: boolean; onOpenChange: (open: boolean) => void }) {
   const id = useId();
   const toggle = useRef<HTMLButtonElement>(null);
-  const shown = tray.entries.length > 0 || tray.tooMany;
+  const shown = tray.entries.length > 0;
   // The time left counts down only while a file is sending or being read; settled, the line
   // stays still instead of redrawing on the shared tick.
   const busy = tray.entries.some(isBusy);

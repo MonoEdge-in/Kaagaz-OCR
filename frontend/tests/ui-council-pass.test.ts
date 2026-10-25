@@ -147,8 +147,31 @@ describe("the Documents list's line rhythm", () => {
   it("gives every line after a row's first the same height, in every column", () => {
     const text = css("components/documents/Documents.module.css");
     const block = text.slice(text.lastIndexOf("@container docs-list (min-width: 36rem) {"));
-    expect(block).toMatch(/\.facts \{\s*margin-block-start: 0;\s*line-height: var\(--h-sm\);/);
-    expect(block).toMatch(/\.inFolder,\s*\.bandSize,\s*\.bandBy \{\s*line-height: var\(--h-sm\);/);
-    expect(text).toMatch(/\.docType \{\s*line-height: var\(--h-sm\);/);
+    // Changed on purpose (Vrushit UAT, 25 Oct 2026): "keep it clustered, one line after one":
+    // the same height in every column still, but 24px (--row-sub), not 32px.
+    expect(block).toMatch(/\.facts \{\s*margin-block-start: 0;\s*line-height: var\(--row-sub\);/);
+    expect(block).toMatch(/\.inFolder,\s*\.bandSize,\s*\.bandBy \{\s*line-height: var\(--row-sub\);/);
+    expect(text).toMatch(/\.docType \{\s*line-height: var\(--row-sub\);/);
+  });
+
+  // Vrushit UAT (25 Oct 2026): "no vertical spacing and padding. Keep it clustered."
+  it("stacks the lines under a name close, with a compact row padding", () => {
+    const text = css("components/documents/Documents.module.css");
+    expect(text).toMatch(/table\.docs \{\s*--row-line: var\(--control-h\);[^}]*--row-sub: var\(--badge-h\);/);
+    expect(text).toMatch(/table\.docs td \{\s*height: 48px;\s*padding-block: var\(--space-2\);/);
+    expect(text).not.toMatch(/\.(facts|inFolder|bandBy|docType|statusLine) \{[^}]*var\(--h-sm\)/);
+  });
+});
+
+// Vrushit UAT (25 Oct 2026): the tags go in the Label column, after the label, not under the name.
+describe("the Documents list's tags", () => {
+  it("puts the tags with the label, under the name only while the Label column is hidden", () => {
+    const table = read("components/documents/DocumentsTable.tsx");
+    const label = table.slice(table.indexOf("styles.labelCell}"), table.indexOf("styles.versionCell}"));
+    expect(label).toMatch(/<LabelChip label=\{document\.sensitivity\} \/> : dash\}\s*\{tagList\(\)\}/);
+    expect(table).toContain("{tagList(styles.factTags)}");
+    expect(table.match(/aria-label="Tags"/g)).toHaveLength(1); // one list, drawn in the two places
+    const text = css("components/documents/Documents.module.css");
+    expect(text).toMatch(/@container docs-list \(min-width: 56rem\) \{[^@]*\.factLabel,\s*\.factTags \{\s*display: none;/);
   });
 });

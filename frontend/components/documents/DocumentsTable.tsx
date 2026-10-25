@@ -785,6 +785,17 @@ const DocumentRow = memo(function DocumentRow({
       <span className="visually-hidden">Not known</span>
     </>
   );
+  // Vrushit UAT (25 Oct 2026): the tags sit with the label, in its column once it shows.
+  const tagList = (className = "") =>
+    document.tags.length > 0 && (
+      <ul className={`${library.tags} ${library.rowTags} ${className}`} aria-label="Tags">
+        {document.tags.map((tag) => (
+          <li key={tag.id} className={library.tag}>
+            {tag.name}
+          </li>
+        ))}
+      </ul>
+    );
   // D11: the whole row opens the document. A click handler, not a stretched link: an
   // absolutely placed ::after stays in its row only where the browser makes a <tr> its
   // containing block, and some (Safari) do not, so it covered the page and any click
@@ -859,15 +870,7 @@ const DocumentRow = memo(function DocumentRow({
         {!inTrash && document.folder_id && tree.byId.has(document.folder_id) && (
           <span className={styles.inFolder}>In {pathLabel(tree, document.folder_id)}</span>
         )}
-        {document.tags.length > 0 && (
-          <ul className={`${library.tags} ${library.rowTags}`} aria-label="Tags">
-            {document.tags.map((tag) => (
-              <li key={tag.id} className={library.tag}>
-                {tag.name}
-              </li>
-            ))}
-          </ul>
-        )}
+        {tagList(styles.factTags)}
         {document.newer_version && (
           <Link href={`/documents/${document.newer_version.id}`} className={styles.newerVersion}>
             {newerVersionText(document.newer_version)}
@@ -887,6 +890,7 @@ const DocumentRow = memo(function DocumentRow({
       </td>
       <td role="cell" className={`${styles.meta} ${styles.labelCell}`}>
         {document.sensitivity ? <LabelChip label={document.sensitivity} /> : dash}
+        {tagList()}
       </td>
       <td role="cell" className={`${styles.meta} ${styles.versionCell} tabular`}>
         {version}

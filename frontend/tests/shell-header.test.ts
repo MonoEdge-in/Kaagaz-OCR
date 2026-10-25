@@ -125,6 +125,15 @@ describe("G5: the header's search, Upload and account menu", () => {
     expect(html).toMatch(/popovertarget="account-menu"/i);
     expect(html).toMatch(/<div id="account-menu" popover="auto"/);
   });
+
+  // Vrushit UAT (25 Oct 2026): the avatar circle is as tall as the Upload button beside it.
+  it("draws the avatar circle at the Upload button's height, with no border around it", () => {
+    const circle = rule(shellCss, ".avatar");
+    expect(circle).toMatch(/width: var\(--control-h\);/);
+    expect(circle).toMatch(/height: var\(--control-h\);/);
+    expect(circle).toMatch(/border-radius: 50%;/);
+    expect(rule(shellCss, ".avatarButton")).toMatch(/border: 0;/);
+  });
 });
 
 describe("G6 and G12: the account menu", () => {

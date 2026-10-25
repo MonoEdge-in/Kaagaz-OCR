@@ -288,7 +288,7 @@ def list_documents(
     uploaded_to: IsoDay = None,
     trashed: bool = False,
     attention: bool = False,
-    department_id: uuid.UUID | None = None,
+    department_id: Annotated[uuid.UUID | Literal["none"] | None, Query()] = None,  # "none": in no department
     owner_id: uuid.UUID | None = None,
     sensitivity: Annotated[list[Sensitivity] | None, Query(max_length=4)] = None,
     party: Annotated[str | None, Query(max_length=200)] = None,
@@ -316,7 +316,11 @@ def list_documents(
     number = None if property is None else autofile.survey_digits(property)
     with context.db.customer(customer_id) as conn:
         folder_ids = _folder_scope(conn, customer_id, folder_id, include_subfolders)
-        department = None if department_id is None else _folder_scope(conn, customer_id, department_id, True)
+        department = (
+            _folder_scope(conn, customer_id, department_id, True)
+            if isinstance(department_id, uuid.UUID)
+            else None
+        )
         if tag_ids and tags_sql.count_existing(conn, customer_id, tag_ids) != len(set(tag_ids)):
             raise ApiError(404, "not_found")  # a tag this customer does not have
         rows, total = listing.list_documents(
@@ -335,6 +339,7 @@ def list_documents(
             trashed=trashed,
             attention=attention,
             department_folders=department,
+            outside_departments=department_id == "none",
             owner_id=None if owner_id is None else str(owner_id),
             sensitivities=sensitivity or (),
             party=party.strip() if party else None,

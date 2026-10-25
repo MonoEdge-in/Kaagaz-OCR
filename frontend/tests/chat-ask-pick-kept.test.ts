@@ -7,6 +7,8 @@ import type { ChatOptions } from "@/lib/types";
 
 const FLASH = { id: "google/gemini-3.8-flash", name: "Google: Gemini 3.8 Flash", default: true };
 const SONNET = { id: "anthropic/claude-sonnet-5.5", name: "Anthropic: Claude Sonnet 5.5", default: false };
+// Changed on purpose (Vrushit UAT, 25 Oct 2026): the pick is the engine alone; the Ask bar's
+// model picker is gone, so a model kept by it is ignored and no model is sent.
 
 const options = (changes: Partial<ChatOptions> = {}): ChatOptions => ({
   agents: [FLASH, SONNET],
@@ -30,23 +32,25 @@ afterEach(() => vi.unstubAllGlobals());
 describe("Ask's engine", () => {
   it("starts on Swift even when the organisation's default is Precision, and sends it", () => {
     const allowed = options();
-    expect(defaultPick(allowed)).toEqual({ agents: [FLASH.id], level: "medium" });
-    expect(choiceBody(allowed, defaultPick(allowed))).toEqual({ agents: [FLASH.id], thinking: "medium" });
+    expect(defaultPick(allowed)).toEqual({ level: "medium" });
+    expect(choiceBody(allowed, defaultPick(allowed))).toEqual({ thinking: "medium" });
     expect(defaultPick(options({ levels: ["high"], default_level: "high" })).level).toBe("high"); // no Swift allowed
   });
 
   it("keeps the pick in this browser, so another tab or a reload starts from it", () => {
     stubStorage();
-    savePick({ agents: [SONNET.id], level: "high" });
-    expect(usablePick(options(), loadPick())).toEqual({ agents: [SONNET.id], level: "high" });
+    savePick({ level: "high" });
+    expect(usablePick(options(), loadPick())).toEqual({ level: "high" });
+    // A pick an older screen kept with a model: its level stays, its model does not.
+    expect(usablePick(options(), { agents: [SONNET.id], level: "high" })).toEqual({ level: "high" });
   });
 
   it("drops a kept pick the organisation no longer allows", () => {
-    expect(usablePick(options({ levels: ["low", "medium"] }), { agents: [FLASH.id], level: "high" })).toBeNull();
-    expect(usablePick(options({ agents: [FLASH] }), { agents: [SONNET.id], level: "medium" })).toBeNull();
-    expect(usablePick(options(), { agents: [FLASH.id], level: "low" })).toBeNull(); // Low is not offered in Ask
+    expect(usablePick(options({ levels: ["low", "medium"] }), { level: "high" })).toBeNull();
+    expect(usablePick(options({ agents: [FLASH] }), { level: "medium" })).toEqual({ level: "medium" });
+    expect(usablePick(options(), { level: "low" })).toBeNull(); // Low is not offered in Ask
     expect(usablePick(options(), "{nonsense")).toBeNull();
-    expect(usablePick(options(), { agents: [42], level: "high" })).toBeNull();
+    expect(usablePick(options(), { level: 42 })).toBeNull();
   });
 
   it("reads nothing kept when the browser refuses storage, and saving then is harmless", () => {
@@ -56,6 +60,6 @@ describe("Ask's engine", () => {
       },
     });
     expect(loadPick()).toBeNull();
-    expect(() => savePick({ agents: [], level: "medium" })).not.toThrow();
+    expect(() => savePick({ level: "medium" })).not.toThrow();
   });
 });
