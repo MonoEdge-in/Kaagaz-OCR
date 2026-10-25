@@ -84,6 +84,9 @@ export interface AttentionPage {
   pageNo: number;
   lines: string[];
   kept: boolean; // kept as is: off the attention list, still marked
+  // The spots marked on the page (Vrushit UAT, 25 Oct 2026: two marks said "1 to check"): one
+  // a word unsure or [?] and a line not pinned, as the reader counted them, so its marks.
+  marked: number;
 }
 
 const counted = (n: number, one: string, many: string) => `${n.toLocaleString("en-IN")} ${n === 1 ? one : many}`;
@@ -105,6 +108,11 @@ export function attentionPages(pages: readonly PageSummary[]): AttentionPage[] {
                 ? `The exact spot of ${counted(page.unpinned_lines, "line", "lines")} needs a check.`
                 : "",
             ].filter(Boolean);
-      return { pageNo: page.page_no, lines, kept: page.accepted_at !== null };
+      return {
+        pageNo: page.page_no,
+        lines,
+        kept: page.accepted_at !== null,
+        marked: page.unsure_words + page.illegible_words + page.unpinned_lines,
+      };
     });
 }

@@ -5,75 +5,52 @@
 // text is exactly as read, plain React text only (visibleText), grouped by clearCopy.ts.
 // Words not read for sure have a dotted underline and a tooltip. Pressing a line highlights
 // its box on the page. Copy all and Print (the copy alone, through a portal and globals.css).
-// Translate follows Ask: with `canTranslate` off (Ask switched off or at None) it is not
-// shown; a translation sits under its page with its own label, never mixed into the text.
 // Document panel UX (25 Oct 2026): Copy all (it says "Copied") and Print in one quiet row; then
-// the text with its own control above it, "Show the text in", which keeps the page in place.
+// the text. Vrushit UAT (25 Oct 2026): no translation for now, so no language switch.
 // One heading a page ("Page 1"), a page jump when there are several. The line opened is lit
 // like the spot on the page, with "The line you opened". A label line keeps its label and
 // value in two columns. A table keeps whole words, scrolls sideways in its own frame (an edge
 // and a note say so) and opens wide in a dialog.
 
-import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { ActionDialog } from "@/components/documents/ActionDialog";
-import { Segmented } from "@/components/ui/Segmented/Segmented";
 import { Toast } from "@/components/ui/Toast";
-import { ApiError, getClearCopy, translatePage } from "@/lib/api";
-import type { ClearCopy, PageTranslation, ReadLine, Region, TranslateLanguage } from "@/lib/types";
+import { getClearCopy } from "@/lib/api";
+import type { ClearCopy, ReadLine, Region } from "@/lib/types";
 import {
   CLEAN_COPY,
   COPIED,
   COPY_BLOCKED,
-  LANGUAGES,
   LEFT_OUT,
-  MAX_TRANSLATE_PAGES,
   NOT_SURE_TIP,
   OPENED_NOTE,
-  SHOW_IN,
-  TRANSLATE_AT_ONCE,
-  TRANSLATING,
-  TRANSLATION_LABEL,
   WIDE_NOTE,
   blocks,
   copyText,
-  pageOf,
   pageTitle,
   pairParts,
   parts,
-  translateFailure,
 } from "./clearCopy";
 import type { Part } from "./clearCopy";
 import type { Spot } from "./panels";
-import { visibleText } from "./scanned";
 import { sameRegion } from "./selection";
 import styles from "./ReadClearly.module.css";
 
 export interface ReadClearlyPanelProps {
   documentId: string;
-  pageNo: number | null; // the page shown beside it: Translate starts there
   active: Region | null; // the spot highlighted now
-  canTranslate: boolean;
   onShow: (spot: Spot) => void;
 }
 
 type Loaded = { key: string; copy: ClearCopy } | { key: string; failed: true };
-type Done =
-  | { status: "loading" }
-  | { status: "failed"; text: string; retry: boolean }
-  | { status: "done"; result: PageTranslation };
 
-export function ReadClearlyPanel({ documentId, pageNo, active, canTranslate, onShow }: ReadClearlyPanelProps) {
+export function ReadClearlyPanel({ documentId, active, onShow }: ReadClearlyPanelProps) {
   const [attempt, setAttempt] = useState(0);
   const [loaded, setLoaded] = useState<Loaded | null>(null);
-  const [language, setLanguage] = useState<TranslateLanguage | null>(null);
-  const [done, setDone] = useState<Record<string, Done>>({});
-  const [switchedOff, setSwitchedOff] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const reader = useRef<HTMLDivElement>(null);
-  // A language picked: where the page shown was, so it stays there (keepPlace below).
-  const keep = useRef<{ page: HTMLElement; top: number } | null>(null);
   const key = `${documentId}:${attempt}`;
 
   useEffect(() => {
@@ -89,50 +66,6 @@ export function ReadClearlyPanel({ documentId, pageNo, active, canTranslate, onS
 
   const current = loaded && loaded.key === key ? loaded : null;
   const pages = current && "copy" in current ? current.copy.pages : [];
-  const doneKey = (lang: TranslateLanguage, page: number) => `${documentId}:${lang}:${page}`;
-  const inFlight = useRef(new Set<string>());
-
-  async function translate(lang: TranslateLanguage, wanted: number[]) {
-    // In flight is tracked at once (a ref, not state), so a double press never sends a page twice.
-    const queue = wanted.filter(
-      (page) => !inFlight.current.has(doneKey(lang, page)) && done[doneKey(lang, page)]?.status !== "done",
-    );
-    const set = (page: number, value: Done) => setDone((now) => ({ ...now, [doneKey(lang, page)]: value }));
-    queue.forEach((page) => {
-      inFlight.current.add(doneKey(lang, page));
-      set(page, { status: "loading" });
-    });
-    let next = 0;
-    const worker = async () => {
-      for (let page = queue[next++]; page !== undefined; page = queue[next++]) {
-        try {
-          set(page, { status: "done", result: await translatePage(documentId, page, lang) });
-        } catch (error: unknown) {
-          if (error instanceof ApiError && error.code === "feature_off") setSwitchedOff(true);
-          set(page, { status: "failed", ...translateFailure(error instanceof ApiError ? error.code : undefined) });
-        } finally {
-          inFlight.current.delete(doneKey(lang, page));
-        }
-      }
-    };
-    await Promise.all(Array.from({ length: TRANSLATE_AT_ONCE }, worker));
-  }
-
-  const pick = (lang: TranslateLanguage | null) => {
-    const first = pageNo ?? pages[0]?.page_no;
-    const page = reader.current?.querySelector<HTMLElement>(`[data-page="${first}"]`);
-    keep.current = page ? { page, top: page.getBoundingClientRect().top } : null;
-    setLanguage(lang);
-    if (lang && first !== undefined) void translate(lang, [first]);
-  };
-
-  // keepPlace: after a language change, <main> scrolls by what the page shown moved.
-  useLayoutEffect(() => {
-    const held = keep.current;
-    keep.current = null;
-    const moved = held ? held.page.getBoundingClientRect().top - held.top : 0;
-    if (held && moved !== 0) held.page.closest("main")?.scrollBy({ top: moved });
-  }, [language]);
 
   const text = (shown: Part[]) =>
     shown.map((part, index) =>
@@ -178,8 +111,6 @@ export function ReadClearlyPanel({ documentId, pageNo, active, canTranslate, onS
     const marks = page.marks;
     let n = 0;
     const plain = (each: ReadLine) => line(each, ++n, parts(each, marks));
-    const tr = language ? done[doneKey(language, page.page_no)] : undefined;
-    const meta = LANGUAGES.find((each) => each.id === language);
     return (
       <section key={page.page_no} className={styles.page} data-page={page.page_no}>
         <h3 className={styles.pageTitle}>{pageTitle(page.page_no, pages.length)}</h3>
@@ -216,40 +147,10 @@ export function ReadClearlyPanel({ documentId, pageNo, active, canTranslate, onS
             </TableFrame>
           );
         })}
-        {language && canTranslate && !switchedOff && !tr && page.lines.length > 0 && (
-          <button type="button" className="btn btn-quiet" onClick={() => void translate(language, [page.page_no])}>
-            Translate {pageOf(page.page_no, pages.length).toLowerCase()}
-          </button>
-        )}
-        {language && canTranslate && !switchedOff && tr && (
-          <div className={styles.translation} lang={meta?.lang}>
-            <p className={styles.label}>{TRANSLATION_LABEL}</p>
-            {tr.status === "loading" && <p className={styles.note}>{TRANSLATING}</p>}
-            {tr.status === "failed" && (
-              <p className={styles.note}>
-                {tr.text}
-                {tr.retry && " "}
-                {tr.retry && (
-                  <button type="button" className="btn btn-quiet" onClick={() => language && void translate(language, [page.page_no])}>
-                    Try again
-                  </button>
-                )}
-              </p>
-            )}
-            {tr.status === "done" &&
-              tr.result.lines.map((text, at) => (
-                <p key={at}>
-                  <bdi dir="auto">{visibleText(text)}</bdi>
-                </p>
-              ))}
-          </div>
-        )}
       </section>
     );
   });
 
-  const showTranslate = canTranslate && !switchedOff && pages.length > 0;
-  const allPages = pages.slice(0, MAX_TRANSLATE_PAGES).map((page) => page.page_no);
   return (
     <section className={styles.panel} aria-labelledby="read-clearly-heading">
       <h2 id="read-clearly-heading" className={styles.heading} tabIndex={-1}>
@@ -292,24 +193,7 @@ export function ReadClearlyPanel({ documentId, pageNo, active, canTranslate, onS
         )}
       </div>
       <Toast message={toast} onClose={() => setToast(null)} />
-      {/* The text, with its own control above it. */}
       <div ref={reader} className={styles.reader}>
-        {showTranslate && (
-          <div className={styles.languages}>
-            <span className={styles.label}>{SHOW_IN}</span>
-            <Segmented<TranslateLanguage | "original">
-              label={SHOW_IN}
-              options={LANGUAGES.map((each) => ({ value: each.id ?? "original", label: <span lang={each.lang}>{each.name}</span> }))}
-              value={language ?? "original"}
-              onChange={(value) => pick(value === "original" ? null : value)}
-            />
-            {language && pages.length > 1 && (
-              <button type="button" className="btn btn-quiet" onClick={() => void translate(language, allPages)}>
-                {pages.length > MAX_TRANSLATE_PAGES ? `Translate the first ${MAX_TRANSLATE_PAGES} pages` : "Translate all pages"}
-              </button>
-            )}
-          </div>
-        )}
         {current === null ? (
           <span className={`skeleton ${styles.skeleton}`} aria-hidden="true" />
         ) : "failed" in current ? (

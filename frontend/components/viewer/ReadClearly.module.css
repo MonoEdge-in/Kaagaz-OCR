@@ -1,7 +1,7 @@
 /* Read clearly: a calm reading view. Large, clear text in the body font (with Devanagari
    fallbacks), neutral colours only, flat and square (MonoEdge design system). A wide table
    scrolls inside its own box, so the page never scrolls sideways. Document panel UX (25 Oct
-   2026): one quiet row of actions; the text and its language control grouped under a hairline;
+   2026): one quiet row of actions; the text under a hairline;
    one heading a page; the line opened lit like the spot on the page (--hl-fill). */
 
 .panel {
@@ -45,7 +45,7 @@
   width: auto;
 }
 
-/* The text and its control, one group. */
+/* The text, under a hairline. */
 .reader {
   display: flex;
   flex-direction: column;
@@ -53,24 +53,6 @@
   min-width: 0;
   padding-block-start: var(--space-3);
   border-block-start: 1px solid var(--border);
-}
-
-.languages {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2) var(--space-3);
-}
-
-/* The segmented control's options: 44px targets, 16px words. */
-.languages button {
-  min-height: var(--h-lg);
-  font-size: 1rem;
-}
-
-.label {
-  font-weight: 600;
-  font-size: var(--fs-base);
 }
 
 .skeleton {
@@ -222,13 +204,6 @@
 .table th {
   background: var(--bg-subdued);
   font-weight: 600;
-}
-
-.translation {
-  margin-top: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  border-inline-start: 3px solid var(--border-strong);
-  background: var(--bg-subdued);
 }
 
 /* The line opened breathes twice when it is lit, then stays still. */

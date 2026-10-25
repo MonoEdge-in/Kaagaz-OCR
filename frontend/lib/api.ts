@@ -64,7 +64,6 @@ import type {
   PageReadings,
   PageSummary,
   DocumentWords,
-  PageTranslation,
   PasswordReset,
   PlatformEvent,
   PlatformHealth,
@@ -87,7 +86,6 @@ import type {
   Tag,
   TaskLevel,
   TestModel,
-  TranslateLanguage,
   TwoStepSetup,
   UploadLimits,
   UploadReading,
@@ -348,9 +346,6 @@ export const getDocumentWords = (id: string, words: readonly string[]) =>
   request<DocumentWords>("GET", `/documents/${id}/words${query({ w: words })}`);
 /** Read clearly: every page's lines in one request (no AI). */
 export const getClearCopy = (id: string) => request<ClearCopy>("GET", `/documents/${id}/clear-copy`);
-/** Read clearly: one page in English, Hindi or Marathi (follows Ask: 403 feature_off when off). */
-export const translatePage = (id: string, pageNo: number, language: TranslateLanguage) =>
-  request<PageTranslation>("POST", `/documents/${id}/pages/${pageNo}/translate`, { language });
 
 /** This user's story of the document (any version: it belongs to the family); story is null when there is none. */
 export const getMyStory = (id: string) =>
