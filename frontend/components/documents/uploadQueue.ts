@@ -5,14 +5,16 @@
 // go; their documents are in the list by then. Each batch is summed up once,
 // when its last file settles (finished, counted by settled). A stored file is
 // followed while it is read (PRD 5 U10), so its batch settles once all are read.
-// Files go 3 at a time (Q2, runLimited).
+// Files go 3 at a time in all (Q2, createSlots).
 
 import { beingRead } from "@/components/viewer/reprocess";
-import type { DocumentSummary, UploadReading } from "@/lib/types";
+import { ApiError } from "@/lib/api";
+import { POLL_STEPS_MS } from "@/lib/poll";
+import type { BatchView, DocumentSummary, UploadReading } from "@/lib/types";
 import type { UploadState } from "./logic";
 import type { StageTimes } from "./uploadStages";
 
-/** PRD 5 Q2: files sent at once; 50 files stay well inside RATE_LIMIT_PER_MINUTE. */
+/** PRD 5 Q2: files sent at once, in all. Their calls are paced too (lib/api.ts, UPLOAD_CALLS_PER_MINUTE). */
 export const UPLOADS_AT_ONCE = 3;
 
 export interface UploadEntry {
@@ -119,22 +121,64 @@ export function queueReducer(queue: UploadQueue, event: QueueEvent): UploadQueue
   }
 }
 
-/** Run work on each item, at most ``limit`` at once, in order (Q2: 3 uploads at a time). */
-export async function runLimited<T>(
-  items: readonly T[],
-  limit: number,
-  work: (item: T) => Promise<void>,
-): Promise<void> {
-  let next = 0;
-  const slot = async () => {
-    while (next < items.length) {
-      const item = items[next] as T;
-      next += 1;
-      await work(item);
+/**
+ * At most ``limit`` pieces of work at once, across every caller, first come first served
+ * (Q2: 3 uploads at a time in all, not per drop: Vrushit UAT, 25 Oct 2026, had several
+ * drops sending 3 each). O(1) a call.
+ */
+export function createSlots(limit: number): <T>(work: () => Promise<T>) => Promise<T> {
+  let going = 0;
+  const waiting: (() => void)[] = [];
+  return async (work) => {
+    if (going >= limit) await new Promise<void>((resolve) => waiting.push(resolve));
+    else going += 1;
+    try {
+      return await work();
+    } finally {
+      const next = waiting.shift();
+      if (next) next();
+      else going -= 1;
     }
   };
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, slot));
 }
+
+/** What one round of following the batches brought back. */
+export interface Followed {
+  views: BatchView[];
+  gone: string[]; // 404: not this person's batch, or none of its files was stored
+  failed: boolean; // a batch did not answer: ask again
+  skipped: boolean; // another followed batch waits for a later round
+}
+
+/**
+ * One round of following the drops still being read: one request, for the batch asked
+ * longest ago (``asked``: the round each was last asked in; never asked goes first), so
+ * following many drops costs one request a round, not one each (Vrushit UAT, 25 Oct 2026:
+ * one GET per drop every few seconds used up the API's budget). A 429 is thrown for the
+ * poller to wait out (lib/poll.ts).
+ */
+export async function askBatches(
+  following: readonly string[],
+  asked: Map<string, number>,
+  load: (id: string) => Promise<BatchView>,
+): Promise<Followed> {
+  const round: Followed = { views: [], gone: [], failed: false, skipped: following.length > 1 };
+  const id = [...following].sort((a, b) => (asked.get(a) ?? -1) - (asked.get(b) ?? -1))[0];
+  if (id === undefined) return round;
+  asked.set(id, Math.max(0, ...asked.values()) + 1);
+  try {
+    round.views.push(await load(id));
+  } catch (caught) {
+    if (caught instanceof ApiError && caught.status === 404) round.gone.push(id);
+    else if (caught instanceof ApiError && caught.status === 429) throw caught;
+    else round.failed = true;
+  }
+  return round;
+}
+
+/** How long the screens wait to hear of stored files, so a run of them is one refresh: the
+ * poller's first step, so a bulk upload never asks for the list more often than it polls. */
+export const NOTIFY_MS = POLL_STEPS_MS[0];
 
 /** Once nothing of the batch is still going, count it. */
 function settle(queue: UploadQueue): UploadQueue {
