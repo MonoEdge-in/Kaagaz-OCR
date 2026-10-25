@@ -3,27 +3,14 @@
 // reader's, as read and in order; nothing is added or changed, only grouped: headings,
 // "Label: value" lines, lists, table cells back in a grid by row and column, and paragraphs.
 
-import type { ReadLine, ReadingMark, TranslateLanguage } from "@/lib/types";
+import type { ClearCopy, ExtractedValue, ReadLine, ReadingMark } from "@/lib/types";
+import { fieldText } from "./labels";
 import { lineMarked, notSure, visibleText } from "./scanned";
 
 /** The clean copy's one name: its tab, its heading and its button (document panel UX, 25 Oct 2026; was "Read clearly"). */
 export const CLEAN_COPY = "Clean copy";
 export const NOT_SURE_TIP = "Not read for sure — check the original";
-export const TRANSLATION_LABEL = "Translation — the original text is above";
-export const TRANSLATING = "Translating…";
-export const BUSY = "Translation isn't available right now. Try again in a minute.";
-export const UNUSABLE = "This page can't be translated. The exact text is above.";
-export const TOO_LONG = "This page is too long to translate in one go. The exact text is above.";
 export const LEFT_OUT = "This document is long, so the clean copy stops here. The rest is on the page images.";
-export const MAX_TRANSLATE_PAGES = 20; // "Translate all pages" asks for at most this many
-export const TRANSLATE_AT_ONCE = 3; // requests in flight at a time
-
-export const LANGUAGES: { id: TranslateLanguage | null; name: string; lang?: string }[] = [
-  { id: null, name: "Original" },
-  { id: "en", name: "English", lang: "en" },
-  { id: "hi", name: "हिंदी", lang: "hi" },
-  { id: "mr", name: "मराठी", lang: "mr" },
-];
 
 export type Block =
   | { type: "heading"; line: ReadLine }
@@ -136,13 +123,6 @@ export function parts(line: ReadLine, marks: readonly ReadingMark[]): Part[] {
   return out;
 }
 
-/** What a failed translation says, by the reply's error code; Try again only when busy. */
-export function translateFailure(code: string | undefined): { text: string; retry: boolean } {
-  if (code === "page_too_long") return { text: TOO_LONG, retry: false };
-  if (code === "translation_unusable") return { text: UNUSABLE, retry: false };
-  return { text: BUSY, retry: true };
-}
-
 /** "Page 1 of 4". */
 export const pageOf = (pageNo: number, total: number) => `Page ${pageNo} of ${total}`;
 
@@ -151,7 +131,6 @@ export const pageOf = (pageNo: number, total: number) => `Page ${pageNo} of ${to
 export const pageTitle = (pageNo: number, total: number) => (total === 1 ? `Page ${pageNo}` : pageOf(pageNo, total));
 export const OPENED_NOTE = "The line you opened";
 export const WIDE_NOTE = "Scroll sideways to see all columns";
-export const SHOW_IN = "Show the text in";
 export const COPIED = "Copied";
 export const COPY_BLOCKED = "Copying is blocked here. Select the text and copy it instead.";
 
@@ -160,4 +139,18 @@ export function copyText(pages: readonly { page_no: number; lines: readonly Read
   return pages
     .map((page) => [pageOf(page.page_no, pages.length), ...page.lines.map((line) => visibleText(line.text))].join("\n"))
     .join("\n\n");
+}
+
+/**
+ * Export as Data (Vrushit UAT, 25 Oct 2026): the document's raw data as plain text, the text
+ * as read page by page (copyText, with the long-document note when it was cut), then the
+ * values found, "Invoice date: 19/03/22 (page 1)".
+ */
+export function dataText(copy: ClearCopy, values: readonly Pick<ExtractedValue, "field" | "value" | "region">[]): string {
+  const found = values.map((value) => `${fieldText(value.field)}: ${visibleText(value.value)} (page ${value.region.page})`);
+  return [
+    copyText(copy.pages),
+    ...(copy.truncated ? [LEFT_OUT] : []),
+    ...(found.length > 0 ? [["Values found", ...found].join("\n")] : []),
+  ].join("\n\n");
 }

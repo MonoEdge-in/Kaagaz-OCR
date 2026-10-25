@@ -412,7 +412,8 @@ describe("Ensemble", () => {
     expect(none).not.toContain("Run Ensemble on full document");
     const status_ = status({ flagged: 0, reviewed: 0, remaining: 0, summary: "Scan complete · 14 pages · 2,431 words · Nothing flagged" });
     const items = documentMoreItems(status_, { onEnsemble: () => undefined, onExport: () => undefined, download: "/f" });
-    expect(items.map((item) => item.label)).toEqual(["Run Ensemble on full document", "Export", "Download original"]);
+    // Changed on purpose (Vrushit UAT, 25 Oct 2026): Export is "Export as Data", the read text as a .txt.
+    expect(items.map((item) => item.label)).toEqual(["Run Ensemble on full document", "Export as Data", "Download original"]);
     expect(items.every((item) => item.hint.length > 0)).toBe(true);
   });
 
@@ -433,22 +434,24 @@ describe("Ensemble", () => {
 describe("the export dialog", () => {
   const dialog = (shown: ReviewStatus) =>
     renderToStaticMarkup(
-      createElement(ExportDialog, { status: shown, download: "/api/documents/d1/file", onReview: () => undefined, onClose: () => undefined }),
+      createElement(ExportDialog, { status: shown, onSave: () => undefined, onReview: () => undefined, onClose: () => undefined }),
     );
 
+  // Changed on purpose (Vrushit UAT, 25 Oct 2026): Export as Data saves the read text as a .txt
+  // file (a button that makes it), no longer a link to the original file.
   it("gives both choices equally when words are not yet reviewed", () => {
     const html = dialog(status({ export: { ready: false, message: "3 flagged words not yet reviewed. Export anyway or review first." } }));
     expect(html).toContain("3 flagged words not yet reviewed. Export anyway or review first.");
     expect(html).toMatch(/<button type="button" class="btn"[^>]*>Review first</);
-    expect(html).toMatch(/<a class="btn"[^>]*>Export anyway</);
+    expect(html).toMatch(/<button type="button" class="btn">Export anyway</);
     expect(html).not.toContain("btn-primary");
-    expect(html).toContain("Export downloads the original file.");
+    expect(html).toContain("Saves the text as read, page by page, and the values found, as a plain text file (.txt).");
   });
 
   it("says ready once every flag is reviewed", () => {
     const html = dialog(status({ remaining: 0, export: { ready: true, message: "12 flagged · 12 reviewed. Ready to export." } }));
     expect(html).toContain("12 flagged · 12 reviewed. Ready to export.");
-    expect(html).toMatch(/>Export</);
+    expect(html).toMatch(/>Export as Data</);
   });
 });
 

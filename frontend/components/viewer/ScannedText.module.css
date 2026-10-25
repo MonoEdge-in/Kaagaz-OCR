@@ -144,34 +144,6 @@
   color: var(--text-secondary);
 }
 
-/* What was read: a native disclosure under a value. */
-.read {
-  margin-block-start: var(--space-1);
-  font-size: var(--fs-sm);
-}
-
-/* One control tall, its one line centred (padding, so the disclosure triangle stays). */
-.read summary {
-  padding-block: calc((var(--control-h) - 1lh) / 2);
-  color: var(--text-secondary);
-  cursor: pointer;
-}
-
-.readList {
-  display: grid;
-  gap: var(--space-1);
-  margin: var(--space-1) 0;
-}
-
-.readList dt {
-  font-weight: 600;
-}
-
-.readList dd {
-  margin: 0;
-  overflow-wrap: anywhere;
-}
-
 /* The line holding the box pressed on the page (24 Oct 2026): lit in the selection's tint,
    with the accent edge, and it flashes in once so the eye finds it. */
 .held {

@@ -4,13 +4,9 @@ import { describe, expect, it } from "vitest";
 import { AttentionPanel } from "@/app/(app)/documents/[id]/DocumentPanels";
 import { PageViewer } from "@/components/viewer/PageViewer";
 import {
-  LINE_FIELDS,
-  MONEY_LINE_FIELDS,
   cardSections,
-  checkChip,
   checkReasonText,
   groupLinks,
-  invoiceSpot,
   languagesText,
   linkText,
   lowResolutionText,
@@ -158,67 +154,11 @@ describe("linkText", () => {
   });
 });
 
-describe("checkChip", () => {
-  it("says the checks passed, in the verified look", () => {
-    expect(checkChip({ check_status: "passed", check_reasons: [] })).toEqual({
-      text: "Checks passed",
-      label: "verified",
-      reasons: [],
-    });
-  });
-
-  it("keeps the badge short and lists every failed check in plain words", () => {
-    const chip = checkChip({
-      check_status: "failed",
-      check_reasons: ["lines_sum_mismatch", "bad_gstin"],
-    });
-    expect(chip).toEqual({
-      text: "Ready to verify", // Changed on purpose (Tushar, 16 Oct 2026: Ready to verify)
-      label: "needs_review",
-      reasons: ["Line items don't add up to the subtotal", "A GSTIN isn't valid"],
-    });
-  });
-
-  it("never says passed when no check could run, and says why", () => {
-    expect(checkChip({ check_status: "not_checked", check_reasons: [] })).toEqual({
-      text: "Ready to verify", // Changed on purpose (Tushar, 16 Oct 2026: Ready to verify)
-      label: "needs_review",
-      reasons: ["The amounts are not checked yet"],
-    });
-  });
-
-  it("still says ready to verify when a failed check gives no reason", () => {
-    expect(checkChip({ check_status: "failed", check_reasons: [] })).toEqual({
-      text: "Ready to verify", // Changed on purpose (Tushar, 16 Oct 2026: Ready to verify)
-      label: "needs_review",
-      reasons: [],
-    });
-  });
-
+// Changed on purpose (Vrushit UAT, 25 Oct 2026): the Invoice section is gone from the document
+// page, and with it checkChip, invoiceSpot and the line fields; the review queue keeps the reasons.
+describe("checkReasonText", () => {
   it("has words for a reason it does not know", () => {
     expect(checkReasonText("new_rule")).toBe("new rule");
-  });
-});
-
-describe("invoiceSpot", () => {
-  it("finds a field by its stored name, and a line cell by its record", () => {
-    const total = value({
-      field: "total_amount",
-      region: box(2),
-      label_region: box(2, 0.5),
-    });
-    const cell = value({
-      record_key: "line:2",
-      field: "amount",
-      region: box(3),
-    });
-    expect(invoiceSpot([total, cell], "document", "total_amount")).toEqual({
-      name: "Total amount",
-      region: box(2),
-      label: box(2, 0.5),
-    });
-    expect(invoiceSpot([total, cell], "line:2", "amount")?.region).toEqual(box(3));
-    expect(invoiceSpot([total], "line:1", "amount")).toBeNull();
   });
 });
 
@@ -327,19 +267,21 @@ describe("the Attention panel (PRD 5 U5)", () => {
       page(2, { read_quality: "unreadable", read_issues: ["blurry"], problems: [blurry] }),
       page(3, { read_quality: "uncertain", unsure_words: 14, unpinned_lines: 1, accepted_at: "2026-10-09T10:00:00Z" }),
     ];
+    // Changed on purpose (Vrushit UAT, 25 Oct 2026): each page also says how many spots are marked on it.
     expect(attentionPages(pages)).toEqual([
-      { pageNo: 2, lines: ["This page is blurry."], kept: false },
+      { pageNo: 2, lines: ["This page is blurry."], kept: false, marked: 0 },
       {
         pageNo: 3,
         lines: ["14 words unsure", "The exact spot of 1 line needs a check."],
         kept: true,
+        marked: 15,
       },
     ]);
   });
 
   it("says an unreadable page with no problems listed needs a closer look", () => {
     expect(attentionPages([page(4, { read_quality: "unreadable", illegible_words: 3 })])).toEqual([
-      { pageNo: 4, lines: ["This page needs a closer look.", "Hard to read: 3 words."], kept: false },
+      { pageNo: 4, lines: ["This page needs a closer look.", "Hard to read: 3 words."], kept: false, marked: 3 },
     ]);
   });
 
@@ -360,8 +302,10 @@ describe("the Attention panel (PRD 5 U5)", () => {
     const two = attention([page(1), page(2, { read_quality: "uncertain", unsure_words: 2, unpinned_lines: 1 })]);
     expect(two).toMatch(/<section class="[^"]*_attentionToCheck_/);
     expect(two).toContain("badge badge-review");
-    expect(two).toContain("2 to check");
-    expect(two).toContain("2 reading problems on page 2. Check them on the page before you rely on them.");
+    // Changed on purpose (Vrushit UAT, 25 Oct 2026): a page counts the spots marked on it (2 unsure
+    // words and 1 line not pinned: 3 marks), not its 2 lines of problems.
+    expect(two).toContain("3 to check");
+    expect(two).toContain("3 reading problems on page 2. Check them on the page before you rely on them.");
     const one = attention([page(3, { read_quality: "uncertain", unsure_words: 1 })]);
     expect(one).toContain("1 to check");
     expect(one).toContain("1 reading problem on page 3. Check it on the page before you rely on it.");
@@ -381,12 +325,6 @@ describe("the Attention panel (PRD 5 U5)", () => {
       expect(html).not.toContain("reading problem");
     }
     expect(clear).toContain(ALL_CLEAR);
-  });
-});
-
-describe("the invoice lines' money columns", () => {
-  it("lines up rate and amount only, the lines' money", () => {
-    expect(LINE_FIELDS.filter((field) => MONEY_LINE_FIELDS.has(field))).toEqual(["rate", "amount"]);
   });
 });
 

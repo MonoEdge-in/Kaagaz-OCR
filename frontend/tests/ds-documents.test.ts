@@ -99,7 +99,7 @@ describe("the MonoEdge design system on the documents screens", () => {
       [view, ".title"],
       [view, ".panel"],
       [view, ".problemBody"],
-      [view, ".factRow dd"],
+      // Changed on purpose (Vrushit UAT, 25 Oct 2026): .factRow dd went with the Invoice section.
       [view, ".valuesWrap"],
       ["components/viewer/ScannedText.module.css", ".lineButton"],
       ["components/viewer/PageViewer.module.css", ".viewer"],

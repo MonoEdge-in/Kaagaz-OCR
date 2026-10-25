@@ -1,7 +1,7 @@
 // The words and spots behind the viewer's panels (PRD 3 Y1 to Y4), kept out of
 // the components so they are unit tested in node (tests/viewer-panels.test.ts):
-// the card's items, the related documents' sentence, the invoice's check chip
-// and cell spots, and the low-resolution warning.
+// the card's items, the related documents' sentence, the invoice check reasons
+// (the review queue's) and the low-resolution warning.
 
 import { fieldText } from "@/components/viewer/labels";
 import { beingRead } from "@/components/viewer/reprocess";
@@ -11,8 +11,6 @@ import type {
   DocumentLink,
   DocumentStatus,
   ExtractedValue,
-  Invoice,
-  Label,
   PageSummary,
   Region,
 } from "@/lib/types";
@@ -156,56 +154,6 @@ const CHECK_REASONS: Record<string, string> = {
 /** One invoice check reason in plain words. */
 export function checkReasonText(reason: string): string {
   return CHECK_REASONS[reason] ?? fieldText(reason).toLowerCase();
-}
-
-const sentence = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
-
-/**
- * The invoice check's short badge, "Checks passed" or "Ready to verify", and why
- * to verify it, one reason per line (shown as a list under the badge, so a
- * long reason never makes one wide badge). `label` gives its look (LabelBadge's).
- */
-export function checkChip(invoice: Pick<Invoice, "check_status" | "check_reasons">): {
-  text: "Checks passed" | "Ready to verify";
-  label: Label;
-  reasons: string[];
-} {
-  if (invoice.check_status === "passed") return { text: "Checks passed", label: "verified", reasons: [] };
-  const reasons =
-    invoice.check_status === "not_checked"
-      ? ["The amounts are not checked yet"]
-      : invoice.check_reasons.map((reason) => sentence(checkReasonText(reason)));
-  return { text: "Ready to verify", label: "needs_review", reasons };
-}
-
-/** The invoice fields in screen order, with the field their value is stored under (E4 names). */
-export const INVOICE_FIELDS = [
-  ["invoice_number", "invoice_number"],
-  ["invoice_date", "invoice_date"],
-  ["seller_name", "party_name"],
-  ["seller_gstin", "gstin"],
-  ["buyer_name", "buyer_name"],
-  ["buyer_gstin", "buyer_gstin"],
-  ["subtotal", "subtotal"],
-  ["tax_total", "tax_amount"],
-  ["total", "total_amount"],
-] as const;
-
-export const LINE_FIELDS = ["description", "hsn", "quantity", "unit", "rate", "amount"] as const;
-
-/** The invoice lines' money columns: lined up at the end (globals.css .num). */
-export const MONEY_LINE_FIELDS: ReadonlySet<string> = new Set(["rate", "amount"]);
-
-/** Where an invoice value sits: record "document" for a field, "line:{n}" for a line's cell. */
-export function invoiceSpot(values: ExtractedValue[], record: string, field: string): Spot | null {
-  const value = values.find((v) => v.record_key === record && v.field === field);
-  return value
-    ? {
-        name: fieldText(field),
-        region: value.region,
-        label: value.label_region,
-      }
-    : null;
 }
 
 /** The warning for a page scanned at a low resolution (PRD 3 Y4); null otherwise. */
