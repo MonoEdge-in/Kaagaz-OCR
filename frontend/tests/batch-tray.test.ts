@@ -239,8 +239,17 @@ describe("each file's place in the tray", () => {
     expect(verifiedWords(doc("v", { values_found: 4 }))).toBe("All values verified");
     expect(verifiedWords(doc("n", { values_found: 0 }))).toBeNull(); // no values: just Ready
     expect(verifiedWords(doc("u"))).toBeNull(); // a listing without the count
-    expect(verifiedWords(doc("c", { values_found: 4, values_to_review: 1 }))).toBeNull();
+    // Changed on purpose (QA issue #366, 25 Oct 2026): a value still waiting is named, so
+    // every value shows as Verified or Ready to verify.
+    expect(verifiedWords(doc("c", { values_found: 4, values_to_review: 1 }))).toBe("1 value ready to verify");
     expect(verifiedWords(doc("f", { values_found: 4, status: "failed" }))).toBeNull();
+  });
+
+  it("never says All values verified while a value read once still waits (QA #366)", () => {
+    // The invoice date read by one reader only (single_reader), as the API now counts it.
+    const waiting = doc("d", { values_found: 5, values_to_review: 2, words_unsure: 3, pages_uncertain: 1 });
+    expect(verifiedWords(waiting)).toBe("2 values ready to verify");
+    expect(verifiedWords({ ...waiting, values_to_review: 0 })).toBeNull(); // words left: not all verified yet
   });
 
   it("keeps a reload's counts the batch API does not have: already uploaded and not sent", () => {

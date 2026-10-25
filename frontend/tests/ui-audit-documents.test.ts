@@ -214,6 +214,16 @@ describe("the documents list (D1, D2, D3, D6, D9, D10, D11)", () => {
     expect(docs).toMatch(/@container docs-list \(min-width: 36rem\)[\s\S]*?\.selectionBar\[data-idle\] \{\s*display:\s*none;/);
   });
 
+  it("QA #370: on cards the idle bar sits after the list, and the facts line is never repeated", () => {
+    expect(docs).toMatch(/@container docs-list \(max-width: 35\.98rem\) \{\s*\.selectionBar\[data-idle\] \{\s*position:\s*static;/);
+    // The card's own cells lose to "table.docs td { display: block }" unless at least as specific.
+    const cards = docs.slice(docs.search(/@container docs-list \(max-width: 35\.98rem\) \{\s*table\.docs,/));
+    expect(cards).toMatch(/^@container[\s\S]*?table\.docs td \{\s*display:\s*block;/);
+    for (const cell of ["ownerCell", "labelCell", "versionCell", "docDateCell"]) {
+      expect(cards).toMatch(new RegExp(`table\\.docs \\.${cell}[,\\s][^{]*\\{\\s*display:\\s*none;`));
+    }
+  });
+
   it("D10: with documents listed the whole screen takes files, and only files", () => {
     expect(view).toMatch(/<Dropzone\s+variant="page"/);
     expect(view).not.toContain('variant="slim"');

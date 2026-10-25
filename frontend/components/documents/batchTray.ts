@@ -171,9 +171,10 @@ export function unreadableWords(
 }
 
 /**
- * "All values verified" (U1) for a ready file with values and nothing on the attention
- * list; null otherwise, so a file with no values (a letter, a photo of a page), or from a
- * listing without the count, is just Ready.
+ * A ready file's values, each Verified or Ready to verify (QA #366): "2 values ready to
+ * verify" while any still waits (values_to_review, the review queue's own count), "All
+ * values verified" (U1) with nothing on the attention list; null otherwise, so a file with
+ * no values (a letter, a photo of a page), or from a listing without the count, is just Ready.
  */
 export function verifiedWords(
   document: Pick<
@@ -182,6 +183,7 @@ export function verifiedWords(
   >,
 ): string | null {
   if (document.status !== "ready" || !((document.values_found ?? 0) > 0)) return null;
+  if (document.values_to_review > 0) return `${counted(document.values_to_review, "value")} ready to verify`;
   return attentionWords(document).length === 0 ? "All values verified" : null;
 }
 
