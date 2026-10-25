@@ -30,6 +30,9 @@ export class FakePart {
   setRequestHeader(name: string, value: string) {
     this.headers[name] = value;
   }
+  getResponseHeader(): string | null {
+    return null;
+  }
   send(body: unknown) {
     this.body = body;
     server.parts.push(this);

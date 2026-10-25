@@ -129,6 +129,8 @@ _DAMAGED = (
 
 # An object's header, "12 0 obj", anywhere in the file (a viewer's index rebuild).
 _OBJECT_HEADER = re.compile(rb"(?<![0-9])\d+\s+\d+\s+obj\b")
+# The header an index offset must point at (pdfminer skips white space first).
+_HEADER_AT = re.compile(rb"\s*(\d+)\s+\d+\s+obj\b")
 _ENDS_A_DICTIONARY_PART = frozenset({b"stream", b"endobj", b"obj"})
 
 # Work bounds, so no PDF can make the check hang or fill memory (council 17 Oct 2026: an
@@ -338,6 +340,13 @@ def _bounded_pdf_finding(data: bytes, bounds: _Bounds) -> Finding | None:
                     damaged = True
                     break
                 bounds.grant(_READ_PER_OBJECT)
+                if not _header_where_indexed(data, document, object_id):
+                    # Vrushit UAT, 25 Oct 2026: from a wrong offset pdfminer reads on to the next
+                    # "obj", through a scanned page's image bytes, quadratic in them (a 2.5 MB scan
+                    # with offsets 7 bytes off ran out the deadline: "unscannable"). A viewer
+                    # rebuilds such an index; the repair walk below finds the object by its header.
+                    damaged = True
+                    continue
                 try:
                     obj = document.getobj(object_id)
                 except _DAMAGED:
@@ -355,6 +364,22 @@ def _bounded_pdf_finding(data: bytes, bounds: _Bounds) -> Finding | None:
     # Always, not only when damaged (security review, 17 Oct 2026): a sound index can
     # leave out an object a viewer still finds and runs (one written after the end, say).
     return _repair_walk(data, document, bounds)
+
+
+def _header_where_indexed(data: bytes, document: PDFDocument, object_id: int) -> bool:
+    """False if the index entry pdfminer would use (the first index listing the object, as
+    ``getobj`` picks it) gives a file offset where this object's header is not. An object
+    inside an object stream has no offset of its own: True. O(1)."""
+    for xref in document.xrefs:
+        try:
+            stream_id, position, _ = xref.get_pos(object_id)
+        except KeyError:
+            continue
+        if stream_id is not None:
+            return True
+        header = _HEADER_AT.match(data, position)
+        return header is not None and int(header.group(1)) == object_id
+    return True  # listed nowhere: getobj says so itself
 
 
 def _repair_walk(data: bytes, document: PDFDocument, bounds: _Bounds) -> Finding | None:

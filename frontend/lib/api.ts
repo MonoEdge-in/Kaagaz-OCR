@@ -104,6 +104,7 @@ export class ApiError extends Error {
     readonly code: string,
     message: string,
     readonly details?: unknown, // the few errors that carry more (409 word_has_meaning)
+    readonly retryAfter?: number, // seconds, from a 429's Retry-After: when to ask again
   ) {
     super(message);
     this.name = "ApiError";
@@ -133,6 +134,8 @@ export const FEATURE_OFF = "This is turned off for now.";
 export const isFeatureOff = (caught: unknown) => caught instanceof ApiError && caught.code === "feature_off";
 
 async function errorFrom(response: Response): Promise<ApiError> {
+  const waitHeader = Number(response.headers.get("Retry-After") ?? "");
+  const retryAfter = waitHeader > 0 ? waitHeader : undefined;
   try {
     const body = (await response.json()) as { error?: { code?: string; message?: string; details?: unknown } };
     const code = body.error?.code ?? "error";
@@ -142,10 +145,17 @@ async function errorFrom(response: Response): Promise<ApiError> {
       // One calm sentence wherever the message is shown, whatever the server's words.
       code === "feature_off" ? FEATURE_OFF : (body.error?.message ?? "Something went wrong."),
       body.error?.details,
+      retryAfter,
     );
   } catch {
-    return new ApiError(response.status, "error", "Something went wrong.");
+    return new ApiError(response.status, "error", "Something went wrong.", undefined, retryAfter);
   }
+}
+
+/** A 429's wait in milliseconds (its Retry-After, else fallback); null for any other error. */
+export function rateLimitWait(caught: unknown, fallback: number): number | null {
+  if (!(caught instanceof ApiError) || caught.status !== 429) return null;
+  return caught.retryAfter !== undefined ? caught.retryAfter * 1000 : fallback;
 }
 
 async function request<T>(
@@ -422,21 +432,55 @@ function waitForNetwork(delay: number): Promise<void> {
   return new Promise((resolve) => window.addEventListener("online", () => resolve(), { once: true }));
 }
 
-/** A busy or failing server (429, 5xx) is asked this many more times, then the row fails with Retry. */
+/** A failing server (5xx) is asked this many more times, then the row fails with Retry. */
 const SERVER_RETRIES = 4;
 
 /**
- * Waits out a lost connection, however long; a busy or failing server only SERVER_RETRIES
- * times more (about 30 s), so a server error never leaves a row "waiting" for ever.
+ * Upload calls from this tab (start, each part, finish): a burst of this many, then this many
+ * a minute. The API gives a file's upload calls their own budget of RATE_LIMIT_PER_MINUTE
+ * (120 in .env.example; tests/request-budget.test.ts reads it), so this pace is never refused
+ * and the uploads wait their turn here instead (Vrushit UAT, 25 Oct 2026).
+ */
+export const UPLOAD_CALLS_PER_MINUTE = 80;
+let uploadTokens = UPLOAD_CALLS_PER_MINUTE;
+let uploadTokensAt: number | null = null;
+
+/** Wait for this tab's next upload call (a token bucket, shared by every file). */
+async function uploadTurn(): Promise<void> {
+  for (;;) {
+    const now = Date.now();
+    const elapsed = uploadTokensAt === null ? 0 : Math.max(0, now - uploadTokensAt); // the clock may be set back
+    const refilled = (elapsed * UPLOAD_CALLS_PER_MINUTE) / 60_000;
+    uploadTokens = Math.min(UPLOAD_CALLS_PER_MINUTE, uploadTokens + refilled);
+    uploadTokensAt = now;
+    if (uploadTokens >= 1) {
+      uploadTokens -= 1;
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, ((1 - uploadTokens) * 60_000) / UPLOAD_CALLS_PER_MINUTE));
+  }
+}
+
+/**
+ * Each upload call waits its turn (uploadTurn). Waits out a lost connection, however long; a
+ * failing server only SERVER_RETRIES times more (about 30 s), so a server error never leaves a
+ * row "waiting" for ever. A 429 is the server's pace, not a failure: the call waits the
+ * Retry-After it gave, without counting a try or saying the connection is lost, and goes again.
  */
 async function retryWhileOffline<T>(work: () => Promise<T>, onWaiting?: (waiting: boolean) => void): Promise<T> {
   let delay = 1000;
   let serverTries = 0;
   for (;;) {
+    await uploadTurn();
     try { return await work(); }
     catch (error) {
+      const paced = rateLimitWait(error, delay);
+      if (paced !== null) {
+        await waitForNetwork(paced);
+        continue;
+      }
       const lost = error instanceof ApiError ? error.status === 0 : error instanceof TypeError;
-      const busy = error instanceof ApiError && (error.status === 429 || error.status >= 500);
+      const busy = error instanceof ApiError && error.status >= 500;
       if (!lost && !(busy && serverTries++ < SERVER_RETRIES)) throw error;
       onWaiting?.(true);
       await waitForNetwork(delay);
@@ -457,7 +501,8 @@ function putPart(url: string, body: Blob, onProgress: (loaded: number) => void):
       if (xhr.status >= 200 && xhr.status < 300) resolve();
       else if (xhr.status === 0) reject(new ApiError(0, "network", "Could not reach the server."));
       else reject(noticeSessionEnd(await errorFrom(new Response(xhr.responseText, {
-        status: xhr.status, headers: { "Content-Type": "application/json" },
+        status: xhr.status,
+        headers: { "Content-Type": "application/json", "Retry-After": xhr.getResponseHeader("Retry-After") ?? "" },
       }))));
     };
     xhr.onerror = () => reject(new TypeError("Network error"));
