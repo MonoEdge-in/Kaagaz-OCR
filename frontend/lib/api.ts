@@ -689,9 +689,24 @@ export const resolveReview = (
     remember,
     ...(choice === "typed" ? { value } : {}),
   });
-/** Verify all on the review queue: every value its filters show, verified on the server in one call. */
-export const verifyAllReview = (filters: { document_id?: string; reason?: ReviewReason[] }) =>
-  request<VerifyAllResult>("POST", "/review/verify-all", filters);
+/** A refused Verify all is asked again this many times, each after the 429's Retry-After. */
+const VERIFY_ALL_PACED_TRIES = 3;
+/**
+ * Verify all on the review queue: every value its filters show, verified on the server in one
+ * call. A 429 is the limiter refusing before anything ran, so the call waits the Retry-After it
+ * gave (1 s without one) and goes again, a few times; then the 429 is the caller's to show.
+ */
+export async function verifyAllReview(filters: { document_id?: string; reason?: ReviewReason[] }) {
+  for (let tries = 0; ; tries++) {
+    try {
+      return await request<VerifyAllResult>("POST", "/review/verify-all", filters);
+    } catch (caught) {
+      const wait = rateLimitWait(caught, 1000);
+      if (wait === null || tries >= VERIFY_ALL_PACED_TRIES) throw caught;
+      await new Promise((resolve) => setTimeout(resolve, wait));
+    }
+  }
+}
 
 // --- admin ---------------------------------------------------------------------
 

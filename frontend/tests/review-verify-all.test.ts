@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { canVerifyAll, verifyAllFilters, verifyAllQuestion, verifyAllText } from "@/components/review/review";
-import { verifyAllReview } from "@/lib/api";
+import { ApiError, verifyAllReview } from "@/lib/api";
 
 const queue = readFileSync(join(__dirname, "..", "components/review/ReviewQueue.tsx"), "utf8");
 
@@ -82,5 +82,39 @@ describe("Verify all on the review queue", () => {
     expect(queue).toContain("verifyAllReview(verifyAllFilters(documentId, reason))");
     expect(queue).not.toContain("verifyEach");
     expect(queue).not.toContain("resolveReview");
+  });
+
+  it("waits out a 429's Retry-After and asks again, then gives the 429 up after a few tries", async () => {
+    vi.useFakeTimers();
+    try {
+      const replies = [429, 200];
+      const sent: number[] = [];
+      vi.stubGlobal("fetch", async () => {
+        sent.push(Date.now());
+        const status = replies.shift() ?? 429;
+        const body = status === 200 ? { verified: 1, skipped: [], left: 0 } : { error: { code: "rate_limited" } };
+        return new Response(JSON.stringify(body), {
+          status,
+          headers: { "Content-Type": "application/json", "Retry-After": "7" },
+        });
+      });
+
+      const paced = verifyAllReview({});
+      await vi.advanceTimersByTimeAsync(6_999);
+      expect(sent).toHaveLength(1); // not before the Retry-After
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await paced).toEqual({ verified: 1, skipped: [], left: 0 });
+      expect(sent).toEqual([sent[0], (sent[0] ?? 0) + 7_000]);
+
+      sent.length = 0;
+      const refused = verifyAllReview({}).catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(60_000);
+      const caught = await refused;
+      expect(caught).toBeInstanceOf(ApiError);
+      expect((caught as ApiError).status).toBe(429);
+      expect(sent).toHaveLength(4); // the first try and three paced ones
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
