@@ -723,6 +723,8 @@ table.docs tbody tr[data-selected="true"] .selectHit input {
    the tick box, the file icon and name, the status chip, the date and the menu. */
 table.docs {
   --row-line: var(--control-h);
+  /* Every line after the first: close under it, one line after another (Vrushit UAT, 25 Oct 2026). */
+  --row-sub: var(--badge-h);
   width: 100%;
   border-collapse: separate;
   border-spacing: 0;
@@ -945,7 +947,7 @@ table.docs > tbody > tr {
   align-items: center;
   gap: var(--space-2);
   min-width: 0;
-  height: var(--h-sm);
+  height: var(--row-sub);
 }
 
 @media (pointer: coarse) {
@@ -1083,7 +1085,7 @@ table.docs > tbody > tr {
      status chip and the dates share one line. */
   table.docs td {
     height: 48px;
-    padding-block: var(--space-3); /* SoW 19 Oct: more room above and below each row */
+    padding-block: var(--space-2); /* Vrushit UAT (25 Oct 2026): a compact row */
     vertical-align: top;
     border-bottom: 1px solid var(--k-rule);
   }
@@ -1147,7 +1149,7 @@ table.docs > tbody > tr {
 
   /* "Land record" sits on the same line as the status's "7 flagged" (Tushar, 17 Oct 2026). */
   .docType {
-    line-height: var(--h-sm);
+    line-height: var(--row-sub);
   }
 
   /* The question is wider than the menu's column, so it opens as a small panel over the
@@ -1240,7 +1242,9 @@ table.docs > tbody > tr {
     width: 7.5rem;
   }
 
-  .factLabel {
+  /* The label and the tags show in the Label column (Vrushit UAT, 25 Oct 2026). */
+  .factLabel,
+  .factTags {
     display: none;
   }
 }
@@ -1670,22 +1674,22 @@ table.docs > tbody > tr {
 }
 
 /* One line rhythm across a row (Tushar, 24 Oct 2026: "no one alignment is good"): in the
-   table every first line is --row-line tall and every line after it var(--h-sm), so the
+   table every first line is --row-line tall and every line after it --row-sub (24px), so the
    owner, "17 to check", "Land record" and "by …" sit on one row, and the size under them. */
 @container docs-list (min-width: 36rem) {
   .facts {
     margin-block-start: 0;
-    line-height: var(--h-sm);
+    line-height: var(--row-sub);
   }
 
   .facts > * {
-    line-height: var(--h-sm);
+    line-height: var(--row-sub);
   }
 
   .inFolder,
   .bandSize,
   .bandBy {
-    line-height: var(--h-sm);
+    line-height: var(--row-sub);
   }
 
   table.docs .labelCell :global(.badge),

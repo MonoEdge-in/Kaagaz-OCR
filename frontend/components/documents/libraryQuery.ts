@@ -72,7 +72,7 @@ export interface LibraryState {
   readonly to: string | null; // YYYY-MM-DD, the last day included
   readonly attention: boolean; // PRD 5 U2 "Needs attention": only documents with reading problems
   // File management Q3.
-  readonly departmentId: string | null;
+  readonly departmentId: string | null; // a department's id, or NO_DEPARTMENT
   readonly ownerId: string | null;
   readonly labels: readonly Sensitivity[];
   readonly party: string | null;
@@ -122,6 +122,9 @@ export const NO_FILTERS: Partial<LibraryState> = {
   docTo: null,
   newer: false,
 };
+
+/** The department filter for the files in no department, as the dashboard counts them. */
+export const NO_DEPARTMENT = "none";
 
 /** The server takes at most this many tag_id values. */
 export const MAX_TAG_FILTERS = 50;
@@ -213,7 +216,7 @@ export function libraryFromSearch(search: SearchLike): LibraryState {
     from: day(search.get("from")),
     to: day(search.get("to")),
     attention: !trash && search.get("attention") === "1",
-    departmentId: uuid(search.get("dept")),
+    departmentId: search.get("dept") === NO_DEPARTMENT ? NO_DEPARTMENT : uuid(search.get("dept")),
     ownerId: uuid(search.get("owner")),
     labels: [...new Set(search.getAll("label").filter(isLabel))],
     party: words(search.get("party"), MAX_PARTY_LENGTH),

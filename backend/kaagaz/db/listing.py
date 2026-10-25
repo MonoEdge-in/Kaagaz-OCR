@@ -195,6 +195,14 @@ _UPLOADED_TO = " AND d.created_at < :uploaded_to"
 # the card (as autofile.survey_digits reads it), the document date and a newer version
 # waiting to be confirmed.
 _IN_DEPARTMENT = " AND d.folder_id = ANY(CAST(:department_folders AS uuid[]))"
+# The dashboard's "Not in a department": in no folder, or in one under no department (its
+# _DASHBOARD_DEPARTMENTS tree, so the list holds exactly the files it counts).
+_OUTSIDE_DEPARTMENTS = (
+    " AND (d.folder_id IS NULL OR d.folder_id NOT IN (WITH RECURSIVE tree (id, depth) AS ("
+    " SELECT id, 1 FROM folders WHERE customer_id = :c AND parent_id IS NULL AND kind = 'department'"
+    " UNION ALL SELECT f.id, t.depth + 1 FROM tree t JOIN folders f ON f.parent_id = t.id"
+    " WHERE f.customer_id = :c AND t.depth < 6) SELECT id FROM tree))"
+)
 _OF_OWNER = " AND d.owner_id = :owner_id"
 _LABELLED = " AND d.sensitivity = ANY(CAST(:sensitivities AS text[]))"
 _WITH_PARTY = (
@@ -271,6 +279,7 @@ def list_documents(
     trashed: bool = False,
     attention: bool = False,
     department_folders: Sequence[str] | None = None,
+    outside_departments: bool = False,
     owner_id: str | None = None,
     sensitivities: Sequence[str] = (),
     party: str | None = None,
@@ -292,6 +301,7 @@ def list_documents(
     one of these tags), ``detected_type``, and ``uploaded_from`` (inclusive) to
     ``uploaded_to`` (exclusive), ``attention`` (PRD 5 U2: a page or a value needs
     attention); File management Q3: ``department_folders`` (a department's subtree),
+    ``outside_departments`` (the dashboard's "Not in a department"),
     ``owner_id``, ``sensitivities`` (any of), ``party``, ``property_number`` (normalised),
     ``doc_date_from`` to ``doc_date_to`` (both inclusive) and ``has_newer_version``. All of
     them apply in both queries, before LIMIT. A sort other than ``created_at`` reads every
@@ -338,6 +348,7 @@ def list_documents(
         file_filters(
             params,
             department_folders=department_folders,
+            outside_departments=outside_departments,
             owner_id=owner_id,
             sensitivities=sensitivities,
             party=party,
@@ -367,6 +378,7 @@ def file_filters(
     params: dict[str, Any],
     *,
     department_folders: Sequence[str] | None = None,
+    outside_departments: bool = False,
     owner_id: str | None = None,
     sensitivities: Sequence[str] = (),
     party: str | None = None,
@@ -384,6 +396,7 @@ def file_filters(
             "department_folders",
             list(department_folders or ()),
         ),
+        (outside_departments, _OUTSIDE_DEPARTMENTS, "outside_departments", None),
         (owner_id is not None, _OF_OWNER, "owner_id", owner_id),
         (bool(sensitivities), _LABELLED, "sensitivities", list(dict.fromkeys(sensitivities))),
         (bool(party), _WITH_PARTY, "party", _like_pattern(party)),

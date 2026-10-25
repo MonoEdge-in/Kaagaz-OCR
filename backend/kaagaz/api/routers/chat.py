@@ -580,18 +580,23 @@ def _choice(
     """Who drafts the answer under the asker's Ask setting (AI settings, 0038): nothing
     saved, ``resolve_chat`` as before; None, no model (``NO_MODEL``); Low and High those
     thinking levels, the request's own level capped at it; Max high on the strongest
-    usable answer model unless the request names one. One statement more than before."""
+    usable answer model unless the request names one. Ask's Precision (high asked for,
+    and still high; Vrushit UAT, 25 Oct 2026) is on that strongest model too, unless the
+    request names one, so it differs from Swift in its model as well as its level. One
+    statement more than before."""
     ceiling = effective_settings(conn, user.customer_id)
     saved = ai_settings.rows(conn, user.customer_id, user.user_id)
     task = ai_settings.resolve("ask", saved, *ai_settings.ask_ceiling(ceiling))
     if task.chosen and task.effective == "none":
         return NO_MODEL
+    asked = thinking
     if task.chosen:
         thinking = ai_settings.ask_thinking(task.effective, ceiling["chat_levels"] or ["low"], thinking)
-        if task.effective == "max" and agents is None:
-            agents = strongest_chat(
-                usable_chat_models(conn, user.customer_id, settings=context.settings), thinking
-            )
+    precision = asked == "high" and thinking == "high"
+    if agents is None and thinking is not None and (precision or (task.chosen and task.effective == "max")):
+        agents = strongest_chat(
+            usable_chat_models(conn, user.customer_id, settings=context.settings), thinking
+        )
     return resolve_chat(conn, user.customer_id, agents, thinking, settings=context.settings)
 
 
