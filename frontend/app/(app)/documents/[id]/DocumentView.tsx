@@ -160,6 +160,7 @@ const FROM_LINK = ", from the link you opened";
 // The status under the title: its words (lib/format.ts statusChip) with an icon.
 const STATUS_ICONS: Record<StatusTone, KIconName> = { ready: "check-circle", working: "clock", neutral: "info", danger: "alert" };
 const DETAILS_ID = "document-details"; // More details: the kind, pages, counts, tags and versions
+const valueDomId = (id: string) => `document-value-${id}`; // a value's "show on page" button
 
 type Loaded =
   | { attempt: number; detail: DocumentDetail }
@@ -488,6 +489,14 @@ export function DocumentView({
     setReloads((n) => n + 1);
   };
 
+  // Verify and Verify all are disabled while they save and are gone once nothing is left to
+  // verify, which dropped focus to the page (QA pass, 25 Oct 2026): back to the value, or to
+  // the Values found heading.
+  const afterVerify = (valueId: string | null) => {
+    requestAnimationFrame(() => {
+      (document.getElementById(valueDomId(valueId ?? "")) ?? document.getElementById("values-heading"))?.focus();
+    });
+  };
   const verifyValue = async (value: ExtractedValue) => {
     if (!canVerifyValues || verifying !== null || value.label !== "needs_review") return;
     setVerifying(value.id);
@@ -503,6 +512,8 @@ export function DocumentView({
     } finally {
       setVerifying(null);
       setReloads((n) => n + 1);
+      // The pressed Verify was disabled, then goes: keep the keyboard on this value's row.
+      afterVerify(value.id);
     }
   };
 
@@ -526,13 +537,14 @@ export function DocumentView({
     });
     setVerifying(null);
     setReloads((n) => n + 1);
+    afterVerify(null);
   };
   const retryValues = pendingValues.filter((value) => verifyNotice?.retry?.includes(value.id));
 
   const values = (
     <section className={styles.values} aria-labelledby="values-heading">
       <div className={styles.valuesHeader}>
-        <h2 id="values-heading" className={styles.valuesHeading}>
+        <h2 id="values-heading" className={styles.valuesHeading} tabIndex={-1}>
           Values found
           {detail.values.length > 0 ? (
             <span className={`${styles.count} tabular`}>{detail.values.length}</span>
@@ -609,6 +621,7 @@ export function DocumentView({
                     <td role="cell" className={styles.valueCell}>
                       <button
                         type="button"
+                        id={valueDomId(value.id)}
                         className={styles.valueButton}
                         aria-pressed={active}
                         onClick={() => showValue(value)}
@@ -823,7 +836,8 @@ export function DocumentView({
             <div id={DETAILS_ID} className={styles.status} hidden={!moreOpen && detail.status !== "rejected"}>
               <span className={styles.meta}>
                 {typeLabel(detail.detected_type)}
-                <span className="mono">{pagesText}</span>
+                {/* The count line after it starts with the pages: said once ("PDF · 3 pages 3 pages · 180 words", QA pass, 25 Oct 2026). */}
+                {!review.status?.summary && <span className="mono">{pagesText}</span>}
               </span>
               {review.status?.summary && <span className={`${styles.meta} tabular`}>{trustText(review.status)}</span>}
               {trail.length === 0 && <span className={styles.meta}>Not in a folder</span>}

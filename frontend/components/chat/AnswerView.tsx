@@ -179,6 +179,10 @@ function DocumentList({ answer, terms }: { answer: Answer; terms: readonly strin
 export const TRY_THESE = "Try one of these";
 /** KZ-006 (24 Oct 2026): every model was down; as routers/chat.py OUTAGE_LINE. */
 export const OUTAGE_TEXT = "The AI is not responding right now, so this is not a written answer. Ask again in a minute."
+/** A search answer the AI did not write (off on this server, or not answering): the lines that
+ * matched, quoted. It read as a written answer before (QA pass, 25 Oct 2026). */
+export const QUOTED_TEXT =
+  "The AI did not write this answer: these are the lines that best match your question, quoted from your documents. Check that they answer it."
 
 export const AnswerView = memo(function AnswerView({
   message,
@@ -426,6 +430,7 @@ export const AnswerView = memo(function AnswerView({
     <div {...card} className={`motion-rise ${styles.answerCard}`}>
       <span className="visually-hidden">Answer: </span>
       {opening}
+      {answer.status === "answered" && answer.route === "search" && !answer.model_used ? <p className={styles.understood}>{QUOTED_TEXT}</p> : null}
       {understood}
       <p className={styles.answerText}>
         {answer.sentences.map((sentence, index) => (

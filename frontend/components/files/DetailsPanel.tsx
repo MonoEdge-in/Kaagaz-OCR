@@ -88,7 +88,7 @@ export function DetailsPanel({
   );
 
   return (
-    <section aria-labelledby={`${id}-heading`}>
+    <section aria-labelledby={`${id}-heading`} className={styles.detailsBox}>
       <h2 id={`${id}-heading`} className="visually-hidden">
         {FILES_TEXT.details}
       </h2>
