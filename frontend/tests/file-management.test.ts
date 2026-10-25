@@ -782,6 +782,28 @@ describe("the dashboard (D1)", () => {
     expect(read("components/dashboard/Dashboard.module.css")).toMatch(/\.outside \{[^}]*border-style: dashed;/);
   });
 
+  // Vrushit UAT (25 Oct 2026): "Not in a department · 6 files" opened all 9 files.
+  it("opens Not in a department on exactly the files it counts, as a department filter", () => {
+    const html = render(createElement(DashboardBody, { data, now: Date.parse("2026-10-17T10:00:00Z") }));
+    expect(html).toContain('href="/documents?dept=none"');
+    const state = libraryFromSearch(new URLSearchParams("dept=none"));
+    expect(state.departmentId).toBe("none");
+    expect(listParams(state, "", 0).department_id).toBe("none");
+    expect(filterCount(state)).toBe(1);
+    const filters = render(
+      createElement(LibraryFilters, {
+        library: state,
+        tags: [],
+        tagsError: null,
+        onRetryTags: () => undefined,
+        showSubfolders: false,
+        onChange: () => undefined,
+        departments: [folder(LAND, "Land & Legal")],
+      }),
+    );
+    expect(filters).toContain("Department: Not in a department");
+  });
+
   it("is the home screen: Home first in the nav, and the sign-in lands there", () => {
     expect(read("app/page.tsx")).toContain('redirect("/dashboard")');
     expect(read("components/shell/nav.ts")).toContain('{ href: "/dashboard", label: "Home", icon: "home" }');

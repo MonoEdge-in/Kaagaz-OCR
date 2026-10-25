@@ -7,8 +7,9 @@
 // settings, spec 17 Oct 2026). Hidden when there is only one choice. One model answers
 // (Tushar, 16 Oct 2026, one model in Ask): "Answered by" is one choice of radio buttons.
 // Changed on purpose (spec 17 Oct 2026): org users never see a model's name. Changed on purpose
-// (Tushar, 24 Oct 2026): the model is chosen in the Ask bar's quality picker (QualityPicker.tsx),
-// so this panel is the AI engine only. No price or cost here.
+// (Vrushit UAT, 25 Oct 2026: "give only one option, Swift and Precision, and make sure there is a
+// difference"): this panel is the one choice; Precision also answers on the organisation's
+// strongest model (logic.ts choiceBody). No price or cost here.
 
 import { useId } from "react";
 import type { ChatOptions, ThinkingLevel } from "@/lib/types";
@@ -20,10 +21,11 @@ import styles from "./Chat.module.css";
 /** Swift first, then Precision (SoW 19 Oct 2026; Low is not offered in Ask). */
 const LEVEL_ORDER: ThinkingLevel[] = ["medium", "high"];
 
-// Plain words (25 Oct 2026): what each does for the person asking.
+// Plain words (25 Oct 2026): what each does for the person asking. Changed on purpose (Vrushit
+// UAT, 25 Oct 2026): what each really does differently (chat.py _choice, service.py _input_cap).
 const LEVEL_HINTS: Record<ThinkingLevel, string> = {
-  high: "Precision: slower, more careful answers for important questions.",
-  medium: "Swift: quick answers for everyday questions.",
+  high: "Precision: reads more of your documents and takes more care, on the strongest AI your organisation allows. Slower; for important questions.",
+  medium: "Swift: quick answers from the most relevant parts of your documents, for everyday questions.",
   low: "Fastest.",
 };
 

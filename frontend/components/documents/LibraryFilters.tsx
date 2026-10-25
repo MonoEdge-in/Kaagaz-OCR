@@ -25,6 +25,7 @@ import {
   propertyChipText,
 } from "@/components/files/filterChips";
 import { LABELS, LABEL_DESCRIPTIONS, labelName } from "@/components/files/labels";
+import { FILES_TEXT } from "@/components/files/words";
 import { Icon } from "@/components/ui/Icon/Icon";
 import { IconButton } from "@/components/ui/IconButton";
 import { typeLabel } from "@/lib/format";
@@ -34,6 +35,7 @@ import {
   FILTER_TYPES,
   MAX_PARTY_LENGTH,
   MAX_PROPERTY_LENGTH,
+  NO_DEPARTMENT,
   NO_FILTERS,
   filterCount,
   isIsoDate,
@@ -75,7 +77,9 @@ export function LibraryFilters({
   const departmentName =
     library.departmentId === null
       ? null
-      : (departments.find((folder) => folder.id === library.departmentId)?.name ?? "…");
+      : library.departmentId === NO_DEPARTMENT
+        ? FILES_TEXT.notInDepartment
+        : (departments.find((folder) => folder.id === library.departmentId)?.name ?? "…");
   const ownerName =
     library.ownerId === null ? null : (people?.find((person) => person.id === library.ownerId)?.name ?? "…");
 
@@ -230,6 +234,17 @@ export function LibraryFilters({
                   </label>
                 </li>
               ))}
+              <li>
+                <label className={styles.check}>
+                  <input
+                    type="radio"
+                    name={`${id}-department`}
+                    checked={library.departmentId === NO_DEPARTMENT}
+                    onChange={() => onChange({ ...library, departmentId: NO_DEPARTMENT })}
+                  />
+                  {FILES_TEXT.notInDepartment}
+                </label>
+              </li>
             </ul>
           </fieldset>
         </div>
