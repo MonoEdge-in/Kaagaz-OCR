@@ -41,8 +41,8 @@ from sqlalchemy.exc import IntegrityError
 from kaagaz.chunking.context import document_part
 from kaagaz.db.documents import folder_missing
 from kaagaz.db.folders import FolderNotFound
-from kaagaz.db.visibility import LIVE_SUGGESTION
 from kaagaz.db.review import WAITING_VALUE
+from kaagaz.db.visibility import LIVE_SUGGESTION
 from kaagaz.versions import name_key
 
 # File management (Q3, Q4, F5, O1 to O3): the owner and label, the version count, the
