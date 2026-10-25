@@ -65,8 +65,7 @@ describe("confidenceText", () => {
     expect(notSure(null)).toBe(false);
     const panel = readFileSync(join(__dirname, "..", "components/viewer/ScannedTextPanel.tsx"), "utf8");
     expect(panel).toContain("{lines.some((line) => notSure(line.confidence)) && <p className={styles.muted}>{CONFIDENCE_NOTE}</p>}");
-    const read = readFileSync(join(__dirname, "..", "components/viewer/WhatWasRead.tsx"), "utf8");
-    expect(read).toContain("{notSure(value.confidence) && <span className={styles.muted}>{CONFIDENCE_NOTE}</span>}");
+    // Changed on purpose (Vrushit UAT, 25 Oct 2026): "What was read" under a value is gone (WhatWasRead.tsx).
     const card = readFileSync(join(__dirname, "..", "components/review/ReviewCard.tsx"), "utf8");
     expect(card).toContain("{notSure(value.confidence) && <p className={`muted ${styles.reason}`}>{CONFIDENCE_NOTE}</p>}");
   });

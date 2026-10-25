@@ -1,29 +1,21 @@
 // Read clearly (19 Oct 2026): line grouping, the unsure marks, plain text only, the wording
-// rules, the translation label, Translate following Ask, print styles and no sideways scroll.
+// rules, print styles and no sideways scroll. Vrushit UAT (25 Oct 2026): no translation for now.
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
-  BUSY,
   COPIED,
   COPY_BLOCKED,
-  LANGUAGES,
   LEFT_OUT,
   NOT_SURE_TIP,
   OPENED_NOTE,
-  SHOW_IN,
-  TOO_LONG,
-  TRANSLATING,
-  TRANSLATION_LABEL,
-  UNUSABLE,
   WIDE_NOTE,
   blocks,
   copyText,
   pageTitle,
   pairParts,
   parts,
-  translateFailure,
 } from "@/components/viewer/clearCopy";
 import type { ReadLine, ReadingMark } from "@/lib/types";
 
@@ -102,37 +94,24 @@ describe("Read clearly: the screen", () => {
 
   it("renders document text as React text only", () => {
     expect(panel).not.toMatch(/dangerouslySetInnerHTML|innerHTML|insertAdjacentHTML/);
-    expect(panel).toContain("visibleText(text)"); // the translation too
+    // Changed on purpose (Vrushit UAT, 25 Oct 2026): no translation, the one text this panel put
+    // through visibleText itself; every line still goes through parts (visibleText).
   });
 
   it("uses calm words: no Needs review, no banned words, no model or cost words", () => {
     expect(words).not.toMatch(/needs review/i);
     expect(words).not.toMatch(/couldn't|sorry|unfortunately|perfect|guaranteed/i);
     expect(words).not.toMatch(/\b(model|gemini|openrouter|cost|price|spend|budget)\b/i);
-    expect([TRANSLATION_LABEL, TRANSLATING, BUSY, UNUSABLE, TOO_LONG]).toEqual([
-      "Translation — the original text is above",
-      "Translating…",
-      "Translation isn't available right now. Try again in a minute.",
-      "This page can't be translated. The exact text is above.",
-      "This page is too long to translate in one go. The exact text is above.",
-    ]);
-    expect(LANGUAGES.map((each) => each.name)).toEqual(["Original", "English", "हिंदी", "मराठी"]);
   });
 
-  it("says why a page was not translated, and offers Try again only when the service is busy", () => {
-    expect(translateFailure("backend_unavailable")).toEqual({ text: BUSY, retry: true });
-    expect(translateFailure("rate_limited")).toEqual({ text: BUSY, retry: true });
-    expect(translateFailure(undefined)).toEqual({ text: BUSY, retry: true }); // no reply at all
-    expect(translateFailure("translation_unusable")).toEqual({ text: UNUSABLE, retry: false });
-    expect(translateFailure("page_too_long")).toEqual({ text: TOO_LONG, retry: false });
-    expect(panel).toMatch(/\{tr\.retry && \(\s*<button type="button"[^\n]*\n\s*Try again/);
-  });
-
-  it("shows Translate only when Ask is on and above None", () => {
-    expect(panel).toMatch(/const showTranslate = canTranslate && !switchedOff/);
-    expect(read("app/(app)/documents/[id]/DocumentView.tsx")).toContain(
-      'canTranslate={askLevel !== undefined && askLevel !== "none"}',
-    );
+  // Changed on purpose (Vrushit UAT, 25 Oct 2026): translation is removed for now, so the
+  // "Show the text in: Original / English / हिंदी / मराठी" switch and the code only it used are gone.
+  it("has no translation: no language switch, no Translate, no call to translate a page", () => {
+    expect(panel).not.toMatch(/Show the text in|Segmented|translatePage|canTranslate|TRANSLAT/);
+    expect(read("components/viewer/clearCopy.ts")).not.toMatch(/translateFailure|LANGUAGES|SHOW_IN|TRANSLAT/);
+    expect(read("lib/api.ts")).not.toContain("/translate`");
+    expect(read("app/(app)/documents/[id]/DocumentView.tsx")).not.toMatch(/canTranslate|askLevel/);
+    expect(read("components/viewer/ReadClearly.module.css")).not.toMatch(/\.languages|\.translation/);
   });
 
   it("prints the copy alone, and never scrolls sideways", () => {
@@ -147,12 +126,8 @@ describe("Read clearly: the screen", () => {
     expect(LEFT_OUT).not.toMatch(/couldn't|sorry|unfortunately/i);
   });
 
-  it("never sends the same page twice: in-flight pages are held in a ref until they finish", () => {
-    expect(panel).toContain("const inFlight = useRef(new Set<string>());");
-    expect(panel).toMatch(/!inFlight\.current\.has\(doneKey\(lang, page\)\)/);
-    expect(panel).toMatch(/inFlight\.current\.add\(doneKey\(lang, page\)\)/);
-    expect(panel).toMatch(/finally \{\s*inFlight\.current\.delete\(doneKey\(lang, page\)\);/);
-  });
+  // Changed on purpose (Vrushit UAT, 25 Oct 2026): "never sends the same page twice" was about
+  // translating pages; with no translation there is nothing in flight to hold.
 });
 
 // Document panel UX (Tushar, 25 Oct 2026): the clean copy's Text tab, readable at 320px.
@@ -196,16 +171,7 @@ describe("the clean copy, easy to read", () => {
     expect(read("components/viewer/PageViewer.module.css")).toContain("background: var(--hl-fill);");
   });
 
-  it("labels the language control, marks its Devanagari options and puts it right above the text", () => {
-    expect(SHOW_IN).toBe("Show the text in");
-    expect(panel).toContain("label: <span lang={each.lang}>{each.name}</span>");
-    expect(LANGUAGES.filter((each) => /[ऀ-ॿ]/.test(each.name)).map((each) => each.lang)).toEqual(["hi", "mr"]);
-    expect(rule(".languages button")).toMatch(/min-height: var\(--h-lg\);/);
-    const group = panel.slice(panel.indexOf("<div ref={reader} className={styles.reader}>"));
-    expect(group.indexOf("<Segmented")).toBeGreaterThan(0);
-    expect(group.indexOf("<Segmented")).toBeLessThan(group.indexOf("<div className={styles.copy}>{copy}</div>"));
-    expect(panel).toContain('held.page.closest("main")?.scrollBy({ top: moved });'); // the page stays in place
-  });
+  // Changed on purpose (Vrushit UAT, 25 Oct 2026): the language control is gone (see "has no translation").
 
   it("aligns label and value lines, the label in medium weight", () => {
     expect(rule(".pair")).toMatch(/grid-template-columns: minmax\(0, 2fr\) minmax\(0, 3fr\);/);
