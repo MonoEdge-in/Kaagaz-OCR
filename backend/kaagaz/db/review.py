@@ -19,7 +19,7 @@ has nothing final to review.
 """
 
 from collections.abc import Mapping, Sequence
-from datetime import date
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -104,6 +104,24 @@ _COUNT_FOR_DOCUMENT = (
     " AND v.label_reason = ANY(CAST(:reasons AS text[]))"
 )
 
+# Verify all: the next chunk of the same queue (the count's filter: current, ready, out of
+# Trash, with its page), after the last value seen, by (created_at, id), and no newer than
+# when Verify all began. Locked like _LOCK_VALUE (OF v): a value another reviewer is
+# resolving is waited for, then read again, and left out once it is no longer needs review.
+_NEXT_CHUNK = (
+    "SELECT v.id, v.created_at, v.value_text FROM extracted_values v"
+    " JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id"
+    " JOIN pages p ON p.customer_id = v.customer_id AND p.document_id = v.document_id"
+    " AND p.page_no = v.page_no"
+    " WHERE v.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
+    " AND v.label = 'needs_review'"
+    " AND v.label_reason = ANY(CAST(:reasons AS text[]))"
+    " AND v.created_at <= :until AND (v.created_at, v.id) > (:after_at, CAST(:after_id AS uuid))"
+)
+_CHUNK_ORDER = " ORDER BY v.created_at, v.id LIMIT :limit FOR UPDATE OF v"
+_NEXT_CHUNK_ALL = _NEXT_CHUNK + _CHUNK_ORDER
+_NEXT_CHUNK_FOR_DOCUMENT = _NEXT_CHUNK + " AND v.document_id = CAST(:doc AS uuid)" + _CHUNK_ORDER
+
 # Only the value's row is locked (OF v), never the document's, so a resolve never
 # waits on the family lock that trash and the pipeline take.
 _LOCK_VALUE = (
@@ -138,10 +156,57 @@ def list_queue(
         "limit": limit,
         "offset": offset,
     }
-    queue, count = (_QUEUE, _COUNT) if document_id is None else (_QUEUE_FOR_DOCUMENT, _COUNT_FOR_DOCUMENT)
+    queue = _QUEUE if document_id is None else _QUEUE_FOR_DOCUMENT
     rows = conn.execute(text(queue), params).mappings().all()
+    return rows, count_queue(conn, customer_id, document_id=document_id, reasons=reasons)
+
+
+def count_queue(
+    conn: Connection, customer_id: str, *, document_id: str | None, reasons: Sequence[str] | None
+) -> int:
+    """How many values ``list_queue`` lists in all with these filters. O(n) over the
+    customer's n needs-review values."""
+    params = {
+        "c": customer_id,
+        "doc": document_id,
+        "reasons": list(EVERY_REASON if reasons is None else reasons),
+    }
+    count = _COUNT if document_id is None else _COUNT_FOR_DOCUMENT
     total: int = conn.execute(text(count), params).scalar_one()
-    return rows, int(total)
+    return int(total)
+
+
+def database_now(conn: Connection) -> datetime:
+    """The database's clock, which stamps each value's created_at."""
+    now: datetime = conn.execute(text("SELECT now()")).scalar_one()
+    return now
+
+
+def next_chunk(
+    conn: Connection,
+    customer_id: str,
+    *,
+    document_id: str | None,
+    reasons: Sequence[str] | None,
+    until: datetime,
+    after: tuple[datetime, str] | None,
+    limit: int,
+) -> Sequence[RowMapping]:
+    """Verify all: up to ``limit`` values of the queue as ``list_queue`` filters it, oldest
+    first, created no later than ``until`` and after ``after`` (the last one's created_at
+    and id), each locked until the transaction ends. Its id, created_at and value_text."""
+    after_at, after_id = after or (datetime.min.replace(tzinfo=UTC), "00000000-0000-0000-0000-000000000000")
+    params = {
+        "c": customer_id,
+        "doc": document_id,
+        "reasons": list(EVERY_REASON if reasons is None else reasons),
+        "until": until,
+        "after_at": after_at,
+        "after_id": after_id,
+        "limit": limit,
+    }
+    statement = _NEXT_CHUNK_ALL if document_id is None else _NEXT_CHUNK_FOR_DOCUMENT
+    return conn.execute(text(statement), params).mappings().all()
 
 
 def get_item(conn: Connection, customer_id: str, value_id: str) -> RowMapping | None:

@@ -293,12 +293,20 @@ describe("any number of files may be queued (Tushar, 25 Oct 2026)", () => {
         }),
       );
     });
+    let settled = false;
+    const all = Promise.all(uploads).then(() => {
+      settled = true;
+    });
     await pass(35 * 60_000); // 600 files x 4 calls at UPLOAD_CALLS_PER_MINUTE
-    await Promise.all(uploads);
+    // Each file's fingerprint is hashed with the real crypto, outside the fake clock, so on a busy
+    // machine the last files can finish hashing after that window and then wait on a fake timer
+    // that never fires (it hung, 25 Oct 2026). Keep the clock moving until all settle, bounded.
+    for (let extra = 0; !settled && extra < 30; extra += 1) await pass(60_000);
+    await all;
     expect(errors).toEqual([]); // no batch_full, no "Too many requests"
     expect(api.docs).toHaveLength(600);
     expect(api.sent.filter((request) => request.status >= 400)).toEqual([]);
-  });
+  }, 30_000); // about 2,400 simulated calls: 4-5 s of real time, over vitest's 5 s default
 });
 
 describe("a 429 is waited out, never hammered", () => {
