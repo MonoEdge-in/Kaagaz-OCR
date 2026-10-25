@@ -10,6 +10,11 @@
 //   something does (the signature: status, status_message, progress). Never more
 //   than 5 s, so Ready shows within 5 s (council 16 Oct 2026).
 // - A failed request is tried again on the same steps: one failure never stops it.
+// - A 429 is the server's pace, not a failure (Vrushit UAT, 25 Oct 2026: the screen said
+//   "The list did not refresh"): the next ask waits its Retry-After, and the screen is not
+//   told of a failure.
+
+import { rateLimitWait } from "./api";
 
 export const POLL_STEPS_MS = [3000, 5000] as const;
 
@@ -51,12 +56,15 @@ export function createPoller<T>(task: () => PollTask<T>, hidden: () => boolean):
     timer = null;
   }
 
-  function plan() {
+  function plan(atLeast = 0) {
     cancel();
-    timer = setTimeout(() => {
-      timer = null;
-      run();
-    }, POLL_STEPS_MS[step]);
+    timer = setTimeout(
+      () => {
+        timer = null;
+        run();
+      },
+      Math.max(POLL_STEPS_MS[step] ?? 0, atLeast),
+    );
   }
 
   /** force: an explicit refresh (the first load too) is sent even in a hidden tab. */
@@ -75,6 +83,7 @@ export function createPoller<T>(task: () => PollTask<T>, hidden: () => boolean):
     const mine = generation;
     const current = task();
     let more = true;
+    let paced = 0; // a 429's wait before the next ask
     current
       .load()
       .then(
@@ -89,17 +98,23 @@ export function createPoller<T>(task: () => PollTask<T>, hidden: () => boolean):
         (caught: unknown) => {
           if (mine !== generation) return;
           step = Math.min(step + 1, lastStep);
-          current.onFailure(caught);
+          const wait = rateLimitWait(caught, POLL_STEPS_MS[1]);
+          if (wait === null) current.onFailure(caught);
+          else paced = wait;
         },
       )
       .finally(() => {
         out = false;
-        if (queued) {
+        if (queued && paced === 0) {
           const again = queuedForce;
           queued = false;
           queuedForce = false;
           run(again);
-        } else if (mine === generation && more) plan();
+        } else if (mine === generation && (more || queued)) {
+          queued = false;
+          queuedForce = false;
+          plan(paced);
+        }
       });
   }
 

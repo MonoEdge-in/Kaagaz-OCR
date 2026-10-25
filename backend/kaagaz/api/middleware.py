@@ -8,7 +8,13 @@ Why:
 * **Rate limit**: a token bucket per signed-in user (per client address before
   sign-in; per operator, ``op:{oid}``, on /api/operator), ``rate_limit_per_minute``
   tokens refilled evenly over a minute,
-  held in memory. PROVISIONAL: behind the Next.js proxy every visitor who is
+  held in memory. A file's upload calls (``/api/documents/upload-sessions``: start,
+  parts, finish) have their own bucket of the same size, ``{key}:upload``, so a bulk
+  upload and the screens' reads never use up each other's (Vrushit UAT, 25 Oct 2026:
+  the batch tray's polling used up the budget and 805 calls were refused, uploads
+  among them). A refusal's ``Retry-After`` is the honest wait for the next token
+  (about a second at 120 a minute), not a flat minute, and each refusal is logged at
+  WARNING with the path, the ids and the bucket. PROVISIONAL: behind the Next.js proxy every visitor who is
   not signed in shares the proxy's address; trusting ``X-Forwarded-For`` is a
   security setting for Vrushit.
 * **Headers**: ``X-Content-Type-Options: nosniff``, ``Referrer-Policy:
@@ -24,6 +30,7 @@ Why:
 
 import json
 import logging
+import math
 import re
 import threading
 import time
@@ -43,6 +50,10 @@ REQUEST_ID_HEADER = "X-Request-ID"
 _REQUEST_ID = re.compile(r"^[A-Za-z0-9-]{8,64}$")
 
 access_log = logging.getLogger("kaagaz.api.access")
+limit_log = logging.getLogger("kaagaz.api.rate_limit")
+
+# A file's upload calls, counted in their own bucket (see the module notes).
+UPLOAD_PATH = "/api/documents/upload-sessions"
 error_log = logging.getLogger("kaagaz.api.errors")
 
 
@@ -92,6 +103,16 @@ class RateLimiter:
             bucket.tokens -= 1.0
             return True
 
+    def retry_after(self, key: str) -> int:
+        """Whole seconds until ``key`` has a token again, at least 1. O(1)."""
+        now = self._clock()
+        with self._lock:
+            bucket = self._buckets.get(key)
+            if bucket is None:
+                return 1
+            tokens = bucket.tokens + max(0.0, now - bucket.updated) * self._refill_per_second
+        return max(1, math.ceil((1.0 - tokens) / self._refill_per_second))
+
     def _drop_idle(self, now: float) -> None:
         full_after = self._capacity / self._refill_per_second
         idle = [key for key, b in self._buckets.items() if now - b.updated >= full_after]
@@ -116,10 +137,30 @@ class RequestMiddleware(BaseHTTPMiddleware):
             key = f"op:{operator_id}"
         else:
             key = f"user:{user_id}" if user_id else f"ip:{request.client.host if request.client else '-'}"
+        path = request.url.path
+        upload = path == UPLOAD_PATH or path.startswith(UPLOAD_PATH + "/")
+        if upload:
+            key += ":upload"
         if self._limiter.allow(key):
             response = await call_next(request)
         else:
-            response = error_response(429, "rate_limited", headers={"Retry-After": "60"})
+            wait = self._limiter.retry_after(key)
+            response = error_response(429, "rate_limited", headers={"Retry-After": str(wait)})
+            limit_log.warning(
+                json.dumps(
+                    {
+                        "event": "rate_limited",
+                        "request_id": request_id,
+                        "method": request.method,
+                        "path": path,
+                        "bucket": "upload" if upload else "general",
+                        "retry_after": wait,
+                        "user_id": user_id,
+                        "operator_id": operator_id,
+                    },
+                    separators=(",", ":"),
+                )
+            )
 
         response.headers[REQUEST_ID_HEADER] = request_id
         response.headers["X-Content-Type-Options"] = "nosniff"
@@ -131,7 +172,7 @@ class RequestMiddleware(BaseHTTPMiddleware):
                     "event": "request",
                     "request_id": request_id,
                     "method": request.method,
-                    "path": request.url.path,
+                    "path": path,
                     "status": response.status_code,
                     "ms": round((time.perf_counter() - started) * 1000, 1),
                     "user_id": user_id,

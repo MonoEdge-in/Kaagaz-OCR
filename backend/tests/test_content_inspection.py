@@ -5,7 +5,10 @@ Every attack sample here is made up and harmless: the scripts only call
 """
 
 import io
+import random
+import re
 import struct
+import time
 import unittest
 import zipfile
 import zlib
@@ -26,17 +29,19 @@ WINDOWS_PROGRAM = b"MZ" + b"\x90" * 62 + b"This program cannot be run in DOS mod
 LINUX_PROGRAM = b"\x7fELF\x02\x01\x01" + b"\x00" * 57
 
 
-def pdf_with(objects: list[bytes]) -> bytes:
+def pdf_with(objects: list[bytes], gaps: dict[int, bytes] | None = None) -> bytes:
     """A small PDF with a correct cross-reference table, built from object bodies.
 
-    Object 1 must be the catalog.
+    Object 1 must be the catalog. ``gaps``: what stands between an object's "0" and "obj"
+    in its header, by object number (a single space when not given).
     """
     out = io.BytesIO()
     out.write(b"%PDF-1.7\n")
     offsets = []
     for number, body in enumerate(objects, start=1):
         offsets.append(out.tell())
-        out.write(b"%d 0 obj\n" % number + body + b"\nendobj\n")
+        gap = (gaps or {}).get(number, b" ")
+        out.write(b"%d 0" % number + gap + b"obj\n" + body + b"\nendobj\n")
     xref = out.tell()
     out.write(b"xref\n0 %d\n0000000000 65535 f \n" % (len(objects) + 1))
     for offset in offsets:
@@ -58,6 +63,11 @@ def with_broken_object(data: bytes, number: int) -> bytes:
     lines = data[start:].split(b"\n")
     lines[2 + number] = b"%010d 00000 n " % 9  # inside the header line
     return data[:start] + b"\n".join(lines)
+
+
+def shifted_index(data: bytes, by: int) -> bytes:
+    """``data`` with every in-use cross-reference offset ``by`` bytes too far."""
+    return re.sub(rb"(\d{10}) 00000 n ", lambda m: b"%010d 00000 n " % (int(m.group(1)) + by), data)
 
 
 def png_bytes() -> bytes:
@@ -217,6 +227,59 @@ class DamagedPdfsCannotHideActiveContent(unittest.TestCase):
     def test_an_ordinary_scan_with_a_broken_entry_is_left_to_the_readers(self) -> None:
         scan = make_pdf([Page(picture=Picture(text_like_picture(60, 80), 0, 0, 612, 792))])
         self.assertIsNone(inspect(with_broken_object(scan, 3)))
+
+    def test_a_big_scan_whose_index_is_a_few_bytes_off_passes_in_time(self) -> None:
+        """Vrushit UAT, 25 Oct 2026: with every offset 7 bytes off (viewers rebuild such an
+        index), pdfminer read on through the image bytes to the next "obj", quadratic in
+        them: this 2.4 MB, two-page scan ran out the 20 s deadline and was refused as
+        "unscannable"."""
+        noise = random.Random(7).randbytes(1240 * 1754)  # noqa: S311 - a fixed seed makes a test scan, not a secret
+        gray = Image.frombytes("L", (1240, 1754), noise)
+        buffer = io.BytesIO()
+        gray.convert("RGB").save(buffer, "JPEG", quality=75)
+        jpeg = buffer.getvalue()
+        image = (
+            b"<< /Type /XObject /Subtype /Image /Width 1240 /Height 1754 /ColorSpace /DeviceRGB"
+            b" /BitsPerComponent 8 /Filter /DCTDecode /Length %d >>\nstream\n"
+            % len(jpeg)
+            + jpeg
+            + b"\nendstream"
+        )
+        draw = b"<< /Length 30 >>\nstream\nq 595 0 0 842 0 0 cm /Im0 Do Q\nendstream"
+        objects = [b"<< /Type /Catalog /Pages 2 0 R >>", b"<< /Type /Pages /Kids [3 0 R 6 0 R] /Count 2 >>"]
+        for first in (3, 6):  # each page, its drawing, its picture
+            resources = b"/Resources << /XObject << /Im0 %d 0 R >> >> /Contents %d 0 R" % (
+                first + 2,
+                first + 1,
+            )
+            objects += [
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] " + resources + b" >>",
+                draw,
+                image,
+            ]
+        scan = shifted_index(pdf_with(objects), 7)
+        started = time.monotonic()
+        self.assertIsNone(inspect(scan))
+        self.assertLess(time.monotonic() - started, 5.0)
+
+    def test_javascript_in_a_pdf_whose_index_is_a_few_bytes_off_is_blocked(self) -> None:
+        self.assertIs(inspect(shifted_index(pdf_with([CATALOG_JS, PAGES, PAGE, JS]), 7)), Finding.BLOCKED)
+        locked = make_pdf([Page(texts=[Text(72, 700, "Total 500")])], password_protected=True)
+        self.assertIs(inspect(shifted_index(locked, 7)), Finding.UNSCANNABLE)  # no repair walk: refused
+
+    def test_an_action_behind_a_header_with_a_comment_is_blocked_at_any_offset(self) -> None:
+        """Security review, 25 Oct 2026: PDF syntax reads a comment as white space, so
+        "4 0 %c\\nobj" is a header pdfminer and pdfium both read. A stricter header test
+        skipped it, and an /OpenAction to JavaScript or Launch behind it passed."""
+        launch = b"<< /S /Launch /F (calc.exe) >>"
+        for action in (JS, launch):
+            commented = pdf_with([CATALOG_JS, PAGES, PAGE, action], gaps={4: b" %c\n"})
+            for by in (0, 3):  # the index right, and a few bytes off
+                with self.subTest(action=action[:20], off_by=by):
+                    self.assertIs(inspect(shifted_index(commented, by)), Finding.BLOCKED)
+        # The controls: the same header with nothing active passes; without the comment, blocked.
+        self.assertIsNone(inspect(pdf_with([CATALOG, PAGES, PAGE], gaps={3: b" %c\n"})))
+        self.assertIs(inspect(pdf_with([CATALOG_JS, PAGES, PAGE, JS])), Finding.BLOCKED)
 
     def test_a_damaged_encrypted_pdf_is_unscannable(self) -> None:
         locked = make_pdf([Page(texts=[Text(72, 700, "Total 500")])], password_protected=True)

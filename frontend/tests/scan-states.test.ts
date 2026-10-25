@@ -217,7 +217,8 @@ describe("one calm, fixed-height status cell", () => {
 
   it("gives each line one fixed height, the text cut to one line, the bar one width", () => {
     const css = read("components/documents/Documents.module.css");
-    expect(css).toMatch(/\.statusLine \{[^}]*height: var\(--h-sm\);/);
+    // Changed on purpose (Vrushit UAT, 25 Oct 2026): a row's lines after the first sit close, --row-sub.
+    expect(css).toMatch(/\.statusLine \{[^}]*height: var\(--row-sub\);/);
     expect(css).toMatch(/@media \(pointer: coarse\) \{\s*\.statusLine \+ \.statusLine \{\s*height: var\(--h-lg\);/);
     expect(css).toMatch(/\.statusText \{[^}]*-webkit-line-clamp: 1;[^}]*overflow: hidden;/);
     expect(css).toMatch(/\.scanMeter \{\s*flex: none;\s*width: 4rem;/);

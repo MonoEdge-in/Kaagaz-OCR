@@ -12,7 +12,11 @@ command, using only the standard library ``socket``:
    * ``stream: <signature> FOUND`` is INFECTED;
    * ``INSTREAM size limit exceeded. ERROR`` is UNSCANNABLE: clamd refused to
      read the whole file, so it cannot be called clean;
-   * ``stream: Heuristics.Limits.Exceeded... FOUND`` and
+   * ``stream: Heuristics.Limits.Exceeded.MaxScanTime FOUND`` is ``ScannerError``: clamd ran
+     out of time, which depends on how busy it was, not only on the file (Vrushit UAT,
+     25 Oct 2026), so the job is retried like a timeout; after the last try the document
+     fails, still unscanned, and is never read.
+   * any other ``stream: Heuristics.Limits.Exceeded... FOUND`` and
      ``stream: Heuristics.Encrypted... FOUND`` are UNSCANNABLE too: clamd could
      not look inside. So is ``stream: Heuristics.Broken... FOUND``
      (``AlertBrokenMedia``): a damaged file, not a virus; still refused.
@@ -50,6 +54,15 @@ _CHUNK_BYTES = 64 * 1024
 
 # clamd's replies are one short line. A longer one is not clamd.
 _MAX_REPLY_BYTES = 4096
+
+# clamd's MaxScanTime alert: retried, not a verdict on the file (see _verdict).
+_TIME_LIMIT = "stream: Heuristics.Limits.Exceeded.MaxScanTime"
+# clamd could not look inside, by alert: the reason logged for each.
+_UNSCANNABLE = (
+    ("stream: Heuristics.Limits.Exceeded", "limits_exceeded"),
+    ("stream: Heuristics.Encrypted", "encrypted"),
+    ("stream: Heuristics.Broken.", "broken"),
+)
 
 # The EICAR anti-virus test string, split in two so this source file is not
 # itself flagged by a virus scanner on a developer's machine.
@@ -109,12 +122,17 @@ def _read_reply(connection: socket.socket) -> bytes:
 
 def _verdict(reply: bytes, *, sent_all: bool) -> Verdict:
     text = reply.decode("ascii", errors="replace").strip()
+    if text.startswith(_TIME_LIMIT):
+        logger.warning("virus scan unfinished: time_limit")
+        raise ScannerError("scanner_timeout")
     if text.endswith("size limit exceeded. ERROR"):
+        logger.warning("virus scan unscannable: size_limit")
         return Verdict.UNSCANNABLE
-    if text.startswith(
-        ("stream: Heuristics.Limits.Exceeded", "stream: Heuristics.Encrypted", "stream: Heuristics.Broken.")
-    ):
-        return Verdict.UNSCANNABLE
+    for prefix, reason in _UNSCANNABLE:
+        if text.startswith(prefix):
+            # A fixed reason only: which check could not look inside, never clamd's words.
+            logger.warning("virus scan unscannable: %s", reason)
+            return Verdict.UNSCANNABLE
     if sent_all and text == "stream: OK":
         return Verdict.CLEAN
     if text.startswith("stream: ") and text.endswith(" FOUND"):
@@ -149,6 +167,9 @@ class LayeredScanner:
 
     def scan(self, data: bytes) -> Verdict:
         finding = inspect_isolated(data)  # in a child process with OS limits
+        if finding is not None:
+            # Which layer refused the file, so a support case can tell (Vrushit UAT, 25 Oct 2026).
+            logger.warning("content check refused: %s", finding.value)
         if finding is Finding.BLOCKED:
             return Verdict.BLOCKED
         if finding is Finding.UNSCANNABLE:

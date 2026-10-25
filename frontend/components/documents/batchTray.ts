@@ -24,8 +24,19 @@ import {
 import type { UploadEntry } from "./uploadQueue";
 import { NO_TIMES, jobFraction } from "./uploadStages";
 
-export const MAX_FILES_PER_BATCH = 100; // the server's MAX_FILES_PER_BATCH (409 batch_full past it)
-export const TOO_MANY_FILES = "Up to 100 files at a time. Drop the rest after these start.";
+/** Files in one batch: the server's MAX_FILES_PER_BATCH (409 batch_full past it), which is also
+ * how many files one GET /api/batches/{id} returns. A bigger pick is never refused: it is split
+ * into batches of this many (Tushar, 25 Oct 2026: any number of files may be queued). */
+export const MAX_FILES_PER_BATCH = 100;
+
+/** The pick in batches of at most MAX_FILES_PER_BATCH files, in order. O(n). */
+export function inBatches<T>(files: readonly T[]): T[][] {
+  const batches: T[][] = [];
+  for (let start = 0; start < files.length; start += MAX_FILES_PER_BATCH) {
+    batches.push(files.slice(start, start + MAX_FILES_PER_BATCH));
+  }
+  return batches;
+}
 export const KEEP_MS = 24 * 60 * 60 * 1000;
 export const STORE_KEY = "kaagaz.uploads.batches";
 

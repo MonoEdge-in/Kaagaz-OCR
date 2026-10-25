@@ -70,10 +70,8 @@
 
 @media (min-width: 1024px) {
   .screen {
-    grid-template-areas:
-      "pane subbar"
-      "pane thread";
-    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-areas: "pane thread";
+    grid-template-rows: minmax(0, 1fr);
     grid-template-columns: 320px minmax(0, 1fr); /* 280px of card, and its 40px margin */
   }
 
@@ -81,22 +79,9 @@
     display: block;
   }
 
-  /* The pane holds the list and New here, so the Ask bar keeps only the quality picker, over
-     the thread at the composer's right edge; with no picker there is no bar (Tushar, 24 Oct
-     2026: the picker was hidden with the bar on wide screens). */
+  /* The pane holds the list and New here (Vrushit UAT, 25 Oct 2026: the bar was only shown
+     for the answer quality picker, which is gone). */
   .subbar {
-    justify-content: flex-end;
-    padding: var(--space-3) var(--space-8) 0;
-    background: transparent;
-    border-bottom: 0;
-  }
-
-  .subbar .subbarList,
-  .subbar .subbarNew {
-    display: none;
-  }
-
-  .subbar:not(:has(.quality)) {
     display: none;
   }
 }
@@ -1643,26 +1628,4 @@
     clip-path: inset(50%);
     white-space: nowrap;
   }
-}
-
-/* The Ask bar's right side: the quality picker, then New (24 Oct 2026). */
-.subbarEnd {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-width: 0;
-}
-
-.quality {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  color: var(--accent);
-  font-weight: 600;
-}
-
-.qualityWords {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
 }
