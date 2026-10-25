@@ -13,7 +13,8 @@ describe("the documents table lines up", () => {
   });
 
   it("puts the document kind on the status's second line", () => {
-    expect(css).toMatch(/\.docType \{\s*line-height: var\(--h-sm\);/);
+    // Changed on purpose (Vrushit UAT, 25 Oct 2026): the status's second line is --row-sub too.
+    expect(css).toMatch(/\.docType \{\s*line-height: var\(--row-sub\);/);
     expect(css).toMatch(/table\.docs \.docType \{\s*line-height: var\(--h-lg\);/);
   });
 

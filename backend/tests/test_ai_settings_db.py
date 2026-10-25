@@ -17,13 +17,16 @@ from sqlalchemy import text
 
 from kaagaz.api import totp
 from kaagaz.db import models
+from kaagaz.db import operator_models as ops
 from kaagaz.db.engine import Database
+from kaagaz.db.operator_orgs import Outcome
 from kaagaz.worker_main import _scanning_on
 from tests.db_support import insert_document, new_customer
 from tests.settings_factory import make_settings
 from tests.test_api_support import CSRF, Api, Signed, TestClient
 from tests.test_autofile_db import file, organisation, ready, state, upload
-from tests.test_migration_0023_db import allow, catalog_model
+from tests.test_isolation_ai_settings import chat_model, set_org
+from tests.test_migration_0023_db import allow, catalog_model, new_operator
 from tests.test_operator_auth_db import _Operator, _owner
 
 pytestmark = pytest.mark.db
@@ -133,6 +136,33 @@ def test_ask_at_none_drafts_with_no_model_and_a_level_caps_the_request(db: Datab
     member.client.post("/api/chat", json=body, headers=CSRF)
     choice = api.answers.choices[-1]
     assert choice is not None and choice.thinking == "low"  # the request's own level is capped
+
+
+def test_precision_answers_on_the_strongest_model_and_swift_on_the_usual_one(db: Database) -> None:
+    # Vrushit UAT (25 Oct 2026): Swift and Precision must really differ, not in the level alone.
+    api = Api(db, settings=GEMINI)
+    member = api.new_signed()
+    usual, strong = chat_model(db, price_in=1, price_out=2), chat_model(db, price_in=5, price_out=20)
+    choice = ops.AiChoice(
+        chat_models=[usual, strong],
+        chat_default=usual,
+        chat_levels=["low", "medium", "high"],
+        chat_default_level="medium",
+    )
+    assert set_org(db, new_operator(db), member.customer_id, choice) == Outcome("done", member.customer_id)
+
+    def drafted_by(**body: Any) -> tuple[list[str], str]:
+        reply = member.client.post("/api/chat", json={"question": "totals?", **body}, headers=CSRF)
+        assert reply.status_code == 200, reply.text
+        last = api.answers.choices[-1]
+        assert last is not None
+        return [agent.model for agent in last.agents], last.thinking
+
+    assert drafted_by() == ([usual], "medium")  # Swift: the organisation's default, nothing sent
+    assert drafted_by(thinking="high") == ([strong], "high")  # Precision
+    assert drafted_by(thinking="high", agents=[usual]) == ([usual], "high")  # a model named is kept
+    put(member, "me", {"ask": "low"})
+    assert drafted_by(thinking="high") == ([usual], "low")  # capped below high: not Precision
 
 
 def test_switched_off_features_are_403_feature_off(db: Database) -> None:

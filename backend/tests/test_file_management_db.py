@@ -423,6 +423,27 @@ def test_d2_each_customer_sees_only_its_own_counts(db: Database) -> None:
     assert [row["name"] for row in other["departments"]] == ["Theirs"]
 
 
+def test_d2_not_in_a_department_lists_exactly_the_files_it_counts(db: Database) -> None:
+    # Vrushit UAT (25 Oct 2026): the card said 6 files and its list showed all 9.
+    api = Api(db)
+    mine = api.new_admin()
+    theirs = api.new_admin()
+    department = _department(db, mine.customer_id, mine.user_id)
+    inner = api.add_folder(mine.customer_id, mine.user_id, "Land records", department)
+    plain = api.add_folder(mine.customer_id, mine.user_id, "Old scans")
+    api.add_document(mine.customer_id, uploaded_by=mine.user_id, folder_id=department)
+    api.add_document(mine.customer_id, uploaded_by=mine.user_id, folder_id=inner)
+    loose = api.add_document(mine.customer_id, uploaded_by=mine.user_id)
+    scanned = api.add_document(mine.customer_id, uploaded_by=mine.user_id, folder_id=plain)
+    api.add_document(theirs.customer_id, uploaded_by=theirs.user_id)
+    assert mine.client.get("/api/dashboard").json()["not_in_department"] == 2
+    assert set(_ids(mine, department_id="none")) == {loose, scanned}
+    assert mine.client.get("/api/documents", params={"department_id": "none"}).json()["total"] == 2
+    with db.customer(mine.customer_id) as conn:  # search's Q3 filters share the fragment
+        assert set(listing.matching_ids(conn, mine.customer_id, outside_departments=True)) == {loose, scanned}
+    assert mine.client.get("/api/documents", params={"department_id": "nowhere"}).status_code in (400, 422)
+
+
 def test_d2_the_dashboard_answers_in_under_300_ms_on_10000_documents(db: Database) -> None:
     customer, admin = new_customer(db)
     with db.customer(customer) as conn:

@@ -126,7 +126,7 @@ class FileFilters(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    department_id: uuid.UUID | None = None
+    department_id: uuid.UUID | Literal["none"] | None = None  # "none": in no department
     owner_id: uuid.UUID | None = None
     sensitivity: list[Literal["public", "internal", "confidential", "restricted"]] | None = Field(
         default=None, max_length=4
@@ -145,13 +145,14 @@ def narrow(conn: Connection, customer_id: str, scope: Scope, asked: FileFilters)
     if all(getattr(asked, name) == field.default for name, field in FileFilters.model_fields.items()):
         return scope
     department = None
-    if asked.department_id is not None:
+    if isinstance(asked.department_id, uuid.UUID):
         department = folders_sql.descendant_ids(conn, customer_id, str(asked.department_id))
     kept = set(
         listing.matching_ids(
             conn,
             customer_id,
             department_folders=department,
+            outside_departments=asked.department_id == "none",
             owner_id=None if asked.owner_id is None else str(asked.owner_id),
             sensitivities=asked.sensitivity or (),
             party=(asked.party or "").strip() or None,
