@@ -531,7 +531,7 @@
   }
 }
 
-/* QA #370: on cards an idle bar stays where it is, after the list; stuck, it floated over
+/* QA issue 370: on cards an idle bar stays where it is, after the list; stuck, it floated over
    the cards and the search box. It sticks once a row is ticked. */
 @container docs-list (max-width: 35.98rem) {
   .selectionBar[data-idle] {
@@ -1412,7 +1412,7 @@ table.docs > tbody > tr {
   }
 
   /* File management F5: on a card the owner, label, version and date are the facts line.
-     QA #370: more specific than "table.docs td" above, or the cells showed too, with a "—". */
+     QA issue 370: more specific than "table.docs td" above, or the cells showed too, with a "—". */
   table.docs .ownerCell,
   table.docs .labelCell,
   table.docs .versionCell,
