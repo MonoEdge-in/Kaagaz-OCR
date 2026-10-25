@@ -711,7 +711,8 @@ describe("layout guards", () => {
     const overview = read("components/operator/OverviewView.tsx");
     expect(overview).toContain('className={column.id === "spend" ? "num" : undefined}');
     expect(overview).toContain('data-label="AI spend this month" className="num"');
-    expect(read("app/(app)/documents/[id]/DocumentPanels.tsx").match(/className=\{MONEY_LINE_FIELDS\.has\(field\) \? "num" : undefined\}/g)).toHaveLength(2);
+    // Changed on purpose (Vrushit UAT, 25 Oct 2026): the invoice lines, with their money columns, are gone from the document page.
+    expect(read("app/(app)/documents/[id]/DocumentPanels.tsx")).not.toContain("MONEY_LINE_FIELDS");
   });
 });
 
@@ -742,7 +743,9 @@ describe("the document screen (boards 2, 3 and 6)", () => {
     const panels = view.slice(view.indexOf("<PanelTabs"), view.indexOf("</PanelTabs>"));
     const overview = panels.slice(panels.indexOf('shownTab === "overview"'), panels.indexOf('shownTab === "attention"'));
     // Changed on purpose (24 Oct 2026): the Document card is gone from Details.
-    for (const part of ["{values}", "<InvoicePanel", "<RelatedPanel", "<StoryPanel"]) expect(overview).toContain(part);
+    // Changed on purpose (Vrushit UAT, 25 Oct 2026): the Invoice section is gone from Details.
+    for (const part of ["{values}", "<RelatedPanel", "<StoryPanel"]) expect(overview).toContain(part);
+    expect(overview).not.toContain("<InvoicePanel");
     const attention = panels.slice(panels.indexOf('shownTab === "attention"'), panels.indexOf('shownTab === "scanned"'));
     for (const part of ["<PageProblems", "<AttentionPanel"]) expect(attention).toContain(part);
     expect(panels).toContain("<ScannedTextPanel");

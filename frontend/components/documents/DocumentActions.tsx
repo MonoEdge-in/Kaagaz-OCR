@@ -39,7 +39,7 @@ import {
   movedMessage,
   tagNameProblem,
 } from "./library";
-import type { EditAction, RowAction } from "./library";
+import type { EditAction, MenuEntry, RowAction } from "./library";
 import { documentsCount, runEach } from "./trash";
 import styles from "./Library.module.css";
 
@@ -52,8 +52,8 @@ export interface RowMenuProps {
   /** The document screen's menu (DD2): Read again first when `readAgain`. */
   place?: "list" | "document";
   readAgain?: boolean;
-  /** The document screen's other actions (24 Oct 2026: Ensemble, Export, Download original),
-   * after the menu's own, each with one plain line; disabled ones say why. */
+  /** The document screen's other actions (24 Oct 2026: Ensemble, Export as Data, Download original),
+   * after the menu's own and before Move to Trash, each with one plain line; disabled ones say why. */
   more?: readonly MoreItem[];
 }
 
@@ -63,6 +63,8 @@ export interface MoreItem {
   onSelect(): void;
   disabledReason?: string | null;
 }
+
+const isDanger = (entry: MenuEntry) => entry.kind === "action" && entry.danger;
 
 export function RowMenu({
   item,
@@ -203,48 +205,7 @@ export function RowMenu({
             style={at ? { top: at.top, left: at.left } : { top: 0, left: 0 }}
             onKeyDown={onMenuKey}
           >
-            {entries.map((entry) => (
-              <li key={entry.kind === "download" ? "download" : entry.action} role="none">
-                {entry.kind === "download" ? (
-                  <a
-                    role="menuitem"
-                    tabIndex={-1}
-                    className={styles.menuItem}
-                    href={entry.href}
-                    download
-                    aria-label="Download original"
-                    aria-describedby={`${menuId}-download`}
-                    onClick={() => close(true)}
-                  >
-                    <span className={styles.menuWords}>
-                      Download original
-                      <span id={`${menuId}-download`} className={styles.menuHint}>
-                        {ACTION_HELP.download}
-                      </span>
-                    </span>
-                  </a>
-                ) : (
-                  <button
-                    role="menuitem"
-                    tabIndex={-1}
-                    type="button"
-                    className={entry.danger ? `${styles.menuItem} ${styles.danger}` : styles.menuItem}
-                    aria-label={entry.words}
-                    aria-describedby={`${menuId}-${entry.action}`}
-                    onClick={() => pick(entry.action)}
-                  >
-                    {entry.danger && <Icon name="trash" />}
-                    {/* The words, then one plain line saying what it does (plain words, 25 Oct 2026). */}
-                    <span className={styles.menuWords}>
-                      {entry.words}
-                      <span id={`${menuId}-${entry.action}`} className={styles.menuHint}>
-                        {ACTION_HELP[entry.action]}
-                      </span>
-                    </span>
-                  </button>
-                )}
-              </li>
-            ))}
+            {entries.filter((entry) => !isDanger(entry)).map(entryItem)}
             {more.map((extra, index) => (
               <li key={extra.label} role="none">
                 <button
@@ -269,11 +230,58 @@ export function RowMenu({
                 </button>
               </li>
             ))}
+            {/* Vrushit UAT (25 Oct 2026): Move to Trash, the destructive one, always last. */}
+            {entries.filter(isDanger).map(entryItem)}
           </ul>,
           window.document.body,
         )}
     </>
   );
+
+  function entryItem(entry: MenuEntry) {
+    return (
+      <li key={entry.kind === "download" ? "download" : entry.action} role="none">
+        {entry.kind === "download" ? (
+          <a
+            role="menuitem"
+            tabIndex={-1}
+            className={styles.menuItem}
+            href={entry.href}
+            download
+            aria-label="Download original"
+            aria-describedby={`${menuId}-download`}
+            onClick={() => close(true)}
+          >
+            <span className={styles.menuWords}>
+              Download original
+              <span id={`${menuId}-download`} className={styles.menuHint}>
+                {ACTION_HELP.download}
+              </span>
+            </span>
+          </a>
+        ) : (
+          <button
+            role="menuitem"
+            tabIndex={-1}
+            type="button"
+            className={entry.danger ? `${styles.menuItem} ${styles.danger}` : styles.menuItem}
+            aria-label={entry.words}
+            aria-describedby={`${menuId}-${entry.action}`}
+            onClick={() => pick(entry.action)}
+          >
+            {entry.danger && <Icon name="trash" />}
+            {/* The words, then one plain line saying what it does (plain words, 25 Oct 2026). */}
+            <span className={styles.menuWords}>
+              {entry.words}
+              <span id={`${menuId}-${entry.action}`} className={styles.menuHint}>
+                {ACTION_HELP[entry.action]}
+              </span>
+            </span>
+          </button>
+        )}
+      </li>
+    );
+  }
 }
 
 export interface EditDialogProps {

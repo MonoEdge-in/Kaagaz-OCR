@@ -47,7 +47,7 @@ export const EXIT_LABEL = "Exit review";
 export const ENSEMBLE_FLAGGED = "Run Ensemble on flagged words";
 export const ENSEMBLE_DOCUMENT = "Run Ensemble on full document";
 export const SEND_TO_ENSEMBLE = "Send to Ensemble";
-export const EXPORT_LABEL = "Export";
+export const EXPORT_LABEL = "Export as Data"; // Vrushit UAT (25 Oct 2026): the read text as a .txt file
 export const DOWNLOAD_LABEL = "Download original";
 export const ENSEMBLE_INFO =
   "Ensemble reads the same text with several recognition models and compares their readings. When they agree, the word is resolved. When they don't, it stays flagged for you, with each reading shown.";
@@ -210,7 +210,7 @@ export type HistoryFilter = (typeof HISTORY_FILTERS)[number]["id"];
 
 // --- Export (section 7) ---
 
-export const EXPORT_NOTE = "Export downloads the original file.";
+export const EXPORT_NOTE = "Saves the text as read, page by page, and the values found, as a plain text file (.txt).";
 export const EXPORT_WAIT = "Export is available when scanning finishes.";
 export const REVIEW_FIRST = "Review first";
 export const EXPORT_ANYWAY = "Export anyway";

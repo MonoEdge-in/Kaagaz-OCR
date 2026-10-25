@@ -617,16 +617,6 @@ export interface ClearCopy {
   truncated: boolean; // the document-wide cap was reached: the rest was left out
 }
 
-export type TranslateLanguage = "en" | "hi" | "mr";
-
-/** POST /documents/{id}/pages/{n}/translate: one translation for each line, in order. */
-export interface PageTranslation {
-  page_no: number;
-  language: TranslateLanguage;
-  lines: string[]; // plain text only, through visibleText
-  cached: boolean;
-}
-
 /** What became of a cited document since the answer was given. Missing means "live". */
 export type SourceState = "live" | "older_version" | "in_trash" | "deleted";
 
