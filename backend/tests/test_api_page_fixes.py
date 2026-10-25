@@ -429,8 +429,10 @@ def test_f4_the_summary_counts_pages_to_attend_to_and_values_to_review(db: Datab
     detail = signed.client.get(f"/api/documents/{doc}").json()
 
     counts = ("pages_unreadable", "pages_uncertain", "values_to_review")
-    assert tuple(listed[doc][name] for name in counts) == (2, 1, 1)  # box_unanchored: not counted
-    assert tuple(detail[name] for name in counts) == (2, 1, 1)
+    # Changed on purpose (QA issue #366, 25 Oct 2026): box_unanchored still waits to be
+    # verified, so it is counted, as the review queue lists it.
+    assert tuple(listed[doc][name] for name in counts) == (2, 1, 2)
+    assert tuple(detail[name] for name in counts) == (2, 1, 2)
     assert tuple(listed[clean][name] for name in counts) == (0, 0, 0)
     reasons = sorted(value["label_reason"] for value in detail["values"])
     assert reasons == ["box_unanchored", "low_confidence", "readers_agree"]  # PRD 5 reasons, as stored

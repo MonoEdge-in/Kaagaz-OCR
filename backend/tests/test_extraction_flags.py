@@ -11,8 +11,8 @@ from typing import Any
 
 import pytest
 
-from kaagaz.db import listing
-from kaagaz.db.review import EVERY_REASON
+from kaagaz.db import listing, review
+from kaagaz.db.review import EVERY_REASON, WAITING_VALUE
 from kaagaz.db.word_review import FLAGGED_VALUE
 from kaagaz.extraction.flags import (
     LINE,
@@ -142,13 +142,19 @@ def test_every_label_reason_has_a_row() -> None:
     assert set(VALUE_TABLE) == set(EVERY_REASON)
 
 
-def test_the_file_list_counts_the_values_the_review_screen_flags() -> None:
-    """KZ-004: one "flagged" definition. The SQL picks the reasons value_flag flags (a fixed
-    value aside), and the list's count and attention filter use the same fragment."""
+def test_the_file_list_counts_the_values_the_review_queue_lists() -> None:
+    """KZ-004: the SQL picks the reasons value_flag flags (a fixed value aside), out of the
+    values still waiting to be verified."""
     picked = set(re.findall(r"'(\w+)'", FLAGGED_VALUE.split(" IN ")[1].split(")")[0]))
     assert picked == {reason for reason, flag in VALUE_TABLE.items() if flag and reason != "corrected"}
-    assert FLAGGED_VALUE in listing._COLUMNS and FLAGGED_VALUE in listing._NEEDS_ATTENTION
-    assert "ev.label = 'needs_review'" not in listing._COLUMNS
+    # Changed on purpose (QA issue #366, 25 Oct 2026): the list's count and attention filter
+    # use the review queue's one definition of a value still waiting, no longer the review
+    # screen's flagged values, which left single_reader out and said "All values verified".
+    assert FLAGGED_VALUE.startswith(f"({WAITING_VALUE} AND ")
+    assert WAITING_VALUE in listing._COLUMNS and WAITING_VALUE in listing._NEEDS_ATTENTION
+    assert FLAGGED_VALUE not in listing._COLUMNS and FLAGGED_VALUE not in listing._NEEDS_ATTENTION
+    for statement in (review._QUEUE, review._QUEUE_FOR_DOCUMENT, review._COUNT, review._COUNT_FOR_DOCUMENT):
+        assert WAITING_VALUE in statement
 
 
 @pytest.mark.parametrize("reason", sorted(VALUE_TABLE))

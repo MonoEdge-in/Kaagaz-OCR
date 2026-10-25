@@ -67,40 +67,47 @@ EVERY_REASON = (
     "local_reader",
 )
 
+# One definition of a value still waiting to be verified (QA #366): labelled needs review,
+# shown as Ready to verify; every other value is Verified. The queue lists these (of current,
+# ready documents out of Trash), and the file list and the upload tray count them
+# (db/listing.py's values_to_review), so a file never says "All values verified" while one
+# of its values still waits. Alias ``v``.
+WAITING_VALUE = "v.label = 'needs_review'"
+
 # The queue and its total repeat the same filter in full, so each can be checked on its own.
 # Two fixed statements each, for the whole queue and for one document, never one with
 # "(:doc IS NULL OR ...)": a prepared statement's generic plan could not use the
 # document id then. The count keeps the pages join, so it counts what the queue lists.
 _QUEUE = _ITEM + (
-    " AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready' AND v.label = 'needs_review'"
+    f" AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready' AND {WAITING_VALUE}"
     " AND v.label_reason = ANY(CAST(:reasons AS text[]))"
     " ORDER BY v.created_at, v.id LIMIT :limit OFFSET :offset"
 )
 
 _QUEUE_FOR_DOCUMENT = _ITEM + (
-    " AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready' AND v.label = 'needs_review'"
+    f" AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready' AND {WAITING_VALUE}"
     " AND v.document_id = CAST(:doc AS uuid)"
     " AND v.label_reason = ANY(CAST(:reasons AS text[]))"
     " ORDER BY v.created_at, v.id LIMIT :limit OFFSET :offset"
 )
 
 _COUNT = (
-    "SELECT count(*) FROM extracted_values v"
+    "SELECT count(*) FROM extracted_values v"  # noqa: S608 - a fixed fragment, WAITING_VALUE
     " JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id"
     " JOIN pages p ON p.customer_id = v.customer_id AND p.document_id = v.document_id"
     " AND p.page_no = v.page_no"
     " WHERE v.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
-    " AND v.label = 'needs_review'"
+    f" AND {WAITING_VALUE}"
     " AND v.label_reason = ANY(CAST(:reasons AS text[]))"
 )
 
 _COUNT_FOR_DOCUMENT = (
-    "SELECT count(*) FROM extracted_values v"
+    "SELECT count(*) FROM extracted_values v"  # noqa: S608 - a fixed fragment, WAITING_VALUE
     " JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id"
     " JOIN pages p ON p.customer_id = v.customer_id AND p.document_id = v.document_id"
     " AND p.page_no = v.page_no"
     " WHERE v.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
-    " AND v.label = 'needs_review' AND v.document_id = CAST(:doc AS uuid)"
+    f" AND {WAITING_VALUE} AND v.document_id = CAST(:doc AS uuid)"
     " AND v.label_reason = ANY(CAST(:reasons AS text[]))"
 )
 
@@ -109,12 +116,12 @@ _COUNT_FOR_DOCUMENT = (
 # when Verify all began. Locked like _LOCK_VALUE (OF v): a value another reviewer is
 # resolving is waited for, then read again, and left out once it is no longer needs review.
 _NEXT_CHUNK = (
-    "SELECT v.id, v.created_at, v.value_text FROM extracted_values v"
+    "SELECT v.id, v.created_at, v.value_text FROM extracted_values v"  # noqa: S608 - a fixed fragment, WAITING_VALUE
     " JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id"
     " JOIN pages p ON p.customer_id = v.customer_id AND p.document_id = v.document_id"
     " AND p.page_no = v.page_no"
     " WHERE v.customer_id = :c AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'"
-    " AND v.label = 'needs_review'"
+    f" AND {WAITING_VALUE}"
     " AND v.label_reason = ANY(CAST(:reasons AS text[]))"
     " AND v.created_at <= :until AND (v.created_at, v.id) > (:after_at, CAST(:after_id AS uuid))"
 )

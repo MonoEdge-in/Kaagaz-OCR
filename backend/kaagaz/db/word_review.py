@@ -97,10 +97,11 @@ _FLAG_SPANS = text(
     " OR p.read_issues && CAST(ARRAY['read_locally', 'reader_refused'] AS text[]) OR u.ensemble)"
     " ORDER BY p.page_no, e.ord"
 )
-# A value (alias ``v``) flags.value_flag flags while open: one definition of "flagged" for this
-# screen and the file list's ``values_to_review`` (kaagaz/db/listing.py).
+# A value (alias ``v``) flags.value_flag flags while open: this screen's flagged values, some
+# of the values still waiting to be verified (review.WAITING_VALUE), which the file list
+# counts (QA #366).
 FLAGGED_VALUE = (
-    "(v.label = 'needs_review'"
+    f"({review_sql.WAITING_VALUE}"
     " AND (v.label_reason IN ('readers_disagree', 'low_confidence', 'ocr_script')"
     " OR (v.votes IS NOT NULL AND v.votes ->> 'value' IS NULL)))"
 )
