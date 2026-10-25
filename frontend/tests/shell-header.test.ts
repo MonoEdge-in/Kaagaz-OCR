@@ -14,6 +14,7 @@ import { initials, isSearchShortcut } from "@/components/shell/nav";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import type { ConfirmDialogProps } from "@/components/ui/ConfirmDialog";
 import { IconButton } from "@/components/ui/IconButton";
+import { PaletteProvider } from "@/components/ui/PaletteProvider";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { ThemeProvider } from "@/components/ui/ThemeProvider";
 import { Toast } from "@/components/ui/Toast";
@@ -46,10 +47,18 @@ const me: Me = {
   session: { scope: "admin" },
 };
 const noop = () => undefined;
-/** The account menu as the server renders it, inside the page's theme (children as the third argument). */
+/** The account menu as the server renders it, inside the page's theme and palette (children as the third argument). */
 const account = (initial: ThemeChoice) =>
   renderToStaticMarkup(
-    createElement(ThemeProvider, { initial } as Parameters<typeof ThemeProvider>[0], createElement(AccountMenu, { me })),
+    createElement(
+      ThemeProvider,
+      { initial } as Parameters<typeof ThemeProvider>[0],
+      createElement(
+        PaletteProvider,
+        { initial: "kaagaz" } as Parameters<typeof PaletteProvider>[0],
+        createElement(AccountMenu, { me }),
+      ),
+    ),
   );
 
 describe("G1: the status bar row only when it has content", () => {

@@ -2,8 +2,10 @@ import type { Metadata, Viewport } from "next";
 import { Archivo, IBM_Plex_Mono, IBM_Plex_Sans, IBM_Plex_Sans_Devanagari } from "next/font/google";
 import { cookies } from "next/headers";
 import type { ReactNode } from "react";
+import { PaletteProvider } from "@/components/ui/PaletteProvider";
 import { ThemeProvider } from "@/components/ui/ThemeProvider";
 import { WheelGuard } from "@/components/ui/WheelGuard";
+import { PALETTE_COOKIE, paletteAttribute, parsePalette } from "@/lib/palette";
 import { parseTheme, THEME_COOKIE, themeAttribute } from "@/lib/theme";
 import "./globals.css";
 import "./styles/tokens.css";
@@ -70,19 +72,24 @@ export const viewport: Viewport = {
 export default async function RootLayout({ children }: { children: ReactNode }) {
   // The theme cookie is read on the server so the page arrives in the right
   // theme (lib/theme.ts). This makes pages render per request, which is fine
-  // for an app that is behind sign-in.
-  const choice = parseTheme((await cookies()).get(THEME_COOKIE)?.value);
+  // for an app that is behind sign-in. The colour palette the same way (lib/palette.ts).
+  const jar = await cookies();
+  const choice = parseTheme(jar.get(THEME_COOKIE)?.value);
+  const palette = parsePalette(jar.get(PALETTE_COOKIE)?.value);
   return (
     <html
       lang="en"
       data-theme={themeAttribute(choice)}
+      data-palette={paletteAttribute(palette)}
       className={`${archivo.variable} ${plexSans.variable} ${plexDevanagari.variable} ${plexMono.variable}`}
       // Next turns smooth scrolling off while it moves between pages.
       data-scroll-behavior="smooth"
     >
       <body>
         <WheelGuard />
-        <ThemeProvider initial={choice}>{children}</ThemeProvider>
+        <ThemeProvider initial={choice}>
+          <PaletteProvider initial={palette}>{children}</PaletteProvider>
+        </ThemeProvider>
       </body>
     </html>
   );
