@@ -29,17 +29,19 @@ WINDOWS_PROGRAM = b"MZ" + b"\x90" * 62 + b"This program cannot be run in DOS mod
 LINUX_PROGRAM = b"\x7fELF\x02\x01\x01" + b"\x00" * 57
 
 
-def pdf_with(objects: list[bytes]) -> bytes:
+def pdf_with(objects: list[bytes], gaps: dict[int, bytes] | None = None) -> bytes:
     """A small PDF with a correct cross-reference table, built from object bodies.
 
-    Object 1 must be the catalog.
+    Object 1 must be the catalog. ``gaps``: what stands between an object's "0" and "obj"
+    in its header, by object number (a single space when not given).
     """
     out = io.BytesIO()
     out.write(b"%PDF-1.7\n")
     offsets = []
     for number, body in enumerate(objects, start=1):
         offsets.append(out.tell())
-        out.write(b"%d 0 obj\n" % number + body + b"\nendobj\n")
+        gap = (gaps or {}).get(number, b" ")
+        out.write(b"%d 0" % number + gap + b"obj\n" + body + b"\nendobj\n")
     xref = out.tell()
     out.write(b"xref\n0 %d\n0000000000 65535 f \n" % (len(objects) + 1))
     for offset in offsets:
@@ -264,6 +266,20 @@ class DamagedPdfsCannotHideActiveContent(unittest.TestCase):
         self.assertIs(inspect(shifted_index(pdf_with([CATALOG_JS, PAGES, PAGE, JS]), 7)), Finding.BLOCKED)
         locked = make_pdf([Page(texts=[Text(72, 700, "Total 500")])], password_protected=True)
         self.assertIs(inspect(shifted_index(locked, 7)), Finding.UNSCANNABLE)  # no repair walk: refused
+
+    def test_an_action_behind_a_header_with_a_comment_is_blocked_at_any_offset(self) -> None:
+        """Security review, 25 Oct 2026: PDF syntax reads a comment as white space, so
+        "4 0 %c\\nobj" is a header pdfminer and pdfium both read. A stricter header test
+        skipped it, and an /OpenAction to JavaScript or Launch behind it passed."""
+        launch = b"<< /S /Launch /F (calc.exe) >>"
+        for action in (JS, launch):
+            commented = pdf_with([CATALOG_JS, PAGES, PAGE, action], gaps={4: b" %c\n"})
+            for by in (0, 3):  # the index right, and a few bytes off
+                with self.subTest(action=action[:20], off_by=by):
+                    self.assertIs(inspect(shifted_index(commented, by)), Finding.BLOCKED)
+        # The controls: the same header with nothing active passes; without the comment, blocked.
+        self.assertIsNone(inspect(pdf_with([CATALOG, PAGES, PAGE], gaps={3: b" %c\n"})))
+        self.assertIs(inspect(pdf_with([CATALOG_JS, PAGES, PAGE, JS])), Finding.BLOCKED)
 
     def test_a_damaged_encrypted_pdf_is_unscannable(self) -> None:
         locked = make_pdf([Page(texts=[Text(72, 700, "Total 500")])], password_protected=True)
