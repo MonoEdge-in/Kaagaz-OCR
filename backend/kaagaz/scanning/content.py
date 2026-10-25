@@ -64,7 +64,7 @@ from pdfminer.pdfdocument import LITERAL_OBJSTM, PDFDocument, PDFXRefFallback
 from pdfminer.pdfparser import PDFParser, PDFStreamParser
 from pdfminer.pdftypes import PDFObjRef, PDFStream
 from pdfminer.psexceptions import PSEOF, PSException
-from pdfminer.psparser import PSKeyword, PSLiteral
+from pdfminer.psparser import KWD, PSBaseParser, PSKeyword, PSLiteral
 
 from kaagaz.ingestion.sniff import JPEG, PDF, PNG, TEXT, TIFF, ZIP, detect_type
 
@@ -127,8 +127,16 @@ _DAMAGED = (
     zlib.error,
 )
 
-# An object's header, "12 0 obj", anywhere in the file (a viewer's index rebuild).
+# An object's header, "12 0 obj", anywhere in the file (a viewer's index rebuild). PDF
+# syntax lets a comment stand for white space ("12 0 %x\nobj"), so the repair walk also
+# looks for it in a copy of the file with every comment blanked out (_COMMENT).
 _OBJECT_HEADER = re.compile(rb"(?<![0-9])\d+\s+\d+\s+obj\b")
+_COMMENT = re.compile(rb"%[^\r\n]*")
+# The usual header at an index offset; anything else is read with pdfminer's own tokens.
+_HEADER_AT = re.compile(rb"\s*(\d+)\s+\d+\s+obj\b")
+# Bytes after an index offset read for its header's three tokens (_tokens_say_header).
+_HEADER_PEEK = 4096
+_OBJ = KWD(b"obj")
 _ENDS_A_DICTIONARY_PART = frozenset({b"stream", b"endobj", b"obj"})
 
 # Work bounds, so no PDF can make the check hang or fill memory (council 17 Oct 2026: an
@@ -338,6 +346,13 @@ def _bounded_pdf_finding(data: bytes, bounds: _Bounds) -> Finding | None:
                     damaged = True
                     break
                 bounds.grant(_READ_PER_OBJECT)
+                if not _header_where_indexed(data, document, object_id):
+                    # Vrushit UAT, 25 Oct 2026: from a wrong offset pdfminer reads on to the next
+                    # "obj", through a scanned page's image bytes, quadratic in them (a 2.5 MB scan
+                    # with offsets 7 bytes off ran out the deadline: "unscannable"). A viewer
+                    # rebuilds such an index; the repair walk below finds the object by its header.
+                    damaged = True
+                    continue
                 try:
                     obj = document.getobj(object_id)
                 except _DAMAGED:
@@ -357,6 +372,43 @@ def _bounded_pdf_finding(data: bytes, bounds: _Bounds) -> Finding | None:
     return _repair_walk(data, document, bounds)
 
 
+def _header_where_indexed(data: bytes, document: PDFDocument, object_id: int) -> bool:
+    """False if the index entry pdfminer would use (the first index listing the object, as
+    ``getobj`` picks it) gives a file offset where this object's header is not. An object
+    inside an object stream has no offset of its own: True. O(1)."""
+    for xref in document.xrefs:
+        try:
+            stream_id, position, _ = xref.get_pos(object_id)
+        except KeyError:
+            continue
+        if stream_id is not None:
+            return True
+        header = _HEADER_AT.match(data, position)
+        if header is not None and int(header.group(1)) == object_id:
+            return True
+        return _tokens_say_header(data, position, object_id)
+    return True  # listed nowhere: getobj says so itself
+
+
+def _tokens_say_header(data: bytes, position: int, object_id: int) -> bool:
+    """Whether pdfminer's tokens at ``position`` (comments and white space skipped, as a
+    viewer skips them) are this object's header, "id gen obj". Read from at most
+    _HEADER_PEEK bytes, so a wrong offset into image bytes costs O(1); if those run out
+    before three tokens, it is not called a non-header: getobj reads it, as it always did
+    (security review, 25 Oct 2026: "4 0 %c\\nobj" is a header a stricter test missed)."""
+    parser = PSBaseParser(io.BytesIO(data[max(0, position) : position + _HEADER_PEEK]))
+    tokens: list[object] = []
+    try:
+        for _ in range(3):
+            tokens.append(parser.nexttoken()[1])
+    except PSEOF:
+        return True  # undecided
+    except _DAMAGED:
+        return False  # no header there: getobj would fail the same way
+    first, generation, keyword = tokens
+    return first == object_id and isinstance(generation, int) and keyword is _OBJ
+
+
 def _repair_walk(data: bytes, document: PDFDocument, bounds: _Bounds) -> Finding | None:
     """BLOCKED if any object in the whole file, found by its header as a viewer rebuilds
     an index (pdfium, pdf.js and Acrobat all do), or inside an object stream, is active;
@@ -370,20 +422,30 @@ def _repair_walk(data: bytes, document: PDFDocument, bounds: _Bounds) -> Finding
     parser = PDFParser(file)
     parser.set_document(document)
     parser.fallback = True  # a stream runs to its "endstream", whatever its /Length says
-    for header in _OBJECT_HEADER.finditer(data):
+    for end in _header_ends(data):
         bounds.grant(_READ_PER_OBJECT)
-        parser.seek(header.end())
+        parser.seek(end)
         try:
             found = [parser.nextobject()[1], *_leftovers(parser)]
         except _DAMAGED:
             found = None
         if found is None:
-            active = _loose_names_active(parser, header.end())
+            active = _loose_names_active(parser, end)
         else:
             active = any(_holds_active(value, document) for value in found)
         if active:
             return Finding.BLOCKED
     return None
+
+
+def _header_ends(data: bytes) -> list[int]:
+    """Where each object header in the file ends, in file order: headers as written, and
+    headers with a comment between their parts, found in a copy with each comment blanked
+    to spaces (same offsets). Both, since a "%" inside a string is not a comment. O(n)."""
+    blanked = _COMMENT.sub(lambda comment: b" " * len(comment.group()), data)
+    ends = {header.end() for header in _OBJECT_HEADER.finditer(data)}
+    ends.update(header.end() for header in _OBJECT_HEADER.finditer(blanked))
+    return sorted(ends)
 
 
 def _leftovers(parser: PDFParser) -> list[object]:

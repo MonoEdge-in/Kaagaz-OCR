@@ -7,6 +7,8 @@ second half (marked ``db``) signs in against a real PostgreSQL.
 
 import base64
 import json
+import re
+from pathlib import Path
 
 import pytest
 from sqlalchemy import text
@@ -204,6 +206,61 @@ def test_rate_limit_gives_429_with_the_error_shape() -> None:
     assert reply.status_code == 429
     assert reply.json()["error"]["code"] == "rate_limited"
     assert reply.headers["X-Request-ID"]
+
+
+def test_rate_limiter_retry_after_is_the_wait_for_the_next_token() -> None:
+    """Vrushit UAT, 25 Oct 2026: a flat "60" made a polite client stall a minute for a
+    token that comes back in half a second at 120 a minute."""
+    now = [0.0]
+    limiter = RateLimiter(120, clock=lambda: now[0])
+    while limiter.allow("a"):
+        pass
+    assert limiter.retry_after("a") == 1
+    slow = RateLimiter(3, clock=lambda: now[0])  # one token every 20 s
+    while slow.allow("a"):
+        pass
+    now[0] = 5.0
+    assert slow.retry_after("a") == 15
+
+
+def test_the_documented_limit_is_the_one_the_browser_is_sized_under() -> None:
+    """frontend/tests/request-budget.test.ts reads RATE_LIMIT_PER_MINUTE from .env.example and
+    checks a bulk upload's polling and upload pace fit well under it. Lowering it here breaks
+    this test; making the browser chattier breaks that one."""
+    example = (Path(__file__).resolve().parents[2] / ".env.example").read_text(encoding="utf-8")
+    assert re.findall(r"^RATE_LIMIT_PER_MINUTE=(\d+)$", example, re.MULTILINE) == ["120"]
+
+
+def test_a_refusal_says_when_to_come_back_and_is_logged(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level("WARNING", logger="kaagaz.api.rate_limit")
+    client = _offline_client(rate_limit_per_minute=2)  # one token every 30 s
+    client.get("/api/auth/me")
+    client.get("/api/auth/me")
+    reply = client.get("/api/auth/me")
+    assert reply.status_code == 429
+    assert reply.headers["Retry-After"] == "30"
+    lines = [json.loads(r.getMessage()) for r in caplog.records if r.name == "kaagaz.api.rate_limit"]
+    assert len(lines) == 1
+    assert lines[0]["event"] == "rate_limited"
+    assert lines[0]["path"] == "/api/auth/me"
+    assert (lines[0]["bucket"], lines[0]["retry_after"]) == ("general", 30)
+    assert [r.levelname for r in caplog.records if r.name == "kaagaz.api.rate_limit"] == ["WARNING"]
+
+
+def test_upload_calls_and_reads_never_use_up_each_others_budget() -> None:
+    """Vrushit UAT, 25 Oct 2026: the batch tray's polling used up the one budget and the
+    upload calls were refused ("Too many requests"). Each has its own bucket now."""
+    client = _offline_client(rate_limit_per_minute=2)
+    for _ in range(2):
+        client.get("/api/auth/me")
+    assert client.get("/api/auth/me").status_code == 429  # reads: used up
+    # Uploads still go.
+    assert client.post("/api/documents/upload-sessions/candidates", json={}, headers=CSRF).status_code != 429
+    assert (
+        client.put("/api/documents/upload-sessions/s1/parts/1", content=b"x", headers=CSRF).status_code != 429
+    )
+    # Still a limit: the upload bucket is the same size, and a third call is refused.
+    assert client.post("/api/documents/upload-sessions", json={}, headers=CSRF).status_code == 429
 
 
 def test_forged_cookie_is_not_signed_in_without_a_database_lookup() -> None:

@@ -13,14 +13,12 @@ import type { ChangeEvent, ReactNode } from "react";
 import { buildTree } from "@/components/documents/folderTree";
 import { ACCEPT_ATTRIBUTE } from "@/components/documents/logic";
 import { UploadStatus, useUploads } from "@/components/documents/UploadArea";
+import { NOTIFY_MS } from "@/components/documents/uploadQueue";
 import { departmentsOf, lastDepartment } from "@/components/files/departments";
 import { canReview } from "@/components/review/review";
 import { listFolders } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import type { Folder } from "@/lib/types";
-
-/** How long the screens wait to hear of stored files, so a run of them is one refresh. */
-const NOTIFY_MS = 1000;
 
 /** The shell's own file input; a screen with its own (#upload-input) is used first. */
 export const SHELL_UPLOAD_INPUT_ID = "upload-input-shell";
@@ -40,8 +38,8 @@ export function UploadsProvider({ children }: { children: ReactNode }) {
   const { me } = useSession();
   const listeners = useRef(new Set<() => void>());
   const notifyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // One refresh for a run of stored files: a 100-file drop asks each screen again about once
-  // a second while it lands, not 100 times in a row.
+  // One refresh for a run of stored files: a 100-file drop asks each screen again at most
+  // every NOTIFY_MS (3 s) while it lands, not 100 times in a row.
   const notify = () => {
     if (notifyTimer.current !== null) return;
     notifyTimer.current = setTimeout(() => {
@@ -112,7 +110,6 @@ export function UploadsProvider({ children }: { children: ReactNode }) {
         entries={uploads.entries}
         views={uploads.views}
         stored={uploads.stored}
-        tooMany={uploads.tooMany}
         onClearFinished={uploads.clearFinished}
         onRestore={(key, documentId, name) => void uploads.restore(key, documentId, name)}
         onRetry={(key) => void uploads.retry(key)}

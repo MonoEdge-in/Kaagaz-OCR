@@ -10,8 +10,8 @@ import {
   UPLOADS_AT_ONCE,
   followed,
   isBusy,
+  createSlots,
   queueReducer,
-  runLimited,
 } from "@/components/documents/uploadQueue";
 import type { UploadEntry } from "@/components/documents/uploadQueue";
 import type { DocumentSummary } from "@/lib/types";
@@ -54,24 +54,29 @@ const entry = (key: string, state: UploadState, batchId = "b1"): UploadEntry => 
   state,
 });
 
+// Changed on purpose (Vrushit UAT, 25 Oct 2026): runLimited ran 3 at a time per drop, so
+// several drops sent 3 each; createSlots is one limit shared by every drop.
 describe("3 at a time (Q2)", () => {
-  it("never has more than 3 uploads going at once, and sends every file in order", async () => {
+  it("never has more than 3 uploads going at once, across drops, and sends every file in order", async () => {
+    const slots = createSlots(UPLOADS_AT_ONCE);
     let going = 0;
     let most = 0;
     const started: number[] = [];
     const releases: (() => void)[] = [];
-    const run = runLimited([1, 2, 3, 4, 5, 6, 7], UPLOADS_AT_ONCE, async (n) => {
-      started.push(n);
-      going += 1;
-      most = Math.max(most, going);
-      await new Promise<void>((resolve) => releases.push(resolve));
-      going -= 1;
-    });
+    const work = (n: number) =>
+      slots(async () => {
+        started.push(n);
+        going += 1;
+        most = Math.max(most, going);
+        await new Promise<void>((resolve) => releases.push(resolve));
+        going -= 1;
+      });
+    // Three drops, as a person adds files in several goes, each started before the last ends.
+    const run = Promise.all([[1, 2], [3, 4, 5], [6, 7]].map((drop) => Promise.all(drop.map(work))));
     for (let i = 0; i < 7; i += 1) {
-      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
       expect(going).toBeLessThanOrEqual(3);
       releases.shift()?.();
-      await new Promise((resolve) => setTimeout(resolve, 0));
     }
     await run;
     expect(UPLOADS_AT_ONCE).toBe(3);
@@ -79,15 +84,10 @@ describe("3 at a time (Q2)", () => {
     expect(started).toEqual([1, 2, 3, 4, 5, 6, 7]);
   });
 
-  it("runs fewer slots than 3 for fewer files, and nothing for none", async () => {
-    const seen: string[] = [];
-    await runLimited(["a"], UPLOADS_AT_ONCE, async (item) => {
-      seen.push(item);
-    });
-    await runLimited([], UPLOADS_AT_ONCE, async () => {
-      throw new Error("never called");
-    });
-    expect(seen).toEqual(["a"]);
+  it("frees the slot when a file fails, and gives back what the work gave", async () => {
+    const slots = createSlots(1);
+    await expect(slots(async () => Promise.reject(new Error("refused")))).rejects.toThrow("refused");
+    await expect(slots(async () => "a")).resolves.toBe("a");
   });
 });
 
