@@ -77,7 +77,14 @@
   overflow-wrap: anywhere;
 }
 
-/* The document page's Details tab: one term and its value a row, pickers inline. */
+/* The document page's Details tab: one term and its value a row, pickers inline. The tab's
+   own width decides the stacking, not the screen's: beside the viewer at 1024px the panel is
+   about 15rem, where a 9rem term column squeezed "Ravi Madeup" and Change onto three lines
+   (QA pass, 25 Oct 2026). */
+.detailsBox {
+  container: details / inline-size;
+}
+
 .details {
   display: grid;
   grid-template-columns: minmax(0, 9rem) minmax(0, 1fr);
@@ -103,7 +110,7 @@
   overflow-wrap: anywhere;
 }
 
-@media (max-width: 479.98px) {
+@container details (max-width: 23.98rem) {
   .details {
     grid-template-columns: minmax(0, 1fr);
     gap: var(--space-1);

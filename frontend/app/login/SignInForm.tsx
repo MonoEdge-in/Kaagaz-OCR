@@ -138,9 +138,14 @@ export function SignInForm({ note, next }: { note: string | null; next: string }
         return;
       }
       const message = signInErrorMessage(caught);
-      setServerError(askCode ? `${message} ${CODE_ADVICE}` : message);
-      setCode("");
-      setBusy(false);
+      flushSync(() => {
+        setServerError(askCode ? `${message} ${CODE_ADVICE}` : message);
+        setCode("");
+        setBusy(false);
+      });
+      // The pressed button was disabled while busy, which dropped focus to the page: put it back
+      // in the field to fix, so the keyboard carries on from there (QA pass, 25 Oct 2026).
+      document.getElementById(askCode ? FIELD_IDS.code : FIELD_IDS.password)?.focus();
     }
   }
 
