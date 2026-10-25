@@ -13,6 +13,7 @@ import { useRef, useState } from "react";
 import { clearStored } from "@/components/documents/batchTray";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { Icon } from "@/components/ui/Icon";
+import { PalettePicker } from "@/components/ui/PalettePicker";
 import { ThemeToggle } from "@/components/ui/ThemeToggle";
 import { ApiError, logout, logoutEverywhere } from "@/lib/api";
 import { announceSession, leavePage } from "@/lib/sessionChannel";
@@ -91,6 +92,8 @@ export function AccountMenu({ me }: { me: Me }) {
         </div>
 
         <ThemeToggle />
+        {/* Tushar, 25 Oct 2026: six colour palettes, for this person only, beside the theme. */}
+        <PalettePicker />
 
         {/* Spec 17 Oct 2026: the member's own AI settings, within what the admin left open. */}
         <Link
