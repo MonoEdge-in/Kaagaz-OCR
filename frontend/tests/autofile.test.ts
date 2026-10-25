@@ -70,7 +70,7 @@ const tray = (document: DocumentSummary, folders = [{ id: INVOICES, name: "Invoi
       entries: [{ key: "a", name: "bill.pdf", size: 1000, state: { kind: "done", documentId: DOC, document } }],
       views: {},
       stored: [],
-      tooMany: false,
+      // Changed on purpose (Tushar, 25 Oct 2026): no "too many files" alert any more, so no tooMany.
       onClearFinished: () => undefined,
       onRestore: () => undefined,
       onRetry: () => undefined,

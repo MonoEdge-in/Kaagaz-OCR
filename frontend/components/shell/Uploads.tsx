@@ -110,7 +110,6 @@ export function UploadsProvider({ children }: { children: ReactNode }) {
         entries={uploads.entries}
         views={uploads.views}
         stored={uploads.stored}
-        tooMany={uploads.tooMany}
         onClearFinished={uploads.clearFinished}
         onRestore={(key, documentId, name) => void uploads.restore(key, documentId, name)}
         onRetry={(key) => void uploads.retry(key)}

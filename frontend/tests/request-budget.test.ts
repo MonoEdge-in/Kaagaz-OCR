@@ -12,6 +12,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { inBatches } from "@/components/documents/batchTray";
 import { shouldPoll } from "@/components/documents/logic";
 import { NOTIFY_MS, UPLOADS_AT_ONCE, askBatches, createSlots } from "@/components/documents/uploadQueue";
 import type { Followed } from "@/components/documents/uploadQueue";
@@ -67,7 +68,7 @@ function stubApi() {
 
   const refuse = { next: 0, wait: 0 }; // refuse the next calls, saying to wait this long
 
-  function answer(method: string, path: string): { status: number; body: unknown; wait?: number } {
+  function answer(method: string, path: string, body?: string): { status: number; body: unknown; wait?: number } {
     const bucket: Bucket = path.startsWith(UPLOAD_PATH) ? "upload" : "general";
     const forced = refuse.next > 0 ? (refuse.next -= 1) >= 0 : false;
     const wait = forced ? refuse.wait : buckets[bucket].allow();
@@ -75,7 +76,14 @@ function stubApi() {
     sent.push({ at: Date.now() - start, bucket, path, status, wait });
     if (wait > 0) return { status, wait, body: { error: { code: "rate_limited", message: "Too many requests." } } };
     if (path === `${UPLOAD_PATH}/candidates`) return { status, body: { candidates: [] } };
-    if (path === UPLOAD_PATH) return { status, body: { id: `s${sessions.size + 1}`, part_size: 8 * 1024 * 1024, part_count: 1 } };
+    if (path === UPLOAD_PATH) {
+      // The API's MAX_FILES_PER_BATCH: the 101st file of one batch is 409 batch_full.
+      const batch = String((JSON.parse(body ?? "{}") as { batch_id?: string }).batch_id);
+      if ([...sessions.values()].filter((id) => id === batch).length >= 100) {
+        return { status: 409, body: { error: { code: "batch_full", message: "Up to 100 files at a time." } } };
+      }
+      return { status, body: { id: `s${sessions.size + 1}`, part_size: 8 * 1024 * 1024, part_count: 1 } };
+    }
     if (/\/parts\/\d+$/.test(path)) return { status, body: {} };
     if (path.endsWith("/complete")) {
       const id = `d${docs.length + 1}`;
@@ -122,7 +130,7 @@ function stubApi() {
   vi.stubGlobal("XMLHttpRequest", FakeXhr);
   vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
     const path = url.split("?")[0] ?? url;
-    const reply = answer(init.method ?? "GET", path);
+    const reply = answer(init.method ?? "GET", path, init.body ? String(init.body) : undefined);
     if (path === UPLOAD_PATH && reply.status === 200) {
       const body = JSON.parse(String(init.body)) as { batch_id: string };
       sessions.set((reply.body as { id: string }).id, body.batch_id);
@@ -268,6 +276,28 @@ describe("the request budget of a bulk upload", () => {
     expect(api.sent.length).toBe(before);
     tray.stop();
     list.stop();
+  });
+});
+
+describe("any number of files may be queued (Tushar, 25 Oct 2026)", () => {
+  it("queues a pick of 600 files in batches of 100, none refused for the count or the pace", async () => {
+    const api = stubApi();
+    const slots = createSlots(UPLOADS_AT_ONCE);
+    const errors: unknown[] = [];
+    const pick = Array.from({ length: 600 }, (_, i) => new File([`%PDF-1.7 page ${i}`], `deed-${i}.pdf`));
+    const uploads = inBatches(pick).flatMap((batch, index) => {
+      const batchId = `${String(index).padStart(8, "0")}-0000-4000-8000-000000000000`;
+      return batch.map((file) =>
+        slots(() => uploadDocument(file, "u1", () => {}, undefined, undefined, batchId)).catch((caught: unknown) => {
+          errors.push(caught);
+        }),
+      );
+    });
+    await pass(35 * 60_000); // 600 files x 4 calls at UPLOAD_CALLS_PER_MINUTE
+    await Promise.all(uploads);
+    expect(errors).toEqual([]); // no batch_full, no "Too many requests"
+    expect(api.docs).toHaveLength(600);
+    expect(api.sent.filter((request) => request.status >= 400)).toEqual([]);
   });
 });
 

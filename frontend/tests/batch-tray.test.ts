@@ -12,7 +12,7 @@ import {
   KEEP_MS,
   MAX_FILES_PER_BATCH,
   STORE_KEY,
-  TOO_MANY_FILES,
+  inBatches,
   batchFraction,
   clearStored,
   leftText,
@@ -83,7 +83,7 @@ const TRAY = {
   entries: [] as UploadEntry[],
   views: {},
   stored: [],
-  tooMany: false,
+  // Changed on purpose (Tushar, 25 Oct 2026): no "too many files" alert any more, so no tooMany.
   onClearFinished: () => undefined,
   onRestore: () => undefined,
   onRetry: () => undefined,
@@ -369,10 +369,18 @@ describe("the drop's bar and time", () => {
   });
 });
 
-describe("at most 100 files a drop", () => {
-  it("says so in the PRD's words", () => {
+// Changed on purpose (Tushar, 25 Oct 2026): "no limit on the number of documents put in the
+// queue". A drop of more than 100 files was cut at 100 with "Up to 100 files at a time"; now
+// it is split into batches of 100 (the server's batch size) and every file is queued.
+describe("any number of files a drop", () => {
+  it("splits a pick of 600 into six batches of 100, every file kept, in order", () => {
     expect(MAX_FILES_PER_BATCH).toBe(100);
-    expect(TOO_MANY_FILES).toBe("Up to 100 files at a time. Drop the rest after these start.");
+    const pick = Array.from({ length: 600 }, (_, i) => i);
+    const batches = inBatches(pick);
+    expect(batches.map((batch) => batch.length)).toEqual([100, 100, 100, 100, 100, 100]);
+    expect(batches.flat()).toEqual(pick);
+    expect(inBatches(pick.slice(0, 250)).map((batch) => batch.length)).toEqual([100, 100, 50]);
+    expect(inBatches([])).toEqual([]);
   });
 });
 

@@ -56,13 +56,12 @@ import { useTick } from "@/lib/tick";
 import type { BatchView, DocumentSummary, UploadLimits, UploadReader, UploadResult } from "@/lib/types";
 import { usePoll } from "@/lib/usePoll";
 import {
-  MAX_FILES_PER_BATCH,
   NOT_FILED_TEXT,
-  TOO_MANY_FILES,
   UNDONE_TEXT,
   batchFraction,
   batchStore,
   filedText,
+  inBatches,
   leftText,
   newBatchId,
   readStored,
@@ -140,7 +139,6 @@ export function useUploads(onUploaded: () => void) {
   // Drops from before a reload: every file the batch API lists gets a row.
   const [restored] = useState(() => new Set(stored.map((batch) => batch.id)));
   const [views, setViews] = useState<Record<string, BatchView>>({});
-  const [tooMany, setTooMany] = useState(false);
   const [slots] = useState(() => createSlots(UPLOADS_AT_ONCE)); // Q2: 3 files at a time in all
 
   function chooseReader(id: string) {
@@ -292,16 +290,15 @@ export function useUploads(onUploaded: () => void) {
   }
 
   /**
-   * Queue one drop of files for upload into folderId (undefined: the top level): one
-   * batch of at most MAX_FILES_PER_BATCH files; the rest are refused and the tray says so.
+   * Queue one drop of files for upload into folderId (undefined: the top level), however
+   * many: in batches of at most MAX_FILES_PER_BATCH files (inBatches), each its own batch.
    * departmentId (File management F2): the department picked, used when no folder is named.
    */
   async function addFiles(files: File[], folderId?: string, departmentId?: string) {
     const userId = me.user.id;
     const reading = readingToSend(limits.readers, reader);
-    const batchId = newBatchId();
-    setTooMany(files.length > MAX_FILES_PER_BATCH);
-    const added = files.slice(0, MAX_FILES_PER_BATCH).map((file) => {
+    const batches = inBatches(files).map((group) => ({ batchId: newBatchId(), group }));
+    const added = batches.flatMap(({ batchId, group }) => group.map((file) => {
       nextKey.current += 1;
       const problem = validateUpload(file, limits);
       const entry: UploadEntry = {
@@ -315,9 +312,10 @@ export function useUploads(onUploaded: () => void) {
       const start: Start = (onProgress, onSent, onWaiting) =>
         uploadDocument(file, userId, onProgress, folderId, reading, batchId, onSent, departmentId, onWaiting);
       return { entry, file, start };
-    });
+    }));
     dispatch({ type: "add", entries: added.map((item) => item.entry) });
-    setStored((batches) => [{ id: batchId, at: Date.now(), already: 0, notSent: 0 }, ...batches]);
+    const at = Date.now();
+    setStored((before) => [...batches.map(({ batchId }) => ({ id: batchId, at, already: 0, notSent: 0 })), ...before]);
     const sending = added.filter((item) => item.entry.state.kind === "waiting");
     for (const { entry, start } of sending) kept.current.set(entry.key, start);
     // A few at a time across every drop, so many drops do not multiply them.
@@ -374,7 +372,6 @@ export function useUploads(onUploaded: () => void) {
     const busy = new Set(queue.entries.filter(isBusy).map((entry) => entry.batchId));
     dispatch({ type: "clear" });
     setStored((batches) => batches.filter((batch) => busy.has(batch.id)));
-    setTooMany(false);
   }
 
   const { entries, finished, settled } = queue;
@@ -387,7 +384,6 @@ export function useUploads(onUploaded: () => void) {
     reader: reader ?? startReader(limits.readers, scanLevel),
     views,
     stored,
-    tooMany,
     chooseReader,
     addFiles,
     addVersion,
@@ -582,14 +578,13 @@ export function Dropzone({
  * bar (pages read over all pages), then its files in the order they were dropped, so a
  * file never moves as it changes state. A new version, which has no batch, is listed after
  * them. No live region of its own: the status bar's line speaks for the uploads
- * (UploadStatus). "Up to 100 files at a time" is said as an alert. ``onHide``: the Hide
- * button of the status bar's panel.
+ * (UploadStatus). A pick of more than 100 files shows as several batches of up to 100.
+ * ``onHide``: the Hide button of the status bar's panel.
  */
 export function BatchTray({
   entries,
   views,
   stored,
-  tooMany,
   onClearFinished,
   onRestore,
   onRetry,
@@ -601,7 +596,6 @@ export function BatchTray({
   entries: UploadEntry[];
   views: Record<string, BatchView>;
   stored: StoredBatch[];
-  tooMany: boolean;
   onClearFinished: () => void;
   onRestore: (key: string, documentId: string, existingName: string) => void;
   onRetry: (key: string) => void;
@@ -610,7 +604,7 @@ export function BatchTray({
   canReread: boolean; // a reviewer or an admin: may read a document again
   onHide?: () => void;
 }) {
-  if (entries.length === 0 && !tooMany) return null;
+  if (entries.length === 0) return null;
   const settled = entries.some((entry) => !isBusy(entry));
   const batches = new Map<string, UploadEntry[]>();
   const loose: UploadEntry[] = [];
@@ -650,11 +644,6 @@ export function BatchTray({
           )}
         </span>
       </div>
-      {tooMany && (
-        <p className={`error-text ${styles.small}`} role="alert">
-          {TOO_MANY_FILES}
-        </p>
-      )}
       {[...batches].map(([id, rows]) => {
         const view = views[id] ?? null;
         const busy = rows.some(isBusy);
@@ -887,7 +876,7 @@ export function UploadStatus({
 }: Omit<Parameters<typeof BatchTray>[0], "onHide"> & { open: boolean; onOpenChange: (open: boolean) => void }) {
   const id = useId();
   const toggle = useRef<HTMLButtonElement>(null);
-  const shown = tray.entries.length > 0 || tray.tooMany;
+  const shown = tray.entries.length > 0;
   // The time left counts down only while a file is sending or being read; settled, the line
   // stays still instead of redrawing on the shared tick.
   const busy = tray.entries.some(isBusy);
