@@ -122,9 +122,11 @@
   font-size: var(--fs-base);
 }
 
+/* Its circle fills it, so no border: the circle is exactly as tall as Upload. */
 .avatarButton {
   width: var(--control-h);
   padding: 0;
+  border: 0;
 }
 
 /* Upload: on a phone only its icon shows, so it is a round button like the others. */
@@ -140,8 +142,8 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: var(--h-sm);
-  height: var(--h-sm);
+  width: var(--control-h);
+  height: var(--control-h);
   border-radius: 50%;
   background: var(--accent);
   color: var(--text-onaccent);

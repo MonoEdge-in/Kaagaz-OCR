@@ -197,3 +197,19 @@ describe("the my words sources", () => {
     for (const file of files) expect(readFileSync(file, "utf8"), file).not.toMatch(/console\.|innerHTML/);
   });
 });
+
+// Vrushit UAT (25 Oct 2026): My words keeps only "Add a word"; suggesting an organization word
+// is gone, and the intro no longer talks about suggestions. The organization list stays, for the
+// words the viewer and chat send in for review.
+describe("the my words page", () => {
+  const screen = readFileSync(join(__dirname, "..", "components", "words", "MyWordsScreen.tsx"), "utf8");
+
+  it("offers Add a word only, with an intro about the person's own words", () => {
+    expect(screen).toContain(">Add a word</h2>");
+    expect(screen).not.toMatch(/Suggest an organization word|suggestOrganizationWord|organizationDraft|>Suggest</);
+    expect(screen).toContain("<p>Your words stay private, and chat uses them to understand your questions.</p>");
+    expect(screen).not.toMatch(/Suggestions made here/);
+    expect(readFileSync(join(__dirname, "..", "lib", "api.ts"), "utf8")).not.toContain("suggestOrganizationWord");
+    expect(screen).toContain("listOrganizationWords");
+  });
+});

@@ -20,7 +20,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, CSSProperties, FormEvent, ReactNode } from "react";
 import { activityDocument, activitySentence } from "@/components/activity/words";
 import { askHref } from "@/components/chat/logic";
-import { ALL_DOCUMENTS, libraryHref } from "@/components/documents/libraryQuery";
+import { ALL_DOCUMENTS, NO_DEPARTMENT, libraryHref } from "@/components/documents/libraryQuery";
 import { ACCEPT_ATTRIBUTE } from "@/components/documents/logic";
 import { DepartmentPicker } from "@/components/files/DepartmentPicker";
 import { departmentsOf, lastDepartment, rememberDepartment } from "@/components/files/departments";
@@ -413,7 +413,10 @@ export function DashboardBody({ data, now }: { data: DashboardData; now: number 
               ))}
               {data.not_in_department > 0 && (
                 <li>
-                  <Link className={`${styles.department} ${styles.outside}`} href="/documents">
+                  <Link
+                    className={`${styles.department} ${styles.outside}`}
+                    href={libraryHref({ ...ALL_DOCUMENTS, departmentId: NO_DEPARTMENT })}
+                  >
                     <span className={styles.departmentName}>
                       <Icon name="folder" />
                       <strong>{DASHBOARD_TEXT.notInDepartment}</strong>

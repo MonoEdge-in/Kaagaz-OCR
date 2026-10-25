@@ -15,7 +15,7 @@ import { ActionDialog } from "@/components/documents/ActionDialog";
 import { EmptyState } from "@/components/ui/EmptyState";
 import {
   FEATURE_OFF, addMyWord, changeMyWord, decideOrganizationWord, deleteMyWord, isFeatureOff,
-  listMyWords, listOrganizationWords, suggestOrganizationWord,
+  listMyWords, listOrganizationWords,
 } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import type { MyWord, OrganizationWord } from "@/lib/types";
@@ -65,8 +65,6 @@ export function MyWordsScreen() {
   const [attempt, setAttempt] = useState(0);
   const [items, setItems] = useState<MyWord[] | null>(null);
   const [organizationItems, setOrganizationItems] = useState<OrganizationWord[]>([]);
-  const [organizationDraft, setOrganizationDraft] = useState(EMPTY);
-  const [organizationBusy, setOrganizationBusy] = useState(false);
   const [loadError, setLoadError] = useState(false);
   const [off, setOff] = useState(false); // My words switched off for the whole product
   const [filter, setFilter] = useState("");
@@ -133,22 +131,6 @@ export function MyWordsScreen() {
     else if (!busy) void save({ body, draft: body }, setProblem);
   }
 
-  async function submitOrganizationWord(event: FormEvent) {
-    event.preventDefault();
-    if (!draftOk(organizationDraft) || organizationBusy) return;
-    setOrganizationBusy(true);
-    try {
-      const { item } = await suggestOrganizationWord(organizationDraft.word, organizationDraft.meaning, userId);
-      setOrganizationItems((current) => [...current, item]);
-      setOrganizationDraft(EMPTY);
-      setStatus("Suggestion sent to your organization for review.");
-    } catch {
-      setStatus("This suggestion could not be saved. It may already be pending or approved.");
-    } finally {
-      setOrganizationBusy(false);
-    }
-  }
-
   async function decideOrganization(item: OrganizationWord, decision: "approve" | "reject") {
     try {
       const { item: decided } = await decideOrganizationWord(item.id, decision, userId);
@@ -211,7 +193,7 @@ export function MyWordsScreen() {
     <div className="page">
       <header className="page-header"><div>
         <h1 ref={headingRef} tabIndex={-1}>My words</h1>
-        <p>Your words stay private. Suggestions made here are organization-wide; words sent from a document viewer apply only to that document after a reviewer or admin approves them.</p>
+        <p>Your words stay private, and chat uses them to understand your questions.</p>
       </div></header>
       <p className="visually-hidden" role="status" aria-live="polite">{status}</p>
       {alert(problem)}
@@ -236,17 +218,6 @@ export function MyWordsScreen() {
           </p>
         )}
         {note && <p className="hint">{note}</p>}
-      </form>
-
-      <form className={`card stack ${styles.block}`} onSubmit={submitOrganizationWord} noValidate aria-labelledby="suggest-word-heading">
-        <h2 id="suggest-word-heading" className={styles.subheading}>Suggest an organization word</h2>
-        <div className={styles.fields}>
-          <WordFields idPrefix="organization" draft={organizationDraft} onChange={setOrganizationDraft} checked={false} />
-          <button type="submit" className={`btn ${styles.target}`} disabled={!draftFilled(organizationDraft) || organizationBusy}>
-            {organizationBusy ? <span className="spinner" aria-hidden="true" /> : null}Suggest
-          </button>
-        </div>
-        <p className="hint">Approved words are shared with everyone in your organization.</p>
       </form>
 
       {organizationItems.length > 0 && (
