@@ -20,7 +20,10 @@ import type {
 
 // PRD 6 decision 9 (24 Oct 2026): the server's words exactly (backend/kaagaz/answering/voice.py,
 // a test reads both); no "sorry", no "couldn't". The closest documents and next steps follow.
-export const NOT_FOUND_CLOSEST_TEXT = "Nothing matches every part of this. These are the closest documents.";
+// Changed on purpose (#410, Vrushit's UAT): nothing decides "every part"; the closest documents
+// hold some of the question's words, and the words no document has are named (notFoundText).
+export const NOT_FOUND_SOME_TEXT = "These documents match some of your words.";
+export const NOT_FOUND_CLOSEST_TEXT = "No answer to the whole question was found. These documents match some of your words.";
 export const NOT_FOUND_TEXT = "Nothing in your documents matches this yet.";
 // An "unchecked" answer (a figure only in values not confirmed yet): no number, no
 // Review wording (Tushar, 16 Oct 2026); the documents follow it.
@@ -97,9 +100,16 @@ export function answerStatusText(answer: Answer | null): string {
   return ["Answer ready.", first].filter(Boolean).join(" ");
 }
 
-/** The not-found line (decision 9): the closest documents' when it lists any. */
-export function notFoundText(closest: number): string {
-  return closest > 0 ? NOT_FOUND_CLOSEST_TEXT : NOT_FOUND_TEXT;
+/** The not-found line (decision 9): the closest documents' when it lists any. #410: the
+ * question's words no document searched has (`missing_words`) are named first, as voice.py's
+ * soft_line says them. */
+export function notFoundText(closest: number, missing: readonly string[] = []): string {
+  if (missing.length === 0) return closest > 0 ? NOT_FOUND_CLOSEST_TEXT : NOT_FOUND_TEXT;
+  const quoted = missing.map((word) => `“${word}”`);
+  const words =
+    quoted.length === 1 ? `word ${quoted[0]}` : `words ${quoted.slice(0, -1).join(", ")} or ${quoted[quoted.length - 1]}`;
+  const line = `No document searched has the ${words}.`;
+  return closest > 0 ? `${line} ${NOT_FOUND_SOME_TEXT}` : line;
 }
 
 /** The DOM id of an answer card: focus moves to a new one (PRD 6 A). */

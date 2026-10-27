@@ -225,8 +225,9 @@ OUTAGE_LINE = "The AI is not responding right now, so this is not a written answ
 
 def answer_text(answer: dict[str, Any]) -> str:
     """The assistant message's plain text: its sentences joined, a clarify's question, or the
-    not-found line (decision 9: the closest documents' when it lists any). Never the opening,
-    so the asker's name is never in the history a rewrite reads."""
+    not-found line (decision 9: the closest documents' when it lists any; #410: naming the words
+    no document has). Never the opening, so the asker's name is never in the history a rewrite
+    reads."""
     clarify = answer.get("clarify") if answer.get("status") == "clarify" else None
     if isinstance(clarify, dict) and isinstance(clarify.get("question"), str):
         return str(clarify["question"])
@@ -236,7 +237,9 @@ def answer_text(answer: dict[str, Any]) -> str:
         texts = [s["text"] for s in sentences if isinstance(s, dict) and isinstance(s.get("text"), str)]
     if answer.get("outage"):
         return OUTAGE_LINE
-    return " ".join(texts) or soft_line(bool(answer.get("closest_documents")))
+    missing = answer.get("missing_words")
+    words = [word for word in missing if isinstance(word, str)] if isinstance(missing, list) else []
+    return " ".join(texts) or soft_line(bool(answer.get("closest_documents")), words)
 
 
 @router.post("/chat")

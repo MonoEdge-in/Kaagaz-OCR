@@ -729,6 +729,7 @@ export interface Answer {
   unreadable_page_count?: number;
   related_documents?: RelatedDocument[]; // "Also in"; missing before 16 Oct 2026
   mentions?: Mentions; // "Also mentions"; only when there is one (17 Oct 2026)
+  missing_words?: string[]; // #410: a not-found's words no document searched has; only when there is one
   // Features 25-27 (C7), only on an answer drafted with the asker's answer settings: the
   // names (and ids) of the models that replied, the one used first; how many were asked;
   // whether the others confirmed it (null with one model); the thinking level.
