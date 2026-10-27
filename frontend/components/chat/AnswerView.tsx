@@ -2,7 +2,7 @@
 
 // One answer card. In order: what a follow-up was searched for ("Searching for: …",
 // PRD 3 H1) and how the question was understood (only when that differs), the
-// sentences with citation chips (each moves to its source card), the source cards,
+// sentences with citation chips (each opens its document at the cited spot, lit), the source cards,
 // and Useful or Not useful (PRD 6 F1). No Verified or Needs review label, badge or edge in Ask
 // (Tushar, 16 Oct 2026): checking values is the Review screen's, kept apart.
 // "Not found" is a real answer: a neutral card that says so and lists the closest
@@ -39,7 +39,6 @@ import { pinSource } from "@/lib/api";
 import type { Answer, Message, SourcePin } from "@/lib/types";
 import {
   answerCardId,
-  cardId,
   citationLink,
   citationMap,
   documentLink,
@@ -59,25 +58,13 @@ import {
   UNCHECKED_TEXT,
 } from "./answer";
 import { FeedbackControls } from "./FeedbackControls";
-import { scrollBehavior } from "./hooks";
 import { DocumentRow, MentionsSection, RelatedRow, SourceCard } from "./SourceCard";
 import styles from "./Chat.module.css";
-
-/** Bring the source card into view (only as far as needed) and move focus to it,
- * opening its Sources bar first when it is closed. */
-function goToSource(id: string) {
-  const card = window.document.getElementById(id);
-  if (!card) return;
-  const bar = card.closest("details");
-  if (bar && !bar.open) bar.open = true;
-  card.scrollIntoView({ block: "nearest", behavior: scrollBehavior() });
-  card.focus({ preventScroll: true });
-}
 
 /**
  * One collapsible bar holding an answer's sources (Tushar, 16 Oct 2026): closed at
  * first, its summary saying what is inside ("Sources · 4 · Also in 3 documents",
- * "Sources · 20 pages to check · 3 documents"). A citation number opens it (goToSource).
+ * "Sources · 20 pages to check · 3 documents").
  */
 function SourcesBar({ count, children }: { count: string; children: React.ReactNode }) {
   return (
@@ -124,10 +111,25 @@ function DocumentList({ answer, terms, shown }: { answer: Answer; terms: readonl
       const figure = figureOf(c);
       return figure ? [{ c, figure }] : [];
     });
+    // Vrushit UAT 3 (27 Oct 2026): one compact line, the title opening its first cited spot,
+    // lit, then each other page as a small link; no row of page chips.
+    const opens = pages[0] ? citationLink(pages[0], terms) : documentLink(doc.document_id, terms);
     return (
       <li key={doc.document_id} className={styles.docItem}>
         <p className={styles.docTitle}>
-          <Script text={doc.title} />
+          <Link className={styles.docLink} href={opens}>
+            <Script text={doc.title} />
+          </Link>
+          {pages.length > 0 ? (
+            <span className={styles.docPages}>
+              {pages.map((c) => (
+                <Link key={c.n} href={citationLink(c, terms)}>
+                  p. {c.page_no}
+                  <span className="visually-hidden">, open the highlighted spot</span>
+                </Link>
+              ))}
+            </span>
+          ) : null}
         </p>
         {doc.why ? (
           <p className={styles.docWhy}>
@@ -141,26 +143,12 @@ function DocumentList({ answer, terms, shown }: { answer: Answer; terms: readonl
                 <span className={styles.figure}>
                   <Script text={figure} />
                 </span>{" "}
-                <LabelBadge label={c.label} />
+                {/* A figure with an unsure or illegible word is never shown as Verified. */}
+                <LabelBadge label={c.hard_to_read ? "needs_review" : c.label} />
               </li>
             ))}
           </ul>
         ) : null}
-        <div className={styles.chipRow}>
-          {pages.length > 0 ? (
-            pages.map((c) => (
-              <Link key={c.n} className={styles.chip} href={citationLink(c, terms)}>
-                <Icon name="open" size={16} />
-                Page {c.page_no}
-              </Link>
-            ))
-          ) : (
-            <Link className={styles.chip} href={documentLink(doc.document_id, terms)}>
-              <Icon name="open" size={16} />
-              Open
-            </Link>
-          )}
-        </div>
       </li>
     );
   };
@@ -456,21 +444,24 @@ export const AnswerView = memo(function AnswerView({
           <span key={index}>
             {index > 0 ? " " : null}
             <Script text={sentence.text} />
-            {sentenceCitations(sentence, cards).map((n) => (
-              <button
-                key={n}
-                type="button"
-                className={`${styles.numberMark} ${styles.cite}`}
-                aria-label={`Source ${n}`}
-                onClick={() => goToSource(cardId(message.id, n))}
-                onPointerEnter={() => setHot(n)}
-                onPointerLeave={() => setHot(null)}
-                onFocus={() => setHot(n)}
-                onBlur={() => setHot(null)}
-              >
-                {n}
-              </button>
-            ))}
+            {/* Vrushit UAT 3 (27 Oct 2026): a number opens its document at the cited spot, lit. */}
+            {sentenceCitations(sentence, cards).map((n) => {
+              const cited = cards.get(n);
+              return cited ? (
+                <Link
+                  key={n}
+                  href={citationLink(cited, terms)}
+                  className={`${styles.numberMark} ${styles.cite}`}
+                  aria-label={`Source ${n}: ${cited.document_name}, page ${cited.page_no}`}
+                  onPointerEnter={() => setHot(n)}
+                  onPointerLeave={() => setHot(null)}
+                  onFocus={() => setHot(n)}
+                  onBlur={() => setHot(null)}
+                >
+                  {n}
+                </Link>
+              ) : null;
+            })}
           </span>
         ))}
         {labelled ? (

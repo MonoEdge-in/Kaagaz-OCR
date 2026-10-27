@@ -13,7 +13,7 @@ from kaagaz.db import operator_insights as insights
 from kaagaz.db.engine import Database
 from kaagaz.db.sqlstate import sqlstate
 from tests.db_support import new_customer
-from tests.test_api_support import Api
+from tests.test_api_support import Api, MovingClock
 from tests.test_operator_auth_db import _DISABLED
 from tests.test_operator_insights_db import answers, at, feedback, of, operator, read, window_day
 from tests.test_operator_orgs_db import _signed_in
@@ -85,3 +85,13 @@ def test_the_route_sends_counts_only_and_a_disabled_operator_gets_401(db: Databa
     assert client.get("/api/operator/answer-weeks", params={"weeks": 13}).status_code == 400
     operator.sql(_DISABLED, d=True)
     assert client.get("/api/operator/answer-weeks").status_code == 401
+
+
+def test_just_after_midnight_on_monday_the_route_never_asks_for_the_week_still_ending(db: Database) -> None:
+    """The app's clock a little ahead of the database's at 00:01 on a Monday (India): the last
+    whole week is the one before, so 0051's check never refuses it with a 500."""
+    api = Api(db, clock=MovingClock(datetime(2026, 10, 25, 18, 31, tzinfo=UTC)))  # Mon 26 Oct, 00:01 IST
+    _, client = _signed_in(api)
+    response = client.get("/api/operator/answer-weeks", params={"weeks": 1})
+    assert response.status_code == 200
+    assert (response.json()["from"], response.json()["to"]) == ("2026-10-12", "2026-10-18")

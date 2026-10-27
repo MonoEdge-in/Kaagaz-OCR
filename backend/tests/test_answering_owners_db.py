@@ -270,6 +270,14 @@ def test_a_plot_number_is_never_a_survey_number_of_the_same_digits(keyed: Databa
     assert sorted(d["document_id"] for d in both["documents"]) == sorted([plot, survey])
 
 
+def test_a_plot_number_read_before_it_had_a_field_is_still_found(keyed: Database) -> None:
+    # Read before #274: the plot number was kept as the survey number.
+    c, _ = new_customer(keyed)
+    old = add_land(keyed, c, "Plan of Plot 56.pdf", [("Ketaki Mhaskar", None)], survey="56")
+    answer = ask(keyed, c, "Who owns plot 56?")
+    assert [d["document_id"] for d in answer["documents"]] == [old]
+
+
 _DIMENSION = text(
     "INSERT INTO extracted_values (id, customer_id, document_id, record_key, field, value_text,"
     " value_raw, page_no, region, reader, label, label_reason)"

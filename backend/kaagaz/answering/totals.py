@@ -21,9 +21,13 @@ printed total is not listed (it covers the whole sheet, not the range): the shee
 are added up as any records. Every record's figure is checked for words hard to read, listed or
 not (``hard``). Known limit: an unlabelled bottom row printing only a number is still added in
 as a record.
+
+Figures printed in more than one currency (a ₹ figure and a $ one) are never added up or compared:
+that withholds the total too. A figure with no currency mark is not taken as another currency.
 """
 
-from collections.abc import Collection, Sequence
+import re
+from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
@@ -36,6 +40,10 @@ from kaagaz.answering.sanitize import clean_text
 _MAX_TEXT = 100  # a document name or a figure longer than this is cut in its line
 PRINTED_TOTAL = "This sheet prints its own total, so I haven't added up its rows."
 PRINTED_TOTALS = "These sheets print their own totals, so I haven't added up their rows."
+# A currency as printed beside a figure, and its code.
+_CURRENCY = re.compile(r"₹|\brs\b\.?|\binr\b|\$|\busd\b|€|\beur\b|£|\bgbp\b", re.IGNORECASE)
+_CODES = {"₹": "INR", "rs": "INR", "inr": "INR", "$": "USD", "usd": "USD", "€": "EUR", "eur": "EUR"}
+_CODES |= {"£": "GBP", "gbp": "GBP"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,8 +82,11 @@ def tell(
     unverified = sum(figure.amount is not None and not checked for figure, _, checked in rows)
     names = sum(figure.grouped and not figure.party_verified for figure, _, _ in rows)
     dates = sum(figure.dated and not figure.date_verified for figure, _, _ in rows)
+    currencies = _currencies(figure for figure, _, _ in rows)
     if doubtful:
         why = f"{_of(doubtful, n, noun)} {_verb(doubtful, 'reads', 'read')} like a total"
+    elif len(currencies) > 1:
+        why = f"the {metric} figures are in {len(currencies)} currencies ({', '.join(currencies)})"
     elif undated:
         why = f"{_of(undated, n, noun)} {_verb(undated, 'has', 'have')} no date I can read"
     elif lacking:
@@ -112,6 +123,16 @@ def tell(
         )
     lines = [(_line(f, f.value, metric, ok), f.value, regions) for f, regions, ok in listed if f.value]
     return Told(head, lines, total)
+
+
+def _currencies(figures: Iterable[Figure]) -> list[str]:
+    """The currencies the figures are printed in, as codes, sorted; a figure with none adds none."""
+    found = set()
+    for figure in figures:
+        if figure.amount is not None and figure.value is not None:
+            marks = _CURRENCY.findall(figure.value.value_text)
+            found |= {_CODES[mark.casefold().rstrip(".")] for mark in marks}
+    return sorted(found)
 
 
 def _checked(figure: Figure, regions: list[dict[str, Any]], hard: Collection[str]) -> bool:

@@ -1202,7 +1202,8 @@ export type UsageKind =
   | "story"
   | "careful" // Dynamic's careful re-reads (feature 26)
   | "ensemble_scan" // Ensemble's other readers (feature 27)
-  | "ensemble_chat"; // Ensemble's other answer drafts (feature 27)
+  | "ensemble_chat" // Ensemble's other answer drafts (feature 27)
+  | "land"; // PRD 6 D: reading owners, shares and places of land records
 
 /** Tokens of some model calls: all an org admin sees (no money, Tushar, 15 Oct 2026). */
 export interface UsageTokens {

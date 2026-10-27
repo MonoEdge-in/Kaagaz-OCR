@@ -333,7 +333,8 @@ def ask(body: AskBody, user: User, context: Context, background: BackgroundTasks
             answer = reply.to_json()
             if reply.unavailable:
                 answer["outage"] = True
-            if answer.get("version") == 2:
+            # A clarifying question shows no opening (ClarifyView), so it never spends the greeting.
+            if answer.get("version") == 2 and answer.get("status") != "clarify":
                 answer["opening"] = _opening(answer, question, user.display_name, earlier, context)
 
         with context.db.customer(user.customer_id) as conn:
@@ -426,7 +427,9 @@ def _inputs(
     if not switched["ask"]:
         raise ApiError(403, "feature_off", FEATURE_OFF)
     # What Kaagaz learned (PRD 6 F3, answering/pins.py): this customer's Useful and
-    # Wrong documents marks; lifts decides which apply to this question and to whom.
+    # Wrong documents marks; lifts decides which apply to this question and to whom. With
+    # the nlq_learning switch off, the query is not run at all.
+    learned = chat_sql.learned_for(conn, user.customer_id, user.user_id) if switched["nlq_learning"] else []
     pins += [
         Pin(
             row["document_id"],
@@ -437,8 +440,7 @@ def _inputs(
             user_id=str(row["user_id"]),
             own=bool(row["own"]),
         )
-        for row in chat_sql.learned_for(conn, user.customer_id, user.user_id)
-        if switched["nlq_learning"]
+        for row in learned
     ]
     try:
         agents = _first_allowed(conn, user.customer_id, agents, context)

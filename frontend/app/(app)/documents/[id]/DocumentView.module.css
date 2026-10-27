@@ -458,10 +458,6 @@
   font-size: var(--fs-lg);
 }
 
-.fieldCell {
-  font-weight: 600;
-}
-
 /* Vrushit UAT 2 (issue 416): Details' "Review values" link, at the column's start. */
 .reviewValues {
   align-self: flex-start;
@@ -693,6 +689,73 @@
 .pageNote {
   font-size: var(--fs-base);
   color: var(--text-secondary);
+}
+
+/* Vrushit UAT 3 (27 Oct 2026): Related documents, a quiet disclosure closed at first; each
+   document one short line, its name then its type and shared number, muted. */
+.related {
+  display: block;
+}
+
+.relatedSummary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--control-min);
+  list-style: none;
+  cursor: pointer;
+}
+
+.relatedSummary::-webkit-details-marker {
+  display: none;
+}
+
+.relatedChevron {
+  flex: none;
+  color: var(--text-secondary);
+}
+
+.related[open] > .relatedSummary .relatedChevron {
+  transform: rotate(90deg);
+}
+
+.relatedHeading {
+  margin: 0;
+  font-size: var(--fs-base);
+  font-weight: 600;
+}
+
+.relatedList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.relatedItem {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 var(--space-2);
+  min-width: 0;
+  font-size: var(--fs-sm);
+}
+
+.relatedItem > * {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.relatedItem .pageNote {
+  font-size: var(--fs-sm);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .relatedChevron {
+    transition: transform var(--t-med) var(--ease);
+  }
 }
 
 /* Loading and errors */

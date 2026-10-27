@@ -1,0 +1,58 @@
+name: Production guard
+
+# Changes reach production only by pull request (CLAUDE.md, Branches). The organisation's plan
+# has no branch protection for a private repository, so this cannot stop a direct push; it
+# fails loudly on one instead, naming each commit that arrived without a merged pull request,
+# or a history rewrite. The server deploys production on its own, so look at a failure at once.
+
+on:
+  push:
+    branches: [production]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  guard:
+    name: Production guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      BEFORE: ${{ github.event.before }}
+      AFTER: ${{ github.event.after }}
+      FORCED: ${{ github.event.forced }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Every new commit came from a merged pull request
+        run: |
+          set -euo pipefail
+          if [ "$FORCED" = "true" ]; then
+            echo "::error::production was force-pushed ($BEFORE to $AFTER). Its history was rewritten."
+            exit 1
+          fi
+          if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            echo "production was created; nothing to compare."
+            exit 0
+          fi
+          # Only the commits that landed on production itself: a merged pull request brings its
+          # branch's commits in behind one merge or squash commit, which is the one checked.
+          direct=""
+          for sha in $(git rev-list --first-parent "$BEFORE..$AFTER"); do
+            merged=$(gh api "repos/$REPO/commits/$sha/pulls" \
+              --jq "[.[] | select(.merged_at != null and .base.ref == \"production\")] | length")
+            if [ "$merged" = "0" ]; then
+              direct="$direct $sha"
+              echo "::error::$sha reached production without a merged pull request: $(git log -1 --format='%an, %s' "$sha")"
+            fi
+          done
+          if [ -n "$direct" ]; then
+            exit 1
+          fi
+          echo "Every new commit on production came from a merged pull request."

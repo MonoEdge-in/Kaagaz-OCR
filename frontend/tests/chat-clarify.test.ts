@@ -93,6 +93,12 @@ describe("the thread around it", () => {
       false,
       false,
     ]);
+    // A new question typed without a question mark is never taken as the reply.
+    expect([answersClarify("Yes, Pune"), answersClarify("Survey 45/2"), answersClarify("Total GST paid last month")]).toEqual([
+      true,
+      true,
+      false,
+    ]);
     expect(answerStatusText(clarifying("m2").answer)).toBe("Did you mean Pune?");
   });
 
