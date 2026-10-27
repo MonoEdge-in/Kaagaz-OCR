@@ -459,7 +459,11 @@ def test_d2_the_dashboard_answers_in_under_300_ms_on_10000_documents(db: Databas
             ),
             {"c": customer, "u": admin},
         )
-        conn.execute(text("ANALYZE documents"))
+    # Fixed (#239, 27 Oct 2026): ANALYZE as the table's owner. The app role may not, so its
+    # ANALYZE did nothing; on a database other tests had filled, the planner then took this
+    # customer for one row and joined its 10,000 documents in a nested loop (9 s, not 0.01 s).
+    with db.engine.begin() as owner:
+        owner.execute(text("ANALYZE documents"))
     now = datetime.now(UTC)
     timings = []
     for _ in range(3):
