@@ -13,8 +13,8 @@ from types import ModuleType, SimpleNamespace
 from typing import Any, cast
 from unittest import mock
 
+import pytest
 from PIL import Image, ImageDraw, ImageFont
-from rapidocr import LangRec, ModelType, OCRVersion
 
 from kaagaz.db.engine import Database
 from kaagaz.ingestion import sniff
@@ -39,6 +39,10 @@ from kaagaz.reading.spans import BoxLocation, ReadError, Span
 from kaagaz.reading.wiring import GEMINI_OCR_MODULE, build_reader_socket
 from kaagaz.settings import Settings, SettingsError
 from tests.settings_factory import make_settings
+
+# rapidocr is the optional ocr extra (pyproject.toml). CI installs it (".[dev,ocr]") and runs
+# this module; an install without it skips the module instead of failing to collect (#239).
+rapidocr = pytest.importorskip("rapidocr", reason='needs the ocr extra: pip install -e ".[dev,ocr]"')
 
 
 def box_of(span: Span) -> BoxLocation:
@@ -166,9 +170,9 @@ class DevanagariReadAgainTest(unittest.TestCase):
         self.assertEqual((self.first.pages, self.second.pages), (1, 1))
         params = self.built[1]
         self.assertEqual(params["Rec.model_path"], str(self.model))
-        self.assertIs(params["Rec.lang_type"], LangRec.DEVANAGARI)
-        self.assertIs(params["Rec.ocr_version"], OCRVersion.PPOCRV5)
-        self.assertIs(params["Rec.model_type"], ModelType.MOBILE)
+        self.assertIs(params["Rec.lang_type"], rapidocr.LangRec.DEVANAGARI)
+        self.assertIs(params["Rec.ocr_version"], rapidocr.OCRVersion.PPOCRV5)
+        self.assertIs(params["Rec.model_type"], rapidocr.ModelType.MOBILE)
         self.assertEqual(self.engine.version, DEVANAGARI_VERSION)
 
     def test_a_clean_page_never_builds_the_second_engine(self) -> None:

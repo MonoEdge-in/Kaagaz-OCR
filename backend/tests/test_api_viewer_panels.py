@@ -115,6 +115,9 @@ def test_the_detail_sends_the_same_number_of_statements_for_one_link_or_many(db:
         return user.client.get(f"/api/documents/{document_id}")
 
     assert len(links_of(user, many)) == 5
+    # Changed on purpose (#239, 27 Oct 2026): a first open writes A1's document.view (803f5e8);
+    # both are opened once first, so the two measured opens differ only in their links.
+    assert len(links_of(user, one)) == 1
     assert _statements(db, lambda: detail(one)) == _statements(db, lambda: detail(many))
 
 

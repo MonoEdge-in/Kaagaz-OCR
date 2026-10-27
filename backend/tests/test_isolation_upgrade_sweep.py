@@ -14,10 +14,9 @@ from sqlalchemy import text
 from kaagaz.db.documents import mark_for_upgrade, oldest_read_locally
 from kaagaz.db.engine import Database
 from kaagaz.ingestion.ports import Job
-from kaagaz.jobs.upgrade import upgrade_oldest
 from tests.db_support import new_customer
 from tests.fakes import MemoryQueue
-from tests.test_upgrade_sweep_db import read_locally, status_of, upgrade_audits
+from tests.test_upgrade_sweep_db import read_locally, status_of, sweep_to, upgrade_audits
 
 pytestmark = pytest.mark.db
 
@@ -39,7 +38,7 @@ def test_isolation_upgrade_sweep_never_reaches_another_customer(db: Database) ->
     assert status_of(db, b, b_doc) == "ready"
     assert upgrade_audits(db, a) == upgrade_audits(db, b) == []
 
-    assert upgrade_oldest(db, MemoryQueue()) == Job(b, b_doc)
+    sweep_to(db, MemoryQueue(), Job(b, b_doc), {a, b})  # B's is older than A's
     assert (upgrade_audits(db, b), upgrade_audits(db, a)) == ([(None, b_doc)], [])
     assert status_of(db, a, a_doc) == "ready"
     with db.customer(a) as conn:  # B's audit row is not A's to see
@@ -48,4 +47,4 @@ def test_isolation_upgrade_sweep_never_reaches_another_customer(db: Database) ->
             {"d": b_doc},
         ).scalar_one()
     assert seen == 0
-    assert upgrade_oldest(db, MemoryQueue()) == Job(a, a_doc)  # tidy up for the other tests
+    sweep_to(db, MemoryQueue(), Job(a, a_doc), {b})  # tidy up for the other tests

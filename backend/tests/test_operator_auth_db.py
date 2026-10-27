@@ -34,6 +34,10 @@ OPEN_TO_ALL = {
     ("POST", "/api/auth/admin/login"),
     ("POST", "/api/auth/admin/enrol"),
     ("POST", "/api/operator/login"),
+    # Changed on purpose (#239, 27 Oct 2026): sign-up from the sign-in page (16 Oct, 8205163)
+    # is for people with no session, as tests/test_api_sessions.py lists it.
+    ("GET", "/api/auth/signup"),
+    ("POST", "/api/auth/signup"),
 }
 WRONG = "not the password!!"
 _INSERT = "INSERT INTO operators (email, display_name, password_hash) VALUES (:e, 'Ops', :h) RETURNING id"

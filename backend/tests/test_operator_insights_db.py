@@ -452,7 +452,8 @@ def test_upload_to_ready_counts_each_documents_first_ready_run_only(db: Database
     customer, _ = new_customer(db)
     model = new_model()
     for document_id in read_documents(db, customer, K, at(day), model):  # ready a minute after upload
-        run(db, customer, document_id, at(day, 1), seconds=600, config={"read_model": model})  # read again
+        # Fixed (#239, 27 Oct 2026): an hour after the noon upload; at(day, 1) was 01:00, before it.
+        run(db, customer, document_id, at(day, 13), seconds=600, config={"read_model": model})  # read again
     earlier = document(db, customer, at(day - timedelta(days=5)))
     run(db, customer, earlier, at(day - timedelta(days=5)))  # first ready before the window
     run(db, customer, earlier, at(day, 2), seconds=600)  # read again in it: not a first

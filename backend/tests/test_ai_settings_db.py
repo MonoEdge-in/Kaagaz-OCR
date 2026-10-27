@@ -39,7 +39,13 @@ TASKS = ["scan", "ask", "ensemble", "autofile"]
 @contextmanager
 def switched_off(db: Database, feature: str) -> Iterator[None]:
     """``feature`` off for every organisation (as the operator's function leaves it), then on."""
-    _owner(db, "INSERT INTO feature_switches (feature, enabled) VALUES (:f, false)", {"f": feature})
+    # Fixed (#239, 27 Oct 2026): another test may have left the feature's row (switched back on).
+    _owner(
+        db,
+        "INSERT INTO feature_switches (feature, enabled) VALUES (:f, false)"
+        " ON CONFLICT (feature) DO UPDATE SET enabled = false",
+        {"f": feature},
+    )
     try:
         yield
     finally:
@@ -100,15 +106,16 @@ def test_a_locked_task_is_409_and_a_level_not_allowed_is_400(db: Database) -> No
     api = Api(db, settings=GEMINI)
     admin = api.new_admin()
     member = api.sign_in(admin.customer_id)
+    # Fixed (#239, 27 Oct 2026): checked before the lock, which refuses any level for ask first.
+    for tasks in ({"ensemble": "on"}, {"scan": "on"}, {"ask": "max"}):  # not granted, wrong kind, ceiling
+        reply = put(member, "me", tasks)
+        assert (reply.status_code, reply.json()["error"]["code"]) == (400, "not_allowed"), tasks
     done = put(admin, "organisation", {"ask": {"level": "low", "locked": True}})
     assert done.status_code == 200, done.text
     refused = put(member, "me", {"ask": "none"})
     assert (refused.status_code, refused.json()["error"]["code"]) == (409, "locked")
     shown = settings_of(member)["ask"]
     assert (shown["organisation"], shown["locked"], shown["effective"]) == ("low", True, "low")
-    for tasks in ({"ensemble": "on"}, {"scan": "on"}, {"ask": "max"}):  # not granted, wrong kind, ceiling
-        reply = put(member, "me", tasks)
-        assert (reply.status_code, reply.json()["error"]["code"]) == (400, "not_allowed"), tasks
     assert [row for row in api.audit_rows(admin.customer_id) if row[0] == "ai_settings.mine"] == []
     [row] = [row for row in api.audit_rows(admin.customer_id) if row[0] == "ai_settings.organisation"]
     assert row[3] == {"task": "ask", "old": None, "new": "low", "locked": True}

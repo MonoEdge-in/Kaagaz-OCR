@@ -742,7 +742,13 @@ class Sent:
         self.max_params = max(self.max_params, *(len(params) for params in sets))
         table = re.match(r"INSERT INTO (\w+)", statement)
         if table:
-            arrays = [len(value) for value in sets[0].values() if isinstance(value, list)]
+            # Fixed (#239, 27 Oct 2026): only an unnest's arrays are rows; a one-row INSERT's list
+            # is a column value (pages.read_issues, text[], 3286d5a), so that statement is 1 row.
+            arrays = (
+                [len(value) for value in sets[0].values() if isinstance(value, list)]
+                if "unnest(" in statement
+                else []
+            )
             self.rows.setdefault(table[1], []).append(len(sets) if many else max(arrays, default=1))
 
 
@@ -1057,8 +1063,13 @@ T_ASKED = datetime(2026, 10, 8, 9, 30, tzinfo=UTC)
 
 
 def test_the_reading_fields_are_the_ones_the_store_reads() -> None:
-    names = [item.name for item in fields(ReadPage)][len(fields(PageRecord)) :]
-    assert names == list(pipeline_store.PAGE_READING_DEFAULTS)
+    # Changed on purpose (#239, 27 Oct 2026): PageRecord itself has the reading fields (3286d5a),
+    # in this order from read_by on.
+    names = [item.name for item in fields(PageRecord)]
+    start = names.index("read_by")
+    assert names[start : start + len(pipeline_store.PAGE_READING_DEFAULTS)] == list(
+        pipeline_store.PAGE_READING_DEFAULTS
+    )
 
 
 def test_save_writes_each_pages_reading_result_and_good_for_a_page_without_one(db: Database) -> None:

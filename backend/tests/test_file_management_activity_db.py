@@ -431,7 +431,8 @@ def test_p2_a_cited_document_in_trash_shows_no_snippet(db: Database) -> None:
     api = Api(db)
     signed = api.new_signed()
     first, _second = family(api, signed)
-    other = api.add_document(signed.customer_id)
+    # Fixed (#239, 27 Oct 2026): a member moves to Trash only what they uploaded (can_delete).
+    other = api.add_document(signed.customer_id, uploaded_by=signed.user_id)
     ask(db, signed, "What is the area?", scope=[first], cited=[other])
     with db.customer(signed.customer_id) as conn:  # the citation's words, as the chat saves them
         conn.execute(

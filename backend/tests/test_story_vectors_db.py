@@ -110,7 +110,9 @@ def test_a_pass_embeds_each_story_as_its_own_user_and_hands_on_its_cursor(db: Da
     third = embed_missing_stories(db, model, limit=2, customer_id=customer, after=second.after)
 
     assert (first, second, third) == (StoryPass(2, 2, keys[1]), StoryPass(1, 1, None), StoryPass(0, 0, None))
-    assert model.calls == [[texts[keys[0]], texts[keys[1]]], [texts[keys[2]]]]  # one call a pass
+    # Changed on purpose (#239, 27 Oct 2026): one call a story, as Vertex embeds one text at a time
+    # (9ca77e0).
+    assert model.calls == [[texts[keys[0]]], [texts[keys[1]]], [texts[keys[2]]]]
     assert _every_tag(db, texts) == [TAG, TAG, TAG]
 
 
@@ -168,7 +170,9 @@ class _Jobs:
 
     def run_once(self) -> bool:
         self.calls += 1
-        return True
+        # Changed on purpose (#239, 27 Oct 2026): sweeps run only after a turn the queue had
+        # nothing for (480633b), so these jobs find an empty queue.
+        return False
 
 
 class _Flaky(FakeModel):
@@ -211,7 +215,7 @@ def test_the_worker_wrapper_embeds_the_missing_stories_and_waits_out_a_model_tha
         worker.run_once()  # the third, after the cursor
 
     assert jobs.calls == 5  # the jobs ran on every turn
-    assert len(model.calls) == 4
+    assert len(model.calls) == 5  # Changed on purpose (#239): 2 down, then one a story (9ca77e0)
     assert _every_tag(db, texts) == [TAG, TAG, TAG]
     codes = [record.__dict__.get("code") for record in caplog.records if record.levelname == "WARNING"]
     assert codes == ["unreachable", "unreachable"]

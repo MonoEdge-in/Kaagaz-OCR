@@ -195,8 +195,12 @@ def test_operator_rate_limits_are_validated_dynamic_and_audited(db: Database) ->
     assert org_inherited.status_code == 200, org_inherited.text
     assert org_inherited.json()["organisation_rpm"] is None
 
-    assert client.put(path, json={"rpm": 601, "code": "000000"}, headers=CSRF).status_code == 422
-    assert client.put(user_path, json={"rpm": 121, "code": "000000"}, headers=CSRF).status_code == 422
+    # Fixed (#239, 27 Oct 2026): a body the API refuses is its 400 bad_request (api/errors.py), never 422.
+    for refused in (
+        client.put(path, json={"rpm": 601, "code": "000000"}, headers=CSRF),
+        client.put(user_path, json={"rpm": 121, "code": "000000"}, headers=CSRF),
+    ):
+        assert (refused.status_code, refused.json()["error"]["code"]) == (400, "bad_request")
     assert (
         client.put(
             user_path, json={"rpm": 60, "code": wrong_code(api, operator.secret)}, headers=CSRF

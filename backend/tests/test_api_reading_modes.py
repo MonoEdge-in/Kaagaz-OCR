@@ -243,9 +243,12 @@ def _ensemble_org(api: Api, customer_id: str) -> tuple[str, str]:
     default = add_model(api.db, name="Gemini 3.8 Flash")
     other = add_model(api.db, name="Sonnet 5.5", tokens=(500, 100))
     allow(api.db, customer_id, [default, other], default=default)
+    # Fixed (#239, 27 Oct 2026): Dynamic on for this organisation itself. The platform row's
+    # dynamic is false on a new database (0026's column default), which COALESCE(..., true)
+    # (7e64d29) never reaches.
     with api.db.engine.begin() as conn:
         conn.execute(
-            text("INSERT INTO customer_ai_settings (customer_id, ensemble) VALUES (:c, true)"),
+            text("INSERT INTO customer_ai_settings (customer_id, ensemble, dynamic) VALUES (:c, true, true)"),
             {"c": customer_id},
         )
     return default, other
@@ -290,7 +293,8 @@ def test_a_refused_reading_is_403_and_nothing_is_stored(db: Database) -> None:
     dynamic = _upload(member, {"read_mode": "dynamic"})
     unusable = _upload(member, {"read_model": "google/not-allowed"})
 
-    assert (dynamic.status_code, dynamic.json()["code"]) == (403, "dynamic_not_allowed")
-    assert (unusable.status_code, unusable.json()["code"]) == (403, "model_not_allowed")
+    # Fixed (#239, 27 Oct 2026): an ApiError reply is {"error": {"code", "message"}}.
+    assert (dynamic.status_code, dynamic.json()["error"]["code"]) == (403, "dynamic_not_allowed")
+    assert (unusable.status_code, unusable.json()["error"]["code"]) == (403, "model_not_allowed")
     assert documents_of(db, member.customer_id) == 0
     assert api.queue.jobs == []

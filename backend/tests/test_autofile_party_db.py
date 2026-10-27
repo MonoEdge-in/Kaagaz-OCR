@@ -104,12 +104,14 @@ def test_a_folder_named_after_the_organisation_itself_is_never_made(db: Database
     clear own GSTIN yet, nothing goes deeper than Invoices."""
     customer, admin = organisation(db)
     early = bill(db, customer, admin, ("Mehta Textiles", MEHTA))  # no history: own GSTIN not clear
-    assert path(db, customer, early) == (None, "Invoices")
+    # Changed on purpose (#239, 27 Oct 2026): Invoices sits in the department its type maps to
+    # (24cea75), so its parent is that department; nothing goes deeper than Invoices.
+    assert path(db, customer, early) == ("Accounts and HR", "Invoices")
     history(db, customer)
     both = upload(db, customer, admin)
     invoice(db, customer, both, ("Our Shop", OWN), ("Our Shop", OWN))
     read(db, customer, both)
-    assert path(db, customer, both) == (None, "Invoices")
+    assert path(db, customer, both) == ("Accounts and HR", "Invoices")
     assert [f[1] for f in folders(db, customer)] == ["Accounts and HR", "Invoices"]
 
 
@@ -117,7 +119,9 @@ def test_a_bill_that_needs_review_stays_in_invoices(db: Database) -> None:
     customer, admin = organisation(db)
     history(db, customer)
     document = bill(db, customer, admin, ("Mehta Textiles", MEHTA), label="needs_review")
-    assert path(db, customer, document) == (None, "Invoices")
+    # Changed on purpose (#239, 27 Oct 2026): Invoices sits in the department its type maps to
+    # (24cea75), so its parent is that department; nothing goes deeper than Invoices.
+    assert path(db, customer, document) == ("Accounts and HR", "Invoices")
 
 
 def test_a_persons_folder_of_that_name_is_never_taken_the_gstin_is_added(db: Database) -> None:
@@ -137,7 +141,8 @@ def test_a_persons_folder_of_that_name_is_never_taken_the_gstin_is_added(db: Dat
         insert_folder(conn, customer, admin, "Sharma", invoices)
         insert_folder(conn, customer, admin, f"Sharma ({SHARMA})", invoices)
     both_taken = bill(db, customer, admin, ("Sharma", SHARMA))
-    assert path(db, customer, both_taken) == (None, "Invoices")
+    # Changed on purpose (#239, 27 Oct 2026): this Invoices is inside the Finance department (24cea75).
+    assert path(db, customer, both_taken) == ("Finance", "Invoices")
 
 
 def test_a_moved_and_renamed_party_folder_is_still_used_and_undo_goes_to_the_top_level(db: Database) -> None:

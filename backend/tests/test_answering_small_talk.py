@@ -62,7 +62,7 @@ def test_the_replies_are_plain_honest_and_name_the_asker() -> None:
     help_list = small_talk.sentences("help", "what can you do", "Tushar")
     assert help_list == ["Here is what I can do for you:", *small_talk.CAN_DO]
     for talk in ("greet", "thanks", "who", "help"):
-        for line in small_talk.sentences(talk, "hi", "Tushar"):  # type: ignore[arg-type]
+        for line in small_talk.sentences(talk, "hi", "Tushar"):
             assert not BANNED.search(line), line
             assert not re.search(r"\d", line), line
     answer = small_talk.answer("help", "help", None, ["a", "b", "c", "d"])

@@ -27,12 +27,16 @@ def test_0013_up_down_up(fresh: tuple[str, Database]) -> None:
     url, database = fresh
     migrate(url, "0012")
     at_0012 = m0002._schema(database)
-    migrate(url, "head")
-    at_head = m0002._schema(database)
+    migrate(url, "0013")
     with database.system() as conn:
         kind, not_null, has_default, comment = conn.execute(_COLUMN).one()
     assert (kind, not_null, has_default) == ("text", False, False)
     assert "NULL = Auto" in comment
+    migrate(url, "head")
+    at_head = m0002._schema(database)
+    # Changed on purpose (#239, 27 Oct 2026): 0021 (RT3) cleared the column and rewrote its comment.
+    with database.system() as conn:
+        assert conn.execute(_COLUMN).one()[3].startswith("No longer used (RT3)")
 
     m0002._downgrade(url, "0012")
     assert m0002._schema(database) == at_0012

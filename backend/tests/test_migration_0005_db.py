@@ -41,7 +41,23 @@ TO_DOCUMENTS = {
     "page_reads",
     "document_sections",
     "document_topics",
+    # Changed on purpose (#239, 27 Oct 2026): the keys added since, each cascading: 0030's word
+    # review and Ensemble, 0036's pins, 0041's version suggestions, 0044's organisation word
+    # suggestions, 0049's map keys, 0051's learning removals, 0056's page blocks and table cells.
+    "word_changes",
+    "ensemble_runs",
+    "ensemble_readings",
+    "source_pins",
+    "version_suggestions",
+    "organization_word_suggestions",
+    "value_keys",
+    "learning_removals",
+    "page_blocks",
+    "table_cells",
 }
+# Changed on purpose (#239, 27 Oct 2026): 0023's spend ledger keeps its rows when a document
+# goes: SET NULL (document_id), never a cascade.
+KEEPS_ITS_ROWS = {"model_usage"}
 
 
 def _runs(database: Database, customer_id: str) -> list[tuple[str, str | None]]:
@@ -87,5 +103,7 @@ def test_every_key_to_documents_deletes_with_the_document(db: Database) -> None:
                 " AND connamespace = 'public'::regnamespace"
             )
         ).all()
-    assert {table for table, _ in keys} == TO_DOCUMENTS
-    assert {(table, action) for table, action in keys} == {(table, "c") for table in TO_DOCUMENTS}
+    assert {table for table, _ in keys} == TO_DOCUMENTS | KEEPS_ITS_ROWS
+    assert {(table, action) for table, action in keys} == {(table, "c") for table in TO_DOCUMENTS} | {
+        (table, "n") for table in KEEPS_ITS_ROWS
+    }

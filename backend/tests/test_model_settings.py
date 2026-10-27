@@ -103,9 +103,10 @@ def test_a_card_call_and_its_repair_must_end_well_inside_the_lease() -> None:
 
 
 def test_the_answer_reply_budget_is_a_start_up_setting() -> None:
-    """MODEL_ANSWER_MAX_TOKENS ships as 512 (PROVISIONAL), and a missing one stops start-up by name."""
+    """MODEL_ANSWER_MAX_TOKENS ships as 2048 (PROVISIONAL), and a missing one stops start-up by name."""
     env = shipped()
-    assert env.get("MODEL_ANSWER_MAX_TOKENS") == "512"
+    # Changed on purpose (#239, 27 Oct 2026): 512 cut off a list answer, so 2048 (55bcf27).
+    assert env.get("MODEL_ANSWER_MAX_TOKENS") == "2048"
     del env["MODEL_ANSWER_MAX_TOKENS"]
     with pytest.raises(SettingsError, match="MODEL_ANSWER_MAX_TOKENS"):
         Settings.from_env(env)

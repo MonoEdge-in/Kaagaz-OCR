@@ -108,11 +108,14 @@ def test_the_queue_and_its_total_are_what_the_old_statement_gave(db: Database) -
             params = {"c": customer, "doc": asked, "limit": limit, "offset": offset}
             with db.customer(customer) as conn:
                 rows, total = review.list_queue(conn, customer, limit=limit, offset=offset, document_id=asked)
-                old_rows = conn.execute(text(_OLD_QUEUE), params).mappings().all()
+                old_result = conn.execute(text(_OLD_QUEUE), params)
+                old_columns, old_rows = list(old_result.keys()), old_result.mappings().all()
                 old_total = conn.execute(text(_OLD_COUNT), params).scalar_one()
             # PRD 3 Y5 adds each value's invoice check reasons (none here: no invoices).
             assert [row["check_reasons"] for row in rows] == [[] for _ in rows]
-            new_rows = [{k: v for k, v in dict(row).items() if k != "check_reasons"} for row in rows]
+            # Changed on purpose (#239, 27 Oct 2026): an item also carries its votes (addc9c7) and
+            # its page's reading fields (PRD 5), so the rows are compared on the old columns.
+            new_rows = [{key: row[key] for key in old_columns} for row in rows]
             assert new_rows == [dict(row) for row in old_rows], (asked, limit, offset)
             assert total == old_total
             cases += bool(old_rows)

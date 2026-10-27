@@ -278,7 +278,9 @@ def test_ms1_ms2_the_admin_sees_the_models_read_only_by_name(db: Database) -> No
 @pytest.mark.db
 def test_ms1_with_no_models_set_the_platforms_model_reads(db: Database) -> None:
     # Changed on purpose (features 25-27, 15 Oct 2026): the platform's model is listed as the default.
-    settings = make_settings(ocr_engine="gemini", model_enabled=True)
+    # Changed on purpose (#239, 27 Oct 2026): a made-up key. The app builds its model client
+    # at start (#212), and Settings.from_env refuses MODEL_ENABLED or gemini without a key.
+    settings = make_settings(ocr_engine="gemini", model_enabled=True, openrouter_api_key="test-key")
     admin = Api(db, settings=settings, clock=MovingClock(NOW)).new_admin()
     status, body = _gets(admin, "/api/admin/models")
     assert (status, body) == (
@@ -444,9 +446,13 @@ def test_sp1_a_search_bills_nothing(db: Database) -> None:
 @pytest.mark.parametrize(
     ("overrides", "enabled"),
     [
-        ({"ocr_engine": "gemini", "model_enabled": True}, True),
-        ({"ocr_engine": "rapidocr", "model_enabled": True}, True),  # chat and cards call models
-        ({"ocr_engine": "gemini", "model_enabled": False}, True),  # scans are read by a model
+        # Changed on purpose (#239, 27 Oct 2026): a made-up key wherever AI is on, as
+        # Settings.from_env requires; the app builds its model client at start (#212).
+        ({"ocr_engine": "gemini", "model_enabled": True, "openrouter_api_key": "test-key"}, True),
+        # chat and cards call models
+        ({"ocr_engine": "rapidocr", "model_enabled": True, "openrouter_api_key": "test-key"}, True),
+        # scans are read by a model
+        ({"ocr_engine": "gemini", "model_enabled": False, "openrouter_api_key": "test-key"}, True),
         ({"ocr_engine": "rapidocr", "model_enabled": False}, False),  # keyless mode
     ],
 )
