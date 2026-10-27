@@ -7,6 +7,7 @@ so no test sleeps for real except the ones about a slow reply.
 """
 
 import base64
+import contextlib
 import json
 import logging
 import threading
@@ -39,8 +40,9 @@ from kaagaz.ai.openrouter import (
     process_gate,
 )
 from kaagaz.db.engine import Database
+from kaagaz.ingestion.ports import Job
 from kaagaz.settings import NO_THINKING, Settings
-from kaagaz.worker_main import worker_model
+from kaagaz.worker_main import admission, report_reader_state, worker_model
 from tests import openrouter_fake
 from tests.openrouter_fake import (
     KEY,
@@ -468,24 +470,36 @@ FLASH = "google/gemini-3-flash-preview"  # a model one organisation chose, not O
 
 
 @pytest.mark.parametrize("reply", [error_reply(404), redirect_to("http://127.0.0.1:9/elsewhere")])
-def test_407_the_platform_readers_404_or_redirect_is_a_key_problem_that_blocks_no_call(
+def test_407_the_platform_readers_404_or_redirect_asks_health_to_act_and_pauses_nothing(
     fake: OpenRouterFake, reply: Reply
 ) -> None:
     """Issue 407: no wait fixes OCR_MODEL naming no model, or a base URL that redirects, and the
-    reader makes its documents wait for a person (gemini_ocr KEY_CODES). So the gate's status says
-    key_problem for KEY_LATCH_SECONDS (Health: act) instead of "working". Unlike a rejected key,
-    no call is refused: another model (chat, an organisation's own) is still asked."""
+    reader makes its documents wait for a person (gemini_ocr KEY_CODES). The worker's Health report
+    (``health``) says key_problem for KEY_LATCH_SECONDS, so the operator's Health acts. ``status``,
+    which admission, the stuck sweep and the upgrade sweep act on, stays "working": a job of an
+    organisation whose own model works is admitted and read, and no call is refused."""
     fake.script("completions", reply, json_reply(GOOD), json_reply(GOOD))
     clock = Clock()
     client = _client(fake.url, clock)
     with pytest.raises(ModelUnavailable):
         _read(client)
-    assert client.status() == ("key_problem", 1000.0)
-
-    assert _read(client, model=FLASH).value == GOOD  # asked: nothing is latched
-    assert client.status() == ("key_problem", 1000.0)  # another model's reply does not end it
-    clock.now += KEY_LATCH_SECONDS
+    reported: list[tuple[str, datetime | None]] = []
+    at = datetime(2026, 10, 8, 10, 0, 0, tzinfo=UTC)
+    report_reader_state(
+        lambda state, since: reported.append((state, since)),
+        client.gate.health,  # what worker_main reports to reader_status
+        monotonic=clock,
+        wall_clock=lambda: at,
+    )
+    assert reported == [("key_problem", at)]
     assert client.status() == ("working", None)
+
+    admit = admission(lambda: client.status()[0], lambda job: contextlib.nullcontext())
+    with admit(Job("customer", "document")):  # not handed back (Deferred)
+        assert _read(client, model=FLASH).value == GOOD  # that organisation's own model reads it
+    assert client.gate.health() == ("key_problem", 1000.0)  # another model's reply does not end it
+    clock.now += KEY_LATCH_SECONDS
+    assert client.gate.health() == ("working", None)
     assert _read(client).value == GOOD
     assert len(fake.requests) == 3
 
@@ -496,7 +510,16 @@ def test_407_a_reply_from_the_platform_reader_ends_its_key_problem(fake: OpenRou
     with pytest.raises(ModelUnavailable):
         _read(client)
     assert _read(client).value == GOOD  # OCR_MODEL was put right
-    assert client.status() == ("working", None)
+    assert client.gate.health() == ("working", None)
+
+
+def test_407_a_rejected_key_is_still_the_key_problem_admission_acts_on(fake: OpenRouterFake) -> None:
+    """The real key latch is unchanged: ``status`` and ``health`` both say key_problem."""
+    fake.script("completions", error_reply(401, error_type="authentication"))
+    client = _client(fake.url, Clock())
+    with pytest.raises(ModelUnavailable):
+        _read(client)
+    assert client.status() == client.gate.health() == ("key_problem", 1000.0)
 
 
 @pytest.mark.parametrize("reply", [error_reply(404), redirect_to("http://127.0.0.1:9/elsewhere")])
@@ -509,7 +532,7 @@ def test_407_a_model_one_organisation_chose_never_reports_a_key_problem(
     client = _client(fake.url, Clock())
     with pytest.raises(ModelUnavailable):
         _read(client, model=FLASH)
-    assert client.status() == ("working", None)
+    assert client.status() == client.gate.health() == ("working", None)
 
 
 def test_any_other_status_is_an_http_error(fake: OpenRouterFake) -> None:

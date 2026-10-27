@@ -68,8 +68,9 @@ thinking tokens and cost.
 * 404: ``ModelUnavailable("model_not_found")`` (a wrong model ID in .env, or a model
   OpenRouter withdrew).
 * A redirect: ``ModelUnavailable("redirect_refused")``; any other status ``http_error``.
-  For OCR_MODEL, either one makes the gate's status ``key_problem`` for KEY_LATCH_SECONDS,
-  with no latch (issue 407, ``ModelGate.reader_unfixable``).
+  For OCR_MODEL, either one makes the reader's Health report ``key_problem`` for
+  KEY_LATCH_SECONDS (``ModelGate.health``), with no latch and no change to ``status``
+  (issue 407, ``ModelGate.reader_unfixable``).
 * A reply that was blocked (``message.refusal``, ``finish_reason`` ``content_filter``, or a
   ``native_finish_reason`` in ``BLOCKED_FINISH_REASONS``): ``ModelOutputError("blocked")``.
 * ``finish_reason`` ``length``: ``ModelOutputError("output_truncated")``, with no repair
@@ -719,20 +720,29 @@ class ModelGate:
         (since None); ``failing``: a model's last requests failed, since the first of them
         (an open breaker past BREAKER_OPEN_SECONDS too); ``down``: a model's breaker is
         open or probing, since its first failure; ``key_problem``: a 401, 402 or key 403
-        within KEY_LATCH_SECONDS, since it came, or OCR_MODEL's 404 or redirect in that time
-        (``reader_unfixable``). A model with no failure in
+        within KEY_LATCH_SECONDS, since it came. A model with no failure in
         FAILURE_GAP_SECONDS counts as working. Two models in the worst state give the
-        earlier since."""
+        earlier since. The worker's admission, the stuck sweep and the upgrade sweep act on
+        it; Health reads ``health``."""
         with self._lock:
             now = self.clock()
             if self._key_latched_at is not None and now < self._key_latched_at + KEY_LATCH_SECONDS:
                 return KEY_PROBLEM, self._key_latched_at
-            if self._reader_unfixable_at is not None and now < self._reader_unfixable_at + KEY_LATCH_SECONDS:
-                return KEY_PROBLEM, self._reader_unfixable_at
             states = [breaker.status(now) for breaker in self._breakers.values()]
         worst = max((state for state, _ in states), key=_STATE_RANK.__getitem__, default=WORKING)
         since = [at for state, at in states if state == worst and at is not None]
         return worst, min(since) if since else None
+
+    def health(self) -> tuple[str, float | None]:
+        """What the worker reports for Health (U9): ``status``, or ``key_problem`` while OCR_MODEL's
+        404 or redirect is fresh (``reader_unfixable``, issue 407), so the operator is asked to act.
+        Only the report: nothing is handed back for it, so an organisation reading with another
+        model goes on."""
+        with self._lock:
+            unfixable = self._reader_unfixable_at
+            fresh = unfixable is not None and self.clock() < unfixable + KEY_LATCH_SECONDS
+        state = self.status()
+        return (KEY_PROBLEM, unfixable) if fresh and state[0] != KEY_PROBLEM else state
 
     def admit(self, model: str) -> None:
         """Raises at once while the key is latched or ``model``'s breaker is open; lets one
@@ -842,10 +852,11 @@ class ModelGate:
 
     def reader_unfixable(self, model: str, code: str) -> None:
         """Issue 407: a 404 or a redirect (``code``) for OCR_MODEL, the platform's reader. No
-        wait fixes it and its documents wait for a person (gemini_ocr KEY_CODES), so ``status``
-        says ``key_problem`` for KEY_LATCH_SECONDS: Health asks for action, and the worker hands
-        scans back as for a key. No call is refused (chat and other models still work). Another
-        model's (one organisation's choice, read locally) changes nothing. Logged once at error."""
+        wait fixes it and its documents wait for a person (gemini_ocr KEY_CODES), so ``health``
+        says ``key_problem`` for KEY_LATCH_SECONDS: Health asks for action. ``status`` is not
+        changed and no call is refused, so admission, the sweeps, chat and the organisations
+        reading with another model go on. Another model's (one organisation's choice, read
+        locally) changes nothing. Logged once at error."""
         if model != self._reader_model:
             return
         with self._lock:

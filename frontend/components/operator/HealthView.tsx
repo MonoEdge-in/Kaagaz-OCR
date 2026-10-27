@@ -4,7 +4,7 @@
 // reason in plain words, how many are being read and how long the oldest has
 // waited, for the whole platform and per organisation; and how many deleted
 // organisations were removed for good and checked again a day later. PRD 5 U9:
-// each worker's reader status (working, slow, down, key problem, or not
+// each worker's reader status (working, slow, down, key or model problem, or not
 // reporting after 2 minutes) and the jobs waiting in each queue lane. #246 O1: the Release
 // card, the commit the API runs; the deployer's last attempt and last good release are in
 // files on the server that no container reads, so the card points to the deploy log.
