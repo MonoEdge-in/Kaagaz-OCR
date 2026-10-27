@@ -8,7 +8,6 @@ import {
   reprocessErrorText,
   reprocessReducer,
   settledText,
-  valuesNote,
 } from "@/components/viewer/reprocess";
 import type { ReprocessState } from "@/components/viewer/reprocess";
 import { ApiError, reprocessDocument } from "@/lib/api";
@@ -201,16 +200,9 @@ describe("Read again settles", () => {
   });
 });
 
-describe("valuesNote", () => {
-  it("says the values are not final while the document is read", () => {
-    expect(valuesNote("received", 0)).toBe("Values show here once the document has been read.");
-    expect(valuesNote("clean", 0)).toBe("Values show here once the document has been read.");
-    expect(valuesNote("clean", 12)).toBe(
-      "Being read again. These values are from the last reading and may change.",
-    );
-    for (const status of ["ready", "failed", "needs_reader", "rejected"] as DocumentStatus[]) {
-      expect(valuesNote(status, 3)).toBeNull();
-    }
+// Changed on purpose (Vrushit UAT 2, 27 Oct 2026, #416): valuesNote went with Values found.
+describe("beingRead", () => {
+  it("is true only while the document is checked or read", () => {
     expect([beingRead("received"), beingRead("clean"), beingRead("ready")]).toEqual([true, true, false]);
   });
 });

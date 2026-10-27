@@ -64,16 +64,8 @@ describe("3. a value is one compact row in 0.75rem, with no What was read", () =
     expect(css("components/viewer/ScannedText.module.css")).not.toMatch(/\.readList|\.read summary/);
   });
 
-  it("sets the row's text at 0.75rem and lays a narrow row out on one line, its badge at the end", () => {
-    const sheet = css(VIEW_CSS);
-    expect(sheet).toMatch(/\.valuesTable \{[^}]*font-size: 0\.75rem;/);
-    expect(sheet).toMatch(/\.valuesTable td :global\(\.btn\) \{[^}]*font-size: inherit;/);
-    const narrow = sheet.slice(sheet.indexOf("@container (max-width: 35.99rem)"));
-    expect(narrow).toMatch(/\.valuesTable tbody tr \{\s*display: flex;\s*flex-wrap: wrap;\s*align-items: center;/);
-    expect(narrow).toMatch(/\.valuesTable td\.labelCell \{\s*margin-inline-start: auto;/);
-    expect(narrow).not.toMatch(/grid-template-areas/);
-    expect(narrow).not.toMatch(/font-size: var\(--fs-lg\)/); // the value was 18px in a card
-  });
+  // Changed on purpose (Vrushit UAT 2, 27 Oct 2026, #416): the value rows are gone with Values
+  // found (uat-2-document-page.test.ts).
 });
 
 describe("4. no Invoice section and no line cards on the document page", () => {

@@ -594,24 +594,11 @@ describe("layout guards", () => {
     expect(read("components/chat/AnswerView.tsx")).toContain("export const AnswerView = memo(function AnswerView(");
   });
 
-  // Changed on purpose (MonoEdge design system, 16 Oct 2026): no gradients, so the hatch is a 1px
-  // dashed edge for Needs review beside a solid one for Verified (the badge keeps its icon and word).
-  it("edges a value row solid for Verified and dashed for Needs review, as a table and as a card, and keeps it when selected", () => {
+  // Changed on purpose (Vrushit UAT 2, 27 Oct 2026, #416): Values found is gone from the document
+  // page, and its rows' edges with it (uat-2-document-page.test.ts); still no gradients there.
+  it("draws no gradient on the document page", () => {
     const css = "app/(app)/documents/[id]/DocumentView.module.css";
-    const solid = rulesFor(css, ".valuesTable tr[data-label] td:first-child::before");
-    expect(solid.map((rule) => rule.at)).toEqual(["@container (min-width: 36rem)"]);
-    expect(solid[0]?.body).toMatch(/border-inline-start:\s*1px solid var\(--success\);/);
-    const dashed = rulesFor(css, '.valuesTable tr[data-label="needs_review"] td:first-child::before');
-    expect(dashed.map((rule) => rule.at)).toEqual(["@container (min-width: 36rem)"]);
-    expect(dashed[0]?.body).toMatch(/border-inline-start-style:\s*dashed;/);
-    const card = rulesFor(css, '.valuesTable tr[data-label="needs_review"]');
-    expect(card.map((rule) => rule.at)).toEqual(["@container (max-width: 35.99rem)"]);
-    expect(card[0]?.body).toMatch(/border-style:\s*dashed;/);
     expect(read(css).replace(/\/\*[\s\S]*?\*\//g, "")).not.toMatch(/gradient/);
-    // Selection sets only the colour, so the edge stays.
-    const selected = [...rulesFor(css, ".activeRow td"), ...rulesFor(css, ".valuesTable tbody tr.activeRow")];
-    expect(selected.filter((rule) => /background-color:\s*var\(--accent-subtle\)/.test(rule.body))).toHaveLength(2);
-    expect(read("app/(app)/documents/[id]/DocumentView.tsx")).toContain("data-label={value.label}");
   });
 
   it("on a phone, hides a button's extra words the way visually-hidden does, so its name stays whole", () => {
@@ -746,37 +733,15 @@ describe("the document screen (boards 2, 3 and 6)", () => {
     const overview = panels.slice(panels.indexOf('shownTab === "overview"'), panels.indexOf('shownTab === "attention"'));
     // Changed on purpose (24 Oct 2026): the Document card is gone from Details.
     // Changed on purpose (Vrushit UAT, 25 Oct 2026): the Invoice section is gone from Details.
-    for (const part of ["{values}", "<RelatedPanel", "<StoryPanel"]) expect(overview).toContain(part);
+    // Changed on purpose (Vrushit UAT 2, 27 Oct 2026, #416): Values found is gone from Details.
+    for (const part of ["<RelatedPanel", "<StoryPanel"]) expect(overview).toContain(part);
     expect(overview).not.toContain("<InvoicePanel");
+    expect(overview).not.toContain("{values}");
     const attention = panels.slice(panels.indexOf('shownTab === "attention"'), panels.indexOf('shownTab === "scanned"'));
     for (const part of ["<PageProblems", "<AttentionPanel"]) expect(attention).toContain(part);
     expect(panels).toContain("<ScannedTextPanel");
     expect(panels).toContain("<PageWordsList");
-    expect(view).toContain('id="values-heading"');
-  });
-
-  it("shows the values in three columns, the reason under its badge, and only the badge on one line", () => {
-    const view = read(VIEW);
-    const head = view.slice(view.indexOf("<thead"), view.indexOf("</thead>"));
-    expect(head.match(/role="columnheader"/g)).toHaveLength(3);
-    expect(head).toContain("Label and reason");
-    // Changed on purpose (Tushar, 16 Oct 2026: Ready to verify): the badge gets the value's confidence for its tooltip.
-    expect(view).toMatch(
-      // Changed on purpose (24 Oct 2026): the AI's own reason is said once over the list, so a
-      // row shows its reason only when it is another one (or the readers' vote).
-      /<td role="cell" className=\{styles\.labelCell\}>\s*<LabelBadge label=\{value\.label\} confidence=\{value\.confidence \?\? null\} \/>\s*\{\(value\.label_reason !== "model_chosen" \|\| value\.votes\) && \(\s*<div className=\{styles\.reason\}>/,
-    );
-    const nowrap = rules(read(VIEW_CSS)).filter((rule) => NOWRAP.test(rule.body) && /label|reason/i.test(rule.selector));
-    expect(nowrap.map((rule) => rule.selector)).toEqual([".labelCell :global(.badge)"]);
-  });
-
-  it("shows about six values, then a quiet Show all N, never hiding a Needs review value", () => {
-    const view = read(VIEW);
-    expect(view).toContain("const FIRST_VALUES = 6;");
-    expect(view).toContain('value.label === "needs_review"');
-    expect(view).toContain("{shownValues.map((value) => {");
-    expect(view).toContain("className={`btn btn-quiet ${styles.showAll}`}");
-    expect(view).toContain('`Show all ${detail.values.length.toLocaleString("en-IN")}`');
+    expect(view).not.toContain('id="values-heading"');
   });
 
   // Changed on purpose (MonoEdge design system, 16 Oct 2026): a dashed edge, not a hatch.

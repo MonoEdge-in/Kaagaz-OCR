@@ -9,16 +9,14 @@
 // each a link to that version's own id). A newer version still being read, or one
 // that failed, gets a line linking to it. A document in Trash says so.
 // Below: the page viewer and, beside it from 1024 px, the panels as tabs (DD6):
-// Overview (the document card, Values found, related documents and the
+// Overview (the document card, related documents and the
 // user's story), Needs attention (N) (the page's reading problems as an alert, DD4,
 // then the Attention panel, U5), Scanned text (ScannedTextPanel.tsx) and My words
 // (components/words/ViewerWords.tsx). The same tabs in the same order on every load
 // (DD8): Overview first, or Scanned text when the link says ?scanned=1. On a window at
 // least 1024 px wide and 36rem tall the page column sticks, as tall as <main>, with
 // the page fitted to its width (DD5, STICKY_VIEWER_QUERY), and a handle between the
-// columns resizes them (by drag past 5px, or the arrow keys). Values found shows about
-// six values, then "Show all N" (never hiding a Ready to verify value); its third column
-// is the label with its reason under it. Under the page: "Highlighted: <field>".
+// columns resizes them (by drag past 5px, or the arrow keys). Under the page: "Highlighted: <field>".
 // While it is checked or read, on load too, its summary is asked for again
 // (lib/poll.ts); once it settles, the whole detail is asked for once, and the screen
 // says what was found. Clicking a value jumps to its page and highlights its spot.
@@ -43,6 +41,8 @@
 // Vrushit UAT (25 Oct 2026): no Invoice section and no "What was read" under a value; a value
 // is one compact row (its name, the value, its page, Add meaning, then its badge) in 0.75rem;
 // Needs attention's count is a filled circle; Export as Data saves the read text as a .txt.
+// Vrushit UAT 2 (27 Oct 2026, #416): no Values found in Details. A value is verified in Review
+// (/review, its "By document" view, or ?document_id=), and the summary card shows its facts.
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -80,7 +80,6 @@ import { valueAt } from "@/components/viewer/scanned";
 import { loadDocumentWords } from "@/components/viewer/YourWords";
 import { useTabMotion } from "@/lib/motion";
 import { AddMeaningDialog, PageWordsList, useViewerWords } from "@/components/words/ViewerWords";
-import wordStyles from "@/components/words/Words.module.css";
 import {
   newerVersionText,
   sortedVersions,
@@ -90,17 +89,16 @@ import {
   versionText,
   withSummary,
 } from "@/components/viewer/versions";
-import { LabelBadge } from "@/components/viewer/LabelBadge";
 import { PdfDocumentViewer } from "@/components/viewer/PdfDocumentViewer";
 import { ViewerBoundary } from "@/components/viewer/ViewerBoundary";
-import { fieldText, reasonText, voteText } from "@/components/viewer/labels";
-import { lowResolutionText, untilRead } from "@/components/viewer/panels";
+import { fieldText } from "@/components/viewer/labels";
+import { lowResolutionText } from "@/components/viewer/panels";
 import type { Spot } from "@/components/viewer/panels";
-import { beingRead, canReprocess, loadFailure, settledText, valuesNote } from "@/components/viewer/reprocess";
+import { beingRead, canReprocess, loadFailure, settledText } from "@/components/viewer/reprocess";
 import { highlightsOf, initialSelection, pageChange } from "@/components/viewer/selection";
-import { selectSpot, selectValue } from "@/components/viewer/selection";
+import { selectSpot } from "@/components/viewer/selection";
 import type { Selection } from "@/components/viewer/selection";
-import { canReview, verifiedText, verifyEach } from "@/components/review/review";
+import { canReview } from "@/components/review/review";
 import { flagDomId, trustText } from "@/components/review/wordReview";
 import { Timeline } from "@/components/activity/Timeline";
 import { ACTIVITY_TEXT } from "@/components/activity/words";
@@ -111,14 +109,7 @@ import { FILES_TEXT } from "@/components/files/words";
 import { VersionBanner } from "@/components/versions/VersionBanner";
 import { VersionsPanel } from "@/components/versions/VersionsPanel";
 import { VERSION_TEXT } from "@/components/versions/words";
-import {
-  ApiError,
-  documentActivity,
-  getDocument,
-  getDocumentSummary,
-  getPageReadings,
-  resolveReview,
-} from "@/lib/api";
+import { documentActivity, getDocument, getDocumentSummary, getPageReadings } from "@/lib/api";
 import { formatDate, formatDateTime, statusChip, typeLabel } from "@/lib/format";
 import type { StatusTone } from "@/lib/format";
 import { progressSignature } from "@/lib/poll";
@@ -129,7 +120,6 @@ import type {
   DocumentDetail,
   DocumentSummary,
   DocumentWords,
-  ExtractedValue,
   PageSummary,
   ReadingMark,
   Region,
@@ -154,14 +144,12 @@ export interface DocumentViewProps {
   wordsParam: string | null;
 }
 
-const FIRST_VALUES = 6; // shown before "Show all N"
 // Said after "Highlighted: <field>" when the spot came in a link (a source card, a search
 // hit or a review item), not from a pick on this screen.
 const FROM_LINK = ", from the link you opened";
 // The status under the title: its words (lib/format.ts statusChip) with an icon.
 const STATUS_ICONS: Record<StatusTone, KIconName> = { ready: "check-circle", working: "clock", neutral: "info", danger: "alert" };
 const DETAILS_ID = "document-details"; // More details: the kind, pages, counts, tags and versions
-const valueDomId = (id: string) => `document-value-${id}`; // a value's "show on page" button
 
 type Loaded =
   | { attempt: number; detail: DocumentDetail }
@@ -211,11 +199,6 @@ export function DocumentView({
   // "Add meaning": what it is for, and the button that opened it (focus goes back there).
   const [adding, setAdding] = useState<{ text: string; region: Region } | null>(null);
   const opener = useRef<HTMLElement | null>(null);
-  const [allValues, setAllValues] = useState(false); // "Show all N" pressed
-  const [verifying, setVerifying] = useState<string | "all" | null>(null);
-  const [verifyProgress, setVerifyProgress] = useState({ done: 0, total: 0 });
-  // After Verify all: what it says, and the ids of the values that could not be saved.
-  const [verifyNotice, setVerifyNotice] = useState<{ text: string; failed: boolean; retry?: string[] } | null>(null);
   // Word-level review: on or off, the word being reviewed, the export dialog.
   const [reviewing, setReviewing] = useState(false);
   const [currentFlag, setCurrentFlag] = useState<string | null>(null);
@@ -348,11 +331,6 @@ export function DocumentView({
   const bringPage = (region: Region) => {
     if (bringPageForSpot(selection?.region ?? null, region)) viewerRef.current?.scrollIntoView({ block: "nearest" });
   };
-  const showValue = (value: ExtractedValue) => {
-    choose(selectValue(value));
-    setAnnouncement(`Showing ${fieldText(value.field)} on page ${value.region.page}.`);
-    bringPage(value.region);
-  };
   const showSpot = (spot: Spot, said = `Showing ${spot.name} on page ${spot.region.page}.`) => {
     choose(selectSpot(spot.region, spot.label));
     setAnnouncement(said);
@@ -464,19 +442,6 @@ export function DocumentView({
   const download = detail.deleted_at === null ? downloadHref(detail) : null;
   const position = versionPosition(detail);
   const note = versionNote(detail);
-  const readingNote = valuesNote(detail.status, detail.values.length);
-  const canVerifyValues =
-    canReview(me.user.role) &&
-    detail.status === "ready" &&
-    detail.deleted_at === null;
-  const pendingValues = detail.values.filter((value) => value.label === "needs_review");
-  // About six values, then "Show all N"; a Ready to verify value and the one highlighted always show.
-  const shownValues =
-    allValues || detail.values.length <= FIRST_VALUES
-      ? detail.values
-      : detail.values.filter(
-          (value, index) => index < FIRST_VALUES || value.label === "needs_review" || value.id === selection?.valueId,
-        );
   // "Highlighted: Grand total, from the link you opened" under the page; else PageViewer's own words.
   const highlighted =
     selection?.region && (detail.values.find((v) => v.id === selection.valueId) ?? valueAt(detail.values, selection.region));
@@ -488,201 +453,6 @@ export function DocumentView({
     setToast(message); // its own live region reads it out
     setReloads((n) => n + 1);
   };
-
-  // Verify and Verify all are disabled while they save and are gone once nothing is left to
-  // verify, which dropped focus to the page (QA pass, 25 Oct 2026): back to the value, or to
-  // the Values found heading.
-  const afterVerify = (valueId: string | null) => {
-    requestAnimationFrame(() => {
-      (document.getElementById(valueDomId(valueId ?? "")) ?? document.getElementById("values-heading"))?.focus();
-    });
-  };
-  const verifyValue = async (value: ExtractedValue) => {
-    if (!canVerifyValues || verifying !== null || value.label !== "needs_review") return;
-    setVerifying(value.id);
-    setVerifyNotice(null);
-    try {
-      await resolveReview(value.id, "typed", false, value.value);
-      setVerifyNotice({ text: `Verified ${fieldText(value.field)}.`, failed: false });
-    } catch (error) {
-      setVerifyNotice({
-        text: error instanceof ApiError ? error.message : "Could not verify this value. Check your connection, then try again.",
-        failed: true,
-      });
-    } finally {
-      setVerifying(null);
-      setReloads((n) => n + 1);
-      // The pressed Verify was disabled, then goes: keep the keyboard on this value's row.
-      afterVerify(value.id);
-    }
-  };
-
-  // Verify all: every value still Ready to verify, or after a partial failure (Try again)
-  // only those that could not be saved and are still Ready to verify.
-  const verifyAllValues = async (values: ExtractedValue[]) => {
-    if (!canVerifyValues || verifying !== null || values.length === 0) return;
-    const total = values.length;
-    setVerifying("all");
-    setVerifyProgress({ done: 0, total });
-    setVerifyNotice(null);
-    const failed = await verifyEach(
-      values,
-      (value) => resolveReview(value.id, "typed", false, value.value),
-      (done) => setVerifyProgress({ done, total }),
-    );
-    setVerifyNotice({
-      text: verifiedText(total, failed.length),
-      failed: failed.length > 0,
-      retry: failed.map((value) => value.id),
-    });
-    setVerifying(null);
-    setReloads((n) => n + 1);
-    afterVerify(null);
-  };
-  const retryValues = pendingValues.filter((value) => verifyNotice?.retry?.includes(value.id));
-
-  const values = (
-    <section className={styles.values} aria-labelledby="values-heading">
-      <div className={styles.valuesHeader}>
-        <h2 id="values-heading" className={styles.valuesHeading} tabIndex={-1}>
-          Values found
-          {detail.values.length > 0 ? (
-            <span className={`${styles.count} tabular`}>{detail.values.length}</span>
-          ) : null}
-        </h2>
-        {canVerifyValues && pendingValues.length > 0 && (
-          <button
-            type="button"
-            className="btn btn-quiet"
-            onClick={() => void verifyAllValues(pendingValues)}
-            disabled={verifying !== null}
-          >
-            {verifying === "all"
-              ? `Verifying ${verifyProgress.done} of ${verifyProgress.total}…`
-              : `Verify all ${pendingValues.length}`}
-          </button>
-        )}
-      </div>
-      {verifyNotice && (
-        <p className={verifyNotice.failed ? "error-text" : "muted"} role={verifyNotice.failed ? "alert" : "status"}>
-          {verifyNotice.text}
-        </p>
-      )}
-      {canVerifyValues && retryValues.length > 0 && (
-        <button
-          type="button"
-          className={`btn btn-quiet ${styles.showAll}`}
-          onClick={() => void verifyAllValues(retryValues)}
-          disabled={verifying !== null}
-        >
-          Try again
-          <span className="visually-hidden">{` to verify the ${retryValues.length} not saved`}</span>
-        </button>
-      )}
-      {readingNote && <p className="muted">{readingNote}</p>}
-      {/* Said once, not on every row (Tushar, 24 Oct 2026: "minimize this"). */}
-      {detail.values.some((value) => value.label_reason === "model_chosen") && (
-        <p className={styles.valuesNote}>{AI_FOUND_NOTE}</p>
-      )}
-      {detail.values.length === 0 ? (
-        !readingNote && <p className="muted">{untilRead(detail.status, "No values were found in this document.")}</p>
-      ) : (
-        <div className={styles.valuesWrap}>
-          <table className={`table ${styles.valuesTable}`} role="table">
-            <caption className="visually-hidden">
-              Values found. Pick a value to show it on its page.
-            </caption>
-            <thead role="rowgroup">
-              <tr role="row">
-                <th scope="col" role="columnheader">
-                  Field
-                </th>
-                <th scope="col" role="columnheader">
-                  Value
-                </th>
-                <th scope="col" role="columnheader">
-                  Label and reason
-                </th>
-              </tr>
-            </thead>
-            <tbody role="rowgroup">
-              {shownValues.map((value) => {
-                const active = selection?.valueId === value.id;
-                return (
-                  <tr
-                    key={value.id}
-                    role="row"
-                    className={active ? styles.activeRow : undefined}
-                    data-label={value.label}
-                  >
-                    <td role="cell" className={styles.fieldCell}>
-                      {fieldText(value.field)}
-                    </td>
-                    <td role="cell" className={styles.valueCell}>
-                      <button
-                        type="button"
-                        id={valueDomId(value.id)}
-                        className={styles.valueButton}
-                        aria-pressed={active}
-                        onClick={() => showValue(value)}
-                      >
-                        {value.value}
-                        <span className="visually-hidden">
-                          {`, show on page ${value.region.page}`}
-                        </span>
-                      </button>
-                      <span className={styles.valuePage}>
-                        Page {value.region.page}
-                        {active ? ", highlighted" : ""}
-                      </span>
-                      <button
-                        type="button"
-                        className={`btn btn-quiet ${wordStyles.target}`}
-                        onClick={(event) => addMeaning(value.value, value.region, event.currentTarget)}
-                      >
-                        Add meaning
-                        <span className="visually-hidden">{` for ${fieldText(value.field)}`}</span>
-                      </button>
-                    </td>
-                    <td role="cell" className={styles.labelCell}>
-                      <LabelBadge label={value.label} confidence={value.confidence ?? null} />
-                      {(value.label_reason !== "model_chosen" || value.votes) && (
-                        <div className={styles.reason}>
-                          {value.label_reason !== "model_chosen" && reasonText(value.label_reason)}
-                          {value.votes && <div className={styles.pageNote}>{voteText(value.votes)}</div>}
-                        </div>
-                      )}
-                      {canVerifyValues && value.label === "needs_review" && (
-                        <button
-                          type="button"
-                          className="btn btn-quiet"
-                          onClick={() => void verifyValue(value)}
-                          disabled={verifying !== null}
-                        >
-                          {verifying === value.id ? "Verifying…" : "Verify"}
-                          <span className="visually-hidden">{` ${fieldText(value.field)} on page ${value.region.page}`}</span>
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
-      {detail.values.length > FIRST_VALUES && (
-        <button
-          type="button"
-          className={`btn btn-quiet ${styles.showAll}`}
-          aria-expanded={allValues}
-          onClick={() => setAllValues(!allValues)}
-        >
-          {allValues ? "Show fewer" : `Show all ${detail.values.length.toLocaleString("en-IN")}`}
-        </button>
-      )}
-    </section>
-  );
 
   return (
     <div className="page page-wide">
@@ -931,7 +701,6 @@ export function DocumentView({
               shownTab === "overview" ? (
                 <>
                   <DetailsPanel detail={detail} onSaved={reloadWith} />
-                  {values}
                   <RelatedPanel detail={detail} />
                   <StoryPanel documentId={detail.id} inTrash={detail.deleted_at !== null} />
                 </>
@@ -1282,7 +1051,5 @@ function useDocumentWords(documentId: string, words: readonly string[], version:
   return loaded && loaded.key === key ? loaded.found : null;
 }
 
-/** Said once over Values found, for the values the AI picked (24 Oct 2026: not on every row). */
-export const AI_FOUND_NOTE = "Values marked Ready to verify were found by the AI. Check each one against its page.";
 const NO_REGIONS: Region[] = [];
 const NO_HITS: number[] = [];
