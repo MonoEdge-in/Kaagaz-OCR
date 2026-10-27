@@ -31,8 +31,8 @@
 // flagged words marked on the page and in Scanned text, and review mode: the Needs
 // attention tab becomes the review panel (ReviewPanel.tsx); leaving it puts focus back
 // on the word on the page.
-// Your words (package H): a link with ?words= lights every line of the page holding one,
-// with a note, "Show your words" and "Next page with your words" under the page (YourWords.tsx).
+// Your words (package H): a link with ?words= lights every line of the page holding one
+// (YourWords.tsx); Vrushit UAT 2 (#412): no panel about them under the page.
 
 // Document panel UX (25 Oct 2026): the panel answers, in order, what is this (the name, one
 // status in words, the AI summary and its key facts), can I trust it (one status line, its
@@ -77,7 +77,7 @@ import { CLEAN_COPY } from "@/components/viewer/clearCopy";
 import { ReadClearlyPanel } from "@/components/viewer/ReadClearlyPanel";
 import { ScannedTextPanel } from "@/components/viewer/ScannedTextPanel";
 import { valueAt } from "@/components/viewer/scanned";
-import { YourWords, loadDocumentWords } from "@/components/viewer/YourWords";
+import { loadDocumentWords } from "@/components/viewer/YourWords";
 import { useTabMotion } from "@/lib/motion";
 import { AddMeaningDialog, PageWordsList, useViewerWords } from "@/components/words/ViewerWords";
 import wordStyles from "@/components/words/Words.module.css";
@@ -299,7 +299,6 @@ export function DocumentView({
   const readingMarks = usePageMarks(documentId, markedPage, reloads);
   const yourWords = linkWords(wordsParam);
   const wordsFound = useDocumentWords(documentId, yourWords, reloads);
-  const [wordsOn, setWordsOn] = useState(true);
 
   // While it loads, only the skeleton (SoW 19 Oct: "Back to documents" flashed for half a second).
   if (!current) {
@@ -444,7 +443,7 @@ export function DocumentView({
       (document.getElementById(flagDomId(word ?? "")) ?? reviewButton.current)?.focus();
     });
   };
-  const wordBoxes = wordsOn && wordsFound ? wordsFound.boxes : NO_REGIONS;
+  const wordBoxes = wordsFound ? wordsFound.boxes : NO_REGIONS;
   const wordHits = wordsFound?.hits ?? NO_HITS;
 
   const pagesText =
@@ -751,16 +750,6 @@ export function DocumentView({
           ) : (
             <p className={styles.noPages}>No pages to show yet.</p>
           )}
-          {page ? (
-            <YourWords
-              words={yourWords}
-              found={wordsFound}
-              pageNo={page.page_no}
-              on={wordsOn}
-              onToggle={() => setWordsOn((on) => !on)}
-              onPage={changePage}
-            />
-          ) : null}
         </section>
         <SplitHandle split={split} onSplit={setSplit} layout={layoutRef} />
         <div className={styles.panels}>
