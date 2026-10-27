@@ -23,32 +23,40 @@ import { docTypeLabel } from "@/lib/format";
 import type { DocumentDetail, DocumentStatus, PageSummary, ReadingMark } from "@/lib/types";
 import styles from "./DocumentView.module.css";
 
+/** Vrushit UAT 3 (27 Oct 2026): a closed, quiet disclosure with its count; each document one line,
+ * its name and then, muted, its type and the number it shares. */
 export function RelatedPanel({ detail }: { detail: DocumentDetail }) {
+  const groups = groupLinks(detail.links);
+  if (groups.length === 0) {
+    return (
+      <section className={styles.panel} aria-labelledby="related-heading">
+        <h2 id="related-heading" className={styles.relatedHeading}>
+          Related documents
+        </h2>
+        <p className={styles.pageNote}>{untilRead(detail.status, "No other document shares a number with this one.")}</p>
+      </section>
+    );
+  }
   return (
-    <section className={styles.panel} aria-labelledby="related-heading">
-      <h2 id="related-heading" className={styles.valuesHeading}>
-        Related documents
-      </h2>
-      {detail.links.length === 0 ? (
-        <p className="muted">{untilRead(detail.status, "No other document shares a number with this one.")}</p>
-      ) : (
-        <ul className={styles.panelList}>
-          {groupLinks(detail.links).map(([link, ...more]) => (
-            <li key={link.id}>
-              <Link href={`/documents/${link.id}`} className={styles.fieldCell}>
-                {link.display_name}
-              </Link>
-              <div className={styles.pageNote}>
-                {[
-                  docTypeLabel(link.doc_type),
-                  ...[link, ...more].map((shared) => linkText(shared, detail.values)),
-                ].join(" · ")}
-              </div>
-            </li>
-          ))}
-        </ul>
-      )}
-    </section>
+    <details className={`${styles.panel} ${styles.related}`}>
+      <summary className={styles.relatedSummary}>
+        <Icon name="chevron-right" size={16} className={styles.relatedChevron} />
+        <h2 className={styles.relatedHeading}>Related documents</h2>
+        <span className={`tabular ${styles.pageNote}`}>{groups.length.toLocaleString("en-IN")}</span>
+      </summary>
+      <ul className={styles.relatedList}>
+        {groups.map(([link, ...more]) => (
+          <li key={link.id} className={styles.relatedItem}>
+            <Link href={`/documents/${link.id}`}>{link.display_name}</Link>
+            <span className={styles.pageNote}>
+              {[docTypeLabel(link.doc_type), ...[link, ...more].map((shared) => linkText(shared, detail.values))].join(
+                " · ",
+              )}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </details>
   );
 }
 

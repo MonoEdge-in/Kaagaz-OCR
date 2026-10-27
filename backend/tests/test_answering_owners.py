@@ -1,6 +1,11 @@
 """Which questions are owner and place questions (kaagaz/answering/owners.py ``owner_ask``)."""
 
-from kaagaz.answering.owners import OWNING, OwnerAsk, owner_ask
+from types import SimpleNamespace
+from typing import Any
+
+from kaagaz.answering.fixed_queries import ValueRef
+from kaagaz.answering.owners import OWNING, OwnerAsk, PgOwners, _lands, _map_lines, owner_ask
+from kaagaz.search.scope import EVERYTHING, Scope
 
 KEYS = {
     ("person", "nikhil varde"),
@@ -82,3 +87,49 @@ def test_an_open_list_naming_nothing_asks_for_every_owner_or_every_number() -> N
         "List all invoices",
     ):
         assert owner_ask(question, nobody) is None, question
+
+
+class _Looked(PgOwners):
+    """PgOwners with its one statement replaced: the fields each lookup looked in, and a record
+    only where ``kept_as`` is among them."""
+
+    def __init__(self, kept_as: str) -> None:
+        self.kept_as = kept_as
+        self.looked: list[list[str]] = []
+
+    def _rows(self, customer_id: str, query: Any, params: dict[str, Any], scope: Scope) -> list[Any]:
+        self.looked.append(params["fields"])
+        return [SimpleNamespace(document_id="d1", land="land:1")] if self.kept_as in params["fields"] else []
+
+
+def test_a_plot_number_kept_as_a_survey_number_is_still_found() -> None:
+    # Read before plot numbers had their own field (#274): plot 56 is kept as a survey number.
+    old = _Looked(kept_as=SURVEY)
+    assert old.keyed("c", "property", ["56"], EVERYTHING, ("land_plot_number",)) == [("d1", "land:1")]
+    assert old.looked == [["land_plot_number"], ["land_plot_number", SURVEY]]
+    # Kept as a plot number: found there, and survey numbers are never looked in.
+    new = _Looked(kept_as="land_plot_number")
+    assert new.keyed("c", "property", ["56"], EVERYTHING, ("land_plot_number",)) == [("d1", "land:1")]
+    assert new.looked == [["land_plot_number"]]
+    # A survey number asked as one never falls back to anything.
+    survey = _Looked(kept_as="land_plot_number")
+    assert survey.keyed("c", "property", ["56"], EVERYTHING, (SURVEY,)) == []
+    assert survey.looked == [[SURVEY]]
+
+
+def _map_value(field: str, said: str, region: dict[str, Any]) -> tuple[str, str | None, ValueRef]:
+    ref = ValueRef("v-" + said, "d1", "Map 59.pdf", "pdf", 1, region, field, said, "verified")
+    return "land:1", said.casefold(), ref
+
+
+def test_a_map_value_with_no_spot_is_never_quoted_even_a_word() -> None:
+    spot = {"kind": "box", "page": 1, "box": [0.1, 0.1, 0.2, 0.12]}
+    lands = _lands(
+        [
+            _map_value(SURVEY, "45", spot),
+            _map_value("land_boundary_east", "46", spot),
+            _map_value("land_boundary_west", "Nala", {"kind": "box", "page": 1, "box": [0.5, 0.5, 0.4, 0.4]}),
+        ]
+    )
+    said = _map_lines(lands[("d1", "land:1")], OwnerAsk(properties=("45",), borders=True))
+    assert [text for text, _ in said] == ["The neighbours printed for Survey 45: 46 on the east."]

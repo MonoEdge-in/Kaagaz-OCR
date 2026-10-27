@@ -682,6 +682,7 @@ const KIND_WORDS: Record<UsageKind, string> = {
   careful: "Careful re-reads", // Dynamic (feature 26)
   ensemble_scan: "Second opinions", // Ensemble (feature 27): the other readers
   ensemble_chat: "Second opinions", // and the other answer drafts
+  land: "Land records", // PRD 6 D: owners, shares and places
 };
 
 /** The kind of work in words; a kind this screen does not know yet is shown as is. */

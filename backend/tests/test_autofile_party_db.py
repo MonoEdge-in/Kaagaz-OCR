@@ -184,4 +184,6 @@ def test_a_moved_and_renamed_party_folder_is_still_used_and_undo_goes_to_the_top
         assert lock_live_family(conn, customer, first) is not None
         assert autofile.undo(conn, customer, first) == mehta
     assert state(db, customer, first) == (None, None)
-    assert len(folders(db, customer)) == 3  # the folders stay
+    # Changed on purpose (Vrushit UAT 3, 27 Oct 2026): moving Mehta out left Invoices and its
+    # department empty, and Kaagaz made them, so they went; the party folder stays.
+    assert [f[1] for f in folders(db, customer)] == ["Mehta 2026"]

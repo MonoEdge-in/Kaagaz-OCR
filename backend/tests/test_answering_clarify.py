@@ -7,7 +7,17 @@ from typing import Any
 import pytest
 
 from kaagaz.answering import draft, rewrite
-from kaagaz.answering.clarify import Entity, Entry, Kind, distance, latin_key, outcome, put, reply_to
+from kaagaz.answering.clarify import (
+    Entity,
+    Entry,
+    Kind,
+    answers_clarify,
+    distance,
+    latin_key,
+    outcome,
+    put,
+    reply_to,
+)
 from kaagaz.answering.memory import Memory
 from kaagaz.answering.rewrite import Turn, checked_plan, history_text, rewrite_and_plan
 from kaagaz.answering.service import AnswerService
@@ -341,3 +351,17 @@ def test_the_vocabulary_is_narrowed_to_the_scopes_documents_and_a_property_keyed
         "survey45/2",
         "survey 45/2",
     )
+
+
+def test_typed_words_answer_the_open_clarify_only_as_a_short_name() -> None:
+    """A new question typed without a question mark ("Total GST paid last month") is never put
+    into the old one as the answer."""
+    for typed, answers in (
+        ("Pune", True),
+        ("Yes, Pune", True),
+        ("Survey 45/2", True),
+        ("Whose land is it?", False),
+        ("Total GST paid last month", False),
+        ("", False),
+    ):
+        assert answers_clarify(typed) is answers, typed

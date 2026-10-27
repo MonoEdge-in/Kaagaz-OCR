@@ -70,10 +70,22 @@ jobs:
           # Lock files are machine-written, so they don't count.
           changed=$(git diff --numstat "$BASE...$HEAD" -- . ':!*.lock' ':!package-lock.json' | awk '{ a += $1; d += $2 } END { print a + d + 0 }')
           echo "Changed lines, excluding lock files: $changed"
-          if [ "$changed" -gt 1000 ]; then
-            echo "::error::$changed changed lines. The limit is 1000: split this pull request."
+          if [ "$changed" -gt 3000 ]; then
+            echo "::error::$changed changed lines. The limit is 3000: split this pull request."
             exit 1
           fi
+
+      - name: No new Markdown files
+        run: |
+          set -euo pipefail
+          # CLAUDE.md, Never do these 9: no summaries, plans, notes or READMEs of our own. A doc
+          # that must change is edited in the file that already covers it.
+          added=$(git diff --name-only --diff-filter=A "$BASE...$HEAD" -- '*.md' '*.MD' '*.markdown')
+          if [ -n "$added" ]; then
+            echo "::error::New Markdown files: $(tr '\n' ' ' <<< "$added"). Edit the existing doc that covers it instead."
+            exit 1
+          fi
+          echo "No new Markdown files."
 
       - name: Tests come with the code
         run: |

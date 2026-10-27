@@ -132,7 +132,10 @@ describe("sources in order of relevance", () => {
     const html = render(message({}));
     const order = [...html.matchAll(/<article id="source-a1-(\d)"/g)].map((match) => match[1]);
     expect(order).toEqual(["2", "1"]);
-    expect(html).toMatch(/aria-label="Source 1"[^>]*>1<\/button><button[^>]*aria-label="Source 2"/);
+    // Changed on purpose (Vrushit UAT 3, 27 Oct 2026): each number is a link that opens its
+    // document at the cited spot, lit; it was a button that moved to the source card.
+    expect(html).toMatch(/<a[^>]*aria-label="Source 1: Invoice 1.pdf, page 1" href="\/documents\/doc-1\?page=1&amp;region=[^"]+"[^>]*>1<\/a>/);
+    expect(html).toMatch(/aria-label="Source 1[^"]*"[^>]*>1<\/a><a[^>]*aria-label="Source 2/);
   });
 
   it("puts the pinned source on top after a reload, pressed", () => {

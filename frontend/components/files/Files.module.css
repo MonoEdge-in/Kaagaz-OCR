@@ -88,7 +88,10 @@
 .details {
   display: grid;
   grid-template-columns: minmax(0, 9rem) minmax(0, 1fr);
-  gap: var(--space-2) var(--space-4);
+  /* Vrushit UAT 3 (27 Oct 2026): every row the same height, a Change button's or a value's,
+     so Owner and Label are spaced as the rows under them. */
+  grid-auto-rows: minmax(var(--control-min), auto);
+  gap: var(--space-1) var(--space-4);
   margin: 0;
   align-items: center;
 }
@@ -101,6 +104,7 @@
 }
 
 .change {
+  height: var(--control-min);
   padding-inline: var(--space-2);
 }
 
@@ -113,6 +117,7 @@
 @container details (max-width: 23.98rem) {
   .details {
     grid-template-columns: minmax(0, 1fr);
+    grid-auto-rows: auto;
     gap: var(--space-1);
   }
 

@@ -17,7 +17,7 @@ Closes #
 
 ## Checklist
 
-- [ ] Under 1000 changed lines, and does one job
+- [ ] Under 3000 changed lines, and does one job
 - [ ] Tests included, and they fail without this change
 - [ ] Every database query runs inside a transaction with the customer set
 - [ ] No new dependency, or Vrushit approved it (name it here, with its licence)

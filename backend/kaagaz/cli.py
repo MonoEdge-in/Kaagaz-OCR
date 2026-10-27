@@ -98,6 +98,10 @@
   spent (all measured), and the tokens saved (estimated: a whole-page Careful read's tokens
   less what the page spent). Per-page tokens are recorded only since 16 Oct 2026, so the
   token lines count only the runs read since, and it says how many. Numbers only.
+* ``prune-folders [--customer-id ID] [--apply]``: the empty folders Kaagaz made (auto-filing's
+  department, type, property, party and year folders with nothing in them, ``folders.prune_empty``'s
+  rules), listed by each customer's count; ``--apply`` deletes them and then their parents left
+  empty, each audited. Folders people made are never listed. Ids and counts only.
 
 Why passwords are never flags: a flag lands in the shell history and the
 process list. They come from ``KAAGAZ_ADMIN_PASSWORD`` (``KAAGAZ_DEMO_PASSWORD``
@@ -133,6 +137,7 @@ from kaagaz.api.auth import ROLES, hash_password
 from kaagaz.api.twostep import box
 from kaagaz.db import audit, customer_purge
 from kaagaz.db import customers as customers_sql
+from kaagaz.db import folders as folders_sql
 from kaagaz.db import operator_models as operator_models_sql
 from kaagaz.db import operators as operators_sql
 from kaagaz.db import users as users_sql
@@ -266,6 +271,10 @@ def _parser() -> argparse.ArgumentParser:
     times = commands.add_parser("scan-times", help="how long the last documents took, step by step")
     times.add_argument("--customer-id", help="one customer only (default: every customer)")
     times.add_argument("--last", type=int, default=5, help="the last N ready runs (default 5)")
+
+    prune = commands.add_parser("prune-folders", help="the empty folders Kaagaz made; --apply deletes them")
+    prune.add_argument("--customer-id", help="one customer only (default: every customer)")
+    prune.add_argument("--apply", action="store_true", help="delete them (default: only count them)")
 
     saving = commands.add_parser("cost-saving", help="what Cost saving read and saved in the last runs")
     saving.add_argument("--customer-id", "--customer", help="one customer only (default: every customer)")
@@ -588,6 +597,30 @@ def _land_facts(
         db, chat, settings, customers, max_usd=args.max_usd, out=out, storage=storage, checker=checker,
         sample=args.sample,
     )  # fmt: skip
+
+
+def _prune_folders(db: Database, customer_id: str | None, apply: bool, out: TextIO) -> None:
+    """prune-folders: each customer's empty folders Kaagaz made, one line a customer with any,
+    in its own ``db.customer()``; with ``apply``, deleted (``folders.prune_empty``). Then a total."""
+    if customer_id is None:
+        with db.system() as conn:
+            customers = indexing.customer_ids(conn)
+    else:
+        try:
+            uuid.UUID(customer_id)
+        except ValueError:
+            raise CliError("the customer id is not valid") from None
+        customers = [customer_id]
+    total = 0
+    for customer in customers:
+        with db.customer(customer) as conn:
+            empty = folders_sql.empty_made_folders(conn, customer)
+            count = len(folders_sql.prune_empty(conn, customer, empty)) if apply and empty else len(empty)
+        if count:
+            out.write(f"customer {customer}: {count} {'deleted' if apply else 'empty'}\n")
+        total += count
+    verb = "deleted" if apply else "empty, not deleted (add --apply)"
+    out.write(f"{total} folder{'' if total == 1 else 's'} {verb}\n")
 
 
 def _scan_times(db: Database, customer_id: str | None, last: int, out: TextIO) -> None:
@@ -1103,6 +1136,8 @@ def main(
             _land_facts(db, args, settings or Settings.from_env(env), model, storage, stdout)
         elif args.command == "scan-times":
             _scan_times(db, args.customer_id, args.last, stdout)
+        elif args.command == "prune-folders":
+            _prune_folders(db, args.customer_id, args.apply, stdout)
         elif args.command == "cost-saving":
             stdout.write(cost_saving_report(_ready_runs(db, args.customer_id, args.last)) + "\n")
         elif args.command in CUSTOMER_STATUS:

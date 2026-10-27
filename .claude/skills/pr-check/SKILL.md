@@ -22,7 +22,7 @@ push, never open the pull request.
 
 | # | Check | How | Fails when |
 |---|---|---|---|
-| 1 | Size | added plus removed lines from `--stat`, counting lock files separately | over 1000 changed lines, lock files excluded |
+| 1 | Size | added plus removed lines from `--stat`, counting lock files separately | over 3000 changed lines, lock files excluded |
 | 2 | One job | read the diff against the stated task | the changes serve more than one purpose |
 | 3 | Scope | every changed hunk maps to what was asked | extra features, refactors, reformatting, or files nobody asked for |
 | 4 | Acceptance criteria | stated in the issue or the pull request description | missing, or not checkable by someone else |

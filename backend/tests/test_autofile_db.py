@@ -195,8 +195,8 @@ def test_r10_a_deleted_type_folder_takes_its_key_and_the_next_file_makes_a_new_o
     read(db, customer, first)
     old = next(f[0] for f in folders(db, customer) if f[3] is not None and f[3].startswith("type:invoice:"))
     person_moves(db, customer, first, None)
-    with db.customer(customer) as conn:
-        delete_folder(conn, customer, old)
+    # Changed on purpose (Vrushit UAT 3, 27 Oct 2026): the move left it empty, so it went with it.
+    assert old not in {f[0] for f in folders(db, customer)}
 
     second = upload(db, customer, admin)
     read(db, customer, second)
@@ -467,7 +467,10 @@ def test_race_filing_waits_for_a_folder_move_and_a_folder_delete_without_a_deadl
     assert state(db, customer, moved) == ("filed", "Invoices")
 
     person_moves(db, customer, first, None)
-    person_moves(db, customer, moved, None)
+    # A file in Trash keeps the folder (Restore needs it), so a person can still delete it:
+    # moving both out would have emptied it, and it would have gone (Vrushit UAT 3).
+    with db.customer(customer) as conn:
+        trash_document(conn, customer, moved, by=admin, now=NOW)
     session = _session()
     with ThreadPoolExecutor(max_workers=1) as pool:
         with db.customer(customer) as conn:
@@ -505,7 +508,7 @@ def _undo(client: Any, document: str) -> Any:
     return client.post(f"/api/documents/{document}/autofile/undo", headers=CSRF)
 
 
-def test_r16_undo_moves_the_family_back_keeps_the_folder_and_names_who(db: Database) -> None:
+def test_r16_undo_moves_the_family_back_drops_the_empty_folder_and_names_who(db: Database) -> None:
     api = Api(db)
     customer, admin = organisation(db)
     member = api.sign_in(customer)  # any user of the organisation, not only its uploader
@@ -521,7 +524,9 @@ def test_r16_undo_moves_the_family_back_keeps_the_folder_and_names_who(db: Datab
     assert reply.status_code == 200, reply.text
     assert (reply.json()["folder_id"], reply.json()["autofile"]) == (department, None)
     assert state(db, customer, document) == (None, "Accounts and HR")
-    assert {f[0] for f in folders(db, customer)} == {invoices, department}  # the folders stay
+    # Changed on purpose (Vrushit UAT 3, 27 Oct 2026): the Invoices folder Kaagaz made is empty
+    # now, so it goes; the department holds the file again, so it stays.
+    assert {f[0] for f in folders(db, customer)} == {department}
     # Fixed (#239, 27 Oct 2026): the row names the folder it was filed in, as autofile.undo returns
     # it (d82ada4) and this test first said (9334e9a); 24cea75 changed only the test.
     assert audit(db, customer)[-1] == ("document.autofile_undo", member.user_id, {"folder_id": invoices})

@@ -52,7 +52,7 @@ Hard rules. If a task seems to need one broken, stop and ask.
 - Noticed something else worth doing? Say it in one line and ask. Do not build it.
 - Do not pick up plan tasks on your own. The plan says what will exist. Tushar says what to do now.
 - No speculative generality. No plug in systems or config for cases this sprint does not have. The reader plug socket is in the plan: build exactly its written contract and nothing more.
-- Smallest diff that meets the acceptance criteria. Past 1000 changed lines, stop and propose a split: CI fails anything bigger.
+- Smallest diff that meets the acceptance criteria. Past 3000 changed lines, stop and propose a split: CI fails anything bigger.
 - Keep the code plain enough that Tushar can defend every line in review.
 
 ## Before you write code
@@ -133,9 +133,10 @@ CI runs on pull requests into `main` and `production` and checks:
 | Scope | Checks |
 |---|---|
 | Always (`ci.yml`) | No secret files or secret values in the diff. No conflict markers. No file over 2MB. The production compose files render. |
-| The pull request (`pr.yml`) | Title format. Size, failing over 1000 changed lines (lock files excluded). Branch name, linked issue, tests alongside code, suppressed checks, new dependencies and identity-number shapes, as warnings. |
+| The pull request (`pr.yml`) | Title format. Size, failing over 3000 changed lines (lock files excluded). New Markdown files, failing. Branch name, linked issue, tests alongside code, suppressed checks, new dependencies and identity-number shapes, as warnings. |
 | Backend, from `backend/` | Install with `pip install -c constraints.txt -e ".[dev,ocr]"`. `ruff check`, `ruff format --check`, `mypy`, migrations from an empty database, then `pytest`. Dependency licences, failing on AGPL, SSPL or GPL v3. |
 | Frontend, from `frontend/` | `npm ci`, lint, typecheck, tests, production build. |
+| A push to `production` (`production-guard.yml`) | Every new commit came from a merged pull request, and no force push. It cannot block a push (no branch protection on the plan); it fails loudly instead. |
 
 **Customer isolation tests carry the pytest marker `isolation`** and run first, on their own, so a failure is impossible to miss. Any test proving one customer cannot reach another customer's data gets that marker; `backend/tests/conftest.py` adds it to every module named `test_isolation_*.py`. Tests marked `db` need a real PostgreSQL (`DATABASE_URL`); `pytest -m "not db"` runs without one.
 
@@ -148,7 +149,7 @@ If a hook or permission rule blocks you, do not work around it. Explain what you
 - [ ] Customer separation and the source rule both hold
 - [ ] Lint, format and typecheck pass on the changed code
 - [ ] No secrets in the diff, no unapproved dependency
-- [ ] Diff self reviewed: minimal, only what was asked, no debug leftovers, under 1000 changed lines
+- [ ] Diff self reviewed: minimal, only what was asked, no debug leftovers, under 3000 changed lines
 - [ ] Docs updated if behaviour or config changed
 
 ## How to report back

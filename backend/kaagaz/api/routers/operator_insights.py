@@ -274,6 +274,10 @@ def get_org_numbers(
     }
 
 
+# How far the app's clock may run ahead of the database's (get_answer_weeks).
+CLOCK_SKEW = timedelta(minutes=5)
+
+
 @router.get("/answer-weeks")
 def get_answer_weeks(
     operator: OperatorSession,
@@ -284,7 +288,9 @@ def get_answer_weeks(
     """PRD 6 F3: the last ``weeks`` whole ISO weeks that have ended, Monday to Sunday in
     TIMEZONE; never this week, so a count is never read twice while it grows."""
     zone = context.settings.timezone
-    today = context.clock().astimezone(ZoneInfo(zone)).date()
+    # 0051 refuses a week that has not ended by the database's clock; the first minutes of a
+    # Monday still count as Sunday here, so a clock a little behind the app's never 500s.
+    today = (context.clock() - CLOCK_SKEW).astimezone(ZoneInfo(zone)).date()
     monday = today - timedelta(days=today.weekday() + 7 * weeks)
     with db.operator() as conn:
         rows = insights_sql.answer_weeks(conn, operator.operator_id, monday, weeks, zone)
