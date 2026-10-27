@@ -102,6 +102,8 @@ describe("answer settings", () => {
   // Changed on purpose (SoW 19 Oct 2026): "AI engine", Swift then Precision; no Low.
   // Changed on purpose (plain words, 25 Oct 2026): both hints are shown, saying what each is for.
   // Changed on purpose (Vrushit UAT, 25 Oct 2026): each hint says what it really does differently.
+  // Changed on purpose (#411, 27 Oct 2026): only what the code does (AnswerSettings.tsx LEVEL_HINTS):
+  // the AI, how long it thinks, and reading more only with many or long documents.
   it("show the AI engine as Swift and Precision segments, each with its hint, both shown", () => {
     const allowed = options({ levels: ["low", "medium", "high"] });
     const html = renderToStaticMarkup(
@@ -111,11 +113,12 @@ describe("answer settings", () => {
     expect(segments.map((match) => match[2])).toEqual(["Swift", "Precision"]);
     for (const [, hint] of segments) expect(html).toContain(`<p id="${hint}"`);
     expect(html).toMatch(
-      /<p id="[^"]+-high" class="[^"]+">Precision: reads more of your documents and takes more care, on the strongest AI your organisation allows\. Slower; for important questions\.<\/p>/,
+      /<p id="[^"]+-high" class="[^"]+">Precision: the strongest AI your organisation allows, thinking longer; with many or long documents it reads more of them\. Slower\.<\/p>/,
     );
     expect(html).toMatch(
-      /<p id="[^"]+-medium" class="[^"]+">Swift: quick answers from the most relevant parts of your documents, for everyday questions\.<\/p>/,
+      /<p id="[^"]+-medium" class="[^"]+">Swift: your organisation&#x27;s usual AI, thinking briefly\. Quicker, for everyday questions\.<\/p>/,
     );
+    expect(html).not.toMatch(/takes more care|most relevant parts/); // #411: Precision searches and checks the same way
     expect(html).not.toMatch(/-low"|>Low</);
     expect(html).toMatch(/<legend>AI engine<\/legend>/);
     expect(html).not.toMatch(/Gemini|Claude|Sonnet|Flash/);

@@ -23,9 +23,13 @@ const LEVEL_ORDER: ThinkingLevel[] = ["medium", "high"];
 
 // Plain words (25 Oct 2026): what each does for the person asking. Changed on purpose (Vrushit
 // UAT, 25 Oct 2026): what each really does differently (chat.py _choice, service.py _input_cap).
+// Changed on purpose (#411, Vrushit's UAT, 27 Oct 2026): only what the code does. Precision asks
+// the strongest allowed AI (chat.py _choice) to think at High, not Medium; it reads more only
+// past ANSWER_SWIFT_INPUT_TOKENS, in parts past ANSWER_PARTS_TOKENS (service.py _input_cap,
+// _in_parts). The search, the evidence check and every check on the answer are the same.
 const LEVEL_HINTS: Record<ThinkingLevel, string> = {
-  high: "Precision: reads more of your documents and takes more care, on the strongest AI your organisation allows. Slower; for important questions.",
-  medium: "Swift: quick answers from the most relevant parts of your documents, for everyday questions.",
+  high: "Precision: the strongest AI your organisation allows, thinking longer; with many or long documents it reads more of them. Slower.",
+  medium: "Swift: your organisation's usual AI, thinking briefly. Quicker, for everyday questions.",
   low: "Fastest.",
 };
 
