@@ -1,6 +1,7 @@
 """The admin routes: users, the customer's settings, the audit log, the numbers and
-the failed jobs (PRD 3 Z1; Retry is the documents router's reprocess route), and the
-organisation's AI models and use in tokens (model choice, council 11 Oct 2026).
+the failed jobs (PRD 3 Z1; Retry is the documents router's reprocess route), the
+organisation's AI models and use in tokens (model choice, council 11 Oct 2026), and each
+member's numbers (#386, ``/admin/members``: this organisation's users only, never money).
 
 Why the admin session: every route here needs an admin's session (scope "admin": an
 admin's sign-in at /login, always with the two-step code since 0035). The check sits on
@@ -522,6 +523,55 @@ def get_stats(user: AdminSession, context: Context) -> dict[str, Any]:
     }
     numbers["reader_pages"] = reader
     return numbers
+
+
+MemberPeriod = Literal["month", "30d", "all"]
+MEMBER_DAYS = 30
+
+
+@router.get("/admin/members")
+def get_member_numbers(
+    user: AdminSession, context: Context, period: MemberPeriod = "month"
+) -> dict[str, Any]:
+    """#386: each member of the admin's own organisation with what they did in the period (this
+    month, the last 30 days or all time, in TIMEZONE): files uploaded, pages of them read,
+    questions asked, values verified, and when they were last active. No money and no tokens.
+    ``from`` is the first day counted (null for all time), ``to`` today. One query."""
+    zone = context.settings.timezone
+    now = context.clock()
+    today = now.astimezone(ZoneInfo(zone)).date()
+    start: datetime | None = None
+    end: datetime | None = None
+    if period == "month":
+        start, end = month_window(now, zone)
+    elif period == "30d":
+        start = day_start((today - timedelta(days=MEMBER_DAYS - 1)).isoformat(), zone)
+        end = day_start((today + timedelta(days=1)).isoformat(), zone)
+    with context.db.customer(user.customer_id) as conn:
+        rows = admin_sql.member_numbers(conn, user.customer_id, start=start, end=end)
+    return {
+        "period": period,
+        "from": None if start is None else start.date().isoformat(),
+        "to": today.isoformat(),
+        "members": [member_numbers(row) for row in rows],
+    }
+
+
+def member_numbers(row: RowMapping) -> dict[str, Any]:
+    """``MemberNumbers``: one member's row, counts as whole numbers."""
+    last: datetime | None = row["last_active_at"]
+    return {
+        "user_id": str(row["id"]),
+        "display_name": row["display_name"],
+        "email": row["email"],
+        "role": row["role"],
+        "disabled": bool(row["disabled"]),
+        **{
+            key: int(row[key])
+            for key in ("documents_uploaded", "pages_read", "questions_asked", "values_verified")
+        },
+        "last_active_at": None if last is None else last.isoformat(),
+    }
 
 
 # --- AI models and use (model choice, council 11 Oct 2026) ---------------------------
