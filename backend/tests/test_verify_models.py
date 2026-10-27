@@ -113,6 +113,7 @@ def page_value() -> dict[str, Any]:
             "box_2d": [y0 / height * 1000, x0 / width * 1000, y1 / height * 1000, x1 / width * 1000],
             "unsure": [],
             "continues_on_next_page": False,
+            "block": 0,  # g3 (#383)
             "table": None,
         }
         for index, (text, (x0, y0, x1, y1)) in enumerate(zip(TRUTH, page.boxes, strict=True))

@@ -299,6 +299,25 @@ class SpanValidationTest(unittest.TestCase):
             [(None, "model"), ("illegible", "model"), ("unsure", "model")],
         )
 
+    def test_the_block_and_col_span_are_checked(self) -> None:
+        """#383, #382: a block from 0 on any box span; a col_span of 1 or more on a table cell only."""
+        merged = Span("a", "a", box(), None, "table_cell", "ocr", "t1", 0, 2, True, block=3, col_span=2)
+        good = [Span("a", "a", box(), kind="note", origin="ocr", block=0), merged]
+        for span in good:
+            with self.subTest(span=span):
+                self.assertEqual(self.read_one(span), [span])
+        bad = {
+            "a negative block": Span("a", "a", box(), origin="ocr", block=-1),
+            "a block as a bool": Span("a", "a", box(), origin="ocr", block=cast(int, True)),
+            "a block on a sheet cell": Span("a", "a", CellLocation(1, 1, 1), origin="cell", block=0),
+            "a col_span of 0": Span("a", "a", box(), None, "table_cell", "ocr", "t1", 0, 0, False, col_span=0),
+            "a col_span on a line": Span("a", "a", box(), kind="paragraph", origin="ocr", col_span=2),
+        }
+        for name, span in bad.items():
+            with self.subTest(name), self.assertRaises(ReadError) as ctx:
+                self.read_one(span)
+            self.assertEqual(ctx.exception.code, "invalid_reader_output")
+
     def test_confidence_outside_zero_to_one_is_refused(self) -> None:
         for confidence in (-0.01, 1.01, float("nan"), float("inf"), cast(float, True), cast(float, "0.5")):
             with self.subTest(confidence=confidence), self.assertRaises(ReadError) as ctx:

@@ -45,8 +45,9 @@ A reader output is stored as a JSON array of spans, each
 ``{"text", "raw", "region", "confidence"}`` with ``region`` as in
 kaagaz.reading.spans.location_to_json, plus ``"kind"``, ``"origin"``,
 ``"table_id"``, ``"row"``, ``"col"`` and ``"header"`` only when they are set
-(PRD 2 P4), and ``"quality"`` and ``"box_source"`` likewise (PRD 5 F3). Outputs
-stored before PRD 2 have none of them and still load (``span_from_json``). A table
+(PRD 2 P4), ``"quality"`` and ``"box_source"`` likewise (PRD 5 F3), and ``"block"``
+and ``"col_span"`` (#383, #382). Outputs stored before any of them have none and still
+load (``span_from_json``). A table
 ``row`` is a top-level key, so it never mixes with a cell's ``region.row``, which
 is all ``listing.sheet_cells`` reads.
 
@@ -74,10 +75,13 @@ statement, like the card-label check. Word review (0030): after the values, each
 change still in force is written again into the new values and pieces
 (``word_review.reapply``), so a read again never silently undoes a person's text. Then the
 land values' keys (``value_keys.key_document``, 0049) from their text as it now stands.
+The page layout (``page_blocks``, ``table_cells``, 0056, #383 and #382) is deleted and
+inserted like sections, from ``DocumentContent.layout``.
 
 Cost per save: one family lock, 1 update, 1 read of the earlier pages' "Keep as is",
-7 deletes; per SAVE_CHUNK rows, one batched insert of pages, one of pieces and one of
-sections (pipelined, a row each) and one insert of values (an array per column); one
+9 deletes; per SAVE_CHUNK rows, one batched insert of pages, one of pieces, one of
+sections, one of blocks and one of table cells (pipelined, a row each) and one insert of
+values (an array per column); one
 batched insert of the topics; one insert per reader output, 2 for an invoice, and 3 to 7
 small link statements; O(rows) data sent, O(SAVE_CHUNK) rows built at a time. The
 card-label and map checks run before the transaction opens. The link lookup
@@ -86,6 +90,7 @@ risk 12). One indexed query for ``load_learned``.
 """
 
 import json
+from collections import Counter
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import asdict
 from types import MappingProxyType
@@ -93,6 +98,7 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import Connection, text
 
+from kaagaz.chunking.layout import Block, Layout
 from kaagaz.chunking.piece import Piece
 from kaagaz.db import value_keys, word_review
 from kaagaz.db.engine import Database, unavailable
@@ -146,6 +152,8 @@ _ACCEPTED = text(
     " AND read_again_requested_at IS NULL"
 )
 _DELETES = [
+    text("DELETE FROM table_cells WHERE customer_id = :c AND document_id = :d"),
+    text("DELETE FROM page_blocks WHERE customer_id = :c AND document_id = :d"),
     text("DELETE FROM document_topics WHERE customer_id = :c AND document_id = :d"),
     text("DELETE FROM document_sections WHERE customer_id = :c AND document_id = :d"),
     text("DELETE FROM invoices WHERE customer_id = :c AND document_id = :d"),  # its lines go with it
@@ -240,6 +248,16 @@ _INSERT_SECTION = text(
     " piece_seq_from, piece_seq_to, summary, tsv) VALUES (:c, :d, :seq, CAST(:path AS text[]),"
     " :page_from, :page_to, :piece_seq_from, :piece_seq_to, :summary, to_tsvector('simple', :words))"
 )
+# #383, #382 (0056): a page's blocks in reading order, and its tables' cells.
+_INSERT_BLOCK = text(
+    "INSERT INTO page_blocks (customer_id, document_id, page_no, seq, kind, region, table_id)"
+    " VALUES (:c, :d, :page_no, :seq, :kind, CAST(:region AS jsonb), :table_id)"
+)
+_INSERT_CELL = text(
+    "INSERT INTO table_cells (customer_id, document_id, page_no, table_id, row_no, col_no, col_span,"
+    " is_header, text, region) VALUES (:c, :d, :page_no, :table_id, :row_no, :col_no, :col_span,"
+    " :is_header, :text, CAST(:region AS jsonb))"
+)
 _INSERT_TOPIC = text(
     "INSERT INTO document_topics (customer_id, document_id, topic, aliases, piece_seqs)"
     " VALUES (:c, :d, :topic, CAST(:aliases AS text[]), CAST(:piece_seqs AS integer[]))"
@@ -307,6 +325,8 @@ def span_to_json(span: Span) -> dict[str, Any]:
         "header": span.header,
         "quality": span.quality,
         "box_source": span.box_source,
+        "block": span.block,
+        "col_span": span.col_span,
     }
     data.update({key: value for key, value in optional.items() if value is not None})
     return data
@@ -327,6 +347,8 @@ def span_from_json(data: Mapping[str, Any]) -> Span:
         header=data.get("header"),
         quality=data.get("quality"),
         box_source=data.get("box_source"),
+        block=data.get("block"),
+        col_span=data.get("col_span"),
     )
 
 
@@ -369,6 +391,7 @@ class PgPipelineStore:
                     seqs = range(start, min(start + SAVE_CHUNK, len(pieces)))
                     conn.execute(_INSERT_PIECE, [_piece_row(ids, seq, pieces[seq]) for seq in seqs])
                 _insert_map(conn, ids, content.sections, content.topics)
+                _insert_layout(conn, ids, content.layout)
                 _insert_values(conn, ids, content.values, content.reader)
                 # A person's word changes, written again into the new rows (0030), so a
                 # read again of another page never undoes their text.
@@ -476,6 +499,48 @@ def _insert_map(
             for topic in topics
         ]
         conn.execute(_INSERT_TOPIC, rows)
+
+
+def _insert_layout(conn: Connection, ids: dict[str, str], layout: Layout) -> None:
+    """The blocks, numbered from 0 on each page in reading order, then the table cells, in
+    chunks of SAVE_CHUNK (#383, #382)."""
+    seqs: Counter[int] = Counter()
+    numbered = []
+    for block in layout.blocks:
+        numbered.append((seqs[block.page], block))
+        seqs[block.page] += 1
+    for start in range(0, len(numbered), SAVE_CHUNK):
+        rows = [_block_row(ids, seq, block) for seq, block in numbered[start : start + SAVE_CHUNK]]
+        conn.execute(_INSERT_BLOCK, rows)
+    for start in range(0, len(layout.cells), SAVE_CHUNK):
+        conn.execute(
+            _INSERT_CELL, [_cell_row(ids, cell) for cell in layout.cells[start : start + SAVE_CHUNK]]
+        )
+
+
+def _block_row(ids: dict[str, str], seq: int, block: Block) -> dict[str, Any]:
+    return {
+        **ids,
+        "page_no": block.page,
+        "seq": seq,
+        "kind": block.kind,
+        "region": json.dumps(location_to_json(block.box)),
+        "table_id": block.table_id,
+    }
+
+
+def _cell_row(ids: dict[str, str], cell: Span) -> dict[str, Any]:
+    return {
+        **ids,
+        "page_no": cell.location.page,
+        "table_id": cell.table_id,
+        "row_no": cell.row,
+        "col_no": cell.col,
+        "col_span": cell.col_span or 1,
+        "is_header": bool(cell.header),
+        "text": cell.text,
+        "region": json.dumps(location_to_json(cell.location)),
+    }
 
 
 def _section_row(ids: dict[str, str], section: "Section") -> dict[str, Any]:

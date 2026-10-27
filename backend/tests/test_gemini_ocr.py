@@ -35,7 +35,9 @@ from kaagaz.reading.gemini_ocr import (
     INSTRUCTION,
     PAGE_SCHEMA,
     GeminiEngine,
+    as_result,
     checked,
+    joined_halves,
     pixels_sha256,
 )
 from kaagaz.reading.ocr import (
@@ -83,8 +85,10 @@ def line(
     unsure: tuple[str, ...] = (),
     table: dict[str, Any] | None = None,
     continues: bool = False,
+    block: int = 0,
 ) -> dict[str, Any]:
-    """One line of a reply; ``box`` is box_2d, [ymin, xmin, ymax, xmax] in 0..1000."""
+    """One line of a reply; ``box`` is box_2d, [ymin, xmin, ymax, xmax] in 0..1000. A
+    ``table`` with no col_span covers one column (g3)."""
     return {
         "order": order,
         "kind": kind,
@@ -92,7 +96,8 @@ def line(
         "box_2d": list(box),
         "unsure": list(unsure),
         "continues_on_next_page": continues,
-        "table": table,
+        "block": block,
+        "table": None if table is None else {"col_span": 1, **table},
     }
 
 
@@ -287,8 +292,8 @@ class G1EngineTest(unittest.TestCase):
         self.assertEqual(built.engine.name, "gemini")
         self.assertEqual(built.engine.version, f"{MODEL};prompt={GEMINI_OCR_PROMPT_VERSION}")
         self.assertEqual(
-            build(ocr_model="google/gemini-3.8-flash").engine.version, "google/gemini-3.8-flash;prompt=g2"
-        )
+            build(ocr_model="google/gemini-3.8-flash").engine.version, "google/gemini-3.8-flash;prompt=g3"
+        )  # Changed on purpose (#383, #382): g3 adds the block, "note" and col_span
 
     def test_g1_it_is_a_page_engine_and_keeps_a_page_cache(self) -> None:
         engine = build().engine
@@ -496,6 +501,12 @@ BAD_REPLIES: dict[str, Any] = {
     "a table missing header": value(
         line("x", kind="table_cell", table={k: v for k, v in _CELL.items() if k != "header"})
     ),
+    "a line missing its block": value({k: v for k, v in line("x").items() if k != "block"}),
+    "a negative block": value(line("x", block=-1)),
+    "a block at the line limit": value(line("x", block=MAX_BLOCKS_PER_PAGE)),
+    "a table missing col_span": value({**line("x", kind="table_cell"), "table": _CELL}),
+    "a col_span of 0": value(line("x", kind="table_cell", table={**_CELL, "col_span": 0})),
+    "a col_span past the index limit": value(line("x", kind="table_cell", table={**_CELL, "col_span": 1000})),
     "an unsure word not a string": value({**line("x"), "unsure": [3]}),
     "more distinct unsure entries than words": value(line("only", unsure=("o", "on", "only"))),
     "a half character in the text": value(line("x" + chr(0xD800))),
@@ -519,6 +530,27 @@ class G3ChecksTest(unittest.TestCase):
         )
         self.assertEqual(len(checked(good).lines), 2)
         self.assertEqual(checked(good).lines[0].table, OcrTable("t1", 0, 1, True))
+
+    def test_383_each_line_keeps_its_block_and_a_merged_cell_its_col_span(self) -> None:
+        """#383, #382: the block and a merged header's col_span reach the page's lines and
+        spans (through the cache's JSON too), and a note keeps its kind."""
+        merged = {**_CELL, "col": 2, "header": True, "col_span": 2}
+        content = value(
+            line("Amount", kind="table_cell", table=merged, block=1),
+            line("Seen, ok", (300, 850, 320, 990), order=1, kind="note", block=2),
+        )
+        self.assertEqual(as_result(checked(content))["lines"][0]["table"]["col_span"], 2)
+        read = build(reply(content)).engine.read_page(page(), page_no=1)
+        self.assertEqual([(item.block, item.kind) for item in read.lines], [(1, "table_cell"), (2, "note")])
+        self.assertEqual(read.lines[0].table, OcrTable("t1", 0, 2, True, 2))
+        spans = ocr_spans(list(read.lines), 1, 1000, 1000)
+        self.assertEqual([(s.block, s.col_span) for s in spans], [(1, 2), (2, None)])
+
+    def test_383_a_cut_off_pages_bottom_half_numbers_its_blocks_after_the_top_halfs(self) -> None:
+        top = checked(value(line("Top", block=0), line("Note", (300, 800, 320, 990), order=1, block=1)))
+        bottom = checked(value(line("Bottom", (500, 100, 520, 500), block=0)))
+        joined = joined_halves(top, bottom, 2000, 1050, 950)
+        self.assertEqual([item.block for item in joined.lines], [0, 1, 2])
 
     def test_fx8_duplicate_unsure_words_are_deduplicated(self) -> None:
         checked_reply = checked(value(line("Total", unsure=("Total", "Total"))))

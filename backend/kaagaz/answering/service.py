@@ -1979,15 +1979,19 @@ _NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?")
 def _focus(item: Evidence, sentences: Sequence[str]) -> list[dict[str, Any]]:
     """The regions of the lines the answer used, so the page shows the exact spot.
 
-    A text piece keeps one region per line, in order. A line is used when it
+    A text piece keeps one region per line, in order; a table piece or a sheet
+    row one per cell, each row's cells joined by " | " (#382), so its cells pair
+    up with its regions instead. A line (or cell) is used when it
     holds a sentence (or a sentence holds it), or shares a number with one.
-    Falls back to every region when the lines and regions do not pair up (a
-    spreadsheet row), no line matches, or the lines used miss a page of a piece
+    Falls back to every region when the lines and regions do not pair up, no
+    line matches, or the lines used miss a page of a piece
     that crosses pages (H4: each of its pages shows its spot). Digits of any
     script read as ASCII on both sides, so "450" finds the line "४५०".
     O(lines * sentences).
     """
     lines = ascii_digits(item.hit.text).splitlines()
+    if len(lines) != len(item.regions):
+        lines = [cell for line in lines for cell in line.split(" | ")]
     if len(lines) != len(item.regions) or len(item.regions) != len(item.hit.regions):
         return item.regions
     folded = [ascii_digits(sentence).casefold().strip() for sentence in sentences]
