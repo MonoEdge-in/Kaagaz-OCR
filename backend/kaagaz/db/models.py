@@ -157,7 +157,9 @@ class Reading:
     ``others`` (ensemble only, at most two) read them again for the vote; ``careful``
     (dynamic only) re-reads the unclear pages; ``thinking`` the level sent; ``notes``
     why something fell back (``mode_revoked``, ``ensemble_after_scan``,
-    ``thinking_fallback``)."""
+    ``thinking_fallback``); ``routes`` (#384, ``reading.page_route``) whether each page is
+    read locally first and kept so when clean: Automatic (dynamic) only, never Max, never
+    single (every page by the model) nor local (no model), and only with PAGE_ROUTING."""
 
     mode: str
     lead: Agent
@@ -165,6 +167,7 @@ class Reading:
     careful: Agent | None = None
     thinking: str = ""
     notes: tuple[str, ...] = ()
+    routes: bool = False
 
     def config(self) -> dict[str, Any]:
         """``processing_runs.config.reading`` (S5a): ids, providers, mode and thinking."""
@@ -329,7 +332,8 @@ def resolve_scan(conn: Connection, customer_id: str, document_id: str, *, settin
     who asked for the reading (``read_requested_by``), None reads with the local reader only
     (mode ``local``, an explicit "Read with" too); with no explicit "Read with", Low is
     dynamic, High single at high thinking, Max high thinking with Careful (mode dynamic).
-    Nothing saved: as before."""
+    Nothing saved: as before. #384: with PAGE_ROUTING a dynamic reading routes its pages
+    (``Reading.routes``), unless the level is High or Max."""
     document = conn.execute(_DOCUMENT, {"customer": customer_id, "document": document_id}).mappings().first()
     rows = [] if document is None else usable_models(conn, customer_id, settings=settings)
     by_id = {row["id"]: row for row in rows}
@@ -375,7 +379,9 @@ def resolve_scan(conn: Connection, customer_id: str, document_id: str, *, settin
             )
         elif lead_row["efforts"] and "thinking_fallback" not in notes:  # none: its one mode
             notes += ("thinking_fallback",)
-        return Reading("dynamic", lead, careful=careful, thinking=thinking, notes=notes)
+        # #384: only Automatic routes pages; a High or Max level keeps every page the model's.
+        routes = settings.page_routing and level not in ("high", "max")
+        return Reading("dynamic", lead, careful=careful, thinking=thinking, notes=notes, routes=routes)
     return Reading("single", lead, thinking=thinking, notes=notes)
 
 

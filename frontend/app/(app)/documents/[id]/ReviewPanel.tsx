@@ -12,6 +12,8 @@
 // could not settle shows every reading. A 409 says the API's words and loads the word
 // again. Under it, the flagged words with checkboxes (Shift+click picks a run of them) to
 // send to Ensemble, and a History view: every change, who and when, Undo where allowed.
+// Read this spot again (#385, reviewers and admins): only the word's box of its page is read
+// again, cut out and zoomed; the document goes back to be read, so review ends.
 
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 import type { RefObject } from "react";
@@ -31,21 +33,24 @@ import {
   nextOpen,
   progressText,
   proposal,
+  READ_SPOT_AGAIN,
+  READ_SPOT_SENT,
   readingsDifferText,
   readingsOf,
   reviewKey,
   saveWord,
   scoreText,
   selectRange,
+  spotOf,
   stateText,
   undoWord,
   unsettled,
 } from "@/components/review/wordReview";
 import type { HistoryFilter } from "@/components/review/wordReview";
 import { PageViewer } from "@/components/viewer/PageViewer";
-import { listChanges } from "@/lib/api";
+import { listChanges, readPageAgain } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
-import type { DocumentDetail, EnsembleScope, WordChange } from "@/lib/types";
+import type { DocumentDetail, DocumentSummary, EnsembleScope, WordChange } from "@/lib/types";
 import type { WordReview } from "./WordReview";
 import styles from "./WordReview.module.css";
 
@@ -61,10 +66,12 @@ export interface ReviewPanelProps {
   onEnsemble(scope: EnsembleScope, keys: string[]): void;
   say(message: string): void;
   headingRef: RefObject<HTMLHeadingElement | null>;
+  onReadAgain(reply: DocumentSummary): void; // #385: the word's spot sent to be read again
 }
 
 export function ReviewPanel(props: ReviewPanelProps) {
-  const { detail, review, current, onCurrent, onExit, ensembleAllowed, onEnsemble, say, headingRef } = props;
+  const { detail, review, current, onCurrent, onExit, ensembleAllowed, onEnsemble, say, headingRef, onReadAgain } =
+    props;
   const status = review.status;
   const flags = review.flags;
   const index = Math.max(0, flags.findIndex((flag) => flag.word_key === current));
@@ -120,6 +127,23 @@ export function ReviewPanel(props: ReviewPanelProps) {
     if (!flag || !canEdit) return;
     setEditing({ key: flag.word_key, text: flag.text });
     requestAnimationFrame(() => inputRef.current?.select());
+  };
+  const readSpotAgain = () => {
+    const spot = flag ? spotOf(flag) : null;
+    if (!flag || !spot || !canEdit || busy) return;
+    setBusy(true);
+    setError(null);
+    readPageAgain(detail.id, flag.page_no, [spot]).then(
+      (reply) => {
+        setBusy(false);
+        say(READ_SPOT_SENT);
+        onReadAgain(reply);
+      },
+      (caught: unknown) => {
+        setBusy(false);
+        setError(failureText(caught));
+      },
+    );
   };
   const sendWord = () => {
     if (flag && canEdit && ensembleAllowed) onEnsemble("word", [flag.word_key]);
@@ -299,6 +323,11 @@ export function ReviewPanel(props: ReviewPanelProps) {
                         {ensembleAllowed && (
                           <button type="button" className="btn" onClick={sendWord}>
                             {SEND_TO_ENSEMBLE}
+                          </button>
+                        )}
+                        {spotOf(flag) && (
+                          <button type="button" className="btn" disabled={busy} onClick={readSpotAgain}>
+                            {READ_SPOT_AGAIN}
                           </button>
                         )}
                         <button type="button" className="btn" onClick={startEdit}>
