@@ -70,7 +70,7 @@ import type { SearchMode } from "./insideSearch";
 import { folderNameSuggestions, libraryErrorText, noMatchTitle } from "./library";
 import { mergeList } from "./listMerge";
 import { LibraryFilters } from "./LibraryFilters";
-import { NO_FILTERS, SORT_KEYS, includeSubfoldersHref, isFiltered, libraryHref, listParams, nextSort } from "./libraryQuery";
+import { NO_DEPARTMENT, NO_FILTERS, SORT_KEYS, includeSubfoldersHref, isFiltered, libraryHref, listParams, nextSort } from "./libraryQuery";
 import type { LibraryState, SortKey } from "./libraryQuery";
 import {
   ACCEPT_ATTRIBUTE,
@@ -446,7 +446,12 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
   const showControls = view === "list" || view === "no-match" || (loaded !== null && !shown);
   const placeName = library.trash
     ? "Trash"
-    : (current?.folder.name ?? (library.folderId === null ? "All documents" : "Folder"));
+    : (current?.folder.name ??
+      (library.folderId !== null
+        ? "Folder"
+        : library.departmentId === NO_DEPARTMENT
+          ? FILES_TEXT.notInDepartment // the tree's Other (issue 409)
+          : "All documents"));
   // Nothing is uploaded into Trash, and it has no folder to change.
   const canUpload = !folderGone && !library.trash;
   const above = current ? folderPath(tree, current.folder.id).slice(0, -1) : [];

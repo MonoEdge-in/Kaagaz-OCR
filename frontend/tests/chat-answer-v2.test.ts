@@ -18,6 +18,7 @@ import {
   listedDocuments,
   NOT_FOUND_CLOSEST_TEXT,
   NOT_FOUND_TEXT,
+  notFoundText,
   scriptParts,
 } from "@/components/chat/answer";
 import type { Answer, Citation, Message } from "@/lib/types";
@@ -159,6 +160,13 @@ describe("a v2 not-found answer", () => {
     const html = render(notFound(5));
     expect(text(html)).toContain(`Sure. ${NOT_FOUND_CLOSEST_TEXT}`);
     expect(listItems(html)).toBe(5);
+    // Changed on purpose (#413, Vrushit's UAT): the first 3 show; the rest wait, closed, in a
+    // "2 more documents" disclosure, as the Sources bar does.
+    const shown = html.slice(0, html.indexOf("<details"));
+    expect(listItems(shown)).toBe(3);
+    expect(html).toMatch(/<details class="[^"]*moreDocs[^"]*"><summary[^>]*>[\s\S]*?2 more documents<\/summary>/);
+    expect(listItems(html.slice(html.indexOf("<details")))).toBe(2);
+    expect(render(notFound(3))).not.toContain("<details");
     // Changed on purpose (package H, 24 Oct 2026): a closest document opens with the question's words lit.
     expect(html).toContain('href="/documents/c0?words=highest+total"');
     expect(text(html)).toContain("Mentions godown");
@@ -167,6 +175,18 @@ describe("a v2 not-found answer", () => {
     const none = render(notFound(0));
     expect(text(none)).toContain(NOT_FOUND_TEXT);
     expect(listItems(none)).toBe(0);
+  });
+
+  // #410 (Vrushit's UAT): the words of the question no document has are named, as voice.py says
+  // them (test_answering_voice.py pins the same lines).
+  it("names the words no document searched has", () => {
+    const html = render({ ...notFound(2), missing_words: ["SBH"] });
+    expect(text(html)).toContain(
+      "Sure. No document searched has the word “SBH”. These documents match some of your words.",
+    );
+    expect(notFoundText(0, ["SBH", "Jalna", "Wakad"])).toBe("No document searched has the words “SBH”, “Jalna” or “Wakad”.");
+    expect(notFoundText(2)).toBe(NOT_FOUND_CLOSEST_TEXT);
+    expect(text(render(notFound(1)))).not.toContain("No document searched");
   });
 
   it("is announced softly, with how many closest documents, never the opening", () => {

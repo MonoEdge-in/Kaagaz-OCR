@@ -139,6 +139,35 @@
   min-width: var(--control-h);
 }
 
+/* Vrushit UAT 2 (issue 417): the box under a line to type a word in its place; the field and
+   its two buttons wrap under one another at 320px. */
+.fix {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-2);
+  border-block-start: 1px solid var(--border);
+}
+
+.fixLabel {
+  color: var(--text-primary);
+  font-size: var(--fs-base);
+}
+
+.fixRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.fixInput {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
 .lineMeta {
   font-size: var(--fs-sm);
   color: var(--text-secondary);

@@ -11,7 +11,9 @@ Code writes every word of an answer but the model's at most 3 cited sentences:
   only ever put here, after the answer: it never reaches a prompt, a log or the history.
 * **The soft not-found** (decision 9): ``SOFT_CLOSEST`` when there are closest documents,
   else ``SOFT_NOTHING``; the same words as ``frontend/components/chat/answer.ts`` (a test
-  reads both). No "sorry", no "couldn't" (scan-review-ux-rules 6).
+  reads both). No "sorry", no "couldn't" (scan-review-ux-rules 6). #410 (Vrushit's UAT, 27 Oct
+  2026): when the question names words no document searched has (``missing``), the line says
+  which, then ``SOFT_SOME`` when there are closest documents (``soft_line``).
 * **Each document's title and why** (``title``, ``why``): from its card (type, identifier,
   names, date) and the question's words, never a digit in ``why``.
 * **The final number check** (``unsupported``, decision 2): every number, and every fraction
@@ -33,7 +35,10 @@ from zoneinfo import ZoneInfo
 from kaagaz.answering.sanitize import clean_text
 from kaagaz.chunking.script import ascii_digits
 
-SOFT_CLOSEST = "Nothing matches every part of this. These are the closest documents."
+# Changed on purpose (#410): nothing decides "every part"; a closest document holds some of the
+# question's words (evidence.closest_documents), so the line says that and no more.
+SOFT_SOME = "These documents match some of your words."
+SOFT_CLOSEST = f"No answer to the whole question was found. {SOFT_SOME}"
 SOFT_NOTHING = "Nothing in your documents matches this yet."
 
 FOUND = "Here's what I found."  # after the first answer's greeting, when it answers
@@ -126,9 +131,16 @@ def opening(
     )
 
 
-def soft_line(closest: bool) -> str:
-    """Decision 9's not-found line: with closest documents or without."""
-    return SOFT_CLOSEST if closest else SOFT_NOTHING
+def soft_line(closest: bool, missing: Sequence[str] = ()) -> str:
+    """Decision 9's not-found line: with closest documents or without. #410: ``missing``, the
+    question's words no document searched has, are named first ("No document searched has the
+    word “SBH”."). O(m)."""
+    if not missing:
+        return SOFT_CLOSEST if closest else SOFT_NOTHING
+    quoted = [f"“{word}”" for word in missing]
+    words = f"word {quoted[0]}" if len(quoted) == 1 else f"words {', '.join(quoted[:-1])} or {quoted[-1]}"
+    line = f"No document searched has the {words}."
+    return f"{line} {SOFT_SOME}" if closest else line
 
 
 def title(document_name: str, card: Mapping[str, Any] | None) -> str:

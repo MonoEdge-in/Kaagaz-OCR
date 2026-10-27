@@ -847,7 +847,8 @@ class EveryPathClosesItsRunTest(unittest.TestCase):
         job = system.job(CSV)
         system.runs.start(CUSTOMER, job.document_id, now=T0)  # the worker was killed mid-run
         system.statuses.set_status(CUSTOMER, job.document_id, DocumentStatus.CLEAN)
-        system.repo.record_attempt(CUSTOMER, job.document_id, 5, 5)
+        for attempt in range(1, 6):  # changed on purpose (issue 407): each try in turn, to the last
+            system.repo.record_attempt(CUSTOMER, job.document_id, attempt, 5)
         system.repo.mark_exhausted(CUSTOMER, job.document_id, now=T0, max_attempts=5)
         self.assertEqual(self.closed(system, job), [("failed", "retries_exhausted")])
 

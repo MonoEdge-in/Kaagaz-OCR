@@ -32,8 +32,9 @@ NOT_SCANNED = {
 NOT_REPROCESSABLE = {
     "error": {
         "code": "not_reprocessable",
-        "message": "This document can't be read again right now. Only a ready, failed or unreadable document"
-        " that is not in Trash can be.",
+        # Changed on purpose (issue 407): one still waiting 6 hours on may be read again too.
+        "message": "This document can't be read again right now. Only a ready, failed or unreadable document,"
+        " or one still waiting 6 hours after it was sent, that is not in Trash can be.",
     }
 }
 HOURLY = "Too many documents were sent to be read again in the last hour. Please try again later."

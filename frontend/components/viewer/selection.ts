@@ -3,7 +3,7 @@
 // this document is ignored, and the screen opens on its first page.
 
 import { decodeRegion, parsePageParam } from "@/lib/regions";
-import type { DocumentDetail, ExtractedValue, Region } from "@/lib/types";
+import type { DocumentDetail, Region } from "@/lib/types";
 
 export interface Selection {
   pageNo: number;
@@ -35,10 +35,6 @@ export function initialSelection(
   if (pageNo === undefined) return null;
   const value = region ? detail.values.find((v) => sameRegion(v.region, region)) : undefined;
   return { pageNo, region, valueId: value?.id ?? null };
-}
-
-export function selectValue(value: ExtractedValue): Selection {
-  return { pageNo: value.region.page, region: value.region, valueId: value.id };
 }
 
 /** A panel item's spot and its label's (PRD 3 Y1, Y3), opened on the item's page. */

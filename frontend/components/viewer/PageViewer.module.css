@@ -109,28 +109,24 @@
 /* Your words (package H): each line holding a word asked or searched for, a light green tint
    with a solid green underline, so it is never colour alone and never looks like the amber
    spot. Drawn before the spot, which keeps its fill and ring on top. */
-.word,
-.wordSwatch {
+.word {
   background: color-mix(in srgb, var(--words-on-paper) 14%, transparent);
   border-bottom: 3px solid var(--words-on-paper);
   border-radius: var(--k-r-1);
 }
 
 /* Each further word its own highlighter (24 Oct 2026), the first keeping the green above. */
-.word[data-word="1"],
-.wordSwatch[data-word="1"] {
+.word[data-word="1"] {
   background: color-mix(in srgb, var(--words-on-paper-2) 14%, transparent);
   border-bottom-color: var(--words-on-paper-2);
 }
 
-.word[data-word="2"],
-.wordSwatch[data-word="2"] {
+.word[data-word="2"] {
   background: color-mix(in srgb, var(--words-on-paper-3) 14%, transparent);
   border-bottom-color: var(--words-on-paper-3);
 }
 
-.word[data-word="3"],
-.wordSwatch[data-word="3"] {
+.word[data-word="3"] {
   background: color-mix(in srgb, var(--words-on-paper-4) 14%, transparent);
   border-bottom-color: var(--words-on-paper-4);
 }
@@ -155,123 +151,17 @@
   }
 }
 
-/* Under the page (24 Oct 2026): each word with its colour and where it is, so the asker sees
-   which word was found where, and plainly when one is not in the document. */
-.wordsHeading {
-  margin: 0;
-  font-size: var(--fs-sm);
-  font-weight: 600;
+/* The PDF viewer's hand (Vrushit UAT 2, issue 419): its scroll area (data-hand, set while the
+   hand is on) shows a grab cursor, a grabbing one while dragged. The PDF engine sets each page's
+   cursor inline, so these need !important to win; a mark on the page (a button) keeps its own. */
+.hand [data-hand],
+.hand [data-hand] *:not(button) {
+  cursor: grab !important;
 }
 
-.wordLegend {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  min-width: 0;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.legendRow {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2);
-  min-width: 0;
-  font-size: var(--fs-sm);
-}
-
-.legendWord {
-  font-weight: 600;
-  overflow-wrap: break-word;
-}
-
-.legendWhere {
-  color: var(--text-secondary);
-}
-
-.legendRow[data-missing] .legendWord {
-  color: var(--text-secondary);
-  text-decoration: line-through;
-}
-
-.legendRow[data-missing] .wordSwatch {
-  opacity: 0.35;
-}
-
-.legendJump {
-  min-height: var(--control-h);
-  padding: 0 var(--space-2);
-  border: 0;
-  background: none;
-  color: var(--accent);
-  font: inherit;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-@media (hover: hover) and (pointer: fine) {
-  .legendJump:hover {
-    text-decoration: underline;
-  }
-}
-
-.wordSwatch {
-  flex: none;
-  width: 1.25em;
-  height: 0.875em;
-}
-
-/* Under the page: the note, then its chips (their own class, never .btn), wrapping at 320px. */
-.yourWords {
-  display: flex;
-  flex: none;
-  flex-direction: column;
-  gap: var(--space-2);
-  min-width: 0;
-}
-
-.wordsNote {
-  overflow-wrap: break-word;
-}
-
-.wordChips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  min-width: 0;
-}
-
-.wordChip {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  flex: 0 1 auto;
-  min-width: 0;
-  max-width: 100%;
-  min-height: var(--control-h); /* 44px on touch */
-  padding: var(--space-1) var(--space-3);
-  border: 1px solid var(--k-rule-strong);
-  border-radius: var(--k-r-pill);
-  background: var(--k-surface);
-  color: var(--k-ink);
-  font: inherit;
-  font-size: var(--fs-sm);
-  line-height: 1.25;
-  text-align: start;
-  overflow-wrap: break-word;
-  cursor: pointer;
-}
-
-@media (hover: hover) and (pointer: fine) {
-  .wordChip:hover {
-    background: var(--bg-hover);
-  }
-}
-
-.wordChip[aria-pressed="false"] .wordSwatch {
-  opacity: 0.4;
+.hand [data-hand="grabbing"],
+.hand [data-hand="grabbing"] *:not(button) {
+  cursor: grabbing !important;
 }
 
 /* My words (B2): a dashed outline with no fill and a number, so it is never

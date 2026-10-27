@@ -127,9 +127,11 @@
   overflow: hidden;
 }
 
+/* Vrushit UAT 2 (issue 415): it keeps the button's own side padding, so its pill (the hover fill and
+   the focus ring) sits inside the card; with none, the pill's round end ran past the text's
+   edge into the card's padding. */
 .expand {
   align-self: flex-start;
-  padding-inline: 0;
 }
 
 .chevron {
@@ -448,13 +450,6 @@
   border-radius: var(--k-r-4);
 }
 
-.values {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  container-type: inline-size;
-}
-
 .valuesHeading {
   display: flex;
   align-items: center;
@@ -463,103 +458,12 @@
   font-size: var(--fs-lg);
 }
 
-.valuesHeader {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-}
-
-/* The handoff's tab count (.k-tab-count): mono figures in a small sunken pill. */
-.count {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: var(--badge-h);
-  height: var(--badge-h);
-  padding: 0 var(--space-2);
-  border-radius: var(--k-r-pill);
-  background: var(--k-sunken);
-  color: var(--k-ink-muted);
-  font: 500 11px/1 var(--k-font-mono);
-}
-
-/* The values table: a table while its column is wide enough, cards when not.
-   It follows the column's width (a container query), because on a wide
-   screen the column is narrow even though the window is not. */
-.valuesTable {
-  width: 100%;
-  border-collapse: separate;
-  border-spacing: 0;
-  border: 1px solid var(--border);
-  border-radius: var(--k-r-4);
-  background: var(--bg-surface);
-  /* Vrushit UAT (25 Oct 2026): "Font to be small like 0.75rem". The badge's own size, in rem. */
-  font-size: 0.75rem;
-}
-
-/* A row's Add meaning and Verify: its own small words, as short as the badge (a mouse). */
-@media (pointer: fine) {
-  .valuesTable td :global(.btn) {
-    height: var(--badge-h);
-    min-height: var(--badge-h);
-    padding-inline: var(--space-2);
-    font-size: inherit;
-  }
-}
-
-.valuesTable th,
-.valuesTable td {
-  overflow-wrap: break-word;
-}
-
-/* The values table's wrapper is the only thing that may scroll sideways (the MonoEdge rule
-   for tables); inside it a header cannot stick to the window, so the header row stays put. */
-.valuesWrap {
-  position: relative;
-  min-width: 0;
-  /* At most about six values tall, then it scrolls in place (24 Oct 2026: "add scroll"). */
-  max-height: 34rem;
-  overflow-x: auto;
-  overflow-y: auto;
-  overscroll-behavior-x: contain;
-}
-
-/* Said once over the list. */
-.valuesNote {
-  margin: 0;
-  color: var(--text-secondary);
-  font-size: var(--fs-sm);
-}
-
-/* A value's page, on the value's own line. */
-.valuePage {
-  margin-inline: var(--space-2);
-  color: var(--text-secondary);
-  white-space: nowrap;
-}
-
-.valuesTable tbody tr:last-child td {
-  border-bottom: 0;
-}
-
 .fieldCell {
   font-weight: 600;
 }
 
-/* Label and reason: the badge stays on one line, its reason wraps under it. */
-.labelCell :global(.badge) {
-  white-space: nowrap;
-}
-
-.reason {
-  margin-block-start: var(--space-1);
-  color: var(--text-secondary);
-}
-
-/* "Show all N" under a long values list: quiet, at the list's start. */
-.showAll {
+/* Vrushit UAT 2 (issue 416): Details' "Review values" link, at the column's start. */
+.reviewValues {
   align-self: flex-start;
 }
 
@@ -789,127 +693,6 @@
 .pageNote {
   font-size: var(--fs-base);
   color: var(--text-secondary);
-}
-
-
-
-/* background-color only, so a selected row keeps its edge. */
-.activeRow td {
-  background-color: var(--accent-subtle);
-}
-
-.activeRow .valueButton {
-  text-decoration-thickness: 2px;
-}
-
-/* The row's edge at its inline start: solid for Verified, dashed for Needs review (1px),
-   beside the badge's own icon and word, so the two differ at a glance. */
-@container (min-width: 36rem) {
-  .valuesTable tbody td:first-child {
-    position: relative;
-    padding-inline-start: var(--space-4);
-  }
-
-  .valuesTable tr[data-label] td:first-child::before {
-    content: "";
-    position: absolute;
-    inset-block: var(--space-2);
-    inset-inline-start: var(--space-1);
-    border-inline-start: 1px solid var(--success);
-  }
-
-  .valuesTable tr[data-label="needs_review"] td:first-child::before {
-    border-inline-start-style: dashed;
-    border-inline-start-color: var(--warning);
-  }
-}
-
-@container (max-width: 35.99rem) {
-  .valuesTable,
-  .valuesTable tbody,
-  .valuesTable tr,
-  .valuesTable td {
-    display: block;
-  }
-
-  .valuesTable {
-    border: 0;
-    background: transparent;
-  }
-
-  .valuesTable thead {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-  }
-
-  /* desktop/DocumentPage.html: one rounded list, a hairline between the values. */
-  .valuesTable tbody {
-    display: flex;
-    flex-direction: column;
-    border: 1px solid var(--k-rule);
-    border-radius: var(--k-r-5);
-    background: var(--k-surface);
-    overflow: clip;
-  }
-
-  /* Vrushit UAT (25 Oct 2026): one compact row, the name, the value with its page and Add
-     meaning, and the badge at the end; it wraps only when the column is too narrow. */
-  .valuesTable tbody tr {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: var(--space-1) var(--space-3);
-    padding: var(--space-2) var(--space-3); /* compact (24 Oct 2026) */
-    border: 1px solid transparent;
-    border-block-end-color: var(--k-rule);
-  }
-
-  .valuesTable tbody tr:last-child {
-    border-block-end-color: transparent;
-  }
-
-  .valuesTable tbody tr.activeRow {
-    background-color: var(--accent-subtle);
-    border-color: var(--accent);
-  }
-
-  /* A row: no edge for Verified, a dashed one and the review tint for Needs review. */
-  .valuesTable tr[data-label="needs_review"] {
-    border-style: dashed;
-    border-color: var(--warning);
-    background-color: var(--k-review-soft);
-  }
-
-  .valuesTable td,
-  .activeRow td {
-    padding: 0;
-    border: 0;
-    background: transparent;
-  }
-
-  /* The badge, then its reason beside it, wrapping under it when long. */
-  .valuesTable td.labelCell {
-    margin-inline-start: auto;
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: var(--space-1) var(--space-2);
-  }
-
-  .reason {
-    margin-block-start: 0;
-  }
-
-  .valueCell {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    column-gap: var(--space-1);
-  }
 }
 
 /* Loading and errors */

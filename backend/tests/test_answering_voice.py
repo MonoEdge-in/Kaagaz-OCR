@@ -9,6 +9,7 @@ answering service's fakes (test_answering_golden.py, test_answering_context.py).
 import dataclasses
 import logging
 import re
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -17,31 +18,43 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from kaagaz.answering.evidence import closest_documents
+from kaagaz.answering.exhaustive import key_terms
+from kaagaz.answering.service import AnswerService
 from kaagaz.answering.voice import (
     LEAD_INS,
     MAX_OPENING_WORDS,
     SOFT_CLOSEST,
     SOFT_NOTHING,
+    SOFT_SOME,
     first_name,
     greeting,
     opening,
+    soft_line,
     title,
     unsupported,
     why,
 )
+from kaagaz.api.routers.chat import answer_text
 from kaagaz.api.views import answer_with_source_states, cited_document_ids
+from kaagaz.search.scope import Scope
 from tests.test_answering_context import A as WHOLE
 from tests.test_answering_context import FakeContext, Fused, Routed, answers, page
 from tests.test_answering_golden import (
     INVOICE,
     QUESTION,
+    SETTINGS,
+    UNUSED_DB,
     A,
+    FakeFixedQueries,
     FakeModel,
+    FakeRetriever,
+    FakeUnchecked,
     assert_well_formed,
     evidence_blocks,
     piece,
     service,
 )
+from tests.test_answering_golden import NOW as GOLDEN_NOW
 
 INDIA = ZoneInfo("Asia/Kolkata")
 NOW = datetime(2026, 10, 24, 13, 0, tzinfo=UTC)  # 18:30 in India
@@ -127,8 +140,95 @@ def test_the_soft_not_found_wording_is_the_screens_and_never_apologises() -> Non
     code = screen.read_text(encoding="utf-8")
     assert f'NOT_FOUND_CLOSEST_TEXT = "{SOFT_CLOSEST}";' in code
     assert f'NOT_FOUND_TEXT = "{SOFT_NOTHING}";' in code
-    for line in (SOFT_CLOSEST, SOFT_NOTHING):
+    assert f'NOT_FOUND_SOME_TEXT = "{SOFT_SOME}";' in code
+    # #410: the words no document has; the screen's test (chat-answer-v2) pins the same lines.
+    one = soft_line(True, ["SBH"])
+    assert one == "No document searched has the word “SBH”. These documents match some of your words."
+    three = soft_line(False, ["SBH", "Jalna", "Wakad"])
+    assert three == "No document searched has the words “SBH”, “Jalna” or “Wakad”."
+    assert (soft_line(True), soft_line(False)) == (SOFT_CLOSEST, SOFT_NOTHING)
+    for line in (SOFT_CLOSEST, SOFT_NOTHING, one, three):
         assert not re.search(r"sorry|couldn't|could not|unfortunately|\bno\.", line, re.IGNORECASE)
+
+
+class TermMentions:
+    """``Mentions``: how many documents hold each term (none for a term not listed)."""
+
+    def __init__(self, held: dict[str, int]) -> None:
+        self.held = held
+        self.calls: list[list[str]] = []
+
+    def mentions(
+        self, customer_id: str, terms: Sequence[str], scope: Scope, exclude: Sequence[str], listed: int
+    ) -> tuple[int, list[dict[str, object]]]:
+        self.calls.append(list(terms))
+        total = sum(self.held.get(term, 0) for term in terms)
+        rows = [{"document_id": "m1", "document_name": "m1.pdf", "page_no": 1, "pages": [1], "snippet": "x"}]
+        return total, rows if total else []
+
+
+RECEIPTS = [
+    piece(
+        f"receipt-{n}.pdf",
+        f"Receipt No. {n}\nReceived with thanks from Patil Traders the sum of Rs. {n},500\nDate: 12/03/2009",
+    )
+    for n in (14, 15)
+]
+
+
+def test_a_sum_over_years_naming_a_word_no_document_has_says_which_word_410(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # #410 (Vrushit's UAT): "Sum of SBH Receipt over 2007 to 2026". No fixed total: a year span
+    # is no date range dates.py reads, and SBH and receipt are words no plan knows. The search
+    # finds the receipts ("sum" and "receipt" pass the gate) and the model, told never to add
+    # up, finds no answer. The not-found now says which of its words no document has.
+    caplog.set_level(logging.INFO, logger="kaagaz.answering.service")
+    question = "Sum of SBH Receipt over 2007 to 2026"
+    assert key_terms(question) == ["SBH"]  # "Sum" and "over" frame it; "receipt" is a form's word
+    assert key_terms("Kiska profit sabse jyada tha?") == []  # "Kiska" is whose, never a name
+    assert key_terms("Patil ka bil kitna tha?") == ["Patil"]
+    fixed = FakeFixedQueries({A: []})
+    port = TermMentions({"Receipt": 2})
+    answer = AnswerService(
+        db=UNUSED_DB,
+        model=FakeModel(lambda system, user: {"status": "not_found", "sentences": []}),
+        settings=SETTINGS,
+        clock=lambda: GOLDEN_NOW,
+        retriever=FakeRetriever({A: RECEIPTS}),
+        fixed_queries=fixed,
+        unchecked=FakeUnchecked(),
+        mentions=port,
+    ).answer(A, question)
+
+    assert (answer.status, answer.route, fixed.field_calls) == ("not_found", "search", [])
+    codes = [r.__dict__["code"] for r in caplog.records if r.getMessage() == "answer not found"]
+    assert codes == ["notfound_model"]
+    assert [doc["display_name"] for doc in answer.closest_documents] == ["receipt-14.pdf", "receipt-15.pdf"]
+    assert answer.missing_words == ("SBH",)
+    assert ["SBH"] in port.calls
+    data = answer.to_json()
+    assert data["missing_words"] == ["SBH"]
+    assert answer_text(data) == soft_line(True, ["SBH"])
+
+
+def test_no_word_is_named_missing_when_every_key_term_is_somewhere_or_it_answered() -> None:
+    port = TermMentions({"SBH": 1})
+    found = AnswerService(
+        db=UNUSED_DB,
+        model=FakeModel(lambda system, user: {"status": "not_found", "sentences": []}),
+        settings=SETTINGS,
+        clock=lambda: GOLDEN_NOW,
+        retriever=FakeRetriever({A: RECEIPTS}),
+        fixed_queries=FakeFixedQueries({A: []}),
+        unchecked=FakeUnchecked(),
+        mentions=port,
+    ).answer(A, "Sum of SBH Receipt over 2007 to 2026")
+    assert found.status == "not_found" and found.missing_words == ()
+    assert "missing_words" not in found.to_json()
+    assert answer_text(found.to_json()) == SOFT_CLOSEST
+    answered = service(pieces=[INVOICE], model=FakeModel())[0].answer(A, QUESTION)
+    assert answered.status == "answered" and "missing_words" not in answered.to_json()
 
 
 LAND_CARD: dict[str, Any] = {

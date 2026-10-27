@@ -39,7 +39,7 @@ from sqlalchemy import Connection, RowMapping, text
 from sqlalchemy.exc import IntegrityError
 
 from kaagaz.chunking.context import document_part
-from kaagaz.db.documents import folder_missing
+from kaagaz.db.documents import STUCK, folder_missing
 from kaagaz.db.folders import FolderNotFound
 from kaagaz.db.review import WAITING_VALUE
 from kaagaz.db.visibility import LIVE_SUGGESTION
@@ -95,7 +95,7 @@ _FILE_COLUMNS = (
 # for a document in no batch. It counts this customer's own rows only, so another
 # customer's load never shows in it.
 _COLUMNS = (
-    "SELECT d.id, d.display_name, d.detected_type, d.size_bytes, d.status, d.failure_code,"  # noqa: S608 - a fixed fragment, review.WAITING_VALUE
+    "SELECT d.id, d.display_name, d.detected_type, d.size_bytes, d.status, d.failure_code,"  # noqa: S608 - fixed fragments, review.WAITING_VALUE and documents.STUCK
     " d.page_count, d.created_at, d.uploaded_by, d.folder_id, d.deleted_at, d.family_id, d.version_no,"
     " d.attempts, d.max_attempts, d.progress, d.doc_type, d.languages, d.summary, d.read_model,"
     " u.display_name AS uploaded_by_name,"
@@ -115,6 +115,13 @@ _COLUMNS = (
     f" AND v.document_id = d.id AND {WAITING_VALUE}) AS values_to_review,"
     " (SELECT array_agg(o.uploaded_by) FROM documents o"
     " WHERE o.customer_id = d.customer_id AND o.family_id = d.family_id) AS family_uploaders,"
+    # Issue 407: in progress RETRY_STUCK_HOURS since it was asked for (documents.STUCK), so it
+    # may be read again; and while it waits for the reader ({"step": "waiting"}), its last
+    # run's code, which says what it waits on (on the index processing_runs_document).
+    f" {STUCK} AS stuck,"
+    " CASE WHEN d.status IN ('received', 'clean') AND d.progress ->> 'step' = 'waiting'"
+    " THEN (SELECT r.error_code FROM processing_runs r WHERE r.customer_id = d.customer_id"
+    " AND r.document_id = d.id ORDER BY r.started_at DESC LIMIT 1) END AS waiting_code,"
     # Auto-filing (feature 28), from the family's first version: filed while it is still in a
     # folder; not filed when skipped, or read as current with no type (the filing that runs
     # right after a typed read is not shown as "not filed" in the moment before it commits).
@@ -124,7 +131,10 @@ _COLUMNS = (
     " FROM documents r WHERE r.customer_id = d.customer_id AND r.id = d.family_id) AS autofile,"
     " (SELECT json_build_object('id', n.id, 'version_no', n.version_no, 'status', n.status,"
     " 'failure_code', n.failure_code, 'detected_type', n.detected_type, 'page_count', n.page_count,"
-    " 'attempts', n.attempts, 'max_attempts', n.max_attempts, 'progress', n.progress)"
+    " 'attempts', n.attempts, 'max_attempts', n.max_attempts, 'progress', n.progress,"
+    " 'waiting_code', CASE WHEN n.progress ->> 'step' = 'waiting' THEN (SELECT r.error_code"  # issue 407
+    " FROM processing_runs r WHERE r.customer_id = n.customer_id AND r.document_id = n.id"
+    " ORDER BY r.started_at DESC LIMIT 1) END)"
     " FROM documents n WHERE n.customer_id = d.customer_id AND n.family_id = d.family_id"
     " AND n.version_no > d.version_no AND n.deleted_at IS NULL"
     " ORDER BY n.version_no DESC LIMIT 1) AS newer," + _FILE_COLUMNS

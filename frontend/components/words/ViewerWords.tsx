@@ -104,7 +104,7 @@ export function PageWordsList({ words }: { words: ViewerWords }) {
         </div>
       )}
       {show && !words.loading && !error && markers.length === 0 && (
-        <p className="muted">None yet. Choose &quot;Add meaning&quot; by a value or a scanned line. Only you see your words.</p>
+        <p className="muted">None yet. Choose &quot;Add meaning&quot; by a line in Text. Only you see your words.</p>
       )}
       {markers.length > 0 && (
         <ol className={styles.list}>

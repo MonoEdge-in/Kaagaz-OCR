@@ -25,7 +25,8 @@ Why here: the family rules next to their SQL. Every function takes a connection 
   version of this family.
 * **Accept** (V6, V9) locks both families in id order and, in one transaction, gives the
   document the family, the next number, the family's folder, tags, owner and label, and makes
-  it current (the highest ready version). **Undo** (V7) puts it back alone, in the folder it
+  it current (the highest ready version); a family in no folder moves into the document's
+  folder instead (issue 414). **Undo** (V7) puts it back alone, in the folder it
   had before (``previous_folder_id``), and the family's highest ready version is current again.
 * A suggestion whose document or candidate family went to Trash or was deleted is no longer
   shown or answered (``visibility.LIVE_SUGGESTION``).
@@ -239,6 +240,11 @@ _JOIN = text(
     " sensitivity_set_by_person = cur.sensitivity_set_by_person, autofile = NULL, is_current = true"
     " FROM documents cur WHERE n.customer_id = :c AND n.id = :n AND cur.customer_id = :c AND cur.id = :cur"
 )
+# Issue 414: a family in no folder joins the folder of the document linked to it, so the
+# folder auto-filing made for that document is not left empty; both end in one folder.
+_FAMILY_INTO = text(
+    "UPDATE documents SET folder_id = :folder, autofile = NULL WHERE customer_id = :c AND family_id = :f"
+)
 _DROP_TAGS = text("DELETE FROM document_tags WHERE customer_id = :c AND document_id = :n")
 _FAMILY_TAGS = text(
     "INSERT INTO document_tags (customer_id, document_id, tag_id)"
@@ -283,11 +289,15 @@ def link(conn: Connection, customer_id: str, suggestion_id: str, *, by: str | No
     if conn.execute(_ACCEPT, {**params, "by": by, "previous": state["from_folder"]}).first() is None:
         raise Refused("already_decided")
     ids = {**params, "n": new, "f": family, "cur": str(state["current_id"]), "v": int(state["version_no"])}
+    folder_id = state["folder_id"]
+    if folder_id is None and state["from_folder"] is not None:
+        folder_id = state["from_folder"]
+        conn.execute(_FAMILY_INTO, {**ids, "folder": folder_id})
     conn.execute(_FAMILY_NOT_CURRENT, ids)
     conn.execute(_JOIN, ids)
     conn.execute(_DROP_TAGS, ids)
     conn.execute(_FAMILY_TAGS, ids)
-    folder = None if state["folder_id"] is None else str(state["folder_id"])
+    folder = None if folder_id is None else str(folder_id)
     audit.record(
         conn,
         customer_id,

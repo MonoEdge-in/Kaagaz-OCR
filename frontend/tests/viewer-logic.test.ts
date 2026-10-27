@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { fieldText, labelBadgeClass, labelIcon, labelText, reasonText } from "@/components/viewer/labels";
-import { initialSelection, sameRegion, selectValue } from "@/components/viewer/selection";
+import { initialSelection, sameRegion } from "@/components/viewer/selection";
 import {
   BACKUP_ISSUES,
   ZOOM_STEPS,
@@ -393,8 +393,8 @@ describe("document selection", () => {
     expect(initialSelection({ pages: [], values: [] }, "1", null)).toBeNull();
   });
 
-  it("selects a clicked value on its own page", () => {
-    expect(selectValue(value)).toEqual({ pageNo: 2, region, valueId: "v1" });
+  // Changed on purpose (Vrushit UAT 2, 27 Oct 2026, #416): selectValue went with Values found.
+  it("never takes a cell for a box", () => {
     expect(sameRegion(region, { kind: "cell", page: 2, row: 1, column: 1 })).toBe(false);
   });
 });

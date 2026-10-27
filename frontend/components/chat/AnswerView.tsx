@@ -24,7 +24,8 @@
 // PRD 6 A (24 Oct 2026), an answer in contract v2: its opening first, then the short answer,
 // then the documents it lists (DocumentList: title, why, each figure as printed with its label
 // beside it, the page to open; at most 10, then how many more), then what was assumed. A
-// not-found says decision 9's soft line and lists its closest documents. Labels come back in
+// not-found says decision 9's soft line (naming the words no document has, #410) and lists its
+// closest documents, the first 3 open and the rest in a closed disclosure (#413). Labels come back in
 // Ask (decision 1): beside a figure or a total, never on a document's title. Answers saved
 // before v2 render as they did. The card is a focus target: a new answer gets the focus.
 
@@ -112,60 +113,74 @@ function Script({ text }: { text: string }) {
 
 /** PRD 6 A: the documents a v2 answer lists, each with its title and why, the figures its
  * sources print with their labels beside them, and the pages to open (a closest document,
- * citing nothing, opens at its start); then how many more are in Sources. */
-function DocumentList({ answer, terms }: { answer: Answer; terms: readonly string[] }) {
+ * citing nothing, opens at its start); then how many more are in Sources. #413: with `shown`,
+ * only the first that many are listed, the rest in a closed "N more documents" disclosure. */
+function DocumentList({ answer, terms, shown }: { answer: Answer; terms: readonly string[]; shown?: number }) {
   const { documents, more } = listedDocuments(answer);
   if (documents.length === 0) return null;
+  const item = (doc: (typeof documents)[number]) => {
+    const pages = doc.sources.filter((c, i, all) => all.findIndex((o) => o.page_no === c.page_no) === i);
+    const figures = doc.sources.flatMap((c) => {
+      const figure = figureOf(c);
+      return figure ? [{ c, figure }] : [];
+    });
+    return (
+      <li key={doc.document_id} className={styles.docItem}>
+        <p className={styles.docTitle}>
+          <Script text={doc.title} />
+        </p>
+        {doc.why ? (
+          <p className={styles.docWhy}>
+            <Script text={doc.why} />
+          </p>
+        ) : null}
+        {figures.length > 0 ? (
+          <ul className={styles.docFigures} aria-label="Figures as printed">
+            {figures.map(({ c, figure }) => (
+              <li key={c.n}>
+                <span className={styles.figure}>
+                  <Script text={figure} />
+                </span>{" "}
+                <LabelBadge label={c.label} />
+              </li>
+            ))}
+          </ul>
+        ) : null}
+        <div className={styles.chipRow}>
+          {pages.length > 0 ? (
+            pages.map((c) => (
+              <Link key={c.n} className={styles.chip} href={citationLink(c, terms)}>
+                <Icon name="open" size={16} />
+                Page {c.page_no}
+              </Link>
+            ))
+          ) : (
+            <Link className={styles.chip} href={documentLink(doc.document_id, terms)}>
+              <Icon name="open" size={16} />
+              Open
+            </Link>
+          )}
+        </div>
+      </li>
+    );
+  };
+  const rest = shown === undefined ? [] : documents.slice(shown);
   return (
     <div>
       <ul className={styles.docList} aria-label="Documents">
-        {documents.map((doc) => {
-          const pages = doc.sources.filter((c, i, all) => all.findIndex((o) => o.page_no === c.page_no) === i);
-          const figures = doc.sources.flatMap((c) => {
-            const figure = figureOf(c);
-            return figure ? [{ c, figure }] : [];
-          });
-          return (
-            <li key={doc.document_id} className={styles.docItem}>
-              <p className={styles.docTitle}>
-                <Script text={doc.title} />
-              </p>
-              {doc.why ? (
-                <p className={styles.docWhy}>
-                  <Script text={doc.why} />
-                </p>
-              ) : null}
-              {figures.length > 0 ? (
-                <ul className={styles.docFigures} aria-label="Figures as printed">
-                  {figures.map(({ c, figure }) => (
-                    <li key={c.n}>
-                      <span className={styles.figure}>
-                        <Script text={figure} />
-                      </span>{" "}
-                      <LabelBadge label={c.label} />
-                    </li>
-                  ))}
-                </ul>
-              ) : null}
-              <div className={styles.chipRow}>
-                {pages.length > 0 ? (
-                  pages.map((c) => (
-                    <Link key={c.n} className={styles.chip} href={citationLink(c, terms)}>
-                      <Icon name="open" size={16} />
-                      Page {c.page_no}
-                    </Link>
-                  ))
-                ) : (
-                  <Link className={styles.chip} href={documentLink(doc.document_id, terms)}>
-                    <Icon name="open" size={16} />
-                    Open
-                  </Link>
-                )}
-              </div>
-            </li>
-          );
-        })}
+        {documents.slice(0, documents.length - rest.length).map(item)}
       </ul>
+      {rest.length > 0 ? (
+        <details className={styles.moreDocs}>
+          <summary className={styles.sourcesSummary}>
+            <Icon name="chevron-right" size={16} className={styles.sourcesChevron} />
+            {counted(rest.length, "more document", "more documents")}
+          </summary>
+          <ul className={styles.docList} aria-label="More documents">
+            {rest.map(item)}
+          </ul>
+        </details>
+      ) : null}
       {more > 0 ? (
         <p className={styles.understood}>{counted(more, "more document is", "more documents are")} in Sources.</p>
       ) : null}
@@ -177,6 +192,8 @@ function DocumentList({ answer, terms }: { answer: Answer; terms: readonly strin
 // so old answer cards skip re-rendering (UI quality council, 15 Oct 2026).
 /** Over an answer's one-press questions (24 Oct 2026). */
 export const TRY_THESE = "Try one of these";
+/** #413 (Vrushit's UAT): a not-found lists its first 3 closest documents; the rest wait, closed. */
+const CLOSEST_SHOWN = 3;
 /** KZ-006 (24 Oct 2026): every model was down; as routers/chat.py OUTAGE_LINE. */
 export const OUTAGE_TEXT = "The AI is not responding right now, so this is not a written answer. Ask again in a minute."
 /** A search answer the AI did not write (off on this server, or not answering): the lines that
@@ -348,9 +365,11 @@ export const AnswerView = memo(function AnswerView({
           <span className={styles.notFoundIcon}>
             <Icon name={answer.outage ? "alert" : "search-off"} size={20} />
           </span>
-          <p className={styles.plain}>{answer.outage ? OUTAGE_TEXT : notFoundText(closest)}</p>
+          <p className={styles.plain}>
+            {answer.outage ? OUTAGE_TEXT : notFoundText(closest, answer.missing_words ?? [])}
+          </p>
         </div>
-        {listed}
+        {v2 ? <DocumentList answer={answer} terms={terms} shown={CLOSEST_SHOWN} /> : null}
         {noteText}
         {understood}
         {notePages || closestInBar.length > 0 || mentions ? (

@@ -17,7 +17,7 @@ import { FILES_TEXT } from "@/components/files/words";
 import { Icon } from "@/components/ui/Icon";
 import { Icon as TreeIcon } from "@/components/ui/Icon/Icon";
 import type { FolderNode, FolderTree } from "./folderTree";
-import { libraryHref } from "./libraryQuery";
+import { NO_DEPARTMENT, libraryHref } from "./libraryQuery";
 import type { LibraryState } from "./libraryQuery";
 import styles from "./Library.module.css";
 
@@ -68,18 +68,22 @@ export function FolderNav({ tree, library, loading, error, onRetry, onNavigate, 
   const order = departmentsOf(tree.roots.map((node) => node.folder)).map((folder) => folder.id);
   const departments = order.flatMap((id) => tree.roots.filter((node) => node.folder.id === id));
   const others = tree.roots.filter((node) => !isDepartment(node.folder));
+  // Issue 409: Other opens the documents in no department (the filter the dashboard links to).
+  // It is a place like a folder, so going anywhere else in the tree leaves it.
+  const inOther = library.departmentId === NO_DEPARTMENT && library.folderId === null && !library.trash;
+  const away = library.departmentId === NO_DEPARTMENT ? { ...library, departmentId: null } : library;
   const item = (node: FolderNode) => (
-    <FolderItem key={node.folder.id} node={node} library={library} onNavigate={onNavigate} onDrop={onDropDocument} />
+    <FolderItem key={node.folder.id} node={node} library={away} onNavigate={onNavigate} onDrop={onDropDocument} />
   );
   return (
     <div className={styles.treeWrap}>
       <ul className={styles.tree}>
         <li>
           <Link
-            href={libraryHref({ ...library, folderId: null, subfolders: false, trash: false })}
+            href={libraryHref({ ...away, folderId: null, subfolders: false, trash: false })}
             scroll={false}
             className={styles.treeLink}
-            aria-current={library.folderId === null && !library.trash ? "page" : undefined}
+            aria-current={library.folderId === null && !library.trash && !inOther ? "page" : undefined}
             data-drop={top.over ? "true" : undefined}
             onClick={() => onNavigate("All documents")}
             {...top.handlers}
@@ -102,9 +106,16 @@ export function FolderNav({ tree, library, loading, error, onRetry, onNavigate, 
           others.map(item)
         ) : (
           <li className={styles.treeGroup}>
-            <span id="tree-other" className={styles.groupHeading}>
+            <Link
+              id="tree-other"
+              href={libraryHref({ ...library, folderId: null, subfolders: false, trash: false, departmentId: NO_DEPARTMENT })}
+              scroll={false}
+              className={`${styles.treeLink} ${styles.groupLink}`}
+              aria-current={inOther ? "page" : undefined}
+              onClick={() => onNavigate(FILES_TEXT.notInDepartment)}
+            >
               {FILES_TEXT.other}
-            </span>
+            </Link>
             {others.length > 0 && (
               <>
                 <span id="tree-outside" className={styles.groupSub}>
@@ -119,7 +130,7 @@ export function FolderNav({ tree, library, loading, error, onRetry, onNavigate, 
         )}
         <li className={styles.trashItem}>
           <Link
-            href={libraryHref({ ...library, folderId: null, subfolders: false, trash: true })}
+            href={libraryHref({ ...away, folderId: null, subfolders: false, trash: true })}
             scroll={false}
             className={styles.treeLink}
             aria-current={library.trash ? "page" : undefined}
