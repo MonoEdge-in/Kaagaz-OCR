@@ -380,11 +380,14 @@ class Settings:
     cost_saving_hard_lines_max: int = 12
     cost_saving_hard_share: float = 0.4
     cost_saving_crop_pad: float = 0.5
-    # Routing each page by its content (#384, ``reading.page_route``): under Automatic, each
-    # scanned page is read by the local reader first and keeps that read when it is clean
-    # (page_routing, off by default); the thresholds are ``page_route.RouteRules``'s, and at
-    # most page_route_region_pages_max pages of a document are read through their regions (#385).
-    page_routing: bool = False
+    # Routing each page by its content (#384, ``reading.page_route``): for an account whose
+    # reader choice is "Save cost" (#398, the scan level save), each scanned page is read by
+    # the local reader first and keeps that read when it is clean. page_routing is the
+    # platform's permission for that choice (on by default; off: no account may choose it and
+    # a saved one reads every page with the AI); the thresholds are ``page_route.RouteRules``'s,
+    # and at most page_route_region_pages_max pages of a document are read through their
+    # regions (#385).
+    page_routing: bool = True
     page_route_clean_confidence: float = 0.95
     page_route_min_words: int = 8
     page_route_min_line_px: float = 16.0
@@ -591,7 +594,7 @@ class Settings:
             cost_saving_hard_lines_max=env.between_or("COST_SAVING_HARD_LINES_MAX", 1, 60, default=12),
             cost_saving_hard_share=env.number_in("COST_SAVING_HARD_SHARE", 0.05, 1.0, default=0.4),
             cost_saving_crop_pad=env.number_in("COST_SAVING_CROP_PAD", 0.1, 2.0, default=0.5),
-            page_routing=env.optional("PAGE_ROUTING") is not None and env.boolean("PAGE_ROUTING"),
+            page_routing=env.optional("PAGE_ROUTING") is None or env.boolean("PAGE_ROUTING"),
             page_route_clean_confidence=env.number_in("PAGE_ROUTE_CLEAN_CONFIDENCE", 0.5, 1.0, default=0.95),
             page_route_min_words=env.between_or("PAGE_ROUTE_MIN_WORDS", 1, 1000, default=8),
             page_route_min_line_px=env.number_in("PAGE_ROUTE_MIN_LINE_PX", 1.0, 200.0, default=16.0),

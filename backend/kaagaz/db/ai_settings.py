@@ -7,8 +7,16 @@ One rule everywhere::
 
 The ceiling is what the caller already loads (``kaagaz.db.models.effective_settings``, the
 auto-filing grant), given as the ``allowed`` levels, lowest first. Levels are ordered
-none < low < high < max, and off < on. With no row for a task (``Task.chosen`` false) the
-caller keeps today's behaviour exactly; ``effective`` then says what today's is.
+none < save < low < high < max (save: scan only), and off < on. With no row for a task
+(``Task.chosen`` false) the caller keeps today's behaviour exactly; ``effective`` then says
+what today's is.
+
+The reader choice (#398) is the scan level, so its default, lock, ceiling and audit are the
+scan's: None is "Local reader only", Save is "Save cost" (the local reader keeps clean printed
+pages, the AI reads the rest: ``db.models.Reading.routes``), Low, High and Max are "AI reads
+every page" at that care. Save is allowed only with PAGE_ROUTING (the platform's permission)
+and Cost saving on; while it is not, a saved Save reads as Low (every page by the AI). Nothing
+saved is never Save.
 
 The cost-saving and Ensemble switches live inside ``effective_settings`` (so every caller of
 the ceiling sees them); scan_ai is the worker's (``worker_main.admission``), ask the chat
@@ -35,8 +43,9 @@ FEATURES = (
     "version_spotting", "land_facts", "nlq_clarify", "nlq_learning",  # PRD 6 (0052)
 )  # fmt: skip
 STEPS = ("none", "low", "high", "max")  # scan and ask
+SCAN_STEPS = ("none", "save", "low", "high", "max")  # scan: with the reader choice's Save (#398)
 SWITCH = ("off", "on")  # ensemble and autofile
-_ORDER = {level: n for levels in (STEPS, SWITCH) for n, level in enumerate(levels)}
+_ORDER = {level: n for levels in (SCAN_STEPS, SWITCH) for n, level in enumerate(levels)}
 
 # (task, organisation row?) -> (level, locked)
 Saved = dict[tuple[str, bool], tuple[str, bool]]
@@ -169,13 +178,16 @@ def switch_on(conn: Connection, feature: str, customer_id: str | None) -> bool:
 def resolve(task: str, saved: Saved, allowed: Sequence[str], default: str, *, available: bool = True) -> Task:
     """``task`` by the rule (module notes): the organisation's level when locked, else the
     member's, else the organisation's, else ``default`` (today's), never above
-    ``allowed[-1]``. O(1)."""
+    ``allowed[-1]``; a Save not allowed now is Low (#398: every page read by the AI). O(1)."""
     org, mine = saved.get((task, True)), saved.get((task, False))
     locked = org is not None and org[1]
     chosen = org[0] if org is not None and locked else mine[0] if mine is not None else None
     if chosen is None and org is not None:
         chosen = org[0]
-    effective = lowest(chosen or default, allowed[-1])
+    wanted = chosen or default
+    if wanted == "save" and wanted not in allowed:
+        wanted = "low"
+    effective = lowest(wanted, allowed[-1])
     return Task(
         task,
         effective,
@@ -190,12 +202,15 @@ def resolve(task: str, saved: Saved, allowed: Sequence[str], default: str, *, av
 
 def scan_ceiling(ceiling: Mapping[Any, Any], settings: Settings) -> tuple[tuple[str, ...], str]:
     """(allowed, today's level) for scanning: High and Max only when the organisation's scan
-    thinking is high; today is Low (Automatic) with Dynamic, else the single read's level.
+    thinking is high; Save (#398) only with PAGE_ROUTING and Dynamic (Cost saving), whose
+    reading it is; today is Low (Automatic) with Dynamic, else the single read's level.
     Keyless (no reading model): None only."""
     if settings.ocr_engine != "gemini":  # reading.ocr.GEMINI, not imported: the worker loads this early
         return ("none",), "none"
     top = (ceiling["scan_thinking"] or settings.ocr_thinking_level) == "high"
-    allowed = STEPS if top else STEPS[:2]
+    allowed: tuple[str, ...] = STEPS if top else STEPS[:2]
+    if settings.page_routing and ceiling["dynamic"]:
+        allowed = ("none", "save", *allowed[1:])
     return allowed, "low" if ceiling["dynamic"] or not top else "high"
 
 

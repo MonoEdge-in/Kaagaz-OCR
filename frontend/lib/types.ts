@@ -1624,7 +1624,8 @@ export interface EnsembleEstimate {
 
 /** AI settings by task (spec 17 Oct 2026): levels, never model names. */
 export type AiTask = "scan" | "ask" | "ensemble" | "autofile";
-export type TaskLevel = "none" | "low" | "high" | "max" | "off" | "on";
+// "save": scanning only, the reader choice that reads clean printed pages on our server (#398).
+export type TaskLevel = "none" | "save" | "low" | "high" | "max" | "off" | "on";
 
 export interface AiTaskSetting {
   task: AiTask;

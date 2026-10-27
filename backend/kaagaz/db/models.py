@@ -158,8 +158,9 @@ class Reading:
     (dynamic only) re-reads the unclear pages; ``thinking`` the level sent; ``notes``
     why something fell back (``mode_revoked``, ``ensemble_after_scan``,
     ``thinking_fallback``); ``routes`` (#384, ``reading.page_route``) whether each page is
-    read locally first and kept so when clean: Automatic (dynamic) only, never Max, never
-    single (every page by the model) nor local (no model), and only with PAGE_ROUTING."""
+    read locally first and kept so when clean: only for the reader choice Save (#398, which
+    PAGE_ROUTING permits) read dynamic, never single (every page by the model) nor local (no
+    model). ``reader`` (#398, in the run's config): local, save (routed) or ai."""
 
     mode: str
     lead: Agent
@@ -169,6 +170,11 @@ class Reading:
     notes: tuple[str, ...] = ()
     routes: bool = False
 
+    @property
+    def reader(self) -> str:
+        """Who reads the pages (#398): local (no model), save (routed) or ai (every page)."""
+        return "local" if self.mode == "local" else "save" if self.routes else "ai"
+
     def config(self) -> dict[str, Any]:
         """``processing_runs.config.reading`` (S5a): ids, providers, mode and thinking."""
 
@@ -177,6 +183,7 @@ class Reading:
 
         return {
             "mode": self.mode,
+            "reader": self.reader,
             "lead": agent(self.lead),
             "others": [agent(one) for one in self.others],
             "careful": None if self.careful is None else agent(self.careful),
@@ -330,10 +337,10 @@ def resolve_scan(conn: Connection, customer_id: str, document_id: str, *, settin
 
     AI settings (0038, ``ai_settings``): with a scan level saved for the organisation or for
     who asked for the reading (``read_requested_by``), None reads with the local reader only
-    (mode ``local``, an explicit "Read with" too); with no explicit "Read with", Low is
-    dynamic, High single at high thinking, Max high thinking with Careful (mode dynamic).
-    Nothing saved: as before. #384: with PAGE_ROUTING a dynamic reading routes its pages
-    (``Reading.routes``), unless the level is High or Max."""
+    (mode ``local``, an explicit "Read with" too); with no explicit "Read with", Save and Low
+    are dynamic, High single at high thinking, Max high thinking with Careful (mode dynamic).
+    Nothing saved: as before. #384, #398: only Save (the reader choice "Save cost", allowed
+    with PAGE_ROUTING and Cost saving) routes a dynamic reading's pages (``Reading.routes``)."""
     document = conn.execute(_DOCUMENT, {"customer": customer_id, "document": document_id}).mappings().first()
     rows = [] if document is None else usable_models(conn, customer_id, settings=settings)
     by_id = {row["id"]: row for row in rows}
@@ -358,7 +365,7 @@ def resolve_scan(conn: Connection, customer_id: str, document_id: str, *, settin
     if level == "none":  # the local reader only, even for an explicit "Read with"
         return Reading("local", lead, thinking=thinking, notes=notes)
     if level is not None and read_model is None:  # no explicit "Read with": the level decides
-        mode = "dynamic" if level == "low" else "single"
+        mode = "dynamic" if level in ("save", "low") else "single"
         if level in ("high", "max"):
             thinking, notes = _thinking("high", lead_row, settings)
         if level == "max" and allowed["dynamic"]:  # Max never turns on a Dynamic the super admin took away
@@ -379,8 +386,9 @@ def resolve_scan(conn: Connection, customer_id: str, document_id: str, *, settin
             )
         elif lead_row["efforts"] and "thinking_fallback" not in notes:  # none: its one mode
             notes += ("thinking_fallback",)
-        # #384: only Automatic routes pages; a High or Max level keeps every page the model's.
-        routes = settings.page_routing and level not in ("high", "max")
+        # #398: only the reader choice Save routes pages (``scan_ceiling`` allows it only with
+        # PAGE_ROUTING); nothing saved, Low, High and Max keep every page the model's.
+        routes = level == "save"
         return Reading("dynamic", lead, careful=careful, thinking=thinking, notes=notes, routes=routes)
     return Reading("single", lead, thinking=thinking, notes=notes)
 

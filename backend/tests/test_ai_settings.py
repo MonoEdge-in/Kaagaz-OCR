@@ -4,6 +4,7 @@ scan resolver's mapping, Ask at None (no model call), the worker's Scanning with
 the local reader for a scan at None, and the area query's test model. The SQL, the API and
 the isolation: test_ai_settings_db, test_isolation_ai_task_settings, test_migration_0038_db."""
 
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -32,6 +33,7 @@ from tests.test_worker_defer import A1, B1, MemoryLocks, Run, fair_share, workin
 
 GEMINI = make_settings(ocr_engine="gemini", ocr_thinking_level="high")
 STEPS = ai_settings.STEPS
+SCAN_STEPS = ai_settings.SCAN_STEPS
 
 
 # --- the rule ---------------------------------------------------------------------------------
@@ -81,9 +83,11 @@ def test_the_view_never_names_a_model_or_a_price() -> None:
 
 def test_the_ceilings() -> None:
     dynamic = {"scan_thinking": None, "dynamic": True, "chat_levels": ["low"], "chat_default_level": "low"}
-    assert ai_settings.scan_ceiling(dynamic, GEMINI) == (STEPS, "low")
+    # Changed on purpose (#398): Save, the reader choice "Save cost", with PAGE_ROUTING and Dynamic.
+    assert ai_settings.scan_ceiling(dynamic, GEMINI) == (SCAN_STEPS, "low")
     assert ai_settings.scan_ceiling({**dynamic, "dynamic": False}, GEMINI) == (STEPS, "high")
-    assert ai_settings.scan_ceiling({**dynamic, "scan_thinking": "medium"}, GEMINI) == (STEPS[:2], "low")
+    assert ai_settings.scan_ceiling({**dynamic, "scan_thinking": "medium"}, GEMINI) == (SCAN_STEPS[:3], "low")
+    assert ai_settings.scan_ceiling(dynamic, replace(GEMINI, page_routing=False)) == (STEPS, "low")
     assert ai_settings.scan_ceiling(dynamic, make_settings(ocr_engine="rapidocr")) == (("none",), "none")
     assert ai_settings.ask_ceiling(dynamic) == (STEPS[:2], "low")
     assert ai_settings.ask_ceiling({"chat_levels": ["low", "high"], "chat_default_level": "high"}) == (
@@ -216,6 +220,67 @@ def test_a_scan_level_above_the_ceiling_is_capped() -> None:
         GEMINI,
     )
     assert capped.mode == "dynamic" and capped.thinking == "low"  # max -> low (Automatic)
+
+
+# --- the reader choice (#398): the scan level's None, Save, and Low to Max ------------------------
+
+SAVE_ALLOWED = ai_settings.scan_ceiling(DYNAMIC_ON, GEMINI)[0]
+NO_SAVE = ai_settings.scan_ceiling(DYNAMIC_ON, replace(GEMINI, page_routing=False))[0]
+
+
+@pytest.mark.parametrize(
+    ("saved", "allowed", "effective"),
+    [
+        ({}, SAVE_ALLOWED, "low"),  # nothing saved: today's, never Save
+        ({("scan", True): ("save", False)}, SAVE_ALLOWED, "save"),  # the organisation's default
+        ({("scan", True): ("save", False), ("scan", False): ("none", False)}, SAVE_ALLOWED, "none"),  # mine
+        ({("scan", True): ("save", False), ("scan", False): ("high", False)}, SAVE_ALLOWED, "high"),
+        ({("scan", True): ("save", True), ("scan", False): ("high", False)}, SAVE_ALLOWED, "save"),  # locked
+        ({("scan", True): ("high", True), ("scan", False): ("save", False)}, SAVE_ALLOWED, "high"),
+        ({("scan", False): ("save", False)}, NO_SAVE, "low"),  # the platform's PAGE_ROUTING off: every page
+        ({("scan", True): ("save", True)}, NO_SAVE, "low"),
+        ({("scan", False): ("save", False)}, ("none",), "none"),  # keyless: the local reader only
+    ],
+)
+def test_the_reader_choice_follows_the_rule(
+    saved: ai_settings.Saved, allowed: tuple[str, ...], effective: str
+) -> None:
+    assert resolve("scan", saved, allowed, "low").effective == effective
+
+
+def test_save_is_allowed_only_with_page_routing_and_cost_saving() -> None:
+    assert "save" in SAVE_ALLOWED and "save" not in NO_SAVE
+    assert "save" not in ai_settings.scan_ceiling({**DYNAMIC_ON, "dynamic": False}, GEMINI)[0]
+    assert (
+        "save"
+        not in resolve(
+            "ask", {}, *ai_settings.ask_ceiling({"chat_levels": None, "chat_default_level": None})
+        ).allowed
+    )
+
+
+def _reader(
+    *saved: tuple[bool, str, bool], settings: Any = GEMINI, read_model: str | None = None
+) -> models.Reading:
+    conn = FakeConn(scan=TWO_TIERS, settings=DYNAMIC_ON, document=_document(*saved, read_model=read_model))
+    return scan(conn, settings)
+
+
+def test_each_reader_choice_reads_as_chosen() -> None:
+    ai = _reader()  # nothing saved: AI reads every page, never routed
+    assert (ai.reader, ai.mode, ai.routes, ai.config()["reader"]) == ("ai", "dynamic", False, "ai")
+    for level in ("low", "high", "max"):
+        assert (_reader((True, level, False)).reader, _reader((True, level, False)).routes) == ("ai", False)
+    save = _reader((False, "save", False))
+    assert (save.reader, save.mode, save.thinking, save.routes) == ("save", "dynamic", "low", True)
+    assert save.config()["reader"] == "save"
+    local = _reader((True, "none", True))
+    assert (local.reader, local.mode, local.routes) == ("local", "local", False)
+
+
+def test_save_without_the_platforms_permission_reads_every_page_with_the_ai() -> None:
+    reading = _reader((True, "save", True), settings=replace(GEMINI, page_routing=False))
+    assert (reading.reader, reading.mode, reading.routes) == ("ai", "dynamic", False)
 
 
 def test_the_area_query_uses_the_test_model_for_every_organisation_while_it_is_set() -> None:
