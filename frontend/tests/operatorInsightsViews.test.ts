@@ -199,10 +199,12 @@ describe("Overview", () => {
 
     it("lists the 8 tiles as a description list", () => {
       const labels = [...html.matchAll(/<dt[^>]*>([^<]*)<\/dt>/g)].map((match) => match[1]);
+      // Changed on purpose (#386/#387, 27 Oct 2026): #377, the tile counts the pages an AI model
+      // read, so it says so; every page read is in Each organisation's numbers.
       expect(labels).toEqual([
         "Active organisations",
         "Files uploaded",
-        "Pages read",
+        "Pages read by AI",
         "Questions asked",
         "AI spend",
         "$ per 1,000 pages",
@@ -211,14 +213,15 @@ describe("Overview", () => {
       ]);
       // Changed on purpose (Tushar, 16 Oct 2026): real figures, plain words, no clutter.
       const tiles = html.split("<dl")[1]?.split("</dl>")[0] ?? "";
-      expect(tiles).toContain("Pages read");
+      expect(tiles).toContain("Pages read by AI"); // Changed on purpose (#386/#387, 27 Oct 2026): #377's name
       expect(tiles).not.toMatch(/re-reads included|Month-end forecast|\(part not known\)|too few to compare|no change/);
       expect(tile(html, "Active organisations")).toContain("of 2 organisations");
       expect(tile(html, "Failed runs")).toContain("of 12 reading runs");
     });
 
     it("puts the value first, then the label, then one short line", () => {
-      expect(html).toMatch(/<dt class="[^"]*">Pages read<\/dt><dd class="[^"]*tileValue[^"]* tabular">60<\/dd>/);
+      // Changed on purpose (#386/#387, 27 Oct 2026): #377's name for the tile.
+      expect(html).toMatch(/<dt class="[^"]*">Pages read by AI<\/dt><dd class="[^"]*tileValue[^"]* tabular">60<\/dd>/);
       expect(read("components/operator/Insights.module.css")).toMatch(/\.tiles \.tileValue \{\s*order: -1;/);
     });
 

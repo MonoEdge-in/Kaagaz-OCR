@@ -957,3 +957,44 @@
   justify-content: space-between;
   gap: var(--space-3);
 }
+
+/* Issues 386 and 387: a header that sorts (SortHeader.tsx), the arrow in the accent. */
+.sortButton {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: var(--control-min);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .sortButton:hover {
+    color: var(--accent);
+  }
+}
+
+.sortMark {
+  color: var(--accent);
+}
+
+/* A second, quieter line in a cell: a member's role, a breakdown of a figure. */
+.cellNote {
+  display: block;
+  margin-top: var(--space-1);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+}
+
+.cellList {
+  margin: var(--space-1) 0 0;
+  padding: 0;
+  list-style: none;
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+}

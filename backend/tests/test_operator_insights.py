@@ -17,6 +17,8 @@ from kaagaz.api.routers.operator_insights import (
     DAILY_KEYS,
     INSIGHTS_KEYS,
     ORG_HEALTH_KEYS,
+    ORG_NUMBERS_KEYS,
+    ORG_NUMBERS_REPLY_KEYS,
     QUALITY_KEYS,
     QUALITY_REPLY_KEYS,
 )
@@ -28,7 +30,10 @@ from tests.test_operator_orgs import CID, OID, _NoDatabase
 
 AT = int(NOW.timestamp())
 INSIGHTS, QUALITY, BOARD = "/api/operator/insights", "/api/operator/quality", "/api/operator/model-board"
-INSIGHT_ROUTES = {("GET", INSIGHTS), ("GET", QUALITY), ("GET", BOARD)}
+ORG_NUMBERS = "/api/operator/org-numbers"
+# Changed on purpose (#386/#387, 27 Oct 2026): each organisation's numbers is an insights route
+# too, so its days are checked first and a disabled operator gets 401 (the tests below).
+INSIGHT_ROUTES = {("GET", INSIGHTS), ("GET", QUALITY), ("GET", BOARD), ("GET", ORG_NUMBERS)}
 ZONE = "Asia/Kolkata"  # settings_factory's TIMEZONE
 TODAY = date(2026, 9, 27)  # NOW (10:00 UTC) in ZONE
 
@@ -56,6 +61,7 @@ class _Offline:
             "daily": [_function_row(DAILY_KEYS, day=TODAY)],
             "quality": [_function_row(QUALITY_KEYS, None), _function_row(QUALITY_KEYS)],
             "model_board": [_function_row(BOARD_KEYS, model="google/gemini-3-flash")],
+            "org_numbers": [_function_row(ORG_NUMBERS_KEYS)],
         }
         monkeypatch.setattr(
             operators_sql, "session_operator", lambda conn, oid: ("ops@example.test", "Ops", 2)
@@ -181,8 +187,35 @@ def test_the_model_board_has_exactly_the_agreed_keys(offline: _Offline) -> None:
     assert offline.calls == [("model_board", (OID, TODAY, TODAY, ZONE))]
 
 
+def test_org_numbers_have_exactly_the_agreed_keys_and_send_each_route_as_counted(offline: _Offline) -> None:
+    offline.rows["org_numbers"] = [
+        _function_row(
+            ORG_NUMBERS_KEYS,
+            pages_by_route={"ai": 4, "local": 2, "a_route_added_later": 1},
+            failed_documents={"infected": 1},
+            ai_cost_usd=Decimal("0.040000"),
+        ),
+        _function_row(ORG_NUMBERS_KEYS, pages_by_route={}, ai_cost_usd=None),
+    ]
+    reply = offline.get(ORG_NUMBERS, days=7)
+    assert reply.status_code == 200, reply.text
+    body = reply.json()
+    assert set(body) == ORG_NUMBERS_REPLY_KEYS
+    assert (body["from"], body["to"]) == ("2026-09-21", "2026-09-27")
+    assert [set(row) for row in body["organisations"]] == [ORG_NUMBERS_KEYS] * 2
+    first, second = body["organisations"]
+    assert first["pages_by_route"] == {"ai": 4, "local": 2, "a_route_added_later": 1}
+    assert (first["failed_documents"], first["ai_cost_usd"], second["ai_cost_usd"]) == (
+        {"infected": 1},
+        0.04,
+        None,
+    )
+    assert offline.calls == [("org_numbers", (OID, date(2026, 9, 21), TODAY, ZONE))]
+
+
 def test_no_reply_sends_a_column_its_key_set_does_not_name(offline: _Offline) -> None:
-    for path in (INSIGHTS, QUALITY, BOARD):
+    # Changed on purpose (#386/#387, 27 Oct 2026): each organisation's numbers too.
+    for path in (INSIGHTS, QUALITY, BOARD, ORG_NUMBERS):
         reply = offline.get(path)
         assert reply.status_code == 200 and "someone@example.test" not in reply.text, path
 

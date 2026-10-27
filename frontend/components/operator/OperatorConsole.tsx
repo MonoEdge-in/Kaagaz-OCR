@@ -1,6 +1,7 @@
 "use client";
 
-// /operator: nine tabs, Overview (the default) and Quality (operator insights,
+// /operator: nine tabs, Overview (the default, with each organisation's numbers under it,
+// #387) and Quality (operator insights,
 // council 11 Oct 2026; Answers by week under it, PRD 6 F3), Organisations,
 // Models (with Compare models under the catalogue), AI spend (model choice), Activity and Health, as the admin
 // screen's tabs (Tabs.tsx): one line that scrolls sideways, arrow keys, Home and End
@@ -22,6 +23,7 @@ import { HealthView } from "./HealthView";
 import { ModelBoard } from "./ModelBoard";
 import { ModelsView } from "./ModelsView";
 import { OrganisationsView } from "./OrganisationsView";
+import { OrgNumbersView } from "./OrgNumbers";
 import { OverviewView } from "./OverviewView";
 import { QualityView } from "./QualityView";
 import { SessionTimeoutView } from "./SessionTimeout";
@@ -86,7 +88,12 @@ export function OperatorConsole() {
       <h1>Platform</h1>
       <TestModelBanner testModel={testModel} onChanged={reloadTestModel} />
       <Tabs<TabId> prefix="operator" label="Platform sections" tabs={OPERATOR_TABS} active={active} onChange={choose}>
-        {active === "overview" && <OverviewView openOrg={openOrg} openTab={openTab} />}
+        {active === "overview" && (
+          <>
+            <OverviewView openOrg={openOrg} openTab={openTab} />
+            <OrgNumbersView />
+          </>
+        )}
         {active === "quality" && (
           <>
             <QualityView />
