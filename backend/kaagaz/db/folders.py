@@ -33,6 +33,7 @@ from typing import Any
 from sqlalchemy import Connection, CursorResult, text
 from sqlalchemy.exc import IntegrityError
 
+from kaagaz.db import audit
 from kaagaz.db.sqlstate import CHECK_VIOLATION, FOREIGN_KEY_VIOLATION, UNIQUE_VIOLATION, sqlstate
 
 _MAX_DEPTH = 5
@@ -197,7 +198,8 @@ _DETACH_TRASHED = (
     " WHERE d.customer_id = :c AND d.id = l.id AND d.deleted_at IS NOT NULL"
 )
 
-_DELETE = "DELETE FROM folders WHERE customer_id = :c AND id = :f RETURNING id"
+_DELETE = "DELETE FROM folders WHERE customer_id = :c AND id = :f RETURNING id, parent_id"
+_PARENT = "SELECT parent_id FROM folders WHERE customer_id = :c AND id = :f"
 
 
 def _lock_tree(conn: Connection, customer_id: str) -> None:
@@ -301,9 +303,12 @@ def move_folder(conn: Connection, customer_id: str, folder_id: str, *, parent_id
             raise FolderCycle()
         if int(target_depth) + int(height) > _MAX_DEPTH:
             raise FolderTooDeep()
+    before = conn.execute(text(_PARENT), {"c": customer_id, "f": folder_id}).scalar()
     row = _write_named(conn, _MOVE, {"c": customer_id, "f": folder_id, "p": parent_id}).first()
     if row is None:
         raise FolderNotFound()
+    if before is not None and str(before) != parent_id:
+        prune_empty(conn, customer_id, [str(before)])
     return _folder(row)
 
 
@@ -327,6 +332,7 @@ def delete_folder(conn: Connection, customer_id: str, folder_id: str) -> None:
         raise
     if deleted is None:
         raise FolderNotFound()
+    prune_empty(conn, customer_id, [None if deleted[1] is None else str(deleted[1])])
 
 
 def folder_path(conn: Connection, customer_id: str, folder_id: str) -> list[FolderRow]:
@@ -366,3 +372,76 @@ def _folder(row: Sequence[Any]) -> FolderRow:
         kind=str(row[4]),
         sort_order=row[5],
     )
+
+
+# --- empty folders Kaagaz made (Vrushit UAT 3, 27 Oct 2026) ---------------------------------
+# A folder auto-filing made (its folder.create audit row says auto, on audit_log_folder) goes once
+# nothing is in it: no folder, no document (Trash included: Restore needs it), no accepted
+# version's Undo that would put a document back in it, and no folder whose key names it (a type
+# folder's key holds its department's id, a year folder's its category's: R10 keeps using a moved
+# one). A folder a person made is never deleted.
+_PRUNE = (
+    "DELETE FROM folders f WHERE f.customer_id = :c AND f.id = :f"
+    " AND NOT EXISTS (SELECT 1 FROM folders ch WHERE ch.customer_id = :c AND ch.parent_id = f.id)"
+    " AND NOT EXISTS (SELECT 1 FROM documents d WHERE d.customer_id = :c AND d.folder_id = f.id)"
+    " AND NOT EXISTS (SELECT 1 FROM version_suggestions s"
+    " WHERE s.customer_id = :c AND s.previous_folder_id = f.id)"
+    " AND NOT EXISTS (SELECT 1 FROM folders k WHERE k.customer_id = :c"
+    " AND k.autofile_key LIKE '%:' || f.id::text)"
+    " AND EXISTS (SELECT 1 FROM audit_log a WHERE a.customer_id = :c AND a.folder_id = f.id"
+    " AND a.action = 'folder.create' AND a.details ->> 'auto' = 'true')"
+    " RETURNING f.parent_id"
+)
+# The empty folders Kaagaz made today, deepest first (the cleanup command).
+_EMPTY_MADE = (
+    "SELECT f.id FROM folders f WHERE f.customer_id = :c"
+    " AND NOT EXISTS (SELECT 1 FROM folders ch WHERE ch.customer_id = :c AND ch.parent_id = f.id)"
+    " AND NOT EXISTS (SELECT 1 FROM documents d WHERE d.customer_id = :c AND d.folder_id = f.id)"
+    " AND NOT EXISTS (SELECT 1 FROM version_suggestions s"
+    " WHERE s.customer_id = :c AND s.previous_folder_id = f.id)"
+    " AND NOT EXISTS (SELECT 1 FROM folders k WHERE k.customer_id = :c"
+    " AND k.autofile_key LIKE '%:' || f.id::text)"
+    " AND EXISTS (SELECT 1 FROM audit_log a WHERE a.customer_id = :c AND a.folder_id = f.id"
+    " AND a.action = 'folder.create' AND a.details ->> 'auto' = 'true')"
+    " ORDER BY f.id"
+)
+
+
+def prune_empty(conn: Connection, customer_id: str, folder_ids: Sequence[str | None]) -> list[str]:
+    """Delete each of ``folder_ids`` that Kaagaz made and that is now empty (``_PRUNE``), then
+    its parent the same way, up the tree; the ids deleted, each audited with no actor. Called
+    after a write that may have emptied them, in the same transaction. No tree lock (a move
+    holds a family lock, and the tree lock comes first everywhere else): a file or folder put
+    in one meanwhile makes its foreign key refuse the delete, and that folder simply stays.
+    One statement a folder, O(depth) a folder given."""
+    deleted: list[str] = []
+    for start in dict.fromkeys(f for f in folder_ids if f is not None):
+        folder: str | None = start
+        while folder is not None:
+            try:
+                with conn.begin_nested():
+                    row = conn.execute(text(_PRUNE), {"c": customer_id, "f": folder}).first()
+            except IntegrityError as error:
+                if sqlstate(error) != FOREIGN_KEY_VIOLATION:
+                    raise
+                break  # filled meanwhile: kept
+            if row is None:
+                break  # not Kaagaz's, not empty, or gone
+            deleted.append(folder)
+            audit.record(
+                conn,
+                customer_id,
+                actor_user_id=None,
+                action="folder.delete",
+                target_type="folder",
+                target_id=folder,
+                details={"auto": True},
+            )
+            folder = None if row[0] is None else str(row[0])
+    return deleted
+
+
+def empty_made_folders(conn: Connection, customer_id: str) -> list[str]:
+    """The folders Kaagaz made that ``prune_empty`` would delete now (no folder, no document, no
+    Undo waiting to fill them); their parents may follow. O(F) for F folders."""
+    return [str(row[0]) for row in conn.execute(text(_EMPTY_MADE), {"c": customer_id})]

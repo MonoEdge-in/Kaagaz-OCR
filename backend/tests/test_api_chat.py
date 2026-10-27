@@ -315,6 +315,22 @@ def test_openings_greet_by_name_once_and_never_repeat_over_ten_answers(db: Datab
     assert "opening" not in old["answer"]["answer"]
 
 
+@pytest.mark.db
+def test_a_clarifying_question_never_spends_the_greeting(db: Database) -> None:
+    """A clarify shows no opening, so the first real answer after it still greets by name."""
+    api = Api(db)
+    signed = api.new_signed()  # "Test member"; NOW is 15:30 in India
+    v2 = {**answer_json(), "version": 2, "opening": None, "documents": [], "assumptions": []}
+    clarify = {"question": "Did you mean Pune?", "choices": []}
+    api.answers.reply = {**v2, "status": "clarify", "clarify": clarify}
+    asked = signed.client.post("/api/chat", json={"question": "land in Puny?"}, headers=CSRF).json()
+    assert asked["answer"]["answer"].get("opening") is None
+    api.answers.reply = v2
+    conversation = {"conversation_id": asked["conversation_id"]}
+    answered = signed.client.post("/api/chat", json={"question": "Pune", **conversation}, headers=CSRF).json()
+    assert answered["answer"]["answer"]["opening"] == "Good afternoon, Test. Here's what I found."
+
+
 def test_a_new_conversations_title_is_its_first_question_made_short() -> None:
     assert short_title("  What is the   total\non bill 12?  ") == "What is the total on bill 12?"
     long = "Which supplier sent the most invoices in September and what was the total amount of them all"

@@ -74,7 +74,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import Connection, text
 from sqlalchemy.exc import IntegrityError
 
-from kaagaz.db import audit, autofile, customers, versions
+from kaagaz.db import audit, autofile, customers, folders, versions
 from kaagaz.db.engine import Database, unavailable
 from kaagaz.db.runs import close_running, finish_run, is_run_open
 from kaagaz.db.sqlstate import FOREIGN_KEY_VIOLATION, retry_on_deadlock, sqlstate
@@ -200,10 +200,12 @@ def delete_forever(conn: Connection, storage: BlobStorage, customer_id: str, doc
     row back and a retry works. One statement, plus O(k) storage calls for the
     document's k stored files.
     """
-    conn.execute(
-        text("DELETE FROM documents WHERE customer_id = :c AND id = :d"),
+    folder = conn.execute(
+        text("DELETE FROM documents WHERE customer_id = :c AND id = :d RETURNING folder_id"),
         {"c": customer_id, "d": document_id},
-    )
+    ).scalar()
+    # The folder Kaagaz made that its last document leaves goes too (Vrushit UAT 3).
+    folders.prune_empty(conn, customer_id, [None if folder is None else str(folder)])
     storage.delete(customer_id, document_id)
 
 

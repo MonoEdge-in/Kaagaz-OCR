@@ -34,7 +34,7 @@ other party as printed (``party_name``); a sibling of that name already there ge
 own a new folder, the type folder is used. Undo still moves the family to the top level.
 
 ``undo`` moves a filed family back to the top level, or to its department when it was filed
-inside one; the folder stays.
+inside one; the folder it leaves goes when that leaves it empty (``folders.prune_empty``).
 
 The department template (File management F3, 0041): a file is routed to a department from
 its recognized type (finance documents to Accounts and HR, land records and contracts to
@@ -62,7 +62,7 @@ from sqlalchemy import Connection, RowMapping, text
 
 from kaagaz.chunking.script import fold_digits, is_devanagari, latin_spelling, sound_key
 from kaagaz.db import ai_settings, audit
-from kaagaz.db.folders import _DEPTH, _MAX_DEPTH, _lock_tree
+from kaagaz.db.folders import _DEPTH, _MAX_DEPTH, _lock_tree, prune_empty
 from kaagaz.db.trash import InTrash, lock_live_family
 from kaagaz.extraction.checks import gstin_valid
 
@@ -483,13 +483,15 @@ def _set(conn: Connection, customer_id: str, family_id: str, state: str | None) 
 
 def undo(conn: Connection, customer_id: str, family_id: str) -> str | None:
     """Move a family Kaagaz filed back where it was before filing (R16): its department when
-    it was filed inside one (F3), else the top level; the folder stays. Returns the folder it
-    was in; None when it is not filed now (a person moved it since, or its folder was
-    deleted), and nothing changes. The caller holds the family lock
-    (``trash.lock_live_family``). O(v log D + depth)."""
+    it was filed inside one (F3), else the top level; the folder it leaves, and its parents,
+    go when that leaves them empty (``folders.prune_empty``). Returns the folder it was in;
+    None when it is not filed now (a person moved it since, or its folder was deleted), and
+    nothing changes. The caller holds the family lock (``trash.lock_live_family``).
+    O(v log D + depth)."""
     row = conn.execute(text(_FILED_IN), {"c": customer_id, "f": family_id}).first()
     if row is None or row[0] != FILED or row[1] is None:
         return None
     back = conn.execute(text(_DEPARTMENT_ABOVE), {"c": customer_id, "folder": row[1]}).scalar()
     conn.execute(text(_FILE_FAMILY), {"c": customer_id, "f": family_id, "folder": back, "state": None})
+    prune_empty(conn, customer_id, [str(row[1])])
     return str(row[1])

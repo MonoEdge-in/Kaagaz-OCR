@@ -241,13 +241,15 @@ def messages_with_feedback(
 
 def openings(conn: Connection, customer_id: str, conversation_id: str) -> list[str | None]:
     """PRD 6 A: the stored opening of each of the conversation's answers, oldest first (None
-    for an answer without one), so a line is never used twice in it. One query on
+    for an answer without one), so a line is never used twice in it. Clarifying questions are
+    left out: none is shown, so the first real answer still greets by name. One query on
     (conversation_id, created_at), O(M log M) for its M messages."""
     return list(
         conn.execute(
             text(
                 "SELECT m.answer ->> 'opening' FROM messages m"
                 " WHERE m.customer_id = :c AND m.conversation_id = :conv AND m.role = 'assistant'"
+                " AND m.answer ->> 'status' IS DISTINCT FROM 'clarify'"
                 " ORDER BY m.created_at, m.id"
             ),
             {"c": customer_id, "conv": conversation_id},

@@ -104,13 +104,26 @@ describe("a v2 answer card", () => {
     expect(figureOf({ ...value(1, "d1"), kind: "piece" })).toBeNull();
     const item = html.slice(html.indexOf("Invoice INV-2041"), html.indexOf("Invoice INV-2042"));
     expect(item).toMatch(/<span class="[^"]*figure[^"]*">₹1,23,45,678\.00<\/span>\s*<span class="badge badge-verified">/);
+    // Changed on purpose (Vrushit UAT 3, 27 Oct 2026): the title opens the cited spot, and each
+    // page is a small "p. 2" link on the title's line; no row of page chips.
     expect(item).toContain('href="/documents/d1?page=2');
-    expect(item).toContain("Page 2");
+    expect(item).toContain("p. 2");
+    expect(item).not.toContain("Page 2");
     // The title line holds no badge; the total in the short answer has the answer's label.
-    expect(html).toMatch(/<p class="[^"]*docTitle[^"]*">Invoice INV-2041<\/p>/);
-    expect(html).toMatch(/1,23,45,678\.<button[\s\S]*?<\/button><\/span> <span class="badge badge-review">/);
+    expect(html).toMatch(/<p class="[^"]*docTitle[^"]*"><a class="[^"]*docLink[^"]*" href="\/documents\/d1\?page=2[^"]*">Invoice INV-2041<\/a>/);
+    expect(html).not.toMatch(/docTitle[^"]*"><a[^>]*>[^<]*<\/a>\s*<span class="badge/);
+    expect(html).toMatch(/1,23,45,678\.<a[\s\S]*?<\/a><\/span> <span class="badge badge-review">/);
     expect(text(html)).toContain("Ready to verify");
     expect(text(html)).not.toMatch(/needs review/i);
+  });
+
+  it("never shows a hard-to-read figure as Verified, even when its value is", () => {
+    const answer = v2(1);
+    answer.citations = [value(1, "d1", { label: "verified", hard_to_read: true })];
+    const html = render(answer);
+    const item = html.slice(html.indexOf("Invoice INV-2041"));
+    expect(item).toMatch(/<span class="[^"]*figure[^"]*">₹1,23,45,678\.00<\/span>\s*<span class="badge badge-review">/);
+    expect(item).not.toContain("badge-verified");
   });
 
   it("says what was assumed in one line", () => {

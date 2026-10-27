@@ -374,6 +374,11 @@ class PgOwners:
         number is a property key on a ``land_boundary_*`` field)."""
         fields = list(fields or (_PLACES if kind == "place" else _PROPERTIES))
         rows = self._rows(customer_id, _KEYED, {"kind": kind, "keys": list(keys), "fields": fields}, scope)
+        if not rows and _PLOT in fields and _SURVEY not in fields:
+            # Land records read before plot numbers had their own field (#274) keep them as survey
+            # numbers: "plot 56" looks there only when no record keeps 56 as a plot number.
+            params = {"kind": kind, "keys": list(keys), "fields": [*fields, _SURVEY]}
+            rows = self._rows(customer_id, _KEYED, params, scope)
         return [(row.document_id, row.land) for row in rows]
 
     def every(
@@ -537,7 +542,8 @@ def _lands(values: Sequence[tuple[str, str | None, ValueRef]]) -> dict[tuple[str
             land.plot = land.plot or ref
         elif ref.field == _KHATA:
             land.khata = land.khata or ref
-        elif ref.field in _MEASURES or ref.field in _SIDES:
+        elif (ref.field in _MEASURES or ref.field in _SIDES) and valid_regions([ref.region]):
+            # A map value with no spot on its page is never quoted, words included (decision 2).
             land.printed.setdefault(ref.field, []).append((ref, latin))
     for spot, party in parties.items():
         party.share = shares.get(spot)

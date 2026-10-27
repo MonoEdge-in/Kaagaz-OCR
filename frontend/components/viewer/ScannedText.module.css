@@ -99,6 +99,7 @@
 .lineButton {
   display: flex;
   flex-direction: column;
+  justify-content: center; /* the line's words on the middle of its row, level with its buttons */
   gap: var(--space-1);
   flex: 1 1 12rem;
   min-width: 0;
@@ -136,7 +137,10 @@
 
 .addMeaning {
   flex: none;
-  min-width: var(--control-h);
+  align-self: center;
+  /* Vrushit UAT 3 (27 Oct 2026): a compact button, so a line's row is no taller than it needs. */
+  height: var(--control-min);
+  min-width: var(--control-min);
 }
 
 /* Vrushit UAT 2 (issue 417): the box under a line to type a word in its place; the field and

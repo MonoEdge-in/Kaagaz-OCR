@@ -400,10 +400,15 @@ def reply_to(
     return Pending(**fields, turn=clarify["turn"], picked=() if typed else tuple(picks[i] for i in chosen))
 
 
+MAX_REPLY_WORDS = 4  # "Yes, Pune", "Survey 45/2"; "Total GST paid last month" is a new question
+
+
 def answers_clarify(typed: str) -> bool:
     """Typed words answer the open clarify (B2) only as a short name: at most MAX_ENTITY_CHARS and
-    no question mark; anything longer, or a question, is a new question that leaves it."""
-    return 0 < len(typed) <= MAX_ENTITY_CHARS and not typed.rstrip().endswith("?")
+    MAX_REPLY_WORDS words, and no question mark; anything longer, or a question, is a new
+    question that leaves it."""
+    short = len(typed.split()) <= MAX_REPLY_WORDS
+    return 0 < len(typed) <= MAX_ENTITY_CHARS and short and not typed.rstrip().endswith("?")
 
 
 def put(question: str, as_typed: str | None, said: str) -> str:

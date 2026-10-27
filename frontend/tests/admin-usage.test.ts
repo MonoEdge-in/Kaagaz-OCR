@@ -25,7 +25,7 @@ import {
   shareText,
   usageTokens,
 } from "@/components/admin/UsagePanel";
-import type { UsageBudget, UsageReport, UsageTotals } from "@/lib/types";
+import type { UsageBudget, UsageKind, UsageReport, UsageTotals } from "@/lib/types";
 
 const totals = (changes: Partial<UsageTotals> = {}): UsageTotals => ({
   calls: 40,
@@ -332,5 +332,14 @@ describe("usageKindText", () => {
     expect(usageKindText("scan")).toBe("Reading scanned pages");
     expect(usageKindText("embed")).toBe("Search indexing");
     expect(usageKindText("story")).toBe("Stories");
+    expect(usageKindText("land")).toBe("Land records");
+  });
+
+  it("has words for every kind the backend bills (kaagaz/ai/usage.py KINDS), never the raw kind", () => {
+    const usage = readFileSync(join(__dirname, "..", "..", "backend", "kaagaz", "ai", "usage.py"), "utf8");
+    const block = usage.slice(usage.indexOf("KINDS = ("), usage.indexOf(")", usage.indexOf("KINDS = (")));
+    const kinds = [...block.matchAll(/"([a-z_]+)"/g)].map((m) => m[1] as UsageKind);
+    expect(kinds.length).toBeGreaterThan(10);
+    for (const kind of kinds) expect(usageKindText(kind), kind).not.toBe(kind);
   });
 });

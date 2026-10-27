@@ -15,11 +15,14 @@ import os
 import subprocess
 import sys
 
+import pytest
 from sqlalchemy import text
 
 from kaagaz.db.engine import Database
 from tests.db_support import BACKEND, migrate
 from tests.test_migration_0002_db import fresh  # noqa: F401 - the fixture
+
+pytestmark = pytest.mark.db
 
 AHEAD = "9999"  # a revision no file has: what a newer release left behind
 

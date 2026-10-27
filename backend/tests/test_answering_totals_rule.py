@@ -510,3 +510,20 @@ def test_whatever_the_mix_a_highest_is_verified_only_over_verified_values() -> N
             [_, said] = answer.sentences
             cited = {answer.citations[n - 1].ref_id for n in said.citations}
             assert cited == unsure if len(unsure) <= MAX_CITED_VALUES else cited < unsure
+
+
+def test_figures_in_two_currencies_are_never_added_up() -> None:
+    """A ₹ figure and a $ one, both verified, the $ one's amount from its invoice's own column
+    (parse_amount reads no $): no total, and the head says why. A figure with no currency mark
+    beside a ₹ one is not another currency."""
+    plain = figure("b.pdf", "500")
+    assert plain.value is not None
+    printed = dataclasses.replace(plain.value, value_text="$500")
+    dollars = dataclasses.replace(plain, amount=Decimal(500), value=printed)
+    mixed = tell([figure("a.pdf", "Rs. 18,400"), dollars], "profit", "", "invoice")
+    assert mixed.total is None
+    assert mixed.head == (
+        "The profit figures are in 2 currencies (INR, USD), so I haven't added up the profit."
+    )
+    same = tell([figure("a.pdf", "Rs. 18,400"), figure("b.pdf", "9,250")], "profit", "", "invoice")
+    assert same.total == Decimal("27650")

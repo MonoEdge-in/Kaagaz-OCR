@@ -40,7 +40,7 @@ from sqlalchemy.exc import IntegrityError
 
 from kaagaz.chunking.context import document_part
 from kaagaz.db.documents import STUCK, folder_missing
-from kaagaz.db.folders import FolderNotFound
+from kaagaz.db.folders import FolderNotFound, prune_empty
 from kaagaz.db.review import WAITING_VALUE
 from kaagaz.db.visibility import LIVE_SUGGESTION
 from kaagaz.versions import name_key
@@ -260,6 +260,11 @@ _RENAME_HEADERS = (
 # auto-filing state, so Kaagaz never moves it after them.
 _MOVE_FAMILY = (
     "UPDATE documents SET folder_id = :f, autofile = NULL WHERE customer_id = :c"
+    " AND family_id = (SELECT family_id FROM documents WHERE customer_id = :c AND id = :d)"
+)
+# The folders the family is in now, before a move.
+_FAMILY_FOLDERS = (
+    "SELECT DISTINCT folder_id FROM documents WHERE customer_id = :c AND folder_id IS NOT NULL"
     " AND family_id = (SELECT family_id FROM documents WHERE customer_id = :c AND id = :d)"
 )
 
@@ -941,15 +946,19 @@ def move_family(conn: Connection, customer_id: str, document_id: str, *, folder_
     top level). The caller holds the family lock (``trash.lock_family``).
 
     Raises FolderNotFound when the folder is not this customer's: the foreign
-    key refuses it, and the caller's transaction must end. O(v log D) for the
-    family's v versions.
+    key refuses it, and the caller's transaction must end. A folder Kaagaz made that
+    the move leaves empty is deleted (``prune_empty``). O(v log D) for the family's
+    v versions.
     """
+    params = {"c": customer_id, "d": document_id, "f": folder_id}
+    left = [str(f) for f in conn.execute(text(_FAMILY_FOLDERS), params).scalars() if str(f) != folder_id]
     try:
-        conn.execute(text(_MOVE_FAMILY), {"c": customer_id, "d": document_id, "f": folder_id})
+        conn.execute(text(_MOVE_FAMILY), params)
     except IntegrityError as error:
         if folder_missing(error):
             raise FolderNotFound() from None
         raise
+    prune_empty(conn, customer_id, left)
 
 
 # --- Model choice and AI spend (council 11 Oct 2026, MS5, SP2, SP4) -------------------
