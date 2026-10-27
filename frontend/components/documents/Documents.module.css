@@ -1035,27 +1035,8 @@ table.docs > tbody > tr {
   }
 }
 
-.confirm {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  font-size: var(--fs-sm);
-  font-weight: 600;
-}
-
-.confirmButtons {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-}
-
 .rowError {
   margin: var(--space-1) 0 0;
-}
-
-/* Delete or Move to Trash, then Cancel: the destructive button stands apart. */
-.confirmButtons > :global(.btn-danger) {
-  margin-inline-end: auto;
 }
 
 @container docs-list (min-width: 36rem) {
@@ -1064,8 +1045,8 @@ table.docs > tbody > tr {
   }
 
   /* The header sticks under the top bar. No overflow wrapper (the MonoEdge rule for tables),
-     on purpose: a row's Actions menu and its "are you sure" panel open past the row, and a
-     scrolling wrapper would cut them off. The column budgets (tests/layout-guards.test.ts)
+     on purpose: a row's Actions menu opens past the row, and a
+     scrolling wrapper would cut it off. The column budgets (tests/layout-guards.test.ts)
      and the cards below 36rem keep the table inside its width instead. */
   table.docs thead th {
     position: sticky;
@@ -1166,23 +1147,8 @@ table.docs > tbody > tr {
     line-height: var(--row-sub);
   }
 
-  /* The question is wider than the menu's column, so it opens as a small panel over the
-     end of its row instead of running off the table. */
   .actionsCell {
     text-align: end;
-  }
-
-  .confirm {
-    position: absolute;
-    inset-inline-end: var(--space-2);
-    top: var(--space-1);
-    z-index: calc(var(--z-sticky) + 1);
-    width: min(20rem, 80cqi);
-    padding: var(--space-3);
-    border: 1px solid var(--border-strong);
-    border-radius: var(--k-r-4);
-    background: var(--bg-surface);
-    text-align: start;
   }
 
   .rowError {

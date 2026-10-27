@@ -8,7 +8,8 @@
 // with the selection's actions shows only while rows are ticked, stuck to the bottom
 // of the list's view, so it never pushes a row (on cards it also holds Select all).
 // Move to Trash, and Delete forever in Trash, ask
-// first; focus goes to Cancel, and back to the menu button if it is cancelled. Restore
+// first, in a dialog as on the document screen (issue 408: the question opened over the row's
+// own columns and the next row); focus goes to Cancel, and back to the menu button. Restore
 // needs no question: nothing is lost. Ticked rows can be moved to Trash
 // together; in Trash they can be restored together, or deleted forever together
 // by whoever may (canDeleteForever, asked first; a granted member or reviewer
@@ -54,6 +55,7 @@ import {
 import { useSession } from "@/lib/session";
 import { docTypeLabel, formatBytes, formatDate, formatDateTime, formatRelative, typeLabel } from "@/lib/format";
 import type { DocumentSummary, Me, Tag } from "@/lib/types";
+import { ActionDialog } from "./ActionDialog";
 import { EditDialog, MoveDialog, RowMenu } from "./DocumentActions";
 import { DOCUMENT_DRAG } from "./FolderNav";
 import { pathLabel } from "./folderTree";
@@ -678,10 +680,7 @@ const DocumentRow = memo(function DocumentRow({
   const refocusActions = useRef(false);
   const afterEdit = useRef<"actions" | "list">("actions");
 
-  // Stable callback refs, so each runs once when its button appears.
-  const focusOnMount = useCallback((element: HTMLButtonElement | null) => {
-    element?.focus();
-  }, []);
+  // A stable callback ref, so it runs once when its button appears.
   const holdActions = useCallback((element: HTMLButtonElement | null) => {
     actionsButton.current = element;
     if (element && refocusActions.current) {
@@ -767,8 +766,8 @@ const DocumentRow = memo(function DocumentRow({
     }
   }
 
+  // The dialog hands focus back to the menu button once it is shut (onClosed).
   function cancel() {
-    refocusActions.current = true;
     setConfirming(null);
   }
 
@@ -814,7 +813,8 @@ const DocumentRow = memo(function DocumentRow({
   function openRow(event: ReactMouseEvent<HTMLTableRowElement>) {
     if (event.defaultPrevented || event.button !== 0) return;
     if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-    if ((event.target as Element).closest("a, button, input, label, select, textarea, [role='menu'], [role='dialog']")) return;
+    // A row's dialogs sit inside it: a click on their words or backdrop never opens the document.
+    if ((event.target as Element).closest("a, button, input, label, select, textarea, dialog, [role='menu'], [role='dialog']")) return;
     if (window.getSelection()?.toString()) return;
     // The name's own link: its navigation and its scroll memory, nothing new.
     event.currentTarget.querySelector<HTMLAnchorElement>(`.${styles.name}`)?.click();
@@ -939,7 +939,11 @@ const DocumentRow = memo(function DocumentRow({
         )}
       </td>
       <td role="cell" className={styles.actionsCell}>
-        {confirming === null && !busy && (
+        {confirming === null && busy ? (
+          <p className={`muted ${styles.small}`} role="status">
+            <span className="spinner" aria-hidden="true" /> Restoring…
+          </p>
+        ) : (
           <RowMenu
             item={document}
             canForever={canForever}
@@ -947,47 +951,43 @@ const DocumentRow = memo(function DocumentRow({
             toggleRef={holdActions}
           />
         )}
-        {confirming === null && busy && (
-          <p className={`muted ${styles.small}`} role="status">
-            <span className="spinner" aria-hidden="true" /> Restoring…
-          </p>
-        )}
         {confirming !== null && (
-          <div className={styles.confirm} role="group" aria-labelledby={`confirm-${document.id}`}>
-            <span id={`confirm-${document.id}`}>{question}</span>
-            {confirming === "forever" && askPassword && (
-              <PasswordField
-                id={`forever-password-${document.id}`}
-                label="Your password"
-                autoComplete="current-password"
-                value={password}
-                onChange={setPassword}
-              />
-            )}
-            <div className={styles.confirmButtons}>
-              <button
-                type="button"
-                className="btn btn-danger"
-                onClick={confirm}
-                disabled={busy || (confirming === "forever" && askPassword && password === "")}
-              >
-                <BusyLabel
-                  busy={busy}
-                  idle={confirming === "forever" ? "Delete forever" : "Move to Trash"}
-                  working={confirming === "forever" ? "Deleting…" : "Moving…"}
+          <ActionDialog
+            title={confirming === "forever" ? "Delete forever" : "Move to Trash"}
+            onClose={cancel}
+            onClosed={() => actionsButton.current?.focus()}
+            canClose={() => !busy}
+          >
+            <div className={library.dialogForm}>
+              <p>{question}</p>
+              {confirming === "forever" && askPassword && (
+                <PasswordField
+                  id={`forever-password-${document.id}`}
+                  label="Your password"
+                  autoComplete="current-password"
+                  value={password}
+                  onChange={setPassword}
                 />
-              </button>
-              <button
-                ref={focusOnMount}
-                type="button"
-                className="btn"
-                onClick={cancel}
-                disabled={busy}
-              >
-                Cancel
-              </button>
+              )}
+              <div className={library.formButtons}>
+                <button
+                  type="button"
+                  className={`btn btn-danger ${library.apart}`}
+                  onClick={confirm}
+                  disabled={busy || (confirming === "forever" && askPassword && password === "")}
+                >
+                  <BusyLabel
+                    busy={busy}
+                    idle={confirming === "forever" ? "Delete forever" : "Move to Trash"}
+                    working={confirming === "forever" ? "Deleting…" : "Moving…"}
+                  />
+                </button>
+                <button type="button" className="btn" data-autofocus onClick={cancel} disabled={busy}>
+                  Cancel
+                </button>
+              </div>
             </div>
-          </div>
+          </ActionDialog>
         )}
         {error && (
           <p className={`error-text ${styles.rowError}`} role="alert">
