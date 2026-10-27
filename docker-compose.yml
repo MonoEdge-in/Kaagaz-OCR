@@ -18,6 +18,9 @@ x-backend: &backend
   image: kaagaz-backend:${KAAGAZ_TAG:-local}
   build:
     context: ./backend
+    args:
+      # The commit the image is built from, shown by /api/health (#246 O1).
+      KAAGAZ_COMMIT: ${KAAGAZ_TAG:-local}
   env_file: .env
   environment:
     # .env keeps localhost for running on the laptop; inside Docker the

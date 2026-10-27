@@ -1166,6 +1166,9 @@ export interface PlatformHealth {
   // lane (null when the queue did not answer). Status only: never an error, key or customer.
   reader?: ReaderReport[];
   queues?: { express: number; main: number } | null;
+  // #246 O1: the commit the API's image was built from ("local": built by hand). The
+  // deployer's last attempt and last good release stay in files on the server.
+  release?: { commit: string };
 }
 
 export type ReaderState = "working" | "failing" | "down" | "key_problem";
