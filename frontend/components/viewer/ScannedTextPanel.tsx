@@ -25,6 +25,7 @@ import {
   FIRST_LINES,
   confidenceText,
   emptyState,
+  FIX_MEMBER_NOTE,
   FIX_NOTE,
   fixBox,
   lineHolding,
@@ -58,13 +59,14 @@ export interface ScannedTextPanelProps {
   // Vrushit UAT (25 Oct 2026): "how to replace the missing text?" A main reader's line holding a
   // flagged word ([?] too) offers Fix text (a reviewer); #417: the word typed is saved through this.
   onFix?: (flag: WordFlag, text: string) => Promise<{ ok: boolean; message: string }>;
+  member?: boolean; // a member: told that only a reviewer or an admin can fix a word (FIX_MEMBER_NOTE)
   fixed?: WordFlag[]; // the page's words a person fixed: shown in their lines as fixed (withFixes)
 }
 
 type Loaded = { key: string; readings: PageReadings } | { key: string; httpStatus: number | null };
 
 export function ScannedTextPanel(props: ScannedTextPanelProps) {
-  const { documentId, page, voted = [], active, cited, onShow, onClose, onAddMeaning, headingRef, flags = [], onFix, fixed = [] } =
+  const { documentId, page, voted = [], active, cited, onShow, onClose, onAddMeaning, headingRef, flags = [], onFix, member = false, fixed = [] } =
     props;
   const [attempt, setAttempt] = useState(0);
   const [loaded, setLoaded] = useState<Loaded | null>(null);
@@ -197,7 +199,9 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
       ) : (
         <>
           {lines.some((line) => notSure(line.confidence)) && <p className={styles.muted}>{CONFIDENCE_NOTE}</p>}
-          {reader?.role === "first" && onFix && flags.length > 0 && <p className={styles.muted}>{FIX_NOTE}</p>}
+          {reader?.role === "first" && flags.length > 0 && (onFix || member) && (
+            <p className={styles.muted}>{onFix ? FIX_NOTE : FIX_MEMBER_NOTE}</p>
+          )}
           {truncated && <p className={styles.note}>{truncated}</p>}
           <div
             className={styles.linesBox}

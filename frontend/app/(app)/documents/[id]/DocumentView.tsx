@@ -452,6 +452,12 @@ export function DocumentView({
   const download = detail.deleted_at === null ? downloadHref(detail) : null;
   const position = versionPosition(detail);
   const note = versionNote(detail);
+  // #416 follow-up: in Details, a reviewer's or an admin's way to this document's values waiting in
+  // Review, counted from the detail already loaded (no request of its own); none, no link.
+  const waiting =
+    canReview(me.user.role) && detail.deleted_at === null
+      ? detail.values.filter((value) => value.label === "needs_review").length
+      : 0;
   // "Highlighted: Grand total, from the link you opened" under the page; else PageViewer's own words.
   const highlighted =
     selection?.region && (detail.values.find((v) => v.id === selection.valueId) ?? valueAt(detail.values, selection.region));
@@ -711,6 +717,14 @@ export function DocumentView({
               shownTab === "overview" ? (
                 <>
                   <DetailsPanel detail={detail} onSaved={reloadWith} />
+                  {waiting > 0 && (
+                    <Link
+                      className={`btn btn-quiet ${styles.reviewValues}`}
+                      href={`/review?document_id=${encodeURIComponent(detail.id)}`}
+                    >
+                      {`Review values (${waiting.toLocaleString("en-IN")} waiting)`}
+                    </Link>
+                  )}
                   <RelatedPanel detail={detail} />
                   <StoryPanel documentId={detail.id} inTrash={detail.deleted_at !== null} />
                 </>
@@ -777,6 +791,7 @@ export function DocumentView({
                     onAddMeaning={addMeaning}
                     flags={pageFlags}
                     onFix={review.status?.can_review && detail.deleted_at === null ? fixWord : undefined}
+                    member={review.status?.can_review === false}
                     // Every flagged word holds its place; only a person's edit changes its text (an
                     // Ensemble proposal is not shown as fixed until a person takes it).
                     fixed={review.flags

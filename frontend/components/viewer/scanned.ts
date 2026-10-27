@@ -184,6 +184,8 @@ export function lineMarked(line: Pick<ReadLine, "region">, region: Region | null
 const UNREAD = "[?]";
 // Vrushit UAT 2 (27 Oct 2026, #417): said over the lines while a reviewer can fix a word in them.
 export const FIX_NOTE = "To type the right word in place of [?] or a marked word, press its line or Fix text.";
+// Said there instead to a member, who cannot fix a word.
+export const FIX_MEMBER_NOTE = "Only a reviewer or an admin can type the right word for a [?].";
 
 /** The fix box under a line (#417): what it asks, and the text it starts with (nothing for an
  * unread [?]; else the word as it reads now, to correct). */

@@ -462,6 +462,11 @@
   font-weight: 600;
 }
 
+/* Vrushit UAT 2 (issue 416): Details' "Review values" link, at the column's start. */
+.reviewValues {
+  align-self: flex-start;
+}
+
 /* A value is a word in a line, beside its Add meaning button: both sit on the
    line's middle (vertical-align), not the value's baseline. */
 .valueButton {

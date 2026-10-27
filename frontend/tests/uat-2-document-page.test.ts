@@ -4,7 +4,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { FIX_NOTE, fixBox } from "@/components/viewer/scanned";
+import { FIX_MEMBER_NOTE, FIX_NOTE, fixBox } from "@/components/viewer/scanned";
 import { panTo } from "@/components/viewer/viewer";
 
 const ROOT = join(__dirname, "..");
@@ -28,7 +28,7 @@ describe("#416 no Values found in the Details tab", () => {
     const view = read(VIEW);
     const panels = view.slice(view.indexOf("<PanelTabs"), view.indexOf("</PanelTabs>"));
     const details = panels.slice(panels.indexOf('shownTab === "overview"'), panels.indexOf('shownTab === "attention"'));
-    expect(details).toMatch(/<DetailsPanel[^>]*\/>\s*<RelatedPanel[^>]*\/>\s*<StoryPanel[^>]*\/>/);
+    expect(details).toMatch(/<DetailsPanel[^>]*\/>\s*\{waiting > 0 && \([\s\S]*?\)\}\s*<RelatedPanel[^>]*\/>\s*<StoryPanel[^>]*\/>/);
     const code = view.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1"); // its comments say what went
     expect(code).not.toMatch(/Values found|values-heading|<table|Verify all|Show all|verifyValue|FIRST_VALUES/);
     expect(css(VIEW_CSS)).not.toMatch(/\.(values|valuesTable|valuesWrap|valuesNote|valuePage|showAll|activeRow|labelCell)\b/);
@@ -38,6 +38,16 @@ describe("#416 no Values found in the Details tab", () => {
     expect(read("app/(app)/documents/[id]/SummaryCard.tsx")).toContain("onClick={() => onShow(item)}");
     expect(read(VIEW)).toContain("<SummaryCard detail={detail} active={selection?.region ?? null} onShow={showSpot} />");
     expect(read("components/shell/nav.ts")).toMatch(/href: "\/review"/);
+    // Follow-up: Details links a reviewer or an admin to this document's values waiting in Review,
+    // counted from the loaded detail (no request of its own), only when some wait.
+    const view = read(VIEW);
+    expect(view).toMatch(
+      /const waiting =\s+canReview\(me\.user\.role\) && detail\.deleted_at === null\s+\? detail\.values\.filter\(\(value\) => value\.label === "needs_review"\)\.length\s+: 0;/,
+    );
+    expect(view).toContain("href={`/review?document_id=${encodeURIComponent(detail.id)}`}");
+    expect(view).toContain('{`Review values (${waiting.toLocaleString("en-IN")} waiting)`}');
+    expect(css(VIEW_CSS)).toMatch(/\.reviewValues \{\s*align-self: flex-start;\s*\}/);
+    expect(read("components/review/ReviewQueue.tsx")).toContain('searchParams.get("document_id")');
     // Add meaning stays on the Text tab's lines, and My words says so (no value row offers it now).
     expect(read(VIEW)).toContain("onAddMeaning={addMeaning}");
     expect(read("components/words/ViewerWords.tsx")).toContain("Choose &quot;Add meaning&quot; by a line in Text.");
@@ -66,7 +76,17 @@ describe("#417 a [?] in the Text view: type the word in its place, right there",
       draft: "Krishn4",
     });
     expect(FIX_NOTE).toBe("To type the right word in place of [?] or a marked word, press its line or Fix text.");
-    expect(panel).toContain("{reader?.role === \"first\" && onFix && flags.length > 0 && <p className={styles.muted}>{FIX_NOTE}</p>}");
+    expect(panel).toMatch(
+      /\{reader\?\.role === "first" && flags\.length > 0 && \(onFix \|\| member\) && \(\s*<p className=\{styles\.muted\}>\{onFix \? FIX_NOTE : FIX_MEMBER_NOTE\}<\/p>\s*\)\}/,
+    );
+  });
+
+  it("tells a member, who cannot type a word, who can (follow-up)", () => {
+    expect(FIX_MEMBER_NOTE).toBe("Only a reviewer or an admin can type the right word for a [?].");
+    expect(read(VIEW)).toContain("member={review.status?.can_review === false}");
+    // A member gets no Fix text and no box: onFix is a reviewer's or an admin's only.
+    expect(read(VIEW)).toContain("onFix={review.status?.can_review && detail.deleted_at === null ? fixWord : undefined}");
+    expect(panel).toContain("const toFix = first && onFix ?");
   });
 
   it("opens the box under the line from a press on the line or Fix text, labelled by its hint", () => {
