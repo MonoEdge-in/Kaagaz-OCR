@@ -11,6 +11,7 @@ import { ReviewPanel } from "@/app/(app)/documents/[id]/ReviewPanel";
 import { ExportDialog, SummaryBar, documentMoreItems } from "@/app/(app)/documents/[id]/WordReview";
 import type { WordReview } from "@/app/(app)/documents/[id]/WordReview";
 import { FlagText } from "@/components/review/FlagText";
+import { readPageAgain } from "@/lib/api";
 import * as words from "@/components/review/wordReview";
 import {
   confirmText,
@@ -141,6 +142,7 @@ const panel = (shown: ReviewStatus, flags: WordFlag[], allowed = true) =>
       onEnsemble: () => undefined,
       say: () => undefined,
       headingRef: { current: null },
+      onReadAgain: () => undefined,
     }),
   );
 
@@ -504,5 +506,25 @@ describe("a rejected file", () => {
     expect(view).toMatch(/\{detail\.status !== "rejected" && \(\s*<SummaryBar/);
     const hook = css("app/(app)/documents/[id]/WordReview.tsx");
     expect(hook).toMatch(/useEffect\(\(\) => \{\s*if \(!enabled\) return;\s*let cancelled = false;\s*load\(\)/);
+  });
+});
+
+// #385: Read this spot again, for a reviewer, reads only the word's box of its page again.
+describe("read this spot again", () => {
+  it("is offered to a reviewer for a word with a box, never for a cell or to a member", () => {
+    expect(panel(status(), [flag()])).toContain(`>${words.READ_SPOT_AGAIN}<`);
+    const cell = flag({ region: { kind: "cell", page: 3, row: 2, column: 1 } });
+    expect(panel(status(), [cell])).not.toContain(words.READ_SPOT_AGAIN);
+    expect(panel(status({ can_review: false }), [flag()], false)).not.toContain(words.READ_SPOT_AGAIN);
+    expect(words.spotOf(flag())).toEqual([0.1, 0.1, 0.2, 0.12]);
+    expect(words.spotOf(cell)).toBeNull();
+  });
+
+  it("posts the word's box as the page's one region", async () => {
+    const calls = answer({ id: "d1", status: "received" });
+    await readPageAgain("d1", 3, [[0.1, 0.1, 0.2, 0.12]]);
+    expect(calls).toEqual([
+      { url: "/api/documents/d1/pages/3/read-again", method: "POST", body: { regions: [[0.1, 0.1, 0.2, 0.12]] } },
+    ]);
   });
 });

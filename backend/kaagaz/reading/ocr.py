@@ -142,6 +142,8 @@ PATH_WORDS, PATH_PAGE = "path_words", "path_page"
 # Handwriting stays page wide (Tushar's accuracy first, 16 Oct 2026): a quick read of a
 # handwritten page can be sure of every word and still be wrong (7/12 extracts).
 PAGE_WIDE = frozenset({*(CAREFUL_ISSUES - {ILLEGIBLE_WORDS}), "quality_poor", "handwritten"})
+# #385: a region of a page asked to be read again, as page fractions (x0, y0, x1, y1).
+Region = tuple[float, float, float, float]
 
 _log = logging.getLogger(__name__)
 
@@ -595,6 +597,14 @@ class DocumentPages:
     # The models among these with no thinking levels (Tushar, 18 Oct 2026): every call to one
     # is sent with no reasoning field, whatever level the read asks for.
     plain: frozenset[str] = frozenset()
+    # #384 (``reading.page_route``, ``db.models.Reading.routes``): each page not asked to be read
+    # again is read by the local reader first and routed by what it shows; each routed page's
+    # (route, reason) is kept in ``routed`` for run_config.reading.
+    route_pages: bool = False
+    routed: dict[int, tuple[str, str]] | None = None
+    # #385: for a page asked to be read again for some of its regions (page fractions x0, y0,
+    # x1, y1; ``pages.read_again_regions``), only those regions are read again.
+    read_again_regions: Mapping[int, tuple[Region, ...]] = dataclasses.field(default_factory=dict)
 
 
 @runtime_checkable

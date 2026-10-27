@@ -80,6 +80,7 @@ from kaagaz.db.sqlstate import FOREIGN_KEY_VIOLATION, retry_on_deadlock, sqlstat
 from kaagaz.db.trash import lock_family
 from kaagaz.ingestion.ports import BlobStorage, DocumentRecord, UnknownFolder
 from kaagaz.jobs.worker import Superseded
+from kaagaz.reading.ocr import Region
 from kaagaz.scanning.gate import DocumentStatus
 
 if TYPE_CHECKING:
@@ -474,7 +475,8 @@ def fail_stuck(
 
 # Only a page of a document out of Trash is marked or accepted.
 _REQUEST_PAGE = (
-    "UPDATE pages p SET read_again_requested_at = :now FROM documents d"
+    "UPDATE pages p SET read_again_requested_at = :now,"
+    " read_again_regions = CAST(:regions AS jsonb) FROM documents d"
     " WHERE p.customer_id = :c AND p.document_id = :d AND p.page_no = :n"
     " AND d.customer_id = p.customer_id AND d.id = p.document_id AND d.deleted_at IS NULL"
     " RETURNING p.page_no"
@@ -490,23 +492,38 @@ _PAGES_TO_READ_AGAIN = (
     " AND read_again_requested_at IS NOT NULL ORDER BY page_no"
 )
 _CLEAR_READ_AGAIN = (
-    "UPDATE pages SET read_again_requested_at = NULL"
+    "UPDATE pages SET read_again_requested_at = NULL, read_again_regions = NULL"
     " WHERE customer_id = :c AND document_id = :d AND read_again_requested_at IS NOT NULL"
+)
+
+# #385: the regions asked for on the pages to read again, by page.
+_REGIONS_TO_READ_AGAIN = (
+    "SELECT page_no, read_again_regions FROM pages WHERE customer_id = :c AND document_id = :d"
+    " AND read_again_requested_at IS NOT NULL AND read_again_regions IS NOT NULL ORDER BY page_no"
 )
 
 
 def request_page_read_again(
-    conn: Connection, customer_id: str, document_id: str, page_no: int, *, now: datetime
+    conn: Connection,
+    customer_id: str,
+    document_id: str,
+    page_no: int,
+    *,
+    now: datetime,
+    regions: Sequence[Region] | None = None,
 ) -> bool:
     """Mark page ``page_no`` to be read again, harder, by the document's next run (F5),
     and return True; False when this customer's document, out of Trash, has no such
-    page, and then nothing changes.
+    page, and then nothing changes. ``regions`` (#385, page fractions x0, y0, x1, y1): only
+    those regions of the page are read again; None, the whole page. A later request for
+    the page replaces an earlier one.
 
     ``conn`` comes from ``Database.customer(customer_id)``, in the transaction in which
     ``mark_for_reprocess`` (which takes the family lock first, and counts the request
     against REPROCESS_PER_HOUR) sets the document to be read again, so the mark and the
     job commit together. One statement on the pages key: O(log P)."""
-    params = {"c": customer_id, "d": document_id, "n": page_no, "now": now}
+    shapes = None if regions is None else json.dumps([list(region) for region in regions])
+    params = {"c": customer_id, "d": document_id, "n": page_no, "now": now, "regions": shapes}
     return conn.execute(text(_REQUEST_PAGE), params).first() is not None
 
 
@@ -914,6 +931,19 @@ class PgDocuments:
         with unavailable(), self._db.customer(customer_id) as conn:
             rows = conn.execute(text(_PAGES_TO_READ_AGAIN), {"c": customer_id, "d": document_id})
             return tuple(int(row[0]) for row in rows)
+
+    def regions_to_read_again(self, customer_id: str, document_id: str) -> dict[int, tuple[Region, ...]]:
+        """The regions asked for (#385) on the pages to read again, by page; a page asked
+        for whole is not in it. Its own short transaction, one statement on the pages key:
+        O(log P + p)."""
+        with unavailable(), self._db.customer(customer_id) as conn:
+            rows = conn.execute(text(_REGIONS_TO_READ_AGAIN), {"c": customer_id, "d": document_id})
+            return {
+                int(page_no): tuple(
+                    (float(x0), float(y0), float(x1), float(y1)) for x0, y0, x1, y1 in regions
+                )
+                for page_no, regions in rows
+            }
 
     def set_page_count(self, customer_id: str, document_id: str, page_count: int) -> None:
         with unavailable(), self._db.customer(customer_id) as conn:

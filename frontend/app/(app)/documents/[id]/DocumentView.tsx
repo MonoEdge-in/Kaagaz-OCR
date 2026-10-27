@@ -953,6 +953,12 @@ export function DocumentView({
                   onEnsemble={(scope, keys) => void ensemble.ask(scope, keys)}
                   say={setAnnouncement}
                   headingRef={reviewHeading}
+                  onReadAgain={(reply) => {
+                    merge(reply);
+                    readingAgain.current = true;
+                    poll.later();
+                    exitReview();
+                  }}
                 />
               ) : shownTab === "attention" ? (
                 <>

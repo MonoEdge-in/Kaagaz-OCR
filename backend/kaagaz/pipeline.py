@@ -273,6 +273,7 @@ from kaagaz.reading.ocr import (
     DocumentPages,
     PageCache,
     PageRead,
+    Region,
     careful_pages,
     careful_plan,
     careful_reasons,
@@ -583,9 +584,11 @@ class OcrMeter(Protocol):
 
 class ReadAgainStore(Protocol):
     """kaagaz.db.documents.PgDocuments in production: the pages a user asked to read
-    again, harder (PRD 5 F5)."""
+    again, harder (PRD 5 F5), and the regions asked for on some of them (#385)."""
 
     def pages_to_read_again(self, customer_id: str, document_id: str) -> tuple[int, ...]: ...
+
+    def regions_to_read_again(self, customer_id: str, document_id: str) -> dict[int, tuple[Region, ...]]: ...
 
 
 class Checker(Protocol):
@@ -763,6 +766,7 @@ class _Run:
     # counted in vision_crops) and the pages graded unreadable.
     page_reads: dict[int, PageRead] = field(default_factory=dict)
     read_again: frozenset[int] = frozenset()
+    read_again_regions: dict[int, tuple[Region, ...]] = field(default_factory=dict)  # #385
     checker_crops: int = 0
     pages_unreadable: int = 0
     model_tokens_at_start: tuple[int, int] = (0, 0)  # the model client's (input, output) then
@@ -782,6 +786,8 @@ class _Run:
     # Fast scan (council 16 Oct 2026): each page Careful read inline, with its reasons (None:
     # not read inline), and the seconds of the steps after reading (``_timed``).
     escalated: dict[int, list[str]] | None = None
+    # #384: each page's (route, reason) when the document's pages are routed (None: not routed).
+    routed: dict[int, tuple[str, str]] | None = None
     steps: dict[str, float] = field(default_factory=dict)
     ready_at: float | None = None  # Ready first: the timer when the document was ready
 
@@ -1497,13 +1503,23 @@ class DocumentProcessor:
         Ensemble's other models, or Dynamic's Careful with its memo of first reads and the
         pages to read again with it (``escalate``, the second reading). Fast scan (council 16
         Oct 2026): a Dynamic document of at most DYNAMIC_MAX_PAGES pages (``page_count``) is
-        read once, Careful page by page (``inline_careful``), its reasons kept on the run."""
+        read once, Careful page by page (``inline_careful``), its reasons kept on the run.
+        #384: with ``Reading.routes`` each page is routed by its local read, each route kept
+        on the run (``routed``); #385: one more short query for the regions asked for when a
+        page is to be read again."""
         meter, cache = self._ocr_meter, self._page_cache
         if meter is None or cache is None:
             return contextlib.nullcontext()
+        reading = run.reading
         if self._read_again is not None:
             run.read_again = frozenset(self._read_again.pages_to_read_again(job.customer_id, job.document_id))
-        reading = run.reading
+            if run.read_again:  # #385: a second short query only when a page was asked for
+                run.read_again_regions = self._read_again.regions_to_read_again(
+                    job.customer_id, job.document_id
+                )
+        routes = reading is not None and reading.routes
+        if routes and run.routed is None:
+            run.routed = {}
         careful = None if reading is None or reading.mode != "dynamic" else reading.careful
         if careful is not None and run.memo is None:
             run.memo = {}
@@ -1528,6 +1544,9 @@ class DocumentProcessor:
             page_count=page_count,
             escalated=run.escalated if inline else None,
             local=reading is not None and reading.mode == "local",
+            route_pages=routes,
+            routed=run.routed if routes else None,
+            read_again_regions=run.read_again_regions,
             plain=frozenset()
             if reading is None
             else frozenset(
@@ -2004,6 +2023,11 @@ def _reading_config(run: _Run) -> dict[str, Any]:
     reading = run.reading
     config = {} if reading is None else reading.config()
     config.update(run.reading_notes)
+    if run.routed:  # #384: how each scanned page was routed, for measuring the saving
+        config["routed"] = [
+            {"page": page_no, "route": route, "reason": reason}
+            for page_no, (route, reason) in sorted(run.routed.items())
+        ]
     return config
 
 

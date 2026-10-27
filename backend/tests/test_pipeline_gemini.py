@@ -42,7 +42,7 @@ from kaagaz.pipeline import (
     build_processor,
 )
 from kaagaz.preparing.pages import prepare_pages
-from kaagaz.reading.ocr import DocumentPages, MeteredOcrEngine, OcrLine, PageRead
+from kaagaz.reading.ocr import DocumentPages, MeteredOcrEngine, OcrLine, PageRead, Region
 from kaagaz.reading.rapid_pool import RapidOcrPool, shared_pool
 from kaagaz.reading.spans import ReadError
 from kaagaz.reading.wiring import GEMINI_OCR_MODULE, build_reader_socket
@@ -206,9 +206,13 @@ class MemoryReadAgain:
 
     def __init__(self, documents: MemoryDocuments) -> None:
         self.marks = documents.read_again
+        self.regions: dict[tuple[str, str], dict[int, tuple[Region, ...]]] = {}  # #385
 
     def pages_to_read_again(self, customer_id: str, document_id: str) -> tuple[int, ...]:
         return tuple(sorted(self.marks.get((customer_id, document_id), set())))
+
+    def regions_to_read_again(self, customer_id: str, document_id: str) -> dict[int, tuple[Region, ...]]:
+        return dict(self.regions.get((customer_id, document_id), {}))
 
 
 @dataclass

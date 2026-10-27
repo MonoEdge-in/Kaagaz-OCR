@@ -373,6 +373,19 @@ class Settings:
     cost_saving_hard_lines_max: int = 12
     cost_saving_hard_share: float = 0.4
     cost_saving_crop_pad: float = 0.5
+    # Routing each page by its content (#384, ``reading.page_route``): under Automatic, each
+    # scanned page is read by the local reader first and keeps that read when it is clean
+    # (page_routing, off by default); the thresholds are ``page_route.RouteRules``'s, and at
+    # most page_route_region_pages_max pages of a document are read through their regions (#385).
+    page_routing: bool = False
+    page_route_clean_confidence: float = 0.95
+    page_route_min_words: int = 8
+    page_route_min_line_px: float = 16.0
+    page_route_height_spread: float = 0.45
+    page_route_table_share: float = 0.3
+    page_route_region_lines_max: int = 6
+    page_route_region_share: float = 0.15
+    page_route_region_pages_max: int = 25
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "Settings":
@@ -571,6 +584,15 @@ class Settings:
             cost_saving_hard_lines_max=env.between_or("COST_SAVING_HARD_LINES_MAX", 1, 60, default=12),
             cost_saving_hard_share=env.number_in("COST_SAVING_HARD_SHARE", 0.05, 1.0, default=0.4),
             cost_saving_crop_pad=env.number_in("COST_SAVING_CROP_PAD", 0.1, 2.0, default=0.5),
+            page_routing=env.optional("PAGE_ROUTING") is not None and env.boolean("PAGE_ROUTING"),
+            page_route_clean_confidence=env.number_in("PAGE_ROUTE_CLEAN_CONFIDENCE", 0.5, 1.0, default=0.95),
+            page_route_min_words=env.between_or("PAGE_ROUTE_MIN_WORDS", 1, 1000, default=8),
+            page_route_min_line_px=env.number_in("PAGE_ROUTE_MIN_LINE_PX", 1.0, 200.0, default=16.0),
+            page_route_height_spread=env.number_in("PAGE_ROUTE_HEIGHT_SPREAD", 0.05, 5.0, default=0.45),
+            page_route_table_share=env.number_in("PAGE_ROUTE_TABLE_SHARE", 0.0, 1.0, default=0.3),
+            page_route_region_lines_max=env.between_or("PAGE_ROUTE_REGION_LINES_MAX", 0, 60, default=6),
+            page_route_region_share=env.number_in("PAGE_ROUTE_REGION_SHARE", 0.0, 1.0, default=0.15),
+            page_route_region_pages_max=env.between_or("PAGE_ROUTE_REGION_PAGES_MAX", 0, 1000, default=25),
             cpu_workers=env.positive("CPU_WORKERS"),
             max_check_crops=env.positive("MAX_CHECK_CROPS"),
             model_rpm=env.between("MODEL_RPM", 1, 1200),
