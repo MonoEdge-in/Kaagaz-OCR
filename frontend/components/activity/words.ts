@@ -3,12 +3,12 @@
 // Restricted"). The log keeps ids only; the server fills the names in when it is shown
 // (ActivityEntry). Pure functions, unit tested in node (tests/file-management.test.ts).
 
-import { describeAction, whoText } from "@/components/admin/logic";
+import { describeAction, describeTarget, whoText } from "@/components/admin/logic";
 import { labelName } from "@/components/files/labels";
 import type { ActivityEntry } from "@/lib/types";
 
 type Entry = Pick<ActivityEntry, "action" | "actor_name" | "details"> &
-  Partial<Pick<ActivityEntry, "document" | "folder">>;
+  Partial<Pick<ActivityEntry, "document" | "folder" | "actor_id">>;
 
 const text = (value: unknown) => (typeof value === "string" && value.trim() !== "" ? value : null);
 const version = (entry: Entry, otherwise: number) => entry.document?.version_no ?? otherwise;
@@ -64,6 +64,20 @@ export function activitySentence(entry: Entry): string {
 export function activityDocument(entry: Entry): string | null {
   if (!entry.document) return null;
   return entry.document.deleted || entry.document.name === null ? "a deleted document" : entry.document.name;
+}
+
+/**
+ * The admin Activity tab's Document column (issue 375): the document; for an account event
+ * the person it was about when that is not who did it ("Sign-in failed": Priya), else
+ * nothing; for anything else, what it was done on.
+ */
+export function activityTarget(
+  entry: Entry & Pick<ActivityEntry, "target_type" | "target_id"> & Partial<Pick<ActivityEntry, "subject_name">>,
+): string {
+  const document = activityDocument(entry);
+  if (document !== null) return document;
+  if (entry.target_type !== "user") return describeTarget(entry.target_type);
+  return (entry.target_id !== entry.actor_id && entry.subject_name) || "—";
 }
 
 /** The action filter's choices (A5), in the order people look for them. */

@@ -225,7 +225,9 @@ export const signUpOpen = () => request<{ enabled: boolean }>("GET", "/auth/sign
  * have it); the first code (adminEnrol) signs in as that admin. */
 export const signUp = (body: { organisation_name: string; name: string; email: string; password: string }) =>
   request<TwoStepSetup>("POST", "/auth/signup", body);
-export const me = () => request<Me>("GET", "/auth/me");
+/** Who is signed in, 200 either way (issue 378): a signed-out visit logs no expected 401. */
+export const currentSession = () =>
+  request<{ signed_in: true; me: Me } | { signed_in: false }>("GET", "/auth/session");
 
 /** The first code from the set-up (sign-in or sign-up) turns two-step on and signs in. */
 export const adminEnrol = (enrolToken: string, code: string) =>
@@ -387,7 +389,7 @@ export function uploadDocument(
   batchId?: string,
   onSent?: () => void,
   departmentId?: string, // F2: used by the server when no folder is named
-  onWaiting?: (waiting: boolean) => void,
+  onWaiting?: UploadWaiting,
 ): Promise<UploadResult> {
   return resumableUpload(file, {
     file_name: file.name, file_size: file.size, user_id: userId, folder_id: folderId,
@@ -408,7 +410,7 @@ export function uploadVersion(
   reading?: UploadReading,
   onSent?: () => void,
   versionNote?: string, // V9: optional, at most 200 characters
-  onWaiting?: (waiting: boolean) => void,
+  onWaiting?: UploadWaiting,
 ): Promise<UploadResult> {
   return resumableUpload(file, {
     file_name: file.name, file_size: file.size, user_id: userId,
@@ -437,6 +439,9 @@ function waitForNetwork(delay: number): Promise<void> {
   if (online) return new Promise((resolve) => setTimeout(resolve, delay));
   return new Promise((resolve) => window.addEventListener("online", () => resolve(), { once: true }));
 }
+
+/** Told while an upload call waits to go again (true) and why, then once it goes (false). */
+export type UploadWaiting = (waiting: boolean, why?: "connection" | "server") => void;
 
 /** A failing server (5xx) is asked this many more times, then the row fails with Retry. */
 const SERVER_RETRIES = 4;
@@ -473,7 +478,7 @@ async function uploadTurn(): Promise<void> {
  * row "waiting" for ever. A 429 is the server's pace, not a failure: the call waits the
  * Retry-After it gave, without counting a try or saying the connection is lost, and goes again.
  */
-async function retryWhileOffline<T>(work: () => Promise<T>, onWaiting?: (waiting: boolean) => void): Promise<T> {
+async function retryWhileOffline<T>(work: () => Promise<T>, onWaiting?: UploadWaiting): Promise<T> {
   let delay = 1000;
   let serverTries = 0;
   for (;;) {
@@ -488,7 +493,7 @@ async function retryWhileOffline<T>(work: () => Promise<T>, onWaiting?: (waiting
       const lost = error instanceof ApiError ? error.status === 0 : error instanceof TypeError;
       const busy = error instanceof ApiError && error.status >= 500;
       if (!lost && !(busy && serverTries++ < SERVER_RETRIES)) throw error;
-      onWaiting?.(true);
+      onWaiting?.(true, lost ? "connection" : "server"); // issue 357: a 5xx is not a lost connection
       await waitForNetwork(delay);
       onWaiting?.(false);
       delay = Math.min(delay * 2, 15000);
@@ -519,7 +524,7 @@ function putPart(url: string, body: Blob, onProgress: (loaded: number) => void):
 
 async function resumableUpload(
   file: File, metadata: Omit<ResumableStart, "fingerprint">, onProgress: (fraction: number) => void,
-  onSent?: () => void, onWaiting?: (waiting: boolean) => void,
+  onSent?: () => void, onWaiting?: UploadWaiting,
 ): Promise<UploadResult> {
   // The bytes never go backwards, even when a part is sent again after a lost connection.
   let shown = 0;

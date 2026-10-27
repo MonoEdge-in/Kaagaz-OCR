@@ -25,6 +25,10 @@
   admin allowed to delete forever; the password, counted like a sign-in, then a
   5-minute confirm cookie (kaagaz/api/auth.py) for Delete forever. 204.
 * ``POST /auth/logout``, ``POST /auth/logout-everywhere``, ``GET /auth/me``.
+* ``GET /auth/session`` (issue 378): the app's first look, 200 either way: ``{signed_in:
+  false}`` with no session (one ``/auth/me`` would refuse with 401), else ``{signed_in:
+  true, me}``, the same checks and reply as ``/auth/me``. A signed-out visit then logs no
+  expected 401 in the browser before it goes to sign in.
 * ``POST /auth/signup`` {organisation_name, name, email, password} (16 Oct 2026): anyone
   makes a new organisation and its first admin, with their own password. The reply (201) is
   the two-step set-up offer {enrol_token, secret, otpauth_uri}, no session: the first code
@@ -84,6 +88,7 @@ from kaagaz.api.auth import (
     User,
     UserAllowPasswordChange,
     clear_session_cookie,
+    current_user_allow_password_change,
     feature_on,
     hash_password,
     load_user,
@@ -396,6 +401,18 @@ def logout_everywhere(user: User, context: Context) -> Response:
 @router.get("/auth/me")
 def me(user: UserAllowPasswordChange) -> dict[str, Any]:
     return me_json(user)
+
+
+@router.get("/auth/session")
+def session(request: Request) -> dict[str, Any]:
+    """``/auth/me``'s checks, with no session a 200 ``{signed_in: false}``, not a 401."""
+    try:
+        user = current_user_allow_password_change(request)
+    except ApiError as error:
+        if error.status == 401:
+            return {"signed_in": False}
+        raise
+    return {"signed_in": True, "me": me_json(user)}
 
 
 # --- the steps they share ----------------------------------------------------------------

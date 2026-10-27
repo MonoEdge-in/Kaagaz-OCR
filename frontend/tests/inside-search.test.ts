@@ -5,6 +5,7 @@ import { InsideSearchResults } from "@/components/documents/InsideResults";
 import {
   DEFAULT_SEARCH_MODE,
   SEARCH_MODES,
+  foundCountText,
   noResultsText,
   pagesText,
   resultView,
@@ -157,5 +158,25 @@ describe("the results", () => {
       }),
     );
     expect(html).toContain('<p class="muted" role="status">2 documents found.</p>');
+  });
+
+  // Issue 374 (27 Oct 2026): 22 matched, the cap let 20 through: never "20 documents found".
+  it("say the list was cut when the server capped it", () => {
+    const twenty = Array.from({ length: 20 }, (_, n) => found({ id: `${DOC.slice(0, -2)}${String(n).padStart(2, "0")}` }));
+    const html = renderToStaticMarkup(
+      createElement(InsideSearchResults, {
+        found: { documents: twenty, capped: true },
+        error: null,
+        q: "total",
+        noResults: "",
+        datesIgnored: false,
+        onRetry: () => undefined,
+        onClear: () => undefined,
+      }),
+    );
+    expect(html).toContain("Showing the first 20 documents found. More matched");
+    expect(html).not.toContain('role="status">20 documents found.');
+    expect(foundCountText({ documents: twenty })).toBe("20 documents found.");
+    expect(foundCountText({ documents: [found()], capped: false })).toBe("1 document found.");
   });
 });

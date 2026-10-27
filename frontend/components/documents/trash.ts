@@ -4,7 +4,7 @@
 // The server checks every rule again.
 
 import { sessionScope } from "@/components/shell/gate";
-import { ApiError } from "@/lib/api";
+import { ApiError, deleteDocument, restoreDocument } from "@/lib/api";
 import type { DocumentSummary, Me } from "@/lib/types";
 
 /**
@@ -128,6 +128,35 @@ const FAILED_TO: Record<BulkAction, string> = {
   forever: "deleted",
   read: "read again",
 };
+
+/** Undo for a removal, with the words said once it is undone. */
+export interface RemovalUndo {
+  run(): Promise<void>;
+  done: string;
+}
+
+/**
+ * Undo for Move to Trash (restore them) and Restore (move them back to Trash), as Move to
+ * folder has (issue 372); none for Delete forever, which cannot be undone, or Read again.
+ * The documents go back one at a time, as the selection's own actions do.
+ */
+export function undoRemoval(
+  action: BulkAction,
+  ids: readonly string[],
+  calls: { trash(id: string): Promise<unknown>; restore(id: string): Promise<unknown> } = {
+    trash: deleteDocument,
+    restore: restoreDocument,
+  },
+): RemovalUndo | undefined {
+  if (ids.length === 0 || (action !== "trash" && action !== "restore")) return undefined;
+  const back = action === "trash" ? calls.restore : calls.trash;
+  return {
+    run: async () => {
+      for (const id of ids) await back(id);
+    },
+    done: action === "trash" ? "Restored from Trash." : "Moved back to Trash.",
+  };
+}
 
 /** "2 documents could not be restored. <why>". */
 export function bulkFailedMessage(action: BulkAction, failed: number, reason: string): string {

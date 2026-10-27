@@ -372,9 +372,9 @@ def response_format(
     """The ``response_format`` asking for JSON that follows ``schema`` (G3), sent with no
     ``maxItems``: Google Vertex refuses the document card's schema with it (400
     INVALID_ARGUMENT, live 11 Oct 2026) and takes it without. No ``minItems`` either
-    (Anthropic refuses it, gemini_ocr's schema note; Read clearly's translation sent it).
+    (Anthropic refuses it, gemini_ocr's schema note).
     Every caller checks its own lists after the reply (card ``_capped``, invoice lines,
-    memory, answer sentences, a translation's line count). Hashes of our schemas
+    memory, answer sentences). Hashes of our schemas
     (``ANSWER_PROMPT_HASH``) are taken before this, so leaving keys out never changes them.
     ``max_length`` False leaves every ``maxLength`` out too (a model not of
     MAX_LENGTH_VENDOR)."""

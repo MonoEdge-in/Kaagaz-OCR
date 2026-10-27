@@ -235,6 +235,7 @@ export interface BatchView {
 /** GET /api/search (PRD 3 Q2): the documents found, best first, at most SEARCH_MAX_DOCUMENTS. */
 export interface DocumentSearch {
   documents: FoundDocument[];
+  capped?: boolean; // true when more documents matched than the cap let through (issue 374)
   story_matches?: unknown; // checked by lib/storyMatches.ts before use
   understood_words?: { word: string; meaning: string; origin?: "personal" | "organization" }[];
 }
@@ -1008,6 +1009,7 @@ export interface AuditEntry {
   actor_name: string | null;
   target_type: string | null;
   target_id: string | null;
+  subject_name?: string | null; // a "user" row's person, by name (issue 375); null once removed
   details: Record<string, unknown>;
   created_at: string;
 }

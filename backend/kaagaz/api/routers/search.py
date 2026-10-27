@@ -20,6 +20,11 @@ list's ``detected_type`` (Q3 applies the Type filter to both modes) and the docu
 Q3 filters (``FileFilters``). Anything else is 400 ``bad_request``, as every invalid
 request. ``q`` is never logged (the access line has no query string). Snippets go through
 ``clean_snippet``; only well-formed regions are sent.
+
+The cap (issue 374): the search asks for one document more than SEARCH_MAX_DOCUMENTS, and
+a reply that had more says ``capped: true`` (the key is left out otherwise), so the screen
+never calls a cut list the whole count. The true total is not counted: the candidate lists
+are themselves capped, so it would cost another search.
 """
 
 from typing import Annotated, Any
@@ -59,7 +64,7 @@ def search_inside_documents(
 ) -> dict[str, Any]:
     """``{documents: [{id, display_name, doc_type, score, best: {snippet, page_from,
     page_to, regions}, more}], story_matches: [], understood_words: [{word, meaning}]}``,
-    best first, at most SEARCH_MAX_DOCUMENTS."""
+    best first, at most SEARCH_MAX_DOCUMENTS, with ``capped: true`` when more matched."""
     question = params.q.strip()
     if not question:
         return _nothing()
@@ -84,19 +89,21 @@ def search_inside_documents(
             customer_id=customer_id,
             query_text=question,
             embedding=None,
-            max_documents=settings.search_max_documents,
+            max_documents=settings.search_max_documents + 1,  # one more tells a capped list
             recipe=recipe_tag(settings.model_embed),
             ef_search=settings.search_ef,
             scope=scope,
             expansion=expansion,
         )
+    capped = len(found) > settings.search_max_documents
     return {
-        "documents": [_document(result) for result in found],
+        "documents": [_document(result) for result in found[: settings.search_max_documents]],
         "story_matches": [],
         "understood_words": [
             {"word": w, "meaning": m, **({"origin": origin} if origin != "personal" else {})}
             for w, m, origin in expansion.understood()
         ],
+        **({"capped": True} if capped else {}),
     }
 
 

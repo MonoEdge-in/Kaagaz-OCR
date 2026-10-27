@@ -25,8 +25,11 @@ from tests.test_operator_orgs import ORG_ROUTES
 pytestmark = pytest.mark.db
 
 fresh = m0002.fresh  # the fixture, by its name
+# Changed on purpose (issue 378, 27 Oct 2026): GET /auth/session answers anyone, signed in
+# or not (test_api_auth.py checks it says signed_in false to an operator's cookie).
 OPEN_TO_ALL = {
     ("GET", "/api/health"),
+    ("GET", "/api/auth/session"),
     ("POST", "/api/auth/login"),
     ("POST", "/api/auth/admin/login"),
     ("POST", "/api/auth/admin/enrol"),

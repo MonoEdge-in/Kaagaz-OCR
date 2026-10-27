@@ -140,6 +140,8 @@ function nameProblem(name: string, what: string, max: number): string | null {
 
 /** Folder names are 1 to 100 characters (PRD 1, F1). */
 export const folderNameProblem = (name: string) => nameProblem(name, "folder", 100);
+/** A department is a top-level folder: the same rule, in the Departments tab's own word (issue 376). */
+export const departmentNameProblem = (name: string) => nameProblem(name, "department", 100);
 /** Tag names are 1 to 40 characters (PRD 1, F2). */
 export const tagNameProblem = (name: string) => nameProblem(name, "tag", 40);
 /** Document names are 1 to 255 characters; "GST 2026/27" keeps its slash. */
@@ -229,10 +231,13 @@ export function findTagByName(tags: readonly Tag[], name: string): Tag | null {
  * words; the folder rules (folder_cycle, folder_too_deep, folder_not_empty)
  * come with the server's own message.
  */
-export function libraryErrorText(error: unknown, what: "folder" | "tag" | "document"): string {
+export function libraryErrorText(error: unknown, what: "folder" | "department" | "tag" | "document"): string {
   if (!(error instanceof ApiError)) return "Check your internet connection, then try again.";
   if (error.code === "conflict" && what === "folder") {
     return "A folder with this name is already here. Choose another name.";
+  }
+  if (error.code === "conflict" && what === "department") {
+    return "A department with this name already exists. Choose another name.";
   }
   if (error.code === "conflict" && what === "tag") return "A tag with this name already exists.";
   return error.message;
