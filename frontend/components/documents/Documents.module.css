@@ -1553,16 +1553,17 @@ table.docs > tbody > tr {
   font-variant-numeric: tabular-nums;
 }
 
-/* As tall as the 32px bar allows (28px), and at least 44px wide. */
+/* Issue 420: inside the 32px bar with room above and below (24px; --h-sm, 32px, filled the
+   bar edge to edge), its words clear of its edge, and at least 44px wide. */
 .barToggle {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex: none;
   min-width: 44px;
-  height: var(--h-sm);
+  height: var(--badge-h);
   margin-inline-start: auto;
-  padding-inline: var(--space-2);
+  padding-inline: var(--space-3);
   border: 1px solid var(--border-strong);
   border-radius: var(--k-r-pill);
   background: transparent;

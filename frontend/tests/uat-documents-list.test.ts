@@ -95,3 +95,20 @@ describe("409: Other in the folder tree opens the documents in no department", (
     );
   });
 });
+
+describe("420: the Uploads button sits inside the status bar with room around it", () => {
+  const rule = (path: string, selector: string) =>
+    css(path).match(new RegExp(`(?:^|\\n)${selector.replace(".", "\\.")} \\{([^}]*)\\}`))?.[1] ?? "";
+  const px = (token: string) => Number(read("app/globals.css").match(new RegExp(`${token}: (\\d+)px;`))?.[1]);
+
+  it("is shorter than the bar, so it no longer touches its edges", () => {
+    const toggle = rule("components/documents/Documents.module.css", ".barToggle");
+    const height = toggle.match(/\bheight: var\((--[\w-]+)\);/)?.[1] ?? "";
+    expect(height).toBe("--badge-h");
+    expect(px("--statusbar-h") - px(height)).toBeGreaterThanOrEqual(8); // 4px or more above and below
+  });
+
+  it("keeps its words clear of its own edge", () => {
+    expect(rule("components/documents/Documents.module.css", ".barToggle")).toMatch(/padding-inline: var\(--space-3\);/);
+  });
+});
