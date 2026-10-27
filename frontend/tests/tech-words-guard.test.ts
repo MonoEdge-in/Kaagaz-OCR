@@ -35,7 +35,7 @@ import {
   readerHeading,
   secondReaderNote,
 } from "@/components/viewer/scanned";
-import { HINTS, TASK_HELP } from "@/lib/aiSettings";
+import { HINTS, READER_HINTS, READER_NAMES, TASK_HELP } from "@/lib/aiSettings";
 import type {
   DocumentStatus,
   LabelReason,
@@ -152,6 +152,8 @@ function shownTexts(): string[] {
     ...Object.values(ACTION_HELP),
     ...Object.values(TASK_HELP),
     ...Object.values(HINTS).flatMap((hints) => Object.values(hints)),
+    ...Object.values(READER_NAMES), // #398: Scanning's reader choice
+    ...Object.values(READER_HINTS),
     ...[[0, 0], [12, 0], [1, 2]].map(([flagged = 0, pages = 0]) => flaggedWords(flagged, pages)),
   ];
   for (const confidence of [null, Number.NaN, 0, 0.62, 0.8999, 0.9, 0.97, 1]) {
