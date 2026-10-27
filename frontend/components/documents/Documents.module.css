@@ -1015,6 +1015,7 @@ table.docs > tbody > tr {
   padding-inline: var(--space-3);
   border: 1px solid var(--border-strong);
   border-radius: var(--k-r-pill);
+  background: none; /* issue 407: Retry is a button, the same look as Review */
   font-size: var(--fs-sm);
   font-weight: 600;
   color: var(--text-primary);

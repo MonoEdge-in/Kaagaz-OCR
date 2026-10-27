@@ -10,12 +10,19 @@ import type { DocumentStatus, DocumentSummary, Label, Role } from "@/lib/types";
 
 const REPROCESSABLE: readonly DocumentStatus[] = ["ready", "failed", "needs_reader"];
 
-/** A reviewer or an admin, for a ready, failed or unreadable document that is not in Trash. */
+/**
+ * A reviewer or an admin, for a ready, failed or unreadable document that is not in Trash, or
+ * one still being read 6 hours after it was asked for (`stuck`, issue 407: the server decides).
+ */
 export function canReprocess(
   role: Role,
-  document: Pick<DocumentSummary, "status" | "deleted_at">,
+  document: Pick<DocumentSummary, "status" | "deleted_at" | "stuck">,
 ): boolean {
-  return canReview(role) && document.deleted_at === null && REPROCESSABLE.includes(document.status);
+  return (
+    canReview(role) &&
+    document.deleted_at === null &&
+    (REPROCESSABLE.includes(document.status) || document.stuck === true)
+  );
 }
 
 /**
@@ -74,7 +81,7 @@ export function reprocessReducer(state: ReprocessState, event: ReprocessEvent): 
 export function reprocessErrorText(error: unknown): string {
   if (error instanceof ApiError) {
     if (error.status === 409 && error.code === "not_reprocessable") {
-      return "This document can't be read again right now. Only a ready, failed or unreadable document that is not in Trash can be.";
+      return "This document can't be read again right now. Only a ready, failed or unreadable document, or one still waiting 6 hours after it was sent, that is not in Trash can be.";
     }
     if (error.status === 403 && error.code === "forbidden") {
       return "Only a reviewer or an admin can read a document again.";

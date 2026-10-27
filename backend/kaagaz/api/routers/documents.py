@@ -42,7 +42,8 @@ Why some choices:
 * **Trash means deleted.** A family in Trash can't be renamed, moved, tagged
   or given a new version: 409 ``in_trash``, checked under the family lock.
 * **Read again** (PRD 2 X1) is for a reviewer or an admin: a ready, failed or
-  unreadable document out of Trash goes back to the start and its job is
+  unreadable document out of Trash, or one still in progress RETRY_STUCK_HOURS after it
+  was asked for (issue 407, kaagaz/db/documents.py), goes back to the start and its job is
   queued, inside one transaction under the family lock, so a queue that is down
   changes nothing (503). Anything else is 409 ``not_reprocessable``; another
   customer's id is 404. A customer may start REPROCESS_PER_HOUR in an hour, and

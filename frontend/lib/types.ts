@@ -86,6 +86,8 @@ export interface DocumentSummary {
   progress: DocumentProgress | null; // null unless it is being checked or read; status_message already says it
   time_left: TimeLeft | null; // null until preparing (PRD 4 #13): while scanning, waiting or done; never in Trash
   understanding?: boolean; // Ready first (16 Oct 2026): ready and usable, its card and map still coming
+  // Issue 407: still being read 6 hours after it was uploaded or last read again, so it may be read again (Retry).
+  stuck?: boolean;
   doc_type: DocType | null; // from the AI model's document card; null without one (PRD 2, D6)
   languages: string[]; // "en", "hi", "mr", "other"; [] when not known
   // PRD 5 F4: pages unreadable or uncertain still on the attention list (a page kept as is

@@ -18,6 +18,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.exc import TimeoutError as PoolTimeout
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from kaagaz.db.documents import RETRY_STUCK_HOURS
 from kaagaz.ingestion.errors import BackendUnavailable
 
 MESSAGES = {
@@ -47,10 +48,10 @@ MESSAGES = {
     "folder_not_empty": "This folder isn't empty. Move or delete what is inside it first.",
     "not_needs_review": "This value doesn't need review any more.",
     "not_in_trash": "Only a document in Trash can be deleted forever.",
-    # PRD 2 X1 (PROVISIONAL wording).
+    # PRD 2 X1 (PROVISIONAL wording); issue 407: or one still being read RETRY_STUCK_HOURS on.
     "not_reprocessable": (
-        "This document can't be read again right now. Only a ready, failed or unreadable document"
-        " that is not in Trash can be."
+        "This document can't be read again right now. Only a ready, failed or unreadable document,"
+        f" or one still waiting {RETRY_STUCK_HOURS} hours after it was sent, that is not in Trash can be."
     ),
     # Critical #5: the tab chose the file while another account was signed in. It must
     # not invite a retry: that would send the file into the account signed in now.

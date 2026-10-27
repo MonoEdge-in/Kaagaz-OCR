@@ -8,16 +8,21 @@ The concurrency tests force the order with events and ``wait_until_blocked``.
 
 import io
 import threading
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
 from sqlalchemy import text
 
-from kaagaz.db.documents import PgDocuments
+from kaagaz.api.views import READER_STOPPED, READER_WAITING
+from kaagaz.db.documents import RETRY_STUCK_HOURS, PgDocuments
 from kaagaz.db.engine import Database
+from kaagaz.db.runs import PgRuns, close_running
 from kaagaz.db.trash import trash_document
 from kaagaz.ingestion.ports import Job
 from kaagaz.ingestion.service import UploadService
+from kaagaz.jobs.worker import Superseded
+from kaagaz.pipeline import Progress
 from tests.db_support import wait_until_blocked
 from tests.fakes import MemoryQueue
 from tests.settings_factory import make_settings
@@ -32,8 +37,9 @@ pytestmark = pytest.mark.db
 NOT_REPROCESSABLE = {
     "error": {
         "code": "not_reprocessable",
-        "message": "This document can't be read again right now. Only a ready, failed or unreadable document"
-        " that is not in Trash can be.",
+        # Changed on purpose (issue 407): one still waiting 6 hours on may be read again too.
+        "message": "This document can't be read again right now. Only a ready, failed or unreadable document,"
+        " or one still waiting 6 hours after it was sent, that is not in Trash can be.",
     }
 }
 
@@ -370,3 +376,143 @@ def test_the_hourly_limit_holds_for_two_requests_at_once(db: Database) -> None:
         assert first_api.audit_actions(c).count("document.reprocess") == 1
     finally:
         second_db.engine.dispose()
+
+
+# --- issue 407: Retry for a document still in progress long after it was asked for ---------
+
+
+def hours_ago(hours: float) -> datetime:
+    """Measured on the database's clock (the rule uses SQL now()), not the app's MovingClock."""
+    return datetime.now(UTC) - timedelta(hours=hours)
+
+
+@pytest.mark.parametrize("status", ["received", "clean"])
+def test_407_one_still_in_progress_6_hours_after_its_upload_may_be_read_again(
+    db: Database, status: str
+) -> None:
+    """Measured from the upload (``created_at``), never from ``updated_at``: every try, step and
+    hand-back moves that (here it is fresh), so a document that keeps waiting would never age."""
+    assert RETRY_STUCK_HOURS == 6
+    api = Api(db)
+    reviewer = api.new_signed("reviewer")
+    c = reviewer.customer_id
+    doc = api.add_document(c, status=status, attempts=1, max_attempts=5, created_at=hours_ago(6.1))
+    assert reviewer.client.get(f"/api/documents/{doc}").json()["stuck"] is True
+
+    reply = reprocess(reviewer, doc)
+
+    assert reply.status_code == 200
+    assert reply.json()["stuck"] is False  # asked for again just now
+    assert stored(api, c, doc) == ("received", None, 0, None, None, True)
+    assert [(job.customer_id, job.document_id) for job in api.queue.jobs] == [(c, doc)]
+    assert api.audit_rows(c)[-1] == ("document.reprocess", "document", doc, {"status": status})
+
+
+@pytest.mark.parametrize(("uploaded", "read_again"), [(5.9, None), (7.0, 2.0)])
+def test_407_one_asked_for_under_6_hours_ago_is_still_409(
+    db: Database, uploaded: float, read_again: float | None
+) -> None:
+    """Under 6 hours since the upload, or since the last read again when that is later."""
+    api = Api(db)
+    reviewer = api.new_signed("reviewer")
+    c = reviewer.customer_id
+    doc = api.add_document(c, status="clean", created_at=hours_ago(uploaded))
+    if read_again is not None:
+        with db.customer(c) as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO audit_log (customer_id, action, target_type, target_id, details, family_id,"
+                    " created_at) VALUES (:c, 'document.reprocess', 'document', :t, '{}', :f, :at)"
+                ),
+                {"c": c, "t": doc, "f": doc, "at": hours_ago(read_again)},
+            )
+    assert reviewer.client.get(f"/api/documents/{doc}").json()["stuck"] is False
+    before = stored(api, c, doc)
+
+    reply = reprocess(reviewer, doc)
+
+    assert (reply.status_code, reply.json()) == (409, NOT_REPROCESSABLE)
+    assert stored(api, c, doc) == before
+    assert api.queue.jobs == []
+
+
+def test_407_a_member_still_gets_403_for_a_stuck_document(db: Database) -> None:
+    api = Api(db)
+    member = api.new_signed("member")
+    doc = api.add_document(member.customer_id, status="clean", created_at=hours_ago(7))
+    reply = reprocess(member, doc)
+    assert (reply.status_code, reply.json()["error"]["code"]) == (403, "forbidden")
+    assert api.queue.jobs == []
+
+
+@pytest.mark.parametrize(
+    ("code", "message"),
+    [
+        ("gemini_key_unavailable", READER_STOPPED),  # a wrong key, a spent cap, a model ID that names none
+        ("gemini_unavailable", READER_WAITING),  # an outage: it goes on by itself
+        ("ocr_unavailable", READER_WAITING),
+    ],
+)
+def test_407_a_wait_on_a_key_problem_says_reading_is_stopped_not_that_it_goes_on(
+    db: Database, code: str, message: str
+) -> None:
+    """The pipeline's order: the progress becomes ``{"step": "waiting"}``, then the run ends
+    with the code. The list and the detail say which wait it is."""
+    api = Api(db)
+    reviewer = api.new_signed("reviewer")
+    c = reviewer.customer_id
+    doc = api.add_document(c, status="clean")
+    run = PgRuns(db).start(c, doc, now=api.clock())
+    PgDocuments(db).clear_progress(c, doc, run_id=run, waiting="reader")
+    with db.customer(c) as conn:
+        close_running(conn, c, doc, status="failed", error_code=code, now=api.clock())
+
+    detail = reviewer.client.get(f"/api/documents/{doc}").json()
+    listed = {row["id"]: row for row in reviewer.client.get("/api/documents").json()["items"]}
+
+    assert (detail["status_message"], detail["progress"]) == (message, None)
+    assert listed[doc]["status_message"] == message
+
+
+def test_407_a_retry_while_its_run_is_still_open_never_makes_two_runs(db: Database) -> None:
+    """The run fence: the retry's job starts a run that supersedes the one still open, whose
+    writes are then refused (Superseded); the first job's later delivery finds the document
+    settled and is skipped, so it is read once and only one run is ready."""
+    api = Api(db)
+    reviewer = api.new_signed("reviewer")
+    c = reviewer.customer_id
+    doc = UploadService(PIPELINE_POLICY, PgDocuments(db), api.storage, MemoryQueue()).accept(
+        c, io.BytesIO(CSV)
+    )
+    params = {"c": c, "d": doc.document_id}
+    with db.customer(c) as conn:
+        conn.execute(
+            text(
+                "UPDATE documents SET status = 'clean', created_at = :at WHERE customer_id = :c AND id = :d"
+            ),
+            {**params, "at": hours_ago(7)},
+        )
+    first = PgRuns(db).start(c, doc.document_id, now=api.clock())  # its job is still reading it
+
+    assert reprocess(reviewer, doc.document_id).status_code == 200
+    read = with_runs(db, api.storage)
+    read(Job(c, doc.document_id), lambda: None)  # the retry's job
+    with pytest.raises(Superseded):
+        PgDocuments(db).set_progress(c, doc.document_id, Progress("reading", 1, 2), run_id=first)
+    read(Job(c, doc.document_id), lambda: None)  # the first job comes back: settled, skipped
+
+    with db.customer(c) as conn:
+        runs: dict[str, str] = dict(
+            conn.execute(
+                text(
+                    "SELECT id::text, status FROM processing_runs WHERE customer_id = :c AND document_id = :d"
+                ),
+                params,
+            ).all()
+        )
+        status = conn.execute(
+            text("SELECT status FROM documents WHERE customer_id = :c AND id = :d"), params
+        ).scalar_one()
+    assert status == "ready"
+    assert runs[first] == "superseded"
+    assert sorted(runs.values()) == ["ready", "superseded"]
