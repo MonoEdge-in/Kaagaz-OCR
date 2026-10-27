@@ -47,7 +47,9 @@ PR C): lower-ranked pieces are left out whole, never cut, and verify checks only
 pieces the model saw. M4: the evidence comes in its order of priority (the hits with
 their context headers, then topic and section pieces, then neighbours), so the lowest
 is cut first; the cards come last (``fit_cards``). Each block's estimate is added up
-once, unrounded, so the sum is exactly the whole prompt's estimate.
+once, unrounded, so the sum is exactly the whole prompt's estimate. #381 (lost in the
+middle): in the prompt the evidence kept is laid out by ``edges``, the best at its start and
+its end and the weakest in the middle, never in reading order; each block keeps its id.
 ``ANSWER_PROMPT_HASH`` names the prompt and schema (ML amendment 10); the service logs
 it with each model answer.
 
@@ -147,9 +149,19 @@ class Draft:
     sentences: list[DraftSentence]
 
 
+def edges[T](ranked: Sequence[T]) -> list[T]:
+    """#381, lost in the middle: ``ranked`` (best first) laid out so the best are at the start and
+    the end of the prompt, where a model reads most closely, and the weakest in the middle: rank 1
+    first, 2 last, 3 second, 4 second to last... Each piece keeps its id, so a citation points at
+    the same piece whatever its place. O(e)."""
+    return [*ranked[0::2], *ranked[1::2][::-1]]
+
+
 def user_prompt(question: str, evidence: Sequence[Evidence], cards: Sequence[str] = ()) -> str:
-    """The question, the fenced cards (M2) and the fenced evidence, escaped: none can add a tag."""
-    blocks = [_block(item) for item in evidence]
+    """The question, the fenced cards (M2) and the fenced evidence, escaped: none can add a tag.
+    ``evidence`` comes best first and is laid out by ``edges`` (#381); the sum of the blocks, and
+    so the prompt's size, does not depend on their order."""
+    blocks = [_block(item) for item in edges(evidence)]
     question_block = "<question>\n" + _escape(question) + "\n</question>"
     return "Question:\n" + question_block + _cards(cards) + "\n\nEvidence:\n" + "\n".join(blocks)
 

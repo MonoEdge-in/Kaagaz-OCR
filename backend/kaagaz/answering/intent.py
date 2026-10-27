@@ -19,6 +19,9 @@ when every part is certain:
    question that mentions a date we could not read gets no plan.
 5. Every topic word is understood. "Kiska profit sabse jyada tha Pune
    branch me?" is not answered as if "Pune branch" was never said.
+6. #381: a total may be bounded by one side and one number ("the total of invoices
+   over ₹50,000", ``bound_asked``): the service adds up only the records whose figure
+   is strictly over (or under) it, from every record, never the top hits.
 
 Anything else takes the search route, which says "not found" when the
 documents do not answer. Never a guessed field (CLAUDE.md never-do 6).
@@ -33,9 +36,11 @@ the question has one aggregate word and every topic word is known, so a
 search question never runs it.
 """
 
+import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal, InvalidOperation
 from itertools import pairwise
 from typing import Literal
 
@@ -72,6 +77,18 @@ _DATE_FIELDS = ("invoice_date", "date", "bill_date", "month")
 _THINGS = frozenset({"invoice", "invoices", "document", "documents", "files", "file"})
 # Topic words that add nothing to a fixed query ("filed", "filled": PRD 6 Example 3, C2).
 _FILLER = frozenset({"value", "overall", "all", "made", "earned", "got", "number", "data", "filed", "filled"})
+_FILLER |= {"every"}  # #381: "the total of every invoice" is the total of all of them
+# #381: a total's bound ("over 50,000"), its words and the currency words beside its number.
+_SIDES: dict[str, Literal[">", "<"]] = {
+    **dict.fromkeys(("over", "above", "exceeding", "exceeds", "exceed"), ">"),
+    **dict.fromkeys(("under", "below"), "<"),
+}
+_THAN: dict[str, Literal[">", "<"]] = {
+    **dict.fromkeys(("more", "greater", "higher"), ">"),
+    **dict.fromkeys(("less", "lower"), "<"),
+}
+_CURRENCY = frozenset({"rs", "inr", "rupee", "rupees"})
+_DIGIT = re.compile("[0-9]")
 # Every field a plan can use: the only ones the fields query looks for.
 FIELDS = (*(f for fields in _METRIC_FIELDS.values() for f in fields), *_GROUP_FIELDS, *_DATE_FIELDS)
 
@@ -87,6 +104,35 @@ class FixedPlan:
     # The question names invoices: a count or a total reads the rows of the invoices table
     # (#228, PRD 6 C).
     invoices: bool = False
+    # #381: a total of the records whose figure is over (">") or under ("<") the one number the
+    # question names ("the total of invoices over ₹50,000"); None: every record.
+    bound: tuple[Literal[">", "<"], Decimal] | None = None
+
+    def within(self, amount: Decimal) -> bool:
+        """``amount`` is inside ``bound`` (strictly), or there is none."""
+        if self.bound is None:
+            return True
+        side, number = self.bound
+        return amount > number if side == ">" else amount < number
+
+
+def bound_asked(
+    normalised: NormalisedQuestion, numbers: Sequence[str]
+) -> tuple[Literal[">", "<"], Decimal] | None:
+    """#381: the one side ("over", "above", "more than": ">"; "under", "below", "less than": "<")
+    and the one number (``numbers``: the question's own, ``evidence.numbers_asked``, so
+    "₹1,00,000" is one) a total is bounded by; None when there is not exactly one of each, or the
+    number is not plain digits ("50k", "1 lakh"). O(w)."""
+    words = normalised.words
+    sides = {_SIDES[word] for word in words if word in _SIDES}
+    sides |= {_THAN[a] for a, b in pairwise(words) if b == "than" and a in _THAN}
+    if len(sides) != 1 or len(numbers) != 1:
+        return None
+    try:
+        number = Decimal(numbers[0].replace(",", ""))
+    except InvalidOperation:
+        return None
+    return (sides.pop(), number) if number.is_finite() else None
 
 
 def plan_fixed(
@@ -94,13 +140,17 @@ def plan_fixed(
     date_range: tuple[date, date] | None,
     mentions_date: bool,
     available_fields: Callable[[Sequence[str]], set[str]],
+    bound: tuple[Literal[">", "<"], Decimal] | None = None,
 ) -> FixedPlan | None:
     """A fixed-query plan, or None to take the search route. ``available_fields(FIELDS)``
-    gives which of them the customer has; it is called at most once."""
+    gives which of them the customer has; it is called at most once. ``bound``: the question's
+    (``bound_asked``), only ever for a total of every record, not by party (#381)."""
     words = normalised.words
     aggregate = _aggregate(words)
     if aggregate is None or (mentions_date and date_range is None):
         return None
+    if bound is not None and aggregate != "total":
+        return None  # "the highest invoice over 50,000" is not a question we can pin down
 
     metric_concepts = {_METRIC_WORDS[word] for word in words if word in _METRIC_WORDS}
     group_asked = any(word in _GROUP_WORDS for word in words)
@@ -108,7 +158,9 @@ def plan_fixed(
     invoices = "invoice" in words or "invoices" in words
     invoice_count = aggregate == "count" and invoices
     known = _HIGHEST | _LOWEST | _TOTAL | _COUNT | set(_METRIC_WORDS) | _GROUP_WORDS | _THINGS | _FILLER
-    if any(word not in known for word in normalised.keywords):
+    if bound is not None:  # its words, its currency and the digits of its one number
+        known |= {*_SIDES, *_THAN, "than", *_CURRENCY}
+    if any(word not in known and not (bound and _DIGIT.search(word)) for word in normalised.keywords):
         return None
     available = available_fields(FIELDS) if not invoice_count or date_range is not None else set()
 
@@ -140,7 +192,7 @@ def plan_fixed(
         if not group_fields:
             return None
     return FixedPlan(
-        aggregate, metric, group_fields, date_fields, start, end, aggregate == "total" and invoices
+        aggregate, metric, group_fields, date_fields, start, end, aggregate == "total" and invoices, bound
     )
 
 
