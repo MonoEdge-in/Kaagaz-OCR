@@ -57,7 +57,8 @@ def _downgrade(url: str, revision: str) -> None:
     subprocess.run(  # noqa: S603 - fixed command; the revision is checked above
         [sys.executable, "-m", "alembic", "downgrade", revision],
         cwd=BACKEND,
-        env={**os.environ, "DATABASE_URL": url},
+        # Changed on purpose (#246, 27 Oct 2026): env.py refuses a downgrade without it (G5).
+        env={**os.environ, "DATABASE_URL": url, "KAAGAZ_ALLOW_DOWNGRADE": "1"},
         check=True,
         capture_output=True,
     )

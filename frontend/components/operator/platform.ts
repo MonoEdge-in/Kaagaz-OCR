@@ -149,6 +149,12 @@ export function readerWords(report: Pick<ReaderReport, "state" | "seen_at">, now
   return Object.hasOwn(READER_STATES, report.state) ? READER_STATES[report.state] : plain(report.state);
 }
 
+/** #246 O1: the running commit, shortened to 12 characters like a git log; an image built by
+ * hand (no commit given to it) says so. */
+export function commitWords(commit: string): string {
+  return commit === "local" ? "Built by hand, no commit" : commit.slice(0, 12);
+}
+
 /** The jobs waiting in each lane; "Not answering" when the queue did not answer (null). */
 export function queueWords(queues: PlatformHealth["queues"]): { label: string; value: string }[] {
   const lane = (count: number | undefined) => (queues ? formatNumber(count ?? 0) : "Not answering");

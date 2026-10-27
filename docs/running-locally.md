@@ -288,7 +288,10 @@ Lambda's `INSTANCE_ID` and `WAKE_TOKEN` live only in the Lambda console.
 **What runs by itself.** `kaagaz-deploy.timer` runs `infra/ec2/deploy.sh` 2
 minutes after boot and every 5 minutes: when `origin/production` has a new
 commit it deploys it (Deploys and rollback, below; 1 to 2 minutes of downtime
-while the app restarts), otherwise it starts anything that is down. Each run
+while the app restarts), otherwise it starts anything that is down and, when
+`infra/caddy/Caddyfile` differs from the copy in `~/.kaagaz-caddyfile`, hands it
+to Caddy with a graceful `caddy reload` (#246 D8; a file Caddy refuses leaves the
+old config running and logs `caddy reload failed`). Each run
 logs one line, the commit and `deployed`, `unchanged`, `held`, `failed` or
 `rolled back to <commit>` (`journalctl -u kaagaz-deploy -n 50`); a failed build
 or migration is tried again on the next run. After a good deploy it removes build cache unused for 7 days
@@ -336,9 +339,10 @@ Caddyfile, those of the newest commit, so every release must keep them working
 for the release before it.
 
 **Never start the app with a plain `dc up -d`** on the server: it runs
-`migrate` with `:local`, and after a rollback over a migration that older image
-fails on the newer database and leaves api, worker and frontend stopped (until
-#246 PR 1 lets `migrate` accept a database ahead of the code). Use
+`migrate` with `:local`. Images from before #246 M2 fail on a database ahead of
+them (after a rollback over a migration) and leave api, worker and frontend
+stopped; since M2, `alembic upgrade head` on such a database changes nothing,
+logs one `database_ahead` line and exits 0. Use
 `dc up -d --no-deps <service>`, and never `dc up --build` or `dc build`.
 
 If `migrate` fails: the site is still on the old release, and every 5 minutes

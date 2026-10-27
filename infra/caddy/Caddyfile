@@ -15,12 +15,30 @@
 	# Browsers then use only HTTPS for this site for a year (security checklist, 15 Oct 2026).
 	header Strict-Transport-Security "max-age=31536000"
 
+	# A deploy restarts api and frontend (infra/ec2/deploy.sh, #246 A7). While one cannot be
+	# reached, Caddy tries it again every half second for up to 30 s before giving up, so a
+	# request waits through the restart instead of failing at once. Only requests that never
+	# reached it are tried again, so nothing is sent twice.
 	handle /api/* {
-		reverse_proxy api:8000
+		reverse_proxy api:8000 {
+			lb_try_duration 30s
+			lb_try_interval 500ms
+		}
 	}
 
 	handle {
-		reverse_proxy frontend:3000
+		reverse_proxy frontend:3000 {
+			lb_try_duration 30s
+			lb_try_interval 500ms
+		}
+	}
+
+	# Still unreachable after that (a slow start, or a rollback): a short note and when to try
+	# again, not a bare 502. Only Caddy's own errors land here; the API's own replies, 503s
+	# included, pass through unchanged.
+	handle_errors 502 503 504 {
+		header Retry-After "60"
+		respond "Kaagaz is updating. Please try again in a minute." 503
 	}
 
 	# One JSON line per request on stdout; the idle check reads these (WP-G).
