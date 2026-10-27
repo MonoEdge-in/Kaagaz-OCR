@@ -3,7 +3,8 @@ locks and members' choices are never read for a person, never shown and never wr
 
 Row level security alone hides B's rows from A's connection and refuses a row written for
 B; the foreign key refuses a choice of A's for B's user. The API's control: B's own saved
-choice shows for B, and changes B's Ask, never A's.
+choice shows for B, and changes B's Ask, never A's. The reader choice (#398): A's Save cost
+never decides how B's uploads are read.
 """
 
 import pytest
@@ -14,6 +15,7 @@ from kaagaz.db import ai_settings, models
 from kaagaz.db.engine import Database
 from tests.settings_factory import make_settings
 from tests.test_api_support import CSRF, Api
+from tests.test_reader_choice_db import _job_reading, _upload, cost_saving, put, scan_of
 
 pytestmark = pytest.mark.db
 
@@ -46,6 +48,29 @@ def test_another_organisations_settings_are_never_read_or_shown(db: Database) ->
         assert changed.rowcount == 0
     with db.customer(b_admin.customer_id) as conn:
         assert ai_settings.rows(conn, b_admin.customer_id, None) == {("ask", True): ("none", True)}
+
+
+def test_one_organisations_reader_choice_never_reaches_another(db: Database) -> None:
+    """#398: A's Save cost (locked) never decides how B's uploads are read, nor shows for B;
+    the control: A's own member's upload reads as A chose."""
+    api = Api(db, settings=make_settings(ocr_engine="gemini"))
+    a_admin, b_admin = api.new_admin(), api.new_admin()
+    a_member, b_member = api.sign_in(a_admin.customer_id), api.sign_in(b_admin.customer_id)
+    for customer in (a_admin.customer_id, b_admin.customer_id):
+        cost_saving(db, customer)
+    assert put(a_admin, "organisation", {"level": "save", "locked": True}).status_code == 200
+
+    b_scan = scan_of(b_member)
+    assert (b_scan["organisation"], b_scan["locked"], b_scan["effective"]) == (None, False, "low")
+    b_reading = _job_reading(db, b_member.customer_id, _upload(b_member)).reading
+    assert b_reading is not None and (b_reading.reader, b_reading.routes) == ("ai", False)
+    a_reading = _job_reading(db, a_member.customer_id, _upload(a_member)).reading
+    assert a_reading is not None and (a_reading.reader, a_reading.routes) == ("save", True)  # the control
+    with db.customer(b_admin.customer_id) as conn:
+        assert ai_settings.rows(conn, a_admin.customer_id, None) == {}
+        assert (
+            conn.execute(text("SELECT count(*) FROM ai_task_settings WHERE level = 'save'")).scalar_one() == 0
+        )
 
 
 def test_a_row_for_another_organisation_or_its_user_is_refused(db: Database) -> None:

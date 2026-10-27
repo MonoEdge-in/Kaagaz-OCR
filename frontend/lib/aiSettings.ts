@@ -26,7 +26,7 @@ export const TASK_NAMES: Record<AiTask, string> = {
 
 /** What each setting is for, behind its "What's this?" (plain words, 25 Oct 2026). */
 export const TASK_HELP: Record<AiTask, string> = {
-  scan: "How carefully your uploaded scans and photos are read. More care is slower but makes fewer mistakes.",
+  scan: "Who reads your uploaded scans and photos, and how carefully. More care is slower but makes fewer mistakes.",
   ask: "How much care goes into answers to your questions. More care is slower but better for tricky questions.",
   ensemble: "After a scan, lets you have the words the reader was unsure of read again by several AI readers.",
   autofile: "Puts new uploads into a folder for their type, like Invoices, so you don't have to.",
@@ -34,6 +34,7 @@ export const TASK_HELP: Record<AiTask, string> = {
 
 export const LEVEL_NAMES: Record<TaskLevel, string> = {
   none: "None",
+  save: "AI for harder pages",
   low: "Low",
   high: "High",
   max: "Max",
@@ -51,7 +52,6 @@ export const CHOICES: Record<AiTask, readonly TaskLevel[]> = {
 /** The short hint under the chosen level. */
 export const HINTS: Record<AiTask, Partial<Record<TaskLevel, string>>> = {
   scan: {
-    none: "The built-in reader only. Fast, plain text, with more words to check.",
     low: "A quick read for clear pages, with extra care for hard words.",
     high: "A careful read of every page.",
     max: "The most careful read your organisation allows, with a second look at unclear pages.",
@@ -72,12 +72,47 @@ export const HINTS: Record<AiTask, Partial<Record<TaskLevel, string>>> = {
   },
 };
 
+/**
+ * Scanning's reader choice (#398): the scan level says who reads. None is the local reader only,
+ * Save the local reader for clean printed pages and AI for the rest, Low to Max AI for every page
+ * (with the care the level gives). No model names and no money words.
+ */
+export type ScanReader = "ai" | "save" | "local";
+export const SCAN_READERS: readonly ScanReader[] = ["ai", "save", "local"];
+export const READER_NAMES: Record<ScanReader, string> = {
+  ai: "AI reads every page",
+  save: LEVEL_NAMES.save,
+  local: "Local reader only",
+};
+export const READER_HINTS: Record<ScanReader, string> = {
+  ai: "Every page is read by AI and checked by the local reader.",
+  save: "Clean printed pages are read on our server; harder pages by AI. Values from the server reader need a quick review.",
+  local: "Pages are read on our server only. Handwriting and Hindi/Marathi read less well.",
+};
+/** AI's levels of care, under "AI reads every page". */
+export const AI_LEVELS: readonly TaskLevel[] = ["low", "high", "max"];
+const READER_LEVEL: Record<ScanReader, TaskLevel> = { ai: "low", save: "save", local: "none" };
+
+export const readerOf = (level: TaskLevel): ScanReader => (level === "none" ? "local" : level === "save" ? "save" : "ai");
+
+/** The scan level a reader is picked as: AI keeps a level of care already chosen, else Low. */
+export const levelOfReader = (reader: ScanReader, current: TaskLevel): TaskLevel =>
+  reader === "ai" && readerOf(current) === "ai" ? current : READER_LEVEL[reader];
+
+/** A reader the organisation may pick now (the server leaves Save out when it is not offered). */
+export const readerAllowed = (task: AiTaskSetting, reader: ScanReader): boolean => task.allowed.includes(READER_LEVEL[reader]);
+
+/** A level as the settings screens name it: Scanning's by its reader, AI's with its care. */
+export const levelName = (task: AiTask, level: TaskLevel): string =>
+  task !== "scan" ? LEVEL_NAMES[level] : readerOf(level) === "ai" ? `${READER_NAMES.ai} · ${LEVEL_NAMES[level]}` : READER_NAMES[readerOf(level)];
+
 export const NOT_ALLOWED = "Not available for your organisation.";
 export const SET_BY_ADMIN = "Set by your admin.";
 export const USE_ORGANISATION = "Use the organisation's setting";
 export const MEMBERS_CAN_CHANGE = "Members can change this";
 
-const RANK: Record<TaskLevel, number> = { none: 0, off: 0, low: 1, on: 1, high: 2, max: 3 };
+// Save reads like Automatic (Low), with clean printed pages kept on our server.
+const RANK: Record<TaskLevel, number> = { none: 0, off: 0, save: 1, low: 1, on: 1, high: 2, max: 3 };
 
 export const taskOf = (settings: AiSettings | null, task: AiTask): AiTaskSetting | undefined =>
   settings?.tasks.find((each) => each.task === task);

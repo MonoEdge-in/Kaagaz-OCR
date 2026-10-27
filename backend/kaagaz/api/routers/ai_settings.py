@@ -1,5 +1,8 @@
 """AI settings by task (Tushar, 17 Oct 2026; spec Outside-Folder/prd/ai-task-settings-spec.md,
-0038): how much effort the AI puts into scanning, Ask, Ensemble and auto-filing.
+0038): how much effort the AI puts into scanning, Ask, Ensemble and auto-filing. Scanning's
+level is also its reader (#398, ``kaagaz.db.ai_settings``): none the local reader only, save
+the local reader for clean printed pages and the AI for the rest, low to max the AI for
+every page.
 
 * ``GET /ai-settings``: each task's effective level, the person's own choice, the
   organisation's default and lock, the levels the ceiling leaves (``allowed``, lowest first)
@@ -37,7 +40,7 @@ router = APIRouter()
 
 Context = Annotated[AppContext, Depends(get_context)]
 TaskName = Literal["scan", "ask", "ensemble", "autofile"]
-Level = Literal["none", "low", "high", "max", "off", "on"]
+Level = Literal["none", "save", "low", "high", "max", "off", "on"]  # save: scan only (#398)
 LOCKED = "Set by your admin."
 NOT_ALLOWED = "Not available for your organisation."
 

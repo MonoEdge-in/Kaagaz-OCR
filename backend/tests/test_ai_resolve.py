@@ -204,6 +204,7 @@ def test_an_old_ensemble_document_is_read_by_its_lead_alone() -> None:
     assert reading == models.Reading("single", agent(PRO), thinking="low", notes=("ensemble_after_scan",))
     assert reading.config() == {
         "mode": "single",
+        "reader": "ai",  # Changed on purpose (#398): the reader chosen, in the run's config
         "lead": {"model": PRO, "provider": "google-vertex"},
         "others": [],
         "careful": None,
