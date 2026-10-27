@@ -1560,8 +1560,23 @@
   transition: transform var(--t-med) var(--ease);
 }
 
-.sourcesBar[open] > .sourcesSummary .sourcesChevron {
+.sourcesBar[open] > .sourcesSummary .sourcesChevron,
+.moreDocs[open] > .sourcesSummary .sourcesChevron {
   transform: rotate(90deg);
+}
+
+/* Issue 413: a not-found's closest documents past the first 3, closed at first; the same summary row
+   as the Sources bar, its items as the list above (.docItem's rule on top). */
+.moreDocs {
+  margin-top: var(--space-3);
+}
+
+.moreDocs > .sourcesSummary {
+  padding-inline: 0;
+}
+
+.moreDocs > .docList {
+  margin-top: var(--space-2);
 }
 
 .sourcesLabel {

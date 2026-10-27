@@ -98,7 +98,8 @@ The steps (docs/architecture.md):
 16. Also mentions (17 Oct 2026, ``_mentioned``): after an answered or not-found answer (not
     a count, not while the model is down), the other documents in scope holding the
     question's key terms (Jalna, जालना) as whole words, from one word-index statement; the
-    answer's text, label and verify never see them.
+    answer's text, label and verify never see them. A not-found answer also names the key terms
+    no document in scope holds (#410, ``_missing``: one such statement a term).
 17. Owners and places (PRD 6 E, kaagaz/answering/owners.py): a question naming people, places or a
     property the company's land values hold, with an owning or share word (or a property with a map
     word: its map values and neighbours as printed), is answered first, from
@@ -386,6 +387,9 @@ class Answer:
     # answering it needs (kept on the server), and what was assumed; in to_json only when set.
     clarify: dict[str, Any] | None = None
     resume: dict[str, Any] | None = None
+    # #410: a not-found answer's key terms that no document in scope holds (``_missing``); in
+    # to_json only when there is one, so answers without it keep their shape.
+    missing_words: tuple[str, ...] = ()
 
     def to_json(self) -> dict[str, Any]:
         """The ``Answer`` of frontend/lib/types.ts, exactly; ``agents``, ``agent_ids``,
@@ -428,6 +432,7 @@ class Answer:
             "related_documents": [dict(doc) for doc in self.related_documents],
             **team,
             **({} if self.mentions is None else {"mentions": self.mentions}),
+            **({"missing_words": list(self.missing_words)} if self.missing_words else {}),
             **({"clarify": self.clarify, "resume": self.resume} if self.clarify else {}),
             # KZ-006 (24 Oct 2026): the model was down, so this not found is no answer either way.
             **({"outage": True} if self.unavailable else {}),
@@ -748,6 +753,8 @@ class AnswerService:
         # (never "busy", 24 Oct 2026).
         unavailable = answer.status == "not_found" and _timing().degraded
         answer = self._unreadable(customer_id, answer, scope)
+        if not unavailable:  # an outage says so instead (KZ-006)
+            answer = self._missing(customer_id, asked, answer, scope)
         answer = self._shaped(customer_id, asked, self._mentioned(customer_id, asked, answer, scope), scope)
         said = [*answer.assumptions, *step.assumptions]
         return replace(answer, rewritten_question=rewritten, unavailable=unavailable, assumptions=said)
@@ -863,6 +870,21 @@ class AnswerService:
         if not total:
             return answer
         return replace(answer, mentions={"terms": terms, "total": total, "documents": documents})
+
+    def _missing(self, customer_id: str, question: str, answer: Answer, scope: Scope) -> Answer:
+        """#410 (Vrushit's UAT, 27 Oct 2026): a not-found answer names the question's key terms
+        (``key_terms``: never a frame, total, date or form word) that no document in ``scope``
+        holds as whole words, by the word index "Also mentions" uses, so the soft line can say
+        which part of the question matched nothing (voice.soft_line). One statement a term, at
+        most MAX_MENTION_TERMS, for a not-found answer only."""
+        if self._mentions is None or answer.status != "not_found":
+            return answer
+        missing = tuple(
+            term
+            for term in key_terms(question)
+            if not self._mentions.mentions(customer_id, [term], scope, [], 1)[0]
+        )
+        return replace(answer, missing_words=missing) if missing else answer
 
     def remember(self, turns: Sequence[Turn], memory: Memory, cited: Sequence[str]) -> Memory | None:
         """M3: the conversation's new summary and memory from ``memory`` and the ``turns``
