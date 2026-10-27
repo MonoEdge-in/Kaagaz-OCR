@@ -9,6 +9,10 @@ revision this code does not have (an older image after a rollback, or a revert o
 request that carried a migration) changes nothing, logs ``database_ahead`` and exits 0, so
 the older release starts on the newer schema. That is safe only while migrations only add
 (expand/contract, M1). Any other command on such a database fails as before.
+
+Downgrades are refused (#246 G5) unless KAAGAZ_ALLOW_DOWNGRADE=1: a ``downgrade()`` drops
+what its migration added, and the rows in it with it. The deploy never runs one; a person
+runs one on purpose, with the variable set, after a dump.
 """
 
 import json
@@ -39,6 +43,7 @@ def run_offline() -> None:
 # lock; failing fast leaves the running app alone, and it can be run again when
 # quiet. Short enough for a request to notice, long enough for one to finish.
 LOCK_TIMEOUT = "10s"
+ALLOW_DOWNGRADE = "KAAGAZ_ALLOW_DOWNGRADE"
 
 
 def _unknown_heads() -> list[str]:
@@ -53,6 +58,15 @@ def _targets_code_head() -> bool:
     target = context.get_revision_argument()
     targets = set(target) if isinstance(target, tuple) else {target}
     return targets == set(context.script.get_heads())
+
+
+def _goes_down() -> bool:
+    """Whether this command would take any migration down. Alembic works out its steps from
+    the database's heads before running them; it has no public way to ask, hence the
+    private call (alembic 1.x)."""
+    migration = context.get_context()
+    steps = migration._migrations_fn(migration.get_current_heads(), migration)
+    return any(getattr(step, "is_downgrade", False) for step in steps)
 
 
 def _say_database_ahead(heads: list[str]) -> None:
@@ -78,6 +92,10 @@ def run_online() -> None:
             ahead = _unknown_heads()
             if ahead and _targets_code_head():
                 _say_database_ahead(ahead)
+            elif os.environ.get(ALLOW_DOWNGRADE, "").strip() != "1" and _goes_down():
+                raise SystemExit(
+                    f"refusing to downgrade: a downgrade drops data; set {ALLOW_DOWNGRADE}=1 to run one on purpose"
+                )
             else:
                 context.run_migrations()
     engine.dispose()

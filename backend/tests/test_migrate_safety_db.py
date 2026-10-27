@@ -4,6 +4,9 @@ M2: ``alembic upgrade head`` (the migrate container) on a database ahead of the 
 older image after a rollback, or a revert of a migration's pull request) changes nothing,
 logs ``database_ahead`` and exits 0, so that release starts. Any other target still fails.
 
+G5: a downgrade is refused unless KAAGAZ_ALLOW_DOWNGRADE=1, and refused before anything
+changes; with it, it runs as before.
+
 Each test gets the fresh database ``tests/test_migration_0002_db.py`` makes and drops.
 """
 
@@ -25,7 +28,11 @@ def _alembic(url: str, *args: str, **extra_env: str) -> subprocess.CompletedProc
     return subprocess.run(  # noqa: S603 - fixed command; the arguments are the test's own
         [sys.executable, "-m", "alembic", *args],
         cwd=BACKEND,
-        env={**os.environ, "DATABASE_URL": url, **extra_env},
+        env={
+            **{k: v for k, v in os.environ.items() if k != "KAAGAZ_ALLOW_DOWNGRADE"},
+            "DATABASE_URL": url,
+            **extra_env,
+        },
         check=False,
         capture_output=True,
         text=True,
@@ -72,4 +79,26 @@ def test_a_database_at_this_codes_head_is_left_as_it_is(fresh: tuple[str, Databa
     done = _alembic(url, "upgrade", "head")
     assert done.returncode == 0, done.stderr
     assert "database_ahead" not in done.stderr
+    assert _version(database) == head
+
+
+def test_a_downgrade_is_refused_without_the_switch_and_changes_nothing(fresh: tuple[str, Database]) -> None:  # noqa: F811
+    url, database = fresh
+    migrate(url)
+    head = _version(database)
+    for switch in ({}, {"KAAGAZ_ALLOW_DOWNGRADE": "0"}, {"KAAGAZ_ALLOW_DOWNGRADE": "yes"}):
+        refused = _alembic(url, "downgrade", "-1", **switch)
+        assert refused.returncode != 0
+        assert "refusing to downgrade" in refused.stderr and "KAAGAZ_ALLOW_DOWNGRADE=1" in refused.stderr
+        assert _version(database) == head
+
+
+def test_a_downgrade_runs_with_the_switch(fresh: tuple[str, Database]) -> None:  # noqa: F811
+    url, database = fresh
+    migrate(url)
+    head = _version(database)
+    done = _alembic(url, "downgrade", "-1", KAAGAZ_ALLOW_DOWNGRADE="1")
+    assert done.returncode == 0, done.stderr
+    assert _version(database) < head
+    assert _alembic(url, "upgrade", "head").returncode == 0  # an upgrade never needs it
     assert _version(database) == head
