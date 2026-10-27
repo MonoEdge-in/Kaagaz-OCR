@@ -101,7 +101,8 @@ def test_the_last_try_failing_clears_the_marks_too(db: Database) -> None:
     documents = PgDocuments(db)
     with db.customer(customer) as conn:
         assert request_page_read_again(conn, customer, doc, 1, now=T0)
-    documents.record_attempt(customer, doc, 5, 5)
+    for attempt in range(1, 6):  # changed on purpose (issue 407): each try in turn, to the last
+        documents.record_attempt(customer, doc, attempt, 5)
     documents.mark_exhausted(customer, doc, now=T1, max_attempts=5)
     assert documents.get_status(customer, doc) is DocumentStatus.FAILED
     assert documents.pages_to_read_again(customer, doc) == ()

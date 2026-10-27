@@ -41,7 +41,7 @@ import { LabelChip } from "@/components/files/LabelChip";
 import { FILES_TEXT, NEWER_SPOKEN, versionCell } from "@/components/files/words";
 import { Icon } from "@/components/ui/Icon";
 import { PasswordField } from "@/components/ui/PasswordField";
-import { beingRead, canReprocess } from "@/components/viewer/reprocess";
+import { beingRead, canReprocess, reprocessErrorText } from "@/components/viewer/reprocess";
 import { newerVersionText } from "@/components/viewer/versions";
 import { FADE_IN, MOTION_MS, play } from "@/lib/motion";
 import {
@@ -414,6 +414,7 @@ export function DocumentsTable({
               whenSpoken={whenSpoken(document, inTrash, now)}
               inTrash={inTrash}
               deletable={tickable(document)}
+              readable={readable(document)}
               canForever={canForever}
               askPassword={askPassword}
               selected={selectedIds.has(document.id)}
@@ -645,6 +646,7 @@ const DocumentRow = memo(function DocumentRow({
   whenSpoken,
   inTrash,
   deletable,
+  readable,
   canForever,
   askPassword,
   selected,
@@ -660,6 +662,7 @@ const DocumentRow = memo(function DocumentRow({
   whenSpoken: string;
   inTrash: boolean;
   deletable: boolean; // it gets a checkbox (selectable)
+  readable: boolean; // it may be read again (canReprocess): its status cell may offer Retry
   canForever: boolean;
   askPassword: boolean;
   selected: boolean;
@@ -769,6 +772,21 @@ const DocumentRow = memo(function DocumentRow({
   // The dialog hands focus back to the menu button once it is shut (onClosed).
   function cancel() {
     setConfirming(null);
+  }
+
+  // Issue 407: the status cell's Retry is Read again (POST .../reprocess); the row stays and
+  // the list is asked for again.
+  async function retry() {
+    setBusy(true);
+    setError(null);
+    try {
+      await reprocessDocument(document.id);
+      events.onSaved(bulkDoneMessage("read", 1));
+    } catch (caught) {
+      if (lostTheRight(caught)) refresh();
+      setError(reprocessErrorText(caught));
+    }
+    setBusy(false);
   }
 
   // O3: who changed it last (the newest upload or details change); the uploader on an older reply.
@@ -890,7 +908,12 @@ const DocumentRow = memo(function DocumentRow({
         )}
       </td>
       <td role="cell" className={styles.statusCell}>
-        <StatusCell document={document} inTrash={inTrash} />
+        <StatusCell
+          document={document}
+          inTrash={inTrash}
+          onRetry={readable ? () => void retry() : undefined}
+          busy={busy}
+        />
       </td>
       <td role="cell" className={`${styles.meta} ${styles.typeCell}`}>
         {typeLabel(document.detected_type)}
@@ -1018,8 +1041,25 @@ const DocumentRow = memo(function DocumentRow({
  * its words, then the bar and the time left, or what was flagged), keyed by phase so the
  * new lines fade in (opacity only) and nothing else moves. Any other state: the chip and
  * the server's words, which may wrap.
+ * Issue 407: with `onRetry` (whoever may read it again), a failed row, or one still being read
+ * 6 hours on (`stuck`), ends its second line with Retry; the server checks both again.
  */
-export function StatusCell({ document, inTrash }: { document: DocumentSummary; inTrash: boolean }) {
+export function StatusCell({
+  document,
+  inTrash,
+  onRetry,
+  busy = false,
+}: {
+  document: DocumentSummary;
+  inTrash: boolean;
+  onRetry?: () => void;
+  busy?: boolean;
+}) {
+  const retry = onRetry && !inTrash && (document.status === "failed" || document.stuck === true) && (
+    <button type="button" className={styles.statusAction} onClick={onRetry} disabled={busy}>
+      Retry<span className="visually-hidden">{` ${document.display_name}`}</span>
+    </button>
+  );
   if (beingRead(document.status) && document.deleted_at === null) {
     const words = scanWords(document);
     const detail = words ? words.detail : document.status_message;
@@ -1033,6 +1073,7 @@ export function StatusCell({ document, inTrash }: { document: DocumentSummary; i
         </span>
         <span className={styles.statusLine}>
           <TimeLeft document={document} />
+          {retry}
         </span>
       </span>
     );
@@ -1076,6 +1117,7 @@ export function StatusCell({ document, inTrash }: { document: DocumentSummary; i
         <span className={styles.statusText} title={document.status_message}>
           {document.status_message}
         </span>
+        {retry}
       </span>
     </span>
   );

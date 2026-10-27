@@ -136,7 +136,7 @@ const READER_STATES: Record<ReaderState, string> = {
   working: "Working",
   failing: "Slow",
   down: "Down",
-  key_problem: "Key problem",
+  key_problem: "Key or model problem", // issue 407: a wrong OCR_MODEL is reported as key_problem too
 };
 
 /** A worker that has not reported for this long shows "Not reporting" (V4). */

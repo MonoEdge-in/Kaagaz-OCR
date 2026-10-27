@@ -11,6 +11,7 @@ from sqlalchemy import RowMapping
 
 from kaagaz.api.auth import CurrentUser
 from kaagaz.api.views import (
+    READER_STOPPED,
     READER_WAITING,
     batch_view,
     document_summary,
@@ -44,6 +45,28 @@ def test_q6_a_document_waiting_for_the_reader_says_so_and_shows_no_step(status: 
     assert _message(status, progress=WAITING, batch_ahead=4) == READER_WAITING  # the reader comes first
     assert _message(status, progress=WAITING, attempts=2, max_attempts=5) == READER_WAITING + " Try 2 of 5."
     assert in_progress(status, WAITING) is None
+
+
+@pytest.mark.parametrize("status", ["received", "clean"])
+def test_407_a_wait_on_a_key_problem_never_says_it_goes_on_by_itself(status: str) -> None:
+    """Issue 407: a key problem is a person's fix, so the words say reading is stopped and who
+    fixes it; an outage (any other code) still goes on by itself."""
+    assert READER_STOPPED == (
+        "Reading is stopped until the Kaagaz team fixes the reading service. It starts again after that."
+    )
+    key = _message(status, progress=WAITING, waiting_code="gemini_key_unavailable")
+    assert key == READER_STOPPED
+    assert "on its own" not in key
+    assert _message(status, progress=WAITING, waiting_code="gemini_unavailable") == READER_WAITING
+    assert _message(status, progress=WAITING, waiting_code=None) == READER_WAITING
+    newer = newer_version(
+        {**_row(status, progress=WAITING), "waiting_code": "gemini_key_unavailable"}, max_pages=100
+    )
+    assert newer is not None and newer["status_message"] == READER_STOPPED  # the "Version 2: ..." line too
+    row = cast(RowMapping, {**_row(status, progress=WAITING), "waiting_code": "gemini_key_unavailable"})
+    assert (
+        document_summary(row, max_pages=100, tags=[], user=USER, now=NOW)["status_message"] == READER_STOPPED
+    )
 
 
 def test_q6_files_ahead_in_the_batch_show_while_it_waits_its_turn() -> None:
@@ -104,6 +127,8 @@ def _row(
         "words_unsure": 0,
         "autofile": None,
         "batch_ahead": counts.get("ahead", 0),
+        "stuck": False,  # issue 407: listing._COLUMNS
+        "waiting_code": None,
         "family_uploaders": [USER.user_id],
         "newer": None,
         "first_unreadable": None,

@@ -41,6 +41,15 @@ describe("canReprocess (PRD 2, X1)", () => {
     expect(canReprocess("admin", doc("ready", TRASHED))).toBe(false);
     expect(canReprocess("reviewer", doc("failed", TRASHED))).toBe(false);
   });
+
+  it("offers it for one still being read 6 hours on (issue 407), never to a member or in Trash", () => {
+    for (const status of ["received", "clean"] as DocumentStatus[]) {
+      expect(canReprocess("reviewer", { ...doc(status), stuck: true }), status).toBe(true);
+      expect(canReprocess("admin", { ...doc(status), stuck: false }), status).toBe(false);
+      expect(canReprocess("member", { ...doc(status), stuck: true }), status).toBe(false);
+      expect(canReprocess("admin", { ...doc(status, TRASHED), stuck: true }), status).toBe(false);
+    }
+  });
 });
 
 describe("reprocessConfirmText", () => {
@@ -117,10 +126,11 @@ describe("loadFailure (QA, 15 Oct 2026)", () => {
 });
 
 describe("reprocessErrorText", () => {
-  it("explains a 409: only a ready, failed or unreadable document out of Trash", () => {
+  it("explains a 409: only a ready, failed or unreadable document, or one waiting 6 hours, out of Trash", () => {
     const error = new ApiError(409, "not_reprocessable", "server words");
+    // Changed on purpose (issue 407): the server's words (kaagaz/api/errors.py) changed with the rule.
     expect(reprocessErrorText(error)).toBe(
-      "This document can't be read again right now. Only a ready, failed or unreadable document that is not in Trash can be.",
+      "This document can't be read again right now. Only a ready, failed or unreadable document, or one still waiting 6 hours after it was sent, that is not in Trash can be.",
     );
   });
 

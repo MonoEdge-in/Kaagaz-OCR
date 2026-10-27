@@ -47,6 +47,13 @@ _WAITING_AGAIN = "Waiting to try again."
 # down (pipeline _clear_progress); or the files before it in the uploader's own batch.
 READER_WAITING = "Reading is paused for now. It will continue on its own."
 _WAITING_STEP = "waiting"
+# Issue 407: the wait's run ended with a key problem (pipeline: a wrong key, a spent cap, a
+# model ID that names no model). No wait fixes that, so the words never say it goes on by
+# itself. PROVISIONAL wording.
+READER_STOPPED = (
+    "Reading is stopped until the Kaagaz team fixes the reading service. It starts again after that."
+)
+_KEY_WAIT = "gemini_key_unavailable"
 
 
 def files_ahead_message(count: int) -> str:
@@ -70,6 +77,7 @@ def status_message(
     progress: Mapping[str, Any] | None = None,
     batch_ahead: int = 0,
     pages_unreadable: int = 0,
+    waiting_code: str | None = None,
 ) -> str:
     """``max_pages`` is the MAX_PAGES setting, named when a file had too many pages
     (a PDF's pages, or a TIFF's frames: ``detected_type`` says which to call it),
@@ -82,7 +90,9 @@ def status_message(
     PRD 5 Q6: a progress of ``{"step": "waiting"}`` says the reader is down; with no
     progress, ``batch_ahead`` files of the uploader's own batch still before it say
     how many are ahead. A ready document with ``pages_unreadable`` pages still flagged
-    says so (council 16 Oct 2026: such a document is ready, not failed, since e01b937d)."""
+    says so (council 16 Oct 2026: such a document is ready, not failed, since e01b937d).
+    ``waiting_code`` is the last run's code while it waits: a key problem is READER_STOPPED
+    (issue 407)."""
     if status == "rejected":
         return CUSTOMER_MESSAGES.get(failure_code or "", "This file was not processed.")
     if status == "failed" and failure_code == "too_many_pages":
@@ -110,7 +120,7 @@ def status_message(
         return f"Ready. {pages} to check."
     message = _STATUS_MESSAGES.get(status, "")
     if status in _IN_PROGRESS and progress is not None and progress.get("step") == _WAITING_STEP:
-        message = READER_WAITING
+        message = READER_STOPPED if waiting_code == _KEY_WAIT else READER_WAITING
     elif status in _IN_PROGRESS and progress is not None:
         message = progress_message(progress) or message
     elif status in _IN_PROGRESS and batch_ahead > 0:
@@ -203,6 +213,7 @@ def newer_version(newer: Mapping[str, Any] | None, *, max_pages: int) -> dict[st
             attempts=int(newer["attempts"] or 0),
             max_attempts=newer["max_attempts"],
             progress=newer.get("progress"),
+            waiting_code=newer.get("waiting_code"),
         ),
     }
 
@@ -231,8 +242,10 @@ def document_summary(
             progress=row["progress"],
             batch_ahead=int(row["batch_ahead"]),
             pages_unreadable=int(row["pages_unreadable"]),
+            waiting_code=row["waiting_code"],
         ),
         "progress": in_progress(row["status"], row["progress"]),
+        "stuck": bool(row["stuck"]),  # issue 407: may be read again (db/documents.py STUCK)
         "time_left": document_time_left(row, now=now),
         "understanding": understanding(row, now=now),  # ready, its card and map still coming
         "doc_type": row["doc_type"],  # PRD 2 D3: from the document card; null without one

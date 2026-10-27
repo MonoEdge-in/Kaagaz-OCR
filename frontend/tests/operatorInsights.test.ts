@@ -655,7 +655,8 @@ describe("attentionItems", () => {
     });
     expect(attentionItems(reply(), names, quality({}), h, NOW).map((i) => [i.severity, i.target, i.text])).toEqual([
       ["act", "health", "The scan reader is down on 1 worker."],
-      ["act", "health", "The scan reader has a key problem on 2 workers."],
+      // Changed on purpose (issue 407): a wrong reading model (OCR_MODEL) is reported as key_problem too.
+      ["act", "health", "The scan reader's key or model setting needs fixing on 2 workers."],
     ]);
     expect(attentionItems(reply(), names, quality({}), health({ reader: undefined, queues: null }), NOW)).toEqual([]);
   });

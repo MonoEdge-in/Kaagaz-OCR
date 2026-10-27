@@ -22,7 +22,8 @@ PostgreSQL breaks a deadlock (AR7).
 purge (kaagaz/jobs/purge.py) and ``delete_family_forever`` (the permanent delete).
 
 ``mark_for_reprocess`` is "Read again" (PRD 2 X1): under the family lock, a
-ready, failed or unreadable document out of Trash goes back to ``received`` with
+ready, failed or unreadable document out of Trash, or one still in progress
+RETRY_STUCK_HOURS after it was asked for (issue 407), goes back to ``received`` with
 its tries reset, within the customer's hourly limit and one document's cooldown
 (security A8). The caller audits it and queues the job in the same transaction.
 
@@ -212,6 +213,20 @@ REPROCESSABLE = ("ready", "failed", "needs_reader")
 # Security A8 (PROVISIONAL): one document is read again at most once in this time.
 REPROCESS_COOLDOWN_MINUTES = 10
 
+# Issue 407: a document still in progress this many hours after its reading was asked for
+# may be read again (Retry), whatever holds it: a key problem, a lost job, a slot that never
+# frees. Asked for: its upload, or its last read again (the audit rows "read again" already
+# counts, on the index audit_log_family), whichever is later. Never ``updated_at``: every try,
+# step and hand-back moves it, so a document that keeps waiting would never get old enough.
+RETRY_STUCK_HOURS = 6
+STUCK = (
+    "CASE WHEN d.status IN ('received', 'clean') THEN GREATEST(d.created_at,"  # noqa: S608 - a fixed number
+    " (SELECT max(a.created_at) FROM audit_log a WHERE a.customer_id = d.customer_id"
+    " AND a.family_id = d.family_id AND a.target_id = d.id::text"
+    " AND a.action IN ('document.reprocess', 'document.read_upgrade')))"
+    f" < now() - make_interval(hours => {RETRY_STUCK_HOURS}) ELSE false END"
+)
+
 
 class NotReprocessable(Exception):
     """The document is being read, was rejected, or is in Trash."""
@@ -232,7 +247,8 @@ class ReprocessLimited(Exception):
 
 
 _REPROCESS_STATE = (
-    "SELECT status, deleted_at IS NOT NULL AS in_trash FROM documents WHERE customer_id = :c AND id = :d"
+    f"SELECT d.status, d.deleted_at IS NOT NULL AS in_trash, {STUCK} AS stuck"  # noqa: S608 - a fixed fragment, STUCK
+    " FROM documents d WHERE d.customer_id = :c AND d.id = :d"
 )
 # A queued or running Ensemble run of the document (0030's ensemble_runs_one_active index).
 _ENSEMBLE_RUNNING = (
@@ -262,13 +278,13 @@ _REPROCESSED_LATELY = (
 # the same statement, so the ai_documents_read_mode_models check always sees a pair it
 # allows; a model or mode left out (NULL) keeps the document's (as listing.set_reading).
 _REPROCESS = (
-    "UPDATE documents SET status = 'received', failure_code = NULL, attempts = 0, max_attempts = NULL,"
+    "UPDATE documents d SET status = 'received', failure_code = NULL, attempts = 0, max_attempts = NULL,"  # noqa: S608 - a fixed fragment, STUCK
     " progress = NULL, read_requested_by = CAST(:by AS uuid),"
     " read_model = COALESCE(CAST(:m AS text), read_model),"
     " read_mode = COALESCE(CAST(:mode AS text), read_mode),"
     " read_also = CASE WHEN CAST(:mode AS text) IS NULL THEN read_also ELSE CAST(:also AS text[]) END"
-    " WHERE customer_id = :c AND id = :d AND status IN ('ready', 'failed', 'needs_reader')"
-    " AND deleted_at IS NULL"
+    " WHERE d.customer_id = :c AND d.id = :d"
+    f" AND (d.status IN ('ready', 'failed', 'needs_reader') OR {STUCK}) AND d.deleted_at IS NULL"
 )
 
 
@@ -294,7 +310,9 @@ def mark_for_reprocess(
     first, and is waited for, never skipped: a family being moved to Trash is
     waited for, then seen. Then the customer's reprocess lock (a transaction
     advisory lock), so the hourly count is exact. Raises NotReprocessable unless the status is ready,
-    failed or needs_reader and it is out of Trash (EnsembleRunning while an Ensemble run of
+    failed or needs_reader, or it is still in progress RETRY_STUCK_HOURS after it was asked for
+    (``STUCK``, issue 407; a job still on it is fenced off by the new run, kaagaz/db/runs.py), and
+    it is out of Trash (EnsembleRunning while an Ensemble run of
     it is queued or running), and ReprocessLimited when the
     customer already started ``per_hour`` in the last hour, or this document one
     in the last REPROCESS_COOLDOWN_MINUTES. Nothing is changed when it raises.
@@ -306,7 +324,7 @@ def mark_for_reprocess(
         return None
     params: dict[str, Any] = {"c": customer_id, "d": document_id}
     state = conn.execute(text(_REPROCESS_STATE), params).one()
-    if state.in_trash or state.status not in REPROCESSABLE:
+    if state.in_trash or (state.status not in REPROCESSABLE and not state.stuck):
         raise NotReprocessable(document_id)
     if conn.execute(text(_ENSEMBLE_RUNNING), params).scalar_one():
         raise EnsembleRunning(document_id)
@@ -957,12 +975,19 @@ class PgDocuments:
     def record_attempt(self, customer_id: str, document_id: str, attempt: int, max_attempts: int) -> None:
         """Write the worker's try number on a document still in progress (received
         or clean), before the try runs, so the file list can say "Try 2 of 5".
-        A finished or rejected document is left alone. One indexed statement."""
+        A finished or rejected document is left alone. Only the document's own try or the
+        next one is written (issue 407): a job from before a read again, its tries counted
+        from before the reset, is still delivered, and its numbers must not take the count
+        over, or its last delivery (``mark_exhausted``) would fail the new reading early. A
+        try whose write was lost (the database was down) leaves the count behind; the job's
+        last delivery then fails nothing, and the stuck sweep counts on from it
+        (``requeue_stuck``). One indexed statement."""
         with unavailable(), self._db.customer(customer_id) as conn:
             conn.execute(
                 text(
                     "UPDATE documents SET attempts = :a, max_attempts = :m"
                     " WHERE customer_id = :c AND id = :d AND status IN ('received', 'clean')"
+                    " AND :a BETWEEN attempts AND attempts + 1"
                 ),
                 {"a": attempt, "m": max_attempts, "c": customer_id, "d": document_id},
             )
