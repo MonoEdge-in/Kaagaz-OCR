@@ -31,17 +31,25 @@ values. Each is quoted as printed with its unit and cited, after its label as re
 ``label_text``, 0054; a label that reads like instructions is left out); one asked for and not
 printed is said to be not printed, never worked out from the others, the drawing or the scale.
 
+**Open lists** (#381, 27 Oct 2026): "all owners", "list the owners", "every survey number" (a list
+word, an owning word or a survey, khata or plot number word, and nothing else but frame words, so
+nothing named). ``_EVERY_RECORD`` finds every land record in scope holding the field (at most
+MAX_LISTED, with how many in all, by the ``(customer_id, field)`` index), and one sentence names
+every owner, or prints every number, of them as printed and cited, each once; every record is
+listed with all its owners. From the stored values, never the top search hits, so none is skipped.
+
 Time: at most four key statements and one for the values, O(k) index probes for k keys and
 O(v) in the values of the records found.
 """
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from itertools import pairwise
 from typing import Any
 
 from sqlalchemy import text
 
-from kaagaz.answering.evidence import looks_like_instructions
+from kaagaz.answering.evidence import looks_like_instructions, valid_regions
 from kaagaz.answering.fixed_queries import ValueRef
 from kaagaz.answering.hinglish import STOP_WORDS
 from kaagaz.answering.sanitize import clean_text
@@ -106,6 +114,13 @@ _FRAME |= {*_MEASURE_WORDS, *_SIZE_WORDS, *_BORDER_WORDS, *_MAP_WORDS}
 _LAND_WORDS = frozenset(
     {"survey", "plot", "gat", "khata", "land", "property", "map", "maps", "naksha", "sketch"}
 )
+# #381, an open list of every one ("all owners", "every survey number"): its words, and the only
+# other words such a question may hold, so "all the owners of Sharma Traders" is never one.
+_EVERY = frozenset({"all", "every", "each", "list"})
+_NUMBERED = frozenset({"number", "numbers", "no", "nos"})
+_LIST_FRAME = _FRAME | _EVERY | _NUMBERED | {"gat", "khata", "lot", "lands", "these", "those", "this"}
+_LIST_FRAME |= {"document", "documents", "record", "records", "file", "files", "name", "names", "named"}
+_NUMBER_KINDS = {_SURVEY: "survey", _KHATA: "khata", _PLOT: "plot"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,6 +136,20 @@ class OwnerAsk:
     borders: bool = False  # the neighbours by side
     drawn: bool = False  # the map itself: every value printed on it
     within: tuple[str, ...] = ()  # the property fields the numbers were named as; () any of them
+    every: tuple[str, ...] = ()  # #381: an open list of every one: OWNING, or one number field
+
+
+def _listed(words: Sequence[str], owning: bool) -> tuple[str, ...]:
+    """#381: what an open list asks for: every owner (an owning word: "all owners", "list the
+    owners") or every survey, khata or plot number ("every survey number"), with a list word and
+    no word but this module's frame words; () else. O(n)."""
+    if not _EVERY.intersection(words) or not all(word in _LIST_FRAME for word in words):
+        return ()
+    kinds = {_NUMBER_WORDS[word] for word in words if word in _NUMBER_WORDS}
+    if owning:
+        return OWNING if not kinds else ()
+    numbered = any(a in _NUMBER_WORDS and b in _NUMBERED for a, b in pairwise(words))
+    return (kinds.pop(),) if len(kinds) == 1 and numbered else ()
 
 
 def _measures_asked(words: Sequence[str]) -> tuple[tuple[str, ...], bool]:
@@ -155,7 +184,8 @@ def owner_ask(question: str, resolve: Callable[[list[str]], list[tuple[str, str]
     # A map question names the land ("survey 45/2", "plot 12", "the map"): "the size of invoice 12"
     # is never one, even where a survey 12 is keyed.
     mapped = (bool(measures) or borders or drawn) and bool(_LAND_WORDS.intersection(words))
-    if not owning and not shares and not mapped:
+    every = _listed(words, owning)
+    if not owning and not shares and not mapped and not every:
         return None
     at: dict[str, int] = {}  # each candidate, and where it first starts in the question
     named_as: dict[str, str | None] = {}  # a number's field, by the word before it
@@ -174,6 +204,8 @@ def owner_ask(question: str, resolve: Callable[[list[str]], list[tuple[str, str]
     kinds = [named_as.get(key) for key in properties]
     within = () if None in kinds else tuple(dict.fromkeys(str(kind) for kind in kinds))
     unowned = bool(_UNOWNED_WORDS.intersection(words))
+    if every and not (people or places or properties):
+        return OwnerAsk(every=every)  # #381: nothing named, so every one in scope
     if not owning and not shares:
         mapping = OwnerAsk(
             properties=properties, measures=measures, borders=borders, drawn=drawn, within=within
@@ -256,6 +288,33 @@ _KEYED = text(
     """
 )
 
+# #381: every land record in scope holding one of the fields (an open list), at most :limit, with
+# how many there are in all.
+_EVERY_RECORD = text(
+    """
+    SELECT v.document_id::text AS document_id, split_part(v.record_key, ':party:', 1) AS land,
+           count(*) OVER () AS total
+    FROM extracted_values v
+    JOIN documents d ON d.customer_id = v.customer_id AND d.id = v.document_id
+    WHERE v.customer_id = :customer_id AND d.deleted_at IS NULL AND d.is_current AND d.status = 'ready'
+      AND (CAST(:s_folders AS uuid[]) IS NULL OR d.folder_id = ANY(CAST(:s_folders AS uuid[])))
+      AND (CAST(:s_tags AS uuid[]) IS NULL OR d.id IN (SELECT dt.document_id FROM document_tags dt
+        WHERE dt.customer_id = :customer_id AND dt.tag_id = ANY(CAST(:s_tags AS uuid[]))
+        GROUP BY dt.document_id HAVING count(DISTINCT dt.tag_id) = cardinality(CAST(:s_tags AS uuid[]))))
+      AND (CAST(:s_doc_types AS text[]) IS NULL OR d.doc_type = ANY(CAST(:s_doc_types AS text[])))
+      AND (CAST(:s_detected_type AS text) IS NULL OR d.detected_type = CAST(:s_detected_type AS text))
+      AND (CAST(:s_documents AS uuid[]) IS NULL OR d.id = ANY(CAST(:s_documents AS uuid[])))
+      AND (CAST(:s_from AS date) IS NULL AND CAST(:s_to AS date) IS NULL
+        OR coalesce(d.document_date, (d.created_at AT TIME ZONE CAST(:s_tz AS text))::date)
+        BETWEEN coalesce(CAST(:s_from AS date), '-infinity')
+        AND coalesce(CAST(:s_to AS date), 'infinity'))
+      AND v.field = ANY(CAST(:fields AS text[]))
+    GROUP BY v.document_id, split_part(v.record_key, ':party:', 1), d.display_name
+    ORDER BY lower(d.display_name), document_id, land
+    LIMIT :limit
+    """
+)
+
 _SHARES_AS_PRINTED = text(
     """
     SELECT v.record_key, k.latin, v.id::text AS value_id, v.document_id::text AS document_id,
@@ -317,6 +376,18 @@ class PgOwners:
         rows = self._rows(customer_id, _KEYED, {"kind": kind, "keys": list(keys), "fields": fields}, scope)
         return [(row.document_id, row.land) for row in rows]
 
+    def every(
+        self, customer_id: str, fields: Sequence[str], scope: Scope, limit: int
+    ) -> tuple[int, list[tuple[str, str]]]:
+        """#381: how many land records in ``scope`` hold one of ``fields``, and the first ``limit``
+        (document_id, record) by document name; (0, []) while the ``land_facts`` switch is off."""
+        with self._db.customer(customer_id) as conn:
+            if not ai_settings.switch_on(conn, "land_facts", customer_id):
+                return 0, []
+            params = {"customer_id": customer_id, "fields": list(fields), "limit": limit, **scope.params()}
+            rows = list(conn.execute(_EVERY_RECORD, params))
+        return (int(rows[0].total) if rows else 0), [(row.document_id, row.land) for row in rows]
+
     def shares(
         self, customer_id: str, documents: Sequence[str], scope: Scope
     ) -> list[tuple[str, str | None, ValueRef]]:
@@ -369,6 +440,8 @@ def reply(source: PgOwners, customer_id: str, ask: OwnerAsk, scope: Scope) -> Re
     """The answer to ``ask`` from ``source``, or None when no land record matches any of it
     (the other routes then answer). Every number in it is a count of what it lists or cites,
     a figure as printed and cited, or a page."""
+    if ask.every:
+        return _every_reply(source, customer_id, ask.every, scope)
     if ask.measures or ask.borders or ask.drawn:
         return _map_reply(source, customer_id, ask, scope)
     owned = source.owned(customer_id, ask.people, scope) if ask.people else []
@@ -405,6 +478,39 @@ def reply(source: PgOwners, customer_id: str, ask: OwnerAsk, scope: Scope) -> Re
             text = f"{_called(land)} names {shown} and {len(hidden)} more owners."
             sentences.append((text, [p.name for p in hidden]))
     return Reply(True, sentences, [_document(land, ask.people) for land in records], [])
+
+
+def _every_reply(source: PgOwners, customer_id: str, fields: Sequence[str], scope: Scope) -> Reply | None:
+    """#381, an open list: every owner, or every survey, khata or plot number, the land records in
+    ``scope`` print, from the stored values (never the top search hits, so none is skipped), each
+    name or number as printed and cited, and each record listed with every owner it names. Past
+    MAX_LISTED records the sentence says how many it lists of how many. None when no record holds
+    one (the other routes then answer). Two statements, and one for the values."""
+    total, records = source.every(customer_id, fields, scope, MAX_LISTED)
+    lands = _lands(source.shares(customer_id, sorted({d for d, _ in records}), scope))
+    kept = [lands[record] for record in records if record in lands]
+    on = f"{len(kept)} land record{'' if len(kept) == 1 else 's'}"
+    on = on if len(kept) == total else f"the first {len(kept)} of {total} land records"
+    seen: dict[str, list[ValueRef]] = {}  # each name or number once, as first printed: its values
+    if tuple(fields) == OWNING:
+        for party in (p for land in kept for p in land.owning()):
+            seen.setdefault(party.person, []).append(party.name)
+        noun, verb = "owner", "name"
+    else:
+        field_ = fields[0]
+        for land in kept:
+            for ref in (land.survey, land.khata, land.plot):
+                # A number with no spot on its page is never shown (decision 2: it can't be cited).
+                if ref is not None and ref.field == field_ and valid_regions([ref.region]):
+                    seen.setdefault(" ".join(clean_text(ref.value_text).casefold().split()), []).append(ref)
+        noun, verb = f"{_NUMBER_KINDS[field_]} number", "print"
+    if not seen:
+        return None
+    count = f"{len(seen)} {noun}{'' if len(seen) == 1 else 's'}"
+    named = _and([" ".join(clean_text(refs[0].value_text).split()) for refs in seen.values()])
+    head = f"Your documents {verb} {count} on {on}: {named}."
+    documents = [_document(land, tuple(p.person for p in land.owning())) for land in kept]
+    return Reply(True, [(head, [ref for refs in seen.values() for ref in refs])], documents, [])
 
 
 def _lands(values: Sequence[tuple[str, str | None, ValueRef]]) -> dict[tuple[str, str], _Land]:

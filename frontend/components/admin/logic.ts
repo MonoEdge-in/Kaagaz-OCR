@@ -13,6 +13,8 @@ import type {
   CustomerSettings,
   DocumentStatus,
   Me,
+  MemberNumbers,
+  MemberPeriod,
   PageRoute,
   Role,
   Stats,
@@ -376,6 +378,65 @@ export function breakdowns(stats: Stats): Breakdown[] {
       ]),
     },
   ];
+}
+
+// --- #386: each member's numbers, and the sort shared with the operator's table (#387) ---
+
+export const MEMBER_PERIODS: readonly { id: MemberPeriod; label: string }[] = [
+  { id: "month", label: "This month" },
+  { id: "30d", label: "Last 30 days" },
+  { id: "all", label: "All time" },
+];
+
+export type SortDir = "ascending" | "descending";
+export interface SortState<K extends string> {
+  column: K;
+  dir: SortDir;
+}
+
+/**
+ * The sort after a press on `column`'s header: the same column turns round; another starts
+ * with the most first, or A to Z for a name.
+ */
+export function nextSort<K extends string>(current: SortState<K>, column: K, nameColumn: K): SortState<K> {
+  if (current.column === column) return { column, dir: current.dir === "ascending" ? "descending" : "ascending" };
+  return { column, dir: column === nameColumn ? "ascending" : "descending" };
+}
+
+/** `rows` sorted by `value`; a null (never active) always goes last, and ties go by name. */
+export function sortedBy<T>(
+  rows: readonly T[],
+  value: (row: T) => number | string | null,
+  dir: SortDir,
+  name: (row: T) => string,
+): T[] {
+  const sign = dir === "ascending" ? 1 : -1;
+  return [...rows].sort((a, b) => {
+    const [x, y] = [value(a), value(b)];
+    if (x !== y) {
+      if (x === null) return 1;
+      if (y === null) return -1;
+      const order = typeof x === "string" && typeof y === "string" ? x.localeCompare(y) : Number(x) - Number(y);
+      if (order !== 0) return sign * order;
+    }
+    return name(a).localeCompare(name(b));
+  });
+}
+
+export type MemberColumn = "name" | "documents_uploaded" | "pages_read" | "questions_asked" | "values_verified" | "last_active_at";
+
+export const MEMBER_COLUMNS: readonly { id: MemberColumn; label: string }[] = [
+  { id: "name", label: "Member" },
+  { id: "documents_uploaded", label: "Files uploaded" },
+  { id: "pages_read", label: "Pages read" },
+  { id: "questions_asked", label: "Questions asked" },
+  { id: "values_verified", label: "Values verified" },
+  { id: "last_active_at", label: "Last active" },
+];
+
+export function sortMembers(members: readonly MemberNumbers[], sort: SortState<MemberColumn>): MemberNumbers[] {
+  const value = (member: MemberNumbers) => (sort.column === "name" ? member.display_name : member[sort.column]);
+  return sortedBy(members, value, sort.dir, (member) => member.display_name);
 }
 
 // The audit details the Activity tab shows, in words; any other key (an id, the model a

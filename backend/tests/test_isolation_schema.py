@@ -400,6 +400,15 @@ OPERATOR_RIGHTS = {
         " clarify bigint, rated bigint, useful bigint)",
         EMPTY_PATH,
     ),
+    # Changed on purpose (#386/#387, 27 Oct 2026): 0055, read-only, each organisation's numbers,
+    # counts and codes only.
+    "kaagaz_op_org_numbers": (
+        "TABLE(customer_id uuid, documents bigint, documents_in_trash bigint, pages_read bigint,"
+        " pages_by_route jsonb, failed_documents jsonb, active_users bigint, questions bigint,"
+        " ai_calls bigint, ai_input_tokens bigint, ai_output_tokens bigint, ai_cost_usd numeric,"
+        " ai_cost_unknown_calls bigint)",
+        EMPTY_PATH,
+    ),
 }
 # The only tables without customer_id: the customers themselves, alembic's own, the
 # platform operator's (0015), the workers' reader status (0022) and the model catalogue
@@ -733,6 +742,8 @@ INSIGHT_READERS = (
     "kaagaz_op_quality",
     "kaagaz_op_model_board",
     "kaagaz_op_answer_weeks",  # 0051, PRD 6 F3
+    # Changed on purpose (#386/#387, 27 Oct 2026): 0055, each organisation's numbers.
+    "kaagaz_op_org_numbers",
 )
 ENABLED = "o.id = p_operator AND NOT o.disabled AND o.totp_enabled_at IS NOT NULL"
 _PERSON_OR_CONTENT = re.compile(

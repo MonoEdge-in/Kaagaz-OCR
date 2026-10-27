@@ -1031,6 +1031,29 @@ export interface Stats {
   scan_tokens?: { input_tokens: number; output_tokens: number };
 }
 
+/** #386: the admin's members table, GET /admin/members?period=. No money, no tokens. */
+export type MemberPeriod = "month" | "30d" | "all";
+
+export interface MemberNumbers {
+  user_id: string;
+  display_name: string;
+  email: string;
+  role: Role;
+  disabled: boolean;
+  documents_uploaded: number; // every version, those in Trash too
+  pages_read: number; // the pages of those files that were read, each page once
+  questions_asked: number; // a clarifying question back not counted
+  values_verified: number;
+  last_active_at: string | null; // ISO time; null: never signed in
+}
+
+export interface MembersReply {
+  period: MemberPeriod;
+  from: string | null; // the first day counted; null: all time
+  to: string; // today
+  members: MemberNumbers[];
+}
+
 /** The signed-in user's own story about a document's family (GET / PUT /documents/{id}/my-story).
  * Only its author ever gets it. The user's text: shown as text only, never logged. */
 export interface MyStory {
@@ -1412,6 +1435,30 @@ export interface QualityRow {
   corrections: number;
   corrections_second: number | null;
   corrections_typed: number | null;
+}
+
+/** #387: one organisation's numbers for the period (GET /operator/org-numbers?days=). */
+export interface OrgNumbers {
+  organisation_id: string;
+  documents: number; // files uploaded in the period, every version, those in Trash too
+  documents_in_trash: number;
+  pages_read: number; // the pages of those files that were read, each page once
+  pages_by_route: Record<string, number>; // how they were read: ai, local, text_layer, cells, blank, ocr, or a later route
+  failed_documents: Record<string, number>; // failed, rejected or not readable yet, by reason code
+  active_users: number; // people who did anything the activity log records
+  questions: number; // replies to questions, a clarifying question back not counted
+  ai_calls: number; // AI calls not served from the cache
+  ai_input_tokens: number;
+  ai_output_tokens: number;
+  ai_cost_usd: number | null; // what OpenRouter reported; null: none known
+  ai_cost_unknown_calls: number; // calls whose cost is not known or only estimated
+}
+
+export interface OrgNumbersReply {
+  from: string;
+  to: string;
+  ai_enabled: boolean;
+  organisations: OrgNumbers[];
 }
 
 /** GET /operator/quality?days= */

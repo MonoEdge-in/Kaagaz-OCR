@@ -52,6 +52,31 @@ def test_the_queries_given_another_companys_keys_and_ids_find_nothing(db: Databa
     assert queries.shares(b, [a_land], EVERYTHING) == []
 
 
+def test_an_open_list_of_every_owner_and_number_finds_only_its_own_companys_records(db: Database) -> None:
+    """#381: "all owners" and "every survey number" read every record in scope: only their own."""
+    (a, _), (b, _), (c, _) = new_customer(db), new_customer(db), new_customer(db)
+    a_land = add_land(db, a, "A.pdf", [("Nikhil Varde", None)], survey="45/2")
+    b_land = add_land(db, b, "B.pdf", [("Asha Shinde", None)], survey="77")
+    answers, queries = (
+        AnswerService(db=db, model=None, settings=make_settings(), clock=lambda: NOW),
+        PgOwners(db),
+    )
+
+    for customer, own, other, name, number in (
+        (a, a_land, b_land, "Nikhil", "45/2"),
+        (b, b_land, a_land, "Asha", "77"),
+    ):
+        for question, said in (("Who are all the owners?", name), ("List every survey number", number)):
+            answer = answers.answer(customer, question).to_json()
+            assert said in answer["sentences"][0]["text"] and other not in json.dumps(answer)
+            assert {d["document_id"] for d in answer["documents"]} == {own}
+    for question in ("Who are all the owners?", "List every survey number"):
+        for_c = answers.answer(c, question).to_json()
+        assert a_land not in json.dumps(for_c) and b_land not in json.dumps(for_c)
+    assert queries.every(c, ["land_owner_name"], EVERYTHING, 50) == (0, [])
+    assert queries.every(b, ["land_survey_number"], EVERYTHING, 50) == (1, [(b_land, "land:1")])
+
+
 def test_a_map_question_finds_only_its_own_companys_map_values(db: Database) -> None:
     (a, _), (b, _) = new_customer(db), new_customer(db)
     printed = [("length", "45.5 m"), ("boundary_east", "46")]
