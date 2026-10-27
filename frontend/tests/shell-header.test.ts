@@ -157,11 +157,15 @@ describe("G6 and G12: the account menu", () => {
     expect(menu.indexOf(">Sign out everywhere<")).toBeGreaterThan(menu.indexOf(">Sign out<"));
   });
 
-  it("styles Sign out everywhere destructive, and Sign out quiet", () => {
+  // Changed on purpose (issue 373, 27 Oct 2026): Sign out is the menu's main button, and Sign
+  // out everywhere a quiet item in the danger colour, no longer louder than Sign out.
+  it("styles Sign out as the main button, and Sign out everywhere quiet in the danger colour", () => {
     const button = (words: string) => menu.slice(menu.lastIndexOf("<button", menu.indexOf(`>${words}<`)), menu.indexOf(`>${words}<`));
-    expect(button("Sign out everywhere")).toContain("btn btn-destructive");
-    expect(button("Sign out")).toContain("btn btn-quiet");
-    expect(button("Sign out")).not.toContain("btn-destructive");
+    expect(button("Sign out everywhere")).toContain("btn btn-quiet");
+    expect(button("Sign out everywhere")).toContain("signOutEverywhere");
+    expect(button("Sign out everywhere")).not.toContain("btn-destructive");
+    expect(button("Sign out")).toContain("btn btn-primary");
+    expect(rule(shellCss, ".signOutEverywhere")).toMatch(/--btn-fg: var\(--critical\);/);
   });
 
   it("asks in a dialog first, which focuses Cancel and not the destructive button", () => {

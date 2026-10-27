@@ -897,7 +897,8 @@ def audit_entry(row: RowMapping, names: audit.Names = audit.NO_NAMES, *, full: b
     """``AuditEntry`` (File management A5): names read now, a deleted document by
     DELETED_DOCUMENT. ``full`` (the admin's log): every detail but money; otherwise only
     ``audit.SHOWN_DETAILS``. The ids in details come with their names: ``folder_path``,
-    ``parent_path``, and ``from_name`` and ``to_name`` for an owner change."""
+    ``parent_path``, and ``from_name`` and ``to_name`` for an owner change. An account event
+    (a ``user`` target) names the person it is about: ``subject_name`` (issue 375)."""
     raw = row["details"] if isinstance(row["details"], dict) else {}
     # Older org.models_set rows hold the operator's budget_usd: never shown to the org.
     if full:
@@ -928,6 +929,7 @@ def audit_entry(row: RowMapping, names: audit.Names = audit.NO_NAMES, *, full: b
         "actor_name": None if actor is None else names.users.get(str(actor)),
         "target_type": row["target_type"],
         "target_id": row["target_id"],
+        **({"subject_name": names.users.get(str(row["target_id"]))} if row["target_type"] == "user" else {}),
         "family_id": None if row["family_id"] is None else str(row["family_id"]),
         "document": document,
         "folder": None

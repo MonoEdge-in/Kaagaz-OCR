@@ -90,8 +90,9 @@ function columnsAt(css: string, container: string, width: number): Map<string, n
   return widths;
 }
 
-/** The least room Name and Status share in the documents table (11rem each). */
-const NAME_AND_STATUS_REM = 22;
+/** The least room Name keeps in the documents table. Changed on purpose (issue 371, 27 Oct
+ * 2026): Status has its own 11rem column now, counted with the others; Name takes the rest. */
+const NAME_REM = 11;
 
 /** The least room the admin Users table's User column (name and e-mail) keeps. */
 const USER_REM = 11;
@@ -183,7 +184,7 @@ describe("layout guards", () => {
   });
 
   it("leaves Name and Status room at each width the documents table starts at", () => {
-    const found = budgets(DOCS_CSS, "docs-list", NAME_AND_STATUS_REM);
+    const found = budgets(DOCS_CSS, "docs-list", NAME_REM);
     // Changed on purpose (UI audit, 16 Oct 2026): D3, a table from 36rem (a laptop's list with the
     // side nav and the folder tree), Type back at 48rem, every column from 64rem.
     // Changed on purpose (PRD 1, screens): File management F5's columns come in one by one,
@@ -193,7 +194,8 @@ describe("layout guards", () => {
     const css = read(DOCS_CSS);
     expect(columnsAt(css, "docs-list", 36).has("typeColumn")).toBe(false);
     expect(columnsAt(css, "docs-list", 48).has("typeColumn")).toBe(true);
-    const at48 = [...columnsAt(css, "docs-list", 48).values()].reduce((sum, rem) => sum + rem, NAME_AND_STATUS_REM);
+    const at48 = [...columnsAt(css, "docs-list", 48).values()].reduce((sum, rem) => sum + rem, NAME_REM);
+    expect(columnsAt(css, "docs-list", 36).get("statusColumn")).toBe(11);
     expect(at48).toBeLessThanOrEqual(48);
   });
 

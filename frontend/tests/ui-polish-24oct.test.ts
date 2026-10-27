@@ -69,7 +69,8 @@ describe("the rest of the screens", () => {
   it("starts the lines under a document's name under its words, and Review is a small button", () => {
     const docs = css("components/documents/Documents.module.css");
     expect(docs).toMatch(/\.nameCell \{\s*--name-indent: calc\(24px \+ var\(--space-2\)\);/);
-    expect(docs).toMatch(/\.facts,\s*\.inFolder,\s*\.bandType,\s*\.newerVersion,\s*\.nameCell > ul \{\s*margin-inline-start: var\(--name-indent\);/);
+    // Changed on purpose (issue 371, 27 Oct 2026): "In <folder>" is on the facts' line, indented with it.
+    expect(docs).toMatch(/\.facts,\s*\.bandType,\s*\.newerVersion,\s*\.nameCell > ul \{\s*margin-inline-start: var\(--name-indent\);/);
     expect(docs).toMatch(/\.statusAction \{[^}]*border-radius: var\(--k-r-pill\);/);
   });
 

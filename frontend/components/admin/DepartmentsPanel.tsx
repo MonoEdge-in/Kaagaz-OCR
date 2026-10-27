@@ -4,10 +4,12 @@
 // with Rename and Move up / Move down, and a form to add one. A department is a top-level
 // folder of kind department; anyone can still make their own folders anywhere. Every name
 // is React text. The server refuses the change to anyone but an admin (403).
+// Issue 376: one error at a time, in the word "department". An add that failed says why under
+// its own form, on a line of its own, so the Add button never moves; typing clears it.
 
 import { useEffect, useId, useState } from "react";
 import type { FormEvent } from "react";
-import { libraryErrorText, folderNameProblem } from "@/components/documents/library";
+import { departmentNameProblem, libraryErrorText } from "@/components/documents/library";
 import { departmentsOf, nextSortOrder, reorder } from "@/components/files/departments";
 import fileStyles from "@/components/files/Files.module.css";
 import { FILES_TEXT } from "@/components/files/words";
@@ -20,6 +22,7 @@ import styles from "./Admin.module.css";
 export function DepartmentsPanel({ initial }: { initial?: Folder[] }) {
   const [folders, setFolders] = useState<Folder[] | null>(initial ?? null);
   const [error, setError] = useState<string | null>(null);
+  const [addError, setAddError] = useState<string | null>(null); // said under the add form
   const [said, setSaid] = useState("");
   const [busy, setBusy] = useState(false);
   const [renaming, setRenaming] = useState<string | null>(null);
@@ -43,15 +46,16 @@ export function DepartmentsPanel({ initial }: { initial?: Folder[] }) {
 
   const departments = departmentsOf(folders ?? []);
 
-  async function run(work: () => Promise<unknown>, done: string) {
+  async function run(work: () => Promise<unknown>, done: string, fail: (text: string) => void = setError) {
     setBusy(true);
     setError(null);
+    setAddError(null);
     try {
       await work();
       setSaid(done);
       setAttempt((n) => n + 1);
     } catch (caught) {
-      setError(libraryErrorText(caught, "folder"));
+      fail(libraryErrorText(caught, "department"));
     } finally {
       setBusy(false);
     }
@@ -133,8 +137,14 @@ export function DepartmentsPanel({ initial }: { initial?: Folder[] }) {
           label={FILES_TEXT.newDepartment}
           submitLabel={FILES_TEXT.addDepartment}
           busy={busy}
+          error={addError}
+          onEdit={() => setAddError(null)}
           onSubmit={(name) =>
-            void run(() => createFolder(name, null, { sort_order: nextSortOrder(departments) }), `${name} added.`)
+            void run(
+              () => createFolder(name, null, { sort_order: nextSortOrder(departments) }),
+              `${name} added.`,
+              setAddError,
+            )
           }
         />
       )}
@@ -148,11 +158,15 @@ export function DepartmentsPanel({ initial }: { initial?: Folder[] }) {
   );
 }
 
-function NameForm({
+/** A department's name, to add or rename one. `error`: the server's refusal of the last add,
+ * shown in the same one place as a name's own problem, which takes its place. */
+export function NameForm({
   start,
   label = FILES_TEXT.nameLabel,
   submitLabel,
   busy,
+  error = null,
+  onEdit,
   onSubmit,
   onCancel,
 }: {
@@ -160,16 +174,20 @@ function NameForm({
   label?: string;
   submitLabel: string;
   busy: boolean;
+  error?: string | null;
+  onEdit?(): void;
   onSubmit(name: string): void;
   onCancel?(): void;
 }) {
   const id = useId();
   const [name, setName] = useState(start);
   const [problem, setProblem] = useState<string | null>(null);
+  const shown = problem ?? error;
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const found = folderNameProblem(name);
+    const found = departmentNameProblem(name);
     setProblem(found);
+    onEdit?.(); // the last refusal goes: one error at a time
     if (found) return;
     onSubmit(name.trim());
     if (!onCancel) setName("");
@@ -184,15 +202,14 @@ function NameForm({
           value={name}
           maxLength={100}
           autoComplete="off"
-          aria-invalid={problem ? true : undefined}
-          aria-describedby={problem ? `${id}-error` : undefined}
-          onChange={(event) => setName(event.target.value)}
+          aria-invalid={shown ? true : undefined}
+          aria-describedby={shown ? `${id}-error` : undefined}
+          onChange={(event) => {
+            setName(event.target.value);
+            setProblem(null);
+            onEdit?.();
+          }}
         />
-        {problem && (
-          <p id={`${id}-error`} className="error-text" role="alert">
-            {problem}
-          </p>
-        )}
       </div>
       {onCancel && (
         <button type="button" className="btn" onClick={onCancel}>
@@ -202,6 +219,12 @@ function NameForm({
       <button type="submit" className="btn" disabled={busy}>
         {submitLabel}
       </button>
+      {/* A line of its own under the field and buttons, so the button stays where it is. */}
+      {shown && (
+        <p id={`${id}-error`} className={`error-text ${fileStyles.departmentError}`} role="alert">
+          {shown}
+        </p>
+      )}
     </form>
   );
 }

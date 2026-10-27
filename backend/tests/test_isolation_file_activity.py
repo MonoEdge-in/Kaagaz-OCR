@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 from sqlalchemy import text
 
+from kaagaz.db import audit
 from kaagaz.db.engine import Database
 from tests.test_api_support import Api
 from tests.test_file_management_activity_db import ask, every
@@ -42,6 +43,31 @@ def test_bs_ids_reach_none_of_bs_activity_through_a(db: Database) -> None:
         assert a.client.get("/api/admin/audit/export", params=params).text.splitlines()[1:] == [], params
     assert b_document not in {item["target_id"] for item in a.client.get("/api/dashboard").json()["activity"]}
     assert [item["target_id"] for item in every(b, f"/api/folders/{b_folder}/activity")] == [b_document]
+
+
+def test_an_account_event_names_its_person_and_never_another_customers(db: Database) -> None:
+    """Issue 375: a user row names the person it is about (``subject_name``), read inside the
+    customer: a row of A's that holds B's user id names nobody."""
+    api = Api(db)
+    a, b = api.new_admin(), api.new_admin()
+    priya, _ = api.add_user(a.customer_id, "member")
+    with db.customer(a.customer_id) as conn:
+        for target in (priya, b.user_id):  # as the command line's create-user writes it
+            audit.record(
+                conn,
+                a.customer_id,
+                actor_user_id=None,
+                action="user.create",
+                target_type="user",
+                target_id=target,
+                details={"role": "member"},
+            )
+    rows = {
+        item["target_id"]: item for item in every(a, "/api/admin/audit") if item["action"] == "user.create"
+    }
+    assert rows[priya]["subject_name"] == "Test member"  # the control
+    assert rows[priya]["actor_id"] is None
+    assert rows[b.user_id]["subject_name"] is None
 
 
 def test_search_filters_and_my_words_stay_with_their_customer(db: Database) -> None:

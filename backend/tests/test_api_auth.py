@@ -381,6 +381,23 @@ def test_logout_clears_the_cookie(db: Database) -> None:
 
 
 @pytest.mark.db
+def test_the_session_probe_answers_200_signed_in_or_not(db: Database) -> None:
+    """Issue 378: GET /auth/session is /auth/me with no 401 for a visit with no session (no
+    cookie, a signed-out one, a disabled user's), so the browser logs no expected error."""
+    api = Api(db)
+    assert api.client().get("/api/auth/session").json() == {"signed_in": False}  # no cookie at all
+    signed = api.new_signed()
+    reply = signed.client.get("/api/auth/session")
+    assert reply.status_code == 200
+    assert reply.json() == {"signed_in": True, "me": signed.client.get("/api/auth/me").json()}
+    with db.customer(signed.customer_id) as conn:
+        conn.execute(text("UPDATE users SET disabled = true WHERE id = :u"), {"u": signed.user_id})
+    reply = signed.client.get("/api/auth/session")
+    assert (reply.status_code, reply.json()) == (200, {"signed_in": False})
+    assert signed.client.get("/api/auth/me").status_code == 401  # /auth/me is unchanged
+
+
+@pytest.mark.db
 def test_disabling_a_user_ends_their_session_on_the_next_request(db: Database) -> None:
     api = Api(db)
     signed = api.new_signed()
