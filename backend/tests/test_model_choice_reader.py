@@ -101,8 +101,9 @@ def _ledger() -> Iterator[_Ledger]:
 class PortableSchemaTest(unittest.TestCase):
     """FINAL 9: PAGE_SCHEMA is strict-portable, and the local checks keep every bound."""
 
-    def test_the_prompt_version_is_g2_in_the_reader_and_in_ocr(self) -> None:
-        self.assertEqual(GEMINI_OCR_PROMPT_VERSION, "g2")
+    def test_the_prompt_version_is_g3_in_the_reader_and_in_ocr(self) -> None:
+        # Changed on purpose (#383, #382): g3 adds each line's block, "note" and col_span.
+        self.assertEqual(GEMINI_OCR_PROMPT_VERSION, "g3")
         self.assertIs(GEMINI_OCR_PROMPT_VERSION, ocr.READER_PROMPT_VERSION)
 
     def test_no_numeric_or_length_bound_and_every_object_is_closed(self) -> None:
@@ -144,21 +145,21 @@ class DocumentModelTest(unittest.TestCase):
         (call,) = built.client.calls
         self.assertEqual((call.model, call.provider), (CLAUDE, "google-vertex"))
         self.assertEqual(read.read_by, CLAUDE)
-        key = PageKey(CUSTOMER, DOCUMENT, 1, pixels_sha256(image), CLAUDE, "g2")
+        key = PageKey(CUSTOMER, DOCUMENT, 1, pixels_sha256(image), CLAUDE, GEMINI_OCR_PROMPT_VERSION)
         self.assertEqual(cache.puts, [key])
 
     def test_the_version_names_the_model_that_read_the_document(self) -> None:
         """R11: processing_runs.ocr_engine and reader_outputs.reader_version come from
         ``version``, asked after the document closes: the chosen model, else OCR_MODEL."""
         built = build(reply(value(line("Total"))), reply(value(line("Total"))))
-        self.assertEqual(built.engine.version, f"{MODEL};prompt=g2")  # no document yet
+        self.assertEqual(built.engine.version, f"{MODEL};prompt=g3")  # no document yet
         with built.engine.document(_pages(FakeCache(), CLAUDE, "google-vertex")):
             built.engine.read_page(page(), page_no=1)
-            self.assertEqual(built.engine.version, f"{CLAUDE};prompt=g2")
-        self.assertEqual(built.engine.version, f"{CLAUDE};prompt=g2")  # asked after it closed
+            self.assertEqual(built.engine.version, f"{CLAUDE};prompt=g3")
+        self.assertEqual(built.engine.version, f"{CLAUDE};prompt=g3")  # asked after it closed
         with built.engine.document(_pages(FakeCache())):  # no model chosen: OCR_MODEL
             built.engine.read_page(page(), page_no=1)
-        self.assertEqual(built.engine.version, f"{MODEL};prompt=g2")
+        self.assertEqual(built.engine.version, f"{MODEL};prompt=g3")
 
     def test_without_a_document_or_a_chosen_model_ocr_model_reads(self) -> None:
         built = build(reply(value(line("Total"))), reply(value(line("Total"))))
