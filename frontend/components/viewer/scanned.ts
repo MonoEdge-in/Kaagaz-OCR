@@ -180,6 +180,19 @@ export function lineMarked(line: Pick<ReadLine, "region">, region: Region | null
   return x >= rx0 - e && x <= rx1 + e && y >= ry0 - e && y <= ry1 + e;
 }
 
+// The reader's mark for a part of a line it could not read (page_quality.ILLEGIBLE_MARK).
+const UNREAD = "[?]";
+// Vrushit UAT 2 (27 Oct 2026, #417): said over the lines while a reviewer can fix a word in them.
+export const FIX_NOTE = "To type the right word in place of [?] or a marked word, press its line or Fix text.";
+
+/** The fix box under a line (#417): what it asks, and the text it starts with (nothing for an
+ * unread [?]; else the word as it reads now, to correct). */
+export function fixBox(flag: Pick<WordFlag, "text">): { hint: string; draft: string } {
+  return flag.text === UNREAD
+    ? { hint: "Type the word you see on the page in place of [?].", draft: "" }
+    : { hint: `Type the word you see on the page in place of '${flag.text}'.`, draft: flag.text };
+}
+
 /**
  * The line as read with the words people fixed in it (Vrushit UAT, 25 Oct 2026: a "[?]" typed
  * in through Fix text). The line's flagged words, fixed or not, are walked left to right on the

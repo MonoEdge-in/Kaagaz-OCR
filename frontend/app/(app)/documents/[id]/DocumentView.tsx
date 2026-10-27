@@ -99,7 +99,7 @@ import { highlightsOf, initialSelection, pageChange } from "@/components/viewer/
 import { selectSpot } from "@/components/viewer/selection";
 import type { Selection } from "@/components/viewer/selection";
 import { canReview } from "@/components/review/review";
-import { flagDomId, trustText } from "@/components/review/wordReview";
+import { flagDomId, saveWord, trustText } from "@/components/review/wordReview";
 import { Timeline } from "@/components/activity/Timeline";
 import { ACTIVITY_TEXT } from "@/components/activity/words";
 import { DetailsPanel } from "@/components/files/DetailsPanel";
@@ -413,6 +413,14 @@ export function DocumentView({
       return;
     }
     startReview(flag);
+  };
+  // Vrushit UAT 2 (#417): a word typed in place in Text is saved as the review's Edit (saveWord),
+  // or confirmed when it is left as it reads; the words are asked for again after it, or after a 409.
+  const fixWord = async (flag: WordFlag, typed: string) => {
+    const done = await saveWord(detail.id, flag, typed === flag.text ? null : typed);
+    if (done.ok) setAnnouncement(done.message);
+    if (done.ok || done.reload) review.reload();
+    return done;
   };
   const exitReview = () => {
     setReviewing(false);
@@ -766,7 +774,7 @@ export function DocumentView({
                     onClose={() => document.getElementById(tabId("scanned"))?.focus()}
                     onAddMeaning={addMeaning}
                     flags={pageFlags}
-                    onFix={review.status?.can_review && detail.deleted_at === null ? startReview : undefined}
+                    onFix={review.status?.can_review && detail.deleted_at === null ? fixWord : undefined}
                     // Every flagged word holds its place; only a person's edit changes its text (an
                     // Ensemble proposal is not shown as fixed until a person takes it).
                     fixed={review.flags
