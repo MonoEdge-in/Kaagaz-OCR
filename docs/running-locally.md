@@ -288,7 +288,10 @@ Lambda's `INSTANCE_ID` and `WAKE_TOKEN` live only in the Lambda console.
 **What runs by itself.** `kaagaz-deploy.timer` runs `infra/ec2/deploy.sh` 2
 minutes after boot and every 5 minutes: when `origin/production` has a new
 commit it deploys it (Deploys and rollback, below; 1 to 2 minutes of downtime
-while the app restarts), otherwise it starts anything that is down. Each run
+while the app restarts), otherwise it starts anything that is down and, when
+`infra/caddy/Caddyfile` differs from the copy in `~/.kaagaz-caddyfile`, hands it
+to Caddy with a graceful `caddy reload` (#246 D8; a file Caddy refuses leaves the
+old config running and logs `caddy reload failed`). Each run
 logs one line, the commit and `deployed`, `unchanged`, `held`, `failed` or
 `rolled back to <commit>` (`journalctl -u kaagaz-deploy -n 50`); a failed build
 or migration is tried again on the next run. After a good deploy it removes build cache unused for 7 days
