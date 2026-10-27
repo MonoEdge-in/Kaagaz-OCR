@@ -158,11 +158,23 @@ def test_the_caddyfile_sends_api_unchanged_to_the_api_and_the_rest_to_the_fronte
         # Changed on purpose (final polish, 16 Oct 2026): HSTS on the HTTPS site (security checklist).
         'header Strict-Transport-Security "max-age=31536000"',
         # handle, not handle_path: the API's routes are mounted under /api (kaagaz/api/app.py).
+        # Changed on purpose (#246, 27 Oct 2026): A7, each upstream is tried again for 30 s
+        # while a deploy restarts it, then a short "updating" note instead of a bare 502.
         "handle /api/* {",
-        "reverse_proxy api:8000",
+        "reverse_proxy api:8000 {",
+        "lb_try_duration 30s",
+        "lb_try_interval 500ms",
+        "}",
         "}",
         "handle {",
-        "reverse_proxy frontend:3000",
+        "reverse_proxy frontend:3000 {",
+        "lb_try_duration 30s",
+        "lb_try_interval 500ms",
+        "}",
+        "}",
+        "handle_errors 502 503 504 {",
+        'header Retry-After "60"',
+        'respond "Kaagaz is updating. Please try again in a minute." 503',
         "}",
         "log {",
         "output stdout",

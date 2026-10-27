@@ -5,7 +5,9 @@
 // waited, for the whole platform and per organisation; and how many deleted
 // organisations were removed for good and checked again a day later. PRD 5 U9:
 // each worker's reader status (working, slow, down, key problem, or not
-// reporting after 2 minutes) and the jobs waiting in each queue lane.
+// reporting after 2 minutes) and the jobs waiting in each queue lane. #246 O1: the Release
+// card, the commit the API runs; the deployer's last attempt and last good release are in
+// files on the server that no container reads, so the card points to the deploy log.
 
 import { useEffect, useState } from "react";
 import table from "@/components/documents/Table.module.css";
@@ -14,7 +16,15 @@ import { formatDateTime, formatNumber } from "@/lib/format";
 import type { PlatformHealth } from "@/lib/types";
 import { LoadFailed } from "./LoadFailed";
 import { countText, operatorErrorMessage, orgStatus } from "./logic";
-import { countsInWords, failureWords, queueWords, readerWords, statusWords, waitWords } from "./platform";
+import {
+  commitWords,
+  countsInWords,
+  failureWords,
+  queueWords,
+  readerWords,
+  statusWords,
+  waitWords,
+} from "./platform";
 import admin from "@/components/admin/Admin.module.css";
 import columns from "./Platform.module.css";
 import styles from "./Operator.module.css";
@@ -102,6 +112,25 @@ export function HealthView() {
           </>
         )}
       </section>
+      {health.release !== undefined && (
+        <section className={admin.section} aria-labelledby="health-release-heading">
+          <h2 id="health-release-heading" className={admin.sectionHeading}>
+            Release
+          </h2>
+          <dl className={admin.tiles}>
+            <div className={admin.tile}>
+              <dt className={admin.tileLabel}>Running commit</dt>
+              <dd className={`${admin.tileValue} mono`} title={health.release.commit}>
+                {commitWords(health.release.commit)}
+              </dd>
+            </div>
+          </dl>
+          <p className={styles.summary}>
+            The last deploy and the last good release are in the server&apos;s deploy log
+            (journalctl -u kaagaz-deploy).
+          </p>
+        </section>
+      )}
       {health.organisations.length > 0 && (
         <section className={admin.section} aria-labelledby="health-orgs-heading">
           <h2 id="health-orgs-heading" className={admin.sectionHeading}>

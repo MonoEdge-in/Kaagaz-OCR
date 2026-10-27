@@ -3,9 +3,21 @@
 The URL comes from DATABASE_URL only, so no connection string is ever written
 into a file (CLAUDE.md never-do 4). Migrations run as the connecting user (the
 table owner), never as the restricted app role.
+
+A database ahead of the code (#246 M2): ``alembic upgrade head`` on a database whose
+revision this code does not have (an older image after a rollback, or a revert of a pull
+request that carried a migration) changes nothing, logs ``database_ahead`` and exits 0, so
+the older release starts on the newer schema. That is safe only while migrations only add
+(expand/contract, M1). Any other command on such a database fails as before.
+
+Downgrades are refused (#246 G5) unless KAAGAZ_ALLOW_DOWNGRADE=1: a ``downgrade()`` drops
+what its migration added, and the rows in it with it. The deploy never runs one; a person
+runs one on purpose, with the variable set, after a dump.
 """
 
+import json
 import os
+import sys
 
 from alembic import context
 from sqlalchemy import create_engine
@@ -31,6 +43,49 @@ def run_offline() -> None:
 # lock; failing fast leaves the running app alone, and it can be run again when
 # quiet. Short enough for a request to notice, long enough for one to finish.
 LOCK_TIMEOUT = "10s"
+ALLOW_DOWNGRADE = "KAAGAZ_ALLOW_DOWNGRADE"
+
+
+def _unknown_heads() -> list[str]:
+    """The database's revisions this code has no file for: empty unless the database is ahead."""
+    known = {script.revision for script in context.script.walk_revisions()}
+    return sorted(head for head in context.get_context().get_current_heads() if head not in known)
+
+
+def _targets() -> set[str] | None:
+    """The command's target revisions, or None for a command with none (``current``). Alembic
+    hands env.py ``upgrade head``'s target as the head's revision id, not the word."""
+    try:
+        target = context.get_revision_argument()
+    except KeyError:
+        return None
+    return set(target) if isinstance(target, tuple) else {str(target)}
+
+
+def _goes_down() -> bool:
+    """Whether this command would take any migration down. Alembic works out its steps from
+    the database's heads before running them; it has no public way to ask, hence the
+    private call (alembic 1.x). Without it, it cannot tell, so it says yes: refused. Only
+    for a command with a target: ``current``'s step function prints as it runs."""
+    migration = context.get_context()
+    steps_for = getattr(migration, "_migrations_fn", None)
+    if steps_for is None:
+        return True
+    steps = steps_for(migration.get_current_heads(), migration)
+    return any(getattr(step, "is_downgrade", False) for step in steps)
+
+
+def _say_database_ahead(heads: list[str]) -> None:
+    """One JSON line on stderr, like the app's own log lines: revision ids only."""
+    line = {
+        "level": "WARNING",
+        "logger": "kaagaz.migrate",
+        "message": "the database is ahead of this code; nothing to migrate",
+        "code": "database_ahead",
+        "database": heads,
+        "code_head": sorted(context.script.get_heads()),
+    }
+    sys.stderr.write(json.dumps(line) + "\n")
 
 
 def run_online() -> None:
@@ -40,7 +95,23 @@ def run_online() -> None:
         with context.begin_transaction():
             # SET LOCAL: inside the migration's own transaction, gone when it ends.
             context.execute(f"SET LOCAL lock_timeout = '{LOCK_TIMEOUT}'")
-            context.run_migrations()
+            targets = _targets()
+            to_head = targets == set(context.script.get_heads())
+            ahead = _unknown_heads()
+            if ahead and to_head:
+                _say_database_ahead(ahead)
+            # `upgrade head` (the deploy's only command) never needs the steps worked out.
+            elif (
+                targets is not None
+                and not to_head
+                and os.environ.get(ALLOW_DOWNGRADE, "").strip() != "1"
+                and _goes_down()
+            ):
+                raise SystemExit(
+                    f"refusing to downgrade: a downgrade drops data; set {ALLOW_DOWNGRADE}=1 to run one on purpose"
+                )
+            else:
+                context.run_migrations()
     engine.dispose()
 
 

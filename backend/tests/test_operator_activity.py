@@ -212,7 +212,9 @@ def test_health_holds_counts_only_with_the_totals_and_the_purges(offline: _Offli
     reply = offline.get(HEALTH)
     assert reply.status_code == 200, reply.text
     body = reply.json()
-    assert set(body) == {"organisations", "totals", "purges", "reader", "queues"}
+    # Changed on purpose (#246, 27 Oct 2026): the Release card's running commit (O1).
+    assert set(body) == {"organisations", "totals", "purges", "reader", "queues", "release"}
+    assert body["release"] == {"commit": "local"}
     first = body["organisations"][0]
     assert set(first) == {
         "id",

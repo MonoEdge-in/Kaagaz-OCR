@@ -16,7 +16,8 @@
 # next run. A release that was rolled back is held: not tried again, while the
 # next commit on production is. Otherwise each run puts :local back on the
 # live images recorded in IMAGES_FILE (undoing a hand `dc build` or a rollback
-# cut short) and starts anything that is down. Each run prints one line: the
+# cut short), starts anything that is down, and hands Caddy the checkout's
+# Caddyfile if it changed (CADDY_FILE). Each run prints one line: the
 # commit, then deployed, unchanged, held, failed or "rolled back to <commit>".
 #
 # `deploy.sh --rollback` puts the previous images back (run it again to go
@@ -44,6 +45,10 @@ DEPLOYED_FILE=/home/ubuntu/.kaagaz-deployed
 IMAGES_FILE=/home/ubuntu/.kaagaz-images
 # A production commit that was rolled back, so the timer does not deploy it again.
 ROLLED_BACK_FILE=/home/ubuntu/.kaagaz-rolled-back
+# A copy of the Caddyfile Caddy last loaded from this script (#246 D8). Caddy's
+# container mounts infra/caddy/Caddyfile, but a checkout replaces a changed file
+# with a new one, which a running container never sees.
+CADDY_FILE=/home/ubuntu/.kaagaz-caddyfile
 LOCK_FILE=/tmp/kaagaz-deploy.lock
 COMPOSE=(-f docker-compose.yml -f docker-compose.prod.yml)
 # Every service but migrate. They are always started with --no-deps, so no
@@ -123,6 +128,24 @@ wait_for_api() {
 # Starts the app on the images of commit $1 again.
 roll_back_to() {
   tag_images "$1" local && docker compose "${COMPOSE[@]}" up -d --no-deps "${APPS[@]}" && wait_for_api
+}
+
+# When the checkout's Caddyfile differs from CADDY_FILE, hands it to Caddy on
+# stdin and reloads it: open connections finish, and a file Caddy refuses leaves
+# its running config in place. Recorded only once loaded, so a failed reload is
+# tried again on the next run. Never fatal.
+reload_caddy() {
+  if cmp -s infra/caddy/Caddyfile "$CADDY_FILE"; then
+    return 0
+  fi
+  if ! docker compose "${COMPOSE[@]}" exec -T caddy \
+    sh -c 'cat >/tmp/Caddyfile && caddy reload --config /tmp/Caddyfile --adapter caddyfile' \
+    <infra/caddy/Caddyfile >/dev/null; then
+    echo "caddy reload failed; Caddy keeps its previous config" >&2
+    return 0
+  fi
+  cp -f infra/caddy/Caddyfile "$CADDY_FILE" || echo "could not record $CADDY_FILE; caddy reloads again next run" >&2
+  echo "caddy reloaded the changed Caddyfile" >&2
 }
 
 # Removes the commit images other than the live one ($1) and the previous one
@@ -247,6 +270,7 @@ if ! docker compose "${COMPOSE[@]}" up -d --no-deps "${INFRA[@]}" "${APPS[@]}"; 
   report "$target" failed
   exit 1
 fi
+reload_caddy
 if [[ "$target" == "$rolled_back" && "$target" != "$deployed" ]]; then
   report "$target" held
 else

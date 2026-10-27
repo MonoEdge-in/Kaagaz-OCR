@@ -72,7 +72,16 @@ def create_app(
     model: ModelClient | None = None,
 ) -> FastAPI:
     owns_db = db is None
-    database = db if db is not None else Database(make_engine(settings.database_url), settings.db_app_role)
+    if db is None:
+        # The API's PostgreSQL timeouts (#246 A1): a request never waits minutes on the database.
+        engine = make_engine(
+            settings.database_url,
+            statement_timeout_seconds=settings.db_statement_timeout_seconds,
+            lock_timeout_seconds=settings.db_lock_timeout_seconds,
+            idle_in_transaction_timeout_seconds=settings.db_idle_in_transaction_timeout_seconds,
+        )
+        db = Database(engine, settings.db_app_role)
+    database = db
     now = clock or _utc_now
     context = AppContext(
         settings=settings,

@@ -103,6 +103,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
+from kaagaz import worker_heartbeat
 from kaagaz.adapters.queue import SqsQueue
 from kaagaz.adapters.scanner import build_scanner
 from kaagaz.adapters.storage import S3Storage
@@ -358,6 +359,20 @@ def admission(
             yield
 
     return admit
+
+
+def beating(handler: Handler, beat: Callable[[], None]) -> Handler:
+    """``handler`` with ``beat`` (the heartbeat file, #246 A3) called each time its job says
+    "still working", before the lease is renewed: a long job keeps the worker healthy."""
+
+    def handle(job: Job, heartbeat: Heartbeat) -> None:
+        def both() -> None:
+            beat()
+            heartbeat()
+
+        handler(job, both)
+
+    return handle
 
 
 def dispatch(pipeline: Handler, ensemble: Handler) -> Handler:
@@ -724,12 +739,16 @@ def install_stop_handlers(stop: threading.Event) -> None:
     signal.signal(signal.SIGTERM, request_stop)
 
 
-def run_until_stopped(worker: RunsJobs, stop: threading.Event, *, pause_seconds: float) -> None:
-    """Run jobs until ``stop`` is set, checking it between jobs.
+def run_until_stopped(
+    worker: RunsJobs, stop: threading.Event, *, pause_seconds: float, beat: Callable[[], None] = lambda: None
+) -> None:
+    """Run jobs until ``stop`` is set, checking it between jobs. ``beat`` (the heartbeat file,
+    #246 A3) is called at the start of every turn.
 
     An idle loop does not spin: ``run_once`` waits on the queue's long poll.
     """
     while not stop.is_set():
+        beat()
         try:
             worker.run_once()
         except BackendUnavailable as error:
@@ -797,7 +816,15 @@ def _serve(settings: Settings) -> None:
     from kaagaz.reading.ocr import GEMINI
     from kaagaz.reading.wiring import build_ocr_engine
 
-    db = Database(make_engine(settings.database_url), settings.db_app_role)
+    # The worker's PostgreSQL timeouts (#246 A1): long, so a big document's save or a sweep is
+    # never cut, but a stuck statement, lock wait or open transaction still ends.
+    engine = make_engine(
+        settings.database_url,
+        statement_timeout_seconds=settings.db_worker_statement_timeout_seconds,
+        lock_timeout_seconds=settings.db_worker_lock_timeout_seconds,
+        idle_in_transaction_timeout_seconds=settings.db_idle_in_transaction_timeout_seconds,
+    )
+    db = Database(engine, settings.db_app_role)
     storage = S3Storage(settings)
     queue = SqsQueue(settings)
     max_receives = queue.max_receives()  # once; no redrive policy stops the worker here
@@ -832,7 +859,7 @@ def _serve(settings: Settings) -> None:
 
     jobs = job_worker(
         queue,
-        dispatch(processor, ensemble),
+        beating(dispatch(processor, ensemble), worker_heartbeat.beat),
         max_attempts=settings.job_max_attempts,
         # The last delivery also ends the document's runs still running (AR11), on the worker's clock.
         mark_exhausted=lambda customer, document: documents.mark_exhausted(
@@ -879,7 +906,7 @@ def _serve(settings: Settings) -> None:
         max_attempts=settings.job_max_attempts,
     )
     worker = ReviveStuck(catalog, revive, lambda: gate.status()[0], _utc_now, lock=lock)
-    run_until_stopped(worker, stop, pause_seconds=settings.queue_wait_seconds)
+    run_until_stopped(worker, stop, pause_seconds=settings.queue_wait_seconds, beat=worker_heartbeat.beat)
     reports.join(READER_REPORT_SECONDS)  # stop is set: at most the report in flight is left
     db.engine.dispose()
     logger.info("worker stopped")

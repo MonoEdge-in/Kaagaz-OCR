@@ -48,9 +48,28 @@ MAX_OVERFLOW = 5
 POOL_TIMEOUT_SECONDS = 10
 
 
-def make_engine(database_url: str) -> Engine:
+def make_engine(
+    database_url: str,
+    *,
+    statement_timeout_seconds: int = 0,
+    lock_timeout_seconds: int = 0,
+    idle_in_transaction_timeout_seconds: int = 0,
+) -> Engine:
     """``hide_parameters``: a failing statement's error and the engine's log lines
-    never show the bound values, which can be row values or document text."""
+    never show the bound values, which can be row values or document text.
+
+    The three timeouts (#246 A1) are set on every connection when it opens, so they hold
+    for the whole process; 0 is PostgreSQL's own "no limit", the default (the CLI, tests).
+    A statement's own ``set_config('statement_timeout', ..., true)`` (search, listing,
+    insights) still wins inside its transaction. A statement or lock wait cut short is an
+    OperationalError, so ``unavailable()`` makes it BackendUnavailable (503 busy, or the
+    worker's retry), never a crash."""
+    timeouts = {
+        "statement_timeout": statement_timeout_seconds,
+        "lock_timeout": lock_timeout_seconds,
+        "idle_in_transaction_session_timeout": idle_in_transaction_timeout_seconds,
+    }
+    options = " ".join(f"-c {name}={seconds * 1000}" for name, seconds in timeouts.items() if seconds > 0)
     return create_engine(
         normalise_url(database_url),
         pool_pre_ping=True,
@@ -59,6 +78,7 @@ def make_engine(database_url: str) -> Engine:
         pool_timeout=POOL_TIMEOUT_SECONDS,
         future=True,
         hide_parameters=True,
+        connect_args={"options": options} if options else {},
     )
 
 

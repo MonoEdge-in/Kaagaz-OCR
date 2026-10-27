@@ -396,6 +396,19 @@ class Settings:
     page_route_region_lines_max: int = 6
     page_route_region_share: float = 0.15
     page_route_region_pages_max: int = 25
+    # PostgreSQL timeouts for each process, in seconds (#246 A1; 0 is no limit), set on every
+    # connection the API or the worker opens (``make_engine``); the CLI and the migrations set
+    # none. PROVISIONAL, Vrushit's values. Optional, so an older .env still starts. The worker's
+    # are long on purpose: a cut statement or lock wait hands the job back to be read again,
+    # and its saves (pieces, page layout) and sweeps can run for minutes on a big document.
+    # Idle in a transaction: a session that holds a transaction open doing nothing this long
+    # is ended, so a stuck process cannot hold its locks (and block a migration) for ever;
+    # model calls run outside any transaction.
+    db_statement_timeout_seconds: int = 120  # the API
+    db_lock_timeout_seconds: int = 60  # the API
+    db_worker_statement_timeout_seconds: int = 900
+    db_worker_lock_timeout_seconds: int = 300
+    db_idle_in_transaction_timeout_seconds: int = 900  # both
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "Settings":
@@ -603,6 +616,15 @@ class Settings:
             page_route_region_lines_max=env.between_or("PAGE_ROUTE_REGION_LINES_MAX", 0, 60, default=6),
             page_route_region_share=env.number_in("PAGE_ROUTE_REGION_SHARE", 0.0, 1.0, default=0.15),
             page_route_region_pages_max=env.between_or("PAGE_ROUTE_REGION_PAGES_MAX", 0, 1000, default=25),
+            db_statement_timeout_seconds=env.at_least("DB_STATEMENT_TIMEOUT_SECONDS", 0, default=120),
+            db_lock_timeout_seconds=env.at_least("DB_LOCK_TIMEOUT_SECONDS", 0, default=60),
+            db_worker_statement_timeout_seconds=env.at_least(
+                "DB_WORKER_STATEMENT_TIMEOUT_SECONDS", 0, default=900
+            ),
+            db_worker_lock_timeout_seconds=env.at_least("DB_WORKER_LOCK_TIMEOUT_SECONDS", 0, default=300),
+            db_idle_in_transaction_timeout_seconds=env.at_least(
+                "DB_IDLE_IN_TRANSACTION_TIMEOUT_SECONDS", 0, default=900
+            ),
             cpu_workers=env.positive("CPU_WORKERS"),
             max_check_crops=env.positive("MAX_CHECK_CROPS"),
             model_rpm=env.between("MODEL_RPM", 1, 1200),
