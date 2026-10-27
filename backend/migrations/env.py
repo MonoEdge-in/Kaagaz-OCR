@@ -63,9 +63,12 @@ def _targets_code_head() -> bool:
 def _goes_down() -> bool:
     """Whether this command would take any migration down. Alembic works out its steps from
     the database's heads before running them; it has no public way to ask, hence the
-    private call (alembic 1.x)."""
+    private call (alembic 1.x). Without it, it cannot tell, so it says yes: refused."""
     migration = context.get_context()
-    steps = migration._migrations_fn(migration.get_current_heads(), migration)
+    steps_for = getattr(migration, "_migrations_fn", None)
+    if steps_for is None:
+        return True
+    steps = steps_for(migration.get_current_heads(), migration)
     return any(getattr(step, "is_downgrade", False) for step in steps)
 
 
@@ -92,7 +95,12 @@ def run_online() -> None:
             ahead = _unknown_heads()
             if ahead and _targets_code_head():
                 _say_database_ahead(ahead)
-            elif os.environ.get(ALLOW_DOWNGRADE, "").strip() != "1" and _goes_down():
+            # `upgrade head` (the deploy's only command) never needs the steps worked out.
+            elif (
+                not _targets_code_head()
+                and os.environ.get(ALLOW_DOWNGRADE, "").strip() != "1"
+                and _goes_down()
+            ):
                 raise SystemExit(
                     f"refusing to downgrade: a downgrade drops data; set {ALLOW_DOWNGRADE}=1 to run one on purpose"
                 )
