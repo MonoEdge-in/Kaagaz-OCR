@@ -18,7 +18,9 @@ router); only ``OperatorDatabase`` here, and each read is one ``kaagaz_op_*`` fu
   each worker's reader state from its reports of the last 10 minutes (``kaagaz_op_reader``,
   0022; the screen shows "not reporting" after 2 minutes, "slow" for failing), and
   ``queues``: the jobs waiting in each lane, null when the queue does not answer. Status
-  only: never an error body, a key or a customer.
+  only: never an error body, a key or a customer. #246 O1 adds ``release``: the commit
+  this API runs (``/health``'s). The deployer's own records (last attempt, last good) are
+  files on the server outside every container, so they are not here.
 """
 
 import base64
@@ -33,6 +35,7 @@ from sqlalchemy import RowMapping
 from kaagaz.api.auth import OperatorSession, current_operator
 from kaagaz.api.context import AppContext, get_context, get_operator_db
 from kaagaz.api.errors import ApiError
+from kaagaz.api.routers.health import running_commit
 from kaagaz.api.views import iso
 from kaagaz.db import operator_activity as activity_sql
 from kaagaz.db import operators as operators_sql
@@ -112,6 +115,7 @@ def get_health(operator: OperatorSession, db: OperatorDb, context: Context) -> d
         },
         "reader": [_reader(row) for row in readers],
         "queues": _queues(context),
+        "release": {"commit": running_commit()},
     }
 
 

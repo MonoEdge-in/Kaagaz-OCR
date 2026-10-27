@@ -13,6 +13,13 @@
 #   - Every long-running service restarts after a crash or a reboot.
 #   - Every service's log is rotated (5 files of 20 MB), so logs never fill the disk.
 #   - SeaweedFS reads its access keys from the server's own file, not from git.
+#   - api, each worker and clamav have a memory limit (#246 A2), so one of them
+#     running away is stopped alone instead of the kernel's OOM killer picking a
+#     process anywhere on the box, postgres included. postgres has none. PROVISIONAL
+#     (Vrushit's budget): generous on purpose, from the 15 GiB server using about
+#     2.2 GiB at idle with 5 workers; clamav needs 1.5 to 3 GiB while it reloads its
+#     signatures. A container over its limit is killed and restarted
+#     (restart: unless-stopped); a worker's job then goes back to the queue.
 #
 # The server's .env sets KAAGAZ_DOMAIN, ACME_EMAIL and SEAWEEDFS_S3_CONFIG (the
 # path of its s3.json); compose stops with the name of any that is missing.
@@ -47,6 +54,7 @@ services:
     ports: !reset []
     restart: unless-stopped
     logging: *logging
+    mem_limit: 4g
 
   # One-shot: it runs once per deploy and exits, so it gets no restart policy.
   migrate:
@@ -56,6 +64,7 @@ services:
     ports: !reset []
     restart: unless-stopped
     logging: *logging
+    mem_limit: 3g
     environment:
       # The number of worker copies below, not docker-compose.yml's laptop "1".
       # OpenRouter RPM is reserved centrally in PostgreSQL across API and worker processes.
@@ -63,6 +72,7 @@ services:
 
   worker:
     logging: *logging # restart: unless-stopped is already in docker-compose.yml
+    mem_limit: 4g # each copy
     # WORKER_REPLICAS controls worker processes only; it does not set model RPM.
     # The lease and run fence keep each document to one copy, and each sweep
     # between jobs takes a Postgres advisory lock, so only one copy runs it.

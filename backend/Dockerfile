@@ -48,5 +48,11 @@ COPY migrations migrations
 RUN useradd --create-home --uid 10001 app
 USER app
 
+# The commit this image was built from, for /api/health and the operator's Release card
+# (#246 O1). docker-compose.yml passes the deployer's KAAGAZ_TAG; "local" otherwise. Last,
+# so a new commit rebuilds no layer above.
+ARG KAAGAZ_COMMIT=local
+ENV KAAGAZ_COMMIT=$KAAGAZ_COMMIT
+
 EXPOSE 8000
 CMD ["uvicorn", "kaagaz.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -18,6 +18,9 @@ x-backend: &backend
   image: kaagaz-backend:${KAAGAZ_TAG:-local}
   build:
     context: ./backend
+    args:
+      # The commit the image is built from, shown by /api/health (#246 O1).
+      KAAGAZ_COMMIT: ${KAAGAZ_TAG:-local}
   env_file: .env
   environment:
     # .env keeps localhost for running on the laptop; inside Docker the
@@ -172,6 +175,15 @@ services:
     # document, so a deploy waits for the document instead of cutting it
     # (16 Oct 2026). An idle worker still stops at once.
     stop_grace_period: 600s
+    # The worker's heartbeat (#246 A3): it touches a file each turn of its loop and while a
+    # job runs; none for a whole job lease (QUEUE_LEASE_SECONDS) means it is stuck
+    # (kaagaz/worker_heartbeat.py). Docker only reports it; nothing restarts on it.
+    healthcheck:
+      test: ["CMD", "python", "-m", "kaagaz.worker_heartbeat"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 5m
     depends_on:
       migrate:
         condition: service_completed_successfully
