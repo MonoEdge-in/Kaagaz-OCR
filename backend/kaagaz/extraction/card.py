@@ -446,7 +446,7 @@ def _card_lines(reader: ReaderText) -> Iterator[tuple[int, str]]:
         # Span.kind: the block kind from the main reader, or a text layer's headings (pdf_reader).
         if not (page <= 2 or page == last or span.kind in _HEADINGS):
             continue
-        if line and kept == k - 1 and _join_before(reader, k) == " | ":
+        if line and kept == k - 1 and "\n" not in _join_before(reader, k):  # #382: or with empty cells
             line.append(span.text)
         else:
             if line:
@@ -458,7 +458,8 @@ def _card_lines(reader: ReaderText) -> Iterator[tuple[int, str]]:
 
 
 def _join_before(reader: ReaderText, k: int) -> str:
-    """The reader text's join between span k - 1 and span k: a new line, or " | "."""
+    """The reader text's join between span k - 1 and span k: a new line (with a table row's
+    empty first cells, #382), or " | " (one per empty cell between)."""
     end_of_previous = reader.span_starts[k - 1] + len(reader.spans[k - 1].text)
     return reader.text[end_of_previous : reader.span_starts[k]]
 

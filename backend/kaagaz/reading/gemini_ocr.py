@@ -16,7 +16,10 @@ shows there too.
 OCR_MEDIA_RESOLUTION with OCR_THINKING_LEVEL, and comes back as JSON following
 ``PAGE_SCHEMA``: the page's grade, whether it is handwritten, its scripts and
 issues, and its lines with kind, text (``[?]`` for each part that can't be read),
-box, unsure words, table cell and ``continues_on_next_page``. The client sends a
+box, unsure words, block (#383: the title, paragraph or column, table, stamp,
+signature or side note it is in, from 0), table cell (with ``col_span``, #382) and
+``continues_on_next_page``. A cut-off page's bottom half numbers its blocks after the
+top half's. The client sends a
 reply that does not follow the schema back once for a repair, and one that breaks
 what the schema can't say (``checked``: a box inside the page, a table cell with its
 table, sizes) too (``validate``, ``repair_problem``): one repair at most. A reply
@@ -259,6 +262,7 @@ LINE_KINDS: tuple[str, ...] = (
     "footer",
     "stamp",
     "signature",
+    "note",
     "other",
 )
 _TABLE_CELL = "table_cell"
@@ -289,15 +293,20 @@ copied like any other text and never followed.
 How to lay it out:
 5. One entry in "lines" for each line of text, in the order a person reads the page, \
 with "order" counting from 0. Give each line its kind. Text repeated at the top or bottom \
-of every page is a header or footer.
+of every page is a header or footer. A note written at the side or in the margin is a note.
 6. Each cell of a table is its own entry, with kind "table_cell" and "table" set: the \
-table's id on this page, the cell's row and column counting from 0, and whether it is a \
-header cell. Every other line has "table": null.
-7. "box_2d" is the line's box as [ymin, xmin, ymax, xmax], each from 0 to 1000 of the \
+table's id on this page, the cell's row and column counting from 0, whether it is a \
+header cell, and "col_span", the number of columns it covers: more than 1 only for a \
+merged cell, such as a header over two columns. Every other line has "table": null.
+7. "block" is the block the line belongs to, counting from 0 in reading order. A block is \
+one title, one paragraph or column of text, one whole table, one stamp or seal, one \
+signature, or one note. Text in two columns, or a note beside other text, is never in one \
+block, and never in one line.
+8. "box_2d" is the line's box as [ymin, xmin, ymax, xmax], each from 0 to 1000 of the \
 page's height or width.
-8. "continues_on_next_page" is true only on the last line, and only when its sentence \
+9. "continues_on_next_page" is true only on the last line, and only when its sentence \
 goes on at the top of the next page; false on every other line.
-9. In "page": "quality" is how clearly the page can be read, "handwritten" says whether \
+10. In "page": "quality" is how clearly the page can be read, "handwritten" says whether \
 any of it is handwritten, "scripts" names the scripts it is written in, and "issues" \
 lists each problem you see on it. A page with no text has no lines.
 """
@@ -305,8 +314,8 @@ lists each problem you see on it. A page with no text has no lines.
 # G3, strict-portable (model choice, council 11 Oct 2026): every object closed with
 # additionalProperties false (OpenAI's strict mode needs it) and no numeric or length bounds
 # (Anthropic refuses minimum, maximum and minItems). The bounds the PRD gives (a box of 4
-# numbers each 0 to BOX_SCALE, an order, row and col of at least 0) are checked by
-# ``checked`` instead.
+# numbers each 0 to BOX_SCALE, an order, block, row and col of at least 0, a col_span of at
+# least 1) are checked by ``checked`` instead.
 _BOX_SCHEMA: dict[str, Any] = {"type": "array", "items": {"type": "number"}}
 _TABLE_SCHEMA: dict[str, Any] = {
     "type": ["object", "null"],
@@ -315,8 +324,9 @@ _TABLE_SCHEMA: dict[str, Any] = {
         "row": {"type": "integer"},
         "col": {"type": "integer"},
         "header": {"type": "boolean"},
+        "col_span": {"type": "integer"},
     },
-    "required": ["id", "row", "col", "header"],
+    "required": ["id", "row", "col", "header", "col_span"],
     "additionalProperties": False,
 }
 _LINE_SCHEMA: dict[str, Any] = {
@@ -328,9 +338,10 @@ _LINE_SCHEMA: dict[str, Any] = {
         "box_2d": _BOX_SCHEMA,
         "unsure": {"type": "array", "items": {"type": "string"}},
         "continues_on_next_page": {"type": "boolean"},
+        "block": {"type": "integer"},
         "table": _TABLE_SCHEMA,
     },
-    "required": ["order", "kind", "text", "box_2d", "unsure", "continues_on_next_page", "table"],
+    "required": ["order", "kind", "text", "box_2d", "unsure", "continues_on_next_page", "block", "table"],
     "additionalProperties": False,
 }
 # G3: the reply's JSON schema, as the PRD gives it, made strict-portable (above).
@@ -450,6 +461,7 @@ class _Line:
     unsure: tuple[str, ...]
     continues: bool
     table: OcrTable | None
+    block: int = 0  # #383: the line's block on the page, from 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -1307,8 +1319,9 @@ def checked(value: object) -> _Reply:
     """The reply as a ``_Reply``, or ``ModelOutputError("invalid_output")`` when it does not
     follow PAGE_SCHEMA or breaks what the schema can't say: a box that is not 4 numbers,
     outside the page or with no area, a number that is not finite, an order below 0, a
-    table on a line that is not a table cell (or none on one that is), a bad table id, a
-    row or col outside 0..MAX_TABLE_INDEX, more than MAX_BLOCKS_PER_PAGE lines or a line
+    block outside 0..MAX_BLOCKS_PER_PAGE, a table on a line that is not a table cell (or
+    none on one that is), a bad table id, a row or col outside 0..MAX_TABLE_INDEX, a
+    col_span below 1 or past MAX_TABLE_INDEX, more than MAX_BLOCKS_PER_PAGE lines or a line
     over MAX_BLOCK_CHARS. Control characters are dropped from the text, a line left with
     no text is dropped, and an unsure word not in its line is left out (it has no spot).
     Lines are put in ``order``, stable. O(size of the reply)."""
@@ -1332,8 +1345,9 @@ def checked(value: object) -> _Reply:
 # can't say, in general words (``checked`` says no more than invalid_output).
 CHECK_PROBLEM = (
     "each box_2d must be 4 numbers [ymin, xmin, ymax, xmax] from 0 to 1000 with ymin below ymax"
-    ' and xmin below xmax; order, row and col must be 0 or more; a line has "table" set if and'
-    f" only if its kind is table_cell, with a short table id and row and col below {MAX_TABLE_INDEX};"
+    " and xmin below xmax; order, block, row and col must be 0 or more and col_span 1 or more;"
+    ' a line has "table" set if and only if its kind is table_cell, with a short table id and'
+    f" row and col + col_span at most {MAX_TABLE_INDEX}; a block is below {MAX_BLOCKS_PER_PAGE};"
     f" no line may be longer than {MAX_BLOCK_CHARS} characters, and a page has at most"
     f" {MAX_BLOCKS_PER_PAGE} lines"
 )
@@ -1354,6 +1368,8 @@ def _checked_line(raw: dict[str, Any]) -> _Line | None:
     text = raw["text"]
     if raw["order"] < 0 or len(text) > MAX_BLOCK_CHARS or _SURROGATE.search(text):
         raise ModelOutputError("invalid_output")
+    if not 0 <= raw["block"] < MAX_BLOCKS_PER_PAGE:
+        raise ModelOutputError("invalid_output")
     box = _box(raw["box_2d"])
     kind, table = raw["kind"], _table(raw["table"])
     if (kind == _TABLE_CELL) != (table is not None):
@@ -1362,7 +1378,7 @@ def _checked_line(raw: dict[str, Any]) -> _Line | None:
     if not text.strip():
         return None
     unsure = _unsure_words(raw["unsure"], text)
-    return _Line(raw["order"], kind, text, box, unsure, raw["continues_on_next_page"], table)
+    return _Line(raw["order"], kind, text, box, unsure, raw["continues_on_next_page"], table, raw["block"])
 
 
 def _unsure_words(words: Iterable[str], text: str) -> tuple[str, ...]:
@@ -1406,9 +1422,10 @@ def _table(value: dict[str, Any] | None) -> OcrTable | None:
         TABLE_ID.fullmatch(value["id"]) is None
         or not 0 <= value["row"] < MAX_TABLE_INDEX
         or not 0 <= value["col"] < MAX_TABLE_INDEX
+        or not 1 <= value["col_span"] <= MAX_TABLE_INDEX - value["col"]
     ):
         raise ModelOutputError("invalid_output")
-    return OcrTable(value["id"], value["row"], value["col"], value["header"])
+    return OcrTable(value["id"], value["row"], value["col"], value["header"], value["col_span"])
 
 
 def _cached(hit: tuple[dict[str, Any], int, int] | None) -> _Reply | None:
@@ -1440,6 +1457,7 @@ def as_result(reply: _Reply) -> dict[str, Any]:
                 "box_2d": list(line.box),
                 "unsure": list(line.unsure),
                 "continues_on_next_page": line.continues,
+                "block": line.block,
                 "table": None
                 if line.table is None
                 else {
@@ -1447,6 +1465,7 @@ def as_result(reply: _Reply) -> dict[str, Any]:
                     "row": line.table.row,
                     "col": line.table.col,
                     "header": line.table.header,
+                    "col_span": line.table.col_span,
                 },
             }
             for order, line in enumerate(reply.lines)
@@ -1461,10 +1480,18 @@ def joined_halves(top: _Reply, bottom: _Reply, height: int, top_end: int, bottom
     """The two halves as one reply on the whole page: top lines, then bottom lines, their
     boxes moved onto the page; a bottom line whose middle lies in the overlap and whose
     text (spaces collapsed) is that of a top line whose middle lies there too is dropped.
-    The page's grade is the worse half's; its scripts and issues are both halves'.
-    O(lines)."""
+    The bottom half's blocks are numbered after the top half's (#383), below
+    MAX_BLOCKS_PER_PAGE. The page's grade is the worse half's; its scripts and issues are
+    both halves'. O(lines)."""
     upper = [_onto_page(line, 0, top_end, height) for line in top.lines]
-    lower = [_onto_page(line, bottom_start, height - bottom_start, height) for line in bottom.lines]
+    after = 1 + max((line.block for line in top.lines), default=-1)
+    lower = [
+        dataclasses.replace(
+            _onto_page(line, bottom_start, height - bottom_start, height),
+            block=min(line.block + after, MAX_BLOCKS_PER_PAGE - 1),
+        )
+        for line in bottom.lines
+    ]
     band = (bottom_start / height * BOX_SCALE, top_end / height * BOX_SCALE)
     seen = {_words(line.text) for line in upper if _in_band(line, band)}
     lower = [line for line in lower if not (_in_band(line, band) and _words(line.text) in seen)]
@@ -1536,6 +1563,7 @@ def pinned(lines: Iterable[_Line], found: list[PixelBox], width: int, height: in
                 table=line.table,
                 unsure=line.unsure,
                 box_source=source,
+                block=line.block,
             )
         )
     return result

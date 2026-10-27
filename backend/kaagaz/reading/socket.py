@@ -22,7 +22,8 @@ present, a real cell or a box inside the page, a confidence that is None or
 between 0 and 1, and its layout fields (PRD 2 P4): a known kind and origin; a
 cell has no kind and no table; a table cell has all its table fields, and
 nothing else has any. Its word marks (PRD 5 F3): a known quality and box
-source, set only on a span read by OCR.
+source, set only on a span read by OCR. Its block (#383): None or a number from
+0, never on a cell; its ``col_span`` (#382): None, or 1 or more on a table cell.
 
 ``read`` takes an optional ``on_page`` callback. A reader that reads page by
 page (PDFs, scans and photos) calls it after each page, so a long reading
@@ -387,10 +388,19 @@ def _is_valid_layout(span: Span) -> bool:
     table = (span.table_id, span.row, span.col, span.header)
     if isinstance(span.location, BoxLocation) and span.origin is None:
         return False  # a box must say how it was read (fail closed)
+    if not (span.block is None or _is_index(span.block)):
+        return False
+    if span.col_span is not None and not (_is_index(span.col_span) and span.col_span >= 1):
+        return False
     if isinstance(span.location, CellLocation):
-        return span.origin in {None, "cell"} and span.kind is None and table == (None, None, None, None)
+        layout = (span.kind, span.block, span.col_span)
+        return (
+            span.origin in {None, "cell"}
+            and layout == (None, None, None)
+            and table == (None, None, None, None)
+        )
     if table == (None, None, None, None):
-        return span.kind != "table_cell"
+        return span.kind != "table_cell" and span.col_span is None
     return (
         span.kind == "table_cell"
         and isinstance(span.table_id, str)

@@ -506,10 +506,11 @@ def _with_kinds(spans: list[Span], chars: list[dict[str, Any]], frame: PageFrame
 
 def _alone(boxes: list[BoxLocation], k: int) -> bool:
     """No other span shares span k's line: none overlaps it by half the smaller height, as
-    ``line_spans`` joins a line, and it gives one line's spans one after another."""
+    ``line_spans`` joins a line. Every span is looked at: in columns, ``line_spans`` gives
+    a line's spans apart (#383). O(S)."""
     box = boxes[k]
-    for other in (boxes[k - 1] if k else None, boxes[k + 1] if k + 1 < len(boxes) else None):
-        if other is None:
+    for j, other in enumerate(boxes):
+        if j == k:
             continue
         smaller = min(box.y1 - box.y0, other.y1 - other.y0)
         if min(box.y1, other.y1) - max(box.y0, other.y0) >= smaller / 2:
