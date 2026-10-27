@@ -3,9 +3,17 @@
 The URL comes from DATABASE_URL only, so no connection string is ever written
 into a file (CLAUDE.md never-do 4). Migrations run as the connecting user (the
 table owner), never as the restricted app role.
+
+A database ahead of the code (#246 M2): ``alembic upgrade head`` on a database whose
+revision this code does not have (an older image after a rollback, or a revert of a pull
+request that carried a migration) changes nothing, logs ``database_ahead`` and exits 0, so
+the older release starts on the newer schema. That is safe only while migrations only add
+(expand/contract, M1). Any other command on such a database fails as before.
 """
 
+import json
 import os
+import sys
 
 from alembic import context
 from sqlalchemy import create_engine
@@ -33,6 +41,33 @@ def run_offline() -> None:
 LOCK_TIMEOUT = "10s"
 
 
+def _unknown_heads() -> list[str]:
+    """The database's revisions this code has no file for: empty unless the database is ahead."""
+    known = {script.revision for script in context.script.walk_revisions()}
+    return sorted(head for head in context.get_context().get_current_heads() if head not in known)
+
+
+def _targets_code_head() -> bool:
+    """Whether the command's target is this code's head (``upgrade head``: alembic hands
+    env.py the head's revision id, not the word)."""
+    target = context.get_revision_argument()
+    targets = set(target) if isinstance(target, tuple) else {target}
+    return targets == set(context.script.get_heads())
+
+
+def _say_database_ahead(heads: list[str]) -> None:
+    """One JSON line on stderr, like the app's own log lines: revision ids only."""
+    line = {
+        "level": "WARNING",
+        "logger": "kaagaz.migrate",
+        "message": "the database is ahead of this code; nothing to migrate",
+        "code": "database_ahead",
+        "database": heads,
+        "code_head": sorted(context.script.get_heads()),
+    }
+    sys.stderr.write(json.dumps(line) + "\n")
+
+
 def run_online() -> None:
     engine = create_engine(_url())
     with engine.connect() as connection:
@@ -40,7 +75,11 @@ def run_online() -> None:
         with context.begin_transaction():
             # SET LOCAL: inside the migration's own transaction, gone when it ends.
             context.execute(f"SET LOCAL lock_timeout = '{LOCK_TIMEOUT}'")
-            context.run_migrations()
+            ahead = _unknown_heads()
+            if ahead and _targets_code_head():
+                _say_database_ahead(ahead)
+            else:
+                context.run_migrations()
     engine.dispose()
 
 

@@ -336,9 +336,10 @@ Caddyfile, those of the newest commit, so every release must keep them working
 for the release before it.
 
 **Never start the app with a plain `dc up -d`** on the server: it runs
-`migrate` with `:local`, and after a rollback over a migration that older image
-fails on the newer database and leaves api, worker and frontend stopped (until
-#246 PR 1 lets `migrate` accept a database ahead of the code). Use
+`migrate` with `:local`. Images from before #246 M2 fail on a database ahead of
+them (after a rollback over a migration) and leave api, worker and frontend
+stopped; since M2, `alembic upgrade head` on such a database changes nothing,
+logs one `database_ahead` line and exits 0. Use
 `dc up -d --no-deps <service>`, and never `dc up --build` or `dc build`.
 
 If `migrate` fails: the site is still on the old release, and every 5 minutes
