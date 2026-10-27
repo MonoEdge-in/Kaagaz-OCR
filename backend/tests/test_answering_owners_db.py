@@ -386,6 +386,7 @@ _PLANS: dict[str, tuple[str, dict[str, Any]]] = {
         {"kind": "property", "keys": ["45/2"], "fields": ["land_boundary_east"]},
     ),
     "_SHARES_AS_PRINTED": ("document_id = ANY", {"fields": ["land_share"]}),
+    "_EVERY_RECORD": ("field = ANY", {"fields": list(owners.OWNING), "limit": 51}),  # #381
 }
 # A company with 2,000 land records, each with one owner in one of 200 villages, so the planner
 # knows from the statistics how few rows a key finds.
@@ -437,6 +438,62 @@ def test_each_statement_uses_its_b_tree_index_under_row_level_security(
         line for line in plan.splitlines() if line.strip().startswith("Index Cond:") and condition in line
     ]
     assert index and "Seq Scan" not in plan, plan
+
+
+def test_every_owner_in_scope_is_named_from_the_stored_values_none_skipped(keyed: Database) -> None:
+    """#381: "all owners" names every owner of every land record in scope, each once, cited, with
+    every record listed and all its owners (none hidden past MAX_NAMED); never a seller."""
+    c, _ = new_customer(keyed)
+    big = add_land(keyed, c, "7/12 big.pdf", [(V, "50%"), (K, None), ("Kale A", None), ("Kale B", None)])
+    deed = add_land(keyed, c, "Sale deed.pdf", buyers=[ASHA], sellers=["Ramesh More"], survey="77")
+    mine = add_land(keyed, c, "7/12 V.pdf", [(V, None)], survey="45/2")
+    gone = add_land(keyed, c, "Trashed.pdf", [("Gone Person", None)], deleted_at=NOW)
+    question = "Who are all the owners?"
+
+    answer = ask(keyed, c, question)
+
+    assert (answer["status"], answer["route"]) == ("answered", "fixed_query")
+    assert [s["text"] for s in answer["sentences"]] == [
+        "Your documents name 5 owners on 3 land records: Nikhil Varde, Krishna Sohoni, Kale A, Kale B"
+        " and Asha Shinde."
+    ]
+    by_n = {c["n"]: c for c in answer["citations"]}
+    named = [by_n[n]["snippet"] for n in answer["sentences"][0]["citations"]]
+    assert named.count("land_owner_name: Nikhil Varde") == 2 and "land_seller_name: Ramesh More" not in named
+    assert [(d["document_id"], d["why"].split(";")[0]) for d in answer["documents"]] == [
+        (big, "owners Nikhil Varde, Krishna Sohoni, Kale A, Kale B"),
+        (mine, "owners Nikhil Varde, shares not printed"),
+        (deed, "buyers Asha Shinde, shares not printed"),
+    ]
+    assert gone not in json.dumps(answer) and "Ramesh" not in answer["sentences"][0]["text"]
+    numbers_allowed(answer, question, (5, 3))
+
+
+def test_every_survey_number_is_printed_once_and_past_the_cap_says_how_many_it_lists(
+    keyed: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    c, _ = new_customer(keyed)
+    add_land(keyed, c, "A 7/12.pdf", [(V, None)], survey="45/2")
+    add_land(keyed, c, "B deed.pdf", buyers=[K], survey="45/2")  # the same land in another document
+    add_land(keyed, c, "C 7/12.pdf", [(ASHA, None)], survey="46")
+    add_land(keyed, c, "D 7/12.pdf", [(ASHA, None)])  # no survey number: not a record of the list
+    question = "List every survey number"
+
+    answer = ask(keyed, c, question)
+
+    assert [s["text"] for s in answer["sentences"]] == [
+        "Your documents print 2 survey numbers on 3 land records: 45/2 and 46."
+    ]
+    assert len(answer["sentences"][0]["citations"]) == 3 and len(answer["documents"]) == 3
+    numbers_allowed(answer, question, (2, 3))
+
+    monkeypatch.setattr(owners, "MAX_LISTED", 2)
+    capped = ask(keyed, c, question)
+    assert [s["text"] for s in capped["sentences"]] == [
+        "Your documents print 1 survey number on the first 2 of 3 land records: 45/2."
+    ]
+    with switched_off(keyed, "land_facts"):
+        assert ask(keyed, c, question)["route"] != "fixed_query"
 
 
 def test_the_land_facts_switch_off_leaves_owner_questions_to_the_other_routes(keyed: Database) -> None:

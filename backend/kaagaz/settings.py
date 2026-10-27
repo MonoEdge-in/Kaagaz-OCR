@@ -353,6 +353,13 @@ class Settings:
     # PROVISIONAL: 30k, from the review's estimate that a smaller prompt saves 2 to 5 s on a
     # large scope; measure on the server's timing lines and tune.
     answer_swift_input_tokens: int
+    # Read in parts (#381, lost in the middle): a Precision answer whose evidence is more than
+    # answer_parts_tokens is read as at most answer_parts_max parts at once, each asked for the
+    # facts that answer the question, then drafted from the pieces they name (answering/parts.py);
+    # 0 turns it off. Swift never reads in parts. PROVISIONAL: 24k and 5 (a 120k whole scope in
+    # five parts); measure recall with scripts/eval_position_recall.py and tune.
+    answer_parts_tokens: int
+    answer_parts_max: int
     topic_max_per_doc: int
     topic_expand_max_pieces: int
     query_aspects_max: int
@@ -622,6 +629,8 @@ class Settings:
             model_context_tokens=model_context_tokens,
             answer_whole_doc_tokens=whole_doc_tokens,
             answer_swift_input_tokens=env.at_least("ANSWER_SWIFT_INPUT_TOKENS", 0, default=30_000),
+            answer_parts_tokens=env.at_least("ANSWER_PARTS_TOKENS", 0, default=24_000),
+            answer_parts_max=env.between_or("ANSWER_PARTS_MAX", 2, 8, default=5),
             topic_max_per_doc=env.at_least("TOPIC_MAX_PER_DOC", 1, default=40),
             topic_expand_max_pieces=env.at_least("TOPIC_EXPAND_MAX_PIECES", 0, default=12),
             query_aspects_max=env.at_least("QUERY_ASPECTS_MAX", 0, default=6),
