@@ -130,7 +130,10 @@ def test_cx5_whole_document_mode_cites_pages_4_9_and_18_from_every_piece_in_orde
     assert (answer["status"], [s["text"] for s in answer["sentences"]]) == ("answered", list(QUOTES[LEAVES]))
     assert {c["page_no"] for c in answer["citations"]} == set(OFFER_LEAVE_PAGES.values())
     (prompt,) = model.drafts
-    assert blocks(prompt) == [row[2] for row in typed.pieces()]  # every piece, in seq order
+    # Changed on purpose (#381, 27 Oct 2026): every piece once, ranked by the question's search and
+    # laid out with the best at both ends, never in seq order.
+    assert sorted(blocks(prompt)) == sorted(row[2] for row in typed.pieces())
+    assert blocks(prompt) != [row[2] for row in typed.pieces()]
     # Changed on purpose (PRD 6 B1): asked for its plan in the rewrite's call, never rewritten.
     # Changed on purpose again (Ask speed, 24 Oct 2026): the letter gives the company no name or
     # place keys, so a plan could change nothing and that call is not made.

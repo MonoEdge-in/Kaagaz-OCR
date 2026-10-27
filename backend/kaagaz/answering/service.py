@@ -103,7 +103,9 @@ The steps (docs/architecture.md):
     property the company's land values hold, with an owning or share word (or a property with a map
     word: its map values and neighbours as printed), is answered first, from
     fixed queries over ``value_keys``: code-built sentences and one ``documents`` line a record
-    (answer contract v2), every figure a cited value as printed.
+    (answer contract v2), every figure a cited value as printed. So is an open list naming nothing
+    ("all owners", "every survey number", #381): every record in scope, never the top hits; and
+    step 4's total may be bounded ("the total of invoices over ₹50,000", ``intent.bound_asked``).
 18. Clarify (PRD 6 B1, clarify.py): with the model and a vocabulary port (as ``context``), the
     rewrite call runs on every question and gives the plan; an unclear name is asked (status
     ``clarify``), a resolved one put in the question. ``pending``: a stored clarify answered,
@@ -117,6 +119,16 @@ The steps (docs/architecture.md):
     the answer is the one the steps above give one after another. A call that would be for the
     plan alone is not made when the scope's vocabulary has no key (``Vocabulary.any_keys``):
     with no name to resolve or offer, step 18 could change nothing.
+20. Nothing lost in the middle (#381, 27 Oct 2026): a model reads the middle of a long prompt
+    least closely. Every draft's evidence goes in best first and the prompt lays it out with the
+    best at its start and its end, the weakest in the middle (``draft.edges``); a whole scope's
+    pieces (step 10) are first ranked by the question's own search (``_ranked``: one embedding,
+    one search), never left in reading order. Each piece keeps its number, so every citation
+    points at the same piece, page and spot. A Precision answer (high thinking) whose evidence is
+    more than ANSWER_PARTS_TOKENS is read in at most ANSWER_PARTS_MAX parts at once, each asked
+    for the facts that answer the question (answering/parts.py), and drafted from the pieces
+    they name only; none named is not found, and a part that fails leaves the draft to all the
+    evidence in one call, as before (``_read_in_parts``). The timing line's ``parts``: how many.
 
 No source, no answer: an answered result always has at least one sentence,
 every sentence cites at least one source (but step 13's count, which sums up its cited
@@ -137,7 +149,8 @@ summed over parallel drafts and step 19's overlap) and in all. ``overlap`` is 1 
 Time: one ``available_fields`` query only for a question with an aggregate
 word and no unknown topic word, then either one fixed query or one search
 (then one neighbours statement for the usable hits) plus at most one model
-call (one per agent with Ensemble, at most three, in parallel); the rest is
+call (one per agent with Ensemble, at most three, in parallel; step 20's parts add at most
+ANSWER_PARTS_MAX, in parallel, before it); the rest is
 O(e * t) over e pieces of evidence of t characters. e is at most
 ANSWER_MAX_EVIDENCE hits plus 2 * ANSWER_NEIGHBOURS neighbours per hit.
 """
@@ -228,10 +241,11 @@ from kaagaz.answering.hard_to_read import (
     not_found_note,
 )
 from kaagaz.answering.hinglish import NormalisedQuestion, normalise
-from kaagaz.answering.intent import FixedPlan, metric_asked, plan_fixed
+from kaagaz.answering.intent import FixedPlan, bound_asked, metric_asked, plan_fixed
 from kaagaz.answering.memory import NO_MEMORY, Memory, allowed_tokens, prompt_text, summarise
 from kaagaz.answering.owners import PgOwners, owner_ask
 from kaagaz.answering.owners import reply as owners_reply
+from kaagaz.answering.parts import PARTS_PROMPT_HASH, read_part, split
 from kaagaz.answering.pins import Pin, lifts, pinned_first
 from kaagaz.answering.rewrite import MAX_QUESTION, Rewritten, Turn, rewrite_and_plan
 from kaagaz.answering.rewrite import MAX_REPLY_TOKENS as REWRITE_REPLY_TOKENS
@@ -435,6 +449,7 @@ class _Timing:
     degraded: bool = False  # the model was down for the question's vector or its draft (KZ-006)
     overlap: bool = False  # step 19's early search was used
     overlap_ms: float = 0.0  # the time it took, beside the plan call
+    parts: int = 0  # step 20: the parts the evidence was read in (0: one call, as before)
 
     def lap(self, stage: str) -> None:
         now = time.monotonic()
@@ -480,7 +495,7 @@ def _timed[**P](answer: Callable[P, Answer]) -> Callable[P, Answer]:
             LIMITER_WAIT.reset(waits)
         _timing_log.info(
             "answer timing route=%s status=%s outcome=%s whole=%d aspects=%d pinned=%d overlap=%d %s"
-            " overlap_ms=%.0f limiter_wait_ms=%.0f total_ms=%.0f",
+            " overlap_ms=%.0f limiter_wait_ms=%.0f total_ms=%.0f parts=%d",
             result.route,
             result.status,
             timing.reason or result.label,
@@ -492,6 +507,7 @@ def _timed[**P](answer: Callable[P, Answer]) -> Callable[P, Answer]:
             timing.overlap_ms,
             waited[0] * 1000,
             (timing.last - timing.start) * 1000,
+            timing.parts,
         )
         return result
 
@@ -957,7 +973,8 @@ class AnswerService:
         found_range = date_range(normalised, self._today())
         fixed = self._fixed.scoped(scope)
         fields = partial(fixed.available_fields, customer_id)  # asked for only if a plan could follow
-        plan = plan_fixed(normalised, found_range, mentions_date(normalised), fields)
+        bound = bound_asked(normalised, numbers_asked(question, normalised.keywords))  # #381
+        plan = plan_fixed(normalised, found_range, mentions_date(normalised), fields, bound)
         if plan is not None:
             return self._fixed_answer(customer_id, plan, shown, fixed)
         unchecked = self._unchecked_answer(customer_id, normalised, shown, scope)
@@ -1210,10 +1227,20 @@ class AnswerService:
             invoices=plan.invoices,
             group_fields=plan.group_fields,
         )
+        noun = "invoice" if plan.invoices else "record"
+        period = describe_range(plan.start, plan.end) if plan.start and plan.end else ""
+        if plan.bound is not None:
+            # #381: every record whose figure is past the bound, and every one with no figure to
+            # compare (it withholds the total, as ever); a sheet's printed total row covers rows
+            # on both sides, so it is left out, as with a date range.
+            figures = [
+                f for f in figures if not f.printed_total and (f.amount is None or plan.within(f.amount))
+            ]
+            side = "over" if plan.bound[0] == ">" else "under"
+            period = f"of {noun}s {side} {indian_number(plan.bound[1])}" + (f" {period}" if period else "")
         if not figures:
             return _not_found("fixed_query", shown, [], model_used=False, reason="notfound_fixed_no_rows")
-        period = describe_range(plan.start, plan.end) if plan.start and plan.end else ""
-        said = (_words(metric).removeprefix("total "), period, "invoice" if plan.invoices else "record")
+        said = (_words(metric).removeprefix("total "), period, noun)
         told = tell(figures, *said, ranking=ranking)
         if not told.lines:
             return _not_found("fixed_query", shown, [], model_used=False, reason="notfound_fixed_no_sentence")
@@ -1366,6 +1393,10 @@ class AnswerService:
                     break
                 evidence.append(item)
             _timing().lap("widen")
+        else:
+            # Step 20 (#381): most relevant first, so the prompt puts them at its ends.
+            evidence = self._ranked(customer_id, query_text, spoken, scope, expansion, evidence)
+            _timing().lap("widen")
 
         drafted = self._draft(customer_id, scope, question, normalised, evidence, expansion, choice)
         _timing().lap("draft")
@@ -1443,6 +1474,31 @@ class AnswerService:
                 )
             ),
         )
+
+    def _ranked(
+        self,
+        customer_id: str,
+        query_text: str,
+        spoken: str,
+        scope: Scope,
+        expansion: Expansion,
+        evidence: Sequence[Evidence],
+    ) -> list[Evidence]:
+        """Step 20 (#381): a whole scope's pieces (CX5), most relevant first: the ones the
+        question's own search finds (words, typos and meaning, fused), in its order, then the rest
+        in reading order. Each keeps its number, so a citation points at the same piece. One
+        embedding and one search; the model being down for the embedding only loses the meaning
+        (it is no outage: the order is a help, never the answer)."""
+        timing = _timing()
+        down = timing.degraded
+        vector = self._embed(spoken)
+        timing.degraded = down
+        limit = max(1, min(len(evidence), MAX_LIMIT))
+        found = self._retriever.search(customer_id, query_text, vector, limit, scope, expansion)
+        place: dict[str, int] = {}
+        for hit in found:
+            place.setdefault(hit.piece_id, len(place))
+        return sorted(evidence, key=lambda item: place.get(item.hit.piece_id, len(place)))
 
     def _closest(
         self,
@@ -1585,6 +1641,11 @@ class AnswerService:
             budget = self._evidence_budget if cap is None else min(cap, self._evidence_budget)
             seen = fit_evidence(asked, evidence, budget)
             code = "evidence_too_large"  # not even the best piece fits
+            if seen and self._in_parts(seen, choice):
+                picked = self._read_in_parts(asked, seen, choice)
+                if picked is not None and not picked:  # every part read, none holds an answer
+                    return Draft("not_found", []), True, seen, "notfound_model", team
+                seen = seen if picked is None else picked
             if seen:
                 cards = fit_cards(asked, seen, self._cards(customer_id, scope, seen), budget)
                 draft_with = partial(
@@ -1618,6 +1679,61 @@ class AnswerService:
             why,
             team,
         )
+
+    def _in_parts(self, seen: Sequence[Evidence], choice: ChatChoice | None) -> bool:
+        """Step 20 (#381): read ``seen`` in parts: a Precision answer (high thinking; Swift and
+        Low never, they stay fast) whose evidence is more than ANSWER_PARTS_TOKENS (0: never)."""
+        most = self._settings.answer_parts_tokens
+        precise = choice is not None and bool(choice.agents) and choice.thinking == "high"
+        return precise and most > 0 and sum(_tokens(item) for item in seen) > most
+
+    def _read_in_parts(
+        self, asked: str, seen: Sequence[Evidence], choice: ChatChoice | None
+    ) -> list[Evidence] | None:
+        """Step 20 (#381, answering/parts.py): ``seen`` split into at most ANSWER_PARTS_MAX parts,
+        each read by the choice's first agent at its level, all at once (each call takes its own
+        slot of the model limiter; one deadline, as ``_ensemble``), in a copy of the context
+        (billing, the rate scope, the limiter's waits); every thread is joined before this
+        returns. The pieces the parts name, in ``seen``'s order ([]: none holds an answer), or
+        None when a part failed, logged by its code: the answer is then drafted from all of
+        ``seen`` in one call, as before."""
+        if self._model is None or choice is None or not choice.agents:
+            return None
+        model, lead = self._model, choice.agents[0]
+        settings = self._settings
+        groups = split(
+            seen, [_tokens(item) for item in seen], settings.answer_parts_tokens, settings.answer_parts_max
+        )
+        deadline = time.monotonic() + settings.model_timeout_seconds + ENSEMBLE_SLACK_SECONDS
+
+        def one(part: list[Evidence]) -> list[int] | ModelUnavailable | ModelOutputError:
+            try:
+                return read_part(
+                    model,
+                    asked,
+                    part,
+                    max_tokens=settings.model_answer_max_tokens,
+                    chat_model=lead.model,
+                    thinking=lead.level(choice.thinking),
+                    provider=lead.provider,
+                    deadline=deadline,
+                )
+            except (ModelUnavailable, ModelOutputError) as error:
+                return error
+
+        with ThreadPoolExecutor(max_workers=len(groups)) as pool:  # leaving it joins every thread
+            futures = [pool.submit(copy_context().run, one, part) for part in groups]
+        results = [future.result() for future in futures]
+        for result in results:
+            if not isinstance(result, list):
+                _log.warning(
+                    "read in parts failed, drafted from all the evidence", extra={"code": result.code}
+                )
+                return None
+        _log.info("read in %d parts by %s with prompt %s", len(groups), lead.model, PARTS_PROMPT_HASH)
+        _timing().parts = len(groups)
+        named = {n for result in results if isinstance(result, list) for n in result}
+        return [item for item in seen if item.n in named]
 
     def _ensemble(
         self, draft_with: Callable[..., Draft], seen: Sequence[Evidence], choice: ChatChoice
@@ -1979,15 +2095,19 @@ _NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?")
 def _focus(item: Evidence, sentences: Sequence[str]) -> list[dict[str, Any]]:
     """The regions of the lines the answer used, so the page shows the exact spot.
 
-    A text piece keeps one region per line, in order. A line is used when it
+    A text piece keeps one region per line, in order; a table piece or a sheet
+    row one per cell, each row's cells joined by " | " (#382), so its cells pair
+    up with its regions instead. A line (or cell) is used when it
     holds a sentence (or a sentence holds it), or shares a number with one.
-    Falls back to every region when the lines and regions do not pair up (a
-    spreadsheet row), no line matches, or the lines used miss a page of a piece
+    Falls back to every region when the lines and regions do not pair up, no
+    line matches, or the lines used miss a page of a piece
     that crosses pages (H4: each of its pages shows its spot). Digits of any
     script read as ASCII on both sides, so "450" finds the line "४५०".
     O(lines * sentences).
     """
     lines = ascii_digits(item.hit.text).splitlines()
+    if len(lines) != len(item.regions):
+        lines = [cell for line in lines for cell in line.split(" | ")]
     if len(lines) != len(item.regions) or len(item.regions) != len(item.hit.regions):
         return item.regions
     folded = [ascii_digits(sentence).casefold().strip() for sentence in sentences]

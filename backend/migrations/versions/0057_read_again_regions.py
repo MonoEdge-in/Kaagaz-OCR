@@ -10,14 +10,14 @@ One nullable column with no default (no table rewrite, no row written). ``pages`
 ``customer_id``, row level security policy (0001) and table grants (0001), which cover it; no
 grant changes. The downgrade drops the column (a pending request reads its whole page again).
 
-Revision ID: 0056
-Revises: 0055 (org numbers)
+Revision ID: 0057
+Revises: 0056 (page layout)
 """
 
 from alembic import op
 
-revision = "0056"
-down_revision = "0055"
+revision = "0057"
+down_revision = "0056"
 branch_labels = None
 depends_on = None
 

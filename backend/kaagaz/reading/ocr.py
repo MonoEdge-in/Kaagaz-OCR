@@ -101,7 +101,8 @@ GEMINI = "gemini"
 # from the page cache and processing_runs shows the change. Here, not in that module, so the
 # pipeline can ask which models are verified for it (model choice, council 11 Oct 2026)
 # without loading the reader, and the API may import it. g2: the strict-portable PAGE_SCHEMA.
-READER_PROMPT_VERSION = "g2"
+# g3 (#383, #382): each line's block, the kind "note", and a table cell's col_span.
+READER_PROMPT_VERSION = "g3"
 # PRD 5 RT2: pages.read_by for a page the local reader read.
 LOCAL_READ_BY = "rapidocr"
 # PRD 5 F3: the span qualities that mark one word of a line, not the line.
@@ -150,12 +151,14 @@ _log = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class OcrTable:
-    """Where a table cell sits: its table on the page, and its row and column from 0."""
+    """Where a table cell sits: its table on the page, its row and column from 0, and how
+    many columns it covers (a merged header, #382)."""
 
     table_id: str
     row: int
     col: int
     header: bool
+    col_span: int = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,6 +175,8 @@ class OcrLine:
     box came from (``spans.BOX_SOURCES``, G5): "found", the union of the boxes
     RapidOCR's text finder found under the line, or "model", the model's own
     box when none matched. None for an engine that finds its own boxes.
+    ``block`` is the block of the page the line is in, from 0 (#383); None for an
+    engine that gives no layout.
     """
 
     text: str
@@ -184,6 +189,7 @@ class OcrLine:
     table: OcrTable | None = None
     unsure: tuple[str, ...] = ()
     box_source: str | None = None
+    block: int | None = None
 
 
 class OcrEngine(Protocol):
@@ -837,12 +843,26 @@ def _block_span(line: OcrLine, page_no: int, width: int, height: int) -> Span | 
     box = _page_box(page_no, (line.x0, line.y0, line.x1, line.y1), width, height)
     if not text or not box.is_valid():
         return None
-    span = Span(text, line.text, box, _clamped(line.confidence), line.kind, "ocr", box_source=line.box_source)
+    span = Span(
+        text,
+        line.text,
+        box,
+        _clamped(line.confidence),
+        line.kind,
+        "ocr",
+        box_source=line.box_source,
+        block=line.block,
+    )
     table = line.table
     if table is None:
         return span
     return dataclasses.replace(
-        span, table_id=table.table_id, row=table.row, col=table.col, header=table.header
+        span,
+        table_id=table.table_id,
+        row=table.row,
+        col=table.col,
+        header=table.header,
+        col_span=table.col_span if table.col_span > 1 else None,
     )
 
 

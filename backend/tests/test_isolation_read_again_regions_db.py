@@ -1,4 +1,4 @@
-"""Customer separation for the regions of a page read again (#385, migration 0056): one
+"""Customer separation for the regions of a page read again (#385, migration 0057): one
 customer can neither mark regions on another customer's page, through the store or the API,
 nor see the regions marked on it."""
 

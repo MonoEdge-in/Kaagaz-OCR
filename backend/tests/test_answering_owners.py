@@ -1,6 +1,6 @@
 """Which questions are owner and place questions (kaagaz/answering/owners.py ``owner_ask``)."""
 
-from kaagaz.answering.owners import OwnerAsk, owner_ask
+from kaagaz.answering.owners import OWNING, OwnerAsk, owner_ask
 
 KEYS = {
     ("person", "nikhil varde"),
@@ -59,3 +59,26 @@ def test_a_measure_word_routes_only_when_asked_as_a_measure() -> None:
         "Which road is survey 45/2 on?",
     ):
         assert owner_ask(question, resolve) is None, question
+
+
+def test_an_open_list_naming_nothing_asks_for_every_owner_or_every_number() -> None:
+    """#381: every one in scope, from the stored values; anything else named keeps its own route."""
+
+    def nobody(candidates: list[str]) -> list[tuple[str, str]]:
+        return []
+
+    for question in ("Who are all the owners?", "List the owners in these documents", "every owner"):
+        assert owner_ask(question, nobody) == OwnerAsk(every=OWNING), question
+    assert owner_ask("List every survey number", nobody) == OwnerAsk(every=(SURVEY,))
+    assert owner_ask("all khata numbers", nobody) == OwnerAsk(every=("land_khata_number",))
+    assert owner_ask("Show all plot nos", nobody) == OwnerAsk(every=("land_plot_number",))
+    # Someone or somewhere named: the question as before.
+    assert owner_ask("All land owned by Nikhil Varde", resolve) == OwnerAsk(people=("nikhil varde",))
+    for question in (
+        "List all the owners of Sharma Traders",  # a word outside the frame: not a land list
+        "Who are the owners?",  # no list word
+        "Which survey numbers border 45/2?",  # a map question, not a list
+        "all survey and khata numbers",  # two kinds at once
+        "List all invoices",
+    ):
+        assert owner_ask(question, nobody) is None, question

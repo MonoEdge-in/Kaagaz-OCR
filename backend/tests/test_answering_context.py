@@ -239,10 +239,15 @@ def test_cx5_whole_document_mode_gives_every_piece_in_reading_order() -> None:
 
     answer = answers(retriever, context, model).answer(A, "How many leaves do I get?")
 
-    assert blocks(model.drafted[0]) == [p.text for p in sorted(OFFER_LETTER, key=lambda hit: hit.seq)]
+    # Changed on purpose (#381, 27 Oct 2026): every piece still, never in reading order: ranked by
+    # the question's search (leave policy, then the rest in reading order), best at both ends.
+    ranked = [LEAVE_POLICY, HOLIDAYS, SALARY, CASUAL, MATERNITY]
+    assert blocks(model.drafted[0]) == [p.text for p in draft.edges(ranked)]
     assert sorted(c.page_no for c in answer.citations) == [4, 9, 18]
-    # No search, no aspects, no topics, sections or neighbours: every piece is there already.
-    assert (retriever.calls, retriever.fused, model.rewrites) == ([], [], [])
+    # No aspects, no topics, sections or neighbours: every piece is there already. Changed on
+    # purpose (#381, 27 Oct 2026): one search, with the question's vector, to rank them.
+    assert [(text, limit) for _, text, _, limit in retriever.calls] == [("leaves get", 5)]
+    assert (retriever.fused, model.rewrites) == ([], [])
     # Changed on purpose (PRD 6 A, 24 Oct 2026): the cards once more, for the listed documents' titles.
     assert context.calls == ["whole", "cards", "cards"]
 
@@ -387,14 +392,13 @@ def test_cx6_order_is_hits_then_topic_and_section_pieces_then_neighbours() -> No
 
     answers(retriever, context, model, SEARCH_ONLY).answer(A, "How many casual leave days?")
 
-    assert blocks(model.drafted[0]) == [
-        CASUAL.text,
-        HOLIDAYS.text,
-        MATERNITY.text,
-        LEAVE_POLICY.text,
-        near.text,
-    ]
-    assert 'neighbour="yes"' in model.drafted[0].split(LEAVE_POLICY.text)[1]
+    # Changed on purpose (#381, 27 Oct 2026): this order, laid out with the best at both ends of the
+    # prompt and the neighbour, the weakest, in the middle; each keeps its id.
+    order = [CASUAL, HOLIDAYS, MATERNITY, LEAVE_POLICY, near]
+    assert blocks(model.drafted[0]) == [hit.text for hit in draft.edges(order)]
+    ids = {text.split("\n", 1)[-1]: int(n) for n, text in _BLOCK.findall(model.drafted[0])}
+    assert [ids[hit.text] for hit in order] == [1, 2, 3, 4, 5]
+    assert 'neighbour="yes"' in model.drafted[0].split(MATERNITY.text)[1].split(LEAVE_POLICY.text)[0]
     assert context.calls == ["topics", "sections", "cards", "cards"]  # PRD 6 A: the listed documents' titles
     assert "casual leave" in context.terms and "leave" in context.terms  # "leaves" without its s
 
@@ -626,10 +630,12 @@ def test_a_swift_answer_reads_at_most_the_swift_cap_and_precision_keeps_the_whol
         answers(retriever, context, Routed(LEAVES), capped).answer(
             A, "How many leaves do I get?", choice=ChatChoice([agent], thinking)
         )
-        assert (not retriever.calls) is whole, thinking
+        # Changed on purpose (#381, 27 Oct 2026): a whole scope is searched once too, to rank its
+        # pieces; only a scope searched for its evidence is widened by topics.
+        assert ("topics" not in context.calls) is whole, thinking
     retriever, context = Fused(OFFER_LETTER), FakeContext(OFFER_LETTER)
     off = dataclasses.replace(SETTINGS, answer_swift_input_tokens=0)  # 0: no cap
     answers(retriever, context, Routed(LEAVES), off).answer(
         A, "How many leaves do I get?", choice=ChatChoice([agent], "medium")
     )
-    assert retriever.calls == []
+    assert "topics" not in context.calls  # Changed on purpose (#381, 27 Oct 2026): as above

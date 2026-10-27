@@ -36,7 +36,8 @@ C5: a table from a layout reader (cells that carry ``table_id``, ``row`` and
 ``col``) makes its own pieces, of at most ``TABLE_MAX_ROWS`` rows or
 ``MAX_CHARS``. Each row is written "Header: value | Header: value", like a
 sheet row (``rows.py``). The names come from the table's header rows (rows
-where every cell is a header). A table with no header row, found right after
+where every cell is a header), a merged header naming every column it covers
+(``layout.header_names``, #382). A table with no header row, found right after
 a table on the previous page with the same number of columns, takes that
 table's names: it is the same table running on over the page. Otherwise the
 columns are named by letter. A name is at most ``NAME_MAX`` characters. A
@@ -63,6 +64,7 @@ from collections.abc import Collection, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from itertools import groupby
 
+from kaagaz.chunking.layout import header_names
 from kaagaz.chunking.piece import Piece, piece_label
 from kaagaz.chunking.rows import column_letter
 from kaagaz.reading.spans import BoxLocation, Span
@@ -295,7 +297,7 @@ class _Builder:
         ]
         headers = [row for row in rows if all(span.header for span, _ in row)]
         data = [row for row in rows if not all(span.header for span, _ in row)]
-        found = self._names(page, 1 + max(_row_col(span)[1] for span, _ in cells), headers)
+        found = self._names(page, max(_row_col(span)[1] + (span.col_span or 1) for span, _ in cells), headers)
         # A table of only header rows still keeps its text, under column letters.
         names = found if data else _Names(page, found.columns, {}, ())
         chunk: list[tuple[str, list[Line]]] = []
@@ -314,11 +316,7 @@ class _Builder:
         """The header rows' names, one per column; else the names of a table just
         before on the previous page with as many columns; else none."""
         if headers:
-            names: dict[int, str] = {}
-            for row in headers:
-                for span, _ in row:
-                    col = _row_col(span)[1]
-                    names[col] = f"{names[col]} {span.text}" if col in names else span.text
+            names = header_names(span for row in headers for span, _ in row)
             names = {col: _short(name) for col, name in names.items()}
             return _Names(page, columns, names, tuple(span for row in headers for span, _ in row))
         previous = self._table

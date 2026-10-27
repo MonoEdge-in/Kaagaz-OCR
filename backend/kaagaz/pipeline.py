@@ -211,6 +211,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 from PIL import Image
 
 from kaagaz.chunking.context import with_context
+from kaagaz.chunking.layout import Layout, page_layout
 from kaagaz.chunking.lines import pieces_from_lines
 from kaagaz.chunking.piece import Piece
 from kaagaz.chunking.rows import pieces_from_rows
@@ -412,6 +413,7 @@ class DocumentContent:
     links: tuple[LinkIdentifier, ...] = ()  # this document's own identifiers
     sections: tuple[Section, ...] = ()  # CX2: the document's map, in reading order
     topics: tuple[Topic, ...] = ()  # CX3: the topics that join distant pages
+    layout: Layout = field(default_factory=Layout)  # #383, #382: the pages' blocks and table cells
 
 
 # --- runs and progress (R6, X2, X3) -------------------------------------------
@@ -1251,6 +1253,7 @@ class DocumentProcessor:
             links=document_links(facts, values),
             sections=document_map.sections,
             topics=document_map.topics,
+            layout=page_layout(read.usable),
         )
 
     def _file(self, job: Job) -> None:

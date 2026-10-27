@@ -475,6 +475,7 @@ def offer_letter_scan_replies() -> list[dict[str, Any]]:
                 ],
                 "unsure": [],
                 "continues_on_next_page": text == NOTICE_START,
+                "block": order,  # g3 (#383): each line its own block
                 "table": None,
             }
             for order, (text, (x0, y0, x1, y1), kind) in enumerate(_offer_boxes(n))

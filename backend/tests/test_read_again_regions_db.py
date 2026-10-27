@@ -1,4 +1,4 @@
-"""Read again for regions of a page (#385, migration 0056), against a real PostgreSQL: the
+"""Read again for regions of a page (#385, migration 0057), against a real PostgreSQL: the
 store (``request_page_read_again`` with regions, ``PgDocuments.regions_to_read_again``, the
 marks cleared with a failure for good) and the API (POST
 /api/documents/{id}/pages/{n}/read-again with ``regions``: stored, counted in the audit row,

@@ -976,7 +976,7 @@ class ReadAgainBody(BaseModel):
     read_agents: list[str] | None = None  # ignored: Ensemble runs only after the scan (16 Oct 2026)
 
 
-# #385: the most regions one page's Read again may name (migration 0056 holds the same).
+# #385: the most regions one page's Read again may name (migration 0057 holds the same).
 MAX_READ_AGAIN_REGIONS = 10
 
 

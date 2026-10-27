@@ -284,8 +284,11 @@ def test_cx5_whole_document_mode_cites_pages_4_9_and_18_from_every_piece_in_orde
     assert [s["text"] for s in answer["sentences"]] == list(QUOTES[LEAVES])
     assert {c["page_no"] for c in answer["citations"]} == set(OFFER_LEAVE_PAGES.values())
     (prompt,) = model.drafts
-    assert blocks(prompt) == [piece.text for piece in content.pieces]
-    assert model.rewrites == [] and retriever.calls == []  # no rewrite, no search
+    # Changed on purpose (#381, 27 Oct 2026): every piece once, ranked by one search of the question
+    # and laid out with the best at both ends, never in reading order.
+    assert sorted(blocks(prompt)) == sorted(piece.text for piece in content.pieces)
+    assert blocks(prompt) != [piece.text for piece in content.pieces]
+    assert model.rewrites == [] and len(retriever.calls) == 1  # no rewrite, one search to rank
 
 
 def test_cx6_with_no_whole_document_the_aspects_and_the_leave_topic_find_pages_4_9_and_18() -> None:

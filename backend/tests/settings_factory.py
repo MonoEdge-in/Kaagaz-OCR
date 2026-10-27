@@ -106,6 +106,8 @@ _BASE: dict[str, Any] = {
     "model_context_tokens": 200_000,
     "answer_whole_doc_tokens": 120_000,
     "answer_swift_input_tokens": 30_000,
+    "answer_parts_tokens": 24_000,
+    "answer_parts_max": 5,
     "topic_max_per_doc": 40,
     "topic_expand_max_pieces": 12,
     "query_aspects_max": 6,
