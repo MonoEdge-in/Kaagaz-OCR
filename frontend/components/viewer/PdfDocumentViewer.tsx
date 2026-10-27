@@ -13,9 +13,15 @@
 // page or a spot scrolls the viewer to it, once the file is open. While the viewer travels
 // there (STEERING_MS) the pages it passes are not told back, or the screen would leave its
 // choice for one of them.
+//
+// The hand (Vrushit UAT 2, 27 Oct 2026, #419): a toolbar toggle. While it is on, a drag on the
+// pages moves them (a mouse, a pen or a finger) with a grab cursor, and the engine's own pointer
+// work (selecting text) is left out through its exclusion rule (data-no-interaction); a mark on
+// the page is still pressed as before. Off, the pages select text as they did. The scroll follows
+// the pointer at once, never animated; the keys scroll the pages either way.
 
 import "@/components/extend/extend.css";
-import { DownloadIcon, HighlighterIcon, PrinterIcon } from "lucide-react";
+import { DownloadIcon, HandIcon, HighlighterIcon, PrinterIcon } from "lucide-react";
 import { useCallback, useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react";
 import { PDFViewer } from "@/components/extend/pdf-viewer";
 import type { PDFViewerHandle, PDFViewerPageOverlayProps } from "@/components/extend/pdf-viewer";
@@ -28,6 +34,7 @@ import { fileUrl } from "@/lib/api";
 import type { ReadingMark, Region, WordFlag } from "@/lib/types";
 import { markName, marksOnPage } from "./readingMarks";
 import styles from "./PageViewer.module.css";
+import { panTo } from "./viewer";
 import { wordColour } from "./YourWords";
 
 /** How long a scroll the screen asked for takes to settle (a smooth scroll across pages). */
@@ -114,6 +121,7 @@ export function PdfDocumentViewer({
 }: PdfDocumentViewerProps) {
   const viewer = useRef<PDFViewerHandle>(null);
   const [showHighlights, setShowHighlights] = useState(true);
+  const [hand, setHand] = useState(false); // #419: a drag moves the pages
   const [printing, setPrinting] = useState(false);
   const [printFailed, setPrintFailed] = useState(false);
   const [open, setOpen] = useState(false); // the file is open, so the viewer can scroll
@@ -147,6 +155,42 @@ export function PdfDocumentViewer({
     if (performance.now() < steeringUntil.current) return;
     if (page !== screen.current.pageNo) screen.current.onPageChange(page);
   }, []);
+
+  // The hand (#419), on the viewer's own scroll area once the file is open.
+  useEffect(() => {
+    const area = viewer.current?.getViewportElement();
+    if (!hand || !open || !area) return;
+    let press: { id: number; x: number; y: number; left: number; top: number } | null = null;
+    const down = (event: PointerEvent) => {
+      if (event.button !== 0 || (event.target instanceof Element && event.target.closest("button, a"))) return;
+      press = { id: event.pointerId, x: event.clientX, y: event.clientY, left: area.scrollLeft, top: area.scrollTop };
+      area.setPointerCapture(event.pointerId);
+      area.dataset.hand = "grabbing";
+      event.preventDefault();
+    };
+    const move = (event: PointerEvent) => {
+      if (press?.id === event.pointerId) area.scrollTo({ ...panTo(press, event.clientX, event.clientY), behavior: "instant" });
+    };
+    const end = (event: PointerEvent) => {
+      if (press?.id !== event.pointerId) return;
+      press = null;
+      area.dataset.hand = "grab";
+    };
+    area.dataset.noInteraction = "";
+    area.dataset.hand = "grab"; // its cursor (PageViewer.module.css .hand)
+    area.addEventListener("pointerdown", down);
+    area.addEventListener("pointermove", move);
+    area.addEventListener("pointerup", end);
+    area.addEventListener("pointercancel", end);
+    return () => {
+      delete area.dataset.noInteraction;
+      delete area.dataset.hand;
+      area.removeEventListener("pointerdown", down);
+      area.removeEventListener("pointermove", move);
+      area.removeEventListener("pointerup", end);
+      area.removeEventListener("pointercancel", end);
+    };
+  }, [hand, open]);
 
   const overlay = useCallback(
     ({ pageNumber, pageWidth, pageHeight, scale }: PDFViewerPageOverlayProps) => {
@@ -237,7 +281,7 @@ export function PdfDocumentViewer({
   );
 
   return (
-    <div className="extend-ui flex min-h-0 flex-1 flex-col">
+    <div className={`extend-ui flex min-h-0 flex-1 flex-col ${hand ? styles.hand : ""}`}>
       <PDFViewer
         ref={viewer}
         className="min-h-0 flex-1"
@@ -250,6 +294,17 @@ export function PdfDocumentViewer({
         onDocumentLoadSuccess={() => setOpen(true)}
         toolbarActions={
           <>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              aria-pressed={hand}
+              aria-label="Hand"
+              title={hand ? "Hand on: drag to move the page" : "Hand: drag to move the page"}
+              onClick={() => setHand((on) => !on)}
+            >
+              <HandIcon />
+            </Button>
             <Button
               type="button"
               variant="ghost"

@@ -99,8 +99,8 @@ describe("the MonoEdge design system on the documents screens", () => {
       [view, ".title"],
       [view, ".panel"],
       [view, ".problemBody"],
-      // Changed on purpose (Vrushit UAT, 25 Oct 2026): .factRow dd went with the Invoice section.
-      [view, ".valuesWrap"],
+      // Changed on purpose (Vrushit UAT, 25 Oct 2026): .factRow dd went with the Invoice section;
+      // (Vrushit UAT 2, 27 Oct 2026, #416) .valuesWrap went with Values found.
       ["components/viewer/ScannedText.module.css", ".lineButton"],
       ["components/viewer/PageViewer.module.css", ".viewer"],
     ];
@@ -111,10 +111,8 @@ describe("the MonoEdge design system on the documents screens", () => {
     const wrap = (file: string, selector: string) =>
       rules(css(file)).find((rule) => rule.selector === selector)?.body ?? "";
     expect(wrap("components/documents/Table.module.css", ".reflowWrap")).toMatch(/overflow-x:\s*auto;/);
-    expect(wrap("app/(app)/documents/[id]/DocumentView.module.css", ".valuesWrap")).toMatch(/overflow-x:\s*auto;/);
-    expect(read("app/(app)/documents/[id]/DocumentView.tsx")).toMatch(
-      /<div className=\{styles\.valuesWrap\}>\s*<table className=\{`table \$\{styles\.valuesTable\}`\}/,
-    );
+    // Changed on purpose (Vrushit UAT 2, 27 Oct 2026, #416): the document page has no values table.
+    expect(read("app/(app)/documents/[id]/DocumentView.tsx")).not.toContain("<table");
     // The list's own table opens its Actions menus past the row, so it is kept unwrapped, said in its CSS.
     expect(read("components/documents/Documents.module.css")).toContain("No overflow wrapper (the MonoEdge rule for tables)");
   });

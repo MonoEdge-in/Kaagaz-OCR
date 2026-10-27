@@ -59,6 +59,19 @@ export function tabsThatFit(rem: number | null, long: boolean): number {
   return rem >= four ? 4 : rem >= three ? 3 : 2;
 }
 
+/**
+ * The PDF viewer's hand (Vrushit UAT 2, 27 Oct 2026, #419): where a drag that began at `press`
+ * (the pointer, and the pages' scroll then) scrolls the pages with the pointer now at x, y. The
+ * page follows the pointer, so the scroll moves the other way; the browser keeps it in range.
+ */
+export function panTo(
+  press: { x: number; y: number; left: number; top: number },
+  x: number,
+  y: number,
+): { left: number; top: number } {
+  return { left: press.left - (x - press.x), top: press.top - (y - press.y) };
+}
+
 /** The next zoom step in or out; stays put at either end. */
 export function stepZoom(current: number, direction: "in" | "out"): number {
   const index = ZOOM_STEPS.findIndex((step) => step >= current - 1e-9);

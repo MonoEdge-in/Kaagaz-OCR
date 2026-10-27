@@ -345,7 +345,8 @@ export function attentionItems(reply: InsightsReply, names: ReadonlyMap<string, 
     const down = fresh.filter((report) => report.state === "down").length;
     const key = fresh.filter((report) => report.state === "key_problem").length;
     if (down > 0) platform("act", `The scan reader is down on ${formatNumber(down)} ${down === 1 ? "worker" : "workers"}.`, "health");
-    if (key > 0) platform("act", `The scan reader has a key problem on ${formatNumber(key)} ${key === 1 ? "worker" : "workers"}.`, "health");
+    // key_problem: a rejected key or spent credit, or (issue 407) OCR_MODEL that OpenRouter does not serve.
+    if (key > 0) platform("act", `The scan reader's key or model setting needs fixing on ${formatNumber(key)} ${key === 1 ? "worker" : "workers"}.`, "health");
     const waited = health.totals.oldest_in_progress_seconds;
     if (waited !== null && waited > ATTENTION.queueOldMinutes * 60) {
       platform("check", `The oldest document in progress has waited ${waitWords(waited)}.`, "health");

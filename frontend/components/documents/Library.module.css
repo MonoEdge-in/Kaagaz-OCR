@@ -166,6 +166,15 @@
   color: var(--k-ink-muted);
 }
 
+/* Other (issue 409): the group's heading is also the link to the files in no department,
+   as tall as a folder's link and as far from the group above as Departments. */
+.groupLink {
+  margin-block-start: var(--space-3);
+  font-size: var(--fs-base);
+  font-weight: 500;
+  color: var(--k-ink-muted);
+}
+
 .groupSub {
   padding-block-start: 0;
   font-weight: 600;

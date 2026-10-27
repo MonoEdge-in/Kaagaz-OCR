@@ -8,7 +8,8 @@
 // with the selection's actions shows only while rows are ticked, stuck to the bottom
 // of the list's view, so it never pushes a row (on cards it also holds Select all).
 // Move to Trash, and Delete forever in Trash, ask
-// first; focus goes to Cancel, and back to the menu button if it is cancelled. Restore
+// first, in a dialog as on the document screen (issue 408: the question opened over the row's
+// own columns and the next row); focus goes to Cancel, and back to the menu button. Restore
 // needs no question: nothing is lost. Ticked rows can be moved to Trash
 // together; in Trash they can be restored together, or deleted forever together
 // by whoever may (canDeleteForever, asked first; a granted member or reviewer
@@ -40,7 +41,7 @@ import { LabelChip } from "@/components/files/LabelChip";
 import { FILES_TEXT, NEWER_SPOKEN, versionCell } from "@/components/files/words";
 import { Icon } from "@/components/ui/Icon";
 import { PasswordField } from "@/components/ui/PasswordField";
-import { beingRead, canReprocess } from "@/components/viewer/reprocess";
+import { beingRead, canReprocess, reprocessErrorText } from "@/components/viewer/reprocess";
 import { newerVersionText } from "@/components/viewer/versions";
 import { FADE_IN, MOTION_MS, play } from "@/lib/motion";
 import {
@@ -54,6 +55,7 @@ import {
 import { useSession } from "@/lib/session";
 import { docTypeLabel, formatBytes, formatDate, formatDateTime, formatRelative, typeLabel } from "@/lib/format";
 import type { DocumentSummary, Me, Tag } from "@/lib/types";
+import { ActionDialog } from "./ActionDialog";
 import { EditDialog, MoveDialog, RowMenu } from "./DocumentActions";
 import { DOCUMENT_DRAG } from "./FolderNav";
 import { pathLabel } from "./folderTree";
@@ -412,6 +414,7 @@ export function DocumentsTable({
               whenSpoken={whenSpoken(document, inTrash, now)}
               inTrash={inTrash}
               deletable={tickable(document)}
+              readable={readable(document)}
               canForever={canForever}
               askPassword={askPassword}
               selected={selectedIds.has(document.id)}
@@ -643,6 +646,7 @@ const DocumentRow = memo(function DocumentRow({
   whenSpoken,
   inTrash,
   deletable,
+  readable,
   canForever,
   askPassword,
   selected,
@@ -658,6 +662,7 @@ const DocumentRow = memo(function DocumentRow({
   whenSpoken: string;
   inTrash: boolean;
   deletable: boolean; // it gets a checkbox (selectable)
+  readable: boolean; // it may be read again (canReprocess): its status cell may offer Retry
   canForever: boolean;
   askPassword: boolean;
   selected: boolean;
@@ -671,6 +676,8 @@ const DocumentRow = memo(function DocumentRow({
   const [confirming, setConfirming] = useState<Confirming>(null);
   const [editing, setEditing] = useState<EditAction | null>(null);
   const [busy, setBusy] = useState(false);
+  // What the row says while Restore or Retry runs (Trash and Delete forever say it in their dialog).
+  const [working, setWorking] = useState(BUSY_WORDS.restore);
   const [error, setError] = useState<string | null>(null);
   const [password, setPassword] = useState("");
   const { refresh } = useSession();
@@ -678,10 +685,7 @@ const DocumentRow = memo(function DocumentRow({
   const refocusActions = useRef(false);
   const afterEdit = useRef<"actions" | "list">("actions");
 
-  // Stable callback refs, so each runs once when its button appears.
-  const focusOnMount = useCallback((element: HTMLButtonElement | null) => {
-    element?.focus();
-  }, []);
+  // A stable callback ref, so it runs once when its button appears.
   const holdActions = useCallback((element: HTMLButtonElement | null) => {
     actionsButton.current = element;
     if (element && refocusActions.current) {
@@ -701,6 +705,7 @@ const DocumentRow = memo(function DocumentRow({
       return;
     }
     if (action === "restore") {
+      setWorking(BUSY_WORDS.restore);
       void act(
         restoreDocument,
         restoredMessage(document.display_name),
@@ -767,9 +772,25 @@ const DocumentRow = memo(function DocumentRow({
     }
   }
 
+  // The dialog hands focus back to the menu button once it is shut (onClosed).
   function cancel() {
-    refocusActions.current = true;
     setConfirming(null);
+  }
+
+  // Issue 407: the status cell's Retry is Read again (POST .../reprocess); the row stays and
+  // the list is asked for again.
+  async function retry() {
+    setWorking(BUSY_WORDS.read);
+    setBusy(true);
+    setError(null);
+    try {
+      await reprocessDocument(document.id);
+      events.onSaved(bulkDoneMessage("read", 1));
+    } catch (caught) {
+      if (lostTheRight(caught)) refresh();
+      setError(reprocessErrorText(caught));
+    }
+    setBusy(false);
   }
 
   // O3: who changed it last (the newest upload or details change); the uploader on an older reply.
@@ -814,7 +835,8 @@ const DocumentRow = memo(function DocumentRow({
   function openRow(event: ReactMouseEvent<HTMLTableRowElement>) {
     if (event.defaultPrevented || event.button !== 0) return;
     if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-    if ((event.target as Element).closest("a, button, input, label, select, textarea, [role='menu'], [role='dialog']")) return;
+    // A row's dialogs sit inside it: a click on their words or backdrop never opens the document.
+    if ((event.target as Element).closest("a, button, input, label, select, textarea, dialog, [role='menu'], [role='dialog']")) return;
     if (window.getSelection()?.toString()) return;
     // The name's own link: its navigation and its scroll memory, nothing new.
     event.currentTarget.querySelector<HTMLAnchorElement>(`.${styles.name}`)?.click();
@@ -890,7 +912,12 @@ const DocumentRow = memo(function DocumentRow({
         )}
       </td>
       <td role="cell" className={styles.statusCell}>
-        <StatusCell document={document} inTrash={inTrash} />
+        <StatusCell
+          document={document}
+          inTrash={inTrash}
+          onRetry={readable ? () => void retry() : undefined}
+          busy={busy}
+        />
       </td>
       <td role="cell" className={`${styles.meta} ${styles.typeCell}`}>
         {typeLabel(document.detected_type)}
@@ -939,7 +966,11 @@ const DocumentRow = memo(function DocumentRow({
         )}
       </td>
       <td role="cell" className={styles.actionsCell}>
-        {confirming === null && !busy && (
+        {confirming === null && busy ? (
+          <p className={`muted ${styles.small}`} role="status">
+            <span className="spinner" aria-hidden="true" /> {working}
+          </p>
+        ) : (
           <RowMenu
             item={document}
             canForever={canForever}
@@ -947,47 +978,43 @@ const DocumentRow = memo(function DocumentRow({
             toggleRef={holdActions}
           />
         )}
-        {confirming === null && busy && (
-          <p className={`muted ${styles.small}`} role="status">
-            <span className="spinner" aria-hidden="true" /> Restoring…
-          </p>
-        )}
         {confirming !== null && (
-          <div className={styles.confirm} role="group" aria-labelledby={`confirm-${document.id}`}>
-            <span id={`confirm-${document.id}`}>{question}</span>
-            {confirming === "forever" && askPassword && (
-              <PasswordField
-                id={`forever-password-${document.id}`}
-                label="Your password"
-                autoComplete="current-password"
-                value={password}
-                onChange={setPassword}
-              />
-            )}
-            <div className={styles.confirmButtons}>
-              <button
-                type="button"
-                className="btn btn-danger"
-                onClick={confirm}
-                disabled={busy || (confirming === "forever" && askPassword && password === "")}
-              >
-                <BusyLabel
-                  busy={busy}
-                  idle={confirming === "forever" ? "Delete forever" : "Move to Trash"}
-                  working={confirming === "forever" ? "Deleting…" : "Moving…"}
+          <ActionDialog
+            title={confirming === "forever" ? "Delete forever" : "Move to Trash"}
+            onClose={cancel}
+            onClosed={() => actionsButton.current?.focus()}
+            canClose={() => !busy}
+          >
+            <div className={library.dialogForm}>
+              <p>{question}</p>
+              {confirming === "forever" && askPassword && (
+                <PasswordField
+                  id={`forever-password-${document.id}`}
+                  label="Your password"
+                  autoComplete="current-password"
+                  value={password}
+                  onChange={setPassword}
                 />
-              </button>
-              <button
-                ref={focusOnMount}
-                type="button"
-                className="btn"
-                onClick={cancel}
-                disabled={busy}
-              >
-                Cancel
-              </button>
+              )}
+              <div className={library.formButtons}>
+                <button
+                  type="button"
+                  className={`btn btn-danger ${library.apart}`}
+                  onClick={confirm}
+                  disabled={busy || (confirming === "forever" && askPassword && password === "")}
+                >
+                  <BusyLabel
+                    busy={busy}
+                    idle={confirming === "forever" ? "Delete forever" : "Move to Trash"}
+                    working={confirming === "forever" ? "Deleting…" : "Moving…"}
+                  />
+                </button>
+                <button type="button" className="btn" data-autofocus onClick={cancel} disabled={busy}>
+                  Cancel
+                </button>
+              </div>
             </div>
-          </div>
+          </ActionDialog>
         )}
         {error && (
           <p className={`error-text ${styles.rowError}`} role="alert">
@@ -1018,8 +1045,25 @@ const DocumentRow = memo(function DocumentRow({
  * its words, then the bar and the time left, or what was flagged), keyed by phase so the
  * new lines fade in (opacity only) and nothing else moves. Any other state: the chip and
  * the server's words, which may wrap.
+ * Issue 407: with `onRetry` (whoever may read it again), a failed row, or one still being read
+ * 6 hours on (`stuck`), ends its second line with Retry; the server checks both again.
  */
-export function StatusCell({ document, inTrash }: { document: DocumentSummary; inTrash: boolean }) {
+export function StatusCell({
+  document,
+  inTrash,
+  onRetry,
+  busy = false,
+}: {
+  document: DocumentSummary;
+  inTrash: boolean;
+  onRetry?: () => void;
+  busy?: boolean;
+}) {
+  const retry = onRetry && !inTrash && (document.status === "failed" || document.stuck === true) && (
+    <button type="button" className={styles.statusAction} onClick={onRetry} disabled={busy}>
+      Retry<span className="visually-hidden">{` ${document.display_name}`}</span>
+    </button>
+  );
   if (beingRead(document.status) && document.deleted_at === null) {
     const words = scanWords(document);
     const detail = words ? words.detail : document.status_message;
@@ -1033,6 +1077,7 @@ export function StatusCell({ document, inTrash }: { document: DocumentSummary; i
         </span>
         <span className={styles.statusLine}>
           <TimeLeft document={document} />
+          {retry}
         </span>
       </span>
     );
@@ -1076,6 +1121,7 @@ export function StatusCell({ document, inTrash }: { document: DocumentSummary; i
         <span className={styles.statusText} title={document.status_message}>
           {document.status_message}
         </span>
+        {retry}
       </span>
     </span>
   );

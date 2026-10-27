@@ -47,7 +47,9 @@ fact whose field names a village, in Latin letters, else "Survey 44"; a deed wit
 joins the one property folder of its number when there is just one), Party for verified
 invoices (``party:<GSTIN>``, as above) or Year (``year:<yyyy>:<category id>``). A land record
 with no survey number is filed by year. Folders Kaagaz makes carry the matching kind. An
-unrecognized type remains unfiled; it never creates a guessed department.
+unrecognized type remains unfiled; it never creates a guessed department. A Property or
+Party folder already holding its key is looked up first and used wherever it now is, so no
+department or category is made that the file would not go into (issue 414).
 """
 
 import re
@@ -210,16 +212,22 @@ def file_document(conn: Connection, customer_id: str, document_id: str) -> str |
     if name is None:
         _set(conn, customer_id, family, SKIPPED)
         return "other"
-    department = (
-        str(state["folder_id"])
-        if state["folder_kind"] == "department"
-        else _department(conn, customer_id, state["doc_type"], state["uploaded_by"])
-    )
-    if department is not None:
-        folder = _in_department(conn, customer_id, document_id, department, state)
+    # Issue 414: the Property or Party folder is used wherever it now is, so it is looked up
+    # first; a department or category is made only when the file goes into it.
+    own = _own_folder(conn, customer_id, document_id, state)
+    found = None if own is None else conn.execute(text(_BY_KEY), {"c": customer_id, "k": own[1]}).scalar()
+    if found is not None:
+        folder = str(found)
     else:
-        _set(conn, customer_id, family, SKIPPED)
-        return "no_department"
+        department = (
+            str(state["folder_id"])
+            if state["folder_kind"] == "department"
+            else _department(conn, customer_id, state["doc_type"], state["uploaded_by"])
+        )
+        if department is None:
+            _set(conn, customer_id, family, SKIPPED)
+            return "no_department"
+        folder = _in_department(conn, customer_id, department, state, own)
     conn.execute(text(_FILE_FAMILY), {"c": customer_id, "f": family, "folder": folder, "state": FILED})
     audit.record(
         conn,
@@ -305,33 +313,55 @@ def property_folder(number: str, place: str | None) -> tuple[str, str]:
     return f"property:{slug}:{number}", name
 
 
-def _in_department(
-    conn: Connection, customer_id: str, document_id: str, department: str, state: RowMapping
-) -> str:
-    """The folder for a file uploaded into a department: Department, then Category (the
-    type folder), then Property (land records and deeds with a survey number), Party
-    (verified invoices, 28b) or Year (the document date, else the upload's). A level that
-    can't be made (no owner, no room, a name taken) leaves the file one level up. The
-    caller holds the tree lock. A few indexed statements."""
-    owner, card = state["uploaded_by"], state["card"]
+def _own_folder(
+    conn: Connection, customer_id: str, document_id: str, state: RowMapping
+) -> tuple[str, str, str] | None:
+    """The file's own folder below its category, as (kind, key, name): Property for a land
+    record or a deed with a survey number, Party for a verified invoice with one clear other
+    party (28b); None for any other file. The caller holds the tree lock. A few indexed
+    statements, O(I) for an invoice (the count of the customer's I invoices)."""
+    card = state["card"]
     number = survey_number(card)
-    kind = state["doc_type"]
-    if kind == "land_record" or (kind == "contract" and number is not None):
-        kind = "land_record"  # a deed with a survey number goes next to its land
-    category = _child(
-        conn, customer_id, department, f"type:{kind}:{department}", FOLDERS[kind], "category", owner
-    )
-    if category == department:
-        return department
-    if kind == "land_record" and number is not None:
+    if number is not None and state["doc_type"] in ("land_record", "contract"):
         place = village(card)
         key, name = property_folder(number, place)
         if place is None:  # a deed with no village joins the one property of that number
             same = conn.execute(text(_SAME_NUMBER), {"c": customer_id, "k": f"property:%:{number}"}).all()
             key = str(same[0][0]) if len(same) == 1 else key
-        return _child(conn, customer_id, category, key, name, "property", owner)
+        return "property", key, name
+    if state["doc_type"] != "invoice":
+        return None
+    params = {"c": customer_id, "d": document_id}
+    invoice = conn.execute(text(_INVOICE), params).first()
+    if invoice is None:
+        return None
+    top = [(str(r[0]), int(r[1]), int(r[2])) for r in conn.execute(text(_MOST_SEEN), params)]
+    found = party(invoice[0], invoice[1], invoice[2], invoice[3], own_gstin(top))
+    return None if found is None else ("party", f"party:{found[0]}", found[1])
+
+
+def _in_department(
+    conn: Connection, customer_id: str, department: str, state: RowMapping, own: tuple[str, str, str] | None
+) -> str:
+    """The folder for a file uploaded into a department: Department, then Category (the
+    type folder), then its own folder (``own``: Property or Party, none of its key yet) or
+    Year (the document date, else the upload's). A level that can't be made (no owner, no
+    room, a name taken) leaves the file one level up. The caller holds the tree lock. A few
+    indexed statements."""
+    owner = state["uploaded_by"]
+    # A deed with a survey number goes next to its land.
+    kind = "land_record" if own is not None and own[0] == "property" else state["doc_type"]
+    category = _child(
+        conn, customer_id, department, f"type:{kind}:{department}", FOLDERS[kind], "category", owner
+    )
+    if category == department:
+        return department
+    if own is not None and own[0] == "property":
+        return _child(conn, customer_id, category, own[1], own[2], "property", owner)
+    if own is not None:
+        return _party_folder(conn, customer_id, category, own, owner)
     if kind == "invoice":
-        return _party_folder(conn, customer_id, document_id, category, owner)
+        return category  # no verified invoice or no clear other party: no Party folder
     year = filing_year(state["document_date"], state["created_at"])
     return _child(conn, customer_id, category, f"year:{year}:{category}", year, "year", owner)
 
@@ -430,24 +460,13 @@ def party_name(name: str | None, gstin: str) -> str:
 
 
 def _party_folder(
-    conn: Connection, customer_id: str, document_id: str, type_folder: str, owner: object
+    conn: Connection, customer_id: str, type_folder: str, own: tuple[str, str, str], owner: object
 ) -> str:
-    """The party folder for a verified invoice (28b), or ``type_folder`` when there is none
-    to use: no verified invoice, no clear party, no room or no owner, or both names taken.
-    The caller holds the tree lock. O(I) for the customer's I invoices (the count)."""
-    params = {"c": customer_id, "d": document_id}
-    invoice = conn.execute(text(_INVOICE), params).first()
-    if invoice is None:
-        return type_folder
-    top = [(str(r[0]), int(r[1]), int(r[2])) for r in conn.execute(text(_MOST_SEEN), params)]
-    found = party(invoice[0], invoice[1], invoice[2], invoice[3], own_gstin(top))
-    if found is None:
-        return type_folder
-    gstin, name = found
-    key = f"party:{gstin}"
-    keyed = conn.execute(text(_BY_KEY), {"c": customer_id, "k": key}).scalar()
-    if keyed is not None:
-        return str(keyed)
+    """A new party folder for a verified invoice (28b; ``own`` from ``_own_folder``, its key in
+    no folder yet), or ``type_folder`` when none can be made: no room or no owner, or both
+    names taken. The caller holds the tree lock. A few indexed statements."""
+    _, key, name = own
+    gstin = key.removeprefix("party:")
     depth: int | None = conn.execute(text(_DEPTH), {"c": customer_id, "f": type_folder}).scalar_one()
     if owner is None or depth is None or depth >= _MAX_DEPTH:
         return type_folder

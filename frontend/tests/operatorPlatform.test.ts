@@ -139,7 +139,8 @@ describe("the reader and the queues (PRD 5 U9)", () => {
     expect(readerWords({ state: "working", seen_at: seen(1000) }, now)).toBe("Working");
     expect(readerWords({ state: "failing", seen_at: seen(1000) }, now)).toBe("Slow");
     expect(readerWords({ state: "down", seen_at: seen(1000) }, now)).toBe("Down");
-    expect(readerWords({ state: "key_problem", seen_at: seen(1000) }, now)).toBe("Key problem");
+    // Changed on purpose (issue 407): a wrong reading model is reported as key_problem too.
+    expect(readerWords({ state: "key_problem", seen_at: seen(1000) }, now)).toBe("Key or model problem");
   });
 
   it("says not reporting once a worker has been quiet for 2 minutes", () => {

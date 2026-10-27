@@ -719,7 +719,7 @@ def keep_reporting(stop: threading.Event, beat: Callable[[], None], every: float
 def start_reader_reports(
     stop: threading.Event, db: Database, status: Callable[[], tuple[str, float | None]], hostname: str
 ) -> threading.Thread:
-    """This copy's reader reports (U9, V4): the gate's ``status`` into reader_status
+    """This copy's reader reports (U9, V4): the gate's ``health`` (``status``) into reader_status
     under this host's worker name, now and every READER_REPORT_SECONDS until ``stop``."""
     report = functools.partial(reader_status.report, db, worker_name(hostname))
     return keep_reporting(stop, lambda: report_reader_state(report, status), READER_REPORT_SECONDS)
@@ -842,7 +842,8 @@ def _serve(settings: Settings) -> None:
     logger.info("worker started")
     documents = PgDocuments(db)
     gate = process_gate(settings, database=db)  # the one every model client of this process shares
-    reports = start_reader_reports(stop, db, gate.status, socket.gethostname())
+    # Health reads ``health`` (issue 407: OCR_MODEL broken shows); the jobs act on ``status``.
+    reports = start_reader_reports(stop, db, gate.health, socket.gethostname())
     fair_share = FairShare(functools.partial(first_free_lock, db.engine), settings.max_active_per_customer)
     reading = ReadingCap(
         db.engine,

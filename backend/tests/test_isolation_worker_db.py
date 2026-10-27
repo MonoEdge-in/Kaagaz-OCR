@@ -24,7 +24,8 @@ def test_another_customer_cannot_mark_a_document_exhausted(db: Database) -> None
     documents = PgDocuments(db)
     record, _ = documents.add_if_absent(DocumentRecord(a, str(uuid.uuid4()), "b" * 64, 10, "pdf"))
 
-    documents.record_attempt(a, record.document_id, 5, 5)
+    for attempt in range(1, 6):  # changed on purpose (issue 407): each try in turn, to the last
+        documents.record_attempt(a, record.document_id, attempt, 5)
     documents.mark_exhausted(
         b, record.document_id, now=datetime(2026, 9, 30, 12, 0, tzinfo=UTC), max_attempts=5
     )
@@ -39,7 +40,8 @@ def test_another_customer_cannot_record_a_try_on_a_document(db: Database) -> Non
     documents = PgDocuments(db)
     record, _ = documents.add_if_absent(DocumentRecord(a, str(uuid.uuid4()), "c" * 64, 10, "pdf"))
 
-    documents.record_attempt(b, record.document_id, 2, 5)
+    # Changed on purpose (issue 407): try 1, which a's own count would take, so only b is refused.
+    documents.record_attempt(b, record.document_id, 1, 5)
 
     with db.customer(a) as conn:
         row = conn.execute(

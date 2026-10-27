@@ -608,7 +608,7 @@ The demo users are `admin@`, `reviewer@` and `member@` on `sharma-traders.exampl
 
 **19. Search, "not found" and the claim check**
 - Check: ask a question that is not about a number, with a typo in a word from a document; then ask "What is the weather in Delhi?".
-- Expect: the first gives `route:"search"` with `kind:"piece"` citations (exact words, typo-tolerant and, with a model, meaning search are merged). The second gives `status:"not_found"`, the text "Nothing matches every part of this. These are the closest documents." and a list of closest documents. With a model on, any sentence citing nothing, or with a number that is not in its evidence, is dropped, and links and markup are stripped.
+- Expect: the first gives `route:"search"` with `kind:"piece"` citations (exact words, typo-tolerant and, with a model, meaning search are merged). The second gives `status:"not_found"`, the not-found line ("No document searched has the words “weather” or “Delhi”." when no document has them, else "No answer to the whole question was found. These documents match some of your words.") and any closest documents. With a model on, any sentence citing nothing, or with a number that is not in its evidence, is dropped, and links and markup are stripped.
 - Tests: `test_search_db.py`, `test_search_fuse.py`, `test_answering_golden.py` (`test_ten_unanswerable_questions_are_all_not_found`, `test_prompt_injection_in_evidence_changes_nothing`), `test_answering_verify.py`, `test_answering_sanitize.py`.
 
 **20. Answer labels**

@@ -64,16 +64,8 @@ describe("3. a value is one compact row in 0.75rem, with no What was read", () =
     expect(css("components/viewer/ScannedText.module.css")).not.toMatch(/\.readList|\.read summary/);
   });
 
-  it("sets the row's text at 0.75rem and lays a narrow row out on one line, its badge at the end", () => {
-    const sheet = css(VIEW_CSS);
-    expect(sheet).toMatch(/\.valuesTable \{[^}]*font-size: 0\.75rem;/);
-    expect(sheet).toMatch(/\.valuesTable td :global\(\.btn\) \{[^}]*font-size: inherit;/);
-    const narrow = sheet.slice(sheet.indexOf("@container (max-width: 35.99rem)"));
-    expect(narrow).toMatch(/\.valuesTable tbody tr \{\s*display: flex;\s*flex-wrap: wrap;\s*align-items: center;/);
-    expect(narrow).toMatch(/\.valuesTable td\.labelCell \{\s*margin-inline-start: auto;/);
-    expect(narrow).not.toMatch(/grid-template-areas/);
-    expect(narrow).not.toMatch(/font-size: var\(--fs-lg\)/); // the value was 18px in a card
-  });
+  // Changed on purpose (Vrushit UAT 2, 27 Oct 2026, #416): the value rows are gone with Values
+  // found (uat-2-document-page.test.ts).
 });
 
 describe("4. no Invoice section and no line cards on the document page", () => {
@@ -104,12 +96,14 @@ describe("5. Fix text: replace a [?] in the Text view", () => {
     expect(withFixes(two, [first("Are")])).toBe("Are there any [?] tools");
   });
 
-  it("offers Fix text on a line holding a flagged word, opening that word's review (its Edit) for a reviewer", () => {
+  // Changed on purpose (Vrushit UAT 2, 27 Oct 2026, #417): Fix text opens a box under its line to
+  // type the word there, saved as the review's Edit, not the review panel (uat-2-document-page.test.ts).
+  it("offers Fix text on a line holding a flagged word, for a reviewer, saved as the review's Edit", () => {
     const panel = read("components/viewer/ScannedTextPanel.tsx");
     expect(panel).toContain("const toFix = first && onFix ? flags.find((each) => lineMarked(each, line.region)) : undefined;");
-    expect(panel).toMatch(/onClick=\{\(\) => onFix\(toFix\)\}>\s*Fix text/);
+    expect(panel).toMatch(/onClick=\{\(\) => \(box \? fixInput\.current\?\.focus\(\) : openFix\(toFix\)\)\}\s*>\s*Fix text/);
     const view = read(VIEW);
-    expect(view).toContain("onFix={review.status?.can_review && detail.deleted_at === null ? startReview : undefined}");
+    expect(view).toContain("onFix={review.status?.can_review && detail.deleted_at === null ? fixWord : undefined}");
     // Review fix (25 Oct 2026): only a person's edit shows as fixed; an Ensemble proposal keeps the text as read.
     expect(view).toContain('.map((flag) => (flag.change?.action === "edit" ? flag : { ...flag, text: flag.as_read }))}');
   });

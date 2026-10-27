@@ -324,8 +324,11 @@ class MemoryDocuments(MemoryRepository):
 
     def record_attempt(self, customer_id: str, document_id: str, attempt: int, max_attempts: int) -> None:
         """Like PgDocuments.record_attempt: only a document still in progress keeps
-        the try number (in ``attempts``, keyed like ``failure_codes``)."""
-        if self._statuses.get_status(customer_id, document_id) in (None, DocumentStatus.CLEAN):
+        the try number (in ``attempts``, keyed like ``failure_codes``), and only its own try
+        or the next one (issue 407)."""
+        tried, _ = self.attempts.get((customer_id, document_id), (0, 0))
+        in_progress = self._statuses.get_status(customer_id, document_id) in (None, DocumentStatus.CLEAN)
+        if in_progress and tried <= attempt <= tried + 1:
             self.attempts[(customer_id, document_id)] = (attempt, max_attempts)
 
     def mark_exhausted(self, customer_id: str, document_id: str, *, now: datetime, max_attempts: int) -> None:

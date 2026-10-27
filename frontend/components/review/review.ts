@@ -94,35 +94,6 @@ export function canReview(role: Role): boolean {
   return role === "reviewer" || role === "admin";
 }
 
-/**
- * Verify all on the document screen (issue #224): each value through `verify` (one
- * POST /review each, so each is checked and audited as one resolve), in turn. A value
- * that fails is kept aside and the rest still go; `onDone` gets the count tried so far.
- * Returns the values that could not be saved.
- */
-export async function verifyEach<T>(
-  values: readonly T[],
-  verify: (value: T) => Promise<unknown>,
-  onDone: (done: number) => void,
-): Promise<T[]> {
-  const failed: T[] = [];
-  for (const [index, value] of values.entries()) {
-    try {
-      await verify(value);
-    } catch {
-      failed.push(value); // counted and offered again, never hidden
-    }
-    onDone(index + 1);
-  }
-  return failed;
-}
-
-/** "Verified 4 of 6. 2 could not be saved." once Verify all ends; the count alone when all were. */
-export function verifiedText(total: number, failed: number): string {
-  const saved = `Verified ${total - failed} of ${total}.`;
-  return failed === 0 ? saved : `${saved} ${failed} could not be saved.`;
-}
-
 // --- Verify all on the review queue ----------------------------------------------------
 // One POST /review/verify-all, never a POST per value: the server verifies each value of
 // the queue the screen shows, in chunks, each one checked and audited as one resolve.

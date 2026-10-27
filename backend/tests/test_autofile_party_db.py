@@ -145,6 +145,29 @@ def test_a_persons_folder_of_that_name_is_never_taken_the_gstin_is_added(db: Dat
     assert path(db, customer, both_taken) == ("Finance", "Invoices")
 
 
+def test_a_party_folder_found_elsewhere_leaves_no_empty_department_or_invoices(db: Database) -> None:
+    """Issue 414: the party's folder is used wherever it is, so nothing is made above where it
+    would have gone: before, a new Invoices (and department) was made first and left empty."""
+    customer, admin = organisation(db)
+    history(db, customer)
+    first = bill(db, customer, admin, ("Mehta Textiles", MEHTA))
+    with db.customer(customer) as conn:
+        purchases = create_folder(
+            conn, customer, name="Purchases", parent_id=None, created_by=admin, kind="department"
+        )
+    second = upload(db, customer, admin, folder=purchases.id)  # uploaded into another department
+    invoice(db, customer, second, ("Mehta Textiles", MEHTA), ("Our Shop", OWN))
+    read(db, customer, second)
+
+    assert path(db, customer, second) == path(db, customer, first) == ("Invoices", "Mehta Textiles")
+    assert sorted(f[1] for f in folders(db, customer)) == [
+        "Accounts and HR",
+        "Invoices",
+        "Mehta Textiles",
+        "Purchases",
+    ]
+
+
 def test_a_moved_and_renamed_party_folder_is_still_used_and_undo_goes_to_the_top_level(db: Database) -> None:
     customer, admin = organisation(db)
     history(db, customer)

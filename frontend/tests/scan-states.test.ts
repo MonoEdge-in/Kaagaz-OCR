@@ -215,6 +215,25 @@ describe("one calm, fixed-height status cell", () => {
     expect(html(failed)).toContain(">Failed</span>");
   });
 
+  it("offers Retry on a failed row, or one still being read 6 hours on (issue 407), to whoever may read it again", () => {
+    const withRetry = (document: DocumentSummary, inTrash = false) =>
+      renderToStaticMarkup(createElement(StatusCell, { document, inTrash, onRetry: () => {} }));
+    const stopped = "Reading is stopped until the Kaagaz team fixes the reading service. It starts again after that.";
+    const stuck = doc("s", { status: "clean", stuck: true, status_message: stopped });
+    const failed = doc("f", { status: "failed", status_message: "This file needs another read." });
+    const button = /<button type="button" class="[^"]*statusAction[^"]*">Retry<span class="visually-hidden"> s\.pdf<\/span><\/button>/;
+    expect(withRetry(stuck)).toMatch(button);
+    expect(withRetry(stuck)).toContain(`title="${stopped}">${stopped}</span>`);
+    expect(lines(withRetry(stuck))).toBe(2); // still two lines: the row keeps its height
+    expect(withRetry(failed)).toContain(">Retry<span");
+    // Not stuck yet, ready, or in Trash: no Retry. No onRetry (a member): none either.
+    for (const document of [doc("q", { status: "clean", stuck: false }), doc("r")]) {
+      expect(withRetry(document), document.id).not.toContain(">Retry<");
+    }
+    expect(withRetry(failed, true)).not.toContain(">Retry<");
+    expect(html(stuck)).not.toContain(">Retry<");
+  });
+
   it("gives each line one fixed height, the text cut to one line, the bar one width", () => {
     const css = read("components/documents/Documents.module.css");
     // Changed on purpose (Vrushit UAT, 25 Oct 2026): a row's lines after the first sit close, --row-sub.

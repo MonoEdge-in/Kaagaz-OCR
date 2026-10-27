@@ -336,23 +336,25 @@ class PgExhaustive:
 
 MAX_MENTION_TERMS = 3
 MAX_MENTIONED = 50
-# Never a key term: the question's frame and fillers, highest/total/not, date words, and the
-# glossary's document words in every script (village, जिल्हा, malak): on most forms.
+# Never a key term: the question's frame and fillers, highest/total/not, date words, the words
+# that bound a figure or a span ("over 2007 to 2026", #410), and the glossary's document words
+# in every script (village, जिल्हा, malak): on most forms.
 _NOT_TERMS = (
     _FRAME
     | _NOT_ROUTED
     | _words(
         set(DATE_WORDS), set(glossary.EQUIVALENTS), {w for ws in glossary.EQUIVALENTS.values() for w in ws}
     )
+    | _words({"over", "above", "under", "below", "between", "than", "since", "until", "till", "upto"})
 )
 
 
 def key_terms(question: str, evidence: Sequence[str] = ()) -> list[str]:
     """Up to MAX_MENTION_TERMS words of the question, as typed, that name what it is about
     (a name or a place: Jalna, जालना, Patil): letters only, three or more, not a frame or
-    glossary word nor a Romanised one (``glossary.concept``); words the cited ``evidence``
-    holds first. ponytail: a plain English word (deed, road) passes too; a stop list grows
-    when one proves noisy. O(n + e)."""
+    glossary word nor a Romanised one (``glossary.concept``), nor one the Hinglish map reads as
+    another word ("Kiska" is whose, #410); words the cited ``evidence`` holds first. ponytail:
+    a plain English word (deed, road) passes too; a stop list grows when one proves noisy. O(n + e)."""
     seen: set[str] = set()
     found: list[str] = []
     for word in spaced_words(fold_digits(question)):
@@ -361,7 +363,9 @@ def key_terms(question: str, evidence: Sequence[str] = ()) -> list[str]:
             continue
         if not all(unicodedata.category(ch)[0] in "LM" for ch in folded):
             continue
-        if not has_devanagari_letters(folded) and glossary.concept(folded) is not None:
+        if not has_devanagari_letters(folded) and (
+            glossary.concept(folded) is not None or normalise(folded).english != folded
+        ):
             continue
         seen.add(folded)
         found.append(word)
