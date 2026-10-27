@@ -12,6 +12,8 @@ suppresses outcome values below K in SQL.
   (``customer_id`` NULL) whose outcome values and their totals count only the
   organisations at K or more (no leak by subtraction).
 * ``model_board`` (F4): per model, pages, speed, page signals and spend. No customer.
+* ``org_numbers`` (#387, 0055): per organisation, files uploaded, the pages of them read by
+  how they were read, the failed ones by reason, active people, questions and AI use.
 
 Days are in ``zone`` (TIMEZONE), both ends included; the function refuses a backwards or
 over-long range and an unknown zone (check_violation). Never a user, document, name or
@@ -65,6 +67,18 @@ def model_board(
     return _rows(
         conn,
         "SELECT * FROM kaagaz_op_model_board(:o, :start, :end, :zone)",
+        {"o": operator_id, "start": start, "end": end, "zone": zone},
+    )
+
+
+def org_numbers(
+    conn: Connection, operator_id: str, start: date, end: date, zone: str
+) -> Sequence[RowMapping]:
+    """#387: one row per organisation from ``start`` to ``end``; ``pages_by_route`` and
+    ``failed_documents`` are {route or reason: count}."""
+    return _rows(
+        conn,
+        "SELECT * FROM kaagaz_op_org_numbers(:o, :start, :end, :zone)",
         {"o": operator_id, "start": start, "end": end, "zone": zone},
     )
 

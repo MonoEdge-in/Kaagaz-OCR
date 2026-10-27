@@ -47,6 +47,8 @@ import type {
   Folder,
   InsightsReply,
   Me,
+  MemberPeriod,
+  MembersReply,
   MySpot,
   MyStory,
   MyWord,
@@ -60,6 +62,7 @@ import type {
   OrgFeatureSwitch,
   Organisation,
   OrgModelRates,
+  OrgNumbersReply,
   OrganisationCreated,
   PageReadings,
   PageSummary,
@@ -761,6 +764,9 @@ export const listAudit = (params: AuditParams = {}) =>
 export const auditExportUrl = (params: AuditParams) =>
   `/api/admin/audit/export${query({ ...params, limit: undefined, offset: undefined, cursor: undefined })}`;
 export const getStats = () => request<Stats>("GET", "/admin/stats");
+/** #386: each member of the admin's own organisation with what they did in the period. */
+export const getMemberNumbers = (period: MemberPeriod) =>
+  request<MembersReply>("GET", `/admin/members${query({ period })}`);
 /** Documents that failed or can't be read (PRD 3 Z1); Retry is reprocessDocument. */
 export const listFailed = (params: { limit?: number; offset?: number } = {}) =>
   request<{ items: FailedDocument[]; total: number }>("GET", `/admin/failed${query(params)}`);
@@ -857,6 +863,8 @@ export const getOperatorInsights = (days: number) =>
   request<InsightsReply>("GET", `/operator/insights${query({ days })}`);
 /** Reading, answers and review (F3); outcome values below K come as null. */
 export const getOperatorQuality = (days: number) => request<QualityReply>("GET", `/operator/quality${query({ days })}`);
+/** #387: each organisation's numbers over the last `days` days (1 to 90). */
+export const getOrgNumbers = (days: number) => request<OrgNumbersReply>("GET", `/operator/org-numbers${query({ days })}`);
 /** Compare models (F4): observational, not an A/B test. */
 export const getModelBoard = (days: number) => request<BoardReply>("GET", `/operator/model-board${query({ days })}`);
 /** PRD 6 F3: replies per organisation and ended week (1 to 12); hidden counts come as null. */

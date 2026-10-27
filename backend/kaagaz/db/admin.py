@@ -16,9 +16,17 @@ Trash (``LISTED``, kaagaz/db/visibility.py); values waiting for review are
 counted as the review queue shows them (``LIVE_CURRENT``). Older versions and
 what is in Trash are counted on their own (``_KEPT``), so nothing is hidden.
 The failed jobs list (PRD 3 Z1) shows current versions out of Trash too (``LISTED``).
+
+Each member's numbers (#386) are what that person did in a window: files they uploaded (every
+version, those in Trash too; a file deleted for good is forgotten), the pages of those files
+that were read (``pages.route`` set, each page once, every route), their questions (replies in
+their own chats, a clarifying question back not counted, as ``questions_total``) and the values
+they verified (their ``corrections`` rows: every verify writes one). Last active is when their
+session was last used or they last signed in (``users``), whatever the window.
 """
 
 from collections.abc import Sequence
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import Connection, RowMapping, text
@@ -107,6 +115,41 @@ def stats(conn: Connection, customer_id: str) -> dict[str, Any]:
         **{key: int(value) for key, value in counts.items()},
         **{key: int(value) for key, value in kept.items()},
     }
+
+
+# #386: every user of this customer with their numbers in [lo, hi); NULL is no bound (all time).
+# Three grouped reads joined to the users, never one query per member.
+_MEMBERS = (
+    "WITH w AS (SELECT coalesce(CAST(:lo AS timestamptz), '-infinity') AS lo,"
+    " coalesce(CAST(:hi AS timestamptz), 'infinity') AS hi)"
+    " SELECT u.id, u.display_name, u.email, u.role, u.disabled,"
+    " GREATEST(u.last_seen_at, u.last_login_at) AS last_active_at,"
+    " coalesce(d.documents, 0) AS documents_uploaded, coalesce(d.pages, 0) AS pages_read,"
+    " coalesce(q.questions, 0) AS questions_asked, coalesce(v.verified, 0) AS values_verified"
+    " FROM users u"
+    " LEFT JOIN (SELECT d.uploaded_by, count(*) AS documents, sum(p.pages) AS pages FROM documents d"
+    " CROSS JOIN w CROSS JOIN LATERAL (SELECT count(*) AS pages FROM pages p"
+    " WHERE p.customer_id = d.customer_id AND p.document_id = d.id AND p.route IS NOT NULL) p"
+    " WHERE d.customer_id = :c AND d.uploaded_by IS NOT NULL AND d.created_at >= w.lo AND d.created_at < w.hi"
+    " GROUP BY d.uploaded_by) d ON d.uploaded_by = u.id"
+    " LEFT JOIN (SELECT v.user_id, count(*) AS questions FROM conversations v"
+    " JOIN messages m ON m.customer_id = v.customer_id AND m.conversation_id = v.id CROSS JOIN w"
+    " WHERE v.customer_id = :c AND m.role = 'assistant' AND m.answer ->> 'status' IS DISTINCT FROM 'clarify'"
+    " AND m.created_at >= w.lo AND m.created_at < w.hi GROUP BY v.user_id) q ON q.user_id = u.id"
+    " LEFT JOIN (SELECT k.corrected_by, count(*) AS verified FROM corrections k CROSS JOIN w"
+    " WHERE k.customer_id = :c AND k.created_at >= w.lo AND k.created_at < w.hi GROUP BY k.corrected_by) v"
+    " ON v.corrected_by = u.id"
+    " WHERE u.customer_id = :c ORDER BY lower(u.display_name), u.id"
+)
+
+
+def member_numbers(
+    conn: Connection, customer_id: str, *, start: datetime | None, end: datetime | None
+) -> Sequence[RowMapping]:
+    """#386: each user of this customer with what they did in [start, end) (None: no bound),
+    in one statement. O(users + this customer's documents, pages, replies and corrections in
+    the window), each grouped once."""
+    return conn.execute(text(_MEMBERS), {"c": customer_id, "lo": start, "hi": end}).mappings().all()
 
 
 # PRD 3 Z1: each family's current version that failed or can't be read, out of Trash,

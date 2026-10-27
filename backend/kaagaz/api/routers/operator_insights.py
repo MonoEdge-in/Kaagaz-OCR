@@ -16,6 +16,9 @@ each read is one read-only ``kaagaz_op_*`` function (``kaagaz.db.operator_insigh
 * ``GET /operator/answer-weeks?weeks=`` (PRD 6 F3, 1 to 12, 4 by default): ``from``, ``to``
   and ``organisations``, rows of ``ANSWER_WEEK_KEYS`` per organisation and ended ISO week
   (0051's ``kaagaz_op_answer_weeks``): counts only, outcomes NULL below K with their complement.
+* ``GET /operator/org-numbers?days=`` (#387, 0055): ``from``, ``to``, ``ai_enabled`` and
+  ``organisations``, rows of ``ORG_NUMBERS_KEYS``; ``pages_by_route`` and ``failed_documents``
+  are {route or reason: count}, every route counted under its own name.
 
 Organisation rows say ``organisation_id`` for the function's ``customer_id``. Decimals are
 sent as numbers, NULL (suppressed below K, or not known) as null. Never a user, document,
@@ -141,6 +144,24 @@ QUALITY_KEYS = frozenset(
 ANSWER_WEEK_KEYS = frozenset(
     {"organisation_id", "week", "replies", "answered", "not_found", "clarify", "rated", "useful"}
 )
+ORG_NUMBERS_REPLY_KEYS = frozenset({"from", "to", "ai_enabled", "organisations"})
+ORG_NUMBERS_KEYS = frozenset(
+    {
+        "organisation_id",
+        "documents",
+        "documents_in_trash",
+        "pages_read",
+        "pages_by_route",
+        "failed_documents",
+        "active_users",
+        "questions",
+        "ai_calls",
+        "ai_input_tokens",
+        "ai_output_tokens",
+        "ai_cost_usd",
+        "ai_cost_unknown_calls",
+    }
+)
 BOARD_REPLY_KEYS = frozenset({"from", "to", "ai_enabled", "items"})
 BOARD_KEYS = frozenset(
     {
@@ -233,6 +254,23 @@ def get_model_board(
         "to": end.isoformat(),
         "ai_enabled": ai_enabled(context.settings),
         "items": [_row(row, BOARD_KEYS) for row in rows],
+    }
+
+
+@router.get("/org-numbers")
+def get_org_numbers(
+    operator: OperatorSession, db: OperatorDb, context: Context, days: Days = 30
+) -> dict[str, Any]:
+    """#387: each organisation's numbers for the period, one function call."""
+    start, end = _period(context, days)
+    with db.operator() as conn:
+        rows = insights_sql.org_numbers(conn, operator.operator_id, start, end, context.settings.timezone)
+        _check_signed_in(conn, operator.operator_id, rows)
+    return {
+        "from": start.isoformat(),
+        "to": end.isoformat(),
+        "ai_enabled": ai_enabled(context.settings),
+        "organisations": [_row(row, ORG_NUMBERS_KEYS) for row in rows],
     }
 
 
