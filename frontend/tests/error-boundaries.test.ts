@@ -27,7 +27,7 @@ describe("the PDF viewer's error boundary", () => {
   });
 
   it("shows the viewer's children until then", () => {
-    const html = renderToStaticMarkup(createElement(ViewerBoundary, { download: null, children: "the viewer" }));
+    const html = renderToStaticMarkup(createElement(ViewerBoundary, { download: null }, "the viewer"));
     expect(html).toBe("the viewer");
   });
 

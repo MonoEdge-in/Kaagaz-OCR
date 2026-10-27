@@ -37,7 +37,7 @@ export function ViewerFailed({ onRetry, download }: { onRetry: () => void; downl
 }
 
 interface ViewerBoundaryProps {
-  children: ReactNode;
+  children?: ReactNode;
   /** The file's download address, offered while the viewer cannot draw. */
   download?: string | null;
 }
