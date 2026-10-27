@@ -8,6 +8,8 @@
 // organisation's setting or the member's own. A choice above the organisation's limit is
 // disabled with a note. A task switched off for the whole product says so. The Save bar
 // shows only while something is changed (as Settings). Never a model name or cost word.
+// Scanning (#398) first picks who reads (AI reads every page, AI for harder pages, Local
+// reader only), and only AI's pick shows the levels of care (Low, High, Max).
 
 import { useEffect, useId, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
@@ -15,19 +17,27 @@ import libraryStyles from "@/components/documents/Library.module.css";
 import reviewStyles from "@/components/review/Review.module.css";
 import { ApiError, FEATURE_OFF, getAiSettings, putMyAiSettings, putOrgAiSettings } from "@/lib/api";
 import {
+  AI_LEVELS,
   CHOICES,
   HINTS,
   LEVEL_NAMES,
   MEMBERS_CAN_CHANGE,
   NOT_ALLOWED,
+  READER_HINTS,
+  READER_NAMES,
+  SCAN_READERS,
   SET_BY_ADMIN,
   TASK_HELP,
   TASK_NAMES,
   USE_ORGANISATION,
   aiSaveErrorText,
   changedOnly,
+  levelName,
+  levelOfReader,
   mineDraftOf,
   orgDraftOf,
+  readerAllowed,
+  readerOf,
 } from "@/lib/aiSettings";
 import type { MineDraft, OrgDraft } from "@/lib/aiSettings";
 import type { TaskLevel, AiSettings, AiTaskSetting } from "@/lib/types";
@@ -168,7 +178,7 @@ function OrgRow({ task, value, onChange }: { task: AiTaskSetting; value?: { leve
   const current = value ?? { level: task.organisation ?? task.effective, locked: task.locked };
   return (
     <TaskGroup task={task}>
-      <Levels task={task} value={current.level} onPick={(level) => onChange({ ...current, level })} />
+      <Choice task={task} value={current.level} onPick={(level) => onChange({ ...current, level })} />
       <label className={libraryStyles.check}>
         <input type="checkbox" checked={!current.locked} onChange={(event) => onChange({ ...current, locked: !event.target.checked })} />
         {MEMBERS_CAN_CHANGE}
@@ -183,7 +193,7 @@ function MemberRow({ task, mine, onChange }: { task: AiTaskSetting; mine: TaskLe
     return (
       <TaskGroup task={task}>
         <p className={styles.customer}>
-          <strong>{LEVEL_NAMES[theirs]}</strong>
+          <strong>{levelName(task.task, theirs)}</strong>
         </p>
         <p className="hint">{SET_BY_ADMIN}</p>
       </TaskGroup>
@@ -195,8 +205,54 @@ function MemberRow({ task, mine, onChange }: { task: AiTaskSetting; mine: TaskLe
         <input type="checkbox" checked={mine === null} onChange={(event) => onChange(event.target.checked ? null : theirs)} />
         {USE_ORGANISATION}
       </label>
-      <Levels task={task} value={mine ?? theirs} disabled={mine === null} onPick={onChange} />
+      <Choice task={task} value={mine ?? theirs} disabled={mine === null} onPick={onChange} />
     </TaskGroup>
+  );
+}
+
+type ChoiceProps = { task: AiTaskSetting; value: TaskLevel; disabled?: boolean; onPick(level: TaskLevel): void };
+
+/** Scanning's reader and, for AI, its care; any other task's levels. */
+function Choice(props: ChoiceProps) {
+  return props.task.task === "scan" ? <ReaderChoice {...props} /> : <Levels {...props} />;
+}
+
+/** Who reads the scans (#398): one control tall like the levels; a reader not allowed now disabled with the note. */
+function ReaderChoice({ task, value, disabled = false, onPick }: ChoiceProps) {
+  const id = useId();
+  const reader = readerOf(value);
+  const notAllowed = SCAN_READERS.filter((each) => !readerAllowed(task, each));
+  return (
+    <>
+      <div className={reviewStyles.segments} role="radiogroup" aria-label={`${TASK_NAMES.scan} reader`}>
+        {SCAN_READERS.map((each) => {
+          const allowed = readerAllowed(task, each);
+          return (
+            <label key={each} className={reviewStyles.segment}>
+              <input
+                type="radio"
+                name={`${id}-reader`}
+                value={each}
+                checked={reader === each}
+                disabled={disabled || !allowed}
+                aria-describedby={allowed ? `${id}-hint` : `${id}-hint ${id}-limit`}
+                onChange={() => onPick(levelOfReader(each, value))}
+              />
+              {READER_NAMES[each]}
+            </label>
+          );
+        })}
+      </div>
+      <p id={`${id}-hint`} className="hint">
+        {READER_HINTS[reader]}
+      </p>
+      {notAllowed.length > 0 && (
+        <p id={`${id}-limit`} className="hint">
+          {notAllowed.map((each) => READER_NAMES[each]).join(", ")}: {NOT_ALLOWED}
+        </p>
+      )}
+      {reader === "ai" && <Levels task={task} value={value} disabled={disabled} onPick={onPick} choices={AI_LEVELS} />}
+    </>
   );
 }
 
@@ -212,9 +268,8 @@ function TaskGroup({ task, children }: { task: AiTaskSetting; children: ReactNod
 }
 
 /** The segmented control: one control tall, 2px corners; a level above the limit disabled with the note. */
-function Levels({ task, value, disabled = false, onPick }: { task: AiTaskSetting; value: TaskLevel; disabled?: boolean; onPick(level: TaskLevel): void }) {
+function Levels({ task, value, disabled = false, onPick, choices = CHOICES[task.task] }: ChoiceProps & { choices?: readonly TaskLevel[] }) {
   const id = useId();
-  const choices = CHOICES[task.task];
   const someNotAllowed = choices.some((level) => !task.allowed.includes(level));
   return (
     <>

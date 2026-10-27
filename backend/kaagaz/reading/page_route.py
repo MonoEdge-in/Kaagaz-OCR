@@ -1,7 +1,8 @@
 """Which reader a scanned page needs, decided page by page (#384), from the local reader's own
 read of it.
 
-Under Automatic (Cost saving, ``db.models.Reading.routes``) with PAGE_ROUTING on, the Gemini
+For the reader choice "Save cost" (#398, scan level save, read Automatic:
+``db.models.Reading.routes``; PAGE_ROUTING is the platform's permission for it), the Gemini
 reader first reads each scanned page with the local reader (RapidOCR, no model call) and
 ``route_page`` decides from what that read shows:
 
@@ -19,10 +20,10 @@ much the lines' heights vary (a sign of handwriting: printed lines are of a few 
 many lines sit three or more to a row (a table: only the model gives cells their row and
 column). Every check sends the page to the model when it is not met: when unsure, the model.
 
-The router can only save model calls: it runs only where the organisation's reading already
-calls the model for every page (never for AI settings None, which reads locally, and never for
-High or Max, which read every page with the model), and it never reads a page the document
-would not read. A page asked to be read again (F5) is never routed.
+The router can only save model calls: it runs only where the account chose it and its reading
+already calls the model for every page (never for AI settings None, which reads locally, and
+never for Low, High or Max, which read every page with the model), and it never reads a page
+the document would not read. A page asked to be read again (F5) is never routed.
 
 Pure and O(lines log lines): no image, no model, no database.
 """

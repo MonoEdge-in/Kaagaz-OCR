@@ -21,7 +21,22 @@ import {
   switchConfirm,
   undoConfirm,
 } from "@/components/operator/FeatureSwitches";
-import { capChatOptions, capReaders, changedOnly, gateEnsemble, mineDraftOf, orgDraftOf, startReader } from "@/lib/aiSettings";
+import {
+  AI_LEVELS,
+  READER_HINTS,
+  READER_NAMES,
+  SCAN_READERS,
+  capChatOptions,
+  capReaders,
+  changedOnly,
+  gateEnsemble,
+  levelName,
+  levelOfReader,
+  mineDraftOf,
+  orgDraftOf,
+  readerOf,
+  startReader,
+} from "@/lib/aiSettings";
 import {
   ApiError,
   FEATURE_OFF,
@@ -171,6 +186,96 @@ describe("the member's AI settings", () => {
     const draft = { ...mineDraftOf(SETTINGS), scan: "low" as const };
     expect(changedOnly(mineDraftOf(SETTINGS), draft)).toEqual({ scan: "low" });
     expect(changedOnly(mineDraftOf(SETTINGS), mineDraftOf(SETTINGS))).toEqual({});
+  });
+});
+
+// #398: every account chooses who reads its scans, in the Scanning row.
+describe("the Scanning reader choice", () => {
+  const withScan = (scan: Partial<AiTaskSetting>): AiSettings => ({
+    ...SETTINGS,
+    tasks: [task({ task: "scan", allowed: ["none", "save", "low", "high", "max"], ...scan }), ...SETTINGS.tasks.slice(1)],
+  });
+  const render = (scope: "organisation" | "member", settings: AiSettings) =>
+    renderToStaticMarkup(
+      createElement(AiSettingsForm, {
+        scope,
+        settings,
+        draft: scope === "organisation" ? orgDraftOf(settings) : mineDraftOf(settings),
+        busy: false,
+        error: null,
+        onChange: () => {},
+        onSubmit: () => {},
+      }),
+    );
+  const scanRow = (html: string) => /<legend[^>]*>Scanning<\/legend>[\s\S]*?<\/fieldset>/.exec(html)?.[0] ?? "";
+  const radios = (html: string, name: "reader" | "level") =>
+    [...scanRow(html).matchAll(/<input type="radio"[^>]*\/>/g)]
+      .map((match) => match[0])
+      .filter((input) => input.includes(`-${name}"`));
+  const value = (input: string) => /value="([^"]+)"/.exec(input)?.[1];
+
+  it("offers three readers in one control, AI reads every page by default, with plain hints", () => {
+    const html = render("organisation", withScan({ effective: "low" }));
+    const row = scanRow(html);
+    expect(row).toContain('aria-label="Scanning reader"');
+    expect(radios(html, "reader").map(value)).toEqual(["ai", "save", "local"]);
+    for (const name of ["AI reads every page", "AI for harder pages", "Local reader only"]) expect(row).toContain(`/>${name}</label>`);
+    expect(radios(html, "reader").find((input) => input.includes('checked=""'))).toContain('value="ai"');
+    expect(row).toContain(READER_HINTS.ai);
+    expect(radios(html, "level").map(value)).toEqual(["low", "high", "max"]); // AI's care, no None
+    expect(READER_HINTS).toEqual({
+      ai: "Every page is read by AI and checked by the local reader.",
+      save: "Clean printed pages are read on our server; harder pages by AI. Values from the server reader need a quick review.",
+      local: "Pages are read on our server only. Handwriting and Hindi/Marathi read less well.",
+    });
+  });
+
+  it("shows only the reader's hint for the other two, and maps each reader to a scan level", () => {
+    const save = scanRow(render("organisation", withScan({ effective: "save", organisation: "save" })));
+    expect(save).toContain(READER_HINTS.save);
+    expect(save).not.toContain('value="low"');
+    const local = scanRow(render("organisation", withScan({ effective: "none", organisation: "none" })));
+    expect(local).toContain(READER_HINTS.local);
+    expect([levelOfReader("local", "high"), levelOfReader("save", "high"), levelOfReader("ai", "none"), levelOfReader("ai", "max")]).toEqual([
+      "none",
+      "save",
+      "low",
+      "max",
+    ]);
+    expect(SCAN_READERS.map((each) => readerOf(levelOfReader(each, "low")))).toEqual(["ai", "save", "local"]);
+  });
+
+  it("disables the reader the platform has not allowed, with a plain note", () => {
+    const html = render("organisation", withScan({ allowed: ["none", "low", "high", "max"] }));
+    expect(radios(html, "reader").find((input) => input.includes('value="save"'))).toContain('disabled=""');
+    expect(radios(html, "reader").find((input) => input.includes('value="local"'))).not.toContain('disabled=""');
+    expect(scanRow(html)).toContain("AI for harder pages: Not available for your organisation.");
+  });
+
+  it("shows a locked reader with Set by your admin. to a member, and an open one waits on the organisation's setting", () => {
+    const locked = scanRow(render("member", withScan({ effective: "save", organisation: "save", locked: true })));
+    expect(locked).toMatch(/<strong>AI for harder pages<\/strong><\/p><p class="hint">Set by your admin\.<\/p>/);
+    expect(locked).not.toContain('type="radio"');
+    const lockedAi = scanRow(render("member", withScan({ effective: "high", organisation: "high", locked: true })));
+    expect(lockedAi).toContain("<strong>AI reads every page · High</strong>");
+    const open = render("member", withScan({ effective: "none", organisation: "none" }));
+    expect(radios(open, "reader").every((input) => input.includes('disabled=""'))).toBe(true);
+    expect(radios(open, "reader").find((input) => input.includes('checked=""'))).toContain('value="local"');
+  });
+
+  it("names no model and no money in any reader, hint or level", () => {
+    const texts = [...Object.values(READER_NAMES), ...Object.values(READER_HINTS), ...AI_LEVELS.map((level) => levelName("scan", level))];
+    for (const settings of [withScan({ effective: "save", organisation: "save" }), withScan({ allowed: ["none"] })]) {
+      texts.push(render("organisation", settings).replace(/<[^>]*>/g, " "), render("member", settings).replace(/<[^>]*>/g, " "));
+    }
+    for (const text of texts) {
+      expect(text).not.toMatch(MODELS);
+      expect(text).not.toMatch(MONEY);
+    }
+  });
+
+  it("Read with offers Automatic only under AI for harder pages", () => {
+    expect(capReaders(READERS, "save").map((each) => each.title)).toEqual(["Automatic"]);
   });
 });
 

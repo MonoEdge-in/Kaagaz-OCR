@@ -6,8 +6,8 @@ connection (tests/test_ai_resolve.py), and the pipeline's rig (tests/test_pipeli
 * ``route_page`` on made-up local reads: clean print stays local, a few unsure lines go as
   regions, anything else (handwriting, low confidence, a table, small text, Devanagari, few
   words, nothing found) goes to the model.
-* The organisation's settings: only Automatic routes; None never reaches the model, High, Max
-  and single read every page with it.
+* The account's settings: only the reader choice Save cost (#398) routes; None never reaches
+  the model, nothing saved, Low, High, Max and single read every page with it.
 * The engine: a local page makes no call, a hard page one, a regions page one crops call whose
   lines alone change, bounded per document; a read again is never routed.
 * Read again by region (F5): the cached read with only the lines in the region read again,
@@ -153,10 +153,14 @@ def _reading(
 
 
 class SettingsTest(unittest.TestCase):
-    def test_automatic_routes_when_page_routing_is_on(self) -> None:
-        self.assertTrue(_reading(_document()).routes)  # nothing saved: Automatic
-        self.assertTrue(_reading(_document((True, "low", False), mode="single")).routes)
-        self.assertFalse(_reading(_document(), routing=False).routes)  # off by default
+    def test_only_the_reader_choice_save_routes_and_only_with_page_routing(self) -> None:
+        # Changed on purpose (#398): routing is the account's choice (Save cost), PAGE_ROUTING
+        # only permits it; nothing saved and Low (Automatic) read every page with the model.
+        self.assertTrue(_reading(_document((True, "save", False))).routes)
+        self.assertTrue(_reading(_document((True, "save", False), mode="single")).routes)
+        self.assertFalse(_reading(_document()).routes)  # nothing saved: as before
+        self.assertFalse(_reading(_document((True, "low", False))).routes)
+        self.assertFalse(_reading(_document((True, "save", False)), routing=False).routes)
 
     def test_ai_off_never_routes_to_the_model(self) -> None:
         reading = _reading(_document((True, "none", False)))
@@ -165,8 +169,8 @@ class SettingsTest(unittest.TestCase):
     def test_every_page_by_the_model_stays_so(self) -> None:
         for level in ("high", "max"):
             self.assertFalse(_reading(_document((True, level, False))).routes, level)
-        revoked = _reading(_document(), settings={**DYNAMIC_ON, "dynamic": False})  # Cost saving off
-        self.assertEqual((revoked.mode, revoked.routes), ("single", False))
+        revoked = _reading(_document((True, "save", False)), settings={**DYNAMIC_ON, "dynamic": False})
+        self.assertEqual((revoked.mode, revoked.routes), ("single", False))  # Cost saving off
         self.assertFalse(_reading(_document(mode="single")).routes)
 
 
