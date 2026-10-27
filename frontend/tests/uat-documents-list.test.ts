@@ -2,11 +2,46 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { FolderNav } from "@/components/documents/FolderNav";
+import { buildTree } from "@/components/documents/folderTree";
+import { ALL_DOCUMENTS, NO_DEPARTMENT } from "@/components/documents/libraryQuery";
+import type { LibraryState } from "@/components/documents/libraryQuery";
+import type { Folder } from "@/lib/types";
 
 const ROOT = join(__dirname, "..");
 const read = (path: string) => readFileSync(join(ROOT, path), "utf8");
 const css = (path: string) => read(path).replace(/\/\*[\s\S]*?\*\//g, "");
+
+const LAND = "11111111-1111-4111-8111-111111111111";
+const OLD = "22222222-2222-4222-8222-222222222222";
+const folder = (id: string, name: string, kind: Folder["kind"]): Folder => ({
+  id,
+  name,
+  parent_id: null,
+  created_at: "2026-10-01T10:00:00Z",
+  kind,
+  sort_order: kind === "department" ? 0 : null,
+});
+const TREE = buildTree([folder(LAND, "Land & Legal", "department"), folder(OLD, "Old scans", "custom")]);
+
+function nav(library: LibraryState): string {
+  return renderToStaticMarkup(
+    createElement(FolderNav, {
+      tree: TREE,
+      library,
+      loading: false,
+      error: null,
+      onRetry: () => undefined,
+      onNavigate: () => undefined,
+    }),
+  );
+}
+
+/** The <a> whose words are `words`, as rendered. */
+const link = (html: string, words: string) => html.match(new RegExp(`<a [^>]*>(?:(?!</a>).)*${words}</a>`))?.[0] ?? "";
 
 describe("408: a row's Move to Trash asks in a dialog, not over the row", () => {
   const table = read("components/documents/DocumentsTable.tsx");
@@ -30,5 +65,33 @@ describe("408: a row's Move to Trash asks in a dialog, not over the row", () => 
 
   it("never opens the document for a click inside a row's dialog", () => {
     expect(table).toMatch(/closest\("a, button, input, label, select, textarea, dialog, /);
+  });
+});
+
+describe("409: Other in the folder tree opens the documents in no department", () => {
+  it("is a link to the list's no-department filter, as the dashboard's Not in a department is", () => {
+    expect(link(nav(ALL_DOCUMENTS), "Other")).toContain('href="/documents?dept=none"');
+  });
+
+  it("is marked as the place being viewed there, and All documents is not", () => {
+    const html = nav({ ...ALL_DOCUMENTS, departmentId: NO_DEPARTMENT });
+    expect(link(html, "Other")).toContain('aria-current="page"');
+    expect(link(html, "All documents")).not.toContain("aria-current");
+    expect(link(nav(ALL_DOCUMENTS), "Other")).not.toContain("aria-current");
+  });
+
+  it("is left by going anywhere else in the tree, and other filters stay", () => {
+    const html = nav({ ...ALL_DOCUMENTS, departmentId: NO_DEPARTMENT, type: "pdf" });
+    expect(link(html, "All documents")).toContain('href="/documents?type=pdf"');
+    expect(link(html, "Old scans")).toContain(`href="/documents?folder=${OLD}&amp;type=pdf"`);
+    expect(link(html, "Trash")).toContain('href="/documents?trash=1&amp;type=pdf"');
+    // A department picked in the filters is a filter, not the place: it stays.
+    expect(link(nav({ ...ALL_DOCUMENTS, departmentId: LAND }), "Old scans")).toContain(`dept=${LAND}`);
+  });
+
+  it("names the list it opens after the files it holds", () => {
+    expect(read("components/documents/DocumentsView.tsx")).toMatch(
+      /library\.departmentId === NO_DEPARTMENT\s*\?\s*FILES_TEXT\.notInDepartment/,
+    );
   });
 });
