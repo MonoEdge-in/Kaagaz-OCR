@@ -10,6 +10,7 @@ from sqlalchemy import text
 
 from kaagaz.db.engine import Database
 from kaagaz.search.indexing import recipe_tag
+from tests.settings_factory import make_settings
 from tests.test_api_support import Api, Signed
 from tests.test_indexing_db import FakeModel
 from tests.test_search_db import REGION, add_pieces, axis
@@ -57,6 +58,24 @@ def test_results_come_grouped_by_document_with_a_clean_snippet(db: Database) -> 
         "more": 1,
     }
     assert found == {**expected, "score": found["score"]}
+
+
+def test_a_list_cut_by_the_cap_says_capped_and_one_that_fits_does_not(db: Database) -> None:
+    """Issue 374: three documents match and the cap is two: two come back with ``capped``;
+    with the cap at three, all three and no ``capped`` key."""
+    api = Api(db, settings=make_settings(search_max_documents=2))
+    signed = api.new_signed()
+    for n in range(3):
+        _document(api, signed, [f"Invoice INV-7400 copy {n}"], name=f"copy-{n}.pdf")
+    capped = _search(signed, q="INV-7400")
+    assert (len(capped["documents"]), capped.get("capped")) == (2, True)
+
+    roomy = Api(db, settings=make_settings(search_max_documents=3))
+    every = roomy.client()
+    every.cookies = signed.client.cookies
+    reply = every.get("/api/search", params={"q": "INV-7400"})
+    assert reply.status_code == 200, reply.text
+    assert len(reply.json()["documents"]) == 3 and "capped" not in reply.json()
 
 
 def test_the_scope_comes_from_the_query_string(db: Database) -> None:

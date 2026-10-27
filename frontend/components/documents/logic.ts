@@ -257,7 +257,8 @@ export function formatProgressPercent(done: number, total: number): string {
 export type UploadState =
   | { kind: "waiting" }
   | { kind: "sending"; fraction: number }
-  | { kind: "offline"; fraction: number }
+  // server (issue 357): the server failed (5xx) and the call is tried again; else the connection is lost.
+  | { kind: "offline"; fraction: number; server?: boolean }
   | { kind: "saving" }
   | { kind: "reading"; documentId: string; document: DocumentSummary }
   | { kind: "done"; documentId: string; document?: DocumentSummary }
@@ -281,7 +282,7 @@ export function uploadStateText(state: UploadState): string {
     case "sending":
       return "Uploading";
     case "offline":
-      return "Waiting for connection";
+      return state.server ? "The server had a problem. Trying again…" : "Waiting for connection";
     case "saving":
       return "Saving";
     // U7 (QA 17 Oct): a document waiting for the reader says so, never "Scanning".

@@ -362,6 +362,19 @@
   padding-inline: var(--space-3);
 }
 
+/* Sign out everywhere (issue 373): a quiet item in the danger colour, under Sign out, not a
+   filled red button louder than it. It still asks first (ConfirmDialog). */
+.signOutEverywhere {
+  --btn-fg: var(--critical);
+  font-weight: 500;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .signOutEverywhere:hover {
+    background: color-mix(in srgb, var(--critical) 10%, transparent);
+  }
+}
+
 /* --- Content: the one main scroller --------------------------------------------------- */
 
 .main {

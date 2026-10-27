@@ -120,6 +120,16 @@ export function noResultsText(state: LibraryState): string {
   return narrowed ? "No document here holds these words." : "No document holds these words.";
 }
 
+/**
+ * How many documents were found. A list cut at the server's cap says so (issue 374): it is
+ * the first of more, never the whole count.
+ */
+export function foundCountText(found: Pick<DocumentSearch, "documents" | "capped">): string {
+  const count = found.documents.length;
+  if (found.capped) return `Showing the first ${count} documents found. More matched: add a word or a filter to narrow the search.`;
+  return count === 1 ? "1 document found." : `${count} documents found.`;
+}
+
 /** "Also searched: 7/12 (from your words)"; null when the search used none of them (Q2). */
 export function alsoSearchedText(found: Pick<DocumentSearch, "understood_words">): string | null {
   const meanings = [...new Set((found.understood_words ?? []).map((word) => word.meaning.trim()).filter(Boolean))];

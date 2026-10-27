@@ -568,11 +568,19 @@ export function describeAction(action: string, details: Record<string, unknown> 
 
 // What Kaagaz did by itself (feature 28) has no person: the Who column says "Kaagaz".
 const BY_KAAGAZ = new Set(["document.autofile", "org.autofile_grant", "org.autofile_revoke"]);
+// Issue 375: with no person at all (actor_id null), these come from Kaagaz's own set-up
+// commands (backend kaagaz/cli.py create-user and reset-admin-2fa), never from a screen.
+const SET_UP_BY_KAAGAZ = new Set(["user.create", "user.reset_totp"]);
 
-/** Who did it: the person's name, "Kaagaz" for auto-filing, else a dash (a removed user). */
-export function whoText(entry: Pick<AuditEntry, "action" | "actor_name" | "details">): string {
+/** Who did it: the person's name, "Kaagaz" for auto-filing and set-up, else a dash (a removed user). */
+export function whoText(
+  entry: Pick<AuditEntry, "action" | "actor_name" | "details"> & Partial<Pick<AuditEntry, "actor_id">>,
+): string {
   if (entry.actor_name !== null) return entry.actor_name;
-  const kaagaz = BY_KAAGAZ.has(entry.action) || (entry.action === "folder.create" && entry.details.auto === true);
+  const kaagaz =
+    BY_KAAGAZ.has(entry.action) ||
+    (entry.action === "folder.create" && entry.details.auto === true) ||
+    (entry.actor_id === null && SET_UP_BY_KAAGAZ.has(entry.action));
   return kaagaz ? "Kaagaz" : "—";
 }
 

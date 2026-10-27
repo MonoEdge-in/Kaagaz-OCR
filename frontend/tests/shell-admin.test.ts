@@ -402,9 +402,11 @@ describe("describeTarget", () => {
 
   // Changed on purpose (PRD 1, screens): File management A5, the Document column names the
   // document, and what anything else was done on when the row is not about one.
+  // Changed on purpose (issue 375, 27 Oct 2026): through activityTarget, which never says
+  // "User" for an account event (tests/activity-subject.test.ts).
   it("is what the Activity tab shows, with no target id", () => {
     const panel = readFileSync(join(__dirname, "..", "components/admin/ActivityPanel.tsx"), "utf8");
-    expect(panel).toContain("{activityDocument(entry) ?? describeTarget(entry.target_type)}");
+    expect(panel).toContain("{activityTarget(entry)}");
     expect(panel).not.toContain("target_id");
   });
 });

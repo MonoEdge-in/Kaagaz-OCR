@@ -233,7 +233,13 @@ def test_must_change_blocks_every_route_except_password_logout_and_me(db: Databa
         ("GET", "/api/auth/signup"),
         ("POST", "/api/auth/signup"),
     }
-    allowed = {("POST", "/api/auth/password"), ("POST", "/api/auth/logout"), ("GET", "/api/auth/me")}
+    # Changed on purpose (issue 378, 27 Oct 2026): GET /auth/session is /auth/me's quiet twin.
+    allowed = {
+        ("POST", "/api/auth/password"),
+        ("POST", "/api/auth/logout"),
+        ("GET", "/api/auth/me"),
+        ("GET", "/api/auth/session"),
+    }
     calls = route_calls(api.app)
     assert open_to_all | allowed <= set(calls)
 
@@ -247,6 +253,7 @@ def test_must_change_blocks_every_route_except_password_logout_and_me(db: Databa
     me = client.get("/api/auth/me")
     assert me.status_code == 200
     assert me.json()["user"]["must_change_password"] is True
+    assert client.get("/api/auth/session").json() == {"signed_in": True, "me": me.json()}
 
 
 def test_setting_a_new_password_lifts_the_gate(db: Database) -> None:

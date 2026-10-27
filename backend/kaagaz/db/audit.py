@@ -257,14 +257,16 @@ NO_NAMES = Names({}, {})
 
 
 def names(conn: Connection, customer_id: str, rows: Sequence[RowMapping]) -> Names:
-    """The actors, the owners in owner changes and every folder ``rows`` name. Two queries
-    whatever the page size: O(r) ids, each path O(depth)."""
+    """The actors, the owners in owner changes, the people account events are about (issue
+    375) and every folder ``rows`` name. Two queries whatever the page size: O(r) ids, each
+    path O(depth)."""
     users: set[str] = set()
     folders: set[str] = set()
     for row in rows:
         details = row["details"] if isinstance(row["details"], dict) else {}
         owners = (details.get("from"), details.get("to")) if row["action"] == "document.owner_change" else ()
-        users.update(filter(None, map(_uuid, (row["actor_user_id"], *owners))))
+        subject = row["target_id"] if row["target_type"] == "user" else None
+        users.update(filter(None, map(_uuid, (row["actor_user_id"], *owners, subject))))
         folders.update(
             filter(None, map(_uuid, (row["folder_id"], details.get("folder_id"), details.get("parent_id"))))
         )

@@ -17,7 +17,7 @@ import {
   auditParams,
 } from "@/components/activity/auditFilters";
 import type { AuditFilters } from "@/components/activity/auditFilters";
-import { ACTION_CHOICES, ACTIVITY_TEXT, activityDocument, activityWho, activityWords } from "@/components/activity/words";
+import { ACTION_CHOICES, ACTIVITY_TEXT, activityTarget, activityWho, activityWords } from "@/components/activity/words";
 import { buildTree, inTreeOrder, pathLabel } from "@/components/documents/folderTree";
 import library from "@/components/documents/Library.module.css";
 import table from "@/components/documents/Table.module.css";
@@ -27,7 +27,7 @@ import { IconButton } from "@/components/ui/IconButton";
 import { ApiError, auditExportUrl, listAudit, listDocuments, listFolders, listPeople } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
 import type { ActivityEntry, DocumentSummary, Folder, Person } from "@/lib/types";
-import { AUDIT_PAGE_SIZE, describeDetails, describeTarget } from "./logic";
+import { AUDIT_PAGE_SIZE, describeDetails } from "./logic";
 import styles from "./Admin.module.css";
 
 const SKELETON_ROWS = [0, 1, 2, 3, 4];
@@ -210,7 +210,7 @@ export function ActivityTable({ items }: { items: readonly ActivityEntry[] }) {
                 <WrapName name={activityWords(entry)} />
               </td>
               <td role="cell" data-label={columns.document} className={styles.wrap}>
-                {activityDocument(entry) ?? describeTarget(entry.target_type)}
+                {activityTarget(entry)}
               </td>
               <td role="cell" data-label={columns.folder} className={styles.wrap}>
                 {entry.folder?.path ?? "—"}

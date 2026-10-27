@@ -14,7 +14,7 @@ import { Icon } from "@/components/ui/Icon";
 import { STORY_NOTE_SEARCH, storyMatchesFrom, storyStatusText } from "@/lib/storyMatches";
 import type { DocumentSearch } from "@/lib/types";
 import { LabelChip } from "@/components/files/LabelChip";
-import { alsoSearchedText, highlightParts, resultView } from "./insideSearch";
+import { alsoSearchedText, foundCountText, highlightParts, resultView } from "./insideSearch";
 import styles from "./Documents.module.css";
 import libraryStyles from "./Library.module.css";
 
@@ -94,7 +94,7 @@ export function InsideSearchResults({
     <>
       {note}
       <p className="muted" role="status">
-        {found.documents.length === 1 ? "1 document found." : `${found.documents.length} documents found.`}
+        {foundCountText(found)}
         {stories.length > 0 ? ` ${storyStatusText(stories.length)}` : null}
       </p>
       {storyBox}
