@@ -123,6 +123,15 @@ ENSEMBLE_MAX_PAGES at the same time as the main model (``_ensemble``), and their
 (``PageRead.others``); since Ensemble runs only after the scan (16 Oct 2026), no scan asks
 for it (``db.models.resolve_scan``) and the vote that used them is gone.
 
+**Routing and regions** (#384, #385). With ``DocumentPages.route_pages`` each page not asked
+to be read again is first read by the local reader and routed (``page_route.route_page``):
+kept local with no call, read through its few unsure lines' zoomed crops in one call
+(``_local_regions``, at most PAGE_ROUTE_REGION_PAGES_MAX pages a document), or read whole as
+above; its route goes in ``DocumentPages.routed``. A page asked to be read again for some
+regions (``DocumentPages.read_again_regions``) has only its cached read's lines there read
+again, harder, through their zoomed crops, and the merged read replaces the cached one
+(``_read_regions_again``); else the whole page is read again as before.
+
 **Threads** (G8): ``read_page`` is called from OCR_PAGE_CONCURRENCY page threads at
 once. The client and the pool are thread-safe; the outage clock and the local
 reader are kept under a lock; the document is set before the pages are read and
@@ -152,7 +161,7 @@ import logging
 import math
 import re
 import threading
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from concurrent import futures
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
@@ -170,6 +179,7 @@ from kaagaz.reading.ocr import (
     ENSEMBLE_MAX_PAGES,
     MAX_BLOCK_CHARS,
     MAX_BLOCKS_PER_PAGE,
+    MAX_OCR_PIXELS,
     MAX_TABLE_INDEX,
     PATH_PAGE,
     PATH_WORDS,
@@ -199,6 +209,7 @@ from kaagaz.reading.page_quality import (
     READER_REFUSED,
     UNPINNED,
 )
+from kaagaz.reading.page_route import LOCAL, MODEL, REGIONS, PageRoute, RouteRules, route_page
 from kaagaz.reading.rapid_pool import PixelBox, RapidOcrPool
 from kaagaz.reading.spans import TABLE_ID, Span
 from kaagaz.settings import NO_THINKING, Settings
@@ -372,6 +383,11 @@ PAGE_SCHEMA: dict[str, Any] = {
 CROP_PAD = 0.5
 CROP_GAP = 24
 CROP_RULE = 4
+# Region re-reads (#385, ``_read_regions``): the crops are zoomed so their lines are about
+# REGION_LINE_PX pixels high, never more than REGION_ZOOM_MAX times, and never past
+# MAX_OCR_PIXELS for the stacked picture.
+REGION_LINE_PX = 64.0
+REGION_ZOOM_MAX = 3.0
 # The crops' reading rules: the page's rules 1 to 4, for strips of it. ``{counts}`` says how
 # many lines each strip holds. General on purpose, as INSTRUCTION is.
 CROPS_INSTRUCTION = """\
@@ -500,6 +516,18 @@ class GeminiEngine:
         # Cost saving's limits (``careful_plan``, ``crop_boxes``), from COST_SAVING_*.
         self._limits = (settings.cost_saving_hard_lines_max, settings.cost_saving_hard_share)
         self._crop_pad = settings.cost_saving_crop_pad
+        # Routing each page (#384, ``page_route``) and its region re-reads (#385), from PAGE_ROUTE_*.
+        self._route_rules = RouteRules(
+            clean_confidence=settings.page_route_clean_confidence,
+            min_words=settings.page_route_min_words,
+            min_line_px=settings.page_route_min_line_px,
+            height_spread=settings.page_route_height_spread,
+            table_share=settings.page_route_table_share,
+            region_lines_max=settings.page_route_region_lines_max,
+            region_share=settings.page_route_region_share,
+        )
+        self._region_pages_max = settings.page_route_region_pages_max
+        self._region_pages = 0  # the open document's pages read through their regions
         self._fallback_after = 60.0 * settings.reader_outage_fallback_minutes
         # Q7: a failure longer than this after the last one starts a new outage (module notes).
         self._outage_gap = max(
@@ -542,6 +570,7 @@ class GeminiEngine:
             if self._pages is not None:
                 raise RuntimeError("the Gemini reader is already reading a document")
             self._pages = pages
+            self._region_pages = 0
             self._read_with = self._model if pages.model is None else pages.model
             # O(1): max(seconds per page x pages, one page's read); no budget without a page
             # count (Dynamic's second reading of a long document: each page keeps its own).
@@ -578,14 +607,177 @@ class GeminiEngine:
         first = None if pages.memo is None or pages.inline_careful else pages.memo.get((page_no, sha))
         if first is not None and (page_no not in pages.escalate or pages.careful is None):
             return first  # Dynamic's second reading: no call, so no boxes to find
+        again = page_no in pages.read_again
+        spent = (0, 0)
+        if pages.route_pages and not again:  # #384: the local read first, kept when it will do
+            routed, spent = self._routed(image, page_no, pages)
+            if routed is not None:
+                if pages.memo is not None:
+                    pages.memo[(page_no, sha)] = routed
+                return routed
         with ThreadPoolExecutor(1) as finder:
             boxes = finder.submit(self._pool.find_boxes, image)
             page = functools.partial(self._read, image, page_no=page_no, sha=sha, boxes=boxes)
-            if pages.memo is not None:
-                return self._dynamic(image, page, page_no, pages, pages.memo, sha)
-            if pages.others and page_no <= ENSEMBLE_MAX_PAGES:
-                return self._ensemble(image, page, page_no, pages)
+            regions = pages.read_again_regions.get(page_no) if again else None
+            if regions:  # #385: only the asked-for regions read again, harder
+                read = self._read_regions_again(image, page, page_no, pages, regions, sha, boxes)
+                if pages.memo is not None:
+                    pages.memo[(page_no, sha)] = read
+            elif pages.memo is not None:
+                read = self._dynamic(image, page, page_no, pages, pages.memo, sha)
+            elif pages.others and page_no <= ENSEMBLE_MAX_PAGES:
+                read = self._ensemble(image, page, page_no, pages)
+            else:
+                read = page(pages=pages)
+        return read if spent == (0, 0) else _plus(read, *spent)
+
+    # Routing each page (#384) and reading only its hard regions again (#385).
+
+    def _routed(
+        self, image: Image.Image, page_no: int, pages: DocumentPages
+    ) -> tuple[PageRead | None, tuple[int, int]]:
+        """The page as the local reader reads it, when ``route_page`` keeps it local, or with its
+        few unsure lines read again by the model through their regions (``_local_regions``, at
+        most PAGE_ROUTE_REGION_PAGES_MAX pages a document); None for the model to read the
+        whole page, with the tokens a regions call that could not be used was billed. Each
+        page's route and reason go in ``pages.routed``. O(the local read + its lines)."""
+        local = dataclasses.replace(self._local_reader().read_page(image, page_no=page_no), page_no=page_no)
+        decision = route_page(local, self._route_rules)
+        if decision.route == REGIONS:
+            with self._lock:
+                allowed = self._region_pages < self._region_pages_max
+                if allowed:
+                    self._region_pages += 1
+            if not allowed:
+                decision = PageRoute(MODEL, "region_cap")
+        read: PageRead | None = local if decision.route == LOCAL else None
+        spent = (0, 0)
+        if decision.route == REGIONS:
+            read, spent = self._local_regions(image, local, decision.lines, pages)
+            if read is None:
+                decision = PageRoute(MODEL, "region_failed")
+        if pages.routed is not None:
+            pages.routed[page_no] = (decision.route, decision.reason)
+        return read, spent
+
+    def _local_regions(
+        self, image: Image.Image, local: PageRead, unsure: Sequence[int], pages: DocumentPages
+    ) -> tuple[PageRead | None, tuple[int, int]]:
+        """#385: ``local`` with its ``unsure`` lines read again by the document's model, at its
+        level, cut out and zoomed into one picture (``_read_regions``), and merged back by line
+        (``with_hard_words``): only those lines take the model's text and unsure words, their
+        boxes kept; every other line stays as the local reader read it. The page stays
+        ``read_by`` the local reader, so the checker never checks its values against the reader
+        that read them (they need review, as any local page's). (None, the tokens billed) when
+        the call can't be made or its reply can't be used: the page goes to the model whole."""
+        model = pages.model or self._model
+        thinking = pages.thinking or self._normal[1]
+        found = self._read_regions(
+            image, local.lines, unsure, model, pages.provider, self._normal[0], thinking
+        )
+        if found is None:
+            return None, (0, 0)
+        crops, value, spent = found
+        if value is None:
+            return None, spent
+        return with_hard_words(local, crops, value, spent, hard=unsure), (0, 0)
+
+    def _read_regions_again(
+        self,
+        image: Image.Image,
+        page: Callable[..., PageRead],
+        page_no: int,
+        pages: DocumentPages,
+        regions: Sequence[tuple[float, float, float, float]],
+        sha: str,
+        boxes: "Future[list[PixelBox]]",
+    ) -> PageRead:
+        """#385, read again (F5) for regions of the page (page fractions): the page's cached
+        read by the document's model, with the lines that meet a region, and its own hard
+        lines, read again at OCR_RETRY_MEDIA_RESOLUTION and OCR_RETRY_THINKING_LEVEL through
+        their zoomed crops; only they take the new text and unsure words, the rest of the
+        page as read. The merged reply replaces the cached one, so a later reading keeps it.
+        The whole page is read again harder (F5 as before) when nothing is cached, no line
+        meets a region, the lines are more than COST_SAVING_HARD_LINES_MAX, or the call
+        fails. The page stays the model's, so the checker checks its values as on any other.
+        O(lines x regions) besides the call."""
+        model, provider = pages.model or self._model, pages.provider
+        key = self._key(pages, sha, page_no, model, pages.thinking or self._normal[1])
+        hit = pages.cache.get(key)
+        reply = _cached(hit)
+        if hit is None or reply is None:
             return page(pages=pages)
+        first = self._page(reply, image, page_no, model, cached=True, boxes=boxes)
+        asked = [
+            (x0 * image.width, y0 * image.height, x1 * image.width, y1 * image.height)
+            for x0, y0, x1, y1 in regions
+        ]
+        meets = {
+            index
+            for index, line in enumerate(first.lines)
+            if any(_overlap((line.x0, line.y0, line.x1, line.y1), box) for box in asked)
+        }
+        hard = sorted(meets | set(hard_lines(first)))
+        if not meets or len(hard) > self._limits[0]:
+            return page(pages=pages)
+        found = self._read_regions(image, first.lines, hard, model, provider, *self._harder)
+        if found is None:
+            return page(pages=pages)
+        crops, value, spent = found
+        if value is None:
+            return _plus(page(pages=pages), *spent)
+        merged = with_crop_lines(reply, crops, value, hard)
+        pages.cache.put(key, as_result(merged), hit[1] + spent[0], hit[2] + spent[1])
+        return self._page(merged, image, page_no, model, tokens=spent, boxes=boxes)
+
+    def _read_regions(
+        self,
+        image: Image.Image,
+        lines: Sequence[OcrLine],
+        hard: Sequence[int],
+        model: str,
+        provider: str | None,
+        resolution: str,
+        thinking: str,
+    ) -> tuple[list[tuple[PixelBox, tuple[int, ...]]], dict[str, Any] | None, tuple[int, int]] | None:
+        """The ``hard`` lines' crops (``crop_boxes``), zoomed (``region_zoom``) and stacked into
+        one picture, read by ``model`` in one call following CROPS_SCHEMA, each strip's line
+        count checked (``crops_problem``, one repair turn through the client), on the page's
+        deadline and the model's rate slot (the client's). (crops, the reply's JSON or None
+        when it failed or can't be used, the tokens billed); None, with no call, when there
+        are no crops, one has no area, or the document's budget has run out. Never cached
+        here. O(the crops' pixels) besides the call."""
+        crops = crop_boxes(lines, hard, image.width, image.height, pad=self._crop_pad)
+        tiny = any(x1 - x0 < 1 or y1 - y0 < 1 for (x0, y0, x1, y1), _members in crops)
+        if not crops or tiny or self._left() < MIN_CALL_SECONDS:
+            return None
+        counts = [len(members) for _box, members in crops]
+        check = crops_problem(counts)
+        boxes = [box for box, _members in crops]
+        with crop_strip(image, boxes, zoom=region_zoom(lines, hard, boxes)) as strip:
+            png = png_of(strip)
+        try:
+            reply = self._client.read_page(
+                png=png,
+                instruction=crops_instruction(counts),
+                schema=CROPS_SCHEMA,
+                media_resolution=resolution,
+                thinking_level=self._sent(model, thinking),
+                deadline=self._page_deadline(),
+                model=model,
+                provider=provider,
+                validate=check,
+            )
+        except (ModelUnavailable, ModelOutputError) as error:
+            _log.warning("regions not read again", extra={"code": error.code})
+            return crops, None, (error.input_tokens, error.output_tokens)
+        except ProviderNotAllowed:
+            _log.warning("regions not read again", extra={"code": PROVIDER_NOT_ALLOWED})
+            return crops, None, (0, 0)
+        spent = (reply.input_tokens, reply.output_tokens)
+        if schema_problem(reply.value, CROPS_SCHEMA) is not None or check(reply.value) is not None:
+            return crops, None, spent
+        return crops, reply.value, spent
 
     # Dynamic and Ensemble (features 26 and 27, council 15 Oct 2026).
 
@@ -1170,12 +1362,14 @@ def crop_boxes(
     return [(box, tuple(i for i, line in enumerate(lines) if _holds(box, line))) for box in crops]
 
 
-def crop_strip(image: Image.Image, crops: Sequence[PixelBox]) -> Image.Image:
-    """The crops cut from ``image`` (whole pixels, outward) and stacked top to bottom on
-    white, left-aligned, CROP_GAP pixels apart with a dark rule in the middle of each gap.
-    O(the crops' pixels)."""
+def crop_strip(image: Image.Image, crops: Sequence[PixelBox], *, zoom: float = 1.0) -> Image.Image:
+    """The crops cut from ``image`` (whole pixels, outward), each scaled by ``zoom`` (#385;
+    1: as cut), and stacked top to bottom on white, left-aligned, CROP_GAP pixels apart with
+    a dark rule in the middle of each gap. O(the crops' pixels x zoom²)."""
     pieces = [
-        image.crop((math.floor(x0), math.floor(y0), math.ceil(x1), math.ceil(y1))).convert("RGB")
+        _zoomed(
+            image.crop((math.floor(x0), math.floor(y0), math.ceil(x1), math.ceil(y1))).convert("RGB"), zoom
+        )
         for x0, y0, x1, y1 in crops
     ]
     width = max(piece.width for piece in pieces)
@@ -1191,6 +1385,29 @@ def crop_strip(image: Image.Image, crops: Sequence[PixelBox]) -> Image.Image:
         top += piece.height + CROP_GAP
         piece.close()
     return strip
+
+
+def _zoomed(piece: Image.Image, zoom: float) -> Image.Image:
+    """``piece`` scaled by ``zoom`` (Lanczos), closing the original; itself at 1."""
+    if zoom == 1.0:
+        return piece
+    size = (max(1, round(piece.width * zoom)), max(1, round(piece.height * zoom)))
+    with piece:
+        return piece.resize(size, Image.Resampling.LANCZOS)
+
+
+def region_zoom(lines: Sequence[OcrLine], hard: Sequence[int], crops: Sequence[PixelBox]) -> float:
+    """How much the crops of ``hard`` lines are scaled (#385): so the median hard line is
+    REGION_LINE_PX high, from 1 (never smaller) to REGION_ZOOM_MAX, and lowered so the
+    stacked crops stay within MAX_OCR_PIXELS. O(h log h + crops)."""
+    heights = sorted(lines[index].y1 - lines[index].y0 for index in hard)
+    middle = heights[len(heights) // 2] if heights else 0.0
+    zoom = REGION_ZOOM_MAX if middle <= 0 else min(REGION_ZOOM_MAX, max(1.0, REGION_LINE_PX / middle))
+    width = max((math.ceil(x1) - math.floor(x0) for x0, _y0, x1, _y1 in crops), default=0)
+    height = sum(math.ceil(y1) - math.floor(y0) for _x0, y0, _x1, y1 in crops)
+    if width * height * zoom * zoom > MAX_OCR_PIXELS:
+        zoom = max(1.0, math.floor(1000 * math.sqrt(MAX_OCR_PIXELS / (width * height))) / 1000)
+    return zoom
 
 
 def crops_instruction(counts: Sequence[int]) -> str:
@@ -1224,19 +1441,24 @@ def with_hard_words(
     crops: Sequence[tuple[PixelBox, tuple[int, ...]]],
     value: dict[str, Any],
     tokens: tuple[int, int],
+    *,
+    hard: Collection[int] | None = None,
 ) -> PageRead:
     """``first`` with each hard line's text and unsure words as the crops reply read them
-    (``crops_problem`` passed it), its box, kind and table kept, and ``tokens`` added; a
-    line read empty, too long or with bad characters keeps its first reading, and every
-    other line is left as it was. illegible_words follows the [?] that are left.
-    O(lines + the reply)."""
+    (``crops_problem`` passed it), its box, kind and table kept, its confidence None (the
+    model gives none), and ``tokens`` added; a line read empty, too long or with bad
+    characters keeps its first reading, and every other line is left as it was. ``hard``:
+    the lines to take the new reading (#385), else ``hard_lines(first)``. illegible_words
+    follows the [?] that are left. O(lines + the reply)."""
     lines = list(first.lines)
-    hard = set(hard_lines(first))
+    hard = set(hard_lines(first) if hard is None else hard)
     for (_box, members), crop in zip(crops, value["crops"], strict=True):
         for index, raw in zip(members, crop["lines"], strict=True):
             reading = _crop_line(raw) if index in hard else None
             if reading is not None:
-                lines[index] = dataclasses.replace(lines[index], text=reading[0], unsure=reading[1])
+                lines[index] = dataclasses.replace(
+                    lines[index], text=reading[0], unsure=reading[1], confidence=None
+                )
     illegible = any(ILLEGIBLE_MARK in line.text for line in lines)
     issues = first.issues
     if not illegible:
@@ -1244,6 +1466,26 @@ def with_hard_words(
     elif ILLEGIBLE_WORDS not in issues:
         issues = (*issues, ILLEGIBLE_WORDS)
     return dataclasses.replace(_plus(first, *tokens), lines=tuple(lines), issues=issues)
+
+
+def with_crop_lines(
+    reply: _Reply,
+    crops: Sequence[tuple[PixelBox, tuple[int, ...]]],
+    value: dict[str, Any],
+    hard: Collection[int],
+) -> _Reply:
+    """#385, read again by region: ``reply`` (a page's checked reply, its lines in the order
+    of the pinned lines the crops were cut from) with each ``hard`` line's text and unsure
+    words as the crops reply read them, its order, kind, box and table kept; a line read
+    empty, too long or with bad characters keeps its reading, and every other line is left
+    as it was. ``as_result`` of it is what the page cache keeps. O(lines + the reply)."""
+    lines = list(reply.lines)
+    for (_box, members), crop in zip(crops, value["crops"], strict=True):
+        for index, raw in zip(members, crop["lines"], strict=True):
+            reading = _crop_line(raw) if index in hard else None
+            if reading is not None:
+                lines[index] = dataclasses.replace(lines[index], text=reading[0], unsure=reading[1])
+    return dataclasses.replace(reply, lines=tuple(lines))
 
 
 def _crop_line(raw: dict[str, Any]) -> tuple[str, tuple[str, ...]] | None:
