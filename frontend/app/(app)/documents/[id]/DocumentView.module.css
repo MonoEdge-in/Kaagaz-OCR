@@ -127,9 +127,11 @@
   overflow: hidden;
 }
 
+/* Vrushit UAT 2 (issue 415): it keeps the button's own side padding, so its pill (the hover fill and
+   the focus ring) sits inside the card; with none, the pill's round end ran past the text's
+   edge into the card's padding. */
 .expand {
   align-self: flex-start;
-  padding-inline: 0;
 }
 
 .chevron {
