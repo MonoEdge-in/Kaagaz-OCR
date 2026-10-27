@@ -474,6 +474,29 @@ def test_407_a_wait_on_a_key_problem_says_reading_is_stopped_not_that_it_goes_on
     assert listed[doc]["status_message"] == message
 
 
+def test_407_an_old_jobs_tries_never_fail_the_retried_reading_early(db: Database) -> None:
+    """The job from before the Retry is still delivered, its tries counted from before the reset.
+    Its try numbers must not take over the document's count, or its delivery past the last one
+    (``mark_exhausted``) fails the new reading after fewer than JOB_MAX_ATTEMPTS tries of it."""
+    api = Api(db)
+    reviewer = api.new_signed("reviewer")
+    c = reviewer.customer_id
+    doc = api.add_document(c, status="clean", attempts=3, max_attempts=5, created_at=hours_ago(7))
+    assert reprocess(reviewer, doc).status_code == 200  # tries back to 0, a new job queued
+    documents, now = PgDocuments(db), datetime.now(UTC)
+
+    documents.record_attempt(c, doc, 1, 5)  # the new job's first try
+    documents.record_attempt(c, doc, 4, 5)  # the old job comes back: its 4th and 5th tries
+    documents.record_attempt(c, doc, 5, 5)
+    documents.mark_exhausted(c, doc, now=now, max_attempts=5)  # its 6th delivery, past the last
+
+    assert stored(api, c, doc)[:4] == ("received", None, 1, 5)
+    for attempt in (1, 2, 3, 4, 5):  # the new job's own tries, a try handed back uncounted repeated
+        documents.record_attempt(c, doc, attempt, 5)
+    documents.mark_exhausted(c, doc, now=now, max_attempts=5)
+    assert stored(api, c, doc)[:3] == ("failed", "retries_exhausted", 5)
+
+
 def test_407_a_retry_while_its_run_is_still_open_never_makes_two_runs(db: Database) -> None:
     """The run fence: the retry's job starts a run that supersedes the one still open, whose
     writes are then refused (Superseded); the first job's later delivery finds the document

@@ -975,12 +975,19 @@ class PgDocuments:
     def record_attempt(self, customer_id: str, document_id: str, attempt: int, max_attempts: int) -> None:
         """Write the worker's try number on a document still in progress (received
         or clean), before the try runs, so the file list can say "Try 2 of 5".
-        A finished or rejected document is left alone. One indexed statement."""
+        A finished or rejected document is left alone. Only the document's own try or the
+        next one is written (issue 407): a job from before a read again, its tries counted
+        from before the reset, is still delivered, and its numbers must not take the count
+        over, or its last delivery (``mark_exhausted``) would fail the new reading early. A
+        try whose write was lost (the database was down) leaves the count behind; the job's
+        last delivery then fails nothing, and the stuck sweep counts on from it
+        (``requeue_stuck``). One indexed statement."""
         with unavailable(), self._db.customer(customer_id) as conn:
             conn.execute(
                 text(
                     "UPDATE documents SET attempts = :a, max_attempts = :m"
                     " WHERE customer_id = :c AND id = :d AND status IN ('received', 'clean')"
+                    " AND :a BETWEEN attempts AND attempts + 1"
                 ),
                 {"a": attempt, "m": max_attempts, "c": customer_id, "d": document_id},
             )

@@ -464,6 +464,54 @@ def test_a_404_names_the_model_problem(fake: OpenRouterFake) -> None:
     assert caught.value.code == "model_not_found"
 
 
+FLASH = "google/gemini-3-flash-preview"  # a model one organisation chose, not OCR_MODEL (PRO here)
+
+
+@pytest.mark.parametrize("reply", [error_reply(404), redirect_to("http://127.0.0.1:9/elsewhere")])
+def test_407_the_platform_readers_404_or_redirect_is_a_key_problem_that_blocks_no_call(
+    fake: OpenRouterFake, reply: Reply
+) -> None:
+    """Issue 407: no wait fixes OCR_MODEL naming no model, or a base URL that redirects, and the
+    reader makes its documents wait for a person (gemini_ocr KEY_CODES). So the gate's status says
+    key_problem for KEY_LATCH_SECONDS (Health: act) instead of "working". Unlike a rejected key,
+    no call is refused: another model (chat, an organisation's own) is still asked."""
+    fake.script("completions", reply, json_reply(GOOD), json_reply(GOOD))
+    clock = Clock()
+    client = _client(fake.url, clock)
+    with pytest.raises(ModelUnavailable):
+        _read(client)
+    assert client.status() == ("key_problem", 1000.0)
+
+    assert _read(client, model=FLASH).value == GOOD  # asked: nothing is latched
+    assert client.status() == ("key_problem", 1000.0)  # another model's reply does not end it
+    clock.now += KEY_LATCH_SECONDS
+    assert client.status() == ("working", None)
+    assert _read(client).value == GOOD
+    assert len(fake.requests) == 3
+
+
+def test_407_a_reply_from_the_platform_reader_ends_its_key_problem(fake: OpenRouterFake) -> None:
+    fake.script("completions", error_reply(404), json_reply(GOOD))
+    client = _client(fake.url, Clock())
+    with pytest.raises(ModelUnavailable):
+        _read(client)
+    assert _read(client).value == GOOD  # OCR_MODEL was put right
+    assert client.status() == ("working", None)
+
+
+@pytest.mark.parametrize("reply", [error_reply(404), redirect_to("http://127.0.0.1:9/elsewhere")])
+def test_407_a_model_one_organisation_chose_never_reports_a_key_problem(
+    fake: OpenRouterFake, reply: Reply
+) -> None:
+    """Its failure is that organisation's alone (the reader reads its pages locally), so it must
+    never make the worker hand back every customer's jobs."""
+    fake.script("completions", reply)
+    client = _client(fake.url, Clock())
+    with pytest.raises(ModelUnavailable):
+        _read(client, model=FLASH)
+    assert client.status() == ("working", None)
+
+
 def test_any_other_status_is_an_http_error(fake: OpenRouterFake) -> None:
     fake.script("completions", error_reply(418))
     with pytest.raises(ModelUnavailable) as caught:

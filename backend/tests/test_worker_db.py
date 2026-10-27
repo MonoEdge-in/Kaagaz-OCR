@@ -47,7 +47,8 @@ def test_a_document_still_in_progress_is_stored_as_failed_retries_exhausted(db: 
     documents.set_status(customer, clean, DocumentStatus.CLEAN)
 
     for document_id in (received, clean):
-        documents.record_attempt(customer, document_id, 5, 5)  # the last try, as the worker records it
+        for attempt in range(1, 6):  # changed on purpose (issue 407): each try in turn, to the last
+            documents.record_attempt(customer, document_id, attempt, 5)
         documents.mark_exhausted(customer, document_id, now=NOW, max_attempts=5)
         assert stored_state(db, customer, document_id) == ("failed", "retries_exhausted")
 
@@ -98,11 +99,17 @@ def test_the_try_number_is_stored_only_on_a_document_still_in_progress(db: Datab
     assert stored_attempts(db, customer, received) == (0, None)  # the defaults of migration 0003
 
     documents.record_attempt(customer, received, 1, 5)
+    documents.record_attempt(customer, clean, 1, 5)
     documents.record_attempt(customer, clean, 2, 5)
     assert stored_attempts(db, customer, received) == (1, 5)
     assert stored_attempts(db, customer, clean) == (2, 5)
-    documents.record_attempt(customer, received, 3, 5)  # each try overwrites the last
-    assert stored_attempts(db, customer, received) == (3, 5)
+    documents.record_attempt(customer, clean, 2, 5)  # the same try again (handed back uncounted)
+    assert stored_attempts(db, customer, clean) == (2, 5)
+    # Changed on purpose (issue 407): a try moves the count on by one at most. A jump, or a
+    # number below it, is a job from before a read again, and is not written.
+    documents.record_attempt(customer, received, 3, 5)
+    documents.record_attempt(customer, clean, 1, 5)
+    assert (stored_attempts(db, customer, received), stored_attempts(db, customer, clean)) == ((1, 5), (2, 5))
 
     finished = {status: add_document(documents, customer) for status in ("ready", "needs_reader", "rejected")}
     documents.set_status(customer, finished["ready"], DocumentStatus.READY)
@@ -111,7 +118,7 @@ def test_the_try_number_is_stored_only_on_a_document_still_in_progress(db: Datab
     finished["failed"] = add_document(documents, customer)
     documents.set_failed(customer, finished["failed"], "corrupt_file")
     for document_id in finished.values():
-        documents.record_attempt(customer, document_id, 2, 5)
+        documents.record_attempt(customer, document_id, 1, 5)  # a next try, refused only for its status
         assert stored_attempts(db, customer, document_id) == (0, None)
 
 

@@ -484,7 +484,8 @@ def test_the_last_delivery_ends_the_runs_still_running(db: Database) -> None:
     for doc in (reading, ready):
         PgRuns(db).start(customer, doc, now=T0)
     for doc in (reading, ready):
-        PgDocuments(db).record_attempt(customer, doc, 5, 5)
+        for attempt in range(1, 6):  # changed on purpose (issue 407): each try in turn, to the last
+            PgDocuments(db).record_attempt(customer, doc, attempt, 5)
         PgDocuments(db).mark_exhausted(customer, doc, now=T1, max_attempts=5)
 
     assert [row[1:] for row in runs(db, customer, reading)] == [("failed", "retries_exhausted", T0, T1)]

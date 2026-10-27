@@ -68,6 +68,8 @@ thinking tokens and cost.
 * 404: ``ModelUnavailable("model_not_found")`` (a wrong model ID in .env, or a model
   OpenRouter withdrew).
 * A redirect: ``ModelUnavailable("redirect_refused")``; any other status ``http_error``.
+  For OCR_MODEL, either one makes the gate's status ``key_problem`` for KEY_LATCH_SECONDS,
+  with no latch (issue 407, ``ModelGate.reader_unfixable``).
 * A reply that was blocked (``message.refusal``, ``finish_reason`` ``content_filter``, or a
   ``native_finish_reason`` in ``BLOCKED_FINISH_REASONS``): ``ModelOutputError("blocked")``.
 * ``finish_reason`` ``length``: ``ModelOutputError("output_truncated")``, with no repair
@@ -707,6 +709,9 @@ class ModelGate:
         self._next_start = -math.inf
         self._breakers: dict[str, _Breaker] = {}
         self._key_latched_at: float | None = None
+        # Issue 407: OCR_MODEL, the platform's reader, answered 404 or a redirect (``reader_unfixable``).
+        self._reader_model = settings.ocr_model
+        self._reader_unfixable_at: float | None = None
 
     def status(self) -> tuple[str, float | None]:
         """(the reader's state, since when on the gate's clock) for Health (U9) and the
@@ -714,13 +719,16 @@ class ModelGate:
         (since None); ``failing``: a model's last requests failed, since the first of them
         (an open breaker past BREAKER_OPEN_SECONDS too); ``down``: a model's breaker is
         open or probing, since its first failure; ``key_problem``: a 401, 402 or key 403
-        within KEY_LATCH_SECONDS, since it came. A model with no failure in
+        within KEY_LATCH_SECONDS, since it came, or OCR_MODEL's 404 or redirect in that time
+        (``reader_unfixable``). A model with no failure in
         FAILURE_GAP_SECONDS counts as working. Two models in the worst state give the
         earlier since."""
         with self._lock:
             now = self.clock()
             if self._key_latched_at is not None and now < self._key_latched_at + KEY_LATCH_SECONDS:
                 return KEY_PROBLEM, self._key_latched_at
+            if self._reader_unfixable_at is not None and now < self._reader_unfixable_at + KEY_LATCH_SECONDS:
+                return KEY_PROBLEM, self._reader_unfixable_at
             states = [breaker.status(now) for breaker in self._breakers.values()]
         worst = max((state for state, _ in states), key=_STATE_RANK.__getitem__, default=WORKING)
         since = [at for state, at in states if state == worst and at is not None]
@@ -795,7 +803,8 @@ class ModelGate:
 
     def record(self, model: str, *, failed: bool) -> None:
         """One request's outcome for ``model``: any reply closes its breaker (and ends a key
-        latch); a failure (408, 429, 5xx, a mid-reply error, no connection) counts towards
+        latch, and OCR_MODEL's own ends ``reader_unfixable``); a failure (408, 429, 5xx, a
+        mid-reply error, no connection) counts towards
         opening it, unless the one before is more than FAILURE_GAP_SECONDS old (the count
         starts again). Another model's breaker is not touched."""
         with self._lock:
@@ -805,6 +814,8 @@ class ModelGate:
                 breaker.state, breaker.failures, breaker.down_since = _CLOSED, 0, None
                 breaker.last_failure_at = None
                 self._key_latched_at = None
+                if model == self._reader_model:
+                    self._reader_unfixable_at = None
                 return
             now = self.clock()
             if breaker.last_failure_at is not None and now - breaker.last_failure_at > FAILURE_GAP_SECONDS:
@@ -828,6 +839,20 @@ class ModelGate:
             self._key_latched_at = self.clock()
         if first:
             _log.error("openrouter key rejected", extra={"code": code})
+
+    def reader_unfixable(self, model: str, code: str) -> None:
+        """Issue 407: a 404 or a redirect (``code``) for OCR_MODEL, the platform's reader. No
+        wait fixes it and its documents wait for a person (gemini_ocr KEY_CODES), so ``status``
+        says ``key_problem`` for KEY_LATCH_SECONDS: Health asks for action, and the worker hands
+        scans back as for a key. No call is refused (chat and other models still work). Another
+        model's (one organisation's choice, read locally) changes nothing. Logged once at error."""
+        if model != self._reader_model:
+            return
+        with self._lock:
+            first = self._reader_unfixable_at is None
+            self._reader_unfixable_at = self.clock()
+        if first:
+            _log.error("reading model unusable", extra={"code": code})
 
 
 _PROCESS_GATES: dict[tuple[str, int, int, int], ModelGate] = {}
@@ -1179,8 +1204,10 @@ class OpenRouterClient:
                 if reply.status in _BAD_REQUEST_STATUSES:
                     raise ModelOutputError("bad_request")
                 if reply.status == 404:
+                    gate.reader_unfixable(model, "model_not_found")
                     raise ModelUnavailable("model_not_found")
                 if 300 <= reply.status < 400:
+                    gate.reader_unfixable(model, "redirect_refused")
                     raise ModelUnavailable("redirect_refused")
                 raise ModelUnavailable("http_error")
             if reply.status == 0 and code == "timeout":
