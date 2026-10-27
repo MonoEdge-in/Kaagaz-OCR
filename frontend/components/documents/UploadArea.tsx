@@ -47,6 +47,7 @@ import {
   uploadDocument,
   uploadVersion,
 } from "@/lib/api";
+import type { UploadWaiting } from "@/lib/api";
 import { formatBytes } from "@/lib/format";
 import { progressSignature } from "@/lib/poll";
 import { advance, barValue } from "@/lib/progress";
@@ -103,7 +104,7 @@ import type { Shown, Stage, StageTimes } from "./uploadStages";
 import { WrapName } from "./WrapName";
 import styles from "./Documents.module.css";
 
-type Start = (onProgress: (fraction: number) => void, onSent: () => void, onWaiting: (waiting: boolean) => void) => Promise<UploadResult>;
+type Start = (onProgress: (fraction: number) => void, onSent: () => void, onWaiting: UploadWaiting) => Promise<UploadResult>;
 
 /** Not sent because of the connection or the server, not because the file was refused: it can be sent again. */
 const canRetry = (caught: unknown) =>
@@ -237,9 +238,9 @@ export function useUploads(onUploaded: () => void) {
           times.sentAt = performance.now();
           dispatch({ type: "change", key, change: { state: { kind: "saving" }, times: { ...times } } });
         },
-        (waiting) => {
+        (waiting, why) => {
           if (!waiting) times.startedAt = fraction > 0 ? performance.now() : null;
-          if (waiting) update(key, { kind: "offline", fraction });
+          if (waiting) update(key, { kind: "offline", fraction, server: why === "server" });
           else if (times.sentAt !== null) update(key, { kind: "saving" });
           else update(key, { kind: "sending", fraction });
         },
@@ -573,6 +574,9 @@ export function Dropzone({
   );
 }
 
+/** Said once over the tray's rows while a finished file can take a story (issue 369). */
+export const STORY_PROMPT = "Add a story to a finished file so you can find it later.";
+
 /**
  * The batch tray (PRD 5 U1): for each drop, newest first, one line, the time left, one
  * bar (pages read over all pages), then its files in the order they were dropped, so a
@@ -606,6 +610,8 @@ export function BatchTray({
 }) {
   if (entries.length === 0) return null;
   const settled = entries.some((entry) => !isBusy(entry));
+  // Issue 369: the story prompt is said once for the tray; each finished file has a short link.
+  const storyPrompt = entries.some((entry) => storyTarget(entry.state) !== null);
   const batches = new Map<string, UploadEntry[]>();
   const loose: UploadEntry[] = [];
   for (const entry of entries) {
@@ -644,6 +650,7 @@ export function BatchTray({
           )}
         </span>
       </div>
+      {storyPrompt && <p className={`muted ${styles.small}`}>{STORY_PROMPT}</p>}
       {[...batches].map(([id, rows]) => {
         const view = views[id] ?? null;
         const busy = rows.some(isBusy);
@@ -771,7 +778,7 @@ function UploadRow({
           <span className={styles.fileName}>
             <WrapName name={entry.name} />
           </span>
-          <span className={`muted tabular ${styles.small}`}>{formatBytes(entry.size)}</span>
+          <span className={`muted tabular mono ${styles.small}`}>{formatBytes(entry.size)}</span>
           <span className={failed ? `error-text ${styles.small} ${styles.badge}` : `muted ${styles.small} ${styles.badge}`}>
             {uploadStateText(state)}
           </span>
@@ -851,8 +858,8 @@ function UploadRow({
         )}
         {story !== null && (
           <Link href={storyHref(story)} className={`${styles.inlineAction} ${styles.storyLink}`}>
-            Add a story so you can find this later
-            <span className="visually-hidden">{`: ${entry.name}`}</span>
+            Add a story
+            <span className="visually-hidden">{` to ${entry.name}`}</span>
           </Link>
         )}
       </div>
@@ -927,7 +934,10 @@ function TickingLine({ entries, views }: { entries: UploadEntry[]; views: Record
   return <LineText text={statusBarText(entries, views, now)} />;
 }
 
-/** The line's words, the whole of them in the tooltip when the bar cuts them. */
-function LineText({ text }: { text: string }) {
-  return <span title={text || undefined}>{text}</span>;
+/**
+ * The line's words, the whole of them in the tooltip when the bar cuts them. No words, no
+ * element (issue 368): an empty span left the line not :empty, so the bar kept its 32 px.
+ */
+export function LineText({ text }: { text: string }) {
+  return text ? <span title={text}>{text}</span> : null;
 }

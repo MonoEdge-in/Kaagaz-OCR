@@ -1,6 +1,6 @@
 "use client";
 
-// The upload's Department picker (File management F2): which department the next files go
+// The upload's "Upload to" picker (File management F2; issue 367): which department the next files go
 // into, kept for next time in this browser. Shown only where no folder decides it (a
 // folder being viewed wins, and inside a department there is no question). It sits beside
 // "Read with" and looks like it (Documents.module.css).

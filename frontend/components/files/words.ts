@@ -6,8 +6,8 @@ import type { SortKey } from "@/components/documents/libraryQuery";
 import { formatNumber } from "@/lib/format";
 
 export const FILES_TEXT = {
-  // F2: the upload's department.
-  departmentLabel: "Department",
+  // F2: the upload's department. "Upload to" (issue 367): it picks where new files go, never filters the list.
+  departmentLabel: "Upload to",
   noDepartment: "No department",
   // F5: the tree.
   departments: "Departments",

@@ -82,6 +82,7 @@ import {
   uploadsFinishedText,
 } from "./logic";
 import { foreverNeeds } from "./trash";
+import type { RemovalUndo } from "./trash";
 import { Dropzone, ReaderSelect } from "./UploadArea";
 import styles from "./Documents.module.css";
 import libraryStyles from "./Library.module.css";
@@ -148,7 +149,8 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
   const [tagsVersion, setTagsVersion] = useState(0);
   const [newFolderAsk, setNewFolderAsk] = useState(0); // D12: the folder column's "+", the one New folder
   const [dropError, setDropError] = useState<string | null>(null);
-  const [toast, setToast] = useState<{ message: string; undo: () => Promise<void> } | null>(null);
+  // undone: the words once Undo worked ("Moved back.", "Restored from Trash.").
+  const [toast, setToast] = useState<{ message: string; undo: () => Promise<void>; undone: string } | null>(null);
   // The shell's one upload queue and tray (D-12); this screen adds files into the folder shown.
   const { uploads, setTrayOpen } = useSharedUploads(() => setReload((n) => n + 1));
   const filtered = isFiltered(library);
@@ -374,9 +376,11 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
     headingRef.current?.focus(); // the pager's button is disabled while the page loads
   }
 
-  // Moved to Trash, restored or deleted for good: the row has left this list.
-  function afterRemoved(message: string) {
-    setAnnouncement(message);
+  // Moved to Trash, restored or deleted for good: the row has left this list. A move to Trash
+  // or a restore says so in the toast, with Undo, as a move to a folder does (issue 372).
+  function afterRemoved(message: string, undo?: RemovalUndo) {
+    if (undo) setToast({ message, undo: undo.run, undone: undo.done });
+    else setAnnouncement(message);
     headingRef.current?.focus();
     const nextOffset = offsetAfterDelete(offset, shown?.list.items.length ?? 0, PAGE_SIZE);
     if (nextOffset !== offset) turnPage(nextOffset);
@@ -385,15 +389,15 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
 
   // A move shows in the toast (its own live region), with Undo; anything else is announced.
   function afterSave(message: string, undo?: () => Promise<void>) {
-    if (undo) setToast({ message, undo });
+    if (undo) setToast({ message, undo, undone: "Moved back." });
     else setAnnouncement(message);
     setReload((n) => n + 1);
   }
 
-  function undoMove(undo: () => Promise<void>) {
+  function undoMove(undo: () => Promise<void>, undone: string) {
     setDropError(null);
     undo().then(
-      () => afterSave("Moved back."),
+      () => afterSave(undone),
       (caught: unknown) => {
         setDropError(libraryErrorText(caught, "document"));
         setReload((n) => n + 1);
@@ -928,7 +932,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
 
       <Toast
         message={toast?.message ?? null}
-        onUndo={toast ? () => undoMove(toast.undo) : undefined}
+        onUndo={toast ? () => undoMove(toast.undo, toast.undone) : undefined}
         onClose={() => setToast(null)}
       />
       {versionFile && (

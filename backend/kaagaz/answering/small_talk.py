@@ -96,7 +96,7 @@ CAN_DO = (
     "Read scans and photos, and mark any word it was not sure about for you to check.",
     "Find documents by a name, number or word in Search.",
     "Spot a new version of a document and show what changed.",
-    "Show a page as clear text, or in English, Hindi or Marathi, with Read clearly.",
+    "Show a whole document as clear text with Read clearly.",
     "Learn your own words for things in My words.",
 )
 

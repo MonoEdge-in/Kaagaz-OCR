@@ -16,8 +16,9 @@
 // document was trashed. Each row is the family's
 // current version; a newer one still being read, or one that failed, gets a
 // line under the name ("Version 3: ..."), linking to it. The Type column
-// gives the file type, and under it what kind of document it is ("Invoice",
-// or "Unknown" without the AI model's card: PRD 2, D6). Names wrap in full at
+// gives the file type, and under it what kind of document it is ("Invoice"), once the AI
+// model's card has said (PRD 2, D6); with no card yet (the model off, down, or still reading)
+// that line is left out, never "Unknown" on every row (issue 371). Names wrap in full at
 // their _ . - and @ marks (WrapName.tsx). The By cell says "Uploaded by" in
 // words; the full table hides those words under its By header. A document with
 // reading problems says so in its status ("Scan complete" then "12 flagged · Review",
@@ -76,6 +77,7 @@ import { TimeLeft } from "./TimeLeft";
 import { WrapName } from "./WrapName";
 import {
   type BulkAction,
+  type RemovalUndo,
   bulkDoneMessage,
   bulkFailedMessage,
   bulkForeverQuestion,
@@ -90,14 +92,16 @@ import {
   runForever,
   selectable,
   trashQuestion,
+  undoRemoval,
 } from "./trash";
 import styles from "./Documents.module.css";
 import library from "./Library.module.css";
 
 /** What a row reports back to the screen. */
 export interface RowEvents {
-  /** Moved to Trash, restored or deleted for good: announce it and ask for the list again. */
-  onRemoved(message: string): void;
+  /** Moved to Trash, restored or deleted for good: say it and ask for the list again; a move
+   * to Trash or a restore can be undone (issue 372). */
+  onRemoved(message: string, undo?: RemovalUndo): void;
   /** Renamed, moved or tagged: announce it and ask for the list again; a move can be undone. */
   onSaved(message: string, undo?: () => Promise<void>): void;
   /** After a move the row may be gone: focus the list's heading. */
@@ -259,7 +263,7 @@ export function DocumentsTable({
   });
   const rowEvents = useMemo<RowEvents>(
     () => ({
-      onRemoved: (message) => latestEvents.current.onRemoved(message),
+      onRemoved: (message, undo) => latestEvents.current.onRemoved(message, undo),
       onSaved: (message, undo) => latestEvents.current.onSaved(message, undo),
       onFocusList: () => latestEvents.current.onFocusList(),
       onTagCreated: () => latestEvents.current.onTagCreated(),
@@ -320,7 +324,7 @@ export function DocumentsTable({
     if (result.done.length > 0) {
       // Read again keeps the rows (they are read again); the others leave the list.
       if (action === "read") events.onSaved(bulkDoneMessage(action, result.done.length));
-      else onRemoved(bulkDoneMessage(action, result.done.length));
+      else onRemoved(bulkDoneMessage(action, result.done.length), undoRemoval(action, result.done));
     }
     // The buttons pressed are gone now: keep keyboard focus on the select-all box shown.
     selectAll.current.find((input) => input.isConnected && input.offsetParent !== null)?.focus();
@@ -697,7 +701,12 @@ const DocumentRow = memo(function DocumentRow({
       return;
     }
     if (action === "restore") {
-      void act(restoreDocument, restoredMessage(document.display_name), "Could not restore this document.");
+      void act(
+        restoreDocument,
+        restoredMessage(document.display_name),
+        "Could not restore this document.",
+        undoRemoval("restore", [document.id]),
+      );
       return;
     }
     if (action === "read") return; // only the document screen's menu offers it
@@ -718,12 +727,12 @@ const DocumentRow = memo(function DocumentRow({
   }
 
   // Move to Trash, Restore or Delete forever: the row leaves this list when it works.
-  async function act(call: (id: string) => Promise<unknown>, message: string, failed: string) {
+  async function act(call: (id: string) => Promise<unknown>, message: string, failed: string, undo?: RemovalUndo) {
     setBusy(true);
     setError(null);
     try {
       await call(document.id);
-      events.onRemoved(message);
+      events.onRemoved(message, undo);
     } catch (caught) {
       if (lostTheRight(caught)) refresh();
       setError(
@@ -753,6 +762,7 @@ const DocumentRow = memo(function DocumentRow({
         deleteDocument,
         deletedMessage(document.display_name),
         "Could not move this document to Trash.",
+        undoRemoval("trash", [document.id]),
       );
     }
   }
@@ -847,7 +857,8 @@ const DocumentRow = memo(function DocumentRow({
           </span>
         </Link>
         <span className={styles.bandType}>
-          {typeLabel(document.detected_type)} · {docTypeLabel(document.doc_type)} · {formatBytes(document.size_bytes)}
+          {typeLabel(document.detected_type)}
+          {document.doc_type && ` · ${docTypeLabel(document.doc_type)}`} · {formatBytes(document.size_bytes)}
         </span>
         {/* F5: the label, version, owner and date, each here until its own column has room. */}
         <span className={styles.facts}>
@@ -865,11 +876,12 @@ const DocumentRow = memo(function DocumentRow({
           {document.document_date && (
             <span className={styles.factDate}>{FILES_TEXT.dated(formatDate(document.document_date))}</span>
           )}
+          {/* Where it is filed, so a move shows in All documents too (16 Oct 2026); on the facts'
+              line, not a line of its own, so a row stays short (issue 371). */}
+          {!inTrash && document.folder_id && tree.byId.has(document.folder_id) && (
+            <span className={styles.inFolder}>In {pathLabel(tree, document.folder_id)}</span>
+          )}
         </span>
-        {/* Where it is filed, so a move shows in All documents too (16 Oct 2026). */}
-        {!inTrash && document.folder_id && tree.byId.has(document.folder_id) && (
-          <span className={styles.inFolder}>In {pathLabel(tree, document.folder_id)}</span>
-        )}
         {tagList(styles.factTags)}
         {document.newer_version && (
           <Link href={`/documents/${document.newer_version.id}`} className={styles.newerVersion}>
@@ -882,7 +894,7 @@ const DocumentRow = memo(function DocumentRow({
       </td>
       <td role="cell" className={`${styles.meta} ${styles.typeCell}`}>
         {typeLabel(document.detected_type)}
-        <span className={styles.docType}>{docTypeLabel(document.doc_type)}</span>
+        {document.doc_type && <span className={styles.docType}>{docTypeLabel(document.doc_type)}</span>}
         <span className={`${styles.bandSize} tabular`}>{formatBytes(document.size_bytes)}</span>
       </td>
       <td role="cell" className={`${styles.meta} ${styles.ownerCell}`}>

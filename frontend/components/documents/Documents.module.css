@@ -830,8 +830,8 @@ table.docs > tbody > tr {
   --name-indent: calc(24px + var(--space-2));
 }
 
+/* "In <folder>" is a fact on the facts' line (issue 371), so it is indented with it. */
 .facts,
-.inFolder,
 .bandType,
 .newerVersion,
 .nameCell > ul {
@@ -1106,9 +1106,15 @@ table.docs > tbody > tr {
     border-bottom: 0;
   }
 
-  /* Name and Status have no width: they share what is left. */
+  /* Name has no width: it takes what is left (issue 371: Status had half of it, so a long
+     name was cut while Status stood half empty, and the facts under the name wrapped). */
   .selectColumn {
     width: 3rem;
+  }
+
+  /* The chip and "7 flagged · Review" fit (the 11rem Status always had at 36rem). */
+  .statusColumn {
+    width: 11rem;
   }
 
   /* Room for "Image (JPEG)" and "Bank statement" on one line, with a gap before the size
@@ -1481,7 +1487,7 @@ table.docs > tbody > tr {
   color: inherit;
 }
 
-/* "Add a story so you can find this later" under a finished upload: the touch size. */
+/* "Add a story" under a finished upload: the touch size. */
 .storyLink {
   min-height: var(--h-lg);
 }
@@ -1630,6 +1636,9 @@ table.docs > tbody > tr {
   border-radius: var(--k-r-4);
   background: var(--bg-surface);
   color: var(--text-primary);
+  /* The status bar's mono stops here (issue 369): the tray reads in the body font, and only its
+     sizes and counts are figures (.tabular). */
+  font-family: var(--k-font-body);
   font-size: var(--fs-base);
   white-space: normal;
 }
