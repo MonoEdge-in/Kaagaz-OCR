@@ -246,7 +246,8 @@ describe("Move to folder in the selection bar", () => {
     const view = readFileSync(join(__dirname, "../components/documents/DocumentsView.tsx"), "utf8");
     const drop = view.slice(view.indexOf("function dropDocument"), view.indexOf("function navigated"));
     expect(drop).toMatch(/afterSave\(\s*`Moved \$\{name\} to \$\{placeName\}\.`,\s*item\s*\?\s*async/);
-    expect(view).toMatch(/if \(undo\) setToast\(\{ message, undo \}\)/);
+    // Changed on purpose (issue 372, 27 Oct 2026): the toast also keeps the words said once undone.
+    expect(view).toContain('if (undo) setToast({ message, undo, undone: "Moved back." });');
     expect(view).toContain("<Toast");
   });
 

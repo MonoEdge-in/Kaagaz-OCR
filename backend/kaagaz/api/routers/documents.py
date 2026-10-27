@@ -85,7 +85,11 @@ Why some choices:
   read costs more). The worker reads that page again, harder, and the rest of the
   document from the page cache (G7). Only a page read from a scan or photo (route
   ``ocr``) can be: another page is 409 ``not_reprocessable``; a page the document
-  does not have is 404, and nothing is counted.
+  does not have is 404, and nothing is counted. An optional JSON body may name
+  ``regions`` of the page (#385: 1 to MAX_READ_AGAIN_REGIONS boxes [x0, y0, x1, y1] in
+  page fractions, each with an area, else 400): only the lines there (and the page's
+  own unsure ones) are read again, cut out and zoomed, the rest of the page kept as read;
+  the audit row counts the regions. Every rule above holds the same.
 * **Who asked to read again** (model choice): a Read again of the document may name a
   ``read_model`` in an optional JSON body, checked as an upload's, and its audit row
   names it; a page's Read again keeps the document's model (no re-billing of the cache).
@@ -972,6 +976,35 @@ class ReadAgainBody(BaseModel):
     read_agents: list[str] | None = None  # ignored: Ensemble runs only after the scan (16 Oct 2026)
 
 
+# #385: the most regions one page's Read again may name (migration 0057 holds the same).
+MAX_READ_AGAIN_REGIONS = 10
+
+
+class PageReadAgainBody(BaseModel):
+    # Other fields (a document's read_model, read_mode) are ignored, as before #385: a page keeps
+    # the document's reading.
+    model_config = ConfigDict(extra="ignore")
+
+    # #385: the regions of the page to read again, each [x0, y0, x1, y1] in page fractions;
+    # left out or null, the whole page (F5).
+    regions: list[Annotated[list[float], Field(min_length=4, max_length=4)]] | None = Field(
+        default=None, min_length=1, max_length=MAX_READ_AGAIN_REGIONS
+    )
+
+
+def _regions(body: PageReadAgainBody | None) -> list[tuple[float, float, float, float]] | None:
+    """The body's regions as boxes (#385), None for the whole page; 400 ``bad_request`` for a
+    box that is not finite, outside the page, or with no area. O(regions)."""
+    if body is None or body.regions is None:
+        return None
+    boxes = []
+    for x0, y0, x1, y1 in body.regions:
+        if not (all(map(math.isfinite, (x0, y0, x1, y1))) and 0 <= x0 < x1 <= 1 and 0 <= y0 < y1 <= 1):
+            raise ApiError(400, "bad_request")
+        boxes.append((x0, y0, x1, y1))
+    return boxes
+
+
 ActivityLimit = Annotated[int, Query(ge=1, le=100)]
 ActivityCursor = Annotated[str | None, Query(pattern=CURSOR)]
 
@@ -1087,12 +1120,20 @@ def _read_again_express(context: AppContext, row: RowMapping) -> bool:
 
 
 @router.post("/documents/{document_id}/pages/{page_no}/read-again")
-def read_page_again(document_id: uuid.UUID, page_no: int, user: Reviewer, context: Context) -> dict[str, Any]:
-    """Read one page again, harder (F5), and return the document's summary, now
-    ``received``. The read again of its document in every rule (the module notes).
+def read_page_again(
+    document_id: uuid.UUID,
+    page_no: int,
+    user: Reviewer,
+    context: Context,
+    body: PageReadAgainBody | None = None,
+) -> dict[str, Any]:
+    """Read one page again, harder (F5), or only some regions of it (#385), and return the
+    document's summary, now ``received``. The read again of its document in every rule
+    (the module notes).
     One transaction: the page checks, the family lock and the counts, the page's
     mark, the audit row, then the job."""
     customer_id, target = user.customer_id, str(document_id)
+    regions = _regions(body)
     with context.db.customer(customer_id) as conn:
         _document_or_404(conn, user, document_id)
         page = listing.get_page(conn, customer_id, target, page_no) if page_no >= 1 else None
@@ -1116,7 +1157,7 @@ def read_page_again(document_id: uuid.UUID, page_no: int, user: Reviewer, contex
         except ReprocessLimited as limited:
             raise ApiError(429, "rate_limited", _REPROCESS_LIMITED[limited.reason]) from None
         if previous is None or not request_page_read_again(
-            conn, customer_id, target, page_no, now=context.clock()
+            conn, customer_id, target, page_no, now=context.clock(), regions=regions
         ):
             raise ApiError(404, "not_found")  # deleted in the moment since: everything rolls back
         audit.record(
@@ -1126,7 +1167,11 @@ def read_page_again(document_id: uuid.UUID, page_no: int, user: Reviewer, contex
             action="document.reprocess",
             target_type="document",
             target_id=target,
-            details={"status": previous, "page_no": page_no},
+            details={
+                "status": previous,
+                "page_no": page_no,
+                **({"regions": len(regions)} if regions is not None else {}),
+            },
         )
         row = _document_or_404(conn, user, document_id)
         tags = tags_sql.tags_for_documents(conn, customer_id, [target])[target]

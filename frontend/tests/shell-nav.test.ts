@@ -250,7 +250,8 @@ describe("one nav list for the sidebar and the drawer", () => {
     const menu = sources.find((s) => s.name === "ShellMenu.tsx")?.text ?? "";
     expect(menu).not.toMatch(/Sign out|ThemeToggle/);
     expect(account.indexOf("<span>Sign out everywhere</span>")).toBeGreaterThan(account.indexOf('endSession("here")'));
-    expect(account).toMatch(/className=\{`btn btn-destructive btn-block \$\{styles\.signOut\}`\}\s*onClick=\{\(\) => setConfirming\(true\)\}/);
+    // Changed on purpose (issue 373, 27 Oct 2026): a quiet item in the danger colour, not a red button.
+    expect(account).toMatch(/className=\{`btn btn-quiet btn-block \$\{styles\.signOut\} \$\{styles\.signOutEverywhere\}`\}\s*onClick=\{\(\) => setConfirming\(true\)\}/);
     expect(account).toMatch(/<ConfirmDialog[\s\S]*open=\{confirming\}[\s\S]*onConfirm=\{\(\) => void endSession\("everywhere"\)\}/);
     expect(account).toContain("logoutEverywhere()");
     expect(account).not.toContain("window.confirm");

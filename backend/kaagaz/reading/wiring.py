@@ -85,6 +85,16 @@ def reader_config(settings: Settings) -> dict[str, Any]:
         "cost_saving_hard_lines_max": settings.cost_saving_hard_lines_max,
         "cost_saving_hard_share": settings.cost_saving_hard_share,
         "cost_saving_crop_pad": settings.cost_saving_crop_pad,
+        # #384, #385: whether pages were routed, and at which thresholds.
+        "page_routing": settings.page_routing,
+        "page_route_clean_confidence": settings.page_route_clean_confidence,
+        "page_route_min_words": settings.page_route_min_words,
+        "page_route_min_line_px": settings.page_route_min_line_px,
+        "page_route_height_spread": settings.page_route_height_spread,
+        "page_route_table_share": settings.page_route_table_share,
+        "page_route_region_lines_max": settings.page_route_region_lines_max,
+        "page_route_region_share": settings.page_route_region_share,
+        "page_route_region_pages_max": settings.page_route_region_pages_max,
     }
 
 

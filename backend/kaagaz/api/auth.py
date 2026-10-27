@@ -39,7 +39,7 @@ Why each piece (FULL-BUILD-SPEC section 3, PRD 1 A1 to A7):
   ``password_change_required``; then an admin without two-step sign-in set up gets
   403 ``mfa_enrol_required`` (MFA required for admins, 16 Oct 2026). Only the few
   routes that use ``current_user_allow_password_change`` (/auth/password,
-  /auth/logout, /auth/me) skip both; /auth/admin/enrol needs no session.
+  /auth/logout, /auth/me, /auth/session) skip both; /auth/admin/enrol needs no session.
 * **CSRF**: every request that is not GET, HEAD or OPTIONS must carry
   ``X-Requested-With: kaagaz``. A cross-site form cannot add a header, and a
   cross-site script cannot either without CORS, which the API never allows.
@@ -586,7 +586,7 @@ def current_user(request: Request) -> CurrentUser:
 
 def current_user_allow_password_change(request: Request) -> CurrentUser:
     """``current_user`` without the password-change gate. Only for /auth/password,
-    /auth/logout and /auth/me."""
+    /auth/logout, /auth/me and /auth/session."""
     return _signed_in(request)
 
 

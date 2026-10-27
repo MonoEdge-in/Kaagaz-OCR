@@ -222,6 +222,14 @@ export const NOT_SENT = "This did not reach Kaagaz. Nothing was changed. Check y
 export const failureText = (caught: unknown) =>
   caught instanceof ApiError && caught.code !== "error" ? caught.message : NOT_SENT;
 
+// --- Read this spot again (#385): only the word's spot of its page, cut out and zoomed ---
+
+export const READ_SPOT_AGAIN = "Read this spot again";
+export const READ_SPOT_SENT = "This spot is being read again. The page updates when it is done.";
+
+/** The spot to read again: the word's box on its page (page fractions); null for a cell. */
+export const spotOf = (flag: Pick<WordFlag, "region">) => (flag.region.kind === "box" ? flag.region.box : null);
+
 // --- Keyboard (section 4): never while typing, never inside a dialog or a menu ---
 
 export type ReviewKey = "next" | "previous" | "confirm" | "edit" | "ensemble" | "exit";

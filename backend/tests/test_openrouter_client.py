@@ -1292,15 +1292,21 @@ def test_a_schema_goes_out_with_no_max_items_and_nothing_else_changed() -> None:
     assert sent == dropped(CARD_SCHEMA)
 
 
-def test_a_page_translation_goes_out_with_no_min_or_max_items(fake: OpenRouterFake) -> None:
-    """Read clearly's translation asks for one line per line with minItems and maxItems; the
-    request carries neither (Anthropic refuses minItems, Vertex maxItems), and the line count
-    is checked after the reply (page_translate)."""
-    from kaagaz.answering.page_translate import translate_page
-
+def test_a_list_schema_goes_out_with_no_min_or_max_items(fake: OpenRouterFake) -> None:
+    """A schema asking for an exact list length with minItems and maxItems goes out with
+    neither (Anthropic refuses minItems, Vertex maxItems); the caller checks the count."""
+    # Changed on purpose (issue 358, 27 Oct 2026): the page translation that sent this schema
+    # is gone, so the same request is made straight through the client.
+    schema = {
+        "type": "object",
+        "properties": {"lines": {"type": "array", "items": {"type": "string"}, "minItems": 2, "maxItems": 2}},
+        "required": ["lines"],
+    }
     fake.script("completions", json_reply({"lines": ["Sale deed", "Item"]}))
-    found = translate_page(_client(fake.url, Clock()), ("openrouter-test", "d", "1"), ["विक्री", "वस्तू"], "en")
-    assert found.lines == ["Sale deed", "Item"]
+    reply = _client(fake.url, Clock()).chat_json(
+        system="Translate.", user="two lines", schema=schema, max_tokens=8000, temperature=0.0
+    )
+    assert reply == {"lines": ["Sale deed", "Item"]}
     (body,) = fake.bodies()
     sent = json.dumps(body["response_format"])
     assert '"lines"' in sent and "minItems" not in sent and "maxItems" not in sent

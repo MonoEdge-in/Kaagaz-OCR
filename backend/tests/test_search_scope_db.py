@@ -269,7 +269,8 @@ def test_results_are_grouped_by_document_capped_and_count_the_other_pieces(db: D
     assert scores == sorted(scores, reverse=True)
     top3 = documents(db, customer, "INV-9001 grand", most=3)
     assert [result.best for result in top3] == [result.best for result in grouped[:3]]
-    for bad in (0, 101):
+    # Changed on purpose (issue 374, 27 Oct 2026): 101 is allowed, the route asks one past its cap.
+    for bad in (0, 102):
         with pytest.raises(ValueError, match="max_documents"):
             documents(db, customer, "INV-9001", most=bad)
 

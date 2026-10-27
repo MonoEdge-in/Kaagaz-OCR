@@ -1,7 +1,9 @@
 "use client";
 
 // Who is signed in, for every screen inside the app. The provider asks the
-// backend once (GET /api/auth/me), shows a loading state until it knows, and
+// backend once (GET /api/auth/session: /auth/me's answer, or signed_in false with no
+// session, a 200, so a signed-out visit logs no expected 401; issue 378), shows a
+// loading state until it knows, and
 // sends the browser to sign in when there is no session, or when any later
 // reply says it has ended: to /login, coming back to /admin from the admin
 // screens (signInPath, components/shell/gate.ts). Screens read the result
@@ -21,7 +23,7 @@ import type { ReactNode } from "react";
 import { appGate, endedPath, pageAfterSessionChange, signInPath, twoStepPath } from "@/components/shell/gate";
 import { SetPasswordScreen } from "@/components/shell/SetPasswordScreen";
 import styles from "@/components/shell/Shell.module.css";
-import { ApiError, me as fetchMe, logout, onSessionEnded } from "./api";
+import { ApiError, currentSession, logout, onSessionEnded } from "./api";
 import { announceSession, leavePage, watchSession } from "./sessionChannel";
 import type { Me } from "./types";
 
@@ -47,7 +49,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const load = useCallback(async (): Promise<Loaded> => {
     try {
-      return { kind: "signed_in", me: await fetchMe() };
+      const found = await currentSession();
+      return found.signed_in ? { kind: "signed_in", me: found.me } : { kind: "signed_out" };
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) return { kind: "signed_out" };
       return { kind: "error", message: sessionErrorMessage(error) };
