@@ -264,6 +264,47 @@ def test_f3_auto_filing_reuses_an_existing_finance_department(db: Database) -> N
         )
 
 
+def _folder_names(db: Database, customer: str) -> list[str]:
+    with db.customer(customer) as conn:
+        rows = conn.execute(
+            text("SELECT name FROM folders WHERE customer_id = :c ORDER BY name"), {"c": customer}
+        )
+        return [str(row[0]) for row in rows]
+
+
+def test_f3_a_property_folder_found_elsewhere_leaves_no_empty_department_or_category(db: Database) -> None:
+    """Issue 414: the property's folder is used wherever it is, so the department and category
+    above where it would have gone are never made: before, they were made first and left empty."""
+    customer, admin = organisation(db)
+    revenue = _department(db, customer, admin, "Revenue")
+    first = upload(db, customer, admin, folder=revenue)
+    _read(db, customer, first, "land_record", _land("53", "Daregav"))
+    assert _place(db, customer, first)[:1] + _place(db, customer, first)[3:] == (
+        "Survey 53, Daregav",
+        "Land records",
+        "Revenue",
+    )
+
+    second = upload(db, customer, admin)  # no department: Land & Legal is its mapped one
+    assert _read(db, customer, second, "land_record", _land("53", "Daregav")) == "filed"
+
+    assert _place(db, customer, second)[0] == "Survey 53, Daregav"
+    assert _folder_names(db, customer) == ["Land records", "Revenue", "Survey 53, Daregav"]
+
+
+def test_f3_a_property_folder_found_from_another_department_makes_no_empty_category(db: Database) -> None:
+    customer, admin = organisation(db)
+    first = upload(db, customer, admin)
+    _read(db, customer, first, "land_record", _land("53", "Daregav"))
+    accounts = _department(db, customer, admin, "Accounts")
+
+    deed = upload(db, customer, admin, folder=accounts)  # a deed of the same land, into Accounts
+    assert _read(db, customer, deed, "contract", _land("53", None)) == "filed"
+
+    assert _place(db, customer, deed)[0] == "Survey 53, Daregav"
+    assert _folder_names(db, customer) == ["Accounts", "Land & Legal", "Land records", "Survey 53, Daregav"]
+
+
 def test_f2_a_department_form_field_must_be_a_department(db: Database) -> None:
     api = Api(db)
     signed = api.new_admin()
