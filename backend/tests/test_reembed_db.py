@@ -131,7 +131,9 @@ def test_stories_without_a_current_vector_are_embedded_and_others_left(db: Datab
     code, out = _reembed(db, model, "--customer-id", customer)
 
     assert (code, out) == (0, f"customer {customer}: 0 documents, 0 cleared, 0 embedded, 2 stories\n")
-    assert sorted(model.calls[1]) == ["no vector", "old tag"]  # one pass, after the probe
+    # Changed on purpose (#239, 27 Oct 2026): one text a request (9ca77e0), after the probe.
+    assert sorted(call for batch in model.calls[1:] for call in batch) == ["no vector", "old tag"]
+    assert len(model.calls) == 3
     tags = text("SELECT embedding_model FROM document_stories")
     with db.user(customer, user) as conn:
         assert {row[0] for row in conn.execute(tags)} == {document_stories.recipe_tag(model.embed_model)}
