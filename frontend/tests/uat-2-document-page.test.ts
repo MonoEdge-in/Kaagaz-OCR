@@ -43,6 +43,18 @@ describe("#416 no Values found in the Details tab", () => {
   });
 });
 
+describe("#418 My words first among the document's own tabs", () => {
+  it("puts My words right after Text, so it is among the four tabs a wide panel shows", () => {
+    const view = read(VIEW);
+    const list = view.slice(view.indexOf("const tabs: TabItem[] = ["), view.indexOf("];", view.indexOf("const tabs: TabItem[] = [")));
+    const ids = [...list.matchAll(/id: "(\w+)"/g)].map((match) => match[1]);
+    expect(ids).toEqual(["overview", "attention", "scanned", "words", "questions", "clear", "versions", "activity"]);
+    // At most four show (PanelTabs: tabs.slice(0, room)), Needs attention or not: My words is one.
+    expect(ids.slice(0, 4)).toContain("words");
+    expect(ids.filter((id) => id !== "attention").slice(0, 4)).toContain("words");
+  });
+});
+
 describe("#417 a [?] in the Text view: type the word in its place, right there", () => {
   const panel = read("components/viewer/ScannedTextPanel.tsx");
 

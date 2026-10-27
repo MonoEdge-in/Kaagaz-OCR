@@ -363,15 +363,17 @@ export function DocumentView({
   // Scanned text), and Questions, Versions and Activity; Needs attention and My words stay.
   // Document panel UX (25 Oct 2026): Needs attention only with something in it (or while
   // reviewing); the first four show, the rest are under More (PanelTabs).
+  // Vrushit UAT 2 (27 Oct 2026, #418): My words comes right after Text, so it is among the four
+  // a wide panel shows (it was last, always under More).
   const tabs: TabItem[] = [
     { id: "overview", label: FILES_TEXT.details },
     ...(attention > 0 || reviewing ? [{ id: "attention" as const, label: "Needs attention", count: attention || undefined }] : []),
     ...(hasScannedText ? [{ id: "scanned" as const, label: "Text" }] : []),
+    { id: "words", label: "My words" },
     { id: "questions", label: QUESTIONS_TEXT.heading },
     ...(hasScannedText ? [{ id: "clear" as const, label: CLEAN_COPY }] : []),
     { id: "versions", label: VERSION_TEXT.versions, count: detail.versions.length },
     { id: "activity", label: ACTIVITY_TEXT.heading },
-    { id: "words", label: "My words" },
   ];
   const openClear = () => {
     setTab("clear");
