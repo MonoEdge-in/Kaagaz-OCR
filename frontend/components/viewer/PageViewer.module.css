@@ -151,6 +151,19 @@
   }
 }
 
+/* The PDF viewer's hand (Vrushit UAT 2, issue 419): its scroll area (data-hand, set while the
+   hand is on) shows a grab cursor, a grabbing one while dragged. The PDF engine sets each page's
+   cursor inline, so these need !important to win; a mark on the page (a button) keeps its own. */
+.hand [data-hand],
+.hand [data-hand] *:not(button) {
+  cursor: grab !important;
+}
+
+.hand [data-hand="grabbing"],
+.hand [data-hand="grabbing"] *:not(button) {
+  cursor: grabbing !important;
+}
+
 /* My words (B2): a dashed outline with no fill and a number, so it is never
    colour alone and never looks like the highlight or "needs review". */
 .mine {

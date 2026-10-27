@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { FIX_NOTE, fixBox } from "@/components/viewer/scanned";
+import { panTo } from "@/components/viewer/viewer";
 
 const ROOT = join(__dirname, "..");
 const read = (path: string) => readFileSync(join(ROOT, path), "utf8");
@@ -88,5 +89,44 @@ describe("#417 a [?] in the Text view: type the word in its place, right there",
     const sheet = css("components/viewer/ScannedText.module.css");
     expect(sheet).toMatch(/\.fixRow \{[^}]*flex-wrap: wrap;[^}]*min-width: 0;/);
     expect(sheet).toMatch(/\.fixInput \{[^}]*min-width: 0;/);
+  });
+});
+
+describe("#419 the PDF viewer's hand: drag a zoomed page around", () => {
+  const viewer = read("components/viewer/PdfDocumentViewer.tsx");
+
+  it("scrolls the other way the pointer moves, from where the drag began", () => {
+    const press = { x: 100, y: 200, left: 50, top: 400 };
+    expect(panTo(press, 100, 200)).toEqual({ left: 50, top: 400 });
+    expect(panTo(press, 60, 150)).toEqual({ left: 90, top: 450 }); // dragged up and left: shows more right and below
+    expect(panTo(press, 130, 260)).toEqual({ left: 20, top: 340 });
+  });
+
+  it("is a toolbar toggle a keyboard reaches, named and pressed", () => {
+    expect(viewer).toMatch(/aria-pressed=\{hand\}\s+aria-label="Hand"/);
+    expect(viewer).toContain("onClick={() => setHand((on) => !on)}");
+    expect(viewer).toContain("const [hand, setHand] = useState(false);");
+  });
+
+  it("pans only while on, never animated, leaving marks pressable and selection to the engine when off", () => {
+    const effect = viewer.slice(viewer.indexOf("// The hand (#419), on the viewer's own scroll area"), viewer.indexOf("const overlay = useCallback("));
+    expect(effect).toContain("if (!hand || !open || !area) return;");
+    expect(effect).toContain('event.target.closest("button, a")');
+    expect(effect).toContain('area.scrollTo({ ...panTo(press, event.clientX, event.clientY), behavior: "instant" });');
+    // The engine's exclusion rule keeps its text selection out while the hand is on, and back after.
+    expect(effect).toContain('area.dataset.noInteraction = "";');
+    expect(effect).toContain("delete area.dataset.noInteraction;");
+    for (const type of ["pointerdown", "pointermove", "pointerup", "pointercancel"]) {
+      expect(effect).toContain(`area.addEventListener("${type}"`);
+      expect(effect).toContain(`area.removeEventListener("${type}"`);
+    }
+    expect(effect).not.toMatch(/pointerType/); // a mouse, a pen and a finger alike
+    // A grab cursor while on, a grabbing one while dragged.
+    expect(effect).toContain('area.dataset.hand = "grabbing";');
+    expect(effect).toContain("delete area.dataset.hand;");
+    expect(viewer).toContain("className={`extend-ui flex min-h-0 flex-1 flex-col ${hand ? styles.hand : \"\"}`}");
+    const sheet = css("components/viewer/PageViewer.module.css");
+    expect(sheet).toMatch(/\.hand \[data-hand\],\s*\.hand \[data-hand\] \*:not\(button\) \{\s*cursor: grab !important;/);
+    expect(sheet).toMatch(/\.hand \[data-hand="grabbing"\],\s*\.hand \[data-hand="grabbing"\] \*:not\(button\) \{\s*cursor: grabbing !important;/);
   });
 });
