@@ -338,9 +338,16 @@ export const getSheetCells = (id: string, pageNo: number, rowFrom = 1, rowTo = 2
   );
 /** One drop of files (PRD 5 Q1): the uploader's own only; 404 for any other or unknown batch. */
 export const getBatch = (id: string) => request<BatchView>("GET", `/batches/${encodeURIComponent(id)}`);
-/** F5: read one page again, harder (a reviewer or an admin); the reply is the document, now received. */
-export const readPageAgain = (id: string, pageNo: number) =>
-  request<DocumentSummary>("POST", `/documents/${id}/pages/${pageNo}/read-again`);
+/**
+ * F5: read one page again, harder (a reviewer or an admin); with `regions` (#385, boxes in page
+ * fractions), only those spots of it. The reply is the document, now received.
+ */
+export const readPageAgain = (id: string, pageNo: number, regions?: readonly (readonly number[])[]) =>
+  request<DocumentSummary>(
+    "POST",
+    `/documents/${id}/pages/${pageNo}/read-again`,
+    regions === undefined ? undefined : { regions },
+  );
 /** F5 "Keep as is": the page leaves the attention list but stays flagged; the reply is the page. */
 export const acceptPage = (id: string, pageNo: number) =>
   request<PageSummary>("POST", `/documents/${id}/pages/${pageNo}/accept`);
