@@ -5,7 +5,8 @@
 // words: the pipeline, questions and how they were answered, the pages read this
 // month by how they were read (PRD 2, R6), and what is kept. A row that is 0 is
 // left out; a list with nothing says so. Which reader or model read them is the
-// operator's only (UI quality council, 15 Oct 2026); AI use is on the Usage tab.
+// operator's only (UI quality council, 15 Oct 2026); AI use is on the Usage tab. Then each
+// member's numbers (#386, MembersTable), which load on their own.
 
 import { useEffect, useState } from "react";
 import { Icon } from "@/components/ui/Icon";
@@ -13,6 +14,7 @@ import { Tip } from "@/components/ui/Tip";
 import { ApiError, getStats } from "@/lib/api";
 import type { Stats } from "@/lib/types";
 import { breakdowns, kpiTiles } from "./logic";
+import { MembersTable } from "./MembersTable";
 import styles from "./Admin.module.css";
 
 const SKELETON_TILES = [0, 1, 2, 3];
@@ -111,6 +113,7 @@ export function NumbersPanel() {
           </div>
         </>
       )}
+      <MembersTable />
     </section>
   );
 }

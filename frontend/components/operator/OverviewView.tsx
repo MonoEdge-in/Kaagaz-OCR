@@ -270,8 +270,9 @@ function OverviewBody({ data, openOrg, openTab, announce }: OverviewProps & { da
         ))}
       </dl>
       <p className={css.footnote}>
-        Pages read: the pages an AI model read, from the AI spend record (cached pages not counted). Money is what OpenRouter
-        charged, in US dollars. Each change compares with the same number of days before.
+        Pages read by AI: the pages an AI model read, from the AI spend record (cached pages not counted). Every page read, by
+        every way, is in Each organisation&apos;s numbers below. Money is what OpenRouter charged, in US dollars. Each change
+        compares with the same number of days before.
       </p>
       <OrgTable data={data} names={names} announce={announce} />
     </>
@@ -363,8 +364,9 @@ export function tilesOf(reply: InsightsReply, orgs: readonly Organisation[]): Ti
       joined(`of ${countText(orgs.length, "organisation", "organisations")}`, created > 0 && `${formatNumber(created)} new this period`),
     ),
     count("Files uploaded", (totals) => totals.uploads),
+    // #377: named for what it counts, the pages an AI model read; every page read is in OrgNumbers.
     count(
-      "Pages read",
+      "Pages read by AI",
       (totals) => totals.pagesRead,
       now.pagesReread > 0 ? `${formatNumber(now.pagesReread)} more read again (Careful, Ensemble)` : undefined,
     ),
