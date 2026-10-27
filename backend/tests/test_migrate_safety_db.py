@@ -102,3 +102,13 @@ def test_a_downgrade_runs_with_the_switch(fresh: tuple[str, Database]) -> None: 
     assert _version(database) < head
     assert _alembic(url, "upgrade", "head").returncode == 0  # an upgrade never needs it
     assert _version(database) == head
+
+
+def test_a_command_with_no_target_runs_as_before(fresh: tuple[str, Database]) -> None:  # noqa: F811
+    """``alembic current`` (the migration tests use it) has no target: no head check and no
+    downgrade check, so it prints the revision once, as without this env.py."""
+    url, database = fresh
+    migrate(url)
+    done = _alembic(url, "current")
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.split() == [_version(database), "(head)"]
