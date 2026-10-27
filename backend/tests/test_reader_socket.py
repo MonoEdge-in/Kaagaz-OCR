@@ -310,7 +310,9 @@ class SpanValidationTest(unittest.TestCase):
             "a negative block": Span("a", "a", box(), origin="ocr", block=-1),
             "a block as a bool": Span("a", "a", box(), origin="ocr", block=cast(int, True)),
             "a block on a sheet cell": Span("a", "a", CellLocation(1, 1, 1), origin="cell", block=0),
-            "a col_span of 0": Span("a", "a", box(), None, "table_cell", "ocr", "t1", 0, 0, False, col_span=0),
+            "a col_span of 0": Span(
+                "a", "a", box(), None, "table_cell", "ocr", "t1", 0, 0, False, col_span=0
+            ),
             "a col_span on a line": Span("a", "a", box(), kind="paragraph", origin="ocr", col_span=2),
         }
         for name, span in bad.items():
