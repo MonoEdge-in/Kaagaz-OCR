@@ -797,7 +797,15 @@ def _serve(settings: Settings) -> None:
     from kaagaz.reading.ocr import GEMINI
     from kaagaz.reading.wiring import build_ocr_engine
 
-    db = Database(make_engine(settings.database_url), settings.db_app_role)
+    # The worker's PostgreSQL timeouts (#246 A1): long, so a big document's save or a sweep is
+    # never cut, but a stuck statement, lock wait or open transaction still ends.
+    engine = make_engine(
+        settings.database_url,
+        statement_timeout_seconds=settings.db_worker_statement_timeout_seconds,
+        lock_timeout_seconds=settings.db_worker_lock_timeout_seconds,
+        idle_in_transaction_timeout_seconds=settings.db_idle_in_transaction_timeout_seconds,
+    )
+    db = Database(engine, settings.db_app_role)
     storage = S3Storage(settings)
     queue = SqsQueue(settings)
     max_receives = queue.max_receives()  # once; no redrive policy stops the worker here
