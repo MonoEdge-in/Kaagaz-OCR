@@ -15,7 +15,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
-from kaagaz.db import listing
+from kaagaz.db import listing, versions
 from kaagaz.db.documents import PgDocuments
 from kaagaz.db.engine import Database
 from kaagaz.db.pipeline_store import _TYPE_LABEL, CONFIDENTIAL_TYPES
@@ -24,6 +24,7 @@ from tests.db_support import insert_document, insert_folder, migrate, new_custom
 from tests.test_api_support import CSRF, Api, MovingClock, Signed
 from tests.test_autofile_db import file, organisation, upload
 from tests.test_migration_0004_db import _current, _head
+from tests.test_operator_auth_db import _owner
 
 pytestmark = pytest.mark.db
 
@@ -303,6 +304,36 @@ def test_f3_a_property_folder_found_from_another_department_makes_no_empty_categ
 
     assert _place(db, customer, deed)[0] == "Survey 53, Daregav"
     assert _folder_names(db, customer) == ["Accounts", "Land & Legal", "Land records", "Survey 53, Daregav"]
+
+
+def test_v6_accepting_a_newer_version_of_a_family_in_no_folder_keeps_the_newcomers_folder(
+    db: Database,
+) -> None:
+    """Issue 414: the newcomer was filed into "Survey 53, Daregav", made for it; its family sat in
+    no folder. Accepting it moved it to the top level and left that folder empty. Now the
+    family joins it there, and the audit row names that folder."""
+    customer, admin = organisation(db, on=False)
+    older = upload(db, customer, admin)  # read while auto-filing was off: in no folder
+    _read(db, customer, older, "land_record", _land("53", "Daregav"))
+    _owner(db, "UPDATE customers SET autofile_on = true WHERE id = :c", {"c": customer})
+    newer = upload(db, customer, admin)
+    assert _read(db, customer, newer, "land_record", _land("53", "Daregav")) == "filed"
+    with db.customer(customer) as conn:
+        suggestion = str(
+            conn.execute(text(_SUGGEST + " RETURNING id"), {"c": customer, "d": newer, "f": older}).scalar()
+        )
+        versions.link(conn, customer, suggestion, by=admin)
+
+    assert _place(db, customer, newer)[0] == _place(db, customer, older)[0] == "Survey 53, Daregav"
+    with db.customer(customer) as conn:
+        details = conn.execute(
+            text("SELECT details FROM audit_log WHERE customer_id = :c AND action = 'version.accepted'"),
+            {"c": customer},
+        ).scalar_one()
+        folder = conn.execute(
+            text("SELECT folder_id::text FROM documents WHERE id = :d"), {"d": older}
+        ).scalar()
+    assert (details["from_folder_id"], details["folder_id"]) == (folder, folder)
 
 
 def test_f2_a_department_form_field_must_be_a_department(db: Database) -> None:
