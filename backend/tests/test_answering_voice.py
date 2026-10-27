@@ -179,7 +179,9 @@ def test_a_whole_documents_closest_come_from_a_search_not_its_reading_order() ->
 
     assert answer.status == "not_found"
     assert [doc["display_name"] for doc in answer.closest_documents] == ["b-lease.pdf"]
-    assert [call[2] for call in retriever.calls] == [None]  # words and typos only, no vector
+    # Changed on purpose (#381, 27 Oct 2026): the first search ranks the pieces for the draft (with
+    # the vector); the closest still come from words and typos only, no vector.
+    assert [call[2] is None for call in retriever.calls] == [False, True]
     assert [(d["title"], d["citations"]) for d in answer.documents] == [("b-lease.pdf", [])]
     assert answer.documents[0]["why"].startswith("Mentions rent and agreement")
     assert_well_formed(answer)
