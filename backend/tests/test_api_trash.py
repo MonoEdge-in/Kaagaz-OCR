@@ -94,12 +94,11 @@ def test_delete_moves_the_whole_family_to_trash_and_keeps_every_row_and_file(db:
     assert len(api.storage.page_images) == 2
     # By id it still opens (plan 9.7): the viewer can show what is in Trash.
     assert uploader.client.get(f"/api/documents/{second}").status_code == 200
-    assert api.audit_rows(uploader.customer_id)[-1] == (
-        "document.trash",
-        "document",
-        first,
-        {"status": "ready"},
-    )
+    # Changed on purpose (#239, 27 Oct 2026): opening it writes A1's document.view (803f5e8).
+    assert api.audit_rows(uploader.customer_id)[-2:] == [
+        ("document.trash", "document", first, {"status": "ready"}),
+        ("document.view", "document", second, {}),
+    ]
 
 
 def test_delete_of_a_family_already_in_trash_keeps_the_first_time(db: Database) -> None:

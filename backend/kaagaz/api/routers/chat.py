@@ -605,10 +605,12 @@ def _first_allowed(
 ) -> list[str] | None:
     """One model answers in Ask (Tushar, 16 Oct 2026): a request naming several (an older
     screen) gets the first one this organisation allows, never a refusal for naming more;
-    none allowed, the first, which ``resolve_chat`` refuses as before. One query, only then."""
+    none allowed, the first, which ``resolve_chat`` refuses as before. With no chat model set,
+    MODEL_CHAT is the one allowed, as in ``resolve_chat``. One query, only then."""
     if agents is None or len(agents) <= 1:
         return agents
     usable = {row["id"] for row in usable_chat_models(conn, customer_id, settings=context.settings)}
+    usable = usable or {context.settings.model_chat}
     return [next((agent for agent in agents if agent in usable), agents[0])]
 
 

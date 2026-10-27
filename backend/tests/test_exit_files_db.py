@@ -184,7 +184,10 @@ def _read(
     ids: dict[str, str] = {}
     makers: dict[str, Callable[[], DocumentProcessor]] = {}
     for key, file in files.items():
-        doc = upload.accept(customer, io.BytesIO(file.data)).document_id
+        # Fixed (#239, 27 Oct 2026): each under its own name (ExitFile.name). Every one was
+        # "document", so version spotting (d82ada4, name and text alike) made the injected
+        # textile invoice a new version of the plain one, taking it out of search.
+        doc = upload.accept(customer, io.BytesIO(file.data), display_name=file.name).document_id
         checker = checkers.get(key)
         makers[key] = functools.partial(
             _processor, db, storage, documents, prepare, key, file, model, checker
@@ -208,11 +211,15 @@ def _processor(
     with a ``checker`` its pages are the reading model's (PRD 5 V1), read again by it."""
     chat = chat_for(key) if model else None
     timer = Timer()
+    # Fixed (#239, 27 Oct 2026): the meter is the processor's ocr_meter too, as the worker wires it
+    # (pipeline.build_processor): the checker reads the pages it gives (run.page_reads).
+    meter = MeteredOcrEngine(ScriptedOcr(file.ocr_pages), timer=timer)
     return DocumentProcessor(
         gate=ScanGate(storage, FakeScanner(Verdict.CLEAN), storage, documents),
         statuses=documents,
         documents=documents,
-        socket=build_reader_socket(SETTINGS, MeteredOcrEngine(ScriptedOcr(file.ocr_pages), timer=timer)),
+        socket=build_reader_socket(SETTINGS, meter),
+        ocr_meter=meter,
         prepare=prepare,
         sheet_pages=fake_sheet_pages,
         page_images=MemoryPageImages(),

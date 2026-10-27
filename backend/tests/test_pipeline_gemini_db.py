@@ -5,7 +5,8 @@ still the scripted fakes; nothing calls a model."""
 
 import functools
 import io
-from datetime import UTC, datetime
+import itertools
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import text
@@ -17,7 +18,6 @@ from kaagaz.db.pipeline_store import PgPipelineStore
 from kaagaz.db.runs import PgRuns
 from kaagaz.ingestion.ports import Job
 from kaagaz.ingestion.service import UploadService
-from kaagaz.jobs.worker import JobFailed
 from kaagaz.pipeline import DocumentProcessor
 from kaagaz.preparing.pages import prepare_pages
 from kaagaz.reading.ocr import MeteredOcrEngine
@@ -49,6 +49,10 @@ def processor(db: Database, storage: MemoryStorage, reader: ScriptedReader) -> D
         prepare_pages, dpi=72, max_pages=10, max_image_pixels=40_000_000, blank_stddev=3.0, low_res_dpi=150
     )
     meter = MeteredOcrEngine(reader, timer=lambda: 0.0)
+    # Fixed (#239, 27 Oct 2026): a second on each reading of the clock, so each run starts
+    # after the last and COUNTERS' ORDER BY started_at is the runs' order (at one fixed time
+    # the order fell to the random ids).
+    ticks = itertools.count()
     return DocumentProcessor(
         gate=ScanGate(storage, FakeScanner(Verdict.CLEAN), storage, documents),
         statuses=documents,
@@ -61,7 +65,7 @@ def processor(db: Database, storage: MemoryStorage, reader: ScriptedReader) -> D
         runs=PgRuns(db),
         progress=documents,
         ocr_meter=meter,
-        clock=lambda: T0,
+        clock=lambda: T0 + timedelta(seconds=next(ticks)),
         timer=lambda: 0.0,
         ocr_model=MODEL,
         checker=FakeChecker(),
@@ -127,7 +131,9 @@ def test_rt2_f1_f5_page_results_and_counters_are_saved_and_the_read_again_mark_i
     ]
 
 
-def test_f4_a_document_with_every_page_unreadable_fails_and_its_marks_are_cleared(db: Database) -> None:
+def test_f4_a_document_with_every_page_unreadable_is_ready_and_its_marks_are_cleared(db: Database) -> None:
+    # Changed on purpose (#239, 27 Oct 2026): never failed "unreadable" (Tushar, 16 Oct 2026,
+    # e01b937): ready, each such page flagged for review, as test_pipeline_gemini.py says.
     customer, _ = new_customer(db)
     storage = MemoryStorage()
     reader = ScriptedReader({1: page_read(TOTAL)})
@@ -136,19 +142,19 @@ def test_f4_a_document_with_every_page_unreadable_fails_and_its_marks_are_cleare
     run(Job(customer, doc), lambda: None)
     mark(db, customer, doc, 1)
     reader.pages[1] = page_read(TOTAL, read_by="rapidocr", quality=None, issues=("reader_refused",))
-    with pytest.raises(JobFailed):
-        run(Job(customer, doc), lambda: None)
+    run(Job(customer, doc), lambda: None)
 
     assert rows(db, customer, "SELECT status, failure_code FROM documents WHERE id = :d", doc) == [
-        ("failed", "unreadable")
+        ("ready", None)
     ]
+    assert [row[2] for row in rows(db, customer, PAGES, doc)] == ["unreadable"]
     assert rows(
         db,
         customer,
         "SELECT count(*) FROM pages WHERE document_id = :d AND read_again_requested_at IS NOT NULL",
         doc,
     ) == [(0,)]
-    assert rows(db, customer, COUNTERS, doc)[-1] == ("failed", 0, 1, 0, 0, 1, 0, 0)
+    assert rows(db, customer, COUNTERS, doc)[-1] == ("ready", 0, 1, 0, 0, 1, 0, 0)
 
 
 def test_a_text_page_is_read_by_text_layer_and_good(db: Database) -> None:

@@ -458,7 +458,10 @@ SLICES += ("search", "model_on", "model_off")
 # values each are single reader, in both reads: 6 fewer each read. That the checker still
 # verifies a scanned value is test_exit_files_db's positive control (the bill in English).
 VERIFIED_RIGHT_VALUES = 68  # verified and right, both reads: 42 with the model off, 26 with it on
-VERIFIED_RIGHT_ANSWERS = 8  # verified and right, both reads: 4 with the model on, 4 off
+# Changed on purpose (#239, 27 Oct 2026; 8 to 7): a highest is verified only when every value it
+# compared is (PRD 6 C2, Tushar 24 Oct, 65486f9). With the model off, "What was the highest total
+# amount?" compares the Hindi bill's total, which needs review, so it says so and is not verified.
+VERIFIED_RIGHT_ANSWERS = 7  # verified and right, both reads: 4 with the model on, 3 off
 UNANSWERABLE_NOT_FOUND = 12  # UNANSWERABLE asked in both reads: all 12 not found
 # Of the 14 PARAPHRASES: number words not copied from the evidence, and an ordinal day, are dropped.
 PARAPHRASES_KEPT = 12

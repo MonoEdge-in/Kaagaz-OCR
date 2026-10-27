@@ -42,12 +42,16 @@ def test_search_inside_documents_lists_no_story_matches(db: Database) -> None:
     signed = api.new_signed()
     document = api.add_document(signed.customer_id, name="7-12 extract.pdf")
     assert put(signed, document, STORY).status_code == 201
+    # Fixed (#239, 27 Oct 2026): the save embeds the story with the model on (stories.py), so
+    # the search is checked for calls of its own.
+    saved = len(model.calls)
     add_pieces(db, signed.customer_id, document, [("Daregaon 7/12 extract", None)])
 
     reply = signed.client.get("/api/search", params={"q": "Daregaon"})
     body = reply.json()
     assert ([d["id"] for d in body["documents"]], body["story_matches"]) == ([document], [])
-    assert MARK not in reply.text and model.calls == []
+    assert MARK not in reply.text
+    assert model.calls[saved:] == []
     assert [m["document_id"] for m in matches(signed, QUESTION)] == [document]
 
 

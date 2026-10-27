@@ -338,7 +338,9 @@ def test_an_old_org_models_set_audit_row_shows_no_budget() -> None:
 def test_an_org_admin_sees_no_money_in_stats_models_usage_or_audit(db: Database) -> None:
     """Tushar, 15 Oct 2026: org admins never see money, prices, budgets or costs. A budget,
     priced models, spend and an old budget audit row are all there; no response names them."""
-    settings = make_settings(ocr_engine="gemini", model_enabled=True)
+    # Changed on purpose (#239, 27 Oct 2026): a made-up key. The app builds its model client
+    # at start (#212), and Settings.from_env refuses MODEL_ENABLED or gemini without a key.
+    settings = make_settings(ocr_engine="gemini", model_enabled=True, openrouter_api_key="test-key")
     api = Api(db, settings=settings, clock=MovingClock(NOW))
     admin = api.new_admin()
     c = admin.customer_id
@@ -350,10 +352,11 @@ def test_an_org_admin_sees_no_money_in_stats_models_usage_or_audit(db: Database)
         conn.execute(
             text(
                 "INSERT INTO audit_log (customer_id, actor_user_id, action, target_type, target_id, details)"
-                " VALUES (:c, NULL, 'org.models_set', 'customer', CAST(:c AS text),"
+                # Fixed (#239, 27 Oct 2026): one parameter cannot be both the uuid and the text.
+                " VALUES (:c, NULL, 'org.models_set', 'customer', :t,"
                 " jsonb_build_object('by', 'operator', 'budget_usd', 10.0))"
             ),
-            {"c": c},
+            {"c": c, "t": c},
         )
 
     for url in ("/api/admin/stats", "/api/admin/models", "/api/admin/usage", "/api/admin/audit"):

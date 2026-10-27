@@ -669,6 +669,18 @@ def test_first_allowed_keeps_one_model(monkeypatch: pytest.MonkeyPatch) -> None:
     assert first(["google/x-1", "google/y-1"]) == ["google/x-1"]  # refused as before
 
 
+def test_first_allowed_with_no_chat_model_set_keeps_model_chat(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#239: with no chat model set, MODEL_CHAT is the one allowed (as ``resolve_chat``), so an
+    older screen naming it after another is answered by it, not refused."""
+    monkeypatch.setattr(chat_router, "usable_chat_models", lambda *_args, **_kw: [])
+    settings = make_settings()
+    context: Any = type("Context", (), {"settings": settings})()
+    conn: Any = None
+    agents = ["google/x-1", settings.model_chat]
+    assert chat_router._first_allowed(conn, "c", agents, context) == [settings.model_chat]
+    assert chat_router._first_allowed(conn, "c", ["google/x-1", "google/y-1"], context) == ["google/x-1"]
+
+
 @pytest.mark.db
 def test_a_pinned_source_shows_on_top_after_a_reload_and_every_pick_is_kept(db: Database) -> None:
     # Ranked sources (Tushar, 16 Oct 2026, 0036): "Most relevant" puts one source on top.

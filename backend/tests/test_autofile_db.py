@@ -475,10 +475,12 @@ def test_race_filing_waits_for_a_folder_move_and_a_folder_delete_without_a_deadl
             third = pool.submit(_file_as, db, customer, after_delete, session)
             wait_until_blocked(db, application_name=session)
         assert third.result(timeout=10) == "filed"
+    # Fixed (#239, 27 Oct 2026): f[2] is the parent's id, not its name (24cea75).
+    department = next(f[0] for f in folders(db, customer) if f[1] == "Accounts and HR")
     assert {(f[1], f[2]) for f in folders(db, customer)} == {
         ("Accounts and HR", None),
         ("Archive", None),
-        ("Invoices", "Accounts and HR"),
+        ("Invoices", department),
     }
 
 
@@ -520,7 +522,9 @@ def test_r16_undo_moves_the_family_back_keeps_the_folder_and_names_who(db: Datab
     assert (reply.json()["folder_id"], reply.json()["autofile"]) == (department, None)
     assert state(db, customer, document) == (None, "Accounts and HR")
     assert {f[0] for f in folders(db, customer)} == {invoices, department}  # the folders stay
-    assert audit(db, customer)[-1] == ("document.autofile_undo", member.user_id, {"folder_id": department})
+    # Fixed (#239, 27 Oct 2026): the row names the folder it was filed in, as autofile.undo returns
+    # it (d82ada4) and this test first said (9334e9a); 24cea75 changed only the test.
+    assert audit(db, customer)[-1] == ("document.autofile_undo", member.user_id, {"folder_id": invoices})
     again = _undo(member.client, document)
     assert (again.status_code, again.json()["error"]["code"]) == (409, "already_moved")
 

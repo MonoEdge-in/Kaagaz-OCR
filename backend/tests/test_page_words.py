@@ -167,7 +167,7 @@ class WordFindsTest(unittest.TestCase):
         )
 
     def test_no_words_finds_nothing(self) -> None:
-        nothing = {"boxes": [], "hits": [], "pages": [], "found": []}
+        nothing: dict[str, list[Any]] = {"boxes": [], "hits": [], "pages": [], "found": []}
         self.assertEqual(word_finds([("Krishna", None, [box(1, 0.1)])], []), nothing)
 
     def test_the_counts_cover_every_line_past_max_boxes(self) -> None:

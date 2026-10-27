@@ -148,7 +148,9 @@ def test_an_organisation_value_affects_only_it_and_null_follows_the_platform(db:
         again = api.sign_in(mine.customer_id)
         api.clock.advance(4 * HOUR)
         assert _signed_in(again) == 200
-        api.clock.advance(HOUR + 60)
+        # Fixed (#239, 27 Oct 2026): that request was a use, so the idle clock starts again
+        # from it (seen_at, 0040); 5 hours idle are counted from there.
+        api.clock.advance(5 * HOUR + 60)
         assert _signed_in(again) == 401  # 5 hours idle
 
 

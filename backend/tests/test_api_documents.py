@@ -385,6 +385,9 @@ def test_upload_stores_queues_and_returns_the_summary(db: Database) -> None:
         "newer_version",
         "progress",  # PRD 2 X3
         "time_left",  # PRD 4 #13: null until it is being read
+        # Changed on purpose (#239, 27 Oct 2026): Ready first (7e64d29) says whether a ready
+        # document's card and map are still coming.
+        "understanding",
         "doc_type",  # PRD 2 D3 (null until the card, PR 5)
         "languages",
         "pages_unreadable",  # PRD 5 F4
@@ -964,6 +967,8 @@ def test_detail_has_pages_and_values_in_order(db: Database) -> None:
         "effective_dpi": None,  # R4
         "low_resolution": False,
         "read_by": None,  # PRD 5 RT2: not read by a run
+        # Changed on purpose (#239, 27 Oct 2026): the reading model's name (38f5407).
+        "read_by_name": None,
         "read_quality": "good",  # F1: the column's default
         "read_issues": [],
         "unsure_words": 0,
@@ -990,6 +995,8 @@ def test_detail_has_pages_and_values_in_order(db: Database) -> None:
         "confidence": None,
         "label_page_no": None,  # PRD 2 D3: the label's own spot, when it has one
         "label_region": None,
+        # Changed on purpose (#239, 27 Oct 2026): Ensemble's votes (addc9c7); none for one reader.
+        "votes": None,
     }
 
 
@@ -1272,7 +1279,9 @@ def test_uploader_can_delete_and_it_goes_to_trash_with_everything_kept(db: Datab
     with db.customer(signed.customer_id) as conn:
         assert conn.execute(text("SELECT count(*) FROM extracted_values")).scalar_one() == 1
         assert conn.execute(text("SELECT deleted_at FROM documents")).scalar_one() == api.clock()
-    assert api.audit_actions(signed.customer_id)[-1] == "document.trash"
+    # Changed on purpose (#239, 27 Oct 2026): opening the document afterwards writes A1's
+    # document.view (PRD 1 stage 3, 803f5e8), after the trash row.
+    assert api.audit_actions(signed.customer_id)[-2:] == ["document.trash", "document.view"]
 
 
 @pytest.mark.db
@@ -1749,7 +1758,10 @@ def test_the_summary_is_the_details_own_summary_in_fewer_statements(db: Database
     assert reply.status_code == 200
     summary = reply.json()
     assert set(summary) == set(listed)  # a DocumentSummary, as in the list
-    assert summary == {key: detail[key] for key in summary}
+    # Changed on purpose (#239, 27 Oct 2026): the summary's versions is the family's count
+    # (PRD 1, 0041); the detail's is the list itself (frontend/lib/types.ts says so).
+    assert summary["versions"] == len(detail["versions"]) == 1
+    assert {**summary, "versions": detail["versions"]} == {key: detail[key] for key in summary}
     assert (summary["status"], summary["status_message"]) == ("clean", detail["status_message"])
     asked = _statements(db, lambda: signed.client.get(f"/api/documents/{document_id}/summary"))
     whole = _statements(db, lambda: signed.client.get(f"/api/documents/{document_id}"))

@@ -17,6 +17,7 @@ import httpx2 as httpx
 import pytest
 from sqlalchemy import text
 
+from kaagaz.api import totp
 from kaagaz.api.auth import SESSION_COOKIE, SessionClaims, sign_session, verify_password
 from kaagaz.db.engine import Database
 from tests.test_api_support import CSRF, NOW, PASSWORD, Api, TestClient, call, route_calls
@@ -152,7 +153,12 @@ def test_a_2fa_reset_ends_the_admins_sessions(db: Database) -> None:
     admin = api.new_admin()
     colleague = api.admin_sign_in(admin.customer_id)
     colleague_app = api.client()
-    assert _login(colleague_app, colleague.email).status_code == 200
+    # Changed on purpose (#239, 27 Oct 2026): an admin signs in with a code on the one sign-in
+    # (cbcfc50, 16 Oct); the next step's, as this step's was used.
+    api.clock.advance(totp.STEP_SECONDS)
+    assert colleague.totp_secret is not None
+    code = api.code(colleague.totp_secret)
+    assert api.admin_login(colleague_app, colleague.email, code=code).status_code == 200
 
     reply = admin.client.post(f"/api/admin/users/{colleague.user_id}/reset-2fa", headers=CSRF)
 
@@ -243,12 +249,22 @@ def test_must_change_blocks_every_route_except_password_logout_and_me(db: Databa
     calls = route_calls(api.app)
     assert open_to_all | allowed <= set(calls)
 
-    gated = [(method, path) for method, path in calls if (method, path) not in open_to_all | allowed]
-    assert len(gated) > 20
+    # Fixed (#239, 27 Oct 2026): the operator's routes (0015) take an operator session, so a
+    # customer's session gets their 401 before this gate; tests/test_operator_auth_db.py too.
+    operator = [c for c in calls if c[1].startswith("/api/operator") and c != ("POST", "/api/operator/login")]
+    gated = [
+        (method, path)
+        for method, path in calls
+        if (method, path) not in open_to_all | allowed and not path.startswith("/api/operator")
+    ]
+    assert len(gated) > 20 and len(operator) > 10
     for method, path in gated:
         reply = call(client, method, path)
         assert reply.status_code == 403, (method, path)
         assert reply.json() == PASSWORD_CHANGE_REFUSED, (method, path)
+    for method, path in operator:
+        reply = call(client, method, path)
+        assert (reply.status_code, reply.json()["error"]["code"]) == (401, "not_signed_in"), (method, path)
 
     me = client.get("/api/auth/me")
     assert me.status_code == 200

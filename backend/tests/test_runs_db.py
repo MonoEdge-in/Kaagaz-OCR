@@ -333,13 +333,16 @@ def test_a_save_or_ready_from_a_superseded_run_changes_nothing(db: Database) -> 
     old = PgRuns(db).start(customer, doc, now=T0)
     new = PgRuns(db).start(customer, doc, now=T1)
     store, documents = PgPipelineStore(db), PgDocuments(db)
+    # Changed on purpose (#239, 27 Oct 2026): a save is refused while the document is
+    # received (a read again not started, 7e64d29); the new run's scan gate made it clean.
+    documents.set_status(customer, doc, DocumentStatus.CLEAN, run_id=new)
 
     with pytest.raises(Superseded):
         store.save(content(customer, doc), run_id=old)
     with pytest.raises(Superseded):
         documents.mark_ready(customer, doc, 2, run=FinishedRun(old, totals(), T2))
     assert counts(db, customer, doc) == {**EMPTY, "processing_runs": 2}
-    assert rows(db, customer, "SELECT status FROM documents WHERE id = :d", doc) == [{"status": "received"}]
+    assert rows(db, customer, "SELECT status FROM documents WHERE id = :d", doc) == [{"status": "clean"}]
 
     store.save(content(customer, doc), run_id=new)
     documents.mark_ready(customer, doc, 2, run=FinishedRun(new, totals(), T2))
@@ -392,6 +395,8 @@ def test_the_new_run_wins_the_fence_even_when_the_stale_run_started_later(db: Da
     stale = PgRuns(db).start(customer, doc, now=T1)
     new = PgRuns(db).start(customer, doc, now=T0)
     store, documents = PgPipelineStore(db), PgDocuments(db)
+    # Changed on purpose (#239, 27 Oct 2026): as above, the new run's scan gate made it clean.
+    documents.set_status(customer, doc, DocumentStatus.CLEAN, run_id=new)
 
     with pytest.raises(Superseded):
         store.save(content(customer, doc), run_id=stale)
@@ -647,7 +652,8 @@ READER = (
 
 
 def test_the_reader_counters_are_the_ones_finish_run_reads() -> None:
-    names = [item.name for item in fields(ReaderTotals)][len(fields(RunTotals)) :]
+    # Changed on purpose (#239, 27 Oct 2026): RunTotals itself ends with the counters (3286d5a).
+    names = [item.name for item in fields(RunTotals)][-len(READER_COUNTERS) :]
     assert names == list(READER_COUNTERS)
 
 

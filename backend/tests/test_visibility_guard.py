@@ -78,6 +78,8 @@ FILTERED: dict[tuple[ModuleType, str], str] = {
     (owners, "_OWNED"): LIVE_CURRENT,
     (owners, "_KEYED"): LIVE_CURRENT,
     (owners, "_SHARES_AS_PRINTED"): LIVE_CURRENT,
+    # Changed on purpose (#239, 27 Oct 2026): every land record of a list question (PRD 6 E).
+    (owners, "_EVERY_RECORD"): LIVE_CURRENT,
     # The documents an unchecked figure points to (decided 30 Sep 2026): the same.
     (unchecked, "_CARD_DOCUMENTS"): LIVE_CURRENT,
     # The pages a not-found answer names as not read well (PRD 5 F6): the same.
@@ -89,6 +91,10 @@ FILTERED: dict[tuple[ModuleType, str], str] = {
     (review, "_QUEUE_FOR_DOCUMENT"): LIVE_CURRENT,
     (review, "_COUNT_FOR_DOCUMENT"): LIVE_CURRENT,
     (review, "_LOCK_VALUE"): LIVE,
+    # Changed on purpose (#239, 27 Oct 2026): Verify all's chunks lock what the queue lists.
+    (review, "_NEXT_CHUNK"): LIVE_CURRENT,
+    (review, "_NEXT_CHUNK_ALL"): LIVE_CURRENT,
+    (review, "_NEXT_CHUNK_FOR_DOCUMENT"): LIVE_CURRENT,
     # The admin numbers: each family once, by its current version; open review
     # items as the queue shows them.
     (admin, "_DOCUMENTS_BY_STATUS"): LISTED,
@@ -118,6 +124,9 @@ FILTERED: dict[tuple[ModuleType, str], str] = {
 # Statements that count every version on purpose, and why.
 ALL_VERSIONS: dict[tuple[ModuleType, str], str] = {
     (admin, "_KEPT"): "the admin numbers show how many older versions and Trash families are kept",
+    # Changed on purpose (#239, 27 Oct 2026): #386's numbers per member.
+    (admin, "_MEMBERS"): "a member's uploads in a window: each file they uploaded, a version or later"
+    " put in Trash included",
     # Changed on purpose (PRD 1, 0041).
     (listing, "_DASHBOARD_TILES"): "the dashboard counts current families, and new versions as versions",
 }

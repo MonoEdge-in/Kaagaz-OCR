@@ -4,6 +4,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from datetime import datetime, timedelta
 
 import pytest
 from sqlalchemy import text
@@ -27,6 +28,27 @@ def _admit(
         if wait == 0:
             return
         time.sleep(wait)
+
+
+def _clock(db: Database) -> datetime:
+    with db.engine.begin() as conn:
+        found: datetime = conn.execute(text("SELECT clock_timestamp()")).scalar_one()
+    return found
+
+
+def _next_at(db: Database, sql: str, **params: str) -> datetime:
+    with db.engine.begin() as conn:
+        found: datetime = conn.execute(text(sql), params).scalar_one()
+    return found
+
+
+def _spaced(next_at: datetime, before: datetime, after: datetime, seconds: float) -> bool:
+    """``next_at`` is ``seconds`` after a reservation made between ``before`` and ``after``
+    (the database's clock, as the slot function's). Fixed (#239, 27 Oct 2026): reading
+    next_at - clock_timestamp() afterwards counted the test's own delay, so a slow machine
+    failed it."""
+    gap = timedelta(seconds=seconds)
+    return before + gap <= next_at <= after + gap
 
 
 def _init_process_database(url: str) -> None:
@@ -111,12 +133,10 @@ def test_a_user_cap_does_not_block_another_user_in_the_same_organisation(db: Dat
 
 
 def test_platform_rpm_controls_shared_spacing(db: Database) -> None:
+    before = _clock(db)
     _admit(db, platform_rpm=60)
-    with db.engine.begin() as conn:
-        remaining = conn.execute(
-            text("SELECT extract(epoch FROM next_at - clock_timestamp()) FROM model_rate_scheduler WHERE id")
-        ).scalar_one()
-    assert 0.95 <= remaining <= 1.0
+    after = _clock(db)
+    assert _spaced(_next_at(db, "SELECT next_at FROM model_rate_scheduler WHERE id"), before, after, 1.0)
 
 
 def test_dynamic_rate_change_is_used_by_the_next_reservation(db: Database) -> None:
@@ -134,16 +154,11 @@ def test_dynamic_rate_change_is_used_by_the_next_reservation(db: Database) -> No
         conn.execute(
             text("INSERT INTO model_rate_overrides (customer_id, rpm) VALUES (:c, 100)"), {"c": customer}
         )
+    before = _clock(db)
     _admit(db, customer, user)
-    with db.engine.begin() as conn:
-        interval = conn.execute(
-            text(
-                "SELECT extract(epoch FROM next_at - clock_timestamp()) FROM model_rate_state "
-                "WHERE customer_id = :c AND scope = 'organisation'"
-            ),
-            {"c": customer},
-        ).scalar_one()
-    assert 0.55 <= interval <= 0.65
+    after = _clock(db)
+    org = "SELECT next_at FROM model_rate_state WHERE customer_id = :c AND scope = 'organisation'"
+    assert _spaced(_next_at(db, org, c=customer), before, after, 0.6)  # 100 a minute
 
 
 def test_user_override_is_limited_by_organisation_override(db: Database) -> None:
@@ -158,21 +173,10 @@ def test_user_override_is_limited_by_organisation_override(db: Database) -> None
             {"c": customer, "u": user},
         )
 
+    before = _clock(db)
     _admit(db, customer, user)
-    with db.engine.begin() as conn:
-        org_next = conn.execute(
-            text(
-                "SELECT extract(epoch FROM next_at - clock_timestamp()) FROM model_rate_state "
-                "WHERE customer_id = :c AND scope = 'organisation'"
-            ),
-            {"c": customer},
-        ).scalar_one()
-        user_next = conn.execute(
-            text(
-                "SELECT extract(epoch FROM next_at - clock_timestamp()) FROM model_rate_state "
-                "WHERE customer_id = :c AND user_id = :u AND scope = 'user'"
-            ),
-            {"c": customer, "u": user},
-        ).scalar_one()
-    assert 0.08 <= org_next <= 0.12
-    assert 0.48 <= user_next <= 0.52
+    after = _clock(db)
+    org = "SELECT next_at FROM model_rate_state WHERE customer_id = :c AND scope = 'organisation'"
+    mine = "SELECT next_at FROM model_rate_state WHERE customer_id = :c AND user_id = :u AND scope = 'user'"
+    assert _spaced(_next_at(db, org, c=customer), before, after, 0.1)  # 600 a minute
+    assert _spaced(_next_at(db, mine, c=customer, u=user), before, after, 0.5)  # 120 a minute
