@@ -57,16 +57,8 @@ describe("keyboard focus after an action", () => {
     );
   });
 
-  it("keeps focus on the value after Verify, or on Values found after Verify all", () => {
-    const view = read(VIEW);
-    expect(view).toContain("id={valueDomId(value.id)}");
-    expect(view).toContain('<h2 id="values-heading" className={styles.valuesHeading} tabIndex={-1}>');
-    expect(view).toMatch(/document\.getElementById\(valueDomId\(valueId \?\? ""\)\) \?\? document\.getElementById\("values-heading"\)/);
-    const one = view.slice(view.indexOf("const verifyValue = async"), view.indexOf("const verifyAllValues = async"));
-    expect(one).toContain("afterVerify(value.id);");
-    const all = view.slice(view.indexOf("const verifyAllValues = async"), view.indexOf("const retryValues ="));
-    expect(all).toContain("afterVerify(null);");
-  });
+  // Changed on purpose (Vrushit UAT 2, 27 Oct 2026, #416): Verify and Verify all are gone from
+  // the document page with Values found, and their focus rule with them.
 });
 
 describe("More details", () => {

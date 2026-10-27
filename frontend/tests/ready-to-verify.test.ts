@@ -7,7 +7,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { TO_VERIFY_TIP, kpiTiles } from "@/components/admin/logic";
-import { canReview, verifiedText, verifyEach } from "@/components/review/review";
+import { canReview } from "@/components/review/review";
 import { TIP_DELAY, hidesTip, placeTip } from "@/components/ui/Tip";
 import { LabelBadge } from "@/components/viewer/LabelBadge";
 import { confidenceTip, labelText } from "@/components/viewer/labels";
@@ -32,48 +32,20 @@ describe("Ready to verify", () => {
     expect(labelText("verified")).toBe("Verified");
   });
 
-  it("offers single and bulk verification for pending values on any ready, non-Trash version", () => {
-    const view = read("app/(app)/documents/[id]/DocumentView.tsx");
-    expect(view).not.toContain('detail.versions.some((version) => version.id === detail.id && version.is_current)');
-    expect(view).toContain('detail.values.filter((value) => value.label === "needs_review")');
-    expect(view).toContain('value.label === "needs_review" && (');
-    // Only reviewers and admins, on a ready document out of Trash; a member sees no control.
-    expect(view).toMatch(
-      /const canVerifyValues =\s+canReview\(me\.user\.role\) &&\s+detail\.status === "ready" &&\s+detail\.deleted_at === null;/,
-    );
+  // Changed on purpose (Vrushit UAT 2, 27 Oct 2026, #416): Values found, and its Verify and
+  // Verify all, are gone from the document page. A value is verified in Review: one at a time
+  // (POST /review/{id}) or all the queue shows (POST /review/verify-all), for one document too.
+  it("is verified in Review, by a reviewer or an admin, one value or all, for one document too", () => {
     expect([canReview("member"), canReview("reviewer"), canReview("admin")]).toEqual([false, true, true]);
-    expect(view).toContain('await resolveReview(value.id, "typed", false, value.value);');
-    expect(view).toContain('(value) => resolveReview(value.id, "typed", false, value.value),');
-    expect(view).toContain('`Verify all ${pendingValues.length}`');
-    // Changed on purpose (issue #224): Verify all goes on past a failure, says how many were
-    // saved, and offers Try again for the values still Ready to verify that were not.
-    expect(view).toContain("`Verifying ${verifyProgress.done} of ${verifyProgress.total}…`");
-    expect(view).toContain("text: verifiedText(total, failed.length),");
-    expect(view).toContain(
-      "const retryValues = pendingValues.filter((value) => verifyNotice?.retry?.includes(value.id));",
+    expect(read("app/(app)/documents/[id]/DocumentView.tsx")).not.toMatch(/resolveReview|Verify all|verifyAllValues/);
+    expect(read("components/review/ReviewCard.tsx")).toContain(
+      "const after = await resolveReview(value.id, check.choice, remember, check.value);",
     );
-    expect(view).toContain("onClick={() => void verifyAllValues(retryValues)}");
-    expect(view).toContain("{canVerifyValues && retryValues.length > 0 && (");
+    const queue = read("components/review/ReviewQueue.tsx");
+    expect(queue).toContain("await verifyAllReview(verifyAllFilters(documentId, reason));");
+    expect(queue).toContain('const documentId = searchParams.get("document_id") || undefined;');
   });
 
-  it("verifies each value in turn, goes on past a failure and returns the ones not saved", async () => {
-    const sent: string[] = [];
-    const progress: number[] = [];
-    const failed = await verifyEach(
-      ["a", "b", "c", "d", "e", "f"],
-      async (id) => {
-        sent.push(id);
-        if (id === "b" || id === "e") throw new Error("not saved");
-      },
-      (done) => progress.push(done),
-    );
-    expect(sent).toEqual(["a", "b", "c", "d", "e", "f"]);
-    expect(progress).toEqual([1, 2, 3, 4, 5, 6]);
-    expect(failed).toEqual(["b", "e"]);
-    expect(verifiedText(6, failed.length)).toBe("Verified 4 of 6. 2 could not be saved.");
-    expect(verifiedText(6, 0)).toBe("Verified 6 of 6.");
-    expect(await verifyEach([], () => Promise.reject(new Error("never")), () => undefined)).toEqual([]);
-  });
 
   it("is never shown to people as Needs review (internal ids like needs_review stay)", () => {
     const files = [...sources("components"), ...sources("app"), ...sources("lib")];
@@ -162,10 +134,8 @@ describe("the confidence tooltip", () => {
     expect(read("components/ui/Tip.tsx")).toContain('className="tip tabular"');
   });
 
-  it("is on every value's badge that has a score: the values table and the review card", () => {
-    expect(read("app/(app)/documents/[id]/DocumentView.tsx")).toContain(
-      "<LabelBadge label={value.label} confidence={value.confidence ?? null} />",
-    );
+  // Changed on purpose (Vrushit UAT 2, 27 Oct 2026, #416): the values table is gone.
+  it("is on every value's badge that has a score: the review card", () => {
     expect(read("components/review/ReviewCard.tsx")).toContain("text={confidenceTip(value.confidence ?? null)}");
   });
 });

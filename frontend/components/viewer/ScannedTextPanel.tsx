@@ -9,8 +9,11 @@
 // flagged for review carries its band (FlagText.tsx, scan review UX rules, section 2).
 // Vrushit UAT (25 Oct 2026): a main reader's line with a flagged word offers Fix text (the
 // review's Edit), and shows the words people fixed (withFixes).
+// Vrushit UAT 2 (27 Oct 2026, #417): Fix text, or a press on such a line, opens a box under the
+// line to type the word in its place (fixBox says what to type); Save sends it as the review's
+// Edit, Cancel or Esc closes it, and the focus goes back to the line.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { FlagText } from "@/components/review/FlagText";
 import { ApiError, getPageReadings } from "@/lib/api";
 import type { ExtractedValue, PageReadings, PageSummary, Region, WordFlag } from "@/lib/types";
@@ -22,6 +25,9 @@ import {
   FIRST_LINES,
   confidenceText,
   emptyState,
+  FIX_MEMBER_NOTE,
+  FIX_NOTE,
+  fixBox,
   lineHolding,
   lineMarked,
   MAIN_READER,
@@ -51,20 +57,25 @@ export interface ScannedTextPanelProps {
   headingRef?: (heading: HTMLHeadingElement | null) => void; // to move focus to the heading
   flags?: WordFlag[]; // the page's words still flagged for review: their lines carry the band
   // Vrushit UAT (25 Oct 2026): "how to replace the missing text?" A main reader's line holding a
-  // flagged word ([?] too) offers Fix text, which opens that word in review to edit (a reviewer).
-  onFix?: (flag: WordFlag) => void;
+  // flagged word ([?] too) offers Fix text (a reviewer); #417: the word typed is saved through this.
+  onFix?: (flag: WordFlag, text: string) => Promise<{ ok: boolean; message: string }>;
+  member?: boolean; // a member: told that only a reviewer or an admin can fix a word (FIX_MEMBER_NOTE)
   fixed?: WordFlag[]; // the page's words a person fixed: shown in their lines as fixed (withFixes)
 }
 
 type Loaded = { key: string; readings: PageReadings } | { key: string; httpStatus: number | null };
 
 export function ScannedTextPanel(props: ScannedTextPanelProps) {
-  const { documentId, page, voted = [], active, cited, onShow, onClose, onAddMeaning, headingRef, flags = [], onFix, fixed = [] } =
+  const { documentId, page, voted = [], active, cited, onShow, onClose, onAddMeaning, headingRef, flags = [], onFix, member = false, fixed = [] } =
     props;
   const [attempt, setAttempt] = useState(0);
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [role, setRole] = useState<"first" | "second">("first");
   const [allFor, setAllFor] = useState<string | null>(null);
+  // The fix box open (#417): the word's key, the text typed, saving, and what went wrong.
+  const [fixing, setFixing] = useState<{ key: string; text: string; busy: boolean; error: string | null } | null>(null);
+  const fixInput = useRef<HTMLInputElement>(null);
+  const fixId = useId();
   const key = `${documentId}:${page.page_no}:${attempt}`;
 
   useEffect(() => {
@@ -107,6 +118,24 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
     const calm = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     rows.current[holding]?.scrollIntoView({ block: "nearest", behavior: calm ? "auto" : "smooth" });
   }, [holding, active]);
+  const fixKey = fixing?.key ?? null;
+  useEffect(() => fixInput.current?.focus(), [fixKey]); // the box opened: its field takes the keys
+
+  const openFix = (flag: WordFlag) =>
+    setFixing((now) => (now?.key === flag.word_key ? now : { key: flag.word_key, text: fixBox(flag).draft, busy: false, error: null }));
+  const closeFix = (index: number) => {
+    setFixing(null);
+    rows.current[index]?.querySelector("button")?.focus();
+  };
+  const saveFix = async (flag: WordFlag, index: number) => {
+    if (!onFix || !fixing || fixing.busy) return;
+    const typed = fixing.text.trim();
+    if (typed === "") return setFixing({ ...fixing, error: "Type the word you see on the page." });
+    setFixing({ ...fixing, busy: true, error: null });
+    const done = await onFix(flag, typed);
+    if (done.ok) closeFix(index);
+    else setFixing((now) => now && { ...now, busy: false, error: done.message });
+  };
 
   return (
     <section
@@ -170,6 +199,9 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
       ) : (
         <>
           {lines.some((line) => notSure(line.confidence)) && <p className={styles.muted}>{CONFIDENCE_NOTE}</p>}
+          {reader?.role === "first" && flags.length > 0 && (onFix || member) && (
+            <p className={styles.muted}>{onFix ? FIX_NOTE : FIX_MEMBER_NOTE}</p>
+          )}
           {truncated && <p className={styles.note}>{truncated}</p>}
           <div
             className={styles.linesBox}
@@ -184,6 +216,8 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
                 const flag = first ? flags.find((each) => sameRegion(each.region, line.region)) : undefined;
                 const toFix = first && onFix ? flags.find((each) => lineMarked(each, line.region)) : undefined;
                 const text = visibleText(first ? withFixes(line, fixed) : line.text);
+                const box = toFix && fixing?.key === toFix.word_key ? fixing : null;
+                const boxId = `${fixId}-${index}`;
                 return (
                   <li
                     key={index}
@@ -198,7 +232,10 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
                         type="button"
                         className={styles.lineButton}
                         aria-pressed={active !== null && sameRegion(active, line.region)}
-                        onClick={() => onShow({ name: `line ${index + 1}`, region: line.region, label: null })}
+                        onClick={() => {
+                          onShow({ name: `line ${index + 1}`, region: line.region, label: null });
+                          if (toFix) openFix(toFix);
+                        }}
                       >
                         {flag ? (
                           <FlagText flag={flag} text={text} />
@@ -214,8 +251,14 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
                           </span>
                         )}
                       </button>
-                      {toFix && onFix && (
-                        <button type="button" className={`btn btn-quiet ${styles.addMeaning}`} onClick={() => onFix(toFix)}>
+                      {toFix && (
+                        <button
+                          type="button"
+                          className={`btn btn-quiet ${styles.addMeaning}`}
+                          aria-expanded={box !== null}
+                          aria-controls={box ? boxId : undefined}
+                          onClick={() => (box ? fixInput.current?.focus() : openFix(toFix))}
+                        >
                           Fix text<span className="visually-hidden">{` in line ${index + 1}`}</span>
                         </button>
                       )}
@@ -229,6 +272,50 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
                         </button>
                       )}
                     </div>
+                    {toFix && box && (
+                      <form
+                        id={boxId}
+                        className={styles.fix}
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          void saveFix(toFix, index);
+                        }}
+                      >
+                        <label className={styles.fixLabel} htmlFor={`${boxId}-text`}>
+                          {fixBox(toFix).hint}
+                        </label>
+                        <div className={styles.fixRow}>
+                          <input
+                            ref={fixInput}
+                            id={`${boxId}-text`}
+                            className={`input ${styles.fixInput}`}
+                            type="text"
+                            dir="auto"
+                            autoComplete="off"
+                            spellCheck={false}
+                            value={box.text}
+                            onChange={(event) => setFixing({ ...box, text: event.target.value, error: null })}
+                            onKeyDown={(event) => {
+                              if (event.key !== "Escape") return;
+                              event.preventDefault();
+                              event.stopPropagation(); // Esc here closes the box, not the panel
+                              closeFix(index);
+                            }}
+                          />
+                          <button type="button" className="btn" onClick={() => closeFix(index)}>
+                            Cancel
+                          </button>
+                          <button type="submit" className="btn btn-primary" disabled={box.busy} aria-busy={box.busy || undefined}>
+                            Save
+                          </button>
+                        </div>
+                        {box.error && (
+                          <p className="error-text" role="alert">
+                            {box.error}
+                          </p>
+                        )}
+                      </form>
+                    )}
                     {reader?.role === "first" &&
                       voted.map((value) =>
                         value.votes && sameRegion(value.region, line.region) ? (

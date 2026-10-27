@@ -95,14 +95,6 @@ export function beingRead(status: DocumentStatus): boolean {
   return status === "received" || status === "clean";
 }
 
-/** Over the values while the document is read: they are not final. */
-export function valuesNote(status: DocumentStatus, count: number): string | null {
-  if (!beingRead(status)) return null;
-  return count === 0
-    ? "Values show here once the document has been read."
-    : "Being read again. These values are from the last reading and may change.";
-}
-
 /** Said once when reading ends while the viewer is open; again: after Read again. */
 export function settledText(
   document: { status: DocumentStatus; status_message: string; values: readonly { label: Label }[] },

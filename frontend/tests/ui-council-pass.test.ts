@@ -127,13 +127,8 @@ describe("the UI council's responsiveness fixes", () => {
 });
 
 describe("the document page, 24 Oct 2026 (later)", () => {
-  it("keeps Values found compact and scrolling, the AI's note said once", () => {
-    const view = read("app/(app)/documents/[id]/DocumentView.tsx");
-    expect(view).toContain("<p className={styles.valuesNote}>{AI_FOUND_NOTE}</p>");
-    expect(view).toContain('{(value.label_reason !== "model_chosen" || value.votes) && (');
-    expect(view).toMatch(/<span className=\{styles\.valuePage\}>\s*Page \{value\.region\.page\}/);
-    expect(css("app/(app)/documents/[id]/DocumentView.module.css")).toMatch(/\.valuesWrap \{[^}]*max-height: 34rem;[^}]*overflow-y: auto;/);
-  });
+  // Changed on purpose (Vrushit UAT 2, 27 Oct 2026, #416): Values found, with its AI note and
+  // its scrolling list, is gone from the document page (uat-2-document-page.test.ts).
 
   it("gives the PDF viewer's bar the product's theme and pill controls", () => {
     expect(css("app/globals.css")).toMatch(/--viewer-bar: var\(--k-surface\);\s*--viewer-bar-ink: var\(--k-ink\);\s*--viewer-bar-field: var\(--k-sunken\);/);
