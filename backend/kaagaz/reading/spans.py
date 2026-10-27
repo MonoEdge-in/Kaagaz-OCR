@@ -25,6 +25,12 @@ cell, its table, row and column from 0 (PRD 2 P4). All of them are optional.
 PROVISIONAL: P4 names ``table_id``, ``row`` and ``col``; ``header`` is added
 because the OCR contract (P2) already sends it and table pieces need it.
 
+Layout (#383, #382): a span may also say which block of its page it is in
+(``block``, from 0, from the main reader: one title, paragraph or column of text,
+table, stamp or seal, signature, or note at the side or in the margin), and a table
+cell how many columns it covers (``col_span``: a merged header; None is 1). Both
+optional, checked in the socket, and written to JSON only when set.
+
 Word marks in the stored output (PRD 5 F3): a span read by OCR may also say how
 well it was read (``QUALITIES``: ok, unsure or illegible) and where its box came
 from (``BOX_SOURCES``: "found" when it is the union of the boxes RapidOCR's text
@@ -48,6 +54,7 @@ BLOCK_KINDS = frozenset(
         "footer",
         "stamp",
         "signature",
+        "note",
         "image",
         "formula",
         "other",
@@ -116,6 +123,8 @@ class Span:
     header: bool | None = None
     quality: str | None = None  # one of QUALITIES, only on a span read by OCR (PRD 5 F3)
     box_source: str | None = None  # one of BOX_SOURCES, only on a span read by OCR (PRD 5 G5)
+    block: int | None = None  # its block on the page, from 0 (#383)
+    col_span: int | None = None  # a table cell's columns, at least 1; None is 1 (#382)
 
 
 @dataclass(frozen=True, slots=True)

@@ -8,7 +8,11 @@ and counted.
 **The reader text** (``reader_text``). The first reader's spans in reading
 order (a stable sort by page keeps each page's own order), joined by new
 lines. Cells of one table row (a sheet row, or an OCR table row) are joined by
-" | " instead. Running headers and footers are left out as pieces leave them
+" | " instead. An OCR table row is a Markdown-like row with its columns kept
+(#382): its cells in column order, an empty cell for each column it has no cell
+in (a missing quantity, the columns a merged header covers), at most
+``MAX_EMPTY_CELLS`` in a row, so the model sees which number is in which column
+under the table's header rows. Running headers and footers are left out as pieces leave them
 out (``chunking.lines.running_spans`` with ``keep_first``), so a quote runs
 across a page break past "Page 15 of 20"; the first copy of a repeated
 letterhead and a one-off header block stay, so a value printed only there can
@@ -83,6 +87,7 @@ from bisect import bisect_left, bisect_right
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, replace
 from functools import lru_cache
+from itertools import groupby
 
 from kaagaz.chunking.lines import running_spans
 from kaagaz.chunking.script import fold_digits, has_devanagari_letters
@@ -93,6 +98,8 @@ LABEL_WINDOW = 300  # D2: a value_quote within 300 characters after its label_qu
 MAX_QUOTE_CHARS = 300  # security A7: longer quotes, and longer reader text at a match, are dropped
 MAX_CHECKS = 512  # council fix 8: candidate spots one item's search checks, over both passes
 MAX_LABEL_MATCHES = 64  # council fix 8: label matches one labelled item tries
+MAX_EMPTY_CELLS = 30  # #382: empty cells kept in a row of an OCR table, a bound on the joins
+_CELL_JOIN = " | "
 
 _DEVANAGARI_FIRST, _DEVANAGARI_LAST = chr(0x0900), chr(0x097F)
 
@@ -209,16 +216,21 @@ def reader_text(spans: Sequence[Span]) -> ReaderText:
     """The reader text of ``spans``, normalised with its map back. O(n) (module docstring)."""
     running = running_spans(spans, keep_first=True)
     kept = (span for index, span in enumerate(spans) if index not in running)
-    ordered = tuple(sorted(kept, key=lambda span: span.location.page))
+    ordered = _cells_in_column_order(sorted(kept, key=lambda span: span.location.page))
     builder = _Normaliser()
     parts: list[str] = []
     span_starts: list[int] = []
     offset = 0
     previous: tuple[object, ...] | None = None
+    after = 0  # #382: the column after the row's cell before, its col_span counted
     for i, span in enumerate(ordered):
         row = _row_key(span)
+        same = row is not None and row == previous
         if i:
-            join = " | " if row is not None and row == previous else "\n"
+            # #382: an OCR table cell's empty columns before it, in its row.
+            empty = 0 if span.table_id is None else (span.col or 0) - (after if same else 0)
+            cells = min(MAX_EMPTY_CELLS, max(0, empty)) + (1 if same else 0)
+            join = ("" if same else "\n") + _CELL_JOIN * cells
             builder.feed(join, offset)
             parts.append(join)
             offset += len(join)
@@ -227,6 +239,7 @@ def reader_text(spans: Sequence[Span]) -> ReaderText:
         parts.append(span.text)
         offset += len(span.text)
         previous = row
+        after = (span.col or 0) + (span.col_span or 1)
     norm = "".join(builder.chars)
     loose, loose_at = _loose_view(norm)
     return ReaderText(
@@ -496,6 +509,16 @@ def _location(matched: list[Span]) -> Location:
         max(box.x1 for box in boxes),
         max(box.y1 for box in boxes),
     )
+
+
+def _cells_in_column_order(spans: list[Span]) -> tuple[Span, ...]:
+    """``spans`` with the cells of each OCR table row given one after another put in column
+    order (#382), everything else where it was. O(S log S)."""
+    ordered: list[Span] = []
+    for key, run in groupby(spans, key=_row_key):
+        cells = list(run)
+        ordered += sorted(cells, key=lambda span: span.col or 0) if key and key[0] == "table" else cells
+    return tuple(ordered)
 
 
 def _row_key(span: Span) -> tuple[object, ...] | None:

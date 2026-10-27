@@ -36,6 +36,7 @@ class SpanFieldsTest(unittest.TestCase):
                     "footer",
                     "stamp",
                     "signature",
+                    "note",  # Changed on purpose (#383): a note at the side or in the margin
                     "image",
                     "formula",
                     "other",
@@ -51,7 +52,17 @@ class SpanFieldsTest(unittest.TestCase):
         span = Span("Total 500", "Total 500", BOX, origin="ocr")
         self.assertEqual((span.quality, span.box_source), (None, None))
         names = [field.name for field in dataclasses.fields(Span)]
-        self.assertEqual(names[-2:], ["quality", "box_source"])  # after the PRD 2 fields
+        # After the PRD 2 fields; changed on purpose (#383, #382): the layout's two follow them.
+        self.assertEqual(names[-4:], ["quality", "box_source", "block", "col_span"])
+
+    def test_span_json_writes_the_block_and_col_span_only_when_set(self) -> None:
+        """#383, #382: like the word marks, so every output stored before still loads."""
+        cell = Span("Amount", "Amount", BOX, None, "table_cell", "ocr", "t1", 0, 2, True, block=1, col_span=2)
+        data = span_to_json(cell)
+        self.assertEqual((data["block"], data["col_span"]), (1, 2))
+        self.assertEqual(pipeline_store.span_from_json(data), cell)
+        plain = span_to_json(Span("Total 500", "Total 500", BOX, origin="ocr"))
+        self.assertEqual({"block", "col_span"} & plain.keys(), set())
 
     def test_the_new_fields_default_to_none(self) -> None:
         span = Span("Total 500", "Total 500", BOX)

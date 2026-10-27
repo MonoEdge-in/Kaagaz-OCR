@@ -196,7 +196,7 @@ _GSTIN_NAMES = frozenset({"seller_gstin", "buyer_gstin"})
 _OPTIONAL_LINE_FIELDS = ("hsn", "quantity", "unit", "rate")  # in column order
 _NOT_NEGATIVE = frozenset({"quantity", "rate"})
 _SPECIFIC_REASONS = frozenset({"ocr_script", "readers_disagree"})  # kept over model_chosen (council 3)
-_ROW_JOIN = " | "  # quotes.reader_text joins one row's cells with this
+_ROW_BREAK = "\n"  # quotes.reader_text joins rows with it; one row's cells (" | ", #382 empty cells) never
 _REQUIRED_LINE_FIELDS = ("description", "amount")
 _ROW_FIELDS = frozenset(STORED_FIELD.get(name, name) for name in INVOICE_FIELDS)
 
@@ -544,7 +544,7 @@ class _Merge:
         self.window_checks = Checks(MAX_WINDOW_CHECKS)
         # Council 2: each span's row, the spans joined by " | " around it. O(S).
         count = len(reader.spans)
-        joined = [k > 0 and _join_before(reader, k) == _ROW_JOIN for k in range(count)]
+        joined = [k > 0 and _ROW_BREAK not in _join_before(reader, k) for k in range(count)]
         self.row_first = list(range(count))
         for k in range(1, count):
             if joined[k]:
@@ -796,7 +796,8 @@ def _span_end(reader: ReaderText, k: int) -> int:
 
 
 def _join_before(reader: ReaderText, k: int) -> str:
-    """The reader text's join between span k - 1 and span k ("\\n", or " | " in a row)."""
+    """The reader text's join between span k - 1 and span k ("\\n", or " | " in a row, once
+    more for each empty cell between, #382)."""
     return reader.text[_span_end(reader, k - 1) : reader.span_starts[k]]
 
 

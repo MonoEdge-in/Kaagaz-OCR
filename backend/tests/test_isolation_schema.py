@@ -47,6 +47,9 @@ operator functions.
 
 Land facts (0049, #245): the company vocabulary ``value_keys``, read and added, only its
 spellings written again, never deleted by the app (a key goes with its value).
+
+Page layout (0056, #383, #382): a page's blocks and its tables' cells, deleted and inserted by
+the replacing save, never updated.
 """
 
 import re
@@ -136,6 +139,8 @@ FROM_0049 = {"value_keys": (True, True, False, False)}
 UPDATES_0049 = {"value_keys": {"latin", "sound"}}
 # PRD 6 F3 (0051): an admin's Remove on What Kaagaz learned is added, never changed or deleted.
 FROM_0051 = {"learning_removals": (True, True, False, False)}
+# Page layout (0056, #383, #382): blocks and table cells are deleted and inserted by the save.
+FROM_0056 = {"page_blocks": (True, True, False, True), "table_cells": (True, True, False, True)}
 UPDATES_0030 = {
     "word_changes": {"applied", "undone_at", "undone_by"},
     "ensemble_runs": {
@@ -450,6 +455,7 @@ def test_every_customer_table_has_row_level_security_and_the_customer_only_polic
         | set(FROM_0043)
         | set(FROM_0049)
         | set(FROM_0051)
+        | set(FROM_0056)
     )
 
     with db.system() as conn:
@@ -516,6 +522,7 @@ def test_every_customer_table_is_granted_to_the_app_role(db: Database) -> None:
         | FROM_0043
         | FROM_0049
         | FROM_0051
+        | FROM_0056
     ).items():
         assert granted[table] == expected, table
 
@@ -655,6 +662,7 @@ def test_every_foreign_key_between_customer_tables_matches_the_customer_on_both_
         | set(FROM_0038)
         | set(FROM_0041)  # Changed on purpose (PRD 1, 0041)
         | set(FROM_0049)
+        | set(FROM_0056)
         | {"pages", "model_usage", "documents"}  # documents.owner_id (0041)
     )
     for name, _table, _parent, columns, parent_columns in between:
