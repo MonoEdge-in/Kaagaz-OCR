@@ -92,6 +92,7 @@ import {
 } from "@/components/viewer/versions";
 import { LabelBadge } from "@/components/viewer/LabelBadge";
 import { PdfDocumentViewer } from "@/components/viewer/PdfDocumentViewer";
+import { ViewerBoundary } from "@/components/viewer/ViewerBoundary";
 import { fieldText, reasonText, voteText } from "@/components/viewer/labels";
 import { lowResolutionText, untilRead } from "@/components/viewer/panels";
 import type { Spot } from "@/components/viewer/panels";
@@ -702,26 +703,29 @@ export function DocumentView({
               and sheets keep PageViewer. */}
           {page && detail.detected_type === "pdf" ? (
             <div className={styles.pdfPane}>
-              <PdfDocumentViewer
-                key={detail.id}
-                document={detail}
-                pageNo={page.page_no}
-                onPageChange={changePage}
-                highlights={highlightsOf(selection)}
-                highlightNote={highlightNote}
-                download={download}
-                marks={words.markers}
-                activeMark={words.activeId}
-                readingMarks={readingMarks}
-                onMark={showMark}
-                hotMark={hotMark}
-                onHotMark={setHotMark}
-                flags={openFlags}
-                activeFlag={reviewing ? currentFlag : null}
-                onFlag={pressFlag}
-                wordBoxes={wordBoxes}
-                wordHits={wordHits}
-              />
+              {/* #246 A8: a throw in the viewer shows in this pane only, not the whole screen. */}
+              <ViewerBoundary key={detail.id} download={download}>
+                <PdfDocumentViewer
+                  key={detail.id}
+                  document={detail}
+                  pageNo={page.page_no}
+                  onPageChange={changePage}
+                  highlights={highlightsOf(selection)}
+                  highlightNote={highlightNote}
+                  download={download}
+                  marks={words.markers}
+                  activeMark={words.activeId}
+                  readingMarks={readingMarks}
+                  onMark={showMark}
+                  hotMark={hotMark}
+                  onHotMark={setHotMark}
+                  flags={openFlags}
+                  activeFlag={reviewing ? currentFlag : null}
+                  onFlag={pressFlag}
+                  wordBoxes={wordBoxes}
+                  wordHits={wordHits}
+                />
+              </ViewerBoundary>
             </div>
           ) : page ? (
             <PageViewer
