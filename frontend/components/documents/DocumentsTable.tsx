@@ -676,6 +676,8 @@ const DocumentRow = memo(function DocumentRow({
   const [confirming, setConfirming] = useState<Confirming>(null);
   const [editing, setEditing] = useState<EditAction | null>(null);
   const [busy, setBusy] = useState(false);
+  // What the row says while Restore or Retry runs (Trash and Delete forever say it in their dialog).
+  const [working, setWorking] = useState(BUSY_WORDS.restore);
   const [error, setError] = useState<string | null>(null);
   const [password, setPassword] = useState("");
   const { refresh } = useSession();
@@ -703,6 +705,7 @@ const DocumentRow = memo(function DocumentRow({
       return;
     }
     if (action === "restore") {
+      setWorking(BUSY_WORDS.restore);
       void act(
         restoreDocument,
         restoredMessage(document.display_name),
@@ -777,6 +780,7 @@ const DocumentRow = memo(function DocumentRow({
   // Issue 407: the status cell's Retry is Read again (POST .../reprocess); the row stays and
   // the list is asked for again.
   async function retry() {
+    setWorking(BUSY_WORDS.read);
     setBusy(true);
     setError(null);
     try {
@@ -964,7 +968,7 @@ const DocumentRow = memo(function DocumentRow({
       <td role="cell" className={styles.actionsCell}>
         {confirming === null && busy ? (
           <p className={`muted ${styles.small}`} role="status">
-            <span className="spinner" aria-hidden="true" /> Restoring…
+            <span className="spinner" aria-hidden="true" /> {working}
           </p>
         ) : (
           <RowMenu

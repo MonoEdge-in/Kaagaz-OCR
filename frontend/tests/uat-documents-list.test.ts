@@ -56,7 +56,13 @@ describe("408: a row's Move to Trash asks in a dialog, not over the row", () => 
   });
 
   it("keeps the menu button in its row while it asks, so the row does not change under it", () => {
-    expect(table).toMatch(/\{confirming === null && busy \? \([\s\S]*?Restoring…[\s\S]*?\) : \(\s*<RowMenu/);
+    expect(table).toMatch(/\{confirming === null && busy \? \([\s\S]*?\{working\}[\s\S]*?\) : \(\s*<RowMenu/);
+  });
+
+  it("says Starting… while a row's Retry runs, and Restoring… only for Restore (#407)", () => {
+    expect(table).toMatch(/async function retry\(\) \{\s*setWorking\(BUSY_WORDS\.read\);/);
+    expect(table).toMatch(/action === "restore"\) \{\s*setWorking\(BUSY_WORDS\.restore\);/);
+    expect(table).not.toMatch(/\/> Restoring…/);
   });
 
   it("no longer draws a panel placed over the row's columns", () => {

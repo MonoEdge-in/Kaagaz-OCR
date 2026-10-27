@@ -979,9 +979,11 @@ class PgDocuments:
         next one is written (issue 407): a job from before a read again, its tries counted
         from before the reset, is still delivered, and its numbers must not take the count
         over, or its last delivery (``mark_exhausted``) would fail the new reading early. A
-        try whose write was lost (the database was down) leaves the count behind; the job's
-        last delivery then fails nothing, and the stuck sweep counts on from it
-        (``requeue_stuck``). One indexed statement."""
+        try whose write was lost (the database was down, a blip at admission, or a worker that
+        stopped between receiving the job and this write) leaves the count behind; the job's
+        later tries are then not written and its last delivery fails nothing, and the stuck
+        sweep counts on from it (``requeue_stuck``), so it is settled later but always settled.
+        One indexed statement."""
         with unavailable(), self._db.customer(customer_id) as conn:
             conn.execute(
                 text(
