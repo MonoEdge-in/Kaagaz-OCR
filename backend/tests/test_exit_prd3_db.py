@@ -167,9 +167,11 @@ def test_step_4_a_folder_scope_cites_only_that_folder_and_its_total_too(world: W
     total = world.ask("What is the total amount?", scope=scope)["answer"]["answer"]
     assert total["route"] == "fixed_query"
     # Changed on purpose (PRD 6 C): the total with its working, one line a record.
+    # Fixed (#239, 27 Oct 2026): the record is named by its own file name (ExitFile.name), now
+    # that the exit files are uploaded under it (test_exit_files_db._read).
     assert [s["text"] for s in total["sentences"]] == [
         "The total amount was 11,800, from 1 record.",
-        "document: 11,800.00.",
+        "textile-invoice.pdf: 11,800.00.",
     ]
 
 

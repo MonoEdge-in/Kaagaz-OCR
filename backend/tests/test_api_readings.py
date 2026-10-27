@@ -104,7 +104,9 @@ def test_only_the_asked_page_comes_back_as_read_in_stored_order(db: Database) ->
     ("case", "page_no", "expected"),
     [
         ("own", 1, 200),
-        ("in_trash", 1, 200),  # PROVISIONAL, as the image
+        # Changed on purpose (#239, 27 Oct 2026): a family in Trash opens, but its file, page images
+        # and readings are 409 in_trash (File management T1, 65b9067).
+        ("in_trash", 1, 409),
         ("older_version", 1, 200),  # PROVISIONAL, as the image
         ("rejected", 1, 404),
         ("own", 0, 404),
@@ -136,6 +138,9 @@ def test_the_same_answer_as_the_page_image(db: Database, case: str, page_no: int
     assert (image.status_code, readings.status_code) == (expected, expected)
     if expected == 404:
         assert readings.json()["error"]["code"] == "not_found"
+        assert "Invoice" not in readings.text
+    elif expected == 409:
+        assert readings.json()["error"]["code"] == "in_trash"
         assert "Invoice" not in readings.text
     else:
         assert readings.json()["readers"][0]["lines"][0]["text"] == "Invoice"

@@ -90,9 +90,9 @@ class DraftModel:
         return {"status": "answered" if found else "not_found", "sentences": sentences}
 
 
-def ask(db: Database, customer: str, model: DraftModel) -> dict[str, Any]:
+def ask(db: Database, customer: str, model: DraftModel, **settings_given: Any) -> dict[str, Any]:
     # PRD 3's search: no whole documents or aspects (PRD 5 CX5, CX6).
-    settings = make_settings(answer_whole_doc_tokens=0, query_aspects_max=0)
+    settings = make_settings(answer_whole_doc_tokens=0, query_aspects_max=0, **settings_given)
     service = AnswerService(db=db, model=model, settings=settings, clock=lambda: NOW)
     return service.answer(customer, "What is the grand total of INV-1042?").to_json()
 
@@ -180,7 +180,9 @@ def test_neighbours_that_do_not_fit_the_model_window_are_dropped_and_every_hit_k
     add(db, customer, ["x " * 20000, TOTAL, terms])  # the first neighbour alone overfills the window
     model = DraftModel("Grand Total")
 
-    assert ask(db, customer, model)["label"] == "verified"
+    # Changed on purpose (#239, 27 Oct 2026): MODEL_CONTEXT_TOKENS (PRD 5, 094ad8f) is 200,000 in
+    # the tests' settings; this test keeps the 8,192 window it was written for.
+    assert ask(db, customer, model, model_context_tokens=8_192)["label"] == "verified"
     assert blocks(model.prompts[0]) == {1: (False, TOTAL)}
 
 

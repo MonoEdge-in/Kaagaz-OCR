@@ -50,7 +50,8 @@ def test_0041_up_down_up(fresh: tuple[str, Database]) -> None:
     migrate(url, "0040")
     at_0040 = m0002._schema(database)
     migrate(url, "head")
-    assert _current(url) == _head() == "0042"  # Changed on purpose: 0042 adds the council's indexes
+    # Changed on purpose (#239, 27 Oct 2026): 0042 to 0056 came after; down from head passes them all.
+    assert _current(url) == _head()
     at_head = m0002._schema(database)
     assert "version_suggestions" in m0002._names(at_head, "relations")
     m0002._downgrade(url, "0040")

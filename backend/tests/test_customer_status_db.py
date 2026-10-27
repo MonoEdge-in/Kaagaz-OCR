@@ -137,7 +137,8 @@ def test_0014_up_down_up(fresh: tuple[str, Database]) -> None:
         "delete_after": ("timestamp with time zone", False, None),
     }
     assert all(column[3] for column in columns.values())  # each commented (0007's rule)
-    assert _app_may_update(database) == {"max_upload_mb"}
+    # Changed on purpose (#239, 27 Oct 2026): 0025 (auto-filing) lets the app update autofile_on.
+    assert _app_may_update(database) == {"max_upload_mb", "autofile_on"}
 
     m0002._downgrade(url, "0013")
     assert m0002._schema(database) == at_0013

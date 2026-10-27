@@ -6,6 +6,7 @@ are checked before it is reached. The second half (marked ``db``) signs up for r
 """
 
 import base64
+import uuid
 from collections.abc import Iterator
 from typing import Any
 
@@ -155,8 +156,10 @@ def _enrolled(api: Api, client: TestClient, reply: httpx.Response) -> tuple[dict
 def test_sign_up_makes_the_organisation_and_its_admin_who_sets_up_two_step(db: Database) -> None:
     api = Api(db)
     client = api.client()
+    # Fixed (#239, 27 Oct 2026): an e-mail of its own, so a database used before cannot have it.
+    token = uuid.uuid4().hex[:12]
 
-    reply = client.post(URL, json=_body("  Owner.Signup@Example.TEST "), headers=CSRF)
+    reply = client.post(URL, json=_body(f"  Owner.Signup.{token}@Example.TEST "), headers=CSRF)
 
     assert reply.status_code == 201, reply.text
     assert set(reply.json()) == {"enrol_token", "secret", "otpauth_uri"}
@@ -165,7 +168,7 @@ def test_sign_up_makes_the_organisation_and_its_admin_who_sets_up_two_step(db: D
     me, secret = _enrolled(api, client, reply)
     customer_id, user_id = me["customer"]["id"], me["user"]["id"]
     assert me["customer"]["name"] == "Sharma Traders"
-    assert me["user"]["email"] == "owner.signup@example.test"
+    assert me["user"]["email"] == f"owner.signup.{token}@example.test"
     assert me["user"]["display_name"] == "Asha Sharma"
     assert me["user"]["role"] == "admin"
     assert me["user"]["must_change_password"] is False  # their own password
@@ -180,7 +183,7 @@ def test_sign_up_makes_the_organisation_and_its_admin_who_sets_up_two_step(db: D
     assert (rows[0][0], str(rows[0][1]), rows[0][2]) == ("org.self_signup", user_id, user_id)
     # The password they chose and the next code sign them in again.
     api.clock.advance(totp.STEP_SECONDS)
-    again = api.admin_login(api.client(), "owner.signup@example.test", code=api.code(secret))
+    again = api.admin_login(api.client(), f"owner.signup.{token}@example.test", code=api.code(secret))
     assert again.status_code == 200, again.text
 
 
@@ -208,8 +211,10 @@ def test_the_new_admin_sees_only_their_own_organisation(db: Database) -> None:
     other_doc = api.add_document(other_id, name="other-invoice.pdf")
     api.add_user(other_id, "member")
     client = api.client()
+    # Fixed (#239, 27 Oct 2026): CI runs this twice on one database; a fixed e-mail is taken then.
+    email = f"isolated-{uuid.uuid4().hex[:12]}@example.test"
 
-    reply = client.post(URL, json=_body("isolated@example.test"), headers=CSRF)
+    reply = client.post(URL, json=_body(email), headers=CSRF)
     assert reply.status_code == 201, reply.text
     own_id = _enrolled(api, client, reply)[0]["customer"]["id"]
     assert own_id != other_id
@@ -217,4 +222,4 @@ def test_the_new_admin_sees_only_their_own_organisation(db: Database) -> None:
     assert client.get(f"/api/documents/{other_doc}").status_code == 404
     assert client.get("/api/documents").json()["items"] == []
     users = client.get("/api/admin/users").json()["items"]
-    assert [user["email"] for user in users] == ["isolated@example.test"]
+    assert [user["email"] for user in users] == [email]

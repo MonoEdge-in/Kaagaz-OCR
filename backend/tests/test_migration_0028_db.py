@@ -52,7 +52,8 @@ def test_0028_up_down_up(fresh: tuple[str, Database]) -> None:
     at_0027 = m0002._schema(database)
     migrate(url, "head")
     assert _current(url) == _head()
-    migrate(url, "0027")
+    # Fixed (#239, 27 Oct 2026): upgrading to an older revision changes nothing; down is a downgrade.
+    m0002._downgrade(url, "0027")
     assert m0002._schema(database) == at_0027
     migrate(url, "head")
     assert _current(url) == _head()

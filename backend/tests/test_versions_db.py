@@ -626,10 +626,15 @@ def test_autofile_undo_after_filing_into_a_department_goes_back_to_the_departmen
         assert family is not None and autofile.undo(conn, customer, family) is not None
         folder = conn.execute(text("SELECT folder_id::text FROM documents WHERE id = :d"), {"d": satbara})
         assert folder.scalar_one() == department
-    loose = upload(db, customer, admin)  # no department: Undo still goes to the top level
+    # Changed on purpose (#239, 27 Oct 2026): an upload with no department is routed to the one
+    # its type maps to (24cea75, land records to Land & Legal), so Undo goes back to that one.
+    loose = upload(db, customer, admin)
     _read(db, customer, loose, "land_record", _land("51"))
     with db.customer(customer) as conn:
         family = trash.lock_live_family(conn, customer, loose)
         assert family is not None and autofile.undo(conn, customer, family) is not None
-        folder = conn.execute(text("SELECT folder_id FROM documents WHERE id = :d"), {"d": loose})
-        assert folder.scalar_one() is None
+        folder = conn.execute(text("SELECT folder_id::text FROM documents WHERE id = :d"), {"d": loose})
+        mapped = conn.execute(
+            text("SELECT id::text FROM folders WHERE name = 'Land & Legal' AND kind = 'department'")
+        )
+        assert folder.scalar_one() == mapped.scalar_one()

@@ -11,7 +11,8 @@
   failed on it again) is passed over for UPGRADE_RETRY_AFTER_HOURS, so it can't take
   every pass.
 
-The test database is shared, so this test's documents are dated 1990 to be the oldest.
+The test database is shared and the sweep spans every customer, so other tests' older
+documents may come first: ``sweep_to`` passes over them (#239), never over this test's.
 """
 
 from datetime import UTC, datetime
@@ -50,6 +51,17 @@ def read_locally(conn: Connection, customer_id: str, *, year: int, **columns: ob
         {"c": customer_id, "d": doc},
     )
     return doc
+
+
+def sweep_to(db: Database, queue: MemoryQueue, job: Job, ours: set[str]) -> None:
+    """Run the sweep on ``queue`` until it takes ``job``, passing over other tests' older
+    documents (the database is shared): none of the documents passed over is ``ours``'s."""
+    for _ in range(1000):
+        taken = upgrade_oldest(db, queue)
+        if taken == job:
+            return
+        assert taken is not None and taken.customer_id not in ours, taken
+    raise AssertionError("the sweep never reached the document")
 
 
 def status_of(db: Database, customer_id: str, document_id: str) -> str:
@@ -91,12 +103,12 @@ def test_upgrade_sweep_marks_audits_and_queues_the_oldest_in_the_main_lane(db: D
         oldest = read_locally(conn, second, year=1990)
 
     queue = MemoryQueue()
-    assert upgrade_oldest(db, queue) == Job(second, oldest)
-    assert (queue.jobs, queue.lanes) == ([Job(second, oldest)], [False])  # never the express lane
+    sweep_to(db, queue, Job(second, oldest), {disabled, first, second})
+    assert (queue.jobs[-1], set(queue.lanes)) == (Job(second, oldest), {False})  # never the express lane
     assert status_of(db, second, oldest) == "received"
     assert upgrade_audits(db, second) == [(None, oldest)]
 
-    assert upgrade_oldest(db, queue) == Job(first, newer)  # the next oldest, the rest passed over
+    sweep_to(db, queue, Job(first, newer), {disabled, first, second})  # the next, the rest passed over
     for customer, document, status in (
         (disabled, stopped, "ready"),
         (first, trashed, "ready"),
@@ -114,7 +126,7 @@ def test_upgrade_sweep_with_the_queue_down_changes_nothing(db: Database) -> None
         upgrade_oldest(db, _down())
     assert status_of(db, customer, doc) == "ready"
     assert upgrade_audits(db, customer) == []
-    assert upgrade_oldest(db, MemoryQueue()) == Job(customer, doc)  # tidy up for the other tests
+    sweep_to(db, MemoryQueue(), Job(customer, doc), {customer})  # tidy up for the other tests
 
 
 def test_mark_for_upgrade_has_no_user_limits_and_is_not_counted_against_them(db: Database) -> None:
@@ -136,10 +148,10 @@ def test_upgrade_sweep_passes_over_a_document_it_sent_lately(db: Database) -> No
     with db.customer(customer) as conn:
         again = read_locally(conn, customer, year=1960)
         next_one = read_locally(conn, customer, year=1961)
-    assert upgrade_oldest(db, MemoryQueue()) == Job(customer, again)
+    sweep_to(db, MemoryQueue(), Job(customer, again), {customer})
     with db.customer(customer) as conn:  # read locally again: back to ready, still read_locally
         conn.execute(text("UPDATE documents SET status = 'ready' WHERE id = :d"), {"d": again})
-    assert upgrade_oldest(db, MemoryQueue()) == Job(customer, next_one)  # not the same one again
+    sweep_to(db, MemoryQueue(), Job(customer, next_one), {customer})  # not the same one again
     with db.engine.begin() as conn:  # the window passes (the owner: the app can't change the audit log)
         conn.execute(
             text(
@@ -148,4 +160,4 @@ def test_upgrade_sweep_passes_over_a_document_it_sent_lately(db: Database) -> No
             ),
             {"h": UPGRADE_RETRY_AFTER_HOURS + 1, "c": customer, "d": again},
         )
-    assert upgrade_oldest(db, MemoryQueue()) == Job(customer, again)
+    sweep_to(db, MemoryQueue(), Job(customer, again), {customer})

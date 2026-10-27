@@ -43,6 +43,9 @@ SUMMARY_KEYS = {
     "newer_version",
     "progress",
     "time_left",
+    # Changed on purpose (#239, 27 Oct 2026): Ready first (7e64d29) says whether a ready
+    # document's card and map are still coming.
+    "understanding",
     "doc_type",
     "languages",
     "pages_unreadable",
@@ -61,7 +64,17 @@ SUMMARY_KEYS = {
     "department",
     "pending_suggestion",
 }
-BATCH_KEYS = {"id", "documents", "counts", "pages_read", "pages_total", "time_left"}
+# Changed on purpose (#239, 27 Oct 2026): V5's version suggestions (PRD 1 stage 2, d82ada4).
+BATCH_KEYS = {
+    "id",
+    "documents",
+    "counts",
+    "pages_read",
+    "pages_total",
+    "time_left",
+    "version_suggestion_count",
+    "version_suggestions",
+}
 
 
 def in_batch(api: Api, signed: Signed, batch: str, *, minutes: int = 0, **columns: Any) -> str:
@@ -160,10 +173,11 @@ def test_u1_a_file_names_its_first_unreadable_page_still_to_look_at(db: Database
     with api.db.customer(signed.customer_id) as conn:  # page 2 kept as is: off the attention list
         conn.execute(
             text(
-                "UPDATE pages SET accepted_at = now()"
+                # Fixed (#239, 27 Oct 2026): pages_accepted_both (0021) wants who with when.
+                "UPDATE pages SET accepted_at = now(), accepted_by = :u"
                 " WHERE customer_id = :c AND document_id = :d AND page_no = 2"
             ),
-            {"c": signed.customer_id, "d": document},
+            {"c": signed.customer_id, "d": document, "u": signed.user_id},
         )
     (item,) = get_batch(signed, batch).json()["documents"]
     assert item["first_unreadable"] == {

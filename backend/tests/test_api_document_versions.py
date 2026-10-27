@@ -295,5 +295,8 @@ def test_detail_lists_every_version_and_an_older_or_trashed_one_still_opens(db: 
     detail = signed.client.get(f"/api/documents/{first}")
     assert detail.status_code == 200
     assert (detail.json()["deleted_at"], len(detail.json()["versions"])) == (NOW.isoformat(), 2)
-    assert signed.client.get(f"/api/documents/{first}/file").status_code == 200
-    assert signed.client.get(f"/api/documents/{first}/pages/1/image").status_code == 200
+    # Changed on purpose (#239, 27 Oct 2026): a family in Trash opens, but its file, page images
+    # and readings are 409 in_trash (File management T1, 65b9067).
+    for path in (f"/api/documents/{first}/file", f"/api/documents/{first}/pages/1/image"):
+        refused = signed.client.get(path)
+        assert (refused.status_code, refused.json()["error"]["code"]) == (409, "in_trash"), path
