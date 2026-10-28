@@ -25,7 +25,8 @@ def test_a_users_keycloak_sign_in_opens_their_own_organisation_only(
 
     client = api.client()
     sent = start(client, f"/documents/{b_document}")
-    code = realm.issue(sign(claims_for(a_email, sent["nonce"], NOW_UNIX)), sent["code_challenge"])
+    token = sign(claims_for(a_email, sent["nonce"], NOW_UNIX, kaagaz_org=a_customer))
+    code = realm.issue(token, sent["code_challenge"])
     # Anything naming B on the way back is ignored.
     params = {"state": sent["state"], "code": code, "customer_id": b_customer, "cid": b_customer}
     reply = client.get(CALLBACK, params=params, follow_redirects=False)

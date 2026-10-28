@@ -41,14 +41,13 @@ Why each piece (FULL-BUILD-SPEC section 3, PRD 1 A1 to A7):
   routes that use ``current_user_allow_password_change`` (/auth/password,
   /auth/logout, /auth/me, /auth/session) skip both; /auth/admin/enrol needs no session.
 * **Keycloak** (#435, while KEYCLOAK_ENABLED): a session started by the Keycloak sign-in
-  (routers/keycloak.py) carries ``"kc": true``. Keycloak checked the password and the
-  two-step code, so neither gate above applies to it. A session counts only while its
-  ``kc`` matches the setting: turning KEYCLOAK_ENABLED on or off signs everyone out once,
-  so a password session never outlives the switch to Keycloak, nor the other way round.
-  The sign-in's state, nonce and PKCE verifier travel in the keycloak token:
-  ``{"state","nonce","verifier","next","exp"}``, MAC over ``b"keycloak\\x00" + body``,
-  10 minutes, an HttpOnly SameSite=Lax cookie sent to the callback only (Lax: the callback
-  is a top-level GET from Keycloak's site).
+  (routers/keycloak.py) carries ``"kc": true`` and skips both gates above (Keycloak owns
+  the password and the two-step). A session counts only while its ``kc`` matches the
+  setting, so switching KEYCLOAK_ENABLED either way signs everyone out once. The sign-in's
+  state, nonce, PKCE verifier, ``next`` and whether it confirms Delete forever travel in
+  the keycloak token ``{"state","nonce","verifier","next","confirm","exp"}``, MAC over
+  ``b"keycloak\\x00" + body``, 10 minutes, an HttpOnly SameSite=Lax cookie sent to the
+  callback only (Lax: the callback is a top-level GET from Keycloak's site).
 * **CSRF**: every request that is not GET, HEAD or OPTIONS must carry
   ``X-Requested-With: kaagaz``. A cross-site form cannot add a header, and a
   cross-site script cannot either without CORS, which the API never allows.
@@ -69,7 +68,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import cache
-from typing import Annotated, Any
+from typing import Annotated, Any, TypeGuard
 
 from fastapi import Depends, Request, Response
 
@@ -79,7 +78,7 @@ from kaagaz.db import ai_settings
 from kaagaz.db import operators as operators_sql
 from kaagaz.db import users as users_sql
 from kaagaz.db.engine import Database
-from kaagaz.settings import Settings
+from kaagaz.settings import KEYCLOAK_CALLBACK_PATH, Settings
 
 SESSION_COOKIE = "kaagaz_session"
 CSRF_HEADER = "x-requested-with"
@@ -89,6 +88,7 @@ SCOPES = ("app", "admin")
 ENROL_SECONDS = 10 * 60
 CONFIRM_COOKIE = "kaagaz_confirm"
 CONFIRM_SECONDS = 5 * 60  # PROVISIONAL (council 4 Oct 2026)
+CONFIRM_WITH_KEYCLOAK = "Confirm with Keycloak, then delete forever within 5 minutes."
 CONFIRM_PATH = "/api/documents"  # the browser calls the API on its own origin, under /api
 OPERATOR_COOKIE = "kaagaz_operator"
 OPERATOR_PATH = "/api/operator"
@@ -97,7 +97,6 @@ OPERATOR_SESSION_SECONDS = 30 * 60  # absolute, PROVISIONAL (change plan questio
 # Cookies issued before keep the end they were given.
 CAPPED_SECONDS = 24 * 3600
 KEYCLOAK_COOKIE = "kaagaz_keycloak"
-KEYCLOAK_PATH = "/api/auth/keycloak/callback"
 KEYCLOAK_SECONDS = 10 * 60  # from Kaagaz to Keycloak's sign-in page and back
 
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
@@ -195,7 +194,7 @@ _OPERATOR_FIELDS = frozenset({"oid", "ver", "exp"})
 _MOVE_PURPOSE = b"operator_move"
 _MOVE_FIELDS = frozenset({"oid", "ver", "sec", "exp"})
 _KEYCLOAK_PURPOSE = b"keycloak"
-_KEYCLOAK_FIELDS = frozenset({"state", "nonce", "verifier", "next", "exp"})
+_KEYCLOAK_FIELDS = frozenset({"state", "nonce", "verifier", "next", "confirm", "exp"})
 
 
 def session_seconds(scope: str, settings: Settings, idle_hours: int | None = None) -> int:
@@ -409,16 +408,18 @@ class KeycloakClaims:
     nonce: str
     verifier: str  # the PKCE code verifier
     next_path: str  # where the browser goes once signed in, already checked
+    confirm: bool  # a granted member confirming Delete forever, not a sign-in
     expires_at: int  # seconds since the epoch
 
 
 def sign_keycloak(claims: KeycloakClaims, secret: str) -> str:
-    """A keycloak token: exactly ``{state, nonce, verifier, next, exp}``, MAC purpose ``keycloak``."""
+    """A keycloak token: exactly ``_KEYCLOAK_FIELDS``, MAC purpose ``keycloak``."""
     payload = {
         "state": claims.state,
         "nonce": claims.nonce,
         "verifier": claims.verifier,
         "next": claims.next_path,
+        "confirm": claims.confirm,
         "exp": claims.expires_at,
     }
     return _sign(payload, _KEYCLOAK_PURPOSE, secret)
@@ -430,13 +431,18 @@ def read_keycloak(token: str, secret: str, now: int) -> KeycloakClaims | None:
     if not isinstance(data, dict) or set(data) != _KEYCLOAK_FIELDS:
         return None
     texts = (data["state"], data["nonce"], data["verifier"], data["next"])
-    if not all(isinstance(text, str) and text for text in texts) or not _is_int(data["exp"]):
+    if not all(isinstance(text, str) and text for text in texts) or not isinstance(data["confirm"], bool):
         return None
-    if data["exp"] <= now:
+    if not _is_int(data["exp"]) or data["exp"] <= now:
         return None
     state, nonce, verifier, next_path = texts
     return KeycloakClaims(
-        state=state, nonce=nonce, verifier=verifier, next_path=next_path, expires_at=data["exp"]
+        state=state,
+        nonce=nonce,
+        verifier=verifier,
+        next_path=next_path,
+        confirm=data["confirm"],
+        expires_at=data["exp"],
     )
 
 
@@ -449,13 +455,17 @@ def set_keycloak_cookie(response: Response, claims: KeycloakClaims, settings: Se
         httponly=True,
         samesite="lax",
         secure=settings.cookie_secure,
-        path=KEYCLOAK_PATH,
+        path=KEYCLOAK_CALLBACK_PATH,
     )
 
 
 def clear_keycloak_cookie(response: Response, settings: Settings) -> None:
     response.delete_cookie(
-        KEYCLOAK_COOKIE, path=KEYCLOAK_PATH, httponly=True, samesite="lax", secure=settings.cookie_secure
+        KEYCLOAK_COOKIE,
+        path=KEYCLOAK_CALLBACK_PATH,
+        httponly=True,
+        samesite="lax",
+        secure=settings.cookie_secure,
     )
 
 
@@ -526,7 +536,7 @@ def _enrol_claims(data: Any, now: int) -> EnrolClaims | None:
     return EnrolClaims(user_id=uid, customer_id=cid, session_version=ver, sealed_secret=sec, expires_at=exp)
 
 
-def _is_int(value: object) -> bool:
+def _is_int(value: object) -> TypeGuard[int]:
     """A JSON whole number: an int and not a bool (``True`` is an int in Python)."""
     return isinstance(value, int) and not isinstance(value, bool)
 
@@ -545,9 +555,10 @@ def _b64url(raw: bytes) -> str:
 
 
 def _unb64url(text: str) -> bytes:
+    """Strict: any character outside base64url is a ValueError, never skipped."""
     if not text.isascii():
         raise ValueError("not base64url")
-    return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+    return base64.b64decode(text + "=" * (-len(text) % 4), altchars=b"-_", validate=True)
 
 
 def _is_uuid(value: str) -> bool:
@@ -605,7 +616,7 @@ class CurrentUser:
     delete_forever_allowed: bool  # an admin allowed Delete forever (ignored for an admin)
     idle_hours: int | None = None  # the idle timeout in effect (0040); None: no idle limit
     seen_at: datetime | None = None  # the session's last use or sign-in, the idle clock
-    keycloak: bool = False  # signed in through Keycloak (#435), which asked for the two-step code
+    keycloak: bool = False  # signed in through Keycloak (#435)
 
 
 # The idle timeout (0040): the last use is written at most this often, so a request is not a write.
@@ -657,7 +668,7 @@ def current_user(request: Request) -> CurrentUser:
     user (enabled, same role, same session version). Then 403
     ``password_change_required`` while the user must set a new password, and 403
     ``mfa_enrol_required`` for an admin without two-step sign-in set up. Neither for a
-    Keycloak session (#435): Keycloak owns the password and asked for the two-step code."""
+    Keycloak session (#435)."""
     user = _signed_in(request)
     if user.keycloak:
         return user
@@ -681,10 +692,10 @@ def _signed_in(request: Request) -> CurrentUser:
     if claims is None or claims.keycloak != context.settings.keycloak_enabled:
         raise ApiError(401, "not_signed_in")
     user = load_user(context.db, claims.customer_id, claims.user_id, scope=claims.scope)
-    if user is not None and claims.keycloak:
-        user = dataclasses.replace(user, keycloak=True)
     if user is None or user.role != claims.role or user.session_version != claims.session_version:
         raise ApiError(401, "not_signed_in")
+    if claims.keycloak:
+        user = dataclasses.replace(user, keycloak=True)
     if user.role == "admin" and claims.scope != "admin":
         # An admin's app session from before 16 Oct 2026 rested on the password alone.
         raise ApiError(401, "not_signed_in")
@@ -745,7 +756,7 @@ def require_admin_with_two_step(user: AdminSession) -> CurrentUser:
     admin session whose admin has two-step sign-in on, else 403
     ``two_step_required``. ``current_user`` already requires two-step sign-in for
     every admin; this stays as a second check on what can't be undone. A Keycloak session
-    (#435) had its two-step code checked by Keycloak."""
+    (#435) counts as two-step."""
     if not (user.totp_enabled or user.keycloak):
         raise ApiError(403, "two_step_required", "Turn on two-step sign-in in Admin, Settings to do this.")
     return user
@@ -759,8 +770,9 @@ def require_delete_forever(request: Request, user: User) -> CurrentUser:
     they always did: an admin session with two-step sign-in on; a grant never
     counts for an admin, so a password-only admin can't route round two-step.
     Anyone else needs an admin's grant (403 ``forbidden``) and a confirm token
-    from typing their password in the last CONFIRM_SECONDS, for this user and
-    session version (403 ``password_confirm_required``). The grant is read
+    from typing their password (or confirming through Keycloak, #435) in the last
+    CONFIRM_SECONDS, for this user and session version (403
+    ``password_confirm_required``). The grant is read
     again on every request, so stopping it works at once."""
     if user.role == "admin":
         return require_admin_with_two_step(require_admin_session(user))
@@ -771,7 +783,7 @@ def require_delete_forever(request: Request, user: User) -> CurrentUser:
     claims = read_confirm(token, context.settings.session_secret, int(context.clock().timestamp()))
     signed = None if claims is None else (claims.user_id, claims.customer_id, claims.session_version)
     if signed != (user.user_id, user.customer_id, user.session_version):
-        raise ApiError(403, "password_confirm_required")
+        raise ApiError(403, "password_confirm_required", CONFIRM_WITH_KEYCLOAK if user.keycloak else None)
     return user
 
 
@@ -814,10 +826,10 @@ def require_feature(feature: str) -> Callable[[Request, CurrentUser], None]:
     return dependency
 
 
-def own_two_step(request: Request) -> None:
-    """For Kaagaz's own two-step routes for organisation users (set up, turn off, reset, the
-    operator's reset of an admin's): 404 ``not_found`` while KEYCLOAK_ENABLED (#435), when
-    Keycloak asks for the code. The operator's own two-step stays."""
+def kaagaz_sign_in_only(request: Request) -> None:
+    """For the organisation users' routes that Keycloak replaces (#435): two-step set-up and
+    reset, the operator's reset of an admin's, and retyping the password for Delete forever.
+    404 ``not_found`` while KEYCLOAK_ENABLED. The operator's own two-step stays."""
     if get_context(request).settings.keycloak_enabled:
         raise ApiError(404, "not_found")
 

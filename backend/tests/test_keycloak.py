@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 
 from kaagaz.api import keycloak
+from kaagaz.api.auth import _KEYCLOAK_PURPOSE, KeycloakClaims, _sign, read_keycloak, sign_keycloak
 from kaagaz.api.keycloak import KeycloakError
 from kaagaz.settings import Settings, SettingsError
 from tests.keycloak_fake import (
@@ -25,12 +26,18 @@ from tests.keycloak_fake import (
 from tests.test_settings import shipped
 
 NOW = 1_800_000_000
+ASKED_AT = NOW - 30  # the sign-in was started half a minute ago
 NONCE = "made-up-nonce"
 EMAIL = "Asha.Member@Example.test"
+ORG = "made-up-organisation-id"
 
 
 def check(token: str, settings: Settings | None = None) -> str:
-    return keycloak.verified_email(settings or keycloak_settings(), DISCOVERY, token, nonce=NONCE, now=NOW)
+    """The e-mail (the organisation: test_a_genuine_token_gives_its_e_mail_and_organisation)."""
+    found = keycloak.verified_person(
+        settings or keycloak_settings(), DISCOVERY, token, nonce=NONCE, asked_at=ASKED_AT, now=NOW
+    )
+    return found[0]
 
 
 def refused_with(token: str) -> str:
@@ -44,8 +51,17 @@ def realm(monkeypatch: pytest.MonkeyPatch) -> FakeRealm:
     return use_realm(monkeypatch)
 
 
-def test_a_genuine_token_gives_its_e_mail_in_lower_case() -> None:
-    assert check(sign(claims_for(EMAIL, NONCE, NOW))) == "asha.member@example.test"
+def test_a_genuine_token_gives_its_e_mail_and_organisation() -> None:
+    token = sign(claims_for(EMAIL, NONCE, NOW, kaagaz_org=ORG))
+    found = keycloak.verified_person(
+        keycloak_settings(), DISCOVERY, token, nonce=NONCE, asked_at=ASKED_AT, now=NOW
+    )
+    assert found == ("asha.member@example.test", ORG)
+    no_org = sign(claims_for(EMAIL, NONCE, NOW, kaagaz_org=7))  # not text: no organisation
+    found = keycloak.verified_person(
+        keycloak_settings(), DISCOVERY, no_org, nonce=NONCE, asked_at=ASKED_AT, now=NOW
+    )
+    assert found == ("asha.member@example.test", "")
 
 
 @pytest.mark.parametrize(
@@ -65,10 +81,17 @@ def test_a_genuine_token_gives_its_e_mail_in_lower_case() -> None:
         {"azp": "another-client"},
         {"iss": "https://id.example.test/realms/another"},
         {"iss": None},
+        {"auth_time": ASKED_AT - keycloak.LEEWAY_SECONDS - 1},  # a sign-in from before this one
+        {"auth_time": None},
     ],
 )
 def test_a_token_with_a_wrong_claim_is_refused(changes: dict[str, Any]) -> None:
     assert refused_with(sign(claims_for(EMAIL, NONCE, NOW, **changes))) == "token"
+
+
+@pytest.mark.parametrize("acr", ["1", "pwd", None, ["otp"]])
+def test_a_token_without_the_two_step_level_is_refused(acr: object) -> None:
+    assert refused_with(sign(claims_for(EMAIL, NONCE, NOW, acr=acr))) == "two_step"
 
 
 def test_the_leeway_lets_a_token_a_little_past_its_end_through() -> None:
@@ -114,6 +137,22 @@ def test_a_key_too_short_is_never_used(monkeypatch: pytest.MonkeyPatch) -> None:
     assert refused_with(sign(claims_for(EMAIL, NONCE, NOW))) == "token"
 
 
+def test_a_new_realm_key_is_fetched_once_when_its_kid_is_not_known(realm: FakeRealm) -> None:
+    realm.keys = [jwk(other_key(), kid="old-key")]
+    keycloak.endpoints(keycloak_settings())
+    assert (
+        refused_with(sign(claims_for(EMAIL, NONCE, NOW), key=other_key(), header={"alg": "RS256"})) == "token"
+    )
+    assert realm.key_fetches == 1  # cached, then not fetched again for a token with no kid
+    realm.keys = [jwk(realm_key())]  # the realm rotated its key
+    assert check(sign(claims_for(EMAIL, NONCE, NOW))) == "asha.member@example.test"
+    assert realm.key_fetches == 2
+    assert (
+        refused_with(sign(claims_for(EMAIL, NONCE, NOW), header={"alg": "RS256", "kid": "gone"})) == "token"
+    )
+    assert realm.key_fetches == 3  # one more look for an unknown kid, never more
+
+
 def test_an_encryption_key_with_the_same_kid_is_never_used(realm: FakeRealm) -> None:
     realm.keys = [{**jwk(realm_key()), "use": "enc"}]
     assert refused_with(sign(claims_for(EMAIL, NONCE, NOW))) == "token"
@@ -154,10 +193,11 @@ def test_the_discovery_is_kept_for_a_while(realm: FakeRealm) -> None:
     assert keycloak.endpoints(keycloak_settings()) == first
 
 
-def test_the_sign_in_page_asks_for_pkce_s256_and_the_nonce() -> None:
+def test_the_sign_in_page_asks_for_pkce_the_nonce_and_a_fresh_two_step_sign_in() -> None:
     url = keycloak.authorize_url(keycloak_settings(), DISCOVERY, state="s", nonce="n", verifier="v" * 64)
     assert url.startswith(DISCOVERY["authorization_endpoint"] + "?")
     assert "code_challenge_method=S256" in url and "nonce=n" in url and "state=s" in url
+    assert "prompt=login" in url and "max_age=0" in url and "acr_values=otp" in url
     assert "client_secret" not in url and "v" * 64 not in url
 
 
@@ -218,3 +258,14 @@ def test_a_realm_on_this_laptop_may_be_plain_http() -> None:
         "KEYCLOAK_REDIRECT_URI": "http://localhost:3000/api/auth/keycloak/callback",
     }
     assert Settings.from_env(shipped(**{**KEYCLOAK_ENV, **local})).keycloak_enabled
+
+
+def test_the_keycloak_cookie_reads_back_only_with_every_field_of_its_type() -> None:
+    secret = keycloak_settings().session_secret
+    claims = KeycloakClaims(
+        state="s", nonce="n", verifier="v", next_path="/admin", confirm=True, expires_at=NOW + 60
+    )
+    assert read_keycloak(sign_keycloak(claims, secret), secret, NOW) == claims
+    fields = {"state": "s", "nonce": "n", "verifier": "v", "next": "/admin", "confirm": True, "exp": NOW + 60}
+    for changed in ({"confirm": 1}, {"confirm": "yes"}, {"exp": NOW}, {"next": ""}):
+        assert read_keycloak(_sign({**fields, **changed}, _KEYCLOAK_PURPOSE, secret), secret, NOW) is None

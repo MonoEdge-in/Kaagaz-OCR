@@ -44,8 +44,9 @@
   an obvious test word ("asd") is a 400 (``names.org_name_ok``, UI audit G12).
 * While KEYCLOAK_ENABLED (#435): organisation users sign in through Keycloak
   (routers/keycloak.py), so ``POST /auth/login`` is 403 ``keycloak_sign_in``, sign-up is
-  off (404, ``{enabled: false}``: a new account would have no Keycloak user), the two-step
-  routes here are 404 (``own_two_step``), and ``GET /auth/session`` with no session says
+  off (404, ``{enabled: false}``: a new account would have no Keycloak user), two-step
+  set-up and ``/auth/confirm-password`` are 404 (``kaagaz_sign_in_only``; Delete forever is
+  confirmed through Keycloak), and ``GET /auth/session`` with no session says
   ``{signed_in: false, keycloak: true}`` for the sign-in page. Off, nothing here changes.
 
 Why the sign-in looks the way it does (council record 29 Sep, WP1.3):
@@ -78,7 +79,6 @@ Why the sign-in looks the way it does (council record 29 Sep, WP1.3):
 """
 
 import dataclasses
-from collections.abc import Callable
 from datetime import datetime
 from typing import Annotated, Any
 
@@ -97,10 +97,10 @@ from kaagaz.api.auth import (
     current_user_allow_password_change,
     feature_on,
     hash_password,
+    kaagaz_sign_in_only,
     load_user,
     new_enrol,
     new_session,
-    own_two_step,
     read_enrol,
     session_claims,
     set_confirm_cookie,
@@ -187,17 +187,17 @@ class SignupBody(BaseModel):
 
 
 @router.post("/auth/login")
-def login(body: LoginBody, context: Context) -> JSONResponse:
+def login(body: LoginBody, context: Context) -> Response:
     if context.settings.keycloak_enabled:  # nothing sent is checked (#435)
         raise ApiError(403, "keycloak_sign_in", USE_KEYCLOAK)
     attempt = _check_password(context, body.email, body.password)
     if attempt.role != "admin":
-        return _start_session(context, attempt.customer_id, attempt.user_id, scope="app", action="auth.login")
+        return start_session(context, attempt.customer_id, attempt.user_id, scope="app", action="auth.login")
     if attempt.totp_enabled_at is None:
         if attempt.must_change_password:
             # The set-new-password screen first (current_user keeps every other route
             # shut); the next sign-in then sets up the code.
-            return _start_session(
+            return start_session(
                 context, attempt.customer_id, attempt.user_id, scope="admin", action="auth.login"
             )
         _succeeded(context, attempt)  # the password was right; no session until a code is set up
@@ -225,7 +225,7 @@ def login(body: LoginBody, context: Context) -> JSONResponse:
     if not accepted:  # another request used this code a moment ago
         _failed(context, attempt, "code_reused")
         raise _refused(context)
-    return _start_session(context, attempt.customer_id, attempt.user_id, scope="admin", action="auth.login")
+    return start_session(context, attempt.customer_id, attempt.user_id, scope="admin", action="auth.login")
 
 
 @router.post("/auth/admin/login")
@@ -234,8 +234,8 @@ def admin_login_gone() -> None:
     raise ApiError(410, "gone", ADMIN_LOGIN_GONE)
 
 
-@router.post("/auth/admin/enrol", dependencies=[Depends(own_two_step)])
-def admin_enrol(body: EnrolBody, context: Context) -> JSONResponse:
+@router.post("/auth/admin/enrol", dependencies=[Depends(kaagaz_sign_in_only)])
+def admin_enrol(body: EnrolBody, context: Context) -> Response:
     now = context.clock()
     claims = read_enrol(body.enrol_token, context.settings.session_secret, _unix(now))
     if claims is None:
@@ -286,7 +286,7 @@ def admin_enrol(body: EnrolBody, context: Context) -> JSONResponse:
     if not enrolled:  # a second request with the same token, or something changed
         _failed(context, attempt, "enrol_refused")
         raise ApiError(401, "not_signed_in")
-    return _start_session(context, attempt.customer_id, attempt.user_id, scope="admin", action="auth.login")
+    return start_session(context, attempt.customer_id, attempt.user_id, scope="admin", action="auth.login")
 
 
 @router.get("/auth/signup")
@@ -339,7 +339,7 @@ def signup(body: SignupBody, request: Request, context: Context) -> JSONResponse
     return JSONResponse(_enrol_offer(context, user), status_code=201)
 
 
-@router.post("/auth/admin/2fa/start", dependencies=[Depends(own_two_step)])
+@router.post("/auth/admin/2fa/start", dependencies=[Depends(kaagaz_sign_in_only)])
 def turn_on_two_step(body: CurrentPasswordBody, user: AdminSession, context: Context) -> dict[str, str]:
     if user.totp_enabled:
         raise ApiError(409, "conflict", "Two-step sign-in is already on.")
@@ -350,7 +350,7 @@ def turn_on_two_step(body: CurrentPasswordBody, user: AdminSession, context: Con
     return _enrol_offer(context, user)
 
 
-@router.post("/auth/admin/2fa/off", dependencies=[Depends(own_two_step)])
+@router.post("/auth/admin/2fa/off")
 def turn_off_two_step(user: AdminSession) -> None:
     """Refused: every admin keeps two-step sign-in on (MFA required, 16 Oct 2026)."""
     raise ApiError(403, "two_step_required", KEEP_TWO_STEP)
@@ -380,7 +380,7 @@ def change_password(
     return _keep_this_browser(request, context, changed, now)
 
 
-@router.post("/auth/confirm-password", status_code=204)
+@router.post("/auth/confirm-password", status_code=204, dependencies=[Depends(kaagaz_sign_in_only)])
 def confirm_password(body: CurrentPasswordBody, user: User, context: Context) -> Response:
     if user.role == "admin" or not user.delete_forever_allowed:
         raise ApiError(403, "forbidden")  # nothing is counted
@@ -513,7 +513,7 @@ def _keep_this_browser(
     return response
 
 
-def _start_session(
+def start_session(
     context: AppContext,
     customer_id: str,
     user_id: str,
@@ -521,33 +521,12 @@ def _start_session(
     scope: str,
     action: str,
     details: dict[str, audit.DetailValue] | None = None,
-) -> JSONResponse:
-    """The ``Me`` reply and a new session cookie of this scope; clears the count."""
-    return start_session(
-        context,
-        customer_id,
-        user_id,
-        lambda user: JSONResponse(me_json(user)),
-        scope=scope,
-        action=action,
-        details=details,
-    )
-
-
-def start_session[R: Response](
-    context: AppContext,
-    customer_id: str,
-    user_id: str,
-    reply: Callable[[CurrentUser], R],
-    *,
-    scope: str,
-    action: str,
-    details: dict[str, audit.DetailValue] | None = None,
+    reply: Response | None = None,
     keycloak: bool = False,
-) -> R:
-    """``reply`` with a new session cookie of this scope (a Keycloak one with ``keycloak``,
-    #435); clears the count. 401 ``bad_credentials`` if the user or the organisation is
-    disabled."""
+) -> Response:
+    """``reply`` (else the ``Me`` reply) with a new session cookie of this scope, a Keycloak
+    one with ``keycloak`` (#435); clears the count. 401 ``bad_credentials`` if the user or
+    the organisation is disabled."""
     now = context.clock()
     user = load_user(context.db, customer_id, user_id, scope=scope)
     if user is None:  # disabled in the meantime
@@ -566,7 +545,7 @@ def start_session[R: Response](
         idle_hours=user.idle_hours,  # set: 24 hours, the idle timeout ends it (0040)
         keycloak=keycloak,
     )
-    response = reply(user)
+    response = reply or JSONResponse(me_json(user))
     set_session_cookie(response, claims, context.settings, now=_unix(now))
     return response
 
@@ -606,12 +585,18 @@ def _failed(context: AppContext, attempt: AttemptRow, reason: str) -> None:
 
 
 def _audit_failure(
-    context: AppContext, customer_id: str, user_id: str, reason: str, *, locked: bool = False
+    context: AppContext,
+    customer_id: str,
+    user_id: str,
+    reason: str,
+    *,
+    locked: bool = False,
+    via: str | None = None,
 ) -> None:
+    """``via``: the sign-in that failed when not the password one ("keycloak", #435)."""
+    details: dict[str, audit.DetailValue] = {"reason": reason, **({"via": via} if via else {})}
     with context.db.customer(customer_id) as conn:
-        _record(
-            conn, customer_id, "auth.login_failed", actor=None, target=user_id, details={"reason": reason}
-        )
+        _record(conn, customer_id, "auth.login_failed", actor=None, target=user_id, details=details)
         if locked:
             _record(conn, customer_id, "auth.locked", actor=None, target=user_id)
 

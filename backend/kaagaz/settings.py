@@ -422,10 +422,9 @@ class Settings:
     db_worker_statement_timeout_seconds: int = 900
     db_worker_lock_timeout_seconds: int = 300
     db_idle_in_transaction_timeout_seconds: int = 900  # both
-    # Keycloak (#435, Tushar 28 Oct 2026): organisation users sign in through the realm's
-    # OpenID Connect sign-in (kaagaz/api/keycloak.py), which asks for the password and the
-    # two-step code. Off unless "true": the /auth/keycloak routes are not there and nothing
-    # changes. The operator console keeps its own sign-in either way.
+    # Keycloak (#435, Tushar 28 Oct 2026): organisation users sign in through the realm
+    # (kaagaz/api/keycloak.py). Off unless "true": the /auth/keycloak routes are not there and
+    # nothing changes. The operator console keeps its own sign-in either way.
     keycloak_enabled: bool = False
     keycloak_issuer: str = ""  # the realm's URL, such as https://id.example.in/realms/kaagaz
     keycloak_client_id: str = ""

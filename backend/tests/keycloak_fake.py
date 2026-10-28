@@ -6,7 +6,6 @@ the realm's keys and the token endpoint, signs ID tokens RS256 with an RSA key m
 with, as Keycloak does. ``use_realm`` puts it in place for one test.
 """
 
-import base64
 import functools
 import hashlib
 import io
@@ -23,6 +22,7 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 from kaagaz.api import keycloak
+from kaagaz.api.auth import _b64url as b64url
 from kaagaz.settings import Settings
 from tests.settings_factory import make_settings
 
@@ -62,10 +62,6 @@ def other_key() -> rsa.RSAPrivateKey:
     return rsa.generate_private_key(public_exponent=65537, key_size=2048)
 
 
-def b64url(raw: bytes) -> str:
-    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
-
-
 def jwk(key: rsa.RSAPrivateKey, kid: str = KID) -> dict[str, str]:
     numbers = key.public_key().public_numbers()
     n = numbers.n.to_bytes((numbers.n.bit_length() + 7) // 8, "big")
@@ -92,6 +88,8 @@ def claims_for(email: str, nonce: str, now: int, /, **changes: Any) -> dict[str,
         "sub": "made-up-subject",
         "exp": now + 300,
         "iat": now,
+        "auth_time": now,
+        "acr": "otp",
         "nonce": nonce,
         "email": email,
         "email_verified": True,
@@ -109,6 +107,7 @@ class FakeRealm:
     codes: dict[str, tuple[str, str]] = field(default_factory=dict)
     used: set[str] = field(default_factory=set)
     token_forms: list[dict[str, str]] = field(default_factory=list)
+    key_fetches: int = 0
     down: bool = False
 
     def issue(self, id_token: str, challenge: str) -> str:
@@ -125,6 +124,7 @@ class FakeRealm:
         if url == ISSUER + "/.well-known/openid-configuration":
             return _json(self.discovery)
         if url == DISCOVERY["jwks_uri"]:
+            self.key_fetches += 1
             return _json({"keys": self.keys})
         if url == DISCOVERY["token_endpoint"] and isinstance(request.data, bytes):
             return self._token(request, dict(urllib.parse.parse_qsl(request.data.decode())))

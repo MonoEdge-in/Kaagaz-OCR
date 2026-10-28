@@ -7,18 +7,23 @@
   CACHE_SECONDS. The discovery's ``issuer`` must be KEYCLOAK_ISSUER exactly, and each
   endpoint an https URL (http only on a loopback host, as KEYCLOAK_ISSUER), so no
   ``file:`` or other scheme is ever opened or redirected to.
+* **Every sign-in asks again**: ``prompt=login`` and ``max_age=0``, so a Keycloak session
+  left over from before never signs anyone in unasked, and ``acr_values=otp`` asks for the
+  two-step level (the realm maps ``otp`` to its OTP step, docs/running-locally.md 2d).
 * **The code** is swapped at the token endpoint with the PKCE verifier and the client's id
   and secret; the secret goes in that request's body and nowhere else.
 * **The ID token** counts only when: RS256, signed by the realm key its ``kid`` names (RSA,
-  2048 bits or more); ``iss`` KEYCLOAK_ISSUER; ``aud`` this client, and ``azp`` this client
-  when it is given or ``aud`` names others; ``exp`` not passed and ``iat`` not ahead, each
-  within LEEWAY_SECONDS of the clock; ``nonce`` the one this browser was given; and
-  ``email_verified`` true. Its ``email``, trimmed and in lower case, is who signed in.
+  2048 bits or more; a ``kid`` not in the cached keys fetches them once more, for a new
+  key); ``iss`` KEYCLOAK_ISSUER; ``aud`` this client, and ``azp`` this client when it is
+  given or ``aud`` names others; ``exp`` not passed and ``iat`` not ahead, each within
+  LEEWAY_SECONDS of the clock; ``auth_time`` not before this sign-in was asked for;
+  ``nonce`` the one this browser was given; ``acr`` REQUIRED_ACR (``two_step`` otherwise);
+  and ``email_verified`` true. It gives the ``email``, trimmed and in lower case, and the
+  ``kaagaz_org`` claim (the person's organisation id, a Keycloak user attribute).
 * **Every failure** is a ``KeycloakError`` with a short stable code, the only thing logged
   or shown: never a token, a code or an e-mail.
 """
 
-import base64
 import hashlib
 import hmac
 import json
@@ -26,14 +31,15 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, TypeGuard
+from typing import Any
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 from kaagaz.ai.openrouter import build_opener
-from kaagaz.settings import Settings
+from kaagaz.api.auth import _b64url, _is_int, _unb64url
+from kaagaz.settings import _LOOPBACK_HOSTS, Settings
 
 TIMEOUT_SECONDS = 10.0
 MAX_REPLY_BYTES = 1_000_000
@@ -41,7 +47,7 @@ CACHE_SECONDS = 300  # a new realm key is seen within 5 minutes
 LEEWAY_SECONDS = 60  # clocks a little apart
 MIN_KEY_BITS = 2048
 ENDPOINTS = ("authorization_endpoint", "token_endpoint", "jwks_uri", "end_session_endpoint")
-_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})  # as kaagaz/settings.py
+REQUIRED_ACR = "otp"  # the realm's level for the password and the two-step code
 
 _OPENER = build_opener()
 _cache: dict[str, tuple[float, Any]] = {}  # URL: (when fetched, monotonic seconds; its JSON)
@@ -66,7 +72,8 @@ def endpoints(settings: Settings) -> dict[str, str]:
 
 
 def authorize_url(settings: Settings, realm: dict[str, str], *, state: str, nonce: str, verifier: str) -> str:
-    """Keycloak's sign-in page for this client, with the state, nonce and PKCE challenge (S256)."""
+    """Keycloak's sign-in page for this client, with the state, nonce and PKCE challenge (S256),
+    asking for the password and the two-step code every time."""
     query = {
         "response_type": "code",
         "client_id": settings.keycloak_client_id,
@@ -76,6 +83,9 @@ def authorize_url(settings: Settings, realm: dict[str, str], *, state: str, nonc
         "nonce": nonce,
         "code_challenge": _b64url(hashlib.sha256(verifier.encode("ascii")).digest()),
         "code_challenge_method": "S256",
+        "prompt": "login",
+        "max_age": "0",
+        "acr_values": REQUIRED_ACR,
     }
     return realm["authorization_endpoint"] + "?" + urllib.parse.urlencode(query)
 
@@ -98,8 +108,11 @@ def id_token_for(settings: Settings, realm: dict[str, str], code: str, verifier:
     return token
 
 
-def verified_email(settings: Settings, realm: dict[str, str], token: str, *, nonce: str, now: int) -> str:
-    """The verified e-mail in a genuine ID token for this client and this browser's nonce."""
+def verified_person(
+    settings: Settings, realm: dict[str, str], token: str, *, nonce: str, asked_at: int, now: int
+) -> tuple[str, str]:
+    """(verified e-mail, ``kaagaz_org`` or "") from a genuine ID token for this client, this
+    browser's nonce and a sign-in made at or after ``asked_at``."""
     try:
         header_part, claims_part, signature_part = token.split(".")
         header = json.loads(_unb64url(header_part))
@@ -124,18 +137,24 @@ def verified_email(settings: Settings, realm: dict[str, str], token: str, *, non
         raise KeycloakError("token")
     if (azp is not None or len(audiences) > 1) and azp != client:
         raise KeycloakError("token")
-    expires, issued = claims.get("exp"), claims.get("iat")
-    if not (_whole(expires) and _whole(issued)):
+    expires, issued, signed_in = claims.get("exp"), claims.get("iat"), claims.get("auth_time")
+    if not (_is_int(expires) and _is_int(issued) and _is_int(signed_in)):
         raise KeycloakError("token")
-    if expires + LEEWAY_SECONDS <= now or issued > now + LEEWAY_SECONDS:
+    if (
+        expires + LEEWAY_SECONDS <= now
+        or issued > now + LEEWAY_SECONDS
+        or signed_in < asked_at - LEEWAY_SECONDS
+    ):
         raise KeycloakError("token")
     given = claims.get("nonce")
     if not isinstance(given, str) or not hmac.compare_digest(given.encode(), nonce.encode()):
         raise KeycloakError("token")
-    email = claims.get("email")
+    if claims.get("acr") != REQUIRED_ACR:
+        raise KeycloakError("two_step")
+    email, organisation = claims.get("email"), claims.get("kaagaz_org")
     if claims.get("email_verified") is not True or not isinstance(email, str) or not email.strip():
         raise KeycloakError("email_unverified")
-    return email.strip().lower()
+    return email.strip().lower(), organisation if isinstance(organisation, str) else ""
 
 
 def logout_url(settings: Settings, realm: dict[str, str]) -> str:
@@ -146,9 +165,11 @@ def logout_url(settings: Settings, realm: dict[str, str]) -> str:
     return realm["end_session_endpoint"] + "?" + urllib.parse.urlencode(query)
 
 
-def _signing_key(jwks_uri: str, kid: object) -> rsa.RSAPublicKey:
-    """The realm's RSA signing key named ``kid``, else ``token``."""
-    found = _cached_json(jwks_uri)
+def _signing_key(jwks_uri: str, kid: object, *, fresh: bool = False) -> rsa.RSAPublicKey:
+    """The realm's RSA signing key named ``kid``, else ``token``. Not in the cached keys: the
+    keys once more (``fresh``), as the realm may have a new one. The token itself came from
+    the token endpoint, never from the browser, so no one can make Kaagaz fetch keys at will."""
+    found = _cached_json(jwks_uri, fresh=fresh)
     keys = found.get("keys") if isinstance(found, dict) else None
     for jwk in keys if isinstance(keys, list) and isinstance(kid, str) else []:
         if not (isinstance(jwk, dict) and jwk.get("kid") == kid and jwk.get("kty") == "RSA"):
@@ -162,13 +183,15 @@ def _signing_key(jwks_uri: str, kid: object) -> rsa.RSAPublicKey:
                 return rsa.RSAPublicNumbers(e, n).public_key()
         except (AttributeError, KeyError, ValueError):  # "n" or "e" missing or not base64url text
             pass
+    if not fresh and isinstance(kid, str):
+        return _signing_key(jwks_uri, kid, fresh=True)
     raise KeycloakError("token")
 
 
-def _cached_json(url: str) -> Any:
+def _cached_json(url: str, *, fresh: bool = False) -> Any:
     now = time.monotonic()
     kept = _cache.get(url)
-    if kept is not None and now - kept[0] < CACHE_SECONDS:
+    if kept is not None and now - kept[0] < CACHE_SECONDS and not fresh:
         return kept[1]
     value = _fetch(url, None, refused="unreachable")
     _cache[url] = (now, value)
@@ -210,16 +233,3 @@ def _fetch(url: str, data: bytes | None, *, refused: str) -> Any:
         return json.loads(body)
     except ValueError:
         raise KeycloakError("unreachable") from None
-
-
-def _whole(value: object) -> TypeGuard[int]:
-    return isinstance(value, int) and not isinstance(value, bool)
-
-
-def _b64url(raw: bytes) -> str:
-    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
-
-
-def _unb64url(text: str) -> bytes:
-    """Strict: any character outside base64url is a ValueError, never skipped."""
-    return base64.b64decode(text.encode("ascii") + b"=" * (-len(text) % 4), altchars=b"-_", validate=True)
