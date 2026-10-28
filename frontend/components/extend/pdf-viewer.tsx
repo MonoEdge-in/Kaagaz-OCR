@@ -109,6 +109,9 @@ export type PDFViewerPageOverlayProps = {
   pageHeight: number
   scale: number
   rotation: number
+  // Changed for Kaagaz (#442): the page's own turn in the file (/Rotate), in degrees. The
+  // overlay is drawn before it, so marks stored on the page as shown are turned back first.
+  fileRotation: number
 }
 export type PDFViewerHandle = {
   scrollToPage: (pageNumber: number, options?: ScrollIntoViewOptions) => void
@@ -123,6 +126,8 @@ export type PDFViewerHandle = {
     options?: ScrollToOptions
   ) => void
   getViewportElement: () => HTMLDivElement | null
+  // Changed for Kaagaz (#442): fileRotation of a page, for scrollToPageArea's frame.
+  getPageRotation: (pageNumber: number) => number
 }
 export type PDFViewerScrollAreaViewportResolver = (
   container: HTMLDivElement
@@ -2030,6 +2035,8 @@ function PDFViewerInner({
         })
       },
       getViewportElement: () => viewportElementRef.current,
+      getPageRotation: (pageNumber) =>
+        rotationToDegrees(normalizeRotation(pdfDocument?.pages[pageNumber - 1]?.rotation ?? 0)),
     }),
     [pdfDocument, scroll, scrollToPage]
   )
@@ -2216,6 +2223,7 @@ function PDFViewerInner({
               pageHeight: page.height,
               scale: currentZoomLevel,
               rotation: rotationToDegrees(pageRotation),
+              fileRotation: rotationToDegrees(basePageRotation),
             })}
           </PagePointerProvider>
         </Rotate>
