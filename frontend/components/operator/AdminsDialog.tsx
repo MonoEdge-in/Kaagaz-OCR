@@ -11,7 +11,8 @@
 import { useEffect, useState } from "react";
 import { useMinuteNow } from "@/components/chat/hooks";
 import { ActionDialog } from "@/components/documents/ActionDialog";
-import { listAdmins } from "@/lib/api";
+import { keycloakOn } from "@/app/login/signIn";
+import { currentSession, listAdmins } from "@/lib/api";
 import type { OrgAdmin, Organisation } from "@/lib/types";
 import { ConfirmDialog } from "./ConfirmDialog";
 import type { Confirm } from "./ConfirmDialog";
@@ -29,7 +30,18 @@ export function AdminsDialog({ org, onClose }: { org: Organisation; onClose(): v
   const [creating, setCreating] = useState(false);
   const [changing, setChanging] = useState<Confirm | null>(null);
   const [done, setDone] = useState("");
+  const [keycloak, setKeycloak] = useState(false); // sign-in through Keycloak (#435)
   const now = useMinuteNow();
+
+  useEffect(() => {
+    let cancelled = false;
+    currentSession()
+      .then((reply) => !cancelled && setKeycloak(keycloakOn(reply)))
+      .catch(() => {}); // no answer: Reset two-step stays, and the server refuses it while Keycloak is on
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -94,7 +106,7 @@ export function AdminsDialog({ org, onClose }: { org: Organisation; onClose(): v
                   <span className="muted">{lastSignInText(admin.last_sign_in_at, now)}</span>
                   {/* 16px between buttons: Disable and Reset two-step sit beside Enable and Unlock. */}
                   <span className={`${styles.rowActions} ${styles.spaced}`}>
-                    {adminActions(admin, org.status).map((action) => (
+                    {adminActions(admin, org.status, keycloak).map((action) => (
                       <button
                         key={action}
                         type="button"

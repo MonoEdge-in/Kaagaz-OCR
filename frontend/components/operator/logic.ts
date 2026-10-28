@@ -289,12 +289,17 @@ export function lastSignInText(iso: string | null, now: number): string {
   return when ? `Last sign-in ${when}` : "Never signed in";
 }
 
-/** Which changes fit an admin as they are now (none while the organisation is being deleted). */
-export function adminActions(admin: Pick<OrgAdmin, "two_step" | "locked" | "disabled">, orgStatus: OrgStatus) {
+/** Which changes fit an admin as they are now (none while the organisation is being deleted).
+ * No two-step reset while sign-in is through Keycloak (#435), which keeps two-step sign-in. */
+export function adminActions(
+  admin: Pick<OrgAdmin, "two_step" | "locked" | "disabled">,
+  orgStatus: OrgStatus,
+  keycloak = false,
+) {
   if (orgStatus === "deleting") return [];
   return [
     admin.disabled ? ("enable" as const) : ("disable" as const),
     ...(admin.locked ? (["unlock"] as const) : []),
-    ...(admin.two_step ? (["reset-2fa"] as const) : []),
+    ...(admin.two_step && !keycloak ? (["reset-2fa"] as const) : []),
   ];
 }

@@ -47,7 +47,8 @@ export interface Me {
     can_delete_forever: boolean; // an admin allowed this member or reviewer (never an admin)
   };
   customer: { id: string; name: string };
-  session: { scope: SessionScope };
+  // keycloak: signed in through Keycloak (#435), which asked for the password and the two-step code.
+  session: { scope: SessionScope; keycloak?: true };
 }
 
 /** "Turn on" two-step sign-in (POST /auth/admin/2fa/start). Nothing is stored yet. */

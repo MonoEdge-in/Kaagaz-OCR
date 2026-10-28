@@ -3,6 +3,7 @@
 // say when the server says no. Messages say what to do next.
 
 import { ApiError } from "@/lib/api";
+import type { Me } from "@/lib/types";
 
 export type SignInField = "email" | "password";
 
@@ -43,6 +44,36 @@ export function firstInvalid(errors: SignInErrors): SignInField | null {
   if (errors.email) return "email";
   if (errors.password) return "password";
   return null;
+}
+
+// --- Keycloak (#435) ---------------------------------------------------------------
+
+/** Where "Sign in with Keycloak" goes: the backend's start, with where to come back to. */
+export function keycloakStartPath(next: string): string {
+  return `/api/auth/keycloak/start?next=${encodeURIComponent(next)}`;
+}
+
+/** Sign-in is through Keycloak, from GET /auth/session's reply. */
+export function keycloakOn(reply: { signed_in: true; me: Me } | { signed_in: false; keycloak?: true }): boolean {
+  return reply.signed_in ? reply.me.session.keycloak === true : reply.keycloak === true;
+}
+
+const KEYCLOAK_PROBLEMS: Record<string, string> = {
+  state: "That sign-in took too long or was already used. Sign in again.",
+  cancelled: "Sign-in was cancelled. Sign in again when you are ready.",
+  unreachable: "Could not reach Keycloak. Try again in a minute.",
+  token: "Keycloak's answer could not be checked. Sign in again.",
+  email_unverified: "Your e-mail is not verified in Keycloak. Ask your admin to verify it.",
+  no_account: "There is no Kaagaz account for you, or it is turned off. Ask your organisation's admin.",
+};
+
+/** The message for ?keycloak_error=<code> after a failed Keycloak sign-in; null with none.
+ * Only these words are ever shown, never text from the address. */
+export function keycloakProblem(query: Record<string, string | string[] | undefined>): string | null {
+  const code = query.keycloak_error;
+  if (typeof code !== "string") return null;
+  const known = Object.hasOwn(KEYCLOAK_PROBLEMS, code) ? KEYCLOAK_PROBLEMS[code] : undefined;
+  return known ?? "Sign-in did not work. Sign in again.";
 }
 
 export const WRONG_DETAILS_ADVICE = "Check your e-mail and password, then try again.";

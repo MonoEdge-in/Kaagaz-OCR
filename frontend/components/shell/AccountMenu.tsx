@@ -23,7 +23,7 @@ import { ThemeToggle } from "@/components/ui/ThemeToggle";
 import { ApiError, logout, logoutEverywhere } from "@/lib/api";
 import { announceSession, leavePage } from "@/lib/sessionChannel";
 import type { Me } from "@/lib/types";
-import { signedOutPath } from "./gate";
+import { KEYCLOAK_SIGN_OUT, signedOutPath } from "./gate";
 import { initials, roleName } from "./nav";
 import styles from "./Shell.module.css";
 
@@ -80,7 +80,8 @@ export function AccountMenu({ me }: { me: Me }) {
     }
     clearStored(); // the upload tray's drops (PRD 5 U1) are this person's
     announceSession(null);
-    leavePage(signedOutPath(pathname));
+    if (me.session.keycloak === true) leavePage(KEYCLOAK_SIGN_OUT); // on to Keycloak's sign-out (#435)
+    else leavePage(signedOutPath(pathname));
   }
 
   // Issue 373: Down or Up on the avatar opens the menu and moves into it; inside, the arrow

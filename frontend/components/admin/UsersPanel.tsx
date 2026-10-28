@@ -68,12 +68,16 @@ interface Revealed {
   password: string;
 }
 
+/** keycloak: signed in through Keycloak (#435), which keeps two-step sign-in, so no two-step
+ * words or resets here. */
 export function UsersPanel({
   currentUserId,
   adminTwoStep,
+  keycloak = false,
 }: {
   currentUserId: string;
   adminTwoStep: boolean;
+  keycloak?: boolean;
 }) {
   const [attempt, setAttempt] = useState(0);
   const [users, setUsers] = useState<AdminUser[] | null>(null);
@@ -191,6 +195,7 @@ export function UsersPanel({
                     user={user}
                     isSelf={user.id === currentUserId}
                     adminTwoStep={adminTwoStep}
+                    keycloak={keycloak}
                     now={now}
                     onChanged={replace}
                     onPasswordReset={setRevealed}
@@ -203,7 +208,7 @@ export function UsersPanel({
         )}
         {users && <MoreRows shown={Math.min(cap.limit, users.length)} total={users.length} what="users" onMore={cap.showMore} />}
         {/* AD7: two-step is required for admins (0035); one without it sets it up at the next sign-in. */}
-        {users?.some((user) => user.role === "admin" && !user.totp_enabled) && (
+        {!keycloak && users?.some((user) => user.role === "admin" && !user.totp_enabled) && (
           <p className="hint">{twoStepNote()}</p>
         )}
       </section>
@@ -259,6 +264,7 @@ function UserRow({
   user,
   isSelf,
   adminTwoStep,
+  keycloak,
   now,
   onChanged,
   onPasswordReset,
@@ -267,6 +273,7 @@ function UserRow({
   user: AdminUser;
   isSelf: boolean;
   adminTwoStep: boolean;
+  keycloak: boolean;
   now: number;
   onChanged: (user: AdminUser) => void;
   onPasswordReset: (revealed: Revealed) => void;
@@ -308,7 +315,7 @@ function UserRow({
     }, "password reset.");
   };
 
-  const can = userActions(user, { isSelf, now });
+  const can = userActions(user, { isSelf, now, keycloak });
   const forever = foreverControl(user, { isSelf, adminTwoStep });
   const reason = forever.kind === "allow" ? forever.disabledReason : null;
   const selectId = `role-${user.id}`;
@@ -378,7 +385,7 @@ function UserRow({
       </td>
       <td role="cell" data-label="Status">
         <span className={styles.statusList}>
-          {userStatus(user, now).map((part) => (
+          {userStatus(user, now, keycloak).map((part) => (
             <span key={part.text} className="status-chip" data-tone={part.tone}>
               {part.text}
             </span>
