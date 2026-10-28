@@ -166,6 +166,16 @@ export function parseReason(value: string): ReviewReason | null {
   return REASON_FILTERS.find((choice) => choice.value === value)?.value ?? null;
 }
 
+/** Review's own address: ?document_id= for one document's values, &reason= for one reason.
+ * Kept in the address bar, so a document opened from a card leads back to the same list (#436). */
+export function reviewHref(documentId: string | undefined, reason: ReviewReason | null): string {
+  const params = new URLSearchParams();
+  if (documentId) params.set("document_id", documentId);
+  if (reason) params.set("reason", reason);
+  const text = params.toString();
+  return text ? `/review?${text}` : "/review";
+}
+
 /** GET /review's parameters for one page of the queue, filtered by `reason` when set. */
 export function queueParams(
   offset: number,

@@ -21,6 +21,7 @@ import Link from "next/link";
 import { memo } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { IconButton } from "@/components/ui/IconButton";
+import { useBackFrom, withFrom } from "@/lib/backLink";
 import { pageLink } from "@/lib/regions";
 import type { Citation, Mentions, RelatedDocument } from "@/lib/types";
 import {
@@ -97,6 +98,7 @@ export const SourceCard = memo(function SourceCard({
   pinned?: boolean;
   onPin?: () => void;
 }) {
+  const from = useBackFrom();
   const id = cardId(messageId, citation.n);
   const headingId = `${id}-title`;
   const prefix = `Source ${citation.n}: `;
@@ -137,13 +139,13 @@ export const SourceCard = memo(function SourceCard({
           </p>
         )}
         <div className={styles.sourceAction}>
-          <Link href={citationLink(citation, terms)} className={styles.openLink}>
+          <Link href={withFrom(citationLink(citation, terms), from)} className={styles.openLink}>
             <Icon name="open" size={16} />
             {openText(citation)}
             <span className="visually-hidden">{` of ${citation.document_name}`}</span>
           </Link>
           {jumps.map((jump) => (
-            <Link key={jump.text} className={styles.openLink} href={jump.href}>
+            <Link key={jump.text} className={styles.openLink} href={withFrom(jump.href, from)}>
               {jump.text}
               <span className="visually-hidden">{` of ${citation.document_name}`}</span>
             </Link>
@@ -167,7 +169,8 @@ export function RelatedRow({
   pinned?: boolean;
   onPin?: () => void;
 }) {
-  const href = pageLink(doc.document_id, doc.page_no, doc.regions[0], { words: linkWords(...terms) });
+  const from = useBackFrom();
+  const href = withFrom(pageLink(doc.document_id, doc.page_no, doc.regions[0], { words: linkWords(...terms) }), from);
   return (
     <article className={styles.source}>
       <div className={styles.sourceBody}>
@@ -194,6 +197,7 @@ export function RelatedRow({
  * "and N more" past the list.
  */
 export function MentionsSection({ mentions }: { mentions: Mentions }) {
+  const from = useBackFrom();
   const terms = matchTerms(...mentions.terms);
   const words = linkWords(...mentions.terms);
   const heading = `Also mentions ${mentions.terms.map((term) => `“${term}”`).join(" · ")}`;
@@ -212,7 +216,7 @@ export function MentionsSection({ mentions }: { mentions: Mentions }) {
                 <p className={styles.sourceMeta}>{mentionPages(doc.pages, doc.page_no)}</p>
                 <Marked text={doc.snippet} terms={terms} short />
                 <div className={styles.sourceAction}>
-                  <Link href={pageLink(doc.document_id, doc.page_no, undefined, { words })} className={styles.openLink}>
+                  <Link href={withFrom(pageLink(doc.document_id, doc.page_no, undefined, { words }), from)} className={styles.openLink}>
                     <Icon name="open" size={16} />
                     Open page {doc.page_no}
                     <span className="visually-hidden">{` of ${doc.document_name}`}</span>
@@ -231,8 +235,9 @@ export function MentionsSection({ mentions }: { mentions: Mentions }) {
 /** Not found's closest documents and an unchecked answer's: the same row, the name only; it
  * opens with the question's words lit (package H). */
 export function DocumentRow({ id, name, terms = [] }: { id: string; name: string; terms?: readonly string[] }) {
+  const from = useBackFrom();
   return (
-    <Link className={`${styles.source} ${styles.documentRow}`} href={documentLink(id, terms)} title={name}>
+    <Link className={`${styles.source} ${styles.documentRow}`} href={withFrom(documentLink(id, terms), from)} title={name}>
       <Icon name="file" size={16} />
       <span className={styles.sourceName}>{name}</span>
     </Link>

@@ -30,6 +30,7 @@ import { Icon } from "@/components/ui/Icon/Icon";
 import type { KIconName } from "@/components/ui/Icon/Icon";
 import { LabelChip } from "@/components/ui/LabelChip/LabelChip";
 import { ApiError, getDashboard, getReadyQuestions, listFolders, listReview } from "@/lib/api";
+import { withFrom } from "@/lib/backLink";
 import { docTypeLabel, formatDateTime, formatNumber, formatRelative } from "@/lib/format";
 import { useSession } from "@/lib/session";
 import type { ActivityEntry, Dashboard as DashboardData, Folder, ReadyQuestion } from "@/lib/types";
@@ -45,6 +46,9 @@ import {
   todayLine,
 } from "./words";
 import styles from "./Dashboard.module.css";
+
+// The documents opened from here lead back to Home (#436).
+const HOME = "/dashboard";
 
 export function Dashboard() {
   const { me } = useSession();
@@ -456,7 +460,7 @@ export function DashboardBody({ data, now }: { data: DashboardData; now: number 
                   <span className={`k-name-cell ${styles.recentName}`}>
                     <span className="k-file-ic" data-ext={extensionOf(document.display_name)} aria-hidden="true" />
                     <span className={styles.recentWords}>
-                      <Link className={`k-ellip ${styles.recentLink}`} href={`/documents/${document.id}`}>
+                      <Link className={`k-ellip ${styles.recentLink}`} href={withFrom(`/documents/${document.id}`, HOME)}>
                         {document.display_name}
                       </Link>
                       <span className="k-sub k-ellip">{docTypeLabel(document.doc_type)}</span>
@@ -530,7 +534,7 @@ function ActivityRow({ entry }: { entry: ActivityEntry }) {
           {document !== null && (
             <>
               {" "}
-              {linked ? <Link href={`/documents/${linked}`}>{document}</Link> : <span>{document}</span>}
+              {linked ? <Link href={withFrom(`/documents/${linked}`, HOME)}>{document}</Link> : <span>{document}</span>}
             </>
           )}
         </span>

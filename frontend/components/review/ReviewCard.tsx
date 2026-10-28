@@ -17,6 +17,7 @@ import { PageViewer } from "@/components/viewer/PageViewer";
 import { confidenceTip, fieldText, reasonText, voteText } from "@/components/viewer/labels";
 import { CONFIDENCE_NOTE, confidenceText, notSure, routeOrigin } from "@/components/viewer/scanned";
 import { ApiError, resolveReview } from "@/lib/api";
+import { useBackFrom, withFrom } from "@/lib/backLink";
 import { pageLink } from "@/lib/regions";
 import type { ReviewChoice, ReviewItem } from "@/lib/types";
 import { checkChoice, checkReasonsText, focusKeyAction, MAX_TYPED_LENGTH, reasonTag } from "./review";
@@ -46,6 +47,7 @@ export function ReviewCard({
   onSkip?: () => void;
 }) {
   const { value } = item;
+  const from = useBackFrom(); // the queue's address (reviewHref): the document's back link leads there (#436)
   const [typed, setTyped] = useState("");
   const [remember, setRemember] = useState(false);
   const typedRef = useRef<HTMLInputElement>(null);
@@ -53,7 +55,7 @@ export function ReviewCard({
   const [error, setError] = useState<string | null>(null);
   const idBase = `review-${value.id}`;
   const errorId = `${idBase}-error`;
-  const link = pageLink(item.document_id, value.region.page, value.region);
+  const link = withFrom(pageLink(item.document_id, value.region.page, value.region), from);
   const checks = checkReasonsText(item);
   const confidence = confidenceText(value.confidence, routeOrigin(item.page.route));
 
@@ -125,7 +127,7 @@ export function ReviewCard({
             {item.page.unit !== "cells" && (
               <>
                 {confidence && " · "}
-                <Link href={pageLink(item.document_id, value.region.page, value.region, { scanned: true })}>
+                <Link href={withFrom(pageLink(item.document_id, value.region.page, value.region, { scanned: true }), from)}>
                   See page {value.region.page}&apos;s scanned text
                 </Link>
               </>

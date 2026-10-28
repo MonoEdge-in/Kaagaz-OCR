@@ -10,6 +10,7 @@ import { useId, useState } from "react";
 import type { FormEvent } from "react";
 import { sortedVersions } from "@/components/viewer/versions";
 import { ApiError, makeCurrent, updateDocument } from "@/lib/api";
+import { withFrom } from "@/lib/backLink";
 import { formatDateTime } from "@/lib/format";
 import type { DocumentDetail, DocumentVersion } from "@/lib/types";
 import { compareHref } from "./VersionBanner";
@@ -73,7 +74,7 @@ export function VersionsPanel({ detail, onChanged }: { detail: DocumentDetail; o
             )}
             <div className={styles.versionActions}>
               {version.id !== detail.id && (
-                <Link className="btn btn-quiet" href={`/documents/${version.id}`}>
+                <Link className="btn btn-quiet" href={withFrom(`/documents/${version.id}`, `/documents/${encodeURIComponent(detail.id)}`)}>
                   {VERSION_TEXT.view}
                   <span className="visually-hidden">{` version ${version.version_no}`}</span>
                 </Link>

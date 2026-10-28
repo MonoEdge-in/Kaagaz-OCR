@@ -116,6 +116,7 @@ import { progressSignature } from "@/lib/poll";
 import { markReceived } from "@/lib/timeLeft";
 import { decodeRegion } from "@/lib/regions";
 import { useSession } from "@/lib/session";
+import { backFrom } from "@/lib/backLink";
 import type {
   DocumentDetail,
   DocumentSummary,
@@ -142,6 +143,7 @@ export interface DocumentViewProps {
   regionParam: string | null;
   scannedParam: string | null;
   wordsParam: string | null;
+  fromParam: string | null;
 }
 
 // Said after "Highlighted: <field>" when the spot came in a link (a source card, a search
@@ -155,11 +157,11 @@ type Loaded =
   | { attempt: number; detail: DocumentDetail }
   | { attempt: number; error: ReturnType<typeof loadFailure> };
 
-function BackLink() {
+function BackLink({ to }: { to: { href: string; name: string } | null }) {
   return (
-    <Link href="/documents" className={styles.back}>
+    <Link href={to?.href ?? "/documents"} className={styles.back}>
       <Icon name="chevron-left" />
-      Back to documents
+      Back to {to?.name ?? "documents"}
     </Link>
   );
 }
@@ -170,6 +172,7 @@ export function DocumentView({
   regionParam,
   scannedParam,
   wordsParam,
+  fromParam,
 }: DocumentViewProps) {
   const { me } = useSession();
   const [attempt, setAttempt] = useState(0);
@@ -304,7 +307,7 @@ export function DocumentView({
   if ("error" in current) {
     return (
       <div className="page page-wide">
-        <BackLink />
+        <BackLink to={backFrom(fromParam)} />
         <div className={styles.errorBanner} role="alert">
           <Icon name="alert" className={styles.errorIcon} />
           <div className={styles.errorBody}>
@@ -441,14 +444,16 @@ export function DocumentView({
       ? ` · ${detail.page_count} ${detail.page_count === 1 ? "page" : "pages"}`
       : "";
   const trail = detail.folder ? folderTrail(detail.folder) : [];
-  // "Back to Land & Legal": the folder it is filed in, else Documents, or Trash.
+  // "Back to chat": the screen that opened it (#436); else "Back to Land & Legal": the folder
+  // it is filed in, else Documents, or Trash.
   const folder = trail.at(-1);
   const back =
-    detail.deleted_at !== null
+    backFrom(fromParam) ??
+    (detail.deleted_at !== null
       ? { href: "/documents?trash=1", name: "Trash" }
       : folder
         ? { href: libraryHref({ ...ALL_DOCUMENTS, folderId: folder.id }), name: folder.name }
-        : { href: "/documents", name: "documents" };
+        : { href: "/documents", name: "documents" });
   const chip = statusChip(detail.status);
   // Trash means deleted: no download from there, only Restore (the Trash view).
   const download = detail.deleted_at === null ? downloadHref(detail) : null;

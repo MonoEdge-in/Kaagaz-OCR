@@ -341,7 +341,7 @@ describe("the Versions tab (V9, V10, V12)", () => {
     expect(html).toContain("Linked from a suggestion by Priya");
     expect(html).toContain("Uploaded by Priya");
     expect(html).toContain(">Current<");
-    expect(html).toContain('href="/documents/d3"');
+    expect(html).toContain('href="/documents/d3?from=%2Fdocuments%2Fd1"'); // back to version 1 (#436)
     expect(html).toContain('href="/documents/d1/compare?with=d3"');
     // Version 2 is current, so only version 1 offers Make current.
     expect(html.match(/>Make current</g)).toHaveLength(1);

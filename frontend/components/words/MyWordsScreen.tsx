@@ -17,6 +17,7 @@ import {
   FEATURE_OFF, addMyWord, changeMyWord, decideOrganizationWord, deleteMyWord, isFeatureOff,
   listMyWords, listOrganizationWords,
 } from "@/lib/api";
+import { withFrom } from "@/lib/backLink";
 import { useSession } from "@/lib/session";
 import type { MyWord, OrganizationWord } from "@/lib/types";
 import { DuplicateDialog, WordFields } from "./WordParts";
@@ -228,7 +229,7 @@ export function MyWordsScreen() {
               <li key={item.id} className={styles.group}>
                 <span className={styles.word}>{item.word}</span><span className={styles.text}>→ {item.meaning}</span>
                 {item.document_id && item.page_no && (
-                  <Link href={`/documents/${encodeURIComponent(item.document_id)}?page=${item.page_no}`}>
+                  <Link href={withFrom(`/documents/${encodeURIComponent(item.document_id)}?page=${item.page_no}`, "/words")}>
                     From document, page {item.page_no}
                   </Link>
                 )}
