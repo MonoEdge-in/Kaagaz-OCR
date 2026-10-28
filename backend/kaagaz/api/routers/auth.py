@@ -42,6 +42,12 @@
   organisation's log, the new admin as actor. No e-mail check: whoever types an address
   owns that account (PROVISIONAL). A name too short or
   an obvious test word ("asd") is a 400 (``names.org_name_ok``, UI audit G12).
+* While KEYCLOAK_ENABLED (#435): organisation users sign in through Keycloak
+  (routers/keycloak.py), so ``POST /auth/login`` is 403 ``keycloak_sign_in``, sign-up is
+  off (404, ``{enabled: false}``: a new account would have no Keycloak user), two-step
+  set-up and ``/auth/confirm-password`` are 404 (``kaagaz_sign_in_only``; Delete forever is
+  confirmed through Keycloak), and ``GET /auth/session`` with no session says
+  ``{signed_in: false, keycloak: true}`` for the sign-in page. Off, nothing here changes.
 
 Why the sign-in looks the way it does (council record 29 Sep, WP1.3):
 
@@ -91,6 +97,7 @@ from kaagaz.api.auth import (
     current_user_allow_password_change,
     feature_on,
     hash_password,
+    kaagaz_sign_in_only,
     load_user,
     new_enrol,
     new_session,
@@ -125,6 +132,7 @@ MAX_CODE = 16  # 6 digits, plus room for the spaces people type
 ENROL_FIRST = "Set up two-step sign-in to continue. Admins need it to keep your organisation safe."
 KEEP_TWO_STEP = "Admins keep two-step sign-in on to keep your organisation safe."
 ADMIN_LOGIN_GONE = "Sign in on the sign-in page. Admins and members use the same one now."
+USE_KEYCLOAK = "Sign in with Keycloak on the sign-in page."
 # Sign-ups an hour (PROVISIONAL). Behind the Next.js proxy every visitor shares the proxy's
 # address (kaagaz/api/middleware.py), so in production this is one cap for the whole site,
 # sized for real sign-ups. ponytail: site-wide cap; per-visitor once X-Forwarded-For is trusted.
@@ -179,15 +187,17 @@ class SignupBody(BaseModel):
 
 
 @router.post("/auth/login")
-def login(body: LoginBody, context: Context) -> JSONResponse:
+def login(body: LoginBody, context: Context) -> Response:
+    if context.settings.keycloak_enabled:  # nothing sent is checked (#435)
+        raise ApiError(403, "keycloak_sign_in", USE_KEYCLOAK)
     attempt = _check_password(context, body.email, body.password)
     if attempt.role != "admin":
-        return _start_session(context, attempt.customer_id, attempt.user_id, scope="app", action="auth.login")
+        return start_session(context, attempt.customer_id, attempt.user_id, scope="app", action="auth.login")
     if attempt.totp_enabled_at is None:
         if attempt.must_change_password:
             # The set-new-password screen first (current_user keeps every other route
             # shut); the next sign-in then sets up the code.
-            return _start_session(
+            return start_session(
                 context, attempt.customer_id, attempt.user_id, scope="admin", action="auth.login"
             )
         _succeeded(context, attempt)  # the password was right; no session until a code is set up
@@ -215,7 +225,7 @@ def login(body: LoginBody, context: Context) -> JSONResponse:
     if not accepted:  # another request used this code a moment ago
         _failed(context, attempt, "code_reused")
         raise _refused(context)
-    return _start_session(context, attempt.customer_id, attempt.user_id, scope="admin", action="auth.login")
+    return start_session(context, attempt.customer_id, attempt.user_id, scope="admin", action="auth.login")
 
 
 @router.post("/auth/admin/login")
@@ -224,8 +234,8 @@ def admin_login_gone() -> None:
     raise ApiError(410, "gone", ADMIN_LOGIN_GONE)
 
 
-@router.post("/auth/admin/enrol")
-def admin_enrol(body: EnrolBody, context: Context) -> JSONResponse:
+@router.post("/auth/admin/enrol", dependencies=[Depends(kaagaz_sign_in_only)])
+def admin_enrol(body: EnrolBody, context: Context) -> Response:
     now = context.clock()
     claims = read_enrol(body.enrol_token, context.settings.session_secret, _unix(now))
     if claims is None:
@@ -276,7 +286,7 @@ def admin_enrol(body: EnrolBody, context: Context) -> JSONResponse:
     if not enrolled:  # a second request with the same token, or something changed
         _failed(context, attempt, "enrol_refused")
         raise ApiError(401, "not_signed_in")
-    return _start_session(context, attempt.customer_id, attempt.user_id, scope="admin", action="auth.login")
+    return start_session(context, attempt.customer_id, attempt.user_id, scope="admin", action="auth.login")
 
 
 @router.get("/auth/signup")
@@ -285,13 +295,17 @@ def signup_open(context: Context) -> dict[str, bool]:
 
 
 def _signup_on(context: AppContext) -> bool:
-    """SELF_SIGNUP_ENABLED and the super admin's Self sign-up switch (0038)."""
-    return context.settings.self_signup_enabled and feature_on(context, "self_signup")
+    """SELF_SIGNUP_ENABLED and the super admin's Self sign-up switch (0038), while
+    KEYCLOAK_ENABLED is off (#435)."""
+    settings = context.settings
+    if not settings.self_signup_enabled or settings.keycloak_enabled:
+        return False
+    return feature_on(context, "self_signup")
 
 
 @router.post("/auth/signup", status_code=201)
 def signup(body: SignupBody, request: Request, context: Context) -> JSONResponse:
-    if not context.settings.self_signup_enabled:
+    if not context.settings.self_signup_enabled or context.settings.keycloak_enabled:
         raise ApiError(404, "not_found")
     if not signup_limits.allow(request.client.host if request.client else "-"):
         raise ApiError(429, "rate_limited", TOO_MANY_SIGNUPS, headers={"Retry-After": "3600"})
@@ -325,7 +339,7 @@ def signup(body: SignupBody, request: Request, context: Context) -> JSONResponse
     return JSONResponse(_enrol_offer(context, user), status_code=201)
 
 
-@router.post("/auth/admin/2fa/start")
+@router.post("/auth/admin/2fa/start", dependencies=[Depends(kaagaz_sign_in_only)])
 def turn_on_two_step(body: CurrentPasswordBody, user: AdminSession, context: Context) -> dict[str, str]:
     if user.totp_enabled:
         raise ApiError(409, "conflict", "Two-step sign-in is already on.")
@@ -366,7 +380,7 @@ def change_password(
     return _keep_this_browser(request, context, changed, now)
 
 
-@router.post("/auth/confirm-password", status_code=204)
+@router.post("/auth/confirm-password", status_code=204, dependencies=[Depends(kaagaz_sign_in_only)])
 def confirm_password(body: CurrentPasswordBody, user: User, context: Context) -> Response:
     if user.role == "admin" or not user.delete_forever_allowed:
         raise ApiError(403, "forbidden")  # nothing is counted
@@ -404,13 +418,14 @@ def me(user: UserAllowPasswordChange) -> dict[str, Any]:
 
 
 @router.get("/auth/session")
-def session(request: Request) -> dict[str, Any]:
-    """``/auth/me``'s checks, with no session a 200 ``{signed_in: false}``, not a 401."""
+def session(request: Request, context: Context) -> dict[str, Any]:
+    """``/auth/me``'s checks, with no session a 200 ``{signed_in: false}``, not a 401
+    (and ``keycloak: true`` while KEYCLOAK_ENABLED, #435)."""
     try:
         user = current_user_allow_password_change(request)
     except ApiError as error:
         if error.status == 401:
-            return {"signed_in": False}
+            return {"signed_in": False, **({"keycloak": True} if context.settings.keycloak_enabled else {})}
         raise
     return {"signed_in": True, "me": me_json(user)}
 
@@ -498,7 +513,7 @@ def _keep_this_browser(
     return response
 
 
-def _start_session(
+def start_session(
     context: AppContext,
     customer_id: str,
     user_id: str,
@@ -506,8 +521,12 @@ def _start_session(
     scope: str,
     action: str,
     details: dict[str, audit.DetailValue] | None = None,
-) -> JSONResponse:
-    """The ``Me`` reply and a new session cookie of this scope; clears the count."""
+    reply: Response | None = None,
+    keycloak: bool = False,
+) -> Response:
+    """``reply`` (else the ``Me`` reply) with a new session cookie of this scope, a Keycloak
+    one with ``keycloak`` (#435); clears the count. 401 ``bad_credentials`` if the user or
+    the organisation is disabled."""
     now = context.clock()
     user = load_user(context.db, customer_id, user_id, scope=scope)
     if user is None:  # disabled in the meantime
@@ -524,8 +543,9 @@ def _start_session(
         settings=context.settings,
         now=_unix(now),
         idle_hours=user.idle_hours,  # set: 24 hours, the idle timeout ends it (0040)
+        keycloak=keycloak,
     )
-    response = JSONResponse(me_json(user))
+    response = reply or JSONResponse(me_json(user))
     set_session_cookie(response, claims, context.settings, now=_unix(now))
     return response
 
@@ -565,12 +585,18 @@ def _failed(context: AppContext, attempt: AttemptRow, reason: str) -> None:
 
 
 def _audit_failure(
-    context: AppContext, customer_id: str, user_id: str, reason: str, *, locked: bool = False
+    context: AppContext,
+    customer_id: str,
+    user_id: str,
+    reason: str,
+    *,
+    locked: bool = False,
+    via: str | None = None,
 ) -> None:
+    """``via``: the sign-in that failed when not the password one ("keycloak", #435)."""
+    details: dict[str, audit.DetailValue] = {"reason": reason, **({"via": via} if via else {})}
     with context.db.customer(customer_id) as conn:
-        _record(
-            conn, customer_id, "auth.login_failed", actor=None, target=user_id, details={"reason": reason}
-        )
+        _record(conn, customer_id, "auth.login_failed", actor=None, target=user_id, details=details)
         if locked:
             _record(conn, customer_id, "auth.locked", actor=None, target=user_id)
 

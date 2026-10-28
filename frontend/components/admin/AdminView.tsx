@@ -35,6 +35,8 @@ import styles from "./Admin.module.css";
 export function AdminView({ twoStep }: { twoStep: ReactNode }) {
   const { me } = useSession();
   const gate = adminGate(me);
+  // Signed in through Keycloak (#435): no Two-step panel.
+  const keycloak = me.session.keycloak === true;
   const [active, setActive] = useState<TabId>("users");
 
   // A full page load: someone else may sign in there (critical #5).
@@ -84,12 +86,12 @@ export function AdminView({ twoStep }: { twoStep: ReactNode }) {
       </header>
       <Tabs<TabId> prefix="admin" label="Admin sections" tabs={TABS} active={active} onChange={setActive}>
         {active === "users" && (
-          <UsersPanel currentUserId={me.user.id} adminTwoStep={me.user.totp_enabled} />
+          <UsersPanel currentUserId={me.user.id} adminTwoStep={me.user.totp_enabled || keycloak} keycloak={keycloak} />
         )}
         {active === "settings" && (
           <div className={styles.panelStack}>
             <SettingsPanel />
-            {twoStep}
+            {!keycloak && twoStep}
           </div>
         )}
         {active === "departments" && <DepartmentsPanel />}

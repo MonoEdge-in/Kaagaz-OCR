@@ -131,19 +131,32 @@ def valid_model_id(name: str) -> bool:
     return MODEL_ID.fullmatch(name) is not None
 
 
-def _openrouter_base_url(value: str) -> str:
-    """OPENROUTER_BASE_URL: https, or http on a loopback host only; no user, query or
-    fragment, since the key is sent to it. Kept without a trailing slash."""
+def _secure_url(name: str, value: str) -> str:
+    """OPENROUTER_BASE_URL, KEYCLOAK_ISSUER or KEYCLOAK_REDIRECT_URI: https, or http on a
+    loopback host only; no user, query or fragment, since a key or a code is sent to it.
+    Kept without a trailing slash."""
     parts = urllib.parse.urlsplit(value)
     if parts.username is not None or parts.password is not None or parts.query or parts.fragment:
-        raise SettingsError("OPENROUTER_BASE_URL must have no user, password, query or fragment")
+        raise SettingsError(f"{name} must have no user, password, query or fragment")
     host = parts.hostname or ""
     secure = parts.scheme == "https" and bool(host)
     if not (secure or (parts.scheme == "http" and host in _LOOPBACK_HOSTS)):
-        raise SettingsError(
-            "OPENROUTER_BASE_URL must be an https URL (http only for localhost, 127.0.0.1 or ::1)"
-        )
+        raise SettingsError(f"{name} must be an https URL (http only for localhost, 127.0.0.1 or ::1)")
     return value.rstrip("/")
+
+
+# Where Keycloak sends the browser back (#435): KEYCLOAK_REDIRECT_URI must end in it.
+KEYCLOAK_CALLBACK_PATH = "/api/auth/keycloak/callback"
+
+
+def _keycloak(env: "_Env") -> tuple[str, str, str, str]:
+    """(issuer, client id, client secret, redirect URI) while KEYCLOAK_ENABLED is true (#435),
+    each checked by name; off, none is read."""
+    redirect_uri = _secure_url("KEYCLOAK_REDIRECT_URI", env.text("KEYCLOAK_REDIRECT_URI"))
+    if urllib.parse.urlsplit(redirect_uri).path != KEYCLOAK_CALLBACK_PATH:
+        raise SettingsError(f"KEYCLOAK_REDIRECT_URI must end in {KEYCLOAK_CALLBACK_PATH}")
+    issuer = _secure_url("KEYCLOAK_ISSUER", env.text("KEYCLOAK_ISSUER"))
+    return issuer, env.text("KEYCLOAK_CLIENT_ID"), env.text("KEYCLOAK_CLIENT_SECRET"), redirect_uri
 
 
 class SettingsError(Exception):
@@ -409,6 +422,14 @@ class Settings:
     db_worker_statement_timeout_seconds: int = 900
     db_worker_lock_timeout_seconds: int = 300
     db_idle_in_transaction_timeout_seconds: int = 900  # both
+    # Keycloak (#435, Tushar 28 Oct 2026): organisation users sign in through the realm
+    # (kaagaz/api/keycloak.py). Off unless "true": the /auth/keycloak routes are not there and
+    # nothing changes. The operator console keeps its own sign-in either way.
+    keycloak_enabled: bool = False
+    keycloak_issuer: str = ""  # the realm's URL, such as https://id.example.in/realms/kaagaz
+    keycloak_client_id: str = ""
+    keycloak_client_secret: str = field(default="", repr=False)
+    keycloak_redirect_uri: str = ""  # this site's address + KEYCLOAK_CALLBACK_PATH
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "Settings":
@@ -554,6 +575,8 @@ class Settings:
         )
         if queue_express_url == queue_url:
             raise SettingsError("QUEUE_EXPRESS_URL must name a queue other than QUEUE_URL")
+        keycloak_on = env.optional("KEYCLOAK_ENABLED") is not None and env.boolean("KEYCLOAK_ENABLED")
+        issuer, client_id, client_secret, redirect_uri = _keycloak(env) if keycloak_on else ("", "", "", "")
         return cls(
             database_url=env.text("DATABASE_URL"),
             db_app_role=env.text("DB_APP_ROLE"),
@@ -591,7 +614,7 @@ class Settings:
             ocr_dpi_rule=ocr_dpi_rule,
             ocr_model=ocr_model,
             openrouter_api_key=openrouter_api_key,
-            openrouter_base_url=_openrouter_base_url(env.text("OPENROUTER_BASE_URL")),
+            openrouter_base_url=_secure_url("OPENROUTER_BASE_URL", env.text("OPENROUTER_BASE_URL")),
             openrouter_providers=providers,
             openrouter_model_vendors=vendors,
             ocr_media_resolution=env.media_resolution("OCR_MEDIA_RESOLUTION"),
@@ -686,6 +709,11 @@ class Settings:
             rate_limit_per_minute=env.integer("RATE_LIMIT_PER_MINUTE"),
             chat_questions_per_minute=env.at_least("CHAT_QUESTIONS_PER_MINUTE", 1, default=20),
             log_level=env.text("LOG_LEVEL"),
+            keycloak_enabled=keycloak_on,
+            keycloak_issuer=issuer,
+            keycloak_client_id=client_id,
+            keycloak_client_secret=client_secret,
+            keycloak_redirect_uri=redirect_uri,
         )
 
 

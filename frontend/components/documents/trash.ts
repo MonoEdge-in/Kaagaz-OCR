@@ -15,19 +15,29 @@ import type { DocumentSummary, Me } from "@/lib/types";
  */
 export function canDeleteForever(me: Me): boolean {
   if (me.user.role !== "admin") return me.user.can_delete_forever;
-  return sessionScope(me) === "admin" && me.user.totp_enabled;
+  return sessionScope(me) === "admin" && twoStep(me);
 }
 
-/** A granted member or reviewer types their password before deleting for good. */
+/** Two-step sign-in: Kaagaz's own, or Keycloak's for a Keycloak session (#435). */
+function twoStep(me: Me): boolean {
+  return me.user.totp_enabled || me.session.keycloak === true;
+}
+
+/** A granted member or reviewer types their password before deleting for good; signed in
+ * through Keycloak (#435), they confirm on Keycloak's page instead (foreverConfirmsWithKeycloak). */
 export function foreverNeedsPassword(me: Me): boolean {
-  return me.user.role !== "admin" && me.user.can_delete_forever;
+  return me.user.role !== "admin" && me.user.can_delete_forever && me.session.keycloak !== true;
+}
+
+export function foreverConfirmsWithKeycloak(me: Me): boolean {
+  return me.user.role !== "admin" && me.user.can_delete_forever && me.session.keycloak === true;
 }
 
 /** What must happen first to delete forever, for the note in Trash; null if nothing. */
 export function foreverNeeds(me: Me): "admin_sign_in" | "two_step" | "not_allowed" | null {
   if (me.user.role !== "admin") return me.user.can_delete_forever ? null : "not_allowed";
   if (sessionScope(me) !== "admin") return "admin_sign_in";
-  return me.user.totp_enabled ? null : "two_step";
+  return twoStep(me) ? null : "two_step";
 }
 
 /** A row can be ticked: to move to Trash or restore, or in Trash to delete for good. */

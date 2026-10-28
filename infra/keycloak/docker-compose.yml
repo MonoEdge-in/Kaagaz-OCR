@@ -1,0 +1,24 @@
+# Keycloak for the Keycloak sign-in (#435). LAPTOP ONLY, and only when asked:
+#   docker compose -f infra/keycloak/docker-compose.yml up -d
+#   docker compose -f infra/keycloak/docker-compose.yml down
+# Its own file, not a service in docker-compose.yml: the server's stack and its checks
+# (backend/tests/test_compose_prod.py) stay exactly as they are. Production runs its own
+# Keycloak (docs/running-locally.md, 2d), never this one.
+#
+# start-dev: plain http, and a database inside the container, so the realm comes back
+# fresh from kaagaz-realm.json (made-up client and users) whenever the container is made
+# again (down, then up). Its address is the browser's and the API's (run the API on the
+# laptop, section 2b of docs/running-locally.md).
+name: kaagaz-keycloak
+
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.8.1
+    command: ["start-dev", "--import-realm", "--http-port=8180"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin # laptop placeholder
+    ports:
+      - "8180:8180"
+    volumes:
+      - ./kaagaz-realm.json:/opt/keycloak/data/import/kaagaz-realm.json:ro

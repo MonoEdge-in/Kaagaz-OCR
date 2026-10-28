@@ -18,10 +18,12 @@ export function mustChangePassword(me: Me): boolean {
  * "set_password": show only the set-new-password screen (PRD A5), in either scope.
  * "set_two_step": an admin without two-step sign-in (MFA required, 16 Oct 2026); the
  * server refuses everything else, so the browser signs out and the sign-in sets it up.
+ * Neither for a Keycloak session (#435).
  */
 export type AppGate = "set_password" | "set_two_step" | "app";
 
 export function appGate(me: Me): AppGate {
+  if (me.session.keycloak === true) return "app";
   if (mustChangePassword(me)) return "set_password";
   return me.user.role === "admin" && me.user.totp_enabled !== true ? "set_two_step" : "app";
 }
@@ -46,6 +48,21 @@ export function endedPath(pathname: string): string {
 /** The sign-in page after signing out (it says so). */
 export function signedOutPath(pathname: string): string {
   return withNote(signInPath(pathname), "signed_out");
+}
+
+/** Where a Keycloak session (#435) goes once it has ended: Keycloak's own sign-out, which
+ * comes back to the sign-in page. */
+export const KEYCLOAK_SIGN_OUT = "/api/auth/keycloak/logout";
+
+/** A Keycloak sign-in (#435) lands with signed_in=1 in the address, so the page tells the
+ * other tabs who is signed in now, as the password sign-in does: the address without it, or
+ * null when it has none. */
+export function afterKeycloakSignIn(here: { pathname: string; search: string }): string | null {
+  const query = new URLSearchParams(here.search);
+  if (query.get("signed_in") !== "1") return null;
+  query.delete("signed_in");
+  const rest = query.toString();
+  return rest ? `${here.pathname}?${rest}` : here.pathname;
 }
 
 /** The sign-in page for an admin who must set up two-step sign-in first (it says so). */

@@ -46,7 +46,13 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import RowMapping
 
 from kaagaz.api import totp
-from kaagaz.api.auth import CurrentOperator, OperatorSession, current_operator, hash_password
+from kaagaz.api.auth import (
+    CurrentOperator,
+    OperatorSession,
+    current_operator,
+    hash_password,
+    kaagaz_sign_in_only,
+)
 from kaagaz.api.context import AppContext, get_context, get_operator_db
 from kaagaz.api.errors import ApiError
 from kaagaz.api.names import ORG_NAME_PROBLEM, org_name_ok
@@ -260,7 +266,7 @@ def unlock_admin(
     return _change(db, context, operator, customer_id, user_id, "unlock", None)
 
 
-@router.post("/{customer_id}/admins/{user_id}/reset-2fa")
+@router.post("/{customer_id}/admins/{user_id}/reset-2fa", dependencies=[Depends(kaagaz_sign_in_only)])
 def reset_admin_two_step(
     customer_id: uuid.UUID,
     user_id: uuid.UUID,
@@ -269,7 +275,8 @@ def reset_admin_two_step(
     db: OperatorDb,
     context: Context,
 ) -> dict[str, Any]:
-    """Two-step off (the password alone signs in again), every session ends."""
+    """Two-step off (the password alone signs in again), every session ends. 404 while
+    KEYCLOAK_ENABLED (#435)."""
     step_up = _step_up(db, context, operator, body.code)
     return _change(db, context, operator, customer_id, user_id, "reset_totp", step_up)
 

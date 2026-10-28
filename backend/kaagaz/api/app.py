@@ -39,6 +39,7 @@ from kaagaz.api.routers import (
     ensemble,
     folders,
     health,
+    keycloak,
     operator,
     operator_activity,
     operator_insights,
@@ -142,6 +143,8 @@ def create_app(
         operator_insights.router,
     ):
         app.include_router(router, prefix="/api")
+    if settings.keycloak_enabled:  # off, its routes are not there at all (#435)
+        app.include_router(keycloak.router, prefix="/api")
     return app
 
 

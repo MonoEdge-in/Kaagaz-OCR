@@ -138,17 +138,18 @@ export interface StatusPart {
 /**
  * The status column: Active, "Locked until 14:05" or Disabled, then "Two-step on"
  * or "Two-step off" (off is only worth saying for an admin, who can turn it on for
- * the admin screen), then "Temporary password" until the user sets their own.
+ * the admin screen), then "Temporary password" until the user sets their own. With
+ * `keycloak` (#435) no two-step words.
  */
-export function userStatus(user: AdminUser, now: number): StatusPart[] {
+export function userStatus(user: AdminUser, now: number, keycloak = false): StatusPart[] {
   const parts: StatusPart[] = [];
   if (user.disabled) parts.push({ text: "Disabled", tone: "danger" });
   else if (user.locked_until !== null && isLocked(user, now)) {
     parts.push({ text: lockedUntilText(user.locked_until), tone: "danger" });
   } else parts.push({ text: "Active", tone: "ready" });
   // Plain words (25 Oct 2026): "Two-step", as the rest of the product says, not "2FA".
-  if (user.totp_enabled) parts.push({ text: "Two-step on", tone: "neutral" });
-  else if (user.role === "admin") parts.push({ text: "Two-step off", tone: "neutral" });
+  if (!keycloak && user.totp_enabled) parts.push({ text: "Two-step on", tone: "neutral" });
+  else if (!keycloak && user.role === "admin") parts.push({ text: "Two-step off", tone: "neutral" });
   if (user.must_change_password) parts.push({ text: "Temporary password", tone: "neutral" });
   if (user.can_delete_forever) parts.push({ text: "Can delete forever", tone: "neutral" });
   return parts;
@@ -164,11 +165,12 @@ export interface UserActions {
 /**
  * Which buttons a row shows. Nothing on the admin's own row: they cannot
  * disable themselves or reset their own 2FA (the server refuses both), and
- * they change their own password by signing in with it.
+ * they change their own password by signing in with it. No two-step reset with
+ * `keycloak` (#435): the server refuses it.
  */
 export function userActions(
   user: AdminUser,
-  { isSelf, now }: { isSelf: boolean; now: number },
+  { isSelf, now, keycloak = false }: { isSelf: boolean; now: number; keycloak?: boolean },
 ): UserActions {
   if (isSelf) {
     return { toggleDisabled: false, unlock: false, resetPassword: false, reset2fa: false };
@@ -177,7 +179,7 @@ export function userActions(
     toggleDisabled: true,
     unlock: isLocked(user, now),
     resetPassword: true,
-    reset2fa: user.totp_enabled,
+    reset2fa: user.totp_enabled && !keycloak,
   };
 }
 

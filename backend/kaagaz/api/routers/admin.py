@@ -63,7 +63,13 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import Connection, RowMapping
 
-from kaagaz.api.auth import AdminSession, CurrentUser, hash_password, require_admin_session
+from kaagaz.api.auth import (
+    AdminSession,
+    CurrentUser,
+    hash_password,
+    kaagaz_sign_in_only,
+    require_admin_session,
+)
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.readers import usable
@@ -250,9 +256,10 @@ def reset_password(user_id: uuid.UUID, user: AdminSession, context: Context) -> 
     return {"user": admin_user(row, now=context.clock()), "temporary_password": temporary}
 
 
-@router.post("/admin/users/{user_id}/reset-2fa")
+@router.post("/admin/users/{user_id}/reset-2fa", dependencies=[Depends(kaagaz_sign_in_only)])
 def reset_two_step(user_id: uuid.UUID, user: AdminSession, context: Context) -> dict[str, Any]:
-    """Turn a user's two-step code off, so their password alone signs in again."""
+    """Turn a user's two-step code off, so their password alone signs in again. 404 while
+    KEYCLOAK_ENABLED (#435)."""
     target = str(user_id)
     if target == user.user_id:
         raise ApiError(
@@ -275,7 +282,7 @@ def set_delete_forever(
     user_id: uuid.UUID, body: DeleteForeverBody, user: AdminSession, context: Context
 ) -> dict[str, Any]:
     """Allow or stop a member's or reviewer's Delete forever. Audited with ids only."""
-    if body.allowed and not user.totp_enabled:
+    if body.allowed and not (user.totp_enabled or user.keycloak):  # Keycloak's two-step counts (#435)
         raise ApiError(403, "two_step_required", "Turn on two-step sign-in in Admin, Settings to allow this.")
     target = str(user_id)
     with context.db.customer(user.customer_id) as conn:

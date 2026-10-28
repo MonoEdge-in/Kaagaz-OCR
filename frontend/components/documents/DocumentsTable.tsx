@@ -36,6 +36,7 @@
 import Link from "next/link";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent, RefCallback } from "react";
+import { keycloakStartPath } from "@/app/login/signIn";
 import { extensionOf } from "@/components/dashboard/words";
 import { LabelChip } from "@/components/files/LabelChip";
 import { FILES_TEXT, NEWER_SPOKEN, versionCell } from "@/components/files/words";
@@ -87,6 +88,7 @@ import {
   bulkTrashQuestion,
   canDeleteForever,
   deletedForeverMessage,
+  foreverConfirmsWithKeycloak,
   foreverNeedsPassword,
   foreverQuestion,
   lostTheRight,
@@ -209,6 +211,7 @@ export function DocumentsTable({
   const { refresh } = useSession();
   const canForever = canDeleteForever(me);
   const askPassword = foreverNeedsPassword(me);
+  const askKeycloak = foreverConfirmsWithKeycloak(me);
   // Read again (PRD 5 U2): a reviewer or an admin, for a document that can be read again.
   const readable = useCallback(
     (item: DocumentSummary) => !inTrash && canReprocess(me.user.role, item),
@@ -417,6 +420,7 @@ export function DocumentsTable({
               readable={readable(document)}
               canForever={canForever}
               askPassword={askPassword}
+              askKeycloak={askKeycloak}
               selected={selectedIds.has(document.id)}
               onToggle={toggle}
               tree={tree}
@@ -513,6 +517,7 @@ export function DocumentsTable({
                     ? bulkReadQuestion(readableIds.length)
                     : bulkTrashQuestion(restorableIds.length)}
               </span>
+              {confirming === "forever" && askKeycloak && <KeycloakConfirm />}
               {confirming === "forever" && askPassword && (
                 <PasswordField
                   id="bulk-forever-password"
@@ -614,6 +619,21 @@ const BUSY_WORDS: Record<BulkAction, string> = {
 };
 
 /** The server's words for a refusal, else a hint about the connection. */
+/** A member allowed to delete forever, signed in through Keycloak (#435): in place of their
+ * password, they confirm it is them on Keycloak's page, which brings them back here; then
+ * Delete forever works for 5 minutes. Shown only in an open dialog, so the address is known. */
+function KeycloakConfirm() {
+  const here = `${window.location.pathname}${window.location.search}`;
+  return (
+    <p className="hint">
+      Confirm it is you first, then delete within 5 minutes.{" "}
+      <a className="btn" href={keycloakStartPath(here, true)}>
+        Confirm with Keycloak
+      </a>
+    </p>
+  );
+}
+
 function errorText(caught: unknown): string {
   return caught instanceof ApiError ? caught.message : "Check your connection, then try again.";
 }
@@ -649,6 +669,7 @@ const DocumentRow = memo(function DocumentRow({
   readable,
   canForever,
   askPassword,
+  askKeycloak,
   selected,
   onToggle,
   tree,
@@ -665,6 +686,7 @@ const DocumentRow = memo(function DocumentRow({
   readable: boolean; // it may be read again (canReprocess): its status cell may offer Retry
   canForever: boolean;
   askPassword: boolean;
+  askKeycloak: boolean; // confirms through Keycloak instead (#435)
   selected: boolean;
   onToggle: (id: string) => void;
   tree: FolderTree;
@@ -987,6 +1009,7 @@ const DocumentRow = memo(function DocumentRow({
           >
             <div className={library.dialogForm}>
               <p>{question}</p>
+              {confirming === "forever" && askKeycloak && <KeycloakConfirm />}
               {confirming === "forever" && askPassword && (
                 <PasswordField
                   id={`forever-password-${document.id}`}

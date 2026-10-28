@@ -20,7 +20,14 @@
 import { usePathname, useRouter } from "next/navigation";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { appGate, endedPath, pageAfterSessionChange, signInPath, twoStepPath } from "@/components/shell/gate";
+import {
+  afterKeycloakSignIn,
+  appGate,
+  endedPath,
+  pageAfterSessionChange,
+  signInPath,
+  twoStepPath,
+} from "@/components/shell/gate";
 import { SetPasswordScreen } from "@/components/shell/SetPasswordScreen";
 import styles from "@/components/shell/Shell.module.css";
 import { ApiError, currentSession, logout, onSessionEnded } from "./api";
@@ -83,6 +90,15 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     if (hadSession.current) leavePage(endedPath(pathname));
     else router.replace(signInPath(pathname));
   }, [state.kind, router, pathname]);
+
+  // Just signed in through Keycloak (#435): the other tabs hear who it is, once.
+  useEffect(() => {
+    if (state.kind !== "signed_in") return;
+    const clean = afterKeycloakSignIn(window.location);
+    if (clean === null) return;
+    announceSession(state.me.user.id);
+    window.history.replaceState(null, "", clean);
+  }, [state]);
 
   // Another tab signed out, or someone else signed in (lib/sessionChannel.ts).
   // Heard from the start: a tab that does not know yet who is signed in
