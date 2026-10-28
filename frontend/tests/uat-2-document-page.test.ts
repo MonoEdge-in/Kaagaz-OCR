@@ -89,10 +89,12 @@ describe("#417 a [?] in the Text view: type the word in its place, right there",
     expect(panel).toContain("const toFix = first && onFix ?");
   });
 
+  // Changed on purpose (#431): the box asks for the word Fix text works on (ask, the line as shown
+  // for the line's own flag), and while it is open the row's Fix text steps aside (fix-text-431.test.ts).
   it("opens the box under the line from a press on the line or Fix text, labelled by its hint", () => {
-    expect(panel).toMatch(/onShow\(\{ name: `line \$\{index \+ 1\}`, region: line\.region, label: null \}\);\s*if \(toFix\) openFix\(toFix\);/);
-    expect(panel).toContain("aria-expanded={box !== null}");
-    expect(panel).toMatch(/<label className=\{styles\.fixLabel\} htmlFor=\{`\$\{boxId\}-text`\}>\s*\{fixBox\(toFix\)\.hint\}/);
+    expect(panel).toMatch(/onShow\(\{ name: `line \$\{index \+ 1\}`, region: line\.region, label: null \}\);\s*if \(toFix && ask\) openFix\(toFix, ask\.draft\);/);
+    expect(panel).toContain("aria-expanded={false}");
+    expect(panel).toMatch(/<label className=\{styles\.fixLabel\} htmlFor=\{`\$\{boxId\}-text`\}>\s*\{ask\.hint\}/);
     expect(panel).toMatch(/<input\s+ref=\{fixInput\}\s+id=\{`\$\{boxId\}-text`\}/);
     // [Cancel] [Primary]; Esc in the field closes the box (not the panel); focus goes back to the line.
     expect(panel.indexOf(">\n                            Cancel")).toBeLessThan(panel.indexOf(">\n                            Save"));
@@ -107,8 +109,13 @@ describe("#417 a [?] in the Text view: type the word in its place, right there",
     expect(view).toContain("if (done.ok || done.reload) review.reload();");
     expect(view).toContain("onFix={review.status?.can_review && detail.deleted_at === null ? fixWord : undefined}");
     const sheet = css("components/viewer/ScannedText.module.css");
-    expect(sheet).toMatch(/\.fixRow \{[^}]*flex-wrap: wrap;[^}]*min-width: 0;/);
-    expect(sheet).toMatch(/\.fixInput \{[^}]*min-width: 0;/);
+    // Changed on purpose (#431, Tushar 28 Oct 2026): the field on its own line, Cancel and Save
+    // together under it, so Save never drops onto a line of its own in a narrow panel.
+    expect(sheet).toMatch(/\.fixInput \{[^}]*width: 100%;[^}]*min-width: 0;/);
+    expect(sheet).toMatch(/\.fixActions \{[^}]*display: flex;/);
+    expect(sheet).not.toMatch(/\.fixActions \{[^}]*flex-wrap/);
+    const panel = read("components/viewer/ScannedTextPanel.tsx");
+    expect(panel).toMatch(/<div className=\{styles\.fixActions\}>\s*<button type="button" className="btn"[\s\S]*?Cancel[\s\S]*?Save\s*<\/button>\s*<\/div>/);
   });
 });
 

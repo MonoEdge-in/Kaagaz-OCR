@@ -18,6 +18,7 @@
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 import type { RefObject } from "react";
 import { FlagText } from "@/components/review/FlagText";
+import { Icon } from "@/components/ui/Icon";
 import {
   EXIT_LABEL,
   HISTORY_FILTERS,
@@ -371,31 +372,39 @@ export function ReviewPanel(props: ReviewPanelProps) {
             </div>
           )}
 
-          <ul className={styles.list} aria-label="Flagged words">
-            {flags.map((each) => (
-              <li key={each.word_key} className={styles.item} aria-current={each.word_key === flag?.word_key ? "true" : undefined}>
-                {selectable && (
-                  <input
-                    type="checkbox"
-                    aria-label={`Select '${each.text}' for Ensemble`}
-                    checked={selected.has(each.word_key)}
-                    onChange={(event) => {
-                      const native = event.nativeEvent as MouseEvent;
-                      const from = native.shiftKey ? lastPicked.current : null;
-                      setSelected(selectRange(keys, selected, from, each.word_key, event.target.checked));
-                      lastPicked.current = each.word_key;
-                    }}
-                  />
-                )}
-                <button type="button" className={styles.itemButton} onClick={() => onCurrent(each.word_key)}>
-                  <FlagText flag={each} />
-                  <span className={styles.itemMeta}>
-                    Page {each.page_no} · {stateText(each)}
-                  </span>
-                </button>
-              </li>
-            ))}
-          </ul>
+          {/* #432: the list starts shut, one row with its count; it stays as the person left it
+              while they work through the words (the panel stays mounted). */}
+          <details className={styles.listToggle}>
+            <summary className={styles.listSummary}>
+              <Icon name="chevron-right" size={16} className={styles.listChevron} />
+              Flagged words <span className="tabular">({flags.length.toLocaleString("en-IN")})</span>
+            </summary>
+            <ul className={styles.list} aria-label="Flagged words">
+              {flags.map((each) => (
+                <li key={each.word_key} className={styles.item} aria-current={each.word_key === flag?.word_key ? "true" : undefined}>
+                  {selectable && (
+                    <input
+                      type="checkbox"
+                      aria-label={`Select '${each.text}' for Ensemble`}
+                      checked={selected.has(each.word_key)}
+                      onChange={(event) => {
+                        const native = event.nativeEvent as MouseEvent;
+                        const from = native.shiftKey ? lastPicked.current : null;
+                        setSelected(selectRange(keys, selected, from, each.word_key, event.target.checked));
+                        lastPicked.current = each.word_key;
+                      }}
+                    />
+                  )}
+                  <button type="button" className={styles.itemButton} onClick={() => onCurrent(each.word_key)}>
+                    <FlagText flag={each} />
+                    <span className={styles.itemMeta}>
+                      Page {each.page_no} · {stateText(each)}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </details>
           {selectable && selected.size > 0 && (
             <div className={styles.selection}>
               <span className="tabular">{selected.size.toLocaleString("en-IN")} selected</span>

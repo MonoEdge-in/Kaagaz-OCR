@@ -431,6 +431,15 @@
   border: 2px dotted var(--border-strong);
 }
 
+/* Issue 431: the reading problem under words a person settled: the same pattern, in green. */
+.problem[data-state="checked"] {
+  border-color: var(--verified-on-paper);
+}
+
+.problem[data-quality="illegible"][data-state="checked"] {
+  background: color-mix(in srgb, var(--verified-on-paper) 18%, transparent);
+}
+
 /* DD9: "Show reading problems" is a toolbar toggle; its legend is a tooltip under it, shown
    on hover or focus, never over the button, never catching the pointer. */
 .problemTool {
@@ -549,6 +558,21 @@
   content: "!" / "";
   color: var(--illegible-on-paper);
   border: 1px solid var(--illegible-on-paper);
+}
+
+/* Issue 431: a word a person fixed or confirmed (or Ensemble resolved) turns green with a tick,
+   the paper-fixed green (5.3:1 on white, both themes); undone, it is open and red again. */
+.flag[data-state="reviewed"],
+.flag[data-state="resolved"] {
+  border-bottom: 2px solid var(--verified-on-paper);
+}
+
+.flag[data-state="reviewed"]::after,
+.flag[data-state="resolved"]::after {
+  content: "✓";
+  content: "✓" / "";
+  color: var(--verified-on-paper);
+  border: 1px solid var(--verified-on-paper);
 }
 
 /* In Ensemble now: a hairline dashed outline, subtle; the word stays pressable. */

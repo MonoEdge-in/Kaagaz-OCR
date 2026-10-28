@@ -196,17 +196,42 @@ export function fixBox(flag: Pick<WordFlag, "text">): { hint: string; draft: str
 }
 
 /**
+ * The flagged word a line's Fix text works on (#431): a word mark ([?] or an unsure word) before
+ * the line's own flag (a line whose spot is not confirmed also holds its marks, and comes first),
+ * so a Save replaces that word, never the whole line; the line's own flag once its words are done.
+ */
+export function wordToFix<T extends Pick<WordFlag, "kind" | "region">>(
+  flags: readonly T[],
+  line: Pick<ReadLine, "region">,
+): T | undefined {
+  const inLine = flags.filter((each) => lineMarked(each, line.region));
+  return inLine.find((each) => each.kind === "mark") ?? inLine[0];
+}
+
+/** What a Save in the fix box settles (#431): the word, and its line's own flag when the line is
+ * only that word (a signature read as [?]: one word on the page, flagged twice). */
+export function fixesFor<T extends Pick<WordFlag, "kind" | "region" | "text">>(flag: T, flags: readonly T[]): T[] {
+  const lineIsWord = (each: T) =>
+    each !== flag && each.kind === "line" && each.text === flag.text && lineMarked(flag, each.region);
+  return [flag, ...flags.filter(lineIsWord)];
+}
+
+/**
  * The line as read with the words people fixed in it (Vrushit UAT, 25 Oct 2026: a "[?]" typed
  * in through Fix text). The line's flagged words, fixed or not, are walked left to right on the
  * page, each matched to the next place its text as read appears, so a line with two "[?]" gets
- * each fix in its own place; a word not fixed keeps its place and its text as read.
+ * each fix in its own place; a word not fixed keeps its place and its text as read. The line's
+ * own flag counts only once a person typed it (#431: as read, it is the whole line, and would
+ * hide the words fixed in it).
  */
 export function withFixes(
   line: Pick<ReadLine, "text" | "region">,
-  words: readonly Pick<WordFlag, "region" | "as_read" | "text">[],
+  words: readonly (Pick<WordFlag, "region" | "as_read" | "text"> & { kind?: WordFlag["kind"] })[],
 ): string {
   const left = (word: Pick<WordFlag, "region">) => (word.region.kind === "box" ? word.region.box[0] : 0);
-  const inLine = words.filter((word) => lineMarked(word, line.region)).sort((a, b) => left(a) - left(b));
+  const inLine = words
+    .filter((word) => lineMarked(word, line.region) && !(word.kind === "line" && word.text === word.as_read))
+    .sort((a, b) => left(a) - left(b));
   let text = line.text;
   let from = 0;
   for (const word of inLine) {

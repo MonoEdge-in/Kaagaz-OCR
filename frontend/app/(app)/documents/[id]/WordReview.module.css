@@ -334,6 +334,36 @@
 
 /* --- Flagged words list and its selection ------------------------------------- */
 
+/* Issue 432: the list is shut at first, one row with its count (Related documents' pattern). */
+.listSummary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--control-min);
+  font-weight: 600;
+  list-style: none;
+  cursor: pointer;
+}
+
+.listSummary::-webkit-details-marker {
+  display: none;
+}
+
+.listChevron {
+  flex: none;
+  color: var(--text-secondary);
+}
+
+.listToggle[open] > .listSummary .listChevron {
+  transform: rotate(90deg);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .listChevron {
+    transition: transform var(--t-med) var(--ease);
+  }
+}
+
 .list {
   display: flex;
   flex-direction: column;

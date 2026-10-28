@@ -159,17 +159,16 @@
   font-size: var(--fs-base);
 }
 
-.fixRow {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2);
+.fixInput {
+  width: 100%;
   min-width: 0;
 }
 
-.fixInput {
-  flex: 1 1 12rem;
-  min-width: 0;
+/* Cancel and Save side by side under the field: Save never drops onto a line of its own. */
+.fixActions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
 }
 
 .lineMeta {
