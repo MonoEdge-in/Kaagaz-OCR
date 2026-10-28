@@ -424,6 +424,47 @@ its output; until then it is NOT RUN.
   run `pg_restore --list` on its newest dump, then detach and delete the
   volume.
 
+## 2d. Keycloak sign-in (#435, off unless `KEYCLOAK_ENABLED=true`)
+
+Organisation users (admins, reviewers, members) sign in on Keycloak's page, which asks
+for the password and the two-step code; Kaagaz then starts its usual session. The
+operator console keeps its own sign-in and two-step. While on, Kaagaz's own password
+sign-in, sign-up and two-step set-up are off, and turning it on (or off) signs everyone
+out once. A Keycloak user signs in only if their verified e-mail is an enabled Kaagaz
+user's: add the person in Admin as today (the password typed there is never used), and
+in Keycloak with the same e-mail, marked verified.
+
+**On the laptop.** `docker compose -f infra/keycloak/docker-compose.yml up -d` starts Keycloak at
+http://localhost:8180 (console user `admin`, password `admin`) with the made-up realm
+`kaagaz` from `infra/keycloak/kaagaz-realm.json`: the client `kaagaz-web` and two users
+for the demo e-mails `admin@` and `member@sharma-traders.example` (passwords
+`laptop-only-made-up-1` and `-2`; each sets up an authenticator app at the first
+sign-in). Run the API on the laptop (2b), so it reaches Keycloak at the same address as
+the browser, with `KEYCLOAK_ENABLED=true` and `KEYCLOAK_CLIENT_SECRET=laptop-only-made-up-kaagaz-web-secret`
+(the other `KEYCLOAK_*` values in `.env.example` already fit). Stop it with
+`docker compose -f infra/keycloak/docker-compose.yml down`; the realm comes back fresh on
+the next start.
+
+**On the server (Vrushit).** Nothing in `docker-compose.prod.yml`, Caddy or the deploy
+changes; Keycloak runs on its own:
+
+1. Run Keycloak in production mode (`start`, not `start-dev`) at its own https address
+   (for example `https://id.<domain>`), with its own PostgreSQL database (not Kaagaz's),
+   TLS, and a first admin account whose password lives only in the password manager.
+2. Make the realm, then the client: OpenID Connect, Client authentication on
+   (confidential), only Standard flow on, PKCE method S256, Valid redirect URI
+   `https://<domain>/api/auth/keycloak/callback`, Valid post logout redirect URI
+   `https://<domain>/login?signed_out=1`. Copy the client secret from Credentials.
+3. Make two-step sign-in a must for everyone: in Authentication, copy the browser flow,
+   set its OTP Form to Required, and bind the copy as the browser flow (the OTP policy is
+   TOTP, 6 digits, 30 seconds). Turn self-registration off, and keep "Verify email" on or
+   mark each user's e-mail verified: Kaagaz refuses an unverified e-mail.
+4. Add each person with the e-mail of their Kaagaz account.
+5. Set in Kaagaz's `.env`: `KEYCLOAK_ENABLED=true`, `KEYCLOAK_ISSUER=https://id.<domain>/realms/<realm>`,
+   `KEYCLOAK_CLIENT_ID`, `KEYCLOAK_CLIENT_SECRET`, `KEYCLOAK_REDIRECT_URI=https://<domain>/api/auth/keycloak/callback`;
+   check settings (CLAUDE.md, "Check settings before a deploy"), then deploy. The API must
+   reach the issuer's address from the server.
+
 ## 3. Demo customers
 
 With the database migrated, in Docker:

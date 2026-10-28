@@ -1,0 +1,58 @@
+{
+  "realm": "kaagaz",
+  "displayName": "Kaagaz (laptop only)",
+  "enabled": true,
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "resetPasswordAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "otpPolicyType": "totp",
+  "otpPolicyAlgorithm": "HmacSHA1",
+  "otpPolicyDigits": 6,
+  "otpPolicyPeriod": 30,
+  "clients": [
+    {
+      "clientId": "kaagaz-web",
+      "name": "Kaagaz",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "laptop-only-made-up-kaagaz-web-secret",
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "frontchannelLogout": false,
+      "redirectUris": ["http://localhost:3000/api/auth/keycloak/callback"],
+      "webOrigins": [],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:3000/login?signed_out=1"
+      }
+    }
+  ],
+  "users": [
+    {
+      "username": "asha.admin",
+      "email": "admin@sharma-traders.example",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Asha",
+      "lastName": "Admin",
+      "credentials": [{ "type": "password", "value": "laptop-only-made-up-1", "temporary": false }],
+      "requiredActions": ["CONFIGURE_TOTP"]
+    },
+    {
+      "username": "ravi.member",
+      "email": "member@sharma-traders.example",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Ravi",
+      "lastName": "Member",
+      "credentials": [{ "type": "password", "value": "laptop-only-made-up-2", "temporary": false }],
+      "requiredActions": ["CONFIGURE_TOTP"]
+    }
+  ]
+}
