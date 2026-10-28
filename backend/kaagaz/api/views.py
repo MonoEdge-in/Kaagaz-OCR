@@ -838,7 +838,8 @@ def conversation_summary(row: RowMapping) -> dict[str, Any]:
 
 def me_json(user: CurrentUser) -> dict[str, Any]:
     """``Me``: who is signed in, their customer, and the session's scope ("app" for a
-    member or reviewer, "admin" for an admin; the screen shows Admin only for "admin")."""
+    member or reviewer, "admin" for an admin; the screen shows Admin only for "admin"), and
+    ``keycloak: true`` for a Keycloak session (#435; left out otherwise)."""
     return {
         "user": {
             "id": user.user_id,
@@ -850,7 +851,7 @@ def me_json(user: CurrentUser) -> dict[str, Any]:
             "can_delete_forever": user.delete_forever_allowed and user.role != "admin",  # the grant
         },
         "customer": {"id": user.customer_id, "name": user.customer_name},
-        "session": {"scope": user.scope},
+        "session": {"scope": user.scope, **({"keycloak": True} if user.keycloak else {})},
     }
 
 
