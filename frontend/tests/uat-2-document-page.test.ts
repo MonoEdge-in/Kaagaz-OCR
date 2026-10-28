@@ -109,8 +109,13 @@ describe("#417 a [?] in the Text view: type the word in its place, right there",
     expect(view).toContain("if (done.ok || done.reload) review.reload();");
     expect(view).toContain("onFix={review.status?.can_review && detail.deleted_at === null ? fixWord : undefined}");
     const sheet = css("components/viewer/ScannedText.module.css");
-    expect(sheet).toMatch(/\.fixRow \{[^}]*flex-wrap: wrap;[^}]*min-width: 0;/);
-    expect(sheet).toMatch(/\.fixInput \{[^}]*min-width: 0;/);
+    // Changed on purpose (#431, Tushar 28 Oct 2026): the field on its own line, Cancel and Save
+    // together under it, so Save never drops onto a line of its own in a narrow panel.
+    expect(sheet).toMatch(/\.fixInput \{[^}]*width: 100%;[^}]*min-width: 0;/);
+    expect(sheet).toMatch(/\.fixActions \{[^}]*display: flex;/);
+    expect(sheet).not.toMatch(/\.fixActions \{[^}]*flex-wrap/);
+    const panel = read("components/viewer/ScannedTextPanel.tsx");
+    expect(panel).toMatch(/<div className=\{styles\.fixActions\}>\s*<button type="button" className="btn"[\s\S]*?Cancel[\s\S]*?Save\s*<\/button>\s*<\/div>/);
   });
 });
 

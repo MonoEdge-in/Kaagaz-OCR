@@ -293,24 +293,25 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
                         <label className={styles.fixLabel} htmlFor={`${boxId}-text`}>
                           {ask.hint}
                         </label>
-                        <div className={styles.fixRow}>
-                          <input
-                            ref={fixInput}
-                            id={`${boxId}-text`}
-                            className={`input ${styles.fixInput}`}
-                            type="text"
-                            dir="auto"
-                            autoComplete="off"
-                            spellCheck={false}
-                            value={box.text}
-                            onChange={(event) => setFixing({ ...box, text: event.target.value, error: null })}
-                            onKeyDown={(event) => {
-                              if (event.key !== "Escape") return;
-                              event.preventDefault();
-                              event.stopPropagation(); // Esc here closes the box, not the panel
-                              closeFix(index);
-                            }}
-                          />
+                        <input
+                          ref={fixInput}
+                          id={`${boxId}-text`}
+                          className={`input ${styles.fixInput}`}
+                          type="text"
+                          dir="auto"
+                          autoComplete="off"
+                          spellCheck={false}
+                          value={box.text}
+                          onChange={(event) => setFixing({ ...box, text: event.target.value, error: null })}
+                          onKeyDown={(event) => {
+                            if (event.key !== "Escape") return;
+                            event.preventDefault();
+                            event.stopPropagation(); // Esc here closes the box, not the panel
+                            closeFix(index);
+                          }}
+                        />
+                        {/* Save and Cancel stay together under the field, however narrow the panel. */}
+                        <div className={styles.fixActions}>
                           <button type="button" className="btn" onClick={() => closeFix(index)}>
                             Cancel
                           </button>
