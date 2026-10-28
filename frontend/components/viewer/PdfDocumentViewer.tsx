@@ -199,7 +199,7 @@ export function PdfDocumentViewer({
     // The page's size here is already zoomed, and before its file's own turn (#442).
     ({ pageNumber, pageWidth, pageHeight, fileRotation }: PDFViewerPageOverlayProps) => {
       const place = (box: readonly [number, number, number, number]) => {
-        const px = markerRect(box, pageWidth, pageHeight, fileRotation);
+        const px = markerRect(unturnedBox(box, fileRotation), pageWidth, pageHeight);
         return { left: px.left, top: px.top, width: px.width, height: px.height };
       };
       const problems = marksOnPage(readingMarks, pageNumber);

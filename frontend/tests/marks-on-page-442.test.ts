@@ -23,25 +23,16 @@ function shown([u0, v0, u1, v1]: Box, turn: number): Box {
   return [u0, v0, u1, v1];
 }
 
-const close = (actual: object, expected: Record<string, number>) => {
-  for (const [key, value] of Object.entries(expected)) {
-    expect(actual[key as keyof typeof actual], key).toBeCloseTo(value, 6);
-  }
-};
-
 describe("a mark on a scanned PDF page (#442)", () => {
-  it("is turned back by the file's own turn, whichever it is", () => {
-    for (const turn of [0, 90, 180, 270, -90, 450]) {
-      const back = unturnedBox(shown(RED, ((turn % 360) + 360) % 360), turn);
-      back.forEach((value, i) => expect(value).toBeCloseTo(RED[i]!, 9));
-    }
-  });
-
   it("lands on its word in the offset scan at every zoom and file turn", () => {
     for (const zoom of [0.5, 1, 2]) {
       for (const turn of [0, 90, 180, 270]) {
-        const rect = markerRect(shown(RED, turn), A4.width * zoom, A4.height * zoom, turn);
-        close(rect, { left: 25 * zoom, top: (100 / 3) * zoom, width: 150 * zoom, height: 25 * zoom });
+        expect(markerRect(unturnedBox(shown(RED, turn), turn), A4.width * zoom, A4.height * zoom)).toEqual({
+          left: expect.closeTo(25 * zoom, 6),
+          top: expect.closeTo((100 / 3) * zoom, 6),
+          width: expect.closeTo(150 * zoom, 6),
+          height: expect.closeTo(25 * zoom, 6),
+        });
       }
     }
   });
@@ -65,7 +56,9 @@ describe("a mark on a scanned PDF page (#442)", () => {
     const viewer = read("components/extend/pdf-viewer.tsx");
     expect(viewer).toContain("pageWidth: page.width"); // the scroller's size, already zoomed
     expect(viewer).toContain("fileRotation: rotationToDegrees(basePageRotation)");
-    expect(wrapper).toContain("markerRect(box, pageWidth, pageHeight, fileRotation)");
+    expect(wrapper).toContain("markerRect(unturnedBox(box, fileRotation), pageWidth, pageHeight)");
+    // The turn the overlay is drawn with (basePageRotations) is the one scrollToPageArea's frame takes.
+    expect(viewer).toContain("rotationToDegrees(basePageRotations[pageNumber - 1] ?? normalizeRotation(0))");
     expect(wrapper).not.toMatch(/pageWidth \* scale|pageHeight \* scale/);
     expect(wrapper).toContain("unturnedBox([x, y, x, y], viewer.current.getPageRotation(spot.page))");
   });

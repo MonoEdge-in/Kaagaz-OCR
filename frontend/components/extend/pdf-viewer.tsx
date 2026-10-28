@@ -2035,10 +2035,11 @@ function PDFViewerInner({
         })
       },
       getViewportElement: () => viewportElementRef.current,
+      // Changed for Kaagaz (#442): from basePageRotations, as the overlay's fileRotation.
       getPageRotation: (pageNumber) =>
-        rotationToDegrees(normalizeRotation(pdfDocument?.pages[pageNumber - 1]?.rotation ?? 0)),
+        rotationToDegrees(basePageRotations[pageNumber - 1] ?? normalizeRotation(0)),
     }),
-    [pdfDocument, scroll, scrollToPage]
+    [basePageRotations, pdfDocument, scroll, scrollToPage]
   )
   const handleDownload = React.useCallback(async () => {
     if (!pdfFile || isPreparingDownload) return

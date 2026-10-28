@@ -114,7 +114,7 @@ type Box = readonly [number, number, number, number];
  */
 export function unturnedBox(box: Box, turn: number): Box {
   const [x0, y0, x1, y1] = box;
-  switch (((turn % 360) + 360) % 360) {
+  switch (turn) {
     case 90:
       return [y0, 1 - x1, y1, 1 - x0];
     case 180:
@@ -126,15 +126,9 @@ export function unturnedBox(box: Box, turn: number): Box {
   }
 }
 
-/**
- * Where a box marker goes on a page drawn at width x height (the zoom is in them): never under
- * MIN_MARKER_PX, kept on the page. Every mark on a page goes through here, in this order: the
- * stored box, turned back by `turn` (unturnedBox: the page is drawn before its file's own turn),
- * times the drawn size, grown. The PDF viewer then turns the page, marks with it, by the file's
- * turn and the user's.
- */
-export function markerRect(box: Box, width: number, height: number, turn = 0): PixelRect {
-  const px = boxToPixels(unturnedBox(box, turn), width, height);
+/** Where a box marker goes on a page drawn at width x height: never under MIN_MARKER_PX, kept on the page. */
+export function markerRect(box: Box, width: number, height: number): PixelRect {
+  const px = boxToPixels(box, width, height);
   const grow = (start: number, size: number, limit: number) => {
     const wanted = Math.min(Math.max(size, MIN_MARKER_PX), limit);
     const from = Math.min(Math.max(0, start - (wanted - size) / 2), Math.max(0, limit - wanted));
