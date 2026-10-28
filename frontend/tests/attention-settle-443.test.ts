@@ -7,9 +7,12 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { attentionCount } from "@/app/(app)/documents/[id]/DocumentPanels";
-import { toSettle } from "@/components/viewer/pageProblems";
+import { PageProblems } from "@/app/(app)/documents/[id]/PageProblems";
+import { KEEP_MEMBER_NOTE, toSettle } from "@/components/viewer/pageProblems";
 import { FIX_MEMBER_NOTE, fixBox } from "@/components/viewer/scanned";
 import type { PageProblem, PageSummary } from "@/lib/types";
 
@@ -127,5 +130,45 @@ describe("#443 a flagged word in the Text view is fixed or confirmed where it is
   it("keeps the reviewer or admin rule, and tells a member about any marked word", () => {
     expect(read(VIEW)).toContain("onFix={review.status?.can_review && detail.deleted_at === null ? fixWord : undefined}");
     expect(FIX_MEMBER_NOTE).toBe("Only a reviewer or an admin can fix or confirm a marked word.");
+  });
+});
+
+describe("#444 a page problem with no word to check offers Keep as is to a reviewer or an admin", () => {
+  const box = (shown: PageSummary, canFix: boolean) =>
+    renderToStaticMarkup(
+      createElement(PageProblems, {
+        documentId: "d1",
+        page: shown,
+        userId: "u1",
+        canFix,
+        canUpload: true,
+        onReadAgain: () => undefined,
+        onKept: () => undefined,
+        inline: true,
+      }),
+    );
+  const faint = page(1, { read_issues: ["faint"], problems: [problem("faint")] });
+
+  it("gives a reviewer or an admin Keep as is, and a member Upload with who can do the rest", () => {
+    const reviewer = box(faint, true);
+    expect(reviewer).toContain("Keep as is");
+    expect(reviewer).toContain("Read this page again");
+    expect(reviewer).not.toContain(KEEP_MEMBER_NOTE);
+    const member = box(faint, false);
+    expect(member).toContain("Upload a better scan");
+    expect(member).not.toContain("Keep as is");
+    expect(member).toContain(KEEP_MEMBER_NOTE);
+  });
+
+  it("offers Keep as is for a page with no problem in the issue table too (only unsure words)", () => {
+    expect(box(page(2, { unsure_words: 3 }), true)).toContain("Keep as is");
+    expect(box(page(2, { read_quality: "good" }), true)).toBe("");
+  });
+
+  it("stays shown, as kept, once kept: the warning goes only when someone keeps or re-uploads", () => {
+    const kept = box({ ...faint, accepted_at: KEPT }, true);
+    expect(kept).toContain("Kept as is on");
+    expect(kept).not.toContain(">Keep as is<");
+    expect(attentionCount([{ ...faint, accepted_at: KEPT }])).toBe(0);
   });
 });

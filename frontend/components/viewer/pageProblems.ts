@@ -79,6 +79,9 @@ export function fixErrorText(caught: unknown): string {
   return "Check your internet connection, then try again.";
 }
 
+/** Said to a member beside Upload a better scan: who can do the rest (#444). */
+export const KEEP_MEMBER_NOTE = "Only a reviewer or an admin can read this page again or keep it as is.";
+
 // The page problems a word on the review list stands for (#443, kaagaz/db/word_review.py
 // FLAGGED_ISSUES): a [?], a line not pinned, a value read differently. Once a person settles a
 // page's last such word, the server keeps the page as is.
