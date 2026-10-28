@@ -7,10 +7,128 @@
   "resetPasswordAllowed": false,
   "loginWithEmailAllowed": true,
   "duplicateEmailsAllowed": false,
+  "bruteForceProtected": true,
+  "failureFactor": 5,
+  "waitIncrementSeconds": 60,
+  "maxFailureWaitSeconds": 900,
+  "maxDeltaTimeSeconds": 43200,
+  "quickLoginCheckMilliSeconds": 1000,
+  "minimumQuickLoginWaitSeconds": 60,
   "otpPolicyType": "totp",
   "otpPolicyAlgorithm": "HmacSHA1",
   "otpPolicyDigits": 6,
   "otpPolicyPeriod": 30,
+  "attributes": {
+    "acr.loa.map": "{\"pwd\":\"1\",\"otp\":\"2\"}"
+  },
+  "browserFlow": "browser two-step",
+  "authenticatorConfig": [
+    {
+      "alias": "password level",
+      "config": {
+        "loa-condition-level": "1",
+        "loa-max-age": "0"
+      }
+    },
+    {
+      "alias": "code level",
+      "config": {
+        "loa-condition-level": "2",
+        "loa-max-age": "0"
+      }
+    }
+  ],
+  "authenticationFlows": [
+    {
+      "alias": "browser two-step",
+      "providerId": "basic-flow",
+      "topLevel": true,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "flowAlias": "browser two-step forms",
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "authenticatorFlow": true
+        }
+      ]
+    },
+    {
+      "alias": "browser two-step forms",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "flowAlias": "browser two-step password",
+          "requirement": "CONDITIONAL",
+          "priority": 10,
+          "authenticatorFlow": true
+        },
+        {
+          "flowAlias": "browser two-step code",
+          "requirement": "CONDITIONAL",
+          "priority": 20,
+          "authenticatorFlow": true
+        }
+      ]
+    },
+    {
+      "alias": "browser two-step password",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "conditional-level-of-authentication",
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "authenticatorFlow": false,
+          "authenticatorConfig": "password level"
+        },
+        {
+          "authenticator": "auth-username-password-form",
+          "requirement": "REQUIRED",
+          "priority": 20,
+          "authenticatorFlow": false
+        }
+      ]
+    },
+    {
+      "alias": "browser two-step code",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "conditional-level-of-authentication",
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "authenticatorFlow": false,
+          "authenticatorConfig": "code level"
+        },
+        {
+          "authenticator": "auth-otp-form",
+          "requirement": "REQUIRED",
+          "priority": 20,
+          "authenticatorFlow": false
+        }
+      ]
+    }
+  ],
+  "components": {
+    "org.keycloak.userprofile.UserProfileProvider": [
+      {
+        "providerId": "declarative-user-profile",
+        "subComponents": {},
+        "config": {
+          "kc.user.profile.config": [
+            "{\"attributes\":[{\"name\":\"username\",\"displayName\":\"${username}\",\"validations\":{\"length\":{\"min\":3,\"max\":255},\"username-prohibited-characters\":{},\"up-username-not-idn-homograph\":{}},\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\",\"user\"]},\"multivalued\":false},{\"name\":\"email\",\"displayName\":\"${email}\",\"validations\":{\"email\":{},\"length\":{\"max\":255}},\"required\":{\"roles\":[\"user\"]},\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\",\"user\"]},\"multivalued\":false},{\"name\":\"firstName\",\"displayName\":\"${firstName}\",\"validations\":{\"length\":{\"max\":255},\"person-name-prohibited-characters\":{}},\"required\":{\"roles\":[\"user\"]},\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\",\"user\"]},\"multivalued\":false},{\"name\":\"lastName\",\"displayName\":\"${lastName}\",\"validations\":{\"length\":{\"max\":255},\"person-name-prohibited-characters\":{}},\"required\":{\"roles\":[\"user\"]},\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\",\"user\"]},\"multivalued\":false},{\"name\":\"kaagaz_org\",\"displayName\":\"Kaagaz organisation id\",\"permissions\":{\"view\":[\"admin\"],\"edit\":[\"admin\"]},\"multivalued\":false}],\"groups\":[{\"name\":\"user-metadata\",\"displayHeader\":\"User metadata\",\"displayDescription\":\"Attributes, which refer to user metadata\"}]}"
+          ]
+        }
+      }
+    ]
+  },
   "clients": [
     {
       "clientId": "kaagaz-web",
@@ -25,12 +143,30 @@
       "directAccessGrantsEnabled": false,
       "serviceAccountsEnabled": false,
       "frontchannelLogout": false,
-      "redirectUris": ["http://localhost:3000/api/auth/keycloak/callback"],
+      "redirectUris": [
+        "http://localhost:3000/api/auth/keycloak/callback"
+      ],
       "webOrigins": [],
       "attributes": {
         "pkce.code.challenge.method": "S256",
-        "post.logout.redirect.uris": "http://localhost:3000/login?signed_out=1"
-      }
+        "post.logout.redirect.uris": "http://localhost:3000/login?signed_out=1",
+        "minimum.acr.value": "otp"
+      },
+      "protocolMappers": [
+        {
+          "name": "kaagaz_org",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "config": {
+            "user.attribute": "kaagaz_org",
+            "claim.name": "kaagaz_org",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "false",
+            "userinfo.token.claim": "false"
+          }
+        }
+      ]
     }
   ],
   "users": [
@@ -41,8 +177,21 @@
       "enabled": true,
       "firstName": "Asha",
       "lastName": "Admin",
-      "credentials": [{ "type": "password", "value": "laptop-only-made-up-1", "temporary": false }],
-      "requiredActions": ["CONFIGURE_TOTP"]
+      "attributes": {
+        "kaagaz_org": [
+          "00000000-0000-0000-0000-000000000000"
+        ]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "laptop-only-made-up-1",
+          "temporary": false
+        }
+      ],
+      "requiredActions": [
+        "CONFIGURE_TOTP"
+      ]
     },
     {
       "username": "ravi.member",
@@ -51,8 +200,21 @@
       "enabled": true,
       "firstName": "Ravi",
       "lastName": "Member",
-      "credentials": [{ "type": "password", "value": "laptop-only-made-up-2", "temporary": false }],
-      "requiredActions": ["CONFIGURE_TOTP"]
+      "attributes": {
+        "kaagaz_org": [
+          "00000000-0000-0000-0000-000000000000"
+        ]
+      },
+      "credentials": [
+        {
+          "type": "password",
+          "value": "laptop-only-made-up-2",
+          "temporary": false
+        }
+      ],
+      "requiredActions": [
+        "CONFIGURE_TOTP"
+      ]
     }
   ]
 }
