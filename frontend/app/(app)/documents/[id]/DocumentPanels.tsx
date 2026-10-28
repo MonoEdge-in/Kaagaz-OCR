@@ -19,6 +19,7 @@ import { groupLinks, linkText, untilRead } from "@/components/viewer/panels";
 import { ALL_CLEAR, attentionPages } from "@/components/viewer/pageProblems";
 import type { AttentionPage } from "@/components/viewer/pageProblems";
 import { markChipText, markName, marksOnPage } from "@/components/viewer/readingMarks";
+import { withFrom } from "@/lib/backLink";
 import { docTypeLabel } from "@/lib/format";
 import type { DocumentDetail, DocumentStatus, PageSummary, ReadingMark } from "@/lib/types";
 import styles from "./DocumentView.module.css";
@@ -47,7 +48,9 @@ export function RelatedPanel({ detail }: { detail: DocumentDetail }) {
       <ul className={styles.relatedList}>
         {groups.map(([link, ...more]) => (
           <li key={link.id} className={styles.relatedItem}>
-            <Link href={`/documents/${link.id}`}>{link.display_name}</Link>
+            <Link href={withFrom(`/documents/${link.id}`, `/documents/${encodeURIComponent(detail.id)}`)}>
+              {link.display_name}
+            </Link>
             <span className={styles.pageNote}>
               {[docTypeLabel(link.doc_type), ...[link, ...more].map((shared) => linkText(shared, detail.values))].join(
                 " · ",

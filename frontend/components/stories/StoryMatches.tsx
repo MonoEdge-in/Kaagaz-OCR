@@ -10,6 +10,7 @@
 
 import Link from "next/link";
 import { useId } from "react";
+import { useBackFrom, withFrom } from "@/lib/backLink";
 import { STORY_HEADING, storyCards } from "@/lib/storyMatches";
 import type { StoryBand, StoryMatch } from "@/lib/types";
 import styles from "./StoryMatches.module.css";
@@ -32,6 +33,7 @@ export function StoryMatches({
   question,
 }: StoryMatchesProps) {
   const headingId = useId();
+  const from = useBackFrom();
   if (matches.length === 0) return null;
   const Heading = headingLevel === 2 ? "h2" : "h3";
   return (
@@ -52,7 +54,7 @@ export function StoryMatches({
               </p>
             </div>
             <Link
-              href={card.href}
+              href={withFrom(card.href, from)}
               className={card.lead ? `btn btn-primary ${styles.open}` : `btn ${styles.open}`}
             >
               {card.openText}

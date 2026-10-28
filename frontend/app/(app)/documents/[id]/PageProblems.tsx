@@ -32,6 +32,7 @@ import {
 } from "@/components/viewer/pageProblems";
 import type { Fix } from "@/components/viewer/pageProblems";
 import { acceptPage, readPageAgain, uploadVersion } from "@/lib/api";
+import { withFrom } from "@/lib/backLink";
 import type { DocumentSummary, PageSummary } from "@/lib/types";
 import styles from "./DocumentView.module.css";
 
@@ -231,7 +232,8 @@ export function PageProblems({
         )}
         {upload?.step === "sent" && (
           <p className={styles.problemNote} role="status">
-            {upload.words} <Link href={`/documents/${upload.id}`}>Open it</Link>
+            {upload.words}{" "}
+            <Link href={withFrom(`/documents/${upload.id}`, `/documents/${encodeURIComponent(documentId)}`)}>Open it</Link>
           </p>
         )}
         {upload?.step === "error" && (
