@@ -26,13 +26,13 @@ import { useCallback, useEffect, useEffectEvent, useLayoutEffect, useRef, useSta
 import { PDFViewer } from "@/components/extend/pdf-viewer";
 import type { PDFViewerHandle, PDFViewerPageOverlayProps } from "@/components/extend/pdf-viewer";
 import { Button } from "@/components/extend/ui/button";
-import { flagDomId, flagLabel, IN_ENSEMBLE } from "@/components/review/wordReview";
+import { flagDomId, markLabel } from "@/components/review/wordReview";
 import { markerId } from "@/components/words/ViewerWords";
 import { markerRect } from "@/components/words/spots";
 import type { Marker } from "@/components/words/spots";
 import { fileUrl } from "@/lib/api";
 import type { ReadingMark, Region, WordFlag } from "@/lib/types";
-import { markName, marksOnPage } from "./readingMarks";
+import { markChecked, markName, marksOnPage } from "./readingMarks";
 import styles from "./PageViewer.module.css";
 import { panTo } from "./viewer";
 import { wordColour } from "./YourWords";
@@ -237,7 +237,7 @@ export function PdfDocumentViewer({
             )}
           {flags.map((flag) => {
             if (flag.region.kind !== "box" || flag.page_no !== pageNumber) return null;
-            const name = `${flagLabel(flag)}${flag.state === "in_ensemble" ? `, ${IN_ENSEMBLE}` : ""}`;
+            const name = markLabel(flag);
             return (
               <button
                 key={flag.word_key}
@@ -257,13 +257,15 @@ export function PdfDocumentViewer({
           {showHighlights &&
             problems.map((mark, index) => {
               if (mark.region.kind !== "box") return null;
-              const name = markName(mark, index, problems.length);
+              const checked = markChecked(mark, flags);
+              const name = markName(mark, index, problems.length, checked);
               return (
                 <button
                   key={`problem-${index}`}
                   type="button"
                   className={styles.problem}
                   data-quality={mark.quality}
+                  data-state={checked ? "checked" : undefined}
                   data-hot={hotMark === index ? "true" : undefined}
                   aria-label={name}
                   title={name}

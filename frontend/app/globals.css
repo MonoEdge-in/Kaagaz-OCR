@@ -90,6 +90,7 @@
   --hl-halo: #1f1a14; /* dark ink: the outer highlight ring, the same in both themes */
   --mine-on-paper: #204494; /* my words markers: pages are paper white in both themes */
   --illegible-on-paper: #9e2219; /* PRD 5 U3 (V8): "couldn't read" marks, the same in dark */
+  --verified-on-paper: #1b7a4b; /* #431: a word a person fixed or confirmed, the light --success, the same in dark */
   --words-on-paper: #1b7a4b; /* package H: the lines holding your words, the light --success, the same in dark */
   /* 24 Oct 2026: each further word its own highlighter, paper-fixed too, each at least 4.5:1 on white,
      never the blue of the cited spot or My words. */

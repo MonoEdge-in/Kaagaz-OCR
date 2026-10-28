@@ -181,7 +181,8 @@ describe("bands", () => {
     expect(page).toMatch(/\.flag\[data-band="review"\] \{[^}]*solid/);
     const viewer = css("components/viewer/PageViewer.tsx");
     expect(viewer).toContain("aria-label={name}");
-    expect(viewer).toContain("flagLabel(flag)");
+    // Changed on purpose (#431): named by markLabel, the flag's label until it is settled.
+    expect(viewer).toContain("markLabel(flag)");
   });
 });
 

@@ -49,15 +49,22 @@ NO_MAJORITY = {
 
 
 def scanned(
-    customer_id: str, document_id: str, *, mark: str = "4,850", reason: str = "unsure_text", votes: Any = None
+    customer_id: str,
+    document_id: str,
+    *,
+    mark: str = "4,850",
+    reason: str = "unsure_text",
+    votes: Any = None,
+    quality: str = "unsure",
 ) -> DocumentContent:
     """A two-page scan: page 1's line holds the unsure word ``mark`` and a [?], with a total
     in the word's box; page 2's line is unpinned. Two pieces: the lines, and a line naming
-    the word twice (so an edit never goes there)."""
+    the word twice (so an edit never goes there). ``quality`` "illegible" makes the word a
+    review item too (#432: an unsure word is a check, listed and counted nowhere)."""
     line = f"Total Rs {mark} paid [?]"
     spans = (
         Span(line, line, LINE, None, "paragraph", "ocr", quality="ok", box_source="found"),
-        Span(mark, mark, MARK, 0.62, origin="ocr", quality="unsure", box_source="found"),
+        Span(mark, mark, MARK, 0.62, origin="ocr", quality=quality, box_source="found"),
         Span("[?]", "[?]", ILLEGIBLE, None, origin="ocr", quality="illegible", box_source="found"),
         Span("Bill to Patil Stores", "Bill to Patil Stores", UNPINNED, None, "paragraph", "ocr", quality="ok",
              box_source="model"),
@@ -130,16 +137,19 @@ def test_the_flags_come_from_the_stored_reading(db: Database) -> None:
         ("mark", 1, "review", "smudged_print", "[?]", None),
         ("line", 2, "review", "spot_unconfirmed", "Bill to Patil Stores", None),
     ]
+    # Changed on purpose (#432, Tushar, 28 Oct 2026): the unsure word (check band) is still a
+    # flag, so a change to it is kept, but it is no review item: listed and counted nowhere.
+    assert [flag.text for flag in review.listed] == ["[?]", "Bill to Patil Stores"]
     with db.customer(customer) as conn:
         numbers = word_review.counts(conn, customer, document, review)
     assert numbers == {
         "pages": 2,
         "words": 9,
-        "flagged": 3,
-        "by_band": {"check": 1, "review": 2},
+        "flagged": 2,
+        "by_band": {"check": 0, "review": 2},
         "reviewed": 0,
         "resolved": 0,
-        "remaining": 3,
+        "remaining": 2,
         "last_change_at": None,
     }
 
@@ -321,4 +331,5 @@ def test_a_value_the_readers_read_differently_is_verified_only_with_every_flag_i
     )
     with db.customer(customer) as conn:
         numbers = word_review.counts(conn, customer, document, review)
-    assert (numbers["flagged"], numbers["reviewed"], numbers["remaining"]) == (4, 2, 2)
+    # Changed on purpose (#432): the unsure word confirmed above is a check, counted nowhere.
+    assert (numbers["flagged"], numbers["reviewed"], numbers["remaining"]) == (3, 1, 2)

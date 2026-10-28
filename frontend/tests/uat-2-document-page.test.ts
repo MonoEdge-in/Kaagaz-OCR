@@ -89,10 +89,12 @@ describe("#417 a [?] in the Text view: type the word in its place, right there",
     expect(panel).toContain("const toFix = first && onFix ?");
   });
 
+  // Changed on purpose (#431): the box asks for the word Fix text works on (ask, the line as shown
+  // for the line's own flag), and while it is open the row's Fix text steps aside (fix-text-431.test.ts).
   it("opens the box under the line from a press on the line or Fix text, labelled by its hint", () => {
-    expect(panel).toMatch(/onShow\(\{ name: `line \$\{index \+ 1\}`, region: line\.region, label: null \}\);\s*if \(toFix\) openFix\(toFix\);/);
-    expect(panel).toContain("aria-expanded={box !== null}");
-    expect(panel).toMatch(/<label className=\{styles\.fixLabel\} htmlFor=\{`\$\{boxId\}-text`\}>\s*\{fixBox\(toFix\)\.hint\}/);
+    expect(panel).toMatch(/onShow\(\{ name: `line \$\{index \+ 1\}`, region: line\.region, label: null \}\);\s*if \(toFix && ask\) openFix\(toFix, ask\.draft\);/);
+    expect(panel).toContain("aria-expanded={false}");
+    expect(panel).toMatch(/<label className=\{styles\.fixLabel\} htmlFor=\{`\$\{boxId\}-text`\}>\s*\{ask\.hint\}/);
     expect(panel).toMatch(/<input\s+ref=\{fixInput\}\s+id=\{`\$\{boxId\}-text`\}/);
     // [Cancel] [Primary]; Esc in the field closes the box (not the panel); focus goes back to the line.
     expect(panel.indexOf(">\n                            Cancel")).toBeLessThan(panel.indexOf(">\n                            Save"));

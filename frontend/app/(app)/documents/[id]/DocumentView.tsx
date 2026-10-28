@@ -99,7 +99,7 @@ import { highlightsOf, initialSelection, pageChange } from "@/components/viewer/
 import { selectSpot } from "@/components/viewer/selection";
 import type { Selection } from "@/components/viewer/selection";
 import { canReview } from "@/components/review/review";
-import { flagDomId, saveWord, trustText } from "@/components/review/wordReview";
+import { flagDomId, saveWord, settled, trustText } from "@/components/review/wordReview";
 import { Timeline } from "@/components/activity/Timeline";
 import { ACTIVITY_TEXT } from "@/components/activity/words";
 import { DetailsPanel } from "@/components/files/DetailsPanel";
@@ -389,9 +389,11 @@ export function DocumentView({
     if (mark.region.kind === "box" && hasScannedText) setTab("scanned");
   };
   const lowResolution = page ? lowResolutionText(page) : null;
-  // The words still to settle are marked on the page and in Scanned text (High: no mark).
-  const openFlags = review.flags.filter((flag) => flag.state !== "reviewed" && flag.state !== "resolved");
+  // The words still to settle are marked in Scanned text (High: no mark). On the page every
+  // flagged word is marked, a settled one in green (#431), so a fix shows where it was made.
+  const openFlags = review.flags.filter((flag) => !settled(flag));
   const pageFlags = page ? openFlags.filter((flag) => flag.page_no === page.page_no) : [];
+  const pageMarks = page ? review.flags.filter((flag) => flag.page_no === page.page_no) : [];
   const toWord = (key: string) => {
     setCurrentFlag(key);
     const flag = review.flags.find((each) => each.word_key === key);
@@ -504,7 +506,7 @@ export function DocumentView({
                   onMark={showMark}
                   hotMark={hotMark}
                   onHotMark={setHotMark}
-                  flags={openFlags}
+                  flags={review.flags}
                   activeFlag={reviewing ? currentFlag : null}
                   onFlag={pressFlag}
                   wordBoxes={wordBoxes}
@@ -527,7 +529,7 @@ export function DocumentView({
               onMark={showMark}
               hotMark={hotMark}
               onHotMark={setHotMark}
-              flags={pageFlags}
+              flags={pageMarks}
               activeFlag={reviewing ? currentFlag : null}
               onFlag={pressFlag}
               wordBoxes={wordBoxes}

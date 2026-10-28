@@ -193,6 +193,15 @@ export function stateText(flag: WordFlag): string {
   return "Not reviewed yet";
 }
 
+/** Reviewed by a person or resolved by Ensemble: its mark on the page turns green (#431). */
+export const settled = (flag: Pick<WordFlag, "state">) => flag.state === "reviewed" || flag.state === "resolved";
+
+/** A word's mark on the page, by name: "Reviewed: 'Wheat'" once settled, else its flag. */
+export function markLabel(flag: WordFlag): string {
+  if (settled(flag)) return `${stateText(flag)}: '${flag.text}'`;
+  return `${flagLabel(flag)}${flag.state === "in_ensemble" ? `, ${IN_ENSEMBLE}` : ""}`;
+}
+
 /** History: "Reviewed by you", "Resolved by Ensemble", "Ensemble reading kept by Ravi Sharma". */
 export function changeTitle(change: WordChange): string {
   const who = change.by_you ? "you" : (change.user_name ?? "a reviewer");

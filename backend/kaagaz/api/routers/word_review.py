@@ -259,7 +259,7 @@ def list_flags(
     latest = review.latest()
     items = [
         flag_json(flag, latest, user, readings, running)
-        for flag in review.flags
+        for flag in review.listed
         if page is None or flag.page_no == page
     ]
     items = [item for item in items if state is None or item["state"] == state]

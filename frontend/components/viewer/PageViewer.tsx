@@ -35,13 +35,13 @@ import { IconButton } from "@/components/ui/IconButton";
 import { markerId } from "@/components/words/ViewerWords";
 import { markerRect } from "@/components/words/spots";
 import type { Marker } from "@/components/words/spots";
-import { flagDomId, flagLabel, IN_ENSEMBLE } from "@/components/review/wordReview";
+import { flagDomId, markLabel } from "@/components/review/wordReview";
 import { pageImageUrl } from "@/lib/api";
 import { FADE_IN, MOTION_MS, play } from "@/lib/motion";
 import { boxToPixels, cropRect, framedCropView, pageAspect, regionsOnPage } from "@/lib/regions";
 import type { BoxRegion, CropView, FractionRect } from "@/lib/regions";
 import type { DocumentSummary, PageSummary, ReadingMark, Region, WordFlag } from "@/lib/types";
-import { MARK_WORDS, legend, markName, markRect, marksOnPage, showByDefault } from "./readingMarks";
+import { MARK_WORDS, legend, markChecked, markName, markRect, marksOnPage, showByDefault } from "./readingMarks";
 import { SheetGrid } from "./SheetGrid";
 import { useObservedBox } from "./useObservedBox";
 import type { ViewRect } from "./canvasPlan";
@@ -412,7 +412,7 @@ export function PageViewer({
         : flags.map((flag) => {
             if (flag.region.kind !== "box" || flag.page_no !== page.page_no) return null;
             const px = markerRect(flag.region.box, width, height);
-            const name = `${flagLabel(flag)}${flag.state === "in_ensemble" ? `, ${IN_ENSEMBLE}` : ""}`;
+            const name = markLabel(flag);
             return (
               <button
                 key={flag.word_key}
@@ -434,13 +434,15 @@ export function PageViewer({
         : problems.map((mark, index) => {
             const px = markRect(mark, width, height);
             if (!px) return null;
-            const name = markName(mark, index, problems.length);
+            const checked = markChecked(mark, flags);
+            const name = markName(mark, index, problems.length, checked);
             return (
               <button
                 key={index}
                 type="button"
                 className={styles.problem}
                 data-quality={mark.quality}
+                data-state={checked ? "checked" : undefined}
                 data-hot={hotMark === index ? "true" : undefined}
                 aria-label={name}
                 title={name}

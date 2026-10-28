@@ -21,10 +21,11 @@ pytestmark = pytest.mark.db
 FORBIDDEN = {"code": "forbidden", "message": "You don't have permission to do this."}
 
 
-def scan(api: Api, customer_id: str) -> str:
-    """A ready scan, saved as test_word_review_db.scanned makes it: 3 flags on 2 pages."""
+def scan(api: Api, customer_id: str, quality: str = "illegible") -> str:
+    """A ready scan, saved as test_word_review_db.scanned makes it: 3 flags on 2 pages, all
+    review items (#432: with ``quality`` "unsure" the word 4,850 is a check, no review item)."""
     document_id = api.add_document(customer_id, detected_type="jpeg", page_count=2)
-    PgPipelineStore(api.db).save(scanned(customer_id, document_id))
+    PgPipelineStore(api.db).save(scanned(customer_id, document_id, quality=quality))
     return document_id
 
 
@@ -55,7 +56,7 @@ def test_the_review_status_counts_and_says_the_summary_bar(db: Database) -> None
         "pages": 2,
         "words": 9,
         "flagged": 3,
-        "by_band": {"check": 1, "review": 2},
+        "by_band": {"check": 0, "review": 3},
         "reviewed": 0,
         "resolved": 0,
         "remaining": 3,
@@ -72,6 +73,25 @@ def test_the_review_status_counts_and_says_the_summary_bar(db: Database) -> None
     member = api.sign_in(reviewer.customer_id, "member")
     seen = member.client.get(f"/api/documents/{document_id}/review-status").json()
     assert (seen["can_review"], seen["ensemble"]["reason"]) == (False, router.ENSEMBLE_ROLE)
+
+
+def test_a_check_word_is_no_review_item_so_the_list_and_counts_agree(db: Database) -> None:
+    # #432 (Tushar, 28 Oct 2026): "Don't take reviews on ?": an unsure word (check band, a
+    # second look is wise) is neither listed nor counted; the [?] and the unpinned line are.
+    api = Api(db)
+    reviewer = api.new_signed("reviewer")
+    document_id = scan(api, reviewer.customer_id, quality="unsure")
+
+    listed = flags(reviewer, document_id)
+    status = reviewer.client.get(f"/api/documents/{document_id}/review-status").json()
+
+    assert [(item["text"], item["band"]) for item in listed] == [
+        ("[?]", "review"),
+        ("Bill to Patil Stores", "review"),
+    ]
+    assert (status["flagged"], status["by_band"], status["remaining"]) == (2, {"check": 0, "review": 2}, 2)
+    assert status["summary"] == "Scan complete · 2 pages · 9 words · 2 flagged for review"
+    assert status["remaining"] == len([item for item in listed if item["state"] == "open"])
 
 
 def test_a_document_still_being_read_has_no_summary_and_takes_no_change(db: Database) -> None:
@@ -130,7 +150,7 @@ def test_a_reviewer_edits_a_word_and_undoes_it(db: Database, role: str) -> None:
         mark["state"],
     ) == (
         "mark",
-        "check",
+        "review",
         "smudged_print",
         "smudged print",
         0.62,

@@ -13,6 +13,10 @@ Why here: the SQL in one reviewable place. Every function takes a connection fro
   0030): open, reviewed (confirm or edit) or resolved (Ensemble, later). A value a change
   verified (label reason ``corrected``) stays listed, reviewed, with the band and reason it
   had (kept in the change's ``applied``).
+* **Listed** (#432, Tushar, 28 Oct 2026): a person is asked to review the ``review`` band
+  only (``Review.listed``: the list, every count and Ensemble on flagged words). A ``check``
+  word (a second look is wise) is no review item: its reading-problem mark stays on the page,
+  and ``load`` still finds it, so a change already made to it is kept and written again.
 * **Confirm and Edit** (``change_word``) run in one transaction under the family lock
   (``trash.lock_family``, the save's lock too, so a read again never interleaves): the
   document must be ready, current and out of Trash (``not_ready``, ``in_trash``), the word
@@ -55,6 +59,7 @@ from kaagaz.db import review as review_sql
 from kaagaz.db.trash import lock_family
 from kaagaz.extraction.flags import (
     COVERED_REASONS,
+    REVIEW,
     VALUE,
     Flag,
     occurrences,
@@ -210,6 +215,11 @@ class Review:
     def flag(self, key: str) -> Flag | None:
         return next((flag for flag in self.flags if flag.key == key), None)
 
+    @property
+    def listed(self) -> list[Flag]:
+        """The flags a person is asked to review: the ``review`` band (#432)."""
+        return [flag for flag in self.flags if flag.band == REVIEW]
+
 
 def load(conn: Connection, customer_id: str, document_id: str) -> Review:
     """The document's flags and changes (see the module docstring)."""
@@ -250,15 +260,16 @@ def counts(conn: Connection, customer_id: str, document_id: str, review: Review)
     """The summary bar's numbers (spec sections 3 and 7). Two statements more."""
     ids = {"c": customer_id, "d": document_id}
     latest = review.latest()
-    states = [state(flag, latest) for flag in review.flags]
+    listed = review.listed
+    states = [state(flag, latest) for flag in listed]
     times = [row["created_at"] for row in review.changes] + [
         row["undone_at"] for row in review.changes if row["undone_at"] is not None
     ]
     return {
         "pages": int(conn.execute(_PAGES, ids).scalar_one()),
         "words": int(conn.execute(_WORDS, ids).scalar_one()),
-        "flagged": len(review.flags),
-        "by_band": {band: sum(flag.band == band for flag in review.flags) for band in ("check", "review")},
+        "flagged": len(listed),
+        "by_band": {band: sum(flag.band == band for flag in listed) for band in ("check", "review")},
         "reviewed": states.count(REVIEWED),
         "resolved": states.count(RESOLVED),
         "remaining": states.count(OPEN),
