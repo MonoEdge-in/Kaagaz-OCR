@@ -62,11 +62,13 @@ export function AccountMenu({ me }: { me: Me }) {
   async function endSession(kind: SignOutKind) {
     setSigningOut(kind);
     setFailure(null);
+    let ended = false; // already signed out on the server
     try {
       await (kind === "everywhere" ? logoutEverywhere() : logout());
     } catch (caught) {
       // Already signed out on the server (401): go to the sign-in page anyway.
-      if (!(caught instanceof ApiError && caught.status === 401)) {
+      ended = caught instanceof ApiError && caught.status === 401;
+      if (!ended) {
         setFailure({
           kind,
           message:
@@ -80,7 +82,8 @@ export function AccountMenu({ me }: { me: Me }) {
     }
     clearStored(); // the upload tray's drops (PRD 5 U1) are this person's
     announceSession(null);
-    if (me.session.keycloak === true) leavePage(KEYCLOAK_SIGN_OUT); // on to Keycloak's sign-out (#435)
+    // On to Keycloak's sign-out (#435), unless the session had ended (Keycloak may be off now).
+    if (me.session.keycloak === true && !ended) leavePage(KEYCLOAK_SIGN_OUT);
     else leavePage(signedOutPath(pathname));
   }
 

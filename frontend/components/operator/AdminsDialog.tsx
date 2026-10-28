@@ -11,8 +11,7 @@
 import { useEffect, useState } from "react";
 import { useMinuteNow } from "@/components/chat/hooks";
 import { ActionDialog } from "@/components/documents/ActionDialog";
-import { keycloakOn } from "@/app/login/signIn";
-import { currentSession, listAdmins } from "@/lib/api";
+import { currentSession, keycloakOn, listAdmins } from "@/lib/api";
 import type { OrgAdmin, Organisation } from "@/lib/types";
 import { ConfirmDialog } from "./ConfirmDialog";
 import type { Confirm } from "./ConfirmDialog";

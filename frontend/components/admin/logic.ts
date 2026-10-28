@@ -139,7 +139,7 @@ export interface StatusPart {
  * The status column: Active, "Locked until 14:05" or Disabled, then "Two-step on"
  * or "Two-step off" (off is only worth saying for an admin, who can turn it on for
  * the admin screen), then "Temporary password" until the user sets their own. With
- * `keycloak` (#435) no two-step words: Keycloak keeps two-step sign-in, not Kaagaz.
+ * `keycloak` (#435) no two-step words.
  */
 export function userStatus(user: AdminUser, now: number, keycloak = false): StatusPart[] {
   const parts: StatusPart[] = [];
@@ -166,7 +166,7 @@ export interface UserActions {
  * Which buttons a row shows. Nothing on the admin's own row: they cannot
  * disable themselves or reset their own 2FA (the server refuses both), and
  * they change their own password by signing in with it. No two-step reset with
- * `keycloak` (#435): the server refuses it, as Keycloak keeps two-step sign-in.
+ * `keycloak` (#435): the server refuses it.
  */
 export function userActions(
   user: AdminUser,

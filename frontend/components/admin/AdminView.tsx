@@ -35,7 +35,7 @@ import styles from "./Admin.module.css";
 export function AdminView({ twoStep }: { twoStep: ReactNode }) {
   const { me } = useSession();
   const gate = adminGate(me);
-  // Signed in through Keycloak (#435): Keycloak keeps two-step sign-in, so no Two-step panel.
+  // Signed in through Keycloak (#435): no Two-step panel.
   const keycloak = me.session.keycloak === true;
   const [active, setActive] = useState<TabId>("users");
 

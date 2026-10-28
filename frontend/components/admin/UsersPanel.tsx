@@ -68,16 +68,15 @@ interface Revealed {
   password: string;
 }
 
-/** keycloak: signed in through Keycloak (#435), which keeps two-step sign-in, so no two-step
- * words or resets here. */
+/** keycloak: signed in through Keycloak (#435), so no two-step words or resets here. */
 export function UsersPanel({
   currentUserId,
   adminTwoStep,
-  keycloak = false,
+  keycloak,
 }: {
   currentUserId: string;
   adminTwoStep: boolean;
-  keycloak?: boolean;
+  keycloak: boolean;
 }) {
   const [attempt, setAttempt] = useState(0);
   const [users, setUsers] = useState<AdminUser[] | null>(null);

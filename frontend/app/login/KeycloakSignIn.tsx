@@ -4,13 +4,14 @@
 // (GET /auth/session says keycloak: true), the sign-in page shows only "Sign in with
 // Keycloak": a plain link to the backend's start, which goes on to Keycloak's page for the
 // password and the two-step code, and comes back signed in. A failed one comes back here
-// with ?keycloak_error=<code>, shown in plain words (keycloakProblem). Until the server
-// answers, and whenever Keycloak is off, the page is the e-mail and password form as before.
+// with ?keycloak_error=<code>, shown in plain words (keycloakProblem), and that view shows
+// at once. Otherwise the page asks the server first, so it never offers a form that can't
+// work: while it waits, only the heading; if it gets no answer, a message and Try again.
 
 import { useEffect, useState } from "react";
 import { Icon } from "@/components/ui/Icon";
-import { currentSession } from "@/lib/api";
-import { keycloakOn, keycloakStartPath } from "./signIn";
+import { currentSession, keycloakOn } from "@/lib/api";
+import { keycloakStartPath } from "./signIn";
 import { SignedOutNotice } from "./SignedOutNotice";
 import { SignInForm } from "./SignInForm";
 import styles from "./login.module.css";
@@ -21,25 +22,52 @@ interface Props {
   problem: string | null; // a failed Keycloak sign-in (keycloakProblem)
 }
 
+type Mode = "asking" | "password" | "keycloak" | "no_answer";
+
+export const NO_ANSWER = "Could not reach Kaagaz to start signing in. Check your internet connection, then try again.";
+
 export function SignInChoice({ note, next, problem }: Props) {
-  const [keycloak, setKeycloak] = useState(false);
+  const [mode, setMode] = useState<Mode>(problem ? "keycloak" : "asking");
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
+    if (problem) return; // only a Keycloak sign-in comes back with one
     let live = true;
-    currentSession()
-      .then((reply) => {
-        if (live) setKeycloak(keycloakOn(reply));
-      })
-      .catch(() => {}); // no answer: the form stays, and its sign-in says what is wrong
+    currentSession().then(
+      (reply) => live && setMode(keycloakOn(reply) ? "keycloak" : "password"),
+      () => live && setMode("no_answer"),
+    );
     return () => {
       live = false;
     };
-  }, []);
+  }, [problem, attempt]);
 
-  return keycloak ? (
-    <KeycloakSignIn note={note} next={next} problem={problem} />
-  ) : (
-    <SignInForm note={note} next={next} />
+  if (mode === "keycloak") return <KeycloakSignIn note={note} next={next} problem={problem} />;
+  if (mode === "password") return <SignInForm note={note} next={next} />;
+  return (
+    <div className={styles.form}>
+      <div className={styles.intro}>
+        <h1 className={styles.title}>Sign in to Kaagaz</h1>
+      </div>
+      {mode === "no_answer" && (
+        <>
+          <div className={styles.banner} role="alert">
+            <Icon name="alert" />
+            {NO_ANSWER}
+          </div>
+          <button
+            type="button"
+            className="btn btn-block"
+            onClick={() => {
+              setMode("asking");
+              setAttempt((n) => n + 1);
+            }}
+          >
+            Try again
+          </button>
+        </>
+      )}
+    </div>
   );
 }
 

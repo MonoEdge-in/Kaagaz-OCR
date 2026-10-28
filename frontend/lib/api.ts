@@ -229,6 +229,10 @@ export const signUp = (body: { organisation_name: string; name: string; email: s
  * Signed out, `keycloak` says that sign-in is through Keycloak (#435). */
 export const currentSession = () =>
   request<{ signed_in: true; me: Me } | { signed_in: false; keycloak?: true }>("GET", "/auth/session");
+/** Sign-in is through Keycloak (#435), from currentSession's reply. */
+export function keycloakOn(reply: { signed_in: true; me: Me } | { signed_in: false; keycloak?: true }): boolean {
+  return reply.signed_in ? reply.me.session.keycloak === true : reply.keycloak === true;
+}
 
 /** The first code from the set-up (sign-in or sign-up) turns two-step on and signs in. */
 export const adminEnrol = (enrolToken: string, code: string) =>

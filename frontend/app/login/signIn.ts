@@ -3,7 +3,6 @@
 // say when the server says no. Messages say what to do next.
 
 import { ApiError } from "@/lib/api";
-import type { Me } from "@/lib/types";
 
 export type SignInField = "email" | "password";
 
@@ -49,13 +48,9 @@ export function firstInvalid(errors: SignInErrors): SignInField | null {
 // --- Keycloak (#435) ---------------------------------------------------------------
 
 /** Where "Sign in with Keycloak" goes: the backend's start, with where to come back to. */
-export function keycloakStartPath(next: string): string {
-  return `/api/auth/keycloak/start?next=${encodeURIComponent(next)}`;
-}
-
-/** Sign-in is through Keycloak, from GET /auth/session's reply. */
-export function keycloakOn(reply: { signed_in: true; me: Me } | { signed_in: false; keycloak?: true }): boolean {
-  return reply.signed_in ? reply.me.session.keycloak === true : reply.keycloak === true;
+/** `confirm`: a member allowed to delete forever confirms it is them, then comes back to `next`. */
+export function keycloakStartPath(next: string, confirm = false): string {
+  return `/api/auth/keycloak/start?next=${encodeURIComponent(next)}${confirm ? "&confirm=1" : ""}`;
 }
 
 const KEYCLOAK_PROBLEMS: Record<string, string> = {
@@ -65,6 +60,9 @@ const KEYCLOAK_PROBLEMS: Record<string, string> = {
   token: "Keycloak's answer could not be checked. Sign in again.",
   email_unverified: "Your e-mail is not verified in Keycloak. Ask your admin to verify it.",
   no_account: "There is no Kaagaz account for you, or it is turned off. Ask your organisation's admin.",
+  wrong_org: "Your Keycloak account is set up for another organisation. Ask your admin.",
+  two_step: "Keycloak did not ask for your two-step code. Ask your admin.",
+  confirm: "That confirmation was not for you, or you can't delete forever. Go back and try again.",
 };
 
 /** The message for ?keycloak_error=<code> after a failed Keycloak sign-in; null with none.
@@ -80,6 +78,7 @@ export const WRONG_DETAILS_ADVICE = "Check your e-mail and password, then try ag
 export const TOO_MANY_ATTEMPTS = "Too many attempts. Wait a minute, then try again.";
 export const NETWORK_FAILURE = "Could not reach Kaagaz. Check your internet connection and try again.";
 export const SIGN_IN_DOWN = "Sign-in is not working right now. Try again in a minute.";
+export const USE_KEYCLOAK = "Sign-in is through Keycloak now. Reload this page to sign in.";
 
 /**
  * The banner text for a failed sign-in. A 401 shows the backend's own message
@@ -91,6 +90,7 @@ export function signInErrorMessage(caught: unknown): string {
   if (caught instanceof ApiError) {
     if (caught.status === 401) return caught.message.trim() || WRONG_DETAILS_ADVICE;
     if (caught.status === 429) return TOO_MANY_ATTEMPTS;
+    if (caught.code === "keycloak_sign_in") return USE_KEYCLOAK; // switched on since this page loaded (#435)
     if (caught.status === 0) return NETWORK_FAILURE;
     return SIGN_IN_DOWN;
   }
