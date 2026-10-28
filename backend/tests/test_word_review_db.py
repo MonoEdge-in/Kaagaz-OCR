@@ -56,11 +56,13 @@ def scanned(
     reason: str = "unsure_text",
     votes: Any = None,
     quality: str = "unsure",
+    issues: tuple[str, ...] = ("blurry", "illegible_words"),
 ) -> DocumentContent:
     """A two-page scan: page 1's line holds the unsure word ``mark`` and a [?], with a total
     in the word's box; page 2's line is unpinned. Two pieces: the lines, and a line naming
     the word twice (so an edit never goes there). ``quality`` "illegible" makes the word a
-    review item too (#432: an unsure word is a check, listed and counted nowhere)."""
+    review item too (#432: an unsure word is a check, listed and counted nowhere); ``issues``
+    are page 1's problems."""
     line = f"Total Rs {mark} paid [?]"
     spans = (
         Span(line, line, LINE, None, "paragraph", "ocr", quality="ok", box_source="found"),
@@ -71,7 +73,7 @@ def scanned(
     )  # fmt: skip
     pages = [
         PageRecord(PageInfo(1, 595.0, 842.0, "pt"), True, "ocr", read_quality="uncertain",
-                   read_issues=("blurry", "illegible_words"), unsure_words=1, illegible_words=1),
+                   read_issues=issues, unsure_words=1, illegible_words=1),
         PageRecord(PageInfo(2, 595.0, 842.0, "pt"), True, "ocr", read_quality="uncertain",
                    read_issues=("unpinned",), unpinned_lines=1),
     ]  # fmt: skip
@@ -333,3 +335,66 @@ def test_a_value_the_readers_read_differently_is_verified_only_with_every_flag_i
         numbers = word_review.counts(conn, customer, document, review)
     # Changed on purpose (#432): the unsure word confirmed above is a check, counted nowhere.
     assert (numbers["flagged"], numbers["reviewed"], numbers["remaining"]) == (3, 1, 2)
+
+
+KEPT = (
+    "SELECT page_no, accepted_by::text, accepted_at FROM pages"
+    " WHERE document_id = :d AND accepted_at IS NOT NULL ORDER BY page_no"
+)
+
+
+def test_settling_a_pages_last_review_item_keeps_it_when_its_flags_are_its_only_problem(db: Database) -> None:
+    # #443: page 2's one problem is its line not pinned, so confirming that line settles the page.
+    customer, user, document = saved(db)
+    line = change(db, customer, document, key(load(db, customer, document), "line", "Bill to Patil Stores"),
+                  "Bill to Patil Stores", None, user)  # fmt: skip
+    assert rows(db, customer, KEPT, document) == [(2, user, T0)]
+    audits = "SELECT details FROM audit_log WHERE action = 'word_review.confirm'"
+    assert rows(db, customer, audits, document)[0][0]["kept_page"] == 2
+
+    undo(db, customer, document, line, user, T0 + timedelta(minutes=1))
+    assert rows(db, customer, KEPT, document) == []
+
+
+def test_a_page_is_kept_only_once_its_last_word_mark_is_settled(db: Database) -> None:
+    # Both words on page 1 are [?]-like review items, and they are all its problem.
+    customer, user, document = saved(db, quality="illegible", issues=("illegible_words",))
+    review = load(db, customer, document)
+    change(db, customer, document, key(review, "mark", "4,850"), "4,850", None, user)
+    assert rows(db, customer, KEPT, document) == []  # the [?] is still open
+    later = T0 + timedelta(minutes=1)
+    change(db, customer, document, key(review, "mark", "[?]"), "[?]", "cash", user, later)
+    assert rows(db, customer, KEPT, document) == [(1, user, later)]
+
+
+def test_settling_a_value_read_differently_keeps_its_page(db: Database) -> None:
+    customer, user, document = saved(
+        db, reason="readers_disagree", votes=NO_MAJORITY, quality="illegible",
+        issues=("illegible_words", "readers_disagree"),
+    )  # fmt: skip
+    review = load(db, customer, document)
+    change(db, customer, document, key(review, "mark", "4,850"), "4,850", None, user)
+    change(db, customer, document, key(review, "mark", "[?]"), "[?]", None, user)
+    assert rows(db, customer, KEPT, document) == []  # the value is still open
+    value = next(flag for flag in review.flags if flag.kind == "value")
+    change(db, customer, document, value.key, "Rs 4,850", "Rs 4,350", user)
+    assert [page for page, _, _ in rows(db, customer, KEPT, document)] == [1]
+
+
+def test_a_page_with_a_problem_no_flag_stands_for_waits_for_keep_as_is(db: Database) -> None:
+    # Page 1 is blurry too: settling its one review item ([?]) leaves it on the attention list.
+    customer, user, document = saved(db)
+    change(db, customer, document, key(load(db, customer, document), "mark", "[?]"), "[?]", None, user)
+    assert rows(db, customer, KEPT, document) == []
+
+
+def test_a_page_kept_by_its_last_word_stays_kept_through_a_save_and_undo_still_puts_it_back(
+    db: Database,
+) -> None:
+    customer, user, document = saved(db)
+    line = change(db, customer, document, key(load(db, customer, document), "line", "Bill to Patil Stores"),
+                  "Bill to Patil Stores", None, user)  # fmt: skip
+    PgPipelineStore(db).save(scanned(customer, document))  # every row replaced, the keep carried
+    assert rows(db, customer, KEPT, document) == [(2, user, T0)]
+    undo(db, customer, document, line, user, T0 + timedelta(minutes=1))
+    assert rows(db, customer, KEPT, document) == []

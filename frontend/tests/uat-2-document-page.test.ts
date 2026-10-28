@@ -75,14 +75,18 @@ describe("#417 a [?] in the Text view: type the word in its place, right there",
       hint: "Type the word you see on the page in place of 'Krishn4'.",
       draft: "Krishn4",
     });
-    expect(FIX_NOTE).toBe("To type the right word in place of [?] or a marked word, press its line or Fix text.");
+    // Changed on purpose (#443): the box confirms a word as read too.
+    expect(FIX_NOTE).toBe(
+      "To type the right word in place of [?] or a marked word, or confirm it as read, press its line or Fix text.",
+    );
     expect(panel).toMatch(
       /\{reader\?\.role === "first" && flags\.length > 0 && \(onFix \|\| member\) && \(\s*<p className=\{styles\.muted\}>\{onFix \? FIX_NOTE : FIX_MEMBER_NOTE\}<\/p>\s*\)\}/,
     );
   });
 
   it("tells a member, who cannot type a word, who can (follow-up)", () => {
-    expect(FIX_MEMBER_NOTE).toBe("Only a reviewer or an admin can type the right word for a [?].");
+    // Changed on purpose (#443): any marked word (a lone "." too), not only a [?].
+    expect(FIX_MEMBER_NOTE).toBe("Only a reviewer or an admin can fix or confirm a marked word.");
     expect(read(VIEW)).toContain("member={review.status?.can_review === false}");
     // A member gets no Fix text and no box: onFix is a reviewer's or an admin's only.
     expect(read(VIEW)).toContain("onFix={review.status?.can_review && detail.deleted_at === null ? fixWord : undefined}");
@@ -100,13 +104,15 @@ describe("#417 a [?] in the Text view: type the word in its place, right there",
     expect(panel.indexOf(">\n                            Cancel")).toBeLessThan(panel.indexOf(">\n                            Save"));
     expect(panel).toContain("event.stopPropagation(); // Esc here closes the box, not the panel");
     expect(panel).toContain('rows.current[index]?.querySelector("button")?.focus();');
-    expect(panel).toContain('if (typed === "") return setFixing({ ...fixing, error: "Type the word you see on the page." });');
+    // Changed on purpose (#443): Confirm (asRead) sends no typed text.
+    expect(panel).toContain('if (typed === "" && !asRead) return setFixing({ ...fixing, error: "Type the word you see on the page." });');
   });
 
   it("saves through the review's own Edit (saveWord), then asks for the words again", () => {
     const view = read(VIEW);
     expect(view).toContain("const done = await saveWord(detail.id, flag, typed === flag.text ? null : typed);");
-    expect(view).toContain("if (done.ok || done.reload) review.reload();");
+    // Changed on purpose (#443): the whole document, as a word settled may keep its page as is.
+    expect(view).toContain("if (done.ok || done.reload) changed.reload();");
     expect(view).toContain("onFix={review.status?.can_review && detail.deleted_at === null ? fixWord : undefined}");
     const sheet = css("components/viewer/ScannedText.module.css");
     // Changed on purpose (#431, Tushar 28 Oct 2026): the field on its own line, Cancel and Save

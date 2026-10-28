@@ -3,8 +3,8 @@
 // The panels beside the page (PRD 3 Y1 to Y3): the related documents; and first, the
 // Attention panel (PRD 5 U5): every
 // reading problem in the document, by page, each page a jump link, with the
-// shown page's marks as a list of the same buttons as on the page. While a page not kept as is
-// has problems, it carries the Ready to verify dashed edge, "N to check" and a lead line (board 2).
+// shown page's marks as a list of the same buttons as on the page. While anything is left to settle
+// (toSettle, #443), it carries the Ready to verify dashed edge, "N to check" and a lead line (board 2).
 // UI audit DD7 (16 Oct 2026): each mark is a short chip, the word, "1/3" and a jump icon
 // (its full name for screen readers); pointing at one lights its mark on the page, and
 // pointing at a mark on the page lights its chip (`hot`).
@@ -16,12 +16,11 @@ import type { ReactNode } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { labelBadgeClass, labelIcon } from "@/components/viewer/labels";
 import { groupLinks, linkText, untilRead } from "@/components/viewer/panels";
-import { ALL_CLEAR, attentionPages } from "@/components/viewer/pageProblems";
-import type { AttentionPage } from "@/components/viewer/pageProblems";
+import { ALL_CLEAR, attentionPages, toSettle } from "@/components/viewer/pageProblems";
 import { markChipText, markName, marksOnPage } from "@/components/viewer/readingMarks";
 import { withFrom } from "@/lib/backLink";
 import { docTypeLabel } from "@/lib/format";
-import type { DocumentDetail, DocumentStatus, PageSummary, ReadingMark } from "@/lib/types";
+import type { DocumentDetail, DocumentStatus, PageSummary, ReadingMark, WordFlag } from "@/lib/types";
 import styles from "./DocumentView.module.css";
 
 /** Vrushit UAT 3 (27 Oct 2026): a closed, quiet disclosure with its count; each document one line,
@@ -67,6 +66,7 @@ export function RelatedPanel({ detail }: { detail: DocumentDetail }) {
 export function AttentionPanel({
   status,
   pages,
+  open = [],
   current,
   marks,
   onPage,
@@ -79,6 +79,7 @@ export function AttentionPanel({
   fix?: ReactNode;
   status: DocumentStatus;
   pages: PageSummary[];
+  open?: Pick<WordFlag, "page_no">[]; // the words still open on the review list (toSettle)
   current: number | null; // the page shown
   marks: ReadingMark[]; // the shown page's marks
   onPage: (pageNo: number) => void;
@@ -88,7 +89,7 @@ export function AttentionPanel({
 }) {
   const problemPages = attentionPages(pages);
   const shownMarks = current === null ? [] : marksOnPage(marks, current); // as numbered on the page
-  const lead = toCheck(problemPages);
+  const lead = toCheck(pages, open);
   return (
     <section
       className={lead ? `${styles.panel} ${styles.attentionToCheck}` : styles.panel}
@@ -164,23 +165,22 @@ export function AttentionPanel({
   );
 }
 
-/** The Needs attention tab's count (DD6): the reading problems still to check, as "N to check" says. */
-export const attentionCount = (pages: PageSummary[]) => toCheck(attentionPages(pages))?.count ?? 0;
+/** The Needs attention tab's count (DD6): what is left to settle (toSettle), as "N to check" says. */
+export const attentionCount = (pages: PageSummary[], open: Pick<WordFlag, "page_no">[] = []) =>
+  toSettle(pages, open).count;
 
 /**
- * The Attention panel's "N to check" and its lead line: the problems on pages not kept as
- * is (kept ones are off the list); null when there are none. A page counts its marked spots,
- * the ones drawn on it (Vrushit UAT, 25 Oct 2026), or its problem lines when it has no marks.
+ * The Attention panel's "N to check" and its lead line, from toSettle (#443, #444): the words still
+ * open and the pages still to keep as is; null when there are none.
  */
-function toCheck(problemPages: AttentionPage[]): { count: number; text: string } | null {
-  const open = problemPages.filter((item) => !item.kept);
-  const count = open.reduce((sum, item) => sum + (item.marked || item.lines.length), 0);
+function toCheck(pages: PageSummary[], words: Pick<WordFlag, "page_no">[]): { count: number; text: string } | null {
+  const { count, pages: on } = toSettle(pages, words);
   if (count === 0) return null;
-  const where = open.length === 1 ? `page ${open[0]?.pageNo}` : `${open.length.toLocaleString("en-IN")} pages`;
+  const where = on.length === 1 ? `page ${on[0]}` : `${on.length.toLocaleString("en-IN")} pages`;
   const them = count === 1 ? "it" : "them";
   const problems = count === 1 ? "1 reading problem" : `${count.toLocaleString("en-IN")} reading problems`;
   return {
     count,
-    text: `${problems} on ${where}. Check ${them} on the ${open.length === 1 ? "page" : "pages"} before you rely on ${them}.`,
+    text: `${problems} on ${where}. Check ${them} on the ${on.length === 1 ? "page" : "pages"} before you rely on ${them}.`,
   };
 }

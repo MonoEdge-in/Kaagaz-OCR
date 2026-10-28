@@ -14,6 +14,8 @@
 // Edit, Cancel or Esc closes it, and the focus goes back to the line.
 // #431: Fix text works on the line's word mark before the line's own flag (wordToFix), and while
 // the box is open it is the row's one action.
+// #443: the box also offers Confirm, which settles the word as it reads (the review's Confirm), so
+// a stray mark such as a lone "." can be left as it is.
 
 import { useEffect, useId, useRef, useState } from "react";
 import { FlagText } from "@/components/review/FlagText";
@@ -131,13 +133,14 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
     setFixing(null);
     rows.current[index]?.querySelector("button")?.focus();
   };
-  const saveFix = async (flag: WordFlag, index: number) => {
+  // Save sends the text typed; Confirm (asRead) sends each word's own text, so it is confirmed.
+  const saveFix = async (flag: WordFlag, index: number, asRead = false) => {
     if (!onFix || !fixing || fixing.busy) return;
     const typed = fixing.text.trim();
-    if (typed === "") return setFixing({ ...fixing, error: "Type the word you see on the page." });
+    if (typed === "" && !asRead) return setFixing({ ...fixing, error: "Type the word you see on the page." });
     setFixing({ ...fixing, busy: true, error: null });
     let done = { ok: true, message: "" };
-    for (const each of fixesFor(flag, flags)) if (done.ok) done = await onFix(each, typed);
+    for (const each of fixesFor(flag, flags)) if (done.ok) done = await onFix(each, asRead ? each.text : typed);
     if (done.ok) closeFix(index);
     else setFixing((now) => now && { ...now, busy: false, error: done.message });
   };
@@ -314,6 +317,9 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
                         <div className={styles.fixActions}>
                           <button type="button" className="btn" onClick={() => closeFix(index)}>
                             Cancel
+                          </button>
+                          <button type="button" className="btn" disabled={box.busy} onClick={() => void saveFix(toFix, index, true)}>
+                            Confirm
                           </button>
                           <button type="submit" className="btn btn-primary" disabled={box.busy} aria-busy={box.busy || undefined}>
                             Save

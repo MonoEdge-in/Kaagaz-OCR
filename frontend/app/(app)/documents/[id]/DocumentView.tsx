@@ -136,6 +136,7 @@ import { StoryPanel } from "./StoryPanel";
 import { ScriptText, SummaryCard } from "./SummaryCard";
 import styles from "./DocumentView.module.css";
 import { ExportDialog, SummaryBar, documentMoreItems, exportData, useEnsembleStart, useWordReview } from "./WordReview";
+import type { WordReview } from "./WordReview";
 
 export interface DocumentViewProps {
   documentId: string;
@@ -361,7 +362,10 @@ export function DocumentView({
     setAdding({ text, region });
   };
   const hasScannedText = page !== undefined && page.unit !== "cells";
-  const attention = attentionCount(detail.pages);
+  // The words still to settle are marked in Scanned text (High: no mark). On the page every
+  // flagged word is marked, a settled one in green (#431), so a fix shows where it was made.
+  const openFlags = review.flags.filter((flag) => !settled(flag));
+  const attention = attentionCount(detail.pages, openFlags); // #443: one rule, toSettle
   // File management P1 (Changed on purpose, PRD 1 screens): Details (was Overview), Text (was
   // Scanned text), and Questions, Versions and Activity; Needs attention and My words stay.
   // Document panel UX (25 Oct 2026): Needs attention only with something in it (or while
@@ -392,9 +396,6 @@ export function DocumentView({
     if (mark.region.kind === "box" && hasScannedText) setTab("scanned");
   };
   const lowResolution = page ? lowResolutionText(page) : null;
-  // The words still to settle are marked in Scanned text (High: no mark). On the page every
-  // flagged word is marked, a settled one in green (#431), so a fix shows where it was made.
-  const openFlags = review.flags.filter((flag) => !settled(flag));
   const pageFlags = page ? openFlags.filter((flag) => flag.page_no === page.page_no) : [];
   const pageMarks = page ? review.flags.filter((flag) => flag.page_no === page.page_no) : [];
   const toWord = (key: string) => {
@@ -421,12 +422,15 @@ export function DocumentView({
     }
     startReview(flag);
   };
+  // #443: a word settled may keep its page as is (the server's rule), so after a change the whole
+  // document is asked for again, not only its words.
+  const changed: WordReview = { ...review, reload: () => setReloads((n) => n + 1) };
   // Vrushit UAT 2 (#417): a word typed in place in Text is saved as the review's Edit (saveWord),
   // or confirmed when it is left as it reads; the words are asked for again after it, or after a 409.
   const fixWord = async (flag: WordFlag, typed: string) => {
     const done = await saveWord(detail.id, flag, typed === flag.text ? null : typed);
     if (done.ok) setAnnouncement(done.message);
-    if (done.ok || done.reload) review.reload();
+    if (done.ok || done.reload) changed.reload();
     return done;
   };
   const exitReview = () => {
@@ -603,7 +607,7 @@ export function DocumentView({
             {detail.status !== "rejected" && (
               <SummaryBar
                 documentId={detail.id}
-                review={review}
+                review={changed}
                 scanning={detail.status_message}
                 reviewing={reviewing}
                 reviewRef={reviewButton}
@@ -738,7 +742,7 @@ export function DocumentView({
               ) : shownTab === "attention" && reviewing && review.status ? (
                 <ReviewPanel
                   detail={detail}
-                  review={review}
+                  review={changed}
                   current={currentFlag}
                   onCurrent={toWord}
                   onExit={exitReview}
@@ -777,6 +781,7 @@ export function DocumentView({
                     }
                     status={detail.status}
                     pages={detail.pages}
+                    open={openFlags}
                     current={page?.page_no ?? null}
                     marks={readingMarks}
                     onPage={changePage}
