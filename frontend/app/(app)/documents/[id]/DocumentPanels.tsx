@@ -17,6 +17,7 @@ import { Icon } from "@/components/ui/Icon";
 import { labelBadgeClass, labelIcon } from "@/components/viewer/labels";
 import { groupLinks, linkText, untilRead } from "@/components/viewer/panels";
 import { ALL_CLEAR, attentionPages, toSettle } from "@/components/viewer/pageProblems";
+import type { OpenWord } from "@/components/viewer/pageProblems";
 import { markChipText, markName, marksOnPage } from "@/components/viewer/readingMarks";
 import { withFrom } from "@/lib/backLink";
 import { docTypeLabel } from "@/lib/format";
@@ -66,11 +67,12 @@ export function RelatedPanel({ detail }: { detail: DocumentDetail }) {
 export function AttentionPanel({
   status,
   pages,
-  open = [],
+  open,
   current,
   marks,
   onPage,
   onMark,
+  onCheck,
   hot = null,
   onHot = () => undefined,
   fix = null,
@@ -79,15 +81,16 @@ export function AttentionPanel({
   fix?: ReactNode;
   status: DocumentStatus;
   pages: PageSummary[];
-  open?: Pick<WordFlag, "page_no">[]; // the words still open on the review list (toSettle)
+  open: OpenWord[] | null; // the words still open on the review list; null until they load (toSettle)
   current: number | null; // the page shown
   marks: ReadingMark[]; // the shown page's marks
   onPage: (pageNo: number) => void;
   onMark: (mark: ReadingMark, name: string) => void;
+  onCheck: (pageNo: number) => void; // #443: check a good page's open words, in review
   hot?: number | null; // the mark pointed at, here or on the page (its index on the page)
   onHot?: (index: number | null) => void;
 }) {
-  const problemPages = attentionPages(pages);
+  const problemPages = attentionPages(pages, open ?? []);
   const shownMarks = current === null ? [] : marksOnPage(marks, current); // as numbered on the page
   const lead = toCheck(pages, open);
   return (
@@ -126,6 +129,13 @@ export function AttentionPanel({
                   <li key={line}>{line}</li>
                 ))}
               </ul>
+              {item.words !== undefined && (
+                <div className={styles.problemActions}>
+                  <button type="button" className="btn" onClick={() => onCheck(item.pageNo)}>
+                    {`Check ${item.words === 1 ? "it" : "them"}`}
+                  </button>
+                </div>
+              )}
               {item.pageNo === current ? fix : null}
               {item.pageNo === current && shownMarks.length > 0 && (
                 <ul className={styles.markChips} aria-label={`Marks on page ${item.pageNo}`}>
@@ -165,22 +175,27 @@ export function AttentionPanel({
   );
 }
 
-/** The Needs attention tab's count (DD6): what is left to settle (toSettle), as "N to check" says. */
-export const attentionCount = (pages: PageSummary[], open: Pick<WordFlag, "page_no">[] = []) =>
+/** The Needs attention tab's count (DD6): what is left to settle (toSettle), as "N to check" says;
+ * `open` null until the words load, or when they cannot: the pages' marked spots then. */
+export const attentionCount = (pages: PageSummary[], open: Pick<WordFlag, "page_no">[] | null) =>
   toSettle(pages, open).count;
 
 /**
  * The Attention panel's "N to check" and its lead line, from toSettle (#443, #444): the words still
  * open and the pages still to keep as is; null when there are none.
  */
-function toCheck(pages: PageSummary[], words: Pick<WordFlag, "page_no">[]): { count: number; text: string } | null {
-  const { count, pages: on } = toSettle(pages, words);
+function toCheck(
+  pages: PageSummary[],
+  openWords: Pick<WordFlag, "page_no">[] | null,
+): { count: number; text: string } | null {
+  const { count, pages: pagesWithAny } = toSettle(pages, openWords);
   if (count === 0) return null;
-  const where = on.length === 1 ? `page ${on[0]}` : `${on.length.toLocaleString("en-IN")} pages`;
+  const one = pagesWithAny.length === 1;
+  const where = one ? `page ${pagesWithAny[0]}` : `${pagesWithAny.length.toLocaleString("en-IN")} pages`;
   const them = count === 1 ? "it" : "them";
   const problems = count === 1 ? "1 reading problem" : `${count.toLocaleString("en-IN")} reading problems`;
   return {
     count,
-    text: `${problems} on ${where}. Check ${them} on the ${on.length === 1 ? "page" : "pages"} before you rely on ${them}.`,
+    text: `${problems} on ${where}. Check ${them} on the ${one ? "page" : "pages"} before you rely on ${them}.`,
   };
 }

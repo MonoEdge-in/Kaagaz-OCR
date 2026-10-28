@@ -503,7 +503,8 @@ describe("wording (section 6)", () => {
 describe("a rejected file", () => {
   it("asks for no flagged words and shows no summary bar", () => {
     const view = css("app/(app)/documents/[id]/DocumentView.tsx");
-    expect(view).toMatch(/useWordReview\(documentId, reloads, loadedStatus !== null && loadedStatus !== "rejected"\)/);
+    // Changed on purpose (#443): the whole document's reload comes after, for useWordReview's reload.
+    expect(view).toMatch(/useWordReview\(documentId, reloads, loadedStatus !== null && loadedStatus !== "rejected", /);
     expect(view).toMatch(/\{detail\.status !== "rejected" && \(\s*<SummaryBar/);
     const hook = css("app/(app)/documents/[id]/WordReview.tsx");
     expect(hook).toMatch(/useEffect\(\(\) => \{\s*if \(!enabled\) return;\s*let cancelled = false;\s*load\(\)/);

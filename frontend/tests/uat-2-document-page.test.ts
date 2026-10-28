@@ -111,8 +111,9 @@ describe("#417 a [?] in the Text view: type the word in its place, right there",
   it("saves through the review's own Edit (saveWord), then asks for the words again", () => {
     const view = read(VIEW);
     expect(view).toContain("const done = await saveWord(detail.id, flag, typed === flag.text ? null : typed);");
-    // Changed on purpose (#443): the whole document, as a word settled may keep its page as is.
-    expect(view).toContain("if (done.ok || done.reload) changed.reload();");
+    // Changed on purpose (#443): with the word, so the whole document comes again only when it may
+    // have kept its page as is (attention-settle-443.test.ts).
+    expect(view).toContain("if (done.ok || done.reload) review.reload(flag);");
     expect(view).toContain("onFix={review.status?.can_review && detail.deleted_at === null ? fixWord : undefined}");
     const sheet = css("components/viewer/ScannedText.module.css");
     // Changed on purpose (#431, Tushar 28 Oct 2026): the field on its own line, Cancel and Save

@@ -194,13 +194,13 @@ export const FIX_MEMBER_NOTE = "Only a reviewer or an admin can fix or confirm a
  * "." or other punctuation) is said to be one, so Confirm reads as "leave it as it is". */
 export function fixBox(flag: Pick<WordFlag, "text">): { hint: string; draft: string } {
   if (flag.text === UNREAD) return { hint: "Type the word you see on the page in place of [?].", draft: "" };
-  if (/^[\p{P}\p{S}\s]+$/u.test(flag.text)) {
-    return {
-      hint: `'${flag.text}' may be a stray mark. Confirm it to leave it as read, or type what the page shows.`,
-      draft: flag.text,
-    };
-  }
-  return { hint: `Type the word you see on the page in place of '${flag.text}'.`, draft: flag.text };
+  const stray = /^[\p{P}\p{S}\s]+$/u.test(flag.text);
+  return {
+    hint: stray
+      ? `'${flag.text}' may be a stray mark. Confirm it to leave it as read, or type what the page shows.`
+      : `Type the word you see on the page in place of '${flag.text}'.`,
+    draft: flag.text,
+  };
 }
 
 /**

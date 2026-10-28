@@ -256,7 +256,7 @@ describe("the Attention panel (PRD 5 U5)", () => {
   });
 
   it("says so when every page was read clearly", () => {
-    expect(attentionPages([page(1), page(2)])).toEqual([]);
+    expect(attentionPages([page(1), page(2)], [])).toEqual([]);
     expect(ALL_CLEAR).toBe("Everything on these pages was read clearly.");
   });
 
@@ -268,14 +268,14 @@ describe("the Attention panel (PRD 5 U5)", () => {
       page(3, { read_quality: "uncertain", unsure_words: 14, unpinned_lines: 1, accepted_at: "2026-10-09T10:00:00Z" }),
     ];
     // Changed on purpose (#443): the count is toSettle's, so a page no longer counts its marks here.
-    expect(attentionPages(pages)).toEqual([
+    expect(attentionPages(pages, [])).toEqual([
       { pageNo: 2, lines: ["This page is blurry."], kept: false },
       { pageNo: 3, lines: ["14 words unsure", "The exact spot of 1 line needs a check."], kept: true },
     ]);
   });
 
   it("says an unreadable page with no problems listed needs a closer look", () => {
-    expect(attentionPages([page(4, { read_quality: "unreadable", illegible_words: 3 })])).toEqual([
+    expect(attentionPages([page(4, { read_quality: "unreadable", illegible_words: 3 })], [])).toEqual([
       { pageNo: 4, lines: ["This page needs a closer look.", "Hard to read: 3 words."], kept: false },
     ]);
   });
@@ -286,11 +286,12 @@ describe("the Attention panel (PRD 5 U5)", () => {
       createElement(AttentionPanel, {
         status: "ready",
         pages,
-        open,
+        open: open.map((word) => ({ ...word, text: "", reason_text: "" })),
         current: null,
         marks: [],
         onPage: () => undefined,
         onMark: () => undefined,
+        onCheck: () => undefined,
       }),
     );
 
@@ -298,7 +299,13 @@ describe("the Attention panel (PRD 5 U5)", () => {
     // Changed on purpose (#443): the count is what is left to settle (toSettle): here two words still
     // open on a page whose one problem (lines not pinned) they are; its unsure words are no review item.
     const unpinned = { code: "unpinned" as const, says: "The exact spot of 2 lines needs a check.", fix: "Confirm." };
-    const pinned = { read_quality: "uncertain" as const, unsure_words: 2, unpinned_lines: 2, problems: [unpinned] };
+    const pinned = {
+      read_quality: "uncertain" as const,
+      read_issues: ["unpinned" as const], // the server's codes, which toSettle reads (#443)
+      unsure_words: 2,
+      unpinned_lines: 2,
+      problems: [unpinned],
+    };
     const two = attention([page(1), page(2, pinned)], [{ page_no: 2 }, { page_no: 2 }]);
     expect(two).toMatch(/<section class="[^"]*_attentionToCheck_/);
     expect(two).toContain("badge badge-review");
