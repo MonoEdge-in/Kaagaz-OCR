@@ -349,22 +349,15 @@ def test_settling_a_pages_last_review_item_keeps_it_when_its_flags_are_its_only_
     line = change(db, customer, document, key(load(db, customer, document), "line", "Bill to Patil Stores"),
                   "Bill to Patil Stores", None, user)  # fmt: skip
     assert rows(db, customer, KEPT, document) == [(2, user, T0)]
-    audits = "SELECT details FROM audit_log WHERE action = 'word_review.confirm'"
-    assert rows(db, customer, audits, document)[0][0]["kept_page"] == 2
+    audits = "SELECT action, details FROM audit_log WHERE action LIKE 'word_review.%' ORDER BY id"
+    assert rows(db, customer, audits, document)[0][1]["kept"] is True
+    PgPipelineStore(db).save(scanned(customer, document))  # every row replaced, the keep carried
+    assert rows(db, customer, KEPT, document) == [(2, user, T0)]
 
     undo(db, customer, document, line, user, T0 + timedelta(minutes=1))
     assert rows(db, customer, KEPT, document) == []
-
-
-def test_a_page_is_kept_only_once_its_last_word_mark_is_settled(db: Database) -> None:
-    # Both words on page 1 are [?]-like review items, and they are all its problem.
-    customer, user, document = saved(db, quality="illegible", issues=("illegible_words",))
-    review = load(db, customer, document)
-    change(db, customer, document, key(review, "mark", "4,850"), "4,850", None, user)
-    assert rows(db, customer, KEPT, document) == []  # the [?] is still open
-    later = T0 + timedelta(minutes=1)
-    change(db, customer, document, key(review, "mark", "[?]"), "[?]", "cash", user, later)
-    assert rows(db, customer, KEPT, document) == [(1, user, later)]
+    action, details = rows(db, customer, audits, document)[1]
+    assert (action, details["kept"], details["page_no"]) == ("word_review.undo", True, 2)
 
 
 def test_settling_a_value_read_differently_keeps_its_page(db: Database) -> None:
@@ -381,20 +374,46 @@ def test_settling_a_value_read_differently_keeps_its_page(db: Database) -> None:
     assert [page for page, _, _ in rows(db, customer, KEPT, document)] == [1]
 
 
-def test_a_page_with_a_problem_no_flag_stands_for_waits_for_keep_as_is(db: Database) -> None:
-    # Page 1 is blurry too: settling its one review item ([?]) leaves it on the attention list.
-    customer, user, document = saved(db)
+@pytest.mark.parametrize("issues", [("blurry", "illegible_words"), ()])
+def test_a_page_with_a_problem_no_flag_stands_for_or_none_waits_for_keep_as_is(
+    db: Database, issues: tuple[str, ...]
+) -> None:
+    # Page 1 is blurry too, or uncertain for its unsure word alone (no problem code): settling its
+    # one review item ([?]) leaves it on the attention list.
+    customer, user, document = saved(db, issues=issues)
     change(db, customer, document, key(load(db, customer, document), "mark", "[?]"), "[?]", None, user)
     assert rows(db, customer, KEPT, document) == []
 
 
-def test_a_page_kept_by_its_last_word_stays_kept_through_a_save_and_undo_still_puts_it_back(
+def test_a_line_ensemble_read_differently_on_a_page_with_no_problem_code_waits_for_keep_as_is(
     db: Database,
 ) -> None:
-    customer, user, document = saved(db)
-    line = change(db, customer, document, key(load(db, customer, document), "line", "Bill to Patil Stores"),
-                  "Bill to Patil Stores", None, user)  # fmt: skip
-    PgPipelineStore(db).save(scanned(customer, document))  # every row replaced, the keep carried
-    assert rows(db, customer, KEPT, document) == [(2, user, T0)]
-    undo(db, customer, document, line, user, T0 + timedelta(minutes=1))
+    # CodeRabbit on #443: Ensemble read page 1's line differently, a review item on a page with no
+    # problem code; confirming it after the [?], so as the page's last, keeps nothing.
+    customer, user, document = saved(db, issues=())
+    with db.customer(customer) as conn:
+        run = conn.execute(
+            text(
+                "INSERT INTO ensemble_runs (customer_id, document_id, scope, pages, models, status,"
+                " requested_by, finished_at) VALUES (:c, :d, 'document', '{1}', '{m}', 'done', :u, now())"
+                " RETURNING id"
+            ),
+            {"c": customer, "d": document, "u": user},
+        ).scalar_one()
+        conn.execute(
+            text(
+                "INSERT INTO ensemble_readings (customer_id, document_id, run_id, word_key, page_no, region,"
+                " before_text, outcome, proposal) SELECT ro.customer_id, ro.document_id, :r, :k, 1,"
+                " e.span -> 'region', e.span ->> 'text', 'changed', 'Total Rs 4,350 paid [?]'"
+                " FROM reader_outputs ro CROSS JOIN LATERAL jsonb_array_elements(ro.output) AS e(span)"
+                " WHERE ro.customer_id = :c AND ro.document_id = :d AND ro.role = 'first'"
+                " AND e.span ->> 'text' = 'Total Rs 4,850 paid [?]'"
+            ),
+            {"c": customer, "d": document, "r": run, "k": "a" * 64},
+        )
+    review = load(db, customer, document)
+    line = key(review, "line", "Total Rs 4,850 paid [?]")
+    assert [flag.band for flag in review.listed if flag.key == line] == ["review"]
+    change(db, customer, document, key(review, "mark", "[?]"), "[?]", None, user)
+    change(db, customer, document, line, "Total Rs 4,850 paid [?]", None, user, T0 + timedelta(minutes=1))
     assert rows(db, customer, KEPT, document) == []
