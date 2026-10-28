@@ -7,7 +7,7 @@
 
 import { ApiError } from "@/lib/api";
 import { formatDate } from "@/lib/format";
-import type { PageProblem, PageSummary } from "@/lib/types";
+import type { PageProblem, PageSummary, ReadIssue, WordFlag } from "@/lib/types";
 
 export const ALL_CLEAR = "Everything on these pages was read clearly.";
 
@@ -79,14 +79,37 @@ export function fixErrorText(caught: unknown): string {
   return "Check your internet connection, then try again.";
 }
 
+// The page problems a word on the review list stands for (#443, kaagaz/db/word_review.py
+// FLAGGED_ISSUES): a [?], a line not pinned, a value read differently. Once a person settles a
+// page's last such word, the server keeps the page as is.
+const FLAGGED_ISSUES: ReadonlySet<ReadIssue> = new Set(["illegible_words", "unpinned", "readers_disagree"]);
+
+/**
+ * What Needs attention asks a person to settle (#443, #444): the one rule its count, its lead line
+ * and the Text panel's actions follow. Each word still open on the review list (`open`: the review
+ * band only, #432), settled by Confirm or Edit; and each page on the attention list (not good, not
+ * kept as is) that no open word of it accounts for (a problem no word stands for, or none of its
+ * words left open), settled by Keep as is. A page kept as is leaves; its open words stay. O(p + w).
+ */
+export function toSettle(
+  pages: readonly PageSummary[],
+  open: readonly Pick<WordFlag, "page_no">[],
+): { count: number; pages: number[] } {
+  const withWords = new Set(open.map((word) => word.page_no));
+  const toKeep = pages.filter((page) => {
+    if (page.read_quality === "good" || page.accepted_at !== null) return false;
+    const problems = problemsOf(page);
+    return !withWords.has(page.page_no) || problems.length === 0 || problems.some((p) => !FLAGGED_ISSUES.has(p.code));
+  });
+  const where = new Set([...withWords, ...toKeep.map((page) => page.page_no)]);
+  return { count: open.length + toKeep.length, pages: [...where].sort((a, b) => a - b) };
+}
+
 /** One page in the Attention panel: its problems in words, or its counts for a reply from before PR 2. */
 export interface AttentionPage {
   pageNo: number;
   lines: string[];
   kept: boolean; // kept as is: off the attention list, still marked
-  // The spots marked on the page (Vrushit UAT, 25 Oct 2026: two marks said "1 to check"): one
-  // a word unsure or [?] and a line not pinned, as the reader counted them, so its marks.
-  marked: number;
 }
 
 const counted = (n: number, one: string, many: string) => `${n.toLocaleString("en-IN")} ${n === 1 ? one : many}`;
@@ -108,11 +131,6 @@ export function attentionPages(pages: readonly PageSummary[]): AttentionPage[] {
                 ? `The exact spot of ${counted(page.unpinned_lines, "line", "lines")} needs a check.`
                 : "",
             ].filter(Boolean);
-      return {
-        pageNo: page.page_no,
-        lines,
-        kept: page.accepted_at !== null,
-        marked: page.unsure_words + page.illegible_words + page.unpinned_lines,
-      };
+      return { pageNo: page.page_no, lines, kept: page.accepted_at !== null };
     });
 }

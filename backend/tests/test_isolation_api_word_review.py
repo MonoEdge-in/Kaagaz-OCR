@@ -13,7 +13,7 @@ from sqlalchemy import text
 
 from kaagaz.db.engine import Database
 from tests.test_api_support import CSRF, Api
-from tests.test_api_word_review import flags, post, scan
+from tests.test_api_word_review import flags, post, scan, word
 
 pytestmark = pytest.mark.db
 
@@ -79,3 +79,41 @@ def test_a_cannot_reach_bs_word_review(db: Database, role: str) -> None:
     own = b_reviewer.client.post(f"{b_base}/changes/{b_change}/undo", headers=CSRF)
     assert own.status_code == 200, own.text
     assert snapshot(api, b_reviewer.customer_id, b_doc)[1] == 1
+
+
+def kept_pages(api: Api, customer_id: str, document_id: str) -> list[int]:
+    with api.db.customer(customer_id) as conn:
+        found = conn.execute(
+            text("SELECT page_no FROM pages WHERE document_id = :d AND accepted_at IS NOT NULL ORDER BY 1"),
+            {"d": document_id},
+        )
+        return [int(page_no) for (page_no,) in found]
+
+
+def test_a_page_kept_by_its_last_word_is_only_ever_the_customers_own(db: Database) -> None:
+    # #443: settling a page's last review item keeps the page as is. A's change keeps A's page 2
+    # only; B's same scan (same page, same word key) is untouched, and A's undo puts back A's alone.
+    api = Api(db)
+    a_user, b_user = api.new_signed("reviewer"), api.new_signed("reviewer")
+    a_doc, b_doc = scan(api, a_user.customer_id), scan(api, b_user.customer_id)
+    a_line = word(flags(a_user, a_doc), "Bill to Patil Stores")
+    b_line = word(flags(b_user, b_doc), "Bill to Patil Stores")
+    assert a_line["word_key"] == b_line["word_key"]
+    confirm = "/api/documents/{}/flags/{}/confirm"
+
+    refused = post(a_user, confirm.format(b_doc, b_line["word_key"]), {"expected_text": b_line["text"]})
+    assert refused.status_code == 404
+    assert kept_pages(api, b_user.customer_id, b_doc) == []
+
+    made = post(a_user, confirm.format(a_doc, a_line["word_key"]), {"expected_text": a_line["text"]})
+    assert made.status_code == 200, made.text
+    assert kept_pages(api, a_user.customer_id, a_doc) == [2]
+    assert kept_pages(api, b_user.customer_id, b_doc) == []
+
+    own = post(b_user, confirm.format(b_doc, b_line["word_key"]), {"expected_text": b_line["text"]})
+    assert own.status_code == 200, own.text
+    change = a_user.client.get(f"/api/documents/{a_doc}/changes").json()["items"][0]["id"]
+    undone = post(a_user, f"/api/documents/{a_doc}/changes/{change}/undo")
+    assert undone.status_code == 200, undone.text
+    assert kept_pages(api, a_user.customer_id, a_doc) == []
+    assert kept_pages(api, b_user.customer_id, b_doc) == [2]

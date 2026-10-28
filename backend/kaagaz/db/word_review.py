@@ -17,6 +17,12 @@ Why here: the SQL in one reviewable place. Every function takes a connection fro
   only (``Review.listed``: the list, every count and Ensemble on flagged words). A ``check``
   word (a second look is wise) is no review item: its reading-problem mark stays on the page,
   and ``load`` still finds it, so a change already made to it is kept and written again.
+* **A page settled through its flags** (#443, Tushar, 28 Oct 2026): a person's change that
+  settles the last review item of a page whose every problem is one a flag stands for
+  (``FLAGGED_ISSUES``: a [?], a line not pinned, a value read differently) keeps that page as
+  is (F5, ``documents.accept_page``), so it leaves Needs attention and the file list's
+  attention with its last word; ``applied`` keeps the page and time (``kept``), and Undo
+  puts the page back. A page with another problem (faint, blurry...) waits for Keep as is.
 * **Confirm and Edit** (``change_word``) run in one transaction under the family lock
   (``trash.lock_family``, the save's lock too, so a read again never interleaves): the
   document must be ready, current and out of Trash (``not_ready``, ``in_trash``), the word
@@ -56,6 +62,7 @@ from sqlalchemy import Connection, RowMapping, TextClause, text
 from kaagaz.chunking.script import is_devanagari, latin_spelling
 from kaagaz.db import audit, value_keys
 from kaagaz.db import review as review_sql
+from kaagaz.db.documents import accept_page
 from kaagaz.db.trash import lock_family
 from kaagaz.extraction.flags import (
     COVERED_REASONS,
@@ -70,10 +77,15 @@ from kaagaz.extraction.flags import (
 )
 from kaagaz.extraction.land import value_number
 from kaagaz.extraction.parsing import parse_date
+from kaagaz.reading.page_quality import ILLEGIBLE_WORDS, READERS_DISAGREE, UNPINNED
 
 PERSON_ACTIONS = ("confirm", "edit")
 ENSEMBLE_ACTIONS = ("resolve", "keep")
 OPEN, REVIEWED, RESOLVED = "open", "reviewed", "resolved"
+# The page problems a review item stands for (#443): a [?] (illegible mark), a line not pinned
+# (spot not confirmed), a value read differently (readings differ). Mirrored by the Needs
+# attention count (frontend/components/viewer/pageProblems.ts, FLAGGED_ISSUES).
+FLAGGED_ISSUES = frozenset({ILLEGIBLE_WORDS, UNPINNED, READERS_DISAGREE})
 
 # The first reader's spans read by OCR that may be flagged, with their page's reading
 # result: word marks, lines that are unpinned or on a backup-read or unreadable page, and
@@ -135,6 +147,16 @@ _CHANGES = text(
     " u.display_name AS user_name"
     " FROM word_changes w LEFT JOIN users u ON u.customer_id = w.customer_id AND u.id = w.user_id"
     " WHERE w.customer_id = :c AND w.document_id = :d ORDER BY w.created_at, w.id"
+)
+# A page on the attention list (not good, not kept as is), with its problems.
+_PAGE_TO_KEEP = text(
+    "SELECT read_issues FROM pages WHERE customer_id = :c AND document_id = :d AND page_no = :p"
+    " AND read_quality <> 'good' AND accepted_at IS NULL"
+)
+# Undo of a page a change kept: only while it is still kept from that change.
+_UNKEEP_PAGE = text(
+    "UPDATE pages SET accepted_by = NULL, accepted_at = NULL WHERE customer_id = :c AND document_id = :d"
+    " AND page_no = :p AND accepted_at = CAST(:at AS timestamptz)"
 )
 _DOCUMENT_STATE = text(
     "SELECT status, deleted_at, is_current FROM documents WHERE customer_id = :c AND id = :d"
@@ -335,6 +357,9 @@ def change_word(
         conn, ids, flag, before, after, review.flags, reviewed, user_id, change_id, verify=person, votes=votes
     )
     applied["flag"] = {"band": flag.band, "reason": flag.reason}
+    kept = _keep_settled_page(conn, ids, flag, review.listed, latest, user_id, now)
+    if kept is not None:
+        applied["kept"] = kept
     conn.execute(_SET_APPLIED, {"c": customer_id, "id": change_id, "applied": json.dumps(applied)})
     audit.record(
         conn,
@@ -396,6 +421,9 @@ def undo_change(
         if entry["id"] in pieces:
             params = {"c": customer_id, "id": entry["id"], "t": entry["before"], "latin": entry["latin"]}
             conn.execute(_SET_PIECE_TEXT, params)
+    kept = applied.get("kept")
+    if kept:
+        conn.execute(_UNKEEP_PAGE, {**ids, "p": kept["page_no"], "at": kept["at"]})
     conn.execute(_UNDO, {"c": customer_id, "id": change_id, "now": now, "u": user_id})
     audit.record(
         conn,
@@ -450,6 +478,8 @@ def reapply(
             applied["values"] = [*before_applied.get("values", []), *applied["values"]]
             applied["pieces"] = before_applied.get("pieces", [])
         applied["flag"] = before_applied.get("flag")
+        if "kept" in before_applied:
+            applied["kept"] = before_applied["kept"]
         conn.execute(_SET_APPLIED, {"c": customer_id, "id": change_id, "applied": json.dumps(applied)})
 
 
@@ -494,6 +524,31 @@ def lock_ready(conn: Connection, ids: dict[str, str]) -> None:
         raise Refused("in_trash")
     if row.status != "ready" or not row.is_current:
         raise Refused("not_ready")
+
+
+def _keep_settled_page(
+    conn: Connection,
+    ids: dict[str, str],
+    flag: Flag,
+    listed: Sequence[Flag],
+    latest: Mapping[str, RowMapping],
+    user_id: str,
+    now: datetime,
+) -> dict[str, Any] | None:
+    """Keep the flag's page as is when this change settled its last review item and every
+    problem on it is one a flag stands for (see the module docstring): ``{page_no, at}``, else
+    None. ``latest`` is from before the change. One statement more, two when it keeps."""
+    if flag.band != REVIEW or any(
+        other.page_no == flag.page_no and other.key != flag.key and state(other, latest) == OPEN
+        for other in listed
+    ):
+        return None
+    issues = conn.execute(_PAGE_TO_KEEP, {**ids, "p": flag.page_no}).scalar_one_or_none()
+    if issues is None or not FLAGGED_ISSUES.issuperset(issues):
+        return None
+    if not accept_page(conn, ids["c"], ids["d"], flag.page_no, user_id=user_id, now=now):
+        return None
+    return {"page_no": flag.page_no, "at": now.isoformat()}
 
 
 def _apply(
@@ -624,4 +679,5 @@ def _audit_details(change_id: str, flag: Flag, applied: Mapping[str, Any]) -> di
         "values": len(values),
         "verified": sum(bool(entry["verified"]) for entry in values),
         "pieces": len(applied["pieces"]),
+        **({"kept_page": int(applied["kept"]["page_no"])} if "kept" in applied else {}),
     }

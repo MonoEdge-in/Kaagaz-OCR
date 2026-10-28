@@ -73,7 +73,10 @@ describe("#431 Save fixes the [?] the box names", () => {
   it("saves every flag fixesFor names, one after the other, and closes only when all went through", () => {
     const panel = read(PANEL);
     expect(panel).toContain("const toFix = first && onFix ? wordToFix(flags, line) : undefined;");
-    expect(panel).toContain("for (const each of fixesFor(flag, flags)) if (done.ok) done = await onFix(each, typed);");
+    // Changed on purpose (#443): Confirm sends each word's own text (asRead).
+    expect(panel).toContain(
+      "for (const each of fixesFor(flag, flags)) if (done.ok) done = await onFix(each, asRead ? each.text : typed);",
+    );
     expect(panel).toContain("if (done.ok) closeFix(index);");
     expect(panel).toContain('const ask = toFix ? fixBox(toFix.kind === "line" ? { text: read } : toFix) : null;');
   });

@@ -183,16 +183,24 @@ export function lineMarked(line: Pick<ReadLine, "region">, region: Region | null
 // The reader's mark for a part of a line it could not read (page_quality.ILLEGIBLE_MARK).
 const UNREAD = "[?]";
 // Vrushit UAT 2 (27 Oct 2026, #417): said over the lines while a reviewer can fix a word in them.
-export const FIX_NOTE = "To type the right word in place of [?] or a marked word, press its line or Fix text.";
-// Said there instead to a member, who cannot fix a word.
-export const FIX_MEMBER_NOTE = "Only a reviewer or an admin can type the right word for a [?].";
+// #443: or confirm it as read.
+export const FIX_NOTE =
+  "To type the right word in place of [?] or a marked word, or confirm it as read, press its line or Fix text.";
+// Said there instead to a member, who cannot fix a word (#443: any marked word, not only a [?]).
+export const FIX_MEMBER_NOTE = "Only a reviewer or an admin can fix or confirm a marked word.";
 
 /** The fix box under a line (#417): what it asks, and the text it starts with (nothing for an
- * unread [?]; else the word as it reads now, to correct). */
+ * unread [?]; else the word as it reads now, to correct). #443: a mark that is no word (a lone
+ * "." or other punctuation) is said to be one, so Confirm reads as "leave it as it is". */
 export function fixBox(flag: Pick<WordFlag, "text">): { hint: string; draft: string } {
-  return flag.text === UNREAD
-    ? { hint: "Type the word you see on the page in place of [?].", draft: "" }
-    : { hint: `Type the word you see on the page in place of '${flag.text}'.`, draft: flag.text };
+  if (flag.text === UNREAD) return { hint: "Type the word you see on the page in place of [?].", draft: "" };
+  if (/^[\p{P}\p{S}\s]+$/u.test(flag.text)) {
+    return {
+      hint: `'${flag.text}' may be a stray mark. Confirm it to leave it as read, or type what the page shows.`,
+      draft: flag.text,
+    };
+  }
+  return { hint: `Type the word you see on the page in place of '${flag.text}'.`, draft: flag.text };
 }
 
 /**
