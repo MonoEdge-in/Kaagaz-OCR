@@ -49,10 +49,19 @@ const VERIFY_ALL_RESULT_ID = "review-verify-all-result";
 const messageOf = (error: unknown) =>
   error instanceof ApiError ? error.message : "Check your internet connection, then try again.";
 
-function Header() {
+/** The way back to the document a "Review values" link came from (Tushar, 28 Oct 2026). */
+type Back = { href: string; name: string };
+
+function Header({ back }: { back?: Back }) {
   return (
     <header className="page-header">
       <div>
+        {back ? (
+          <Link href={back.href} className={styles.back}>
+            <Icon name="chevron-left" />
+            <span>{`Back to ${back.name}`}</span>
+          </Link>
+        ) : null}
         <h1>Review</h1>
         <p>Values the readers were not sure about. Pick the right reading, or type it.</p>
       </div>
@@ -85,6 +94,12 @@ function Queue({ documentId }: { documentId?: string }) {
   const latest = useRef<ReviewList | null>(null);
   // The element id to focus once the list has re-rendered.
   const focusNext = useRef<string | null>(null);
+  // Opened for one document: its name, kept once known, so the way back still names it
+  // after every value is settled and the list is empty.
+  const [documentName, setDocumentName] = useState<string | null>(null);
+  const back: Back | undefined = documentId
+    ? { href: `/documents/${encodeURIComponent(documentId)}`, name: documentName ?? "the document" }
+    : undefined;
 
   const commit = (next: ReviewList) => {
     latest.current = next;
@@ -97,6 +112,7 @@ function Queue({ documentId }: { documentId?: string }) {
       .then((result) => {
         if (cancelled) return;
         setFirst({ attempt, list: result });
+        if (documentId && result.items[0]) setDocumentName(result.items[0].document_name);
         latest.current = result;
         setList(result);
       })
@@ -218,7 +234,7 @@ function Queue({ documentId }: { documentId?: string }) {
   if (failed === FEATURE_OFF) {
     return (
       <div className="page">
-        <Header />
+        <Header back={back} />
         <EmptyState icon="review" title={FEATURE_OFF} />
       </div>
     );
@@ -226,7 +242,7 @@ function Queue({ documentId }: { documentId?: string }) {
 
   return (
     <div className="page">
-      <Header />
+      <Header back={back} />
       {/* desktop/Review.html: the reasons as a row of pill chips, the one shown pressed. */}
       <div className={`k-chip-row ${styles.reasons}`} role="group" aria-label="Show values where">
         {[{ value: null, text: "Any reason" }, ...REASON_FILTERS].map((choice) => (
@@ -317,9 +333,15 @@ function Queue({ documentId }: { documentId?: string }) {
             title={reason ? "Nothing to review for this reason" : "Nothing to review"}
             headingId={EMPTY_HEADING_ID}
             action={
-              <Link href="/documents" className="btn">
-                Go to Documents
-              </Link>
+              back ? (
+                <Link href={back.href} className="btn">
+                  {`Back to ${back.name}`}
+                </Link>
+              ) : (
+                <Link href="/documents" className="btn">
+                  Go to Documents
+                </Link>
+              )
             }
           >
             {reason

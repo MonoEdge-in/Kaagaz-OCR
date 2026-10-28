@@ -54,6 +54,18 @@
   overflow-wrap: anywhere;
 }
 
+/* Back to the document Review was opened for, as the document page's own back link. */
+.back {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: var(--h-lg);
+  margin-block-end: var(--space-2);
+  font-size: var(--fs-base);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
 .reason {
   margin: 0;
   font-size: var(--fs-sm);
