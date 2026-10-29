@@ -151,7 +151,10 @@ describe("#419 the PDF viewer's hand: drag a zoomed page around", () => {
     const effect = viewer.slice(viewer.indexOf("// The hand (#419), on the viewer's own scroll area"), viewer.indexOf("const overlay = useCallback("));
     expect(effect).toContain("if (!hand || !open || !area) return;");
     expect(effect).toContain('event.target.closest("button, a")');
-    expect(effect).toContain('area.scrollTo({ ...panTo(press, event.clientX, event.clientY), behavior: "instant" });');
+    // Changed on purpose (#454): the pan is worked out on each move and scrolled once a frame
+    // (pdf-smooth-454.test.ts), still never animated.
+    expect(effect).toContain("to = panTo(press, event.clientX, event.clientY);");
+    expect(effect).toContain('if (to) area.scrollTo({ ...to, behavior: "instant" });');
     // The engine's exclusion rule keeps its text selection out while the hand is on, and back after.
     expect(effect).toContain('area.dataset.noInteraction = "";');
     expect(effect).toContain("delete area.dataset.noInteraction;");

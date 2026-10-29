@@ -2166,8 +2166,10 @@ function PDFViewerInner({
             rotation={pageRotation}
             key={`${page.pageIndex}-${pageRotation}`}
             data-pdf-viewer-page={pageNumber}
+            // Changed for Kaagaz (#454): overflow-hidden, so nothing drawn on the page (its
+            // tiles, a mark's ring or badge) shows outside it while the pages move.
             className={cn(
-              "relative border border-transparent bg-transparent shadow-xs select-none selection:bg-transparent selection:text-inherit",
+              "relative overflow-hidden border border-transparent bg-transparent shadow-xs select-none selection:bg-transparent selection:text-inherit",
               pageClassName?.(pageNumber)
             )}
             style={{ backgroundColor: "transparent" }}
