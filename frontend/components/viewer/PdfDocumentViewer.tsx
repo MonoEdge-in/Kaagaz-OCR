@@ -18,7 +18,7 @@
 // pages moves them (a mouse, a pen or a finger) with a grab cursor, and the engine's own pointer
 // work (selecting text) is left out through its exclusion rule (data-no-interaction); a mark on
 // the page is still pressed as before. Off, the pages select text as they did. The scroll follows
-// the pointer at once, never animated; the keys scroll the pages either way.
+// the pointer once a frame (#454), never animated; the keys scroll the pages either way.
 
 import "@/components/extend/extend.css";
 import { DownloadIcon, HandIcon, HighlighterIcon, PrinterIcon } from "lucide-react";
@@ -31,6 +31,8 @@ import { markerId } from "@/components/words/ViewerWords";
 import { markerRect, unturnedBox } from "@/components/words/spots";
 import type { Marker } from "@/components/words/spots";
 import { fileUrl } from "@/lib/api";
+import { MOTION_MS, play } from "@/lib/motion";
+import type { Frame } from "@/lib/motion";
 import type { ReadingMark, Region, WordFlag } from "@/lib/types";
 import { markChecked, markName, marksOnPage } from "./readingMarks";
 import styles from "./PageViewer.module.css";
@@ -41,6 +43,8 @@ import { wordColour } from "./YourWords";
 const STEERING_MS = 1000;
 /** How many frames the spot's page may take to be drawn, after a jump to it (about 1 s). */
 const SPOT_FRAMES = 60;
+/** A new spot settles onto its value (PageViewer's spotIn), played once from toSpot (#454). */
+const SPOT_IN: Frame[] = [{ opacity: 0, transform: "scale(1.15)" }, { opacity: 1, transform: "none" }];
 const NO_WORDS: Region[] = []; // a stable default, so the overlay is not made again each render
 const NO_HITS: number[] = [];
 
@@ -145,6 +149,7 @@ export function PdfDocumentViewer({
     const area = viewer.current.getViewportElement();
     const mark = area?.querySelector(`[data-pdf-viewer-page="${spot.page}"] [data-spot]`);
     if (area && mark) {
+      play(mark, SPOT_IN, MOTION_MS.slow);
       area.scrollTo({ ...centredScroll(mark.getBoundingClientRect(), area.getBoundingClientRect(), area), behavior: "smooth" });
       return true;
     }
@@ -157,12 +162,27 @@ export function PdfDocumentViewer({
     viewer.current?.scrollToPage(pageNo, { behavior: "smooth" });
   });
   useEffect(() => {
+    const area = viewer.current?.getViewportElement();
     let frame = 0;
     const go = (tries: number) => {
       if (!toSpot(tries === 0) && tries < SPOT_FRAMES) frame = requestAnimationFrame(() => go(tries + 1));
     };
+    // #454: the user scrolling, dragging or pressing a key takes over: no more aiming, a smooth
+    // scroll still on its way is halted where it is, and the pages they reach are told again.
+    const stop = () => {
+      cancelAnimationFrame(frame);
+      if (area && performance.now() < steeringUntil.current) {
+        area.scrollTo({ left: area.scrollLeft, top: area.scrollTop, behavior: "instant" });
+      }
+      steeringUntil.current = 0;
+    };
+    const input = ["wheel", "pointerdown", "touchstart", "keydown"] as const;
+    for (const type of input) area?.addEventListener(type, stop, { passive: true });
     go(0);
-    return () => cancelAnimationFrame(frame);
+    return () => {
+      cancelAnimationFrame(frame);
+      for (const type of input) area?.removeEventListener(type, stop);
+    };
   }, [spotKey, open]);
   useEffect(() => toPage(), [pageNo, open]);
 
@@ -179,6 +199,8 @@ export function PdfDocumentViewer({
     const area = viewer.current?.getViewportElement();
     if (!hand || !open || !area) return;
     let press: { id: number; x: number; y: number; left: number; top: number } | null = null;
+    let frame = 0; // #454: one scroll a frame, however often the pointer reports; nothing is measured on a move
+    let to: { left: number; top: number } | null = null;
     const down = (event: PointerEvent) => {
       if (event.button !== 0 || (event.target instanceof Element && event.target.closest("button, a"))) return;
       press = { id: event.pointerId, x: event.clientX, y: event.clientY, left: area.scrollLeft, top: area.scrollTop };
@@ -187,7 +209,12 @@ export function PdfDocumentViewer({
       event.preventDefault();
     };
     const move = (event: PointerEvent) => {
-      if (press?.id === event.pointerId) area.scrollTo({ ...panTo(press, event.clientX, event.clientY), behavior: "instant" });
+      if (press?.id !== event.pointerId) return;
+      to = panTo(press, event.clientX, event.clientY);
+      frame ||= requestAnimationFrame(() => {
+        frame = 0;
+        if (to) area.scrollTo({ ...to, behavior: "instant" });
+      });
     };
     const end = (event: PointerEvent) => {
       if (press?.id !== event.pointerId) return;
@@ -201,6 +228,7 @@ export function PdfDocumentViewer({
     area.addEventListener("pointerup", end);
     area.addEventListener("pointercancel", end);
     return () => {
+      cancelAnimationFrame(frame);
       delete area.dataset.noInteraction;
       delete area.dataset.hand;
       area.removeEventListener("pointerdown", down);
@@ -218,6 +246,12 @@ export function PdfDocumentViewer({
         return { left: px.left, top: px.top, width: px.width, height: px.height };
       };
       const problems = marksOnPage(readingMarks, pageNumber);
+      // The marks of pages beside the screen's come too (#454); a hot mark (DD7) is a number on
+      // the screen's page, as the Needs attention panel counts them.
+      const here = pageNumber === pageNo;
+      // #454: no entrance here. The viewer draws only the pages near the view, so a page scrolled
+      // back to is drawn anew and a CSS entrance played again on each (the blink while moving);
+      // the spot settles once, from toSpot, and the lines holding your words simply show.
       return (
         <>
           {showHighlights &&
@@ -228,7 +262,7 @@ export function PdfDocumentViewer({
                   className={styles.word}
                   data-word={wordColour(wordHits[index])}
                   aria-hidden="true"
-                  style={place(region.box)}
+                  style={{ ...place(region.box), animation: "none" }}
                 />
               ) : null,
             )}
@@ -238,7 +272,7 @@ export function PdfDocumentViewer({
               <div
                 key={`spot-${index}`}
                 data-spot=""
-                className={`${styles.box} ${styles.pulse}`}
+                className={styles.box}
                 aria-hidden="true"
                 style={{ ...place(region.box), visibility: showHighlights ? undefined : "hidden" }}
               />
@@ -289,12 +323,12 @@ export function PdfDocumentViewer({
                   className={styles.problem}
                   data-quality={mark.quality}
                   data-state={checked ? "checked" : undefined}
-                  data-hot={hotMark === index ? "true" : undefined}
+                  data-hot={here && hotMark === index ? "true" : undefined}
                   aria-label={name}
                   title={name}
                   style={place(mark.region.box)}
                   onClick={() => onMark?.(mark, name)}
-                  onPointerEnter={() => onHotMark?.(index)}
+                  onPointerEnter={() => (here ? onHotMark?.(index) : undefined)}
                   onPointerLeave={() => onHotMark?.(null)}
                 />
               );
@@ -302,7 +336,7 @@ export function PdfDocumentViewer({
         </>
       );
     },
-    [showHighlights, wordBoxes, wordHits, highlights, marks, activeMark, flags, activeFlag, onFlag, readingMarks, hotMark, onHotMark, onMark],
+    [showHighlights, wordBoxes, wordHits, highlights, marks, activeMark, flags, activeFlag, onFlag, readingMarks, pageNo, hotMark, onHotMark, onMark],
   );
 
   return (
@@ -371,9 +405,15 @@ export function PdfDocumentViewer({
           </>
         }
       />
-      {spot && showHighlights ? (
-        <p className={`muted ${styles.note} ${styles.pdfNote}`}>{highlightNote ?? "The highlighted box marks the spot."}</p>
-      ) : null}
+      {/* Always laid out, hidden without a spot (#454): the line coming and going resized the
+          pages' scroll area, and the engine answers a resize by setting the scroll again, which
+          stopped a scroll, a drag or the centring on a spot mid-way. */}
+      <p
+        className={`muted ${styles.note} ${styles.pdfNote}`}
+        style={spot && showHighlights ? undefined : { visibility: "hidden" }}
+      >
+        {highlightNote ?? "The highlighted box marks the spot."}
+      </p>
     </div>
   );
 }

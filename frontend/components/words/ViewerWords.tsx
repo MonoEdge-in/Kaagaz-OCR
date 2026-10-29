@@ -7,10 +7,11 @@
 // list is how a keyboard or screen reader reaches them. Every word, meaning and
 // line is plain text from the user or the document: never HTML, never logged.
 
-import { useEffect, useState } from "react";
+import { useMemo, useState } from "react";
 import type { FormEvent } from "react";
 import { scrollBehavior } from "@/components/chat/hooks";
 import { ActionDialog } from "@/components/documents/ActionDialog";
+import { pagesAround, usePageCache } from "@/components/viewer/usePageCache";
 import { addMyWord, ApiError, getMyWordsOnPage } from "@/lib/api";
 import type { MySpot, Region } from "@/lib/types";
 import { browserStore, markersOf, markerText, pickableWords, readShowMyWords, spotsLoadText } from "./spots";
@@ -24,12 +25,13 @@ import styles from "./Words.module.css";
 /** The element id of a marker on the page, so its list item can bring it into view. */
 export const markerId = (id: string) => `my-word-${id}`;
 
-type Loaded = { key: string; spots: MySpot[] } | { key: string; error: string };
+type Loaded = { spots: MySpot[] } | { error: string };
 
 export interface ViewerWords {
   show: boolean;
   setShow(on: boolean): void;
   markers: Marker[]; // [] while hidden, loading or failed
+  markersAround: Marker[]; // #454: every page loaded so far, for the PDF viewer's one scroll
   loading: boolean;
   error: string | null;
   activeId: string | null;
@@ -37,30 +39,29 @@ export interface ViewerWords {
   reload(): void;
 }
 
-/** This user's words on one page; asked for again when the page changes or a word is added. */
-export function useViewerWords(documentId: string, pageNo: number | null): ViewerWords {
+/**
+ * This user's words on one page, and on the pages beside it in `scroll` (the PDF viewer's pages,
+ * #454; [] for a page at a time); each page kept once loaded, asked for again when a word is added.
+ */
+export function useViewerWords(documentId: string, pageNo: number | null, scroll: readonly number[] = []): ViewerWords {
   const [show, setShowState] = useState(() => readShowMyWords(browserStore()));
   const [attempt, setAttempt] = useState(0);
-  const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
-  const key = `${documentId}:${pageNo ?? ""}:${attempt}`;
-
-  useEffect(() => {
-    if (pageNo === null || !show) return;
-    let cancelled = false;
-    getMyWordsOnPage(documentId, pageNo).then(
-      (reply) => !cancelled && setLoaded({ key, spots: reply.items }),
+  const loaded = usePageCache<Loaded>(`${documentId}:${attempt}`, show ? pagesAround(pageNo, scroll) : [], (page) =>
+    getMyWordsOnPage(documentId, page).then(
+      (reply) => ({ spots: reply.items }),
       (caught: unknown) => {
         const status = caught instanceof ApiError && caught.status !== 0 ? caught.status : null;
-        if (!cancelled) setLoaded({ key, error: spotsLoadText(status) });
+        return { error: spotsLoadText(status) };
       },
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [documentId, pageNo, show, key]);
+    ),
+  );
+  const markersAround = useMemo(
+    () => [...loaded].flatMap(([page, each]) => ("spots" in each ? markersOf(each.spots, page) : [])),
+    [loaded],
+  );
 
-  const current = loaded && loaded.key === key ? loaded : null;
+  const current = pageNo === null ? undefined : loaded.get(pageNo);
   return {
     show,
     setShow: (on) => {
@@ -68,7 +69,8 @@ export function useViewerWords(documentId: string, pageNo: number | null): Viewe
       writeShowMyWords(browserStore(), on);
     },
     markers: show && pageNo !== null && current && "spots" in current ? markersOf(current.spots, pageNo) : [],
-    loading: show && current === null,
+    markersAround: show ? markersAround : [],
+    loading: show && current === undefined,
     error: show && current && "error" in current ? current.error : null,
     activeId,
     setActiveId,
