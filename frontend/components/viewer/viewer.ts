@@ -72,6 +72,21 @@ export function panTo(
   return { left: press.left - (x - press.x), top: press.top - (y - press.y) };
 }
 
+type Rect = Pick<DOMRectReadOnly, "left" | "top" | "width" | "height">;
+type ScrollArea = Pick<Element, "scrollLeft" | "scrollTop" | "clientLeft" | "clientTop" | "clientWidth" | "clientHeight">;
+
+/**
+ * The scroll that puts a drawn rect's centre in the middle of a scroll area (#446), both in
+ * screen pixels (getBoundingClientRect), the area's own `box` taken with its borders. The browser
+ * keeps it in range, so a spot near a page's edge goes as far towards the middle as it can.
+ */
+export function centredScroll(rect: Rect, box: Pick<Rect, "left" | "top">, area: ScrollArea): { left: number; top: number } {
+  return {
+    left: area.scrollLeft + rect.left + rect.width / 2 - (box.left + area.clientLeft + area.clientWidth / 2),
+    top: area.scrollTop + rect.top + rect.height / 2 - (box.top + area.clientTop + area.clientHeight / 2),
+  };
+}
+
 /** The next zoom step in or out; stays put at either end. */
 export function stepZoom(current: number, direction: "in" | "out"): number {
   const index = ZOOM_STEPS.findIndex((step) => step >= current - 1e-9);
