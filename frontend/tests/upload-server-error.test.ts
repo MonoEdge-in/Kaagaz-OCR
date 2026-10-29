@@ -49,8 +49,9 @@ function stubApi(first: "server" | "connection") {
 
 // Fixed (#239, 27 Oct 2026): the clock moves only while the upload waits on a timer. The file's
 // hash (crypto.subtle) takes real time, and a slow machine used up the 10 s before the first call.
+// Fixed (#447): bounded by 4 s of real time, not 100,000 turns, which pass in about 100 ms idle.
 async function pass(ms: number, isDone: () => boolean) {
-  for (let left = ms, turns = 0; left > 0 && !isDone() && turns < 100_000; turns++) {
+  for (let left = ms, until = performance.now() + 4_000; left > 0 && !isDone() && performance.now() < until; ) {
     await new Promise((resolve) => setImmediate(resolve));
     if (vi.getTimerCount() > 0) {
       vi.advanceTimersByTime(100);
