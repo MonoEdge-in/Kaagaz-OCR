@@ -439,10 +439,6 @@ def _page_spans(
 ) -> list[Span]:
     """The page's lines, without the words under ``hidden`` (page fractions): text
     that can't be seen never becomes a line (the council's PR 3 review, high 1)."""
-    # Boxes are fractions of the crop box, the part of the page a viewer shows
-    # (and the part pypdfium2 draws). pdfplumber gives both in the same
-    # top-left coordinates, with the page's rotation applied.
-    left, top, right, bottom = (float(value) for value in page.cropbox)
     words = [
         WordBox(
             str(word["text"]),
@@ -453,9 +449,32 @@ def _page_spans(
         )
         for word in page.extract_words()
     ]
-    frame = PageFrame(left, top, right - left, bottom - top)
+    frame = _shown_crop(page)
     spans = line_spans(words_left_visible(words, frame, hidden), number, frame, origin="text_layer")
     return _with_kinds(spans, page.chars, frame)
+
+
+def _shown_crop(page: pdfplumber.page.Page) -> PageFrame:
+    """The crop box, the part of the page a viewer shows (and pypdfium2 draws), as shown:
+    cut to the media box, the page's rotation applied, in the words' coordinates. Boxes
+    are fractions of it.
+
+    pdfplumber's words are the media box as shown, moved by its ``mediabox`` corner. Its
+    ``cropbox`` on a turned page only swaps the box's sides, never turns it, so an off-centre
+    crop box put a turned page's lines 5 to 13 pt off (#445). So the crop box's four margins
+    in the media box are taken from the file and turned clockwise with the page."""
+    media, crop = page.page_obj.mediabox, page.page_obj.cropbox
+    mx0, mx1 = sorted((float(media[0]), float(media[2])))
+    my0, my1 = sorted((float(media[1]), float(media[3])))
+    cx0, cx1 = sorted((float(crop[0]), float(crop[2])))
+    cy0, cy1 = sorted((float(crop[1]), float(crop[3])))
+    margins = [max(0.0, margin) for margin in (cx0 - mx0, my1 - cy1, mx1 - cx1, cy0 - my0)]
+    turns = {90: 1, 180: 2, 270: 3}.get(page.rotation, 0)  # as pdfminer turns the words
+    left, top, right, bottom = margins[-turns:] + margins[:-turns]  # as shown
+    corner_x, corner_y = (float(value) for value in page.mediabox[:2])
+    return PageFrame(
+        corner_x + left, corner_y + top, float(page.width) - left - right, float(page.height) - top - bottom
+    )
 
 
 def _with_kinds(spans: list[Span], chars: list[dict[str, Any]], frame: PageFrame) -> list[Span]:

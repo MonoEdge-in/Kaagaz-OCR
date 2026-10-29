@@ -63,9 +63,7 @@ class AgreementTest(unittest.TestCase):
         self.assert_agree(make_pdf(INVOICE))
 
     def test_they_agree_on_a_rotated_page_too(self) -> None:
-        self.assert_agree(
-            make_pdf([Page(rotate=90, texts=[Text(540, 72, "Landscape total 500", turned=True)])])
-        )
+        self.assert_agree(make_pdf([Page(rotate=90, texts=[Text(540, 72, "Landscape total 500", turn=90)])]))
 
     def test_second_reading_carries_no_confidence_and_keeps_raw(self) -> None:
         spans = second(make_pdf(INVOICE))
