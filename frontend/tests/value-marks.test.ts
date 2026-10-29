@@ -124,6 +124,7 @@ describe("the summary card's one line about checking", () => {
     expect(SUMMARY_TEXT.notChecked(1)).toBe("1 value not checked yet");
     expect(html).toContain(`<span>${SUMMARY_TEXT.notChecked(2)}</span>`);
     expect(html).not.toContain("/review");
+    expect(html).not.toContain("aria-haspopup"); // #453: a member gets no ⋯ menu
   });
 
   it("says nothing when every fact is verified, and keeps the AI caution", () => {

@@ -158,16 +158,15 @@
   min-width: 0;
 }
 
-/* Issue 453: every row is one line tall, the name and the value cut short with "…" (the whole of
-   each in its tooltip), so the slot at the row's end sits at the same place on every row. */
+/* Issue 453: the value is one line, cut short with "…" (whole in its tooltip; Show on page shows
+   it, and a screen reader reads it whole), so the slot at the row's end sits at the same place on
+   every row. The name wraps: a tooltip is out of reach on touch and from the keyboard. */
 .keyFact dt {
   flex: 0 0 9rem;
   min-width: 0;
-  overflow: hidden;
   color: var(--text-secondary);
   font-size: var(--fs-base);
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .keyFact dd {
@@ -191,7 +190,8 @@
   white-space: nowrap;
 }
 
-/* The row's end: a reviewer's ⋯ menu or the value's mark, one size on every row. */
+/* The row's end: a reviewer's ⋯ menu or the value's mark, one size on every row; the menu
+   button fills it. */
 .factEnd {
   display: inline-flex;
   flex: none;
@@ -203,10 +203,10 @@
 
 .factEnd .factMenu {
   --btn-fg: var(--text-secondary);
-  width: var(--badge-h);
-  min-width: var(--badge-h);
-  height: var(--badge-h);
-  min-height: var(--badge-h);
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  min-height: 0;
 }
 
 /* Not checked yet: the same small dot a member sees beside the value, on the ⋯ glyph's shoulder.
@@ -223,12 +223,9 @@
 }
 
 @media (pointer: coarse) {
-  .factEnd,
-  .factEnd .factMenu {
+  .factEnd {
     width: var(--h-lg);
-    min-width: var(--h-lg);
     height: var(--h-lg);
-    min-height: var(--h-lg);
   }
 }
 

@@ -9,7 +9,8 @@
 // It rises in once, when it first appears (the CSS; never on a tab change: it sits above them).
 // #453 (owner, 29 Oct 2026): a reviewer's value not checked yet has one ⋯ button at the row's end,
 // which says so (a small dot, its name and tooltip) and opens Verify, Edit value… and Show on page.
-// Each is one POST /review/{value_id}, as Review sends it; the reply's value replaces the old one here.
+// Each is one POST /review/{value_id}, as Review sends it (sendResolve); the reply's value replaces
+// the old one here. A fact with a value behind it shows that value's words, the ones Verify confirms.
 
 import Link from "next/link";
 import { useEffect, useId, useRef, useState } from "react";
@@ -17,7 +18,7 @@ import type { CSSProperties } from "react";
 import { flushSync } from "react-dom";
 import { RowMenu } from "@/components/admin/RowMenu";
 import { scriptParts } from "@/components/chat/answer";
-import { checkChoice, MAX_TYPED_LENGTH } from "@/components/review/review";
+import { MAX_TYPED_LENGTH, sendResolve } from "@/components/review/review";
 import { Icon as LabelIcon } from "@/components/ui/Icon";
 import { Icon } from "@/components/ui/Icon/Icon";
 import { LabelBadge } from "@/components/viewer/LabelBadge";
@@ -27,7 +28,6 @@ import type { CardItem, Spot } from "@/components/viewer/panels";
 import { beingRead } from "@/components/viewer/reprocess";
 import { plural, valueAt } from "@/components/viewer/scanned";
 import { sameRegion } from "@/components/viewer/selection";
-import { ApiError, resolveReview } from "@/lib/api";
 import type { DocumentDetail, ExtractedValue, Region } from "@/lib/types";
 import styles from "./DocumentView.module.css";
 
@@ -57,7 +57,6 @@ export const FACT_TEXT = {
   save: "Save",
   verified: (text: string) => `Verified "${text}".`,
   saved: (text: string) => `Saved "${text}".`,
-  offline: "Could not save this. Check your connection, then try again.",
 };
 
 /**
@@ -70,26 +69,6 @@ export function withResolved(detail: DocumentDetail, value: ExtractedValue): Doc
     values: detail.values.map((each) => (each.id === value.id ? value : each)),
     reviewer_fixes: detail.reviewer_fixes + 1,
   };
-}
-
-/**
- * Verify or Save one value: checked as Review checks a typed value, then one POST
- * /review/{value_id}, typed, nothing remembered (as Verify all sends each value). `stale`: the
- * value changed on the server (404, 409), so the document is asked for again.
- */
-export async function resolveFact(
-  valueId: string,
-  entered: string,
-): Promise<{ ok: true; value: ExtractedValue } | { ok: false; message: string; stale: boolean }> {
-  const check = checkChoice("typed", entered, null);
-  if (!check.ok) return { ok: false, message: check.message, stale: false };
-  try {
-    const after = await resolveReview(valueId, "typed", false, check.value);
-    return { ok: true, value: after.value };
-  } catch (caught) {
-    if (!(caught instanceof ApiError)) return { ok: false, message: FACT_TEXT.offline, stale: false };
-    return { ok: false, message: caught.message, stale: caught.status === 404 || caught.status === 409 };
-  }
 }
 
 export const MAX_FACTS = 5;
@@ -202,10 +181,10 @@ export function SummaryCard({
 }
 
 /**
- * One fact: its name, its value on one line (cut short with "…", so every row is as tall as the
- * next), and at the row's end the same slot on every row: a reviewer's ⋯ menu while the value is
- * not checked yet, else its mark (members, verified values, and a fact with no value behind it).
- * Edit value… puts a field with Cancel and Save in the value's place; Esc cancels.
+ * One fact: its name (wrapping when long), its value on one line (cut short with "…", whole in
+ * its title), and at the row's end the same slot on every row: a reviewer's ⋯ menu while the
+ * value is not checked yet, else its mark (members, verified values, and a fact with no value
+ * behind it). Edit value… puts a field with Cancel and Save in the value's place; Esc cancels.
  */
 function KeyFact({
   item,
@@ -233,8 +212,9 @@ function KeyFact({
   const shown = useRef<HTMLButtonElement>(null);
   const field = useRef<HTMLInputElement>(null);
   const errorId = useId();
-  // A value a reviewer saved is shown as saved; the card itself keeps what was read.
-  const text = value?.label_reason === "corrected" ? value.value : item.text;
+  // The stored value's words, the ones Verify confirms and Edit starts from (a saved one as
+  // saved); the card's own words only for a fact with no value behind it, which has no menu.
+  const text = value ? value.value : item.text;
   const name = `${item.name} ${text}`;
 
   useEffect(() => {
@@ -264,9 +244,9 @@ function KeyFact({
     if (!value || busy) return;
     setBusy(true);
     setError(null);
-    const done = await resolveFact(value.id, entered);
+    const done = await sendResolve(value.id, "typed", entered, null, false);
     if (done.ok) {
-      settle(() => onResolved(done.value, said(done.value.value)));
+      settle(() => onResolved(done.item.value, said(done.item.value.value)));
       return;
     }
     setError(done.message);
@@ -276,7 +256,7 @@ function KeyFact({
 
   return (
     <div ref={row} className={styles.keyFact} style={{ "--i": index } as CSSProperties}>
-      <dt title={item.name}>{item.name}</dt>
+      <dt>{item.name}</dt>
       <dd>
         {editing ? (
           <form
@@ -332,12 +312,12 @@ function KeyFact({
                   name={name}
                   status={{ label: FACT_TEXT.menu(name), tip: labelTip(value.label, value.label_reason), className: `${styles.factMenu}` }}
                   items={[
-                    { label: FACT_TEXT.verify, description: FACT_TEXT.verifyHelp, onSelect: () => void send(value.value, FACT_TEXT.verified) },
+                    { label: FACT_TEXT.verify, description: FACT_TEXT.verifyHelp, onSelect: () => void send(text, FACT_TEXT.verified) },
                     {
                       label: FACT_TEXT.edit,
                       description: FACT_TEXT.editHelp,
                       onSelect: () => {
-                        setTyped(value.value);
+                        setTyped(text);
                         setError(null);
                         setEditing(true);
                       },

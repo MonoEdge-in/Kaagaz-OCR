@@ -38,9 +38,11 @@ describe("Ready to verify", () => {
   it("is verified in Review, by a reviewer or an admin, one value or all, for one document too", () => {
     expect([canReview("member"), canReview("reviewer"), canReview("admin")]).toEqual([false, true, true]);
     expect(read("app/(app)/documents/[id]/DocumentView.tsx")).not.toMatch(/resolveReview|Verify all|verifyAllValues/);
+    // Changed on purpose (review panel, 29 Oct 2026): through Review's shared send step (review.ts).
     expect(read("components/review/ReviewCard.tsx")).toContain(
-      "const after = await resolveReview(value.id, check.choice, remember, check.value);",
+      "const done = await sendResolve(value.id, choice, typed, value.second_reading, remember);",
     );
+    expect(read("components/review/review.ts")).toContain("await resolveReview(valueId, check.choice, remember, check.value)");
     const queue = read("components/review/ReviewQueue.tsx");
     expect(queue).toContain("await verifyAllReview(verifyAllFilters(documentId, reason));");
     expect(queue).toContain('const documentId = searchParams.get("document_id") || undefined;');

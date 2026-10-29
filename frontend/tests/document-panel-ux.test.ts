@@ -82,15 +82,15 @@ describe("the summary at the top of the panel", () => {
 
   it("lists only the facts the card has, each with its label, at most five", () => {
     const html = summary(detail());
-    // Changed on purpose (owner, 29 Oct 2026, #453): a name cut to one line has itself as its tooltip.
-    expect(html.match(/<dt title="[^"]+">/g)).toHaveLength(2);
+    // Changed on purpose (review panel, 29 Oct 2026, #453): a name wraps, so it needs no tooltip.
+    expect(html.match(/<dt>/g)).toHaveLength(2);
     expect(html).toContain(">Land owner name</dt>");
     expect(html).toContain(">Survey number</dt>");
     expect(html).toContain("Verified"); // the survey number's value is verified
     expect(html).toContain("Ready to verify"); // the owner has no checked value
     expect(html).not.toMatch(/Document date|Village/);
     const many = card({ identifiers: Array.from({ length: 9 }, (_, i) => ({ kind: `id_${i}`, field: `id_${i}`, value: `${i}`, page: 1, region: at(i / 20) })) });
-    expect(summary(detail({ card: many })).match(/<dt title="[^"]+">/g)).toHaveLength(MAX_FACTS);
+    expect(summary(detail({ card: many })).match(/<dt>/g)).toHaveLength(MAX_FACTS);
   });
 
   it("never shows an empty box: a quiet line while it is read, nothing when none will come", () => {

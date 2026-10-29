@@ -254,11 +254,16 @@ export function DocumentView({
     signature: (summary) => progressSignature([summary]),
   });
 
+  // #453: counts the changes made here (a value verified or saved on the summary card). A reply
+  // asked for before one would put the old value back, so it is dropped and asked for again.
+  const changes = useRef(0);
   useEffect(() => {
     let cancelled = false;
+    const asked = changes.current;
     getDocument(documentId)
       .then((detail) => {
         if (cancelled) return;
+        if (asked !== changes.current) return setReloads((n) => n + 1);
         setLoaded({ attempt, detail });
         loadedUnderstanding.current = detail.understanding === true;
         if (beingRead(detail.status) || loadedUnderstanding.current) poll.later();
@@ -268,7 +273,9 @@ export function DocumentView({
         settling.current = null;
       })
       .catch((error: unknown) => {
-        if (!cancelled) setLoaded({ attempt, error: loadFailure(error) });
+        if (cancelled) return;
+        if (asked !== changes.current) return setReloads((n) => n + 1);
+        setLoaded({ attempt, error: loadFailure(error) });
       });
     return () => {
       cancelled = true;
@@ -621,8 +628,11 @@ export function DocumentView({
               onShow={showSpot}
               reviewer={canReview(me.user.role) && detail.deleted_at === null}
               onResolved={(value, message) => {
-                // #453: the reply's value in place, nothing asked again; said aloud.
+                // #453: the reply's value in place at once, never undone by an older reply; the
+                // words asked for again (a flagged value is one of them); said aloud.
+                changes.current += 1;
                 setLoaded((shown) => (shown && "detail" in shown ? { ...shown, detail: withResolved(shown.detail, value) } : shown));
+                review.reloadWords();
                 setAnnouncement(message);
               }}
               onStale={() => setReloads((n) => n + 1)}
