@@ -104,8 +104,30 @@ export function markersOf(spots: readonly MySpot[], pageNo: number): Marker[] {
 /** "'malak' means 'owner'": a marker's words for its list item and screen readers. */
 export const markerText = (marker: Pick<Marker, "word" | "meaning">) => `'${marker.word}' means '${marker.meaning}'`;
 
+type Box = readonly [number, number, number, number];
+
+/**
+ * A stored box in the page's frame before its file's own turn (/Rotate, 0, 90, 180 or 270
+ * degrees clockwise). Readers store fractions of the whole page as shown, that turn applied
+ * (backend pdf_reader.py), white margins and all, so a scan smaller than its page needs no
+ * offset. The PDF viewer draws marks before the turn and turns them with the page (#442).
+ */
+export function unturnedBox(box: Box, turn: number): Box {
+  const [x0, y0, x1, y1] = box;
+  switch (turn) {
+    case 90:
+      return [y0, 1 - x1, y1, 1 - x0];
+    case 180:
+      return [1 - x1, 1 - y1, 1 - x0, 1 - y0];
+    case 270:
+      return [1 - y1, x0, 1 - y0, x1];
+    default:
+      return box;
+  }
+}
+
 /** Where a box marker goes on a page drawn at width x height: never under MIN_MARKER_PX, kept on the page. */
-export function markerRect(box: readonly [number, number, number, number], width: number, height: number): PixelRect {
+export function markerRect(box: Box, width: number, height: number): PixelRect {
   const px = boxToPixels(box, width, height);
   const grow = (start: number, size: number, limit: number) => {
     const wanted = Math.min(Math.max(size, MIN_MARKER_PX), limit);

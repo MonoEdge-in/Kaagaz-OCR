@@ -256,7 +256,7 @@ describe("the Attention panel (PRD 5 U5)", () => {
   });
 
   it("says so when every page was read clearly", () => {
-    expect(attentionPages([page(1), page(2)])).toEqual([]);
+    expect(attentionPages([page(1), page(2)], [])).toEqual([]);
     expect(ALL_CLEAR).toBe("Everything on these pages was read clearly.");
   });
 
@@ -267,45 +267,50 @@ describe("the Attention panel (PRD 5 U5)", () => {
       page(2, { read_quality: "unreadable", read_issues: ["blurry"], problems: [blurry] }),
       page(3, { read_quality: "uncertain", unsure_words: 14, unpinned_lines: 1, accepted_at: "2026-10-09T10:00:00Z" }),
     ];
-    // Changed on purpose (Vrushit UAT, 25 Oct 2026): each page also says how many spots are marked on it.
-    expect(attentionPages(pages)).toEqual([
-      { pageNo: 2, lines: ["This page is blurry."], kept: false, marked: 0 },
-      {
-        pageNo: 3,
-        lines: ["14 words unsure", "The exact spot of 1 line needs a check."],
-        kept: true,
-        marked: 15,
-      },
+    // Changed on purpose (#443): the count is toSettle's, so a page no longer counts its marks here.
+    expect(attentionPages(pages, [])).toEqual([
+      { pageNo: 2, lines: ["This page is blurry."], kept: false },
+      { pageNo: 3, lines: ["14 words unsure", "The exact spot of 1 line needs a check."], kept: true },
     ]);
   });
 
   it("says an unreadable page with no problems listed needs a closer look", () => {
-    expect(attentionPages([page(4, { read_quality: "unreadable", illegible_words: 3 })])).toEqual([
-      { pageNo: 4, lines: ["This page needs a closer look.", "Hard to read: 3 words."], kept: false, marked: 3 },
+    expect(attentionPages([page(4, { read_quality: "unreadable", illegible_words: 3 })], [])).toEqual([
+      { pageNo: 4, lines: ["This page needs a closer look.", "Hard to read: 3 words."], kept: false },
     ]);
   });
 
   // Board 2: the card with the Needs review dashed edge (hatched until the MonoEdge design system, 16 Oct 2026), "N to check" and a lead line.
-  const attention = (pages: PageSummary[]) =>
+  const attention = (pages: PageSummary[], open: { page_no: number }[] = []) =>
     renderToStaticMarkup(
       createElement(AttentionPanel, {
         status: "ready",
         pages,
+        open: open.map((word) => ({ ...word, text: "", reason_text: "" })),
         current: null,
         marks: [],
         onPage: () => undefined,
         onMark: () => undefined,
+        onCheck: () => undefined,
       }),
     );
 
   it("counts what is left to check, with a dashed edge and a lead line in the right number", () => {
-    const two = attention([page(1), page(2, { read_quality: "uncertain", unsure_words: 2, unpinned_lines: 1 })]);
+    // Changed on purpose (#443): the count is what is left to settle (toSettle): here two words still
+    // open on a page whose one problem (lines not pinned) they are; its unsure words are no review item.
+    const unpinned = { code: "unpinned" as const, says: "The exact spot of 2 lines needs a check.", fix: "Confirm." };
+    const pinned = {
+      read_quality: "uncertain" as const,
+      read_issues: ["unpinned" as const], // the server's codes, which toSettle reads (#443)
+      unsure_words: 2,
+      unpinned_lines: 2,
+      problems: [unpinned],
+    };
+    const two = attention([page(1), page(2, pinned)], [{ page_no: 2 }, { page_no: 2 }]);
     expect(two).toMatch(/<section class="[^"]*_attentionToCheck_/);
     expect(two).toContain("badge badge-review");
-    // Changed on purpose (Vrushit UAT, 25 Oct 2026): a page counts the spots marked on it (2 unsure
-    // words and 1 line not pinned: 3 marks), not its 2 lines of problems.
-    expect(two).toContain("3 to check");
-    expect(two).toContain("3 reading problems on page 2. Check them on the page before you rely on them.");
+    expect(two).toContain("2 to check");
+    expect(two).toContain("2 reading problems on page 2. Check them on the page before you rely on them.");
     const one = attention([page(3, { read_quality: "uncertain", unsure_words: 1 })]);
     expect(one).toContain("1 to check");
     expect(one).toContain("1 reading problem on page 3. Check it on the page before you rely on it.");

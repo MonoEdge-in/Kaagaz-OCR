@@ -164,11 +164,18 @@
   min-width: 0;
 }
 
-/* Cancel and Save side by side under the field: Save never drops onto a line of its own. */
+/* Cancel and Save side by side under the field: Save never drops onto a line of its own.
+   Issue 443: with Confirm between them, the three share the row with less padding, so no label
+   is squeezed to break inside its word at 390px. */
 .fixActions {
   display: flex;
   align-items: center;
   gap: var(--space-2);
+}
+
+.fixActions > :global(.btn) {
+  flex: 1 1 auto;
+  padding-inline: var(--space-2);
 }
 
 .lineMeta {

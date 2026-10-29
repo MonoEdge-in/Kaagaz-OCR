@@ -115,7 +115,7 @@ export function ReviewPanel(props: ReviewPanelProps) {
       const next = nextOpen(flags, index);
       if (next >= 0 && next !== index) onCurrent(flags[next]?.word_key ?? "");
     }
-    review.reload();
+    review.reload(flag);
   }
 
   const save = (text: string | null) => {

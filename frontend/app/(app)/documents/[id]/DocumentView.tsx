@@ -210,7 +210,11 @@ export function DocumentView({
   const reviewHeading = useRef<HTMLHeadingElement | null>(null);
   // KZ-007: a rejected file has no words to review, so nothing is asked for it.
   const loadedStatus = loaded && "detail" in loaded ? loaded.detail.status : null;
-  const review = useWordReview(documentId, reloads, loadedStatus !== null && loadedStatus !== "rejected");
+  // #443: after a word change the whole document is asked for again only when it may have kept its
+  // page as is (useWordReview's reload), so the fix box below stays mounted otherwise.
+  const review = useWordReview(documentId, reloads, loadedStatus !== null && loadedStatus !== "rejected", () =>
+    setReloads((n) => n + 1),
+  );
   const ensemble = useEnsembleStart(documentId, review, setAnnouncement);
   // File management A5: the Activity tab's timeline, every version of the family; asked
   // again after each reload (a label or owner change shows at once).
@@ -361,7 +365,12 @@ export function DocumentView({
     setAdding({ text, region });
   };
   const hasScannedText = page !== undefined && page.unit !== "cells";
-  const attention = attentionCount(detail.pages);
+  // The words still to settle are marked in Scanned text (High: no mark). On the page every
+  // flagged word is marked, a settled one in green (#431), so a fix shows where it was made.
+  const openFlags = review.flags.filter((flag) => !settled(flag));
+  // #443: one rule, toSettle; until the words come (or if they cannot), the pages' marked spots count.
+  const openWords = review.status === null ? null : openFlags;
+  const attention = attentionCount(detail.pages, openWords);
   // File management P1 (Changed on purpose, PRD 1 screens): Details (was Overview), Text (was
   // Scanned text), and Questions, Versions and Activity; Needs attention and My words stay.
   // Document panel UX (25 Oct 2026): Needs attention only with something in it (or while
@@ -392,9 +401,6 @@ export function DocumentView({
     if (mark.region.kind === "box" && hasScannedText) setTab("scanned");
   };
   const lowResolution = page ? lowResolutionText(page) : null;
-  // The words still to settle are marked in Scanned text (High: no mark). On the page every
-  // flagged word is marked, a settled one in green (#431), so a fix shows where it was made.
-  const openFlags = review.flags.filter((flag) => !settled(flag));
   const pageFlags = page ? openFlags.filter((flag) => flag.page_no === page.page_no) : [];
   const pageMarks = page ? review.flags.filter((flag) => flag.page_no === page.page_no) : [];
   const toWord = (key: string) => {
@@ -426,7 +432,7 @@ export function DocumentView({
   const fixWord = async (flag: WordFlag, typed: string) => {
     const done = await saveWord(detail.id, flag, typed === flag.text ? null : typed);
     if (done.ok) setAnnouncement(done.message);
-    if (done.ok || done.reload) review.reload();
+    if (done.ok || done.reload) review.reload(flag);
     return done;
   };
   const exitReview = () => {
@@ -777,10 +783,12 @@ export function DocumentView({
                     }
                     status={detail.status}
                     pages={detail.pages}
+                    open={openWords}
                     current={page?.page_no ?? null}
                     marks={readingMarks}
                     onPage={changePage}
                     onMark={showMark}
+                    onCheck={(pageNo) => startReview(openFlags.find((flag) => flag.page_no === pageNo))}
                     hot={hotMark}
                     onHot={setHotMark}
                   />

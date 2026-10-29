@@ -56,11 +56,13 @@ def scanned(
     reason: str = "unsure_text",
     votes: Any = None,
     quality: str = "unsure",
+    issues: tuple[str, ...] = ("blurry", "illegible_words"),
 ) -> DocumentContent:
     """A two-page scan: page 1's line holds the unsure word ``mark`` and a [?], with a total
     in the word's box; page 2's line is unpinned. Two pieces: the lines, and a line naming
     the word twice (so an edit never goes there). ``quality`` "illegible" makes the word a
-    review item too (#432: an unsure word is a check, listed and counted nowhere)."""
+    review item too (#432: an unsure word is a check, listed and counted nowhere); ``issues``
+    are page 1's problems."""
     line = f"Total Rs {mark} paid [?]"
     spans = (
         Span(line, line, LINE, None, "paragraph", "ocr", quality="ok", box_source="found"),
@@ -71,7 +73,7 @@ def scanned(
     )  # fmt: skip
     pages = [
         PageRecord(PageInfo(1, 595.0, 842.0, "pt"), True, "ocr", read_quality="uncertain",
-                   read_issues=("blurry", "illegible_words"), unsure_words=1, illegible_words=1),
+                   read_issues=issues, unsure_words=1, illegible_words=1),
         PageRecord(PageInfo(2, 595.0, 842.0, "pt"), True, "ocr", read_quality="uncertain",
                    read_issues=("unpinned",), unpinned_lines=1),
     ]  # fmt: skip
@@ -333,3 +335,85 @@ def test_a_value_the_readers_read_differently_is_verified_only_with_every_flag_i
         numbers = word_review.counts(conn, customer, document, review)
     # Changed on purpose (#432): the unsure word confirmed above is a check, counted nowhere.
     assert (numbers["flagged"], numbers["reviewed"], numbers["remaining"]) == (3, 1, 2)
+
+
+KEPT = (
+    "SELECT page_no, accepted_by::text, accepted_at FROM pages"
+    " WHERE document_id = :d AND accepted_at IS NOT NULL ORDER BY page_no"
+)
+
+
+def test_settling_a_pages_last_review_item_keeps_it_when_its_flags_are_its_only_problem(db: Database) -> None:
+    # #443: page 2's one problem is its line not pinned, so confirming that line settles the page.
+    customer, user, document = saved(db)
+    line = change(db, customer, document, key(load(db, customer, document), "line", "Bill to Patil Stores"),
+                  "Bill to Patil Stores", None, user)  # fmt: skip
+    assert rows(db, customer, KEPT, document) == [(2, user, T0)]
+    audits = "SELECT action, details FROM audit_log WHERE action LIKE 'word_review.%' ORDER BY id"
+    assert rows(db, customer, audits, document)[0][1]["kept"] is True
+    PgPipelineStore(db).save(scanned(customer, document))  # every row replaced, the keep carried
+    assert rows(db, customer, KEPT, document) == [(2, user, T0)]
+
+    undo(db, customer, document, line, user, T0 + timedelta(minutes=1))
+    assert rows(db, customer, KEPT, document) == []
+    action, details = rows(db, customer, audits, document)[1]
+    assert (action, details["kept"], details["page_no"]) == ("word_review.undo", True, 2)
+
+
+def test_settling_a_value_read_differently_keeps_its_page(db: Database) -> None:
+    customer, user, document = saved(
+        db, reason="readers_disagree", votes=NO_MAJORITY, quality="illegible",
+        issues=("illegible_words", "readers_disagree"),
+    )  # fmt: skip
+    review = load(db, customer, document)
+    change(db, customer, document, key(review, "mark", "4,850"), "4,850", None, user)
+    change(db, customer, document, key(review, "mark", "[?]"), "[?]", None, user)
+    assert rows(db, customer, KEPT, document) == []  # the value is still open
+    value = next(flag for flag in review.flags if flag.kind == "value")
+    change(db, customer, document, value.key, "Rs 4,850", "Rs 4,350", user)
+    assert [page for page, _, _ in rows(db, customer, KEPT, document)] == [1]
+
+
+@pytest.mark.parametrize("issues", [("blurry", "illegible_words"), ()])
+def test_a_page_with_a_problem_no_flag_stands_for_or_none_waits_for_keep_as_is(
+    db: Database, issues: tuple[str, ...]
+) -> None:
+    # Page 1 is blurry too, or uncertain for its unsure word alone (no problem code): settling its
+    # one review item ([?]) leaves it on the attention list.
+    customer, user, document = saved(db, issues=issues)
+    change(db, customer, document, key(load(db, customer, document), "mark", "[?]"), "[?]", None, user)
+    assert rows(db, customer, KEPT, document) == []
+
+
+def test_a_line_ensemble_read_differently_on_a_page_with_no_problem_code_waits_for_keep_as_is(
+    db: Database,
+) -> None:
+    # CodeRabbit on #443: Ensemble read page 1's line differently, a review item on a page with no
+    # problem code; confirming it after the [?], so as the page's last, keeps nothing.
+    customer, user, document = saved(db, issues=())
+    with db.customer(customer) as conn:
+        run = conn.execute(
+            text(
+                "INSERT INTO ensemble_runs (customer_id, document_id, scope, pages, models, status,"
+                " requested_by, finished_at) VALUES (:c, :d, 'document', '{1}', '{m}', 'done', :u, now())"
+                " RETURNING id"
+            ),
+            {"c": customer, "d": document, "u": user},
+        ).scalar_one()
+        conn.execute(
+            text(
+                "INSERT INTO ensemble_readings (customer_id, document_id, run_id, word_key, page_no, region,"
+                " before_text, outcome, proposal) SELECT ro.customer_id, ro.document_id, :r, :k, 1,"
+                " e.span -> 'region', e.span ->> 'text', 'changed', 'Total Rs 4,350 paid [?]'"
+                " FROM reader_outputs ro CROSS JOIN LATERAL jsonb_array_elements(ro.output) AS e(span)"
+                " WHERE ro.customer_id = :c AND ro.document_id = :d AND ro.role = 'first'"
+                " AND e.span ->> 'text' = 'Total Rs 4,850 paid [?]'"
+            ),
+            {"c": customer, "d": document, "r": run, "k": "a" * 64},
+        )
+    review = load(db, customer, document)
+    line = key(review, "line", "Total Rs 4,850 paid [?]")
+    assert [flag.band for flag in review.listed if flag.key == line] == ["review"]
+    change(db, customer, document, key(review, "mark", "[?]"), "[?]", None, user)
+    change(db, customer, document, line, "Total Rs 4,850 paid [?]", None, user, T0 + timedelta(minutes=1))
+    assert rows(db, customer, KEPT, document) == []

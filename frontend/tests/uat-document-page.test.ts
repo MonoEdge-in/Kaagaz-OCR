@@ -142,10 +142,14 @@ describe("6. Needs attention counts what is marked, in a filled circle", () => {
     problems: [{ code: "low_resolution", says: "This page was scanned at low quality, so small letters may be misread.", fix: "Scan it again." }],
   };
 
-  it("says 2 to check for a page with one problem line and two marked words (it said 1)", () => {
-    expect(attentionCount([page])).toBe(2);
+  // Changed on purpose (#443, #444): the count is what is left to settle (toSettle). The two unsure
+  // words are no review item (#432), so this page is one thing to settle (Keep as is), plus each
+  // word still open on the review list.
+  it("says 1 to check for a page with a problem no word stands for, and adds each word still open", () => {
+    expect(attentionCount([page], [])).toBe(1);
+    expect(attentionCount([page], [{ page_no: 1 }, { page_no: 1 }])).toBe(3);
     const html = renderToStaticMarkup(
-      createElement(AttentionPanel, { status: "ready", pages: [page], current: null, marks: [], onPage: () => undefined, onMark: () => undefined }),
+      createElement(AttentionPanel, { status: "ready", pages: [page], open: [{ page_no: 1, text: "Rs 4,850", reason_text: "smudged print" }], current: null, marks: [], onPage: () => undefined, onMark: () => undefined, onCheck: () => undefined }),
     );
     expect(html).toContain("2 to check");
     expect(html).toContain("2 reading problems on page 1.");

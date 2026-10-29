@@ -28,7 +28,7 @@ import type { PDFViewerHandle, PDFViewerPageOverlayProps } from "@/components/ex
 import { Button } from "@/components/extend/ui/button";
 import { flagDomId, markLabel } from "@/components/review/wordReview";
 import { markerId } from "@/components/words/ViewerWords";
-import { markerRect } from "@/components/words/spots";
+import { markerRect, unturnedBox } from "@/components/words/spots";
 import type { Marker } from "@/components/words/spots";
 import { fileUrl } from "@/lib/api";
 import type { ReadingMark, Region, WordFlag } from "@/lib/types";
@@ -136,9 +136,12 @@ export function PdfDocumentViewer({
   const spot = highlights.find((region): region is Extract<Region, { kind: "box" }> => region.kind === "box");
   const spotKey = spot ? `${spot.page}:${spot.box.join(",")}` : null;
   const toSpot = useEffectEvent(() => {
-    if (!open || !spot) return;
+    if (!open || !spot || !viewer.current) return;
     steeringUntil.current = performance.now() + STEERING_MS;
-    viewer.current?.scrollToPageArea(spot.page, { top: spot.box[1] * 100, left: spot.box[0] * 100 }, { behavior: "smooth" });
+    // Its top-left corner as shown, in the frame the viewer scrolls in (before the file's turn).
+    const [x, y] = spot.box;
+    const [left, top] = unturnedBox([x, y, x, y], viewer.current.getPageRotation(spot.page));
+    viewer.current.scrollToPageArea(spot.page, { top: top * 100, left: left * 100 }, { behavior: "smooth" });
   });
   const toPage = useEffectEvent(() => {
     if (!open || spot || pageNo === shownPage.current) return;
@@ -193,11 +196,10 @@ export function PdfDocumentViewer({
   }, [hand, open]);
 
   const overlay = useCallback(
-    ({ pageNumber, pageWidth, pageHeight, scale }: PDFViewerPageOverlayProps) => {
-      const width = pageWidth * scale;
-      const height = pageHeight * scale;
+    // The page's size here is already zoomed, and before its file's own turn (#442).
+    ({ pageNumber, pageWidth, pageHeight, fileRotation }: PDFViewerPageOverlayProps) => {
       const place = (box: readonly [number, number, number, number]) => {
-        const px = markerRect(box, width, height);
+        const px = markerRect(unturnedBox(box, fileRotation), pageWidth, pageHeight);
         return { left: px.left, top: px.top, width: px.width, height: px.height };
       };
       const problems = marksOnPage(readingMarks, pageNumber);
