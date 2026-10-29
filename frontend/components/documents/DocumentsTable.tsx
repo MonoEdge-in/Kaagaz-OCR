@@ -38,6 +38,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import type { MouseEvent as ReactMouseEvent, RefCallback } from "react";
 import { extensionOf } from "@/components/dashboard/words";
 import { LabelChip } from "@/components/files/LabelChip";
+import { labelName } from "@/components/files/labels";
 import { FILES_TEXT, NEWER_SPOKEN, versionCell } from "@/components/files/words";
 import { Icon } from "@/components/ui/Icon";
 import { PasswordField } from "@/components/ui/PasswordField";
@@ -802,6 +803,18 @@ const DocumentRow = memo(function DocumentRow({
   const typeWords = [typeLabel(document.detected_type), document.doc_type && docTypeLabel(document.doc_type)]
     .filter(Boolean)
     .join(" · ");
+  const folderPath = !inTrash && document.folder_id && tree.byId.has(document.folder_id) ? pathLabel(tree, document.folder_id) : null;
+  // The facts line under the name, whole, for its title.
+  const factsLine = [
+    document.sensitivity && labelName(document.sensitivity),
+    owner && `${FILES_TEXT.columns.owner}: ${owner}`,
+    `${typeWords} · ${formatBytes(document.size_bytes)}`,
+    versionCell(document.version_no, newer),
+    document.document_date && FILES_TEXT.dated(formatDate(document.document_date)),
+    folderPath && `In ${folderPath}`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
   const version = (
     <>
       {versionCell(document.version_no, false)}
@@ -881,32 +894,30 @@ const DocumentRow = memo(function DocumentRow({
             <WrapName name={document.display_name} />
           </span>
         </Link>
-        {/* F5: the label, type, version, owner and date, each here until its own column has room.
-            Issue 452: one line under the name, in this order, whatever width the table has. */}
-        <span className={styles.facts}>
+        {/* F5: the label, owner, type, version and date, each here until its own column has room.
+            Issue 452: one line under the name, in this order, whatever width the table has; cut
+            at its end with "…", the whole line in its title (review panel, 29 Oct 2026). */}
+        <span className={styles.facts} title={factsLine}>
           {document.sensitivity && (
             <span className={styles.factLabel}>
               <LabelChip label={document.sensitivity} />
             </span>
           )}
-          <span className={styles.bandType}>
-            {typeLabel(document.detected_type)}
-            {document.doc_type && ` · ${docTypeLabel(document.doc_type)}`} · {formatBytes(document.size_bytes)}
-          </span>
-          <span className={styles.factVersion}>{version}</span>
           {owner && (
             <span className={styles.factOwner}>
               {FILES_TEXT.columns.owner}: {owner}
             </span>
           )}
+          <span className={styles.bandType}>
+            {typeWords} · {formatBytes(document.size_bytes)}
+          </span>
+          <span className={styles.factVersion}>{version}</span>
           {document.document_date && (
             <span className={styles.factDate}>{FILES_TEXT.dated(formatDate(document.document_date))}</span>
           )}
           {/* Where it is filed, so a move shows in All documents too (16 Oct 2026); on the facts'
               line, not a line of its own, so a row stays short (issue 371). */}
-          {!inTrash && document.folder_id && tree.byId.has(document.folder_id) && (
-            <span className={styles.inFolder}>In {pathLabel(tree, document.folder_id)}</span>
-          )}
+          {folderPath && <span className={styles.inFolder}>In {folderPath}</span>}
         </span>
         {tagList(styles.factTags)}
         {document.newer_version && (

@@ -917,14 +917,21 @@ table.docs > tbody > tr {
   display: none;
 }
 
-/* Uploaded (Tushar, 16 Oct 2026: it wrapped to 5 lines): "2h ago" and "by tusharsaini", one
-   line each; a long name is cut with an ellipsis, its full words in the title (and the exact
+/* One line, ending in "…" when it cannot fit; the whole words are in its title. Uploaded (Tushar,
+   16 Oct 2026: it wrapped to 5 lines): "2h ago" and "by tusharsaini", one line each (the exact
    date in the time's title and read out). */
+.oneLine,
+.typeLine,
 .bandBy,
 .byName {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+
+.oneLine,
+.typeLine {
+  display: block;
 }
 
 .bandBy {
@@ -940,14 +947,6 @@ table.docs > tbody > tr {
   content: "·";
   content: "·" / "";
   margin-inline: var(--space-2);
-}
-
-/* One line, ending in "…" when it cannot fit; the whole words are in its title. */
-.oneLine {
-  display: block;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
 }
 
 .statusCell {
@@ -1101,7 +1100,7 @@ table.docs > tbody > tr {
     width: 3rem;
   }
 
-  /* The chip and "7 flagged · Review" fit (the 11rem Status always had at 36rem). */
+  /* The chip, and "8 to check" with Review, fit (the 11rem Status always had at 36rem). */
   .statusColumn {
     width: 11rem;
   }
@@ -1110,13 +1109,6 @@ table.docs > tbody > tr {
      (Tushar, 17 Oct 2026: "Image (JPEG)" wrapped and made its row taller). */
   .typeColumn {
     width: 8.5rem;
-  }
-
-  .typeLine {
-    display: block;
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
   }
 
   .typeLine .docType::before {
@@ -1172,7 +1164,7 @@ table.docs > tbody > tr {
   }
 
   .bandType {
-    display: block;
+    display: inline;
   }
 }
 
@@ -1230,13 +1222,9 @@ table.docs > tbody > tr {
     width: 7.5rem;
   }
 
-  /* The label and the tags show in the Label column (Vrushit UAT, 25 Oct 2026). */
+  /* The label and the tags show in the Label column (Vrushit UAT, 25 Oct 2026); the tags as
+     table.docs', or the tag list's own display (Library.module.css, loaded after) wins. */
   .factLabel,
-  .factTags {
-    display: none;
-  }
-
-  /* Issue 452: the tag list's own display (Library.module.css, loaded after) showed it twice. */
   table.docs .factTags {
     display: none;
   }
@@ -1667,50 +1655,41 @@ table.docs > tbody > tr {
 
 /* One line rhythm across a row (Tushar, 24 Oct 2026: "no one alignment is good"): in the
    table every first line is --row-line tall and every line after it --row-sub (24px), so the
-   owner, "17 to check", "Land record" and "by …" sit on one row, and the size under them. */
+   first lines (the name, the status chip, "PDF · Land record", the owner, the time) sit on one
+   row, and the second lines (the facts, "17 to check", the size, "by …") on the next. */
 @container docs-list (min-width: 36rem) {
-  /* Issue 452: the facts are one line under the name, in a fixed order ("v1 · Owner: Vrushit ·
-     Dated 15 Jun 2007 · In Land & Legal / Land records"). A fact that does not fit wraps to a
-     second line the row never shows, so the line holds whole facts, never "Own…"; the type line
-     and the folder path give way with "…" instead. The dot before each shown fact sits in the
-     gap; the first one's falls outside the line and is clipped, so the facts' columns can come
-     and go without a stray dot. */
+  /* Issue 452: the facts are one line of text under the name, in a fixed order, the owner early
+     ("Owner: Vrushit · v1 · Dated 15 Jun 2007 · In Land & Legal / Land records"). What does not
+     fit is cut at the line's end with "…" (review panel, 29 Oct 2026: whole facts that did not
+     fit were dropped without a trace), and the whole line is in its title. Each shown fact has
+     a dot before it in a box the gap's width; the line starts a gap early, so the first one's
+     is outside it and clipped, and the facts' columns can come and go without a stray dot. */
   .facts {
     margin-block-start: 0;
     line-height: var(--row-sub);
-    position: relative;
+    display: block;
     height: var(--row-sub);
-    column-gap: var(--space-3);
     overflow: hidden;
     white-space: nowrap;
+    text-overflow: ellipsis;
+    text-indent: calc(var(--space-3) * -1);
   }
 
   .facts > * {
-    flex: none;
-    line-height: var(--row-sub);
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    text-indent: 0;
+    vertical-align: top;
   }
 
-  .bandType,
   .inFolder {
-    flex: 1 1 0;
-    min-width: 3em;
-    max-width: max-content;
-  }
-
-  /* The narrowest table's type keeps room for "PDF · Land re…" before the owner takes it. */
-  .bandType {
-    min-width: 9em;
+    display: inline;
   }
 
   .facts > *::before {
     content: "·";
     content: "·" / "";
-    position: absolute;
-    margin-inline-start: calc(var(--space-3) / -2);
-    translate: -50%;
+    display: inline-block;
+    width: var(--space-3);
+    text-align: center;
   }
 
   /* The tags: one line too, under the name or the label; any that do not fit are cut off. */

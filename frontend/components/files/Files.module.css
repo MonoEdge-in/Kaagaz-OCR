@@ -31,7 +31,6 @@
     background: var(--bg-hover);
   }
 
-  /* Issue 452: the card's hover is the cue; its name is not underlined (.quiet-link). */
   .card .cardName:hover {
     text-decoration: none;
   }
@@ -86,6 +85,14 @@
   position: absolute;
   inset: 0;
   border-radius: inherit;
+}
+
+/* Over the link, so their titles show: the chip's description, a cut type's or owner's words. */
+.cardOwner,
+.cardFacts :global(.label-chip),
+.cardFacts > :last-child {
+  position: relative;
+  z-index: 1;
 }
 
 /* One line: the chip and version keep their size, the type gives way with "…". */

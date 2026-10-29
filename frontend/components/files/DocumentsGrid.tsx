@@ -4,7 +4,8 @@
 // Issue 452 (owner, 29 Oct 2026): every card has the same three bands, so a row of cards lines
 // up: the name in two lines' room (cut with "…", whole in its title), one line of chips, and
 // "Owner · date" at the foot. The whole card opens the document; its words say "Owner" and
-// "Last updated" to a screen reader.
+// "Last updated" to a screen reader. The label chip, the type and the owner sit over the card's
+// link, so their titles (the chip's description, a cut type's or owner's whole words) show.
 
 import Link from "next/link";
 import { docTypeLabel, formatDate } from "@/lib/format";
@@ -30,12 +31,12 @@ export function DocumentsGrid({ items, label }: { items: readonly DocumentSummar
                 {versionCell(document.version_no, newer)}
                 {newer && <span className="visually-hidden">{`, ${NEWER_SPOKEN}`}</span>}
               </span>
-              <span>{docTypeLabel(document.doc_type)}</span>
+              <span title={docTypeLabel(document.doc_type)}>{docTypeLabel(document.doc_type)}</span>
             </span>
             <span className={styles.cardMeta}>
               {document.owner?.name && (
                 <>
-                  <span className={styles.cardOwner}>
+                  <span className={styles.cardOwner} title={document.owner.name}>
                     <span className="visually-hidden">{`${FILES_TEXT.columns.owner}: `}</span>
                     {document.owner.name}
                   </span>

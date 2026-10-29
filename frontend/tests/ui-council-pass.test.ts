@@ -169,6 +169,7 @@ describe("the Documents list's tags", () => {
     expect(table).toContain("{tagList(styles.factTags)}");
     expect(table.match(/aria-label="Tags"/g)).toHaveLength(1); // one list, drawn in the two places
     const text = css("components/documents/Documents.module.css");
-    expect(text).toMatch(/@container docs-list \(min-width: 56rem\) \{[^@]*\.factLabel,\s*\.factTags \{\s*display: none;/);
+    // Changed on purpose (review panel, 29 Oct 2026): as table.docs' tags, over the tag list's own display.
+    expect(text).toMatch(/@container docs-list \(min-width: 56rem\) \{[^@]*\.factLabel,\s*table\.docs \.factTags \{\s*display: none;/);
   });
 });

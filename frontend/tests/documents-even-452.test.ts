@@ -138,8 +138,19 @@ describe("the documents grid's cards (issue 452)", () => {
   it("keeps the whole name in a title and says Owner and Last updated to a screen reader", () => {
     const html = renderToStaticMarkup(createElement(DocumentsGrid, { items: [doc()], label: "Documents" }));
     expect(html).toContain('title="7-12 Utara Survey No 45 Wakad with mutation entries 2007 to 2026.pdf"');
-    expect(html).toMatch(/<span class="[^"]*cardOwner[^"]*"><span class="visually-hidden">Owner: <\/span>Vrushit<\/span><span aria-hidden="true">·<\/span>/);
+    expect(html).toMatch(/<span class="[^"]*cardOwner[^"]*" title="Vrushit"><span class="visually-hidden">Owner: <\/span>Vrushit<\/span><span aria-hidden="true">·<\/span>/);
     expect(html).toMatch(/<span class="[^"]*cardDate[^"]*"><span class="visually-hidden">Last updated <\/span>28 Oct 2026<\/span>/);
+  });
+
+  // Review panel, 29 Oct 2026: the card's link (its ::after) lay over the label chip, so the chip's
+  // description never showed; and a long owner or type was cut with "…" and had no title at all.
+  it("lifts the label chip, the owner and the type over the card's link, the cut ones with their whole words in a title", () => {
+    expect(FILES).toMatch(/\.cardOwner,\s*\.cardFacts :global\(\.label-chip\),\s*\.cardFacts > :last-child \{\s*position: relative;\s*z-index: 1;\s*\}/);
+    const owner = "Vrushit Patel of the Land and Legal department";
+    const html = renderToStaticMarkup(createElement(DocumentsGrid, { items: [doc({ owner: { id: "u-v", name: owner } })], label: "Documents" }));
+    expect(html).toContain(`title="${owner}"`);
+    expect(html).toMatch(/<span title="Land record">Land record<\/span><\/span>/); // the facts line's last child
+    expect(html).toContain('title="For the people who work on it.'); // the chip's own description (LabelChip)
   });
 });
 
@@ -150,24 +161,31 @@ describe("the documents list's rows (issue 452)", () => {
     const name = cell(html, "nameCell");
     expect(name).toContain('title="7-12 Utara Survey No 45 Wakad with mutation entries 2007 to 2026.pdf"');
     expect(rule(DOCS, ".name > span")).toMatch(/-webkit-line-clamp: 1;/);
-    // The type line of the narrowest table is inside the facts line, after the label, not a line of its own.
-    expect(name).toMatch(/<span class="[^"]*facts[^"]*"><span class="[^"]*factLabel[^"]*">(?:(?!<\/span><\/span>).)*<\/span><\/span><span class="[^"]*bandType[^"]*">PDF · Land record · 882.1 KB<\/span>/);
+    // Review panel, 29 Oct 2026: the owner comes early (its column is hidden up to 64rem), then the
+    // type line of the narrowest table, inside the facts line, not a line of its own; the whole
+    // line in its title.
+    const line = "Confidential · Owner: Vrushit · PDF · Land record · 882.1 KB · v1 · Dated 15 Jun 2007 · In Land &amp; Legal";
+    expect(name).toMatch(
+      new RegExp(
+        `<span class="[^"]*facts[^"]*" title="${line}"><span class="[^"]*factLabel[^"]*">(?:(?!</span></span>).)*</span></span><span class="[^"]*factOwner[^"]*">Owner: Vrushit</span><span class="[^"]*bandType[^"]*">PDF · Land record · 882.1 KB</span>`,
+      ),
+    );
     const table36 = DOCS.lastIndexOf("@container docs-list (min-width: 36rem) {");
-    // One line tall: a fact that does not fit wraps to a line that is never shown.
+    // Review panel, 29 Oct 2026: facts that did not fit wrapped to a line never shown, gone without
+    // a trace at 36 to 64rem. The line is one line of text, cut at its end with "…".
     const facts = rule(DOCS, ".facts", table36);
+    expect(facts).toMatch(/display: block;/);
     expect(facts).toMatch(/height: var\(--row-sub\);/);
-    expect(facts).toMatch(/overflow: hidden;/);
-    expect(facts).toMatch(/white-space: nowrap;/);
-    expect(rule(DOCS, ".facts > *", table36)).toMatch(/flex: none;[^}]*text-overflow: ellipsis;/);
-    // Only the type line and the folder path give way, with "…".
-    expect(rule(DOCS, ".inFolder", table36)).toMatch(/flex: 1 1 0;\s*min-width: 3em;\s*max-width: max-content;/);
+    expect(facts).toMatch(/overflow: hidden;\s*white-space: nowrap;\s*text-overflow: ellipsis;/);
+    expect(rule(DOCS, ".facts > *", table36)).not.toMatch(/flex|overflow|display/);
+    expect(rule(DOCS, ".inFolder", table36)).toMatch(/display: inline;/);
+    expect(DOCS).toMatch(/@container docs-list \(min-width: 36rem\) and \(max-width: 47\.98rem\) \{[^@]*\.bandType \{\s*display: inline;/);
   });
 
   it("puts one short count and Review on the status's second line, Review at its end", () => {
     const status = cell(html, "statusCell");
     expect(status).toMatch(/title="6 words to check and 2 pages to check">8 to check<\/span>/);
     expect(status).toContain(">Review<span class=\"visually-hidden\"> 6 words to check and 2 pages to check in ");
-    expect(rule(DOCS, ".statusAction")).toMatch(/margin-inline-start: auto;/);
   });
 
   it("gives the Type cell \"PDF · Land record\" and the size, the same two lines on every row", () => {
@@ -177,12 +195,15 @@ describe("the documents list's rows (issue 452)", () => {
       expect(type).toMatch(/bandSize[^"]*tabular">882.1 KB<\/span>/);
     }
     expect(cell(html, "typeCell")).toMatch(/title="PDF · Land record">PDF<span class="[^"]*docType[^"]*">Land record<\/span>/);
-    expect(DOCS).toMatch(/@container docs-list \(min-width: 36rem\) \{\s*\/\*[^*]*\*\/\s*\.bandSize \{\s*display: block;/);
   });
 
   it("keeps the owner on one line, its whole name in the title", () => {
     expect(cell(html, "ownerCell")).toMatch(/<span class="[^"]*oneLine[^"]*" title="Vrushit">Vrushit<\/span>/);
-    expect(rule(DOCS, ".oneLine")).toMatch(/white-space: nowrap;\s*text-overflow: ellipsis;/);
+    // Review panel, 29 Oct 2026: one rule for every line cut with "…".
+    expect(DOCS).toMatch(/\.oneLine,\s*\.typeLine,\s*\.bandBy,\s*\.byName \{\s*overflow: hidden;\s*white-space: nowrap;\s*text-overflow: ellipsis;\s*\}/);
+    expect(DOCS).toMatch(/\.oneLine,\s*\.typeLine \{\s*display: block;\s*\}/);
+    // The tags under the name hide once the Label column shows them (folded into one rule).
+    expect(DOCS).toMatch(/\.factLabel,\s*table\.docs \.factTags \{\s*display: none;\s*\}/);
   });
 
   it("puts Last updated's time on the first line and who on the second", () => {
