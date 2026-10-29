@@ -168,11 +168,13 @@ export function PdfDocumentViewer({
       if (!toSpot(tries === 0) && tries < SPOT_FRAMES) frame = requestAnimationFrame(() => go(tries + 1));
     };
     // #454: the user scrolling, dragging or pressing a key takes over: no more aiming, a smooth
-    // scroll still on its way is halted where it is, and the pages they reach are told again.
+    // scroll still on its way is halted where it is, and the pages they reach are told again. The
+    // page it halted on was passed untold, so the screen is told it now.
     const stop = () => {
       cancelAnimationFrame(frame);
       if (area && performance.now() < steeringUntil.current) {
         area.scrollTo({ left: area.scrollLeft, top: area.scrollTop, behavior: "instant" });
+        if (shownPage.current !== screen.current.pageNo) screen.current.onPageChange(shownPage.current);
       }
       steeringUntil.current = 0;
     };

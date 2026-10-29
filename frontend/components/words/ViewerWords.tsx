@@ -47,14 +47,12 @@ export function useViewerWords(documentId: string, pageNo: number | null, scroll
   const [show, setShowState] = useState(() => readShowMyWords(browserStore()));
   const [attempt, setAttempt] = useState(0);
   const [activeId, setActiveId] = useState<string | null>(null);
-  const loaded = usePageCache<Loaded>(`${documentId}:${attempt}`, show ? pagesAround(pageNo, scroll) : [], (page) =>
-    getMyWordsOnPage(documentId, page).then(
-      (reply) => ({ spots: reply.items }),
-      (caught: unknown) => {
-        const status = caught instanceof ApiError && caught.status !== 0 ? caught.status : null;
-        return { error: spotsLoadText(status) };
-      },
-    ),
+  // A failed page shows why, and is asked again when it is wanted again (usePageCache).
+  const loaded = usePageCache<Loaded>(
+    `${documentId}:${attempt}`,
+    show ? pagesAround(pageNo, scroll) : [],
+    (page) => getMyWordsOnPage(documentId, page).then((reply) => ({ spots: reply.items })),
+    (caught) => ({ error: spotsLoadText(caught instanceof ApiError && caught.status !== 0 ? caught.status : null) }),
   );
   const markersAround = useMemo(
     () => [...loaded].flatMap(([page, each]) => ("spots" in each ? markersOf(each.spots, page) : [])),

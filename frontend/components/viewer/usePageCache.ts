@@ -17,15 +17,20 @@ export function pagesAround(pageNo: number | null, scroll: readonly number[]): n
   return [pageNo, ...scroll.filter((page) => page === pageNo - 1 || page === pageNo + 1)];
 }
 
+/** Until a page of a version comes. */
+const NONE = new Map<number, never>();
+
 /**
  * What `load(page)` answered for each of `pages`, asked once each under `version` (SETTLE_MS after
- * `pages` last changed). A new version starts again empty, as a reload or a retry did before; a
- * page whose load failed is asked again the next time it is wanted.
+ * `pages` last changed). A new version starts again empty, as a reload or a retry did before. A
+ * page whose load failed (rejected) is kept as `failed` says (nothing without it) and asked again
+ * the next time it is wanted, not before.
  */
 export function usePageCache<T>(
   version: string,
   pages: readonly number[],
   load: (page: number) => Promise<T>,
+  failed?: (reason: unknown) => T,
 ): ReadonlyMap<number, T> {
   const [kept, setKept] = useState<{ version: string; pages: ReadonlyMap<number, T> }>(() => ({ version, pages: new Map() }));
   const asked = useRef(new Set<string>());
@@ -34,12 +39,13 @@ export function usePageCache<T>(
     const key = `${version}#${page}`;
     if (asked.current.has(key)) return;
     asked.current.add(key);
-    load(page).then(
-      (value) =>
-        latest.current === version &&
-        setKept((now) => ({ version, pages: new Map(now.version === version ? now.pages : []).set(page, value) })),
-      () => asked.current.delete(key),
-    );
+    const keep = (value: T) =>
+      latest.current === version &&
+      setKept((now) => ({ version, pages: new Map(now.version === version ? now.pages : []).set(page, value) }));
+    load(page).then(keep, (reason: unknown) => {
+      asked.current.delete(key);
+      if (failed) keep(failed(reason));
+    });
   });
   const wanted = pages.join(",");
   useEffect(() => {
@@ -48,6 +54,5 @@ export function usePageCache<T>(
     const timer = setTimeout(() => wanted.split(",").forEach((page) => ask(Number(page))), SETTLE_MS);
     return () => clearTimeout(timer);
   }, [version, wanted]);
-  const [none] = useState<ReadonlyMap<number, T>>(() => new Map()); // until a page of this version comes
-  return kept.version === version ? kept.pages : none;
+  return kept.version === version ? kept.pages : NONE;
 }

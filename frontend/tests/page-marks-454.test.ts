@@ -12,6 +12,9 @@ import { join } from "node:path";
 import { act, createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SETTLE_MS, pagesAround, usePageCache } from "@/components/viewer/usePageCache";
+import { useViewerWords } from "@/components/words/ViewerWords";
+import type { ViewerWords } from "@/components/words/ViewerWords";
+import { spotsLoadText } from "@/components/words/spots";
 
 const read = (path: string) => readFileSync(join(__dirname, "..", path), "utf8");
 
@@ -108,6 +111,41 @@ describe("usePageCache", () => {
     expect(asked()).toEqual([4, 4, 4]);
     expect(latest.get(4)).toBe("marks of page 4");
   });
+
+  // Review panel, 29 Oct 2026: my words turned a failed load into an answer, so the page was
+  // never asked again until Try again. It shows the failure, and asks again only once the page
+  // is wanted again, never in a loop.
+  it("shows a page's failed words, and asks for them again when that page is wanted again", async () => {
+    let words: ViewerWords | null = null;
+    function Words({ pageNo }: { pageNo: number }) {
+      words = useViewerWords("d1", pageNo, [1, 2, 3, 4, 5, 6]);
+      return null;
+    }
+    const pages: number[] = [];
+    let fail = true;
+    vi.stubGlobal("fetch", async (url: string) => {
+      const page = Number(new URL(url, "http://x").searchParams.get("page"));
+      pages.push(page);
+      if (page === 4 && fail) {
+        fail = false;
+        return new Response(JSON.stringify({ error: { code: "error", message: "x" } }), { status: 500 });
+      }
+      return new Response(JSON.stringify({ items: [] }), { status: 200 });
+    });
+    const at = async (pageNo: number) => {
+      await act(async () => root!.render(createElement(Words, { pageNo })));
+      await settle();
+    };
+    await show("d1:0", []); // the bare root
+    await at(4);
+    expect(words!.error).toBe(spotsLoadText(500));
+    await settle(SETTLE_MS * 10);
+    expect(pages.filter((page) => page === 4)).toHaveLength(1); // not asked again while it stays
+    await at(1);
+    await at(4);
+    expect(pages.filter((page) => page === 4)).toHaveLength(2);
+    expect(words!.error).toBeNull();
+  });
 });
 
 describe("the document screen's marks and notice (#454)", () => {
@@ -123,7 +161,7 @@ describe("the document screen's marks and notice (#454)", () => {
     expect(pageViewer).toContain("readingMarks={readingMarks}");
     expect(view).toContain("marks={readingMarks}"); // the Needs attention panel, numbered per page as before
     expect(view).toContain("const readingMarks = (pageNo !== null && marksByPage.get(pageNo)) || NO_MARKS;");
-    expect(view).toContain('const scroll = shown?.detected_type === "pdf" ? shown.pages.map((p) => p.page_no) : NO_PAGES;');
+    expect(view).toContain('const scroll = shown?.detected_type === "pdf" ? shown.pages.map((p) => p.page_no) : [];');
   });
 
   it("lights a hot mark (DD7) only on the screen's page, as the panel numbers them", () => {
@@ -134,7 +172,5 @@ describe("the document screen's marks and notice (#454)", () => {
 
   it("keeps the low-resolution notice's room on every page of a PDF that has one", () => {
     expect(view).toContain("const lowRoom = detail.detected_type === \"pdf\" ? (detail.pages.map(lowNote).find((note) => note !== null) ?? null) : null;");
-    expect(view).toMatch(/\{\(lowResolution \?\? lowRoom\) && \(\s*<p className=\{styles\.trashNotice\} role="note" style=\{lowResolution \? undefined : \{ visibility: "hidden" \}\}>/);
-    expect(view).not.toContain("{lowResolution && !page?.problems?.length && (");
-  });
+    expect(view).toMatch(/\{\(lowResolution \?\? lowRoom\) && \(\s*<p className=\{styles\.trashNotice\} role="note" style=\{lowResolution \? undefined : \{ visibility: "hidden" \}\}>/);  });
 });

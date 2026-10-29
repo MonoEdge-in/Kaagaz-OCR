@@ -286,11 +286,11 @@ export function DocumentView({
       : initialSelection(shown, pageParam, regionParam);
   // #454: a PDF scrolls through all its pages, so the marks of the pages beside the page shown are
   // loaded too, and every loaded page's marks go to the PDF viewer; the panels keep the page's own.
-  const scroll = shown?.detected_type === "pdf" ? shown.pages.map((p) => p.page_no) : NO_PAGES;
+  const scroll = shown?.detected_type === "pdf" ? shown.pages.map((p) => p.page_no) : [];
   const pageNo = selection ? selection.pageNo : null;
   const words = useViewerWords(documentId, pageNo, scroll);
   const stickyViewer = useMediaQuery(STICKY_VIEWER_QUERY);
-  const marksByPage = usePageMarks(documentId, shown?.pages ?? NO_SUMMARIES, pageNo, scroll, reloads);
+  const marksByPage = usePageMarks(documentId, shown?.pages ?? [], pageNo, scroll, reloads);
   const readingMarks = (pageNo !== null && marksByPage.get(pageNo)) || NO_MARKS;
   const marksAround = useMemo(() => [...marksByPage.values()].flat(), [marksByPage]);
   const yourWords = linkWords(wordsParam);
@@ -1065,8 +1065,6 @@ function usePageMarks(
 }
 
 const NO_MARKS: ReadingMark[] = [];
-const NO_PAGES: number[] = [];
-const NO_SUMMARIES: PageSummary[] = [];
 
 /** How many tabs fit the tab row (tabsThatFit), from its width in rem; four until it is measured. */
 function useTabRoom(bar: RefObject<HTMLDivElement | null>, long: boolean): number {

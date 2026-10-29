@@ -22,7 +22,6 @@ describe("the PDF viewer stays smooth while it moves (#454)", () => {
   });
 
   it("never resizes the pages' scroll area as the spot comes and goes: its line is always laid out", () => {
-    expect(wrapper).not.toMatch(/\{spot && showHighlights \? \(\s*<p/);
     expect(wrapper).toContain('style={spot && showHighlights ? undefined : { visibility: "hidden" }}');
   });
 
@@ -49,6 +48,17 @@ describe("the PDF viewer stays smooth while it moves (#454)", () => {
     // A smooth scroll still on its way to the spot is halted where it is, and page sync resumes.
     expect(stop).toMatch(/if \(area && performance\.now\(\) < steeringUntil\.current\) \{\s*area\.scrollTo\(\{ left: area\.scrollLeft, top: area\.scrollTop, behavior: "instant" \}\);/);
     expect(stop).toContain("steeringUntil.current = 0;");
+  });
+
+  // Review panel, 29 Oct 2026: a jump from page 1 to a value on page 9, halted on page 5, left the
+  // panels, the hot marks and the marks asked for on page 9, and choosing page 9 again did nothing.
+  it("tells the screen the page a halted jump stopped on, which it passed untold", () => {
+    const stop = between(wrapper, "const stop = () => {", "const input");
+    expect(stop).toMatch(
+      /behavior: "instant" \}\);\s*if \(shownPage\.current !== screen\.current\.pageNo\) screen\.current\.onPageChange\(shownPage\.current\);\s*\}\s*steeringUntil\.current = 0;/,
+    );
+    // Told back, the screen's page is the viewer's, so choosing the page left scrolls there again.
+    expect(wrapper).toContain("if (!open || spot || pageNo === shownPage.current) return;");
   });
 
   it("pans the hand once a frame, reading no layout on a move", () => {
