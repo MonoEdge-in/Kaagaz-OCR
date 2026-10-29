@@ -212,12 +212,10 @@ describe("#443 a flagged word in the Text view is fixed or confirmed where it is
   });
 
   it("offers Confirm between Cancel and Save, which settles each word as it reads (the review's Confirm)", () => {
+    // Changed on purpose (owner's report, 29 Oct 2026): Confirm and Save in one group, so they wrap
+    // together; each button at its own width (text-panel-lines.test.ts).
     expect(panel).toMatch(
-      /Cancel\s*<\/button>\s*<button type="button" className="btn" disabled=\{box\.busy\} onClick=\{\(\) => void saveFix\(toFix, index, true\)\}>\s*Confirm\s*<\/button>\s*<button type="submit"/,
-    );
-    // Three buttons in a narrow panel share the row, none squeezed inside its word (seen at 390px).
-    expect(read("components/viewer/ScannedText.module.css")).toMatch(
-      /\.fixActions > :global\(\.btn\) \{\s*flex: 1 1 auto;\s*padding-inline: var\(--space-2\);/,
+      /Cancel\s*<\/button>\s*<div className=\{styles\.fixSettle\}>\s*<button type="button" className="btn" disabled=\{box\.busy\} onClick=\{\(\) => void saveFix\(toFix, index, true\)\}>\s*Confirm\s*<\/button>\s*<button type="submit"/,
     );
   });
 });

@@ -101,7 +101,8 @@ describe("#417 a [?] in the Text view: type the word in its place, right there",
     expect(panel).toMatch(/<label className=\{styles\.fixLabel\} htmlFor=\{`\$\{boxId\}-text`\}>\s*\{ask\.hint\}/);
     expect(panel).toMatch(/<input\s+ref=\{fixInput\}\s+id=\{`\$\{boxId\}-text`\}/);
     // [Cancel] [Primary]; Esc in the field closes the box (not the panel); focus goes back to the line.
-    expect(panel.indexOf(">\n                            Cancel")).toBeLessThan(panel.indexOf(">\n                            Save"));
+    // Changed on purpose (owner's report, 29 Oct 2026): Save sits one level in, with Confirm.
+    expect(panel.indexOf(">\n                            Cancel")).toBeLessThan(panel.indexOf(">\n                              Save"));
     expect(panel).toContain("event.stopPropagation(); // Esc here closes the box, not the panel");
     expect(panel).toContain('rows.current[index]?.querySelector("button")?.focus();');
     // Changed on purpose (#443): Confirm (asRead) sends no typed text.
@@ -119,10 +120,11 @@ describe("#417 a [?] in the Text view: type the word in its place, right there",
     // Changed on purpose (#431, Tushar 28 Oct 2026): the field on its own line, Cancel and Save
     // together under it, so Save never drops onto a line of its own in a narrow panel.
     expect(sheet).toMatch(/\.fixInput \{[^}]*width: 100%;[^}]*min-width: 0;/);
-    expect(sheet).toMatch(/\.fixActions \{[^}]*display: flex;/);
-    expect(sheet).not.toMatch(/\.fixActions \{[^}]*flex-wrap/);
+    // Changed on purpose (owner's report, 29 Oct 2026): unwrapped, Save was cut off at the panel's
+    // edge; the row wraps now, Save still never alone: it wraps with Confirm (text-panel-lines.test.ts).
+    expect(sheet).toMatch(/\.fixActions,\s*\.fixSettle \{[^}]*display: flex;/);
     const panel = read("components/viewer/ScannedTextPanel.tsx");
-    expect(panel).toMatch(/<div className=\{styles\.fixActions\}>\s*<button type="button" className="btn"[\s\S]*?Cancel[\s\S]*?Save\s*<\/button>\s*<\/div>/);
+    expect(panel).toMatch(/<div className=\{styles\.fixActions\}>\s*<button type="button" className="btn btn-quiet"[\s\S]*?Cancel[\s\S]*?Save\s*<\/button>\s*<\/div>\s*<\/div>/);
   });
 });
 

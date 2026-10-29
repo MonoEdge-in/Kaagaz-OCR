@@ -179,7 +179,9 @@ describe("the MonoEdge design system on the documents screens", () => {
   it("lets only the page's pan areas and the tables' wrappers keep their scroll; the scanned lines never scroll on their own", () => {
     const scanned = css("components/viewer/ScannedText.module.css");
     expect(scanned).not.toMatch(/overflow(-y)?:\s*(auto|scroll)/);
-    expect(scanned).toMatch(/\.line \{[^}]*content-visibility:\s*auto;[^}]*contain-intrinsic-size:\s*auto 44px;/);
+    // Changed on purpose (owner's report, 29 Oct 2026): on the row, not the <li>, whose paint
+    // containment hid the line numbers (text-panel-lines.test.ts).
+    expect(scanned).toMatch(/\.lineRow \{[^}]*content-visibility:\s*auto;[^}]*contain-intrinsic-size:\s*auto 44px;/);
     // Changed on purpose (UI audit, 16 Oct 2026): DD1, no scroll trap. The page's and the sheet's
     // frames hold only a sideways swipe (never Back); a wheel up or down runs on into <main>.
     const viewer = css("components/viewer/PageViewer.module.css");
