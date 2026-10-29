@@ -246,6 +246,9 @@ export function PdfDocumentViewer({
         return { left: px.left, top: px.top, width: px.width, height: px.height };
       };
       const problems = marksOnPage(readingMarks, pageNumber);
+      // The marks of pages beside the screen's come too (#454); a hot mark (DD7) is a number on
+      // the screen's page, as the Needs attention panel counts them.
+      const here = pageNumber === pageNo;
       // #454: no entrance here. The viewer draws only the pages near the view, so a page scrolled
       // back to is drawn anew and a CSS entrance played again on each (the blink while moving);
       // the spot settles once, from toSpot, and the lines holding your words simply show.
@@ -320,12 +323,12 @@ export function PdfDocumentViewer({
                   className={styles.problem}
                   data-quality={mark.quality}
                   data-state={checked ? "checked" : undefined}
-                  data-hot={hotMark === index ? "true" : undefined}
+                  data-hot={here && hotMark === index ? "true" : undefined}
                   aria-label={name}
                   title={name}
                   style={place(mark.region.box)}
                   onClick={() => onMark?.(mark, name)}
-                  onPointerEnter={() => onHotMark?.(index)}
+                  onPointerEnter={() => (here ? onHotMark?.(index) : undefined)}
                   onPointerLeave={() => onHotMark?.(null)}
                 />
               );
@@ -333,7 +336,7 @@ export function PdfDocumentViewer({
         </>
       );
     },
-    [showHighlights, wordBoxes, wordHits, highlights, marks, activeMark, flags, activeFlag, onFlag, readingMarks, hotMark, onHotMark, onMark],
+    [showHighlights, wordBoxes, wordHits, highlights, marks, activeMark, flags, activeFlag, onFlag, readingMarks, pageNo, hotMark, onHotMark, onMark],
   );
 
   return (

@@ -45,7 +45,7 @@
 // (/review, its "By document" view, or ?document_id=), and the summary card shows its facts.
 
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, KeyboardEvent, ReactNode, RefObject } from "react";
 import { tabAfterKey } from "@/components/admin/logic";
 import { RowMenu } from "@/components/admin/RowMenu";
@@ -93,6 +93,7 @@ import { PdfDocumentViewer } from "@/components/viewer/PdfDocumentViewer";
 import { ViewerBoundary } from "@/components/viewer/ViewerBoundary";
 import { fieldText } from "@/components/viewer/labels";
 import { lowResolutionText } from "@/components/viewer/panels";
+import { pagesAround, usePageCache } from "@/components/viewer/usePageCache";
 import type { Spot } from "@/components/viewer/panels";
 import { beingRead, canReprocess, loadFailure, settledText } from "@/components/viewer/reprocess";
 import { highlightsOf, initialSelection, pageChange } from "@/components/viewer/selection";
@@ -283,10 +284,15 @@ export function DocumentView({
     : chosen && chosen.linkKey === linkKey
       ? chosen.selection
       : initialSelection(shown, pageParam, regionParam);
-  const words = useViewerWords(documentId, selection ? selection.pageNo : null);
+  // #454: a PDF scrolls through all its pages, so the marks of the pages beside the page shown are
+  // loaded too, and every loaded page's marks go to the PDF viewer; the panels keep the page's own.
+  const scroll = shown?.detected_type === "pdf" ? shown.pages.map((p) => p.page_no) : NO_PAGES;
+  const pageNo = selection ? selection.pageNo : null;
+  const words = useViewerWords(documentId, pageNo, scroll);
   const stickyViewer = useMediaQuery(STICKY_VIEWER_QUERY);
-  const markedPage = shown && selection ? shown.pages.find((p) => p.page_no === selection.pageNo) : undefined;
-  const readingMarks = usePageMarks(documentId, markedPage, reloads);
+  const marksByPage = usePageMarks(documentId, shown?.pages ?? NO_SUMMARIES, pageNo, scroll, reloads);
+  const readingMarks = (pageNo !== null && marksByPage.get(pageNo)) || NO_MARKS;
+  const marksAround = useMemo(() => [...marksByPage.values()].flat(), [marksByPage]);
   const yourWords = linkWords(wordsParam);
   const wordsFound = useDocumentWords(documentId, yourWords, reloads);
 
@@ -400,7 +406,12 @@ export function DocumentView({
     setAnnouncement(`Showing ${name} on page ${mark.region.page}.`);
     if (mark.region.kind === "box" && hasScannedText) setTab("scanned");
   };
-  const lowResolution = page ? lowResolutionText(page) : null;
+  const lowNote = (p: PageSummary) => (p.problems?.length ? null : lowResolutionText(p));
+  const lowResolution = page ? lowNote(page) : null;
+  // #454: a PDF scrolls through every page under one notice, so if any page has it, its room is
+  // kept on all of them, hidden where it does not apply: it came and went with the page in view
+  // and resized the viewer mid-scroll, which then set its scroll again.
+  const lowRoom = detail.detected_type === "pdf" ? (detail.pages.map(lowNote).find((note) => note !== null) ?? null) : null;
   const pageFlags = page ? openFlags.filter((flag) => flag.page_no === page.page_no) : [];
   const pageMarks = page ? review.flags.filter((flag) => flag.page_no === page.page_no) : [];
   const toWord = (key: string) => {
@@ -491,10 +502,10 @@ export function DocumentView({
       <Toast message={toast} onClose={() => setToast(null)} />
       <div ref={layoutRef} className={styles.layout} style={{ "--split": `${split}%` } as CSSProperties}>
         <section ref={viewerRef} id="document-page" className={styles.viewer} aria-label="Page">
-          {lowResolution && !page?.problems?.length && (
-            <p className={styles.trashNotice} role="note">
+          {(lowResolution ?? lowRoom) && (
+            <p className={styles.trashNotice} role="note" style={lowResolution ? undefined : { visibility: "hidden" }}>
               <Icon name="alert" />
-              <span>{lowResolution}</span>
+              <span>{lowResolution ?? lowRoom}</span>
             </p>
           )}
           {/* SoW 19 Oct 2026: a PDF in extend-hq/ui's viewer, every page in one scroll; photos
@@ -511,9 +522,9 @@ export function DocumentView({
                   highlights={highlightsOf(selection)}
                   highlightNote={highlightNote}
                   download={download}
-                  marks={words.markers}
+                  marks={words.markersAround}
                   activeMark={words.activeId}
-                  readingMarks={readingMarks}
+                  readingMarks={marksAround}
                   onMark={showMark}
                   hotMark={hotMark}
                   onHotMark={setHotMark}
@@ -1029,31 +1040,27 @@ function SplitHandle({
 }
 
 /**
- * The reading problems of the page shown (PRD 5 U3), from its readings: only for an
- * uncertain or unreadable page, asked again after each reload. [] until they come, and
- * if they can't be loaded (the banner still says what is wrong).
+ * The reading problems of the page shown (PRD 5 U3), and of the pages beside it in `scroll`
+ * (#454), by page, from their readings: only for an uncertain or unreadable page, each kept once
+ * loaded, asked again after each reload. None for a page until they come, nor if they can't be
+ * loaded (the banner still says what is wrong).
  */
-function usePageMarks(documentId: string, page: PageSummary | undefined, version: number): ReadingMark[] {
-  const pageNo = page && page.read_quality !== "good" ? page.page_no : null;
-  const key = pageNo === null ? null : `${documentId}:${pageNo}:${version}`;
-  const [loaded, setLoaded] = useState<{ key: string; marks: ReadingMark[] } | null>(null);
-  useEffect(() => {
-    if (key === null || pageNo === null) return;
-    let cancelled = false;
-    getPageReadings(documentId, pageNo).then(
-      (readings) => {
-        if (!cancelled) setLoaded({ key, marks: readings.marks ?? [] });
-      },
-      () => undefined,
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [documentId, pageNo, key]);
-  return loaded && loaded.key === key ? loaded.marks : NO_MARKS;
+function usePageMarks(
+  documentId: string,
+  pages: readonly PageSummary[],
+  pageNo: number | null,
+  scroll: readonly number[],
+  version: number,
+): ReadonlyMap<number, ReadingMark[]> {
+  const unsure = new Set(pages.filter((p) => p.read_quality !== "good").map((p) => p.page_no));
+  return usePageCache(`${documentId}:${version}`, pagesAround(pageNo, scroll).filter((p) => unsure.has(p)), (p) =>
+    getPageReadings(documentId, p).then((readings) => readings.marks ?? []),
+  );
 }
 
 const NO_MARKS: ReadingMark[] = [];
+const NO_PAGES: number[] = [];
+const NO_SUMMARIES: PageSummary[] = [];
 
 /** How many tabs fit the tab row (tabsThatFit), from its width in rem; four until it is measured. */
 function useTabRoom(bar: RefObject<HTMLDivElement | null>, long: boolean): number {
