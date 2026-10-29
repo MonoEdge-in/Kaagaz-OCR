@@ -109,7 +109,9 @@ COLUMNS: dict[str, dict[str, str]] = {
         " served goes next.",
     },
     "model_rate_user_turns": {
-        "customer_id": ORGANISATION,
+        "customer_id": "customers.id of the organisation (row level security filters on it). No foreign key"
+        " of its own: only (customer_id, user_id) → users, when user_id is set. NULL for model work no"
+        " organisation asked for.",
         "user_id": "→ users.id (same customer). NULL for work no person asked for. One row per"
         " organisation and person.",
         "last_served_at": "When this person's last request was let through; within an organisation, the"
@@ -121,7 +123,8 @@ COLUMNS: dict[str, dict[str, str]] = {
         "updated_at": "When an operator last set it.",
     },
     "user_model_rate_overrides": {
-        "customer_id": CUSTOMER,
+        "customer_id": "customers.id, the customer the row belongs to (row level security filters on it),"
+        " through (customer_id, user_id) → users; no foreign key of its own.",
         "user_id": "→ users.id (same customer), the person capped.",
         "rpm": "The person's cap in model requests a minute, 1 to 120, set by an operator.",
         "updated_at": "When an operator last set it.",

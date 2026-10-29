@@ -3,6 +3,7 @@ it, the table and the 56 columns it names have no comment; after it, nothing in 
 one; the downgrade clears exactly those again and changes nothing else."""
 
 import pytest
+from sqlalchemy import text
 
 from kaagaz.db.engine import Database
 from tests import test_migration_0002_db as base
@@ -16,6 +17,14 @@ M0059 = _load("0059_dictionary_gaps.py")
 NAMED = {("upload_sessions", None)} | {
     (table, column) for table, columns in M0059.COLUMNS.items() for column in columns
 }
+
+# A foreign key from table :t to table :r whose columns include :c.
+_REFERENCES = text(
+    "SELECT 1 FROM pg_constraint k"
+    " JOIN pg_attribute a ON a.attrelid = k.conrelid AND a.attnum = ANY (k.conkey)"
+    " WHERE k.contype = 'f' AND k.conrelid = CAST(:t AS regclass) AND k.confrelid = CAST(:r AS regclass)"
+    " AND a.attname = :c"
+)
 
 
 def _missing(db: Database) -> set[tuple[str, str | None]]:
@@ -39,3 +48,22 @@ def test_0059_up_down_up(fresh: tuple[str, Database]) -> None:
     assert base._schema(db) == before
     migrate(url, "0059")
     assert _dictionary(db) == at_0059
+
+
+def test_every_arrow_0059_writes_is_a_real_foreign_key(db: Database) -> None:
+    """#404 review: a comment "→ t.id" says the column has a foreign key to t. Two said
+    "→ customers.id" on a customer_id whose only key is (customer_id, user_id) → users."""
+    arrows = [
+        (table, column, comment.removeprefix("→ ").split(".")[0])
+        for table, columns in M0059.COLUMNS.items()
+        for column, comment in columns.items()
+        if comment.startswith("→ ")
+    ]
+    assert len(arrows) > 10
+    with db.system() as conn:
+        untrue = [
+            (table, column)
+            for table, column, target in arrows
+            if conn.execute(_REFERENCES, {"t": table, "r": target, "c": column}).first() is None
+        ]
+    assert untrue == []
