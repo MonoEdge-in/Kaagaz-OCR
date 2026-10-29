@@ -72,6 +72,23 @@ export function panTo(
   return { left: press.left - (x - press.x), top: press.top - (y - press.y) };
 }
 
+/**
+ * The page most in view between `top` and `bottom`, by the share of it shown, the first of a tie:
+ * the PDF engine's own rule for its current page (#454, review panel). null when none is in view.
+ */
+export function mostVisiblePage(
+  pages: readonly { page: number; top: number; bottom: number }[],
+  top: number,
+  bottom: number,
+): number | null {
+  let best: { page: number; shown: number } | null = null;
+  for (const each of pages) {
+    const shown = (Math.min(each.bottom, bottom) - Math.max(each.top, top)) / (each.bottom - each.top);
+    if (shown > 0 && (!best || shown > best.shown || (shown === best.shown && each.page < best.page))) best = { page: each.page, shown };
+  }
+  return best?.page ?? null;
+}
+
 type Rect = Pick<DOMRectReadOnly, "left" | "top" | "width" | "height">;
 type ScrollArea = Pick<Element, "scrollLeft" | "scrollTop" | "clientLeft" | "clientTop" | "clientWidth" | "clientHeight">;
 

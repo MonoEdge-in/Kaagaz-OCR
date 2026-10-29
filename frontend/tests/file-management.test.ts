@@ -726,7 +726,9 @@ describe("the folder screen (F5)", () => {
   it("shows the Grid view as cards, and remembers List or Grid per person", () => {
     const html = render(createElement(DocumentsGrid, { items: [doc()], label: "Your documents" }));
     expect(html).toContain("7/12 Survey 44 Wakad.pdf");
-    expect(html).toContain("Owner: Priya");
+    // Changed on purpose (owner, 29 Oct 2026, #452): the card's foot is "Priya · 16 Oct 2026";
+    // "Owner" and "Last updated" are read out, not shown.
+    expect(html).toContain('<span class="visually-hidden">Owner: </span>Priya</span>');
     expect(readViewMode("u1")).toBe("list"); // no storage in node: List
     const store = new Map<string, string>();
     vi.stubGlobal("localStorage", { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v) });

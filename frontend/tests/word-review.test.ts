@@ -97,6 +97,7 @@ const review = (shown: ReviewStatus | null, flags: WordFlag[] = [flag()]): WordR
   flags,
   failed: false,
   reload: () => undefined,
+  reloadWords: () => undefined,
   replace: () => undefined,
   setRun: () => undefined,
 });

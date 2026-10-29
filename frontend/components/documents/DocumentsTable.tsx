@@ -17,7 +17,7 @@
 // document was trashed. Each row is the family's
 // current version; a newer one still being read, or one that failed, gets a
 // line under the name ("Version 3: ..."), linking to it. The Type column
-// gives the file type, and under it what kind of document it is ("Invoice"), once the AI
+// gives the file type, and after it what kind of document it is ("PDF · Invoice"), once the AI
 // model's card has said (PRD 2, D6); with no card yet (the model off, down, or still reading)
 // that line is left out, never "Unknown" on every row (issue 371). Names wrap in full at
 // their _ . - and @ marks (WrapName.tsx). The By cell says "Uploaded by" in
@@ -38,6 +38,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import type { MouseEvent as ReactMouseEvent, RefCallback } from "react";
 import { extensionOf } from "@/components/dashboard/words";
 import { LabelChip } from "@/components/files/LabelChip";
+import { labelName } from "@/components/files/labels";
 import { FILES_TEXT, NEWER_SPOKEN, versionCell } from "@/components/files/words";
 import { Icon } from "@/components/ui/Icon";
 import { PasswordField } from "@/components/ui/PasswordField";
@@ -799,6 +800,21 @@ const DocumentRow = memo(function DocumentRow({
   // F5: "v1 · newer?" while a newer version of this family waits to be confirmed.
   const newer = document.pending_suggestion?.role === "candidate";
   const owner = document.owner?.name ?? null;
+  const typeWords = [typeLabel(document.detected_type), document.doc_type && docTypeLabel(document.doc_type)]
+    .filter(Boolean)
+    .join(" · ");
+  const folderPath = !inTrash && document.folder_id && tree.byId.has(document.folder_id) ? pathLabel(tree, document.folder_id) : null;
+  // The facts line under the name, whole, for its title.
+  const factsLine = [
+    document.sensitivity && labelName(document.sensitivity),
+    owner && `${FILES_TEXT.columns.owner}: ${owner}`,
+    `${typeWords} · ${formatBytes(document.size_bytes)}`,
+    versionCell(document.version_no, newer),
+    document.document_date && FILES_TEXT.dated(formatDate(document.document_date)),
+    folderPath && `In ${folderPath}`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
   const version = (
     <>
       {versionCell(document.version_no, false)}
@@ -878,31 +894,30 @@ const DocumentRow = memo(function DocumentRow({
             <WrapName name={document.display_name} />
           </span>
         </Link>
-        <span className={styles.bandType}>
-          {typeLabel(document.detected_type)}
-          {document.doc_type && ` · ${docTypeLabel(document.doc_type)}`} · {formatBytes(document.size_bytes)}
-        </span>
-        {/* F5: the label, version, owner and date, each here until its own column has room. */}
-        <span className={styles.facts}>
+        {/* F5: the label, owner, type, version and date, each here until its own column has room.
+            Issue 452: one line under the name, in this order, whatever width the table has; cut
+            at its end with "…", the whole line in its title (review panel, 29 Oct 2026). */}
+        <span className={styles.facts} title={factsLine}>
           {document.sensitivity && (
             <span className={styles.factLabel}>
               <LabelChip label={document.sensitivity} />
             </span>
           )}
-          <span className={styles.factVersion}>{version}</span>
           {owner && (
             <span className={styles.factOwner}>
               {FILES_TEXT.columns.owner}: {owner}
             </span>
           )}
+          <span className={styles.bandType}>
+            {typeWords} · {formatBytes(document.size_bytes)}
+          </span>
+          <span className={styles.factVersion}>{version}</span>
           {document.document_date && (
             <span className={styles.factDate}>{FILES_TEXT.dated(formatDate(document.document_date))}</span>
           )}
           {/* Where it is filed, so a move shows in All documents too (16 Oct 2026); on the facts'
               line, not a line of its own, so a row stays short (issue 371). */}
-          {!inTrash && document.folder_id && tree.byId.has(document.folder_id) && (
-            <span className={styles.inFolder}>In {pathLabel(tree, document.folder_id)}</span>
-          )}
+          {folderPath && <span className={styles.inFolder}>In {folderPath}</span>}
         </span>
         {tagList(styles.factTags)}
         {document.newer_version && (
@@ -919,13 +934,22 @@ const DocumentRow = memo(function DocumentRow({
           busy={busy}
         />
       </td>
+      {/* Issue 452: "PDF · Land record" on the first line, the size on the second, on every row. */}
       <td role="cell" className={`${styles.meta} ${styles.typeCell}`}>
-        {typeLabel(document.detected_type)}
-        {document.doc_type && <span className={styles.docType}>{docTypeLabel(document.doc_type)}</span>}
+        <span className={styles.typeLine} title={typeWords}>
+          {typeLabel(document.detected_type)}
+          {document.doc_type && <span className={styles.docType}>{docTypeLabel(document.doc_type)}</span>}
+        </span>
         <span className={`${styles.bandSize} tabular`}>{formatBytes(document.size_bytes)}</span>
       </td>
       <td role="cell" className={`${styles.meta} ${styles.ownerCell}`}>
-        {owner ? <WrapName name={owner} /> : dash}
+        {owner ? (
+          <span className={styles.oneLine} title={owner}>
+            {owner}
+          </span>
+        ) : (
+          dash
+        )}
       </td>
       <td role="cell" className={`${styles.meta} ${styles.labelCell}`}>
         {document.sensitivity ? <LabelChip label={document.sensitivity} /> : dash}
@@ -1098,7 +1122,7 @@ export function StatusCell({
             </span>
           ) : (
             !clean && (
-              <span className={styles.statusText} title={flagged.shown}>
+              <span className={styles.statusText} title={flagged.spoken}>
                 {flagged.shown}
               </span>
             )

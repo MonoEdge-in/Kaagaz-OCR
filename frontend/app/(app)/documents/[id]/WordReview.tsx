@@ -69,6 +69,8 @@ export interface WordReview {
    * change may have kept its page as is (lastOpenOnPage); then, and with no word, the whole document.
    */
   reload(word?: Pick<WordFlag, "word_key" | "page_no">): void;
+  /** Ask for the words alone again: a value verified or saved on the summary card (#453). */
+  reloadWords(): void;
   /** A confirm or edit reply: that word as it is now (the counts come with the next load). */
   replace(flag: WordFlag): void;
   /** A run just started, stopped or retried: show it, and follow it while it runs. */
@@ -141,6 +143,7 @@ export function useWordReview(
       changed.current.clear();
       reloadDocument();
     },
+    reloadWords: () => setAsks((n) => n + 1),
     replace: (flag) =>
       setLoaded((now) =>
         now ? { ...now, flags: now.flags.map((each) => (each.word_key === flag.word_key ? flag : each)) } : now,

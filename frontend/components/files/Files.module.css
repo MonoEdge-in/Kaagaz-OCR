@@ -30,6 +30,10 @@
   .card:hover {
     background: var(--bg-hover);
   }
+
+  .card .cardName:hover {
+    text-decoration: none;
+  }
 }
 
 .tileIcon {
@@ -47,7 +51,12 @@
   color: var(--text-secondary);
 }
 
+/* Issue 452 (owner, 29 Oct 2026): three fixed bands, so the cards of a row are one height and
+   their chips and feet line up: the name always two lines tall, one line of chips, and the
+   owner and date pinned to the foot. The name's link covers the card (::after), so the card's
+   own hover is the cue, not an underline. */
 .card {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
@@ -58,23 +67,76 @@
   background: var(--bg-surface);
 }
 
+/* Two lines, cut with "…" (the whole name is in its title), and two lines' room for a short one. */
 .cardName {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  min-height: 2lh;
+  line-height: 1.5;
   font-weight: 600;
   overflow-wrap: anywhere;
 }
 
-.cardFacts {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-1) var(--space-2);
-  font-size: var(--fs-sm);
+.cardName::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
 }
 
+/* Over the link, so their titles show: the chip's description, a cut type's or owner's words. */
+.cardOwner,
+.cardFacts :global(.label-chip),
+.cardFacts > :last-child {
+  position: relative;
+  z-index: 1;
+}
+
+/* One line: the chip and version keep their size, the type gives way with "…". */
+.cardFacts {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  min-height: var(--badge-h); /* as tall with a label chip as without */
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+}
+
+.cardFacts > * {
+  flex: none;
+}
+
+.cardFacts > :last-child {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* "Vrushit · 28 Oct 2026": a long owner gives way with "…"; the date never breaks. */
 .cardMeta {
+  display: flex;
+  gap: var(--space-1);
+  min-width: 0;
+  margin-top: auto;
   font-size: var(--fs-sm);
   color: var(--text-secondary);
-  overflow-wrap: anywhere;
+  white-space: nowrap;
+}
+
+.cardOwner {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cardDate {
+  flex: none;
+  font-variant-numeric: tabular-nums;
 }
 
 /* The document page's Details tab: one term and its value a row, pickers inline. The tab's

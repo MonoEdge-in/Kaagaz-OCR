@@ -37,8 +37,10 @@ describe("#416 no Values found in the Details tab", () => {
   it("leaves the values reachable: the summary card's facts on the page, and Review to verify them", () => {
     expect(read("app/(app)/documents/[id]/SummaryCard.tsx")).toContain("onClick={() => onShow(item)}");
     // Changed on purpose (owner, 29 Oct 2026): the card is told whether its count links to Review.
+    // Changed on purpose (owner, 29 Oct 2026, #453): and what to do once a value is verified or saved
+    // there (review panel, 29 Oct 2026: its words asked for again, fact-actions.test.ts).
     expect(read(VIEW)).toMatch(
-      /<SummaryCard\s+detail=\{detail\}\s+active=\{selection\?\.region \?\? null\}\s+onShow=\{showSpot\}\s+reviewer=\{canReview\(me\.user\.role\) && detail\.deleted_at === null\}\s+\/>/,
+      /<SummaryCard\s+detail=\{detail\}\s+active=\{selection\?\.region \?\? null\}\s+onShow=\{showSpot\}\s+reviewer=\{canReview\(me\.user\.role\) && detail\.deleted_at === null\}\s+onResolved=\{[\s\S]{1,700}?\}\s+onStale=\{\(\) => setReloads\(\(n\) => n \+ 1\)\}\s+\/>/,
     );
     expect(read("components/shell/nav.ts")).toMatch(/href: "\/review"/);
     // Follow-up: Details links a reviewer or an admin to this document's values waiting in Review,
@@ -151,7 +153,8 @@ describe("#419 the PDF viewer's hand: drag a zoomed page around", () => {
     const effect = viewer.slice(viewer.indexOf("// The hand (#419), on the viewer's own scroll area"), viewer.indexOf("const overlay = useCallback("));
     expect(effect).toContain("if (!hand || !open || !area) return;");
     expect(effect).toContain('event.target.closest("button, a")');
-    expect(effect).toContain('area.scrollTo({ ...panTo(press, event.clientX, event.clientY), behavior: "instant" });');
+    // Changed on purpose (#454): the pan is worked out on each move and scrolled once a frame,
+    // still never animated (pinned in pdf-smooth-454.test.ts).
     // The engine's exclusion rule keeps its text selection out while the hand is on, and back after.
     expect(effect).toContain('area.dataset.noInteraction = "";');
     expect(effect).toContain("delete area.dataset.noInteraction;");

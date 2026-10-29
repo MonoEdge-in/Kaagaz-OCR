@@ -1,9 +1,10 @@
 // The review queue's small decisions, kept out of the components so they are
-// unit tested in node (tests/review-*.test.ts): whether a choice can be sent,
+// unit tested in node (tests/review-*.test.ts): whether a choice can be sent, sending it,
 // how the queue changes after a value is resolved, where focus goes then, and its reason filter.
 
 import { REASON_FILTER_TEXT, fieldText, labelText } from "@/components/viewer/labels";
 import { checkReasonText } from "@/components/viewer/panels";
+import { ApiError, resolveReview } from "@/lib/api";
 import type {
   LabelReason,
   ReviewChoice,
@@ -39,6 +40,31 @@ export function checkChoice(
     return { ok: false, message: `Keep the value under ${MAX_TYPED_LENGTH} characters.` };
   }
   return { ok: true, choice, value };
+}
+
+/** Said when a resolve did not reach the server. */
+export const RESOLVE_OFFLINE = "Could not save this. Check your connection, then try again.";
+
+/**
+ * One resolve, as Review and the summary card send it (#453): the choice checked (checkChoice),
+ * then one POST /review/{value_id}. The server's item; else what to say, `stale` when the value
+ * changed on the server (404, 409), so the caller may ask for it again.
+ */
+export async function sendResolve(
+  valueId: string,
+  choice: ReviewChoice,
+  typed: string,
+  secondReading: string | null,
+  remember: boolean,
+): Promise<{ ok: true; item: ReviewItem } | { ok: false; message: string; stale: boolean }> {
+  const check = checkChoice(choice, typed, secondReading);
+  if (!check.ok) return { ok: false, message: check.message, stale: false };
+  try {
+    return { ok: true, item: await resolveReview(valueId, check.choice, remember, check.value) };
+  } catch (caught) {
+    if (!(caught instanceof ApiError)) return { ok: false, message: RESOLVE_OFFLINE, stale: false };
+    return { ok: false, message: caught.message, stale: caught.status === 404 || caught.status === 409 };
+  }
 }
 
 /** The queue once one value is resolved: that item gone, the total one less. */

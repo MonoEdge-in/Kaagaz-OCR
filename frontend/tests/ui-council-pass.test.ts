@@ -146,7 +146,9 @@ describe("the Documents list's line rhythm", () => {
     // the same height in every column still, but 24px (--row-sub), not 32px.
     expect(block).toMatch(/\.facts \{\s*margin-block-start: 0;\s*line-height: var\(--row-sub\);/);
     expect(block).toMatch(/\.inFolder,\s*\.bandSize,\s*\.bandBy \{\s*line-height: var\(--row-sub\);/);
-    expect(text).toMatch(/\.docType \{\s*line-height: var\(--row-sub\);/);
+    // Changed on purpose (owner, 29 Oct 2026, #452): the kind is on the type's own first line
+    // ("PDF · Land record") and the size is the Type cell's second line, --row-sub like the others.
+    expect(text).toMatch(/@container docs-list \(min-width: 36rem\) \{[^@]*\.bandSize \{\s*display: block;/);
   });
 
   // Vrushit UAT (25 Oct 2026): "no vertical spacing and padding. Keep it clustered."
@@ -167,6 +169,7 @@ describe("the Documents list's tags", () => {
     expect(table).toContain("{tagList(styles.factTags)}");
     expect(table.match(/aria-label="Tags"/g)).toHaveLength(1); // one list, drawn in the two places
     const text = css("components/documents/Documents.module.css");
-    expect(text).toMatch(/@container docs-list \(min-width: 56rem\) \{[^@]*\.factLabel,\s*\.factTags \{\s*display: none;/);
+    // Changed on purpose (review panel, 29 Oct 2026): as table.docs' tags, over the tag list's own display.
+    expect(text).toMatch(/@container docs-list \(min-width: 56rem\) \{[^@]*\.factLabel,\s*table\.docs \.factTags \{\s*display: none;/);
   });
 });
