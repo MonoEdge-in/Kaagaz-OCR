@@ -65,6 +65,18 @@ class AgreementTest(unittest.TestCase):
     def test_they_agree_on_a_rotated_page_too(self) -> None:
         self.assert_agree(make_pdf([Page(rotate=90, texts=[Text(540, 72, "Landscape total 500", turn=90)])]))
 
+    def test_they_agree_on_a_page_cropped_past_its_media_box(self) -> None:
+        """#445 follow-up: the first reader's window was cut to the media box and the
+        second's was not, so their boxes did not overlap at all (IoU 0)."""
+        for rotate in (0, 90, 180, 270):
+            page = Page(
+                rotate=rotate,
+                crop=(-30.0, 60.0, 560.0, 900.0),
+                texts=[Text(300, 400, "Hg Total 500", turn=rotate)],
+            )
+            with self.subTest(rotate=rotate):
+                self.assert_agree(make_pdf([page]))
+
     def test_second_reading_carries_no_confidence_and_keeps_raw(self) -> None:
         spans = second(make_pdf(INVOICE))
         self.assertTrue(all(s.confidence is None for s in spans))

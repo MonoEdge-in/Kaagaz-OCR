@@ -4,10 +4,10 @@ PRD 2 PR 3, with the council's ML 3 and ML 4. ``page_signals`` reads one
 page, open in pdfplumber and in pypdfium2 at the same time (as the reader has
 it), and gives the ``PageSignals`` that ``text_quality.text_layer_ok`` needs:
 
-* ``coverage``: the share of the crop box under the page's images, their union
-  clipped to it, so a scan cut into strips counts as a whole (pdfplumber
-  ``page.images``, whose ``x0``, ``x1``, ``top`` and ``bottom`` are in the crop
-  box's own top-left coordinates, nested form XObjects included).
+* ``coverage``: the share of the page as shown (``shown_crop``) under the page's
+  images, their union clipped to it, so a scan cut into strips counts as a whole
+  (pdfplumber ``page.images``, whose ``x0``, ``x1``, ``top`` and ``bottom`` are in
+  its words' top-left coordinates, nested form XObjects included).
 * From one pass over PDFium's text page, for the characters the file holds
   (PDFium's made-up spaces and line breaks, and whitespace, are left out):
 
@@ -16,7 +16,7 @@ it), and gives the ``PageSignals`` that ``text_quality.text_layer_ok`` needs:
     through ``FPDFText_GetTextObject`` then ``FPDFTextObj_GetTextRenderMode``; a
     colour with no alpha (``FPDFText_GetFillColor``, or ``GetStrokeColor`` for
     stroked text); a font size under 1 pt (``FPDFText_GetFontSize``) (the
-    council's PR 3 review, high 1); a box off the crop box or too small; or a
+    council's PR 3 review, high 1); a box off the page as shown or too small; or a
     light colour that does not stand out where the page draws it (council
     17 Oct 2026: white text on a dark band is seen, white on white is not).
     Their loose boxes, merged along each run, become ``hidden_boxes`` as page
@@ -108,13 +108,14 @@ def is_legacy_font(name: str) -> bool:
 
 
 def image_coverage(page: Any) -> float:
-    """The share of a pdfplumber page's crop box under its images: their union,
-    each clipped to the crop box first; 0.0 with no image. An image with a
-    coordinate that is not finite is left out. Exact, by slabs between the
-    images' top and bottom edges: O(k^2 log k) for the k (at most
+    """The share of a pdfplumber page's window as shown (``shown_crop``) under its
+    images: their union, each clipped to the window first; 0.0 with no image. An
+    image with a coordinate that is not finite is left out. Exact, by slabs between
+    the images' top and bottom edges: O(k^2 log k) for the k (at most
     _MAX_COVERAGE_IMAGES) largest images, O(k) space.
     """
-    left, top, right, bottom = (float(value) for value in page.cropbox)
+    frame = shown_crop(page)
+    left, top, right, bottom = frame.left, frame.top, frame.left + frame.width, frame.top + frame.height
     area = (right - left) * (bottom - top)
     if not (math.isfinite(area) and area > 0):
         return 0.0
@@ -146,9 +147,10 @@ def _union_area(boxes: list[tuple[float, float, float, float]]) -> float:
 
 @dataclass(frozen=True, slots=True)
 class ViewerFrame:
-    """A page's crop box in PDF units and its rotation (clockwise, as shown): turns
-    PDFium's boxes (origin bottom left, before rotation) into the viewer's frame
-    (the crop box, rotation applied, origin top left), as pdfplumber gives them."""
+    """A page's window (the crop box cut to the media box) in PDF units and its
+    rotation (clockwise, as shown): turns PDFium's boxes (origin bottom left, before
+    rotation) into the viewer's frame (the window, rotation applied, origin top
+    left), as pdfplumber gives them."""
 
     left: float
     bottom: float
@@ -158,7 +160,11 @@ class ViewerFrame:
 
     @classmethod
     def of(cls, page: Any) -> "ViewerFrame":
-        left, bottom, right, top = (float(value) for value in page.get_cropbox())
+        """A pypdfium2 page's window as PDFium draws it: its bounding box, the crop box cut
+        to the media box, both inherited from the page tree. (pypdfium2's ``get_cropbox``
+        and ``get_mediabox`` neither cut nor inherit: a crop box past the media box put the
+        hidden-word boxes off the words they hide, #445.)"""
+        left, bottom, right, top = (float(value) for value in page.get_bbox())
         return cls(left, bottom, right, top, int(page.get_rotation()) % 360)
 
     @property
@@ -194,6 +200,30 @@ class ViewerFrame:
         return x - self.left, self.top - y
 
 
+def shown_crop(page: Any) -> PageFrame:
+    """A pdfplumber page's window, the part of the page a viewer shows (and PDFium draws,
+    ``ViewerFrame.of``), as shown: the crop box cut to the media box, the page's rotation
+    applied, in the words' coordinates. Boxes are fractions of it.
+
+    pdfplumber's words are the media box as shown, moved by its ``mediabox`` corner. Its
+    ``cropbox`` on a turned page only swaps the box's sides, never turns it, so an off-centre
+    crop box put a turned page's lines 5 to 13 pt off (#445). So the window is cut from the
+    file's boxes (pdfminer inherits them) and turned within the media box as ViewerFrame
+    turns PDFium's boxes."""
+    media, crop = page.page_obj.mediabox, page.page_obj.cropbox
+    mx0, mx1 = sorted((float(media[0]), float(media[2])))
+    my0, my1 = sorted((float(media[1]), float(media[3])))
+    cx0, cx1 = sorted((float(crop[0]), float(crop[2])))
+    cy0, cy1 = sorted((float(crop[1]), float(crop[3])))
+    left, bottom = min(max(cx0, mx0), mx1), min(max(cy0, my0), my1)
+    right, top = max(left, min(cx1, mx1)), max(bottom, min(cy1, my1))  # empty if they do not meet
+    window = ViewerFrame(mx0, my0, mx1, my1, int(page.rotation)).word("", left, bottom, right, top)
+    corner_x, corner_y = (float(value) for value in page.mediabox[:2])
+    return PageFrame(
+        corner_x + window.x0, corner_y + window.top, window.x1 - window.x0, window.bottom - window.top
+    )
+
+
 def relative_luminance(rgb: tuple[int, int, int]) -> float:
     """WCAG 2 relative luminance of an sRGB colour (0 to 255 per channel): 0.0 black, 1.0 white."""
     red, green, blue = rgb
@@ -211,7 +241,7 @@ def hidden_chars(page: Any, textpage: Any) -> frozenset[int]:
     readers use, so they always agree on what is hidden.
 
     Each character is, by ``_look``: hidden (render mode 3 or 7, no alpha, a font
-    size under MIN_FONT_POINTS, its loose box's centre outside the crop box, or a
+    size under MIN_FONT_POINTS, its loose box's centre outside the page as shown, or a
     loose box under MIN_BOX_HEIGHT high or MIN_BOX_WIDTH wide); visible (its
     colour has a contrast of LIGHT_CONTRAST or more with white, as before); or
     light. Light characters can be seen only on a darker background, so the page
@@ -220,7 +250,8 @@ def hidden_chars(page: Any, textpage: Any) -> frozenset[int]:
     O(characters + the pixels of the light characters' boxes) time; space
     O(drawn pixels), at most about RENDER_PIXELS, drawn only for a light character.
     """
-    crop = tuple(float(value) for value in page.get_cropbox())
+    window = ViewerFrame.of(page)
+    crop = (window.left, window.bottom, window.right, window.top)
     hidden: set[int] = set()
     light: list[tuple[int, tuple[int, int, int]]] = []
     for index in range(textpage.count_chars()):
