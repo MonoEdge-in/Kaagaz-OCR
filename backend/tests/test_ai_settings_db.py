@@ -232,6 +232,25 @@ def test_dynamic_with_no_choice_of_its_own_is_the_platform_rows(db: Database) ->
             conn.rollback()
 
 
+def test_the_operators_cost_saving_count_takes_no_platform_row_as_off(db: Database) -> None:
+    """#405, 0060: the operator's count follows the same rule, so an organisation with no
+    Dynamic of its own is not counted without the platform row (before: counted, as on)."""
+    new_customer(db)  # no Dynamic of its own
+    operator = new_operator(db)
+    count = text(
+        "SELECT organisations_using FROM kaagaz_op_feature_switches(:o) WHERE feature = 'cost_saving'"
+    )
+    with db.engine.connect() as conn:
+        conn.begin()
+        try:
+            conn.execute(text("UPDATE platform_ai_settings SET dynamic = false"))
+            off = conn.execute(count, {"o": operator}).scalar_one()
+            conn.execute(text("DELETE FROM platform_ai_settings"))
+            assert conn.execute(count, {"o": operator}).scalar_one() == off
+        finally:
+            conn.rollback()
+
+
 def test_auto_filing_follows_the_uploaders_own_choice(db: Database) -> None:
     customer, _ = organisation(db, on=False)  # granted, the admin's switch off
     api = Api(db)
