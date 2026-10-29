@@ -7,7 +7,9 @@ describe("icons", () => {
     // Changed on purpose (UI quality council, 15 Oct 2026): "download" for Download original on phones.
     // Changed on purpose (PRD 1, screens): "home" for the dashboard's nav link (File management D1).
     // Changed on purpose (owner, 29 Oct 2026): "ring-dashed" for a value not checked yet (LabelBadge).
-    expect(ICON_NAMES).toHaveLength(36); // 29 + "scan-text" + "words" + "download" + "to-top" (16 Oct 2026) + "more" (17 Oct 2026) + "home" + "ring-dashed"
+    // Changed on purpose (owner, 29 Oct 2026, #453): "dot" in its place; the dashed ring is gone.
+    expect(ICON_NAMES).toHaveLength(36); // 29 + "scan-text" + "words" + "download" + "to-top" (16 Oct 2026) + "more" (17 Oct 2026) + "home" + "dot"
+    expect(ICON_NAMES).not.toContain("ring-dashed");
   });
 
   it("gives every icon at least one shape, inside the 24 x 24 grid", () => {

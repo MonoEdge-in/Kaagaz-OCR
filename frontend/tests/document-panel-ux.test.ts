@@ -41,8 +41,11 @@ const verified = { id: "v1", field: "land_survey_number", value: "72", raw: "72"
 const detail = (over: Partial<DocumentDetail> = {}) =>
   ({ id: "d1", status: "ready", understanding: false, card: card(), values: [verified], pages: [], ...over }) as unknown as DocumentDetail;
 // Changed on purpose (owner, 29 Oct 2026): the card takes `reviewer`; its count line is in value-marks.test.ts.
+// Changed on purpose (owner, 29 Oct 2026, #453): and onResolved and onStale, for a value's menu (fact-actions.test.ts).
 const summary = (shown: DocumentDetail) =>
-  renderToStaticMarkup(createElement(SummaryCard, { detail: shown, active: null, onShow: () => undefined, reviewer: false }));
+  renderToStaticMarkup(
+    createElement(SummaryCard, { detail: shown, active: null, onShow: () => undefined, reviewer: false, onResolved: () => undefined, onStale: () => undefined }),
+  );
 
 describe("the summary at the top of the panel", () => {
   it("sits under the name and above Ask, the one primary, and shows once on the page", () => {
@@ -79,14 +82,15 @@ describe("the summary at the top of the panel", () => {
 
   it("lists only the facts the card has, each with its label, at most five", () => {
     const html = summary(detail());
-    expect(html.match(/<dt>/g)).toHaveLength(2);
+    // Changed on purpose (owner, 29 Oct 2026, #453): a name cut to one line has itself as its tooltip.
+    expect(html.match(/<dt title="[^"]+">/g)).toHaveLength(2);
     expect(html).toContain(">Land owner name</dt>");
     expect(html).toContain(">Survey number</dt>");
     expect(html).toContain("Verified"); // the survey number's value is verified
     expect(html).toContain("Ready to verify"); // the owner has no checked value
     expect(html).not.toMatch(/Document date|Village/);
     const many = card({ identifiers: Array.from({ length: 9 }, (_, i) => ({ kind: `id_${i}`, field: `id_${i}`, value: `${i}`, page: 1, region: at(i / 20) })) });
-    expect(summary(detail({ card: many })).match(/<dt>/g)).toHaveLength(MAX_FACTS);
+    expect(summary(detail({ card: many })).match(/<dt title="[^"]+">/g)).toHaveLength(MAX_FACTS);
   });
 
   it("never shows an empty box: a quiet line while it is read, nothing when none will come", () => {
