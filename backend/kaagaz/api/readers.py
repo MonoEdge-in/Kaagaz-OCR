@@ -8,7 +8,7 @@ imports a reader module (the reader plug socket). ``GET /api/upload-limits`` off
 
 * ``readers``: "Automatic" (Dynamic, id ``dynamic``; "Cost saving" in the super admin
   console, never here: Tushar, 16 Oct 2026) first, the default, when the organisation may use
-  it (its switch is on unless the organisation or the platform turned it off): it reads
+  it (its switch, else the platform's, is on; off on a new database, #405): it reads
   clear pages quickly and takes extra care with hard-to-read words, with the Careful tier
   or, with none, the default model thinking harder (``db.models.resolve_scan``). Then "Standard" (the default
   without Dynamic) and, when a usable model costs measurably more a page, "Careful", the

@@ -1,4 +1,4 @@
-"""Ready first and Dynamic by default (Tushar, 16 Oct 2026: "upload and within 20 sec it
+"""Ready first and Dynamic (Tushar, 16 Oct 2026: "upload and within 20 sec it
 reads and understands the data of 10 pages").
 
 * Ready first: the document is saved and ready with its rule values (checked and labelled,
@@ -6,7 +6,7 @@ reads and understands the data of 10 pages").
   values, the links and the context headers come in a second save, fenced like the first
   (a newer run wins), through the save that writes each person's word change again; the
   model down leaves the rule values, ready; the run's times say both parts.
-* Dynamic by default: the first read thinks low, Careful high, and with one allowed model
+* Dynamic: the first read thinks low, Careful high, and with one allowed model
   Careful is that model thinking harder (its early read is no duplicate).
 * The API's ``understanding``: a ready document whose card is still coming.
 """

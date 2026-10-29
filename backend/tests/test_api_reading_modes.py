@@ -244,8 +244,7 @@ def _ensemble_org(api: Api, customer_id: str) -> tuple[str, str]:
     other = add_model(api.db, name="Sonnet 5.5", tokens=(500, 100))
     allow(api.db, customer_id, [default, other], default=default)
     # Fixed (#239, 27 Oct 2026): Dynamic on for this organisation itself. The platform row's
-    # dynamic is false on a new database (0026's column default), which COALESCE(..., true)
-    # (7e64d29) never reaches.
+    # dynamic is false on a new database (0026's column default; #405).
     with api.db.engine.begin() as conn:
         conn.execute(
             text("INSERT INTO customer_ai_settings (customer_id, ensemble, dynamic) VALUES (:c, true, true)"),

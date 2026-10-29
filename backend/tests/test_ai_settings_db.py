@@ -215,6 +215,23 @@ def test_a_scan_at_none_is_read_locally_and_low_is_automatic(db: Database) -> No
     assert (low.mode, low.notes[-1]) == ("single", "mode_revoked")
 
 
+def test_dynamic_with_no_choice_of_its_own_is_the_platform_rows(db: Database) -> None:
+    """#405: an organisation that never set Dynamic has the platform row's (off on a new
+    database, 0026), and no default of its own: without the row it is not on. As the owner,
+    rolled back, as the platform row is every organisation's."""
+    customer, _ = new_customer(db)
+    with db.engine.connect() as conn:
+        conn.begin()
+        try:
+            for platform in (True, False):
+                conn.execute(text("UPDATE platform_ai_settings SET dynamic = :d"), {"d": platform})
+                assert models.effective_settings(conn, customer)["dynamic"] is platform
+            conn.execute(text("DELETE FROM platform_ai_settings"))
+            assert not models.effective_settings(conn, customer)["dynamic"]
+        finally:
+            conn.rollback()
+
+
 def test_auto_filing_follows_the_uploaders_own_choice(db: Database) -> None:
     customer, _ = organisation(db, on=False)  # granted, the admin's switch off
     api = Api(db)
