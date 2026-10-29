@@ -29,10 +29,11 @@ export function labelIcon(label: Label): "check-seal" | "eye-alert" {
 
 /**
  * A value's quiet mark (owner, 29 Oct 2026: a pill on every line looked unsure): a check seal
- * for Verified, a dashed ring for Ready to verify. Different shapes, so colour is never the only sign.
+ * for Verified, a small dot for Ready to verify (#453: the dashed ring looked unsure too).
+ * Different shapes, so colour is never the only sign.
  */
-export function labelMarkIcon(label: Label): "check-seal" | "ring-dashed" {
-  return label === "verified" ? "check-seal" : "ring-dashed";
+export function labelMarkIcon(label: Label): "check-seal" | "dot" {
+  return label === "verified" ? "check-seal" : "dot";
 }
 
 /** The mark's tooltip: its label in plain words, then why, when the value's reason is known. */

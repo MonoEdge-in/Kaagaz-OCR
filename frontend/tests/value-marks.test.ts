@@ -41,7 +41,8 @@ describe("a value's label mark", () => {
     expect(seen(waiting)).toBe("");
     expect(verified).toContain('class="label-mark label-mark-verified"');
     expect(waiting).toContain('class="label-mark"');
-    expect([labelMarkIcon("verified"), labelMarkIcon("needs_review")]).toEqual(["check-seal", "ring-dashed"]);
+    // Changed on purpose (owner, 29 Oct 2026, #453): a small dot, not a dashed ring.
+    expect([labelMarkIcon("verified"), labelMarkIcon("needs_review")]).toEqual(["check-seal", "dot"]);
     const drawing = (html: string) => /<svg[\s\S]*<\/svg>/.exec(html)?.[0];
     expect(drawing(verified)).not.toEqual(drawing(waiting));
     // The words stay the product's own (lib/status.ts, docs/architecture.md).
@@ -95,8 +96,11 @@ const card: DocumentCard = {
 };
 const detail = (values: ExtractedValue[]) =>
   ({ id: "d 1", status: "ready", understanding: false, card, values, pages: [] }) as unknown as DocumentDetail;
+// Changed on purpose (owner, 29 Oct 2026, #453): the card takes onResolved and onStale for a value's menu.
 const summary = (values: ExtractedValue[], reviewer: boolean) =>
-  renderToStaticMarkup(createElement(SummaryCard, { detail: detail(values), active: null, onShow: () => undefined, reviewer }));
+  renderToStaticMarkup(
+    createElement(SummaryCard, { detail: detail(values), active: null, onShow: () => undefined, reviewer, onResolved: () => undefined, onStale: () => undefined }),
+  );
 
 describe("the summary card's one line about checking", () => {
   // Seller verified; Reference number waiting; Document date has no value behind it, so it waits too.
@@ -107,7 +111,10 @@ describe("the summary card's one line about checking", () => {
     expect(SUMMARY_TEXT.toVerify(2)).toBe("2 values to verify");
     expect(html).toContain(`<span>${SUMMARY_TEXT.toVerify(2)}</span>`);
     expect(html).toContain('<a href="/review?document_id=d%201">Review</a>');
-    expect(html.match(/class="label-mark"/g)).toHaveLength(2);
+    // Changed on purpose (owner, 29 Oct 2026, #453): a reviewer's waiting value has its ⋯ menu in
+    // place of the mark; the date, with no value behind it, keeps the mark.
+    expect(html.match(/class="label-mark"/g)).toHaveLength(1);
+    expect(html.match(/aria-haspopup="menu"/g)).toHaveLength(1);
     expect(html.match(/label-mark-verified/g)).toHaveLength(1);
     expect(html).not.toContain("badge");
   });

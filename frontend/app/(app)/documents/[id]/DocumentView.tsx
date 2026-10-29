@@ -133,7 +133,7 @@ import { PageProblems } from "./PageProblems";
 import { ReadAgain } from "./ReadAgain";
 import { ReviewPanel } from "./ReviewPanel";
 import { StoryPanel } from "./StoryPanel";
-import { ScriptText, SummaryCard } from "./SummaryCard";
+import { ScriptText, SummaryCard, withResolved } from "./SummaryCard";
 import styles from "./DocumentView.module.css";
 import { ExportDialog, SummaryBar, documentMoreItems, exportData, useEnsembleStart, useWordReview } from "./WordReview";
 
@@ -609,6 +609,12 @@ export function DocumentView({
               active={selection?.region ?? null}
               onShow={showSpot}
               reviewer={canReview(me.user.role) && detail.deleted_at === null}
+              onResolved={(value, message) => {
+                // #453: the reply's value in place, nothing asked again; said aloud.
+                setLoaded((shown) => (shown && "detail" in shown ? { ...shown, detail: withResolved(shown.detail, value) } : shown));
+                setAnnouncement(message);
+              }}
+              onStale={() => setReloads((n) => n + 1)}
             />
             {/* Can I trust it: one status line; the counts and this document's facts under More details. */}
             {detail.status !== "rejected" && (

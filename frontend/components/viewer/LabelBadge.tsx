@@ -5,7 +5,7 @@ import { labelMarkIcon, labelText, labelTip } from "./labels";
 
 /**
  * "Verified" or "Ready to verify" beside a value or an answer, never document status. A quiet
- * mark, not a pill (owner, 29 Oct 2026): a check seal or a dashed ring, its word read out by
+ * mark, not a pill (owner, 29 Oct 2026): a check seal or a small dot (#453), its word read out by
  * screen readers, and a tooltip on hover and focus with the word and, when known, the value's
  * reason. They differ by shape and word, never by colour alone. The Review queue keeps its pill.
  */
