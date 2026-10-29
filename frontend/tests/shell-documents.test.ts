@@ -458,11 +458,13 @@ describe("uploadDocument into a folder", () => {
   });
 
   // Only the waits between tries are faked: each round lets the real work (hashing the file)
-  // go on, then moves the clock a second.
+  // go on, then moves the clock a second if the upload waits on a timer.
+  // Fixed (#447): bounded by real time, not rounds. The hash (crypto.subtle) takes real time,
+  // and on a loaded machine it outlasted the 2,000 rounds (under 10 ms) the loop used to allow.
   const settled = async (outcome: () => unknown) => {
-    for (let round = 0; round < 2_000 && outcome() === null; round += 1) {
+    for (const until = performance.now() + 4_000; outcome() === null && performance.now() < until; ) {
       await new Promise((resolve) => setImmediate(resolve));
-      vi.advanceTimersByTime(1_000);
+      if (vi.getTimerCount() > 0) vi.advanceTimersByTime(1_000);
     }
   };
 
