@@ -57,9 +57,8 @@ describe("a mark on a scanned PDF page (#442)", () => {
     expect(viewer).toContain("pageWidth: page.width"); // the scroller's size, already zoomed
     expect(viewer).toContain("fileRotation: rotationToDegrees(basePageRotation)");
     expect(wrapper).toContain("markerRect(unturnedBox(box, fileRotation), pageWidth, pageHeight)");
-    // The turn the overlay is drawn with (basePageRotations) is the one scrollToPageArea's frame takes.
-    expect(viewer).toContain("rotationToDegrees(basePageRotations[pageNumber - 1] ?? normalizeRotation(0))");
+    // Changed on purpose (#446): scrolling to the spot centres its mark as drawn
+    // (tests/spot-scroll-446.test.ts), so it no longer turns the spot back itself.
     expect(wrapper).not.toMatch(/pageWidth \* scale|pageHeight \* scale/);
-    expect(wrapper).toContain("unturnedBox([x, y, x, y], viewer.current.getPageRotation(spot.page))");
   });
 });

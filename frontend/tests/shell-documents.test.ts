@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { settle } from "./fake-clock";
 import { UPLOADED, fakeUploadServer, nextPart } from "./fake-upload-server";
 import {
   ACCEPT_ATTRIBUTE,
@@ -457,15 +458,6 @@ describe("uploadDocument into a folder", () => {
     vi.useRealTimers();
   });
 
-  // Only the waits between tries are faked: each round lets the real work (hashing the file)
-  // go on, then moves the clock a second.
-  const settled = async (outcome: () => unknown) => {
-    for (let round = 0; round < 2_000 && outcome() === null; round += 1) {
-      await new Promise((resolve) => setImmediate(resolve));
-      vi.advanceTimersByTime(1_000);
-    }
-  };
-
   it("sends the folder being viewed as folder_id, then the file as one part", async () => {
     const server = fakeUploadServer();
     const file = new File(["%PDF-1.7"], "bill.pdf", { type: "application/pdf" });
@@ -557,7 +549,7 @@ describe("uploadDocument into a folder", () => {
     const server = fakeUploadServer({ complete: { status: 500, body: { error: { code: "server_error", message: "Try again." } } } });
     let caught: unknown = null;
     void uploadDocument(csv(), "u1", () => {}).catch((error: unknown) => (caught = error));
-    await settled(() => caught);
+    await settle(() => caught !== null, 4_000, 1_000); // only the waits between tries are faked
     expect(caught).toMatchObject({ status: 500 });
     expect(server.completes).toBe(5);
   });
@@ -575,7 +567,7 @@ describe("uploadDocument into a folder", () => {
     void uploadDocument(csv(), "u1", () => {}, undefined, undefined, undefined, undefined, undefined, (w) =>
       waiting.push(w),
     ).then((reply) => (result = reply));
-    await settled(() => result);
+    await settle(() => result !== null, 4_000, 1_000);
     expect(result).toMatchObject({ duplicate: false });
     expect(server.completes).toBe(3);
     expect(waiting).toEqual([true, false, true, false]);

@@ -216,7 +216,8 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
             role="region"
             aria-label={`Lines read on page ${page.page_no}`}
           >
-            <ol className={styles.lines}>
+            {/* role: Safari reads a list drawn without markers as no list; the numbers are CSS's. */}
+            <ol className={styles.lines} role="list">
               {shown.map((line, index) => {
                 const marked = lineMarked(line, cited);
                 const meta = confidenceText(line.confidence, line.origin);
@@ -274,7 +275,9 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
                           Fix text<span className="visually-hidden">{` in line ${index + 1}`}</span>
                         </button>
                       )}
-                      {onAddMeaning && (
+                      {/* While the box is open its row offers only the box: Add meaning steps aside too,
+                          so it never slides under the pointer that pressed Fix text (owner, 29 Oct 2026). */}
+                      {onAddMeaning && !box && (
                         <button
                           type="button"
                           className={`btn btn-quiet ${styles.addMeaning}`}
@@ -313,17 +316,19 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
                             closeFix(index);
                           }}
                         />
-                        {/* Save and Cancel stay together under the field, however narrow the panel. */}
+                        {/* [Cancel] [Confirm] [Save] under the field; a narrow panel wraps them. */}
                         <div className={styles.fixActions}>
-                          <button type="button" className="btn" onClick={() => closeFix(index)}>
+                          <button type="button" className="btn btn-quiet" onClick={() => closeFix(index)}>
                             Cancel
                           </button>
-                          <button type="button" className="btn" disabled={box.busy} onClick={() => void saveFix(toFix, index, true)}>
-                            Confirm
-                          </button>
-                          <button type="submit" className="btn btn-primary" disabled={box.busy} aria-busy={box.busy || undefined}>
-                            Save
-                          </button>
+                          <div className={styles.fixSettle}>
+                            <button type="button" className="btn" disabled={box.busy} onClick={() => void saveFix(toFix, index, true)}>
+                              Confirm
+                            </button>
+                            <button type="submit" className="btn btn-primary" disabled={box.busy} aria-busy={box.busy || undefined}>
+                              Save
+                            </button>
+                          </div>
                         </div>
                         {box.error && (
                           <p className="error-text" role="alert">

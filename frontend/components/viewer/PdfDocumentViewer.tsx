@@ -34,11 +34,13 @@ import { fileUrl } from "@/lib/api";
 import type { ReadingMark, Region, WordFlag } from "@/lib/types";
 import { markChecked, markName, marksOnPage } from "./readingMarks";
 import styles from "./PageViewer.module.css";
-import { panTo } from "./viewer";
+import { centredScroll, panTo } from "./viewer";
 import { wordColour } from "./YourWords";
 
 /** How long a scroll the screen asked for takes to settle (a smooth scroll across pages). */
 const STEERING_MS = 1000;
+/** How many frames the spot's page may take to be drawn, after a jump to it (about 1 s). */
+const SPOT_FRAMES = 60;
 const NO_WORDS: Region[] = []; // a stable default, so the overlay is not made again each render
 const NO_HITS: number[] = [];
 
@@ -135,20 +137,33 @@ export function PdfDocumentViewer({
   // The screen chose a spot: scroll to it; else to its page, when that is not the one in view.
   const spot = highlights.find((region): region is Extract<Region, { kind: "box" }> => region.kind === "box");
   const spotKey = spot ? `${spot.page}:${spot.box.join(",")}` : null;
-  const toSpot = useEffectEvent(() => {
-    if (!open || !spot || !viewer.current) return;
+  // Fixed (#446): centred on its mark as drawn, every turn and the zoom applied. The engine's own
+  // scrollToPageArea knows the file's turn but not the user's, so after a turn it missed. True when done.
+  const toSpot = useEffectEvent((first: boolean) => {
+    if (!open || !spot || !viewer.current) return true;
     steeringUntil.current = performance.now() + STEERING_MS;
-    // Its top-left corner as shown, in the frame the viewer scrolls in (before the file's turn).
-    const [x, y] = spot.box;
-    const [left, top] = unturnedBox([x, y, x, y], viewer.current.getPageRotation(spot.page));
-    viewer.current.scrollToPageArea(spot.page, { top: top * 100, left: left * 100 }, { behavior: "smooth" });
+    const area = viewer.current.getViewportElement();
+    const mark = area?.querySelector(`[data-pdf-viewer-page="${spot.page}"] [data-spot]`);
+    if (area && mark) {
+      area.scrollTo({ ...centredScroll(mark.getBoundingClientRect(), area.getBoundingClientRect(), area), behavior: "smooth" });
+      return true;
+    }
+    if (first) viewer.current.scrollToPage(spot.page); // a page far off is drawn once there
+    return false;
   });
   const toPage = useEffectEvent(() => {
     if (!open || spot || pageNo === shownPage.current) return;
     steeringUntil.current = performance.now() + STEERING_MS;
     viewer.current?.scrollToPage(pageNo, { behavior: "smooth" });
   });
-  useEffect(() => toSpot(), [spotKey, open]);
+  useEffect(() => {
+    let frame = 0;
+    const go = (tries: number) => {
+      if (!toSpot(tries === 0) && tries < SPOT_FRAMES) frame = requestAnimationFrame(() => go(tries + 1));
+    };
+    go(0);
+    return () => cancelAnimationFrame(frame);
+  }, [spotKey, open]);
   useEffect(() => toPage(), [pageNo, open]);
 
   // Stable, so the viewer tells only a change of its page, never its old page again when the
@@ -217,12 +232,18 @@ export function PdfDocumentViewer({
                 />
               ) : null,
             )}
-          {showHighlights &&
-            highlights.map((region, index) =>
-              region.kind === "box" && region.page === pageNumber ? (
-                <div key={`spot-${index}`} className={`${styles.box} ${styles.pulse}`} aria-hidden="true" style={place(region.box)} />
-              ) : null,
-            )}
+          {/* Drawn even with Highlights off, hidden, so toSpot can still centre it (#446). */}
+          {highlights.map((region, index) =>
+            region.kind === "box" && region.page === pageNumber ? (
+              <div
+                key={`spot-${index}`}
+                data-spot=""
+                className={`${styles.box} ${styles.pulse}`}
+                aria-hidden="true"
+                style={{ ...place(region.box), visibility: showHighlights ? undefined : "hidden" }}
+              />
+            ) : null,
+          )}
           {showHighlights &&
             marks.map((mark) =>
               mark.region.kind === "box" && mark.region.page === pageNumber ? (

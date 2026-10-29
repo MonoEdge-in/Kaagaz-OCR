@@ -126,8 +126,6 @@ export type PDFViewerHandle = {
     options?: ScrollToOptions
   ) => void
   getViewportElement: () => HTMLDivElement | null
-  // Changed for Kaagaz (#442): fileRotation of a page, for scrollToPageArea's frame.
-  getPageRotation: (pageNumber: number) => number
 }
 export type PDFViewerScrollAreaViewportResolver = (
   container: HTMLDivElement
@@ -2035,11 +2033,8 @@ function PDFViewerInner({
         })
       },
       getViewportElement: () => viewportElementRef.current,
-      // Changed for Kaagaz (#442): from basePageRotations, as the overlay's fileRotation.
-      getPageRotation: (pageNumber) =>
-        rotationToDegrees(basePageRotations[pageNumber - 1] ?? normalizeRotation(0)),
     }),
-    [basePageRotations, pdfDocument, scroll, scrollToPage]
+    [pdfDocument, scroll, scrollToPage]
   )
   const handleDownload = React.useCallback(async () => {
     if (!pdfFile || isPreparingDownload) return

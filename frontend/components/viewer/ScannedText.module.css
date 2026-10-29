@@ -78,14 +78,28 @@
   padding-inline-start: 3.5em;
   color: var(--text-secondary);
   font-size: var(--fs-sm);
+  list-style: none;
+  counter-reset: line;
 }
 
-/* A long list paints only the lines near the screen; each keeps its last height. */
 .line {
+  position: relative;
   border-block-end: 1px solid var(--border);
   border-inline-start: 2px solid transparent;
-  content-visibility: auto;
-  contain-intrinsic-size: auto 44px;
+  counter-increment: line;
+}
+
+/* The line's number in the list's margin, level with its first line of text (the line button's
+   padding and line height). Not a list marker: a marker follows the row's text, which a row
+   off the screen does not lay out (content-visibility, below). */
+.line::before {
+  content: counter(line) ".";
+  position: absolute;
+  inset-block-start: var(--space-1);
+  inset-inline-end: 100%;
+  padding-inline-end: var(--space-2);
+  white-space: nowrap;
+  line-height: calc(var(--fs-base) * 1.6);
 }
 
 .line:last-child {
@@ -129,10 +143,15 @@
   background: var(--accent-subtle);
 }
 
+/* A long list paints only the lines near the screen; each keeps its last height. On the row, not
+   the <li>: content-visibility clips paint to its box, and on the <li> it hid the line's number
+   (drawn outside the item) and could cut a glyph at its edge (owner's report, 29 Oct 2026). */
 .lineRow {
   display: flex;
   flex-wrap: wrap;
   align-items: stretch;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 44px;
 }
 
 .addMeaning {
@@ -143,14 +162,14 @@
   min-width: var(--control-min);
 }
 
-/* Vrushit UAT 2 (issue 417): the box under a line to type a word in its place; the field and
-   its two buttons wrap under one another at 320px. */
+/* Vrushit UAT 2 (issue 417): the box under a line to type a word in its place. Its words start
+   where the line's do (the line button's own padding). */
 .fix {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
   min-width: 0;
-  padding: var(--space-2);
+  padding: var(--space-2) var(--space-2) var(--space-3);
   border-block-start: 1px solid var(--border);
 }
 
@@ -164,18 +183,21 @@
   min-width: 0;
 }
 
-/* Cancel and Save side by side under the field: Save never drops onto a line of its own.
-   Issue 443: with Confirm between them, the three share the row with less padding, so no label
-   is squeezed to break inside its word at 390px. */
-.fixActions {
+/* Under the field, at the end as in a dialog: Cancel (quiet), Confirm, Save, each at its own
+   width. Owner's report (29 Oct 2026): stretched to share the row, Save was cut off at the
+   panel's edge. A narrow panel wraps them: Confirm and Save together on top, Cancel under them,
+   as a dialog's buttons stack on a phone (.actions), so Save never stands alone. */
+.fixActions,
+.fixSettle {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   align-items: center;
   gap: var(--space-2);
 }
 
-.fixActions > :global(.btn) {
-  flex: 1 1 auto;
-  padding-inline: var(--space-2);
+.fixActions {
+  flex-wrap: wrap-reverse;
 }
 
 .lineMeta {
