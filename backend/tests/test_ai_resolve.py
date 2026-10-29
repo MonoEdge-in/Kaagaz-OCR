@@ -247,11 +247,12 @@ def test_dynamic_keeps_the_leads_level_when_it_does_not_think_low() -> None:
     assert (reading.mode, reading.thinking, reading.notes) == ("dynamic", "high", ("thinking_fallback",))
 
 
-def test_dynamic_is_on_unless_the_organisation_or_the_platform_turns_it_off() -> None:
-    """The effective switch: the organisation's, else the platform's, else on (16 Oct 2026)."""
+def test_dynamic_is_the_organisations_else_the_platforms() -> None:
+    """The effective switch: the organisation's, else the platform row's, with no default of
+    its own (#405: the "else on" of 16 Oct 2026 was never reached; test_ai_settings_db)."""
     sql = str(models._SETTINGS)
     # Changed on purpose (0038): the platform's Cost saving switch can turn it off too.
-    assert "COALESCE(s.dynamic, p.dynamic, true) AND COALESCE(w.cost_saving, true) AS dynamic" in sql
+    assert "COALESCE(s.dynamic, p.dynamic) AND COALESCE(w.cost_saving, true) AS dynamic" in sql
     off = scan(
         FakeConn(
             scan=[row(FLASH, default=True)], settings={"dynamic": False}, document=document(None, "dynamic")

@@ -7,8 +7,8 @@ own: the organisation's value, else the platform defaults (``platform_models``,
 OCR_THINKING_LEVEL). An organisation inherits an area's models when it has no
 ``customer_models`` row for that area, and a setting when its ``customer_ai_settings``
 field is NULL (no row: every field). Ensemble is the organisation's own switch, never
-inherited (default off). Dynamic is on when neither the organisation nor the platform sets
-it (Tushar, 16 Oct 2026: Dynamic is the default reading); either may turn it off.
+inherited (default off). Dynamic is the organisation's, else the platform row's, which is
+off on a new database (0026; #405: the default "on" of 16 Oct 2026 was never reached).
 
 A model is usable while the area's list names it, it is eligible for that use, the
 operator enabled it, it is verified (scan: for the reader's prompt version; chat: for the
@@ -111,7 +111,7 @@ _SETTINGS = text(
     "SELECT COALESCE(s.scan_thinking, p.scan_thinking) AS scan_thinking,"
     " COALESCE(s.chat_levels, p.chat_levels) AS chat_levels,"
     " COALESCE(s.chat_default_level, p.chat_default_level) AS chat_default_level,"
-    " COALESCE(s.dynamic, p.dynamic, true) AND COALESCE(w.cost_saving, true) AS dynamic,"
+    " COALESCE(s.dynamic, p.dynamic) AND COALESCE(w.cost_saving, true) AS dynamic,"
     " COALESCE(s.ensemble, false) AND COALESCE(w.ensemble, true) AS ensemble"
     " FROM (SELECT 1) one"
     " LEFT JOIN platform_ai_settings p ON true"

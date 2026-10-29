@@ -411,7 +411,7 @@ class LightTextTest(unittest.TestCase):
         band = Picture(
             Image.new("RGB", (10, 10), (20, 30, 90)), 280, 96, 30, 200
         )  # under the turned text only
-        text = Text(300, 100, "Landscape total", size=16, turned=True, color=(1, 1, 1))
+        text = Text(300, 100, "Landscape total", size=16, turn=90, color=(1, 1, 1))
         data = make_pdf([Page(rotate=90, picture=band, texts=[text])])
         ones, twos = first(data), second(data)
         self.assertEqual([s.text for s in ones], ["Landscape total"])

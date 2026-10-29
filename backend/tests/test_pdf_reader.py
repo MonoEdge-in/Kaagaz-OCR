@@ -4,15 +4,15 @@ import unittest
 from unittest import mock
 
 import pdfplumber
-from PIL import Image
+from PIL import Image, ImageOps
 
 from kaagaz.ingestion import sniff
-from kaagaz.preparing.pages import prepare_pages
-from kaagaz.reading.ocr import OcrLine
+from kaagaz.preparing.pages import open_pdf, prepare_pages, render_pdf_page
+from kaagaz.reading.ocr import OcrLine, ocr_spans
 from kaagaz.reading.pdf_reader import PdfReader
 from kaagaz.reading.route import RouteDecision
 from kaagaz.reading.socket import NoReader
-from kaagaz.reading.spans import BoxLocation, ReadError, Span
+from kaagaz.reading.spans import BoxLocation, ReadError, Span, location_to_json
 from kaagaz.reading.text_quality import TextLayerRules
 from tests.pdf_builder import Page, Picture, Text, make_pdf
 from tests.picture_support import text_like_picture
@@ -82,6 +82,23 @@ def box_of(span: Span) -> BoxLocation:
     return span.location
 
 
+def drawn_box(data: bytes) -> tuple[list[float], tuple[float, float]]:
+    """The render path's box of the one line on page 1 (the page drawn, its ink's box as
+    an engine's line through ocr_spans), stored as the pipeline stores it, and the page's
+    size in points as shown."""
+    document = open_pdf(data)
+    try:
+        page = document[0]
+        size = page.get_size()
+        image = render_pdf_page(page, dpi=288, max_image_pixels=10_000_000)
+    finally:
+        document.close()
+    ink = ImageOps.invert(image.convert("L")).point(lambda value: 255 if value > 128 else 0).getbbox()
+    assert ink is not None
+    (span,) = ocr_spans([OcrLine("line", *ink, None)], 1, image.width, image.height)
+    return location_to_json(span.location)["box"], size
+
+
 def refused_with(test: unittest.TestCase, data: bytes, code: str, *, max_pages: int = 10) -> None:
     with test.assertRaises(ReadError) as ctx:
         read(data, None, max_pages=max_pages)
@@ -130,7 +147,7 @@ class TextLayerTest(unittest.TestCase):
     def test_rotated_page_boxes_follow_the_page_as_shown(self) -> None:
         # Stored upright on a /Rotate 90 page: shown 792 wide and 612 high,
         # with the text 72 pt from the left and 540 pt down from the top.
-        data = make_pdf([Page(rotate=90, texts=[Text(540, 72, "Landscape total", turned=True)])])
+        data = make_pdf([Page(rotate=90, texts=[Text(540, 72, "Landscape total", turn=90)])])
         (span,) = read(data)
         box = box_of(span)
         self.assertEqual(span.text, "Landscape total")
@@ -138,6 +155,22 @@ class TextLayerTest(unittest.TestCase):
         self.assertLess(box.y0, 540 / 612)
         self.assertLessEqual(540 / 612, box.y1 + 0.01)
         self.assertLess(box.y1 - box.y0, 0.05)  # a line, not a column
+
+    def test_a_cropped_turned_page_has_its_lines_where_the_page_draws_them(self) -> None:
+        """#445: an off-centre crop box on a turned page put its lines 5 to 13 pt off. Each
+        line's box matches the render path's (the page drawn, its ink's box through
+        ocr_spans) to within 1.5 pt, what the font's box and its ink differ by."""
+        crops = [None, (40.0, 60.0, 560.0, 700.0), (-30.0, 60.0, 560.0, 900.0)]  # the last past the media box
+        for crop in crops:
+            for rotate in (0, 90, 180, 270):
+                with self.subTest(crop=crop, rotate=rotate):
+                    text = Text(300, 400, "Hg Total 500", turn=rotate)  # reads upright as shown
+                    data = make_pdf([Page(rotate=rotate, crop=crop, texts=[text])])
+                    (span,) = read(data)
+                    stored = location_to_json(span.location)["box"]
+                    drawn, size = drawn_box(data)
+                    for read_at, drawn_at, points in zip(stored, drawn, size * 2, strict=True):
+                        self.assertAlmostEqual(read_at * points, drawn_at * points, delta=1.5)
 
     def test_text_outside_the_page_is_left_out(self) -> None:
         data = make_pdf([Page(texts=[Text(72, 700, "seen"), Text(-500, 700, "hidden")])])
