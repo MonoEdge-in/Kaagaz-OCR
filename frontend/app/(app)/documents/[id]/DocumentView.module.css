@@ -175,6 +175,22 @@
   margin: 0;
 }
 
+/* One quiet line under the facts in place of a pill on each (owner, 29 Oct 2026): how many
+   are not checked yet, after the dashed ring their marks show, so it also says what the ring means. */
+.toVerify {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--fs-base);
+}
+
+.toVerify svg {
+  flex: none;
+}
+
 /* Motion answers an action, and the summary rises in once when it first appears. */
 @media (prefers-reduced-motion: no-preference) {
   .summaryCard,
@@ -464,7 +480,8 @@
 }
 
 /* A value is a word in a line, beside its Add meaning button: both sit on the
-   line's middle (vertical-align), not the value's baseline. */
+   line's middle (vertical-align), not the value's baseline. Underlined only on hover and
+   focus (.quiet-link, owner 29 Oct 2026). */
 .valueButton {
   display: inline-block;
   min-height: 24px;
@@ -478,8 +495,6 @@
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   text-align: start;
-  text-decoration: underline;
-  text-underline-offset: 0.18em;
   cursor: pointer;
   overflow-wrap: anywhere;
 }

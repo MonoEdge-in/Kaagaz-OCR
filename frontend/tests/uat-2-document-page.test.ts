@@ -36,7 +36,10 @@ describe("#416 no Values found in the Details tab", () => {
 
   it("leaves the values reachable: the summary card's facts on the page, and Review to verify them", () => {
     expect(read("app/(app)/documents/[id]/SummaryCard.tsx")).toContain("onClick={() => onShow(item)}");
-    expect(read(VIEW)).toContain("<SummaryCard detail={detail} active={selection?.region ?? null} onShow={showSpot} />");
+    // Changed on purpose (owner, 29 Oct 2026): the card is told whether its count links to Review.
+    expect(read(VIEW)).toMatch(
+      /<SummaryCard\s+detail=\{detail\}\s+active=\{selection\?\.region \?\? null\}\s+onShow=\{showSpot\}\s+reviewer=\{canReview\(me\.user\.role\) && detail\.deleted_at === null\}\s+\/>/,
+    );
     expect(read("components/shell/nav.ts")).toMatch(/href: "\/review"/);
     // Follow-up: Details links a reviewer or an admin to this document's values waiting in Review,
     // counted from the loaded detail (no request of its own), only when some wait.

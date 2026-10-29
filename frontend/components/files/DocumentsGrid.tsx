@@ -17,7 +17,7 @@ export function DocumentsGrid({ items, label }: { items: readonly DocumentSummar
         const when = document.updated_at ?? document.created_at;
         return (
           <li key={document.id} className={styles.card}>
-            <Link href={`/documents/${document.id}`} className={styles.cardName}>
+            <Link href={`/documents/${document.id}`} className={`quiet-link ${styles.cardName}`}>
               {document.display_name}
             </Link>
             <span className={styles.cardFacts}>
