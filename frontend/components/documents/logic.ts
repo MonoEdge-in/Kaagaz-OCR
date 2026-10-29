@@ -426,15 +426,17 @@ export function flaggedText(document: Finished): string {
  * "7 to check · 2 pages to check"; and the words its Review link is read out with,
  * "7 words to check", "7 words to check and 2 pages to check". Plain words (25 Oct 2026):
  * "to check", never "flagged".
+ * Issue 452 (owner, 29 Oct 2026): "2 pages to…" was cut beside Review. Shown is one count,
+ * words and pages together ("9 to check"), so it and Review always fit the 11rem Status column;
+ * the words and pages apart are in its title and read out.
  */
 export function flaggedShort(document: Finished): { shown: string; spoken: string } {
   const flagged = flaggedCount(document);
   const pages = pagesToCheck(document);
   const check = pages > 0 ? `${counted(pages, "page")} to check` : "";
-  const words = flagged > 0 ? `${flagged} to check` : "";
   const spokenWords = flagged > 0 ? `${counted(flagged, "word")} to check` : "";
   return {
-    shown: [words, check].filter(Boolean).join(" · "),
+    shown: flagged + pages > 0 ? `${flagged + pages} to check` : "",
     spoken: [spokenWords, check].filter(Boolean).join(" and "),
   };
 }

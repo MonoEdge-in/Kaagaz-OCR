@@ -70,7 +70,9 @@ describe("the rest of the screens", () => {
     const docs = css("components/documents/Documents.module.css");
     expect(docs).toMatch(/\.nameCell \{\s*--name-indent: calc\(24px \+ var\(--space-2\)\);/);
     // Changed on purpose (issue 371, 27 Oct 2026): "In <folder>" is on the facts' line, indented with it.
-    expect(docs).toMatch(/\.facts,\s*\.bandType,\s*\.newerVersion,\s*\.nameCell > ul \{\s*margin-inline-start: var\(--name-indent\);/);
+    // Changed on purpose (owner, 29 Oct 2026, #452): the narrowest table's type line sits inside
+    // the facts' line, so it is indented with it and has no indent of its own.
+    expect(docs).toMatch(/\.facts,\s*\.newerVersion,\s*\.nameCell > ul \{\s*margin-inline-start: var\(--name-indent\);/);
     expect(docs).toMatch(/\.statusAction \{[^}]*border-radius: var\(--k-r-pill\);/);
   });
 

@@ -1,6 +1,10 @@
 // The Grid view of the folder screen (File management F5): one card per document with its
 // name, label chip, version ("v1 · newer?" while one waits), type, owner and last change.
 // Every name is React text. Actions stay with the List view and the document page.
+// Issue 452 (owner, 29 Oct 2026): every card has the same three bands, so a row of cards lines
+// up: the name in two lines' room (cut with "…", whole in its title), one line of chips, and
+// "Owner · date" at the foot. The whole card opens the document; its words say "Owner" and
+// "Last updated" to a screen reader.
 
 import Link from "next/link";
 import { docTypeLabel, formatDate } from "@/lib/format";
@@ -17,7 +21,7 @@ export function DocumentsGrid({ items, label }: { items: readonly DocumentSummar
         const when = document.updated_at ?? document.created_at;
         return (
           <li key={document.id} className={styles.card}>
-            <Link href={`/documents/${document.id}`} className={`quiet-link ${styles.cardName}`}>
+            <Link href={`/documents/${document.id}`} className={`quiet-link ${styles.cardName}`} title={document.display_name}>
               {document.display_name}
             </Link>
             <span className={styles.cardFacts}>
@@ -29,8 +33,19 @@ export function DocumentsGrid({ items, label }: { items: readonly DocumentSummar
               <span>{docTypeLabel(document.doc_type)}</span>
             </span>
             <span className={styles.cardMeta}>
-              {document.owner?.name ? `${FILES_TEXT.columns.owner}: ${document.owner.name} · ` : ""}
-              {`${FILES_TEXT.columns.updatedAt} ${formatDate(when)}`}
+              {document.owner?.name && (
+                <>
+                  <span className={styles.cardOwner}>
+                    <span className="visually-hidden">{`${FILES_TEXT.columns.owner}: `}</span>
+                    {document.owner.name}
+                  </span>
+                  <span aria-hidden="true">·</span>
+                </>
+              )}
+              <span className={styles.cardDate}>
+                <span className="visually-hidden">{`${FILES_TEXT.columns.updatedAt} `}</span>
+                {formatDate(when)}
+              </span>
             </span>
           </li>
         );

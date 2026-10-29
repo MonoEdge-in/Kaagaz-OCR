@@ -145,7 +145,8 @@ describe("quiet links: file names and values in lists", () => {
         label: "Documents",
       }),
     );
-    expect(grid).toMatch(/<a class="quiet-link [^"]*cardName[^"]*" href="\/documents\/a">Plots Title of Panchamukhi Nagar\.pdf<\/a>/);
+    // Changed on purpose (owner, 29 Oct 2026, #452): the card's name carries its whole words in a title.
+    expect(grid).toMatch(/<a class="quiet-link [^"]*cardName[^"]*" title="Plots Title of Panchamukhi Nagar\.pdf" href="\/documents\/a">Plots Title of Panchamukhi Nagar\.pdf<\/a>/);
     expect(read("components/documents/DocumentsTable.tsx")).toContain("className={`quiet-link ${styles.name}`}");
     expect(read("components/documents/InsideResults.tsx")).toContain("className={`quiet-link ${styles.resultName}`}");
     const values = summary([], false);

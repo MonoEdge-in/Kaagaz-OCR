@@ -17,7 +17,7 @@
 // document was trashed. Each row is the family's
 // current version; a newer one still being read, or one that failed, gets a
 // line under the name ("Version 3: ..."), linking to it. The Type column
-// gives the file type, and under it what kind of document it is ("Invoice"), once the AI
+// gives the file type, and after it what kind of document it is ("PDF · Invoice"), once the AI
 // model's card has said (PRD 2, D6); with no card yet (the model off, down, or still reading)
 // that line is left out, never "Unknown" on every row (issue 371). Names wrap in full at
 // their _ . - and @ marks (WrapName.tsx). The By cell says "Uploaded by" in
@@ -799,6 +799,9 @@ const DocumentRow = memo(function DocumentRow({
   // F5: "v1 · newer?" while a newer version of this family waits to be confirmed.
   const newer = document.pending_suggestion?.role === "candidate";
   const owner = document.owner?.name ?? null;
+  const typeWords = [typeLabel(document.detected_type), document.doc_type && docTypeLabel(document.doc_type)]
+    .filter(Boolean)
+    .join(" · ");
   const version = (
     <>
       {versionCell(document.version_no, false)}
@@ -878,17 +881,18 @@ const DocumentRow = memo(function DocumentRow({
             <WrapName name={document.display_name} />
           </span>
         </Link>
-        <span className={styles.bandType}>
-          {typeLabel(document.detected_type)}
-          {document.doc_type && ` · ${docTypeLabel(document.doc_type)}`} · {formatBytes(document.size_bytes)}
-        </span>
-        {/* F5: the label, version, owner and date, each here until its own column has room. */}
+        {/* F5: the label, type, version, owner and date, each here until its own column has room.
+            Issue 452: one line under the name, in this order, whatever width the table has. */}
         <span className={styles.facts}>
           {document.sensitivity && (
             <span className={styles.factLabel}>
               <LabelChip label={document.sensitivity} />
             </span>
           )}
+          <span className={styles.bandType}>
+            {typeLabel(document.detected_type)}
+            {document.doc_type && ` · ${docTypeLabel(document.doc_type)}`} · {formatBytes(document.size_bytes)}
+          </span>
           <span className={styles.factVersion}>{version}</span>
           {owner && (
             <span className={styles.factOwner}>
@@ -919,13 +923,22 @@ const DocumentRow = memo(function DocumentRow({
           busy={busy}
         />
       </td>
+      {/* Issue 452: "PDF · Land record" on the first line, the size on the second, on every row. */}
       <td role="cell" className={`${styles.meta} ${styles.typeCell}`}>
-        {typeLabel(document.detected_type)}
-        {document.doc_type && <span className={styles.docType}>{docTypeLabel(document.doc_type)}</span>}
+        <span className={styles.typeLine} title={typeWords}>
+          {typeLabel(document.detected_type)}
+          {document.doc_type && <span className={styles.docType}>{docTypeLabel(document.doc_type)}</span>}
+        </span>
         <span className={`${styles.bandSize} tabular`}>{formatBytes(document.size_bytes)}</span>
       </td>
       <td role="cell" className={`${styles.meta} ${styles.ownerCell}`}>
-        {owner ? <WrapName name={owner} /> : dash}
+        {owner ? (
+          <span className={styles.oneLine} title={owner}>
+            {owner}
+          </span>
+        ) : (
+          dash
+        )}
       </td>
       <td role="cell" className={`${styles.meta} ${styles.labelCell}`}>
         {document.sensitivity ? <LabelChip label={document.sensitivity} /> : dash}
@@ -1098,7 +1111,7 @@ export function StatusCell({
             </span>
           ) : (
             !clean && (
-              <span className={styles.statusText} title={flagged.shown}>
+              <span className={styles.statusText} title={flagged.spoken}>
                 {flagged.shown}
               </span>
             )

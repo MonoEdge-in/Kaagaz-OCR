@@ -830,9 +830,9 @@ table.docs > tbody > tr {
   --name-indent: calc(24px + var(--space-2));
 }
 
-/* "In <folder>" is a fact on the facts' line (issue 371), so it is indented with it. */
+/* "In <folder>" is a fact on the facts' line (issue 371), so it is indented with it; so is the
+   type line of the narrowest table (issue 452: inside the facts' line, not a line of its own). */
 .facts,
-.bandType,
 .newerVersion,
 .nameCell > ul {
   margin-inline-start: var(--name-indent);
@@ -910,7 +910,8 @@ table.docs > tbody > tr {
   }
 }
 
-/* The size and "Uploaded by" lines are shown only in the narrow table. */
+/* The size and "Uploaded by" lines are shown only in the table: the size always (issue 452),
+   "Uploaded by" while the By column is hidden. */
 .bandSize,
 .bandBy {
   display: none;
@@ -930,10 +931,23 @@ table.docs > tbody > tr {
   line-height: 1.5;
 }
 
-/* What kind of document it is (PRD 2, D6), under its file type. */
+/* What kind of document it is (PRD 2, D6), after its file type: "PDF · Land record" (issue 452). */
 .docType {
-  display: block;
   color: var(--text-secondary);
+}
+
+.docType::before {
+  content: "·";
+  content: "·" / "";
+  margin-inline: var(--space-2);
+}
+
+/* One line, ending in "…" when it cannot fit; the whole words are in its title. */
+.oneLine {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .statusCell {
@@ -961,10 +975,6 @@ table.docs > tbody > tr {
 @media (pointer: coarse) {
   .statusLine + .statusLine {
     height: var(--h-lg);
-  }
-
-  table.docs .docType {
-    line-height: var(--h-lg);
   }
 }
 
@@ -998,21 +1008,18 @@ table.docs > tbody > tr {
   color: var(--text-secondary);
 }
 
-/* "7 flagged" and "3 pages to check" take the same width, so every row's "Review" starts at
-   the same spot (Tushar, 17 Oct 2026: it moved with the text). Longer text ends in "…", its
-   full words in the title; in a tight column the text gives way first. */
-.statusText:has(+ .statusAction) {
-  flex: 0 1 9rem;
-}
-
-/* The action that ends a read document's line: ink, not blue (blue is punctuation). "Review",
-   after "7 flagged" in full, on the line under the chip. */
+/* Issue 452 (owner, 29 Oct 2026: "2 pages to…" was cut, and Review moved): "9 to check" then
+   Review at the line's end, the same spot and size on every row. The count is one short number
+   (flaggedShort), so the two always fit the 11rem column; its words in full are in its title.
+   The action is ink, not blue (blue is punctuation). */
 .statusAction {
   display: inline-flex;
   align-items: center;
   align-self: stretch; /* QA 17 Oct: the link fills its 28px line, so all of it is a target */
   /* A small rounded button (24 Oct 2026), so it reads as the row's one action. */
-  padding-inline: var(--space-3);
+  flex: none;
+  margin-inline-start: auto;
+  padding-inline: var(--space-2);
   border: 1px solid var(--border-strong);
   border-radius: var(--k-r-pill);
   background: none; /* issue 407: Retry is a button, the same look as Review */
@@ -1105,10 +1112,15 @@ table.docs > tbody > tr {
     width: 8.5rem;
   }
 
-  table.docs .docType {
+  .typeLine {
+    display: block;
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
+  }
+
+  .typeLine .docType::before {
+    margin-inline: var(--space-1);
   }
 
   .uploadedColumn {
@@ -1143,11 +1155,6 @@ table.docs > tbody > tr {
     line-height: var(--row-line);
   }
 
-  /* "Land record" sits on the same line as the status's "7 flagged" (Tushar, 17 Oct 2026). */
-  .docType {
-    line-height: var(--row-sub);
-  }
-
   .actionsCell {
     text-align: end;
   }
@@ -1169,8 +1176,8 @@ table.docs > tbody > tr {
   }
 }
 
-/* The narrow tables: the size is a line under the type. */
-@container docs-list (min-width: 36rem) and (max-width: 63.98rem) {
+/* The size is the Type cell's second line (issue 452: under "PDF · Land record" on every row). */
+@container docs-list (min-width: 36rem) {
   /* A short line of its own under the kind, not another control-tall one (SoW 19 Oct). */
   .bandSize {
     display: block;
@@ -1226,6 +1233,11 @@ table.docs > tbody > tr {
   /* The label and the tags show in the Label column (Vrushit UAT, 25 Oct 2026). */
   .factLabel,
   .factTags {
+    display: none;
+  }
+
+  /* Issue 452: the tag list's own display (Library.module.css, loaded after) showed it twice. */
+  table.docs .factTags {
     display: none;
   }
 }
@@ -1363,16 +1375,10 @@ table.docs > tbody > tr {
     color: var(--text-secondary);
   }
 
-  .meta + .meta::before,
-  .docType::before {
+  .meta + .meta::before {
     content: "·";
     content: "·" / "";
     margin-inline: var(--space-2);
-  }
-
-  /* On a card it joins the one meta line: "PDF · Invoice · 1.2 MB". */
-  .docType {
-    display: inline;
   }
 
   .meta[data-empty] {
@@ -1663,13 +1669,63 @@ table.docs > tbody > tr {
    table every first line is --row-line tall and every line after it --row-sub (24px), so the
    owner, "17 to check", "Land record" and "by …" sit on one row, and the size under them. */
 @container docs-list (min-width: 36rem) {
+  /* Issue 452: the facts are one line under the name, in a fixed order ("v1 · Owner: Vrushit ·
+     Dated 15 Jun 2007 · In Land & Legal / Land records"). A fact that does not fit wraps to a
+     second line the row never shows, so the line holds whole facts, never "Own…"; the type line
+     and the folder path give way with "…" instead. The dot before each shown fact sits in the
+     gap; the first one's falls outside the line and is clipped, so the facts' columns can come
+     and go without a stray dot. */
   .facts {
     margin-block-start: 0;
     line-height: var(--row-sub);
+    position: relative;
+    height: var(--row-sub);
+    column-gap: var(--space-3);
+    overflow: hidden;
+    white-space: nowrap;
   }
 
   .facts > * {
+    flex: none;
     line-height: var(--row-sub);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .bandType,
+  .inFolder {
+    flex: 1 1 0;
+    min-width: 3em;
+    max-width: max-content;
+  }
+
+  /* The narrowest table's type keeps room for "PDF · Land re…" before the owner takes it. */
+  .bandType {
+    min-width: 9em;
+  }
+
+  .facts > *::before {
+    content: "·";
+    content: "·" / "";
+    position: absolute;
+    margin-inline-start: calc(var(--space-3) / -2);
+    translate: -50%;
+  }
+
+  /* The tags: one line too, under the name or the label; any that do not fit are cut off. */
+  .factTags,
+  table.docs .labelCell > ul {
+    flex-wrap: nowrap;
+    align-items: center;
+    height: var(--row-sub);
+    margin-block-start: 0;
+    overflow: hidden;
+  }
+
+  .factTags > li,
+  table.docs .labelCell li {
+    flex: none;
   }
 
   .inFolder,
@@ -1681,5 +1737,12 @@ table.docs > tbody > tr {
   table.docs .labelCell :global(.badge),
   table.docs .labelCell > * {
     vertical-align: middle;
+  }
+
+  /* Issue 452: the label chip's middle on the first line's middle, as every other cell's (middle
+     put it half a pixel low, beside the words). */
+  table.docs .labelCell > :global(.label-chip) {
+    vertical-align: top;
+    margin-block-start: calc((var(--row-line) - var(--badge-h)) / 2);
   }
 }
