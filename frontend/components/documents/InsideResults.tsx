@@ -106,7 +106,7 @@ export function InsideSearchResults({
           const view = resultView(document, q);
           return (
             <li key={view.id} className={styles.result}>
-              <Link href={withFrom(view.href, from)} className={styles.resultName}>
+              <Link href={withFrom(view.href, from)} className={`quiet-link ${styles.resultName}`}>
                 {view.name}
               </Link>
               <p className={`${styles.resultMeta} ${styles.resultFacts}`}>

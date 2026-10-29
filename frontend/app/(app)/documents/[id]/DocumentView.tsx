@@ -604,7 +604,12 @@ export function DocumentView({
                 onClosed={() => menuButton.current?.focus()}
               />
             )}
-            <SummaryCard detail={detail} active={selection?.region ?? null} onShow={showSpot} />
+            <SummaryCard
+              detail={detail}
+              active={selection?.region ?? null}
+              onShow={showSpot}
+              reviewer={canReview(me.user.role) && detail.deleted_at === null}
+            />
             {/* Can I trust it: one status line; the counts and this document's facts under More details. */}
             {detail.status !== "rejected" && (
               <SummaryBar

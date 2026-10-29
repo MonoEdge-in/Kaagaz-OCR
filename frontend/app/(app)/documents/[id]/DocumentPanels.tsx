@@ -116,7 +116,7 @@ export function AttentionPanel({
             <li key={item.pageNo}>
               <button
                 type="button"
-                className={styles.valueButton}
+                className={`quiet-link ${styles.valueButton}`}
                 aria-current={item.pageNo === current ? "page" : undefined}
                 onClick={() => onPage(item.pageNo)}
               >

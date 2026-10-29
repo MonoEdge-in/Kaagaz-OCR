@@ -410,6 +410,24 @@ a:hover {
   color: var(--accent-hover);
 }
 
+/* A file name or title in a list, grid or card, or a value in a list of facts (owner, 29 Oct
+   2026): a link by its weight and colour, underlined only on hover and keyboard focus. A link
+   inside a sentence keeps its underline. */
+.quiet-link {
+  text-decoration: none;
+  text-underline-offset: 0.18em;
+}
+
+.quiet-link:focus-visible {
+  text-decoration: underline;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .quiet-link:hover {
+    text-decoration: underline;
+  }
+}
+
 :focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
@@ -1096,6 +1114,35 @@ td.num {
   background: var(--review-bg);
   color: var(--review-fg);
   border: 1px dashed var(--review-solid);
+}
+
+/* A value's label beside it (LabelBadge; owner, 29 Oct 2026: a pill on every line looked
+   unsure): a 16px mark with no fill or edge, its word read out and in its tooltip. Ready to
+   verify is a dashed ring in the secondary ink, Verified a check seal in the success colour:
+   the shapes differ, so colour is never the only sign. The Review queue keeps the pills. */
+.label-mark {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--badge-h);
+  min-height: var(--badge-h);
+  vertical-align: middle;
+  border-radius: var(--r-full);
+  color: var(--text-secondary);
+  cursor: default;
+}
+
+.label-mark-verified {
+  color: var(--success);
+}
+
+/* Touch: the tooltip opens on a tap, so the mark is a full 44px target. */
+@media (pointer: coarse) {
+  .label-mark {
+    min-width: var(--h-lg);
+    min-height: var(--h-lg);
+  }
 }
 
 /* A sensitivity label (File management O2): its name in its own tint, edged in its text

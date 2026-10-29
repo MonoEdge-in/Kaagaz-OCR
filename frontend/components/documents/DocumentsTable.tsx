@@ -864,7 +864,7 @@ const DocumentRow = memo(function DocumentRow({
       <td role="cell" className={styles.nameCell}>
         <Link
           href={`/documents/${document.id}`}
-          className={styles.name}
+          className={`quiet-link ${styles.name}`}
           title={document.display_name}
           onClick={rememberListScroll}
           onDragStart={(event) => {

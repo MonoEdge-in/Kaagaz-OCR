@@ -22,9 +22,23 @@ export function labelBadgeClass(label: Label): string {
   return label === "verified" ? "badge badge-verified" : "badge badge-review";
 }
 
-/** The icon beside each label: a check seal for Verified, an eye for Ready to verify. */
+/** The icon on a label's pill (the Attention count): a check seal for Verified, an eye for Ready to verify. */
 export function labelIcon(label: Label): "check-seal" | "eye-alert" {
   return label === "verified" ? "check-seal" : "eye-alert";
+}
+
+/**
+ * A value's quiet mark (owner, 29 Oct 2026: a pill on every line looked unsure): a check seal
+ * for Verified, a dashed ring for Ready to verify. Different shapes, so colour is never the only sign.
+ */
+export function labelMarkIcon(label: Label): "check-seal" | "ring-dashed" {
+  return label === "verified" ? "check-seal" : "ring-dashed";
+}
+
+/** The mark's tooltip: its label in plain words, then why, when the value's reason is known. */
+export function labelTip(label: Label, reason?: LabelReason): string {
+  const said = label === "verified" ? "Verified" : "Ready to verify: not checked yet";
+  return reason ? `${said}. ${reasonText(reason)}` : `${said}.`;
 }
 
 const REASONS: Record<LabelReason, string> = {

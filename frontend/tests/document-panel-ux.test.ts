@@ -40,8 +40,9 @@ const card = (over: Partial<DocumentCard> = {}): DocumentCard => ({
 const verified = { id: "v1", field: "land_survey_number", value: "72", raw: "72", label: "verified", region: at(0.2) } as ExtractedValue;
 const detail = (over: Partial<DocumentDetail> = {}) =>
   ({ id: "d1", status: "ready", understanding: false, card: card(), values: [verified], pages: [], ...over }) as unknown as DocumentDetail;
+// Changed on purpose (owner, 29 Oct 2026): the card takes `reviewer`; its count line is in value-marks.test.ts.
 const summary = (shown: DocumentDetail) =>
-  renderToStaticMarkup(createElement(SummaryCard, { detail: shown, active: null, onShow: () => undefined }));
+  renderToStaticMarkup(createElement(SummaryCard, { detail: shown, active: null, onShow: () => undefined, reviewer: false }));
 
 describe("the summary at the top of the panel", () => {
   it("sits under the name and above Ask, the one primary, and shows once on the page", () => {
