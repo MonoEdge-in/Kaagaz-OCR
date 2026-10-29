@@ -20,6 +20,7 @@ import { beingRead } from "@/components/viewer/reprocess";
 import { ApiError, UPLOAD_CALLS_PER_MINUTE, getBatch, listDocuments, uploadDocument } from "@/lib/api";
 import { createPoller, progressSignature } from "@/lib/poll";
 import type { BatchView, DocumentList, DocumentSummary } from "@/lib/types";
+import { settle } from "./fake-clock";
 
 const LIMIT = Number(/^RATE_LIMIT_PER_MINUTE=(\d+)$/m.exec(readFileSync(join(__dirname, "..", "..", ".env.example"), "utf8"))?.[1]);
 const UPLOAD_PATH = "/api/documents/upload-sessions";
@@ -172,18 +173,6 @@ async function pass(ms: number) {
   for (let left = ms; left > 0; left -= 100) {
     await new Promise((resolve) => setImmediate(resolve));
     vi.advanceTimersByTime(100);
-  }
-}
-
-/**
- * Move the clock only while a timer is pending, until `isDone`, for at most `realMs` of real time
- * (#447). Each file's hash (crypto.subtle) takes real time, and on a loaded machine a fixed
- * stretch of simulated time ran out before the last one, which then waited on a timer that never fired.
- */
-async function settle(isDone: () => boolean, realMs = 4_000) {
-  for (const until = performance.now() + realMs; !isDone() && performance.now() < until; ) {
-    await new Promise((resolve) => setImmediate(resolve));
-    if (vi.getTimerCount() > 0) vi.advanceTimersByTime(100);
   }
 }
 
