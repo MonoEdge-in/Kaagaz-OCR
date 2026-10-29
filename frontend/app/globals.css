@@ -815,10 +815,17 @@ td.num {
   background: transparent;
 }
 
+/* A quiet button never grows an outline: .btn:hover and .btn:active set a border, which
+   showed as a pill under the pointer (owner's reports, 27–29 Oct 2026). */
 @media (hover: hover) and (pointer: fine) {
   .btn-quiet:hover {
     background: var(--accent-subtle);
+    border-color: transparent;
   }
+}
+
+.btn-quiet:active {
+  border-color: transparent;
 }
 
 .btn-block {
