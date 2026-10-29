@@ -36,7 +36,7 @@ import type { Frame } from "@/lib/motion";
 import type { ReadingMark, Region, WordFlag } from "@/lib/types";
 import { markChecked, markName, marksOnPage } from "./readingMarks";
 import styles from "./PageViewer.module.css";
-import { centredScroll, panTo } from "./viewer";
+import { centredScroll, mostVisiblePage, panTo } from "./viewer";
 import { wordColour } from "./YourWords";
 
 /** How long a scroll the screen asked for takes to settle (a smooth scroll across pages). */
@@ -106,6 +106,16 @@ async function printFile(documentId: string): Promise<boolean> {
   return true;
 }
 
+/** The drawn page most in view in the pages' scroll area (mostVisiblePage), or null. */
+function haltedPage(area: HTMLElement): number | null {
+  const view = area.getBoundingClientRect();
+  const pages = [...area.querySelectorAll<HTMLElement>("[data-pdf-viewer-page]")].map((page) => {
+    const box = page.getBoundingClientRect();
+    return { page: Number(page.dataset.pdfViewerPage), top: box.top, bottom: box.bottom };
+  });
+  return mostVisiblePage(pages, view.top, view.bottom);
+}
+
 export function PdfDocumentViewer({
   document,
   pageNo,
@@ -169,11 +179,13 @@ export function PdfDocumentViewer({
     };
     // #454: the user scrolling, dragging or pressing a key takes over: no more aiming, a smooth
     // scroll still on its way is halted where it is, and the pages they reach are told again. The
-    // page it halted on was passed untold, so the screen is told it now.
+    // page it halted on was never told (the engine says a page's scroll's goal at once, and a
+    // spot's scroll passes its pages untold), so it is measured and told now.
     const stop = () => {
       cancelAnimationFrame(frame);
       if (area && performance.now() < steeringUntil.current) {
         area.scrollTo({ left: area.scrollLeft, top: area.scrollTop, behavior: "instant" });
+        shownPage.current = haltedPage(area) ?? shownPage.current;
         if (shownPage.current !== screen.current.pageNo) screen.current.onPageChange(shownPage.current);
       }
       steeringUntil.current = 0;
