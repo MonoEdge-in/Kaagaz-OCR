@@ -17,9 +17,6 @@ export function pagesAround(pageNo: number | null, scroll: readonly number[]): n
   return [pageNo, ...scroll.filter((page) => page === pageNo - 1 || page === pageNo + 1)];
 }
 
-/** Until a page of a version comes. */
-const NONE = new Map<number, never>();
-
 /**
  * What `load(page)` answered for each of `pages`, asked once each under `version` (SETTLE_MS after
  * `pages` last changed). A new version starts again empty, as a reload or a retry did before. A
@@ -54,5 +51,6 @@ export function usePageCache<T>(
     const timer = setTimeout(() => wanted.split(",").forEach((page) => ask(Number(page))), SETTLE_MS);
     return () => clearTimeout(timer);
   }, [version, wanted]);
-  return kept.version === version ? kept.pages : NONE;
+  const [none] = useState<ReadonlyMap<number, T>>(() => new Map()); // until a page of this version comes
+  return kept.version === version ? kept.pages : none;
 }
