@@ -14,6 +14,9 @@
 // code_required: a second step sends all three again), or setting two-step up
 // first (403 mfa_enrol_required: the set-up step, RequiredEnrol). Signed in, the
 // browser goes to `next` (/documents, or /admin when it came from there).
+// Ways to sign in (#457 phase 1): the provider buttons and the divider above the fields
+// (ProviderButtons), and after Google for anyone with codes on, only the code
+// (ProviderCodeStep).
 
 import { useState } from "react";
 import type { FormEvent } from "react";
@@ -26,6 +29,8 @@ import { announceSession, leavePage } from "@/lib/sessionChannel";
 import type { TwoStepSetup } from "@/lib/types";
 import { CodeField } from "./CodeField";
 import { ForgotPasswordLink } from "./ForgotPasswordLink";
+import { ProviderButtons } from "./ProviderButtons";
+import { ProviderCodeStep } from "./ProviderCodeStep";
 import { RequiredEnrol } from "./EnrolStep";
 import { ResendConfirm } from "./ResendConfirm";
 import {
@@ -51,8 +56,19 @@ const FIELD_IDS: Record<SignInField | "code", string> = {
 const CODE_HINT = "From your authenticator app. A new code shows every 30 seconds.";
 
 /** note: what the page says after signing out or a session ending (SignedOutNotice).
- * next: where to go once signed in (pathAfterSignIn, components/shell/gate.ts). */
-export function SignInForm({ note, next }: { note: string | null; next: string }) {
+ * next: where to go once signed in (pathAfterSignIn, components/shell/gate.ts).
+ * oidcError: a failed provider sign-in's code; providerStep: the code after a provider. */
+export function SignInForm({
+  note,
+  next,
+  oidcError = null,
+  providerStep = false,
+}: {
+  note: string | null;
+  next: string;
+  oidcError?: string | null;
+  providerStep?: boolean;
+}) {
   const hydrated = useHydrated();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -159,6 +175,7 @@ export function SignInForm({ note, next }: { note: string | null; next: string }
   if (enrol) {
     return <RequiredEnrol enrol={enrol} email={normalizeEmail(email)} next={next} onRestart={back} />;
   }
+  if (providerStep) return <ProviderCodeStep next={next} />;
 
   const emailDescribedBy = errors.email ? "login-email-error" : undefined;
 
@@ -178,6 +195,7 @@ export function SignInForm({ note, next }: { note: string | null; next: string }
 
       {!askCode && (
         <>
+          <ProviderButtons next={next} error={oidcError} />
           <div className="field">
             <label htmlFor={FIELD_IDS.email}>E-mail</label>
             <input

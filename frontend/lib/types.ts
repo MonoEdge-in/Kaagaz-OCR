@@ -49,6 +49,36 @@ export interface Me {
   };
   customer: { id: string; name: string };
   session: { scope: SessionScope };
+  // Ways to sign in (#457 phase 1): approved connections made in the last 14 days, for the
+  // app's "Google connected on 30 Oct." banner. Empty while no provider is on (always sent).
+  recent_connections?: { provider: string; linked_at: string }[];
+}
+
+/** One connected account of the signed-in user (GET /auth/identities). */
+export interface ConnectedIdentity {
+  id: string;
+  provider: string; // "google"
+  email: string | null; // the account's email when it was connected, a label only
+  status: "pending" | "approved";
+  linked_at: string;
+  last_used_at: string | null;
+}
+
+/** Account, Ways to sign in: the providers switched on, and the user's own connections. */
+export interface WaysToSignIn {
+  providers: string[];
+  identities: ConnectedIdentity[];
+}
+
+/** Admin, People, Connections to approve (GET /admin/identities). */
+export interface PendingConnection {
+  id: string;
+  user_id: string;
+  display_name: string;
+  user_email: string;
+  provider: string;
+  email: string | null;
+  linked_at: string;
 }
 
 /** "Turn on" two-step sign-in (POST /auth/2fa/start, or after a right password). Nothing is stored yet. */
@@ -985,6 +1015,9 @@ export interface AdminUser {
   totp_enabled: boolean;
   must_change_password: boolean;
   can_delete_forever: boolean; // an admin allowed Delete forever (never set for an admin)
+  // #457 phase 1: "password" and each approved provider. Only the list and the replies that
+  // removed connections send it; a row keeps what it had otherwise.
+  signs_in_with?: string[];
 }
 
 /** POST /admin/users: the new user; with email on (#457), whether the invite email went. */
@@ -1009,6 +1042,8 @@ export interface CustomerSettings {
   platform_max_upload_mb: number;
   // Feature 28: the platform allowed auto-filing (granted), and the admin switched it on.
   autofile: { granted: boolean; on: boolean };
+  // #457 phase 1: "Approve new sign-in connections automatically".
+  auto_approve_connections: boolean;
 }
 
 export interface AuditEntry {

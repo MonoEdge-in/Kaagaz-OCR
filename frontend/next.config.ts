@@ -59,6 +59,12 @@ const nextConfig: NextConfig = {
         headers: [{ key: "Referrer-Policy", value: "no-referrer" }],
       },
       {
+        // The provider sign-in's routes (#457 phase 1): the callback's address holds Google's
+        // one-time code and state, so no referrer leaves it either.
+        source: "/api/auth/oidc/:path*",
+        headers: [{ key: "Referrer-Policy", value: "no-referrer" }],
+      },
+      {
         // The browser keeps no copy of an app page, so after signing out the
         // back button cannot show a signed-in screen from its cache. Not for
         // /_next/ (Next.js's hashed files, kept for good) or /api (the

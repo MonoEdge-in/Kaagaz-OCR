@@ -69,6 +69,7 @@ import type {
   PageSummary,
   DocumentWords,
   PasswordReset,
+  PendingConnection,
   PlatformEvent,
   PlatformHealth,
   LearnedDocument,
@@ -93,6 +94,7 @@ import type {
   TaskLevel,
   TestModel,
   TwoStepSetup,
+  WaysToSignIn,
   UploadLimits,
   UploadReading,
   UploadResult,
@@ -230,7 +232,23 @@ export const signUp = (body: { organisation_name: string; name: string; email: s
   request<TwoStepSetup | SignUpConfirming>("POST", "/auth/signup", body);
 /** Who is signed in, 200 either way (issue 378): a signed-out visit logs no expected 401. */
 export const currentSession = () =>
-  request<{ signed_in: true; me: Me } | { signed_in: false }>("GET", "/auth/session");
+  request<{ signed_in: true; me: Me } | { signed_in: false; providers?: string[] }>("GET", "/auth/session");
+
+// Ways to sign in (#457 phase 1): every route is 404 while no provider is switched on.
+/** After a provider for anyone with two-step sign-in on: the code (the second-step cookie). */
+export const oidcCode = (code: string) => request<Me>("POST", "/auth/oidc/code", { code });
+/** "isn't connected": the provider's email, kept out of the address, read once. */
+export const oidcNotice = () => request<{ email: string | null }>("GET", "/auth/oidc/notice");
+export const identities = () => request<WaysToSignIn>("GET", "/auth/identities");
+/** The password (and the code with two-step sign-in on), then the provider's address to open. */
+export const connectProvider = (provider: string, password: string, code?: string) =>
+  request<{ url: string }>("POST", `/auth/oidc/${encodeURIComponent(provider)}/connect`, {
+    password,
+    ...(code === undefined ? {} : { code }),
+  });
+/** Disconnect, or cancel a waiting one, with the password. The reply is the new list. */
+export const removeIdentity = (id: string, password: string) =>
+  request<WaysToSignIn>("POST", `/auth/identities/${encodeURIComponent(id)}/remove`, { password });
 
 /** The first code from the set-up (sign-in or sign-up) turns two-step on and signs in. */
 export const adminEnrol = (enrolToken: string, code: string) =>
@@ -774,6 +792,19 @@ export const resetUser2fa = (id: string) =>
 export const setDeleteForever = (id: string, allowed: boolean) =>
   request<AdminUser>("PUT", `/admin/users/${id}/delete-forever`, { allowed });
 export const getSettings = () => request<CustomerSettings>("GET", "/admin/settings");
+/** "Approve new sign-in connections automatically" (#457 phase 1); nothing else changes. */
+export const setAutoApprove = (on: boolean) =>
+  request<CustomerSettings>("PATCH", "/admin/settings", { auto_approve_connections: on });
+/** Connections to approve (#457 phase 1); each reply is the list left. */
+export const pendingConnections = () =>
+  request<{ items: PendingConnection[] }>("GET", "/admin/identities?status=pending");
+export const approveConnection = (id: string) =>
+  request<{ items: PendingConnection[] }>("POST", `/admin/identities/${encodeURIComponent(id)}/approve`);
+export const declineConnection = (id: string) =>
+  request<{ items: PendingConnection[] }>("POST", `/admin/identities/${encodeURIComponent(id)}/decline`);
+/** Every connected account of this person goes, and they are signed out; the password stays. */
+export const removeConnections = (id: string) =>
+  request<AdminUser>("POST", `/admin/users/${encodeURIComponent(id)}/remove-connections`);
 /** ``autofileOn`` left out: the switch is left as it is (feature 28). */
 export const updateSettings = (maxUploadMb: number | null, autofileOn?: boolean) =>
   request<CustomerSettings>("PATCH", "/admin/settings", {
