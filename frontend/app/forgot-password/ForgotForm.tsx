@@ -2,10 +2,11 @@
 
 // Forgot password (#457 phase 0): the email, then always the same words, so the page never
 // shows who has an account. The link lasts 30 minutes and signs every browser out. As the
-// sign-in form: method="post", no name attribute, typed value kept after an error.
+// sign-in form: method="post", no name attribute, typed value kept after an error. Once sent,
+// focus moves to the result's heading.
 
 import Link from "next/link";
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import type { FormEvent } from "react";
 import { flushSync } from "react-dom";
 import { Icon } from "@/components/ui/Icon";
@@ -24,6 +25,7 @@ export function ForgotForm() {
   const [failure, setFailure] = useState<string | null>(null);
   const [sent, setSent] = useState(false);
   const [busy, setBusy] = useState(false);
+  const focusOnMount = useCallback((element: HTMLHeadingElement | null) => element?.focus(), []);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -50,7 +52,9 @@ export function ForgotForm() {
     return (
       <div className={login.form}>
         <div className={login.intro}>
-          <h1 className={login.title}>Check your email</h1>
+          <h1 ref={focusOnMount} tabIndex={-1} className={login.title}>
+            Check your email
+          </h1>
           <p className={login.lead} role="status">
             {FORGOT_SENT} The link works for 30 minutes.
           </p>

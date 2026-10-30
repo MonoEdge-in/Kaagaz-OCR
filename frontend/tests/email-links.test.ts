@@ -157,6 +157,27 @@ describe("what the email screens say", () => {
   });
 });
 
+describe("the link and result screens (#457 review)", () => {
+  it("move focus to the new heading when a form is replaced by its result", () => {
+    for (const path of ["app/forgot-password/ForgotForm.tsx", "app/reset-password/LinkPasswordForm.tsx", "app/signup/SignUpForm.tsx"]) {
+      const form = read(path);
+      expect(form, path).toContain("const focusOnMount = useCallback((element: HTMLHeadingElement | null) => element?.focus(), []);");
+      expect(form, path).toMatch(/<h1 ref=\{focusOnMount\} tabIndex=\{-1\}/);
+    }
+  });
+
+  it("say a missing token as soon as the password page loads", () => {
+    const form = read("app/reset-password/LinkPasswordForm.tsx");
+    expect(form).toMatch(/token\.current = takeToken\(\);\s*if \(token\.current === null\) setFailure\(LINK_MISSING\);/);
+  });
+
+  it("check the new password with Change password's rules", () => {
+    const form = read("app/reset-password/LinkPasswordForm.tsx");
+    expect(form).toContain("validateNewPassword(");
+    expect(form).not.toContain("MIN_PASSWORD_LENGTH ? NEXT_TOO_SHORT");
+  });
+});
+
 describe("one spelling (#457 review)", () => {
   it("says email, never e-mail, on the sign-in, sign-up, forgot password and link pages", () => {
     const pages = [

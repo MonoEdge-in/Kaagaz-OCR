@@ -7,10 +7,11 @@
 // values kept after an error. Signed up, the new admin sets up two-step sign-in
 // (every admin must have it, 16 Oct 2026: RequiredEnrol), then the browser goes
 // to /admin. With email on (#457) the server sends a confirm link instead, and the
-// form says to check the email: the organisation then waits for approval.
+// form says to check the email (focus moves to its heading): the organisation then waits for
+// approval.
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { flushSync } from "react-dom";
 import { PasswordField } from "@/components/ui/PasswordField";
@@ -69,6 +70,7 @@ export function SignUpForm() {
   // N3 (QA 17 Oct): asked as SignUpLink does; switched off, no form is shown. No answer: the form stays.
   // null while asking, so the form never flashes before an "off" reply (CodeRabbit).
   const [off, setOff] = useState<boolean | null>(null);
+  const focusOnMount = useCallback((element: HTMLHeadingElement | null) => element?.focus(), []);
 
   useEffect(() => {
     let live = true;
@@ -126,7 +128,9 @@ export function SignUpForm() {
     return (
       <div className={login.form}>
         <div className={login.intro}>
-          <h1 className={login.title}>{words.title}</h1>
+          <h1 ref={focusOnMount} tabIndex={-1} className={login.title}>
+            {words.title}
+          </h1>
           <p className={login.lead} role="status">
             {words.text}
           </p>
