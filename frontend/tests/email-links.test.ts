@@ -64,12 +64,18 @@ describe("what the email screens say", () => {
     expect(CHECK_EMAIL).toBe(
       "Check your email to confirm your address. Your organisation will then wait for approval.",
     );
-    expect(addedNotice({ display_name: "Ramesh", email: "ramesh@firm.in", invited: true })).toBe(
-      "Invite sent to ramesh@firm.in",
-    );
-    expect(addedNotice({ display_name: "Ramesh", email: "ramesh@firm.in" })).toBe(
-      "Added Ramesh. They choose their own password when they first sign in.",
-    );
+    // Changed on purpose (#457 review): the typed temporary password is always kept, and a
+    // failed invite is a problem notice.
+    expect(addedNotice({ display_name: "Ramesh", email: "ramesh@firm.in", invited: true })).toEqual({
+      text: "Invite sent to ramesh@firm.in. If it doesn't arrive, give Ramesh the temporary password you typed.",
+    });
+    expect(addedNotice({ display_name: "Ramesh", email: "ramesh@firm.in", invited: false })).toEqual({
+      problem: true,
+      text: "Couldn't send the invite email. Give Ramesh the temporary password you typed.",
+    });
+    expect(addedNotice({ display_name: "Ramesh", email: "ramesh@firm.in" })).toEqual({
+      text: "Added Ramesh. They choose their own password when they first sign in.",
+    });
   });
 
   it("knows a sign-up that waits for its email", () => {

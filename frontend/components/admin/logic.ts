@@ -221,11 +221,20 @@ export function generatePassword(length = 16, random: (bytes: Uint8Array) => Uin
 }
 
 /** AD7 (UI audit, 16 Oct 2026), with two-step required for admins (0035): what an admin without it sees. */
-/** The toast after Add user: the invite went (#457), else the temporary password as before. */
-export function addedNotice(user: Pick<AddedUser, "display_name" | "email" | "invited">): string {
-  return user.invited
-    ? `Invite sent to ${user.email}`
-    : `Added ${user.display_name}. They choose their own password when they first sign in.`;
+/** The toast after Add user (#457): the invite went, or could not be sent (a problem: the typed
+ * temporary password is the way in), or with email off the temporary password as before. */
+export function addedNotice(user: Pick<AddedUser, "display_name" | "email" | "invited">): {
+  text: string;
+  problem?: boolean;
+} {
+  const name = user.display_name;
+  if (user.invited === true) {
+    return { text: `Invite sent to ${user.email}. If it doesn't arrive, give ${name} the temporary password you typed.` };
+  }
+  if (user.invited === false) {
+    return { problem: true, text: `Couldn't send the invite email. Give ${name} the temporary password you typed.` };
+  }
+  return { text: `Added ${name}. They choose their own password when they first sign in.` };
 }
 
 export function twoStepNote(): string {

@@ -14,11 +14,11 @@ lock out its last way in by accident (the CLI ``reset-admin-2fa`` is the way
 back for the last admin). Every change writes one audit row with ids and
 statuses only (never a password, hashed or not).
 
-Why an invite (#457 phase 0): with email on, Add person makes the user with an unusable
-random password and emails "You're invited" (a 7-day link to choose their own password,
-which proves the e-mail); the reply says ``invited: true`` and no password is kept. When the
-email cannot be sent, the password the admin typed is set as today's temporary one
-(``invited: false``). With email off it is exactly as before, with no ``invited``.
+Why an invite (#457 phase 0): with email on, Add person also emails "You're invited" (a 7-day
+link to choose their own password, which proves the e-mail), made in the same transaction as
+the user and sent after it; the reply says whether it went (``invited``). The password the
+admin typed is always kept as a temporary one (the user must change it), the fallback when
+the email fails or never arrives. With email off it is exactly as before, with no ``invited``.
 
 Why the session version: disabling a user, setting their password, resetting
 their password or their two-step code all raise ``session_version`` (in
@@ -188,8 +188,8 @@ def create_user(body: NewUserBody, user: AdminSession, context: Context) -> JSON
     if not name:
         raise ApiError(400, "bad_request", "Enter a name.")
     inviting = email_on(context)
-    # An invite's password is never told to anyone: the link sets the real one.
-    password_hash = hash_password(secrets.token_urlsafe(32) if inviting else body.password)
+    # The typed password is the temporary one, with an invite too: the fallback if it never arrives.
+    password_hash = hash_password(body.password)
     with context.db.system() as conn:  # a stale, unconfirmed sign-up gives the e-mail back (0063)
         users_sql.release_stale_signup(conn, email)
     try:
@@ -212,21 +212,16 @@ def create_user(body: NewUserBody, user: AdminSession, context: Context) -> JSON
                 target_id=str(row["id"]),
                 details={"role": body.role},
             )
+            target = str(row["id"])
+            link = emails.add_link(conn, context, user.customer_id, target, "invite") if inviting else None
     except users_sql.EmailTaken:
         raise ApiError(409, "conflict", "That e-mail is already in use.") from None
-    if not inviting:
+    if link is None:
         return JSONResponse(admin_user(row, now=context.clock()), status_code=201)
-    target = str(row["id"])
-    link = emails.new_link(context, user.customer_id, target, "invite")
     invited = emails.send(context, email, "invite", emails.invite(user.customer_name, link))
-    with context.db.customer(user.customer_id) as conn:
-        if invited:
+    if invited:  # the one follow-up write, only when the email went
+        with context.db.customer(user.customer_id) as conn:
             _audit_user(conn, user, "auth.invite_sent", target)
-        else:  # today's temporary password, the one the admin typed
-            temporary = users_sql.set_password(
-                conn, user.customer_id, target, password_hash=hash_password(body.password), must_change=True
-            )
-            row = row if temporary is None else temporary
     return JSONResponse({**admin_user(row, now=context.clock()), "invited": invited}, status_code=201)
 
 

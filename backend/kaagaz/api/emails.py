@@ -26,6 +26,7 @@ from collections.abc import Callable
 from datetime import timedelta
 
 from botocore.exceptions import BotoCoreError, ClientError
+from sqlalchemy import Connection
 
 from kaagaz.api.context import AppContext
 from kaagaz.db import email_links as links_sql
@@ -54,18 +55,23 @@ def token_hash(token: str) -> bytes:
 def new_link(context: AppContext, customer_id: str, user_id: str, purpose: str) -> str:
     """A new link of this purpose for this user (the older unused ones end), as the page's
     address with the token in its fragment. The token itself is never stored or logged."""
+    with context.db.customer(customer_id) as conn:
+        return add_link(conn, context, customer_id, user_id, purpose)
+
+
+def add_link(conn: Connection, context: AppContext, customer_id: str, user_id: str, purpose: str) -> str:
+    """``new_link`` in the caller's transaction (``conn`` from ``Database.customer``)."""
     token = secrets.token_urlsafe(TOKEN_BYTES)
     now = context.clock()
-    with context.db.customer(customer_id) as conn:
-        links_sql.add(
-            conn,
-            customer_id,
-            user_id,
-            purpose,
-            token_hash(token),
-            now=now,
-            expires_at=now + LIFETIMES[purpose],
-        )
+    links_sql.add(
+        conn,
+        customer_id,
+        user_id,
+        purpose,
+        token_hash(token),
+        now=now,
+        expires_at=now + LIFETIMES[purpose],
+    )
     return f"{context.settings.app_url}{PAGES[purpose]}#t={token}"
 
 

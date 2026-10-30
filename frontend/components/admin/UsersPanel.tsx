@@ -230,8 +230,8 @@ export function UsersPanel({
           onAdded={(user) => {
             setUsers((current) => (current ? [...current, user] : [user]));
             setAdding(false);
-            // #457: with email on, "Invite sent to {email}"; else the temporary password, as before.
-            setNotice({ text: addedNotice(user) });
+            // #457: with email on, whether the invite went; else the temporary password, as before.
+            setNotice(addedNotice(user));
           }}
         />
       )}

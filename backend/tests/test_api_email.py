@@ -601,7 +601,10 @@ def test_an_invite_sets_the_password_and_proves_the_email(db: Database) -> None:
     [(subject, invite)] = _to(mailer, email)
     assert subject == "You're invited to Kaagaz"
     assert "Invite Co" in invite
-    assert api.admin_login(api.client(), email).status_code == 401  # the typed password is not kept
+    # Changed on purpose (#457 review): the typed password is kept as a temporary one, the
+    # fallback when the email never arrives.
+    kept = api.admin_login(api.client(), email)
+    assert (kept.status_code, kept.json()["user"]["must_change_password"]) == (200, True)
 
     token = _token(mailer, email, "/invite")
     api.clock.advance(7 * 24 * 3600 - 1)  # 7 days
@@ -638,6 +641,18 @@ def test_an_invite_that_cannot_be_sent_falls_back_to_the_temporary_password(
     assert email not in caplog.text  # never the address
     signed = api.admin_login(api.client(), email)
     assert (signed.status_code, signed.json()["user"]["must_change_password"]) == (200, True)
+    user_id = added.json()["id"]
+    with db.customer(admin.customer_id) as conn:  # the link was made with the user, before the send
+        purposes = (
+            conn.execute(
+                text("SELECT purpose FROM email_links WHERE customer_id = :c AND user_id = :u"),
+                {"c": admin.customer_id, "u": user_id},
+            )
+            .scalars()
+            .all()
+        )
+    assert purposes == ["invite"]
+    assert "auth.invite_sent" not in api.audit_actions(admin.customer_id)
 
 
 # --- Change password and the security notices --------------------------------------------------
