@@ -9,15 +9,18 @@ const backend = process.env.BACKEND_URL ?? "http://localhost:8000";
 // data: and blob: URLs, and PDF.js's fonts from data: URLs. The PDF viewer's
 // engine is WebAssembly (served from /_next, compiled under 'wasm-unsafe-eval',
 // which allows no JavaScript eval) and Print frames the file from a blob: URL.
+// Google Analytics on the public pages, after consent (#457 phase 4): Google's script, and
+// the hosts it sends page views to.
+const GA_COLLECT = "https://*.google-analytics.com https://*.analytics.google.com https://*.googletagmanager.com";
 const CSP = [
   "default-src 'self'",
-  "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'",
+  "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://www.googletagmanager.com",
   "style-src 'self' 'unsafe-inline'",
   "worker-src 'self' blob:",
-  "img-src 'self' data: blob:",
+  `img-src 'self' data: blob: ${GA_COLLECT}`,
   "frame-src 'self' blob:",
   "font-src 'self' data:",
-  "connect-src 'self'",
+  `connect-src 'self' ${GA_COLLECT}`,
   "object-src 'none'",
   "frame-ancestors 'none'",
   "base-uri 'self'",

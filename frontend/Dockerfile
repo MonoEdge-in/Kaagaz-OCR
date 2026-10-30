@@ -18,7 +18,11 @@ RUN npm ci
 FROM node:20.20.2-slim AS build
 WORKDIR /app
 ARG BACKEND_URL=http://api:8000
+# Google Analytics on the public pages (#457 phase 4): Next.js writes a NEXT_PUBLIC_ value
+# into the build. Empty (the default, and the test server): no analytics.
+ARG NEXT_PUBLIC_GA_ID=
 ENV BACKEND_URL=${BACKEND_URL} \
+    NEXT_PUBLIC_GA_ID=${NEXT_PUBLIC_GA_ID} \
     NEXT_TELEMETRY_DISABLED=1
 COPY --from=deps /app/node_modules node_modules
 COPY . .
