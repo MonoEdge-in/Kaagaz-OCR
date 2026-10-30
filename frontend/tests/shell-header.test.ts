@@ -41,6 +41,7 @@ const me: Me = {
     role: "admin",
     must_change_password: false,
     totp_enabled: false,
+    two_step_turned_off: false,
     can_delete_forever: false,
   },
   customer: { id: "c1", name: "Sharma Traders" },

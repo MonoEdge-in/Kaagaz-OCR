@@ -9,6 +9,8 @@
 // a dialog that gives Cancel the focus. The arrow keys move into the menu from the
 // avatar and between its actions, Home and End to the first and last, as a row's
 // menu does (RowMenu's onMenuKey); a theme or palette radio keeps its own arrows.
+// An admin also has Two-step sign-in (Tushar, 30 Oct 2026): a dialog to turn their own
+// off or on (TwoStepDialog); members and reviewers have no codes, so it is not there.
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -25,6 +27,8 @@ import { announceSession, leavePage } from "@/lib/sessionChannel";
 import type { Me } from "@/lib/types";
 import { signedOutPath } from "./gate";
 import { initials, roleName } from "./nav";
+import { TwoStepDialog } from "./TwoStepDialog";
+import { TWO_STEP_ACCOUNT, showsTwoStepItem } from "./twoStepAccount";
 import styles from "./Shell.module.css";
 
 const MENU_ID = "account-menu";
@@ -53,6 +57,7 @@ export function AccountMenu({ me }: { me: Me }) {
   const [signingOut, setSigningOut] = useState<SignOutKind | null>(null);
   const [failure, setFailure] = useState<{ kind: SignOutKind; message: string } | null>(null);
   const [confirming, setConfirming] = useState(false);
+  const [twoStep, setTwoStep] = useState(false);
   const name = me.user.display_name;
 
   // "everywhere" raises the account's session version on the server, which
@@ -142,6 +147,20 @@ export function AccountMenu({ me }: { me: Me }) {
           <span>AI settings</span>
         </Link>
 
+        {showsTwoStepItem(me) && (
+          <button
+            type="button"
+            className={`btn btn-quiet btn-block ${styles.signOut}`}
+            onClick={() => {
+              document.getElementById(MENU_ID)?.hidePopover();
+              setTwoStep(true);
+            }}
+          >
+            <Icon name="check-seal" />
+            <span>{TWO_STEP_ACCOUNT.item}</span>
+          </button>
+        )}
+
         <div className={styles.signOuts}>
           <button
             type="button"
@@ -184,6 +203,14 @@ export function AccountMenu({ me }: { me: Me }) {
           again on each one.
         </p>
       </ConfirmDialog>
+
+      {twoStep && (
+        <TwoStepDialog
+          me={me}
+          onClose={() => setTwoStep(false)}
+          onClosed={() => avatar.current?.focus()}
+        />
+      )}
     </>
   );
 }

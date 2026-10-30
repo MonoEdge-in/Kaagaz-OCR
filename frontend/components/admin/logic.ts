@@ -196,7 +196,7 @@ export function foreverControl(
   if (user.can_delete_forever) return { kind: "stop" };
   return {
     kind: "allow",
-    disabledReason: adminTwoStep ? null : "Turn on your two-step sign-in in Settings to allow this.",
+    disabledReason: adminTwoStep ? null : "Turn on two-step sign-in in Account to allow this.",
   };
 }
 

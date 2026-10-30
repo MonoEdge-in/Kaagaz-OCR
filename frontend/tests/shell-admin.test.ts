@@ -42,6 +42,7 @@ const user = (changes: Partial<AdminUser> = {}): AdminUser => ({
   created_at: "2026-09-01T10:00:00+00:00",
   locked_until: null,
   totp_enabled: false,
+  two_step_turned_off: false,
   must_change_password: false,
   can_delete_forever: false,
   ...changes,
@@ -146,7 +147,7 @@ describe("Delete forever, granted (council 4 Oct 2026)", () => {
     expect([control(user({ role: "admin" })).kind, control(user(), true).kind]).toEqual(["none", "none"]);
     expect(control(user(), false, false)).toEqual({
       kind: "allow",
-      disabledReason: "Turn on your two-step sign-in in Settings to allow this.",
+      disabledReason: "Turn on two-step sign-in in Account to allow this.",
     });
   });
 
@@ -173,6 +174,7 @@ describe("adminGate", () => {
       role,
       must_change_password: false,
       totp_enabled: false,
+      two_step_turned_off: false,
       can_delete_forever: false,
     },
     customer: { id: "c1", name: "Sharma Traders" },
