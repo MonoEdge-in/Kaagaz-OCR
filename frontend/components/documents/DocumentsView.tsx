@@ -600,7 +600,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
               )}
               {library.trash && foreverNeeds(me) === "two_step" && (
                 <p className={libraryStyles.placeHint}>
-                  To delete forever, turn on two-step sign-in in <Link href="/admin">Admin, Settings</Link>.
+                  To delete forever, turn on two-step sign-in in Account.
                 </p>
               )}
             </div>
