@@ -11,6 +11,7 @@ import Link from "next/link";
 import { StoryMatches } from "@/components/stories/StoryMatches";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Icon } from "@/components/ui/Icon";
+import { useBackFrom, withFrom } from "@/lib/backLink";
 import { STORY_NOTE_SEARCH, storyMatchesFrom, storyStatusText } from "@/lib/storyMatches";
 import type { DocumentSearch } from "@/lib/types";
 import { LabelChip } from "@/components/files/LabelChip";
@@ -37,6 +38,7 @@ export function InsideSearchResults({
   onRetry,
   onClear,
 }: InsideSearchResultsProps) {
+  const from = useBackFrom(); // set on /search, not on the documents screen (#436)
   const note = datesIgnored && (
     <p className={libraryStyles.placeHint}>The upload dates narrow the list of names only, not this search.</p>
   );
@@ -104,7 +106,7 @@ export function InsideSearchResults({
           const view = resultView(document, q);
           return (
             <li key={view.id} className={styles.result}>
-              <Link href={view.href} className={styles.resultName}>
+              <Link href={withFrom(view.href, from)} className={`quiet-link ${styles.resultName}`}>
                 {view.name}
               </Link>
               <p className={`${styles.resultMeta} ${styles.resultFacts}`}>

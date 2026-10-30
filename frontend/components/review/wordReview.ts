@@ -193,6 +193,30 @@ export function stateText(flag: WordFlag): string {
   return "Not reviewed yet";
 }
 
+/** Reviewed by a person or resolved by Ensemble: its mark on the page turns green (#431). */
+export const settled = (flag: Pick<WordFlag, "state">) => flag.state === "reviewed" || flag.state === "resolved";
+
+/**
+ * Whether a change to `word` may have kept its page as is, or (its Undo) put it back (#443): no
+ * other word on its page is open in `flags`, the words in `changed` (changed since `flags` came)
+ * left out. Only then is the whole document asked for again after it, not only its words.
+ */
+export const lastOpenOnPage = (
+  flags: readonly Pick<WordFlag, "word_key" | "page_no" | "state">[],
+  word: Pick<WordFlag, "word_key" | "page_no">,
+  changed: ReadonlySet<string> = new Set(),
+) =>
+  !flags.some(
+    (other) =>
+      other.page_no === word.page_no && other.word_key !== word.word_key && !changed.has(other.word_key) && !settled(other),
+  );
+
+/** A word's mark on the page, by name: "Reviewed: 'Wheat'" once settled, else its flag. */
+export function markLabel(flag: WordFlag): string {
+  if (settled(flag)) return `${stateText(flag)}: '${flag.text}'`;
+  return `${flagLabel(flag)}${flag.state === "in_ensemble" ? `, ${IN_ENSEMBLE}` : ""}`;
+}
+
 /** History: "Reviewed by you", "Resolved by Ensemble", "Ensemble reading kept by Ravi Sharma". */
 export function changeTitle(change: WordChange): string {
   const who = change.by_you ? "you" : (change.user_name ?? "a reviewer");

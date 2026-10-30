@@ -40,8 +40,12 @@ const card = (over: Partial<DocumentCard> = {}): DocumentCard => ({
 const verified = { id: "v1", field: "land_survey_number", value: "72", raw: "72", label: "verified", region: at(0.2) } as ExtractedValue;
 const detail = (over: Partial<DocumentDetail> = {}) =>
   ({ id: "d1", status: "ready", understanding: false, card: card(), values: [verified], pages: [], ...over }) as unknown as DocumentDetail;
+// Changed on purpose (owner, 29 Oct 2026): the card takes `reviewer`; its count line is in value-marks.test.ts.
+// Changed on purpose (owner, 29 Oct 2026, #453): and onResolved and onStale, for a value's menu (fact-actions.test.ts).
 const summary = (shown: DocumentDetail) =>
-  renderToStaticMarkup(createElement(SummaryCard, { detail: shown, active: null, onShow: () => undefined }));
+  renderToStaticMarkup(
+    createElement(SummaryCard, { detail: shown, active: null, onShow: () => undefined, reviewer: false, onResolved: () => undefined, onStale: () => undefined }),
+  );
 
 describe("the summary at the top of the panel", () => {
   it("sits under the name and above Ask, the one primary, and shows once on the page", () => {
@@ -78,6 +82,7 @@ describe("the summary at the top of the panel", () => {
 
   it("lists only the facts the card has, each with its label, at most five", () => {
     const html = summary(detail());
+    // Changed on purpose (review panel, 29 Oct 2026, #453): a name wraps, so it needs no tooltip.
     expect(html.match(/<dt>/g)).toHaveLength(2);
     expect(html).toContain(">Land owner name</dt>");
     expect(html).toContain(">Survey number</dt>");

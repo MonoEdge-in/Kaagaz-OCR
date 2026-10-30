@@ -17,6 +17,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Icon } from "@/components/ui/Icon";
 import { ApiError, FEATURE_OFF, listReview, verifyAllReview } from "@/lib/api";
+import { BackFrom } from "@/lib/backLink";
 import { useSession } from "@/lib/session";
 import type { ReviewItem, ReviewList, ReviewReason } from "@/lib/types";
 import type { QueueView } from "./review";
@@ -31,8 +32,10 @@ import {
   focusProgress,
   groupByDocument,
   leftToReview,
+  parseReason,
   queueParams,
   resolvedMessage,
+  reviewHref,
   verifyAllFilters,
   verifyAllQuestion,
   verifyAllText,
@@ -69,7 +72,7 @@ function Header({ back }: { back?: Back }) {
   );
 }
 
-function Queue({ documentId }: { documentId?: string }) {
+function Queue({ documentId, initialReason }: { documentId?: string; initialReason: ReviewReason | null }) {
   const { me } = useSession();
   const [attempt, setAttempt] = useState(0);
   const [first, setFirst] = useState<{ attempt: number; list: ReviewList } | null>(null);
@@ -78,7 +81,7 @@ function Queue({ documentId }: { documentId?: string }) {
   const [moreError, setMoreError] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const [saved, setSaved] = useState("");
-  const [reason, setReason] = useState<ReviewReason | null>(null);
+  const [reason, setReason] = useState<ReviewReason | null>(initialReason);
   const [view, setView] = useState<QueueView>("focus");
   // Focus mode: the card shown (its place in the list) and how many were settled in this visit.
   const [index, setIndex] = useState(0);
@@ -259,6 +262,8 @@ function Queue({ documentId }: { documentId?: string }) {
               setAllResult(null);
               setConfirmingAll(false);
               setReason(choice.value);
+              // In the address too, so a document opened from a card leads back to this list (#436).
+              window.history.replaceState(null, "", reviewHref(documentId, choice.value));
               setIndex(0);
               setDone(0);
               setAttempt((n) => n + 1); // the loading state until the filtered list comes
@@ -467,6 +472,7 @@ export function ReviewQueue() {
   const { me } = useSession();
   const searchParams = useSearchParams();
   const documentId = searchParams.get("document_id") || undefined;
+  const reason = parseReason(searchParams.get("reason") ?? "");
   if (!canReview(me.user.role)) {
     return (
       <div className="page">
@@ -477,5 +483,9 @@ export function ReviewQueue() {
       </div>
     );
   }
-  return <Queue documentId={documentId} />;
+  return (
+    <BackFrom value={reviewHref(documentId, reason)}>
+      <Queue documentId={documentId} initialReason={reason} />
+    </BackFrom>
+  );
 }

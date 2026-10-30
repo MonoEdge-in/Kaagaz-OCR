@@ -6,7 +6,9 @@ describe("icons", () => {
     expect(Object.keys(ICONS).sort()).toEqual([...ICON_NAMES].sort());
     // Changed on purpose (UI quality council, 15 Oct 2026): "download" for Download original on phones.
     // Changed on purpose (PRD 1, screens): "home" for the dashboard's nav link (File management D1).
-    expect(ICON_NAMES).toHaveLength(35); // 29 + "scan-text" + "words" + "download" + "to-top" (16 Oct 2026) + "more" (17 Oct 2026) + "home"
+    // Changed on purpose (owner, 29 Oct 2026): "ring-dashed" for a value not checked yet (LabelBadge).
+    // Changed on purpose (owner, 29 Oct 2026, #453): "dot" in its place; the dashed ring is gone.
+    expect(ICON_NAMES).toHaveLength(36); // 29 + "scan-text" + "words" + "download" + "to-top" (16 Oct 2026) + "more" (17 Oct 2026) + "home" + "dot"
   });
 
   it("gives every icon at least one shape, inside the 24 x 24 grid", () => {

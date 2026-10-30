@@ -102,7 +102,7 @@ describe("a row of the documents list", () => {
     const html = table([doc()]);
     // The folder is the facts span's last child: its own span closes, then the facts span.
     expect(html).toMatch(/<span class="[^"]*inFolder[^"]*">In Land &amp; Legal<\/span><\/span>/);
-    expect(html).toMatch(/<span class="[^"]*facts[^"]*">(?:(?!<\/td>).)*In Land &amp; Legal/);
+    expect(html).toMatch(/<span class="[^"]*facts[^"]*"[^>]*>(?:(?!<\/td>).)*In Land &amp; Legal/);
   });
 
   it("gives Status its own width, so Name takes the free width", () => {

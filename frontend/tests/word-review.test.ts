@@ -97,6 +97,7 @@ const review = (shown: ReviewStatus | null, flags: WordFlag[] = [flag()]): WordR
   flags,
   failed: false,
   reload: () => undefined,
+  reloadWords: () => undefined,
   replace: () => undefined,
   setRun: () => undefined,
 });
@@ -181,7 +182,8 @@ describe("bands", () => {
     expect(page).toMatch(/\.flag\[data-band="review"\] \{[^}]*solid/);
     const viewer = css("components/viewer/PageViewer.tsx");
     expect(viewer).toContain("aria-label={name}");
-    expect(viewer).toContain("flagLabel(flag)");
+    // Changed on purpose (#431): named by markLabel, the flag's label until it is settled.
+    expect(viewer).toContain("markLabel(flag)");
   });
 });
 
@@ -502,7 +504,8 @@ describe("wording (section 6)", () => {
 describe("a rejected file", () => {
   it("asks for no flagged words and shows no summary bar", () => {
     const view = css("app/(app)/documents/[id]/DocumentView.tsx");
-    expect(view).toMatch(/useWordReview\(documentId, reloads, loadedStatus !== null && loadedStatus !== "rejected"\)/);
+    // Changed on purpose (#443): the whole document's reload comes after, for useWordReview's reload.
+    expect(view).toMatch(/useWordReview\(documentId, reloads, loadedStatus !== null && loadedStatus !== "rejected", /);
     expect(view).toMatch(/\{detail\.status !== "rejected" && \(\s*<SummaryBar/);
     const hook = css("app/(app)/documents/[id]/WordReview.tsx");
     expect(hook).toMatch(/useEffect\(\(\) => \{\s*if \(!enabled\) return;\s*let cancelled = false;\s*load\(\)/);

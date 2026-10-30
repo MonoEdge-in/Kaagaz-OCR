@@ -108,7 +108,7 @@ from kaagaz.reading.ocr_dpi import (
     line_height_px,
     probe_dpi,
 )
-from kaagaz.reading.pdf_signals import page_signals, words_left_visible
+from kaagaz.reading.pdf_signals import page_signals, shown_crop, words_left_visible
 from kaagaz.reading.route import RouteDecision
 from kaagaz.reading.socket import NoReader, OnPage, PagePool, PagesInOrder
 from kaagaz.reading.spans import BoxLocation, ReadError, Span
@@ -439,10 +439,6 @@ def _page_spans(
 ) -> list[Span]:
     """The page's lines, without the words under ``hidden`` (page fractions): text
     that can't be seen never becomes a line (the council's PR 3 review, high 1)."""
-    # Boxes are fractions of the crop box, the part of the page a viewer shows
-    # (and the part pypdfium2 draws). pdfplumber gives both in the same
-    # top-left coordinates, with the page's rotation applied.
-    left, top, right, bottom = (float(value) for value in page.cropbox)
     words = [
         WordBox(
             str(word["text"]),
@@ -453,7 +449,7 @@ def _page_spans(
         )
         for word in page.extract_words()
     ]
-    frame = PageFrame(left, top, right - left, bottom - top)
+    frame = shown_crop(page)
     spans = line_spans(words_left_visible(words, frame, hidden), number, frame, origin="text_layer")
     return _with_kinds(spans, page.chars, frame)
 

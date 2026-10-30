@@ -36,7 +36,12 @@ describe("#416 no Values found in the Details tab", () => {
 
   it("leaves the values reachable: the summary card's facts on the page, and Review to verify them", () => {
     expect(read("app/(app)/documents/[id]/SummaryCard.tsx")).toContain("onClick={() => onShow(item)}");
-    expect(read(VIEW)).toContain("<SummaryCard detail={detail} active={selection?.region ?? null} onShow={showSpot} />");
+    // Changed on purpose (owner, 29 Oct 2026): the card is told whether its count links to Review.
+    // Changed on purpose (owner, 29 Oct 2026, #453): and what to do once a value is verified or saved
+    // there (review panel, 29 Oct 2026: its words asked for again, fact-actions.test.ts).
+    expect(read(VIEW)).toMatch(
+      /<SummaryCard\s+detail=\{detail\}\s+active=\{selection\?\.region \?\? null\}\s+onShow=\{showSpot\}\s+reviewer=\{canReview\(me\.user\.role\) && detail\.deleted_at === null\}\s+onResolved=\{[\s\S]{1,700}?\}\s+onStale=\{\(\) => setReloads\(\(n\) => n \+ 1\)\}\s+\/>/,
+    );
     expect(read("components/shell/nav.ts")).toMatch(/href: "\/review"/);
     // Follow-up: Details links a reviewer or an admin to this document's values waiting in Review,
     // counted from the loaded detail (no request of its own), only when some wait.
@@ -75,40 +80,56 @@ describe("#417 a [?] in the Text view: type the word in its place, right there",
       hint: "Type the word you see on the page in place of 'Krishn4'.",
       draft: "Krishn4",
     });
-    expect(FIX_NOTE).toBe("To type the right word in place of [?] or a marked word, press its line or Fix text.");
+    // Changed on purpose (#443): the box confirms a word as read too.
+    expect(FIX_NOTE).toBe(
+      "To type the right word in place of [?] or a marked word, or confirm it as read, press its line or Fix text.",
+    );
     expect(panel).toMatch(
       /\{reader\?\.role === "first" && flags\.length > 0 && \(onFix \|\| member\) && \(\s*<p className=\{styles\.muted\}>\{onFix \? FIX_NOTE : FIX_MEMBER_NOTE\}<\/p>\s*\)\}/,
     );
   });
 
   it("tells a member, who cannot type a word, who can (follow-up)", () => {
-    expect(FIX_MEMBER_NOTE).toBe("Only a reviewer or an admin can type the right word for a [?].");
+    // Changed on purpose (#443): any marked word (a lone "." too), not only a [?].
+    expect(FIX_MEMBER_NOTE).toBe("Only a reviewer or an admin can fix or confirm a marked word.");
     expect(read(VIEW)).toContain("member={review.status?.can_review === false}");
     // A member gets no Fix text and no box: onFix is a reviewer's or an admin's only.
     expect(read(VIEW)).toContain("onFix={review.status?.can_review && detail.deleted_at === null ? fixWord : undefined}");
     expect(panel).toContain("const toFix = first && onFix ?");
   });
 
+  // Changed on purpose (#431): the box asks for the word Fix text works on (ask, the line as shown
+  // for the line's own flag), and while it is open the row's Fix text steps aside (fix-text-431.test.ts).
   it("opens the box under the line from a press on the line or Fix text, labelled by its hint", () => {
-    expect(panel).toMatch(/onShow\(\{ name: `line \$\{index \+ 1\}`, region: line\.region, label: null \}\);\s*if \(toFix\) openFix\(toFix\);/);
-    expect(panel).toContain("aria-expanded={box !== null}");
-    expect(panel).toMatch(/<label className=\{styles\.fixLabel\} htmlFor=\{`\$\{boxId\}-text`\}>\s*\{fixBox\(toFix\)\.hint\}/);
+    expect(panel).toMatch(/onShow\(\{ name: `line \$\{index \+ 1\}`, region: line\.region, label: null \}\);\s*if \(toFix && ask\) openFix\(toFix, ask\.draft\);/);
+    expect(panel).toContain("aria-expanded={false}");
+    expect(panel).toMatch(/<label className=\{styles\.fixLabel\} htmlFor=\{`\$\{boxId\}-text`\}>\s*\{ask\.hint\}/);
     expect(panel).toMatch(/<input\s+ref=\{fixInput\}\s+id=\{`\$\{boxId\}-text`\}/);
     // [Cancel] [Primary]; Esc in the field closes the box (not the panel); focus goes back to the line.
-    expect(panel.indexOf(">\n                            Cancel")).toBeLessThan(panel.indexOf(">\n                            Save"));
+    // Changed on purpose (owner's report, 29 Oct 2026): Save sits one level in, with Confirm.
+    expect(panel.indexOf(">\n                            Cancel")).toBeLessThan(panel.indexOf(">\n                              Save"));
     expect(panel).toContain("event.stopPropagation(); // Esc here closes the box, not the panel");
     expect(panel).toContain('rows.current[index]?.querySelector("button")?.focus();');
-    expect(panel).toContain('if (typed === "") return setFixing({ ...fixing, error: "Type the word you see on the page." });');
+    // Changed on purpose (#443): Confirm (asRead) sends no typed text.
+    expect(panel).toContain('if (typed === "" && !asRead) return setFixing({ ...fixing, error: "Type the word you see on the page." });');
   });
 
   it("saves through the review's own Edit (saveWord), then asks for the words again", () => {
     const view = read(VIEW);
     expect(view).toContain("const done = await saveWord(detail.id, flag, typed === flag.text ? null : typed);");
-    expect(view).toContain("if (done.ok || done.reload) review.reload();");
+    // Changed on purpose (#443): with the word, so the whole document comes again only when it may
+    // have kept its page as is (attention-settle-443.test.ts).
+    expect(view).toContain("if (done.ok || done.reload) review.reload(flag);");
     expect(view).toContain("onFix={review.status?.can_review && detail.deleted_at === null ? fixWord : undefined}");
     const sheet = css("components/viewer/ScannedText.module.css");
-    expect(sheet).toMatch(/\.fixRow \{[^}]*flex-wrap: wrap;[^}]*min-width: 0;/);
-    expect(sheet).toMatch(/\.fixInput \{[^}]*min-width: 0;/);
+    // Changed on purpose (#431, Tushar 28 Oct 2026): the field on its own line, Cancel and Save
+    // together under it, so Save never drops onto a line of its own in a narrow panel.
+    expect(sheet).toMatch(/\.fixInput \{[^}]*width: 100%;[^}]*min-width: 0;/);
+    // Changed on purpose (owner's report, 29 Oct 2026): unwrapped, Save was cut off at the panel's
+    // edge; the row wraps now, Save still never alone: it wraps with Confirm (text-panel-lines.test.ts).
+    expect(sheet).toMatch(/\.fixActions,\s*\.fixSettle \{[^}]*display: flex;/);
+    const panel = read("components/viewer/ScannedTextPanel.tsx");
+    expect(panel).toMatch(/<div className=\{styles\.fixActions\}>\s*<button type="button" className="btn btn-quiet"[\s\S]*?Cancel[\s\S]*?Save\s*<\/button>\s*<\/div>\s*<\/div>/);
   });
 });
 
@@ -132,7 +153,8 @@ describe("#419 the PDF viewer's hand: drag a zoomed page around", () => {
     const effect = viewer.slice(viewer.indexOf("// The hand (#419), on the viewer's own scroll area"), viewer.indexOf("const overlay = useCallback("));
     expect(effect).toContain("if (!hand || !open || !area) return;");
     expect(effect).toContain('event.target.closest("button, a")');
-    expect(effect).toContain('area.scrollTo({ ...panTo(press, event.clientX, event.clientY), behavior: "instant" });');
+    // Changed on purpose (#454): the pan is worked out on each move and scrolled once a frame,
+    // still never animated (pinned in pdf-smooth-454.test.ts).
     // The engine's exclusion rule keeps its text selection out while the hand is on, and back after.
     expect(effect).toContain('area.dataset.noInteraction = "";');
     expect(effect).toContain("delete area.dataset.noInteraction;");

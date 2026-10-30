@@ -4,11 +4,14 @@
 // be read ([?]) has a double red edge and a light fill, a spot not confirmed is dotted grey. Each mark is a
 // button named for what it marks; its hit area is at least 24 x 24 px (WCAG 2.5.8),
 // and the Attention panel lists the same marks. The text is shown as read (visibleText).
+// #431: a mark whose flagged words a person fixed or confirmed turns green (markChecked).
 
+import { settled } from "@/components/review/wordReview";
 import { markerRect } from "@/components/words/spots";
 import type { PixelRect } from "@/lib/regions";
-import type { PageSummary, ReadingMark } from "@/lib/types";
+import type { PageSummary, ReadingMark, WordFlag } from "@/lib/types";
 import { visibleText } from "./scanned";
+import { sameRegion } from "./selection";
 
 export type MarkQuality = ReadingMark["quality"];
 
@@ -27,11 +30,18 @@ export function marksOnPage(marks: readonly ReadingMark[] | undefined, pageNo: n
   return (marks ?? []).filter((mark) => mark.region.kind === "box" && mark.region.page === pageNo);
 }
 
-/** "Unsure word 'xyz', mark 2 of 5": the button's name, and the Attention panel's words. */
-export function markName(mark: ReadingMark, index: number, total: number): string {
+/** "Unsure word 'xyz', mark 2 of 5" (", checked" once done): the button's name, and the Attention panel's words. */
+export function markName(mark: ReadingMark, index: number, total: number, checked = false): string {
   const text = visibleText(mark.text).trim();
   const words = MARK_WORDS[mark.quality].name;
-  return `${text ? `${words} '${text}'` : words}, mark ${index + 1} of ${total}`;
+  return `${text ? `${words} '${text}'` : words}, mark ${index + 1} of ${total}${checked ? ", checked" : ""}`;
+}
+
+/** True when the words flagged at this mark's spot are all reviewed or resolved (#431); a word
+ * fixed and then undone is open again, so its mark is not. */
+export function markChecked(mark: ReadingMark, flags: readonly Pick<WordFlag, "region" | "state">[]): boolean {
+  const here = flags.filter((flag) => sameRegion(flag.region, mark.region));
+  return here.length > 0 && here.every(settled);
 }
 
 /** The Needs attention tab's short chip (UI audit DD7): the word as read, else what the mark is. */

@@ -49,6 +49,19 @@ def start(signed: Signed, document_id: str, scope: str = "flagged", keys: list[s
     return post(signed, f"/api/documents/{document_id}/ensemble", {"scope": scope, "word_keys": keys or []})
 
 
+def test_ensemble_on_flagged_words_reads_the_review_items_only(db: Database) -> None:
+    # #432: an unsure word (check band) is no review item, so the run counts as the list does.
+    api = Api(db, settings=GEMINI)
+    reviewer = api.new_signed("reviewer")
+    granted(api, reviewer.customer_id)
+    document_id = scan(api, reviewer.customer_id, quality="unsure")
+
+    estimate = reviewer.client.get(f"/api/documents/{document_id}/ensemble/estimate?scope=flagged")
+
+    assert estimate.json() == {"pages": 2, "words": 2, "seconds": 2 * 2 * ensemble_sql.SECONDS_PER_READ}
+    assert len(flags(reviewer, document_id)) == 2
+
+
 def test_a_reviewer_starts_a_run_once_and_the_review_shows_it(db: Database) -> None:
     api, reviewer, document_id = ready(db)
     base = f"/api/documents/{document_id}"

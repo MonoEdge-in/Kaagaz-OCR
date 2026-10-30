@@ -15,6 +15,8 @@
 // One box (Tushar, 24 Oct 2026: "both wordings are the same, make one box"): `inline`, it sits
 // inside the Attention panel under its page, which already says what is wrong, so it gives
 // only the fix in one line and the buttons, with no banner, icon or title of its own.
+// #444: shown for every page on the attention list, one with no problem in the issue table too
+// (only unsure words), so Keep as is is always there; a member is told who can do the rest.
 
 import Link from "next/link";
 import { useCallback, useReducer, useRef, useState } from "react";
@@ -23,6 +25,7 @@ import { BusyLabel } from "@/components/documents/BusyLabel";
 import { ACCEPT_ATTRIBUTE } from "@/components/documents/logic";
 import { Icon } from "@/components/ui/Icon";
 import {
+  KEEP_MEMBER_NOTE,
   READING_AGAIN_TEXT,
   fixErrorText,
   fixQuestion,
@@ -32,6 +35,7 @@ import {
 } from "@/components/viewer/pageProblems";
 import type { Fix } from "@/components/viewer/pageProblems";
 import { acceptPage, readPageAgain, uploadVersion } from "@/lib/api";
+import { withFrom } from "@/lib/backLink";
 import type { DocumentSummary, PageSummary } from "@/lib/types";
 import styles from "./DocumentView.module.css";
 
@@ -73,7 +77,7 @@ export function PageProblems({
     element.focus();
   };
   const problems = problemsOf(page);
-  if (problems.length === 0) return null;
+  if (page.read_quality === "good") return null;
   const kept = keptText(page);
   const readingAgain = page.read_again_requested_at !== null || askedAgain;
   const questionId = `page-${page.page_no}-question`;
@@ -224,6 +228,7 @@ export function PageProblems({
             )}
           </div>
         )}
+        {!canFix && canUpload && kept === null && <p className={styles.problemNote}>{KEEP_MEMBER_NOTE}</p>}
         {state.step === "error" && (
           <p className="error-text" role="alert">
             {state.message}
@@ -231,7 +236,8 @@ export function PageProblems({
         )}
         {upload?.step === "sent" && (
           <p className={styles.problemNote} role="status">
-            {upload.words} <Link href={`/documents/${upload.id}`}>Open it</Link>
+            {upload.words}{" "}
+            <Link href={withFrom(`/documents/${upload.id}`, `/documents/${encodeURIComponent(documentId)}`)}>Open it</Link>
           </p>
         )}
         {upload?.step === "error" && (

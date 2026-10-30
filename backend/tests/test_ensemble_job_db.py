@@ -110,7 +110,9 @@ def org(db: Database) -> Iterator[dict[str, Any]]:
         document = insert_document(
             conn, customer, uploaded_by=user, detected_type="tiff", sha256=hashlib.sha256(data).hexdigest()
         )
-    PgPipelineStore(db).save(scanned(customer, document))
+    # The word 4,850 marked illegible, so Ensemble on flagged words reads it (#432: an unsure
+    # word is a check, which is no review item and not sent).
+    PgPipelineStore(db).save(scanned(customer, document, quality="illegible"))
     storage = MemoryStorage()
     storage.put(customer, document, io.BytesIO(data))
     yield {

@@ -21,6 +21,7 @@ export const ICON_NAMES = [
   "plus",
   "check-seal",
   "eye-alert",
+  "dot",
   "thumbs-up",
   "thumbs-down",
   "open",
@@ -136,6 +137,9 @@ export const ICONS: Record<IconName, readonly IconShape[]> = {
   plus: [path("M12 5v14"), path("M5 12h14")],
   "check-seal": [path(sealPath(8, 9.5, 8)), path("M8.6 12.2l2.3 2.3 4.4-4.6")],
   "eye-alert": [EYE, path("M12 9v3"), path("M12 15v0.01")],
+  // A small solid dot: a value not checked yet (owner, 29 Oct 2026, #453; the dashed ring looked
+  // unsure). Two rings close together, as every icon is strokes.
+  dot: [circle(12, 12, 1.25), circle(12, 12, 2.75)],
   "thumbs-up": [
     path("M7 11v9H4a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h3Z"),
     path("M7 11l4-7a2 2 0 0 1 2.5 1.8L13 10h5.5a2 2 0 0 1 2 2.3l-1.2 6a2 2 0 0 1-2 1.7H7"),

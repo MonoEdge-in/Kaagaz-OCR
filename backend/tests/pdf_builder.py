@@ -27,9 +27,10 @@ class Text:
     y: float  # the baseline, from the bottom of the page
     text: str
     size: float = 12.0
-    # Drawn a quarter turn anticlockwise, so it reads upright on a page with
-    # /Rotate 90 (how a landscape page is often stored).
-    turned: bool = False
+    # Drawn turned anticlockwise by this many degrees (0, 90, 180 or 270), so it
+    # reads upright on a page with that /Rotate (90: how a landscape page is
+    # often stored).
+    turn: int = 0
     # Drawn with text render mode 3 (neither filled nor stroked), as the hidden
     # OCR layer of a searchable scan is: nothing shows, but readers still
     # extract it (PRD 2, the council's ML 4).
@@ -71,6 +72,9 @@ class Page:
     # in /BaseFont and in its descriptor's /FontName, and no font file is
     # embedded, so a viewer draws it with a stand-in font (PRD 2, ML 3).
     font_name: str | None = None
+    # The /CropBox (x0, y0, x1, y1), the part of the page a viewer shows; None
+    # writes none, so the whole MediaBox shows.
+    crop: tuple[float, float, float, float] | None = None
 
 
 # Letters, digits, "+", "-" and "_": a PDF name with nothing to escape.
@@ -114,8 +118,9 @@ def make_pdf(pages: list[Page], *, password_protected: bool = False) -> bytes:
             content = pictures + content
         objects.append(_stream(b"", content))
         content_number = len(objects)
+        crop = "" if page.crop is None else f"/CropBox [{' '.join(map(str, page.crop))}] "
         objects.append(
-            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {page.width} {page.height}] "
+            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {page.width} {page.height}] {crop}"
             f"/Rotate {page.rotate} /Contents {content_number} 0 R ".encode()
             + b"/Resources << "
             + resources
@@ -141,7 +146,7 @@ def _text_content(texts: list[Text]) -> bytes:
         escaped = item.text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
         font, shown = ("F2", _hex_code_points(item.text)) if item.devanagari else ("F1", f"({escaped})")
         font = "F3" if item.bold else font
-        matrix = "0 1 -1 0" if item.turned else "1 0 0 1"
+        matrix = _TURNS[item.turn]
         if item.color is not None:
             red, green, blue = item.color
             drawn = f"BT /{font} {item.size} Tf {matrix} {item.x} {item.y} Tm {shown} Tj ET"
@@ -153,6 +158,9 @@ def _text_content(texts: list[Text]) -> bytes:
         else:
             parts.append(f"BT /{font} {item.size} Tf {matrix} {item.x} {item.y} Tm {shown} Tj ET\n")
     return "".join(parts).encode("cp1252")
+
+
+_TURNS = {0: "1 0 0 1", 90: "0 1 -1 0", 180: "-1 0 0 -1", 270: "0 -1 1 0"}
 
 
 def _hex_code_points(text: str) -> str:

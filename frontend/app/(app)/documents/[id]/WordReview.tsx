@@ -13,7 +13,7 @@
 // review status with both choices equally visible; Export as Data (Vrushit UAT, 25 Oct 2026)
 // saves the text as read, page by page, and the values found as a .txt file, and says so.
 
-import { useCallback, useEffect, useId, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { RefObject } from "react";
 import type { MoreItem } from "@/components/documents/DocumentActions";
 import { ActionDialog } from "@/components/documents/ActionDialog";
@@ -36,6 +36,7 @@ import {
   confirmText,
   failureText,
   keepAll,
+  lastOpenOnPage,
   needsConfirm,
   openChanges,
   resultText,
@@ -63,7 +64,13 @@ export interface WordReview {
   status: ReviewStatus | null;
   flags: WordFlag[];
   failed: boolean;
-  reload(): void;
+  /**
+   * Ask again (#443): with the word a change just made, its words alone (two requests), unless that
+   * change may have kept its page as is (lastOpenOnPage); then, and with no word, the whole document.
+   */
+  reload(word?: Pick<WordFlag, "word_key" | "page_no">): void;
+  /** Ask for the words alone again: a value verified or saved on the summary card (#453). */
+  reloadWords(): void;
   /** A confirm or edit reply: that word as it is now (the counts come with the next load). */
   replace(flag: WordFlag): void;
   /** A run just started, stopped or retried: show it, and follow it while it runs. */
@@ -72,11 +79,19 @@ export interface WordReview {
 
 const following = (loaded: Loaded) => runActive(loaded.status.ensemble.run);
 
-/** enabled: false asks nothing (a rejected file has no words to review). */
-export function useWordReview(documentId: string, version: number, enabled = true): WordReview {
+/** enabled: false asks nothing (a rejected file has no words to review). `reloadDocument`: asks
+ * for the whole document again, which asks for the words too (`version`). */
+export function useWordReview(
+  documentId: string,
+  version: number,
+  enabled: boolean,
+  reloadDocument: () => void,
+): WordReview {
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [failed, setFailed] = useState(false);
   const [asks, setAsks] = useState(0);
+  // The words changed since the flags came: settled, as their answer may not be back yet.
+  const changed = useRef(new Set<string>());
   const load = useCallback(
     () =>
       Promise.all([getReviewStatus(documentId), listFlags(documentId)]).then(([status, flags]) => ({
@@ -122,7 +137,13 @@ export function useWordReview(documentId: string, version: number, enabled = tru
     status: loaded ? gateEnsemble(loaded.status, ensembleLevel) : null,
     flags: loaded?.flags ?? [],
     failed,
-    reload: () => setAsks((n) => n + 1),
+    reload: (word) => {
+      if (word) changed.current.add(word.word_key);
+      if (word && !lastOpenOnPage(loaded?.flags ?? [], word, changed.current)) return setAsks((n) => n + 1);
+      changed.current.clear();
+      reloadDocument();
+    },
+    reloadWords: () => setAsks((n) => n + 1),
     replace: (flag) =>
       setLoaded((now) =>
         now ? { ...now, flags: now.flags.map((each) => (each.word_key === flag.word_key ? flag : each)) } : now,
@@ -263,7 +284,7 @@ export function SummaryBar(props: SummaryBarProps) {
       <div className={styles.bar} role="alert">
         <p className={styles.text}>The words to check could not be loaded. Nothing was changed.</p>
         <div className={styles.actions}>
-          <button type="button" className="btn" onClick={review.reload}>
+          <button type="button" className="btn" onClick={() => review.reload()}>
             <Icon name="refresh" />
             Try again
           </button>

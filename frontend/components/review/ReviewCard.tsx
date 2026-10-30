@@ -16,10 +16,10 @@ import { Tip } from "@/components/ui/Tip";
 import { PageViewer } from "@/components/viewer/PageViewer";
 import { confidenceTip, fieldText, reasonText, voteText } from "@/components/viewer/labels";
 import { CONFIDENCE_NOTE, confidenceText, notSure, routeOrigin } from "@/components/viewer/scanned";
-import { ApiError, resolveReview } from "@/lib/api";
+import { useBackFrom, withFrom } from "@/lib/backLink";
 import { pageLink } from "@/lib/regions";
 import type { ReviewChoice, ReviewItem } from "@/lib/types";
-import { checkChoice, checkReasonsText, focusKeyAction, MAX_TYPED_LENGTH, reasonTag } from "./review";
+import { checkReasonsText, focusKeyAction, MAX_TYPED_LENGTH, reasonTag, sendResolve } from "./review";
 import styles from "./Review.module.css";
 
 /** The id of a card's heading; the queue moves focus there after a resolve. */
@@ -46,6 +46,7 @@ export function ReviewCard({
   onSkip?: () => void;
 }) {
   const { value } = item;
+  const from = useBackFrom(); // the queue's address (reviewHref): the document's back link leads there (#436)
   const [typed, setTyped] = useState("");
   const [remember, setRemember] = useState(false);
   const typedRef = useRef<HTMLInputElement>(null);
@@ -53,30 +54,21 @@ export function ReviewCard({
   const [error, setError] = useState<string | null>(null);
   const idBase = `review-${value.id}`;
   const errorId = `${idBase}-error`;
-  const link = pageLink(item.document_id, value.region.page, value.region);
+  const link = withFrom(pageLink(item.document_id, value.region.page, value.region), from);
   const checks = checkReasonsText(item);
   const confidence = confidenceText(value.confidence, routeOrigin(item.page.route));
 
   const resolve = async (choice: ReviewChoice) => {
     if (busy) return; // Enter in the box while saving: never a second save
-    const check = checkChoice(choice, typed, value.second_reading);
-    if (!check.ok) {
-      setError(check.message);
-      return;
-    }
     setBusy(true);
     setError(null);
-    try {
-      const after = await resolveReview(value.id, check.choice, remember, check.value);
-      onResolved(item, after);
-    } catch (caught) {
-      setError(
-        caught instanceof ApiError
-          ? caught.message
-          : "Could not save this correction. Check your connection, then try again.",
-      );
-      setBusy(false);
+    const done = await sendResolve(value.id, choice, typed, value.second_reading, remember);
+    if (done.ok) {
+      onResolved(item, done.item);
+      return;
     }
+    setError(done.message);
+    setBusy(false);
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLElement>) => {
@@ -125,7 +117,7 @@ export function ReviewCard({
             {item.page.unit !== "cells" && (
               <>
                 {confidence && " · "}
-                <Link href={pageLink(item.document_id, value.region.page, value.region, { scanned: true })}>
+                <Link href={withFrom(pageLink(item.document_id, value.region.page, value.region, { scanned: true }), from)}>
                   See page {value.region.page}&apos;s scanned text
                 </Link>
               </>

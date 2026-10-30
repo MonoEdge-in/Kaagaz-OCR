@@ -100,8 +100,10 @@ describe("5. Fix text: replace a [?] in the Text view", () => {
   // type the word there, saved as the review's Edit, not the review panel (uat-2-document-page.test.ts).
   it("offers Fix text on a line holding a flagged word, for a reviewer, saved as the review's Edit", () => {
     const panel = read("components/viewer/ScannedTextPanel.tsx");
-    expect(panel).toContain("const toFix = first && onFix ? flags.find((each) => lineMarked(each, line.region)) : undefined;");
-    expect(panel).toMatch(/onClick=\{\(\) => \(box \? fixInput\.current\?\.focus\(\) : openFix\(toFix\)\)\}\s*>\s*Fix text/);
+    // Changed on purpose (#431): the line's word mark before the line's own flag (wordToFix), and
+    // Fix text only while the box is shut (fix-text-431.test.ts).
+    expect(panel).toContain("const toFix = first && onFix ? wordToFix(flags, line) : undefined;");
+    expect(panel).toMatch(/onClick=\{\(\) => openFix\(toFix, ask\.draft\)\}\s*>\s*Fix text/);
     const view = read(VIEW);
     expect(view).toContain("onFix={review.status?.can_review && detail.deleted_at === null ? fixWord : undefined}");
     // Review fix (25 Oct 2026): only a person's edit shows as fixed; an Ensemble proposal keeps the text as read.
@@ -140,10 +142,14 @@ describe("6. Needs attention counts what is marked, in a filled circle", () => {
     problems: [{ code: "low_resolution", says: "This page was scanned at low quality, so small letters may be misread.", fix: "Scan it again." }],
   };
 
-  it("says 2 to check for a page with one problem line and two marked words (it said 1)", () => {
-    expect(attentionCount([page])).toBe(2);
+  // Changed on purpose (#443, #444): the count is what is left to settle (toSettle). The two unsure
+  // words are no review item (#432), so this page is one thing to settle (Keep as is), plus each
+  // word still open on the review list.
+  it("says 1 to check for a page with a problem no word stands for, and adds each word still open", () => {
+    expect(attentionCount([page], [])).toBe(1);
+    expect(attentionCount([page], [{ page_no: 1 }, { page_no: 1 }])).toBe(3);
     const html = renderToStaticMarkup(
-      createElement(AttentionPanel, { status: "ready", pages: [page], current: null, marks: [], onPage: () => undefined, onMark: () => undefined }),
+      createElement(AttentionPanel, { status: "ready", pages: [page], open: [{ page_no: 1, text: "Rs 4,850", reason_text: "smudged print" }], current: null, marks: [], onPage: () => undefined, onMark: () => undefined, onCheck: () => undefined }),
     );
     expect(html).toContain("2 to check");
     expect(html).toContain("2 reading problems on page 1.");

@@ -72,6 +72,38 @@ export function panTo(
   return { left: press.left - (x - press.x), top: press.top - (y - press.y) };
 }
 
+/**
+ * The page most in view between `top` and `bottom`, by the share of it shown, the first of a tie:
+ * the PDF engine's own rule for its current page (#454, review panel). null when none is in view.
+ */
+export function mostVisiblePage(
+  pages: readonly { page: number; top: number; bottom: number }[],
+  top: number,
+  bottom: number,
+): number | null {
+  let best: { page: number; shown: number } | null = null;
+  for (const each of pages) {
+    const shown = (Math.min(each.bottom, bottom) - Math.max(each.top, top)) / (each.bottom - each.top);
+    if (shown > 0 && (!best || shown > best.shown || (shown === best.shown && each.page < best.page))) best = { page: each.page, shown };
+  }
+  return best?.page ?? null;
+}
+
+type Rect = Pick<DOMRectReadOnly, "left" | "top" | "width" | "height">;
+type ScrollArea = Pick<Element, "scrollLeft" | "scrollTop" | "clientLeft" | "clientTop" | "clientWidth" | "clientHeight">;
+
+/**
+ * The scroll that puts a drawn rect's centre in the middle of a scroll area (#446), both in
+ * screen pixels (getBoundingClientRect), the area's own `box` taken with its borders. The browser
+ * keeps it in range, so a spot near a page's edge goes as far towards the middle as it can.
+ */
+export function centredScroll(rect: Rect, box: Pick<Rect, "left" | "top">, area: ScrollArea): { left: number; top: number } {
+  return {
+    left: area.scrollLeft + rect.left + rect.width / 2 - (box.left + area.clientLeft + area.clientWidth / 2),
+    top: area.scrollTop + rect.top + rect.height / 2 - (box.top + area.clientTop + area.clientHeight / 2),
+  };
+}
+
 /** The next zoom step in or out; stays put at either end. */
 export function stepZoom(current: number, direction: "in" | "out"): number {
   const index = ZOOM_STEPS.findIndex((step) => step >= current - 1e-9);

@@ -20,6 +20,7 @@ import { beingRead } from "@/components/viewer/reprocess";
 import { ApiError, UPLOAD_CALLS_PER_MINUTE, getBatch, listDocuments, uploadDocument } from "@/lib/api";
 import { createPoller, progressSignature } from "@/lib/poll";
 import type { BatchView, DocumentList, DocumentSummary } from "@/lib/types";
+import { settle } from "./fake-clock";
 
 const LIMIT = Number(/^RATE_LIMIT_PER_MINUTE=(\d+)$/m.exec(readFileSync(join(__dirname, "..", "..", ".env.example"), "utf8"))?.[1]);
 const UPLOAD_PATH = "/api/documents/upload-sessions";
@@ -256,8 +257,11 @@ describe("the request budget of a bulk upload", () => {
       uploads.push(Promise.all(sending));
       await pass(10_000); // the next drop 10 s later, while these are still going
     }
+    let stored = false;
+    const all = Promise.all(uploads).finally(() => (stored = true));
+    await settle(() => stored);
     await pass(12 * 60_000);
-    await Promise.all(uploads);
+    await all;
 
     expect(api.docs).toHaveLength(60);
     expect(api.docs.every((doc) => Date.now() >= doc.readyAt)).toBe(true);
@@ -297,11 +301,7 @@ describe("any number of files may be queued (Tushar, 25 Oct 2026)", () => {
     const all = Promise.all(uploads).then(() => {
       settled = true;
     });
-    await pass(35 * 60_000); // 600 files x 4 calls at UPLOAD_CALLS_PER_MINUTE
-    // Each file's fingerprint is hashed with the real crypto, outside the fake clock, so on a busy
-    // machine the last files can finish hashing after that window and then wait on a fake timer
-    // that never fires (it hung, 25 Oct 2026). Keep the clock moving until all settle, bounded.
-    for (let extra = 0; !settled && extra < 30; extra += 1) await pass(60_000);
+    await settle(() => settled, 25_000); // 600 files x 4 calls at UPLOAD_CALLS_PER_MINUTE: about 30 minutes
     await all;
     expect(errors).toEqual([]); // no batch_full, no "Too many requests"
     expect(api.docs).toHaveLength(600);
@@ -316,7 +316,7 @@ describe("a 429 is waited out, never hammered", () => {
     const waiting: boolean[] = [];
     let result: unknown = null;
     void uploadDocument(new File(["%PDF-1.7"], "deed.pdf"), "u1", () => {}, undefined, undefined, undefined, undefined, undefined, (w) => waiting.push(w)).then((reply) => (result = reply));
-    await pass(30_000);
+    await settle(() => result !== null);
     expect(result).toMatchObject({ duplicate: false });
     const refused = api.sent.filter((request) => request.status === 429);
     expect(refused).toHaveLength(3); // more than the 4 tries a failing server gets would not matter either

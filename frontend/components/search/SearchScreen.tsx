@@ -20,6 +20,7 @@ import { EmptyState } from "@/components/ui/EmptyState/EmptyState";
 import { Icon } from "@/components/ui/Icon/Icon";
 import { RadioPill } from "@/components/ui/Segmented/Segmented";
 import { ApiError, listDocuments, searchDocuments } from "@/lib/api";
+import { useBackFrom, withFrom } from "@/lib/backLink";
 import { docTypeLabel, statusChip } from "@/lib/format";
 import type { DocumentList, DocumentSearch } from "@/lib/types";
 import styles from "./Search.module.css";
@@ -177,6 +178,7 @@ function NameResults({
   q: string;
   onRetry(): void;
 }) {
+  const from = useBackFrom(); // this search, for the documents' back link (#436)
   if (error !== null) {
     return (
       <div className={styles.error} role="alert">
@@ -209,7 +211,7 @@ function NameResults({
           const chip = statusChip(document.status);
           return (
             <li key={document.id} className={styles.name}>
-              <Link href={`/documents/${document.id}`} className={styles.nameLink}>
+              <Link href={withFrom(`/documents/${document.id}`, from)} className={styles.nameLink}>
                 {document.display_name}
               </Link>
               <span className={styles.facts}>

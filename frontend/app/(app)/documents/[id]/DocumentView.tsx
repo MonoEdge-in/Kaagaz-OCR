@@ -45,7 +45,7 @@
 // (/review, its "By document" view, or ?document_id=), and the summary card shows its facts.
 
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, KeyboardEvent, ReactNode, RefObject } from "react";
 import { tabAfterKey } from "@/components/admin/logic";
 import { RowMenu } from "@/components/admin/RowMenu";
@@ -93,13 +93,14 @@ import { PdfDocumentViewer } from "@/components/viewer/PdfDocumentViewer";
 import { ViewerBoundary } from "@/components/viewer/ViewerBoundary";
 import { fieldText } from "@/components/viewer/labels";
 import { lowResolutionText } from "@/components/viewer/panels";
+import { pagesAround, usePageCache } from "@/components/viewer/usePageCache";
 import type { Spot } from "@/components/viewer/panels";
 import { beingRead, canReprocess, loadFailure, settledText } from "@/components/viewer/reprocess";
 import { highlightsOf, initialSelection, pageChange } from "@/components/viewer/selection";
 import { selectSpot } from "@/components/viewer/selection";
 import type { Selection } from "@/components/viewer/selection";
 import { canReview } from "@/components/review/review";
-import { flagDomId, saveWord, trustText } from "@/components/review/wordReview";
+import { flagDomId, saveWord, settled, trustText } from "@/components/review/wordReview";
 import { Timeline } from "@/components/activity/Timeline";
 import { ACTIVITY_TEXT } from "@/components/activity/words";
 import { DetailsPanel } from "@/components/files/DetailsPanel";
@@ -116,6 +117,7 @@ import { progressSignature } from "@/lib/poll";
 import { markReceived } from "@/lib/timeLeft";
 import { decodeRegion } from "@/lib/regions";
 import { useSession } from "@/lib/session";
+import { backFrom } from "@/lib/backLink";
 import type {
   DocumentDetail,
   DocumentSummary,
@@ -132,7 +134,7 @@ import { PageProblems } from "./PageProblems";
 import { ReadAgain } from "./ReadAgain";
 import { ReviewPanel } from "./ReviewPanel";
 import { StoryPanel } from "./StoryPanel";
-import { ScriptText, SummaryCard } from "./SummaryCard";
+import { ScriptText, SummaryCard, withResolved } from "./SummaryCard";
 import styles from "./DocumentView.module.css";
 import { ExportDialog, SummaryBar, documentMoreItems, exportData, useEnsembleStart, useWordReview } from "./WordReview";
 
@@ -142,6 +144,7 @@ export interface DocumentViewProps {
   regionParam: string | null;
   scannedParam: string | null;
   wordsParam: string | null;
+  fromParam: string | null;
 }
 
 // Said after "Highlighted: <field>" when the spot came in a link (a source card, a search
@@ -155,11 +158,11 @@ type Loaded =
   | { attempt: number; detail: DocumentDetail }
   | { attempt: number; error: ReturnType<typeof loadFailure> };
 
-function BackLink() {
+function BackLink({ to }: { to: { href: string; name: string } | null }) {
   return (
-    <Link href="/documents" className={styles.back}>
+    <Link href={to?.href ?? "/documents"} className={styles.back}>
       <Icon name="chevron-left" />
-      Back to documents
+      Back to {to?.name ?? "documents"}
     </Link>
   );
 }
@@ -170,6 +173,7 @@ export function DocumentView({
   regionParam,
   scannedParam,
   wordsParam,
+  fromParam,
 }: DocumentViewProps) {
   const { me } = useSession();
   const [attempt, setAttempt] = useState(0);
@@ -207,7 +211,11 @@ export function DocumentView({
   const reviewHeading = useRef<HTMLHeadingElement | null>(null);
   // KZ-007: a rejected file has no words to review, so nothing is asked for it.
   const loadedStatus = loaded && "detail" in loaded ? loaded.detail.status : null;
-  const review = useWordReview(documentId, reloads, loadedStatus !== null && loadedStatus !== "rejected");
+  // #443: after a word change the whole document is asked for again only when it may have kept its
+  // page as is (useWordReview's reload), so the fix box below stays mounted otherwise.
+  const review = useWordReview(documentId, reloads, loadedStatus !== null && loadedStatus !== "rejected", () =>
+    setReloads((n) => n + 1),
+  );
   const ensemble = useEnsembleStart(documentId, review, setAnnouncement);
   // File management A5: the Activity tab's timeline, every version of the family; asked
   // again after each reload (a label or owner change shows at once).
@@ -246,11 +254,16 @@ export function DocumentView({
     signature: (summary) => progressSignature([summary]),
   });
 
+  // #453: counts the changes made here (a value verified or saved on the summary card). A reply
+  // asked for before one would put the old value back, so it is dropped and asked for again.
+  const changes = useRef(0);
   useEffect(() => {
     let cancelled = false;
+    const asked = changes.current;
     getDocument(documentId)
       .then((detail) => {
         if (cancelled) return;
+        if (asked !== changes.current) return setReloads((n) => n + 1);
         setLoaded({ attempt, detail });
         loadedUnderstanding.current = detail.understanding === true;
         if (beingRead(detail.status) || loadedUnderstanding.current) poll.later();
@@ -260,7 +273,9 @@ export function DocumentView({
         settling.current = null;
       })
       .catch((error: unknown) => {
-        if (!cancelled) setLoaded({ attempt, error: loadFailure(error) });
+        if (cancelled) return;
+        if (asked !== changes.current) return setReloads((n) => n + 1);
+        setLoaded({ attempt, error: loadFailure(error) });
       });
     return () => {
       cancelled = true;
@@ -276,10 +291,15 @@ export function DocumentView({
     : chosen && chosen.linkKey === linkKey
       ? chosen.selection
       : initialSelection(shown, pageParam, regionParam);
-  const words = useViewerWords(documentId, selection ? selection.pageNo : null);
+  // #454: a PDF scrolls through all its pages, so the marks of the pages beside the page shown are
+  // loaded too, and every loaded page's marks go to the PDF viewer; the panels keep the page's own.
+  const scroll = shown?.detected_type === "pdf" ? shown.pages.map((p) => p.page_no) : [];
+  const pageNo = selection ? selection.pageNo : null;
+  const words = useViewerWords(documentId, pageNo, scroll);
   const stickyViewer = useMediaQuery(STICKY_VIEWER_QUERY);
-  const markedPage = shown && selection ? shown.pages.find((p) => p.page_no === selection.pageNo) : undefined;
-  const readingMarks = usePageMarks(documentId, markedPage, reloads);
+  const marksByPage = usePageMarks(documentId, shown?.pages ?? [], pageNo, scroll, reloads);
+  const readingMarks = (pageNo !== null && marksByPage.get(pageNo)) || NO_MARKS;
+  const marksAround = useMemo(() => [...marksByPage.values()].flat(), [marksByPage]);
   const yourWords = linkWords(wordsParam);
   const wordsFound = useDocumentWords(documentId, yourWords, reloads);
 
@@ -304,7 +324,7 @@ export function DocumentView({
   if ("error" in current) {
     return (
       <div className="page page-wide">
-        <BackLink />
+        <BackLink to={backFrom(fromParam)} />
         <div className={styles.errorBanner} role="alert">
           <Icon name="alert" className={styles.errorIcon} />
           <div className={styles.errorBody}>
@@ -358,7 +378,12 @@ export function DocumentView({
     setAdding({ text, region });
   };
   const hasScannedText = page !== undefined && page.unit !== "cells";
-  const attention = attentionCount(detail.pages);
+  // The words still to settle are marked in Scanned text (High: no mark). On the page every
+  // flagged word is marked, a settled one in green (#431), so a fix shows where it was made.
+  const openFlags = review.flags.filter((flag) => !settled(flag));
+  // #443: one rule, toSettle; until the words come (or if they cannot), the pages' marked spots count.
+  const openWords = review.status === null ? null : openFlags;
+  const attention = attentionCount(detail.pages, openWords);
   // File management P1 (Changed on purpose, PRD 1 screens): Details (was Overview), Text (was
   // Scanned text), and Questions, Versions and Activity; Needs attention and My words stay.
   // Document panel UX (25 Oct 2026): Needs attention only with something in it (or while
@@ -388,10 +413,14 @@ export function DocumentView({
     setAnnouncement(`Showing ${name} on page ${mark.region.page}.`);
     if (mark.region.kind === "box" && hasScannedText) setTab("scanned");
   };
-  const lowResolution = page ? lowResolutionText(page) : null;
-  // The words still to settle are marked on the page and in Scanned text (High: no mark).
-  const openFlags = review.flags.filter((flag) => flag.state !== "reviewed" && flag.state !== "resolved");
+  const lowNote = (p: PageSummary) => (p.problems?.length ? null : lowResolutionText(p));
+  const lowResolution = page ? lowNote(page) : null;
+  // #454: a PDF scrolls through every page under one notice, so if any page has it, its room is
+  // kept on all of them, hidden where it does not apply: it came and went with the page in view
+  // and resized the viewer mid-scroll, which then set its scroll again.
+  const lowRoom = detail.detected_type === "pdf" ? (detail.pages.map(lowNote).find((note) => note !== null) ?? null) : null;
   const pageFlags = page ? openFlags.filter((flag) => flag.page_no === page.page_no) : [];
+  const pageMarks = page ? review.flags.filter((flag) => flag.page_no === page.page_no) : [];
   const toWord = (key: string) => {
     setCurrentFlag(key);
     const flag = review.flags.find((each) => each.word_key === key);
@@ -421,7 +450,7 @@ export function DocumentView({
   const fixWord = async (flag: WordFlag, typed: string) => {
     const done = await saveWord(detail.id, flag, typed === flag.text ? null : typed);
     if (done.ok) setAnnouncement(done.message);
-    if (done.ok || done.reload) review.reload();
+    if (done.ok || done.reload) review.reload(flag);
     return done;
   };
   const exitReview = () => {
@@ -439,14 +468,16 @@ export function DocumentView({
       ? ` · ${detail.page_count} ${detail.page_count === 1 ? "page" : "pages"}`
       : "";
   const trail = detail.folder ? folderTrail(detail.folder) : [];
-  // "Back to Land & Legal": the folder it is filed in, else Documents, or Trash.
+  // "Back to chat": the screen that opened it (#436); else "Back to Land & Legal": the folder
+  // it is filed in, else Documents, or Trash.
   const folder = trail.at(-1);
   const back =
-    detail.deleted_at !== null
+    backFrom(fromParam) ??
+    (detail.deleted_at !== null
       ? { href: "/documents?trash=1", name: "Trash" }
       : folder
         ? { href: libraryHref({ ...ALL_DOCUMENTS, folderId: folder.id }), name: folder.name }
-        : { href: "/documents", name: "documents" };
+        : { href: "/documents", name: "documents" });
   const chip = statusChip(detail.status);
   // Trash means deleted: no download from there, only Restore (the Trash view).
   const download = detail.deleted_at === null ? downloadHref(detail) : null;
@@ -478,10 +509,10 @@ export function DocumentView({
       <Toast message={toast} onClose={() => setToast(null)} />
       <div ref={layoutRef} className={styles.layout} style={{ "--split": `${split}%` } as CSSProperties}>
         <section ref={viewerRef} id="document-page" className={styles.viewer} aria-label="Page">
-          {lowResolution && !page?.problems?.length && (
-            <p className={styles.trashNotice} role="note">
+          {(lowResolution ?? lowRoom) && (
+            <p className={styles.trashNotice} role="note" style={lowResolution ? undefined : { visibility: "hidden" }}>
               <Icon name="alert" />
-              <span>{lowResolution}</span>
+              <span>{lowResolution ?? lowRoom}</span>
             </p>
           )}
           {/* SoW 19 Oct 2026: a PDF in extend-hq/ui's viewer, every page in one scroll; photos
@@ -498,13 +529,13 @@ export function DocumentView({
                   highlights={highlightsOf(selection)}
                   highlightNote={highlightNote}
                   download={download}
-                  marks={words.markers}
+                  marks={words.markersAround}
                   activeMark={words.activeId}
-                  readingMarks={readingMarks}
+                  readingMarks={marksAround}
                   onMark={showMark}
                   hotMark={hotMark}
                   onHotMark={setHotMark}
-                  flags={openFlags}
+                  flags={review.flags}
                   activeFlag={reviewing ? currentFlag : null}
                   onFlag={pressFlag}
                   wordBoxes={wordBoxes}
@@ -527,7 +558,7 @@ export function DocumentView({
               onMark={showMark}
               hotMark={hotMark}
               onHotMark={setHotMark}
-              flags={pageFlags}
+              flags={pageMarks}
               activeFlag={reviewing ? currentFlag : null}
               onFlag={pressFlag}
               wordBoxes={wordBoxes}
@@ -591,7 +622,21 @@ export function DocumentView({
                 onClosed={() => menuButton.current?.focus()}
               />
             )}
-            <SummaryCard detail={detail} active={selection?.region ?? null} onShow={showSpot} />
+            <SummaryCard
+              detail={detail}
+              active={selection?.region ?? null}
+              onShow={showSpot}
+              reviewer={canReview(me.user.role) && detail.deleted_at === null}
+              onResolved={(value, message) => {
+                // #453: the reply's value in place at once, never undone by an older reply; the
+                // words asked for again (a flagged value is one of them); said aloud.
+                changes.current += 1;
+                setLoaded((shown) => (shown && "detail" in shown ? { ...shown, detail: withResolved(shown.detail, value) } : shown));
+                review.reloadWords();
+                setAnnouncement(message);
+              }}
+              onStale={() => setReloads((n) => n + 1)}
+            />
             {/* Can I trust it: one status line; the counts and this document's facts under More details. */}
             {detail.status !== "rejected" && (
               <SummaryBar
@@ -770,10 +815,12 @@ export function DocumentView({
                     }
                     status={detail.status}
                     pages={detail.pages}
+                    open={openWords}
                     current={page?.page_no ?? null}
                     marks={readingMarks}
                     onPage={changePage}
                     onMark={showMark}
+                    onCheck={(pageNo) => startReview(openFlags.find((flag) => flag.page_no === pageNo))}
                     hot={hotMark}
                     onHot={setHotMark}
                   />
@@ -1009,28 +1056,22 @@ function SplitHandle({
 }
 
 /**
- * The reading problems of the page shown (PRD 5 U3), from its readings: only for an
- * uncertain or unreadable page, asked again after each reload. [] until they come, and
- * if they can't be loaded (the banner still says what is wrong).
+ * The reading problems of the page shown (PRD 5 U3), and of the pages beside it in `scroll`
+ * (#454), by page, from their readings: only for an uncertain or unreadable page, each kept once
+ * loaded, asked again after each reload. None for a page until they come, nor if they can't be
+ * loaded (the banner still says what is wrong).
  */
-function usePageMarks(documentId: string, page: PageSummary | undefined, version: number): ReadingMark[] {
-  const pageNo = page && page.read_quality !== "good" ? page.page_no : null;
-  const key = pageNo === null ? null : `${documentId}:${pageNo}:${version}`;
-  const [loaded, setLoaded] = useState<{ key: string; marks: ReadingMark[] } | null>(null);
-  useEffect(() => {
-    if (key === null || pageNo === null) return;
-    let cancelled = false;
-    getPageReadings(documentId, pageNo).then(
-      (readings) => {
-        if (!cancelled) setLoaded({ key, marks: readings.marks ?? [] });
-      },
-      () => undefined,
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [documentId, pageNo, key]);
-  return loaded && loaded.key === key ? loaded.marks : NO_MARKS;
+function usePageMarks(
+  documentId: string,
+  pages: readonly PageSummary[],
+  pageNo: number | null,
+  scroll: readonly number[],
+  version: number,
+): ReadonlyMap<number, ReadingMark[]> {
+  const unsure = new Set(pages.filter((p) => p.read_quality !== "good").map((p) => p.page_no));
+  return usePageCache(`${documentId}:${version}`, pagesAround(pageNo, scroll).filter((p) => unsure.has(p)), (p) =>
+    getPageReadings(documentId, p).then((readings) => readings.marks ?? []),
+  );
 }
 
 const NO_MARKS: ReadingMark[] = [];

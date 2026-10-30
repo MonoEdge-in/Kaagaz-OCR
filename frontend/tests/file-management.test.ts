@@ -341,7 +341,7 @@ describe("the Versions tab (V9, V10, V12)", () => {
     expect(html).toContain("Linked from a suggestion by Priya");
     expect(html).toContain("Uploaded by Priya");
     expect(html).toContain(">Current<");
-    expect(html).toContain('href="/documents/d3"');
+    expect(html).toContain('href="/documents/d3?from=%2Fdocuments%2Fd1"'); // back to version 1 (#436)
     expect(html).toContain('href="/documents/d1/compare?with=d3"');
     // Version 2 is current, so only version 1 offers Make current.
     expect(html.match(/>Make current</g)).toHaveLength(1);
@@ -726,7 +726,9 @@ describe("the folder screen (F5)", () => {
   it("shows the Grid view as cards, and remembers List or Grid per person", () => {
     const html = render(createElement(DocumentsGrid, { items: [doc()], label: "Your documents" }));
     expect(html).toContain("7/12 Survey 44 Wakad.pdf");
-    expect(html).toContain("Owner: Priya");
+    // Changed on purpose (owner, 29 Oct 2026, #452): the card's foot is "Priya · 16 Oct 2026";
+    // "Owner" and "Last updated" are read out, not shown.
+    expect(html).toContain('<span class="visually-hidden">Owner: </span>Priya</span>');
     expect(readViewMode("u1")).toBe("list"); // no storage in node: List
     const store = new Map<string, string>();
     vi.stubGlobal("localStorage", { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v) });

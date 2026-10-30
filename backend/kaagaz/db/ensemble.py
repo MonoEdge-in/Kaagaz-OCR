@@ -208,7 +208,7 @@ def plan(conn: Connection, customer_id: str, document_id: str, scope: str, keys:
     review = word_review.load(conn, customer_id, document_id)
     if scope == "flagged":
         latest = review.latest()
-        chosen = [flag for flag in review.flags if word_review.state(flag, latest) == word_review.OPEN]
+        chosen = [flag for flag in review.listed if word_review.state(flag, latest) == word_review.OPEN]
     else:
         by_key = {flag.key: flag for flag in review.flags}
         if any(key not in by_key for key in keys):

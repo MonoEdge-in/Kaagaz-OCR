@@ -158,11 +158,15 @@
   min-width: 0;
 }
 
+/* Issue 453: the value is one line, cut short with "…" (whole in its tooltip; Show on page shows
+   it, and a screen reader reads it whole), so the slot at the row's end sits at the same place on
+   every row. The name wraps: a tooltip is out of reach on touch and from the keyboard. */
 .keyFact dt {
   flex: 0 0 9rem;
   min-width: 0;
   color: var(--text-secondary);
   font-size: var(--fs-base);
+  overflow-wrap: anywhere;
 }
 
 .keyFact dd {
@@ -172,7 +176,111 @@
   align-items: center;
   gap: var(--space-2);
   min-width: 0;
+  min-height: var(--badge-h);
   margin: 0;
+}
+
+.keyFact .factValue {
+  display: block;
+  flex: 1 1 0;
+  min-width: 0;
+  margin-inline-end: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The row's end: a reviewer's ⋯ menu or the value's mark, one size on every row; the menu
+   button fills it. */
+.factEnd {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: var(--badge-h);
+  height: var(--badge-h);
+}
+
+.factEnd .factMenu {
+  --btn-fg: var(--text-secondary);
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  min-height: 0;
+}
+
+/* Not checked yet: the same small dot a member sees beside the value, on the ⋯ glyph's shoulder.
+   Its words are the button's name and tooltip, so the dot is never the only sign. */
+.factMenu::after {
+  content: "";
+  position: absolute;
+  top: calc(50% - 9px);
+  left: calc(50% + 5px);
+  width: 5px;
+  height: 5px;
+  border-radius: var(--k-r-pill);
+  background: currentColor;
+}
+
+@media (pointer: coarse) {
+  .factEnd {
+    width: var(--h-lg);
+    height: var(--h-lg);
+  }
+}
+
+/* A phone: the name on its own line above the value, so a long Devanagari name has the width. */
+@media (max-width: 639.98px) {
+  .keyFact dt {
+    flex-basis: 100%;
+  }
+}
+
+/* Edit value…: the field takes the value's place, Cancel and Save after it (under it when
+   narrow, together at the end). */
+.factEdit {
+  display: flex;
+  flex: 1 1 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.factField {
+  flex: 1 1 100%;
+  min-width: 0;
+}
+
+.factError {
+  display: flex;
+  flex: 1 1 100%;
+  align-items: center;
+  gap: var(--space-1);
+  margin: 0;
+}
+
+/* One quiet line under the facts in place of a pill on each (owner, 29 Oct 2026): how many
+   are not checked yet, after the dot their marks show, so it also says what the dot means. */
+.toVerify {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--fs-base);
+}
+
+.toVerify svg {
+  flex: none;
+}
+
+/* Review keeps its 44px touch height with its word on the line's middle (issue 453). */
+.toVerify a {
+  display: inline-flex;
+  align-items: center;
 }
 
 /* Motion answers an action, and the summary rises in once when it first appears. */
@@ -464,7 +572,8 @@
 }
 
 /* A value is a word in a line, beside its Add meaning button: both sit on the
-   line's middle (vertical-align), not the value's baseline. */
+   line's middle (vertical-align), not the value's baseline. Underlined only on hover and
+   focus (.quiet-link, owner 29 Oct 2026). */
 .valueButton {
   display: inline-block;
   min-height: 24px;
@@ -478,8 +587,6 @@
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   text-align: start;
-  text-decoration: underline;
-  text-underline-offset: 0.18em;
   cursor: pointer;
   overflow-wrap: anywhere;
 }

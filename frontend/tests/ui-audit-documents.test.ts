@@ -302,14 +302,17 @@ describe("the documents list (D1, D2, D3, D6, D9, D10, D11)", () => {
     // Changed on purpose (plain words, 25 Oct 2026): "to check", never "flagged".
     expect(flaggedShort(counts)).toEqual({ shown: "7 to check", spoken: "7 words to check" });
     expect(flaggedShort({ ...counts, values_to_review: 1 }).spoken).toBe("1 word to check");
+    // Changed on purpose (owner, 29 Oct 2026, #452): one count shown, words and pages together,
+    // so it never gets cut beside Review; the words and pages apart are its title and read out.
     expect(flaggedShort({ ...counts, pages_unreadable: 2 })).toEqual({
-      shown: "7 to check · 2 pages to check",
+      shown: "9 to check",
       spoken: "7 words to check and 2 pages to check",
     });
     expect(flaggedShort({ ...counts, values_to_review: 0, pages_unreadable: 1 })).toEqual({
-      shown: "1 page to check",
+      shown: "1 to check",
       spoken: "1 page to check",
     });
+    expect(flaggedShort({ ...counts, values_to_review: 0 }).shown).toBe("");
   });
 
   it("sets the whole table row in the UI's sans with tabular figures", () => {

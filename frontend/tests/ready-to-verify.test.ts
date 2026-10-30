@@ -38,9 +38,11 @@ describe("Ready to verify", () => {
   it("is verified in Review, by a reviewer or an admin, one value or all, for one document too", () => {
     expect([canReview("member"), canReview("reviewer"), canReview("admin")]).toEqual([false, true, true]);
     expect(read("app/(app)/documents/[id]/DocumentView.tsx")).not.toMatch(/resolveReview|Verify all|verifyAllValues/);
+    // Changed on purpose (review panel, 29 Oct 2026): through Review's shared send step (review.ts).
     expect(read("components/review/ReviewCard.tsx")).toContain(
-      "const after = await resolveReview(value.id, check.choice, remember, check.value);",
+      "const done = await sendResolve(value.id, choice, typed, value.second_reading, remember);",
     );
+    expect(read("components/review/review.ts")).toContain("await resolveReview(valueId, check.choice, remember, check.value)");
     const queue = read("components/review/ReviewQueue.tsx");
     expect(queue).toContain("await verifyAllReview(verifyAllFilters(documentId, reason));");
     expect(queue).toContain('const documentId = searchParams.get("document_id") || undefined;');
@@ -79,23 +81,18 @@ describe("the confidence tooltip", () => {
     expect(confidenceTip(Number.NaN)).toBe("Confidence not measured");
   });
 
-  it("makes the badge focusable and described only when it has a tooltip", () => {
-    const plain = renderToStaticMarkup(createElement(LabelBadge, { label: "needs_review" }));
-    expect(plain).not.toContain("tabindex");
-    expect(plain).not.toContain("role=\"tooltip\"");
-    expect(plain).not.toContain("%");
-
-    const tipped = renderToStaticMarkup(createElement(LabelBadge, { label: "needs_review", confidence: 0.716 }));
-    const described = /tabindex="0" aria-describedby="([^"]+)"/.exec(tipped);
+  // Changed on purpose (owner, 29 Oct 2026): a value's label is a quiet mark with no visible word,
+  // so it always has a tooltip (its word, and why when known), and is always focusable to reach it.
+  // No caller passed a confidence to it; the Review card keeps the confidence tooltip (below).
+  it("makes the mark focusable and described by its tooltip, which never shows a number by default", () => {
+    const mark = renderToStaticMarkup(createElement(LabelBadge, { label: "needs_review", reason: "model_chosen" }));
+    const described = /tabindex="0" aria-describedby="([^"]+)"/.exec(mark);
     expect(described).not.toBeNull();
-    expect(tipped).toContain(`id="${described?.[1]}" role="tooltip"`);
-    expect(tipped).toMatch(/role="tooltip" class="tip tabular" hidden="">Confidence 72%<\/span>/);
-    // The percentage is only in the hidden tooltip, never shown by default.
-    expect(tipped.replace(/<span[^>]*role="tooltip"[^>]*>[^<]*<\/span>/, "")).not.toContain("%");
-
-    const unmeasured = renderToStaticMarkup(createElement(LabelBadge, { label: "verified", confidence: null }));
-    expect(unmeasured).toContain(">Confidence not measured</span>");
-    expect(unmeasured).toContain("Verified");
+    expect(mark).toContain(`id="${described?.[1]}" role="tooltip"`);
+    expect(mark).toMatch(
+      /role="tooltip" class="tip tabular" hidden="">Ready to verify: not checked yet\. Found by the AI\. Check it against the page\.<\/span>/,
+    );
+    expect(mark).not.toContain("%");
   });
 
   it("hides on Esc, shows after a short delay, on hover and on focus", () => {

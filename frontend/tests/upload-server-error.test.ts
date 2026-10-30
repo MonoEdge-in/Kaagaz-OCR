@@ -5,6 +5,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { uploadStateText } from "@/components/documents/logic";
 import { uploadDocument } from "@/lib/api";
+import { settle } from "./fake-clock";
 
 const SESSION = { id: "s1", part_size: 8 * 1024 * 1024, part_count: 1 };
 const DOCUMENT = { id: "d1", display_name: "deed.pdf", status: "received" };
@@ -47,18 +48,6 @@ function stubApi(first: "server" | "connection") {
   vi.stubGlobal("XMLHttpRequest", FakeXhr);
 }
 
-// Fixed (#239, 27 Oct 2026): the clock moves only while the upload waits on a timer. The file's
-// hash (crypto.subtle) takes real time, and a slow machine used up the 10 s before the first call.
-async function pass(ms: number, isDone: () => boolean) {
-  for (let left = ms, turns = 0; left > 0 && !isDone() && turns < 100_000; turns++) {
-    await new Promise((resolve) => setImmediate(resolve));
-    if (vi.getTimerCount() > 0) {
-      vi.advanceTimersByTime(100);
-      left -= 100;
-    }
-  }
-}
-
 async function waitsSaid(first: "server" | "connection"): Promise<[boolean, string | undefined][]> {
   stubApi(first);
   const said: [boolean, string | undefined][] = [];
@@ -66,7 +55,7 @@ async function waitsSaid(first: "server" | "connection"): Promise<[boolean, stri
   void uploadDocument(new File(["%PDF-1.7"], "deed.pdf"), "u1", () => {}, undefined, undefined, undefined, undefined, undefined, (waiting, why) =>
     said.push([waiting, why]),
   ).then(() => (done = true));
-  await pass(10_000, () => done);
+  await settle(() => done);
   expect(done).toBe(true); // tried again, and stored
   return said;
 }

@@ -36,6 +36,7 @@ import { Icon } from "@/components/ui/Icon";
 import { LabelBadge } from "@/components/viewer/LabelBadge";
 import { understoodNotes } from "@/components/words/words";
 import { pinSource } from "@/lib/api";
+import { useBackFrom, withFrom } from "@/lib/backLink";
 import type { Answer, Message, SourcePin } from "@/lib/types";
 import {
   answerCardId,
@@ -103,6 +104,7 @@ function Script({ text }: { text: string }) {
  * citing nothing, opens at its start); then how many more are in Sources. #413: with `shown`,
  * only the first that many are listed, the rest in a closed "N more documents" disclosure. */
 function DocumentList({ answer, terms, shown }: { answer: Answer; terms: readonly string[]; shown?: number }) {
+  const from = useBackFrom();
   const { documents, more } = listedDocuments(answer);
   if (documents.length === 0) return null;
   const item = (doc: (typeof documents)[number]) => {
@@ -113,7 +115,7 @@ function DocumentList({ answer, terms, shown }: { answer: Answer; terms: readonl
     });
     // Vrushit UAT 3 (27 Oct 2026): one compact line, the title opening its first cited spot,
     // lit, then each other page as a small link; no row of page chips.
-    const opens = pages[0] ? citationLink(pages[0], terms) : documentLink(doc.document_id, terms);
+    const opens = withFrom(pages[0] ? citationLink(pages[0], terms) : documentLink(doc.document_id, terms), from);
     return (
       <li key={doc.document_id} className={styles.docItem}>
         <p className={styles.docTitle}>
@@ -123,7 +125,7 @@ function DocumentList({ answer, terms, shown }: { answer: Answer; terms: readonl
           {pages.length > 0 ? (
             <span className={styles.docPages}>
               {pages.map((c) => (
-                <Link key={c.n} href={citationLink(c, terms)}>
+                <Link key={c.n} href={withFrom(citationLink(c, terms), from)}>
                   p. {c.page_no}
                   <span className="visually-hidden">, open the highlighted spot</span>
                 </Link>
@@ -209,6 +211,7 @@ export const AnswerView = memo(function AnswerView({
   // The source put on top: the saved pick, then this person's, at once (the server keeps it).
   const [pin, setPin] = useState<SourcePin | null>(message.pin ?? null);
   const [pinFailed, setPinFailed] = useState(false);
+  const from = useBackFrom(); // the conversation, for the documents' back link (#436)
   const answer = message.answer;
   const putOnTop = (target: SourcePin, previousRank: number) => {
     const before = pin;
@@ -259,7 +262,7 @@ export const AnswerView = memo(function AnswerView({
         <ul className={styles.docChips} aria-label="Pages to check">
           {note.pages.map((page) => (
             <li key={page.href}>
-              <Link className={styles.docChip} href={page.href}>
+              <Link className={styles.docChip} href={withFrom(page.href, from)}>
                 <Icon name="open" size={16} />
                 {page.text}
               </Link>
@@ -450,7 +453,7 @@ export const AnswerView = memo(function AnswerView({
               return cited ? (
                 <Link
                   key={n}
-                  href={citationLink(cited, terms)}
+                  href={withFrom(citationLink(cited, terms), from)}
                   className={`${styles.numberMark} ${styles.cite}`}
                   aria-label={`Source ${n}: ${cited.document_name}, page ${cited.page_no}`}
                   onPointerEnter={() => setHot(n)}

@@ -45,8 +45,20 @@ function moveFocus(event: KeyboardEvent<HTMLDivElement>) {
 /**
  * `name` says whose actions they are ("Ravi Sharma"), for screen readers. `compact`: an
  * icon-only ⋯ button instead of "More" (a narrow list, Ask screen polish, 17 Oct 2026).
+ * `status`: the compact button's own name, tooltip and class when it also carries a state
+ * (a summary card value not checked yet, #453).
  */
-export function RowMenu({ name, items, compact = false }: { name: string; items: RowMenuItem[]; compact?: boolean }) {
+export function RowMenu({
+  name,
+  items,
+  compact = false,
+  status,
+}: {
+  name: string;
+  items: RowMenuItem[];
+  compact?: boolean;
+  status?: { label: string; tip: string; className: string };
+}) {
   const id = useId();
   const anchor = `--row-menu-${id.replace(/[^\w-]/g, "")}`;
   if (items.length === 0) return null;
@@ -55,8 +67,9 @@ export function RowMenu({ name, items, compact = false }: { name: string; items:
       {compact ? (
         <IconButton
           icon="more"
-          label={`More actions for ${name}`}
-          className="btn-quiet"
+          label={status?.label ?? `More actions for ${name}`}
+          title={status?.tip}
+          className={status ? `btn-quiet ${status.className}` : "btn-quiet"}
           popoverTarget={id}
           aria-haspopup="menu"
           style={{ anchorName: anchor }}

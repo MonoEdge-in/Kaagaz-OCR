@@ -3,8 +3,8 @@
 // The panels beside the page (PRD 3 Y1 to Y3): the related documents; and first, the
 // Attention panel (PRD 5 U5): every
 // reading problem in the document, by page, each page a jump link, with the
-// shown page's marks as a list of the same buttons as on the page. While a page not kept as is
-// has problems, it carries the Ready to verify dashed edge, "N to check" and a lead line (board 2).
+// shown page's marks as a list of the same buttons as on the page. While anything is left to settle
+// (toSettle, #443), it carries the Ready to verify dashed edge, "N to check" and a lead line (board 2).
 // UI audit DD7 (16 Oct 2026): each mark is a short chip, the word, "1/3" and a jump icon
 // (its full name for screen readers); pointing at one lights its mark on the page, and
 // pointing at a mark on the page lights its chip (`hot`).
@@ -16,11 +16,12 @@ import type { ReactNode } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { labelBadgeClass, labelIcon } from "@/components/viewer/labels";
 import { groupLinks, linkText, untilRead } from "@/components/viewer/panels";
-import { ALL_CLEAR, attentionPages } from "@/components/viewer/pageProblems";
-import type { AttentionPage } from "@/components/viewer/pageProblems";
+import { ALL_CLEAR, attentionPages, toSettle } from "@/components/viewer/pageProblems";
+import type { OpenWord } from "@/components/viewer/pageProblems";
 import { markChipText, markName, marksOnPage } from "@/components/viewer/readingMarks";
+import { withFrom } from "@/lib/backLink";
 import { docTypeLabel } from "@/lib/format";
-import type { DocumentDetail, DocumentStatus, PageSummary, ReadingMark } from "@/lib/types";
+import type { DocumentDetail, DocumentStatus, PageSummary, ReadingMark, WordFlag } from "@/lib/types";
 import styles from "./DocumentView.module.css";
 
 /** Vrushit UAT 3 (27 Oct 2026): a closed, quiet disclosure with its count; each document one line,
@@ -47,7 +48,9 @@ export function RelatedPanel({ detail }: { detail: DocumentDetail }) {
       <ul className={styles.relatedList}>
         {groups.map(([link, ...more]) => (
           <li key={link.id} className={styles.relatedItem}>
-            <Link href={`/documents/${link.id}`}>{link.display_name}</Link>
+            <Link href={withFrom(`/documents/${link.id}`, `/documents/${encodeURIComponent(detail.id)}`)}>
+              {link.display_name}
+            </Link>
             <span className={styles.pageNote}>
               {[docTypeLabel(link.doc_type), ...[link, ...more].map((shared) => linkText(shared, detail.values))].join(
                 " · ",
@@ -64,10 +67,12 @@ export function RelatedPanel({ detail }: { detail: DocumentDetail }) {
 export function AttentionPanel({
   status,
   pages,
+  open,
   current,
   marks,
   onPage,
   onMark,
+  onCheck,
   hot = null,
   onHot = () => undefined,
   fix = null,
@@ -76,16 +81,18 @@ export function AttentionPanel({
   fix?: ReactNode;
   status: DocumentStatus;
   pages: PageSummary[];
+  open: OpenWord[] | null; // the words still open on the review list; null until they load (toSettle)
   current: number | null; // the page shown
   marks: ReadingMark[]; // the shown page's marks
   onPage: (pageNo: number) => void;
   onMark: (mark: ReadingMark, name: string) => void;
+  onCheck: (pageNo: number) => void; // #443: check a good page's open words, in review
   hot?: number | null; // the mark pointed at, here or on the page (its index on the page)
   onHot?: (index: number | null) => void;
 }) {
-  const problemPages = attentionPages(pages);
+  const problemPages = attentionPages(pages, open ?? []);
   const shownMarks = current === null ? [] : marksOnPage(marks, current); // as numbered on the page
-  const lead = toCheck(problemPages);
+  const lead = toCheck(pages, open);
   return (
     <section
       className={lead ? `${styles.panel} ${styles.attentionToCheck}` : styles.panel}
@@ -109,7 +116,7 @@ export function AttentionPanel({
             <li key={item.pageNo}>
               <button
                 type="button"
-                className={styles.valueButton}
+                className={`quiet-link ${styles.valueButton}`}
                 aria-current={item.pageNo === current ? "page" : undefined}
                 onClick={() => onPage(item.pageNo)}
               >
@@ -122,6 +129,13 @@ export function AttentionPanel({
                   <li key={line}>{line}</li>
                 ))}
               </ul>
+              {item.words !== undefined && (
+                <div className={styles.problemActions}>
+                  <button type="button" className="btn" onClick={() => onCheck(item.pageNo)}>
+                    {`Check ${item.words === 1 ? "it" : "them"}`}
+                  </button>
+                </div>
+              )}
               {item.pageNo === current ? fix : null}
               {item.pageNo === current && shownMarks.length > 0 && (
                 <ul className={styles.markChips} aria-label={`Marks on page ${item.pageNo}`}>
@@ -161,23 +175,27 @@ export function AttentionPanel({
   );
 }
 
-/** The Needs attention tab's count (DD6): the reading problems still to check, as "N to check" says. */
-export const attentionCount = (pages: PageSummary[]) => toCheck(attentionPages(pages))?.count ?? 0;
+/** The Needs attention tab's count (DD6): what is left to settle (toSettle), as "N to check" says;
+ * `open` null until the words load, or when they cannot: the pages' marked spots then. */
+export const attentionCount = (pages: PageSummary[], open: Pick<WordFlag, "page_no">[] | null) =>
+  toSettle(pages, open).count;
 
 /**
- * The Attention panel's "N to check" and its lead line: the problems on pages not kept as
- * is (kept ones are off the list); null when there are none. A page counts its marked spots,
- * the ones drawn on it (Vrushit UAT, 25 Oct 2026), or its problem lines when it has no marks.
+ * The Attention panel's "N to check" and its lead line, from toSettle (#443, #444): the words still
+ * open and the pages still to keep as is; null when there are none.
  */
-function toCheck(problemPages: AttentionPage[]): { count: number; text: string } | null {
-  const open = problemPages.filter((item) => !item.kept);
-  const count = open.reduce((sum, item) => sum + (item.marked || item.lines.length), 0);
+function toCheck(
+  pages: PageSummary[],
+  openWords: Pick<WordFlag, "page_no">[] | null,
+): { count: number; text: string } | null {
+  const { count, pages: pagesWithAny } = toSettle(pages, openWords);
   if (count === 0) return null;
-  const where = open.length === 1 ? `page ${open[0]?.pageNo}` : `${open.length.toLocaleString("en-IN")} pages`;
+  const one = pagesWithAny.length === 1;
+  const where = one ? `page ${pagesWithAny[0]}` : `${pagesWithAny.length.toLocaleString("en-IN")} pages`;
   const them = count === 1 ? "it" : "them";
   const problems = count === 1 ? "1 reading problem" : `${count.toLocaleString("en-IN")} reading problems`;
   return {
     count,
-    text: `${problems} on ${where}. Check ${them} on the ${open.length === 1 ? "page" : "pages"} before you rely on ${them}.`,
+    text: `${problems} on ${where}. Check ${them} on the ${one ? "page" : "pages"} before you rely on ${them}.`,
   };
 }

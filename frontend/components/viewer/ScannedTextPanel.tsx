@@ -12,6 +12,10 @@
 // Vrushit UAT 2 (27 Oct 2026, #417): Fix text, or a press on such a line, opens a box under the
 // line to type the word in its place (fixBox says what to type); Save sends it as the review's
 // Edit, Cancel or Esc closes it, and the focus goes back to the line.
+// #431: Fix text works on the line's word mark before the line's own flag (wordToFix), and while
+// the box is open it is the row's one action.
+// #443: the box also offers Confirm, which settles the word as it reads (the review's Confirm), so
+// a stray mark such as a lone "." can be left as it is.
 
 import { useEffect, useId, useRef, useState } from "react";
 import { FlagText } from "@/components/review/FlagText";
@@ -28,6 +32,7 @@ import {
   FIX_MEMBER_NOTE,
   FIX_NOTE,
   fixBox,
+  fixesFor,
   lineHolding,
   lineMarked,
   MAIN_READER,
@@ -38,6 +43,7 @@ import {
   truncatedText,
   visibleText,
   withFixes,
+  wordToFix,
 } from "./scanned";
 import type { PanelLoad } from "./scanned";
 import { sameRegion } from "./selection";
@@ -121,18 +127,20 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
   const fixKey = fixing?.key ?? null;
   useEffect(() => fixInput.current?.focus(), [fixKey]); // the box opened: its field takes the keys
 
-  const openFix = (flag: WordFlag) =>
-    setFixing((now) => (now?.key === flag.word_key ? now : { key: flag.word_key, text: fixBox(flag).draft, busy: false, error: null }));
+  const openFix = (flag: WordFlag, draft: string) =>
+    setFixing((now) => (now?.key === flag.word_key ? now : { key: flag.word_key, text: draft, busy: false, error: null }));
   const closeFix = (index: number) => {
     setFixing(null);
     rows.current[index]?.querySelector("button")?.focus();
   };
-  const saveFix = async (flag: WordFlag, index: number) => {
+  // Save sends the text typed; Confirm (asRead) sends each word's own text, so it is confirmed.
+  const saveFix = async (flag: WordFlag, index: number, asRead = false) => {
     if (!onFix || !fixing || fixing.busy) return;
     const typed = fixing.text.trim();
-    if (typed === "") return setFixing({ ...fixing, error: "Type the word you see on the page." });
+    if (typed === "" && !asRead) return setFixing({ ...fixing, error: "Type the word you see on the page." });
     setFixing({ ...fixing, busy: true, error: null });
-    const done = await onFix(flag, typed);
+    let done = { ok: true, message: "" };
+    for (const each of fixesFor(flag, flags)) if (done.ok) done = await onFix(each, asRead ? each.text : typed);
     if (done.ok) closeFix(index);
     else setFixing((now) => now && { ...now, busy: false, error: done.message });
   };
@@ -208,14 +216,18 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
             role="region"
             aria-label={`Lines read on page ${page.page_no}`}
           >
-            <ol className={styles.lines}>
+            {/* role: Safari reads a list drawn without markers as no list; the numbers are CSS's. */}
+            <ol className={styles.lines} role="list">
               {shown.map((line, index) => {
                 const marked = lineMarked(line, cited);
                 const meta = confidenceText(line.confidence, line.origin);
                 const first = reader?.role === "first";
                 const flag = first ? flags.find((each) => sameRegion(each.region, line.region)) : undefined;
-                const toFix = first && onFix ? flags.find((each) => lineMarked(each, line.region)) : undefined;
-                const text = visibleText(first ? withFixes(line, fixed) : line.text);
+                const toFix = first && onFix ? wordToFix(flags, line) : undefined;
+                const read = first ? withFixes(line, fixed) : line.text;
+                const text = visibleText(read);
+                // The line's own flag is asked for as the line shows now (#431: its words fixed).
+                const ask = toFix ? fixBox(toFix.kind === "line" ? { text: read } : toFix) : null;
                 const box = toFix && fixing?.key === toFix.word_key ? fixing : null;
                 const boxId = `${fixId}-${index}`;
                 return (
@@ -234,7 +246,7 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
                         aria-pressed={active !== null && sameRegion(active, line.region)}
                         onClick={() => {
                           onShow({ name: `line ${index + 1}`, region: line.region, label: null });
-                          if (toFix) openFix(toFix);
+                          if (toFix && ask) openFix(toFix, ask.draft);
                         }}
                       >
                         {flag ? (
@@ -251,18 +263,21 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
                           </span>
                         )}
                       </button>
-                      {toFix && (
+                      {/* #431: one action. While the box is open it is the action (Save, Cancel or
+                          Esc), so the row's Fix text steps aside rather than sit beside it. */}
+                      {toFix && ask && !box && (
                         <button
                           type="button"
                           className={`btn btn-quiet ${styles.addMeaning}`}
-                          aria-expanded={box !== null}
-                          aria-controls={box ? boxId : undefined}
-                          onClick={() => (box ? fixInput.current?.focus() : openFix(toFix))}
+                          aria-expanded={false}
+                          onClick={() => openFix(toFix, ask.draft)}
                         >
                           Fix text<span className="visually-hidden">{` in line ${index + 1}`}</span>
                         </button>
                       )}
-                      {onAddMeaning && (
+                      {/* While the box is open its row offers only the box: Add meaning steps aside too,
+                          so it never slides under the pointer that pressed Fix text (owner, 29 Oct 2026). */}
+                      {onAddMeaning && !box && (
                         <button
                           type="button"
                           className={`btn btn-quiet ${styles.addMeaning}`}
@@ -272,7 +287,7 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
                         </button>
                       )}
                     </div>
-                    {toFix && box && (
+                    {toFix && ask && box && (
                       <form
                         id={boxId}
                         className={styles.fix}
@@ -282,32 +297,38 @@ export function ScannedTextPanel(props: ScannedTextPanelProps) {
                         }}
                       >
                         <label className={styles.fixLabel} htmlFor={`${boxId}-text`}>
-                          {fixBox(toFix).hint}
+                          {ask.hint}
                         </label>
-                        <div className={styles.fixRow}>
-                          <input
-                            ref={fixInput}
-                            id={`${boxId}-text`}
-                            className={`input ${styles.fixInput}`}
-                            type="text"
-                            dir="auto"
-                            autoComplete="off"
-                            spellCheck={false}
-                            value={box.text}
-                            onChange={(event) => setFixing({ ...box, text: event.target.value, error: null })}
-                            onKeyDown={(event) => {
-                              if (event.key !== "Escape") return;
-                              event.preventDefault();
-                              event.stopPropagation(); // Esc here closes the box, not the panel
-                              closeFix(index);
-                            }}
-                          />
-                          <button type="button" className="btn" onClick={() => closeFix(index)}>
+                        <input
+                          ref={fixInput}
+                          id={`${boxId}-text`}
+                          className={`input ${styles.fixInput}`}
+                          type="text"
+                          dir="auto"
+                          autoComplete="off"
+                          spellCheck={false}
+                          value={box.text}
+                          onChange={(event) => setFixing({ ...box, text: event.target.value, error: null })}
+                          onKeyDown={(event) => {
+                            if (event.key !== "Escape") return;
+                            event.preventDefault();
+                            event.stopPropagation(); // Esc here closes the box, not the panel
+                            closeFix(index);
+                          }}
+                        />
+                        {/* [Cancel] [Confirm] [Save] under the field; a narrow panel wraps them. */}
+                        <div className={styles.fixActions}>
+                          <button type="button" className="btn btn-quiet" onClick={() => closeFix(index)}>
                             Cancel
                           </button>
-                          <button type="submit" className="btn btn-primary" disabled={box.busy} aria-busy={box.busy || undefined}>
-                            Save
-                          </button>
+                          <div className={styles.fixSettle}>
+                            <button type="button" className="btn" disabled={box.busy} onClick={() => void saveFix(toFix, index, true)}>
+                              Confirm
+                            </button>
+                            <button type="submit" className="btn btn-primary" disabled={box.busy} aria-busy={box.busy || undefined}>
+                              Save
+                            </button>
+                          </div>
                         </div>
                         {box.error && (
                           <p className="error-text" role="alert">

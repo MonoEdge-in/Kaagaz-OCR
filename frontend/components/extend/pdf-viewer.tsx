@@ -109,6 +109,9 @@ export type PDFViewerPageOverlayProps = {
   pageHeight: number
   scale: number
   rotation: number
+  // Changed for Kaagaz (#442): the page's own turn in the file (/Rotate), in degrees. The
+  // overlay is drawn before it, so marks stored on the page as shown are turned back first.
+  fileRotation: number
 }
 export type PDFViewerHandle = {
   scrollToPage: (pageNumber: number, options?: ScrollIntoViewOptions) => void
@@ -2163,8 +2166,10 @@ function PDFViewerInner({
             rotation={pageRotation}
             key={`${page.pageIndex}-${pageRotation}`}
             data-pdf-viewer-page={pageNumber}
+            // Changed for Kaagaz (#454): overflow-hidden, so nothing drawn on the page (its
+            // tiles, a mark's ring or badge) shows outside it while the pages move.
             className={cn(
-              "relative border border-transparent bg-transparent shadow-xs select-none selection:bg-transparent selection:text-inherit",
+              "relative overflow-hidden border border-transparent bg-transparent shadow-xs select-none selection:bg-transparent selection:text-inherit",
               pageClassName?.(pageNumber)
             )}
             style={{ backgroundColor: "transparent" }}
@@ -2216,6 +2221,7 @@ function PDFViewerInner({
               pageHeight: page.height,
               scale: currentZoomLevel,
               rotation: rotationToDegrees(pageRotation),
+              fileRotation: rotationToDegrees(basePageRotation),
             })}
           </PagePointerProvider>
         </Rotate>

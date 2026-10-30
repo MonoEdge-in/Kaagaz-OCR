@@ -183,30 +183,63 @@ export function lineMarked(line: Pick<ReadLine, "region">, region: Region | null
 // The reader's mark for a part of a line it could not read (page_quality.ILLEGIBLE_MARK).
 const UNREAD = "[?]";
 // Vrushit UAT 2 (27 Oct 2026, #417): said over the lines while a reviewer can fix a word in them.
-export const FIX_NOTE = "To type the right word in place of [?] or a marked word, press its line or Fix text.";
-// Said there instead to a member, who cannot fix a word.
-export const FIX_MEMBER_NOTE = "Only a reviewer or an admin can type the right word for a [?].";
+// #443: or confirm it as read.
+export const FIX_NOTE =
+  "To type the right word in place of [?] or a marked word, or confirm it as read, press its line or Fix text.";
+// Said there instead to a member, who cannot fix a word (#443: any marked word, not only a [?]).
+export const FIX_MEMBER_NOTE = "Only a reviewer or an admin can fix or confirm a marked word.";
 
 /** The fix box under a line (#417): what it asks, and the text it starts with (nothing for an
- * unread [?]; else the word as it reads now, to correct). */
+ * unread [?]; else the word as it reads now, to correct). #443: a mark that is no word (a lone
+ * "." or other punctuation) is said to be one, so Confirm reads as "leave it as it is". */
 export function fixBox(flag: Pick<WordFlag, "text">): { hint: string; draft: string } {
-  return flag.text === UNREAD
-    ? { hint: "Type the word you see on the page in place of [?].", draft: "" }
-    : { hint: `Type the word you see on the page in place of '${flag.text}'.`, draft: flag.text };
+  if (flag.text === UNREAD) return { hint: "Type the word you see on the page in place of [?].", draft: "" };
+  const stray = /^[\p{P}\p{S}\s]+$/u.test(flag.text);
+  return {
+    hint: stray
+      ? `'${flag.text}' may be a stray mark. Confirm it to leave it as read, or type what the page shows.`
+      : `Type the word you see on the page in place of '${flag.text}'.`,
+    draft: flag.text,
+  };
+}
+
+/**
+ * The flagged word a line's Fix text works on (#431): a word mark ([?] or an unsure word) before
+ * the line's own flag (a line whose spot is not confirmed also holds its marks, and comes first),
+ * so a Save replaces that word, never the whole line; the line's own flag once its words are done.
+ */
+export function wordToFix<T extends Pick<WordFlag, "kind" | "region">>(
+  flags: readonly T[],
+  line: Pick<ReadLine, "region">,
+): T | undefined {
+  const inLine = flags.filter((each) => lineMarked(each, line.region));
+  return inLine.find((each) => each.kind === "mark") ?? inLine[0];
+}
+
+/** What a Save in the fix box settles (#431): the word, and its line's own flag when the line is
+ * only that word (a signature read as [?]: one word on the page, flagged twice). */
+export function fixesFor<T extends Pick<WordFlag, "kind" | "region" | "text">>(flag: T, flags: readonly T[]): T[] {
+  const lineIsWord = (each: T) =>
+    each !== flag && each.kind === "line" && each.text === flag.text && lineMarked(flag, each.region);
+  return [flag, ...flags.filter(lineIsWord)];
 }
 
 /**
  * The line as read with the words people fixed in it (Vrushit UAT, 25 Oct 2026: a "[?]" typed
  * in through Fix text). The line's flagged words, fixed or not, are walked left to right on the
  * page, each matched to the next place its text as read appears, so a line with two "[?]" gets
- * each fix in its own place; a word not fixed keeps its place and its text as read.
+ * each fix in its own place; a word not fixed keeps its place and its text as read. The line's
+ * own flag counts only once a person typed it (#431: as read, it is the whole line, and would
+ * hide the words fixed in it).
  */
 export function withFixes(
   line: Pick<ReadLine, "text" | "region">,
-  words: readonly Pick<WordFlag, "region" | "as_read" | "text">[],
+  words: readonly (Pick<WordFlag, "region" | "as_read" | "text"> & { kind?: WordFlag["kind"] })[],
 ): string {
   const left = (word: Pick<WordFlag, "region">) => (word.region.kind === "box" ? word.region.box[0] : 0);
-  const inLine = words.filter((word) => lineMarked(word, line.region)).sort((a, b) => left(a) - left(b));
+  const inLine = words
+    .filter((word) => lineMarked(word, line.region) && !(word.kind === "line" && word.text === word.as_read))
+    .sort((a, b) => left(a) - left(b));
   let text = line.text;
   let from = 0;
   for (const word of inLine) {
