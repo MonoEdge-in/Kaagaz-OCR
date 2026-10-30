@@ -232,6 +232,14 @@ export const currentSession = () =>
 /** The first code from the set-up (sign-in or sign-up) turns two-step on and signs in. */
 export const adminEnrol = (enrolToken: string, code: string) =>
   request<Me>("POST", "/auth/admin/enrol", { enrol_token: enrolToken, code });
+/** An admin turns their own two-step back on (Tushar, 30 Oct 2026): the password gives the
+ * set-up key; then adminEnrol with the first code. Nothing is stored before that code. */
+export const startTwoStep = (password: string) =>
+  request<TwoStepSetup>("POST", "/auth/admin/2fa/start", { password });
+/** An admin turns their own two-step off, with the password and a current code; it stays
+ * off until they turn it on again (Tushar, 30 Oct 2026). */
+export const turnOffTwoStep = (password: string, code: string) =>
+  request<Me>("POST", "/auth/admin/2fa/off", { password, code });
 export const changePassword = (current: string, next: string) =>
   request<Me>("POST", "/auth/password", { current_password: current, new_password: next });
 export const logoutEverywhere = () => request<void>("POST", "/auth/logout-everywhere");
