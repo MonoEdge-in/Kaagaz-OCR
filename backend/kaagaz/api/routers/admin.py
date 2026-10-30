@@ -51,8 +51,8 @@ reviewer's waiting Google account (``/admin/identities``), removes a person's co
 connections automatically" (``auto_approve_connections``, audited ``settings.auto_approve_on``
 or ``_off``). Each is 404 while no provider is switched on (the switch: left out of the
 settings, a 400 to set); another organisation's ids are 404. Approving or declining leaves
-the person's sessions as they are. Resetting a person's password clears their connections too. ``/admin/users`` says how
-each person signs in (``signs_in_with``).
+the person's sessions as they are. Resetting a person's password clears their connections
+too. ``/admin/users`` says how each person signs in (``signs_in_with``).
 
 Why auto-filing is a setting here (feature 28, council 15 Oct 2026): the platform operator
 grants it, then the admin switches it on or off (``autofile_on``) in the same form as the
