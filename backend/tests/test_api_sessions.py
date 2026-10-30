@@ -379,7 +379,7 @@ def test_every_auth_event_is_audited_with_a_valid_action(db: Database) -> None:
         ).all()
     actions = [str(row[0]) for row in rows]
     assert all(ACTION.fullmatch(action) for action in actions)
-    assert not ACTION.fullmatch("user.reset_2fa")  # why the 2FA reset is "user.reset_totp"
+    assert not ACTION.fullmatch("user.reset_2fa")  # why the 2FA reset is "auth.totp_reset"
     assert {
         "auth.login",
         "auth.login_failed",
@@ -390,7 +390,7 @@ def test_every_auth_event_is_audited_with_a_valid_action(db: Database) -> None:
         "auth.totp_on",
         "user.unlock",
         "user.reset_password",
-        "user.reset_totp",
+        "auth.totp_reset",  # Changed on purpose (#457 review): the spec's name, was user.reset_totp
     } <= set(actions)
     for action, target_type, target_id, _ in rows:
         if str(action).startswith(("auth.", "user.")):

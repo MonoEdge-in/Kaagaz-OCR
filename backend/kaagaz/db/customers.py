@@ -64,8 +64,9 @@ def set_status(conn: Connection, customer_id: str, status: str, *, now: datetime
     """Make an active customer disabled, or a disabled one active, on an owner
     connection. Returns the status it had before: None when there is no such
     customer, and then nothing changes; nothing changes either when it already
-    had ``status``, or when it is being deleted (cancelling a deletion is PR 4's), or when
-    a pending sign-up would be made active (only the operator's Approve does that, 0061).
+    had ``status``, or when it is being deleted (cancelling a deletion is PR 4's), or while it
+    is a pending sign-up (only the operator's Approve makes it active, 0061; disabling it
+    first would route round that, 0063).
     The row is locked first, so two runs at once change it once. O(1), and
     disabling also raises every user's session version and enabling clears their sign-in
     locks: O(u) for its u users."""
@@ -74,7 +75,7 @@ def set_status(conn: Connection, customer_id: str, status: str, *, now: datetime
     before = conn.execute(_LOCK, {"c": customer_id}).scalar()
     if before is None:
         return None
-    if before not in (status, DELETING) and not (before == PENDING and status == ACTIVE):
+    if before not in (status, DELETING, PENDING):
         conn.execute(_SET, {"c": customer_id, "s": status, "now": now})
         conn.execute(_END_SESSIONS if status == DISABLED else _CLEAR_LOCKS, {"c": customer_id})
     return str(before)

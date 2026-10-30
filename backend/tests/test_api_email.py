@@ -199,15 +199,10 @@ def test_a_sign_up_confirms_its_email_then_waits_for_an_operators_approval(db: D
     reply = api.admin_login(api.client(), email)
     assert (reply.status_code, reply.json()["error"]["code"]) == (403, "mfa_enrol_required")
     actions = api.audit_actions(org["id"])
-    assert actions[:4] == [
-        "org.self_signup",
-        "auth.login_failed",
-        "auth.login_failed",
-        "auth.email_confirmed",
-    ]
+    # Changed on purpose (#457 review): the right password while pending is not a failure, so
+    # only the wrong one is audited (and counted).
+    assert actions[:3] == ["org.self_signup", "auth.login_failed", "auth.email_confirmed"]
     assert "org.approved" in actions
-    reasons = [details.get("reason") for action, _, _, details in api.audit_rows(org["id"])]
-    assert "customer_pending" in reasons
 
 
 # --- confirm your email ------------------------------------------------------------------------
@@ -831,3 +826,66 @@ def test_a_link_whose_user_is_gone_is_not_used_up_and_nothing_is_audited(
     assert _post(api.client(), "/api/auth/reset", {"token": token, "new_password": NEW_PASSWORD}).json() == {
         "ok": True
     }
+
+
+def _pending_org(api: Api, ops: TestClient, email: str) -> str:
+    [org] = [
+        item
+        for item in ops.get("/api/operator/orgs").json()["items"]
+        if item["status"] == "pending" and _org_admin(api, item["id"]) == email
+    ]
+    return str(org["id"])
+
+
+def _org_admin(api: Api, customer_id: str) -> str | None:
+    with api.db.customer(customer_id) as conn:
+        found = conn.execute(
+            text("SELECT email FROM users WHERE customer_id = :c"), {"c": customer_id}
+        ).scalar()
+    return None if found is None else str(found)
+
+
+@pytest.mark.db
+def test_a_waiting_sign_up_can_not_be_disabled_then_enabled_round_approve(db: Database) -> None:
+    api, _ = _email_api(db)
+    email = _pending_sign_up(api)
+    operator, ops = _Operator(api), api.client()
+    assert operator.login(ops).status_code == 200
+    org_id = _pending_org(api, ops, email)
+    api.clock.advance(totp.STEP_SECONDS)  # the sign-in used this step's code
+    disabled = _post(ops, f"/api/operator/orgs/{org_id}/disable", {"code": api.code(operator.secret)})
+    assert (disabled.status_code, disabled.json()["error"]["message"]) == (
+        409,
+        "This organisation is waiting for approval. Use Approve.",
+    )
+    assert _post(ops, f"/api/operator/orgs/{org_id}/enable").status_code == 409
+    with db.engine.begin() as conn:
+        status = conn.execute(text("SELECT status FROM customers WHERE id = :c"), {"c": org_id}).scalar()
+    assert status == "pending"
+
+
+@pytest.mark.db
+def test_a_waiting_sign_ups_admin_never_locks_themselves_out_and_approve_clears_any_lock(
+    db: Database,
+) -> None:
+    api, mailer = _email_api(db)
+    email = _pending_sign_up(api)
+    for _ in range(api.settings.login_max_failures + 1):  # a right password while pending: not a failure
+        assert api.admin_login(api.client(), email).json()["error"]["code"] == "org_pending"
+    with db.system() as conn:
+        found = users_sql.login_lookup(conn, email)
+    assert found is not None
+    assert api.user_state(found.customer_id, found.user_id)["failed_logins"] == 0
+    assert "auth.login_failed" not in api.audit_actions(found.customer_id)
+
+    _post(api.client(), "/api/auth/email/confirm", {"token": _token(mailer, email, "/email/confirm")})
+    with db.customer(found.customer_id) as conn:  # wrong passwords meanwhile locked it
+        conn.execute(
+            text("UPDATE users SET failed_logins = 9, locked_until = :t WHERE id = :u"),
+            {"t": api.clock() + timedelta(hours=1), "u": found.user_id},
+        )
+    operator, ops = _Operator(api), api.client()
+    assert operator.login(ops).status_code == 200
+    assert _post(ops, f"/api/operator/orgs/{found.customer_id}/approve").status_code == 200
+    state = api.user_state(found.customer_id, found.user_id)
+    assert (state["failed_logins"], state["locked_until"]) == (0, None)

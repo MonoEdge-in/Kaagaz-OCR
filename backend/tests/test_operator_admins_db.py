@@ -126,7 +126,7 @@ def test_an_operator_manages_one_admin_with_one_row_per_change(db: Database) -> 
         ("user.update", "user", uid),
         ("user.update", "user", uid),
         ("user.unlock", "user", uid),
-        ("user.reset_totp", "user", uid),
+        ("auth.totp_reset", "user", uid),  # Changed on purpose (#457 review, 0063): the spec's name
     ]
 
 

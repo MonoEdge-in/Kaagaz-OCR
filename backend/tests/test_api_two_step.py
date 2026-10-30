@@ -210,7 +210,7 @@ def test_an_admin_resets_a_members_code(db: Database) -> None:
     assert reset.json()["totp_enabled"] is False
     assert member_client.get("/api/auth/me").status_code == 401  # every session ends
     assert api.admin_login(api.client(), member.email).status_code == 200  # the password alone
-    assert api.audit_actions(admin.customer_id).count("user.reset_totp") == 1
+    assert api.audit_actions(admin.customer_id).count("auth.totp_reset") == 1  # Changed on purpose (#457)
     assert _subjects(mailer, member.email) == ["Your Kaagaz two-step sign-in was reset"]
 
 

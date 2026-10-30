@@ -549,7 +549,9 @@ def test_reset_2fa_clears_the_code_so_the_next_sign_in_sets_it_up_again(db: Data
     assert reply.json()["totp_enabled"] is False
     state = api.user_state(admin.customer_id, colleague.user_id)
     assert (state["totp_secret_enc"], state["totp_enabled_at"], state["totp_last_step"]) == (None, None, None)
-    assert api.audit_actions(admin.customer_id)[-1] == "user.reset_totp"
+    assert (
+        api.audit_actions(admin.customer_id)[-1] == "auth.totp_reset"
+    )  # Changed on purpose (#457): the spec's
     signed_in = api.admin_login(api.client(), colleague.email)  # MFA required (0035): no session yet
     assert (signed_in.status_code, signed_in.json()["error"]["code"]) == (403, "mfa_enrol_required")
     assert "set-cookie" not in signed_in.headers

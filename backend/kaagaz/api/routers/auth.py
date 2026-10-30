@@ -514,7 +514,7 @@ def _check_password(context: AppContext, email: str, password: str) -> AttemptRo
         _failed(context, attempt, "disabled")
         raise _refused(context)
     if attempt.customer_pending:  # a sign-up waiting for an operator (0061), told after a right password
-        _failed(context, attempt, "customer_pending")
+        _succeeded(context, attempt)  # not a failure: waiting must never lock its admin out
         raise ApiError(403, "org_pending", ORG_PENDING)
     if not attempt.customer_active:  # its organisation is disabled or being deleted (0014)
         _failed(context, attempt, "customer_disabled")

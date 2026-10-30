@@ -314,9 +314,9 @@ def reset_two_step(
         row = users_sql.reset_totp(conn, user.customer_id, target)
         if row is None:
             raise ApiError(404, "not_found")
-        # PROVISIONAL: "user.reset_totp", not the plan's "user.reset_2fa", because audit
-        # actions must match ^[a-z_.]{1,64}$ (PRD 1 A7, the audit_log CHECK): no digits.
-        _audit_user(conn, user, "user.reset_totp", target)
+        # The spec's auth.totp_reset (#457; it was user.reset_totp, never the plan's
+        # "user.reset_2fa": audit actions must match ^[a-z_.]{1,64}$, the audit_log CHECK).
+        _audit_user(conn, user, "auth.totp_reset", target)
     notice = emails.two_step_reset(row["display_name"])
     emails.after(background, "two_step_reset", emails.send, context, row["email"], "two_step_reset", notice)
     return admin_user(row, now=context.clock())

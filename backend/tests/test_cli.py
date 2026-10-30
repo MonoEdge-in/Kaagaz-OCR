@@ -217,7 +217,8 @@ def test_reset_admin_2fa_clears_the_code_and_ends_the_sessions(db: Database) -> 
     assert out.getvalue() == f"user {user_id}: 2FA is off; they set it up again at their next sign-in\n"
     with db.customer(customer_id) as conn:
         rows = conn.execute(text("SELECT action, actor_user_id, target_id, details FROM audit_log")).all()
-    assert [tuple(row) for row in rows] == [("user.reset_totp", None, user_id, {"by": "cli"})]
+    # Changed on purpose (#457 review): the spec's auth.totp_reset, as the admin screen's.
+    assert [tuple(row) for row in rows] == [("auth.totp_reset", None, user_id, {"by": "cli"})]
 
 
 @pytest.mark.parametrize("role", ["member", "reviewer", None])

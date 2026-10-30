@@ -368,6 +368,25 @@ def test_the_cli_never_enables_a_sign_up_waiting_for_approval(
     assert _audit(db, customer) == []
 
 
+def test_a_sign_up_waiting_for_approval_can_never_be_disabled_either(
+    db: Database, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Disable then Enable would route round Approve and its confirmed-email rule (#457 review):
+    a pending organisation can do nothing, and a stale one is released (0063)."""
+    customer, _ = new_customer(db)
+    with db.engine.begin() as conn:
+        conn.execute(text("UPDATE customers SET status = 'pending' WHERE id = :c"), {"c": customer})
+    with db.engine.begin() as conn:
+        assert customers.set_status(conn, customer, customers.DISABLED, now=NOW) == customers.PENDING
+    assert _status(db, customer) == ("pending", None, None)
+
+    assert _cli(db, "disable-customer", customer) == (2, "")
+    error = capsys.readouterr().err
+    assert "waiting for approval" in error and "Approve" in error
+    assert _status(db, customer) == ("pending", None, None)
+    assert _audit(db, customer) == []
+
+
 def test_the_cli_needs_a_real_customer_id(db: Database, capsys: pytest.CaptureFixture[str]) -> None:
     assert _cli(db, "disable-customer", str(uuid.uuid4())) == (2, "")
     assert "no such customer" in capsys.readouterr().err

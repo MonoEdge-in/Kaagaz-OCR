@@ -414,12 +414,12 @@ def _reset_admin_2fa(db: Database, email: str) -> str:
     with db.customer(found.customer_id) as conn:
         if users_sql.reset_totp(conn, found.customer_id, found.user_id) is None:
             raise CliError("no admin has that e-mail")
-        # PROVISIONAL: "user.reset_totp", the same action as the admin screen's 2FA reset.
+        # The spec's auth.totp_reset (#457), the same action as the admin screen's 2FA reset.
         audit.record(
             conn,
             found.customer_id,
             actor_user_id=None,
-            action="user.reset_totp",
+            action="auth.totp_reset",
             target_type="user",
             target_id=found.user_id,
             details={"by": "cli"},
@@ -454,7 +454,7 @@ def _set_customer_status(db: Database, command: str, customer_id: str, now: date
             raise CliError("no such customer")
         if before == customers_sql.DELETING:
             raise CliError("this customer is being deleted; nothing was changed (cancel the deletion first)")
-        if before == customers_sql.PENDING and status == customers_sql.ACTIVE:
+        if before == customers_sql.PENDING:  # neither enable nor disable: Approve only (0063)
             raise CliError(
                 "this organisation is waiting for approval; nothing was changed"
                 " (use Approve in the operator console once its admin has confirmed their email)"
