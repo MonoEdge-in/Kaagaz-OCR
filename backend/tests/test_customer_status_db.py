@@ -351,6 +351,22 @@ def test_the_cli_refuses_a_customer_being_deleted_and_says_so(
     assert _audit(db, customer) == []
 
 
+def test_the_cli_never_enables_a_sign_up_waiting_for_approval(
+    db: Database, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A pending sign-up (0061) is approved in the operator console, after its admin proved
+    their e-mail: enable-customer is no way round that."""
+    customer, _ = new_customer(db)
+    with db.engine.begin() as conn:
+        conn.execute(text("UPDATE customers SET status = 'pending' WHERE id = :c"), {"c": customer})
+
+    assert _cli(db, "enable-customer", customer) == (2, "")
+    error = capsys.readouterr().err
+    assert "waiting for approval" in error and "Approve" in error and "operator console" in error
+    assert _status(db, customer) == ("pending", None, None)
+    assert _audit(db, customer) == []
+
+
 def test_the_cli_needs_a_real_customer_id(db: Database, capsys: pytest.CaptureFixture[str]) -> None:
     assert _cli(db, "disable-customer", str(uuid.uuid4())) == (2, "")
     assert "no such customer" in capsys.readouterr().err

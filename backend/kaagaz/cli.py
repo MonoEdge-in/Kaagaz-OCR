@@ -11,7 +11,8 @@
   it is off its users can't sign in, their sessions end at the next request
   (for good: after enabling, everyone signs in again), the worker fails its
   jobs (``customer_disabled``) and no model is called for it. A customer
-  being deleted is refused, and nothing changes. Each change
+  being deleted is refused, and nothing changes; so is enabling a sign-up waiting for
+  approval (0061: the operator console's Approve, once its e-mail is proven). Each change
   writes one audit row in that customer's log (``customer.disable``,
   ``customer.enable``). These two run as the table owner (``_owner``).
 * ``purge-customer --customer-id --now``: break-glass for a legal request (super admin
@@ -453,6 +454,11 @@ def _set_customer_status(db: Database, command: str, customer_id: str, now: date
             raise CliError("no such customer")
         if before == customers_sql.DELETING:
             raise CliError("this customer is being deleted; nothing was changed (cancel the deletion first)")
+        if before == customers_sql.PENDING and status == customers_sql.ACTIVE:
+            raise CliError(
+                "this organisation is waiting for approval; nothing was changed"
+                " (use Approve in the operator console once its admin has confirmed their email)"
+            )
         if before == status:
             return f"customer {customer_id}: already {done}, nothing changed"
         audit.record(
