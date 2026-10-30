@@ -34,6 +34,7 @@ ADMIN_USER_FIELDS = {
     "created_at",
     "locked_until",
     "totp_enabled",
+    "two_step_turned_off",
     "must_change_password",
     "can_delete_forever",
 }

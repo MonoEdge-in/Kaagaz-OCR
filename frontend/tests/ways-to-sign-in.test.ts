@@ -55,6 +55,7 @@ function me(role: Me["user"]["role"], totp: boolean): Me {
       role,
       must_change_password: false,
       totp_enabled: totp,
+      two_step_turned_off: false,
       can_delete_forever: false,
       email_confirmed: true,
     },

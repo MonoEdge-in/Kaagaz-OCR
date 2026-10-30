@@ -28,10 +28,10 @@
   back and one line changed exactly once).
 
 The downgrade refuses while any customer is pending (0014's pattern: approve or disable
-it first), then puts every object back as 0060 left it; the links and proofs are lost.
+it first), then puts every object back as 0061b left it; the links and proofs are lost.
 
 Revision ID: 0061
-Revises: 0060 (Dynamic's count)
+Revises: 0061b (an admin's own two-step off, production's #460)
 """
 
 import importlib.util
@@ -41,7 +41,7 @@ from types import ModuleType
 from alembic import op
 
 revision = "0061"
-down_revision = "0060"
+down_revision = "0061b"
 branch_labels = None
 depends_on = None
 

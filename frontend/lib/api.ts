@@ -261,7 +261,8 @@ export const adminEnrol = (enrolToken: string, code: string) =>
 /** Account, Two-step sign-in, Turn on (#457, any role): the password, then the set-up key; the
  * first code (adminEnrol) turns it on. */
 export const startTwoStep = (password: string) => request<TwoStepSetup>("POST", "/auth/2fa/start", { password });
-/** Turn off, for a member or reviewer (an admin gets 403): the password and a current code. */
+/** Turn off, for anyone: the password and a current code. An admin's stays off until they turn
+ * it on again (Tushar, 30 Oct 2026). */
 export const turnOffTwoStep = (password: string, code: string) =>
   request<Me>("POST", "/auth/2fa/off", { password, code });
 /** With two-step sign-in on, the code too (#457). */

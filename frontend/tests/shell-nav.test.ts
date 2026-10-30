@@ -77,6 +77,7 @@ describe("the session gate", () => {
       role: "admin",
       must_change_password,
       totp_enabled: true, // every admin has two-step sign-in (16 Oct 2026; tests/admin-two-step.test.ts)
+      two_step_turned_off: false,
       can_delete_forever: false,
       email_confirmed: true, // #457
     },

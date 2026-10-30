@@ -1,17 +1,18 @@
 "use client";
 
-// Account, Two-step sign-in (#457 phase 3), for every role. An admin's is always on (the
-// server refuses Turn off), so their panel only says so. A member or reviewer turns it on
-// with their password, then the set-up step every admin uses (EnrolStep: the QR code or the
-// key, then a first code); and off with their password and a current code, which signs every
-// other browser out. Like Change password: method="post", no name attributes, the password
-// masked again on submit and never trimmed, the code cleared after a refusal. A missing or
-// wrong password or code shows on its field, which takes focus (#457 review).
+// Account, Two-step sign-in (#457 phase 3), for every role. Anyone turns it on with their
+// password, then the set-up step every admin uses (EnrolStep: the QR code or the key, then a
+// first code); and off with their password and a current code, after a warning, which signs
+// every other browser out. An admin's then stays off until they turn it on again (Tushar,
+// 30 Oct 2026); another admin resets an admin's lost code, an admin a member's. Like Change
+// password: method="post", no name attributes, the password masked again on submit and never
+// trimmed, the code cleared after a refusal. A missing or wrong password or code shows on its
+// field, which takes focus (#457 review).
 
 import { useState } from "react";
 import type { FormEvent } from "react";
 import { flushSync } from "react-dom";
-import { LOST_PHONE, TWO_STEP_ON } from "@/app/(app)/admin/TwoStepPanel";
+import { LOST_PHONE } from "@/app/(app)/admin/TwoStepPanel";
 import { CodeField } from "@/app/login/CodeField";
 import { EnrolStep } from "@/app/login/EnrolStep";
 import { codeError, normalizeCode } from "@/app/login/twoStep";
@@ -23,8 +24,9 @@ import type { Me, TwoStepSetup } from "@/lib/types";
 import { CURRENT_MISSING } from "./setPassword";
 import {
   LOST_CODE,
-  MEMBER_OFF,
-  MEMBER_ON,
+  OFF_TEXT,
+  OFF_WARNING,
+  ON_TEXT,
   TURNED_OFF,
   TURNED_ON,
   proofField,
@@ -99,22 +101,6 @@ export function TwoStepDialog({
     }
   }
 
-  if (view === "admin") {
-    return (
-      <ActionDialog title="Two-step sign-in" onClose={onClose} onClosed={onClosed}>
-        <p className={styles.twoStepText}>
-          Your two-step sign-in: <strong>On</strong>. {TWO_STEP_ON}
-        </p>
-        <p className={styles.note}>{LOST_PHONE}</p>
-        <div className="actions">
-          <button type="button" className="btn" onClick={onClose}>
-            Close
-          </button>
-        </div>
-      </ActionDialog>
-    );
-  }
-
   if (enrol) {
     return (
       <ActionDialog title="Two-step sign-in" onClose={onClose} onClosed={onClosed}>
@@ -131,9 +117,9 @@ export function TwoStepDialog({
   return (
     <ActionDialog title="Two-step sign-in" onClose={onClose} onClosed={onClosed} canClose={() => !busy}>
       <p className={styles.twoStepText}>
-        Your two-step sign-in: <strong>{view === "on" ? "On" : "Off"}</strong>. {view === "on" ? MEMBER_ON : MEMBER_OFF}
+        Your two-step sign-in: <strong>{view === "on" ? "On" : "Off"}</strong>. {view === "on" ? ON_TEXT : OFF_TEXT}
       </p>
-      {view === "on" && <p className={styles.note}>{LOST_CODE}</p>}
+      {view === "on" && <p className={styles.note}>{me.user.role === "admin" ? LOST_PHONE : LOST_CODE}</p>}
       <form method="post" noValidate onSubmit={submit}>
         <PasswordField
           id={PASSWORD_ID}
@@ -160,6 +146,7 @@ export function TwoStepDialog({
             enterKeyHint="done"
           />
         )}
+        {view === "on" && <p className={styles.warning}>{OFF_WARNING}</p>}
         {failure && (
           <p className="error-text" role="alert">
             {failure}

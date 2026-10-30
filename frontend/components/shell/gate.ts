@@ -18,12 +18,15 @@ export function mustChangePassword(me: Me): boolean {
  * "set_password": show only the set-new-password screen (PRD A5), in either scope.
  * "set_two_step": an admin without two-step sign-in (MFA required, 16 Oct 2026); the
  * server refuses everything else, so the browser signs out and the sign-in sets it up.
+ * Not an admin who turned their own off (Tushar, 30 Oct 2026): it stays off until they
+ * turn it on from the Account menu. Only true counts as turned off.
  */
 export type AppGate = "set_password" | "set_two_step" | "app";
 
 export function appGate(me: Me): AppGate {
   if (mustChangePassword(me)) return "set_password";
-  return me.user.role === "admin" && me.user.totp_enabled !== true ? "set_two_step" : "app";
+  const needsTwoStep = me.user.totp_enabled !== true && me.user.two_step_turned_off !== true;
+  return me.user.role === "admin" && needsTwoStep ? "set_two_step" : "app";
 }
 
 /**

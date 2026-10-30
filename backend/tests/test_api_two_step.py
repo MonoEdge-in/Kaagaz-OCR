@@ -1,10 +1,11 @@
 """Two-step codes for everyone (#457 phase 3).
 
-Admins keep their required code and cannot turn it off. Members and reviewers may turn one
-on (Account, Two-step sign-in: the password, the new key, a first code) and off (the
-password and a code). Anyone with codes on types the code after the password, with the
-admins' attempt counting, lock and replay check. An admin resets a lost code; an admin of
-another organisation cannot. Every change is audited and sends a security notice.
+An admin's code is required until they turn it off themselves (0061b; the rest of that rule
+in tests/test_api_admin_sign_in.py). Anyone may turn one on (Account, Two-step sign-in: the
+password, the new key, a first code) and off (the password and a code), on the same routes.
+Anyone with codes on types the code after the password, with the admins' attempt counting,
+lock and replay check. An admin resets a lost code; an admin of another organisation cannot.
+Every change is audited and sends a security notice.
 """
 
 import base64
@@ -105,6 +106,8 @@ def test_a_member_or_reviewer_turns_codes_on_and_off(db: Database, role: str) ->
     assert other_browser.get("/api/auth/me").status_code == 401  # every other one is signed out
     state = api.user_state(customer_id, signed.user_id)
     assert (state["totp_secret_enc"], state["totp_enabled_at"], state["totp_last_step"]) == (None, None, None)
+    # "Turned off" is an admin's only: a member made admin later still sets one up.
+    assert (off.json()["user"]["two_step_turned_off"], state["totp_off_at"]) == (False, None)
     assert _post(signed.client, "/api/auth/2fa/off", {"password": PASSWORD}).status_code == 409
     assert api.admin_login(api.client(), signed.email).status_code == 200  # the password alone again
 
@@ -113,23 +116,36 @@ def test_a_member_or_reviewer_turns_codes_on_and_off(db: Database, role: str) ->
     assert _subjects(mailer, signed.email) == ["Two-step sign-in is on", "Two-step sign-in is off"]
 
 
-def test_an_admin_cannot_turn_theirs_off(db: Database) -> None:
+def test_an_admin_turns_theirs_off_on_the_same_route_with_a_notice(db: Database) -> None:
+    api, mailer = _email_api(db)
+    admin = api.new_admin()
+    assert admin.totp_secret is not None
+    api.clock.advance(totp.STEP_SECONDS)  # the sign-in's code works once
+
+    reply = _post(
+        admin.client, "/api/auth/2fa/off", {"password": PASSWORD, "code": api.code(admin.totp_secret)}
+    )
+
+    assert reply.status_code == 200, reply.text
+    user = reply.json()["user"]
+    assert (user["totp_enabled"], user["two_step_turned_off"]) == (False, True)
+    assert api.user_state(admin.customer_id, admin.user_id)["totp_off_at"] == api.clock()
+    assert api.audit_actions(admin.customer_id)[-1] == "auth.totp_off"
+    assert _subjects(mailer, admin.email) == ["Two-step sign-in is off"]
+
+
+def test_the_admins_own_turn_off_route_is_gone(db: Database) -> None:
+    # Changed on purpose (#457 with #460, 30 Oct 2026): one route for every role, /auth/2fa/off.
     api = Api(db)
     admin = api.new_admin()
     assert admin.totp_secret is not None
     before = api.user_state(admin.customer_id, admin.user_id)
 
     reply = _post(
-        admin.client, "/api/auth/2fa/off", {"password": PASSWORD, "code": api.code(admin.totp_secret)}
+        admin.client, "/api/auth/admin/2fa/off", {"password": PASSWORD, "code": api.code(admin.totp_secret)}
     )
 
-    assert (reply.status_code, reply.json()["error"]) == (
-        403,
-        {
-            "code": "two_step_required",
-            "message": "Admins keep two-step sign-in on to keep your organisation safe.",
-        },
-    )
+    assert reply.status_code == 404
     assert api.user_state(admin.customer_id, admin.user_id) == before  # nothing counted or used
 
 

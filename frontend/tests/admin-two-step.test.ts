@@ -2,17 +2,23 @@
 // on the one sign-in page. This replaces the morning's per-organisation grant by the
 // super admin (its tests went with it, on the owner's decision): no toggle in the
 // console, no "Turn off" for an admin, and the set-up step on /login and after sign-up.
+// Changed on purpose (Tushar, 30 Oct 2026): an admin can turn their own two-step off, and on
+// again, from their Account menu (tests/account-two-step.test.ts); Settings says which it is.
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { LOST_PHONE, TWO_STEP_ON, TwoStepPanel } from "@/app/(app)/admin/TwoStepPanel";
+import { CHANGE_IN_ACCOUNT, LOST_PHONE, TWO_STEP_OFF, TWO_STEP_ON, TwoStepPanel } from "@/app/(app)/admin/TwoStepPanel";
 import { ENROL_REQUIRED, enrolOffer } from "@/app/login/twoStep";
 import { appGate, pathAfterSignIn, signedOutMessage, twoStepPath } from "@/components/shell/gate";
 import { ApiError } from "@/lib/api";
 import type { Me } from "@/lib/types";
+
+// The panel reads who is signed in; each test sets it.
+const session = vi.hoisted(() => ({ me: null as unknown }));
+vi.mock("@/lib/session", () => ({ useSession: () => ({ me: session.me, refresh: () => undefined }) }));
 
 const read = (path: string) => readFileSync(join(__dirname, "..", path), "utf8");
 
@@ -24,6 +30,7 @@ const me = (role: Me["user"]["role"], totpEnabled: boolean, mustChange = false):
     role,
     must_change_password: mustChange,
     totp_enabled: totpEnabled,
+    two_step_turned_off: false,
     can_delete_forever: false,
     email_confirmed: true, // #457
   },
@@ -48,7 +55,7 @@ describe("the set-up offer after a right password", () => {
     expect(ENROL_REQUIRED).toBe(
       "Set up two-step sign-in to continue. Admins need it to keep your organisation safe.",
     );
-    for (const text of [ENROL_REQUIRED, TWO_STEP_ON, LOST_PHONE]) {
+    for (const text of [ENROL_REQUIRED, TWO_STEP_ON, TWO_STEP_OFF, CHANGE_IN_ACCOUNT, LOST_PHONE]) {
       expect(text).not.toMatch(/can't|cannot|sorry|unfortunately/i);
     }
   });
@@ -79,13 +86,20 @@ describe("the sign-in page shows the set-up step", () => {
 });
 
 describe("the admin's own Two-step panel", () => {
-  it("says On and offers no Turn off", () => {
-    const html = renderToStaticMarkup(createElement(TwoStepPanel));
-    expect(html).toContain("<strong>On</strong>");
-    expect(html).toContain("Admins keep it on.");
-    expect(html).not.toMatch(/turn off/i);
-    expect(html).not.toContain("<button");
-    expect(read("lib/api.ts")).not.toContain("/auth/admin/2fa/off");
+  it("says On or Off, and that the Account menu changes it", () => {
+    session.me = me("admin", true);
+    const on = renderToStaticMarkup(createElement(TwoStepPanel));
+    expect(on).toContain("<strong>On</strong>");
+    expect(on).toContain(TWO_STEP_ON);
+    expect(on).toContain(LOST_PHONE);
+    session.me = { ...me("admin", false), user: { ...me("admin", false).user, two_step_turned_off: true } };
+    const off = renderToStaticMarkup(createElement(TwoStepPanel));
+    expect(off).toContain("<strong>Off</strong>");
+    expect(off).toContain("You sign in with your email and password only.");
+    for (const html of [on, off]) {
+      expect(html).toContain("Turn it off or on from your Account menu.");
+      expect(html).not.toContain("<button");
+    }
   });
 });
 
