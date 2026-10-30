@@ -44,7 +44,10 @@ export function linkError(caught: unknown): string {
   return EMAIL_DOWN;
 }
 
-/** The app's banner while the signed-in person's email is not confirmed. */
-export function confirmBanner(email: string): string {
-  return `Confirm your email. We sent a link to ${email}.`;
+/** The app's banner while the signed-in person's email is not confirmed. ``sent``: this browser
+ * sent a link just now. People made before email had none sent, so "We sent" waits for it. */
+export function confirmBanner(email: string, sent: boolean): { text: string; button: string } {
+  return sent
+    ? { text: `Confirm your email. We sent a link to ${email}.`, button: "Send again" }
+    : { text: `Confirm your email address, ${email}.`, button: "Send link" };
 }

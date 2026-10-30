@@ -1,10 +1,13 @@
 // Email (#457 phase 0): the link token read from the address's fragment, the words each
 // email screen says, and what the sign-in, sign-up and admin screens say about email.
 
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { ORG_PENDING, signInErrorMessage } from "@/app/login/signIn";
 import { CHECK_EMAIL, signUpConfirming } from "@/app/signup/signUp";
 import { addedNotice } from "@/components/admin/logic";
+import { EmailBanner } from "@/components/shell/EmailBanner";
 import { orgStatus, waitingOnly } from "@/components/operator/logic";
 import { ApiError } from "@/lib/api";
 import {
@@ -48,7 +51,16 @@ describe("what the email screens say", () => {
 
   it("uses the spec's words", () => {
     expect(FORGOT_SENT).toBe("If that email has an account, we've sent a link.");
-    expect(confirmBanner("ramesh@firm.in")).toBe("Confirm your email. We sent a link to ramesh@firm.in.");
+    // Changed on purpose (#457 follow-up): people made before email had no link sent yet, so
+    // the banner says "We sent a link" only once this browser sent one.
+    expect(confirmBanner("ramesh@firm.in", false)).toEqual({
+      text: "Confirm your email address, ramesh@firm.in.",
+      button: "Send link",
+    });
+    expect(confirmBanner("ramesh@firm.in", true)).toEqual({
+      text: "Confirm your email. We sent a link to ramesh@firm.in.",
+      button: "Send again",
+    });
     expect(CHECK_EMAIL).toBe(
       "Check your email to confirm your address. Your organisation will then wait for approval.",
     );
@@ -68,6 +80,15 @@ describe("what the email screens say", () => {
   it("tells a waiting organisation why it cannot sign in", () => {
     expect(ORG_PENDING).toBe("Your organisation is waiting for approval.");
     expect(signInErrorMessage(new ApiError(403, "org_pending", "anything"))).toBe(ORG_PENDING);
+  });
+});
+
+describe("the confirm banner", () => {
+  it("offers Send link before any link was sent", () => {
+    const html = renderToStaticMarkup(createElement(EmailBanner, { email: "ramesh@firm.in" }));
+    expect(html).toContain("Confirm your email address, ramesh@firm.in.");
+    expect(html).toContain("Send link");
+    expect(html).not.toContain("We sent a link");
   });
 });
 
