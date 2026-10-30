@@ -157,17 +157,24 @@ def approve(
 
 
 def remove(
-    conn: Connection, customer_id: str, identity_id: str, *, user_id: str | None = None
+    conn: Connection,
+    customer_id: str,
+    identity_id: str,
+    *,
+    user_id: str | None = None,
+    status: str | None = None,
 ) -> RowMapping | None:
-    """Delete one connection (only ``user_id``'s when given); the row, or None."""
+    """Delete one connection (only ``user_id``'s, or only one with this ``status``, when
+    given); the row, or None."""
     return (
         conn.execute(
             text(
                 "DELETE FROM user_identities WHERE customer_id = :c AND id = :i"
                 " AND (CAST(:u AS uuid) IS NULL OR user_id = CAST(:u AS uuid))"
+                " AND (CAST(:s AS text) IS NULL OR status = CAST(:s AS text))"
                 " RETURNING id, user_id, provider, email_at_link, status, linked_at"
             ),
-            {"c": customer_id, "i": identity_id, "u": user_id},
+            {"c": customer_id, "i": identity_id, "u": user_id, "s": status},
         )
         .mappings()
         .first()

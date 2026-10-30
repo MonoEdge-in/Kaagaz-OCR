@@ -74,6 +74,14 @@ def set_autofile(conn: Connection, customer_id: str, *, on: bool) -> bool:
     )
 
 
+def set_auto_approve(conn: Connection, customer_id: str, *, on: bool) -> None:
+    """Switch "Approve new sign-in connections automatically" on or off (#457 phase 1). O(1)."""
+    conn.execute(
+        text("UPDATE customers SET auto_approve_connections = :on WHERE id = :c"),
+        {"c": customer_id, "on": on},
+    )
+
+
 _DOCUMENTS_BY_STATUS = (
     "SELECT d.status, count(*) FROM documents d"
     " WHERE d.customer_id = :c AND d.deleted_at IS NULL AND d.is_current GROUP BY d.status"

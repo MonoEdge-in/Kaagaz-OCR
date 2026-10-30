@@ -862,11 +862,16 @@ def me_json(
     }
 
 
-def admin_user(row: RowMapping, *, now: datetime) -> dict[str, Any]:
+def admin_user(
+    row: RowMapping, *, now: datetime, signs_in_with: Sequence[str] | None = None
+) -> dict[str, Any]:
     """``AdminUser``. ``locked_until`` is null once the lock has passed, so the
-    screen never shows a lock that no longer holds."""
+    screen never shows a lock that no longer holds. ``signs_in_with`` (#457 phase 1:
+    "password" and each approved provider) only where the reply knows it: the list, and the
+    replies that removed connections; the screen keeps what it had otherwise."""
     locked_until: datetime | None = row["locked_until"]
     return {
+        **({} if signs_in_with is None else {"signs_in_with": list(signs_in_with)}),
         "id": str(row["id"]),
         "email": row["email"],
         "display_name": row["display_name"],
