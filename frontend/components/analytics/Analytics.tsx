@@ -9,7 +9,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { Button, ButtonGroup } from "@/components/ui/Button/Button";
 import { useHydrated } from "@/components/ui/useHydrated";
-import { BANNER_TEXT, pagePath, readConsent, saveConsent, startGtag, viewFor } from "./ga";
+import { BANNER_TEXT, readConsent, saveConsent, startGtag, viewFor } from "./ga";
 import type { Consent } from "./ga";
 import styles from "./Analytics.module.css";
 
@@ -18,7 +18,9 @@ const storage = () => window.localStorage;
 export function Analytics({ id }: { id: string }) {
   // The choice is read in the browser only, so the server's page never shows the banner.
   const hydrated = useHydrated();
-  const path = pagePath(usePathname() ?? "");
+  const pathname = usePathname() ?? "";
+  // With the query string, read in the browser only: /login?step=code is never tracked.
+  const path = hydrated ? pathname + window.location.search : pathname;
   const [chosen, setChosen] = useState<Consent | null>(null);
   const view = hydrated ? viewFor(id, path, chosen ?? readConsent(storage)) : "off";
 

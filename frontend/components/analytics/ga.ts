@@ -1,8 +1,9 @@
 // Google Analytics on the public pages only, after the visitor accepts it (#457 phase 4).
 // Inside the app it would send page titles (document names), addresses (document ids) and
-// searched words, so it never runs there. What it sends: the page's path, without its query
-// string or fragment (an emailed link's token is in the fragment), and a fixed title. Never
-// what is typed, never a user or organisation id. No measurement id, no analytics.
+// searched words, so it never runs there. Nor on the pages that hold a secret while open: the
+// emailed links' pages (a token, a new password) and /login?step=code (the code after Google).
+// What it sends: the page's path, without its query string or fragment, and a fixed title.
+// Never what is typed, never a user or organisation id. No measurement id, no analytics.
 
 export type Consent = "accepted" | "declined";
 export type View = "off" | "ask" | "on";
@@ -13,14 +14,11 @@ export const BANNER_TEXT =
   "We'd like to use Google Analytics to see how people find the sign-in pages. Nothing you type is sent.";
 
 // The public pages and their fixed titles. A page not here sends nothing: a public page
-// added later gets its line here.
+// added later gets its line here, unless it holds a token, a password or a code.
 export const PAGE_TITLES: Readonly<Record<string, string>> = {
   "/login": "Sign in",
   "/signup": "Sign up",
   "/forgot-password": "Forgot password",
-  "/reset-password": "Reset password",
-  "/invite": "Accept invite",
-  "/email/confirm": "Confirm email",
 };
 
 // NEXT_PUBLIC_GA_ID, when it is a GA4 measurement id ("G-" then letters and digits).
@@ -35,8 +33,17 @@ export function pagePath(path: string): string {
   return path.split(/[?#]/, 1)[0] || "/";
 }
 
+// The fixed title of a tracked page, from its path and query: none for a page not in
+// PAGE_TITLES, and none for /login while it asks for the code after Google (?step=code).
+function titleFor(path: string): string | null {
+  const url = new URL(path, "http://x");
+  if (url.pathname === "/login" && url.searchParams.get("step") === "code") return null;
+  return PAGE_TITLES[pagePath(path)] ?? null;
+}
+
+// path: the page's path with its query string, which the code step needs.
 export function viewFor(id: string | null, path: string, consent: Consent | null): View {
-  if (!id || !(pagePath(path) in PAGE_TITLES) || consent === "declined") return "off";
+  if (!id || !titleFor(path) || consent === "declined") return "off";
   return consent === "accepted" ? "on" : "ask";
 }
 
@@ -78,11 +85,12 @@ function referrerOrigin(referrer: string): string {
   }
 }
 
-// Adds Google's script once, then sends this page's one page view. The config sends no page
-// view of its own and has Google signals and ad personalisation off.
+// Adds Google's script once, then sends this page's one page view. The page is set first for
+// everything gtag sends, so Google's script never reads the address bar's query string. The
+// config sends no page view of its own and has Google signals and ad personalisation off.
 export function startGtag(win: GtagWindow, doc: GtagDocument, id: string, path: string): void {
   const page = pagePath(path);
-  const title = PAGE_TITLES[page];
+  const title = titleFor(path);
   if (!title) return;
   if (!win.gtag) {
     const layer = (win.dataLayer ??= []);
@@ -102,6 +110,7 @@ export function startGtag(win: GtagWindow, doc: GtagDocument, id: string, path: 
     page_title: title,
     page_referrer: referrerOrigin(doc.referrer),
   };
+  win.gtag("set", view);
   win.gtag("config", id, {
     send_page_view: false,
     allow_google_signals: false,
