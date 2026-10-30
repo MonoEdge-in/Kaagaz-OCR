@@ -44,7 +44,7 @@ const MENU_ID = "app-menu";
 const UPLOAD_INPUT_ID = "upload-input";
 
 export function AppShell({ children }: { children: ReactNode }) {
-  const { me } = useSession();
+  const { me, refresh } = useSession();
   const pathname = usePathname();
   const [menuOpen, setMenuOpen] = useState(false);
   const links = navLinks(me.user.role, sessionScope(me));
@@ -151,7 +151,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               <Icon name="upload" />
               <span className="narrow-hide">Upload</span>
             </Link>
-            <AccountMenu me={me} />
+            <AccountMenu me={me} onChanged={refresh} />
           </div>
         </header>
 

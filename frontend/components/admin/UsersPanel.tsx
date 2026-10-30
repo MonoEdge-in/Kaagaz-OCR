@@ -233,7 +233,7 @@ const CONFIRM_TEXT: Record<Confirming, (name: string) => string> = {
   password: (name) =>
     `Reset ${name}'s password? They are signed out everywhere and must choose a new one.`,
   "2fa": (name) =>
-    `Reset ${name}'s two-step sign-in? They are signed out, and can sign in with their password, then set it up again.`,
+    `Reset ${name}'s two-step code? They are signed out, and can sign in with their password, then set up a new code.`,
   forever: allowForeverQuestion,
 };
 
@@ -242,7 +242,7 @@ const CONFIRM_TEXT: Record<Confirming, (name: string) => string> = {
 const CONFIRM_BUTTON: Record<Confirming, string> = {
   disable: "Disable",
   password: "Reset password",
-  "2fa": "Reset two-step sign-in",
+  "2fa": "Reset two-step code",
   forever: "Allow Delete forever",
 };
 
@@ -253,7 +253,7 @@ export const USER_MENU_HELP = {
   stopForever: "Takes back their right to delete documents in Trash permanently.",
   allowForever: "Lets them delete any document in Trash permanently. Deleted documents can't be recovered.",
   password: "Makes a one-time password for you to give them. They are signed out, then choose their own when they sign in.",
-  twoStep: "For a lost phone: turns off their two-step sign-in and signs them out, so they can set it up again.",
+  twoStep: "For a lost phone: turns off their two-step code and signs them out, so they can set up a new one.",
   disable: "Signs them out and stops them signing in until you enable them again.",
 } as const;
 
@@ -302,7 +302,7 @@ function UserRow({
   const confirmed = (kind: Confirming) => {
     if (kind === "disable") return change({ disabled: true }, "disabled.");
     if (kind === "forever") return act(() => setDeleteForever(user.id, true), "Delete forever allowed.");
-    if (kind === "2fa") return act(() => resetUser2fa(user.id), "two-step sign-in reset.");
+    if (kind === "2fa") return act(() => resetUser2fa(user.id), "two-step code reset.");
     return act(async () => {
       const reset = await resetUserPassword(user.id);
       onPasswordReset({ name: user.display_name, password: reset.temporary_password });
@@ -338,7 +338,7 @@ function UserRow({
       ? [{ label: "Reset password", description: USER_MENU_HELP.password, onSelect: () => setConfirming("password") }]
       : []),
     ...(can.reset2fa
-      ? [{ label: "Reset two-step sign-in", description: USER_MENU_HELP.twoStep, onSelect: () => setConfirming("2fa") }]
+      ? [{ label: "Reset two-step code", description: USER_MENU_HELP.twoStep, onSelect: () => setConfirming("2fa") }]
       : []),
     ...(can.toggleDisabled && !user.disabled
       ? [{ label: "Disable", description: USER_MENU_HELP.disable, onSelect: () => setConfirming("disable"), destructive: true }]

@@ -62,45 +62,49 @@ describe("lockedUntilText and isLocked", () => {
   });
 });
 
+// Changed on purpose (#457 phase 3): anyone may have codes, so every row says Two-step: On or Off.
 describe("userStatus", () => {
   const texts = (u: AdminUser, now = NOW) => userStatus(u, now).map((part) => part.text);
 
   it("says Active for a normal account", () => {
-    expect(userStatus(user(), NOW)).toEqual([{ text: "Active", tone: "ready" }]);
+    expect(userStatus(user(), NOW)).toEqual([{ text: "Active", tone: "ready" }, { text: "Two-step: Off", tone: "neutral" }]);
   });
 
   it("says Locked until 14:05 while locked", () => {
     expect(userStatus(user({ locked_until: LOCK_END }), NOW)).toEqual([
       { text: "Locked until 14:05", tone: "danger" },
+      { text: "Two-step: Off", tone: "neutral" },
     ]);
   });
 
   it("goes back to Active once the lock has passed, even before a reload", () => {
     expect(texts(user({ locked_until: LOCK_END }), Date.parse("2026-09-29T08:36:00Z"))).toEqual([
       "Active",
+      "Two-step: Off",
     ]);
   });
 
   it("says Disabled for a disabled account, lock or not", () => {
     expect(userStatus(user({ disabled: true, locked_until: LOCK_END }), NOW)).toEqual([
       { text: "Disabled", tone: "danger" },
+      { text: "Two-step: Off", tone: "neutral" },
     ]);
   });
 
   // Changed on purpose (plain words, 25 Oct 2026): "Two-step", as the rest of the product, not "2FA".
   it("says two-step on or off for admins", () => {
-    expect(texts(user({ role: "admin", totp_enabled: true }))).toEqual(["Active", "Two-step on"]);
-    expect(texts(user({ role: "admin" }))).toEqual(["Active", "Two-step off"]);
-    expect(texts(user({ role: "admin", disabled: true }))).toEqual(["Disabled", "Two-step off"]);
+    expect(texts(user({ role: "admin", totp_enabled: true }))).toEqual(["Active", "Two-step: On"]);
+    expect(texts(user({ role: "admin" }))).toEqual(["Active", "Two-step: Off"]);
+    expect(texts(user({ role: "admin", disabled: true }))).toEqual(["Disabled", "Two-step: Off"]);
   });
 
-  it("says nothing about two-step for other roles unless it is on", () => {
-    expect(texts(user({ role: "reviewer" }))).toEqual(["Active"]);
-    expect(texts(user({ role: "member", totp_enabled: true }))).toEqual(["Active", "Two-step on"]);
+  it("says two-step on or off for other roles too", () => {
+    expect(texts(user({ role: "reviewer" }))).toEqual(["Active", "Two-step: Off"]);
+    expect(texts(user({ role: "member", totp_enabled: true }))).toEqual(["Active", "Two-step: On"]);
   });
 
   it("marks an account that still has a temporary password", () => {
-    expect(texts(user({ must_change_password: true }))).toEqual(["Active", "Temporary password"]);
+    expect(texts(user({ must_change_password: true }))).toEqual(["Active", "Two-step: Off", "Temporary password"]);
   });
 });
 
@@ -157,6 +161,7 @@ describe("Delete forever, granted (council 4 Oct 2026)", () => {
     );
     expect(userStatus(user({ can_delete_forever: true }), NOW).map((part) => part.text)).toEqual([
       "Active",
+      "Two-step: Off",
       "Can delete forever",
     ]);
     expect(describeAction("user.delete_forever_on")).toBe("Allowed a user to delete forever");

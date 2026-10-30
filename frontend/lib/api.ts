@@ -235,6 +235,12 @@ export const currentSession = () =>
 /** The first code from the set-up (sign-in or sign-up) turns two-step on and signs in. */
 export const adminEnrol = (enrolToken: string, code: string) =>
   request<Me>("POST", "/auth/admin/enrol", { enrol_token: enrolToken, code });
+/** Account, Two-step sign-in, Turn on (#457, any role): the password, then the set-up key; the
+ * first code (adminEnrol) turns it on. */
+export const startTwoStep = (password: string) => request<TwoStepSetup>("POST", "/auth/2fa/start", { password });
+/** Turn off, for a member or reviewer (an admin gets 403): the password and a current code. */
+export const turnOffTwoStep = (password: string, code: string) =>
+  request<Me>("POST", "/auth/2fa/off", { password, code });
 /** With two-step sign-in on, the code too (#457). */
 export const changePassword = (current: string, next: string, code?: string) =>
   request<Me>("POST", "/auth/password", {

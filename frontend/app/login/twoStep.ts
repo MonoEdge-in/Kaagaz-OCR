@@ -30,7 +30,7 @@ export function codeError(value: string): string | null {
 
 /**
  * The server asks for the code (401 code_required) only after the password was
- * right, for an admin with two-step sign-in set up. The screen then shows the
+ * right, for anyone with two-step sign-in set up (always admins; #457 phase 3). The screen then shows the
  * code step; nothing else means this.
  */
 export function codeNeeded(caught: unknown): boolean {

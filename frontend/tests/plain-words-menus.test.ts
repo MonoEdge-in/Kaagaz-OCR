@@ -75,14 +75,15 @@ describe("the admin's user menu", () => {
   });
 
   it("asks first before every item that takes something away", () => {
-    for (const label of ["Allow Delete forever", "Reset password", "Reset two-step sign-in", "Disable"]) {
+    // Changed on purpose (#457 phase 3): the spec's "Reset two-step code".
+    for (const label of ["Allow Delete forever", "Reset password", "Reset two-step code", "Disable"]) {
       expect(items, label).toMatch(new RegExp(`label: "${label}"[^}]*onSelect: \\(\\) => setConfirming\\(`));
     }
     expect(items).toMatch(/label: "Disable"[^}]*destructive: true/);
   });
 
   it("says the item's own verb on the confirm button", () => {
-    expect(panel).toMatch(/disable: "Disable",\s*password: "Reset password",\s*"2fa": "Reset two-step sign-in",\s*forever: "Allow Delete forever",/);
+    expect(panel).toMatch(/disable: "Disable",\s*password: "Reset password",\s*"2fa": "Reset two-step code",\s*forever: "Allow Delete forever",/);
     expect(panel).not.toMatch(/Yes, (disable|reset|allow)|2FA/);
   });
 

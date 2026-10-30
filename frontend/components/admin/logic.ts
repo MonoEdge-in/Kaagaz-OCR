@@ -137,9 +137,9 @@ export interface StatusPart {
 }
 
 /**
- * The status column: Active, "Locked until 14:05" or Disabled, then "Two-step on"
- * or "Two-step off" (off is only worth saying for an admin, who can turn it on for
- * the admin screen), then "Temporary password" until the user sets their own.
+ * The status column: Active, "Locked until 14:05" or Disabled, then "Two-step: On" or
+ * "Two-step: Off" for every user (#457 phase 3: anyone may have codes), then "Temporary
+ * password" until the user sets their own.
  */
 export function userStatus(user: AdminUser, now: number): StatusPart[] {
   const parts: StatusPart[] = [];
@@ -148,8 +148,7 @@ export function userStatus(user: AdminUser, now: number): StatusPart[] {
     parts.push({ text: lockedUntilText(user.locked_until), tone: "danger" });
   } else parts.push({ text: "Active", tone: "ready" });
   // Plain words (25 Oct 2026): "Two-step", as the rest of the product says, not "2FA".
-  if (user.totp_enabled) parts.push({ text: "Two-step on", tone: "neutral" });
-  else if (user.role === "admin") parts.push({ text: "Two-step off", tone: "neutral" });
+  parts.push({ text: user.totp_enabled ? "Two-step: On" : "Two-step: Off", tone: "neutral" });
   if (user.must_change_password) parts.push({ text: "Temporary password", tone: "neutral" });
   if (user.can_delete_forever) parts.push({ text: "Can delete forever", tone: "neutral" });
   return parts;

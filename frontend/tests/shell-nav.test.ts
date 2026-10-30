@@ -256,7 +256,7 @@ describe("one nav list for the sidebar and the drawer", () => {
     expect(account).toMatch(/<ConfirmDialog[\s\S]*open=\{confirming\}[\s\S]*onConfirm=\{\(\) => void endSession\("everywhere"\)\}/);
     expect(account).toContain("logoutEverywhere()");
     expect(account).not.toContain("window.confirm");
-    expect(shell).toContain("<AccountMenu me={me} />");
+    expect(shell).toContain("<AccountMenu me={me} onChanged={refresh} />");
   });
 });
 

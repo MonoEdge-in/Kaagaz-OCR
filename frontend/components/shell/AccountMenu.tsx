@@ -9,8 +9,9 @@
 // a dialog that gives Cancel the focus. The arrow keys move into the menu from the
 // avatar and between its actions, Home and End to the first and last, as a row's
 // menu does (RowMenu's onMenuKey); a theme or palette radio keeps its own arrows.
-// #457: Change password for every role opens its dialog (ChangePasswordDialog); a toast
-// says when it is done.
+// #457: Change password and Two-step sign-in for every role open their dialogs
+// (ChangePasswordDialog, TwoStepDialog); a toast says when it is done, and `onChanged` loads
+// who is signed in again after a two-step change.
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -27,6 +28,7 @@ import { ApiError, logout, logoutEverywhere } from "@/lib/api";
 import { announceSession, leavePage } from "@/lib/sessionChannel";
 import type { Me } from "@/lib/types";
 import { ChangePasswordDialog } from "./ChangePasswordDialog";
+import { TwoStepDialog } from "./TwoStepDialog";
 import { signedOutPath } from "./gate";
 import { initials, roleName } from "./nav";
 import styles from "./Shell.module.css";
@@ -51,13 +53,14 @@ export function menuKeyTarget<T>(items: readonly T[], current: T | null, key: st
   return next === null ? null : (items[next] ?? null);
 }
 
-export function AccountMenu({ me }: { me: Me }) {
+export function AccountMenu({ me, onChanged }: { me: Me; onChanged(): void }) {
   const pathname = usePathname();
   const avatar = useRef<HTMLButtonElement>(null);
   const [signingOut, setSigningOut] = useState<SignOutKind | null>(null);
   const [failure, setFailure] = useState<{ kind: SignOutKind; message: string } | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [changingPassword, setChangingPassword] = useState(false);
+  const [twoStep, setTwoStep] = useState(false);
   const [done, setDone] = useState<string | null>(null);
   const name = me.user.display_name;
 
@@ -158,6 +161,17 @@ export function AccountMenu({ me }: { me: Me }) {
           <Icon name="admin" />
           <span>Change password</span>
         </button>
+        <button
+          type="button"
+          className={`btn btn-quiet btn-block ${styles.signOut}`}
+          onClick={() => {
+            document.getElementById(MENU_ID)?.hidePopover();
+            setTwoStep(true);
+          }}
+        >
+          <Icon name="admin" />
+          <span>Two-step sign-in</span>
+        </button>
 
         <div className={styles.signOuts}>
           <button
@@ -208,6 +222,17 @@ export function AccountMenu({ me }: { me: Me }) {
           onDone={(message) => {
             setChangingPassword(false);
             setDone(message);
+          }}
+        />
+      )}
+      {twoStep && (
+        <TwoStepDialog
+          me={me}
+          onClose={() => setTwoStep(false)}
+          onDone={(message) => {
+            setTwoStep(false);
+            setDone(message);
+            onChanged();
           }}
         />
       )}

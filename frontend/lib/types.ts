@@ -51,7 +51,7 @@ export interface Me {
   session: { scope: SessionScope };
 }
 
-/** "Turn on" two-step sign-in (POST /auth/admin/2fa/start). Nothing is stored yet. */
+/** "Turn on" two-step sign-in (POST /auth/2fa/start, or after a right password). Nothing is stored yet. */
 export interface TwoStepSetup {
   enrol_token: string; // lasts 10 minutes
   secret: string; // base32, in groups of 4
