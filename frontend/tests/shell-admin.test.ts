@@ -441,6 +441,8 @@ describe("describeAction", () => {
     }
     // Changed on purpose (plain words, 25 Oct 2026): "two-step sign-in", not "2FA".
     expect(describeAction("user.reset_totp")).toBe("Reset a user's two-step sign-in");
+    // #457: resets are audited as auth.totp_reset since 0063; both names read the same.
+    expect(describeAction("auth.totp_reset")).toBe("Reset a user's two-step sign-in");
   });
 
   it("has words for every action the backend writes to the audit log", () => {

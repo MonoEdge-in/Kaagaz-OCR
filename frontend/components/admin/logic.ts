@@ -604,6 +604,7 @@ const ACTION_WORDS: Record<string, string> = {
   "user.unlock": "Unlocked a user",
   "user.reset_password": "Reset a user's password",
   "user.reset_totp": "Reset a user's two-step sign-in",
+  "auth.totp_reset": "Reset a user's two-step sign-in", // #457: the name since 0063; older rows keep user.reset_totp
   "user.delete_forever_on": "Allowed a user to delete forever",
   "user.delete_forever_off": "Stopped a user deleting forever",
   // Feature 28: auto-filing.
@@ -637,7 +638,7 @@ export function describeAction(action: string, details: Record<string, unknown> 
 const BY_KAAGAZ = new Set(["document.autofile", "org.autofile_grant", "org.autofile_revoke"]);
 // Issue 375: with no person at all (actor_id null), these come from Kaagaz's own set-up
 // commands (backend kaagaz/cli.py create-user and reset-admin-2fa), never from a screen.
-const SET_UP_BY_KAAGAZ = new Set(["user.create", "user.reset_totp"]);
+const SET_UP_BY_KAAGAZ = new Set(["user.create", "user.reset_totp", "auth.totp_reset"]);
 
 /** Who did it: the person's name, "Kaagaz" for auto-filing and set-up, else a dash (a removed user). */
 export function whoText(
