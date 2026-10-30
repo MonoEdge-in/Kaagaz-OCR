@@ -73,7 +73,8 @@ const NOW = Date.parse("2026-10-06T08:20:00Z");
 
 describe("operator sign-in", () => {
   it("needs the e-mail, the password and a 6-digit code", () => {
-    const none = { email: "Enter your e-mail address.", password: PASSWORD_MISSING, code: CODE_MISSING };
+    // Changed on purpose (#457 review): one spelling, "email" (the shared sign-in message).
+    const none = { email: "Enter your email address.", password: PASSWORD_MISSING, code: CODE_MISSING };
     expect(validateOperatorSignIn("", "", "")).toEqual(none);
     expect(validateOperatorSignIn("op@monoedge.in", "pw", "123 456")).toEqual({ email: null, password: null, code: null });
     expect(validateOperatorSignIn("op", "pw", "12345").email).toBe(EMAIL_INVALID);

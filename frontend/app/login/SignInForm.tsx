@@ -16,7 +16,7 @@
 // browser goes to `next` (/documents, or /admin when it came from there).
 // Ways to sign in (#457 phase 1): the provider buttons and the divider above the fields
 // (ProviderButtons), and after Google for anyone with codes on, only the code
-// (ProviderCodeStep).
+// (ProviderCodeStep). The providers and whether email is on come from the server page.
 
 import { useState } from "react";
 import type { FormEvent } from "react";
@@ -57,17 +57,22 @@ const CODE_HINT = "From your authenticator app. A new code shows every 30 second
 
 /** note: what the page says after signing out or a session ending (SignedOutNotice).
  * next: where to go once signed in (pathAfterSignIn, components/shell/gate.ts).
- * oidcError: a failed provider sign-in's code; providerStep: the code after a provider. */
+ * oidcError: a failed provider sign-in's code; providerStep: the code after a provider.
+ * providers, emailOn: what the server switched on (signInOptions.ts). */
 export function SignInForm({
   note,
   next,
   oidcError = null,
   providerStep = false,
+  providers,
+  emailOn,
 }: {
   note: string | null;
   next: string;
   oidcError?: string | null;
   providerStep?: boolean;
+  providers: readonly string[];
+  emailOn: boolean;
 }) {
   const hydrated = useHydrated();
   const [email, setEmail] = useState("");
@@ -87,7 +92,7 @@ export function SignInForm({
     password: false,
   });
   const [serverError, setServerError] = useState<string | null>(null);
-  // The organisation is a sign-up waiting for approval (#457): "Send the link again" shows.
+  // The organisation is a sign-up waiting for approval (#457): "Send the confirm link again" shows.
   const [pending, setPending] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -188,16 +193,16 @@ export function SignInForm({
         <p className={styles.lead}>
           {askCode
             ? `Two-step sign-in is on for ${normalizeEmail(email)}. Enter the 6-digit code from your authenticator app.`
-            : "Use the e-mail your admin set up for you, or the one you signed up with."}
+            : "Use the email your admin set up for you, or the one you signed up with."}
         </p>
       </div>
       <SignedOutNotice message={note} />
 
-      {!askCode && <ProviderButtons next={next} error={oidcError} />}
+      {!askCode && <ProviderButtons next={next} error={oidcError} providers={providers} />}
       {!askCode && (
         <>
           <div className="field">
-            <label htmlFor={FIELD_IDS.email}>E-mail</label>
+            <label htmlFor={FIELD_IDS.email}>Email</label>
             <input
               id={FIELD_IDS.email}
               className="input"
@@ -276,11 +281,11 @@ export function SignInForm({
 
       {askCode && (
         <button type="button" className="btn btn-block" disabled={busy} onClick={back}>
-          Back to e-mail and password
+          Back to email and password
         </button>
       )}
 
-      <ForgotPasswordLink />
+      <ForgotPasswordLink open={emailOn} />
     </form>
   );
 }

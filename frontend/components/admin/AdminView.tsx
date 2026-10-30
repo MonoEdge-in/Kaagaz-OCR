@@ -84,11 +84,11 @@ export function AdminView({ twoStep }: { twoStep: ReactNode }) {
       </header>
       <Tabs<TabId> prefix="admin" label="Admin sections" tabs={TABS} active={active} onChange={setActive}>
         {active === "users" && (
-          <UsersPanel currentUserId={me.user.id} adminTwoStep={me.user.totp_enabled} />
+          <UsersPanel currentUserId={me.user.id} adminTwoStep={me.user.totp_enabled} providers={me.providers} />
         )}
         {active === "settings" && (
           <div className={styles.panelStack}>
-            <SettingsPanel />
+            <SettingsPanel providers={me.providers} />
             {twoStep}
           </div>
         )}

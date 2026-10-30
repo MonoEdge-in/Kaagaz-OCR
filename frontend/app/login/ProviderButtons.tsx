@@ -1,32 +1,35 @@
 "use client";
 
 // Ways to sign in (#457 phase 1), above the sign-in form: a full-width "Continue with Google"
-// for each provider the server switched on (GET /auth/session's `providers` while signed
-// out), then the divider "or use your email". Each is a plain link to the API's start (a GET
+// for each provider the server switched on (`providers`, from the server page, so the form never
+// moves once it shows: signInOptions.ts), then the divider "or use your email". Each is a plain link to the API's start (a GET
 // that goes on to the provider), so no provider script ever loads; the logo is inline. A
-// failed provider sign-in comes back as ?oidc_error=<code> and is said here in plain words;
-// "isn't connected" asks the server for its email (it never comes in the address). Never on
+// failed provider sign-in comes back as ?oidc_error=<code> and is said here in plain words (a
+// cancelled one as a calm notice, not an alert); "isn't connected" asks the server for its
+// email (it never comes in the address). Never on
 // the operator's sign-in page.
 
 import { useEffect, useState } from "react";
 import { Icon } from "@/components/ui/Icon";
-import { currentSession, oidcNotice } from "@/lib/api";
+import { oidcNotice } from "@/lib/api";
 import { oidcErrorMessage, providerButtons } from "./providerMessages";
 import styles from "./login.module.css";
 
-export function ProviderButtons({ next, error }: { next: string; error: string | null }) {
-  const [providers, setProviders] = useState<string[]>([]);
+export function ProviderButtons({
+  next,
+  error,
+  providers,
+}: {
+  next: string;
+  error: string | null;
+  providers: readonly string[];
+}) {
   const [message, setMessage] = useState<string | null>(
     error && error !== "not_connected" ? oidcErrorMessage(error) : null,
   );
 
   useEffect(() => {
     let live = true;
-    currentSession()
-      .then((reply) => {
-        if (live && !reply.signed_in) setProviders(reply.providers ?? []);
-      })
-      .catch(() => {}); // no answer: the email and password form alone
     if (error === "not_connected") {
       oidcNotice()
         .then((reply) => {
@@ -44,7 +47,12 @@ export function ProviderButtons({ next, error }: { next: string; error: string |
   const buttons = providerButtons(providers, next);
   return (
     <>
-      {message && (
+      {message && error === "cancelled" && (
+        <p role="status" className={styles.notice}>
+          {message}
+        </p>
+      )}
+      {message && error !== "cancelled" && (
         <div className={styles.banner} role="alert">
           <Icon name="alert" />
           {message}

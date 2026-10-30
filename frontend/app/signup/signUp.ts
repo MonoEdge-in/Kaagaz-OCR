@@ -23,8 +23,8 @@ export const MAX_EMAIL = 254;
 
 export const ORGANISATION_MISSING = "Enter your organisation's name.";
 export const NAME_MISSING = "Enter your name.";
-export const EMAIL_MISSING = "Enter your work e-mail address.";
-export const EMAIL_INVALID = "Enter a valid e-mail address, like name@company.com.";
+export const EMAIL_MISSING = "Enter your work email address.";
+export const EMAIL_INVALID = "Enter a valid email address, like name@company.com.";
 export const PASSWORD_TOO_SHORT = `Use at least ${MIN_PASSWORD_LENGTH} characters.`;
 export const PASSWORD_HINT = `At least ${MIN_PASSWORD_LENGTH} characters.`;
 
@@ -67,15 +67,22 @@ export function signUpBody(input: SignUpInput) {
   };
 }
 
-/** With email on (#457): the email is confirmed first, then the organisation waits for an operator. */
-export const CHECK_EMAIL =
-  "Check your email to confirm your address. Your organisation will then wait for approval.";
+/** With email on (#457): the email is confirmed first, then the organisation waits for an operator.
+ * ``sent`` false: the confirm email could not be sent, and the screen offers it again. */
+export function checkEmail(email: string, sent: boolean): { title: string; text: string } {
+  return sent
+    ? {
+        title: "Check your email",
+        text: `We sent a link to ${email} to confirm your address. The link works for 24 hours. Your organisation will then wait for approval.`,
+      }
+    : { title: "Confirm your email", text: `We couldn't send the confirm link to ${email}. Try sending it again.` };
+}
 
 export function signUpConfirming(reply: TwoStepSetup | SignUpConfirming): reply is SignUpConfirming {
   return "status" in reply && reply.status === "confirm_email";
 }
 
-export const ACCOUNT_EXISTS = "An account with this e-mail already exists. Sign in instead.";
+export const ACCOUNT_EXISTS = "An account with this email already exists. Sign in instead.";
 export const TOO_MANY_SIGN_UPS = "Too many sign-ups from here. Try again in an hour.";
 export const SIGN_UP_REFUSED = "Check the details you typed, then try again.";
 export const SIGN_UP_DOWN = "Creating an account is not working right now. Try again in a minute.";

@@ -29,6 +29,7 @@ const me = (role: Me["user"]["role"], totpEnabled: boolean, mustChange = false):
   },
   customer: { id: "c1", name: "Sharma Traders" },
   session: { scope: role === "admin" ? "admin" : "app" },
+  providers: [], // #457 review: the sign-in providers switched on
 });
 
 const OFFER = { enrol_token: "t.k", secret: "JBSW Y3DP", otpauth_uri: "otpauth://totp/x" };

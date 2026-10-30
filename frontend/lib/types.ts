@@ -49,6 +49,9 @@ export interface Me {
   };
   customer: { id: string; name: string };
   session: { scope: SessionScope };
+  // The sign-in providers switched on ("google"), for every role (#457 review): empty while none
+  // is, and Ways to sign in is hidden; the copy names only these.
+  providers: string[];
   // Ways to sign in (#457 phase 1): approved connections made in the last 14 days, for the
   // app's "Google connected on 30 Oct." banner. Empty while no provider is on (always sent).
   recent_connections?: { provider: string; linked_at: string }[];
@@ -1028,6 +1031,7 @@ export interface AddedUser extends AdminUser {
 /** POST /auth/signup with email on (#457): no set-up yet, the email is confirmed first. */
 export interface SignUpConfirming {
   status: "confirm_email";
+  sent: boolean; // false: the confirm email could not be sent
 }
 
 /** A reset password: the temporary password is in this one reply only. */
@@ -1042,8 +1046,8 @@ export interface CustomerSettings {
   platform_max_upload_mb: number;
   // Feature 28: the platform allowed auto-filing (granted), and the admin switched it on.
   autofile: { granted: boolean; on: boolean };
-  // #457 phase 1: "Approve new sign-in connections automatically".
-  auto_approve_connections: boolean;
+  // #457 phase 1: "Approve new sign-in connections automatically"; left out while no provider is on.
+  auto_approve_connections?: boolean;
 }
 
 export interface AuditEntry {

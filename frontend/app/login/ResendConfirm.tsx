@@ -1,6 +1,6 @@
 "use client";
 
-// "Send the link again" (#457) for a sign-up's admin, who cannot sign in while the
+// "Send the confirm link again" (#457) for a sign-up's admin, who cannot sign in while the
 // organisation waits for approval: on the sign-up's "Check your email" screen and on the
 // sign-in page's "waiting for approval" answer. The server answers the same words whoever the
 // address belongs to, and sends a link only to an unconfirmed admin of a waiting sign-up.
@@ -35,7 +35,7 @@ export function ResendConfirm({ email }: { email: string }) {
         aria-busy={busy || undefined}
       >
         {busy && <span className="spinner" aria-hidden="true" />}
-        Send the link again
+        Send the confirm link again
       </button>
       <p role="status">{said}</p>
     </div>

@@ -19,8 +19,17 @@ const row = view.slice(view.indexOf("function OrgRow("));
 describe("one Manage menu per organisation", () => {
   it("is the row's only action: no stacked buttons", () => {
     expect(row.match(/<ManageMenu\b/g)).toHaveLength(1);
-    expect(row).not.toContain("<button");
+    // Changed on purpose (#457 review): one visible Approve beside the menu, only on a waiting
+    // sign-up whose admin confirmed their email; no other button.
+    expect(row.match(/<button/g)).toHaveLength(1);
+    expect(row).toMatch(
+      /\{org\.status === "pending" && org\.admin_email_confirmed && \(\s*<button\s+type="button"\s+className="btn"\s+aria-label=\{`Approve \$\{org\.name\}`\}\s+onClick=\{\(\) => onChange\("approve"\)\}\s*>\s*Approve\s*<\/button>/,
+    );
     expect(view).not.toMatch(/rowActions|actionGroups/);
+  });
+
+  it("offers a waiting sign-up Approve only: it can't be disabled (#457 review)", () => {
+    expect(view).toContain('pending: [{ change: "approve", label: "Approve", description: MENU_HELP.approve }],');
   });
 
   it("names the organisation and says it opens a menu", () => {

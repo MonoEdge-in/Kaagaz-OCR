@@ -16,6 +16,7 @@ import {
   oidcErrorMessage,
   providerButtons,
 } from "@/app/login/providerMessages";
+import { signInOptions } from "@/app/login/signInOptions";
 import { oidcCode, oidcNotice } from "@/lib/api";
 import nextConfig from "@/next.config";
 
@@ -30,8 +31,9 @@ describe("oidcErrorMessage", () => {
   it("says each refusal in the spec's words", () => {
     expect(oidcErrorMessage("cancelled")).toBe("Google sign-in was cancelled.");
     expect(CANCELLED).toBe("Google sign-in was cancelled.");
-    expect(oidcErrorMessage("expired")).toBe("That sign-in expired. Try again.");
-    expect(EXPIRED).toBe("That sign-in expired. Try again.");
+    // Changed on purpose (#457 review): what took too long, and what to do.
+    expect(oidcErrorMessage("expired")).toBe("That sign-in took too long. Go back and sign in again.");
+    expect(EXPIRED).toBe("That sign-in took too long. Go back and sign in again.");
     expect(oidcErrorMessage("not_connected", "ramesh.k@gmail.com")).toBe(
       "ramesh.k@gmail.com isn't connected to Kaagaz. Sign in with your email and password, then connect it under Ways to sign in.",
     );
@@ -85,6 +87,54 @@ describe("the pages", () => {
     const buttons = source("app/login/ProviderButtons.tsx");
     expect(buttons).toContain("<svg");
     expect(buttons).not.toMatch(/<script|googleapis|gstatic/);
+  });
+});
+
+describe("a cancelled Google sign-in (#457 review)", () => {
+  it("is a calm notice, not a red alert", () => {
+    const buttons = source("app/login/ProviderButtons.tsx");
+    expect(buttons).toContain('error === "cancelled"');
+    expect(buttons).toMatch(/<p role="status" className=\{styles\.notice\}>/);
+  });
+});
+
+describe("no layout jump on /login (#457 review)", () => {
+  const json = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+
+  it("asks the backend for the providers and the email switch before the page is drawn", async () => {
+    const asked: { url: string; cache: RequestCache | undefined }[] = [];
+    const get = (async (url: string, init?: RequestInit) => {
+      asked.push({ url, cache: init?.cache });
+      return url.endsWith("/auth/session") ? json({ signed_in: false, providers: ["google"] }) : json({ enabled: true });
+    }) as typeof fetch;
+    expect(await signInOptions(get)).toEqual({ providers: ["google"], emailOn: true });
+    expect(asked.map((a) => a.url.replace(/^https?:\/\/[^/]+/, "")).sort()).toEqual(["/api/auth/email", "/api/auth/session"]);
+    expect(asked.every((a) => a.cache === "no-store")).toBe(true);
+  });
+
+  it("shows neither while email is off (404), nothing is on, or the backend does not answer", async () => {
+    const off = (async (url: string) =>
+      url.endsWith("/auth/session") ? json({ signed_in: false }) : json({ error: { code: "not_found" } }, 404)) as typeof fetch;
+    expect(await signInOptions(off)).toEqual({ providers: [], emailOn: false });
+    const down = (async () => {
+      throw new TypeError("fetch failed");
+    }) as typeof fetch;
+    expect(await signInOptions(down)).toEqual({ providers: [], emailOn: false });
+  });
+
+  it("passes them to the form as props: no request from the browser for them", () => {
+    const page = source("app/login/page.tsx");
+    expect(page).toContain("await signInOptions()");
+    expect(page).toContain("providers={options.providers}");
+    expect(page).toContain("emailOn={options.emailOn}");
+    const form = source("app/login/SignInForm.tsx");
+    expect(form).toContain("<ProviderButtons next={next} error={oidcError} providers={providers} />");
+    expect(form).toContain("<ForgotPasswordLink open={emailOn} />");
+    expect(source("app/login/ProviderButtons.tsx")).not.toContain("currentSession");
+    const forgot = source("app/login/ForgotPasswordLink.tsx");
+    expect(forgot).not.toContain("useEffect");
+    expect(forgot).not.toContain("emailOpen");
   });
 });
 

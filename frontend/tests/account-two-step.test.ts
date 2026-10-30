@@ -35,6 +35,7 @@ const me = (role: Me["user"]["role"], totpEnabled: boolean): Me => ({
   },
   customer: { id: "c1", name: "Sharma Traders" },
   session: { scope: role === "admin" ? "admin" : "app" },
+  providers: [], // #457 review: the sign-in providers switched on
 });
 
 const dialog = (who: Me) =>

@@ -1,8 +1,8 @@
 // /settings/sign-in: Account, Ways to sign in (#457 phase 1), from the account menu. Google's
 // callback comes back here with ?connected=, ?waiting= or ?error=.
 
-import { WaysToSignIn } from "@/components/account/WaysToSignIn";
-import { INTRO, TITLE } from "@/components/account/signInWays";
+import { WaysIntro, WaysToSignIn } from "@/components/account/WaysToSignIn";
+import { TITLE } from "@/components/account/signInWays";
 
 export const metadata = { title: TITLE };
 
@@ -21,7 +21,7 @@ export default async function WaysToSignInPage({
     <div className="page">
       <header className="page-header">
         <h1>{TITLE}</h1>
-        <p className="hint">{INTRO}</p>
+        <WaysIntro />
       </header>
       <WaysToSignIn params={params} />
     </div>

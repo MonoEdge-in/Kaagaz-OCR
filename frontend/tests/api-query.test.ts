@@ -71,6 +71,7 @@ describe("sign-in and admin calls", () => {
     },
     customer: { id: "c1", name: "Sharma Traders" },
     session: { scope: "admin" },
+    providers: [], // #457 review: the sign-in providers switched on
   };
   const USER: AdminUser = {
     id: "u2",

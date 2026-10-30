@@ -2,18 +2,16 @@
 
 // Confirming an email from its link (#457 phase 0): the token is read from the fragment
 // once, cleared from the address bar (takeToken) and sent; the page then says what
-// happened. A new organisation can be used once the Kaagaz team approves it.
+// happened; a sign-up waiting for approval is told so (the reply's ``pending``).
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { confirmEmail } from "@/lib/api";
-import { LINK_MISSING, linkError, takeToken } from "@/lib/emailLinks";
+import { LINK_MISSING, confirmedText, linkError, takeToken } from "@/lib/emailLinks";
 import login from "../../login/login.module.css";
 
-const CONFIRMED = "Your email is confirmed. A new organisation can be used once the Kaagaz team approves it.";
-
-type State = { kind: "working" } | { kind: "done" } | { kind: "failed"; message: string };
+type State = { kind: "working" } | { kind: "done"; text: string } | { kind: "failed"; message: string };
 
 export function ConfirmEmail() {
   const started = useRef(false);
@@ -25,8 +23,9 @@ export function ConfirmEmail() {
     const token = takeToken();
     const sent = token === null ? Promise.reject(new Error(LINK_MISSING)) : confirmEmail(token);
     sent.then(
-      () => setState({ kind: "done" }),
-      (caught: unknown) => setState({ kind: "failed", message: token === null ? LINK_MISSING : linkError(caught) }),
+      (reply) => setState({ kind: "done", text: confirmedText(reply.pending) }),
+      (caught: unknown) =>
+        setState({ kind: "failed", message: token === null ? LINK_MISSING : linkError(caught, "confirm") }),
     );
   }, []);
 
@@ -41,7 +40,7 @@ export function ConfirmEmail() {
         )}
         {state.kind === "done" && (
           <p className={login.lead} role="status">
-            {CONFIRMED}
+            {state.text}
           </p>
         )}
       </div>
