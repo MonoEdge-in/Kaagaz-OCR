@@ -121,17 +121,13 @@ def send_confirm(user: User, context: Context) -> dict[str, bool]:
 
 @router.post("/auth/email/resend-confirm", status_code=202)
 def resend_confirm(body: ForgotBody, background: BackgroundTasks, context: Context) -> dict[str, str]:
-    if not resend_site_limits.allow(SITE):
-        raise ApiError(429, "rate_limited", TOO_MANY_LINKS, headers={"Retry-After": "3600"})
-    emails.after(background, "confirm", _resend_confirm, context, valid_email(body.email))
+    _link_later(background, context, body.email, "confirm", resend_site_limits, resend_email_limits)
     return {"message": RESEND_SENT}
 
 
 @router.post("/auth/forgot", status_code=202)
 def forgot_password(body: ForgotBody, background: BackgroundTasks, context: Context) -> dict[str, str]:
-    if not forgot_site_limits.allow(SITE):
-        raise ApiError(429, "rate_limited", TOO_MANY_LINKS, headers={"Retry-After": "3600"})
-    emails.after(background, "reset", _send_reset, context, valid_email(body.email))
+    _link_later(background, context, body.email, "reset", forgot_site_limits, forgot_email_limits)
     return {"message": FORGOT_SENT}
 
 
@@ -150,36 +146,41 @@ def accept_invite(body: NewPasswordBody, context: Context) -> dict[str, bool]:
     return {"ok": True}
 
 
-def _send_reset(context: AppContext, email: str) -> None:
-    """After the reply: a reset link to an enabled organisation user with this e-mail."""
-    if not forgot_email_limits.allow(email):
+def _link_later(
+    background: BackgroundTasks,
+    context: AppContext,
+    email: str,
+    purpose: str,
+    site_limits: RateLimiter,
+    email_limits: RateLimiter,
+) -> None:
+    """Forgot password's and "Send the link again"'s one core, each with its own limiters: the
+    site-wide limit (429), then the lookup and the email after the reply (``_send_link``), so
+    every address takes the same path and time."""
+    if not site_limits.allow(SITE):
+        raise ApiError(429, "rate_limited", TOO_MANY_LINKS, headers={"Retry-After": "3600"})
+    emails.after(background, purpose, _send_link, context, valid_email(email), purpose, email_limits)
+
+
+def _send_link(context: AppContext, email: str, purpose: str, email_limits: RateLimiter) -> None:
+    """After the reply, within ``email_limits``: a reset link to an enabled organisation user with
+    this e-mail, or a new confirm link to an enabled, unconfirmed admin of a pending sign-up."""
+    if not email_limits.allow(email):
         return
     with context.db.system() as conn:
         found = users_sql.login_lookup(conn, email)
     if found is None or found.disabled:
         return
     with context.db.customer(found.customer_id) as conn:
-        contact = users_sql.contact(conn, found.customer_id, found.user_id)
-    if contact is None:  # removed a moment ago
+        if purpose == "reset":
+            contact = users_sql.contact(conn, found.customer_id, found.user_id)
+        else:
+            contact = users_sql.awaiting_confirm(conn, found.customer_id, found.user_id)
+    if contact is None:  # removed a moment ago, or not waiting to confirm
         return
-    link = new_link(context, found.customer_id, found.user_id, "reset")
-    send(context, contact[0], "reset", emails.reset_password(link))
-
-
-def _resend_confirm(context: AppContext, email: str) -> None:
-    """After the reply: a new confirm link to an enabled, unconfirmed admin of a pending sign-up."""
-    if not resend_email_limits.allow(email):
-        return
-    with context.db.system() as conn:
-        found = users_sql.login_lookup(conn, email)
-    if found is None or found.disabled:
-        return
-    with context.db.customer(found.customer_id) as conn:
-        contact = users_sql.awaiting_confirm(conn, found.customer_id, found.user_id)
-    if contact is None:
-        return
-    link = new_link(context, found.customer_id, found.user_id, "confirm")
-    send(context, contact[0], "confirm", emails.confirm_email(link))
+    link = new_link(context, found.customer_id, found.user_id, purpose)
+    message = emails.reset_password(link) if purpose == "reset" else emails.confirm_email(link)
+    send(context, contact[0], purpose, message)
 
 
 def _set_password(context: AppContext, body: NewPasswordBody, purpose: str, action: str) -> LinkRow:

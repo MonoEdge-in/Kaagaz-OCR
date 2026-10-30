@@ -363,7 +363,7 @@ def test_send_again_without_signing_in_replies_first_and_is_limited_by_email(
     assert len(_to(mailer, pending)) == 1 + 3  # the sign-up's own link, then three
 
     later: list[str] = []
-    monkeypatch.setattr(email_router, "_resend_confirm", lambda context, email: later.append(email))
+    monkeypatch.setattr(email_router, "_send_link", lambda context, email, *_: later.append(email))
     assert _post(client, "/api/auth/email/resend-confirm", {"email": pending}).json() == RESEND_REPLY
     assert later == [pending]  # the lookup happens after the reply
 
@@ -427,7 +427,7 @@ def test_forgot_password_looks_nothing_up_before_it_replies(
     api, _ = _email_api(db)
     member = api.new_signed("member")
     later: list[str] = []
-    monkeypatch.setattr(email_router, "_send_reset", lambda context, email: later.append(email))
+    monkeypatch.setattr(email_router, "_send_link", lambda context, email, *_: later.append(email))
 
     for address in (member.email, "nobody@example.com"):
         assert _post(api.client(), "/api/auth/forgot", {"email": address}).json() == FORGOT_REPLY
