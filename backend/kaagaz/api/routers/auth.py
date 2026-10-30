@@ -64,7 +64,7 @@ Why the sign-in looks the way it does (council record 29 Sep, WP1.3):
 
 * **One reply for every failure.** A wrong password, an unknown e-mail, a
   locked or disabled account and a wrong or reused code all get the same 401
-  ``bad_credentials`` text (``code_required`` and ``mfa_enrol_required`` only
+  ``bad_credentials`` text (``code_required``, ``mfa_enrol_required`` and ``two_step_unreadable`` only
   ever follow a right password), and every path
   spends exactly one scrypt hash, so neither the reply nor its time says
   which accounts exist or which part was wrong.
@@ -90,6 +90,8 @@ Why the sign-in looks the way it does (council record 29 Sep, WP1.3):
 """
 
 import dataclasses
+import json
+import logging
 from datetime import datetime, timedelta
 from typing import Annotated, Any
 
@@ -137,6 +139,7 @@ from kaagaz.db import users as users_sql
 from kaagaz.db.users import AttemptRow
 
 router = APIRouter()
+log = logging.getLogger(__name__)
 
 Context = Annotated[AppContext, Depends(get_context)]
 
@@ -147,6 +150,7 @@ ADMIN_LOGIN_GONE = "Sign in on the sign-in page. Admins and members use the same
 CODE_REQUIRED = "Enter the 6-digit code from your authenticator app."
 WRONG_CODE = "That code is not right. Wait for the next code and try again."
 ORG_PENDING = "Your organisation is waiting for approval."
+UNREADABLE = "Your two-step code can't be checked right now. Ask your admin to reset it."
 RECENT_DAYS = 14  # how long the app's "Google connected" banner shows (#457 phase 1)
 # Sign-ups an hour (PROVISIONAL). Behind the Next.js proxy every visitor shares the proxy's
 # address (kaagaz/api/middleware.py), so in production this is one cap for the whole site,
@@ -609,8 +613,12 @@ def _finish_second_step(
 
 def _code_problem(context: AppContext, attempt: AttemptRow, code: str | None) -> str | None:
     """None when ``code`` is this user's next unused two-step code, which is then used up;
-    else why not (``code_required``, ``totp_unreadable``, ``wrong_code``, ``code_reused``),
-    for the caller to count, audit and answer. Sign-in and Change password share it."""
+    else why not (``code_required``, ``wrong_code``, ``code_reused``), for the caller to
+    count, audit and answer. Sign-in and Change password share it.
+
+    A secret that does not open (a changed key, a damaged row) is not the person's fault: it is
+    logged ``totp_unreadable`` at error level, the attempt is not counted (the password was
+    right), and the reply is 403 ``two_step_unreadable``. Another admin or the CLI resets it."""
     if not _digits(code):
         return "code_required"
     try:  # a missing secret ("") does not open either
@@ -618,7 +626,10 @@ def _code_problem(context: AppContext, attempt: AttemptRow, code: str | None) ->
             attempt.totp_secret_enc or "", aad=attempt.user_id
         )
     except SecretBoxError:
-        return "totp_unreadable"  # another admin or the CLI resets it
+        log.error(json.dumps({"event": "totp_unreadable"}, separators=(",", ":")))
+        with context.db.customer(attempt.customer_id) as conn:  # not counted toward the lock
+            users_sql.unlock(conn, attempt.customer_id, attempt.user_id)
+        raise ApiError(403, "two_step_unreadable", UNREADABLE) from None
     step = totp.matching_step(secret, _digits(code), _unix(context.clock()), attempt.totp_last_step)
     if step is None:
         return "wrong_code"

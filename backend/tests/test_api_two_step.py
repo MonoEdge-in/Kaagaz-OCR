@@ -8,9 +8,11 @@ another organisation cannot. Every change is audited and sends a security notice
 """
 
 import base64
+import logging
 
 import httpx2 as httpx
 import pytest
+from sqlalchemy import text
 
 from kaagaz.adapters.email import MemoryMailer
 from kaagaz.api import totp
@@ -225,3 +227,32 @@ def test_an_admin_of_another_organisation_cannot_reset_a_members_code(db: Databa
     assert (reply.status_code, reply.json()["error"]["code"]) == (404, "not_found")
     assert api.user_state(a_customer, member.user_id) == before
     assert api.audit_rows(a_customer) == a_audit
+
+
+UNREADABLE = "Your two-step code can't be checked right now. Ask your admin to reset it."
+
+
+def test_an_unreadable_two_step_secret_says_so_logs_an_error_and_counts_nothing(
+    db: Database, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A secret that no longer opens (a changed key, a damaged row) is not the person's fault:
+    the sign-in, after a right password, says so, and nothing counts toward the lock."""
+    api = Api(db)
+    customer_id, _ = api.customer()
+    member = api.enrol_user(customer_id, "member")
+    with db.customer(customer_id) as conn:
+        conn.execute(
+            text("UPDATE users SET totp_secret_enc = 'damaged' WHERE id = :u"), {"u": member.user_id}
+        )
+    caplog.set_level(logging.ERROR, logger="kaagaz.api.routers.auth")
+
+    for _ in range(api.settings.login_max_failures + 1):
+        reply = api.admin_login(api.client(), member.email, code=api.code(member.secret))
+        assert (reply.status_code, reply.json()["error"]) == (
+            403,
+            {"code": "two_step_unreadable", "message": UNREADABLE},
+        )
+    assert api.user_state(customer_id, member.user_id)["failed_logins"] == 0
+    assert '{"event":"totp_unreadable"}' in caplog.messages
+    wrong = api.admin_login(api.client(), member.email, password=WRONG, code="123456")
+    assert (wrong.status_code, wrong.json()["error"]["code"]) == (401, "bad_credentials")  # says nothing
