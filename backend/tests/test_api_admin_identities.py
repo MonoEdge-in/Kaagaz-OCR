@@ -130,6 +130,20 @@ def test_remove_connections_signs_member_out_and_keeps_password(db: Database, go
     assert [m.subject for m in mailer.sent if m.to == member.email][-1] == "A Google account was disconnected"
 
 
+def test_removing_connections_from_someone_with_none_changes_nothing(
+    db: Database, google: FakeGoogle
+) -> None:
+    api = _api(db)
+    admin = api.new_admin()
+    member = api.sign_in(admin.customer_id, "member")
+    before = api.audit_rows(admin.customer_id)
+    reply = admin.client.post(f"/api/admin/users/{member.user_id}/remove-connections", headers=CSRF)
+    assert reply.status_code == 200, reply.text
+    assert reply.json()["signs_in_with"] == ["password"]
+    assert api.audit_rows(admin.customer_id) == before  # no row
+    assert member.client.get("/api/auth/me").status_code == 200  # nobody signed out
+
+
 def test_reset_password_also_clears_connections(db: Database, google: FakeGoogle) -> None:
     api = _api(db)
     admin = api.new_admin()
@@ -183,6 +197,19 @@ def test_member_cannot_use_admin_identity_routes(db: Database, google: FakeGoogl
         assert (reply.status_code, reply.json()["error"]["code"]) == (403, "admin_session_required"), path
 
 
+def test_the_auto_approval_switch_is_left_out_and_refused_while_no_provider_is_on(db: Database) -> None:
+    api = Api(db, settings=make_settings())
+    admin = api.new_admin()
+    assert "auto_approve_connections" not in admin.client.get("/api/admin/settings").json()
+    refused = admin.client.patch("/api/admin/settings", json={"auto_approve_connections": True}, headers=CSRF)
+    assert (refused.status_code, refused.json()["error"]) == (
+        400,
+        {"code": "bad_request", "message": "Signing in with Google isn't switched on for Kaagaz yet."},
+    )
+    changed = admin.client.patch("/api/admin/settings", json={"max_upload_mb": 3}, headers=CSRF)
+    assert changed.status_code == 200 and "auto_approve_connections" not in changed.json()
+
+
 def test_admin_identity_routes_are_404_while_off(db: Database) -> None:
     api = Api(db, settings=make_settings())
     admin = api.new_admin()
@@ -220,16 +247,18 @@ def test_a_password_still_signs_in_after_every_disconnect(db: Database, google: 
     assert api.admin_login(api.client(), member.email).status_code == 200
 
 
-def test_approve_signs_the_member_out_elsewhere(db: Database, google: FakeGoogle) -> None:
-    """The spec: approving, like connecting and disconnecting, raises the person's session version."""
+def test_approve_and_decline_keep_the_members_sessions(db: Database, google: FakeGoogle) -> None:
+    """Changed on purpose (#457 review): approval only adds a way in, and a declined connection
+    never signed in, so neither ends the member's sessions (remove and disconnect still do)."""
     api = _api(db)
     admin = api.new_admin()
-    member = _waiting(api, google, admin)
-    [row] = _pending(admin)
-    assert member.client.get("/api/auth/me").status_code == 200
-    assert admin.client.post(f"/api/admin/identities/{row['id']}/approve", headers=CSRF).status_code == 200
-    assert member.client.get("/api/auth/me").status_code == 401
-    assert api.admin_login(api.client(), member.email).status_code == 200  # the password still works
+    approved = _waiting(api, google, admin)
+    declined = _waiting(api, google, admin, "sita@example.com")
+    first, second = _pending(admin)
+    assert admin.client.post(f"/api/admin/identities/{first['id']}/approve", headers=CSRF).status_code == 200
+    assert admin.client.post(f"/api/admin/identities/{second['id']}/decline", headers=CSRF).status_code == 200
+    assert approved.client.get("/api/auth/me").status_code == 200
+    assert declined.client.get("/api/auth/me").status_code == 200
 
 
 def test_approve_refuses_when_the_email_became_another_users_sign_in_email(

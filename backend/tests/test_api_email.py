@@ -889,3 +889,29 @@ def test_a_waiting_sign_ups_admin_never_locks_themselves_out_and_approve_clears_
     assert _post(ops, f"/api/operator/orgs/{found.customer_id}/approve").status_code == 200
     state = api.user_state(found.customer_id, found.user_id)
     assert (state["failed_logins"], state["locked_until"]) == (0, None)
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("purpose", ["reset", "invite"])
+def test_a_password_set_from_a_link_clears_the_lock(db: Database, purpose: str) -> None:
+    api, mailer = _email_api(db)
+    admin = api.new_admin()
+    if purpose == "invite":
+        email = f"ramesh-{uuid.uuid4().hex[:8]}@example.com"
+        person = {"email": email, "display_name": "Ramesh", "role": "member", "password": PASSWORD}
+        user_id = admin.client.post("/api/admin/users", json=person, headers=CSRF).json()["id"]
+    else:
+        member = api.sign_in(admin.customer_id, "member")
+        email, user_id = member.email, member.user_id
+        _post(api.client(), "/api/auth/forgot", {"email": email})
+    token = _token(mailer, email, "/invite" if purpose == "invite" else "/reset-password")
+    with db.customer(admin.customer_id) as conn:  # someone kept guessing
+        conn.execute(
+            text("UPDATE users SET failed_logins = 9, locked_until = :t WHERE id = :u"),
+            {"t": api.clock() + timedelta(hours=1), "u": user_id},
+        )
+    path = "/api/auth/invite/accept" if purpose == "invite" else "/api/auth/reset"
+    assert _post(api.client(), path, {"token": token, "new_password": NEW_PASSWORD}).json() == {"ok": True}
+    state = api.user_state(admin.customer_id, user_id)
+    assert (state["failed_logins"], state["locked_until"]) == (0, None)
+    assert api.admin_login(api.client(), email, password=NEW_PASSWORD).status_code == 200

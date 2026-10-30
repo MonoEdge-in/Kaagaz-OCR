@@ -229,8 +229,7 @@ def test_settings_read_and_change_within_the_platform_limit(db: Database) -> Non
         "max_upload_mb": None,
         "platform_max_upload_mb": 5,
         "autofile": {"granted": False, "on": False},  # feature 28: not granted
-        "auto_approve_connections": False,  # Changed on purpose (#457 phase 1): off by default
-    }
+    }  # Changed on purpose (#457 review): no auto_approve_connections while no provider is on
     changed = admin.client.patch("/api/admin/settings", json={"max_upload_mb": 3}, headers=CSRF)
     assert changed.json()["max_upload_mb"] == 3
     assert (

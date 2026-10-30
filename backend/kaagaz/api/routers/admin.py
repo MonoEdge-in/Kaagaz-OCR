@@ -49,8 +49,9 @@ Why connected accounts are here (#457 phase 1): the admin approves or declines a
 reviewer's waiting Google account (``/admin/identities``), removes a person's connections
 (signed out everywhere, the password still works), and switches "Approve new sign-in
 connections automatically" (``auto_approve_connections``, audited ``settings.auto_approve_on``
-or ``_off``). Each is 404 while no provider is switched on; another organisation's ids are
-404. Resetting a person's password clears their connections too. ``/admin/users`` says how
+or ``_off``). Each is 404 while no provider is switched on (the switch: left out of the
+settings, a 400 to set); another organisation's ids are 404. Approving or declining leaves
+the person's sessions as they are. Resetting a person's password clears their connections too. ``/admin/users`` says how
 each person signs in (``signs_in_with``).
 
 Why auto-filing is a setting here (feature 28, council 15 Oct 2026): the platform operator
@@ -388,8 +389,8 @@ def approve_identity(
     identity_id: uuid.UUID, user: AdminSession, background: BackgroundTasks, context: Context
 ) -> dict[str, Any]:
     """A waiting connection signs in from now on, unless its email became another user's sign-in
-    email meanwhile (409, the one outside account rule). The person is signed out everywhere, as
-    after any change to their ways in, and gets a notice. The list left."""
+    email meanwhile (409, the one outside account rule). The person stays signed in (approval
+    only adds a way in) and gets a notice. The list left."""
     _connections_on(context)
     target = str(identity_id)
     with context.db.customer(user.customer_id) as conn:
@@ -407,7 +408,6 @@ def approve_identity(
         row = identities.approve(conn, user.customer_id, target, user.user_id, context.clock())
         if row is None:  # approved or declined a moment ago
             raise ApiError(404, "not_found")
-        users_sql.bump_session_version(conn, user.customer_id, str(row["user_id"]))
         _audit_identity(conn, user, "auth.identity_approved", row)
         reply = _pending_json(conn, user.customer_id)
     who = (context, user.customer_id, str(row["user_id"]))
@@ -441,23 +441,25 @@ def remove_connections(
     user_id: uuid.UUID, user: AdminSession, background: BackgroundTasks, context: Context
 ) -> dict[str, Any]:
     """ "Remove connected accounts": every connection of this person goes, and they are signed
-    out everywhere. Their password keeps working."""
+    out everywhere. Their password keeps working. With none, nothing changes and nothing is
+    audited."""
     _connections_on(context)
     target = str(user_id)
     with context.db.customer(user.customer_id) as conn:
         if users_sql.role_of(conn, user.customer_id, target) is None:
             raise ApiError(404, "not_found")
         count = identities.remove_all(conn, user.customer_id, target)
-        users_sql.bump_session_version(conn, user.customer_id, target)
-        audit.record(
-            conn,
-            user.customer_id,
-            actor_user_id=user.user_id,
-            action="auth.identity_unlinked",
-            target_type="user",
-            target_id=target,
-            details={"count": count},
-        )
+        if count:
+            users_sql.bump_session_version(conn, user.customer_id, target)
+            audit.record(
+                conn,
+                user.customer_id,
+                actor_user_id=user.user_id,
+                action="auth.identity_unlinked",
+                target_type="user",
+                target_id=target,
+                details={"count": count},
+            )
         row = next(row for row in users_sql.list_users(conn, user.customer_id) if str(row["id"]) == target)
     if count:
         who = (context, user.customer_id, target)
@@ -495,7 +497,12 @@ def _settings_json(row: RowMapping, context: AppContext) -> dict[str, Any]:
         "max_upload_mb": row["max_upload_mb"],
         "platform_max_upload_mb": context.settings.max_upload_bytes // MIB,
         "autofile": {"granted": bool(row["autofile_granted"]), "on": bool(row["autofile_on"])},
-        "auto_approve_connections": bool(row["auto_approve_connections"]),
+        # Only while a provider is on: there is nothing to approve otherwise.
+        **(
+            {"auto_approve_connections": bool(row["auto_approve_connections"])}
+            if _providers_on(context)
+            else {}
+        ),
     }
 
 
@@ -511,6 +518,8 @@ def get_settings(user: AdminSession, context: Context) -> dict[str, Any]:
 @router.patch("/admin/settings")
 def update_settings(body: SettingsBody, user: AdminSession, context: Context) -> dict[str, Any]:
     given = body.model_fields_set
+    if "auto_approve_connections" in given and not _providers_on(context):
+        raise ApiError(400, "bad_request", "Signing in with Google isn't switched on for Kaagaz yet.")
     platform = context.settings.max_upload_bytes // MIB
     if body.max_upload_mb is not None and body.max_upload_mb > platform:
         raise ApiError(400, "bad_request", f"The limit can be at most {platform} MB.")

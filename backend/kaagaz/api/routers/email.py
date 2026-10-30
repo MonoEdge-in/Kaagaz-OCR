@@ -198,6 +198,7 @@ def _set_password(context: AppContext, body: NewPasswordBody, purpose: str, acti
         )
         if changed is None:  # the user went a moment ago: the transaction (the link's use) is undone
             raise ApiError(400, "link_expired", LINK_GONE)
+        users_sql.unlock(conn, link.customer_id, link.user_id)  # their own password now: no lock
         users_sql.confirm_email(conn, link.customer_id, link.user_id, now=now)
         links_sql.void_all(conn, link.customer_id, link.user_id, now=now)
         _record(conn, link, action)
