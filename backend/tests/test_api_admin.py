@@ -229,7 +229,7 @@ def test_settings_read_and_change_within_the_platform_limit(db: Database) -> Non
         "max_upload_mb": None,
         "platform_max_upload_mb": 5,
         "autofile": {"granted": False, "on": False},  # feature 28: not granted
-    }
+    }  # Changed on purpose (#457 review): no auto_approve_connections while no provider is on
     changed = admin.client.patch("/api/admin/settings", json={"max_upload_mb": 3}, headers=CSRF)
     assert changed.json()["max_upload_mb"] == 3
     assert (
@@ -482,7 +482,8 @@ def test_the_user_list_shows_lock_2fa_and_password_status(db: Database) -> None:
 
     items = {item["id"]: item for item in admin.client.get("/api/admin/users").json()["items"]}
 
-    assert all(set(item) == ADMIN_USER_FIELDS for item in items.values())
+    # Changed on purpose (#457 phase 1): the list says how each person signs in.
+    assert all(set(item) == ADMIN_USER_FIELDS | {"signs_in_with"} for item in items.values())
     assert items[member_id]["locked_until"] == (api.clock() + timedelta(minutes=15)).isoformat()
     assert items[member_id]["totp_enabled"] is False
     assert items[admin.user_id]["totp_enabled"] is True
@@ -521,7 +522,8 @@ def test_reset_password_gives_a_temporary_password_and_ends_sessions(db: Databas
 
     assert reply.status_code == 200, reply.text
     body = reply.json()
-    assert set(body["user"]) == ADMIN_USER_FIELDS
+    # Changed on purpose (#457 phase 1): a reset clears connected accounts, and says so.
+    assert set(body["user"]) == ADMIN_USER_FIELDS | {"signs_in_with"}
     assert body["user"]["must_change_password"] is True
     assert len(body["temporary_password"]) == 16
     assert member.client.get("/api/auth/me").status_code == 401
@@ -546,7 +548,9 @@ def test_reset_2fa_clears_the_code_so_the_next_sign_in_sets_it_up_again(db: Data
     assert reply.json()["totp_enabled"] is False
     state = api.user_state(admin.customer_id, colleague.user_id)
     assert (state["totp_secret_enc"], state["totp_enabled_at"], state["totp_last_step"]) == (None, None, None)
-    assert api.audit_actions(admin.customer_id)[-1] == "user.reset_totp"
+    assert (
+        api.audit_actions(admin.customer_id)[-1] == "auth.totp_reset"
+    )  # Changed on purpose (#457): the spec's
     signed_in = api.admin_login(api.client(), colleague.email)  # MFA required (0035): no session yet
     assert (signed_in.status_code, signed_in.json()["error"]["code"]) == (403, "mfa_enrol_required")
     assert "set-cookie" not in signed_in.headers

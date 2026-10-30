@@ -9,21 +9,29 @@ const backend = process.env.BACKEND_URL ?? "http://localhost:8000";
 // data: and blob: URLs, and PDF.js's fonts from data: URLs. The PDF viewer's
 // engine is WebAssembly (served from /_next, compiled under 'wasm-unsafe-eval',
 // which allows no JavaScript eval) and Print frames the file from a blob: URL.
-const CSP = [
-  "default-src 'self'",
-  "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'",
-  "style-src 'self' 'unsafe-inline'",
-  "worker-src 'self' blob:",
-  "img-src 'self' data: blob:",
-  "frame-src 'self' blob:",
-  "font-src 'self' data:",
-  "connect-src 'self'",
-  "object-src 'none'",
-  "frame-ancestors 'none'",
-  "base-uri 'self'",
-  "form-action 'self'",
-].join("; ");
-
+// Google Analytics (#457 phase 4) adds Google's script, and the hosts it sends page views to,
+// on the public pages that load it only, never app-wide.
+function csp(script = "", collect = ""): string {
+  return [
+    "default-src 'self'",
+    `script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'${script}`,
+    "style-src 'self' 'unsafe-inline'",
+    "worker-src 'self' blob:",
+    `img-src 'self' data: blob:${collect}`,
+    "frame-src 'self' blob:",
+    "font-src 'self' data:",
+    `connect-src 'self'${collect}`,
+    "object-src 'none'",
+    "frame-ancestors 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+  ].join("; ");
+}
+const CSP = csp();
+const GA_CSP = csp(
+  " https://www.googletagmanager.com",
+  " https://*.google-analytics.com https://*.analytics.google.com https://*.googletagmanager.com",
+);
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
@@ -51,6 +59,24 @@ const nextConfig: NextConfig = {
           { key: "Content-Security-Policy-Report-Only", value: CSP },
           { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
         ],
+      },
+      {
+        // The pages components/analytics/ga.ts tracks (PAGE_TITLES); /login not while ?step=code.
+        source: "/:page(login|signup|forgot-password)",
+        missing: [{ type: "query", key: "step", value: "code" }],
+        headers: [{ key: "Content-Security-Policy-Report-Only", value: GA_CSP }],
+      },
+      {
+        // The emailed links' pages (#457): their token is in the fragment, never sent anyway;
+        // no referrer at all leaves these pages, as the spec asks for link paths.
+        source: "/:page(reset-password|invite|email/confirm)",
+        headers: [{ key: "Referrer-Policy", value: "no-referrer" }],
+      },
+      {
+        // The provider sign-in's routes (#457 phase 1): the callback's address holds Google's
+        // one-time code and state, so no referrer leaves it either.
+        source: "/api/auth/oidc/:path*",
+        headers: [{ key: "Referrer-Policy", value: "no-referrer" }],
       },
       {
         // The browser keeps no copy of an app page, so after signing out the

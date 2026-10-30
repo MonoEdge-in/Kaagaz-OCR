@@ -4,8 +4,12 @@
 // paper" and what Kaagaz promises; static text only: no API call, no customer
 // names or counts) and the form on the right. Below 760 px the panel is a short
 // band above the form. The one motion: the panel's words fade in once.
+// Google Analytics (#457 phase 4): its choice under the form on the public pages, while
+// NEXT_PUBLIC_GA_ID is set; never on the operator's sign-in.
 
 import type { ReactNode } from "react";
+import { Analytics } from "@/components/analytics/Analytics";
+import { gaId } from "@/components/analytics/ga";
 import { Icon } from "@/components/ui/Icon/Icon";
 import { ThemeToggle } from "@/components/ui/ThemeToggle";
 import styles from "./login.module.css";
@@ -17,6 +21,8 @@ export function AuthFrame({
   variant?: "member" | "platform";
   children: ReactNode;
 }) {
+  // Read when the app is built (a NEXT_PUBLIC_ value); unset or malformed, nothing at all.
+  const gaMeasurementId = gaId(process.env.NEXT_PUBLIC_GA_ID);
   return (
     <div className={styles.page}>
       <div className={styles.theme}>
@@ -58,7 +64,10 @@ export function AuthFrame({
         </aside>
 
         <main className={styles.main}>
-          <div className={styles.formColumn}>{children}</div>
+          <div className={styles.formColumn}>
+            {children}
+            {variant === "member" && gaMeasurementId && <Analytics id={gaMeasurementId} />}
+          </div>
         </main>
       </div>
     </div>

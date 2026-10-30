@@ -4,10 +4,12 @@
 
 import { sessionScope } from "@/components/shell/gate";
 import { roleName } from "@/components/shell/nav";
+import { providersText } from "@/components/account/signInWays";
 import { ApiError } from "@/lib/api";
 import { formatDateTime, formatNumber, formatUsd, PART_NOT_KNOWN, statusChip } from "@/lib/format";
 import type { StatusTone } from "@/lib/format";
 import type {
+  AddedUser,
   AdminUser,
   AuditEntry,
   CustomerSettings,
@@ -16,6 +18,7 @@ import type {
   MemberNumbers,
   MemberPeriod,
   PageRoute,
+  PendingConnection,
   Role,
   Stats,
   UsageBudget,
@@ -136,9 +139,9 @@ export interface StatusPart {
 }
 
 /**
- * The status column: Active, "Locked until 14:05" or Disabled, then "Two-step on"
- * or "Two-step off" (off is only worth saying for an admin, who can turn it on for
- * the admin screen), then "Temporary password" until the user sets their own.
+ * The status column: Active, "Locked until 14:05" or Disabled, then "Two-step: On" or
+ * "Two-step: Off" for every user (#457 phase 3: anyone may have codes), then "Temporary
+ * password" until the user sets their own.
  */
 export function userStatus(user: AdminUser, now: number): StatusPart[] {
   const parts: StatusPart[] = [];
@@ -147,8 +150,7 @@ export function userStatus(user: AdminUser, now: number): StatusPart[] {
     parts.push({ text: lockedUntilText(user.locked_until), tone: "danger" });
   } else parts.push({ text: "Active", tone: "ready" });
   // Plain words (25 Oct 2026): "Two-step", as the rest of the product says, not "2FA".
-  if (user.totp_enabled) parts.push({ text: "Two-step on", tone: "neutral" });
-  else if (user.role === "admin") parts.push({ text: "Two-step off", tone: "neutral" });
+  parts.push({ text: user.totp_enabled ? "Two-step: On" : "Two-step: Off", tone: "neutral" });
   if (user.must_change_password) parts.push({ text: "Temporary password", tone: "neutral" });
   if (user.can_delete_forever) parts.push({ text: "Can delete forever", tone: "neutral" });
   return parts;
@@ -220,6 +222,22 @@ export function generatePassword(length = 16, random: (bytes: Uint8Array) => Uin
 }
 
 /** AD7 (UI audit, 16 Oct 2026), with two-step required for admins (0035): what an admin without it sees. */
+/** The toast after Add user (#457): the invite went, or could not be sent (a problem: the typed
+ * temporary password is the way in), or with email off the temporary password as before. */
+export function addedNotice(user: Pick<AddedUser, "display_name" | "email" | "invited">): {
+  text: string;
+  problem?: boolean;
+} {
+  const name = user.display_name;
+  if (user.invited === true) {
+    return { text: `Invite sent to ${user.email}. If it doesn't arrive, give ${name} the temporary password you typed.` };
+  }
+  if (user.invited === false) {
+    return { problem: true, text: `Couldn't send the invite email. Give ${name} the temporary password you typed.` };
+  }
+  return { text: `Added ${name}. They choose their own password when they first sign in.` };
+}
+
 export function twoStepNote(): string {
   return "Admins without two-step sign-in set it up at their next sign-in.";
 }
@@ -256,6 +274,42 @@ export const AUTOFILE_HELP =
   "Files already uploaded stay where they are. Files you put in a folder yourself are never moved. " +
   "If a file lands in the wrong folder, press Undo or move it.";
 export const AUTOFILE_NOT_AVAILABLE = "Auto-filing isn't available for your organisation yet.";
+
+// Connected accounts (#457 phase 1): the People and Settings words, naming only the providers
+// that are on (Me's providers, #457 review).
+export const AUTO_APPROVE_LABEL = "Approve new sign-in connections automatically";
+export const AUTO_APPROVE_SAVED = "Saved.";
+export const AUTO_APPROVE_NOTE = "This setting saves as soon as you change it.";
+export const CONNECTIONS_FAILED = "Couldn't load connections to approve. Try again.";
+export const ALREADY_DECIDED = "Another admin already decided this one.";
+
+export function autoApproveWarning(providers: readonly string[]): string {
+  return `Members' ${providersText(providers)} accounts will work at once, without your review.`;
+}
+
+export function removeConnectionsQuestion(name: string, providers: readonly string[]): string {
+  return `Remove ${name}'s connected accounts? They can't sign in with ${providersText(providers)} any more. Their password still works.`;
+}
+
+const WAY_NAMES: Record<string, string> = { password: "Password", google: "Google" };
+
+/** Approve's and Decline's names for a screen reader: "Approve Ramesh Kumar's Google account". */
+export function decideLabel(row: PendingConnection, approve: boolean): string {
+  return `${approve ? "Approve" : "Decline"} ${row.display_name}'s ${WAY_NAMES[row.provider] ?? row.provider} account`;
+}
+
+/** "Password, Google": how this person signs in (every account keeps its password). */
+export function signsInWith(ways: readonly string[] | undefined): string {
+  return (ways ?? ["password"]).map((way) => WAY_NAMES[way] ?? way).join(", ");
+}
+
+const askedDay = new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "short", timeZone: "Asia/Kolkata" });
+
+/** A waiting connection in one line: "Ramesh Kumar · Google · ramesh.k@gmail.com · asked 30 Oct". */
+export function pendingLine(row: PendingConnection): string {
+  const parts = [row.display_name, WAY_NAMES[row.provider] ?? row.provider, row.email ?? "no email given"];
+  return `${parts.join(" · ")} · asked ${askedDay.format(new Date(row.linked_at))}`;
+}
 
 /** AD6: the form differs from what is saved (the Save bar shows only then). */
 export function settingsChanged(
@@ -513,6 +567,7 @@ const ACTION_WORDS: Record<string, string> = {
   "user_word.deleted": "Deleted a word from My words",
   "customer.create": "Organisation set up",
   "org.self_signup": "Created the organisation at sign-up",
+  "org.approved": "Organisation approved", // #457: a sign-up approved by the Kaagaz team
   "customer.enable": "Organisation turned on",
   "customer.disable": "Organisation turned off",
   "chat.ask": "Asked a question",
@@ -533,10 +588,23 @@ const ACTION_WORDS: Record<string, string> = {
   "auth.totp_on": "Turned on two-step sign-in",
   "auth.totp_off": "Turned off two-step sign-in",
   "auth.password_change": "Changed their password",
+  // #457 phase 0: email.
+  "auth.email_confirmed": "Confirmed their email",
+  "auth.password_reset": "Reset their password from an email",
+  "auth.invite_sent": "Sent an invite",
+  "auth.invite_accepted": "Accepted an invite",
   "auth.logout_everywhere": "Signed out everywhere",
+  // #457 phase 1: connected accounts.
+  "auth.identity_linked": "Connected a Google account",
+  "auth.identity_approved": "Approved a Google account",
+  "auth.identity_declined": "Declined a Google account",
+  "auth.identity_unlinked": "Disconnected a Google account",
+  "settings.auto_approve_on": "Turned on automatic approval of sign-in connections",
+  "settings.auto_approve_off": "Turned off automatic approval of sign-in connections",
   "user.unlock": "Unlocked a user",
   "user.reset_password": "Reset a user's password",
   "user.reset_totp": "Reset a user's two-step sign-in",
+  "auth.totp_reset": "Reset a user's two-step sign-in", // #457: the name since 0063; older rows keep user.reset_totp
   "user.delete_forever_on": "Allowed a user to delete forever",
   "user.delete_forever_off": "Stopped a user deleting forever",
   // Feature 28: auto-filing.
@@ -570,7 +638,7 @@ export function describeAction(action: string, details: Record<string, unknown> 
 const BY_KAAGAZ = new Set(["document.autofile", "org.autofile_grant", "org.autofile_revoke"]);
 // Issue 375: with no person at all (actor_id null), these come from Kaagaz's own set-up
 // commands (backend kaagaz/cli.py create-user and reset-admin-2fa), never from a screen.
-const SET_UP_BY_KAAGAZ = new Set(["user.create", "user.reset_totp"]);
+const SET_UP_BY_KAAGAZ = new Set(["user.create", "user.reset_totp", "auth.totp_reset"]);
 
 /** Who did it: the person's name, "Kaagaz" for auto-filing and set-up, else a dash (a removed user). */
 export function whoText(

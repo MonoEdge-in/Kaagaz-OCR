@@ -836,9 +836,21 @@ def conversation_summary(row: RowMapping) -> dict[str, Any]:
     return {"id": str(row["id"]), "title": row["title"], "created_at": iso(row["created_at"])}
 
 
-def me_json(user: CurrentUser) -> dict[str, Any]:
+def me_json(
+    user: CurrentUser,
+    *,
+    email_on: bool,
+    providers: Sequence[str],
+    recent_connections: Sequence[dict[str, str]] = (),
+) -> dict[str, Any]:
     """``Me``: who is signed in, their customer, and the session's scope ("app" for a
-    member or reviewer, "admin" for an admin; the screen shows Admin only for "admin")."""
+    member or reviewer, "admin" for an admin; the screen shows Admin only for "admin").
+    ``email_confirmed`` false shows the "Confirm your email" banner (#457), so it is true
+    while email is off: nothing could be sent to confirm it. ``recent_connections``: the
+    "Google connected on 30 Oct." banner's ``{provider, linked_at}`` (#457 phase 1; only
+    /auth/me and /auth/session read them, every other reply leaves the list empty).
+    ``providers``: those switched on (``oidc.enabled_providers``), so Account shows "Ways to
+    sign in" only while one is."""
     return {
         "user": {
             "id": user.user_id,
@@ -848,17 +860,25 @@ def me_json(user: CurrentUser) -> dict[str, Any]:
             "must_change_password": user.must_change_password,
             "totp_enabled": user.totp_enabled,
             "can_delete_forever": user.delete_forever_allowed and user.role != "admin",  # the grant
+            "email_confirmed": user.email_confirmed or not email_on,
         },
         "customer": {"id": user.customer_id, "name": user.customer_name},
         "session": {"scope": user.scope},
+        "recent_connections": list(recent_connections),
+        "providers": list(providers),
     }
 
 
-def admin_user(row: RowMapping, *, now: datetime) -> dict[str, Any]:
+def admin_user(
+    row: RowMapping, *, now: datetime, signs_in_with: Sequence[str] | None = None
+) -> dict[str, Any]:
     """``AdminUser``. ``locked_until`` is null once the lock has passed, so the
-    screen never shows a lock that no longer holds."""
+    screen never shows a lock that no longer holds. ``signs_in_with`` (#457 phase 1:
+    "password" and each approved provider) only where the reply knows it: the list, and the
+    replies that removed connections; the screen keeps what it had otherwise."""
     locked_until: datetime | None = row["locked_until"]
     return {
+        **({} if signs_in_with is None else {"signs_in_with": list(signs_in_with)}),
         "id": str(row["id"]),
         "email": row["email"],
         "display_name": row["display_name"],

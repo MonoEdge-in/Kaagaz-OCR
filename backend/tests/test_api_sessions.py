@@ -20,7 +20,17 @@ from sqlalchemy import text
 from kaagaz.api import totp
 from kaagaz.api.auth import SESSION_COOKIE, SessionClaims, sign_session, verify_password
 from kaagaz.db.engine import Database
-from tests.test_api_support import CSRF, NOW, PASSWORD, Api, TestClient, call, route_calls
+from tests.test_api_support import (
+    CSRF,
+    EMAIL_ROUTES,
+    NOW,
+    OIDC_ROUTES,
+    PASSWORD,
+    Api,
+    TestClient,
+    call,
+    route_calls,
+)
 
 pytestmark = pytest.mark.db
 
@@ -35,10 +45,11 @@ def _login(client: TestClient, email: str, password: str = PASSWORD) -> httpx.Re
     return client.post("/api/auth/login", json={"email": email, "password": password}, headers=CSRF)
 
 
-def _change_password(client: TestClient, current: str, new: str) -> httpx.Response:
-    return client.post(
-        "/api/auth/password", json={"current_password": current, "new_password": new}, headers=CSRF
-    )
+def _change_password(client: TestClient, current: str, new: str, code: str | None = None) -> httpx.Response:
+    body = {"current_password": current, "new_password": new}
+    if code is not None:
+        body["code"] = code
+    return client.post("/api/auth/password", json=body, headers=CSRF)
 
 
 def _b64url(raw: bytes) -> str:
@@ -73,8 +84,10 @@ def test_a_password_change_keeps_the_admin_session_and_its_end(db: Database) -> 
     api = Api(db)
     admin = api.new_admin()
     api.clock.advance(30 * 60)
+    assert admin.totp_secret is not None
 
-    reply = _change_password(admin.client, PASSWORD, NEW_PASSWORD)
+    # Changed on purpose (#457): with two-step sign-in on, the code too.
+    reply = _change_password(admin.client, PASSWORD, NEW_PASSWORD, api.code(admin.totp_secret))
 
     assert reply.status_code == 200, reply.text
     assert reply.json()["session"] == {"scope": "admin"}
@@ -246,8 +259,11 @@ def test_must_change_blocks_every_route_except_password_logout_and_me(db: Databa
         ("GET", "/api/auth/me"),
         ("GET", "/api/auth/session"),
     }
-    calls = route_calls(api.app)
-    assert open_to_all | allowed <= set(calls)
+    # Changed on purpose (#457): the email routes are 404 while email is off (tests/test_api_email.py),
+    # and the provider sign-in's while no provider is on (tests/test_api_oidc_signin.py).
+    switched_off = EMAIL_ROUTES + OIDC_ROUTES
+    calls = [call for call in route_calls(api.app) if call not in switched_off]
+    assert open_to_all | allowed <= set(calls) and set(switched_off) <= set(route_calls(api.app))
 
     # Fixed (#239, 27 Oct 2026): the operator's routes (0015) take an operator session, so a
     # customer's session gets their 401 before this gate; tests/test_operator_auth_db.py too.
@@ -363,7 +379,7 @@ def test_every_auth_event_is_audited_with_a_valid_action(db: Database) -> None:
         ).all()
     actions = [str(row[0]) for row in rows]
     assert all(ACTION.fullmatch(action) for action in actions)
-    assert not ACTION.fullmatch("user.reset_2fa")  # why the 2FA reset is "user.reset_totp"
+    assert not ACTION.fullmatch("user.reset_2fa")  # why the 2FA reset is "auth.totp_reset"
     assert {
         "auth.login",
         "auth.login_failed",
@@ -374,7 +390,7 @@ def test_every_auth_event_is_audited_with_a_valid_action(db: Database) -> None:
         "auth.totp_on",
         "user.unlock",
         "user.reset_password",
-        "user.reset_totp",
+        "auth.totp_reset",  # Changed on purpose (#457 review): the spec's name, was user.reset_totp
     } <= set(actions)
     for action, target_type, target_id, _ in rows:
         if str(action).startswith(("auth.", "user.")):

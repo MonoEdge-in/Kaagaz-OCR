@@ -13,6 +13,8 @@
 // inside documents first, docs/architecture.md, The screens), the Upload button and the account
 // menu (AccountMenu).
 // <main id="main"> has no padding; screens use .page (the chat fills it).
+// #457: while the person's email is not confirmed, EmailBanner sits at the top of <main>;
+// an account connected in the last 14 days, ConnectedBanner (phase 1).
 
 import Form from "next/form";
 import Link from "next/link";
@@ -23,6 +25,7 @@ import { MAX_SEARCH_LENGTH } from "@/components/documents/insideSearch";
 import { Drawer } from "@/components/ui/Drawer";
 import { Icon } from "@/components/ui/Icon";
 import { IconButton } from "@/components/ui/IconButton";
+import { ConnectedBanner } from "@/components/account/ConnectedBanner";
 import { canReview } from "@/components/review/review";
 import { listReview } from "@/lib/api";
 import { useSession } from "@/lib/session";
@@ -33,16 +36,18 @@ import { ShellMenu } from "./ShellMenu";
 import { StatusBarSlot } from "./StatusBar";
 import { SHELL_UPLOAD_INPUT_ID, UploadsProvider } from "./Uploads";
 import { ClockPeek } from "./ClockPeek";
+import { EmailBanner } from "./EmailBanner";
 import { Wordmark } from "./Wordmark";
 import styles from "./Shell.module.css";
 
 const MENU_ID = "app-menu";
+const NONE: readonly { provider: string; linked_at: string }[] = [];
 
 /** The documents screen's and the dashboard's file input (DocumentsView.tsx, Dashboard.tsx). */
 const UPLOAD_INPUT_ID = "upload-input";
 
 export function AppShell({ children }: { children: ReactNode }) {
-  const { me } = useSession();
+  const { me, refresh } = useSession();
   const pathname = usePathname();
   const [menuOpen, setMenuOpen] = useState(false);
   const links = navLinks(me.user.role, sessionScope(me));
@@ -149,7 +154,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               <Icon name="upload" />
               <span className="narrow-hide">Upload</span>
             </Link>
-            <AccountMenu me={me} />
+            <AccountMenu me={me} onChanged={refresh} />
           </div>
         </header>
 
@@ -173,6 +178,8 @@ export function AppShell({ children }: { children: ReactNode }) {
           // A 1px edge under the header once the content has scrolled (UI audit G11).
           onScroll={(event) => event.currentTarget.toggleAttribute("data-scrolled", event.currentTarget.scrollTop > 0)}
         >
+          {!me.user.email_confirmed && <EmailBanner email={me.user.email} />}
+          <ConnectedBanner items={me.recent_connections ?? NONE} />
           <StatusBarSlot value={statusBar}>
             <UploadsProvider>{children}</UploadsProvider>
           </StatusBarSlot>

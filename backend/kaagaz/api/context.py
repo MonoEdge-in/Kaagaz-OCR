@@ -11,6 +11,7 @@ from datetime import datetime
 
 from fastapi import Request
 
+from kaagaz.adapters.email import Mailer
 from kaagaz.ai.client import ModelClient
 from kaagaz.api.ports import Answers, ApiQueue, ApiStorage
 from kaagaz.db.engine import Database, OperatorDatabase
@@ -27,6 +28,8 @@ class AppContext:
     clock: Callable[[], datetime]
     # The model GET /api/search embeds questions with; None with the model off.
     model: ModelClient | None = None
+    # Email (#457 phase 0); None with EMAIL_ENABLED off (kaagaz.api.emails).
+    mailer: Mailer | None = None
 
 
 def get_operator_db(request: Request) -> OperatorDatabase:

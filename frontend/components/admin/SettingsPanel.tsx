@@ -5,16 +5,31 @@
 // (feature 28), shown only once the platform has allowed it, saved by the same Save.
 // UI audit AD6 (16 Oct 2026): each in its own section (Uploads, Filing), and the Save
 // bar sticks to the foot of the screen only while something is changed.
+// #457 phase 1: "Approve new sign-in connections automatically", saved at once (turning it on
+// asks first, with the warning; "Saved." after each change), shown only while a provider is on
+// (the settings reply leaves it out otherwise).
 
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import libraryStyles from "@/components/documents/Library.module.css";
-import { ApiError, getSettings, updateSettings } from "@/lib/api";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { ApiError, getSettings, setAutoApprove, updateSettings } from "@/lib/api";
 import type { CustomerSettings } from "@/lib/types";
-import { AUTOFILE_HELP, AUTOFILE_LABEL, parseUploadLimit, settingsChanged, settingsErrorText } from "./logic";
+import {
+  AUTO_APPROVE_LABEL,
+  AUTO_APPROVE_NOTE,
+  AUTO_APPROVE_SAVED,
+  autoApproveWarning,
+  AUTOFILE_HELP,
+  AUTOFILE_LABEL,
+  parseUploadLimit,
+  settingsChanged,
+  settingsErrorText,
+} from "./logic";
 import styles from "./Admin.module.css";
 
-export function SettingsPanel() {
+/** providers: the sign-in providers switched on (Me's), for the auto-approval warning. */
+export function SettingsPanel({ providers }: { providers: readonly string[] }) {
   const [settings, setSettings] = useState<CustomerSettings | null>(null);
   const [text, setText] = useState("");
   const [autofileOn, setAutofileOn] = useState(false);
@@ -125,6 +140,7 @@ export function SettingsPanel() {
               )}
             </div>
           </fieldset>
+          <AutoApproveSwitch settings={settings} providers={providers} onSaved={setSettings} />
           {settings.autofile.granted && (
             <fieldset className={styles.settingsGroup}>
               <legend className={styles.settingsLegend}>Filing</legend>
@@ -151,6 +167,80 @@ export function SettingsPanel() {
         </form>
       )}
     </section>
+  );
+}
+
+/** "Approve new sign-in connections automatically" (#457 phase 1): saved at once, apart from the
+ * form's Save. Turning it on asks first with the warning; nothing shows while no provider is on. */
+function AutoApproveSwitch({
+  settings,
+  providers,
+  onSaved,
+}: {
+  settings: CustomerSettings;
+  providers: readonly string[];
+  onSaved(next: CustomerSettings): void;
+}) {
+  const [asking, setAsking] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+  const warning = autoApproveWarning(providers);
+
+  async function save(on: boolean) {
+    setBusy(true);
+    setError(null);
+    setSaved(false);
+    try {
+      onSaved(await setAutoApprove(on));
+      setAsking(false);
+      setSaved(true);
+    } catch (caught) {
+      setError(settingsErrorText(caught));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (settings.auto_approve_connections === undefined) return null;
+  return (
+    <fieldset className={styles.settingsGroup}>
+      <legend className={styles.settingsLegend}>Sign-in</legend>
+      <div className="field">
+        <label className={libraryStyles.check}>
+          <input
+            type="checkbox"
+            checked={settings.auto_approve_connections}
+            disabled={busy}
+            onChange={(event) => (event.target.checked ? setAsking(true) : void save(false))}
+            aria-describedby="auto-approve-hint"
+          />
+          {AUTO_APPROVE_LABEL}
+        </label>
+        <span id="auto-approve-hint" className="hint">
+          {warning} {AUTO_APPROVE_NOTE}
+        </span>
+        <span className="hint" role="status">
+          {saved ? AUTO_APPROVE_SAVED : null}
+        </span>
+        {error && !asking && (
+          <span className="error-text" role="alert">
+            {error}
+          </span>
+        )}
+      </div>
+      <ConfirmDialog
+        open={asking}
+        title="Approve new connections automatically?"
+        confirmLabel="Turn on"
+        busy={busy}
+        error={asking ? error : null}
+        onConfirm={() => void save(true)}
+        onCancel={() => setAsking(false)}
+      >
+        <p>{warning}</p>
+      </ConfirmDialog>
+    </fieldset>
   );
 }
 

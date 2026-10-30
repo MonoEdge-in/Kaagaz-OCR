@@ -45,12 +45,46 @@ export interface Me {
     must_change_password: boolean;
     totp_enabled: boolean; // two-step sign-in is on (required for an admin)
     can_delete_forever: boolean; // an admin allowed this member or reviewer (never an admin)
+    email_confirmed: boolean; // false: the "Confirm your email" banner (#457; true while email is off)
   };
   customer: { id: string; name: string };
   session: { scope: SessionScope };
+  // The sign-in providers switched on ("google"), for every role (#457 review): empty while none
+  // is, and Ways to sign in is hidden; the copy names only these.
+  providers: string[];
+  // Ways to sign in (#457 phase 1): approved connections made in the last 14 days, for the
+  // app's "Google connected on 30 Oct." banner. Empty while no provider is on (always sent).
+  recent_connections?: { provider: string; linked_at: string }[];
 }
 
-/** "Turn on" two-step sign-in (POST /auth/admin/2fa/start). Nothing is stored yet. */
+/** One connected account of the signed-in user (GET /auth/identities). */
+export interface ConnectedIdentity {
+  id: string;
+  provider: string; // "google"
+  email: string | null; // the account's email when it was connected, a label only
+  status: "pending" | "approved";
+  linked_at: string;
+  last_used_at: string | null;
+}
+
+/** Account, Ways to sign in: the providers switched on, and the user's own connections. */
+export interface WaysToSignIn {
+  providers: string[];
+  identities: ConnectedIdentity[];
+}
+
+/** Admin, People, Connections to approve (GET /admin/identities). */
+export interface PendingConnection {
+  id: string;
+  user_id: string;
+  display_name: string;
+  user_email: string;
+  provider: string;
+  email: string | null;
+  linked_at: string;
+}
+
+/** "Turn on" two-step sign-in (POST /auth/2fa/start, or after a right password). Nothing is stored yet. */
 export interface TwoStepSetup {
   enrol_token: string; // lasts 10 minutes
   secret: string; // base32, in groups of 4
@@ -984,6 +1018,20 @@ export interface AdminUser {
   totp_enabled: boolean;
   must_change_password: boolean;
   can_delete_forever: boolean; // an admin allowed Delete forever (never set for an admin)
+  // #457 phase 1: "password" and each approved provider. Only the list and the replies that
+  // removed connections send it; a row keeps what it had otherwise.
+  signs_in_with?: string[];
+}
+
+/** POST /admin/users: the new user; with email on (#457), whether the invite email went. */
+export interface AddedUser extends AdminUser {
+  invited?: boolean;
+}
+
+/** POST /auth/signup with email on (#457): no set-up yet, the email is confirmed first. */
+export interface SignUpConfirming {
+  status: "confirm_email";
+  sent: boolean; // false: the confirm email could not be sent
 }
 
 /** A reset password: the temporary password is in this one reply only. */
@@ -998,6 +1046,8 @@ export interface CustomerSettings {
   platform_max_upload_mb: number;
   // Feature 28: the platform allowed auto-filing (granted), and the admin switched it on.
   autofile: { granted: boolean; on: boolean };
+  // #457 phase 1: "Approve new sign-in connections automatically"; left out while no provider is on.
+  auto_approve_connections?: boolean;
 }
 
 export interface AuditEntry {
@@ -1083,7 +1133,8 @@ export interface OperatorMoveOffer {
   otpauth_uri: string; // the same key as an otpauth:// link, for a QR code
 }
 
-export type OrgStatus = "active" | "disabled" | "deleting";
+// pending (#457): a password sign-up waiting for the operator's Approve.
+export type OrgStatus = "active" | "pending" | "disabled" | "deleting";
 
 /** One organisation in GET /operator/orgs: its metadata and counts only. */
 export interface Organisation {
@@ -1100,6 +1151,7 @@ export interface Organisation {
   last_activity_at: string | null;
   autofile_granted: boolean; // feature 28: auto-filing allowed; its admin switches it on
   autofile_on: boolean;
+  admin_email_confirmed: boolean; // #457: one of its admins confirmed their email; Approve needs it
 }
 
 export interface ModelRateUser {

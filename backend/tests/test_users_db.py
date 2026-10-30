@@ -310,8 +310,6 @@ def test_enrol_totp_needs_the_same_session_version(db: Database) -> None:
 @pytest.mark.parametrize(
     "columns",
     [
-        {"role": "member"},
-        {"role": "reviewer"},
         {"disabled": True},
         {"must_change_password": True},
         {"locked_until": NOW + timedelta(minutes=1)},
@@ -322,6 +320,15 @@ def test_enrol_totp_is_refused_for_a_user_who_may_not_enrol(db: Database, column
     _set(db, customer_id, user_id, **columns)
     assert _enrol(db, customer_id, user_id) is False
     assert _state(db, customer_id, user_id)["totp_secret_enc"] is None
+
+
+@pytest.mark.parametrize("role", ["member", "reviewer"])
+def test_enrol_totp_works_for_a_member_or_reviewer_too(db: Database, role: str) -> None:
+    """Changed on purpose (#457 phase 3): two-step codes for everyone, not only admins."""
+    customer_id, user_id = _user(db, role)
+    with db.customer(customer_id) as conn:
+        assert users.enrol_still_open(conn, customer_id, user_id, 1) is True
+    assert _enrol(db, customer_id, user_id) is True
 
 
 def test_enrol_totp_is_allowed_once_a_lock_has_passed(db: Database) -> None:

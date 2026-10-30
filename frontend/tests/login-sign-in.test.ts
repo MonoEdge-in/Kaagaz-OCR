@@ -20,13 +20,15 @@ import { ApiError } from "@/lib/api";
 
 describe("e-mail", () => {
   it("asks for an e-mail when empty or only spaces", () => {
-    expect(EMAIL_MISSING).toBe("Enter your e-mail address.");
+    // Changed on purpose (#457 review): one spelling, "email".
+    expect(EMAIL_MISSING).toBe("Enter your email address.");
     expect(emailError("")).toBe(EMAIL_MISSING);
     expect(emailError("   ")).toBe(EMAIL_MISSING);
   });
 
   it("asks for an @ when the shape is wrong", () => {
-    expect(EMAIL_INVALID).toBe("Enter an e-mail address with an @, like the one you use for work.");
+    // Changed on purpose (#457 review): one spelling, "email".
+    expect(EMAIL_INVALID).toBe("Enter an email address with an @, like the one you use for work.");
     expect(emailError("owner.example.in")).toBe(EMAIL_INVALID);
     expect(emailError("owner@")).toBe(EMAIL_INVALID);
     expect(emailError("@example.in")).toBe(EMAIL_INVALID);

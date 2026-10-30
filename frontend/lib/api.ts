@@ -9,6 +9,7 @@ import type { DocumentListParams } from "@/components/documents/libraryQuery";
 import type { StoryMatchBody } from "./storyMatches";
 import type {
   ActivityPage,
+  AddedUser,
   AdminChange,
   AdminCreated,
   AdminUser,
@@ -68,6 +69,7 @@ import type {
   PageSummary,
   DocumentWords,
   PasswordReset,
+  PendingConnection,
   PlatformEvent,
   PlatformHealth,
   LearnedDocument,
@@ -83,6 +85,7 @@ import type {
   ScopeBody,
   SessionTimeout,
   SheetCells,
+  SignUpConfirming,
   SourcePin,
   Speed,
   SpeedName,
@@ -91,6 +94,7 @@ import type {
   TaskLevel,
   TestModel,
   TwoStepSetup,
+  WaysToSignIn,
   UploadLimits,
   UploadReading,
   UploadResult,
@@ -222,18 +226,69 @@ export const logout = () => request<void>("POST", "/auth/logout");
 /** Whether anyone may create an organisation at /signup (SELF_SIGNUP_ENABLED). */
 export const signUpOpen = () => request<{ enabled: boolean }>("GET", "/auth/signup");
 /** A new organisation and its first admin. The reply is the two-step set-up (admins must
- * have it); the first code (adminEnrol) signs in as that admin. */
+ * have it); the first code (adminEnrol) signs in as that admin. With email on (#457), the
+ * email is confirmed first and the organisation waits for approval: SignUpConfirming. */
 export const signUp = (body: { organisation_name: string; name: string; email: string; password: string }) =>
-  request<TwoStepSetup>("POST", "/auth/signup", body);
+  request<TwoStepSetup | SignUpConfirming>("POST", "/auth/signup", body);
 /** Who is signed in, 200 either way (issue 378): a signed-out visit logs no expected 401. */
 export const currentSession = () =>
-  request<{ signed_in: true; me: Me } | { signed_in: false }>("GET", "/auth/session");
+  request<{ signed_in: true; me: Me } | { signed_in: false; providers?: string[] }>("GET", "/auth/session");
+
+// Ways to sign in (#457 phase 1): every route is 404 while no provider is switched on.
+/** After a provider for anyone with two-step sign-in on: the code (the second-step cookie). */
+export const oidcCode = (code: string) => request<Me>("POST", "/auth/oidc/code", { code });
+/** "isn't connected": the provider's email, kept out of the address, read once. */
+export const oidcNotice = () => request<{ email: string | null }>("GET", "/auth/oidc/notice");
+export const identities = () => request<WaysToSignIn>("GET", "/auth/identities");
+/** The password (and the code with two-step sign-in on), then the provider's address to open. */
+export const connectProvider = (provider: string, password: string, code?: string) =>
+  request<{ url: string }>("POST", `/auth/oidc/${encodeURIComponent(provider)}/connect`, {
+    password,
+    ...(code === undefined ? {} : { code }),
+  });
+/** Disconnect with the password, or cancel a waiting one with none (#457 review). The reply is
+ * the new list. */
+export const removeIdentity = (id: string, password?: string) =>
+  request<WaysToSignIn>(
+    "POST",
+    `/auth/identities/${encodeURIComponent(id)}/remove`,
+    password === undefined ? {} : { password },
+  );
 
 /** The first code from the set-up (sign-in or sign-up) turns two-step on and signs in. */
 export const adminEnrol = (enrolToken: string, code: string) =>
   request<Me>("POST", "/auth/admin/enrol", { enrol_token: enrolToken, code });
-export const changePassword = (current: string, next: string) =>
-  request<Me>("POST", "/auth/password", { current_password: current, new_password: next });
+/** Account, Two-step sign-in, Turn on (#457, any role): the password, then the set-up key; the
+ * first code (adminEnrol) turns it on. */
+export const startTwoStep = (password: string) => request<TwoStepSetup>("POST", "/auth/2fa/start", { password });
+/** Turn off, for a member or reviewer (an admin gets 403): the password and a current code. */
+export const turnOffTwoStep = (password: string, code: string) =>
+  request<Me>("POST", "/auth/2fa/off", { password, code });
+/** With two-step sign-in on, the code too (#457). */
+export const changePassword = (current: string, next: string, code?: string) =>
+  request<Me>("POST", "/auth/password", {
+    current_password: current,
+    new_password: next,
+    ...(code === undefined ? {} : { code }),
+  });
+
+// Email (#457 phase 0): every route is 404 while the server's email is off.
+/** Resolves while email is on (the sign-in page's "Forgot password?"); rejects with 404 when off. */
+export const emailOpen = () => request<{ enabled: boolean }>("GET", "/auth/email");
+/** ``pending``: the confirmed person's organisation is a sign-up waiting for approval. */
+export const confirmEmail = (token: string) =>
+  request<{ ok: true; pending: boolean }>("POST", "/auth/email/confirm", { token });
+/** ``sent`` is false when the email could not be sent. */
+export const sendConfirmEmail = () => request<{ ok: true; sent: boolean }>("POST", "/auth/email/send-confirm");
+/** "Send the link again" with no session (a waiting sign-up's admin): always the same reply. */
+export const resendConfirmEmail = (email: string) =>
+  request<{ message: string }>("POST", "/auth/email/resend-confirm", { email });
+/** Always the same reply, whoever the email belongs to. */
+export const forgotPassword = (email: string) => request<{ message: string }>("POST", "/auth/forgot", { email });
+export const resetPassword = (token: string, newPassword: string) =>
+  request<{ ok: boolean }>("POST", "/auth/reset", { token, new_password: newPassword });
+export const acceptInvite = (token: string, newPassword: string) =>
+  request<{ ok: boolean }>("POST", "/auth/invite/accept", { token, new_password: newPassword });
 export const logoutEverywhere = () => request<void>("POST", "/auth/logout-everywhere");
 /** A granted member or reviewer types their password before Delete forever (a 5-minute cookie). */
 export const confirmPassword = (password: string) =>
@@ -731,7 +786,7 @@ export const createUser = (user: {
   display_name: string;
   role: Role;
   password: string;
-}) => request<AdminUser>("POST", "/admin/users", user);
+}) => request<AddedUser>("POST", "/admin/users", user);
 export const updateUser = (
   id: string,
   changes: { role?: Role; disabled?: boolean; password?: string },
@@ -745,6 +800,19 @@ export const resetUser2fa = (id: string) =>
 export const setDeleteForever = (id: string, allowed: boolean) =>
   request<AdminUser>("PUT", `/admin/users/${id}/delete-forever`, { allowed });
 export const getSettings = () => request<CustomerSettings>("GET", "/admin/settings");
+/** "Approve new sign-in connections automatically" (#457 phase 1); nothing else changes. */
+export const setAutoApprove = (on: boolean) =>
+  request<CustomerSettings>("PATCH", "/admin/settings", { auto_approve_connections: on });
+/** Connections to approve (#457 phase 1); each reply is the list left. */
+export const pendingConnections = () =>
+  request<{ items: PendingConnection[] }>("GET", "/admin/identities?status=pending");
+export const approveConnection = (id: string) =>
+  request<{ items: PendingConnection[] }>("POST", `/admin/identities/${encodeURIComponent(id)}/approve`);
+export const declineConnection = (id: string) =>
+  request<{ items: PendingConnection[] }>("POST", `/admin/identities/${encodeURIComponent(id)}/decline`);
+/** Every connected account of this person goes, and they are signed out; the password stays. */
+export const removeConnections = (id: string) =>
+  request<AdminUser>("POST", `/admin/users/${encodeURIComponent(id)}/remove-connections`);
 /** ``autofileOn`` left out: the switch is left as it is (feature 28). */
 export const updateSettings = (maxUploadMb: number | null, autofileOn?: boolean) =>
   request<CustomerSettings>("PATCH", "/admin/settings", {
@@ -809,6 +877,8 @@ export const createOrg = (org: { name: string; admin_email: string; admin_name: 
 export const disableOrg = (id: string, code: string) =>
   request<unknown>("POST", `/operator/orgs/${id}/disable`, { code });
 export const enableOrg = (id: string) => request<unknown>("POST", `/operator/orgs/${id}/enable`);
+/** #457: a pending sign-up whose admin confirmed their email becomes active. */
+export const approveOrg = (id: string) => request<unknown>("POST", `/operator/orgs/${id}/approve`);
 /** Feature 28: allow or stop auto-filing; stopping it also switches it off. */
 export const setOrgAutofile = (id: string, granted: boolean) =>
   request<unknown>("PUT", `/operator/orgs/${id}/autofile`, { granted });

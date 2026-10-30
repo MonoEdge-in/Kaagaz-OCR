@@ -163,8 +163,15 @@ export interface OrgStatusText {
   note: string | null;
 }
 
-export function orgStatus(org: Pick<Organisation, "status" | "delete_after">): OrgStatusText {
+export function orgStatus(
+  org: Pick<Organisation, "status" | "delete_after"> & Partial<Pick<Organisation, "admin_email_confirmed">>,
+): OrgStatusText {
   if (org.status === "active") return { text: "Active", tone: "ready", note: null };
+  if (org.status === "pending") {
+    // #457: Approve needs the admin's email confirmed first.
+    const note = org.admin_email_confirmed ? "Email confirmed" : "Email not confirmed yet";
+    return { text: "Waiting for approval", tone: "working", note };
+  }
   if (org.status === "deleting") {
     const date = org.delete_after ? formatDate(org.delete_after) : "";
     return { text: "Being deleted", tone: "danger", note: date ? `Deleted on ${date}` : null };
@@ -222,6 +229,11 @@ export function lastActivityText(iso: string | null, now: number): string {
 export function filterOrgs<T extends { name: string }>(items: readonly T[], search: string): T[] {
   const wanted = search.trim().toLocaleLowerCase();
   return wanted ? items.filter((org) => org.name.toLocaleLowerCase().includes(wanted)) : [...items];
+}
+
+/** The "Waiting for approval" filter (#457): only the pending sign-ups, or every one. */
+export function waitingOnly<T extends Pick<Organisation, "status">>(items: readonly T[], waiting: boolean): T[] {
+  return waiting ? items.filter((org) => org.status === "pending") : [...items];
 }
 
 /** The one status line under the search box. */

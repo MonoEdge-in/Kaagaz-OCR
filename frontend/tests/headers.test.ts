@@ -29,6 +29,13 @@ describe("response headers", () => {
     }
   });
 
+  it("send no referrer from the emailed links' pages (#457)", async () => {
+    for (const path of ["/reset-password", "/invite", "/email/confirm"]) {
+      expect((await headersFor(path))["Referrer-Policy"], path).toBe("no-referrer");
+    }
+    expect((await headersFor("/documents"))["Referrer-Policy"]).toBe("same-origin");
+  });
+
   it("keep the security headers everywhere", async () => {
     for (const path of ["/documents", "/api/documents"]) {
       expect(await headersFor(path), path).toMatchObject({

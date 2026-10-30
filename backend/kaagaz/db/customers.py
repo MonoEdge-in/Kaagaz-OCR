@@ -14,7 +14,7 @@ session and no model calls:
 The hourly Trash purge still runs for it: it deletes only, calls no model, and
 a disabled customer's Trash is removed on time all the same.
 
-* ``is_active`` takes a connection from ``Database.customer`` or
+* ``is_active`` and ``is_pending`` take a connection from ``Database.customer`` or
   ``Database.user``: the ``customers`` policy shows only that customer's row.
 * ``set_status`` takes an OWNER connection (the CLI's login role with no SET
   ROLE, ``cli._owner``): ``kaagaz_app`` may update ``max_upload_mb`` only (0014),
@@ -30,8 +30,10 @@ from sqlalchemy import Connection, text
 ACTIVE = "active"
 DISABLED = "disabled"
 DELETING = "deleting"
+PENDING = "pending"  # a sign-up waiting for an operator's Approve (0061)
 
 _IS_ACTIVE = text("SELECT EXISTS (SELECT 1 FROM customers WHERE id = :c AND status = 'active')")
+_IS_PENDING = text("SELECT EXISTS (SELECT 1 FROM customers WHERE id = :c AND status = 'pending')")
 _LOCK = text("SELECT status FROM customers WHERE id = :c FOR UPDATE")
 # disabled_at is set exactly when the status is not active (0014's CHECK).
 _SET = text(
@@ -53,11 +55,18 @@ def is_active(conn: Connection, customer_id: str) -> bool:
     return bool(conn.execute(_IS_ACTIVE, {"c": customer_id}).scalar())
 
 
+def is_pending(conn: Connection, customer_id: str) -> bool:
+    """True while this customer is a sign-up waiting for the operator's Approve (0061). O(1)."""
+    return bool(conn.execute(_IS_PENDING, {"c": customer_id}).scalar())
+
+
 def set_status(conn: Connection, customer_id: str, status: str, *, now: datetime) -> str | None:
     """Make an active customer disabled, or a disabled one active, on an owner
     connection. Returns the status it had before: None when there is no such
     customer, and then nothing changes; nothing changes either when it already
-    had ``status``, or when it is being deleted (cancelling a deletion is PR 4's).
+    had ``status``, or when it is being deleted (cancelling a deletion is PR 4's), or while it
+    is a pending sign-up (only the operator's Approve makes it active, 0061; disabling it
+    first would route round that, 0063).
     The row is locked first, so two runs at once change it once. O(1), and
     disabling also raises every user's session version and enabling clears their sign-in
     locks: O(u) for its u users."""
@@ -66,7 +75,7 @@ def set_status(conn: Connection, customer_id: str, status: str, *, now: datetime
     before = conn.execute(_LOCK, {"c": customer_id}).scalar()
     if before is None:
         return None
-    if before not in (status, DELETING):
+    if before not in (status, DELETING, PENDING):
         conn.execute(_SET, {"c": customer_id, "s": status, "now": now})
         conn.execute(_END_SESSIONS if status == DISABLED else _CLEAR_LOCKS, {"c": customer_id})
     return str(before)

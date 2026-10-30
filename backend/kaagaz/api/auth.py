@@ -29,6 +29,12 @@ Why each piece (FULL-BUILD-SPEC section 3, PRD 1 A1 to A7):
   reviewer's re-typed password for Delete forever. ``{"uid","cid","ver","exp"}``,
   MAC over ``b"confirm\\x00" + body``, 5 minutes, an HttpOnly SameSite=Strict
   cookie for /api/documents only.
+* **The provider sign-in's tokens** (#457 phase 1), each its own MAC purpose, HttpOnly,
+  SameSite=Lax, on /api/auth/oidc only: the flow (``oidc_flow``, 10 minutes, single use: the
+  state, nonce and PKCE verifier from start to callback, and for a connect the signed-in user
+  and session version); the second step (``second_step``, 5 minutes: a right provider sign-in
+  for someone with two-step sign-in on, never a session); and the "isn't connected" notice
+  (``oidc_notice``, 60 seconds), so the provider's email never goes in a URL.
 * **Strict claims**: a token with a missing, extra or wrongly typed field is
   refused, so a Sprint 1 cookie (no scope, no ver) is refused and its user
   signs in once more.
@@ -83,6 +89,15 @@ CONFIRM_PATH = "/api/documents"  # the browser calls the API on its own origin, 
 OPERATOR_COOKIE = "kaagaz_operator"
 OPERATOR_PATH = "/api/operator"
 OPERATOR_SESSION_SECONDS = 30 * 60  # absolute, PROVISIONAL (change plan question 4)
+# Signing in with a provider (#457 phase 1): the flow from start to callback, the code step
+# after it for anyone with two-step sign-in on, and the "isn't connected" notice for the page.
+OIDC_PATH = "/api/auth/oidc"
+OIDC_COOKIE = "kaagaz_oidc"
+OIDC_SECONDS = 10 * 60
+PENDING_COOKIE = "kaagaz_second_step"
+PENDING_SECONDS = 5 * 60
+NOTICE_COOKIE = "kaagaz_oidc_notice"
+NOTICE_SECONDS = 60
 # A session's end while an idle timeout is set (0040): the idle timeout, 1 to 24 hours, ends it.
 # Cookies issued before keep the end they were given.
 CAPPED_SECONDS = 24 * 3600
@@ -180,6 +195,12 @@ _OPERATOR_PURPOSE = b"operator"
 _OPERATOR_FIELDS = frozenset({"oid", "ver", "exp"})
 _MOVE_PURPOSE = b"operator_move"
 _MOVE_FIELDS = frozenset({"oid", "ver", "sec", "exp"})
+_FLOW_PURPOSE = b"oidc_flow"
+_FLOW_FIELDS = frozenset({"p", "m", "st", "no", "ve", "nx", "uid", "cid", "ver", "exp"})
+_PENDING_PURPOSE = b"second_step"
+_PENDING_FIELDS = frozenset({"p", "uid", "cid", "ver", "exp"})
+_NOTICE_PURPOSE = b"oidc_notice"
+_NOTICE_FIELDS = frozenset({"em", "exp"})
 
 
 def session_seconds(scope: str, settings: Settings, idle_hours: int | None = None) -> int:
@@ -362,6 +383,181 @@ def read_move(token: str, secret: str, now: int) -> MoveClaims | None:
     return MoveClaims(operator_id=oid, session_version=ver, sealed_secret=sec, expires_at=exp)
 
 
+# --- the provider sign-in's tokens (#457 phase 1): their own purposes and fields, so none
+# reads as a session or as each other. All three live on OIDC_PATH only.
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class FlowClaims:
+    """One sign-in or connect at a provider, from its start to its callback (single use)."""
+
+    provider: str
+    mode: str  # "signin" or "connect"
+    state: str
+    nonce: str
+    verifier: str  # the PKCE verifier
+    next_path: str
+    user_id: str | None  # a connect's: the signed-in user, customer and session version
+    customer_id: str | None
+    session_version: int | None
+    expires_at: int  # seconds since the epoch
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class PendingClaims:
+    """A right provider sign-in for someone with two-step sign-in on: the code step is next."""
+
+    provider: str
+    user_id: str
+    customer_id: str
+    session_version: int
+    expires_at: int  # seconds since the epoch
+
+
+def sign_flow(claims: FlowClaims, secret: str) -> str:
+    """A flow token: exactly ``{p, m, st, no, ve, nx, uid, cid, ver, exp}``, purpose ``oidc_flow``."""
+    payload = {
+        "p": claims.provider,
+        "m": claims.mode,
+        "st": claims.state,
+        "no": claims.nonce,
+        "ve": claims.verifier,
+        "nx": claims.next_path,
+        "uid": claims.user_id,
+        "cid": claims.customer_id,
+        "ver": claims.session_version,
+        "exp": claims.expires_at,
+    }
+    return _sign(payload, _FLOW_PURPOSE, secret)
+
+
+def read_flow(token: str, secret: str, now: int) -> FlowClaims | None:
+    """The claims of a genuine, unexpired flow token, else None. Strict: exactly its fields,
+    each of its type; a connect carries its user, customer and session version, a sign-in none."""
+    data = _verified(token, _FLOW_PURPOSE, secret)
+    if not isinstance(data, dict) or set(data) != _FLOW_FIELDS:
+        return None
+    texts = [data[name] for name in ("p", "st", "no", "ve", "nx")]
+    if not all(isinstance(value, str) and value for value in texts):
+        return None
+    uid, cid, ver, exp = data["uid"], data["cid"], data["ver"], data["exp"]
+    if not _is_int(exp) or exp <= now:
+        return None
+    if data["m"] == "connect":
+        if not (isinstance(uid, str) and isinstance(cid, str) and _is_uuid(uid) and _is_uuid(cid)):
+            return None
+        if not _is_version(ver):
+            return None
+    elif data["m"] != "signin" or (uid, cid, ver) != (None, None, None):
+        return None
+    provider, state, nonce, verifier, next_path = texts
+    return FlowClaims(
+        provider=provider,
+        mode=data["m"],
+        state=state,
+        nonce=nonce,
+        verifier=verifier,
+        next_path=next_path,
+        user_id=uid,
+        customer_id=cid,
+        session_version=ver,
+        expires_at=exp,
+    )
+
+
+def sign_pending(claims: PendingClaims, secret: str) -> str:
+    """A second-step token: exactly ``{p, uid, cid, ver, exp}``, purpose ``second_step``."""
+    payload = {
+        "p": claims.provider,
+        "uid": claims.user_id,
+        "cid": claims.customer_id,
+        "ver": claims.session_version,
+        "exp": claims.expires_at,
+    }
+    return _sign(payload, _PENDING_PURPOSE, secret)
+
+
+def read_pending(token: str, secret: str, now: int) -> PendingClaims | None:
+    """The claims of a genuine, unexpired second-step token, else None. Strict."""
+    data = _verified(token, _PENDING_PURPOSE, secret)
+    if not isinstance(data, dict) or set(data) != _PENDING_FIELDS:
+        return None
+    provider, uid, cid, ver, exp = data["p"], data["uid"], data["cid"], data["ver"], data["exp"]
+    if not (isinstance(provider, str) and provider and isinstance(uid, str) and isinstance(cid, str)):
+        return None
+    if not (_is_uuid(uid) and _is_uuid(cid) and _is_version(ver) and _is_int(exp)) or exp <= now:
+        return None
+    return PendingClaims(provider=provider, user_id=uid, customer_id=cid, session_version=ver, expires_at=exp)
+
+
+def sign_notice(email: str, expires_at: int, secret: str) -> str:
+    """The "isn't connected" notice: exactly ``{em, exp}``, purpose ``oidc_notice``. It carries
+    the provider's email to the sign-in page without putting it in a URL."""
+    return _sign({"em": email, "exp": expires_at}, _NOTICE_PURPOSE, secret)
+
+
+def read_notice(token: str, secret: str, now: int) -> str | None:
+    """The email of a genuine, unexpired notice token, else None. Strict."""
+    data = _verified(token, _NOTICE_PURPOSE, secret)
+    if not isinstance(data, dict) or set(data) != _NOTICE_FIELDS:
+        return None
+    email, exp = data["em"], data["exp"]
+    if not (isinstance(email, str) and email and _is_int(exp)) or exp <= now:
+        return None
+    return email
+
+
+def _set_oidc_cookie(response: Response, name: str, token: str, max_age: int, settings: Settings) -> None:
+    """HttpOnly, SameSite=Lax (the provider's redirect back is a top-level GET from its site),
+    sent only to OIDC_PATH."""
+    response.set_cookie(
+        name,
+        token,
+        max_age=max_age,
+        httponly=True,
+        samesite="lax",
+        secure=settings.cookie_secure,
+        path=OIDC_PATH,
+    )
+
+
+def _clear_oidc_cookie(response: Response, name: str, settings: Settings) -> None:
+    response.delete_cookie(name, path=OIDC_PATH, httponly=True, samesite="lax", secure=settings.cookie_secure)
+
+
+def set_flow_cookie(response: Response, claims: FlowClaims, settings: Settings, *, now: int) -> None:
+    _set_oidc_cookie(
+        response, OIDC_COOKIE, sign_flow(claims, settings.session_secret), claims.expires_at - now, settings
+    )
+
+
+def clear_flow_cookie(response: Response, settings: Settings) -> None:
+    _clear_oidc_cookie(response, OIDC_COOKIE, settings)
+
+
+def set_pending_cookie(response: Response, claims: PendingClaims, settings: Settings, *, now: int) -> None:
+    _set_oidc_cookie(
+        response,
+        PENDING_COOKIE,
+        sign_pending(claims, settings.session_secret),
+        claims.expires_at - now,
+        settings,
+    )
+
+
+def clear_pending_cookie(response: Response, settings: Settings) -> None:
+    _clear_oidc_cookie(response, PENDING_COOKIE, settings)
+
+
+def set_notice_cookie(response: Response, email: str, settings: Settings, *, now: int) -> None:
+    token = sign_notice(email, now + NOTICE_SECONDS, settings.session_secret)
+    _set_oidc_cookie(response, NOTICE_COOKIE, token, NOTICE_SECONDS, settings)
+
+
+def clear_notice_cookie(response: Response, settings: Settings) -> None:
+    _clear_oidc_cookie(response, NOTICE_COOKIE, settings)
+
+
 def set_operator_cookie(response: Response, claims: OperatorClaims, settings: Settings, *, now: int) -> None:
     """HttpOnly, SameSite=Strict, sent only to /api/operator, for the token's own lifetime."""
     response.set_cookie(
@@ -525,6 +721,7 @@ class CurrentUser:
     delete_forever_allowed: bool  # an admin allowed Delete forever (ignored for an admin)
     idle_hours: int | None = None  # the idle timeout in effect (0040); None: no idle limit
     seen_at: datetime | None = None  # the session's last use or sign-in, the idle clock
+    email_confirmed: bool = False  # the user proved their e-mail with a link (0061)
 
 
 # The idle timeout (0040): the last use is written at most this often, so a request is not a write.
@@ -636,6 +833,7 @@ def load_user(db: Database, customer_id: str, user_id: str, *, scope: str) -> Cu
         delete_forever_allowed=bool(row["delete_forever_allowed"]),
         idle_hours=row["idle_hours"],
         seen_at=row["seen_at"],
+        email_confirmed=bool(row["email_confirmed"]),
     )
 
 

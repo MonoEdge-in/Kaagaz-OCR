@@ -519,6 +519,17 @@ The demo users are `admin@`, `reviewer@` and `member@` on `sharma-traders.exampl
 - Expect: a member sees Documents and Ask; a reviewer adds Review; an admin adds Review and Admin. Below 1024 px a menu drawer opens and closes with Esc or a link. Dark stays after a reload with no flash (cookie `kaagaz_theme=dark`). A member typing /admin sees "Admin is for admins".
 - Tests: `frontend/tests/shell-nav.test.ts`, `ui-drawer.test.ts`, `theme.test.ts`.
 
+**4a. Ways to sign in with Google (#457 phase 1)**
+- Set up: in Google Cloud, a project with the External consent screen (scopes `openid email profile`, test users named while it is in Testing) and an OAuth client of type Web application whose redirect URI is `https://<site>/api/auth/oidc/google/callback` (http only on localhost). Then in `.env`: `GOOGLE_SIGNIN_ENABLED=true`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and `GOOGLE_REDIRECT_URI` (all three required while on; the secret is never logged).
+- Check (screen): Account, Ways to sign in, Connect, type the password (and the code with two-step on), pick an account at Google. Sign out, then Continue with Google on /login. As admin, Admin, Users: Connections to approve, Approve or Decline, and a row's Remove connected accounts; Admin, Settings: the auto-approval switch.
+- Expect: a member's Google with another email says "Sent to your admin for approval." and cannot sign in until approved; the same email (verified by Google) connects at once. An unknown Google account says it isn't connected. Anyone with codes on types the code after Google.
+- Tests (a made-up Google, `backend/tests/oidc_fake.py`, no network): `test_oidc.py`, `test_api_oidc_signin.py`, `test_api_oidc_connect.py`, `test_api_admin_identities.py`, `test_isolation_*identities.py`; `frontend/tests/provider-sign-in.test.ts`, `ways-to-sign-in.test.ts`, `admin-connections.test.ts`.
+
+**4b. Google Analytics (#457 phase 4)**
+- Set up: `NEXT_PUBLIC_GA_ID` (a GA4 `G-` id) in `.env` before the frontend is built. Tracked: /login (not with `?step=code`), /signup and /forgot-password, after Accept analytics.
+- Release: in the GA4 property, switch off Enhanced measurement's "Page changes based on browser history events" and "Form interactions", switch off Google signals and the ads features, and set data retention to 2 months.
+- Tests: `frontend/tests/analytics.test.ts`.
+
 ### From upload to stored text
 
 **5. Upload**

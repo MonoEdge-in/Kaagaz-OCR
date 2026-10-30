@@ -14,6 +14,12 @@ lock out its last way in by accident (the CLI ``reset-admin-2fa`` is the way
 back for the last admin). Every change writes one audit row with ids and
 statuses only (never a password, hashed or not).
 
+Why an invite (#457 phase 0): with email on, Add person also emails "You're invited" (a 7-day
+link to choose their own password, which proves the e-mail), made in the same transaction as
+the user and sent after it; the reply says whether it went (``invited``). The password the
+admin typed is always kept as a temporary one (the user must change it), the fallback when
+the email fails or never arrives. With email off it is exactly as before, with no ``invited``.
+
 Why the session version: disabling a user, setting their password, resetting
 their password or their two-step code all raise ``session_version`` (in
 ``kaagaz.db.users``), so every session of theirs ends at its next request. A
@@ -39,6 +45,15 @@ names a user of this customer only: another customer's user matches no row, so t
 report is empty. A CSV cell that starts with ``= + - @`` (or a tab or a carriage
 return) gets a leading ``'``, so a spreadsheet never runs it as a formula.
 
+Why connected accounts are here (#457 phase 1): the admin approves or declines a member's or
+reviewer's waiting Google account (``/admin/identities``), removes a person's connections
+(signed out everywhere, the password still works), and switches "Approve new sign-in
+connections automatically" (``auto_approve_connections``, audited ``settings.auto_approve_on``
+or ``_off``). Each is 404 while no provider is switched on (the switch: left out of the
+settings, a 400 to set); another organisation's ids are 404. Approving or declining leaves
+the person's sessions as they are. Resetting a person's password clears their connections
+too. ``/admin/users`` says how each person signs in (``signs_in_with``).
+
 Why auto-filing is a setting here (feature 28, council 15 Oct 2026): the platform operator
 grants it, then the admin switches it on or off (``autofile_on``) in the same form as the
 upload limit. Each field left out of the PATCH is left as it is. Switching it on without
@@ -58,19 +73,22 @@ from datetime import date, datetime, timedelta
 from typing import Annotated, Any, Literal
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, Query, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import Connection, RowMapping
 
+from kaagaz.api import emails, oidc
 from kaagaz.api.auth import AdminSession, CurrentUser, hash_password, require_admin_session
 from kaagaz.api.context import AppContext, get_context
+from kaagaz.api.emails import email_on
 from kaagaz.api.errors import ApiError
 from kaagaz.api.readers import usable
 from kaagaz.api.routers.documents import day_start
-from kaagaz.api.views import CURSOR, admin_user, failed_document, timeline, without_money
+from kaagaz.api.views import CURSOR, admin_user, failed_document, iso, timeline, without_money
 from kaagaz.db import admin as admin_sql
-from kaagaz.db import audit, listing
+from kaagaz.db import audit, identities, listing
+from kaagaz.db import email_links as links_sql
 from kaagaz.db import folders as folders_sql
 from kaagaz.db import runs as runs_sql
 from kaagaz.db import usage as usage_sql
@@ -89,6 +107,8 @@ TEMPORARY_PASSWORD_BYTES = 12  # secrets.token_urlsafe gives 16 characters
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 RoleName = Literal["member", "reviewer", "admin"]
+PASSWORD_ONLY = ["password"]  # every account keeps its Kaagaz password (#457)
+ALREADY_BELONGS = "This Google account already belongs to a Kaagaz user."
 
 USAGE_MAX_DAYS = 366
 USAGE_CSV_COLUMNS = ("day", "user", "model", "kind", "calls", "tokens")
@@ -140,14 +160,26 @@ class SettingsBody(BaseModel):
 
     max_upload_mb: int | None = Field(default=None, ge=1)
     autofile_on: bool = False
+    auto_approve_connections: bool = False
 
 
 @router.get("/admin/users")
 def list_users(user: AdminSession, context: Context) -> dict[str, Any]:
+    on = _providers_on(context)
     with context.db.customer(user.customer_id) as conn:
         rows = users_sql.list_users(conn, user.customer_id)
+        connected = identities.providers_by_user(conn, user.customer_id) if on else {}
     now = context.clock()
-    return {"items": [admin_user(row, now=now) for row in rows]}
+    return {
+        "items": [
+            admin_user(
+                row,
+                now=now,
+                signs_in_with=PASSWORD_ONLY + [p for p in connected.get(str(row["id"]), []) if p in on],
+            )
+            for row in rows
+        ]
+    }
 
 
 @router.post("/admin/users", status_code=201)
@@ -156,7 +188,11 @@ def create_user(body: NewUserBody, user: AdminSession, context: Context) -> JSON
     name = body.display_name.strip()
     if not name:
         raise ApiError(400, "bad_request", "Enter a name.")
+    inviting = email_on(context)
+    # The typed password is the temporary one, with an invite too: the fallback if it never arrives.
     password_hash = hash_password(body.password)
+    with context.db.system() as conn:  # a stale, unconfirmed sign-up gives the e-mail back (0063)
+        users_sql.release_stale_signup(conn, email)
     try:
         with context.db.customer(user.customer_id) as conn:
             row = users_sql.create_user(
@@ -177,9 +213,17 @@ def create_user(body: NewUserBody, user: AdminSession, context: Context) -> JSON
                 target_id=str(row["id"]),
                 details={"role": body.role},
             )
+            target = str(row["id"])
+            link = emails.add_link(conn, context, user.customer_id, target, "invite") if inviting else None
     except users_sql.EmailTaken:
         raise ApiError(409, "conflict", "That e-mail is already in use.") from None
-    return JSONResponse(admin_user(row, now=context.clock()), status_code=201)
+    if link is None:
+        return JSONResponse(admin_user(row, now=context.clock()), status_code=201)
+    invited = emails.send(context, email, "invite", emails.invite(user.customer_name, link))
+    if invited:  # the one follow-up write, only when the email went
+        with context.db.customer(user.customer_id) as conn:
+            _audit_user(conn, user, "auth.invite_sent", target)
+    return JSONResponse({**admin_user(row, now=context.clock()), "invited": invited}, status_code=201)
 
 
 @router.patch("/admin/users/{user_id}")
@@ -201,6 +245,8 @@ def update_user(
         )
         if row is None:
             raise ApiError(404, "not_found")
+        if body.disabled is True or password_hash is not None:  # their emailed links stop working
+            links_sql.void_all(conn, user.customer_id, target, now=context.clock())
         audit.record(
             conn,
             user.customer_id,
@@ -247,11 +293,16 @@ def reset_password(user_id: uuid.UUID, user: AdminSession, context: Context) -> 
         if row is None:
             raise ApiError(404, "not_found")
         _audit_user(conn, user, "user.reset_password", target)
-    return {"user": admin_user(row, now=context.clock()), "temporary_password": temporary}
+        identities.remove_all(conn, user.customer_id, target)  # #457: resetting a user clears them
+        links_sql.void_all(conn, user.customer_id, target, now=context.clock())
+    reply = admin_user(row, now=context.clock(), signs_in_with=PASSWORD_ONLY)
+    return {"user": reply, "temporary_password": temporary}
 
 
 @router.post("/admin/users/{user_id}/reset-2fa")
-def reset_two_step(user_id: uuid.UUID, user: AdminSession, context: Context) -> dict[str, Any]:
+def reset_two_step(
+    user_id: uuid.UUID, user: AdminSession, background: BackgroundTasks, context: Context
+) -> dict[str, Any]:
     """Turn a user's two-step code off, so their password alone signs in again."""
     target = str(user_id)
     if target == user.user_id:
@@ -264,9 +315,11 @@ def reset_two_step(user_id: uuid.UUID, user: AdminSession, context: Context) -> 
         row = users_sql.reset_totp(conn, user.customer_id, target)
         if row is None:
             raise ApiError(404, "not_found")
-        # PROVISIONAL: "user.reset_totp", not the plan's "user.reset_2fa", because audit
-        # actions must match ^[a-z_.]{1,64}$ (PRD 1 A7, the audit_log CHECK): no digits.
-        _audit_user(conn, user, "user.reset_totp", target)
+        # The spec's auth.totp_reset (#457; it was user.reset_totp, never the plan's
+        # "user.reset_2fa": audit actions must match ^[a-z_.]{1,64}$, the audit_log CHECK).
+        _audit_user(conn, user, "auth.totp_reset", target)
+    notice = emails.two_step_reset(row["display_name"])
+    emails.after(background, "two_step_reset", emails.send, context, row["email"], "two_step_reset", notice)
     return admin_user(row, now=context.clock())
 
 
@@ -291,6 +344,142 @@ def set_delete_forever(
     return admin_user(row, now=context.clock())
 
 
+# --- connected accounts (#457 phase 1) -----------------------------------------------------------
+
+
+def _providers_on(context: AppContext) -> list[str]:
+    return oidc.enabled_providers(context.settings)
+
+
+def _connections_on(context: AppContext) -> None:
+    """404 while no provider is switched on (after the admin session check, as every route here)."""
+    if not _providers_on(context):
+        raise ApiError(404, "not_found")
+
+
+def _pending_json(conn: Connection, customer_id: str) -> dict[str, Any]:
+    return {
+        "items": [
+            {
+                "id": str(row["id"]),
+                "user_id": str(row["user_id"]),
+                "display_name": row["display_name"],
+                "user_email": row["user_email"],
+                "provider": row["provider"],
+                "email": row["email_at_link"],
+                "linked_at": iso(row["linked_at"]),
+            }
+            for row in identities.pending(conn, customer_id)
+        ]
+    }
+
+
+@router.get("/admin/identities")
+def pending_identities(
+    user: AdminSession, context: Context, status: Literal["pending"] = "pending"
+) -> dict[str, Any]:
+    """Connections to approve: who, the provider, the connected email and when, oldest first."""
+    _connections_on(context)
+    with context.db.customer(user.customer_id) as conn:
+        return _pending_json(conn, user.customer_id)
+
+
+@router.post("/admin/identities/{identity_id}/approve")
+def approve_identity(
+    identity_id: uuid.UUID, user: AdminSession, background: BackgroundTasks, context: Context
+) -> dict[str, Any]:
+    """A waiting connection signs in from now on, unless its email became another user's sign-in
+    email meanwhile (409, the one outside account rule). The person stays signed in (approval
+    only adds a way in) and gets a notice. The list left."""
+    _connections_on(context)
+    target = str(identity_id)
+    with context.db.customer(user.customer_id) as conn:
+        waiting = next(
+            (row for row in identities.pending(conn, user.customer_id) if str(row["id"]) == target), None
+        )
+    if waiting is None:
+        raise ApiError(404, "not_found")
+    email = waiting["email_at_link"]
+    with context.db.system() as conn:
+        taken = email is not None and identities.email_belongs_to_other(conn, email, str(waiting["user_id"]))
+    if taken:
+        raise ApiError(409, "conflict", ALREADY_BELONGS)
+    with context.db.customer(user.customer_id) as conn:
+        row = identities.approve(conn, user.customer_id, target, user.user_id, context.clock())
+        if row is None:  # approved or declined a moment ago
+            raise ApiError(404, "not_found")
+        _audit_identity(conn, user, "auth.identity_approved", row)
+        reply = _pending_json(conn, user.customer_id)
+    who = (context, user.customer_id, str(row["user_id"]))
+    emails.after(
+        background, "identity_approved", emails.notify, *who, "identity_approved", emails.google_approved
+    )
+    return reply
+
+
+@router.post("/admin/identities/{identity_id}/decline")
+def decline_identity(
+    identity_id: uuid.UUID, user: AdminSession, background: BackgroundTasks, context: Context
+) -> dict[str, Any]:
+    """A waiting connection is removed; the person gets a notice. The list left."""
+    _connections_on(context)
+    with context.db.customer(user.customer_id) as conn:
+        row = identities.remove(conn, user.customer_id, str(identity_id), status="pending")
+        if row is None:
+            raise ApiError(404, "not_found")
+        _audit_identity(conn, user, "auth.identity_declined", row)
+        reply = _pending_json(conn, user.customer_id)
+    who = (context, user.customer_id, str(row["user_id"]))
+    emails.after(
+        background, "identity_declined", emails.notify, *who, "identity_declined", emails.google_declined
+    )
+    return reply
+
+
+@router.post("/admin/users/{user_id}/remove-connections")
+def remove_connections(
+    user_id: uuid.UUID, user: AdminSession, background: BackgroundTasks, context: Context
+) -> dict[str, Any]:
+    """ "Remove connected accounts": every connection of this person goes, and they are signed
+    out everywhere. Their password keeps working. With none, nothing changes and nothing is
+    audited."""
+    _connections_on(context)
+    target = str(user_id)
+    with context.db.customer(user.customer_id) as conn:
+        if users_sql.role_of(conn, user.customer_id, target) is None:
+            raise ApiError(404, "not_found")
+        count = identities.remove_all(conn, user.customer_id, target)
+        if count:
+            users_sql.bump_session_version(conn, user.customer_id, target)
+            audit.record(
+                conn,
+                user.customer_id,
+                actor_user_id=user.user_id,
+                action="auth.identity_unlinked",
+                target_type="user",
+                target_id=target,
+                details={"count": count},
+            )
+        row = next(row for row in users_sql.list_users(conn, user.customer_id) if str(row["id"]) == target)
+    if count:
+        who = (context, user.customer_id, target)
+        notice = emails.google_disconnected
+        emails.after(background, "identity_unlinked", emails.notify, *who, "identity_unlinked", notice)
+    return admin_user(row, now=context.clock(), signs_in_with=PASSWORD_ONLY)
+
+
+def _audit_identity(conn: Connection, user: CurrentUser, action: str, row: RowMapping) -> None:
+    audit.record(
+        conn,
+        user.customer_id,
+        actor_user_id=user.user_id,
+        action=action,
+        target_type="user",
+        target_id=str(row["user_id"]),
+        details={"provider": str(row["provider"]), "identity_id": str(row["id"])},
+    )
+
+
 def _audit_user(conn: Connection, user: CurrentUser, action: str, target: str) -> None:
     audit.record(
         conn,
@@ -308,6 +497,12 @@ def _settings_json(row: RowMapping, context: AppContext) -> dict[str, Any]:
         "max_upload_mb": row["max_upload_mb"],
         "platform_max_upload_mb": context.settings.max_upload_bytes // MIB,
         "autofile": {"granted": bool(row["autofile_granted"]), "on": bool(row["autofile_on"])},
+        # Only while a provider is on: there is nothing to approve otherwise.
+        **(
+            {"auto_approve_connections": bool(row["auto_approve_connections"])}
+            if _providers_on(context)
+            else {}
+        ),
     }
 
 
@@ -323,6 +518,8 @@ def get_settings(user: AdminSession, context: Context) -> dict[str, Any]:
 @router.patch("/admin/settings")
 def update_settings(body: SettingsBody, user: AdminSession, context: Context) -> dict[str, Any]:
     given = body.model_fields_set
+    if "auto_approve_connections" in given and not _providers_on(context):
+        raise ApiError(400, "bad_request", "Signing in with Google isn't switched on for Kaagaz yet.")
     platform = context.settings.max_upload_bytes // MIB
     if body.max_upload_mb is not None and body.max_upload_mb > platform:
         raise ApiError(400, "bad_request", f"The limit can be at most {platform} MB.")
@@ -339,6 +536,10 @@ def update_settings(body: SettingsBody, user: AdminSession, context: Context) ->
                 raise ApiError(409, "not_granted", "Auto-filing isn't available for your organisation yet.")
             action = "settings.autofile_on" if body.autofile_on else "settings.autofile_off"
             _audit_settings(conn, user, action)
+        on = body.auto_approve_connections
+        if "auto_approve_connections" in given and on != before["auto_approve_connections"]:
+            admin_sql.set_auto_approve(conn, user.customer_id, on=on)
+            _audit_settings(conn, user, "settings.auto_approve_on" if on else "settings.auto_approve_off")
         row = admin_sql.get_settings(conn, user.customer_id)
     if row is None:
         raise ApiError(404, "not_found")

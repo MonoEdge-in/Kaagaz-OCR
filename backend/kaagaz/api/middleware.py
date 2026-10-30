@@ -164,7 +164,7 @@ class RequestMiddleware(BaseHTTPMiddleware):
 
         response.headers[REQUEST_ID_HEADER] = request_id
         response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["Referrer-Policy"] = "same-origin"
+        response.headers.setdefault("Referrer-Policy", "same-origin")  # a route may set its own
         response.headers.setdefault("Cache-Control", "no-store")
         access_log.info(
             json.dumps(

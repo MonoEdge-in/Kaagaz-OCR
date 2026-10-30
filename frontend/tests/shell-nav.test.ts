@@ -78,9 +78,11 @@ describe("the session gate", () => {
       must_change_password,
       totp_enabled: true, // every admin has two-step sign-in (16 Oct 2026; tests/admin-two-step.test.ts)
       can_delete_forever: false,
+      email_confirmed: true, // #457
     },
     customer: { id: "c1", name: "Sharma Traders" },
     session: { scope },
+    providers: [], // #457 review: the sign-in providers switched on
   });
 
   it("reads the scope", () => {
@@ -255,7 +257,7 @@ describe("one nav list for the sidebar and the drawer", () => {
     expect(account).toMatch(/<ConfirmDialog[\s\S]*open=\{confirming\}[\s\S]*onConfirm=\{\(\) => void endSession\("everywhere"\)\}/);
     expect(account).toContain("logoutEverywhere()");
     expect(account).not.toContain("window.confirm");
-    expect(shell).toContain("<AccountMenu me={me} />");
+    expect(shell).toContain("<AccountMenu me={me} onChanged={refresh} />");
   });
 });
 

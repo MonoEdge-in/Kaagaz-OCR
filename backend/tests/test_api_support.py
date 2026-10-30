@@ -32,6 +32,7 @@ from fastapi.routing import APIRoute, iter_route_contexts
 from fastapi.testclient import TestClient as TestClient
 from sqlalchemy import RowMapping, text
 
+from kaagaz.adapters.email import Mailer
 from kaagaz.ai.client import ModelClient
 from kaagaz.answering.clarify import Pending
 from kaagaz.answering.memory import Memory
@@ -228,7 +229,8 @@ class Signed:
 
 @dataclass(frozen=True)
 class EnrolledAdmin:
-    """An admin whose two-step code is set up (by SQL, as enrolment would leave it)."""
+    """A user (an admin, or any role from ``enrol_user``) whose two-step code is set up (by SQL,
+    as enrolment would leave it)."""
 
     user_id: str
     email: str
@@ -261,8 +263,10 @@ class Api:
         queue: ApiFakeQueue | None = None,
         model: ModelClient | None = None,
         answers: Answers | None = None,
+        mailer: Mailer | None = None,
     ) -> None:
-        """``answers``: the real AnswerService for a test that needs one; FakeAnswers otherwise."""
+        """``answers``: the real AnswerService for a test that needs one; FakeAnswers otherwise.
+        ``mailer``: a MemoryMailer for the email tests (#457), with ``email_enabled`` settings."""
         self.db = db
         self.settings = settings or make_settings()
         self.clock = clock or MovingClock()
@@ -277,6 +281,7 @@ class Api:
             answers=self.answers if answers is None else answers,
             clock=self.clock,
             model=model,
+            mailer=mailer,
         )
 
     def client(self) -> TestClient:
@@ -320,7 +325,11 @@ class Api:
     def enrol_admin(self, customer_id: str) -> EnrolledAdmin:
         """A new admin with a two-step code already set up, written by SQL the way
         ``POST /auth/admin/enrol`` leaves it (the secret sealed with SecretBox)."""
-        user_id, email = self.add_user(customer_id, "admin")
+        return self.enrol_user(customer_id, "admin")
+
+    def enrol_user(self, customer_id: str, role: str) -> EnrolledAdmin:
+        """``enrol_admin`` for any role: members and reviewers may turn codes on too (#457)."""
+        user_id, email = self.add_user(customer_id, role)
         secret = totp.new_secret()
         sealed = SecretBox(self.settings.totp_encryption_key).seal(secret, aad=user_id)
         with self.db.customer(customer_id) as conn:
@@ -544,6 +553,29 @@ def wrong_code(api: Api, secret: bytes) -> str:
 # --- walking every route ------------------------------------------------------------
 
 ANY_ID = "7a0f6f0e-5b9e-4c55-9a39-5f0e0e0e0e0e"  # a well-formed id nothing has
+# The emailed links' routes (#457 phase 0): 404 while email is off, whoever asks.
+EMAIL_ROUTES = (
+    ("GET", "/api/auth/email"),
+    ("POST", "/api/auth/email/confirm"),
+    ("POST", "/api/auth/email/send-confirm"),
+    ("POST", "/api/auth/email/resend-confirm"),
+    ("POST", "/api/auth/forgot"),
+    ("POST", "/api/auth/reset"),
+    ("POST", "/api/auth/invite/accept"),
+)
+
+
+# Ways to sign in (#457 phase 1): 404 while no provider is switched on, whoever asks
+# (tests/test_api_oidc_*.py). The provider is read by a dependency, so route_calls leaves it.
+OIDC_ROUTES = (
+    ("GET", "/api/auth/oidc/{provider}/start"),
+    ("GET", "/api/auth/oidc/{provider}/callback"),
+    ("POST", "/api/auth/oidc/{provider}/connect"),
+    ("GET", "/api/auth/oidc/notice"),
+    ("POST", "/api/auth/oidc/code"),
+    ("GET", "/api/auth/identities"),
+    ("POST", f"/api/auth/identities/{ANY_ID}/remove"),
+)
 
 
 def route_calls(app: FastAPI, prefix: str = "/api") -> list[tuple[str, str]]:

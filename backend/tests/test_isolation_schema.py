@@ -141,6 +141,12 @@ UPDATES_0049 = {"value_keys": {"latin", "sound"}}
 FROM_0051 = {"learning_removals": (True, True, False, False)}
 # Page layout (0056, #383, #382): blocks and table cells are deleted and inserted by the save.
 FROM_0056 = {"page_blocks": (True, True, False, True), "table_cells": (True, True, False, True)}
+# Email links (0061, #457 phase 0): read and added; only used_at may change (a column grant).
+FROM_0061 = {"email_links": (True, True, False, False)}
+# Connected accounts (0062, #457 phase 1): read, added and deleted; only the approval and
+# last-used columns may change (a column grant).
+FROM_0062 = {"user_identities": (True, True, False, True)}
+UPDATES_0062 = {"user_identities": {"status", "approved_at", "approved_by", "last_used_at"}}
 UPDATES_0030 = {
     "word_changes": {"applied", "undone_at", "undone_by"},
     "ensemble_runs": {
@@ -206,6 +212,23 @@ OWNER_RIGHTS = {
     ),
     # 0046, the shared scheduler's single admission function.
     "kaagaz_model_rate_slot": ("double precision", EMPTY_PATH),
+    # 0061, email: a clicked link found by its hash (ids, purpose and times), and self sign-up
+    # with email on (a pending customer).
+    "kaagaz_email_link_lookup": (
+        "TABLE(link_id uuid, customer_id uuid, user_id uuid, purpose text,"
+        " expires_at timestamp with time zone, used_at timestamp with time zone)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_create_pending_customer": ("uuid", EMPTY_PATH),
+    # 0062, connected accounts: a provider sign-in's connection found by its key (ids and
+    # status), and whether an e-mail is another user's (yes or no).
+    "kaagaz_identity_lookup": (
+        "TABLE(identity_id uuid, user_id uuid, customer_id uuid, status text)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_email_belongs_to_other": ("boolean", EMPTY_PATH),
+    # 0063: a pending, unconfirmed sign-up older than 24 hours no longer holds its e-mail.
+    "kaagaz_release_stale_signup": ("boolean", EMPTY_PATH),
 }
 # The platform operator's (0015): only kaagaz_operator may run these, never the app.
 OPERATOR = "kaagaz_operator"
@@ -225,7 +248,8 @@ OPERATOR_RIGHTS = {
         "TABLE(customer_id uuid, name text, status text, disabled_at timestamp with time zone,"
         " delete_after timestamp with time zone, created_at timestamp with time zone, admins bigint,"
         " reviewers bigint, members bigint, documents bigint, pages bigint, size_bytes bigint,"
-        " last_activity_at timestamp with time zone, autofile_granted boolean, autofile_on boolean)",
+        " last_activity_at timestamp with time zone, autofile_granted boolean, autofile_on boolean,"
+        " admin_email_confirmed boolean)",  # Changed on purpose (0061): Approve needs it
         EMPTY_PATH,
     ),
     # 0017: one organisation's admins, and the changes to one of them.
@@ -238,6 +262,7 @@ OPERATOR_RIGHTS = {
     **dict.fromkeys(
         (
             "kaagaz_op_create_customer",
+            "kaagaz_op_approve_customer",  # 0061
             "kaagaz_op_set_customer_status",
             "kaagaz_op_create_admin",
             "kaagaz_op_change_admin",
@@ -456,6 +481,8 @@ def test_every_customer_table_has_row_level_security_and_the_customer_only_polic
         | set(FROM_0049)
         | set(FROM_0051)
         | set(FROM_0056)
+        | set(FROM_0061)
+        | set(FROM_0062)
     )
 
     with db.system() as conn:
@@ -523,6 +550,8 @@ def test_every_customer_table_is_granted_to_the_app_role(db: Database) -> None:
         | FROM_0049
         | FROM_0051
         | FROM_0056
+        | FROM_0061
+        | FROM_0062
     ).items():
         assert granted[table] == expected, table
 
@@ -580,6 +609,17 @@ def test_the_app_may_update_only_the_undo_and_progress_columns_of_word_review(db
     assert {table: _updatable(db, table) for table in UPDATES_0030} == UPDATES_0030
 
 
+def test_the_app_may_update_only_when_an_email_link_was_used(db: Database) -> None:
+    """0061: never a link's hash, purpose, user or expiry, so a link can't be moved or lengthened."""
+    assert _updatable(db, "email_links") == {"used_at"}
+
+
+def test_the_app_may_update_only_the_approval_and_last_use_of_a_connected_account(db: Database) -> None:
+    """0062: never a connection's provider, issuer, subject, user or customer, so an approved
+    connection can't be moved to another person or outside account."""
+    assert {table: _updatable(db, table) for table in UPDATES_0062} == UPDATES_0062
+
+
 def test_the_app_may_update_only_the_spellings_of_a_value_key(db: Database) -> None:
     """0049: never a key's value, document, kind or place level, so a key can't be moved to
     another value or document."""
@@ -633,7 +673,12 @@ def test_the_app_may_update_only_the_upload_limit_and_the_auto_filing_switch_of_
             {"r": APP_ROLE},
         ).all()
     # Changed on purpose (auto-filing council, 15 Oct 2026): the admin's switch, 0025.
-    assert {name for name, may_update in columns if may_update} == {"max_upload_mb", "autofile_on"}
+    # Changed on purpose (#457 phase 1, 0062): the admin's auto-approval switch.
+    assert {name for name, may_update in columns if may_update} == {
+        "max_upload_mb",
+        "autofile_on",
+        "auto_approve_connections",
+    }
 
 
 _FOREIGN_KEYS = text(
@@ -663,6 +708,8 @@ def test_every_foreign_key_between_customer_tables_matches_the_customer_on_both_
         | set(FROM_0041)  # Changed on purpose (PRD 1, 0041)
         | set(FROM_0049)
         | set(FROM_0056)
+        | set(FROM_0061)
+        | set(FROM_0062)
         | {"pages", "model_usage", "documents"}  # documents.owner_id (0041)
     )
     for name, _table, _parent, columns, parent_columns in between:

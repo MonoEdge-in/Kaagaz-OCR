@@ -10,9 +10,12 @@ The exceptions have no customer yet:
 
 * ``login_lookup`` (``Database.system()``): signing in starts from an e-mail only.
   It calls the SECURITY DEFINER function ``kaagaz_login_lookup``, which returns one row.
+* ``release_stale_signup`` (any connection): frees the e-mail of a stale sign-up (0063).
 * ``create_customer``: calls ``kaagaz_create_customer``: the CLI, on its owner
   connection ``cli._owner``, so its ``platform_audit`` row is in the same transaction;
-  self sign-up (``POST /auth/signup``), inside ``Database.system()``.
+  self sign-up (``POST /auth/signup``), inside ``Database.system()``. With email on (#457),
+  self sign-up calls ``kaagaz_create_pending_customer`` (0061): the customer waits as
+  ``pending`` for an operator's approval.
 
 E-mails are unique across all customers (the ``users.email`` constraint), so
 adding a taken e-mail raises ``EmailTaken`` even when another customer holds it.
@@ -75,6 +78,8 @@ class AttemptRow:
     failed_logins: int
     # False while the customer is disabled or being deleted (0014): sign-in is refused.
     customer_active: bool
+    # A sign-up waiting for an operator's approval (0061): refused with its own 403.
+    customer_pending: bool = False
 
 
 def login_lookup(conn: Connection, email: str) -> LoginRow | None:
@@ -95,14 +100,21 @@ def login_lookup(conn: Connection, email: str) -> LoginRow | None:
 
 
 def create_customer(
-    conn: Connection, *, name: str, admin_email: str, admin_name: str, password_hash: str
+    conn: Connection,
+    *,
+    name: str,
+    admin_email: str,
+    admin_name: str,
+    password_hash: str,
+    pending: bool = False,
 ) -> str:
     """Create a customer and its first admin. ``conn``: the CLI's owner connection, or
-    ``Database.system()`` for self sign-up.
+    ``Database.system()`` for self sign-up. ``pending``: it waits for an operator (0061).
     Raises EmailTaken if the admin's e-mail is in use."""
+    function = "kaagaz_create_pending_customer" if pending else "kaagaz_create_customer"
     try:
         customer_id: object = conn.execute(
-            text("SELECT kaagaz_create_customer(:name, :email, :admin_name, :hash)"),
+            text(f"SELECT {function}(:name, :email, :admin_name, :hash)"),
             {"name": name, "email": admin_email.lower(), "admin_name": admin_name, "hash": password_hash},
         ).scalar_one()
     except IntegrityError as error:
@@ -110,6 +122,13 @@ def create_customer(
             raise EmailTaken from None
         raise
     return str(customer_id)
+
+
+def release_stale_signup(conn: Connection, email: str) -> bool:
+    """Before a user with ``email`` is made: a pending sign-up older than 24 hours whose only
+    user has this e-mail and never proved it is deleted (0063), so it no longer holds the
+    e-mail. True when one was. Any connection: the SECURITY DEFINER function checks it all."""
+    return bool(conn.execute(text("SELECT kaagaz_release_stale_signup(:e)"), {"e": email}).scalar())
 
 
 # --- signing in: the lockout counter ------------------------------------------------
@@ -155,10 +174,7 @@ def begin_attempt(
                 "   THEN CAST(:lock_end AS timestamptz) ELSE NULL END"
                 " WHERE u.customer_id = :c AND u.id = :u"
                 " AND (u.locked_until IS NULL OR u.locked_until <= :now)"
-                " RETURNING u.id, u.customer_id, u.password_hash, u.role, u.disabled, u.session_version,"
-                " u.must_change_password, u.totp_secret_enc, u.totp_enabled_at, u.totp_last_step,"
-                " u.failed_logins, EXISTS (SELECT 1 FROM customers c"
-                " WHERE c.id = u.customer_id AND c.status = 'active') AS customer_active"
+                " RETURNING" + _ATTEMPT_COLUMNS
             ),
             {
                 "c": customer_id,
@@ -171,8 +187,38 @@ def begin_attempt(
         .mappings()
         .first()
     )
-    if row is None:
-        return None
+    return None if row is None else _attempt(row)
+
+
+def peek_attempt(conn: Connection, customer_id: str, user_id: str, *, now: datetime) -> AttemptRow | None:
+    """``begin_attempt``'s columns, read without counting anything: a provider sign-in's first
+    step, which the provider itself proved (#457). None means locked (or not here). O(log n)."""
+    row = (
+        conn.execute(
+            text(
+                "SELECT" + _ATTEMPT_COLUMNS + " FROM users AS u WHERE u.customer_id = :c AND u.id = :u"
+                " AND (u.locked_until IS NULL OR u.locked_until <= :now)"
+            ),
+            {"c": customer_id, "u": user_id, "now": now},
+        )
+        .mappings()
+        .first()
+    )
+    return None if row is None else _attempt(row)
+
+
+# What a sign-in needs, with whether the customer is active or a pending sign-up (0014, 0061).
+_ATTEMPT_COLUMNS = (
+    " u.id, u.customer_id, u.password_hash, u.role, u.disabled, u.session_version,"
+    " u.must_change_password, u.totp_secret_enc, u.totp_enabled_at, u.totp_last_step,"
+    " u.failed_logins, EXISTS (SELECT 1 FROM customers c"
+    " WHERE c.id = u.customer_id AND c.status = 'active') AS customer_active,"
+    " EXISTS (SELECT 1 FROM customers c"
+    " WHERE c.id = u.customer_id AND c.status = 'pending') AS customer_pending"
+)
+
+
+def _attempt(row: RowMapping) -> AttemptRow:
     last_step = row["totp_last_step"]
     return AttemptRow(
         user_id=str(row["id"]),
@@ -187,19 +233,20 @@ def begin_attempt(
         totp_last_step=None if last_step is None else int(last_step),
         failed_logins=int(row["failed_logins"]),
         customer_active=bool(row["customer_active"]),
+        customer_pending=bool(row["customer_pending"]),
     )
 
 
 def enrol_still_open(conn: Connection, customer_id: str, user_id: str, session_version: int) -> bool:
     """Can an enrol token for this user and session version still be used? Only
-    for an enabled admin with no two-step code yet, no temporary password, and
-    the same session version as when the token was made. Read only: nothing is
-    counted. O(log n)."""
+    for an enabled user (any role since #457) with no two-step code yet, no temporary
+    password, and the same session version as when the token was made. Read only: nothing
+    is counted. O(log n)."""
     return bool(
         conn.execute(
             text(
                 "SELECT EXISTS (SELECT 1 FROM users WHERE customer_id = :c AND id = :u"
-                " AND role = 'admin' AND NOT disabled AND NOT must_change_password"
+                " AND NOT disabled AND NOT must_change_password"
                 " AND totp_enabled_at IS NULL AND session_version = :v)"
             ),
             {"c": customer_id, "u": user_id, "v": session_version},
@@ -294,7 +341,7 @@ def enrol_totp(
     ver: int,
 ) -> bool:
     """Turn on two-step sign-in with a sealed secret whose first code (``step``) was
-    just checked. False unless the user is an enabled, unlocked admin with no
+    just checked. False unless the user is enabled and unlocked (any role since #457), with no
     pending password change, not yet enrolled, and still on session version
     ``ver`` (the enrol token's), so an enrol token works once and only while
     nothing has changed. O(log n)."""
@@ -303,7 +350,7 @@ def enrol_totp(
             "UPDATE users AS u SET totp_secret_enc = :enc, totp_enabled_at = :now, totp_last_step = :step"
             " WHERE u.customer_id = :c AND u.id = :u"
             " AND u.totp_enabled_at IS NULL AND u.session_version = :ver"
-            " AND NOT u.disabled AND u.role = 'admin' AND NOT u.must_change_password"
+            " AND NOT u.disabled AND NOT u.must_change_password"
             " AND (u.locked_until IS NULL OR u.locked_until <= :now)"
             " RETURNING u.id"
         ),
@@ -367,6 +414,7 @@ def session_user(conn: Connection, customer_id: str, user_id: str) -> RowMapping
                 "SELECT u.id, u.email, u.display_name, u.role, u.disabled,"
                 " u.session_version, u.must_change_password, u.totp_enabled_at IS NOT NULL AS totp_enabled,"
                 " u.delete_forever_allowed_at IS NOT NULL AS delete_forever_allowed,"
+                " u.email_verified_at IS NOT NULL AS email_confirmed,"
                 " c.id AS customer_id, c.name AS customer_name,"
                 " GREATEST(u.last_seen_at, u.last_login_at) AS seen_at,"
                 " COALESCE(s.idle_hours, p.session_idle_hours) AS idle_hours"
@@ -379,6 +427,55 @@ def session_user(conn: Connection, customer_id: str, user_id: str) -> RowMapping
         )
         .mappings()
         .first()
+    )
+
+
+def contact(conn: Connection, customer_id: str, user_id: str) -> tuple[str, str] | None:
+    """This customer's user's (e-mail, name), for an email to them (#457), whatever the
+    customer's status. None if there is no such user. O(log n)."""
+    row = conn.execute(
+        text("SELECT email, display_name FROM users WHERE customer_id = :c AND id = :u"),
+        {"c": customer_id, "u": user_id},
+    ).first()
+    return None if row is None else (str(row[0]), str(row[1]))
+
+
+def admin_contacts(conn: Connection, customer_id: str) -> list[tuple[str, str]]:
+    """Every enabled admin's (e-mail, name) in this customer, for "Waiting for your approval"
+    (#457 phase 1). O(users of this customer)."""
+    rows = conn.execute(
+        text(
+            "SELECT email, display_name FROM users"
+            " WHERE customer_id = :c AND role = 'admin' AND NOT disabled ORDER BY email"
+        ),
+        {"c": customer_id},
+    )
+    return [(str(row[0]), str(row[1])) for row in rows]
+
+
+def awaiting_confirm(conn: Connection, customer_id: str, user_id: str) -> tuple[str, str] | None:
+    """The (e-mail, name) of an enabled user whose e-mail is not confirmed yet and whose
+    customer is a sign-up waiting for an operator (0061), for "Send the link again" (#457);
+    else None. O(log n)."""
+    row = conn.execute(
+        text(
+            "SELECT u.email, u.display_name FROM users AS u"
+            " JOIN customers AS c ON c.id = u.customer_id AND c.status = 'pending'"
+            " WHERE u.customer_id = :c AND u.id = :u AND NOT u.disabled AND u.email_verified_at IS NULL"
+        ),
+        {"c": customer_id, "u": user_id},
+    ).first()
+    return None if row is None else (str(row[0]), str(row[1]))
+
+
+def confirm_email(conn: Connection, customer_id: str, user_id: str, *, now: datetime) -> None:
+    """The user proved their e-mail with a link (0061); the first proof's time is kept. O(log n)."""
+    conn.execute(
+        text(
+            "UPDATE users AS u SET email_verified_at = COALESCE(u.email_verified_at, :now)"
+            " WHERE u.customer_id = :c AND u.id = :u"
+        ),
+        {"c": customer_id, "u": user_id, "now": now},
     )
 
 
