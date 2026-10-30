@@ -45,6 +45,7 @@ ADMIN_COLUMNS = {
     "created_at",
     "locked_until",
     "totp_enabled_at",
+    "totp_off_at",
     "must_change_password",
     "session_version",
     "delete_forever_allowed_at",
@@ -148,6 +149,7 @@ def test_begin_attempt_counts_before_the_password_check_and_returns_the_sign_in_
         totp_secret_enc=None,
         totp_enabled_at=None,
         totp_last_step=None,
+        totp_off_at=None,
         failed_logins=1,
         customer_active=True,
     )
@@ -364,6 +366,42 @@ def test_accept_totp_step_accepts_any_step_when_none_is_stored(db: Database) -> 
     with db.customer(customer_id) as conn:
         conn.execute(text("UPDATE users SET totp_last_step = NULL WHERE id = :u"), {"u": user_id})
         assert users.accept_totp_step(conn, customer_id, user_id, 1) is True
+
+
+def _turn_off(conn: Connection, customer_id: str, user_id: str, step: int) -> int | None:
+    return users.turn_off_totp(conn, customer_id, user_id, step=step, now=NOW)
+
+
+def test_turn_off_totp_needs_a_new_step_has_one_winner_and_enrol_clears_it(db: Database) -> None:
+    customer_id, user_id = _user(db)
+    assert _enrol(db, customer_id, user_id, step=100) is True
+    with db.customer(customer_id) as conn:
+        assert _turn_off(conn, customer_id, user_id, 100) is None  # that code was used already
+
+    def turn_off(conn: Connection) -> int | None:
+        return _turn_off(conn, customer_id, user_id, 101)
+
+    assert _race(db, customer_id, turn_off, turn_off) == (2, None)
+    state = _state(db, customer_id, user_id)
+    assert (state["totp_secret_enc"], state["totp_enabled_at"], state["totp_last_step"]) == (None, None, None)
+    with db.customer(customer_id) as conn:
+        off_at = conn.execute(text("SELECT totp_off_at FROM users WHERE id = :u"), {"u": user_id}).scalar()
+    assert off_at == NOW
+    assert _enrol(db, customer_id, user_id, step=102, ver=2) is True
+    with db.customer(customer_id) as conn:
+        off_at = conn.execute(text("SELECT totp_off_at FROM users WHERE id = :u"), {"u": user_id}).scalar()
+    assert off_at is None
+
+
+def test_turn_off_totp_is_only_for_an_admin(db: Database) -> None:
+    customer_id, user_id = _user(db, "member")
+    with db.customer(customer_id) as conn:
+        conn.execute(
+            text("UPDATE users SET totp_secret_enc = :s, totp_enabled_at = :t WHERE id = :u"),
+            {"s": SEALED, "t": NOW, "u": user_id},
+        )
+        assert _turn_off(conn, customer_id, user_id, 100) is None
+    assert _state(db, customer_id, user_id)["totp_secret_enc"] == SEALED
 
 
 def test_accept_totp_step_is_refused_without_two_step_set_up(db: Database) -> None:

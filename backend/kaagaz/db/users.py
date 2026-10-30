@@ -26,7 +26,7 @@ lock. Times always come in as ``now`` from the injected clock, never SQL
 
 Every admin-facing statement (list, create, update, set_password, unlock,
 reset_totp, set_delete_forever) returns the same columns: the ``AdminUser``
-columns plus ``locked_until``, ``totp_enabled_at``, ``must_change_password``,
+columns plus ``locked_until``, ``totp_enabled_at``, ``totp_off_at``, ``must_change_password``,
 ``session_version`` and ``delete_forever_allowed_at``. None means there is no
 such user in this customer (404).
 
@@ -72,6 +72,7 @@ class AttemptRow:
     totp_secret_enc: str | None
     totp_enabled_at: datetime | None
     totp_last_step: int | None
+    totp_off_at: datetime | None  # the admin turned two-step sign-in off themselves (0061b)
     failed_logins: int
     # False while the customer is disabled or being deleted (0014): sign-in is refused.
     customer_active: bool
@@ -157,7 +158,7 @@ def begin_attempt(
                 " AND (u.locked_until IS NULL OR u.locked_until <= :now)"
                 " RETURNING u.id, u.customer_id, u.password_hash, u.role, u.disabled, u.session_version,"
                 " u.must_change_password, u.totp_secret_enc, u.totp_enabled_at, u.totp_last_step,"
-                " u.failed_logins, EXISTS (SELECT 1 FROM customers c"
+                " u.totp_off_at, u.failed_logins, EXISTS (SELECT 1 FROM customers c"
                 " WHERE c.id = u.customer_id AND c.status = 'active') AS customer_active"
             ),
             {
@@ -185,6 +186,7 @@ def begin_attempt(
         totp_secret_enc=row["totp_secret_enc"],
         totp_enabled_at=row["totp_enabled_at"],
         totp_last_step=None if last_step is None else int(last_step),
+        totp_off_at=row["totp_off_at"],
         failed_logins=int(row["failed_logins"]),
         customer_active=bool(row["customer_active"]),
     )
@@ -227,8 +229,8 @@ def unlock(conn: Connection, customer_id: str, user_id: str) -> RowMapping | Non
                 "UPDATE users AS u SET failed_logins = 0, locked_until = NULL"
                 " WHERE u.customer_id = :c AND u.id = :u"
                 " RETURNING u.id, u.email, u.display_name, u.role, u.disabled, u.created_at,"
-                " u.locked_until, u.totp_enabled_at, u.must_change_password, u.session_version,"
-                " u.delete_forever_allowed_at"
+                " u.locked_until, u.totp_enabled_at, u.totp_off_at, u.must_change_password,"
+                " u.session_version, u.delete_forever_allowed_at"
             ),
             {"c": customer_id, "u": user_id},
         )
@@ -270,8 +272,8 @@ def set_password(
                 " session_version = u.session_version + 1"
                 " WHERE u.customer_id = :c AND u.id = :u"
                 " RETURNING u.id, u.email, u.display_name, u.role, u.disabled, u.created_at,"
-                " u.locked_until, u.totp_enabled_at, u.must_change_password, u.session_version,"
-                " u.delete_forever_allowed_at"
+                " u.locked_until, u.totp_enabled_at, u.totp_off_at, u.must_change_password,"
+                " u.session_version, u.delete_forever_allowed_at"
             ),
             {"c": customer_id, "u": user_id, "hash": password_hash, "must_change": must_change},
         )
@@ -297,10 +299,11 @@ def enrol_totp(
     just checked. False unless the user is an enabled, unlocked admin with no
     pending password change, not yet enrolled, and still on session version
     ``ver`` (the enrol token's), so an enrol token works once and only while
-    nothing has changed. O(log n)."""
+    nothing has changed. Clears "turned off" (``totp_off_at``, 0061b). O(log n)."""
     row = conn.execute(
         text(
-            "UPDATE users AS u SET totp_secret_enc = :enc, totp_enabled_at = :now, totp_last_step = :step"
+            "UPDATE users AS u SET totp_secret_enc = :enc, totp_enabled_at = :now, totp_last_step = :step,"
+            " totp_off_at = NULL"
             " WHERE u.customer_id = :c AND u.id = :u"
             " AND u.totp_enabled_at IS NULL AND u.session_version = :ver"
             " AND NOT u.disabled AND u.role = 'admin' AND NOT u.must_change_password"
@@ -329,23 +332,45 @@ def accept_totp_step(conn: Connection, customer_id: str, user_id: str, step: int
 
 
 def reset_totp(conn: Connection, customer_id: str, user_id: str) -> RowMapping | None:
-    """Turn two-step sign-in off, so the password alone signs in again. Raises
-    ``session_version``, so every session ends. O(log n)."""
+    """Clear the two-step code, and "turned off" with it (0061b): an admin sets one up at
+    their next sign-in. Raises ``session_version``, so every session ends. O(log n)."""
     return (
         conn.execute(
             text(
                 "UPDATE users AS u SET totp_secret_enc = NULL, totp_enabled_at = NULL,"
-                " totp_last_step = NULL, session_version = u.session_version + 1"
+                " totp_last_step = NULL, totp_off_at = NULL, session_version = u.session_version + 1"
                 " WHERE u.customer_id = :c AND u.id = :u"
                 " RETURNING u.id, u.email, u.display_name, u.role, u.disabled, u.created_at,"
-                " u.locked_until, u.totp_enabled_at, u.must_change_password, u.session_version,"
-                " u.delete_forever_allowed_at"
+                " u.locked_until, u.totp_enabled_at, u.totp_off_at, u.must_change_password,"
+                " u.session_version, u.delete_forever_allowed_at"
             ),
             {"c": customer_id, "u": user_id},
         )
         .mappings()
         .first()
     )
+
+
+def turn_off_totp(
+    conn: Connection, customer_id: str, user_id: str, *, step: int, now: datetime
+) -> int | None:
+    """The admin turns their own two-step sign-in off with a right code (``step``, just
+    checked): the code is cleared, ``totp_off_at`` set, and ``session_version`` raised,
+    so every other session ends. The new version, or None if that step or a later one was
+    already used, or the code is not on: a code is never accepted twice. O(log n)."""
+    version: object = conn.execute(
+        text(
+            "UPDATE users AS u SET totp_secret_enc = NULL, totp_enabled_at = NULL, totp_last_step = NULL,"
+            " totp_off_at = :now, session_version = u.session_version + 1"
+            " WHERE u.customer_id = :c AND u.id = :u AND u.role = 'admin' AND u.totp_enabled_at IS NOT NULL"
+            " AND (u.totp_last_step IS NULL OR u.totp_last_step < :step)"
+            " RETURNING u.session_version"
+        ),
+        {"c": customer_id, "u": user_id, "step": step, "now": now},
+    ).scalar()
+    if version is not None and not isinstance(version, int):
+        raise TypeError("session_version is not an integer")
+    return version
 
 
 # --- who is signed in, and the admin's user list ---------------------------------------------
@@ -366,6 +391,7 @@ def session_user(conn: Connection, customer_id: str, user_id: str) -> RowMapping
             text(
                 "SELECT u.id, u.email, u.display_name, u.role, u.disabled,"
                 " u.session_version, u.must_change_password, u.totp_enabled_at IS NOT NULL AS totp_enabled,"
+                " u.totp_off_at IS NOT NULL AS two_step_turned_off,"
                 " u.delete_forever_allowed_at IS NOT NULL AS delete_forever_allowed,"
                 " c.id AS customer_id, c.name AS customer_name,"
                 " GREATEST(u.last_seen_at, u.last_login_at) AS seen_at,"
@@ -395,8 +421,8 @@ def list_users(conn: Connection, customer_id: str) -> Sequence[RowMapping]:
         conn.execute(
             text(
                 "SELECT u.id, u.email, u.display_name, u.role, u.disabled, u.created_at,"
-                " u.locked_until, u.totp_enabled_at, u.must_change_password, u.session_version,"
-                " u.delete_forever_allowed_at"
+                " u.locked_until, u.totp_enabled_at, u.totp_off_at, u.must_change_password,"
+                " u.session_version, u.delete_forever_allowed_at"
                 " FROM users u WHERE u.customer_id = :c"
                 " ORDER BY u.created_at, u.email"
             ),
@@ -429,8 +455,8 @@ def create_user(
                     " (customer_id, email, display_name, role, password_hash, must_change_password)"
                     " VALUES (:c, :email, :name, :role, :hash, :must_change)"
                     " RETURNING u.id, u.email, u.display_name, u.role, u.disabled, u.created_at,"
-                    " u.locked_until, u.totp_enabled_at, u.must_change_password, u.session_version,"
-                    " u.delete_forever_allowed_at"
+                    " u.locked_until, u.totp_enabled_at, u.totp_off_at, u.must_change_password,"
+                    " u.session_version, u.delete_forever_allowed_at"
                 ),
                 {
                     "c": customer_id,
@@ -484,8 +510,8 @@ def update_user(
                 "   ELSE u.delete_forever_allowed_at END"
                 " WHERE u.customer_id = :c AND u.id = :u"
                 " RETURNING u.id, u.email, u.display_name, u.role, u.disabled, u.created_at,"
-                " u.locked_until, u.totp_enabled_at, u.must_change_password, u.session_version,"
-                " u.delete_forever_allowed_at"
+                " u.locked_until, u.totp_enabled_at, u.totp_off_at, u.must_change_password,"
+                " u.session_version, u.delete_forever_allowed_at"
             ),
             {
                 "c": customer_id,
@@ -514,8 +540,8 @@ def set_delete_forever(
                 "   THEN COALESCE(u.delete_forever_allowed_at, :now) ELSE NULL END"
                 " WHERE u.customer_id = :c AND u.id = :u AND u.role <> 'admin'"
                 " RETURNING u.id, u.email, u.display_name, u.role, u.disabled, u.created_at,"
-                " u.locked_until, u.totp_enabled_at, u.must_change_password, u.session_version,"
-                " u.delete_forever_allowed_at"
+                " u.locked_until, u.totp_enabled_at, u.totp_off_at, u.must_change_password,"
+                " u.session_version, u.delete_forever_allowed_at"
             ),
             {"c": customer_id, "u": user_id, "allowed": allowed, "now": now},
         )
