@@ -56,11 +56,12 @@ _cache: dict[str, tuple[float, Any]] = {}  # URL: (when fetched, monotonic secon
 class OidcError(Exception):
     """A step failed. ``code`` says which, in a word the sign-in page explains: ``unavailable``
     (no or a bad reply), ``refused`` (the provider said no), ``bad_token``, ``expired`` or
-    ``wrong_nonce``."""
+    ``wrong_nonce``. ``status``: the provider's HTTP status when it said no, for the log."""
 
-    def __init__(self, code: str) -> None:
+    def __init__(self, code: str, status: int | None = None) -> None:
         super().__init__(code)
         self.code = code
+        self.status = status
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,7 +255,7 @@ def _fetch(url: str, data: bytes | None) -> Any:
             body = reply.read(MAX_REPLY_BYTES + 1)
     except urllib.error.HTTPError as error:
         error.close()
-        raise OidcError("refused") from None
+        raise OidcError("refused", error.code) from None
     except (OSError, ValueError):  # URLError and timeouts are OSErrors
         raise OidcError("unavailable") from None
     if len(body) > MAX_REPLY_BYTES:

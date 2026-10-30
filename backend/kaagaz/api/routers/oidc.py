@@ -50,7 +50,10 @@ Why the GETs need no CSRF header: start changes nothing, and the callback does n
 without the state that only this browser's cookie holds. Start is not limited (it only
 redirects); callbacks with the right state are limited for the whole site
 (``callback_limits``), and past it the reply is the ``busy`` redirect. Logged: the failure's
-code and the provider only, never a code, token, state, nonce, verifier, subject or email.
+code and the provider only (for the token step, also its own failure and the provider's HTTP
+status), never a code, token, state, nonce, verifier, subject or email. Anything unexpected in
+the callback is logged ``oidc_failed`` {provider, error: its type} and is the ``unavailable``
+redirect, never a raw JSON reply.
 """
 
 import dataclasses
@@ -163,12 +166,14 @@ class CodeBody(BaseModel):
 
 
 class _Refused(Exception):
-    """A sign-in ends on /login?oidc_error=<code>; ``email`` for the "isn't connected" notice."""
+    """A sign-in ends on /login?oidc_error=<code>; ``email`` for the "isn't connected" notice;
+    ``cause``, for the log only: the provider step's own failure (``OidcError``)."""
 
-    def __init__(self, code: str, email: str | None = None) -> None:
+    def __init__(self, code: str, email: str | None = None, cause: OidcError | None = None) -> None:
         super().__init__(code)
         self.code = code
         self.email = email
+        self.cause = cause
 
 
 def _provider_on(provider: str, request: Request) -> Provider:
@@ -267,19 +272,26 @@ def callback(
         else:
             response = _sign_in(context, provider, flow, identity)
     except _Refused as refused:
-        logger.warning(
-            json.dumps(
-                {"event": "oidc_refused", "provider": provider.name, "code": refused.code},
-                separators=(",", ":"),
-            )
-        )
-        back = f"{WAYS}?error=" if flow is not None and flow.mode == "connect" else f"{LOGIN}?oidc_error="
-        response = RedirectResponse(back + refused.code, status_code=303)
+        logged: dict[str, object] = {"event": "oidc_refused", "provider": provider.name, "code": refused.code}
+        if refused.cause is not None:  # the token step: why, and the provider's status
+            logged |= {"reason": refused.cause.code, "status": refused.cause.status}
+        logger.warning(json.dumps(logged, separators=(",", ":")))
+        response = _back(flow, refused.code)
         if refused.email is not None:
             set_notice_cookie(response, refused.email, context.settings, now=now)
+    except Exception as error:  # noqa: BLE001 - never raw JSON from a redirect page; logged by type only
+        failed = {"event": "oidc_failed", "provider": provider.name, "error": type(error).__name__}
+        logger.error(json.dumps(failed, separators=(",", ":")))
+        response = _back(flow, "unavailable")
     clear_flow_cookie(response, context.settings)
     response.headers["Referrer-Policy"] = "no-referrer"
     return response
+
+
+def _back(flow: FlowClaims | None, code: str) -> RedirectResponse:
+    """Back to the page the flow started from, with why: Ways to sign in for a connect."""
+    back = f"{WAYS}?error=" if flow is not None and flow.mode == "connect" else f"{LOGIN}?oidc_error="
+    return RedirectResponse(back + code, status_code=303)
 
 
 @router.get("/auth/oidc/notice", dependencies=[Depends(_any_on)])
@@ -399,7 +411,7 @@ def _identity(
         token = oidc.id_token_for(provider, context.settings, code, flow.verifier)
         return oidc.verified_identity(provider, context.settings, token, nonce=flow.nonce, now=now)
     except OidcError as failure:
-        raise _Refused("expired" if failure.code in _EXPIRED else "unavailable") from None
+        raise _Refused("expired" if failure.code in _EXPIRED else "unavailable", cause=failure) from None
 
 
 def _sign_in(

@@ -483,3 +483,39 @@ def test_logs_never_contain_code_token_or_email(
     ]
     for secret in [*never, "ramesh", "sita@example.com", "made-up-google-secret"]:
         assert secret.lower() not in logged, secret
+
+
+def test_an_unexpected_error_in_the_callback_is_logged_and_redirects_as_unavailable(
+    db: Database, google: FakeGoogle, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    def broken(*args: object) -> None:
+        raise RuntimeError("the database broke")
+
+    monkeypatch.setattr(identities, "lookup", broken)
+    caplog.set_level(logging.WARNING, logger="kaagaz.api.routers.oidc")
+    api = _api(db)
+    client = api.client()
+    reply = _sign_in_at_google(api, google, client, "made-up-sub")
+    assert _error(reply) == "unavailable"  # a redirect, never raw JSON
+    assert not client.cookies.get(OIDC_COOKIE)
+    assert '{"event":"oidc_failed","provider":"google","error":"RuntimeError"}' in caplog.messages
+
+
+@pytest.mark.parametrize(
+    ("break_it", "logged"),
+    [("refuse", ',"reason":"refused","status":400}'), ("down", ',"reason":"unavailable","status":null}')],
+)
+def test_a_token_endpoint_failure_logs_why_and_its_status(
+    db: Database, google: FakeGoogle, caplog: pytest.LogCaptureFixture, break_it: str, logged: str
+) -> None:
+    caplog.set_level(logging.WARNING, logger="kaagaz.api.routers.oidc")
+    api = _api(db)
+    client = api.client()
+    query = google.sign_in(_start(client), "made-up-sub", "a@example.com", _now(api))
+    if break_it == "refuse":
+        google.used.add(query["code"])  # Google answers 400: the code was used
+    else:
+        google.down = True
+    reply = client.get("/api/auth/oidc/google/callback", params=query, follow_redirects=False)
+    assert _error(reply) == "unavailable"
+    assert '{"event":"oidc_refused","provider":"google","code":"unavailable"' + logged in caplog.messages
