@@ -394,7 +394,7 @@
 }
 
 
-/* Ways to sign in (#457 phase 1): "Continue with Google", as wide as the form, its logo
+/* Ways to sign in (issue 457, phase 1): "Continue with Google", as wide as the form, its logo
    beside the words; then "or use your email" between two hairlines. */
 .provider {
   gap: var(--space-2);

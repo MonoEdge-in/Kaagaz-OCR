@@ -150,6 +150,15 @@ export function AccountMenu({ me, onChanged }: { me: Me; onChanged(): void }) {
           <Icon name="admin" />
           <span>AI settings</span>
         </Link>
+        {/* #457 phase 1: Account, Ways to sign in (email and password, and Google). */}
+        <Link
+          href="/settings/sign-in"
+          className={`btn btn-quiet btn-block ${styles.signOut}`}
+          onClick={() => document.getElementById(MENU_ID)?.hidePopover()}
+        >
+          <Icon name="admin" />
+          <span>Ways to sign in</span>
+        </Link>
         <button
           type="button"
           className={`btn btn-quiet btn-block ${styles.signOut}`}

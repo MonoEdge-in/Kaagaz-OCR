@@ -1,0 +1,81 @@
+/* Account, Ways to sign in (issue 457, phase 1): one row per way in, its words then its button,
+   which wraps under the words on a phone. MonoEdge tokens only. */
+
+.ways {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  max-width: 44rem;
+}
+
+.rows {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: var(--k-r-4);
+  background: var(--bg-surface);
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-4);
+  min-height: var(--h-lg);
+  padding: var(--space-3) var(--space-4);
+}
+
+.row + .row {
+  border-top: 1px solid var(--border);
+}
+
+.rowText {
+  flex: 1 1 16rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-primary);
+}
+
+.done,
+.error {
+  display: flex;
+  gap: var(--space-2);
+  align-items: flex-start;
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--k-r-4);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+}
+
+.error {
+  border-color: var(--critical);
+}
+
+.done svg,
+.error svg {
+  flex: none;
+  height: 1lh;
+}
+
+/* The app's "Google connected on 30 Oct." banner (ConnectedBanner), as the email banner sits. */
+.banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--border-strong);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+}
+
+.bannerText {
+  flex: 1 1 16rem;
+  margin: 0;
+}
