@@ -47,7 +47,8 @@
   ``kaagaz_create_customer`` (the CLI's function) makes both in one statement, with an
   operator-made organisation's defaults (models, permissions and features off).
   With email on (#457 phase 0) the organisation is made ``pending`` instead, a "Confirm
-  your email" link is sent, and the reply is 201 ``{status: "confirm_email"}`` with no
+  your email" link is sent, and the reply is 201 ``{status: "confirm_email", sent}`` (``sent``:
+  false when the email failed, so the screen offers to send it again) with no
   set-up offer and no session; sign-in then says 403 ``org_pending`` (after a right
   password only) until an operator approves it (``routers/operator_orgs.py``).
   A taken e-mail is the admin screens' 409; with email on, the same 201 as a new sign-up and
@@ -321,7 +322,7 @@ def signup(body: SignupBody, request: Request, context: Context) -> JSONResponse
             found = users_sql.login_lookup(conn, email)
     except users_sql.EmailTaken:
         if pending:  # the same reply as a new sign-up, and nothing sent: it never shows who has an account
-            return JSONResponse({"status": "confirm_email"}, status_code=201)
+            return JSONResponse({"status": "confirm_email", "sent": True}, status_code=201)
         raise ApiError(409, "conflict", "That e-mail is already in use.") from None
     if found is None:  # never: made in this transaction
         raise ApiError(500, "internal_error")
@@ -329,8 +330,8 @@ def signup(body: SignupBody, request: Request, context: Context) -> JSONResponse
         with context.db.customer(customer_id) as conn:
             _record(conn, customer_id, "org.self_signup", actor=found.user_id, target=found.user_id)
         link = new_link(context, customer_id, found.user_id, "confirm")
-        send(context, email, "confirm", emails.confirm_email(link))
-        return JSONResponse({"status": "confirm_email"}, status_code=201)
+        sent = send(context, email, "confirm", emails.confirm_email(link))
+        return JSONResponse({"status": "confirm_email", "sent": sent}, status_code=201)
     user = load_user(context.db, customer_id, found.user_id, scope="admin")
     if user is None:  # never: made in this transaction
         raise ApiError(500, "internal_error")

@@ -7,6 +7,7 @@
   e-mail (``users.email_verified_at``), audited ``auth.email_confirmed``. ``{"ok": true}``.
 * ``POST /auth/email/send-confirm`` (signed in): a new confirm link to the user's own
   e-mail, at most CONFIRMS_PER_HOUR a user (429). Older unused links stop working.
+  ``{"ok": true, "sent": bool}``: ``sent`` is false when the email failed.
 * ``POST /auth/email/resend-confirm`` {email} (no session): "Send the link again" for a
   sign-up's admin, who cannot sign in while their organisation is pending. Always 202 with
   the same words, and the work happens after the reply, as ``/auth/forgot``'s (and with its
@@ -115,8 +116,7 @@ def send_confirm(user: User, context: Context) -> dict[str, bool]:
     if not confirm_limits.allow(user.user_id):
         raise ApiError(429, "rate_limited", TOO_MANY_LINKS, headers={"Retry-After": "3600"})
     link = new_link(context, user.customer_id, user.user_id, "confirm")
-    send(context, user.email, "confirm", emails.confirm_email(link))
-    return {"ok": True}
+    return {"ok": True, "sent": send(context, user.email, "confirm", emails.confirm_email(link))}
 
 
 @router.post("/auth/email/resend-confirm", status_code=202)
@@ -189,9 +189,11 @@ def _set_password(context: AppContext, body: NewPasswordBody, purpose: str, acti
     now = context.clock()
     with context.db.customer(link.customer_id) as conn:
         _use(conn, link, context)
-        users_sql.set_password(
+        changed = users_sql.set_password(
             conn, link.customer_id, link.user_id, password_hash=password_hash, must_change=False
         )
+        if changed is None:  # the user went a moment ago: the transaction (the link's use) is undone
+            raise ApiError(400, "link_expired", LINK_GONE)
         users_sql.confirm_email(conn, link.customer_id, link.user_id, now=now)
         links_sql.void_all(conn, link.customer_id, link.user_id, now=now)
         _record(conn, link, action)

@@ -28,6 +28,7 @@ from kaagaz.api.routers import auth as auth_router
 from kaagaz.api.routers import email as email_router
 from kaagaz.db import email_links as links_sql
 from kaagaz.db import identities
+from kaagaz.db import users as users_sql
 from kaagaz.db.engine import Database, make_engine
 from tests.oidc_fake import ISSUER, google_settings
 from tests.settings_factory import make_settings
@@ -156,7 +157,8 @@ def test_a_sign_up_confirms_its_email_then_waits_for_an_operators_approval(db: D
     }
 
     signed_up = _post(api.client(), "/api/auth/signup", body)
-    assert (signed_up.status_code, signed_up.json()) == (201, {"status": "confirm_email"})
+    # Changed on purpose (#457 review): the reply says whether the link went.
+    assert (signed_up.status_code, signed_up.json()) == (201, {"status": "confirm_email", "sent": True})
     assert "set-cookie" not in signed_up.headers  # no session, no two-step offer
     [(subject, _)] = _to(mailer, email)
     assert subject == "Confirm your email for Kaagaz"
@@ -217,7 +219,8 @@ def test_a_confirm_link_works_once_only_the_newest_works_and_it_expires(db: Data
     assert member.client.get("/api/auth/me").json()["user"]["email_confirmed"] is False  # the banner
     assert api.client().get("/api/auth/email").json() == {"enabled": True}  # "Forgot password?" shows
 
-    assert _post(member.client, "/api/auth/email/send-confirm").json() == {"ok": True}
+    # Changed on purpose (#457 review): the reply says whether the link went.
+    assert _post(member.client, "/api/auth/email/send-confirm").json() == {"ok": True, "sent": True}
     first = _token(mailer, member.email, "/email/confirm")
     _post(member.client, "/api/auth/email/send-confirm")
     newest = _token(mailer, member.email, "/email/confirm")
@@ -283,7 +286,7 @@ def test_a_stale_unconfirmed_sign_up_no_longer_holds_its_email(db: Database) -> 
         "password": PASSWORD,
     }
     again = _post(api.client(), "/api/auth/signup", {**body, "email": held})
-    assert (again.status_code, again.json()) == (201, {"status": "confirm_email"})
+    assert (again.status_code, again.json()) == (201, {"status": "confirm_email", "sent": True})
     assert not _customer_exists(db, old)
     assert len(_to(mailer, held)) == 2  # the old sign-up's link, then the new one's
     assert len(_to(mailer, fresh)) == 1
@@ -320,7 +323,7 @@ def test_a_sign_up_with_a_taken_email_answers_like_a_new_one_and_sends_nothing(d
         "password": PASSWORD,
     }
     reply = _post(api.client(), "/api/auth/signup", {**body, "email": member.email.upper()})
-    assert (reply.status_code, reply.json()) == (201, {"status": "confirm_email"})
+    assert (reply.status_code, reply.json()) == (201, {"status": "confirm_email", "sent": True})
     assert mailer.sent == []
 
 
@@ -789,3 +792,39 @@ def test_forgot_and_send_again_log_a_task_that_breaks_after_the_reply(
     caplog.set_level(logging.ERROR, logger="kaagaz.api.emails")
     assert _post(api.client(), path, {"email": email}).status_code == 202
     assert _task_failed(purpose) in caplog.messages
+
+
+@pytest.mark.db
+def test_a_link_that_could_not_be_sent_says_so(db: Database) -> None:
+    """Sign-up and "Send link" say ``sent: false`` when the email failed, so the screen offers
+    to send it again."""
+    api, _ = _email_api(db, FailingMailer())
+    body = {
+        "organisation_name": f"Sharma Traders {uuid.uuid4().hex[:6]}",
+        "name": "Asha",
+        "password": PASSWORD,
+    }
+    email = f"owner-{uuid.uuid4().hex[:12]}@example.com"
+    signed_up = _post(api.client(), "/api/auth/signup", {**body, "email": email})
+    assert (signed_up.status_code, signed_up.json()) == (201, {"status": "confirm_email", "sent": False})
+    member = api.new_signed("member")
+    assert _post(member.client, "/api/auth/email/send-confirm").json() == {"ok": True, "sent": False}
+
+
+@pytest.mark.db
+def test_a_link_whose_user_is_gone_is_not_used_up_and_nothing_is_audited(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    api, mailer = _email_api(db)
+    member = api.new_signed("member")
+    _post(api.client(), "/api/auth/forgot", {"email": member.email})
+    token = _token(mailer, member.email, "/reset-password")
+    before = api.audit_actions(member.customer_id)
+    with monkeypatch.context() as patched:
+        patched.setattr(users_sql, "set_password", lambda *args, **kwargs: None)
+        gone = _post(api.client(), "/api/auth/reset", {"token": token, "new_password": NEW_PASSWORD})
+    assert (gone.status_code, gone.json()) == (400, LINK_GONE)
+    assert api.audit_actions(member.customer_id) == before
+    assert _post(api.client(), "/api/auth/reset", {"token": token, "new_password": NEW_PASSWORD}).json() == {
+        "ok": True
+    }
