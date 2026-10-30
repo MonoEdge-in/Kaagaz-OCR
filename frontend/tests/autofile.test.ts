@@ -223,6 +223,7 @@ describe("the super admin's allow and stop", () => {
     last_activity_at: null,
     autofile_granted: false,
     autofile_on: false,
+    admin_email_confirmed: false, // #457
   };
 
   it("asks first, saying files already uploaded stay where they are, and stopping turns the switch off", async () => {

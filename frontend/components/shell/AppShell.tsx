@@ -13,6 +13,7 @@
 // inside documents first, docs/architecture.md, The screens), the Upload button and the account
 // menu (AccountMenu).
 // <main id="main"> has no padding; screens use .page (the chat fills it).
+// #457: while the person's email is not confirmed, EmailBanner sits at the top of <main>.
 
 import Form from "next/form";
 import Link from "next/link";
@@ -33,6 +34,7 @@ import { ShellMenu } from "./ShellMenu";
 import { StatusBarSlot } from "./StatusBar";
 import { SHELL_UPLOAD_INPUT_ID, UploadsProvider } from "./Uploads";
 import { ClockPeek } from "./ClockPeek";
+import { EmailBanner } from "./EmailBanner";
 import { Wordmark } from "./Wordmark";
 import styles from "./Shell.module.css";
 
@@ -173,6 +175,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           // A 1px edge under the header once the content has scrolled (UI audit G11).
           onScroll={(event) => event.currentTarget.toggleAttribute("data-scrolled", event.currentTarget.scrollTop > 0)}
         >
+          {!me.user.email_confirmed && <EmailBanner email={me.user.email} />}
           <StatusBarSlot value={statusBar}>
             <UploadsProvider>{children}</UploadsProvider>
           </StatusBarSlot>

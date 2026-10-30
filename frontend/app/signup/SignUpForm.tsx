@@ -6,7 +6,8 @@
 // hydrated and while busy, the password masked again on submit, and typed
 // values kept after an error. Signed up, the new admin sets up two-step sign-in
 // (every admin must have it, 16 Oct 2026: RequiredEnrol), then the browser goes
-// to /admin.
+// to /admin. With email on (#457) the server sends a confirm link instead, and the
+// form says to check the email: the organisation then waits for approval.
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
@@ -23,11 +24,13 @@ import {
   MAX_EMAIL,
   MAX_NAME,
   MAX_ORGANISATION,
+  CHECK_EMAIL,
   PASSWORD_HINT,
   SIGN_UP_OFF,
   firstInvalidSignUp,
   signUpBody,
   signUpError,
+  signUpConfirming,
   signUpFieldError,
   validateSignUp,
 } from "./signUp";
@@ -60,6 +63,8 @@ export function SignUpForm() {
   const [busy, setBusy] = useState(false);
   // Signed up: the two-step set-up the server sent (no session before the first code).
   const [enrol, setEnrol] = useState<TwoStepSetup | null>(null);
+  // Or, with email on, the confirm link went to the email (#457).
+  const [confirming, setConfirming] = useState(false);
   // N3 (QA 17 Oct): asked as SignUpLink does; switched off, no form is shown. No answer: the form stays.
   // null while asking, so the form never flashes before an "off" reply (CodeRabbit).
   const [off, setOff] = useState<boolean | null>(null);
@@ -105,12 +110,30 @@ export function SignUpForm() {
     setErrors(found);
     setBusy(true);
     try {
-      setEnrol(await signUp(signUpBody(input)));
+      const reply = await signUp(signUpBody(input));
+      if (signUpConfirming(reply)) setConfirming(true);
+      else setEnrol(reply);
       setBusy(false);
     } catch (caught) {
       setFailure(signUpError(caught));
       setBusy(false);
     }
+  }
+
+  if (confirming) {
+    return (
+      <div className={login.form}>
+        <div className={login.intro}>
+          <h1 className={login.title}>Check your email</h1>
+          <p className={login.lead} role="status">
+            {CHECK_EMAIL}
+          </p>
+        </div>
+        <p className={login.switch}>
+          <Link href="/login">Back to sign in</Link>
+        </p>
+      </div>
+    );
   }
 
   if (enrol) {

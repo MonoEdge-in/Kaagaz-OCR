@@ -13,6 +13,8 @@
 // stopped per organisation, also in a ConfirmDialog. The table is the shared reflow
 // (Table.module.css): cards below 48rem of room, a table from there.
 // initialSearch (Needs attention on Overview) fills the search and focuses it.
+// #457: a password sign-up waits as "Waiting for approval", with whether its admin's email
+// is confirmed; Approve shows only once it is. "Waiting for approval" filters to them.
 
 import { useEffect, useRef, useState } from "react";
 import { useMinuteNow } from "@/components/chat/hooks";
@@ -33,7 +35,7 @@ import { OrgFeatureSwitchesDialog } from "./FeatureSwitches";
 import { OrgAiSettings, orgAiFocusId } from "./OrgAiSettings";
 import { OrgModelRates } from "./OrgModelRates";
 import { OrgSessionTimeoutDialog } from "./SessionTimeout";
-import { afterDone, countText, deleteCountdown, filterOrgs, GRACE_DAYS, lastActivityText, operatorErrorMessage, orgStatus, searchSummary, userCounts } from "./logic";
+import { afterDone, countText, deleteCountdown, filterOrgs, GRACE_DAYS, lastActivityText, operatorErrorMessage, orgStatus, searchSummary, userCounts, waitingOnly } from "./logic";
 import { MoreRows, useRowCap } from "@/components/admin/RowCap";
 import admin from "@/components/admin/Admin.module.css";
 import styles from "./Operator.module.css";
@@ -59,6 +61,7 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
   const [search, setSearch] = useState(initialSearch);
   const [searched, setSearched] = useState(initialSearch); // the initialSearch last applied
   const [query, setQuery] = useState(initialSearch); // the search, 200ms after the last key
+  const [waiting, setWaiting] = useState(false); // only the sign-ups waiting for approval
   const cap = useRowCap();
   const searchRef = useRef<HTMLInputElement>(null);
   const [creating, setCreating] = useState(false);
@@ -105,7 +108,7 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
 
   const failed = error !== null && error.attempt === attempt ? error.message : null;
   const reload = () => setAttempt((n) => n + 1);
-  const shown = orgs ? filterOrgs(orgs, query) : [];
+  const shown = orgs ? waitingOnly(filterOrgs(orgs, query), waiting) : [];
   const create = (
     <button type="button" className="btn btn-primary" onClick={() => setCreating(true)}>
       <Icon name="plus" />
@@ -175,12 +178,18 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
                 aria-describedby="org-search-summary"
               />
             </div>
+            <label className={styles.waitingFilter}>
+              <input type="checkbox" checked={waiting} onChange={(event) => setWaiting(event.target.checked)} />
+              Waiting for approval
+            </label>
             <p id="org-search-summary" className={styles.summary} role="status">
-              {searchSummary(shown.length, orgs.length, query)}
+              {searchSummary(shown.length, orgs.length, query || (waiting ? "waiting" : ""))}
             </p>
           </div>
           {shown.length === 0 ? (
-            <p className={admin.emptyLine}>No organisation name has these letters.</p>
+            <p className={admin.emptyLine}>
+              {waiting ? "No organisation is waiting for approval." : "No organisation name has these letters."}
+            </p>
           ) : (
             <div className={`${table.reflowWrap} ${admin.tableScroll}`}>
               <table className={`table ${table.reflow}`} role="table">
@@ -257,13 +266,19 @@ export const MENU_HELP = {
   stopAutofile: "Turns auto-filing off here. Files already filed stay where they are.",
   disable: "Signs all its people out now and stops its work until you enable it again.",
   enable: "Lets this organisation's people sign in again.",
+  approve: "Lets this new organisation's admin sign in and start uploading.",
   delete: `Deletes it with all its people and documents after ${GRACE_DAYS} days. You can cancel until then.`,
   cancel: "Keeps it and everything in it. It stays disabled until you enable it.",
 } as const;
 
-// The changes each status allows, as the server: delete only a disabled one.
+// The changes each status allows, as the server: delete only a disabled one; Approve only a
+// pending one whose admin confirmed their email (OrgRow), which can be disabled too.
 const CHANGES: Record<Organisation["status"], { change: OrgChange; label: string; description: string; danger?: boolean }[]> = {
   active: [{ change: "disable", label: "Disable", description: MENU_HELP.disable, danger: true }],
+  pending: [
+    { change: "approve", label: "Approve", description: MENU_HELP.approve },
+    { change: "disable", label: "Disable", description: MENU_HELP.disable, danger: true },
+  ],
   disabled: [
     { change: "enable", label: "Enable", description: MENU_HELP.enable },
     { change: "delete", label: "Delete", description: MENU_HELP.delete, danger: true },
@@ -346,7 +361,9 @@ function OrgRow(props: {
                     : { label: "Allow auto-filing", description: MENU_HELP.allowAutofile, onSelect: onAutofile },
                 ]),
           ]}
-          changes={CHANGES[org.status].map(({ change, label, description, danger }) => ({
+          changes={CHANGES[org.status]
+            .filter(({ change }) => change !== "approve" || org.admin_email_confirmed)
+            .map(({ change, label, description, danger }) => ({
             label,
             description,
             danger,

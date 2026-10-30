@@ -36,7 +36,7 @@ import {
   updateUser,
 } from "@/lib/api";
 import { formatDate } from "@/lib/format";
-import type { AdminUser, Role } from "@/lib/types";
+import type { AddedUser, AdminUser, Role } from "@/lib/types";
 import table from "@/components/documents/Table.module.css";
 import { CopyButton } from "./CopyButton";
 import { MoreRows, useRowCap } from "./RowCap";
@@ -47,6 +47,7 @@ import type { Notice } from "./Toast";
 import {
   MIN_PASSWORD_LENGTH,
   NEW_USER_FIELD_IDS,
+  addedNotice,
   ROLES,
   allowForeverQuestion,
   firstInvalidField,
@@ -213,7 +214,8 @@ export function UsersPanel({
           onAdded={(user) => {
             setUsers((current) => (current ? [...current, user] : [user]));
             setAdding(false);
-            setNotice({ text: `Added ${user.display_name}. They choose their own password when they first sign in.` });
+            // #457: with email on, "Invite sent to {email}"; else the temporary password, as before.
+            setNotice({ text: addedNotice(user) });
           }}
         />
       )}
@@ -465,7 +467,7 @@ const UNSAVED_QUESTION = "Close without adding? What you typed here will be lost
  * Esc, inert page). Esc, the backdrop (press and release both on it) and Close ask
  * first when something is typed; focus goes back to "Add user" when it closes.
  */
-function AddUserPanel({ onClose, onAdded }: { onClose: () => void; onAdded: (user: AdminUser) => void }) {
+function AddUserPanel({ onClose, onAdded }: { onClose: () => void; onAdded: (user: AddedUser) => void }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const pressTarget = useRef<EventTarget | null>(null);
   const [input, setInput] = useState<NewUserInput>(EMPTY_USER);

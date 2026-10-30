@@ -53,6 +53,12 @@ const nextConfig: NextConfig = {
         ],
       },
       {
+        // The emailed links' pages (#457): their token is in the fragment, never sent anyway;
+        // no referrer at all leaves these pages, as the spec asks for link paths.
+        source: "/:page(reset-password|invite|email/confirm)",
+        headers: [{ key: "Referrer-Policy", value: "no-referrer" }],
+      },
+      {
         // The browser keeps no copy of an app page, so after signing out the
         // back button cannot show a signed-in screen from its cache. Not for
         // /_next/ (Next.js's hashed files, kept for good) or /api (the

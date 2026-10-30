@@ -25,6 +25,7 @@ import { login } from "@/lib/api";
 import { announceSession, leavePage } from "@/lib/sessionChannel";
 import type { TwoStepSetup } from "@/lib/types";
 import { CodeField } from "./CodeField";
+import { ForgotPasswordLink } from "./ForgotPasswordLink";
 import { RequiredEnrol } from "./EnrolStep";
 import {
   emailError,
@@ -254,7 +255,7 @@ export function SignInForm({ note, next }: { note: string | null; next: string }
         </button>
       )}
 
-      <p className={styles.help}>Forgot your password? Ask your account admin to reset it.</p>
+      <ForgotPasswordLink />
     </form>
   );
 }

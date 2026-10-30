@@ -9,6 +9,7 @@ import type { DocumentListParams } from "@/components/documents/libraryQuery";
 import type { StoryMatchBody } from "./storyMatches";
 import type {
   ActivityPage,
+  AddedUser,
   AdminChange,
   AdminCreated,
   AdminUser,
@@ -83,6 +84,7 @@ import type {
   ScopeBody,
   SessionTimeout,
   SheetCells,
+  SignUpConfirming,
   SourcePin,
   Speed,
   SpeedName,
@@ -222,9 +224,10 @@ export const logout = () => request<void>("POST", "/auth/logout");
 /** Whether anyone may create an organisation at /signup (SELF_SIGNUP_ENABLED). */
 export const signUpOpen = () => request<{ enabled: boolean }>("GET", "/auth/signup");
 /** A new organisation and its first admin. The reply is the two-step set-up (admins must
- * have it); the first code (adminEnrol) signs in as that admin. */
+ * have it); the first code (adminEnrol) signs in as that admin. With email on (#457), the
+ * email is confirmed first and the organisation waits for approval: SignUpConfirming. */
 export const signUp = (body: { organisation_name: string; name: string; email: string; password: string }) =>
-  request<TwoStepSetup>("POST", "/auth/signup", body);
+  request<TwoStepSetup | SignUpConfirming>("POST", "/auth/signup", body);
 /** Who is signed in, 200 either way (issue 378): a signed-out visit logs no expected 401. */
 export const currentSession = () =>
   request<{ signed_in: true; me: Me } | { signed_in: false }>("GET", "/auth/session");
@@ -232,8 +235,25 @@ export const currentSession = () =>
 /** The first code from the set-up (sign-in or sign-up) turns two-step on and signs in. */
 export const adminEnrol = (enrolToken: string, code: string) =>
   request<Me>("POST", "/auth/admin/enrol", { enrol_token: enrolToken, code });
-export const changePassword = (current: string, next: string) =>
-  request<Me>("POST", "/auth/password", { current_password: current, new_password: next });
+/** With two-step sign-in on, the code too (#457). */
+export const changePassword = (current: string, next: string, code?: string) =>
+  request<Me>("POST", "/auth/password", {
+    current_password: current,
+    new_password: next,
+    ...(code === undefined ? {} : { code }),
+  });
+
+// Email (#457 phase 0): every route is 404 while the server's email is off.
+/** Resolves while email is on (the sign-in page's "Forgot password?"); rejects with 404 when off. */
+export const emailOpen = () => request<{ enabled: boolean }>("GET", "/auth/email");
+export const confirmEmail = (token: string) => request<{ ok: boolean }>("POST", "/auth/email/confirm", { token });
+export const sendConfirmEmail = () => request<{ ok: boolean }>("POST", "/auth/email/send-confirm");
+/** Always the same reply, whoever the email belongs to. */
+export const forgotPassword = (email: string) => request<{ message: string }>("POST", "/auth/forgot", { email });
+export const resetPassword = (token: string, newPassword: string) =>
+  request<{ ok: boolean }>("POST", "/auth/reset", { token, new_password: newPassword });
+export const acceptInvite = (token: string, newPassword: string) =>
+  request<{ ok: boolean }>("POST", "/auth/invite/accept", { token, new_password: newPassword });
 export const logoutEverywhere = () => request<void>("POST", "/auth/logout-everywhere");
 /** A granted member or reviewer types their password before Delete forever (a 5-minute cookie). */
 export const confirmPassword = (password: string) =>
@@ -731,7 +751,7 @@ export const createUser = (user: {
   display_name: string;
   role: Role;
   password: string;
-}) => request<AdminUser>("POST", "/admin/users", user);
+}) => request<AddedUser>("POST", "/admin/users", user);
 export const updateUser = (
   id: string,
   changes: { role?: Role; disabled?: boolean; password?: string },
@@ -809,6 +829,8 @@ export const createOrg = (org: { name: string; admin_email: string; admin_name: 
 export const disableOrg = (id: string, code: string) =>
   request<unknown>("POST", `/operator/orgs/${id}/disable`, { code });
 export const enableOrg = (id: string) => request<unknown>("POST", `/operator/orgs/${id}/enable`);
+/** #457: a pending sign-up whose admin confirmed their email becomes active. */
+export const approveOrg = (id: string) => request<unknown>("POST", `/operator/orgs/${id}/approve`);
 /** Feature 28: allow or stop auto-filing; stopping it also switches it off. */
 export const setOrgAutofile = (id: string, granted: boolean) =>
   request<unknown>("PUT", `/operator/orgs/${id}/autofile`, { granted });

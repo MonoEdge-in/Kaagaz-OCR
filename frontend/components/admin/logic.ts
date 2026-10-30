@@ -8,6 +8,7 @@ import { ApiError } from "@/lib/api";
 import { formatDateTime, formatNumber, formatUsd, PART_NOT_KNOWN, statusChip } from "@/lib/format";
 import type { StatusTone } from "@/lib/format";
 import type {
+  AddedUser,
   AdminUser,
   AuditEntry,
   CustomerSettings,
@@ -220,6 +221,13 @@ export function generatePassword(length = 16, random: (bytes: Uint8Array) => Uin
 }
 
 /** AD7 (UI audit, 16 Oct 2026), with two-step required for admins (0035): what an admin without it sees. */
+/** The toast after Add user: the invite went (#457), else the temporary password as before. */
+export function addedNotice(user: Pick<AddedUser, "display_name" | "email" | "invited">): string {
+  return user.invited
+    ? `Invite sent to ${user.email}`
+    : `Added ${user.display_name}. They choose their own password when they first sign in.`;
+}
+
 export function twoStepNote(): string {
   return "Admins without two-step sign-in set it up at their next sign-in.";
 }
@@ -513,6 +521,7 @@ const ACTION_WORDS: Record<string, string> = {
   "user_word.deleted": "Deleted a word from My words",
   "customer.create": "Organisation set up",
   "org.self_signup": "Created the organisation at sign-up",
+  "org.approved": "Organisation approved", // #457: a sign-up approved by the Kaagaz team
   "customer.enable": "Organisation turned on",
   "customer.disable": "Organisation turned off",
   "chat.ask": "Asked a question",
@@ -533,6 +542,11 @@ const ACTION_WORDS: Record<string, string> = {
   "auth.totp_on": "Turned on two-step sign-in",
   "auth.totp_off": "Turned off two-step sign-in",
   "auth.password_change": "Changed their password",
+  // #457 phase 0: email.
+  "auth.email_confirmed": "Confirmed their email",
+  "auth.password_reset": "Reset their password from an email",
+  "auth.invite_sent": "Sent an invite",
+  "auth.invite_accepted": "Accepted an invite",
   "auth.logout_everywhere": "Signed out everywhere",
   "user.unlock": "Unlocked a user",
   "user.reset_password": "Reset a user's password",

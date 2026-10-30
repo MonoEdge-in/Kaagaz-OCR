@@ -4,6 +4,7 @@
 // server does; giving it back (enable, unlock) and disabling an admin do not.
 
 import {
+  approveOrg,
   cancelDelete,
   changeAdmin,
   disableOrg,
@@ -16,7 +17,7 @@ import type { OperatorModel, OrgAdmin, Organisation } from "@/lib/types";
 import type { Confirm } from "./ConfirmDialog";
 import { DISABLE_EFFECT, deleteEffect } from "./logic";
 
-export type OrgChange = "disable" | "enable" | "delete" | "cancel";
+export type OrgChange = "approve" | "disable" | "enable" | "delete" | "cancel";
 
 /** The model's name in the Models table, where the focus goes after a change. */
 export const modelFocusId = (id: string) => `model-name-${id.replace(/[^A-Za-z0-9_-]/g, "-")}`;
@@ -46,6 +47,17 @@ export function orgConfirm(org: Organisation, change: OrgChange, now: number): C
   const name = org.name;
   const focusId = orgFocusId(org.id);
   switch (change) {
+    case "approve": // #457: a password sign-up whose admin confirmed their email
+      return {
+        title: `Approve ${name}?`,
+        effect: "Its admin can sign in and start uploading. Its AI use counts from now.",
+        action: "Approve organisation",
+        done: `Approved ${name}.`,
+        danger: false,
+        stepUp: false,
+        run: () => approveOrg(org.id),
+        focusId,
+      };
     case "disable":
       return {
         title: `Disable ${name}?`,

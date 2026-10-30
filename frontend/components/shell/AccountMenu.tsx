@@ -9,6 +9,8 @@
 // a dialog that gives Cancel the focus. The arrow keys move into the menu from the
 // avatar and between its actions, Home and End to the first and last, as a row's
 // menu does (RowMenu's onMenuKey); a theme or palette radio keeps its own arrows.
+// #457: Change password for every role opens its dialog (ChangePasswordDialog); a toast
+// says when it is done.
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -20,9 +22,11 @@ import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { Icon } from "@/components/ui/Icon";
 import { PalettePicker } from "@/components/ui/PalettePicker";
 import { ThemeToggle } from "@/components/ui/ThemeToggle";
+import { Toast } from "@/components/ui/Toast";
 import { ApiError, logout, logoutEverywhere } from "@/lib/api";
 import { announceSession, leavePage } from "@/lib/sessionChannel";
 import type { Me } from "@/lib/types";
+import { ChangePasswordDialog } from "./ChangePasswordDialog";
 import { signedOutPath } from "./gate";
 import { initials, roleName } from "./nav";
 import styles from "./Shell.module.css";
@@ -53,6 +57,8 @@ export function AccountMenu({ me }: { me: Me }) {
   const [signingOut, setSigningOut] = useState<SignOutKind | null>(null);
   const [failure, setFailure] = useState<{ kind: SignOutKind; message: string } | null>(null);
   const [confirming, setConfirming] = useState(false);
+  const [changingPassword, setChangingPassword] = useState(false);
+  const [done, setDone] = useState<string | null>(null);
   const name = me.user.display_name;
 
   // "everywhere" raises the account's session version on the server, which
@@ -141,6 +147,17 @@ export function AccountMenu({ me }: { me: Me }) {
           <Icon name="admin" />
           <span>AI settings</span>
         </Link>
+        <button
+          type="button"
+          className={`btn btn-quiet btn-block ${styles.signOut}`}
+          onClick={() => {
+            document.getElementById(MENU_ID)?.hidePopover();
+            setChangingPassword(true);
+          }}
+        >
+          <Icon name="admin" />
+          <span>Change password</span>
+        </button>
 
         <div className={styles.signOuts}>
           <button
@@ -184,6 +201,17 @@ export function AccountMenu({ me }: { me: Me }) {
           again on each one.
         </p>
       </ConfirmDialog>
+      {changingPassword && (
+        <ChangePasswordDialog
+          me={me}
+          onClose={() => setChangingPassword(false)}
+          onDone={(message) => {
+            setChangingPassword(false);
+            setDone(message);
+          }}
+        />
+      )}
+      <Toast message={done} onClose={() => setDone(null)} />
     </>
   );
 }

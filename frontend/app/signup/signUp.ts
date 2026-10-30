@@ -4,6 +4,7 @@
 
 import { MIN_PASSWORD_LENGTH } from "@/components/admin/logic";
 import { ApiError } from "@/lib/api";
+import type { SignUpConfirming, TwoStepSetup } from "@/lib/types";
 import { NETWORK_FAILURE, normalizeEmail } from "@/app/login/signIn";
 
 export type SignUpField = "organisation" | "name" | "email" | "password";
@@ -64,6 +65,14 @@ export function signUpBody(input: SignUpInput) {
     email: normalizeEmail(input.email),
     password: input.password,
   };
+}
+
+/** With email on (#457): the email is confirmed first, then the organisation waits for an operator. */
+export const CHECK_EMAIL =
+  "Check your email to confirm your address. Your organisation will then wait for approval.";
+
+export function signUpConfirming(reply: TwoStepSetup | SignUpConfirming): reply is SignUpConfirming {
+  return "status" in reply && reply.status === "confirm_email";
 }
 
 export const ACCOUNT_EXISTS = "An account with this e-mail already exists. Sign in instead.";

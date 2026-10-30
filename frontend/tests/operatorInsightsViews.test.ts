@@ -38,6 +38,7 @@ const org = (id: string, name: string): Organisation => ({
   last_activity_at: "2026-10-11T09:00:00Z",
   autofile_granted: false,
   autofile_on: false,
+  admin_email_confirmed: false, // #457
 });
 
 const health = (id: string, changes: Partial<OrgInsight> = {}): OrgInsight => ({

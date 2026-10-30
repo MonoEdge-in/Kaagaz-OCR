@@ -78,6 +78,7 @@ describe("the session gate", () => {
       must_change_password,
       totp_enabled: true, // every admin has two-step sign-in (16 Oct 2026; tests/admin-two-step.test.ts)
       can_delete_forever: false,
+      email_confirmed: true, // #457
     },
     customer: { id: "c1", name: "Sharma Traders" },
     session: { scope },

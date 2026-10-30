@@ -25,6 +25,7 @@ const me = (role: Me["user"]["role"], totpEnabled: boolean, mustChange = false):
     must_change_password: mustChange,
     totp_enabled: totpEnabled,
     can_delete_forever: false,
+    email_confirmed: true, // #457
   },
   customer: { id: "c1", name: "Sharma Traders" },
   session: { scope: role === "admin" ? "admin" : "app" },
@@ -68,7 +69,9 @@ describe("the sign-in page shows the set-up step", () => {
 
   it("and after sign-up, where the reply is the set-up and not a session", () => {
     const signUp = read("app/signup/SignUpForm.tsx");
-    expect(signUp).toContain("setEnrol(await signUp(signUpBody(input)));");
+    // Changed on purpose (#457): with email on, the reply may say to confirm the email first.
+    expect(signUp).toContain("const reply = await signUp(signUpBody(input));");
+    expect(signUp).toContain("else setEnrol(reply);");
     expect(signUp).toContain("<RequiredEnrol");
     expect(signUp).not.toContain("announceSession(signedIn");
   });

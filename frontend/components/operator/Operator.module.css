@@ -68,6 +68,16 @@
   max-width: 28rem;
 }
 
+/* Issue 457: only the sign-ups waiting for approval. One control tall, as the summary. */
+.waitingFilter {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--control-h);
+  color: var(--text-primary);
+  font-size: var(--fs-sm);
+}
+
 /* In the toolbar (bottom-aligned, as each field's label sits above its box): one
    control tall, so its words sit on the boxes' middle line. */
 .summary {

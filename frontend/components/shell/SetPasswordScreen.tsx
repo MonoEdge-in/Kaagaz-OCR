@@ -6,6 +6,9 @@
 // success the server re-signs this browser's cookie and signs out the others;
 // onChanged() reloads who is signed in, and the app opens.
 //
+// An admin with two-step sign-in on (an admin reset their password) also types the code
+// (#457: the server asks for it on every password change).
+//
 // It takes props rather than useSession() so lib/session.tsx can render it
 // without an import cycle. Like the sign-in form: method="post", no name
 // attributes, passwords masked again on submit and never trimmed.
@@ -14,6 +17,8 @@ import { usePathname } from "next/navigation";
 import { useState } from "react";
 import type { FormEvent } from "react";
 import { flushSync } from "react-dom";
+import { CodeField } from "@/app/login/CodeField";
+import { codeError, normalizeCode } from "@/app/login/twoStep";
 import { PasswordField } from "@/components/ui/PasswordField";
 import { useHydrated } from "@/components/ui/useHydrated";
 import { MIN_PASSWORD_LENGTH } from "@/components/admin/logic";
@@ -37,11 +42,15 @@ import { Wordmark } from "./Wordmark";
 import styles from "./Shell.module.css";
 
 const ALL_MASKED: Record<NewPasswordField, boolean> = { current: true, next: true, again: true };
+const CODE_ID = "set-password-code";
 
 export function SetPasswordScreen({ me, onChanged }: { me: Me; onChanged(): void }) {
   const pathname = usePathname();
   const hydrated = useHydrated();
   const [input, setInput] = useState<NewPasswordInput>({ current: "", next: "", again: "" });
+  const withCode = me.user.totp_enabled;
+  const [code, setCode] = useState("");
+  const [codeProblem, setCodeProblem] = useState<string | null>(null);
   const [errors, setErrors] = useState<NewPasswordErrors>({});
   const [masked, setMasked] = useState(ALL_MASKED);
   const [failure, setFailure] = useState<SetPasswordError | null>(null);
@@ -62,19 +71,25 @@ export function SetPasswordScreen({ me, onChanged }: { me: Me; onChanged(): void
     setFailure(null);
     const found = validateNewPassword(input);
     const first = firstInvalidNewPassword(found);
-    if (first) {
-      flushSync(() => setErrors(found));
-      document.getElementById(NEW_PASSWORD_FIELD_IDS[first])?.focus();
+    const problem = withCode ? codeError(code) : null;
+    if (first || problem) {
+      flushSync(() => {
+        setErrors(found);
+        setCodeProblem(problem);
+      });
+      document.getElementById(first ? NEW_PASSWORD_FIELD_IDS[first] : CODE_ID)?.focus();
       return;
     }
     setErrors(found);
+    setCodeProblem(null);
     setBusy(true);
     try {
-      await changePassword(input.current, input.next);
+      await changePassword(input.current, input.next, withCode ? normalizeCode(code) : undefined);
       // Stays busy: this screen goes away once the session is reloaded.
       onChanged();
     } catch (caught) {
       setFailure(setPasswordError(caught));
+      setCode(""); // a code works once
       setBusy(false);
     }
   }
@@ -143,6 +158,20 @@ export function SetPasswordScreen({ me, onChanged }: { me: Me; onChanged(): void
             enterKeyHint="done"
             required
           />
+          {withCode && (
+            <CodeField
+              id={CODE_ID}
+              label="6-digit code"
+              value={code}
+              onChange={(value) => {
+                setCode(value);
+                if (codeProblem) setCodeProblem(codeError(value));
+              }}
+              error={codeProblem}
+              hint="From your authenticator app."
+              enterKeyHint="done"
+            />
+          )}
 
           {failure && (
             <div className={styles.gateBanner} role="alert">

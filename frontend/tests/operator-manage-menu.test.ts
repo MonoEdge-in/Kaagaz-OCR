@@ -44,7 +44,8 @@ describe("one Manage menu per organisation", () => {
     expect(row).toContain('{ label: "AI settings", description: MENU_HELP.ai, onSelect: onModels }');
     expect(row).toContain('{ label: "Request limits", description: MENU_HELP.limits, onSelect: onModelRates }');
     expect(row).toMatch(/org\.autofile_granted\s*\? \{ label: "Stop auto-filing"[^}]*\}\s*: \{ label: "Allow auto-filing"/);
-    expect(row).toContain("changes={CHANGES[org.status].map(");
+    // Changed on purpose (#457): Approve only once the admin's email is confirmed.
+    expect(row).toMatch(/changes=\{CHANGES\[org\.status\]\s*\.filter\(\(\{ change \}\) => change !== "approve" \|\| org\.admin_email_confirmed\)\s*\.map\(/);
     expect(menu).toMatch(/\{safe\.map\(entry\)\}\s*\{safe\.length > 0 && changes\.length > 0 && <div role="separator"/);
     expect(menu.indexOf('role="separator"')).toBeLessThan(menu.indexOf("{changes.map(entry)}"));
     expect(row).not.toMatch(/two-step|twoStep/i);

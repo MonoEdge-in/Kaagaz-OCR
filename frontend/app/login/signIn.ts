@@ -49,6 +49,8 @@ export const WRONG_DETAILS_ADVICE = "Check your e-mail and password, then try ag
 export const TOO_MANY_ATTEMPTS = "Too many attempts. Wait a minute, then try again.";
 export const NETWORK_FAILURE = "Could not reach Kaagaz. Check your internet connection and try again.";
 export const SIGN_IN_DOWN = "Sign-in is not working right now. Try again in a minute.";
+/** A sign-up waiting for the operator (#457), said only after a right password (403 org_pending). */
+export const ORG_PENDING = "Your organisation is waiting for approval.";
 
 /**
  * The banner text for a failed sign-in. A 401 shows the backend's own message
@@ -58,6 +60,7 @@ export const SIGN_IN_DOWN = "Sign-in is not working right now. Try again in a mi
  */
 export function signInErrorMessage(caught: unknown): string {
   if (caught instanceof ApiError) {
+    if (caught.code === "org_pending") return ORG_PENDING;
     if (caught.status === 401) return caught.message.trim() || WRONG_DETAILS_ADVICE;
     if (caught.status === 429) return TOO_MANY_ATTEMPTS;
     if (caught.status === 0) return NETWORK_FAILURE;
