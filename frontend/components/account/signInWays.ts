@@ -7,7 +7,6 @@ import { formatDate } from "@/lib/format";
 import type { ConnectedIdentity, Me } from "@/lib/types";
 
 export const TITLE = "Ways to sign in";
-export const INTRO = "Sign in with Google or Microsoft as well as your password.";
 export const WAITING = "Waiting for your admin's approval";
 
 const NAMES: Record<string, string> = { google: "Google" };
@@ -15,6 +14,16 @@ const NAMES: Record<string, string> = { google: "Google" };
 /** "Google" for google; an unknown provider keeps its own name. */
 export function providerName(provider: string): string {
   return NAMES[provider] ?? provider;
+}
+
+/** "Google", or "Google or Microsoft": only the providers that are on (#457 review). */
+export function providersText(providers: readonly string[]): string {
+  return providers.map(providerName).join(" or ");
+}
+
+/** The line under the page's title; nothing while no provider is on. */
+export function introText(providers: readonly string[]): string | null {
+  return providers.length > 0 ? `Sign in with ${providersText(providers)} as well as your password.` : null;
 }
 
 export function passwordRow(email: string): string {

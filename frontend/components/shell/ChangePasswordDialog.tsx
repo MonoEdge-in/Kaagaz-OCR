@@ -29,7 +29,18 @@ const IDS: Record<NewPasswordField | "code", string> = {
 const ALL_MASKED: Record<NewPasswordField, boolean> = { current: true, next: true, again: true };
 export const PASSWORD_CHANGED = "Your password is changed. Your other devices are signed out.";
 
-export function ChangePasswordDialog({ me, onClose, onDone }: { me: Me; onClose(): void; onDone(message: string): void }) {
+/** onClosed: once it is shut, where focus goes (the account menu's avatar). */
+export function ChangePasswordDialog({
+  me,
+  onClose,
+  onClosed,
+  onDone,
+}: {
+  me: Me;
+  onClose(): void;
+  onClosed?(): void;
+  onDone(message: string): void;
+}) {
   const withCode = me.user.totp_enabled;
   const [input, setInput] = useState<NewPasswordInput>({ current: "", next: "", again: "" });
   const [code, setCode] = useState("");
@@ -84,7 +95,7 @@ export function ChangePasswordDialog({ me, onClose, onDone }: { me: Me; onClose(
   });
 
   return (
-    <ActionDialog title="Change password" onClose={onClose} canClose={() => !busy}>
+    <ActionDialog title="Change password" onClose={onClose} onClosed={onClosed} canClose={() => !busy}>
       <form method="post" noValidate onSubmit={submit}>
         <PasswordField {...field("current")} label="Current password" autoComplete="current-password" required />
         <PasswordField

@@ -82,6 +82,7 @@ describe("the session gate", () => {
     },
     customer: { id: "c1", name: "Sharma Traders" },
     session: { scope },
+    providers: [], // #457 review: the sign-in providers switched on
   });
 
   it("reads the scope", () => {

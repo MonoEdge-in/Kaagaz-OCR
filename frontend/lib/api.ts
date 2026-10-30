@@ -246,9 +246,14 @@ export const connectProvider = (provider: string, password: string, code?: strin
     password,
     ...(code === undefined ? {} : { code }),
   });
-/** Disconnect, or cancel a waiting one, with the password. The reply is the new list. */
-export const removeIdentity = (id: string, password: string) =>
-  request<WaysToSignIn>("POST", `/auth/identities/${encodeURIComponent(id)}/remove`, { password });
+/** Disconnect with the password, or cancel a waiting one with none (#457 review). The reply is
+ * the new list. */
+export const removeIdentity = (id: string, password?: string) =>
+  request<WaysToSignIn>(
+    "POST",
+    `/auth/identities/${encodeURIComponent(id)}/remove`,
+    password === undefined ? {} : { password },
+  );
 
 /** The first code from the set-up (sign-in or sign-up) turns two-step on and signs in. */
 export const adminEnrol = (enrolToken: string, code: string) =>

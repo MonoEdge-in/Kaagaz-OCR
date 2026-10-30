@@ -5,27 +5,40 @@
 // [Connect], connected with its email and day [Disconnect], or Waiting for your admin's
 // approval [Cancel]. Connect asks for the Kaagaz password first (and the 6-digit code from
 // anyone with two-step sign-in on), then the browser goes to the provider's account chooser
-// and comes back here with ?connected=, ?waiting= or ?error=. Disconnect and Cancel ask first,
-// with the password; every account keeps its Kaagaz password, so nobody is locked out. The
-// words are signInWays.ts's.
+// and comes back here with ?connected=, ?waiting= or ?error=; that notice shows once the list
+// has loaded. Disconnect asks first, with the password; cancelling a request that still waits
+// needs no password. Every account keeps its Kaagaz password, so nobody is locked out. A
+// missing or wrong password or code shows on its field, which takes focus. The words are
+// signInWays.ts's.
 
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
+import { flushSync } from "react-dom";
 import { CodeField } from "@/app/login/CodeField";
 import { codeError, normalizeCode } from "@/app/login/twoStep";
 import { ActionDialog } from "@/components/documents/ActionDialog";
+import { proofField } from "@/components/shell/twoStepAccount";
 import { Icon } from "@/components/ui/Icon";
 import { PasswordField } from "@/components/ui/PasswordField";
 import { ApiError, connectProvider, identities, removeIdentity } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import type { ConnectedIdentity, WaysToSignIn as Ways } from "@/lib/types";
-import { disconnectQuestion, needsCode, pageNotice, passwordRow, providerName, rowText } from "./signInWays";
+import { disconnectQuestion, introText, needsCode, pageNotice, passwordRow, providerName, rowText } from "./signInWays";
 import styles from "./WaysToSignIn.module.css";
 
 type Asking = { kind: "connect"; provider: string } | { kind: "remove"; provider: string; identity: ConnectedIdentity };
 
 const OFF = "Signing in with Google isn't switched on for Kaagaz yet.";
 const NO_ANSWER = "Could not load your ways to sign in. Check your internet connection, then try again.";
+const PASSWORD_ID = "ways-password";
+const CODE_ID = "ways-code";
+
+/** The line under the page's title, naming only the providers that are on (#457 review). */
+export function WaysIntro() {
+  const { me } = useSession();
+  const text = introText(me.providers);
+  return text ? <p className="hint">{text}</p> : null;
+}
 
 export function WaysToSignIn({ params }: { params: Record<string, string | undefined> }) {
   const { me } = useSession();
@@ -50,7 +63,11 @@ export function WaysToSignIn({ params }: { params: Record<string, string | undef
   }, []);
 
   const connected = params.connected ? ways?.identities.find((row) => row.provider === params.connected) : undefined;
-  const notice = said ? { kind: "done" as const, text: said } : pageNotice(params, connected?.email);
+  const notice = said
+    ? { kind: "done" as const, text: said }
+    : ways !== null || failure !== null
+      ? pageNotice(params, connected?.email)
+      : null;
 
   return (
     <section className={styles.ways} aria-label="Ways to sign in">
@@ -107,8 +124,10 @@ export function WaysToSignIn({ params }: { params: Record<string, string | undef
   );
 }
 
+type Problems = { password: string | null; code: string | null };
+
 /** Connect's "Type your Kaagaz password to continue" (and the code), or the question before
- * Disconnect or Cancel with the password. */
+ * Disconnect with the password, or before cancelling a waiting request, with none. */
 function PasswordDialog({
   asking,
   withCode,
@@ -122,25 +141,35 @@ function PasswordDialog({
 }) {
   const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
-  const [codeProblem, setCodeProblem] = useState<string | null>(null);
+  const [problems, setProblems] = useState<Problems>({ password: null, code: null });
   const [masked, setMasked] = useState(true);
   const [failure, setFailure] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const name = providerName(asking.provider);
   const question = asking.kind === "remove" ? disconnectQuestion(asking.provider, asking.identity) : null;
+  // A request that still waits for approval is cancelled without the password (#457 review).
+  const withPassword = !(asking.kind === "remove" && asking.identity.status === "pending");
+
+  /** Commit the messages first, so the field is described when it gets focus. */
+  function showOnFields(found: Problems) {
+    flushSync(() => setProblems(found));
+    document.getElementById(found.password ? PASSWORD_ID : CODE_ID)?.focus();
+  }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (busy) return;
     setMasked(true);
     setFailure(null);
-    if (password === "") {
-      setFailure("Enter your password.");
+    const found = {
+      password: withPassword && password === "" ? "Enter your password." : null,
+      code: withCode ? codeError(code) : null,
+    };
+    if (found.password || found.code) {
+      showOnFields(found);
       return;
     }
-    const problem = withCode ? codeError(code) : null;
-    setCodeProblem(problem);
-    if (problem) return;
+    setProblems(found);
     setBusy(true);
     try {
       if (asking.kind === "connect") {
@@ -148,12 +177,15 @@ function PasswordDialog({
         window.location.href = url; // the provider's account chooser; it comes back to this page
         return;
       }
-      const reply = await removeIdentity(asking.identity.id, password);
+      const reply = await removeIdentity(asking.identity.id, withPassword ? password : undefined);
       onRemoved(reply, asking.identity.status === "pending" ? "Request cancelled." : `${name} disconnected.`);
     } catch (caught) {
-      setFailure(caught instanceof ApiError ? caught.message : "Check your internet connection, then try again.");
+      const field = proofField(caught);
+      const message = caught instanceof ApiError ? caught.message : "Check your internet connection, then try again.";
       setCode(""); // a code works once
       setBusy(false);
+      if (field) showOnFields({ password: field === "password" ? message : null, code: field === "code" ? message : null });
+      else setFailure(message);
     }
   }
 
@@ -161,27 +193,32 @@ function PasswordDialog({
     <ActionDialog title={question?.title ?? `Connect ${name}`} onClose={onClose} canClose={() => !busy}>
       <form method="post" noValidate onSubmit={submit}>
         <p>{question?.text ?? "Type your Kaagaz password to continue."}</p>
-        <PasswordField
-          id="ways-password"
-          label="Kaagaz password"
-          value={password}
-          onChange={setPassword}
-          autoComplete="current-password"
-          required
-          error={null}
-          masked={masked}
-          onMaskedChange={setMasked}
-        />
+        {withPassword && (
+          <PasswordField
+            id={PASSWORD_ID}
+            label="Kaagaz password"
+            value={password}
+            onChange={(value) => {
+              setPassword(value);
+              if (problems.password) setProblems((was) => ({ ...was, password: null }));
+            }}
+            autoComplete="current-password"
+            required
+            error={problems.password}
+            masked={masked}
+            onMaskedChange={setMasked}
+          />
+        )}
         {withCode && (
           <CodeField
-            id="ways-code"
+            id={CODE_ID}
             label="6-digit code"
             value={code}
             onChange={(value) => {
               setCode(value);
-              if (codeProblem) setCodeProblem(codeError(value));
+              if (problems.code) setProblems((was) => ({ ...was, code: codeError(value) }));
             }}
-            error={codeProblem}
+            error={problems.code}
             hint="From your authenticator app."
             enterKeyHint="done"
           />

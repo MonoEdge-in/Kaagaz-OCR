@@ -13,6 +13,21 @@ export const LOST_CODE = "New phone, or lost it? Your admin can reset your two-s
 export const TURNED_ON = "Two-step sign-in is on.";
 export const TURNED_OFF = "Two-step sign-in is off. Your other devices are signed out.";
 const SIGNED_OUT = "Your session has ended. Sign in again, then try again.";
+// The server's words for a wrong password, and a missing or wrong code (routers/auth.py).
+export const PASSWORD_NOT_RIGHT = "Your current password is not right.";
+const CODE_REFUSALS = [
+  "Enter the 6-digit code from your authenticator app.",
+  "That code is not right. Wait for the next code and try again.",
+];
+
+/** The field a refusal belongs on (#457 review): a wrong password, or a missing or wrong code;
+ * null for anything else, which is said under the form. */
+export function proofField(caught: unknown): "password" | "code" | null {
+  if (!(caught instanceof ApiError) || caught.status !== 400) return null;
+  const said = caught.message.trim();
+  if (said === PASSWORD_NOT_RIGHT) return "password";
+  return CODE_REFUSALS.includes(said) ? "code" : null;
+}
 
 /** "admin": always on, nothing to change; "on" or "off": a member's or reviewer's own choice. */
 export function twoStepView(me: Me): "admin" | "on" | "off" {

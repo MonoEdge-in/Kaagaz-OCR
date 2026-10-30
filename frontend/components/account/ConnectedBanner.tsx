@@ -1,10 +1,12 @@
 "use client";
 
-// "Google connected on 30 Oct." at the top of every signed-in screen (#457 phase 1), for each
+// "Google connected on 30 Oct. Not you? Disconnect it under Ways to sign in." at the top of
+// every signed-in screen (#457 phase 1), for each
 // account connected and approved in the last 14 days (Me's recent_connections): if it was not
 // the person, they see it at once. Dismissed for good on this browser (localStorage, which
 // may be off: then it shows again next time, which is safe).
 
+import Link from "next/link";
 import { useState } from "react";
 import { IconButton } from "@/components/ui/IconButton";
 import { bannerText } from "./signInWays";
@@ -40,7 +42,9 @@ export function ConnectedBanner({ items }: { items: readonly Recent[] }) {
     <>
       {shown.map((item) => (
         <div key={key(item)} className={styles.banner} role="status">
-          <p className={styles.bannerText}>{bannerText(item)}</p>
+          <p className={styles.bannerText}>
+            {bannerText(item)} Not you? Disconnect it under <Link href="/settings/sign-in">Ways to sign in</Link>.
+          </p>
           <IconButton icon="close" label="Dismiss" onClick={() => dismiss(item)} />
         </div>
       ))}

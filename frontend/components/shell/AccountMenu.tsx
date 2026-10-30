@@ -10,8 +10,10 @@
 // avatar and between its actions, Home and End to the first and last, as a row's
 // menu does (RowMenu's onMenuKey); a theme or palette radio keeps its own arrows.
 // #457: Change password and Two-step sign-in for every role open their dialogs
-// (ChangePasswordDialog, TwoStepDialog); a toast says when it is done, and `onChanged` loads
-// who is signed in again after a two-step change.
+// (ChangePasswordDialog, TwoStepDialog), and focus comes back to the avatar when they close; a
+// toast says when it is done, and `onChanged` loads who is signed in again after a two-step
+// change. Ways to sign in shows only while a provider is on (Me's providers). Each of the three
+// has its own icon, from the handoff's set.
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -21,6 +23,7 @@ import { menuItemAfterKey } from "@/components/documents/library";
 import { clearStored } from "@/components/documents/batchTray";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { Icon } from "@/components/ui/Icon";
+import { Icon as KIcon } from "@/components/ui/Icon/Icon";
 import { PalettePicker } from "@/components/ui/PalettePicker";
 import { ThemeToggle } from "@/components/ui/ThemeToggle";
 import { Toast } from "@/components/ui/Toast";
@@ -150,15 +153,17 @@ export function AccountMenu({ me, onChanged }: { me: Me; onChanged(): void }) {
           <Icon name="admin" />
           <span>AI settings</span>
         </Link>
-        {/* #457 phase 1: Account, Ways to sign in (email and password, and Google). */}
-        <Link
-          href="/settings/sign-in"
-          className={`btn btn-quiet btn-block ${styles.signOut}`}
-          onClick={() => document.getElementById(MENU_ID)?.hidePopover()}
-        >
-          <Icon name="admin" />
-          <span>Ways to sign in</span>
-        </Link>
+        {/* #457 phase 1: Account, Ways to sign in (email and password, and Google), while one is on. */}
+        {me.providers.length > 0 && (
+          <Link
+            href="/settings/sign-in"
+            className={`btn btn-quiet btn-block ${styles.signOut}`}
+            onClick={() => document.getElementById(MENU_ID)?.hidePopover()}
+          >
+            <KIcon name="link" />
+            <span>Ways to sign in</span>
+          </Link>
+        )}
         <button
           type="button"
           className={`btn btn-quiet btn-block ${styles.signOut}`}
@@ -167,7 +172,7 @@ export function AccountMenu({ me, onChanged }: { me: Me; onChanged(): void }) {
             setChangingPassword(true);
           }}
         >
-          <Icon name="admin" />
+          <KIcon name="key" />
           <span>Change password</span>
         </button>
         <button
@@ -178,7 +183,7 @@ export function AccountMenu({ me, onChanged }: { me: Me; onChanged(): void }) {
             setTwoStep(true);
           }}
         >
-          <Icon name="admin" />
+          <KIcon name="lock" />
           <span>Two-step sign-in</span>
         </button>
 
@@ -228,6 +233,7 @@ export function AccountMenu({ me, onChanged }: { me: Me; onChanged(): void }) {
         <ChangePasswordDialog
           me={me}
           onClose={() => setChangingPassword(false)}
+          onClosed={() => avatar.current?.focus()}
           onDone={(message) => {
             setChangingPassword(false);
             setDone(message);
@@ -238,6 +244,7 @@ export function AccountMenu({ me, onChanged }: { me: Me; onChanged(): void }) {
         <TwoStepDialog
           me={me}
           onClose={() => setTwoStep(false)}
+          onClosed={() => avatar.current?.focus()}
           onDone={(message) => {
             setTwoStep(false);
             setDone(message);

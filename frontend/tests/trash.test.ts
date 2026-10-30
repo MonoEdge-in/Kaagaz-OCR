@@ -33,6 +33,7 @@ const me = (role: Role, scope: SessionScope = "app", totp_enabled = true): Me =>
   },
   customer: { id: "c1", name: "Sharma Traders" },
   session: { scope },
+  providers: [], // #457 review: the sign-in providers switched on
 });
 const granted = (role: Role, scope: SessionScope = "app"): Me => {
   const base = me(role, scope, false);

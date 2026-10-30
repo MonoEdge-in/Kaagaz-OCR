@@ -183,6 +183,7 @@ describe("adminGate", () => {
     },
     customer: { id: "c1", name: "Sharma Traders" },
     session: { scope },
+    providers: [], // #457 review: the sign-in providers switched on
   });
 
   it("opens the admin screen only for an admin session", () => {
