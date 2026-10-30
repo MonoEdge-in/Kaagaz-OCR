@@ -14,6 +14,7 @@ from kaagaz.db import identities
 from kaagaz.db.engine import Database
 from tests.oidc_fake import ISSUER, FakeGoogle, use_google
 from tests.settings_factory import make_settings
+from tests.test_api_email import BrokenMailer
 from tests.test_api_oidc_connect import _api, _connect, _mine
 from tests.test_api_oidc_signin import _sign_in_at_google
 from tests.test_api_support import ANY_ID, CSRF, PASSWORD, Api, Signed, call
@@ -257,3 +258,20 @@ def test_approve_refuses_when_the_email_became_another_users_sign_in_email(
         "This Google account already belongs to a Kaagaz user.",
     )
     assert _mine(api, member) == [("google", email, "pending")]
+
+
+def test_a_notice_that_breaks_never_breaks_approve_decline_or_remove(
+    db: Database, google: FakeGoogle
+) -> None:
+    api = _api(db, BrokenMailer())
+    admin = api.new_admin()
+    first = _waiting(api, google, admin)
+    _waiting(api, google, admin, "sita@example.com")
+    approve, decline = _pending(admin)
+    for path in (
+        f"/api/admin/identities/{approve['id']}/approve",
+        f"/api/admin/identities/{decline['id']}/decline",
+        f"/api/admin/users/{first.user_id}/remove-connections",
+    ):
+        reply = admin.client.post(path, headers=CSRF)
+        assert reply.status_code == 200, (path, reply.text)

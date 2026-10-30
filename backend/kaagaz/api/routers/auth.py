@@ -93,7 +93,7 @@ import dataclasses
 from datetime import datetime, timedelta
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 from sqlalchemy import Connection
@@ -222,7 +222,7 @@ def admin_login_gone() -> None:
 
 
 @router.post("/auth/admin/enrol")
-def admin_enrol(body: EnrolBody, context: Context) -> JSONResponse:
+def admin_enrol(body: EnrolBody, background: BackgroundTasks, context: Context) -> JSONResponse:
     now = context.clock()
     claims = read_enrol(body.enrol_token, context.settings.session_secret, _unix(now))
     if claims is None:
@@ -272,7 +272,8 @@ def admin_enrol(body: EnrolBody, context: Context) -> JSONResponse:
     if not enrolled:  # a second request with the same token, or something changed
         _failed(context, attempt, "enrol_refused")
         raise ApiError(401, "not_signed_in")
-    emails.notify(context, customer_id, user_id, "two_step_on", emails.two_step_on)
+    who = (context, customer_id, user_id)
+    emails.after(background, "two_step_on", emails.notify, *who, "two_step_on", emails.two_step_on)
     return _start_session(
         context, attempt.customer_id, attempt.user_id, scope=_scope(attempt), action="auth.login"
     )
@@ -348,7 +349,9 @@ def turn_on_two_step(body: CurrentPasswordBody, user: User, context: Context) ->
 
 
 @router.post("/auth/2fa/off")
-def turn_off_two_step(body: TurnOffBody, user: User, request: Request, context: Context) -> JSONResponse:
+def turn_off_two_step(
+    body: TurnOffBody, user: User, request: Request, background: BackgroundTasks, context: Context
+) -> JSONResponse:
     """A member or reviewer, with the password and a code. Refused for an admin: every admin
     keeps two-step sign-in on (MFA required, 16 Oct 2026)."""
     if user.role == "admin":
@@ -370,13 +373,18 @@ def turn_off_two_step(body: TurnOffBody, user: User, request: Request, context: 
         _record(conn, user.customer_id, "auth.totp_off", actor=user.user_id, target=user.user_id)
     changed = dataclasses.replace(user, session_version=int(row["session_version"]), totp_enabled=False)
     response = _keep_this_browser(request, context, changed, now)
-    send(context, user.email, "two_step_off", emails.two_step_off(user.display_name))
+    notice = emails.two_step_off(user.display_name)
+    emails.after(background, "two_step_off", send, context, user.email, "two_step_off", notice)
     return response
 
 
 @router.post("/auth/password")
 def change_password(
-    body: PasswordBody, user: UserAllowPasswordChange, request: Request, context: Context
+    body: PasswordBody,
+    user: UserAllowPasswordChange,
+    request: Request,
+    background: BackgroundTasks,
+    context: Context,
 ) -> JSONResponse:
     if body.new_password == body.current_password:
         raise ApiError(400, "bad_request", "Choose a new password that is different from the current one.")
@@ -402,7 +410,8 @@ def change_password(
         user, session_version=int(row["session_version"]), must_change_password=False
     )
     response = _keep_this_browser(request, context, changed, now)
-    send(context, user.email, "password_changed", emails.password_changed(user.display_name))
+    notice = emails.password_changed(user.display_name)
+    emails.after(background, "password_changed", send, context, user.email, "password_changed", notice)
     return response
 
 

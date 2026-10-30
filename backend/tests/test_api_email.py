@@ -11,6 +11,7 @@ import logging
 import re
 import uuid
 from collections.abc import Iterator
+from datetime import timedelta
 from typing import Any
 
 import httpx2 as httpx
@@ -21,9 +22,11 @@ from sqlalchemy import text
 from kaagaz.adapters.email import MemoryMailer
 from kaagaz.api import totp
 from kaagaz.api.app import create_app
+from kaagaz.api.emails import token_hash
 from kaagaz.api.middleware import RateLimiter
 from kaagaz.api.routers import auth as auth_router
 from kaagaz.api.routers import email as email_router
+from kaagaz.db import email_links as links_sql
 from kaagaz.db import identities
 from kaagaz.db.engine import Database, make_engine
 from tests.oidc_fake import ISSUER, google_settings
@@ -55,6 +58,17 @@ _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
 class FailingMailer(MemoryMailer):
     def send(self, *, to: str, subject: str, text: str) -> None:
         raise ClientError({"Error": {"Code": "MessageRejected", "Message": "no"}}, "SendEmail")
+
+
+class BrokenMailer(MemoryMailer):
+    """Breaks in a way ``send`` does not expect: never SES's own errors."""
+
+    def send(self, *, to: str, subject: str, text: str) -> None:
+        raise RuntimeError("the mailer broke")
+
+
+def _task_failed(purpose: str) -> str:
+    return f'{{"event":"email_task_failed","purpose":"{purpose}","error":"RuntimeError"}}'
 
 
 @pytest.fixture(autouse=True)
@@ -712,3 +726,65 @@ def test_with_email_off_nothing_is_sent_and_me_asks_for_no_confirm(db: Database)
     body = {"current_password": PASSWORD, "new_password": NEW_PASSWORD}
     assert _post(member.client, "/api/auth/password", body).status_code == 200
     assert mailer.sent == []
+
+
+# --- an email that breaks never breaks the action -----------------------------------------------
+
+
+@pytest.mark.db
+def test_a_notice_that_breaks_never_breaks_the_finished_action(
+    db: Database, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Each security notice is sent after the reply; a mailer or database failure there is
+    logged and the finished action keeps its success and its re-signed cookie."""
+    api, _ = _email_api(db, BrokenMailer())
+    member = api.new_signed("member")
+    caplog.set_level(logging.ERROR, logger="kaagaz.api.emails")
+
+    body = {"current_password": PASSWORD, "new_password": NEW_PASSWORD}
+    changed = _post(member.client, "/api/auth/password", body)
+    assert changed.status_code == 200, changed.text
+    assert "set-cookie" in changed.headers
+    assert member.client.get("/api/auth/me").status_code == 200
+    assert _task_failed("password_changed") in caplog.messages
+
+    token = "made-up-reset-token-" + uuid.uuid4().hex
+    with db.customer(member.customer_id) as conn:
+        links_sql.add(
+            conn,
+            member.customer_id,
+            member.user_id,
+            "reset",
+            token_hash(token),
+            now=api.clock(),
+            expires_at=api.clock() + timedelta(minutes=30),
+        )
+    reset = _post(api.client(), "/api/auth/reset", {"token": token, "new_password": PASSWORD})
+    assert reset.json() == {"ok": True}
+    assert _task_failed("password_reset") in caplog.messages
+
+    _, new_admin_email = api.add_user(member.customer_id, "admin")
+    offer = api.admin_login(api.client(), new_admin_email).json()["error"]["details"]
+    secret = base64.b32decode(offer["secret"].replace(" ", ""))
+    enrolled = _post(
+        api.client(), "/api/auth/admin/enrol", {"enrol_token": offer["enrol_token"], "code": api.code(secret)}
+    )
+    assert enrolled.status_code == 200, enrolled.text
+    assert "set-cookie" in enrolled.headers
+    assert _task_failed("two_step_on") in caplog.messages
+    assert member.email not in caplog.text and new_admin_email not in caplog.text
+
+
+@pytest.mark.db
+@pytest.mark.parametrize(
+    ("path", "purpose"), [("/api/auth/forgot", "reset"), ("/api/auth/email/resend-confirm", "confirm")]
+)
+def test_forgot_and_send_again_log_a_task_that_breaks_after_the_reply(
+    db: Database, caplog: pytest.LogCaptureFixture, path: str, purpose: str
+) -> None:
+    working, _ = _email_api(db)  # the sign-up's own link goes first
+    email = working.new_signed("member").email if purpose == "reset" else _pending_sign_up(working)
+    api, _ = _email_api(db, BrokenMailer())
+    caplog.set_level(logging.ERROR, logger="kaagaz.api.emails")
+    assert _post(api.client(), path, {"email": email}).status_code == 202
+    assert _task_failed(purpose) in caplog.messages

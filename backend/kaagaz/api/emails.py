@@ -16,6 +16,8 @@ address nobody has proven yet, so it is never told a name (anyone can type one a
 
 ``send`` never breaks the action that asked for the email: a failure is logged as
 ``{"event": "email_failed", "purpose": ...}``, never with the address, and it returns False.
+A security notice, the admins' email and the forgot-password lookup run after the reply
+(``after``), so nothing there, the database's failure included, can break a finished action.
 """
 
 import hashlib
@@ -26,6 +28,7 @@ from collections.abc import Callable
 from datetime import timedelta
 
 from botocore.exceptions import BotoCoreError, ClientError
+from fastapi import BackgroundTasks
 from sqlalchemy import Connection
 
 from kaagaz.api.context import AppContext
@@ -87,6 +90,20 @@ def send(context: AppContext, to: str, purpose: str, message: Message) -> bool:
         log.warning(json.dumps({"event": "email_failed", "purpose": purpose}, separators=(",", ":")))
         return False
     return True
+
+
+def after(background: BackgroundTasks, purpose: str, task: Callable[..., object], *args: object) -> None:
+    """Run ``task(*args)`` once the reply has gone. The action it follows is finished, so a
+    failure there is logged as ``email_task_failed`` {purpose, error: its type}, never raised."""
+    background.add_task(_logged, purpose, task, *args)
+
+
+def _logged(purpose: str, task: Callable[..., object], *args: object) -> None:
+    try:
+        task(*args)
+    except Exception as error:  # noqa: BLE001 - the reply has gone: logged (its type only), never raised
+        failed = {"event": "email_task_failed", "purpose": purpose, "error": type(error).__name__}
+        log.error(json.dumps(failed, separators=(",", ":")))
 
 
 def notify(

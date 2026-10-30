@@ -19,7 +19,7 @@ from kaagaz.db import identities
 from kaagaz.db.engine import Database
 from tests.oidc_fake import FakeGoogle, google_settings, use_google
 from tests.settings_factory import make_settings
-from tests.test_api_email import FailingMailer
+from tests.test_api_email import BrokenMailer, FailingMailer
 from tests.test_api_support import ANY_ID, CSRF, PASSWORD, Api, Signed, TestClient, wrong_code
 
 pytestmark = pytest.mark.db
@@ -454,3 +454,19 @@ def test_disconnect_rate_limited_per_user(db: Database, monkeypatch: pytest.Monk
     replies = [member.client.post(path, json={"password": PASSWORD}, headers=CSRF) for _ in range(3)]
     assert [reply.status_code for reply in replies] == [404, 404, 429]
     assert replies[2].headers["retry-after"]
+
+
+def test_a_notice_that_breaks_never_breaks_connect_or_disconnect(db: Database, google: FakeGoogle) -> None:
+    """The member's notice and the admins' "Waiting for your approval" go after the reply."""
+    api = _api(db, BrokenMailer())
+    member = api.new_signed("member")
+    reply = _connect(api, google, member)
+    assert _landed(reply) == {"waiting": "google"}
+    assert SESSION_COOKIE in reply.headers.get("set-cookie", "")
+    assert member.client.get("/api/auth/me").status_code == 200
+    [identity] = member.client.get("/api/auth/identities").json()["identities"]
+    removed = member.client.post(
+        f"/api/auth/identities/{identity['id']}/remove", json={"password": PASSWORD}, headers=CSRF
+    )
+    assert removed.status_code == 200, removed.text
+    assert SESSION_COOKIE in removed.headers.get("set-cookie", "")

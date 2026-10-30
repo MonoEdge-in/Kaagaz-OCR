@@ -72,7 +72,7 @@ from datetime import date, datetime, timedelta
 from typing import Annotated, Any, Literal
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, Query, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import Connection, RowMapping
@@ -299,7 +299,9 @@ def reset_password(user_id: uuid.UUID, user: AdminSession, context: Context) -> 
 
 
 @router.post("/admin/users/{user_id}/reset-2fa")
-def reset_two_step(user_id: uuid.UUID, user: AdminSession, context: Context) -> dict[str, Any]:
+def reset_two_step(
+    user_id: uuid.UUID, user: AdminSession, background: BackgroundTasks, context: Context
+) -> dict[str, Any]:
     """Turn a user's two-step code off, so their password alone signs in again."""
     target = str(user_id)
     if target == user.user_id:
@@ -315,7 +317,8 @@ def reset_two_step(user_id: uuid.UUID, user: AdminSession, context: Context) -> 
         # PROVISIONAL: "user.reset_totp", not the plan's "user.reset_2fa", because audit
         # actions must match ^[a-z_.]{1,64}$ (PRD 1 A7, the audit_log CHECK): no digits.
         _audit_user(conn, user, "user.reset_totp", target)
-    emails.send(context, row["email"], "two_step_reset", emails.two_step_reset(row["display_name"]))
+    notice = emails.two_step_reset(row["display_name"])
+    emails.after(background, "two_step_reset", emails.send, context, row["email"], "two_step_reset", notice)
     return admin_user(row, now=context.clock())
 
 
@@ -381,7 +384,9 @@ def pending_identities(
 
 
 @router.post("/admin/identities/{identity_id}/approve")
-def approve_identity(identity_id: uuid.UUID, user: AdminSession, context: Context) -> dict[str, Any]:
+def approve_identity(
+    identity_id: uuid.UUID, user: AdminSession, background: BackgroundTasks, context: Context
+) -> dict[str, Any]:
     """A waiting connection signs in from now on, unless its email became another user's sign-in
     email meanwhile (409, the one outside account rule). The person is signed out everywhere, as
     after any change to their ways in, and gets a notice. The list left."""
@@ -405,12 +410,17 @@ def approve_identity(identity_id: uuid.UUID, user: AdminSession, context: Contex
         users_sql.bump_session_version(conn, user.customer_id, str(row["user_id"]))
         _audit_identity(conn, user, "auth.identity_approved", row)
         reply = _pending_json(conn, user.customer_id)
-    emails.notify(context, user.customer_id, str(row["user_id"]), "identity_approved", emails.google_approved)
+    who = (context, user.customer_id, str(row["user_id"]))
+    emails.after(
+        background, "identity_approved", emails.notify, *who, "identity_approved", emails.google_approved
+    )
     return reply
 
 
 @router.post("/admin/identities/{identity_id}/decline")
-def decline_identity(identity_id: uuid.UUID, user: AdminSession, context: Context) -> dict[str, Any]:
+def decline_identity(
+    identity_id: uuid.UUID, user: AdminSession, background: BackgroundTasks, context: Context
+) -> dict[str, Any]:
     """A waiting connection is removed; the person gets a notice. The list left."""
     _connections_on(context)
     with context.db.customer(user.customer_id) as conn:
@@ -419,12 +429,17 @@ def decline_identity(identity_id: uuid.UUID, user: AdminSession, context: Contex
             raise ApiError(404, "not_found")
         _audit_identity(conn, user, "auth.identity_declined", row)
         reply = _pending_json(conn, user.customer_id)
-    emails.notify(context, user.customer_id, str(row["user_id"]), "identity_declined", emails.google_declined)
+    who = (context, user.customer_id, str(row["user_id"]))
+    emails.after(
+        background, "identity_declined", emails.notify, *who, "identity_declined", emails.google_declined
+    )
     return reply
 
 
 @router.post("/admin/users/{user_id}/remove-connections")
-def remove_connections(user_id: uuid.UUID, user: AdminSession, context: Context) -> dict[str, Any]:
+def remove_connections(
+    user_id: uuid.UUID, user: AdminSession, background: BackgroundTasks, context: Context
+) -> dict[str, Any]:
     """ "Remove connected accounts": every connection of this person goes, and they are signed
     out everywhere. Their password keeps working."""
     _connections_on(context)
@@ -445,7 +460,9 @@ def remove_connections(user_id: uuid.UUID, user: AdminSession, context: Context)
         )
         row = next(row for row in users_sql.list_users(conn, user.customer_id) if str(row["id"]) == target)
     if count:
-        emails.notify(context, user.customer_id, target, "identity_unlinked", emails.google_disconnected)
+        who = (context, user.customer_id, target)
+        notice = emails.google_disconnected
+        emails.after(background, "identity_unlinked", emails.notify, *who, "identity_unlinked", notice)
     return admin_user(row, now=context.clock(), signs_in_with=PASSWORD_ONLY)
 
 

@@ -46,7 +46,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import RowMapping
@@ -287,6 +287,7 @@ def reset_admin_two_step(
     body: StepUpBody,
     operator: OperatorSession,
     db: OperatorDb,
+    background: BackgroundTasks,
     context: Context,
 ) -> dict[str, Any]:
     """Two-step off (the password alone signs in again), every session ends; a security
@@ -294,7 +295,8 @@ def reset_admin_two_step(
     step_up = _step_up(db, context, operator, body.code)
     reply = _change(db, context, operator, customer_id, user_id, "reset_totp", step_up)
     admin = reply["admin"]
-    emails.send(context, admin["email"], "two_step_reset", emails.two_step_reset(admin["name"]))
+    notice = emails.two_step_reset(admin["name"])
+    emails.after(background, "two_step_reset", emails.send, context, admin["email"], "two_step_reset", notice)
     return reply
 
 

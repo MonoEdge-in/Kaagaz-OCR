@@ -123,7 +123,7 @@ def send_confirm(user: User, context: Context) -> dict[str, bool]:
 def resend_confirm(body: ForgotBody, background: BackgroundTasks, context: Context) -> dict[str, str]:
     if not resend_site_limits.allow(SITE):
         raise ApiError(429, "rate_limited", TOO_MANY_LINKS, headers={"Retry-After": "3600"})
-    background.add_task(_resend_confirm, context, valid_email(body.email))
+    emails.after(background, "confirm", _resend_confirm, context, valid_email(body.email))
     return {"message": RESEND_SENT}
 
 
@@ -131,14 +131,16 @@ def resend_confirm(body: ForgotBody, background: BackgroundTasks, context: Conte
 def forgot_password(body: ForgotBody, background: BackgroundTasks, context: Context) -> dict[str, str]:
     if not forgot_site_limits.allow(SITE):
         raise ApiError(429, "rate_limited", TOO_MANY_LINKS, headers={"Retry-After": "3600"})
-    background.add_task(_send_reset, context, valid_email(body.email))
+    emails.after(background, "reset", _send_reset, context, valid_email(body.email))
     return {"message": FORGOT_SENT}
 
 
 @router.post("/auth/reset")
-def reset_password(body: NewPasswordBody, context: Context) -> dict[str, bool]:
+def reset_password(body: NewPasswordBody, background: BackgroundTasks, context: Context) -> dict[str, bool]:
     link = _set_password(context, body, "reset", "auth.password_reset")
-    emails.notify(context, link.customer_id, link.user_id, "password_reset", emails.password_was_reset)
+    notice = emails.password_was_reset
+    who = (context, link.customer_id, link.user_id)
+    emails.after(background, "password_reset", emails.notify, *who, "password_reset", notice)
     return {"ok": True}
 
 

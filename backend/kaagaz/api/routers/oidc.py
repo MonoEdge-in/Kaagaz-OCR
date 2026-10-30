@@ -63,7 +63,7 @@ import urllib.parse
 import uuid
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -246,7 +246,9 @@ def connect(provider: ProviderOn, body: ConnectBody, user: User, context: Contex
 
 
 @router.get("/auth/oidc/{provider}/callback")
-def callback(provider: ProviderOn, request: Request, context: Context) -> RedirectResponse:
+def callback(
+    provider: ProviderOn, request: Request, background: BackgroundTasks, context: Context
+) -> RedirectResponse:
     now = unix(context.clock())
     flow = read_flow(request.cookies.get(OIDC_COOKIE) or "", context.settings.session_secret, now)
     state = request.query_params.get("state", "")
@@ -261,7 +263,7 @@ def callback(provider: ProviderOn, request: Request, context: Context) -> Redire
             raise _Refused("busy")
         identity = _identity(request, context, provider, flow, now)
         if flow.mode == "connect":
-            response = _connect(request, context, provider, flow, identity)
+            response = _connect(request, context, background, provider, flow, identity)
         else:
             response = _sign_in(context, provider, flow, identity)
     except _Refused as refused:
@@ -321,7 +323,12 @@ def my_identities(user: User, context: Context) -> dict[str, Any]:
 
 @router.post("/auth/identities/{identity_id}/remove", dependencies=[Depends(_any_on)])
 def remove_identity(
-    identity_id: uuid.UUID, body: PasswordBody, user: User, request: Request, context: Context
+    identity_id: uuid.UUID,
+    body: PasswordBody,
+    user: User,
+    request: Request,
+    background: BackgroundTasks,
+    context: Context,
 ) -> JSONResponse:
     """Disconnect (or cancel a waiting) connection of the user's own, with the password. Every
     other browser is signed out, this one stays; the password keeps working."""
@@ -352,7 +359,9 @@ def remove_identity(
         )
     response = JSONResponse(_identities_json(context, user))
     _keep_signed_in(request, context, response, version)
-    emails.notify(context, user.customer_id, user.user_id, "identity_unlinked", emails.google_disconnected)
+    who = (context, user.customer_id, user.user_id)
+    notice = emails.google_disconnected
+    emails.after(background, "identity_unlinked", emails.notify, *who, "identity_unlinked", notice)
     return response
 
 
@@ -447,7 +456,12 @@ def _sign_in(
 
 
 def _connect(
-    request: Request, context: AppContext, provider: Provider, flow: FlowClaims, identity: Identity
+    request: Request,
+    context: AppContext,
+    background: BackgroundTasks,
+    provider: Provider,
+    flow: FlowClaims,
+    identity: Identity,
 ) -> RedirectResponse:
     """Connect ``identity`` to the user who started this connect, while that very session is
     still signed in here (link-CSRF both ways); then this browser stays signed in."""
@@ -504,11 +518,11 @@ def _connect(
     outcome = "connected" if approved else "waiting"
     response = RedirectResponse(f"{WAYS}?{outcome}={provider.name}", status_code=303)
     _keep_signed_in(request, context, response, version)
-    if approved:
-        emails.notify(context, customer_id, user_id, "identity_linked", emails.google_connected)
-    else:
-        emails.notify(context, customer_id, user_id, "identity_waiting", emails.google_waiting)
-        _tell_admins(context, customer_id, user.customer_name)
+    purpose, notice = ("identity_linked", emails.google_connected)
+    if not approved:
+        purpose, notice = ("identity_waiting", emails.google_waiting)
+        emails.after(background, "approval_waiting", _tell_admins, context, customer_id, user.customer_name)
+    emails.after(background, purpose, emails.notify, context, customer_id, user_id, purpose, notice)
     return response
 
 
