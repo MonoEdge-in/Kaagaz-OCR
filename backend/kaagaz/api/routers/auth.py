@@ -468,7 +468,7 @@ def session(request: Request) -> dict[str, Any]:
             settings = get_context(request).settings
             return {
                 "signed_in": False,
-                "providers": [name for name in oidc.PROVIDERS if oidc.enabled(settings, name)],
+                "providers": oidc.enabled_providers(settings),
             }
         raise
     context = get_context(request)
@@ -482,7 +482,7 @@ def session(request: Request) -> dict[str, Any]:
 def _recent_connections(context: AppContext, user: CurrentUser) -> list[dict[str, str]]:
     """The user's approved connections made in the last RECENT_DAYS, for the app's "Google
     connected on 30 Oct." banner (#457 phase 1); none, and nothing read, while no provider is on."""
-    if not any(oidc.enabled(context.settings, name) for name in oidc.PROVIDERS):
+    if not oidc.enabled_providers(context.settings):
         return []
     since = context.clock() - timedelta(days=RECENT_DAYS)
     with context.db.customer(user.customer_id) as conn:

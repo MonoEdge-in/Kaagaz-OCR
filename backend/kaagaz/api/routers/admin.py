@@ -347,7 +347,7 @@ def set_delete_forever(
 
 
 def _providers_on(context: AppContext) -> list[str]:
-    return [name for name in oidc.PROVIDERS if oidc.enabled(context.settings, name)]
+    return oidc.enabled_providers(context.settings)
 
 
 def _connections_on(context: AppContext) -> None:

@@ -114,6 +114,11 @@ def enabled(settings: Settings, name: str) -> bool:
     return name in PROVIDERS and _client(settings, name)[0]
 
 
+def enabled_providers(settings: Settings) -> list[str]:
+    """The providers switched on, in ``PROVIDERS`` order: none means every connection route is 404."""
+    return [name for name in PROVIDERS if enabled(settings, name)]
+
+
 def _configured(settings: Settings, provider: Provider) -> tuple[str, str, str]:
     on, client_id, secret, redirect = _client(settings, provider.name)
     if not (on and client_id and secret and redirect):

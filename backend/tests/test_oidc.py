@@ -34,6 +34,8 @@ def test_only_google_is_a_provider_and_it_is_off_until_switched_on() -> None:
     assert oidc.enabled(oidc_fake.google_settings(google_signin_enabled=False), "google") is False
     assert oidc.enabled(SETTINGS, "microsoft") is False
     assert oidc.enabled(SETTINGS, "apple") is False
+    assert oidc.enabled_providers(SETTINGS) == ["google"]
+    assert oidc.enabled_providers(oidc_fake.google_settings(google_signin_enabled=False)) == []
 
 
 def test_authorize_url_has_pkce_select_account_and_scopes() -> None:

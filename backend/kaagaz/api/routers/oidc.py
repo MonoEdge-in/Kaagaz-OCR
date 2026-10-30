@@ -186,7 +186,7 @@ def _provider_on(provider: str, request: Request) -> Provider:
 def _any_on(request: Request) -> None:
     """404 while no provider is switched on."""
     settings = get_context(request).settings
-    if not any(oidc.enabled(settings, name) for name in oidc.PROVIDERS):
+    if not oidc.enabled_providers(settings):
         raise ApiError(404, "not_found")
 
 
@@ -382,7 +382,7 @@ def _identities_json(context: AppContext, user: CurrentUser) -> dict[str, Any]:
     with context.db.customer(user.customer_id) as conn:
         rows = identities.for_user(conn, user.customer_id, user.user_id)
     return {
-        "providers": [name for name in oidc.PROVIDERS if oidc.enabled(context.settings, name)],
+        "providers": oidc.enabled_providers(context.settings),
         "identities": [
             {
                 "id": str(row["id"]),

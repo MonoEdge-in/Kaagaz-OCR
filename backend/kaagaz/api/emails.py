@@ -82,7 +82,7 @@ def add_link(conn: Connection, context: AppContext, customer_id: str, user_id: s
 def send(context: AppContext, to: str, purpose: str, message: Message) -> bool:
     """Send one email; False (logged by purpose only) when email is off or sending failed."""
     mailer = context.mailer
-    if mailer is None or not context.settings.email_enabled:
+    if mailer is None or not email_on(context):
         return False
     subject, text = message
     try:
