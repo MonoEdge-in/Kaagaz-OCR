@@ -5,18 +5,23 @@ The routes and the links themselves: tests/test_api_email.py.
 """
 
 import inspect
+import logging
 import re
 from collections.abc import Callable
+from types import SimpleNamespace
+from typing import cast
 from unittest import mock
 
 import boto3
 import pytest
 from botocore import UNSIGNED
 from botocore.config import Config
+from botocore.exceptions import ClientError, EndpointConnectionError
 from botocore.stub import Stubber
 
 from kaagaz.adapters.email import MemoryMailer, SesMailer
 from kaagaz.api import emails
+from kaagaz.api.context import AppContext
 from kaagaz.settings import Settings, SettingsError
 from tests.test_settings import shipped
 
@@ -174,3 +179,41 @@ def test_an_email_to_an_address_not_yet_proven_is_never_given_a_name() -> None:
             else {"link": "https://kaagaz.example.com/x#t=abc"}
         )
         assert text.startswith("Hello,\n\n")
+
+
+class _Refusing(MemoryMailer):
+    def __init__(self, error: Exception) -> None:
+        super().__init__()
+        self.error = error
+
+    def send(self, *, to: str, subject: str, text: str) -> None:
+        raise self.error
+
+
+@pytest.mark.parametrize(
+    ("error", "said"),
+    [
+        (
+            ClientError({"Error": {"Code": "MessageRejected", "Message": "no"}}, "SendEmail"),
+            "MessageRejected",
+        ),
+        (
+            EndpointConnectionError(endpoint_url="https://email.ap-south-1.amazonaws.com"),
+            "EndpointConnectionError",
+        ),
+    ],
+)
+def test_a_failed_send_says_why_and_an_invite_is_an_error(
+    caplog: pytest.LogCaptureFixture, error: Exception, said: str
+) -> None:
+    """SES's own error code, else the exception's type; never the address."""
+    context = cast(
+        AppContext, SimpleNamespace(mailer=_Refusing(error), settings=SimpleNamespace(email_enabled=True))
+    )
+    caplog.set_level(logging.WARNING, logger="kaagaz.api.emails")
+    for purpose in ("invite", "reset"):
+        assert emails.send(context, "ramesh@example.com", purpose, ("S", "T")) is False
+    [invite, reset] = caplog.records
+    assert invite.getMessage() == f'{{"event":"email_failed","purpose":"invite","error":"{said}"}}'
+    assert (invite.levelno, reset.levelno) == (logging.ERROR, logging.WARNING)
+    assert "ramesh" not in caplog.text

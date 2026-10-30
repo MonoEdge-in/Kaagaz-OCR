@@ -651,7 +651,8 @@ def test_an_invite_that_cannot_be_sent_falls_back_to_the_temporary_password(
         added = admin.client.post("/api/admin/users", json=body, headers=CSRF)
     assert added.status_code == 201, added.text
     assert added.json()["invited"] is False
-    assert '{"event":"email_failed","purpose":"invite"}' in caplog.messages
+    # Changed on purpose (#457 review): the failure says why (SES's code), at error level.
+    assert '{"event":"email_failed","purpose":"invite","error":"MessageRejected"}' in caplog.messages
     assert email not in caplog.text  # never the address
     signed = api.admin_login(api.client(), email)
     assert (signed.status_code, signed.json()["user"]["must_change_password"]) == (200, True)

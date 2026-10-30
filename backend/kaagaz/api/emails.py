@@ -15,7 +15,8 @@ address nobody has proven yet, so it is never told a name (anyone can type one a
   the link to the approval list (Admin, people) and nobody's name or email but their own.
 
 ``send`` never breaks the action that asked for the email: a failure is logged as
-``{"event": "email_failed", "purpose": ...}``, never with the address, and it returns False.
+``{"event": "email_failed", "purpose": ..., "error": SES's code or the type}``, never with the
+address (an invite's at error level), and it returns False.
 A security notice, the admins' email and the forgot-password lookup run after the reply
 (``after``), so nothing there, the database's failure included, can break a finished action.
 """
@@ -86,8 +87,15 @@ def send(context: AppContext, to: str, purpose: str, message: Message) -> bool:
     subject, text = message
     try:
         mailer.send(to=to, subject=subject, text=text)
-    except (BotoCoreError, ClientError):
-        log.warning(json.dumps({"event": "email_failed", "purpose": purpose}, separators=(",", ":")))
+    except (BotoCoreError, ClientError) as error:
+        # Why: SES's own error code, else the exception's type; an invite's failure is an error
+        # (the person waits for it), the rest warnings.
+        why = error.response.get("Error", {}).get("Code") if isinstance(error, ClientError) else None
+        failed = {"event": "email_failed", "purpose": purpose, "error": why or type(error).__name__}
+        log.log(
+            logging.ERROR if purpose == "invite" else logging.WARNING,
+            json.dumps(failed, separators=(",", ":")),
+        )
         return False
     return True
 
