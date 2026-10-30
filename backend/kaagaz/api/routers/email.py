@@ -7,6 +7,11 @@
   e-mail (``users.email_verified_at``), audited ``auth.email_confirmed``. ``{"ok": true}``.
 * ``POST /auth/email/send-confirm`` (signed in): a new confirm link to the user's own
   e-mail, at most CONFIRMS_PER_HOUR a user (429). Older unused links stop working.
+* ``POST /auth/email/resend-confirm`` {email} (no session): "Send the link again" for a
+  sign-up's admin, who cannot sign in while their organisation is pending. Always 202 with
+  the same words, and the work happens after the reply, as ``/auth/forgot``'s (and with its
+  limits). A new confirm link goes only to an enabled user whose e-mail is not confirmed
+  and whose organisation is ``pending``.
 * ``POST /auth/forgot`` {email}: always 202 with the same words, so it never shows who has
   an account. The lookup and the email happen after the reply (a background task), so an
   unknown address takes the same path and time. At most FORGOT_PER_HOUR_ADDRESS a client
@@ -55,6 +60,7 @@ Context = Annotated[AppContext, Depends(get_context)]
 
 LINK_GONE = "That link has expired or was already used."
 FORGOT_SENT = "If that email has an account, we've sent a link."
+RESEND_SENT = "If that email is waiting to be confirmed, we've sent a new link."
 # PROVISIONAL limits. Behind the Next.js proxy every visitor shares the proxy's address
 # (kaagaz/api/middleware.py), so the per-address one is one cap for the whole site for now.
 # ponytail: site-wide cap; per-visitor once X-Forwarded-For is trusted (as sign-up's).
@@ -64,6 +70,8 @@ FORGOTS_PER_HOUR_EMAIL = 3
 confirm_limits = RateLimiter(CONFIRMS_PER_HOUR, window_seconds=3600)
 forgot_ip_limits = RateLimiter(FORGOT_PER_HOUR_ADDRESS, window_seconds=3600)
 forgot_email_limits = RateLimiter(FORGOTS_PER_HOUR_EMAIL, window_seconds=3600)
+resend_ip_limits = RateLimiter(FORGOT_PER_HOUR_ADDRESS, window_seconds=3600)
+resend_email_limits = RateLimiter(FORGOTS_PER_HOUR_EMAIL, window_seconds=3600)
 TOO_MANY_LINKS = "We sent a few links already. Try again in an hour."
 
 
@@ -108,6 +116,16 @@ def send_confirm(user: User, context: Context) -> dict[str, bool]:
     return {"ok": True}
 
 
+@router.post("/auth/email/resend-confirm", status_code=202)
+def resend_confirm(
+    body: ForgotBody, request: Request, background: BackgroundTasks, context: Context
+) -> dict[str, str]:
+    if not resend_ip_limits.allow(request.client.host if request.client else "-"):
+        raise ApiError(429, "rate_limited", TOO_MANY_LINKS, headers={"Retry-After": "3600"})
+    background.add_task(_resend_confirm, context, valid_email(body.email))
+    return {"message": RESEND_SENT}
+
+
 @router.post("/auth/forgot", status_code=202)
 def forgot_password(
     body: ForgotBody, request: Request, background: BackgroundTasks, context: Context
@@ -145,6 +163,22 @@ def _send_reset(context: AppContext, email: str) -> None:
         return
     link = new_link(context, found.customer_id, found.user_id, "reset")
     send(context, contact[0], "reset", emails.reset_password(contact[1], link))
+
+
+def _resend_confirm(context: AppContext, email: str) -> None:
+    """After the reply: a new confirm link to an enabled, unconfirmed admin of a pending sign-up."""
+    if not resend_email_limits.allow(email):
+        return
+    with context.db.system() as conn:
+        found = users_sql.login_lookup(conn, email)
+    if found is None or found.disabled:
+        return
+    with context.db.customer(found.customer_id) as conn:
+        contact = users_sql.awaiting_confirm(conn, found.customer_id, found.user_id)
+    if contact is None:
+        return
+    link = new_link(context, found.customer_id, found.user_id, "confirm")
+    send(context, contact[0], "confirm", emails.confirm_email(contact[1], link))
 
 
 def _set_password(context: AppContext, body: NewPasswordBody, purpose: str, action: str) -> LinkRow:

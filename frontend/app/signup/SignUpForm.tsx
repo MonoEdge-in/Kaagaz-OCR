@@ -19,6 +19,7 @@ import { signUp, signUpOpen } from "@/lib/api";
 import { leavePage } from "@/lib/sessionChannel";
 import type { TwoStepSetup } from "@/lib/types";
 import { RequiredEnrol } from "../login/EnrolStep";
+import { ResendConfirm } from "../login/ResendConfirm";
 import login from "../login/login.module.css";
 import {
   MAX_EMAIL,
@@ -129,6 +130,7 @@ export function SignUpForm() {
             {CHECK_EMAIL}
           </p>
         </div>
+        <ResendConfirm email={signUpBody(input).email} />
         <p className={login.switch}>
           <Link href="/login">Back to sign in</Link>
         </p>

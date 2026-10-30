@@ -45,6 +45,7 @@ SENDER = "no-reply@example.com"
 NEW_PASSWORD = "a brand new made-up password"
 LINK_GONE = {"error": {"code": "link_expired", "message": "That link has expired or was already used."}}
 FORGOT_REPLY = {"message": "If that email has an account, we've sent a link."}
+RESEND_REPLY = {"message": "If that email is waiting to be confirmed, we've sent a new link."}
 _TOKEN = re.compile(r"#t=([A-Za-z0-9_-]+)")
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
@@ -57,7 +58,13 @@ class FailingMailer(MemoryMailer):
 @pytest.fixture(autouse=True)
 def _fresh_limits(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Every test starts with a full allowance: the limiters are one a process."""
-    for name in ("confirm_limits", "forgot_ip_limits", "forgot_email_limits"):
+    for name in (
+        "confirm_limits",
+        "forgot_ip_limits",
+        "forgot_email_limits",
+        "resend_ip_limits",
+        "resend_email_limits",
+    ):
         limiter = getattr(email_router, name)
         monkeypatch.setattr(email_router, name, RateLimiter(int(limiter._capacity), window_seconds=3600))
     monkeypatch.setattr(
@@ -211,6 +218,62 @@ def test_a_confirm_link_works_once_only_the_newest_works_and_it_expires(db: Data
     api.clock.advance(24 * 3600)  # 24 hours: no longer
     assert _post(api.client(), "/api/auth/email/confirm", {"token": late}).json() == LINK_GONE
     assert _email_confirmed(db, customer_id, other.user_id) is False
+
+
+def _pending_sign_up(api: Api) -> str:
+    """A new sign-up's admin e-mail: its organisation pending, its e-mail not confirmed."""
+    token = uuid.uuid4().hex[:12]
+    email = f"owner-{token}@example.com"
+    body = {"organisation_name": f"Mehta Textiles {token}", "name": "Ramesh", "email": email}
+    signed_up = _post(api.client(), "/api/auth/signup", {**body, "password": PASSWORD})
+    assert signed_up.status_code == 201, signed_up.text
+    return email
+
+
+@pytest.mark.db
+def test_send_again_without_signing_in_sends_only_to_a_pending_unconfirmed_admin(db: Database) -> None:
+    """A pending organisation's admin cannot sign in, so "Send the link again" needs no session.
+    The reply is the same whoever is asked for, so it never shows who is waiting."""
+    api, mailer = _email_api(db)
+    pending = _pending_sign_up(api)
+    member = api.new_signed("member")  # unconfirmed, but its organisation is active
+    confirmed = _pending_sign_up(api)
+    _post(api.client(), "/api/auth/email/confirm", {"token": _token(mailer, confirmed, "/email/confirm")})
+    sent_before = len(mailer.sent)
+    client = api.client()
+
+    replies = [
+        _post(client, "/api/auth/email/resend-confirm", {"email": address})
+        for address in (pending.upper(), member.email, confirmed, "nobody@example.com")
+    ]
+    assert {(reply.status_code, str(reply.json())) for reply in replies} == {(202, str(RESEND_REPLY))}
+    assert [sent.to for sent in mailer.sent[sent_before:]] == [pending]
+    first = _token(mailer, pending, "/email/confirm")
+    assert _post(client, "/api/auth/email/confirm", {"token": first}).json() == {"ok": True}
+    assert _post(client, "/api/auth/email/resend-confirm", {"email": pending}).status_code == 202
+    assert len(mailer.sent) == sent_before + 1  # confirmed now: nothing more is sent
+
+
+@pytest.mark.db
+def test_send_again_without_signing_in_replies_first_and_is_limited(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    api, mailer = _email_api(db)
+    pending = _pending_sign_up(api)
+    client = api.client()
+    for _ in range(4):  # the fourth is answered the same, and sends nothing
+        assert _post(client, "/api/auth/email/resend-confirm", {"email": pending}).status_code == 202
+    assert len(_to(mailer, pending)) == 1 + 3  # the sign-up's own link, then three
+    for _ in range(6):
+        _post(client, "/api/auth/email/resend-confirm", {"email": f"n-{uuid.uuid4().hex[:8]}@example.com"})
+    refused = _post(client, "/api/auth/email/resend-confirm", {"email": pending})
+    assert (refused.status_code, refused.json()["error"]["code"]) == (429, "rate_limited")
+
+    later: list[str] = []
+    monkeypatch.setattr(email_router, "resend_ip_limits", RateLimiter(10, window_seconds=3600))
+    monkeypatch.setattr(email_router, "_resend_confirm", lambda context, email: later.append(email))
+    assert _post(client, "/api/auth/email/resend-confirm", {"email": pending}).json() == RESEND_REPLY
+    assert later == [pending]  # the lookup happens after the reply
 
 
 @pytest.mark.db

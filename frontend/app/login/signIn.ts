@@ -52,6 +52,11 @@ export const SIGN_IN_DOWN = "Sign-in is not working right now. Try again in a mi
 /** A sign-up waiting for the operator (#457), said only after a right password (403 org_pending). */
 export const ORG_PENDING = "Your organisation is waiting for approval.";
 
+/** The organisation is a sign-up waiting for approval: the page offers a new confirm link. */
+export function orgPending(caught: unknown): boolean {
+  return caught instanceof ApiError && caught.code === "org_pending";
+}
+
 /**
  * The banner text for a failed sign-in. A 401 shows the backend's own message
  * (it is the same for an unknown e-mail, a wrong password and a disabled

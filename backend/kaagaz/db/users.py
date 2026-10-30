@@ -407,6 +407,21 @@ def contact(conn: Connection, customer_id: str, user_id: str) -> tuple[str, str]
     return None if row is None else (str(row[0]), str(row[1]))
 
 
+def awaiting_confirm(conn: Connection, customer_id: str, user_id: str) -> tuple[str, str] | None:
+    """The (e-mail, name) of an enabled user whose e-mail is not confirmed yet and whose
+    customer is a sign-up waiting for an operator (0061), for "Send the link again" (#457);
+    else None. O(log n)."""
+    row = conn.execute(
+        text(
+            "SELECT u.email, u.display_name FROM users AS u"
+            " JOIN customers AS c ON c.id = u.customer_id AND c.status = 'pending'"
+            " WHERE u.customer_id = :c AND u.id = :u AND NOT u.disabled AND u.email_verified_at IS NULL"
+        ),
+        {"c": customer_id, "u": user_id},
+    ).first()
+    return None if row is None else (str(row[0]), str(row[1]))
+
+
 def confirm_email(conn: Connection, customer_id: str, user_id: str, *, now: datetime) -> None:
     """The user proved their e-mail with a link (0061); the first proof's time is kept. O(log n)."""
     conn.execute(

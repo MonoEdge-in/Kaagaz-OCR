@@ -248,6 +248,9 @@ export const changePassword = (current: string, next: string, code?: string) =>
 export const emailOpen = () => request<{ enabled: boolean }>("GET", "/auth/email");
 export const confirmEmail = (token: string) => request<{ ok: boolean }>("POST", "/auth/email/confirm", { token });
 export const sendConfirmEmail = () => request<{ ok: boolean }>("POST", "/auth/email/send-confirm");
+/** "Send the link again" with no session (a waiting sign-up's admin): always the same reply. */
+export const resendConfirmEmail = (email: string) =>
+  request<{ message: string }>("POST", "/auth/email/resend-confirm", { email });
 /** Always the same reply, whoever the email belongs to. */
 export const forgotPassword = (email: string) => request<{ message: string }>("POST", "/auth/forgot", { email });
 export const resetPassword = (token: string, newPassword: string) =>

@@ -27,10 +27,12 @@ import type { TwoStepSetup } from "@/lib/types";
 import { CodeField } from "./CodeField";
 import { ForgotPasswordLink } from "./ForgotPasswordLink";
 import { RequiredEnrol } from "./EnrolStep";
+import { ResendConfirm } from "./ResendConfirm";
 import {
   emailError,
   firstInvalid,
   normalizeEmail,
+  orgPending,
   passwordError,
   signInErrorMessage,
   validateSignIn,
@@ -69,6 +71,8 @@ export function SignInForm({ note, next }: { note: string | null; next: string }
     password: false,
   });
   const [serverError, setServerError] = useState<string | null>(null);
+  // The organisation is a sign-up waiting for approval (#457): "Send the link again" shows.
+  const [pending, setPending] = useState(false);
   const [busy, setBusy] = useState(false);
 
   function changeEmail(value: string) {
@@ -97,6 +101,7 @@ export function SignInForm({ note, next }: { note: string | null; next: string }
     if (busy) return;
     setMasked(true);
     setServerError(null);
+    setPending(false);
     if (askCode) {
       const problem = codeError(code);
       if (problem) {
@@ -140,6 +145,7 @@ export function SignInForm({ note, next }: { note: string | null; next: string }
       }
       const message = signInErrorMessage(caught);
       flushSync(() => {
+        setPending(orgPending(caught));
         setServerError(askCode ? `${message} ${CODE_ADVICE}` : message);
         setCode("");
         setBusy(false);
@@ -238,6 +244,7 @@ export function SignInForm({ note, next }: { note: string | null; next: string }
           {serverError}
         </div>
       )}
+      {pending && <ResendConfirm email={normalizeEmail(email)} />}
 
       <button
         type="submit"

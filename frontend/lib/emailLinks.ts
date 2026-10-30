@@ -8,6 +8,7 @@ import { ApiError } from "@/lib/api";
 export const LINK_GONE = "That link has expired or was already used.";
 export const LINK_MISSING = "This page needs the link from your email. Open the link in the email again.";
 export const FORGOT_SENT = "If that email has an account, we've sent a link.";
+export const RESEND_SENT = "If that email is waiting to be confirmed, we've sent a new link.";
 export const NETWORK_FAILURE = "Could not reach Kaagaz. Check your internet connection and try again.";
 export const EMAIL_DOWN = "This is not working right now. Try again in a minute.";
 export const TOO_MANY_LINKS = "We sent a few links already. Try again in an hour.";
