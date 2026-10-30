@@ -495,3 +495,18 @@ def test_a_notice_that_breaks_never_breaks_connect_or_disconnect(db: Database, g
     )
     assert removed.status_code == 200, removed.text
     assert SESSION_COOKIE in removed.headers.get("set-cookie", "")
+
+
+@pytest.mark.parametrize(("has_provider", "error"), [(True, "has_provider"), (False, "taken")])
+def test_a_connect_that_loses_a_race_says_which_rule_it_met(
+    db: Database, google: FakeGoogle, monkeypatch: pytest.MonkeyPatch, has_provider: bool, error: str
+) -> None:
+    """Two connects at once: the unique key the second insert met says which refusal it is."""
+
+    def lost(*args: object, **kwargs: object) -> str:
+        raise identities.IdentityTaken(has_provider=has_provider)
+
+    monkeypatch.setattr(identities, "add", lost)
+    api = _api(db)
+    member = api.new_signed("member")
+    assert _landed(_connect(api, google, member)) == {"error": error}

@@ -11,8 +11,9 @@ customer yet and take a ``Database.system()`` connection:
 
 The key (provider, issuer, subject) is unique across every customer and a user has at most
 one connection of each provider: ``add`` turns either unique violation into
-``IdentityTaken``, so two people connecting one account at the same moment get one winner
-and one refusal, never a 500. The email is stored in lower case, as a label only.
+``IdentityTaken`` (``has_provider`` says which, by the key's constraint name), so two people
+connecting one account at the same moment get one winner and one refusal, never a 500.
+The email is stored in lower case, as a label only.
 
 Each call is one indexed statement: O(log n), except ``pending`` and ``providers_by_user``,
 which are O(connections of this customer).
@@ -29,8 +30,16 @@ from kaagaz.db.sqlstate import UNIQUE_VIOLATION, sqlstate
 
 
 class IdentityTaken(Exception):
-    """That outside account is already connected (to anyone), or the user already has one of
-    that provider."""
+    """That outside account is already connected (to anyone), or, ``has_provider``, the user
+    already has one of that provider."""
+
+    def __init__(self, *, has_provider: bool) -> None:
+        super().__init__("has_provider" if has_provider else "taken")
+        self.has_provider = has_provider
+
+
+# The unique key "one of each provider a user" (0062); the other is (provider, issuer, subject).
+_ONE_EACH = "user_identities_customer_id_user_id_provider_key"
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,7 +110,8 @@ def add(
         ).scalar_one()
     except IntegrityError as error:
         if sqlstate(error) == UNIQUE_VIOLATION:
-            raise IdentityTaken from None
+            constraint = getattr(getattr(error.orig, "diag", None), "constraint_name", None)
+            raise IdentityTaken(has_provider=constraint == _ONE_EACH) from None
         raise
     return str(identity_id)
 

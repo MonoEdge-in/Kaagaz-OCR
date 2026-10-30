@@ -114,13 +114,15 @@ def test_add_same_identity_for_another_user_raises_identity_taken(db: Database) 
         wait_until_blocked(db, application_name="identity-race")
     racer.join(10)
     assert len(outcome) == 1 and isinstance(outcome[0], identities.IdentityTaken)
+    assert outcome[0].has_provider is False  # the account is someone's: "taken"
 
 
 def test_a_second_google_for_one_user_raises_identity_taken(db: Database) -> None:
     customer_id, user_id = new_customer(db)
     add(db, customer_id, user_id, subject())
-    with pytest.raises(identities.IdentityTaken):
+    with pytest.raises(identities.IdentityTaken) as taken:
         add(db, customer_id, user_id, subject())
+    assert taken.value.has_provider is True  # one of each provider a user: "has_provider"
 
 
 def test_add_stores_email_lowercased(db: Database) -> None:

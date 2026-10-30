@@ -494,10 +494,7 @@ def _connect(
         raise _Refused("has_provider")
     with context.db.system() as conn:
         found = identities.lookup(conn, provider.name, identity.issuer, identity.subject)
-        belongs = identity.email is not None and identities.email_belongs_to_other(
-            conn, identity.email, user_id
-        )
-    if found is not None or belongs:  # never says whose
+    if found is not None:  # never says whose
         raise _Refused("taken")
     # Same-person auto-approval (Tushar, 30 Oct): Google's verified email is the user's own.
     same_person = (
@@ -507,6 +504,11 @@ def _connect(
     approved = user.role == "admin" or auto or same_person
     try:
         with context.db.customer(customer_id) as conn:
+            # In the insert's own transaction: the email is another user's sign-in email (never says whose).
+            if identity.email is not None and identities.email_belongs_to_other(
+                conn, identity.email, user_id
+            ):
+                raise _Refused("taken")
             identity_id = identities.add(
                 conn,
                 customer_id,
@@ -527,8 +529,8 @@ def _connect(
                 "status": status,
             }
             _record(conn, customer_id, "auth.identity_linked", actor=user_id, target=user_id, details=details)
-    except identities.IdentityTaken:  # someone connected it a moment ago
-        raise _Refused("taken") from None
+    except identities.IdentityTaken as lost:  # a connect a moment ago met the same key
+        raise _Refused("has_provider" if lost.has_provider else "taken") from None
     outcome = "connected" if approved else "waiting"
     response = RedirectResponse(f"{WAYS}?{outcome}={provider.name}", status_code=303)
     _keep_signed_in(request, context, response, version)
