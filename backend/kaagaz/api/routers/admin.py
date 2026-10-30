@@ -189,6 +189,8 @@ def create_user(body: NewUserBody, user: AdminSession, context: Context) -> JSON
     inviting = email_on(context)
     # An invite's password is never told to anyone: the link sets the real one.
     password_hash = hash_password(secrets.token_urlsafe(32) if inviting else body.password)
+    with context.db.system() as conn:  # a stale, unconfirmed sign-up gives the e-mail back (0063)
+        users_sql.release_stale_signup(conn, email)
     try:
         with context.db.customer(user.customer_id) as conn:
             row = users_sql.create_user(

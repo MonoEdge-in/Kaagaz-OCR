@@ -10,6 +10,7 @@ The exceptions have no customer yet:
 
 * ``login_lookup`` (``Database.system()``): signing in starts from an e-mail only.
   It calls the SECURITY DEFINER function ``kaagaz_login_lookup``, which returns one row.
+* ``release_stale_signup`` (any connection): frees the e-mail of a stale sign-up (0063).
 * ``create_customer``: calls ``kaagaz_create_customer``: the CLI, on its owner
   connection ``cli._owner``, so its ``platform_audit`` row is in the same transaction;
   self sign-up (``POST /auth/signup``), inside ``Database.system()``. With email on (#457),
@@ -121,6 +122,13 @@ def create_customer(
             raise EmailTaken from None
         raise
     return str(customer_id)
+
+
+def release_stale_signup(conn: Connection, email: str) -> bool:
+    """Before a user with ``email`` is made: a pending sign-up older than 24 hours whose only
+    user has this e-mail and never proved it is deleted (0063), so it no longer holds the
+    e-mail. True when one was. Any connection: the SECURITY DEFINER function checks it all."""
+    return bool(conn.execute(text("SELECT kaagaz_release_stale_signup(:e)"), {"e": email}).scalar())
 
 
 # --- signing in: the lockout counter ------------------------------------------------

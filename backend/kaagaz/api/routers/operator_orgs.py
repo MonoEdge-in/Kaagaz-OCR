@@ -62,6 +62,7 @@ from kaagaz.api.secret_box import SecretBoxError
 from kaagaz.api.twostep import box, digits, unix
 from kaagaz.api.views import iso
 from kaagaz.db import operator_orgs as orgs_sql
+from kaagaz.db import users as users_sql
 from kaagaz.db.engine import OperatorDatabase
 from kaagaz.db.operator_orgs import Change, Outcome
 
@@ -141,6 +142,8 @@ def create_org(body: NewOrgBody, operator: OperatorSession, db: OperatorDb, cont
     if not org_name_ok(name):
         raise ApiError(400, "bad_request", ORG_NAME_PROBLEM)
     temporary = secrets.token_urlsafe(TEMPORARY_PASSWORD_BYTES)
+    with context.db.system() as conn:  # a stale, unconfirmed sign-up gives the e-mail back (0063)
+        users_sql.release_stale_signup(conn, email)
     with db.operator() as conn:
         outcome = orgs_sql.create_customer(
             conn,

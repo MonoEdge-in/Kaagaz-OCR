@@ -50,7 +50,9 @@
   your email" link is sent, and the reply is 201 ``{status: "confirm_email"}`` with no
   set-up offer and no session; sign-in then says 403 ``org_pending`` (after a right
   password only) until an operator approves it (``routers/operator_orgs.py``).
-  A taken e-mail is the admin screens' 409. At most ``SIGNUPS_PER_HOUR`` a client
+  A taken e-mail is the admin screens' 409; with email on, the same 201 as a new sign-up and
+  nothing is sent, so sign-up never shows who has an account. A pending sign-up never
+  confirmed within 24 hours no longer holds its e-mail (0063). At most ``SIGNUPS_PER_HOUR`` a client
   address (429). Off (``SELF_SIGNUP_ENABLED=false``, or the super admin's Self sign-up
   switch, 0038): 404; ``GET /auth/signup`` says
   ``{enabled}`` for the sign-in pages' link. Audited ``org.self_signup`` in the new
@@ -298,6 +300,8 @@ def signup(body: SignupBody, request: Request, context: Context) -> JSONResponse
         raise ApiError(404, "not_found")
     password_hash = hash_password(body.password)  # before the transaction, never during it
     pending = email_on(context)  # #457: the e-mail is proven, then an operator approves
+    with context.db.system() as conn:  # a stale, unconfirmed sign-up gives the e-mail back (0063)
+        users_sql.release_stale_signup(conn, email)
     try:
         with context.db.system() as conn:
             customer_id = users_sql.create_customer(
@@ -310,6 +314,8 @@ def signup(body: SignupBody, request: Request, context: Context) -> JSONResponse
             )
             found = users_sql.login_lookup(conn, email)
     except users_sql.EmailTaken:
+        if pending:  # the same reply as a new sign-up, and nothing sent: it never shows who has an account
+            return JSONResponse({"status": "confirm_email"}, status_code=201)
         raise ApiError(409, "conflict", "That e-mail is already in use.") from None
     if found is None:  # never: made in this transaction
         raise ApiError(500, "internal_error")

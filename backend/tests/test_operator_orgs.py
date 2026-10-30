@@ -4,7 +4,7 @@ and what a reply may hold. The SQL itself: ``test_operator_orgs_db.py``."""
 
 import logging
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from typing import Any, cast
 
 import pytest
@@ -25,6 +25,7 @@ from kaagaz.api.names import ORG_NAME_PROBLEM
 from kaagaz.api.secret_box import SecretBox
 from kaagaz.db import operator_orgs as orgs_sql
 from kaagaz.db import operators as operators_sql
+from kaagaz.db import users as users_sql
 from kaagaz.db.engine import OperatorDatabase
 from kaagaz.db.operator_orgs import Outcome
 from tests.test_api_auth import _offline_client
@@ -117,6 +118,10 @@ class _Offline:
         monkeypatch.setattr(orgs_sql, "list_customers", lambda conn, oid: [ORG_ROW])
         for name in ("create_customer", "set_customer_status", "step_up_failed", "set_org_autofile"):
             monkeypatch.setattr(orgs_sql, name, self._recorder(name))
+        # Changed on purpose (#457 review): a new organisation first frees a stale sign-up's
+        # e-mail through the app's database (tests/test_api_email.py proves it).
+        monkeypatch.setattr(app.state.kaagaz.db, "system", lambda: nullcontext(None))
+        monkeypatch.setattr(users_sql, "release_stale_signup", lambda conn, email: False)
         token = sign_operator(
             OperatorClaims(operator_id=OID, session_version=2, expires_at=AT + 600),
             self.settings.session_secret,

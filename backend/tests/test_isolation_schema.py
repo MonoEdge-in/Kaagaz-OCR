@@ -227,6 +227,8 @@ OWNER_RIGHTS = {
         EMPTY_PATH,
     ),
     "kaagaz_email_belongs_to_other": ("boolean", EMPTY_PATH),
+    # 0063: a pending, unconfirmed sign-up older than 24 hours no longer holds its e-mail.
+    "kaagaz_release_stale_signup": ("boolean", EMPTY_PATH),
 }
 # The platform operator's (0015): only kaagaz_operator may run these, never the app.
 OPERATOR = "kaagaz_operator"

@@ -230,6 +230,84 @@ def _pending_sign_up(api: Api) -> str:
     return email
 
 
+def _age(db: Database, email: str, hours: int) -> str:
+    """The sign-up of ``email`` made ``hours`` hours ago (as the owner); its customer id."""
+    with db.engine.begin() as conn:
+        return str(
+            conn.execute(
+                text(
+                    "UPDATE customers SET created_at = now() - make_interval(hours => :h)"
+                    " WHERE id = (SELECT customer_id FROM users WHERE email = :e) RETURNING id"
+                ),
+                {"h": hours, "e": email},
+            ).scalar_one()
+        )
+
+
+def _customer_exists(db: Database, customer_id: str) -> bool:
+    with db.engine.begin() as conn:
+        return (
+            conn.execute(text("SELECT count(*) FROM customers WHERE id = :c"), {"c": customer_id}).scalar()
+            == 1
+        )
+
+
+@pytest.mark.db
+def test_a_stale_unconfirmed_sign_up_no_longer_holds_its_email(db: Database) -> None:
+    """A sign-up never confirmed within the link's 24 hours gives the e-mail back to sign-up,
+    an admin's Add person and the operator's new organisation."""
+    api, mailer = _email_api(db)
+    held = _pending_sign_up(api)
+    fresh = _pending_sign_up(api)
+    _age(db, fresh, 23)
+    old = _age(db, held, 25)
+    body = {
+        "organisation_name": f"Sharma Traders {uuid.uuid4().hex[:6]}",
+        "name": "Asha",
+        "password": PASSWORD,
+    }
+    again = _post(api.client(), "/api/auth/signup", {**body, "email": held})
+    assert (again.status_code, again.json()) == (201, {"status": "confirm_email"})
+    assert not _customer_exists(db, old)
+    assert len(_to(mailer, held)) == 2  # the old sign-up's link, then the new one's
+    assert len(_to(mailer, fresh)) == 1
+    _post(api.client(), "/api/auth/signup", {**body, "email": fresh})  # still held: nothing sent
+    assert len(_to(mailer, fresh)) == 1
+
+    admin = api.new_admin()
+    for_admin = _pending_sign_up(api)
+    _age(db, for_admin, 25)
+    person = {"email": for_admin, "display_name": "Ramesh", "role": "member", "password": PASSWORD}
+    added = admin.client.post("/api/admin/users", json=person, headers=CSRF)
+    assert added.status_code == 201, added.text
+
+    for_operator = _pending_sign_up(api)
+    _age(db, for_operator, 25)
+    operator, ops = _Operator(api), api.client()
+    assert operator.login(ops).status_code == 200
+    org = {
+        "name": f"Patel Exports {uuid.uuid4().hex[:6]}",
+        "admin_email": for_operator,
+        "admin_name": "Ramesh",
+    }
+    assert _post(ops, "/api/operator/orgs", org).status_code == 201
+
+
+@pytest.mark.db
+def test_a_sign_up_with_a_taken_email_answers_like_a_new_one_and_sends_nothing(db: Database) -> None:
+    """With email on, sign-up never shows who has an account: the same 201, and no email."""
+    api, mailer = _email_api(db)
+    member = api.new_signed("member")
+    body = {
+        "organisation_name": f"Sharma Traders {uuid.uuid4().hex[:6]}",
+        "name": "Asha",
+        "password": PASSWORD,
+    }
+    reply = _post(api.client(), "/api/auth/signup", {**body, "email": member.email.upper()})
+    assert (reply.status_code, reply.json()) == (201, {"status": "confirm_email"})
+    assert mailer.sent == []
+
+
 @pytest.mark.db
 def test_send_again_without_signing_in_sends_only_to_a_pending_unconfirmed_admin(db: Database) -> None:
     """A pending organisation's admin cannot sign in, so "Send the link again" needs no session.
