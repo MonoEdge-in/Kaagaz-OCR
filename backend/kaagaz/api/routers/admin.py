@@ -106,6 +106,7 @@ _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 RoleName = Literal["member", "reviewer", "admin"]
 PASSWORD_ONLY = ["password"]  # every account keeps its Kaagaz password (#457)
+ALREADY_BELONGS = "This Google account already belongs to a Kaagaz user."
 
 USAGE_MAX_DAYS = 366
 USAGE_CSV_COLUMNS = ("day", "user", "model", "kind", "calls", "tokens")
@@ -380,12 +381,27 @@ def pending_identities(
 
 @router.post("/admin/identities/{identity_id}/approve")
 def approve_identity(identity_id: uuid.UUID, user: AdminSession, context: Context) -> dict[str, Any]:
-    """A waiting connection signs in from now on; the person gets a notice. The list left."""
+    """A waiting connection signs in from now on, unless its email became another user's sign-in
+    email meanwhile (409, the one outside account rule). The person is signed out everywhere, as
+    after any change to their ways in, and gets a notice. The list left."""
     _connections_on(context)
+    target = str(identity_id)
     with context.db.customer(user.customer_id) as conn:
-        row = identities.approve(conn, user.customer_id, str(identity_id), user.user_id, context.clock())
-        if row is None:
+        waiting = next(
+            (row for row in identities.pending(conn, user.customer_id) if str(row["id"]) == target), None
+        )
+    if waiting is None:
+        raise ApiError(404, "not_found")
+    email = waiting["email_at_link"]
+    with context.db.system() as conn:
+        taken = email is not None and identities.email_belongs_to_other(conn, email, str(waiting["user_id"]))
+    if taken:
+        raise ApiError(409, "conflict", ALREADY_BELONGS)
+    with context.db.customer(user.customer_id) as conn:
+        row = identities.approve(conn, user.customer_id, target, user.user_id, context.clock())
+        if row is None:  # approved or declined a moment ago
             raise ApiError(404, "not_found")
+        users_sql.bump_session_version(conn, user.customer_id, str(row["user_id"]))
         _audit_identity(conn, user, "auth.identity_approved", row)
         reply = _pending_json(conn, user.customer_id)
     emails.notify(context, user.customer_id, str(row["user_id"]), "identity_approved", emails.google_approved)

@@ -2,6 +2,7 @@
 member's Google account, remove a person's connections, the auto-approval switch and who
 signs in how. Against a made-up Google."""
 
+import uuid
 from typing import Any
 
 import pytest
@@ -215,3 +216,43 @@ def test_a_password_still_signs_in_after_every_disconnect(db: Database, google: 
         f"/api/auth/identities/{identity_id}/remove", json={"password": PASSWORD}, headers=CSRF
     )
     assert api.admin_login(api.client(), member.email).status_code == 200
+
+
+def test_approve_signs_the_member_out_elsewhere(db: Database, google: FakeGoogle) -> None:
+    """The spec: approving, like connecting and disconnecting, raises the person's session version."""
+    api = _api(db)
+    admin = api.new_admin()
+    member = _waiting(api, google, admin)
+    [row] = _pending(admin)
+    assert member.client.get("/api/auth/me").status_code == 200
+    assert admin.client.post(f"/api/admin/identities/{row['id']}/approve", headers=CSRF).status_code == 200
+    assert member.client.get("/api/auth/me").status_code == 401
+    assert api.admin_login(api.client(), member.email).status_code == 200  # the password still works
+
+
+def test_approve_refuses_when_the_email_became_another_users_sign_in_email(
+    db: Database, google: FakeGoogle
+) -> None:
+    """The one outside account rule holds at approval too: someone was given that email since."""
+    api = _api(db)
+    admin = api.new_admin()
+    email = f"sita-{uuid.uuid4().hex[:8]}@example.com"  # made up: e-mails are unique across runs
+    member = _waiting(api, google, admin, email)
+    [row] = _pending(admin)
+    created = admin.client.post(
+        "/api/admin/users",
+        json={
+            "email": email.upper(),
+            "display_name": "Sita",
+            "role": "member",
+            "password": PASSWORD,
+        },
+        headers=CSRF,
+    )
+    assert created.status_code == 201, created.text
+    reply = admin.client.post(f"/api/admin/identities/{row['id']}/approve", headers=CSRF)
+    assert (reply.status_code, reply.json()["error"]["message"]) == (
+        409,
+        "This Google account already belongs to a Kaagaz user.",
+    )
+    assert _mine(api, member) == [("google", email, "pending")]
