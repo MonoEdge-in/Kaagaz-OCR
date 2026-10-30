@@ -10,6 +10,7 @@ export const REFUSED = "That account can't sign in right now. Ask your admin.";
 export const LOCKED =
   "Too many tries were made on this account, so it is locked for a while. Try again later, or ask your admin to unlock it.";
 export const UNKNOWN = "Google sign-in didn't work. Try again.";
+export const BUSY = "Too many people are signing in right now. Try again in a few minutes.";
 
 /** The banner for a failed provider sign-in; ``email``: the notice's, for ``not_connected``. */
 export function oidcErrorMessage(code: string, email?: string): string {
@@ -26,6 +27,8 @@ export function oidcErrorMessage(code: string, email?: string): string {
       return REFUSED;
     case "locked":
       return LOCKED;
+    case "busy":
+      return BUSY;
     default:
       return UNKNOWN;
   }

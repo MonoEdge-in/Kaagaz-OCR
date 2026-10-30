@@ -43,6 +43,7 @@ describe("oidcErrorMessage", () => {
     expect(oidcErrorMessage("locked")).toBe(LOCKED);
     expect(oidcErrorMessage("unavailable")).toBe("Google sign-in didn't work. Try again.");
     expect(oidcErrorMessage("anything-else")).toBe(UNKNOWN);
+    expect(oidcErrorMessage("busy")).toBe("Too many people are signing in right now. Try again in a few minutes.");
   });
 
   it("still says what to do when the email is not known", () => {

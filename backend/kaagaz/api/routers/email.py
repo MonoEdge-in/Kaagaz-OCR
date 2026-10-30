@@ -14,8 +14,8 @@
   and whose organisation is ``pending``.
 * ``POST /auth/forgot`` {email}: always 202 with the same words, so it never shows who has
   an account. The lookup and the email happen after the reply (a background task), so an
-  unknown address takes the same path and time. At most FORGOT_PER_HOUR_ADDRESS a client
-  address (429) and FORGOTS_PER_HOUR_EMAIL an e-mail (the rest are answered the same and
+  unknown address takes the same path and time. At most LINKS_PER_HOUR_SITE for the whole
+  site (429) and FORGOTS_PER_HOUR_EMAIL an e-mail (the rest are answered the same and
   send nothing). Only organisation users are found (``kaagaz_login_lookup``), never an
   operator, and never a disabled user.
 * ``POST /auth/reset`` {token, new_password}: the password from a reset link. It clears a
@@ -62,15 +62,16 @@ LINK_GONE = "That link has expired or was already used."
 FORGOT_SENT = "If that email has an account, we've sent a link."
 RESEND_SENT = "If that email is waiting to be confirmed, we've sent a new link."
 # PROVISIONAL limits. Behind the Next.js proxy every visitor shares the proxy's address
-# (kaagaz/api/middleware.py), so the per-address one is one cap for the whole site for now.
-# ponytail: site-wide cap; per-visitor once X-Forwarded-For is trusted (as sign-up's).
+# (kaagaz/api/middleware.py), so the address limit is one cap for the whole site, sized for
+# real use. ponytail: site-wide cap; per-visitor once X-Forwarded-For is trusted (as sign-up's).
 CONFIRMS_PER_HOUR = 3
-FORGOT_PER_HOUR_ADDRESS = 10
+LINKS_PER_HOUR_SITE = 300
 FORGOTS_PER_HOUR_EMAIL = 3
+SITE = "site"  # the one key of the site-wide limits
 confirm_limits = RateLimiter(CONFIRMS_PER_HOUR, window_seconds=3600)
-forgot_ip_limits = RateLimiter(FORGOT_PER_HOUR_ADDRESS, window_seconds=3600)
+forgot_site_limits = RateLimiter(LINKS_PER_HOUR_SITE, window_seconds=3600)
 forgot_email_limits = RateLimiter(FORGOTS_PER_HOUR_EMAIL, window_seconds=3600)
-resend_ip_limits = RateLimiter(FORGOT_PER_HOUR_ADDRESS, window_seconds=3600)
+resend_site_limits = RateLimiter(LINKS_PER_HOUR_SITE, window_seconds=3600)
 resend_email_limits = RateLimiter(FORGOTS_PER_HOUR_EMAIL, window_seconds=3600)
 TOO_MANY_LINKS = "We sent a few links already. Try again in an hour."
 
@@ -117,20 +118,16 @@ def send_confirm(user: User, context: Context) -> dict[str, bool]:
 
 
 @router.post("/auth/email/resend-confirm", status_code=202)
-def resend_confirm(
-    body: ForgotBody, request: Request, background: BackgroundTasks, context: Context
-) -> dict[str, str]:
-    if not resend_ip_limits.allow(request.client.host if request.client else "-"):
+def resend_confirm(body: ForgotBody, background: BackgroundTasks, context: Context) -> dict[str, str]:
+    if not resend_site_limits.allow(SITE):
         raise ApiError(429, "rate_limited", TOO_MANY_LINKS, headers={"Retry-After": "3600"})
     background.add_task(_resend_confirm, context, valid_email(body.email))
     return {"message": RESEND_SENT}
 
 
 @router.post("/auth/forgot", status_code=202)
-def forgot_password(
-    body: ForgotBody, request: Request, background: BackgroundTasks, context: Context
-) -> dict[str, str]:
-    if not forgot_ip_limits.allow(request.client.host if request.client else "-"):
+def forgot_password(body: ForgotBody, background: BackgroundTasks, context: Context) -> dict[str, str]:
+    if not forgot_site_limits.allow(SITE):
         raise ApiError(429, "rate_limited", TOO_MANY_LINKS, headers={"Retry-After": "3600"})
     background.add_task(_send_reset, context, valid_email(body.email))
     return {"message": FORGOT_SENT}

@@ -87,6 +87,9 @@ describe("pageNotice", () => {
     });
     expect(pageNotice({ error: "signed_out" })?.text).toBe("Sign in again, then connect Google.");
     expect(pageNotice({ error: "has_provider" })?.kind).toBe("error");
+    expect(pageNotice({ error: "busy" })?.text).toBe(
+      "Too many people are signing in right now. Try again in a few minutes.",
+    );
     expect(pageNotice({ error: "cancelled" })?.text).toBe("Google sign-in was cancelled.");
     expect(pageNotice({ error: "something" })?.text).toBe("Connecting Google didn't work. Try again.");
     expect(pageNotice({})).toBeNull();

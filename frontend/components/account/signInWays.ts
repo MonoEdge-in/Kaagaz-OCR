@@ -2,6 +2,7 @@
 // the notice after coming back from Google (?connected=, ?waiting=, ?error=), whether Connect
 // asks for the code, the disconnect question and the app's "Google connected" banner.
 
+import { BUSY } from "@/app/login/providerMessages";
 import { formatDate } from "@/lib/format";
 import type { ConnectedIdentity, Me } from "@/lib/types";
 
@@ -40,6 +41,7 @@ const ERRORS: Record<string, string> = {
   signed_out: "Sign in again, then connect Google.",
   cancelled: "Google sign-in was cancelled.",
   expired: "That sign-in expired. Try again.",
+  busy: BUSY,
 };
 
 /** What the page says on its way back from Google; ``email``: the connected account's. */

@@ -19,8 +19,8 @@ provider's own routes: while that one is off), before anything else is read.
   audited ``auth.login`` ``{"via": "google"}``. Anyone with codes on gets the 5-minute second
   step cookie and /login?step=code; an admin with no code yet is sent to sign in with the
   password first (``password_first``). Every failure is 303 /login?oidc_error=<code>:
-  ``cancelled``, ``expired``, ``not_connected``, ``refused``, ``locked``, ``unavailable`` or
-  ``password_first``. The reply carries ``Referrer-Policy: no-referrer``.
+  ``cancelled``, ``expired``, ``not_connected``, ``refused``, ``locked``, ``unavailable``,
+  ``busy`` or ``password_first``. The reply carries ``Referrer-Policy: no-referrer``.
 * ``POST /auth/oidc/{provider}/connect`` {password, code?} (signed in, any role): Account, Ways
   to sign in. The Kaagaz password, plus the code for anyone with codes on (always an admin),
   each counted like a sign-in, so a stolen session alone cannot add a lasting way in. Then a
@@ -46,9 +46,10 @@ provider's own routes: while that one is off), before anything else is read.
   for the user the second-step cookie names, while their session version is unchanged.
 
 Why the GETs need no CSRF header: start changes nothing, and the callback does nothing
-without the state that only this browser's cookie holds. Start and callback are limited per
-client address (``start_limits``). Logged: the failure's code and the provider only, never a
-code, token, state, nonce, verifier, subject or email.
+without the state that only this browser's cookie holds. Start is not limited (it only
+redirects); callbacks with the right state are limited for the whole site
+(``callback_limits``), and past it the reply is the ``busy`` redirect. Logged: the failure's
+code and the provider only, never a code, token, state, nonce, verifier, subject or email.
 """
 
 import dataclasses
@@ -119,11 +120,12 @@ logger = logging.getLogger(__name__)
 
 Context = Annotated[AppContext, Depends(get_context)]
 
-# Starts and callbacks an hour from one client address (PROVISIONAL; behind the Next.js proxy
-# every visitor shares the proxy's address, as SIGNUPS_PER_HOUR says).
-STARTS_PER_HOUR = 30
-start_limits = RateLimiter(STARTS_PER_HOUR, window_seconds=3600)
-TOO_MANY = "Too many sign-ins from here. Try again in an hour."
+# Callbacks an hour for the whole site (PROVISIONAL), counted only once the state is right, so
+# stray links cannot use it up; sized for real sign-ins. Behind the Next.js proxy every visitor
+# shares the proxy's address (kaagaz/api/middleware.py), as SIGNUPS_PER_HOUR says.
+# ponytail: site-wide cap; per-visitor once X-Forwarded-For is trusted.
+CALLBACKS_PER_HOUR = 600
+callback_limits = RateLimiter(CALLBACKS_PER_HOUR, window_seconds=3600)
 # Connect starts an hour for one user (PROVISIONAL): each one checks the password.
 CONNECTS_PER_HOUR = 10
 connect_limits = RateLimiter(CONNECTS_PER_HOUR, window_seconds=3600)
@@ -189,11 +191,6 @@ def _safe_next(path: str) -> str:
     return path if _NEXT.fullmatch(path) else "/"
 
 
-def _limited(request: Request) -> None:
-    if not start_limits.allow(f"ip:{request.client.host if request.client else '-'}"):
-        raise ApiError(429, "rate_limited", TOO_MANY, headers={"Retry-After": "3600"})
-
-
 def _new_flow(provider: Provider, next_path: str, now: int, user: CurrentUser | None = None) -> FlowClaims:
     """A new state, nonce and PKCE verifier: a sign-in, or with ``user`` their connect."""
     return FlowClaims(
@@ -212,7 +209,6 @@ def _new_flow(provider: Provider, next_path: str, now: int, user: CurrentUser | 
 
 @router.get("/auth/oidc/{provider}/start")
 def start(provider: ProviderOn, request: Request, context: Context) -> RedirectResponse:
-    _limited(request)
     now = unix(context.clock())
     flow = _new_flow(provider, _safe_next(request.query_params.get("next", "")), now)
     url = oidc.authorize_url(
@@ -249,7 +245,6 @@ def connect(provider: ProviderOn, body: ConnectBody, user: User, context: Contex
 
 @router.get("/auth/oidc/{provider}/callback")
 def callback(provider: ProviderOn, request: Request, context: Context) -> RedirectResponse:
-    _limited(request)
     now = unix(context.clock())
     flow = read_flow(request.cookies.get(OIDC_COOKIE) or "", context.settings.session_secret, now)
     state = request.query_params.get("state", "")
@@ -260,6 +255,8 @@ def callback(provider: ProviderOn, request: Request, context: Context) -> Redire
             or not hmac.compare_digest(state.encode(), flow.state.encode())
         ):
             raise _Refused("expired")
+        if not callback_limits.allow("site"):
+            raise _Refused("busy")
         identity = _identity(request, context, provider, flow, now)
         if flow.mode == "connect":
             response = _connect(request, context, provider, flow, identity)

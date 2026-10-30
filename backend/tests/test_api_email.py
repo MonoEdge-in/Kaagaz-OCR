@@ -60,9 +60,9 @@ def _fresh_limits(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Every test starts with a full allowance: the limiters are one a process."""
     for name in (
         "confirm_limits",
-        "forgot_ip_limits",
+        "forgot_site_limits",
         "forgot_email_limits",
-        "resend_ip_limits",
+        "resend_site_limits",
         "resend_email_limits",
     ):
         limiter = getattr(email_router, name)
@@ -255,7 +255,7 @@ def test_send_again_without_signing_in_sends_only_to_a_pending_unconfirmed_admin
 
 
 @pytest.mark.db
-def test_send_again_without_signing_in_replies_first_and_is_limited(
+def test_send_again_without_signing_in_replies_first_and_is_limited_by_email(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     api, mailer = _email_api(db)
@@ -264,13 +264,8 @@ def test_send_again_without_signing_in_replies_first_and_is_limited(
     for _ in range(4):  # the fourth is answered the same, and sends nothing
         assert _post(client, "/api/auth/email/resend-confirm", {"email": pending}).status_code == 202
     assert len(_to(mailer, pending)) == 1 + 3  # the sign-up's own link, then three
-    for _ in range(6):
-        _post(client, "/api/auth/email/resend-confirm", {"email": f"n-{uuid.uuid4().hex[:8]}@example.com"})
-    refused = _post(client, "/api/auth/email/resend-confirm", {"email": pending})
-    assert (refused.status_code, refused.json()["error"]["code"]) == (429, "rate_limited")
 
     later: list[str] = []
-    monkeypatch.setattr(email_router, "resend_ip_limits", RateLimiter(10, window_seconds=3600))
     monkeypatch.setattr(email_router, "_resend_confirm", lambda context, email: later.append(email))
     assert _post(client, "/api/auth/email/resend-confirm", {"email": pending}).json() == RESEND_REPLY
     assert later == [pending]  # the lookup happens after the reply
@@ -343,17 +338,34 @@ def test_forgot_password_looks_nothing_up_before_it_replies(
 
 
 @pytest.mark.db
-def test_forgot_password_is_limited_by_address_and_by_email(db: Database) -> None:
+def test_forgot_password_is_limited_by_email(db: Database) -> None:
     api, mailer = _email_api(db)
     member = api.new_signed("member")
     client = api.client()
     for _ in range(4):  # the fourth is answered the same, and sends nothing
         assert _post(client, "/api/auth/forgot", {"email": member.email}).status_code == 202
     assert len(_to(mailer, member.email)) == 3
-    for _ in range(6):
-        _post(client, "/api/auth/forgot", {"email": f"n-{uuid.uuid4().hex[:8]}@example.com"})
-    refused = _post(client, "/api/auth/forgot", {"email": member.email})
-    assert (refused.status_code, refused.json()["error"]["code"]) == (429, "rate_limited")
+
+
+def test_the_site_wide_limits_on_forgot_and_send_again_are_three_hundred_an_hour() -> None:
+    """Behind the proxy every visitor shares one address, so the limit is for the whole site."""
+    for name in ("forgot_site_limits", "resend_site_limits"):
+        assert getattr(email_router, name)._capacity == email_router.LINKS_PER_HOUR_SITE == 300
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("path", ["/api/auth/forgot", "/api/auth/email/resend-confirm"])
+def test_forgot_and_send_again_are_limited_for_the_whole_site(
+    db: Database, monkeypatch: pytest.MonkeyPatch, path: str
+) -> None:
+    api, _ = _email_api(db)
+    for name in ("forgot_site_limits", "resend_site_limits"):
+        monkeypatch.setattr(email_router, name, RateLimiter(2, window_seconds=3600))
+    replies = [
+        _post(api.client(), path, {"email": f"n-{uuid.uuid4().hex[:8]}@example.com"}) for _ in range(3)
+    ]
+    assert [reply.status_code for reply in replies] == [202, 202, 429]
+    assert replies[-1].json()["error"]["code"] == "rate_limited"
 
 
 @pytest.mark.db

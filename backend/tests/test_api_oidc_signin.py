@@ -30,7 +30,7 @@ pytestmark = pytest.mark.db
 
 @pytest.fixture
 def google(monkeypatch: pytest.MonkeyPatch) -> FakeGoogle:
-    monkeypatch.setattr(oidc_router, "start_limits", RateLimiter(1000, window_seconds=3600))
+    monkeypatch.setattr(oidc_router, "callback_limits", RateLimiter(1000, window_seconds=3600))
     return use_google(monkeypatch)
 
 
@@ -367,17 +367,36 @@ def test_an_unknown_provider_is_404(db: Database, google: FakeGoogle) -> None:
         assert reply.status_code == 404, provider
 
 
-def test_start_rate_limited_gives_429(db: Database, monkeypatch: pytest.MonkeyPatch) -> None:
-    use_google(monkeypatch)
-    monkeypatch.setattr(oidc_router, "start_limits", RateLimiter(2, window_seconds=3600))
-    client = _api(db).client()
-    assert [
-        client.get("/api/auth/oidc/google/start", follow_redirects=False).status_code for _ in range(3)
-    ] == [
-        303,
-        303,
-        429,
-    ]
+def test_thirty_starts_never_block_a_sign_in(db: Database, google: FakeGoogle) -> None:
+    """Behind the proxy every visitor shares one address: a start (only a redirect) is not limited."""
+    api = _api(db)
+    customer_id, _ = api.customer()
+    member_id, _ = api.add_user(customer_id, "member")
+    subject = _connect(api, customer_id, member_id)
+    client = api.client()
+    for _ in range(30):
+        _start(api.client())
+    assert _sign_in_at_google(api, google, client, subject).headers["location"] == "/documents"
+
+
+def test_the_site_wide_callback_limit_counts_only_callbacks_with_the_right_state(
+    db: Database, google: FakeGoogle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(oidc_router, "callback_limits", RateLimiter(1, window_seconds=3600))
+    api = _api(db)
+    customer_id, _ = api.customer()
+    member_id, _ = api.add_user(customer_id, "member")
+    subject = _connect(api, customer_id, member_id)
+    stray = api.client()
+    for _ in range(5):  # no flow cookie, or the wrong state: never counted
+        reply = stray.get(
+            "/api/auth/oidc/google/callback", params={"state": "x", "code": "y"}, follow_redirects=False
+        )
+        assert _error(reply) == "expired"
+
+    assert _sign_in_at_google(api, google, api.client(), subject).headers["location"] == "/documents"
+    busy = _sign_in_at_google(api, google, api.client(), subject)
+    assert _error(busy) == "busy"  # a redirect the sign-in page explains, never raw 429 JSON
 
 
 def test_callback_has_no_referrer_header(db: Database, google: FakeGoogle) -> None:
