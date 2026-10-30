@@ -174,12 +174,7 @@ def begin_attempt(
                 "   THEN CAST(:lock_end AS timestamptz) ELSE NULL END"
                 " WHERE u.customer_id = :c AND u.id = :u"
                 " AND (u.locked_until IS NULL OR u.locked_until <= :now)"
-                " RETURNING u.id, u.customer_id, u.password_hash, u.role, u.disabled, u.session_version,"
-                " u.must_change_password, u.totp_secret_enc, u.totp_enabled_at, u.totp_last_step,"
-                " u.failed_logins, EXISTS (SELECT 1 FROM customers c"
-                " WHERE c.id = u.customer_id AND c.status = 'active') AS customer_active,"
-                " EXISTS (SELECT 1 FROM customers c"
-                " WHERE c.id = u.customer_id AND c.status = 'pending') AS customer_pending"
+                " RETURNING" + _ATTEMPT_COLUMNS
             ),
             {
                 "c": customer_id,
@@ -192,8 +187,38 @@ def begin_attempt(
         .mappings()
         .first()
     )
-    if row is None:
-        return None
+    return None if row is None else _attempt(row)
+
+
+def peek_attempt(conn: Connection, customer_id: str, user_id: str, *, now: datetime) -> AttemptRow | None:
+    """``begin_attempt``'s columns, read without counting anything: a provider sign-in's first
+    step, which the provider itself proved (#457). None means locked (or not here). O(log n)."""
+    row = (
+        conn.execute(
+            text(
+                "SELECT" + _ATTEMPT_COLUMNS + " FROM users AS u WHERE u.customer_id = :c AND u.id = :u"
+                " AND (u.locked_until IS NULL OR u.locked_until <= :now)"
+            ),
+            {"c": customer_id, "u": user_id, "now": now},
+        )
+        .mappings()
+        .first()
+    )
+    return None if row is None else _attempt(row)
+
+
+# What a sign-in needs, with whether the customer is active or a pending sign-up (0014, 0061).
+_ATTEMPT_COLUMNS = (
+    " u.id, u.customer_id, u.password_hash, u.role, u.disabled, u.session_version,"
+    " u.must_change_password, u.totp_secret_enc, u.totp_enabled_at, u.totp_last_step,"
+    " u.failed_logins, EXISTS (SELECT 1 FROM customers c"
+    " WHERE c.id = u.customer_id AND c.status = 'active') AS customer_active,"
+    " EXISTS (SELECT 1 FROM customers c"
+    " WHERE c.id = u.customer_id AND c.status = 'pending') AS customer_pending"
+)
+
+
+def _attempt(row: RowMapping) -> AttemptRow:
     last_step = row["totp_last_step"]
     return AttemptRow(
         user_id=str(row["id"]),

@@ -13,8 +13,9 @@ provider's own routes: while that one is off), before anything else is read.
   the cookie's, compared in constant time. The mode comes from the cookie, never the query.
   The code is swapped for the ID token and the token checked. Then, for a sign-in, the
   connection is looked up by its key (provider, issuer, subject; only an approved one counts,
-  never an e-mail, so an operator is never found), and the attempt counted as a password's is
-  (``_begin``: locked; a disabled user or organisation is ``refused``, counted and audited).
+  never an e-mail, so an operator is never found), and checked as a password's is, without
+  counting (Google proved this step; ``peek_attempt``: locked; a disabled user or organisation
+  is ``refused`` and audited). The connection is marked used only once every check passed.
   Without two-step sign-in a member or reviewer gets an app session and goes to ``next``,
   audited ``auth.login`` ``{"via": "google"}``. Anyone with codes on gets the 5-minute second
   step cookie and /login?step=code; an admin with no code yet is sent to sign in with the
@@ -99,6 +100,7 @@ from kaagaz.api.routers.auth import (
     CODE_REQUIRED,
     MAX_CODE,
     WRONG_CODE,
+    _audit_failure,
     _begin,
     _check_current_password,
     _code_problem,
@@ -400,17 +402,22 @@ def _sign_in(
     if found is None or found.status != "approved":
         raise _Refused("not_connected", identity.email)
     now = context.clock()
-    attempt = _begin(context, found.customer_id, found.user_id, now)
+    # Read, not counted: Google proved this step. The one count of a sign-in is the code step's
+    # (anyone with codes on) or cleared at once by the session (#457 review).
     with context.db.customer(found.customer_id) as conn:
-        identities.touch_used(conn, found.customer_id, found.id, now)
+        attempt = users_sql.peek_attempt(conn, found.customer_id, found.user_id, now=now)
     if attempt is None:
         raise _Refused("locked")
     if attempt.disabled:
-        _failed(context, attempt, "disabled")
+        _audit_failure(context, attempt.customer_id, attempt.user_id, "disabled")
         raise _Refused("refused")
     if not attempt.customer_active:  # disabled, being deleted, or a sign-up still pending
-        _failed(context, attempt, "customer_disabled")
+        _audit_failure(context, attempt.customer_id, attempt.user_id, "customer_disabled")
         raise _Refused("refused")
+    if attempt.totp_enabled_at is None and attempt.role == "admin":
+        raise _Refused("password_first")  # an admin sets up the code at a password sign-in first
+    with context.db.customer(found.customer_id) as conn:  # a sign-in that passed every check
+        identities.touch_used(conn, found.customer_id, found.id, now)
     if attempt.totp_enabled_at is not None:
         pending = PendingClaims(
             provider=provider.name,
@@ -423,8 +430,6 @@ def _sign_in(
         response = RedirectResponse(f"{LOGIN}?step=code{where}", status_code=303)
         set_pending_cookie(response, pending, context.settings, now=unix(now))
         return response
-    if attempt.role == "admin":  # an admin sets up the code at a password sign-in first
-        raise _Refused("password_first")
     try:
         _, claims = _open_session(
             context,

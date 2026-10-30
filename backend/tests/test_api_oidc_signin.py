@@ -160,7 +160,8 @@ def test_admin_needs_code_after_google_then_wrong_code_counted_then_right_code_s
 
     wrong = client.post("/api/auth/oidc/code", json={"code": wrong_code(api, admin.secret)}, headers=CSRF)
     assert (wrong.status_code, wrong.json()["error"]["code"]) == (401, "bad_credentials")
-    assert api.user_state(customer_id, admin.user_id)["failed_logins"] >= 2  # google, then the code
+    # Changed on purpose (#457 review): one attempt per sign-in, the code's, not Google's as well.
+    assert api.user_state(customer_id, admin.user_id)["failed_logins"] == 1
 
     right = client.post("/api/auth/oidc/code", json={"code": api.code(admin.secret)}, headers=CSRF)
     assert right.status_code == 200, right.text
@@ -205,6 +206,45 @@ def test_admin_without_two_step_must_use_password_first(db: Database, google: Fa
     client = api.client()
     assert _error(_sign_in_at_google(api, google, client, subject)) == "password_first"
     assert not client.cookies.get(SESSION_COOKIE) and not client.cookies.get(PENDING_COOKIE)
+
+
+def test_password_first_counts_nothing(db: Database, google: FakeGoogle) -> None:
+    api = _api(db)
+    customer_id, admin_id = api.customer()
+    subject = _connect(api, customer_id, admin_id)
+    for _ in range(3):
+        assert _error(_sign_in_at_google(api, google, api.client(), subject)) == "password_first"
+    assert api.user_state(customer_id, admin_id)["failed_logins"] == 0
+
+
+def _last_used(api: Api, customer_id: str, user_id: str) -> object:
+    with api.db.customer(customer_id) as conn:
+        [row] = identities.for_user(conn, customer_id, user_id)
+    return row["last_used_at"]
+
+
+@pytest.mark.parametrize("why", ["disabled", "locked", "pending", "password_first"])
+def test_a_refused_sign_in_never_marks_the_connection_used(
+    db: Database, google: FakeGoogle, why: str
+) -> None:
+    api = _api(db)
+    customer_id, admin_id = api.customer()
+    user_id = admin_id if why == "password_first" else api.add_user(customer_id, "member")[0]
+    subject = _connect(api, customer_id, user_id)
+    if why == "disabled":
+        with db.customer(customer_id) as conn:
+            conn.execute(text("UPDATE users SET disabled = true WHERE id = :u"), {"u": user_id})
+    elif why == "locked":
+        with db.customer(customer_id) as conn:
+            conn.execute(
+                text("UPDATE users SET locked_until = :t WHERE id = :u"),
+                {"t": api.clock() + timedelta(minutes=10), "u": user_id},
+            )
+    elif why == "pending":
+        with db.engine.begin() as conn:  # as the owner: the app may not change a status
+            conn.execute(text("UPDATE customers SET status = 'pending' WHERE id = :c"), {"c": customer_id})
+    assert _error(_sign_in_at_google(api, google, api.client(), subject)) is not None
+    assert _last_used(api, customer_id, user_id) is None
 
 
 def test_disabled_user_refused(db: Database, google: FakeGoogle) -> None:
