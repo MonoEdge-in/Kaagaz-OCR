@@ -1046,8 +1046,8 @@ export interface CustomerSettings {
   platform_max_upload_mb: number;
   // Feature 28: the platform allowed auto-filing (granted), and the admin switched it on.
   autofile: { granted: boolean; on: boolean };
-  // #457 phase 1: "Approve new sign-in connections automatically".
-  auto_approve_connections: boolean;
+  // #457 phase 1: "Approve new sign-in connections automatically"; left out while no provider is on.
+  auto_approve_connections?: boolean;
 }
 
 export interface AuditEntry {

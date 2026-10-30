@@ -4,6 +4,7 @@
 
 import { sessionScope } from "@/components/shell/gate";
 import { roleName } from "@/components/shell/nav";
+import { providersText } from "@/components/account/signInWays";
 import { ApiError } from "@/lib/api";
 import { formatDateTime, formatNumber, formatUsd, PART_NOT_KNOWN, statusChip } from "@/lib/format";
 import type { StatusTone } from "@/lib/format";
@@ -274,13 +275,28 @@ export const AUTOFILE_HELP =
   "If a file lands in the wrong folder, press Undo or move it.";
 export const AUTOFILE_NOT_AVAILABLE = "Auto-filing isn't available for your organisation yet.";
 
-// Connected accounts (#457 phase 1): the People and Settings words.
+// Connected accounts (#457 phase 1): the People and Settings words, naming only the providers
+// that are on (Me's providers, #457 review).
 export const AUTO_APPROVE_LABEL = "Approve new sign-in connections automatically";
-export const AUTO_APPROVE_WARNING = "Members' Google or Microsoft accounts will work at once, without your review.";
-export const REMOVE_CONNECTIONS_CONFIRM =
-  "Stops this person signing in with Google or Microsoft. Their password still works.";
+export const AUTO_APPROVE_SAVED = "Saved.";
+export const AUTO_APPROVE_NOTE = "This setting saves as soon as you change it.";
+export const CONNECTIONS_FAILED = "Couldn't load connections to approve. Try again.";
+export const ALREADY_DECIDED = "Another admin already decided this one.";
+
+export function autoApproveWarning(providers: readonly string[]): string {
+  return `Members' ${providersText(providers)} accounts will work at once, without your review.`;
+}
+
+export function removeConnectionsQuestion(name: string, providers: readonly string[]): string {
+  return `Remove ${name}'s connected accounts? They can't sign in with ${providersText(providers)} any more. Their password still works.`;
+}
 
 const WAY_NAMES: Record<string, string> = { password: "Password", google: "Google" };
+
+/** Approve's and Decline's names for a screen reader: "Approve Ramesh Kumar's Google account". */
+export function decideLabel(row: PendingConnection, approve: boolean): string {
+  return `${approve ? "Approve" : "Decline"} ${row.display_name}'s ${WAY_NAMES[row.provider] ?? row.provider} account`;
+}
 
 /** "Password, Google": how this person signs in (every account keeps its password). */
 export function signsInWith(ways: readonly string[] | undefined): string {
@@ -583,8 +599,8 @@ const ACTION_WORDS: Record<string, string> = {
   "auth.identity_approved": "Approved a Google account",
   "auth.identity_declined": "Declined a Google account",
   "auth.identity_unlinked": "Disconnected a Google account",
-  "settings.auto_approve_on": "Turned automatic approval of sign-in connections on",
-  "settings.auto_approve_off": "Turned automatic approval of sign-in connections off",
+  "settings.auto_approve_on": "Turned on automatic approval of sign-in connections",
+  "settings.auto_approve_off": "Turned off automatic approval of sign-in connections",
   "user.unlock": "Unlocked a user",
   "user.reset_password": "Reset a user's password",
   "user.reset_totp": "Reset a user's two-step sign-in",

@@ -14,13 +14,16 @@
 // sign-in), and stop it again.
 //
 // Connected accounts (#457 phase 1): "Connections to approve" above the list while any wait
-// (Approve, Decline), a "Signs in with" column, and "Remove connected accounts" in a row's
-// menu, asked first. None of it shows while no provider is switched on (the server's 404).
+// (Approve, Decline; focus then moves to the next row's Approve, else the Users heading), a
+// "Signs in with" column, and "Remove connected accounts" in a row's menu, asked first. The
+// section hides only on the server's 404 (no provider on); any other failure says so, with Try
+// again. Approving one another admin already decided (404) reloads the list.
 //
 // A reset password comes back once, in the reply. It is shown in a card above
 // the list, with Copy, until Done or until the tab is left; it is never stored.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import type { FormEvent } from "react";
 import { ActionDialog } from "@/components/documents/ActionDialog";
 import { useMinuteNow } from "@/components/chat/hooks";
@@ -53,16 +56,19 @@ import type { RowMenuItem } from "./RowMenu";
 import { Toast } from "./Toast";
 import type { Notice } from "./Toast";
 import {
+  ALREADY_DECIDED,
+  CONNECTIONS_FAILED,
   MIN_PASSWORD_LENGTH,
   NEW_USER_FIELD_IDS,
-  REMOVE_CONNECTIONS_CONFIRM,
   addedNotice,
   ROLES,
   allowForeverQuestion,
+  decideLabel,
   firstInvalidField,
   foreverControl,
   generatePassword,
   pendingLine,
+  removeConnectionsQuestion,
   signsInWith,
   twoStepNote,
   userActions,
@@ -73,6 +79,8 @@ import type { NewUserErrors, NewUserInput } from "./logic";
 import styles from "./Admin.module.css";
 
 const SKELETON_ROWS = [0, 1, 2];
+const USERS_HEADING_ID = "users-heading";
+const approveId = (connectionId: string) => `approve-${connectionId}`;
 
 /** A temporary password just made for one user: shown once, then gone. */
 interface Revealed {
@@ -80,12 +88,15 @@ interface Revealed {
   password: string;
 }
 
+/** providers: the sign-in providers switched on (Me's), named in Remove connected accounts. */
 export function UsersPanel({
   currentUserId,
   adminTwoStep,
+  providers,
 }: {
   currentUserId: string;
   adminTwoStep: boolean;
+  providers: readonly string[];
 }) {
   const [attempt, setAttempt] = useState(0);
   const [users, setUsers] = useState<AdminUser[] | null>(null);
@@ -133,9 +144,9 @@ export function UsersPanel({
   return (
     <div className={styles.panelStack}>
       <ConnectionsToApprove onApproved={() => setAttempt((n) => n + 1)} onNotice={setNotice} />
-      <section className={styles.section} aria-labelledby="users-heading">
+      <section className={styles.section} aria-labelledby={USERS_HEADING_ID}>
         <div className={styles.sectionHead}>
-          <h2 id="users-heading" className={styles.sectionHeading}>
+          <h2 id={USERS_HEADING_ID} tabIndex={-1} className={styles.sectionHeading}>
             Users
           </h2>
           <button
@@ -208,6 +219,7 @@ export function UsersPanel({
                     user={user}
                     isSelf={user.id === currentUserId}
                     adminTwoStep={adminTwoStep}
+                    providers={providers}
                     now={now}
                     onChanged={replace}
                     onPasswordReset={setRevealed}
@@ -244,8 +256,8 @@ export function UsersPanel({
  * so does allowing Delete forever (UI audit AD2: every action that takes something away). */
 type Confirming = "disable" | "password" | "2fa" | "forever" | "connections";
 
-const CONFIRM_TEXT: Record<Confirming, (name: string) => string> = {
-  connections: () => REMOVE_CONNECTIONS_CONFIRM,
+const CONFIRM_TEXT: Record<Confirming, (name: string, providers: readonly string[]) => string> = {
+  connections: (name, providers) => removeConnectionsQuestion(name, providers),
   disable: (name) => `Disable ${name}'s account? They are signed out and can't sign in until it is enabled again.`,
   password: (name) =>
     `Reset ${name}'s password? They are signed out everywhere and must choose a new one.`,
@@ -280,6 +292,7 @@ function UserRow({
   user,
   isSelf,
   adminTwoStep,
+  providers,
   now,
   onChanged,
   onPasswordReset,
@@ -288,6 +301,7 @@ function UserRow({
   user: AdminUser;
   isSelf: boolean;
   adminTwoStep: boolean;
+  providers: readonly string[];
   now: number;
   onChanged: (user: AdminUser) => void;
   onPasswordReset: (revealed: Revealed) => void;
@@ -423,7 +437,7 @@ function UserRow({
         </span>
         {confirming && (
           <ActionDialog title={user.display_name} onClose={() => setConfirming(null)} canClose={() => !busy}>
-            <p>{CONFIRM_TEXT[confirming](user.display_name)}</p>
+            <p>{CONFIRM_TEXT[confirming](user.display_name, providers)}</p>
             {/* [Cancel] [Yes, ...]: the action last; Cancel has focus, so Enter never acts by accident. */}
             <div className="actions">
               <button type="button" className="btn" data-autofocus disabled={busy} onClick={() => setConfirming(null)}>
@@ -448,41 +462,78 @@ function UserRow({
 }
 
 /** Connections to approve (#457 phase 1): each waiting Google account, its person, email and
- * day, with Approve and Decline; shown only while any wait (and never while no provider is on). */
+ * day, with Approve and Decline; shown while any wait, or when the list could not be loaded
+ * (never on the 404 while no provider is on). */
 function ConnectionsToApprove({ onApproved, onNotice }: { onApproved(): void; onNotice(notice: Notice): void }) {
+  const [attempt, setAttempt] = useState(0);
   const [pending, setPending] = useState<PendingConnection[]>([]);
+  const [failed, setFailed] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
 
   useEffect(() => {
     let live = true;
     pendingConnections().then(
       (reply) => {
-        if (live) setPending(reply.items);
+        if (!live) return;
+        setPending(reply.items);
+        setFailed(false);
       },
-      () => undefined, // 404 while no provider is on, or no answer: nothing to approve shows
+      (caught: unknown) => {
+        // 404: no provider is on, so there is nothing to approve. Anything else is said.
+        if (live) setFailed(!(caught instanceof ApiError && caught.status === 404));
+      },
     );
     return () => {
       live = false;
     };
-  }, []);
+  }, [attempt]);
 
-  async function decide(row: PendingConnection, approve: boolean) {
+  async function decide(row: PendingConnection, approve: boolean, at: number) {
     setBusy(row.id);
     try {
       const reply = await (approve ? approveConnection(row.id) : declineConnection(row.id));
-      setPending(reply.items);
+      flushSync(() => {
+        setPending(reply.items);
+        setBusy(null);
+      });
+      // The row is gone: on to the next row's Approve, else the Users heading.
+      const next = reply.items[at];
+      document.getElementById(next ? approveId(next.id) : USERS_HEADING_ID)?.focus();
       onNotice({ text: `${row.display_name}: Google ${approve ? "approved" : "declined"}.` });
       if (approve) onApproved();
     } catch (caught) {
+      setBusy(null);
+      if (caught instanceof ApiError && caught.status === 404) {
+        onNotice({ text: ALREADY_DECIDED });
+        setAttempt((n) => n + 1); // the list as it is now
+        return;
+      }
       onNotice({
         problem: true,
         text: caught instanceof ApiError ? caught.message : "Could not save the change. Check your connection, then try again.",
       });
-    } finally {
-      setBusy(null);
     }
   }
 
+  if (failed) {
+    return (
+      <section className={styles.section} aria-labelledby="connections-heading">
+        <h2 id="connections-heading" className={styles.sectionHeading}>
+          Connections to approve
+        </h2>
+        <div className={styles.errorBanner} role="alert">
+          <Icon name="alert" className={styles.errorIcon} />
+          <div className={styles.errorBody}>
+            <p className={styles.errorTitle}>{CONNECTIONS_FAILED}</p>
+          </div>
+          <button type="button" className="btn" onClick={() => setAttempt((n) => n + 1)}>
+            <Icon name="refresh" />
+            Try again
+          </button>
+        </div>
+      </section>
+    );
+  }
   if (pending.length === 0) return null;
   return (
     <section className={styles.section} aria-labelledby="connections-heading">
@@ -490,14 +541,27 @@ function ConnectionsToApprove({ onApproved, onNotice }: { onApproved(): void; on
         Connections to approve
       </h2>
       <ul className={styles.connections}>
-        {pending.map((row) => (
+        {pending.map((row, at) => (
           <li key={row.id} className={styles.connection}>
             <span className={styles.connectionText}>{pendingLine(row)}</span>
             <span className={styles.rowActions}>
-              <button type="button" className="btn btn-primary" disabled={busy !== null} onClick={() => void decide(row, true)}>
+              <button
+                type="button"
+                id={approveId(row.id)}
+                className="btn"
+                aria-label={decideLabel(row, true)}
+                disabled={busy !== null}
+                onClick={() => void decide(row, true, at)}
+              >
                 Approve
               </button>
-              <button type="button" className="btn" disabled={busy !== null} onClick={() => void decide(row, false)}>
+              <button
+                type="button"
+                className="btn"
+                aria-label={decideLabel(row, false)}
+                disabled={busy !== null}
+                onClick={() => void decide(row, false, at)}
+              >
                 Decline
               </button>
               {busy === row.id && <span className="spinner" aria-hidden="true" />}
