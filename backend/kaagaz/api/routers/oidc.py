@@ -38,7 +38,8 @@ provider's own routes: while that one is off), before anything else is read.
   or ?error=<code>.
 * ``GET /auth/identities``: Ways to sign in's ``{providers, identities}``: the providers
   switched on and the user's own connections. ``POST /auth/identities/{id}/remove``
-  {password}: disconnect (or cancel a waiting) one of the user's own (someone else's: 404),
+  {password?}: disconnect one of the user's own with the password, or cancel a waiting one
+  without it (it never signed in; someone else's: 404),
   audited ``auth.identity_unlinked``; every other browser is signed out, this one stays, the
   password keeps working, and a security notice is emailed. At most CONNECTS_PER_HOUR a user.
 * ``GET /auth/oidc/notice``: "isn't connected" names the provider's email, which never goes in
@@ -100,18 +101,18 @@ from kaagaz.api.middleware import RateLimiter
 from kaagaz.api.oidc import Identity, OidcError, Provider
 from kaagaz.api.routers.admin import MAX_PASSWORD
 from kaagaz.api.routers.auth import (
-    CODE_REQUIRED,
     MAX_CODE,
-    WRONG_CODE,
     _audit_failure,
     _begin,
     _check_current_password,
-    _code_problem,
     _failed,
     _finish_second_step,
     _open_session,
+    _per_user_limit,
+    _prove,
     _record,
     _scope,
+    _succeeded,
 )
 from kaagaz.api.twostep import refused as _refused
 from kaagaz.api.twostep import unix
@@ -136,8 +137,11 @@ CONNECTS_PER_HOUR = 10
 connect_limits = RateLimiter(CONNECTS_PER_HOUR, window_seconds=3600)
 TOO_MANY_CONNECTS = "Too many tries to connect an account. Try again in an hour."
 # Disconnects an hour for one user (PROVISIONAL), the spec's per-user limit: each checks the password.
+# Per user only: behind the Next.js proxy a per-address limit would be one cap for the whole site
+# (kaagaz/api/middleware.py), as CALLBACKS_PER_HOUR says.
 remove_limits = RateLimiter(CONNECTS_PER_HOUR, window_seconds=3600)
 TOO_MANY_REMOVES = "Too many tries to disconnect an account. Try again in an hour."
+PROOF_NEEDED = "Type your Kaagaz password to continue."
 LOGIN = "/login"
 WAYS = "/settings/sign-in"  # Account, Ways to sign in
 # A plain path on this site: no scheme, host, "//", "\", "%" or fragment can get through.
@@ -153,10 +157,10 @@ class ConnectBody(BaseModel):
     code: str | None = Field(default=None, max_length=MAX_CODE)  # with two-step sign-in on
 
 
-class PasswordBody(BaseModel):
+class RemoveBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    password: str = Field(min_length=1, max_length=MAX_PASSWORD)
+    password: str | None = Field(default=None, min_length=1, max_length=MAX_PASSWORD)  # not to cancel
 
 
 class CodeBody(BaseModel):
@@ -228,19 +232,9 @@ def start(provider: ProviderOn, request: Request, context: Context) -> RedirectR
 
 @router.post("/auth/oidc/{provider}/connect")
 def connect(provider: ProviderOn, body: ConnectBody, user: User, context: Context) -> JSONResponse:
-    key = f"user:{user.user_id}"
-    if not connect_limits.allow(key):
-        wait = str(connect_limits.retry_after(key))
-        raise ApiError(429, "rate_limited", TOO_MANY_CONNECTS, headers={"Retry-After": wait})
+    _per_user_limit(connect_limits, user, TOO_MANY_CONNECTS)
+    _prove(context, user, body.password, body.code)  # the code too for anyone with codes on
     now = context.clock()
-    attempt = _check_current_password(context, user, body.password, now)
-    if attempt.totp_enabled_at is not None:  # anyone with codes on (always an admin)
-        problem = _code_problem(context, attempt, body.code)
-        if problem is not None:
-            _failed(context, attempt, problem)
-            raise ApiError(400, "bad_request", CODE_REQUIRED if problem == "code_required" else WRONG_CODE)
-    with context.db.customer(user.customer_id) as conn:
-        users_sql.attempt_succeeded(conn, user.customer_id, user.user_id, now=now)
     flow = _new_flow(provider, WAYS, unix(now), user)
     url = oidc.authorize_url(
         provider, context.settings, state=flow.state, nonce=flow.nonce, verifier=flow.verifier
@@ -336,24 +330,32 @@ def my_identities(user: User, context: Context) -> dict[str, Any]:
 @router.post("/auth/identities/{identity_id}/remove", dependencies=[Depends(_any_on)])
 def remove_identity(
     identity_id: uuid.UUID,
-    body: PasswordBody,
+    body: RemoveBody,
     user: User,
     request: Request,
     background: BackgroundTasks,
     context: Context,
 ) -> JSONResponse:
-    """Disconnect (or cancel a waiting) connection of the user's own, with the password. Every
-    other browser is signed out, this one stays; the password keeps working."""
-    key = f"user:{user.user_id}"
-    if not remove_limits.allow(key):
-        wait = str(remove_limits.retry_after(key))
-        raise ApiError(429, "rate_limited", TOO_MANY_REMOVES, headers={"Retry-After": wait})
-    now = context.clock()
-    _check_current_password(context, user, body.password, now)
+    """Disconnect one connection of the user's own, with the password, or cancel a waiting one
+    (it never signed in, so no password). Every other browser is signed out, this one stays;
+    the password keeps working."""
+    _per_user_limit(remove_limits, user, TOO_MANY_REMOVES)
     with context.db.customer(user.customer_id) as conn:
-        users_sql.attempt_succeeded(conn, user.customer_id, user.user_id, now=now)
+        mine = {str(row["id"]): row for row in identities.for_user(conn, user.customer_id, user.user_id)}
+    found = mine.get(str(identity_id))
+    if found is None:  # someone else's, or none
+        raise ApiError(404, "not_found")
+    waiting = found["status"] == "pending"
+    if not waiting:
+        if body.password is None:
+            raise ApiError(400, "bad_request", PROOF_NEEDED)
+        _succeeded(context, _check_current_password(context, user, body.password, context.clock()))
     with context.db.customer(user.customer_id) as conn:
-        removed = identities.remove(conn, user.customer_id, str(identity_id), user_id=user.user_id)
+        # Without the password, only while it still waits (an admin may approve it meanwhile).
+        status = "pending" if waiting else None
+        removed = identities.remove(
+            conn, user.customer_id, str(identity_id), user_id=user.user_id, status=status
+        )
         if removed is None:
             raise ApiError(404, "not_found")
         version = users_sql.bump_session_version(conn, user.customer_id, user.user_id)

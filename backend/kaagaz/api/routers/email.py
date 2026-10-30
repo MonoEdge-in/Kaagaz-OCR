@@ -46,6 +46,7 @@ from kaagaz.api.emails import email_on, new_link, send, token_hash
 from kaagaz.api.errors import ApiError
 from kaagaz.api.middleware import RateLimiter
 from kaagaz.api.routers.admin import MAX_PASSWORD, MIN_PASSWORD, valid_email
+from kaagaz.api.routers.auth import _per_user_limit
 from kaagaz.db import audit, identities
 from kaagaz.db import email_links as links_sql
 from kaagaz.db import users as users_sql
@@ -113,8 +114,7 @@ def confirm_email(body: TokenBody, context: Context) -> dict[str, bool]:
 
 @router.post("/auth/email/send-confirm")
 def send_confirm(user: User, context: Context) -> dict[str, bool]:
-    if not confirm_limits.allow(user.user_id):
-        raise ApiError(429, "rate_limited", TOO_MANY_LINKS, headers={"Retry-After": "3600"})
+    _per_user_limit(confirm_limits, user, TOO_MANY_LINKS)
     link = new_link(context, user.customer_id, user.user_id, "confirm")
     return {"ok": True, "sent": send(context, user.email, "confirm", emails.confirm_email(link))}
 

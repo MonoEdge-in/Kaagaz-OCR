@@ -397,6 +397,31 @@ def test_remove_needs_password_and_keeps_password_sign_in_working(db: Database, 
     assert to_member[-1] == "A Google account was disconnected"
 
 
+def test_cancelling_a_waiting_request_needs_no_password_but_a_disconnect_does(
+    db: Database, google: FakeGoogle
+) -> None:
+    """A waiting connection never signed in, so cancelling it takes nothing away (#457 review)."""
+    api = _api(db)
+    member = api.new_signed("member")
+    _connect(api, google, member)  # waiting
+    [waiting] = member.client.get("/api/auth/identities").json()["identities"]
+    cancelled = member.client.post(f"/api/auth/identities/{waiting['id']}/remove", json={}, headers=CSRF)
+    assert cancelled.status_code == 200, cancelled.text
+    assert _mine(api, member) == []
+    assert api.user_state(member.customer_id, member.user_id)["failed_logins"] == 0
+
+    _connect(api, google, member, member.email)  # approved at once
+    [approved] = member.client.get("/api/auth/identities").json()["identities"]
+    path = f"/api/auth/identities/{approved['id']}/remove"
+    refused = member.client.post(path, json={}, headers=CSRF)
+    assert (refused.status_code, refused.json()["error"]) == (
+        400,
+        {"code": "bad_request", "message": "Type your Kaagaz password to continue."},
+    )
+    assert len(_mine(api, member)) == 1
+    assert member.client.post(path, json={"password": PASSWORD}, headers=CSRF).status_code == 200
+
+
 def test_remove_someone_elses_is_404(db: Database, google: FakeGoogle) -> None:
     api = _api(db)
     member = api.new_signed("member")

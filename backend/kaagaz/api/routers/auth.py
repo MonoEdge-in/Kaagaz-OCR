@@ -364,17 +364,11 @@ def turn_off_two_step(
     if not user.totp_enabled:
         raise ApiError(409, "conflict", "Two-step sign-in is already off.")
     now = context.clock()
-    attempt = _check_current_password(context, user, body.password, now)
-    problem = _code_problem(context, attempt, body.code)
-    if problem is not None:
-        _failed(context, attempt, problem)
-        raise ApiError(400, "bad_request", CODE_REQUIRED if problem == "code_required" else WRONG_CODE)
-
+    _prove(context, user, body.password, body.code)
     with context.db.customer(user.customer_id) as conn:
         row = users_sql.reset_totp(conn, user.customer_id, user.user_id)
         if row is None:
             raise ApiError(401, "not_signed_in")
-        users_sql.attempt_succeeded(conn, user.customer_id, user.user_id, now=now)
         _record(conn, user.customer_id, "auth.totp_off", actor=user.user_id, target=user.user_id)
     changed = dataclasses.replace(user, session_version=int(row["session_version"]), totp_enabled=False)
     response = _keep_this_browser(request, context, changed, now)
@@ -394,13 +388,7 @@ def change_password(
     if body.new_password == body.current_password:
         raise ApiError(400, "bad_request", "Choose a new password that is different from the current one.")
     now = context.clock()
-    attempt = _check_current_password(context, user, body.current_password, now)
-    if attempt.totp_enabled_at is not None:
-        problem = _code_problem(context, attempt, body.code)
-        if problem is not None:
-            _failed(context, attempt, problem)
-            raise ApiError(400, "bad_request", CODE_REQUIRED if problem == "code_required" else WRONG_CODE)
-
+    _prove(context, user, body.current_password, body.code)
     password_hash = hash_password(body.new_password)
     with context.db.customer(user.customer_id) as conn:
         row = users_sql.set_password(
@@ -408,7 +396,6 @@ def change_password(
         )
         if row is None:
             raise ApiError(401, "not_signed_in")
-        users_sql.attempt_succeeded(conn, user.customer_id, user.user_id, now=now)
         links_sql.void_all(conn, user.customer_id, user.user_id, now=now)  # a reset link sent before
         _record(conn, user.customer_id, "auth.password_change", actor=user.user_id, target=user.user_id)
     changed = dataclasses.replace(
@@ -563,6 +550,27 @@ def _check_current_password(
         _failed(context, attempt, "wrong_password")
         raise ApiError(400, "bad_request", "Your current password is not right.")
     return attempt
+
+
+def _prove(context: AppContext, user: CurrentUser, password: str, code: str | None) -> None:
+    """The signed-in user's proof before a change to how they sign in: the password, then the
+    code for anyone with two-step sign-in on (always an admin), each counted like a sign-in,
+    else a 400 that says what is wrong; then the count starts again. Turning codes off, Change
+    password and connecting an account share it."""
+    attempt = _check_current_password(context, user, password, context.clock())
+    if attempt.totp_enabled_at is not None:
+        problem = _code_problem(context, attempt, code)
+        if problem is not None:
+            _failed(context, attempt, problem)
+            raise ApiError(400, "bad_request", CODE_REQUIRED if problem == "code_required" else WRONG_CODE)
+    _succeeded(context, attempt)
+
+
+def _per_user_limit(limiter: RateLimiter, user: CurrentUser, message: str) -> None:
+    """At most ``limiter``'s allowance for this user, else 429 with ``message`` and when to try again."""
+    key = f"user:{user.user_id}"
+    if not limiter.allow(key):
+        raise ApiError(429, "rate_limited", message, headers={"Retry-After": str(limiter.retry_after(key))})
 
 
 def _scope(attempt: AttemptRow) -> str:
