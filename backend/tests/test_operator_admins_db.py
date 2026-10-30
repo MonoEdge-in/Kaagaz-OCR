@@ -105,10 +105,19 @@ def test_an_operator_manages_one_admin_with_one_row_per_change(db: Database) -> 
     assert [item["locked"] for item in client.get(base).json()["items"] if item["id"] == uid] == [True]
     assert client.post(f"{base}/{uid}/unlock", headers=CSRF).json()["admin"]["locked"] is False
     api.clock.advance(totp.STEP_SECONDS)
+    with db.customer(a) as conn:  # the admin had turned it off themselves (30 Oct 2026)
+        conn.execute(
+            text(
+                "UPDATE users SET totp_secret_enc = NULL, totp_enabled_at = NULL, totp_last_step = NULL,"
+                " totp_off_at = :t WHERE id = :u"
+            ),
+            {"t": api.clock(), "u": uid},
+        )
     reset = client.post(f"{base}/{uid}/reset-2fa", json={"code": api.code(operator.secret)}, headers=CSRF)
     assert reset.json()["admin"]["two_step"] is False
     state = api.user_state(a, uid)
     assert (state["failed_logins"], state["totp_secret_enc"], state["totp_enabled_at"]) == (0, None, None)
+    assert state["totp_off_at"] is None  # a reset means set it up again, not turned off
     again = api.admin_login(api.client(), admin.email, password=PASSWORD)  # sets two-step up again
     assert (again.status_code, again.json()["error"]["code"]) == (403, "mfa_enrol_required")
 

@@ -14,7 +14,9 @@ VERSIONS = BACKEND / "migrations" / "versions"
 
 
 def _revision(path: Path) -> str:
-    match = re.search(r'^revision = "(\d{4})"$', path.read_text(encoding="utf-8"), re.MULTILINE)
+    # Changed on purpose (30 Oct 2026): a letter may follow the 4 digits ("0061b"), for a
+    # revision made while another branch holds the next number; the line still has one head.
+    match = re.search(r'^revision = "(\d{4}[a-z]?)"$', path.read_text(encoding="utf-8"), re.MULTILINE)
     assert match is not None, path.name
     return match.group(1)
 
