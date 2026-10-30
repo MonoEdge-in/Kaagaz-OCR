@@ -1028,6 +1028,7 @@ export interface AddedUser extends AdminUser {
 /** POST /auth/signup with email on (#457): no set-up yet, the email is confirmed first. */
 export interface SignUpConfirming {
   status: "confirm_email";
+  sent: boolean; // false: the confirm email could not be sent
 }
 
 /** A reset password: the temporary password is in this one reply only. */

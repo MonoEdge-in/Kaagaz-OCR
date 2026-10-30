@@ -68,10 +68,10 @@ export function ForgotForm() {
         <h1 id="forgot-title" className={login.title}>
           Forgot password?
         </h1>
-        <p className={login.lead}>Type the e-mail you sign in with. We will send a link to choose a new password.</p>
+        <p className={login.lead}>Type the email you sign in with. We will send a link to choose a new password.</p>
       </div>
       <div className="field">
-        <label htmlFor={EMAIL_ID}>E-mail</label>
+        <label htmlFor={EMAIL_ID}>Email</label>
         <input
           id={EMAIL_ID}
           className="input"

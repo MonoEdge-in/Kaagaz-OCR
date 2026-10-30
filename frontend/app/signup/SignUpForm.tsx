@@ -25,9 +25,9 @@ import {
   MAX_EMAIL,
   MAX_NAME,
   MAX_ORGANISATION,
-  CHECK_EMAIL,
   PASSWORD_HINT,
   SIGN_UP_OFF,
+  checkEmail,
   firstInvalidSignUp,
   signUpBody,
   signUpError,
@@ -64,8 +64,8 @@ export function SignUpForm() {
   const [busy, setBusy] = useState(false);
   // Signed up: the two-step set-up the server sent (no session before the first code).
   const [enrol, setEnrol] = useState<TwoStepSetup | null>(null);
-  // Or, with email on, the confirm link went to the email (#457).
-  const [confirming, setConfirming] = useState(false);
+  // Or, with email on, the confirm link went to the email, or could not be sent (#457).
+  const [confirming, setConfirming] = useState<{ sent: boolean } | null>(null);
   // N3 (QA 17 Oct): asked as SignUpLink does; switched off, no form is shown. No answer: the form stays.
   // null while asking, so the form never flashes before an "off" reply (CodeRabbit).
   const [off, setOff] = useState<boolean | null>(null);
@@ -112,7 +112,7 @@ export function SignUpForm() {
     setBusy(true);
     try {
       const reply = await signUp(signUpBody(input));
-      if (signUpConfirming(reply)) setConfirming(true);
+      if (signUpConfirming(reply)) setConfirming({ sent: reply.sent });
       else setEnrol(reply);
       setBusy(false);
     } catch (caught) {
@@ -122,12 +122,13 @@ export function SignUpForm() {
   }
 
   if (confirming) {
+    const words = checkEmail(signUpBody(input).email, confirming.sent);
     return (
       <div className={login.form}>
         <div className={login.intro}>
-          <h1 className={login.title}>Check your email</h1>
+          <h1 className={login.title}>{words.title}</h1>
           <p className={login.lead} role="status">
-            {CHECK_EMAIL}
+            {words.text}
           </p>
         </div>
         <ResendConfirm email={signUpBody(input).email} />
@@ -213,7 +214,7 @@ export function SignUpForm() {
 
       {textField("organisation", "Organisation name", MAX_ORGANISATION, "organization")}
       {textField("name", "Your name", MAX_NAME, "name")}
-      {textField("email", "Work e-mail", MAX_EMAIL, "username")}
+      {textField("email", "Work email", MAX_EMAIL, "username")}
 
       <PasswordField
         id={FIELD_IDS.password}

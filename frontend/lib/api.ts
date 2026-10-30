@@ -270,8 +270,11 @@ export const changePassword = (current: string, next: string, code?: string) =>
 // Email (#457 phase 0): every route is 404 while the server's email is off.
 /** Resolves while email is on (the sign-in page's "Forgot password?"); rejects with 404 when off. */
 export const emailOpen = () => request<{ enabled: boolean }>("GET", "/auth/email");
-export const confirmEmail = (token: string) => request<{ ok: boolean }>("POST", "/auth/email/confirm", { token });
-export const sendConfirmEmail = () => request<{ ok: boolean }>("POST", "/auth/email/send-confirm");
+/** ``pending``: the confirmed person's organisation is a sign-up waiting for approval. */
+export const confirmEmail = (token: string) =>
+  request<{ ok: true; pending: boolean }>("POST", "/auth/email/confirm", { token });
+/** ``sent`` is false when the email could not be sent. */
+export const sendConfirmEmail = () => request<{ ok: true; sent: boolean }>("POST", "/auth/email/send-confirm");
 /** "Send the link again" with no session (a waiting sign-up's admin): always the same reply. */
 export const resendConfirmEmail = (email: string) =>
   request<{ message: string }>("POST", "/auth/email/resend-confirm", { email });

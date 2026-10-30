@@ -87,7 +87,7 @@ export function SignInForm({
     password: false,
   });
   const [serverError, setServerError] = useState<string | null>(null);
-  // The organisation is a sign-up waiting for approval (#457): "Send the link again" shows.
+  // The organisation is a sign-up waiting for approval (#457): "Send the confirm link again" shows.
   const [pending, setPending] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -188,7 +188,7 @@ export function SignInForm({
         <p className={styles.lead}>
           {askCode
             ? `Two-step sign-in is on for ${normalizeEmail(email)}. Enter the 6-digit code from your authenticator app.`
-            : "Use the e-mail your admin set up for you, or the one you signed up with."}
+            : "Use the email your admin set up for you, or the one you signed up with."}
         </p>
       </div>
       <SignedOutNotice message={note} />
@@ -197,7 +197,7 @@ export function SignInForm({
       {!askCode && (
         <>
           <div className="field">
-            <label htmlFor={FIELD_IDS.email}>E-mail</label>
+            <label htmlFor={FIELD_IDS.email}>Email</label>
             <input
               id={FIELD_IDS.email}
               className="input"
@@ -276,7 +276,7 @@ export function SignInForm({
 
       {askCode && (
         <button type="button" className="btn btn-block" disabled={busy} onClick={back}>
-          Back to e-mail and password
+          Back to email and password
         </button>
       )}
 

@@ -12,6 +12,29 @@ export const RESEND_SENT = "If that email is waiting to be confirmed, we've sent
 export const NETWORK_FAILURE = "Could not reach Kaagaz. Check your internet connection and try again.";
 export const EMAIL_DOWN = "This is not working right now. Try again in a minute.";
 export const TOO_MANY_LINKS = "We sent a few links already. Try again in an hour.";
+export const EMAIL_OFF = "Email isn't switched on for Kaagaz yet.";
+export const SEND_FAILED = "We couldn't send the email. Try again in a minute.";
+
+// What to do about a gone link, on each link's page (#457 review).
+const GONE_NEXT = {
+  reset: "Ask for a new one from Forgot password.",
+  invite: "Ask your admin to send a new invite.",
+  confirm: "Sign in to get a new link.",
+} as const;
+
+export type LinkPage = keyof typeof GONE_NEXT;
+
+/** "That link has expired or was already used.", then what to do on this page. */
+export function linkGone(page: LinkPage): string {
+  return `${LINK_GONE} ${GONE_NEXT[page]}`;
+}
+
+/** The confirm page's words: the wait is said only for a sign-up waiting for approval. */
+export function confirmedText(pending: boolean): string {
+  return pending
+    ? "Your email is confirmed. Your organisation is waiting for approval from the Kaagaz team."
+    : "Your email is confirmed.";
+}
 
 // The server's tokens: URL-safe base64, 43 characters for 32 bytes (at most 128 accepted).
 const TOKEN = /^[A-Za-z0-9_-]{1,128}$/;
@@ -31,16 +54,19 @@ export function takeToken(): string | null {
   return token;
 }
 
-/** What a link page says when the server says no. A 404 is email switched off: the link is no good. */
-export function linkError(caught: unknown): string {
+/** What an email page says when the server says no; ``page``: a link's page, which says what to
+ * do about a gone link. A 404 is email switched off. Anything unexpected is logged. */
+export function linkError(caught: unknown, page?: LinkPage): string {
   if (caught instanceof ApiError) {
-    if (caught.code === "link_expired" || caught.status === 404) return LINK_GONE;
+    if (caught.code === "link_expired") return page ? linkGone(page) : LINK_GONE;
+    if (caught.status === 404) return EMAIL_OFF;
     if (caught.status === 400) return caught.message.trim() || LINK_GONE;
     if (caught.status === 429) return TOO_MANY_LINKS;
     if (caught.status === 0) return NETWORK_FAILURE;
-    return EMAIL_DOWN;
+  } else if (caught instanceof TypeError) {
+    return NETWORK_FAILURE;
   }
-  if (caught instanceof TypeError) return NETWORK_FAILURE;
+  console.error("email request failed", caught);
   return EMAIL_DOWN;
 }
 
@@ -49,5 +75,5 @@ export function linkError(caught: unknown): string {
 export function confirmBanner(email: string, sent: boolean): { text: string; button: string } {
   return sent
     ? { text: `Confirm your email. We sent a link to ${email}.`, button: "Send again" }
-    : { text: `Confirm your email address, ${email}.`, button: "Send link" };
+    : { text: `Confirm your email, ${email}.`, button: "Send link" };
 }

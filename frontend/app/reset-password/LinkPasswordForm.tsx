@@ -17,7 +17,7 @@ import { Icon } from "@/components/ui/Icon";
 import { PasswordField } from "@/components/ui/PasswordField";
 import { useHydrated } from "@/components/ui/useHydrated";
 import { acceptInvite, resetPassword } from "@/lib/api";
-import { LINK_MISSING, linkError, takeToken } from "@/lib/emailLinks";
+import { LINK_GONE, LINK_MISSING, linkError, linkGone, takeToken } from "@/lib/emailLinks";
 import login from "../login/login.module.css";
 
 const WORDS = {
@@ -30,7 +30,7 @@ const WORDS = {
   invite: {
     title: "Choose your password",
     lead: "Welcome to Kaagaz. Choose the password you will sign in with.",
-    done: "Your password is set. Sign in with your e-mail and your new password.",
+    done: "Your password is set. Sign in with your email and your new password.",
     send: acceptInvite,
   },
 } as const;
@@ -81,7 +81,7 @@ export function LinkPasswordForm({ kind }: { kind: keyof typeof WORDS }) {
       await words.send(token.current, next);
       setDone(true);
     } catch (caught) {
-      setFailure(linkError(caught));
+      setFailure(linkError(caught, kind));
     }
     setBusy(false);
   }
@@ -138,7 +138,13 @@ export function LinkPasswordForm({ kind }: { kind: keyof typeof WORDS }) {
       {failure && (
         <div className={login.banner} role="alert">
           <Icon name="alert" />
-          {failure}
+          {failure === linkGone("reset") ? (
+            <span>
+              {LINK_GONE} Ask for a new one from <Link href="/forgot-password">Forgot password</Link>.
+            </span>
+          ) : (
+            failure
+          )}
         </div>
       )}
       <button

@@ -95,7 +95,7 @@ export function ProviderCodeStep({ next }: { next: string }) {
         </button>
       )}
       <a className="btn btn-block" href="/login">
-        Back to e-mail and password
+        Back to email and password
       </a>
     </form>
   );

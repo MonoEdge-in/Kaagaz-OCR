@@ -223,7 +223,8 @@ describe("sign-in markup", () => {
     expect(form).toMatch(/\{!askCode && \(\s*<>\s*<div className="field">/);
     expect(form).toContain("if (!askCode && codeNeeded(caught))");
     expect(form).toContain("askCode ? normalizeCode(code) : undefined");
-    expect(form).toContain("Back to e-mail and password");
+    // Changed on purpose (#457 review): one spelling, "email".
+    expect(form).toContain("Back to email and password");
   });
 
   it("shows the set-up link as a QR code above the typed key, never as text", () => {

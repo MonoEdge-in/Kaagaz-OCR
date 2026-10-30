@@ -76,7 +76,8 @@ describe("what a failed sign-up says", () => {
       message: ACCOUNT_EXISTS,
       signInInstead: true,
     });
-    expect(ACCOUNT_EXISTS).toBe("An account with this e-mail already exists. Sign in instead.");
+    // Changed on purpose (#457 review): one spelling, "email".
+    expect(ACCOUNT_EXISTS).toBe("An account with this email already exists. Sign in instead.");
   });
 
   it("names the hourly limit, the switch, bad details and the network", () => {

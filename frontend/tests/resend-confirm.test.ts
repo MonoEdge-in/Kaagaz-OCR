@@ -23,7 +23,8 @@ describe("Send the link again", () => {
   it("is one button", () => {
     const html = renderToStaticMarkup(createElement(ResendConfirm, { email: "ramesh@example.com" }));
     expect(html).toContain('type="button"');
-    expect(html).toContain("Send the link again");
+    // Changed on purpose (#457 review): the button says which link.
+    expect(html).toContain("Send the confirm link again");
   });
 
   it("shows on the sign-up's Check your email screen", () => {
