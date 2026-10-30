@@ -20,6 +20,7 @@ from tests.db_support import migrate
 from tests.test_api_support import (
     CSRF,
     EMAIL_ROUTES,
+    OIDC_ROUTES,
     PASSWORD,
     Api,
     TestClient,
@@ -49,7 +50,8 @@ OPEN_TO_ALL = {
     ("POST", "/api/auth/signup"),
 }
 # Changed on purpose (#457): 404 while email is off, whoever asks (tests/test_api_email.py).
-EMAIL_OFF = set(EMAIL_ROUTES)
+# Changed on purpose (#457 phase 1): the provider sign-in's too, while no provider is on.
+EMAIL_OFF = set(EMAIL_ROUTES) | set(OIDC_ROUTES)
 WRONG = "not the password!!"
 _INSERT = "INSERT INTO operators (email, display_name, password_hash) VALUES (:e, 'Ops', :h) RETURNING id"
 # As the CLI issues a secret (pending) and as the first valid code leaves it (confirmed).

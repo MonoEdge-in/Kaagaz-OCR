@@ -36,9 +36,10 @@
   5-minute confirm cookie (kaagaz/api/auth.py) for Delete forever. 204.
 * ``POST /auth/logout``, ``POST /auth/logout-everywhere``, ``GET /auth/me``.
 * ``GET /auth/session`` (issue 378): the app's first look, 200 either way: ``{signed_in:
-  false}`` with no session (one ``/auth/me`` would refuse with 401), else ``{signed_in:
-  true, me}``, the same checks and reply as ``/auth/me``. A signed-out visit then logs no
-  expected 401 in the browser before it goes to sign in.
+  false, providers}`` with no session (one ``/auth/me`` would refuse with 401; ``providers``:
+  those switched on, #457), else ``{signed_in: true, me}``, the same checks and reply as
+  ``/auth/me``. A signed-out visit then logs no expected 401 in the browser before it goes to
+  sign in.
 * ``POST /auth/signup`` {organisation_name, name, email, password} (16 Oct 2026): anyone
   makes a new organisation and its first admin, with their own password. The reply (201) is
   the two-step set-up offer {enrol_token, secret, otpauth_uri}, no session: the first code
@@ -95,9 +96,10 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 from sqlalchemy import Connection
 
-from kaagaz.api import emails, totp
+from kaagaz.api import emails, oidc, totp
 from kaagaz.api.auth import (
     CurrentUser,
+    SessionClaims,
     User,
     UserAllowPasswordChange,
     clear_session_cookie,
@@ -434,12 +436,17 @@ def me(user: UserAllowPasswordChange, context: Context) -> dict[str, Any]:
 
 @router.get("/auth/session")
 def session(request: Request) -> dict[str, Any]:
-    """``/auth/me``'s checks, with no session a 200 ``{signed_in: false}``, not a 401."""
+    """``/auth/me``'s checks, with no session a 200 ``{signed_in: false, providers}``, not a
+    401. ``providers``: the sign-in page's "Continue with" buttons, those switched on (#457)."""
     try:
         user = current_user_allow_password_change(request)
     except ApiError as error:
         if error.status == 401:
-            return {"signed_in": False}
+            settings = get_context(request).settings
+            return {
+                "signed_in": False,
+                "providers": [name for name in oidc.PROVIDERS if oidc.enabled(settings, name)],
+            }
         raise
     return {"signed_in": True, "me": me_json(user, email_on=email_on(get_context(request)))}
 
@@ -523,10 +530,16 @@ def _scope(attempt: AttemptRow) -> str:
     return "admin" if attempt.role == "admin" else "app"
 
 
-def _finish_second_step(context: AppContext, attempt: AttemptRow, code: str | None) -> JSONResponse:
-    """After a right first step (the password; later a connected Google or Microsoft account),
-    the second, for every role (#457): the session, once the code is right for anyone with
-    two-step sign-in on. ``attempt`` is the counted attempt of an enabled user.
+def _finish_second_step(
+    context: AppContext,
+    attempt: AttemptRow,
+    code: str | None,
+    details: dict[str, audit.DetailValue] | None = None,
+) -> JSONResponse:
+    """After a right first step (the password, or a connected Google account), the second, for
+    every role (#457): the session, once the code is right for anyone with two-step sign-in on.
+    ``attempt`` is the counted attempt of an enabled user; ``details`` go on its ``auth.login``
+    audit row (a provider sign-in's ``{"via": "google"}``).
 
     * No code set up: a member or reviewer gets their app session. An admin must set one up
       first: 403 ``mfa_enrol_required`` with the set-up offer and no session, except with a
@@ -554,7 +567,9 @@ def _finish_second_step(context: AppContext, attempt: AttemptRow, code: str | No
         if problem == "code_required":
             raise ApiError(401, "code_required", CODE_REQUIRED)
         raise _refused(context)
-    return _start_session(context, attempt.customer_id, attempt.user_id, scope=scope, action="auth.login")
+    return _start_session(
+        context, attempt.customer_id, attempt.user_id, scope=scope, action="auth.login", details=details
+    )
 
 
 def _code_problem(context: AppContext, attempt: AttemptRow, code: str | None) -> str | None:
@@ -602,6 +617,24 @@ def _start_session(
     details: dict[str, audit.DetailValue] | None = None,
 ) -> JSONResponse:
     """The ``Me`` reply and a new session cookie of this scope; clears the count."""
+    user, claims = _open_session(context, customer_id, user_id, scope=scope, action=action, details=details)
+    response = JSONResponse(me_json(user, email_on=email_on(context)))
+    set_session_cookie(response, claims, context.settings, now=_unix(context.clock()))
+    return response
+
+
+def _open_session(
+    context: AppContext,
+    customer_id: str,
+    user_id: str,
+    *,
+    scope: str,
+    action: str,
+    details: dict[str, audit.DetailValue] | None = None,
+) -> tuple[CurrentUser, SessionClaims]:
+    """A new session of this scope for an enabled user: clears the count, audits ``action``,
+    and gives the claims for the caller's reply (``_start_session``'s, or a provider sign-in's
+    redirect). The one 401 when the user was disabled in the meantime."""
     now = context.clock()
     user = load_user(context.db, customer_id, user_id, scope=scope)
     if user is None:  # disabled in the meantime
@@ -619,9 +652,7 @@ def _start_session(
         now=_unix(now),
         idle_hours=user.idle_hours,  # set: 24 hours, the idle timeout ends it (0040)
     )
-    response = JSONResponse(me_json(user, email_on=email_on(context)))
-    set_session_cookie(response, claims, context.settings, now=_unix(now))
-    return response
+    return user, claims
 
 
 def _enrol_offer(context: AppContext, user: CurrentUser) -> dict[str, str]:

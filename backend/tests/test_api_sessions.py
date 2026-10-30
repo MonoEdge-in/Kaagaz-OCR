@@ -20,7 +20,17 @@ from sqlalchemy import text
 from kaagaz.api import totp
 from kaagaz.api.auth import SESSION_COOKIE, SessionClaims, sign_session, verify_password
 from kaagaz.db.engine import Database
-from tests.test_api_support import CSRF, EMAIL_ROUTES, NOW, PASSWORD, Api, TestClient, call, route_calls
+from tests.test_api_support import (
+    CSRF,
+    EMAIL_ROUTES,
+    NOW,
+    OIDC_ROUTES,
+    PASSWORD,
+    Api,
+    TestClient,
+    call,
+    route_calls,
+)
 
 pytestmark = pytest.mark.db
 
@@ -249,9 +259,11 @@ def test_must_change_blocks_every_route_except_password_logout_and_me(db: Databa
         ("GET", "/api/auth/me"),
         ("GET", "/api/auth/session"),
     }
-    # Changed on purpose (#457): the email routes are 404 while email is off (tests/test_api_email.py).
-    calls = [call for call in route_calls(api.app) if call not in EMAIL_ROUTES]
-    assert open_to_all | allowed <= set(calls) and set(EMAIL_ROUTES) <= set(route_calls(api.app))
+    # Changed on purpose (#457): the email routes are 404 while email is off (tests/test_api_email.py),
+    # and the provider sign-in's while no provider is on (tests/test_api_oidc_signin.py).
+    switched_off = EMAIL_ROUTES + OIDC_ROUTES
+    calls = [call for call in route_calls(api.app) if call not in switched_off]
+    assert open_to_all | allowed <= set(calls) and set(switched_off) <= set(route_calls(api.app))
 
     # Fixed (#239, 27 Oct 2026): the operator's routes (0015) take an operator session, so a
     # customer's session gets their 401 before this gate; tests/test_operator_auth_db.py too.

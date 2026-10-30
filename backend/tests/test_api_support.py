@@ -565,6 +565,16 @@ EMAIL_ROUTES = (
 )
 
 
+# Ways to sign in (#457 phase 1): 404 while no provider is switched on, whoever asks
+# (tests/test_api_oidc_*.py). The provider is read by a dependency, so route_calls leaves it.
+OIDC_ROUTES = (
+    ("GET", "/api/auth/oidc/{provider}/start"),
+    ("GET", "/api/auth/oidc/{provider}/callback"),
+    ("GET", "/api/auth/oidc/notice"),
+    ("POST", "/api/auth/oidc/code"),
+)
+
+
 def route_calls(app: FastAPI, prefix: str = "/api") -> list[tuple[str, str]]:
     """Every (method, path) the app serves under ``prefix``, with each path
     parameter filled in: 1 for a number, a well-formed unknown id otherwise.
