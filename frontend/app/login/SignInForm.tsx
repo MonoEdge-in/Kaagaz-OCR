@@ -16,7 +16,7 @@
 // browser goes to `next` (/documents, or /admin when it came from there).
 // Ways to sign in (#457 phase 1): the provider buttons and the divider above the fields
 // (ProviderButtons), and after Google for anyone with codes on, only the code
-// (ProviderCodeStep).
+// (ProviderCodeStep). The providers and whether email is on come from the server page.
 
 import { useState } from "react";
 import type { FormEvent } from "react";
@@ -57,17 +57,22 @@ const CODE_HINT = "From your authenticator app. A new code shows every 30 second
 
 /** note: what the page says after signing out or a session ending (SignedOutNotice).
  * next: where to go once signed in (pathAfterSignIn, components/shell/gate.ts).
- * oidcError: a failed provider sign-in's code; providerStep: the code after a provider. */
+ * oidcError: a failed provider sign-in's code; providerStep: the code after a provider.
+ * providers, emailOn: what the server switched on (signInOptions.ts). */
 export function SignInForm({
   note,
   next,
   oidcError = null,
   providerStep = false,
+  providers,
+  emailOn,
 }: {
   note: string | null;
   next: string;
   oidcError?: string | null;
   providerStep?: boolean;
+  providers: readonly string[];
+  emailOn: boolean;
 }) {
   const hydrated = useHydrated();
   const [email, setEmail] = useState("");
@@ -193,7 +198,7 @@ export function SignInForm({
       </div>
       <SignedOutNotice message={note} />
 
-      {!askCode && <ProviderButtons next={next} error={oidcError} />}
+      {!askCode && <ProviderButtons next={next} error={oidcError} providers={providers} />}
       {!askCode && (
         <>
           <div className="field">
@@ -280,7 +285,7 @@ export function SignInForm({
         </button>
       )}
 
-      <ForgotPasswordLink />
+      <ForgotPasswordLink open={emailOn} />
     </form>
   );
 }

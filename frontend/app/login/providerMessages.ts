@@ -4,7 +4,7 @@
 // comes in the address: the page asks GET /api/auth/oidc/notice for it, once.
 
 export const CANCELLED = "Google sign-in was cancelled.";
-export const EXPIRED = "That sign-in expired. Try again.";
+export const EXPIRED = "That sign-in took too long. Go back and sign in again.";
 export const PASSWORD_FIRST = "Sign in with your email and password first to set up your 6-digit code.";
 export const REFUSED = "That account can't sign in right now. Ask your admin.";
 export const LOCKED =
