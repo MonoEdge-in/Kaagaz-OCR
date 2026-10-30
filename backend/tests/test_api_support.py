@@ -229,7 +229,8 @@ class Signed:
 
 @dataclass(frozen=True)
 class EnrolledAdmin:
-    """An admin whose two-step code is set up (by SQL, as enrolment would leave it)."""
+    """A user (an admin, or any role from ``enrol_user``) whose two-step code is set up (by SQL,
+    as enrolment would leave it)."""
 
     user_id: str
     email: str
@@ -324,7 +325,11 @@ class Api:
     def enrol_admin(self, customer_id: str) -> EnrolledAdmin:
         """A new admin with a two-step code already set up, written by SQL the way
         ``POST /auth/admin/enrol`` leaves it (the secret sealed with SecretBox)."""
-        user_id, email = self.add_user(customer_id, "admin")
+        return self.enrol_user(customer_id, "admin")
+
+    def enrol_user(self, customer_id: str, role: str) -> EnrolledAdmin:
+        """``enrol_admin`` for any role: members and reviewers may turn codes on too (#457)."""
+        user_id, email = self.add_user(customer_id, role)
         secret = totp.new_secret()
         sealed = SecretBox(self.settings.totp_encryption_key).seal(secret, aad=user_id)
         with self.db.customer(customer_id) as conn:

@@ -36,7 +36,7 @@ def test_b_setting_up_two_step_never_touches_a(db: Database) -> None:
         headers=CSRF,
     )
     assert on.status_code == 200, on.text
-    off = b.post("/api/auth/admin/2fa/off", json={"password": PASSWORD}, headers=CSRF)
+    off = b.post("/api/auth/2fa/off", json={"password": PASSWORD}, headers=CSRF)
     assert off.status_code == 403, off.text
 
     assert on.json()["user"]["id"] == b_id

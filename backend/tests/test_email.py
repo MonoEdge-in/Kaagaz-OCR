@@ -113,6 +113,7 @@ TEMPLATES = (
     emails.password_changed,
     emails.password_was_reset,
     emails.two_step_on,
+    emails.two_step_off,
     emails.two_step_reset,
 )
 # What an email may be told: never a document, its name or content, never an id.
@@ -143,6 +144,7 @@ def test_a_security_notice_has_no_link() -> None:
         emails.password_changed,
         emails.password_was_reset,
         emails.two_step_on,
+        emails.two_step_off,
         emails.two_step_reset,
     ):
         _, text = notice(name="Ramesh")

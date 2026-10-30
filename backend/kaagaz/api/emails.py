@@ -8,7 +8,7 @@ its content, and never an id (tests/test_email.py checks every one).
   its SHA-256 hash (``email_links``, 0061), with a purpose, an expiry and a used time. The
   token travels in the URL fragment (``#t=``), so it never reaches a server or proxy log;
   the page reads it and posts it. A new link of one purpose for one user ends the older ones.
-* A security notice (password changed or reset, two-step on or reset) has no link.
+* A security notice (password changed or reset, two-step on, off or reset) has no link.
 
 ``send`` never breaks the action that asked for the email: a failure is logged as
 ``{"event": "email_failed", "purpose": ...}``, never with the address, and it returns False.
@@ -147,6 +147,15 @@ def two_step_on(name: str) -> Message:
         f"Hello {name},\n\nTwo-step sign-in was just turned on for your Kaagaz account. From now"
         " on, signing in asks for the 6-digit code from your authenticator app.\n\nIf this was not"
         " you, tell your organisation's admin now." + _SIGN_OFF,
+    )
+
+
+def two_step_off(name: str) -> Message:
+    return (
+        "Two-step sign-in is off",
+        f"Hello {name},\n\nTwo-step sign-in was just turned off for your Kaagaz account, and every"
+        " other browser was signed out. From now on, your password alone signs you in.\n\nIf this"
+        " was not you, tell your organisation's admin now." + _SIGN_OFF,
     )
 
 

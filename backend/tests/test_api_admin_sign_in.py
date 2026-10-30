@@ -50,11 +50,11 @@ def _secret_from(grouped: str) -> bytes:
 
 
 def _turn_on(client: TestClient, password: str = PASSWORD) -> httpx.Response:
-    return client.post("/api/auth/admin/2fa/start", json={"password": password}, headers=CSRF)
+    return client.post("/api/auth/2fa/start", json={"password": password}, headers=CSRF)
 
 
 def _turn_off(client: TestClient, password: str = PASSWORD) -> httpx.Response:
-    return client.post("/api/auth/admin/2fa/off", json={"password": password}, headers=CSRF)
+    return client.post("/api/auth/2fa/off", json={"password": password}, headers=CSRF)
 
 
 def _session_client(api: Api, customer_id: str, user_id: str, *, scope: str) -> TestClient:

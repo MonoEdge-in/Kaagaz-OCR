@@ -206,14 +206,14 @@ def begin_attempt(
 
 def enrol_still_open(conn: Connection, customer_id: str, user_id: str, session_version: int) -> bool:
     """Can an enrol token for this user and session version still be used? Only
-    for an enabled admin with no two-step code yet, no temporary password, and
-    the same session version as when the token was made. Read only: nothing is
-    counted. O(log n)."""
+    for an enabled user (any role since #457) with no two-step code yet, no temporary
+    password, and the same session version as when the token was made. Read only: nothing
+    is counted. O(log n)."""
     return bool(
         conn.execute(
             text(
                 "SELECT EXISTS (SELECT 1 FROM users WHERE customer_id = :c AND id = :u"
-                " AND role = 'admin' AND NOT disabled AND NOT must_change_password"
+                " AND NOT disabled AND NOT must_change_password"
                 " AND totp_enabled_at IS NULL AND session_version = :v)"
             ),
             {"c": customer_id, "u": user_id, "v": session_version},
@@ -308,7 +308,7 @@ def enrol_totp(
     ver: int,
 ) -> bool:
     """Turn on two-step sign-in with a sealed secret whose first code (``step``) was
-    just checked. False unless the user is an enabled, unlocked admin with no
+    just checked. False unless the user is enabled and unlocked (any role since #457), with no
     pending password change, not yet enrolled, and still on session version
     ``ver`` (the enrol token's), so an enrol token works once and only while
     nothing has changed. O(log n)."""
@@ -317,7 +317,7 @@ def enrol_totp(
             "UPDATE users AS u SET totp_secret_enc = :enc, totp_enabled_at = :now, totp_last_step = :step"
             " WHERE u.customer_id = :c AND u.id = :u"
             " AND u.totp_enabled_at IS NULL AND u.session_version = :ver"
-            " AND NOT u.disabled AND u.role = 'admin' AND NOT u.must_change_password"
+            " AND NOT u.disabled AND NOT u.must_change_password"
             " AND (u.locked_until IS NULL OR u.locked_until <= :now)"
             " RETURNING u.id"
         ),

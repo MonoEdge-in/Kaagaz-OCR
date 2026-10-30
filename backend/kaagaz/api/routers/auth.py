@@ -5,20 +5,28 @@
   have two-step sign-in (MFA required for admins) and gets an admin session
   (``scope: "admin"``, the shorter ADMIN_SESSION_MINUTES): after a right password, an admin
   without a code set up gets 403 ``mfa_enrol_required`` with ``details`` {enrol_token,
-  secret, otpauth_uri} and no session; one with a code set up gets 401 ``code_required``
-  (counted like a failure) until it is sent. An admin with a temporary password and no
-  code yet gets a session that can only set the new password (``current_user``); the
-  next sign-in then sets up the code.
+  secret, otpauth_uri} and no session. Anyone with a code set up (always an admin, and a
+  member or reviewer who turned it on, #457) gets 401 ``code_required`` (counted like a
+  failure) until it is sent: ``_finish_second_step``, for every role. An admin with a
+  temporary password and no code yet gets a session that can only set the new password
+  (``current_user``); the next sign-in then sets up the code.
 * ``POST /auth/admin/login``: 410 ``gone``, whatever is sent. Not kept as an alias: one
   route to sign in is one set of rules to get right, and an old page gets a clear answer.
-* ``POST /auth/admin/2fa/start`` {password} (admin session): with the current
-  password, ``{enrol_token, secret, otpauth_uri}`` for turning it on. Asking
-  for the password means a stolen admin cookie alone cannot put its own key
-  on the account. Nothing is stored yet.
-* ``POST /auth/admin/enrol`` {enrol_token, code}: turns the code on and starts
-  an admin session. The session version stays, so other browsers stay in.
-* ``POST /auth/admin/2fa/off``: 403 ``two_step_required``. Admins keep two-step sign-in
-  on; the operator can reset a lost one, and the admin sets it up again at sign-in.
+* ``POST /auth/2fa/start`` {password} (any session; #457 opened it to every role, it was
+  ``/auth/admin/2fa/start``): with the current password, ``{enrol_token, secret,
+  otpauth_uri}`` for turning it on. Asking for the password means a stolen cookie alone
+  cannot put its own key on the account. Nothing is stored yet. 409 when it is on.
+* ``POST /auth/admin/enrol`` {enrol_token, code}: turns the code on (audited
+  ``auth.totp_on``, a security notice) and starts a session of the user's scope (an admin's
+  at sign-in or sign-up; a member's or reviewer's from Account, Two-step sign-in). The
+  session version stays, so other browsers stay in.
+* ``POST /auth/2fa/off`` {password, code}: a member or reviewer turns it off, with the
+  password and a current code (both counted like a sign-in). Every other browser is signed
+  out, this one is re-signed; audited ``auth.totp_off``, a security notice. 409 when it is
+  off. An admin: 403 ``two_step_required``, nothing read or counted. Admins keep two-step
+  sign-in on; another admin or the operator resets a lost one, and the admin sets it up
+  again at sign-in. A member's or reviewer's lost code: an admin resets it
+  (``routers/admin.py``).
 * ``POST /auth/password`` {current_password, new_password, code?}: a new password;
   every other browser is signed out, this one is re-signed. Anyone with two-step sign-in on
   also sends the code (#457; the sign-in's own check, ``_code_problem``), and a security
@@ -89,7 +97,6 @@ from sqlalchemy import Connection
 
 from kaagaz.api import emails, totp
 from kaagaz.api.auth import (
-    AdminSession,
     CurrentUser,
     User,
     UserAllowPasswordChange,
@@ -153,7 +160,7 @@ class LoginBody(BaseModel):
 
     email: str = Field(min_length=1, max_length=254)
     password: str = Field(min_length=1, max_length=MAX_PASSWORD)
-    code: str | None = Field(default=None, max_length=MAX_CODE)  # admins only; ignored for others
+    code: str | None = Field(default=None, max_length=MAX_CODE)  # with two-step sign-in on
 
 
 class EnrolBody(BaseModel):
@@ -167,6 +174,13 @@ class CurrentPasswordBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     password: str = Field(min_length=1, max_length=MAX_PASSWORD)
+
+
+class TurnOffBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    password: str = Field(min_length=1, max_length=MAX_PASSWORD)
+    code: str | None = Field(default=None, max_length=MAX_CODE)
 
 
 class PasswordBody(BaseModel):
@@ -192,27 +206,7 @@ class SignupBody(BaseModel):
 @router.post("/auth/login")
 def login(body: LoginBody, context: Context) -> JSONResponse:
     attempt = _check_password(context, body.email, body.password)
-    if attempt.role != "admin":
-        return _start_session(context, attempt.customer_id, attempt.user_id, scope="app", action="auth.login")
-    if attempt.totp_enabled_at is None:
-        if attempt.must_change_password:
-            # The set-new-password screen first (current_user keeps every other route
-            # shut); the next sign-in then sets up the code.
-            return _start_session(
-                context, attempt.customer_id, attempt.user_id, scope="admin", action="auth.login"
-            )
-        _succeeded(context, attempt)  # the password was right; no session until a code is set up
-        user = load_user(context.db, attempt.customer_id, attempt.user_id, scope="admin")
-        if user is None:  # disabled in the meantime
-            raise _refused(context)
-        raise ApiError(403, "mfa_enrol_required", ENROL_FIRST, details=_enrol_offer(context, user))
-    problem = _code_problem(context, attempt, body.code)
-    if problem is not None:
-        _failed(context, attempt, problem)  # counted: a wrong code next can't reset it
-        if problem == "code_required":
-            raise ApiError(401, "code_required", CODE_REQUIRED)
-        raise _refused(context)
-    return _start_session(context, attempt.customer_id, attempt.user_id, scope="admin", action="auth.login")
+    return _finish_second_step(context, attempt, body.code)
 
 
 @router.post("/auth/admin/login")
@@ -239,8 +233,7 @@ def admin_enrol(body: EnrolBody, context: Context) -> JSONResponse:
     if attempt is None:
         raise _refused(context)
     if (
-        attempt.role != "admin"
-        or attempt.disabled
+        attempt.disabled
         or not attempt.customer_active
         or attempt.must_change_password
         or attempt.totp_enabled_at is not None
@@ -274,7 +267,9 @@ def admin_enrol(body: EnrolBody, context: Context) -> JSONResponse:
         _failed(context, attempt, "enrol_refused")
         raise ApiError(401, "not_signed_in")
     emails.notify(context, customer_id, user_id, "two_step_on", emails.two_step_on)
-    return _start_session(context, attempt.customer_id, attempt.user_id, scope="admin", action="auth.login")
+    return _start_session(
+        context, attempt.customer_id, attempt.user_id, scope=_scope(attempt), action="auth.login"
+    )
 
 
 @router.get("/auth/signup")
@@ -331,8 +326,8 @@ def signup(body: SignupBody, request: Request, context: Context) -> JSONResponse
     return JSONResponse(_enrol_offer(context, user), status_code=201)
 
 
-@router.post("/auth/admin/2fa/start")
-def turn_on_two_step(body: CurrentPasswordBody, user: AdminSession, context: Context) -> dict[str, str]:
+@router.post("/auth/2fa/start")
+def turn_on_two_step(body: CurrentPasswordBody, user: User, context: Context) -> dict[str, str]:
     if user.totp_enabled:
         raise ApiError(409, "conflict", "Two-step sign-in is already on.")
     now = context.clock()
@@ -342,10 +337,31 @@ def turn_on_two_step(body: CurrentPasswordBody, user: AdminSession, context: Con
     return _enrol_offer(context, user)
 
 
-@router.post("/auth/admin/2fa/off")
-def turn_off_two_step(user: AdminSession) -> None:
-    """Refused: every admin keeps two-step sign-in on (MFA required, 16 Oct 2026)."""
-    raise ApiError(403, "two_step_required", KEEP_TWO_STEP)
+@router.post("/auth/2fa/off")
+def turn_off_two_step(body: TurnOffBody, user: User, request: Request, context: Context) -> JSONResponse:
+    """A member or reviewer, with the password and a code. Refused for an admin: every admin
+    keeps two-step sign-in on (MFA required, 16 Oct 2026)."""
+    if user.role == "admin":
+        raise ApiError(403, "two_step_required", KEEP_TWO_STEP)
+    if not user.totp_enabled:
+        raise ApiError(409, "conflict", "Two-step sign-in is already off.")
+    now = context.clock()
+    attempt = _check_current_password(context, user, body.password, now)
+    problem = _code_problem(context, attempt, body.code)
+    if problem is not None:
+        _failed(context, attempt, problem)
+        raise ApiError(400, "bad_request", CODE_REQUIRED if problem == "code_required" else WRONG_CODE)
+
+    with context.db.customer(user.customer_id) as conn:
+        row = users_sql.reset_totp(conn, user.customer_id, user.user_id)
+        if row is None:
+            raise ApiError(401, "not_signed_in")
+        users_sql.attempt_succeeded(conn, user.customer_id, user.user_id, now=now)
+        _record(conn, user.customer_id, "auth.totp_off", actor=user.user_id, target=user.user_id)
+    changed = dataclasses.replace(user, session_version=int(row["session_version"]), totp_enabled=False)
+    response = _keep_this_browser(request, context, changed, now)
+    send(context, user.email, "two_step_off", emails.two_step_off(user.display_name))
+    return response
 
 
 @router.post("/auth/password")
@@ -502,6 +518,45 @@ def _check_current_password(
     return attempt
 
 
+def _scope(attempt: AttemptRow) -> str:
+    """An admin's session is an admin session; everyone else's an app session."""
+    return "admin" if attempt.role == "admin" else "app"
+
+
+def _finish_second_step(context: AppContext, attempt: AttemptRow, code: str | None) -> JSONResponse:
+    """After a right first step (the password; later a connected Google or Microsoft account),
+    the second, for every role (#457): the session, once the code is right for anyone with
+    two-step sign-in on. ``attempt`` is the counted attempt of an enabled user.
+
+    * No code set up: a member or reviewer gets their app session. An admin must set one up
+      first: 403 ``mfa_enrol_required`` with the set-up offer and no session, except with a
+      temporary password (the set-new-password screen first; the next sign-in sets it up).
+    * A code set up: 401 ``code_required`` until it is sent, else the next unused code
+      (``_code_problem``: the replay check). A missing or wrong code is counted like a wrong
+      password, so it leads to the lock too, and audited with its reason.
+    """
+    scope = _scope(attempt)
+    if attempt.totp_enabled_at is None:
+        if attempt.role != "admin" or attempt.must_change_password:
+            # An admin's set-new-password screen first (current_user keeps every other route
+            # shut); the next sign-in then sets up the code.
+            return _start_session(
+                context, attempt.customer_id, attempt.user_id, scope=scope, action="auth.login"
+            )
+        _succeeded(context, attempt)  # the password was right; no session until a code is set up
+        user = load_user(context.db, attempt.customer_id, attempt.user_id, scope=scope)
+        if user is None:  # disabled in the meantime
+            raise _refused(context)
+        raise ApiError(403, "mfa_enrol_required", ENROL_FIRST, details=_enrol_offer(context, user))
+    problem = _code_problem(context, attempt, code)
+    if problem is not None:
+        _failed(context, attempt, problem)  # counted: a wrong code next can't reset it
+        if problem == "code_required":
+            raise ApiError(401, "code_required", CODE_REQUIRED)
+        raise _refused(context)
+    return _start_session(context, attempt.customer_id, attempt.user_id, scope=scope, action="auth.login")
+
+
 def _code_problem(context: AppContext, attempt: AttemptRow, code: str | None) -> str | None:
     """None when ``code`` is this user's next unused two-step code, which is then used up;
     else why not (``code_required``, ``totp_unreadable``, ``wrong_code``, ``code_reused``),
@@ -570,7 +625,7 @@ def _start_session(
 
 
 def _enrol_offer(context: AppContext, user: CurrentUser) -> dict[str, str]:
-    """A new secret for the admin to put into an authenticator app (typed in, or
+    """A new secret for the user to put into an authenticator app (typed in, or
     as the otpauth link in a QR code), and the signed enrol token that carries it
     (sealed) for 10 minutes. Nothing is stored. The token, the key and the link
     are all made from this one signed-in user."""
