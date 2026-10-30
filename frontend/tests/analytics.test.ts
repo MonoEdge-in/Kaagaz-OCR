@@ -1,10 +1,11 @@
 // Google Analytics on the public pages only, after the visitor accepts it (#457 phase 4):
 // the measurement id's shape, the page path without its query or fragment, each page's fixed
 // title, the remembered choice, what gtag is told, where the component is mounted, and the
-// content security policy's new hosts.
+// content security policy's new hosts (on the pages that load it only).
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { getPathMatch } from "next/dist/shared/lib/router/utils/path-match";
 import { describe, expect, it } from "vitest";
 import {
   BANNER_TEXT,
@@ -75,16 +76,18 @@ describe("pagePath", () => {
 
 describe("the page titles", () => {
   it("are fixed, one per public page", () => {
+    // Changed on purpose (#457): the emailed links' pages hold a token or a new password, so
+    // they are no longer tracked.
     expect(PAGE_TITLES).toEqual({
       "/login": "Sign in",
       "/signup": "Sign up",
       "/forgot-password": "Forgot password",
-      "/reset-password": "Reset password",
-      "/invite": "Accept invite",
-      "/email/confirm": "Confirm email",
     });
   });
 });
+
+// Pages that hold a link's token, a new password or a sign-in code while open.
+const NEVER_TRACKED = ["/reset-password", "/invite", "/email/confirm", "/login?step=code", "/login?next=/documents&step=code"];
 
 describe("the banner", () => {
   it("says plainly what is asked", () => {
@@ -92,8 +95,9 @@ describe("the banner", () => {
       "We'd like to use Google Analytics to see how people find the sign-in pages. Nothing you type is sent.",
     );
     const banner = source("components/analytics/Analytics.tsx");
-    expect(banner).toContain(">Accept</Button>");
-    expect(banner).toContain(">Decline</Button>");
+    // Changed on purpose (#457): the buttons say what they accept or decline.
+    expect(banner).toContain(">Accept analytics</Button>");
+    expect(banner).toContain(">Decline analytics</Button>");
     // Equal weight: neither button is the primary one.
     expect(banner).not.toMatch(/variant="primary"/);
   });
@@ -117,6 +121,19 @@ describe("viewFor", () => {
       expect(viewFor("G-ABC123", path, "accepted"), path).toBe("off");
       expect(viewFor("G-ABC123", path, null), path).toBe("off");
     }
+  });
+
+  it("is off on the emailed links' pages and on the code step after Google, even after Accept", () => {
+    for (const path of NEVER_TRACKED) {
+      expect(viewFor("G-ABC123", path, "accepted"), path).toBe("off");
+      expect(viewFor("G-ABC123", path, null), path).toBe("off");
+    }
+    expect(viewFor("G-ABC123", "/login?next=/documents/abc", "accepted")).toBe("on");
+  });
+
+  it("is given the query string by the banner, so it can see the code step", () => {
+    const banner = source("components/analytics/Analytics.tsx");
+    expect(banner).toContain("window.location.search");
   });
 });
 
@@ -174,14 +191,17 @@ function fakeBrowser(referrer = "") {
 describe("startGtag", () => {
   it("adds Google's script once, and sends one page view with the path and the fixed title only", () => {
     const { win, doc, appended, calls } = fakeBrowser();
-    startGtag(win, doc, "G-ABC123", "/reset-password");
+    // Changed on purpose (#457): /reset-password is no longer tracked, and the page is set for
+    // every event before the config.
+    startGtag(win, doc, "G-ABC123", "/forgot-password");
     expect(appended).toEqual([{ async: true, src: "https://www.googletagmanager.com/gtag/js?id=G-ABC123" }]);
     const page = {
-      page_location: "https://kaagaz.example/reset-password",
-      page_title: "Reset password",
+      page_location: "https://kaagaz.example/forgot-password",
+      page_title: "Forgot password",
       page_referrer: "",
     };
     expect(calls().slice(1)).toEqual([
+      ["set", page],
       [
         "config",
         "G-ABC123",
@@ -201,21 +221,44 @@ describe("startGtag", () => {
   });
 
   it("never sends the query string, the fragment or the address the visitor came from", () => {
+    // Changed on purpose (#457): /reset-password is no longer tracked, so a sign-in address.
     const { win, doc, calls } = fakeBrowser("https://kaagaz.example/documents/d-1?q=gst#p=3");
-    startGtag(win, doc, "G-ABC123", "/reset-password#t=SECRET");
+    startGtag(win, doc, "G-ABC123", "/login?next=/documents/abc#t=SECRET");
     const sent = JSON.stringify(calls());
     expect(sent).not.toContain("SECRET");
+    expect(sent).not.toContain("next=");
+    expect(sent).not.toContain("documents");
     expect(sent).not.toContain("d-1");
     expect(sent).not.toContain("gst");
-    expect(calls().at(-1)).toEqual([
-      "event",
-      "page_view",
-      {
-        page_location: "https://kaagaz.example/reset-password",
-        page_title: "Reset password",
-        page_referrer: "https://kaagaz.example/",
-      },
+    const page = {
+      page_location: "https://kaagaz.example/login",
+      page_title: "Sign in",
+      page_referrer: "https://kaagaz.example/",
+    };
+    // Set before the config, so whatever Google's script sends uses this page, not the address bar.
+    expect(calls()[1]).toEqual(["set", page]);
+    expect(calls().at(-1)).toEqual(["event", "page_view", page]);
+  });
+
+  it("sets the page again before every page view it sends", () => {
+    const { win, doc, calls } = fakeBrowser();
+    startGtag(win, doc, "G-ABC123", "/login?next=/documents/abc");
+    startGtag(win, doc, "G-ABC123", "/signup?ref=x");
+    const sets = calls().filter(([kind]) => kind === "set");
+    expect(sets.map(([, page]) => (page as { page_location: string }).page_location)).toEqual([
+      "https://kaagaz.example/login",
+      "https://kaagaz.example/signup",
     ]);
+    expect(JSON.stringify(calls())).not.toContain("?");
+  });
+
+  it("does nothing on the emailed links' pages or the code step after Google", () => {
+    for (const path of NEVER_TRACKED) {
+      const { win, doc, appended, calls } = fakeBrowser();
+      startGtag(win, doc, "G-ABC123", path);
+      expect(appended, path).toEqual([]);
+      expect(calls(), path).toEqual([]);
+    }
   });
 
   it("does nothing on a page without a fixed title", () => {
@@ -269,9 +312,23 @@ describe("where it is mounted", () => {
 });
 
 describe("the content security policy", () => {
-  async function directives(): Promise<Record<string, string>> {
-    const rule = ((await nextConfig.headers?.()) ?? []).find((r) => r.source === "/:path*");
-    const policy = rule?.headers.find((h) => h.key === "Content-Security-Policy-Report-Only")?.value ?? "";
+  // The rules as Next.js applies them: every matching rule in order, a later header replacing
+  // an earlier one, and a rule skipped when the query has a value it lists as missing.
+  async function headersFor(address: string): Promise<Record<string, string>> {
+    const url = new URL(address, "https://kaagaz.example");
+    const out: Record<string, string> = {};
+    for (const rule of (await nextConfig.headers?.()) ?? []) {
+      const match = getPathMatch(rule.source, { strict: true, removeUnnamedParams: true });
+      if (match(url.pathname) === false) continue;
+      const missing = rule.missing ?? [];
+      if (missing.some((m) => m.type === "query" && url.searchParams.get(m.key) === m.value)) continue;
+      for (const { key, value } of rule.headers) out[key] = value;
+    }
+    return out;
+  }
+
+  async function directives(address: string): Promise<Record<string, string>> {
+    const policy = (await headersFor(address))["Content-Security-Policy-Report-Only"] ?? "";
     return Object.fromEntries(
       policy.split("; ").map((part) => {
         const [name, ...values] = part.split(" ");
@@ -281,21 +338,49 @@ describe("the content security policy", () => {
   }
 
   const collect = "https://*.google-analytics.com https://*.analytics.google.com https://*.googletagmanager.com";
+  const base = {
+    "default-src": "'self'",
+    "script-src": "'self' 'unsafe-inline' 'wasm-unsafe-eval'",
+    "style-src": "'self' 'unsafe-inline'",
+    "worker-src": "'self' blob:",
+    "img-src": "'self' data: blob:",
+    "frame-src": "'self' blob:",
+    "font-src": "'self' data:",
+    "connect-src": "'self'",
+    "object-src": "'none'",
+    "frame-ancestors": "'none'",
+    "base-uri": "'self'",
+    "form-action": "'self'",
+  };
 
-  it("allows Google's script and its collection hosts, and nothing else new", async () => {
-    expect(await directives()).toEqual({
-      "default-src": "'self'",
-      "script-src": "'self' 'unsafe-inline' 'wasm-unsafe-eval' https://www.googletagmanager.com",
-      "style-src": "'self' 'unsafe-inline'",
-      "worker-src": "'self' blob:",
-      "img-src": `'self' data: blob: ${collect}`,
-      "frame-src": "'self' blob:",
-      "font-src": "'self' data:",
-      "connect-src": `'self' ${collect}`,
-      "object-src": "'none'",
-      "frame-ancestors": "'none'",
-      "base-uri": "'self'",
-      "form-action": "'self'",
-    });
+  it("allows Google's script and its collection hosts on the pages that load it, and nothing else new", async () => {
+    for (const path of ["/login", "/signup", "/forgot-password", "/login?next=/documents/abc"]) {
+      expect(await directives(path), path).toEqual({
+        ...base,
+        "script-src": "'self' 'unsafe-inline' 'wasm-unsafe-eval' https://www.googletagmanager.com",
+        "img-src": `'self' data: blob: ${collect}`,
+        "connect-src": `'self' ${collect}`,
+      });
+    }
+  });
+
+  it("allows no Google host anywhere else: the app, the admin, the operator, the emailed links, the code step", async () => {
+    for (const path of [
+      "/documents",
+      "/documents/d-1",
+      "/chat",
+      "/admin",
+      "/operator",
+      "/operator/login",
+      "/reset-password",
+      "/invite",
+      "/email/confirm",
+      "/login?step=code",
+      "/api/documents",
+      "/_next/static/chunks/main.js",
+    ]) {
+      expect(await directives(path), path).toEqual(base);
+      expect(JSON.stringify(await headersFor(path)), path).not.toMatch(/google/);
+    }
   });
 });
