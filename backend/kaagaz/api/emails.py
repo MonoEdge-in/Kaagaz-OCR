@@ -8,7 +8,10 @@ its content, and never an id (tests/test_email.py checks every one).
   its SHA-256 hash (``email_links``, 0061), with a purpose, an expiry and a used time. The
   token travels in the URL fragment (``#t=``), so it never reaches a server or proxy log;
   the page reads it and posts it. A new link of one purpose for one user ends the older ones.
-* A security notice (password changed or reset, two-step on, off or reset) has no link.
+* A security notice (password changed or reset, two-step on, off or reset; a Google account
+  connected, waiting, approved, declined or disconnected) has no link.
+* "Waiting for your approval" goes to each admin when a member's Google account waits, with
+  the link to the approval list (Admin, people) and nobody's name or email but their own.
 
 ``send`` never breaks the action that asked for the email: a failure is logged as
 ``{"event": "email_failed", "purpose": ...}``, never with the address, and it returns False.
@@ -165,4 +168,62 @@ def two_step_reset(name: str) -> Message:
         f"Hello {name},\n\nThe two-step code of your Kaagaz account was reset, and every browser"
         " was signed out. You can sign in with your password and set up two-step sign-in"
         " again.\n\nIf you did not ask for this, tell your organisation's admin now." + _SIGN_OFF,
+    )
+
+
+# --- Ways to sign in (#457 phase 1): a connected Google account ------------------------------
+
+
+def google_connected(name: str) -> Message:
+    return (
+        "A Google account was connected",
+        f"Hello {name},\n\nA Google account was just connected to your Kaagaz account. You can now"
+        " sign in with it as well as with your password.\n\nIf this was not you, disconnect it"
+        " under Account, Ways to sign in, change your password and tell your organisation's admin"
+        " now." + _SIGN_OFF,
+    )
+
+
+def google_waiting(name: str) -> Message:
+    return (
+        "A Google account is waiting for approval",
+        f"Hello {name},\n\nA Google account was just connected to your Kaagaz account. It can sign"
+        " in once your admin approves it.\n\nIf this was not you, cancel it under Account, Ways to"
+        " sign in, change your password and tell your organisation's admin now." + _SIGN_OFF,
+    )
+
+
+def google_approved(name: str) -> Message:
+    return (
+        "Your Google account was approved",
+        f"Hello {name},\n\nYour admin approved the Google account connected to your Kaagaz account."
+        " You can now sign in with it as well as with your password.\n\nIf you did not ask for"
+        " this, tell your organisation's admin now." + _SIGN_OFF,
+    )
+
+
+def google_declined(name: str) -> Message:
+    return (
+        "Your Google account was declined",
+        f"Hello {name},\n\nYour admin declined the Google account you asked to connect to your"
+        " Kaagaz account, so it cannot sign in. Your password works as before." + _SIGN_OFF,
+    )
+
+
+def google_disconnected(name: str) -> Message:
+    return (
+        "A Google account was disconnected",
+        f"Hello {name},\n\nThe Google account connected to your Kaagaz account was disconnected, so"
+        " it can no longer sign in. Your password works as before.\n\nIf you did not expect this,"
+        " tell your organisation's admin." + _SIGN_OFF,
+    )
+
+
+def connection_waiting(name: str, organisation: str, link: str) -> Message:
+    """To each admin: someone asked to sign in with a Google account; who is not said here."""
+    return (
+        "Waiting for your approval",
+        f"Hello {name},\n\nSomeone in {organisation} asked to sign in to Kaagaz with a Google"
+        " account. It works only once an admin approves it. Open the approval list:\n\n"
+        f"{link}\n\nIf you do not recognise the request, decline it." + _SIGN_OFF,
     )

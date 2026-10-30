@@ -115,6 +115,13 @@ TEMPLATES = (
     emails.two_step_on,
     emails.two_step_off,
     emails.two_step_reset,
+    # Changed on purpose (#457 phase 1): a connected Google account's notices, and the admins'.
+    emails.google_connected,
+    emails.google_waiting,
+    emails.google_approved,
+    emails.google_declined,
+    emails.google_disconnected,
+    emails.connection_waiting,
 )
 # What an email may be told: never a document, its name or content, never an id.
 ALLOWED_ARGUMENTS = {"name", "organisation", "link"}
@@ -146,6 +153,11 @@ def test_a_security_notice_has_no_link() -> None:
         emails.two_step_on,
         emails.two_step_off,
         emails.two_step_reset,
+        emails.google_connected,
+        emails.google_waiting,
+        emails.google_approved,
+        emails.google_declined,
+        emails.google_disconnected,
     ):
         _, text = notice(name="Ramesh")
         assert "http" not in text

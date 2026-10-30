@@ -21,6 +21,20 @@ provider's own routes: while that one is off), before anything else is read.
   password first (``password_first``). Every failure is 303 /login?oidc_error=<code>:
   ``cancelled``, ``expired``, ``not_connected``, ``refused``, ``locked``, ``unavailable`` or
   ``password_first``. The reply carries ``Referrer-Policy: no-referrer``.
+* ``POST /auth/oidc/{provider}/connect`` {password, code?} (signed in, any role): Account, Ways
+  to sign in. The Kaagaz password, plus the code for anyone with codes on (always an admin),
+  each counted like a sign-in, so a stolen session alone cannot add a lasting way in. Then a
+  connect flow cookie that also holds the user, customer and session version, and ``{url}``
+  for the browser to open. At most CONNECTS_PER_HOUR a user (429). Its callback connects the
+  account only while that very session is signed in here (else ``signed_out``: link-CSRF both
+  ways), and refuses ``has_provider`` (one of each provider a user) and ``taken`` (that
+  account is connected to anyone, or its email is another user's sign-in email in any
+  organisation; the reply names no one). It is approved at once for an admin's own, with the
+  organisation's auto-approval on, or when Google's verified email is the user's own (any
+  case); else it waits for an admin, who is emailed. Audited ``auth.identity_linked``
+  {provider, identity_id, status}; the session version is raised and this browser re-signed;
+  a security notice is emailed. Back to /settings/sign-in?connected=google, ?waiting=google
+  or ?error=<code>.
 * ``GET /auth/oidc/notice``: "isn't connected" names the provider's email, which never goes in
   a URL (history, logs): the callback leaves it in a signed 60-second cookie, read here once.
 * ``POST /auth/oidc/code`` {code}: the second step, ``routers/auth.py``'s ``_finish_second_step``
@@ -32,6 +46,7 @@ client address (``start_limits``). Logged: the failure's code and the provider o
 code, token, state, nonce, verifier, subject or email.
 """
 
+import dataclasses
 import hmac
 import json
 import logging
@@ -40,25 +55,29 @@ import secrets
 import urllib.parse
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from kaagaz.api import oidc
+from kaagaz.api import emails, oidc
 from kaagaz.api.auth import (
     NOTICE_COOKIE,
     OIDC_COOKIE,
     OIDC_SECONDS,
     PENDING_COOKIE,
     PENDING_SECONDS,
+    CurrentUser,
     FlowClaims,
     PendingClaims,
+    User,
     clear_flow_cookie,
     clear_notice_cookie,
     clear_pending_cookie,
+    current_user,
     read_flow,
     read_notice,
     read_pending,
+    session_claims,
     set_flow_cookie,
     set_notice_cookie,
     set_pending_cookie,
@@ -68,17 +87,25 @@ from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.middleware import RateLimiter
 from kaagaz.api.oidc import Identity, OidcError, Provider
+from kaagaz.api.routers.admin import MAX_PASSWORD
 from kaagaz.api.routers.auth import (
+    CODE_REQUIRED,
     MAX_CODE,
+    WRONG_CODE,
     _begin,
+    _check_current_password,
+    _code_problem,
     _failed,
     _finish_second_step,
     _open_session,
+    _record,
     _scope,
 )
 from kaagaz.api.twostep import refused as _refused
 from kaagaz.api.twostep import unix
-from kaagaz.db import identities
+from kaagaz.db import admin as admin_sql
+from kaagaz.db import audit, identities
+from kaagaz.db import users as users_sql
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -90,11 +117,23 @@ Context = Annotated[AppContext, Depends(get_context)]
 STARTS_PER_HOUR = 30
 start_limits = RateLimiter(STARTS_PER_HOUR, window_seconds=3600)
 TOO_MANY = "Too many sign-ins from here. Try again in an hour."
+# Connect starts an hour for one user (PROVISIONAL): each one checks the password.
+CONNECTS_PER_HOUR = 10
+connect_limits = RateLimiter(CONNECTS_PER_HOUR, window_seconds=3600)
+TOO_MANY_CONNECTS = "Too many tries to connect an account. Try again in an hour."
 LOGIN = "/login"
+WAYS = "/settings/sign-in"  # Account, Ways to sign in
 # A plain path on this site: no scheme, host, "//", "\", "%" or fragment can get through.
 _NEXT = re.compile(r"/[A-Za-z0-9_-][A-Za-z0-9/_-]{0,199}(\?[A-Za-z0-9=&_-]{1,200})?")
 # The OidcError codes the sign-in page explains as "That sign-in expired. Try again."
 _EXPIRED = frozenset({"expired", "wrong_nonce", "bad_token"})
+
+
+class ConnectBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    password: str = Field(min_length=1, max_length=MAX_PASSWORD)
+    code: str | None = Field(default=None, max_length=MAX_CODE)  # with two-step sign-in on
 
 
 class CodeBody(BaseModel):
@@ -139,27 +178,56 @@ def _limited(request: Request) -> None:
         raise ApiError(429, "rate_limited", TOO_MANY, headers={"Retry-After": "3600"})
 
 
+def _new_flow(provider: Provider, next_path: str, now: int, user: CurrentUser | None = None) -> FlowClaims:
+    """A new state, nonce and PKCE verifier: a sign-in, or with ``user`` their connect."""
+    return FlowClaims(
+        provider=provider.name,
+        mode="signin" if user is None else "connect",
+        state=secrets.token_urlsafe(32),
+        nonce=secrets.token_urlsafe(32),
+        verifier=secrets.token_urlsafe(48),  # 64 characters, as PKCE asks (43 to 128)
+        next_path=next_path,
+        user_id=None if user is None else user.user_id,
+        customer_id=None if user is None else user.customer_id,
+        session_version=None if user is None else user.session_version,
+        expires_at=now + OIDC_SECONDS,
+    )
+
+
 @router.get("/auth/oidc/{provider}/start")
 def start(provider: ProviderOn, request: Request, context: Context) -> RedirectResponse:
     _limited(request)
     now = unix(context.clock())
-    flow = FlowClaims(
-        provider=provider.name,
-        mode="signin",
-        state=secrets.token_urlsafe(32),
-        nonce=secrets.token_urlsafe(32),
-        verifier=secrets.token_urlsafe(48),  # 64 characters, as PKCE asks (43 to 128)
-        next_path=_safe_next(request.query_params.get("next", "")),
-        user_id=None,
-        customer_id=None,
-        session_version=None,
-        expires_at=now + OIDC_SECONDS,
-    )
+    flow = _new_flow(provider, _safe_next(request.query_params.get("next", "")), now)
     url = oidc.authorize_url(
         provider, context.settings, state=flow.state, nonce=flow.nonce, verifier=flow.verifier
     )
     response = RedirectResponse(url, status_code=303)
     set_flow_cookie(response, flow, context.settings, now=now)
+    return response
+
+
+@router.post("/auth/oidc/{provider}/connect")
+def connect(provider: ProviderOn, body: ConnectBody, user: User, context: Context) -> JSONResponse:
+    key = f"user:{user.user_id}"
+    if not connect_limits.allow(key):
+        wait = str(connect_limits.retry_after(key))
+        raise ApiError(429, "rate_limited", TOO_MANY_CONNECTS, headers={"Retry-After": wait})
+    now = context.clock()
+    attempt = _check_current_password(context, user, body.password, now)
+    if attempt.totp_enabled_at is not None:  # anyone with codes on (always an admin)
+        problem = _code_problem(context, attempt, body.code)
+        if problem is not None:
+            _failed(context, attempt, problem)
+            raise ApiError(400, "bad_request", CODE_REQUIRED if problem == "code_required" else WRONG_CODE)
+    with context.db.customer(user.customer_id) as conn:
+        users_sql.attempt_succeeded(conn, user.customer_id, user.user_id, now=now)
+    flow = _new_flow(provider, WAYS, unix(now), user)
+    url = oidc.authorize_url(
+        provider, context.settings, state=flow.state, nonce=flow.nonce, verifier=flow.verifier
+    )
+    response = JSONResponse({"url": url})
+    set_flow_cookie(response, flow, context.settings, now=unix(now))
     return response
 
 
@@ -176,7 +244,11 @@ def callback(provider: ProviderOn, request: Request, context: Context) -> Redire
             or not hmac.compare_digest(state.encode(), flow.state.encode())
         ):
             raise _Refused("expired")
-        response = _sign_in(context, provider, flow, _identity(request, context, provider, flow, now))
+        identity = _identity(request, context, provider, flow, now)
+        if flow.mode == "connect":
+            response = _connect(request, context, provider, flow, identity)
+        else:
+            response = _sign_in(context, provider, flow, identity)
     except _Refused as refused:
         logger.warning(
             json.dumps(
@@ -184,7 +256,8 @@ def callback(provider: ProviderOn, request: Request, context: Context) -> Redire
                 separators=(",", ":"),
             )
         )
-        response = RedirectResponse(f"{LOGIN}?oidc_error={refused.code}", status_code=303)
+        back = f"{WAYS}?error=" if flow is not None and flow.mode == "connect" else f"{LOGIN}?oidc_error="
+        response = RedirectResponse(back + refused.code, status_code=303)
         if refused.email is not None:
             set_notice_cookie(response, refused.email, context.settings, now=now)
     clear_flow_cookie(response, context.settings)
@@ -291,3 +364,90 @@ def _sign_in(
     response = RedirectResponse(flow.next_path, status_code=303)
     set_session_cookie(response, claims, context.settings, now=unix(now))
     return response
+
+
+def _connect(
+    request: Request, context: AppContext, provider: Provider, flow: FlowClaims, identity: Identity
+) -> RedirectResponse:
+    """Connect ``identity`` to the user who started this connect, while that very session is
+    still signed in here (link-CSRF both ways); then this browser stays signed in."""
+    try:
+        user = current_user(request)
+    except ApiError:
+        raise _Refused("signed_out") from None
+    signed = (user.user_id, user.customer_id, user.session_version)
+    if signed != (flow.user_id, flow.customer_id, flow.session_version):
+        raise _Refused("signed_out")
+    customer_id, user_id = user.customer_id, user.user_id
+    with context.db.customer(customer_id) as conn:
+        mine = identities.for_user(conn, customer_id, user_id)
+        organisation = admin_sql.get_settings(conn, customer_id)
+    if any(row["provider"] == provider.name for row in mine):
+        raise _Refused("has_provider")
+    with context.db.system() as conn:
+        found = identities.lookup(conn, provider.name, identity.issuer, identity.subject)
+        belongs = identity.email is not None and identities.email_belongs_to_other(
+            conn, identity.email, user_id
+        )
+    if found is not None or belongs:  # never says whose
+        raise _Refused("taken")
+    # Same-person auto-approval (Tushar, 30 Oct): Google's verified email is the user's own.
+    same_person = (
+        provider.name == "google" and identity.email_verified and identity.email == user.email.lower()
+    )
+    auto = organisation is not None and bool(organisation["auto_approve_connections"])
+    approved = user.role == "admin" or auto or same_person
+    try:
+        with context.db.customer(customer_id) as conn:
+            identity_id = identities.add(
+                conn,
+                customer_id,
+                user_id,
+                provider=provider.name,
+                issuer=identity.issuer,
+                subject=identity.subject,
+                email=identity.email,
+                approved=approved,
+                approved_by=None,
+                now=context.clock(),
+            )
+            version = users_sql.bump_session_version(conn, customer_id, user_id)
+            status = "approved" if approved else "pending"
+            details: dict[str, audit.DetailValue] = {
+                "provider": provider.name,
+                "identity_id": identity_id,
+                "status": status,
+            }
+            _record(conn, customer_id, "auth.identity_linked", actor=user_id, target=user_id, details=details)
+    except identities.IdentityTaken:  # someone connected it a moment ago
+        raise _Refused("taken") from None
+    outcome = "connected" if approved else "waiting"
+    response = RedirectResponse(f"{WAYS}?{outcome}={provider.name}", status_code=303)
+    _keep_signed_in(request, context, response, version)
+    if approved:
+        emails.notify(context, customer_id, user_id, "identity_linked", emails.google_connected)
+    else:
+        emails.notify(context, customer_id, user_id, "identity_waiting", emails.google_waiting)
+        _tell_admins(context, customer_id, user.customer_name)
+    return response
+
+
+def _keep_signed_in(request: Request, context: AppContext, response: Response, version: int) -> None:
+    """This browser's session, re-signed with the raised session version: every other browser
+    of the user is signed out, this one keeps its scope and end time."""
+    now = unix(context.clock())
+    claims = session_claims(request, context.settings, now)
+    if claims is not None:
+        renewed = dataclasses.replace(claims, session_version=version)
+        set_session_cookie(response, renewed, context.settings, now=now)
+
+
+def _tell_admins(context: AppContext, customer_id: str, organisation: str) -> None:
+    """Waiting for your approval, to each admin, while email is on."""
+    if not emails.email_on(context):
+        return
+    with context.db.customer(customer_id) as conn:
+        admins = users_sql.admin_contacts(conn, customer_id)
+    link = f"{context.settings.app_url}/admin"
+    for email, name in admins:
+        emails.send(context, email, "approval_waiting", emails.connection_waiting(name, organisation, link))

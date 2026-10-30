@@ -407,6 +407,19 @@ def contact(conn: Connection, customer_id: str, user_id: str) -> tuple[str, str]
     return None if row is None else (str(row[0]), str(row[1]))
 
 
+def admin_contacts(conn: Connection, customer_id: str) -> list[tuple[str, str]]:
+    """Every enabled admin's (e-mail, name) in this customer, for "Waiting for your approval"
+    (#457 phase 1). O(users of this customer)."""
+    rows = conn.execute(
+        text(
+            "SELECT email, display_name FROM users"
+            " WHERE customer_id = :c AND role = 'admin' AND NOT disabled ORDER BY email"
+        ),
+        {"c": customer_id},
+    )
+    return [(str(row[0]), str(row[1])) for row in rows]
+
+
 def awaiting_confirm(conn: Connection, customer_id: str, user_id: str) -> tuple[str, str] | None:
     """The (e-mail, name) of an enabled user whose e-mail is not confirmed yet and whose
     customer is a sign-up waiting for an operator (0061), for "Send the link again" (#457);
