@@ -24,7 +24,9 @@ from kaagaz.api.app import create_app
 from kaagaz.api.middleware import RateLimiter
 from kaagaz.api.routers import auth as auth_router
 from kaagaz.api.routers import email as email_router
+from kaagaz.db import identities
 from kaagaz.db.engine import Database, make_engine
+from tests.oidc_fake import ISSUER, google_settings
 from tests.settings_factory import make_settings
 from tests.test_api_support import (
     CSRF,
@@ -478,6 +480,94 @@ def test_a_reset_link_sets_the_password_once_signs_out_everywhere_and_proves_the
         "Reset your Kaagaz password",
         "Your Kaagaz password was reset",
     ]
+
+
+def _connections(db: Database, customer_id: str, user_id: str) -> int:
+    with db.customer(customer_id) as conn:
+        return len(identities.for_user(conn, customer_id, user_id))
+
+
+@pytest.mark.db
+def test_a_reset_link_removes_connected_accounts_and_change_password_keeps_them(db: Database) -> None:
+    """A reset by email link means someone may have taken the account: its connections go, as an
+    admin's reset. Change password needs the old one, so they stay, and the notice says where to look."""
+    mailer = MemoryMailer()
+    settings = google_settings(email_enabled=True, email_from=SENDER, app_url=SITE)
+    api = Api(db, settings=settings, mailer=mailer)
+    member = api.new_signed("member")
+    with db.customer(member.customer_id) as conn:
+        identities.add(
+            conn,
+            member.customer_id,
+            member.user_id,
+            provider="google",
+            issuer=ISSUER,
+            subject=f"made-up-sub-{uuid.uuid4().hex}",
+            email="ramesh.k@gmail.com",
+            approved=True,
+            approved_by=None,
+            now=api.clock(),
+        )
+
+    body = {"current_password": PASSWORD, "new_password": NEW_PASSWORD}
+    assert _post(member.client, "/api/auth/password", body).status_code == 200
+    assert _connections(db, member.customer_id, member.user_id) == 1
+    [(_, changed)] = _to(mailer, member.email)
+    assert "If you didn't do this, or don't recognise a connected account, open Ways to sign in." in changed
+
+    _post(api.client(), "/api/auth/forgot", {"email": member.email})
+    token = _token(mailer, member.email, "/reset-password")
+    assert _post(api.client(), "/api/auth/reset", {"token": token, "new_password": PASSWORD}).json() == {
+        "ok": True
+    }
+    assert _connections(db, member.customer_id, member.user_id) == 0
+    unlinked = ("auth.identity_unlinked", "user", member.user_id, {"count": 1})
+    assert unlinked in api.audit_rows(member.customer_id)
+    subject, notice = _to(mailer, member.email)[-1]
+    assert subject == "Your Kaagaz password was reset"
+    assert "Connected sign-ins, such as a Google account, were removed too." in notice
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("action", ["change", "reset", "invite", "disable", "admin_reset"])
+def test_setting_a_password_or_an_admins_disable_or_reset_ends_every_open_link(
+    db: Database, action: str
+) -> None:
+    api, mailer = _email_api(db)
+    admin = api.new_admin()
+    if action == "invite":
+        email = f"ramesh-{uuid.uuid4().hex[:8]}@example.com"
+        person = {"email": email, "display_name": "Ramesh", "role": "member", "password": PASSWORD}
+        user_id = admin.client.post("/api/admin/users", json=person, headers=CSRF).json()["id"]
+        invite = _token(mailer, email, "/invite")
+    else:
+        member = api.sign_in(admin.customer_id, "member")
+        email, user_id = member.email, member.user_id
+        _post(member.client, "/api/auth/email/send-confirm")
+        confirm = _token(mailer, email, "/email/confirm")
+    _post(api.client(), "/api/auth/forgot", {"email": email})
+    reset = _token(mailer, email, "/reset-password")
+    new = {"new_password": NEW_PASSWORD}
+
+    if action == "change":
+        assert (
+            _post(member.client, "/api/auth/password", {"current_password": PASSWORD, **new}).status_code
+            == 200
+        )
+    elif action == "reset":
+        assert _post(api.client(), "/api/auth/reset", {"token": reset, **new}).json() == {"ok": True}
+    elif action == "invite":
+        assert _post(api.client(), "/api/auth/invite/accept", {"token": invite, **new}).json() == {"ok": True}
+    elif action == "disable":
+        changed = admin.client.patch(f"/api/admin/users/{user_id}", json={"disabled": True}, headers=CSRF)
+        assert changed.status_code == 200, changed.text
+    else:
+        assert _post(admin.client, f"/api/admin/users/{user_id}/reset-password").status_code == 200
+
+    for path, body in [("/api/auth/reset", {"token": reset, **new})] + (
+        [] if action == "invite" else [("/api/auth/email/confirm", {"token": confirm})]
+    ):
+        assert _post(api.client(), path, body).json() == LINK_GONE, (action, path)
 
 
 @pytest.mark.db

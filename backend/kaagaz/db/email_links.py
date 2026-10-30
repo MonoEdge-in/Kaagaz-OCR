@@ -9,7 +9,8 @@ inside ``Database.system()``, as signing in finds an e-mail.
 
 Single use: ``use`` is one UPDATE whose WHERE holds "not used, not expired", so two
 requests with the same link at once act once. A new link of one purpose for one user
-marks the older unused ones used (``add``), so only the newest works.
+marks the older unused ones used (``add``), so only the newest works. Setting a password,
+or an admin disabling a user or resetting their password, ends all of them (``void_all``).
 
 Each call is one or two indexed statements: O(log n).
 """
@@ -83,3 +84,15 @@ def use(conn: Connection, customer_id: str, link_id: str, *, now: datetime) -> b
         {"c": customer_id, "l": link_id, "now": now},
     ).first()
     return row is not None
+
+
+def void_all(conn: Connection, customer_id: str, user_id: str, *, now: datetime) -> None:
+    """Every open link of this user, of any purpose, stops working: their password was just
+    set, or an admin disabled them or reset their password. O(log n)."""
+    conn.execute(
+        text(
+            "UPDATE email_links SET used_at = :now"
+            " WHERE customer_id = :c AND user_id = :u AND used_at IS NULL"
+        ),
+        {"c": customer_id, "u": user_id, "now": now},
+    )

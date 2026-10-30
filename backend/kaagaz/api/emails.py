@@ -131,8 +131,9 @@ def password_changed(name: str) -> Message:
     return (
         "Your Kaagaz password was changed",
         f"Hello {name},\n\nThe password of your Kaagaz account was just changed. If this was you,"
-        " there is nothing to do.\n\nIf it was not you, ask your organisation's admin to reset"
-        " your password now." + _SIGN_OFF,
+        " there is nothing to do.\n\nIf you didn't do this, or don't recognise a connected account,"
+        " open Ways to sign in. If you can't sign in, ask your organisation's admin to reset your"
+        " password now." + _SIGN_OFF,
     )
 
 
@@ -140,8 +141,10 @@ def password_was_reset(name: str) -> Message:
     return (
         "Your Kaagaz password was reset",
         f"Hello {name},\n\nThe password of your Kaagaz account was just reset with a link sent to"
-        " this email address, and every browser was signed out. If this was you, there is nothing"
-        " to do.\n\nIf it was not you, ask your organisation's admin to reset your password now." + _SIGN_OFF,
+        " this email address, and every browser was signed out. Connected sign-ins, such as a"
+        " Google account, were removed too. If this was you, there is nothing to do; you can"
+        " connect them again under Ways to sign in.\n\nIf it was not you, ask your organisation's"
+        " admin to reset your password now." + _SIGN_OFF,
     )
 
 

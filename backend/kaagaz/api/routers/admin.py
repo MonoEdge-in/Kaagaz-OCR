@@ -87,6 +87,7 @@ from kaagaz.api.routers.documents import day_start
 from kaagaz.api.views import CURSOR, admin_user, failed_document, iso, timeline, without_money
 from kaagaz.db import admin as admin_sql
 from kaagaz.db import audit, identities, listing
+from kaagaz.db import email_links as links_sql
 from kaagaz.db import folders as folders_sql
 from kaagaz.db import runs as runs_sql
 from kaagaz.db import usage as usage_sql
@@ -248,6 +249,8 @@ def update_user(
         )
         if row is None:
             raise ApiError(404, "not_found")
+        if body.disabled is True or password_hash is not None:  # their emailed links stop working
+            links_sql.void_all(conn, user.customer_id, target, now=context.clock())
         audit.record(
             conn,
             user.customer_id,
@@ -295,6 +298,7 @@ def reset_password(user_id: uuid.UUID, user: AdminSession, context: Context) -> 
             raise ApiError(404, "not_found")
         _audit_user(conn, user, "user.reset_password", target)
         identities.remove_all(conn, user.customer_id, target)  # #457: resetting a user clears them
+        links_sql.void_all(conn, user.customer_id, target, now=context.clock())
     reply = admin_user(row, now=context.clock(), signs_in_with=PASSWORD_ONLY)
     return {"user": reply, "temporary_password": temporary}
 

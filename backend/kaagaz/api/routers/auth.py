@@ -132,6 +132,7 @@ from kaagaz.api.twostep import refused as _refused
 from kaagaz.api.twostep import unix as _unix
 from kaagaz.api.views import iso, me_json
 from kaagaz.db import audit, identities
+from kaagaz.db import email_links as links_sql
 from kaagaz.db import users as users_sql
 from kaagaz.db.users import AttemptRow
 
@@ -395,6 +396,7 @@ def change_password(
         if row is None:
             raise ApiError(401, "not_signed_in")
         users_sql.attempt_succeeded(conn, user.customer_id, user.user_id, now=now)
+        links_sql.void_all(conn, user.customer_id, user.user_id, now=now)  # a reset link sent before
         _record(conn, user.customer_id, "auth.password_change", actor=user.user_id, target=user.user_id)
     changed = dataclasses.replace(
         user, session_version=int(row["session_version"]), must_change_password=False

@@ -20,7 +20,9 @@
   operator, and never a disabled user.
 * ``POST /auth/reset`` {token, new_password}: the password from a reset link. It clears a
   temporary password, proves the e-mail, raises the session version (every browser is
-  signed out), is audited ``auth.password_reset`` and sends a security notice. No session
+  signed out), ends the user's other open links, removes their connected accounts (as an
+  admin's reset: someone may have taken the account; audited ``auth.identity_unlinked``
+  {count}), is audited ``auth.password_reset`` and sends a security notice. No session
   starts: the page sends them to sign in, and an admin still types their code.
 * ``POST /auth/invite/accept`` {token, new_password}: the same for an invite from an admin
   (``routers/admin.py``), audited ``auth.invite_accepted``.
@@ -43,7 +45,7 @@ from kaagaz.api.emails import email_on, new_link, send, token_hash
 from kaagaz.api.errors import ApiError
 from kaagaz.api.middleware import RateLimiter
 from kaagaz.api.routers.admin import MAX_PASSWORD, MIN_PASSWORD, valid_email
-from kaagaz.db import audit
+from kaagaz.db import audit, identities
 from kaagaz.db import email_links as links_sql
 from kaagaz.db import users as users_sql
 from kaagaz.db.email_links import LinkRow
@@ -182,13 +184,19 @@ def _set_password(context: AppContext, body: NewPasswordBody, purpose: str, acti
     """The user's own new password from a reset or invite link, with the e-mail proven."""
     link = _open_link(context, body.token, purpose)
     password_hash = hash_password(body.new_password)  # before the transaction, never during it
+    now = context.clock()
     with context.db.customer(link.customer_id) as conn:
         _use(conn, link, context)
         users_sql.set_password(
             conn, link.customer_id, link.user_id, password_hash=password_hash, must_change=False
         )
-        users_sql.confirm_email(conn, link.customer_id, link.user_id, now=context.clock())
+        users_sql.confirm_email(conn, link.customer_id, link.user_id, now=now)
+        links_sql.void_all(conn, link.customer_id, link.user_id, now=now)
         _record(conn, link, action)
+        if purpose == "reset":  # someone may have taken the account: its connections go, as an admin's reset
+            count = identities.remove_all(conn, link.customer_id, link.user_id)
+            if count:
+                _record(conn, link, "auth.identity_unlinked", {"count": count})
     return link
 
 
@@ -212,7 +220,9 @@ def _use(conn: Connection, link: LinkRow, context: AppContext) -> None:
         raise ApiError(400, "link_expired", LINK_GONE)
 
 
-def _record(conn: Connection, link: LinkRow, action: str) -> None:
+def _record(
+    conn: Connection, link: LinkRow, action: str, details: dict[str, audit.DetailValue] | None = None
+) -> None:
     audit.record(
         conn,
         link.customer_id,
@@ -220,4 +230,5 @@ def _record(conn: Connection, link: LinkRow, action: str) -> None:
         action=action,
         target_type="user",
         target_id=link.user_id,
+        details=details,
     )
