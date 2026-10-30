@@ -1,6 +1,8 @@
 """The emailed links (#457 phase 0). Every route here is 404 while email is off
 (``EMAIL_ENABLED``, on the router itself, so a route added later cannot forget it).
 
+* ``GET /auth/email``: ``{"enabled": true}``, so the sign-in page shows "Forgot password?"
+  only while email is on (404, like every route here, while it is off).
 * ``POST /auth/email/confirm`` {token}: the link from "Confirm your email" proves the
   e-mail (``users.email_verified_at``), audited ``auth.email_confirmed``. ``{"ok": true}``.
 * ``POST /auth/email/send-confirm`` (signed in): a new confirm link to the user's own
@@ -79,6 +81,11 @@ class ForgotBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     email: str = Field(min_length=3, max_length=254)
+
+
+@router.get("/auth/email")
+def email_open() -> dict[str, bool]:
+    return {"enabled": True}  # off: the router's 404
 
 
 @router.post("/auth/email/confirm")

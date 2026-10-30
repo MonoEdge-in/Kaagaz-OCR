@@ -550,11 +550,12 @@ def wrong_code(api: Api, secret: bytes) -> str:
 ANY_ID = "7a0f6f0e-5b9e-4c55-9a39-5f0e0e0e0e0e"  # a well-formed id nothing has
 # The emailed links' routes (#457 phase 0): 404 while email is off, whoever asks.
 EMAIL_ROUTES = (
-    "/api/auth/email/confirm",
-    "/api/auth/email/send-confirm",
-    "/api/auth/forgot",
-    "/api/auth/reset",
-    "/api/auth/invite/accept",
+    ("GET", "/api/auth/email"),
+    ("POST", "/api/auth/email/confirm"),
+    ("POST", "/api/auth/email/send-confirm"),
+    ("POST", "/api/auth/forgot"),
+    ("POST", "/api/auth/reset"),
+    ("POST", "/api/auth/invite/accept"),
 )
 
 

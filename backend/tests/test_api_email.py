@@ -101,8 +101,8 @@ def _email_confirmed(db: Database, customer_id: str, user_id: str) -> bool:
 # --- off ----------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("path", EMAIL_ROUTES)
-def test_every_email_route_is_404_while_email_is_off(path: str) -> None:
+@pytest.mark.parametrize(("method", "path"), EMAIL_ROUTES)
+def test_every_email_route_is_404_while_email_is_off(method: str, path: str) -> None:
     db = Database(make_engine("postgresql://unused@localhost:1/unused"), "kaagaz_app")
     app = create_app(
         make_settings(),
@@ -113,7 +113,7 @@ def test_every_email_route_is_404_while_email_is_off(path: str) -> None:
         clock=lambda: NOW,
     )
     body = {"token": "x" * 43, "new_password": NEW_PASSWORD, "email": "ramesh@example.com"}
-    reply = TestClient(app).post(path, json=body, headers=CSRF)
+    reply = TestClient(app).request(method, path, json=None if method == "GET" else body, headers=CSRF)
     assert (reply.status_code, reply.json()["error"]["code"]) == (404, "not_found")
 
 
@@ -192,6 +192,7 @@ def test_a_confirm_link_works_once_only_the_newest_works_and_it_expires(db: Data
     customer_id, _ = api.customer()
     member = api.sign_in(customer_id, "member")
     assert member.client.get("/api/auth/me").json()["user"]["email_confirmed"] is False  # the banner
+    assert api.client().get("/api/auth/email").json() == {"enabled": True}  # "Forgot password?" shows
 
     assert _post(member.client, "/api/auth/email/send-confirm").json() == {"ok": True}
     first = _token(mailer, member.email, "/email/confirm")

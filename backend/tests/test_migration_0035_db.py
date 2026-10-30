@@ -45,7 +45,12 @@ def test_0035_up_down_up_keeps_stored_secrets(fresh: tuple[str, Database]) -> No
     assert COLUMN not in {(table, column) for table, column, *_ in at_head["columns"]}
     assert "kaagaz_op_set_org_two_step" not in m0002._names(at_head, "functions")
     with database.system() as conn:
-        assert conn.execute(text(_LIST_COLUMNS)).scalar_one().endswith("autofile_on boolean)")
+        # Changed on purpose (0061, #457): Approve's admin_email_confirmed comes after it.
+        assert (
+            conn.execute(text(_LIST_COLUMNS))
+            .scalar_one()
+            .endswith("autofile_on boolean, admin_email_confirmed boolean)")
+        )
     with database.customer(customer) as conn:
         assert tuple(conn.execute(text(_SECRET), {"u": admin}).one()) == ("sealed", True)
 

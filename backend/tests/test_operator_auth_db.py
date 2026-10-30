@@ -49,7 +49,7 @@ OPEN_TO_ALL = {
     ("POST", "/api/auth/signup"),
 }
 # Changed on purpose (#457): 404 while email is off, whoever asks (tests/test_api_email.py).
-EMAIL_OFF = {("POST", path) for path in EMAIL_ROUTES}
+EMAIL_OFF = set(EMAIL_ROUTES)
 WRONG = "not the password!!"
 _INSERT = "INSERT INTO operators (email, display_name, password_hash) VALUES (:e, 'Ops', :h) RETURNING id"
 # As the CLI issues a secret (pending) and as the first valid code leaves it (confirmed).
