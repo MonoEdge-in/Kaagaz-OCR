@@ -193,9 +193,9 @@ export function SignInForm({
       </div>
       <SignedOutNotice message={note} />
 
+      {!askCode && <ProviderButtons next={next} error={oidcError} />}
       {!askCode && (
         <>
-          <ProviderButtons next={next} error={oidcError} />
           <div className="field">
             <label htmlFor={FIELD_IDS.email}>E-mail</label>
             <input
