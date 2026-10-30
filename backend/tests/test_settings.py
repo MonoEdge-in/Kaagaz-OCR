@@ -1,6 +1,7 @@
 """Start-up settings for the scan reader (PRD 2 P3, P5, R5) and the lease check (AR1)."""
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -473,6 +474,55 @@ def test_google_redirect_must_be_https_and_the_callback_path(uri: str, ok: bool)
     else:
         with pytest.raises(SettingsError, match="GOOGLE_REDIRECT_URI"):
             Settings.from_env(env)
+
+
+@pytest.mark.parametrize(
+    ("check", "value", "message"),
+    [
+        (
+            lambda value: settings_module._openrouter_base_url(value),
+            "https://user@openrouter.example.com",
+            "OPENROUTER_BASE_URL must have no user, password, query or fragment",
+        ),
+        (
+            lambda value: settings_module._openrouter_base_url(value),
+            "http://openrouter.example.com",
+            "OPENROUTER_BASE_URL must be an https URL (http only for localhost, 127.0.0.1 or ::1)",
+        ),
+        (
+            lambda value: settings_module._app_url(value),
+            "https://kaagaz.example.com/app",
+            "APP_URL must be an https origin such as https://kaagaz.example.com"
+            " (http only for localhost, 127.0.0.1 or ::1)",
+        ),
+        (
+            lambda value: settings_module._redirect_uri(value, "google"),
+            "https://kaagaz.example.com/api/auth/oidc/google/callback/",
+            "GOOGLE_REDIRECT_URI must be an https URL ending /api/auth/oidc/google/callback"
+            " (http only for localhost, 127.0.0.1 or ::1)",
+        ),
+    ],
+)
+def test_each_https_setting_keeps_its_own_message(check: Any, value: str, message: str) -> None:
+    with pytest.raises(SettingsError) as refused:
+        check(value)
+    assert str(refused.value) == message
+
+
+def test_the_three_https_settings_share_one_check() -> None:
+    assert (
+        settings_module._https_url("https://kaagaz.example.com/", "APP_URL", "")
+        == "https://kaagaz.example.com"
+    )
+    assert (
+        settings_module._https_url("http://localhost:8080/v1/", "OPENROUTER_BASE_URL")
+        == "http://localhost:8080/v1"
+    )
+    callback = "https://kaagaz.example.com/api/auth/oidc/google/callback"
+    assert (
+        settings_module._https_url(callback, "GOOGLE_REDIRECT_URI", "/api/auth/oidc/google/callback")
+        == callback
+    )
 
 
 def test_google_client_secret_is_never_in_repr() -> None:

@@ -137,56 +137,50 @@ def _openrouter_base_url(value: str) -> str:
     parts = urllib.parse.urlsplit(value)
     if parts.username is not None or parts.password is not None or parts.query or parts.fragment:
         raise SettingsError("OPENROUTER_BASE_URL must have no user, password, query or fragment")
-    host = parts.hostname or ""
-    secure = parts.scheme == "https" and bool(host)
-    if not (secure or (parts.scheme == "http" and host in _LOOPBACK_HOSTS)):
-        raise SettingsError(
-            "OPENROUTER_BASE_URL must be an https URL (http only for localhost, 127.0.0.1 or ::1)"
-        )
-    return value.rstrip("/")
+    return _https_url(value, "OPENROUTER_BASE_URL")
 
 
 def _app_url(value: str) -> str:
     """APP_URL: an https origin (http only on a loopback host), with no user, path, query or
     fragment, since every emailed link starts with it. Kept without a trailing slash."""
-    parts = urllib.parse.urlsplit(value)
-    host = parts.hostname or ""
-    secure = parts.scheme == "https" and bool(host)
-    if (
-        parts.username is not None
-        or parts.password is not None
-        or parts.path not in ("", "/")
-        or parts.query
-        or parts.fragment
-        or not (secure or (parts.scheme == "http" and host in _LOOPBACK_HOSTS))
-    ):
-        raise SettingsError(
-            "APP_URL must be an https origin such as https://kaagaz.example.com"
-            " (http only for localhost, 127.0.0.1 or ::1)"
-        )
-    return value.rstrip("/")
+    return _https_url(value, "APP_URL", "")
 
 
 def _redirect_uri(value: str, provider: str) -> str:
     """{PROVIDER}_REDIRECT_URI (#457): where the provider sends the browser back, exactly as
     registered with it. https (http only on a loopback host), no user, query or fragment, and
     the path /api/auth/oidc/<provider>/callback."""
+    return _https_url(value, f"{provider.upper()}_REDIRECT_URI", f"/api/auth/oidc/{provider}/callback")
+
+
+_LOOPBACK_NOTE = " (http only for localhost, 127.0.0.1 or ::1)"
+# Each setting's own words when ``_https_url`` refuses it (a redirect URI's name its path).
+_URL_MESSAGES = {
+    "OPENROUTER_BASE_URL": "OPENROUTER_BASE_URL must be an https URL" + _LOOPBACK_NOTE,
+    "APP_URL": "APP_URL must be an https origin such as https://kaagaz.example.com" + _LOOPBACK_NOTE,
+}
+
+
+def _https_url(value: str, name: str, path: str | None = None) -> str:
+    """``value`` when it is https (http only on a loopback host) with no user, password, query
+    or fragment and, when ``path`` is given, exactly that path (``""``: an origin, "/" too);
+    kept without a trailing slash. Else ``SettingsError`` in ``name``'s own words."""
     parts = urllib.parse.urlsplit(value)
     host = parts.hostname or ""
     secure = parts.scheme == "https" and bool(host)
+    paths = {"", "/"} if path == "" else {path}
     if (
         parts.username is not None
         or parts.password is not None
         or parts.query
         or parts.fragment
-        or parts.path != f"/api/auth/oidc/{provider}/callback"
+        or (path is not None and parts.path not in paths)
         or not (secure or (parts.scheme == "http" and host in _LOOPBACK_HOSTS))
     ):
         raise SettingsError(
-            f"{provider.upper()}_REDIRECT_URI must be an https URL ending"
-            f" /api/auth/oidc/{provider}/callback (http only for localhost, 127.0.0.1 or ::1)"
+            _URL_MESSAGES.get(name) or f"{name} must be an https URL ending {path}" + _LOOPBACK_NOTE
         )
-    return value
+    return value.rstrip("/")
 
 
 class SettingsError(Exception):
