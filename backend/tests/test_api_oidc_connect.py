@@ -31,6 +31,7 @@ WAYS = "/settings/sign-in"
 def google(monkeypatch: pytest.MonkeyPatch) -> FakeGoogle:
     monkeypatch.setattr(oidc_router, "start_limits", RateLimiter(1000, window_seconds=3600))
     monkeypatch.setattr(oidc_router, "connect_limits", RateLimiter(1000, window_seconds=3600))
+    monkeypatch.setattr(oidc_router, "remove_limits", RateLimiter(1000, window_seconds=3600))
     return use_google(monkeypatch)
 
 
@@ -442,3 +443,14 @@ def test_identity_routes_are_404_while_off(db: Database, method: str, path: str)
         .request(method, path, json=None if method == "GET" else {"password": PASSWORD}, headers=CSRF)
     )
     assert (reply.status_code, reply.json()["error"]["code"]) == (404, "not_found")
+
+
+def test_disconnect_rate_limited_per_user(db: Database, monkeypatch: pytest.MonkeyPatch) -> None:
+    use_google(monkeypatch)
+    monkeypatch.setattr(oidc_router, "remove_limits", RateLimiter(2, window_seconds=3600))
+    api = _api(db)
+    member = api.new_signed("member")
+    path = f"/api/auth/identities/{ANY_ID}/remove"
+    replies = [member.client.post(path, json={"password": PASSWORD}, headers=CSRF) for _ in range(3)]
+    assert [reply.status_code for reply in replies] == [404, 404, 429]
+    assert replies[2].headers["retry-after"]

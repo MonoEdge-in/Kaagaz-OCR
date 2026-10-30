@@ -39,7 +39,7 @@ provider's own routes: while that one is off), before anything else is read.
   switched on and the user's own connections. ``POST /auth/identities/{id}/remove``
   {password}: disconnect (or cancel a waiting) one of the user's own (someone else's: 404),
   audited ``auth.identity_unlinked``; every other browser is signed out, this one stays, the
-  password keeps working, and a security notice is emailed.
+  password keeps working, and a security notice is emailed. At most CONNECTS_PER_HOUR a user.
 * ``GET /auth/oidc/notice``: "isn't connected" names the provider's email, which never goes in
   a URL (history, logs): the callback leaves it in a signed 60-second cookie, read here once.
 * ``POST /auth/oidc/code`` {code}: the second step, ``routers/auth.py``'s ``_finish_second_step``
@@ -128,6 +128,9 @@ TOO_MANY = "Too many sign-ins from here. Try again in an hour."
 CONNECTS_PER_HOUR = 10
 connect_limits = RateLimiter(CONNECTS_PER_HOUR, window_seconds=3600)
 TOO_MANY_CONNECTS = "Too many tries to connect an account. Try again in an hour."
+# Disconnects an hour for one user (PROVISIONAL), the spec's per-user limit: each checks the password.
+remove_limits = RateLimiter(CONNECTS_PER_HOUR, window_seconds=3600)
+TOO_MANY_REMOVES = "Too many tries to disconnect an account. Try again in an hour."
 LOGIN = "/login"
 WAYS = "/settings/sign-in"  # Account, Ways to sign in
 # A plain path on this site: no scheme, host, "//", "\", "%" or fragment can get through.
@@ -323,6 +326,10 @@ def remove_identity(
 ) -> JSONResponse:
     """Disconnect (or cancel a waiting) connection of the user's own, with the password. Every
     other browser is signed out, this one stays; the password keeps working."""
+    key = f"user:{user.user_id}"
+    if not remove_limits.allow(key):
+        wait = str(remove_limits.retry_after(key))
+        raise ApiError(429, "rate_limited", TOO_MANY_REMOVES, headers={"Retry-After": wait})
     now = context.clock()
     _check_current_password(context, user, body.password, now)
     with context.db.customer(user.customer_id) as conn:

@@ -20,6 +20,7 @@ pytestmark = pytest.mark.db
 def google(monkeypatch: pytest.MonkeyPatch) -> FakeGoogle:
     monkeypatch.setattr(oidc_router, "start_limits", RateLimiter(1000, window_seconds=3600))
     monkeypatch.setattr(oidc_router, "connect_limits", RateLimiter(1000, window_seconds=3600))
+    monkeypatch.setattr(oidc_router, "remove_limits", RateLimiter(1000, window_seconds=3600))
     return use_google(monkeypatch)
 
 
