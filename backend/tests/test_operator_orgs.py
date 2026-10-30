@@ -64,6 +64,7 @@ ORG_ROUTES = {
     ("GET", f"{ORGS}/{ANY_ID}/model-rates"),
     ("PUT", f"{ORGS}/{ANY_ID}/model-rates"),
     ("PUT", f"{ORGS}/{ANY_ID}/users/{ANY_ID}/model-rate"),
+    ("POST", f"{ORGS}/{ANY_ID}/approve"),  # Changed on purpose (#457): a pending sign-up
 }
 ORG_ROW = {
     "customer_id": CID,
@@ -81,6 +82,7 @@ ORG_ROW = {
     "last_activity_at": NOW,
     "autofile_granted": True,
     "autofile_on": False,
+    "admin_email_confirmed": False,
 }
 
 
@@ -255,6 +257,7 @@ def test_the_organisation_list_holds_counts_only(offline: _Offline) -> None:
         "last_activity_at",
         "autofile_granted",  # feature 28
         "autofile_on",
+        "admin_email_confirmed",  # Changed on purpose (#457): Approve needs it
     }
     assert (org["autofile_granted"], org["autofile_on"]) == (True, False)
 

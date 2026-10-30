@@ -836,9 +836,11 @@ def conversation_summary(row: RowMapping) -> dict[str, Any]:
     return {"id": str(row["id"]), "title": row["title"], "created_at": iso(row["created_at"])}
 
 
-def me_json(user: CurrentUser) -> dict[str, Any]:
+def me_json(user: CurrentUser, *, email_on: bool) -> dict[str, Any]:
     """``Me``: who is signed in, their customer, and the session's scope ("app" for a
-    member or reviewer, "admin" for an admin; the screen shows Admin only for "admin")."""
+    member or reviewer, "admin" for an admin; the screen shows Admin only for "admin").
+    ``email_confirmed`` false shows the "Confirm your email" banner (#457), so it is true
+    while email is off: nothing could be sent to confirm it."""
     return {
         "user": {
             "id": user.user_id,
@@ -848,6 +850,7 @@ def me_json(user: CurrentUser) -> dict[str, Any]:
             "must_change_password": user.must_change_password,
             "totp_enabled": user.totp_enabled,
             "can_delete_forever": user.delete_forever_allowed and user.role != "admin",  # the grant
+            "email_confirmed": user.email_confirmed or not email_on,
         },
         "customer": {"id": user.customer_id, "name": user.customer_name},
         "session": {"scope": user.scope},

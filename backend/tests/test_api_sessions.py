@@ -20,7 +20,7 @@ from sqlalchemy import text
 from kaagaz.api import totp
 from kaagaz.api.auth import SESSION_COOKIE, SessionClaims, sign_session, verify_password
 from kaagaz.db.engine import Database
-from tests.test_api_support import CSRF, NOW, PASSWORD, Api, TestClient, call, route_calls
+from tests.test_api_support import CSRF, EMAIL_ROUTES, NOW, PASSWORD, Api, TestClient, call, route_calls
 
 pytestmark = pytest.mark.db
 
@@ -35,10 +35,11 @@ def _login(client: TestClient, email: str, password: str = PASSWORD) -> httpx.Re
     return client.post("/api/auth/login", json={"email": email, "password": password}, headers=CSRF)
 
 
-def _change_password(client: TestClient, current: str, new: str) -> httpx.Response:
-    return client.post(
-        "/api/auth/password", json={"current_password": current, "new_password": new}, headers=CSRF
-    )
+def _change_password(client: TestClient, current: str, new: str, code: str | None = None) -> httpx.Response:
+    body = {"current_password": current, "new_password": new}
+    if code is not None:
+        body["code"] = code
+    return client.post("/api/auth/password", json=body, headers=CSRF)
 
 
 def _b64url(raw: bytes) -> str:
@@ -73,8 +74,10 @@ def test_a_password_change_keeps_the_admin_session_and_its_end(db: Database) -> 
     api = Api(db)
     admin = api.new_admin()
     api.clock.advance(30 * 60)
+    assert admin.totp_secret is not None
 
-    reply = _change_password(admin.client, PASSWORD, NEW_PASSWORD)
+    # Changed on purpose (#457): with two-step sign-in on, the code too.
+    reply = _change_password(admin.client, PASSWORD, NEW_PASSWORD, api.code(admin.totp_secret))
 
     assert reply.status_code == 200, reply.text
     assert reply.json()["session"] == {"scope": "admin"}
@@ -246,8 +249,10 @@ def test_must_change_blocks_every_route_except_password_logout_and_me(db: Databa
         ("GET", "/api/auth/me"),
         ("GET", "/api/auth/session"),
     }
-    calls = route_calls(api.app)
-    assert open_to_all | allowed <= set(calls)
+    # Changed on purpose (#457): the email routes are 404 while email is off (tests/test_api_email.py).
+    email_off = {(method, path) for method, path in route_calls(api.app) if path in EMAIL_ROUTES}
+    calls = [call for call in route_calls(api.app) if call not in email_off]
+    assert open_to_all | allowed <= set(calls) and len(email_off) == len(EMAIL_ROUTES)
 
     # Fixed (#239, 27 Oct 2026): the operator's routes (0015) take an operator session, so a
     # customer's session gets their 401 before this gate; tests/test_operator_auth_db.py too.

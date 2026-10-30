@@ -17,7 +17,16 @@ from kaagaz.db.engine import Database, OperatorDatabase
 from kaagaz.db.sqlstate import sqlstate
 from tests import test_migration_0002_db as m0002
 from tests.db_support import migrate
-from tests.test_api_support import CSRF, PASSWORD, Api, TestClient, password_hash_of, route_calls, wrong_code
+from tests.test_api_support import (
+    CSRF,
+    EMAIL_ROUTES,
+    PASSWORD,
+    Api,
+    TestClient,
+    password_hash_of,
+    route_calls,
+    wrong_code,
+)
 from tests.test_operator_activity import ACTIVITY_ROUTES
 from tests.test_operator_insights import INSIGHT_ROUTES
 from tests.test_operator_orgs import ORG_ROUTES
@@ -39,6 +48,8 @@ OPEN_TO_ALL = {
     ("GET", "/api/auth/signup"),
     ("POST", "/api/auth/signup"),
 }
+# Changed on purpose (#457): 404 while email is off, whoever asks (tests/test_api_email.py).
+EMAIL_OFF = {("POST", path) for path in EMAIL_ROUTES}
 WRONG = "not the password!!"
 _INSERT = "INSERT INTO operators (email, display_name, password_hash) VALUES (:e, 'Ops', :h) RETURNING id"
 # As the CLI issues a secret (pending) and as the first valid code leaves it (confirmed).
@@ -194,7 +205,11 @@ def test_an_operator_session_opens_no_customer_route(db: Database) -> None:
     client = api.client()
     assert operator.login(client).status_code == 200
     cookie = {**CSRF, "Cookie": f"{OPERATOR_COOKIE}={client.cookies.get(OPERATOR_COOKIE)}"}
-    calls = [call for call in route_calls(api.app) if call not in OPEN_TO_ALL and "/operator" not in call[1]]
+    calls = [
+        call
+        for call in route_calls(api.app)
+        if call not in OPEN_TO_ALL | EMAIL_OFF and "/operator" not in call[1]
+    ]
     assert len(calls) > 20
     for method, path in calls:
         body: dict[str, str] | None = None if method in ("GET", "DELETE") else {}

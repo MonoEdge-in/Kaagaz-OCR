@@ -12,7 +12,7 @@
   link). Every existing user keeps NULL, so they are asked to confirm at their next sign-in.
 * ``customers.status`` gains ``pending``: a password sign-up waits for an operator's
   approval. 0014's CHECK ``(status = 'active') = (disabled_at IS NULL)`` becomes
-  ``(status IN ('disabled', 'deleting')) = (disabled_at IS NOT NULL)``: the same for active,
+  ``(status IN ('active', 'pending')) = (disabled_at IS NULL)``: the same for active,
   disabled and deleting, and a pending customer has no ``disabled_at``; ``delete_after``'s
   CHECK already keeps it NULL unless deleting. Everything that asks for ``active`` (sign-in,
   sessions, the worker, the sweeps) already refuses a pending customer.
@@ -215,7 +215,7 @@ UPGRADE = [
         DROP CONSTRAINT customers_disabled_at_check,
         ADD CONSTRAINT customers_status_check CHECK (status IN ('active', 'pending', 'disabled', 'deleting')),
         ADD CONSTRAINT customers_disabled_at_check
-            CHECK ((status IN ('disabled', 'deleting')) = (disabled_at IS NOT NULL))
+            CHECK ((status IN ('active', 'pending')) = (disabled_at IS NULL))
     """,
     f"COMMENT ON COLUMN customers.status IS {_literal(STATUS_COMMENT)}",
     f"COMMENT ON COLUMN customers.disabled_at IS {_literal(DISABLED_AT_COMMENT)}",

@@ -19,8 +19,10 @@
   an admin session. The session version stays, so other browsers stay in.
 * ``POST /auth/admin/2fa/off``: 403 ``two_step_required``. Admins keep two-step sign-in
   on; the operator can reset a lost one, and the admin sets it up again at sign-in.
-* ``POST /auth/password`` {current_password, new_password}: a new password;
-  every other browser is signed out, this one is re-signed.
+* ``POST /auth/password`` {current_password, new_password, code?}: a new password;
+  every other browser is signed out, this one is re-signed. Anyone with two-step sign-in on
+  also sends the code (#457; the sign-in's own check, ``_code_problem``), and a security
+  notice is emailed while email is on.
 * ``POST /auth/confirm-password`` {password}: only for a member or reviewer an
   admin allowed to delete forever; the password, counted like a sign-in, then a
   5-minute confirm cookie (kaagaz/api/auth.py) for Delete forever. 204.
@@ -35,6 +37,10 @@
   (``/auth/admin/enrol``) signs them in as that admin (MFA required, 0035).
   ``kaagaz_create_customer`` (the CLI's function) makes both in one statement, with an
   operator-made organisation's defaults (models, permissions and features off).
+  With email on (#457 phase 0) the organisation is made ``pending`` instead, a "Confirm
+  your email" link is sent, and the reply is 201 ``{status: "confirm_email"}`` with no
+  set-up offer and no session; sign-in then says 403 ``org_pending`` (after a right
+  password only) until an operator approves it (``routers/operator_orgs.py``).
   A taken e-mail is the admin screens' 409. At most ``SIGNUPS_PER_HOUR`` a client
   address (429). Off (``SELF_SIGNUP_ENABLED=false``, or the super admin's Self sign-up
   switch, 0038): 404; ``GET /auth/signup`` says
@@ -81,7 +87,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 from sqlalchemy import Connection
 
-from kaagaz.api import totp
+from kaagaz.api import emails, totp
 from kaagaz.api.auth import (
     AdminSession,
     CurrentUser,
@@ -103,6 +109,7 @@ from kaagaz.api.auth import (
     verify_password,
 )
 from kaagaz.api.context import AppContext, get_context
+from kaagaz.api.emails import email_on, new_link, send
 from kaagaz.api.errors import ApiError
 from kaagaz.api.middleware import RateLimiter
 from kaagaz.api.names import ORG_NAME_PROBLEM, org_name_ok
@@ -125,6 +132,9 @@ MAX_CODE = 16  # 6 digits, plus room for the spaces people type
 ENROL_FIRST = "Set up two-step sign-in to continue. Admins need it to keep your organisation safe."
 KEEP_TWO_STEP = "Admins keep two-step sign-in on to keep your organisation safe."
 ADMIN_LOGIN_GONE = "Sign in on the sign-in page. Admins and members use the same one now."
+CODE_REQUIRED = "Enter the 6-digit code from your authenticator app."
+WRONG_CODE = "That code is not right. Wait for the next code and try again."
+ORG_PENDING = "Your organisation is waiting for approval."
 # Sign-ups an hour (PROVISIONAL). Behind the Next.js proxy every visitor shares the proxy's
 # address (kaagaz/api/middleware.py), so in production this is one cap for the whole site,
 # sized for real sign-ups. ponytail: site-wide cap; per-visitor once X-Forwarded-For is trusted.
@@ -164,6 +174,7 @@ class PasswordBody(BaseModel):
 
     current_password: str = Field(min_length=1, max_length=MAX_PASSWORD)
     new_password: str = Field(min_length=MIN_PASSWORD, max_length=MAX_PASSWORD)
+    code: str | None = Field(default=None, max_length=MAX_CODE)  # with two-step sign-in on
 
 
 class SignupBody(BaseModel):
@@ -195,25 +206,11 @@ def login(body: LoginBody, context: Context) -> JSONResponse:
         if user is None:  # disabled in the meantime
             raise _refused(context)
         raise ApiError(403, "mfa_enrol_required", ENROL_FIRST, details=_enrol_offer(context, user))
-    if not _digits(body.code):
-        _failed(context, attempt, "code_required")  # counted: a wrong code next can't reset it
-        raise ApiError(401, "code_required", "Enter the 6-digit code from your authenticator app.")
-
-    try:  # a missing secret ("") does not open either
-        secret = _box(context.settings.totp_encryption_key).open(
-            attempt.totp_secret_enc or "", aad=attempt.user_id
-        )
-    except SecretBoxError:
-        _failed(context, attempt, "totp_unreadable")  # another admin or the CLI resets it
-        raise _refused(context) from None
-    step = totp.matching_step(secret, _digits(body.code), _unix(context.clock()), attempt.totp_last_step)
-    if step is None:
-        _failed(context, attempt, "wrong_code")
-        raise _refused(context)
-    with context.db.customer(attempt.customer_id) as conn:
-        accepted = users_sql.accept_totp_step(conn, attempt.customer_id, attempt.user_id, step)
-    if not accepted:  # another request used this code a moment ago
-        _failed(context, attempt, "code_reused")
+    problem = _code_problem(context, attempt, body.code)
+    if problem is not None:
+        _failed(context, attempt, problem)  # counted: a wrong code next can't reset it
+        if problem == "code_required":
+            raise ApiError(401, "code_required", CODE_REQUIRED)
         raise _refused(context)
     return _start_session(context, attempt.customer_id, attempt.user_id, scope="admin", action="auth.login")
 
@@ -276,6 +273,7 @@ def admin_enrol(body: EnrolBody, context: Context) -> JSONResponse:
     if not enrolled:  # a second request with the same token, or something changed
         _failed(context, attempt, "enrol_refused")
         raise ApiError(401, "not_signed_in")
+    emails.notify(context, customer_id, user_id, "two_step_on", emails.two_step_on)
     return _start_session(context, attempt.customer_id, attempt.user_id, scope="admin", action="auth.login")
 
 
@@ -301,6 +299,7 @@ def signup(body: SignupBody, request: Request, context: Context) -> JSONResponse
     if not _signup_on(context):  # the super admin's switch (0038), the first database read
         raise ApiError(404, "not_found")
     password_hash = hash_password(body.password)  # before the transaction, never during it
+    pending = email_on(context)  # #457: the e-mail is proven, then an operator approves
     try:
         with context.db.system() as conn:
             customer_id = users_sql.create_customer(
@@ -309,12 +308,19 @@ def signup(body: SignupBody, request: Request, context: Context) -> JSONResponse
                 admin_email=email,
                 admin_name=body.name,
                 password_hash=password_hash,
+                pending=pending,
             )
             found = users_sql.login_lookup(conn, email)
     except users_sql.EmailTaken:
         raise ApiError(409, "conflict", "That e-mail is already in use.") from None
     if found is None:  # never: made in this transaction
         raise ApiError(500, "internal_error")
+    if pending:
+        with context.db.customer(customer_id) as conn:
+            _record(conn, customer_id, "org.self_signup", actor=found.user_id, target=found.user_id)
+        link = new_link(context, customer_id, found.user_id, "confirm")
+        send(context, email, "confirm", emails.confirm_email(body.name, link))
+        return JSONResponse({"status": "confirm_email"}, status_code=201)
     user = load_user(context.db, customer_id, found.user_id, scope="admin")
     if user is None:  # never: made in this transaction
         raise ApiError(500, "internal_error")
@@ -349,7 +355,12 @@ def change_password(
     if body.new_password == body.current_password:
         raise ApiError(400, "bad_request", "Choose a new password that is different from the current one.")
     now = context.clock()
-    _check_current_password(context, user, body.current_password, now)
+    attempt = _check_current_password(context, user, body.current_password, now)
+    if attempt.totp_enabled_at is not None:
+        problem = _code_problem(context, attempt, body.code)
+        if problem is not None:
+            _failed(context, attempt, problem)
+            raise ApiError(400, "bad_request", CODE_REQUIRED if problem == "code_required" else WRONG_CODE)
 
     password_hash = hash_password(body.new_password)
     with context.db.customer(user.customer_id) as conn:
@@ -363,7 +374,9 @@ def change_password(
     changed = dataclasses.replace(
         user, session_version=int(row["session_version"]), must_change_password=False
     )
-    return _keep_this_browser(request, context, changed, now)
+    response = _keep_this_browser(request, context, changed, now)
+    send(context, user.email, "password_changed", emails.password_changed(user.display_name))
+    return response
 
 
 @router.post("/auth/confirm-password", status_code=204)
@@ -399,8 +412,8 @@ def logout_everywhere(user: User, context: Context) -> Response:
 
 
 @router.get("/auth/me")
-def me(user: UserAllowPasswordChange) -> dict[str, Any]:
-    return me_json(user)
+def me(user: UserAllowPasswordChange, context: Context) -> dict[str, Any]:
+    return me_json(user, email_on=email_on(context))
 
 
 @router.get("/auth/session")
@@ -412,7 +425,7 @@ def session(request: Request) -> dict[str, Any]:
         if error.status == 401:
             return {"signed_in": False}
         raise
-    return {"signed_in": True, "me": me_json(user)}
+    return {"signed_in": True, "me": me_json(user, email_on=email_on(get_context(request)))}
 
 
 # --- the steps they share ----------------------------------------------------------------
@@ -443,6 +456,9 @@ def _check_password(context: AppContext, email: str, password: str) -> AttemptRo
     if attempt.disabled:
         _failed(context, attempt, "disabled")
         raise _refused(context)
+    if attempt.customer_pending:  # a sign-up waiting for an operator (0061), told after a right password
+        _failed(context, attempt, "customer_pending")
+        raise ApiError(403, "org_pending", ORG_PENDING)
     if not attempt.customer_active:  # its organisation is disabled or being deleted (0014)
         _failed(context, attempt, "customer_disabled")
         raise _refused(context)
@@ -463,9 +479,11 @@ def _begin(context: AppContext, customer_id: str, user_id: str, now: datetime) -
         )
 
 
-def _check_current_password(context: AppContext, user: CurrentUser, password: str, now: datetime) -> None:
+def _check_current_password(
+    context: AppContext, user: CurrentUser, password: str, now: datetime
+) -> AttemptRow:
     """The signed-in user's own password, counted like a sign-in (so wrong ones
-    lead to the lockout), else a 400 that says what is wrong."""
+    lead to the lockout), else a 400 that says what is wrong. The counted attempt."""
     attempt = _begin(context, user.customer_id, user.user_id, now)
     if attempt is None:
         # The lock stays on for a signed-in session too: letting a session check
@@ -481,6 +499,27 @@ def _check_current_password(context: AppContext, user: CurrentUser, password: st
     if not verify_password(password, attempt.password_hash):
         _failed(context, attempt, "wrong_password")
         raise ApiError(400, "bad_request", "Your current password is not right.")
+    return attempt
+
+
+def _code_problem(context: AppContext, attempt: AttemptRow, code: str | None) -> str | None:
+    """None when ``code`` is this user's next unused two-step code, which is then used up;
+    else why not (``code_required``, ``totp_unreadable``, ``wrong_code``, ``code_reused``),
+    for the caller to count, audit and answer. Sign-in and Change password share it."""
+    if not _digits(code):
+        return "code_required"
+    try:  # a missing secret ("") does not open either
+        secret = _box(context.settings.totp_encryption_key).open(
+            attempt.totp_secret_enc or "", aad=attempt.user_id
+        )
+    except SecretBoxError:
+        return "totp_unreadable"  # another admin or the CLI resets it
+    step = totp.matching_step(secret, _digits(code), _unix(context.clock()), attempt.totp_last_step)
+    if step is None:
+        return "wrong_code"
+    with context.db.customer(attempt.customer_id) as conn:
+        accepted = users_sql.accept_totp_step(conn, attempt.customer_id, attempt.user_id, step)
+    return None if accepted else "code_reused"  # another request used this code a moment ago
 
 
 def _keep_this_browser(
@@ -493,7 +532,7 @@ def _keep_this_browser(
     if claims is None:
         raise ApiError(401, "not_signed_in")
     renewed = dataclasses.replace(claims, session_version=user.session_version)
-    response = JSONResponse(me_json(user))
+    response = JSONResponse(me_json(user, email_on=email_on(context)))
     set_session_cookie(response, renewed, context.settings, now=_unix(now))
     return response
 
@@ -525,7 +564,7 @@ def _start_session(
         now=_unix(now),
         idle_hours=user.idle_hours,  # set: 24 hours, the idle timeout ends it (0040)
     )
-    response = JSONResponse(me_json(user))
+    response = JSONResponse(me_json(user, email_on=email_on(context)))
     set_session_cookie(response, claims, context.settings, now=_unix(now))
     return response
 

@@ -32,6 +32,7 @@ from fastapi.routing import APIRoute, iter_route_contexts
 from fastapi.testclient import TestClient as TestClient
 from sqlalchemy import RowMapping, text
 
+from kaagaz.adapters.email import Mailer
 from kaagaz.ai.client import ModelClient
 from kaagaz.answering.clarify import Pending
 from kaagaz.answering.memory import Memory
@@ -261,8 +262,10 @@ class Api:
         queue: ApiFakeQueue | None = None,
         model: ModelClient | None = None,
         answers: Answers | None = None,
+        mailer: Mailer | None = None,
     ) -> None:
-        """``answers``: the real AnswerService for a test that needs one; FakeAnswers otherwise."""
+        """``answers``: the real AnswerService for a test that needs one; FakeAnswers otherwise.
+        ``mailer``: a MemoryMailer for the email tests (#457), with ``email_enabled`` settings."""
         self.db = db
         self.settings = settings or make_settings()
         self.clock = clock or MovingClock()
@@ -277,6 +280,7 @@ class Api:
             answers=self.answers if answers is None else answers,
             clock=self.clock,
             model=model,
+            mailer=mailer,
         )
 
     def client(self) -> TestClient:
@@ -544,6 +548,14 @@ def wrong_code(api: Api, secret: bytes) -> str:
 # --- walking every route ------------------------------------------------------------
 
 ANY_ID = "7a0f6f0e-5b9e-4c55-9a39-5f0e0e0e0e0e"  # a well-formed id nothing has
+# The emailed links' routes (#457 phase 0): 404 while email is off, whoever asks.
+EMAIL_ROUTES = (
+    "/api/auth/email/confirm",
+    "/api/auth/email/send-confirm",
+    "/api/auth/forgot",
+    "/api/auth/reset",
+    "/api/auth/invite/accept",
+)
 
 
 def route_calls(app: FastAPI, prefix: str = "/api") -> list[tuple[str, str]]:

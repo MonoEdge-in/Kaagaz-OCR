@@ -18,12 +18,14 @@ import hashlib
 import json
 import logging
 import secrets
+from collections.abc import Callable
 from datetime import timedelta
 
 from botocore.exceptions import BotoCoreError, ClientError
 
 from kaagaz.api.context import AppContext
 from kaagaz.db import email_links as links_sql
+from kaagaz.db import users as users_sql
 
 log = logging.getLogger("kaagaz.api.emails")
 
@@ -75,6 +77,19 @@ def send(context: AppContext, to: str, purpose: str, message: Message) -> bool:
         log.warning(json.dumps({"event": "email_failed", "purpose": purpose}, separators=(",", ":")))
         return False
     return True
+
+
+def notify(
+    context: AppContext, customer_id: str, user_id: str, purpose: str, notice: Callable[[str], Message]
+) -> None:
+    """A security notice to the user's own e-mail, while email is on. One read, one send."""
+    if not email_on(context):
+        return
+    with context.db.customer(customer_id) as conn:
+        found = users_sql.contact(conn, customer_id, user_id)
+    if found is not None:
+        email, name = found
+        send(context, email, purpose, notice(name))
 
 
 # --- the texts ------------------------------------------------------------------------------

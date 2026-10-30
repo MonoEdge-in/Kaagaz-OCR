@@ -37,6 +37,7 @@ from kaagaz.api.routers import (
     chat,
     dashboard,
     documents,
+    email,
     ensemble,
     folders,
     health,
@@ -119,6 +120,7 @@ def create_app(
     for router in (
         health.router,
         auth.router,
+        email.router,
         documents.router,
         versions.router,
         read_clearly.router,

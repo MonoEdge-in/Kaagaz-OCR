@@ -14,6 +14,12 @@ lock out its last way in by accident (the CLI ``reset-admin-2fa`` is the way
 back for the last admin). Every change writes one audit row with ids and
 statuses only (never a password, hashed or not).
 
+Why an invite (#457 phase 0): with email on, Add person makes the user with an unusable
+random password and emails "You're invited" (a 7-day link to choose their own password,
+which proves the e-mail); the reply says ``invited: true`` and no password is kept. When the
+email cannot be sent, the password the admin typed is set as today's temporary one
+(``invited: false``). With email off it is exactly as before, with no ``invited``.
+
 Why the session version: disabling a user, setting their password, resetting
 their password or their two-step code all raise ``session_version`` (in
 ``kaagaz.db.users``), so every session of theirs ends at its next request. A
@@ -63,8 +69,10 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import Connection, RowMapping
 
+from kaagaz.api import emails
 from kaagaz.api.auth import AdminSession, CurrentUser, hash_password, require_admin_session
 from kaagaz.api.context import AppContext, get_context
+from kaagaz.api.emails import email_on
 from kaagaz.api.errors import ApiError
 from kaagaz.api.readers import usable
 from kaagaz.api.routers.documents import day_start
@@ -156,7 +164,9 @@ def create_user(body: NewUserBody, user: AdminSession, context: Context) -> JSON
     name = body.display_name.strip()
     if not name:
         raise ApiError(400, "bad_request", "Enter a name.")
-    password_hash = hash_password(body.password)
+    inviting = email_on(context)
+    # An invite's password is never told to anyone: the link sets the real one.
+    password_hash = hash_password(secrets.token_urlsafe(32) if inviting else body.password)
     try:
         with context.db.customer(user.customer_id) as conn:
             row = users_sql.create_user(
@@ -179,7 +189,20 @@ def create_user(body: NewUserBody, user: AdminSession, context: Context) -> JSON
             )
     except users_sql.EmailTaken:
         raise ApiError(409, "conflict", "That e-mail is already in use.") from None
-    return JSONResponse(admin_user(row, now=context.clock()), status_code=201)
+    if not inviting:
+        return JSONResponse(admin_user(row, now=context.clock()), status_code=201)
+    target = str(row["id"])
+    link = emails.new_link(context, user.customer_id, target, "invite")
+    invited = emails.send(context, email, "invite", emails.invite(name, user.customer_name, link))
+    with context.db.customer(user.customer_id) as conn:
+        if invited:
+            _audit_user(conn, user, "auth.invite_sent", target)
+        else:  # today's temporary password, the one the admin typed
+            temporary = users_sql.set_password(
+                conn, user.customer_id, target, password_hash=hash_password(body.password), must_change=True
+            )
+            row = row if temporary is None else temporary
+    return JSONResponse({**admin_user(row, now=context.clock()), "invited": invited}, status_code=201)
 
 
 @router.patch("/admin/users/{user_id}")
@@ -267,6 +290,7 @@ def reset_two_step(user_id: uuid.UUID, user: AdminSession, context: Context) -> 
         # PROVISIONAL: "user.reset_totp", not the plan's "user.reset_2fa", because audit
         # actions must match ^[a-z_.]{1,64}$ (PRD 1 A7, the audit_log CHECK): no digits.
         _audit_user(conn, user, "user.reset_totp", target)
+    emails.send(context, row["email"], "two_step_reset", emails.two_step_reset(row["display_name"]))
     return admin_user(row, now=context.clock())
 
 

@@ -525,6 +525,7 @@ class CurrentUser:
     delete_forever_allowed: bool  # an admin allowed Delete forever (ignored for an admin)
     idle_hours: int | None = None  # the idle timeout in effect (0040); None: no idle limit
     seen_at: datetime | None = None  # the session's last use or sign-in, the idle clock
+    email_confirmed: bool = False  # the user proved their e-mail with a link (0061)
 
 
 # The idle timeout (0040): the last use is written at most this often, so a request is not a write.
@@ -636,6 +637,7 @@ def load_user(db: Database, customer_id: str, user_id: str, *, scope: str) -> Cu
         delete_forever_allowed=bool(row["delete_forever_allowed"]),
         idle_hours=row["idle_hours"],
         seen_at=row["seen_at"],
+        email_confirmed=bool(row["email_confirmed"]),
     )
 
 
