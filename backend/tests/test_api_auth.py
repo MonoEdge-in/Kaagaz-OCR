@@ -9,16 +9,30 @@ import base64
 import json
 import re
 from pathlib import Path
+from typing import Any
 
 import pytest
 from sqlalchemy import text
 
 from kaagaz.api.app import create_app
 from kaagaz.api.auth import (
+    NOTICE_SECONDS,
+    OIDC_SECONDS,
+    PENDING_SECONDS,
     SESSION_COOKIE,
+    ConfirmClaims,
+    FlowClaims,
+    PendingClaims,
     SessionClaims,
     hash_password,
+    read_flow,
+    read_notice,
+    read_pending,
     read_session,
+    sign_confirm,
+    sign_flow,
+    sign_notice,
+    sign_pending,
     sign_session,
     verify_password,
 )
@@ -109,6 +123,79 @@ def test_token_with_a_changed_customer_is_refused() -> None:
     payload["cid"] = "33333333-3333-4333-8333-333333333333"
     forged = base64.urlsafe_b64encode(json.dumps(payload).encode()).rstrip(b"=").decode()
     assert read_session(forged + "." + signature, secret, now=1_000) is None
+
+
+# --- the provider sign-in's flow cookie and second-step token (#457 phase 1) ------------------
+
+SECRET = "a-test-secret-that-is-long-enough-000000"
+CID = "22222222-2222-4222-8222-222222222222"
+
+
+def _flow(**changes: Any) -> FlowClaims:
+    values: dict[str, Any] = {
+        "provider": "google",
+        "mode": "connect",
+        "state": "made-up-state",
+        "nonce": "made-up-nonce",
+        "verifier": "v" * 64,
+        "next_path": "/settings/sign-in",
+        "user_id": UID,
+        "customer_id": CID,
+        "session_version": 3,
+        "expires_at": 1_000 + OIDC_SECONDS,
+    }
+    return FlowClaims(**{**values, **changes})
+
+
+def test_flow_round_trip() -> None:
+    connect = _flow()
+    signin = _flow(mode="signin", user_id=None, customer_id=None, session_version=None, next_path="/")
+    assert read_flow(sign_flow(connect, SECRET), SECRET, now=1_000) == connect
+    assert read_flow(sign_flow(signin, SECRET), SECRET, now=1_000) == signin
+
+
+def test_flow_refused_when_expired_tampered_or_signed_for_another_purpose() -> None:
+    token = sign_flow(_flow(), SECRET)
+    assert read_flow(token, SECRET, now=1_000 + OIDC_SECONDS) is None  # expired
+    assert read_flow(token, "another-secret-that-is-long-enough-0000", now=1_000) is None
+    body, signature = token.split(".")
+    assert read_flow(body + "x." + signature, SECRET, now=1_000) is None
+    confirm = sign_confirm(
+        ConfirmClaims(user_id=UID, customer_id=CID, session_version=3, expires_at=2_000), SECRET
+    )
+    assert read_flow(confirm, SECRET, now=1_000) is None
+    assert read_session(token, SECRET, now=1_000) is None
+
+
+def test_flow_mode_must_be_signin_or_connect() -> None:
+    assert read_flow(sign_flow(_flow(mode="link"), SECRET), SECRET, now=1_000) is None
+    # a connect carries its user, a sign-in carries none
+    assert read_flow(sign_flow(_flow(user_id=None), SECRET), SECRET, now=1_000) is None
+    assert read_flow(sign_flow(_flow(mode="signin"), SECRET), SECRET, now=1_000) is None
+
+
+def test_pending_round_trip_and_expiry() -> None:
+    claims = PendingClaims(
+        provider="google", user_id=UID, customer_id=CID, session_version=3, expires_at=1_000 + PENDING_SECONDS
+    )
+    token = sign_pending(claims, SECRET)
+    assert read_pending(token, SECRET, now=1_000) == claims
+    assert read_pending(token, SECRET, now=1_000 + PENDING_SECONDS) is None
+    assert read_flow(token, SECRET, now=1_000) is None
+
+
+def test_pending_is_not_a_session() -> None:
+    claims = PendingClaims(
+        provider="google", user_id=UID, customer_id=CID, session_version=1, expires_at=2_000
+    )
+    assert read_session(sign_pending(claims, SECRET), SECRET, now=1_000) is None
+
+
+def test_notice_round_trip_and_expiry() -> None:
+    token = sign_notice("ramesh.k@gmail.com", 1_000 + NOTICE_SECONDS, SECRET)
+    assert read_notice(token, SECRET, now=1_000) == "ramesh.k@gmail.com"
+    assert read_notice(token, SECRET, now=1_000 + NOTICE_SECONDS) is None
+    assert read_pending(token, SECRET, now=1_000) is None
 
 
 # --- rate limiter ----------------------------------------------------------------
