@@ -94,8 +94,9 @@ describe("the banner", () => {
       "We'd like to use Google Analytics to see how people find the sign-in pages. Nothing you type is sent.",
     );
     const banner = source("components/analytics/Analytics.tsx");
-    expect(banner).toContain(">Accept</Button>");
-    expect(banner).toContain(">Decline</Button>");
+    // Changed on purpose (#457): the buttons say what they accept or decline.
+    expect(banner).toContain(">Accept analytics</Button>");
+    expect(banner).toContain(">Decline analytics</Button>");
     // Equal weight: neither button is the primary one.
     expect(banner).not.toMatch(/variant="primary"/);
   });

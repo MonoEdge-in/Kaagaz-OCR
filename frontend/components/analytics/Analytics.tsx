@@ -39,8 +39,8 @@ export function Analytics({ id }: { id: string }) {
     <section className={styles.banner} aria-label="Google Analytics">
       <p className={styles.text}>{BANNER_TEXT}</p>
       <ButtonGroup>
-        <Button onClick={() => choose("accepted")}>Accept</Button>
-        <Button onClick={() => choose("declined")}>Decline</Button>
+        <Button onClick={() => choose("accepted")}>Accept analytics</Button>
+        <Button onClick={() => choose("declined")}>Decline analytics</Button>
       </ButtonGroup>
     </section>
   );
