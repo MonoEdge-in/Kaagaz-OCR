@@ -441,7 +441,12 @@ def logout_everywhere(user: User, context: Context) -> Response:
 
 @router.get("/auth/me")
 def me(user: UserAllowPasswordChange, context: Context) -> dict[str, Any]:
-    return me_json(user, email_on=email_on(context), recent_connections=_recent_connections(context, user))
+    return me_json(
+        user,
+        email_on=email_on(context),
+        providers=oidc.enabled_providers(context.settings),
+        recent_connections=_recent_connections(context, user),
+    )
 
 
 @router.get("/auth/session")
@@ -460,7 +465,9 @@ def session(request: Request) -> dict[str, Any]:
         raise
     context = get_context(request)
     recent = _recent_connections(context, user)
-    return {"signed_in": True, "me": me_json(user, email_on=email_on(context), recent_connections=recent)}
+    providers = oidc.enabled_providers(context.settings)
+    me = me_json(user, email_on=email_on(context), providers=providers, recent_connections=recent)
+    return {"signed_in": True, "me": me}
 
 
 # --- the steps they share ----------------------------------------------------------------
@@ -657,7 +664,8 @@ def _keep_this_browser(
     if claims is None:
         raise ApiError(401, "not_signed_in")
     renewed = dataclasses.replace(claims, session_version=user.session_version)
-    response = JSONResponse(me_json(user, email_on=email_on(context)))
+    providers = oidc.enabled_providers(context.settings)
+    response = JSONResponse(me_json(user, email_on=email_on(context), providers=providers))
     set_session_cookie(response, renewed, context.settings, now=_unix(now))
     return response
 
@@ -673,7 +681,8 @@ def _start_session(
 ) -> JSONResponse:
     """The ``Me`` reply and a new session cookie of this scope; clears the count."""
     user, claims = _open_session(context, customer_id, user_id, scope=scope, action=action, details=details)
-    response = JSONResponse(me_json(user, email_on=email_on(context)))
+    providers = oidc.enabled_providers(context.settings)
+    response = JSONResponse(me_json(user, email_on=email_on(context), providers=providers))
     set_session_cookie(response, claims, context.settings, now=_unix(context.clock()))
     return response
 

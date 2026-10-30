@@ -23,7 +23,7 @@ from kaagaz.db import identities
 from kaagaz.db.engine import Database
 from tests.oidc_fake import ISSUER, FakeGoogle, google_settings, use_google
 from tests.settings_factory import make_settings
-from tests.test_api_support import ANY_ID, CSRF, Api, TestClient, wrong_code
+from tests.test_api_support import ANY_ID, CSRF, PASSWORD, Api, TestClient, wrong_code
 
 pytestmark = pytest.mark.db
 
@@ -450,6 +450,17 @@ def test_callback_has_no_referrer_header(db: Database, google: FakeGoogle) -> No
 def test_the_session_probe_lists_the_providers_that_are_on(db: Database) -> None:
     assert _api(db).client().get("/api/auth/session").json() == {"signed_in": False, "providers": ["google"]}
     assert Api(db).client().get("/api/auth/session").json() == {"signed_in": False, "providers": []}
+
+
+def test_every_me_reply_lists_the_providers_that_are_on(db: Database) -> None:
+    """Signed in too: Account hides "Ways to sign in" while none is on (#457 review)."""
+    for api, providers in ((_api(db), ["google"]), (Api(db), [])):
+        member = api.new_signed("member")
+        assert member.client.get("/api/auth/me").json()["providers"] == providers
+        assert member.client.get("/api/auth/session").json()["me"]["providers"] == providers
+        body = {"current_password": PASSWORD, "new_password": "a brand new made-up password"}
+        changed = member.client.post("/api/auth/password", json=body, headers=CSRF)
+        assert changed.json()["providers"] == providers
 
 
 def test_logs_never_contain_code_token_or_email(

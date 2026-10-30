@@ -14,7 +14,7 @@ session and no model calls:
 The hourly Trash purge still runs for it: it deletes only, calls no model, and
 a disabled customer's Trash is removed on time all the same.
 
-* ``is_active`` takes a connection from ``Database.customer`` or
+* ``is_active`` and ``is_pending`` take a connection from ``Database.customer`` or
   ``Database.user``: the ``customers`` policy shows only that customer's row.
 * ``set_status`` takes an OWNER connection (the CLI's login role with no SET
   ROLE, ``cli._owner``): ``kaagaz_app`` may update ``max_upload_mb`` only (0014),
@@ -33,6 +33,7 @@ DELETING = "deleting"
 PENDING = "pending"  # a sign-up waiting for an operator's Approve (0061)
 
 _IS_ACTIVE = text("SELECT EXISTS (SELECT 1 FROM customers WHERE id = :c AND status = 'active')")
+_IS_PENDING = text("SELECT EXISTS (SELECT 1 FROM customers WHERE id = :c AND status = 'pending')")
 _LOCK = text("SELECT status FROM customers WHERE id = :c FOR UPDATE")
 # disabled_at is set exactly when the status is not active (0014's CHECK).
 _SET = text(
@@ -52,6 +53,11 @@ def is_active(conn: Connection, customer_id: str) -> bool:
     """True when this customer exists and is active. False for a customer that is
     disabled, being deleted or gone. O(1): one primary-key lookup."""
     return bool(conn.execute(_IS_ACTIVE, {"c": customer_id}).scalar())
+
+
+def is_pending(conn: Connection, customer_id: str) -> bool:
+    """True while this customer is a sign-up waiting for the operator's Approve (0061). O(1)."""
+    return bool(conn.execute(_IS_PENDING, {"c": customer_id}).scalar())
 
 
 def set_status(conn: Connection, customer_id: str, status: str, *, now: datetime) -> str | None:

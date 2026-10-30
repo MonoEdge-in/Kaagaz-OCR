@@ -4,7 +4,8 @@
 * ``GET /auth/email``: ``{"enabled": true}``, so the sign-in page shows "Forgot password?"
   only while email is on (404, like every route here, while it is off).
 * ``POST /auth/email/confirm`` {token}: the link from "Confirm your email" proves the
-  e-mail (``users.email_verified_at``), audited ``auth.email_confirmed``. ``{"ok": true}``.
+  e-mail (``users.email_verified_at``), audited ``auth.email_confirmed``. ``{"ok": true,
+  "pending": bool}``: ``pending`` while the organisation is a sign-up waiting for approval.
 * ``POST /auth/email/send-confirm`` (signed in): a new confirm link to the user's own
   e-mail, at most CONFIRMS_PER_HOUR a user (429). Older unused links stop working.
   ``{"ok": true, "sent": bool}``: ``sent`` is false when the email failed.
@@ -48,6 +49,7 @@ from kaagaz.api.middleware import RateLimiter
 from kaagaz.api.routers.admin import MAX_PASSWORD, MIN_PASSWORD, valid_email
 from kaagaz.api.routers.auth import _per_user_limit
 from kaagaz.db import audit, identities
+from kaagaz.db import customers as customers_sql
 from kaagaz.db import email_links as links_sql
 from kaagaz.db import users as users_sql
 from kaagaz.db.email_links import LinkRow
@@ -109,7 +111,8 @@ def confirm_email(body: TokenBody, context: Context) -> dict[str, bool]:
         _use(conn, link, context)
         users_sql.confirm_email(conn, link.customer_id, link.user_id, now=now)
         _record(conn, link, "auth.email_confirmed")
-    return {"ok": True}
+        pending = customers_sql.is_pending(conn, link.customer_id)
+    return {"ok": True, "pending": pending}
 
 
 @router.post("/auth/email/send-confirm")

@@ -186,7 +186,9 @@ def test_a_sign_up_confirms_its_email_then_waits_for_an_operators_approval(db: D
     assert (enabled.status_code, enabled.json()["error"]["code"]) == (409, "conflict")
 
     token = _token(mailer, email, "/email/confirm")
-    assert _post(api.client(), "/api/auth/email/confirm", {"token": token}).json() == {"ok": True}
+    # Changed on purpose (#457 review): ``pending``, so the page says the sign-up waits for approval.
+    confirmed = _post(api.client(), "/api/auth/email/confirm", {"token": token})
+    assert confirmed.json() == {"ok": True, "pending": True}
     [org] = [item for item in ops.get("/api/operator/orgs").json()["items"] if item["id"] == org["id"]]
     assert org["admin_email_confirmed"] is True
     approved = _post(ops, approve)
@@ -225,7 +227,8 @@ def test_a_confirm_link_works_once_only_the_newest_works_and_it_expires(db: Data
     _post(member.client, "/api/auth/email/send-confirm")
     newest = _token(mailer, member.email, "/email/confirm")
     assert _post(api.client(), "/api/auth/email/confirm", {"token": first}).json() == LINK_GONE  # replaced
-    assert _post(api.client(), "/api/auth/email/confirm", {"token": newest}).json() == {"ok": True}
+    confirmed = _post(api.client(), "/api/auth/email/confirm", {"token": newest}).json()
+    assert confirmed == {"ok": True, "pending": False}  # Changed on purpose: an active organisation
     reused = _post(api.client(), "/api/auth/email/confirm", {"token": newest})
     assert (reused.status_code, reused.json()) == (400, LINK_GONE)
     assert member.client.get("/api/auth/me").json()["user"]["email_confirmed"] is True
@@ -346,7 +349,7 @@ def test_send_again_without_signing_in_sends_only_to_a_pending_unconfirmed_admin
     assert {(reply.status_code, str(reply.json())) for reply in replies} == {(202, str(RESEND_REPLY))}
     assert [sent.to for sent in mailer.sent[sent_before:]] == [pending]
     first = _token(mailer, pending, "/email/confirm")
-    assert _post(client, "/api/auth/email/confirm", {"token": first}).json() == {"ok": True}
+    assert _post(client, "/api/auth/email/confirm", {"token": first}).json() == {"ok": True, "pending": True}
     assert _post(client, "/api/auth/email/resend-confirm", {"email": pending}).status_code == 202
     assert len(mailer.sent) == sent_before + 1  # confirmed now: nothing more is sent
 
