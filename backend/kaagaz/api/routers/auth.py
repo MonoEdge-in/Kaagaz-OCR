@@ -88,7 +88,7 @@ Why the sign-in looks the way it does (council record 29 Sep, WP1.3):
 """
 
 import dataclasses
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Request, Response
@@ -128,8 +128,8 @@ from kaagaz.api.twostep import box as _box
 from kaagaz.api.twostep import digits as _digits
 from kaagaz.api.twostep import refused as _refused
 from kaagaz.api.twostep import unix as _unix
-from kaagaz.api.views import me_json
-from kaagaz.db import audit
+from kaagaz.api.views import iso, me_json
+from kaagaz.db import audit, identities
 from kaagaz.db import users as users_sql
 from kaagaz.db.users import AttemptRow
 
@@ -144,6 +144,7 @@ ADMIN_LOGIN_GONE = "Sign in on the sign-in page. Admins and members use the same
 CODE_REQUIRED = "Enter the 6-digit code from your authenticator app."
 WRONG_CODE = "That code is not right. Wait for the next code and try again."
 ORG_PENDING = "Your organisation is waiting for approval."
+RECENT_DAYS = 14  # how long the app's "Google connected" banner shows (#457 phase 1)
 # Sign-ups an hour (PROVISIONAL). Behind the Next.js proxy every visitor shares the proxy's
 # address (kaagaz/api/middleware.py), so in production this is one cap for the whole site,
 # sized for real sign-ups. ponytail: site-wide cap; per-visitor once X-Forwarded-For is trusted.
@@ -431,7 +432,7 @@ def logout_everywhere(user: User, context: Context) -> Response:
 
 @router.get("/auth/me")
 def me(user: UserAllowPasswordChange, context: Context) -> dict[str, Any]:
-    return me_json(user, email_on=email_on(context))
+    return me_json(user, email_on=email_on(context), recent_connections=_recent_connections(context, user))
 
 
 @router.get("/auth/session")
@@ -448,10 +449,27 @@ def session(request: Request) -> dict[str, Any]:
                 "providers": [name for name in oidc.PROVIDERS if oidc.enabled(settings, name)],
             }
         raise
-    return {"signed_in": True, "me": me_json(user, email_on=email_on(get_context(request)))}
+    context = get_context(request)
+    recent = _recent_connections(context, user)
+    return {"signed_in": True, "me": me_json(user, email_on=email_on(context), recent_connections=recent)}
 
 
 # --- the steps they share ----------------------------------------------------------------
+
+
+def _recent_connections(context: AppContext, user: CurrentUser) -> list[dict[str, str]]:
+    """The user's approved connections made in the last RECENT_DAYS, for the app's "Google
+    connected on 30 Oct." banner (#457 phase 1); none, and nothing read, while no provider is on."""
+    if not any(oidc.enabled(context.settings, name) for name in oidc.PROVIDERS):
+        return []
+    since = context.clock() - timedelta(days=RECENT_DAYS)
+    with context.db.customer(user.customer_id) as conn:
+        rows = identities.for_user(conn, user.customer_id, user.user_id)
+    return [
+        {"provider": str(row["provider"]), "linked_at": iso(row["linked_at"])}
+        for row in rows
+        if row["status"] == "approved" and row["linked_at"] >= since
+    ]
 
 
 def _check_password(context: AppContext, email: str, password: str) -> AttemptRow:

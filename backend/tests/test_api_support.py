@@ -570,8 +570,11 @@ EMAIL_ROUTES = (
 OIDC_ROUTES = (
     ("GET", "/api/auth/oidc/{provider}/start"),
     ("GET", "/api/auth/oidc/{provider}/callback"),
+    ("POST", "/api/auth/oidc/{provider}/connect"),
     ("GET", "/api/auth/oidc/notice"),
     ("POST", "/api/auth/oidc/code"),
+    ("GET", "/api/auth/identities"),
+    ("POST", f"/api/auth/identities/{ANY_ID}/remove"),
 )
 
 

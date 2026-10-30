@@ -20,7 +20,7 @@ from kaagaz.db.engine import Database
 from tests.oidc_fake import FakeGoogle, google_settings, use_google
 from tests.settings_factory import make_settings
 from tests.test_api_email import FailingMailer
-from tests.test_api_support import CSRF, PASSWORD, Api, Signed, TestClient, wrong_code
+from tests.test_api_support import ANY_ID, CSRF, PASSWORD, Api, Signed, TestClient, wrong_code
 
 pytestmark = pytest.mark.db
 SITE = "https://kaagaz.example.com"
@@ -346,3 +346,99 @@ def test_connect_is_404_while_off(db: Database) -> None:
     reply = member.client.post("/api/auth/oidc/google/connect", json={"password": PASSWORD}, headers=CSRF)
     assert (reply.status_code, reply.json()["error"]["code"]) == (404, "not_found")
     assert api.user_state(member.customer_id, member.user_id)["failed_logins"] == 0  # nothing read
+
+
+# --- a person's own connections (Ways to sign in) -------------------------------------------------
+
+
+def test_list_shows_only_mine(db: Database, google: FakeGoogle) -> None:
+    api = _api(db)
+    member = api.new_signed("member")
+    colleague = api.sign_in(member.customer_id, "member")
+    _connect(api, google, member)
+    _connect(api, google, colleague, "sita@example.com")
+    listed = member.client.get("/api/auth/identities")
+    assert listed.status_code == 200, listed.text
+    body = listed.json()
+    assert body["providers"] == ["google"]
+    assert [(row["provider"], row["email"], row["status"]) for row in body["identities"]] == [
+        ("google", "ramesh.k@gmail.com", "pending")
+    ]
+    assert set(body["identities"][0]) == {"id", "provider", "email", "status", "linked_at", "last_used_at"}
+
+
+def test_remove_needs_password_and_keeps_password_sign_in_working(db: Database, google: FakeGoogle) -> None:
+    mailer = MemoryMailer()
+    api = _api(db, mailer)
+    member = api.new_signed("member")
+    _connect(api, google, member, member.email)  # approved at once: the user's own email
+    identity_id = member.client.get("/api/auth/identities").json()["identities"][0]["id"]
+    path = f"/api/auth/identities/{identity_id}/remove"
+
+    wrong = member.client.post(path, json={"password": "not the password!!"}, headers=CSRF)
+    assert wrong.status_code == 400
+    assert len(_mine(api, member)) == 1
+
+    elsewhere = api.client()
+    assert api.admin_login(elsewhere, member.email).status_code == 200
+    removed = member.client.post(path, json={"password": PASSWORD}, headers=CSRF)
+    assert removed.status_code == 200, removed.text
+    assert removed.json() == {"providers": ["google"], "identities": []}
+    assert _mine(api, member) == []
+    assert member.client.get("/api/auth/me").status_code == 200  # this browser stays in
+    assert elsewhere.get("/api/auth/me").status_code == 401  # every other one is signed out
+    assert api.admin_login(api.client(), member.email).status_code == 200  # the password still works
+    rows = [row for row in api.audit_rows(member.customer_id) if row[0] == "auth.identity_unlinked"]
+    assert rows == [
+        ("auth.identity_unlinked", "user", member.user_id, {"provider": "google", "identity_id": identity_id})
+    ]
+    to_member = [sent.subject for sent in mailer.sent if sent.to == member.email]
+    assert to_member[-1] == "A Google account was disconnected"
+
+
+def test_remove_someone_elses_is_404(db: Database, google: FakeGoogle) -> None:
+    api = _api(db)
+    member = api.new_signed("member")
+    colleague = api.sign_in(member.customer_id, "member")
+    _connect(api, google, colleague)
+    identity_id = colleague.client.get("/api/auth/identities").json()["identities"][0]["id"]
+    reply = member.client.post(
+        f"/api/auth/identities/{identity_id}/remove", json={"password": PASSWORD}, headers=CSRF
+    )
+    assert (reply.status_code, reply.json()["error"]["code"]) == (404, "not_found")
+    assert len(_mine(api, colleague)) == 1
+
+
+def test_me_has_recent_connections(db: Database, google: FakeGoogle) -> None:
+    api = _api(db)
+    member = api.new_signed("member")
+    assert member.client.get("/api/auth/me").json()["recent_connections"] == []
+    _connect(api, google, member, member.email)  # approved
+    linked_at = member.client.get("/api/auth/identities").json()["identities"][0]["linked_at"]
+    me = member.client.get("/api/auth/me").json()
+    assert me["recent_connections"] == [{"provider": "google", "linked_at": linked_at}]
+    assert (
+        member.client.get("/api/auth/session").json()["me"]["recent_connections"] == me["recent_connections"]
+    )
+    api.clock.advance(15 * 24 * 3600)
+    member = api.sign_in(member.customer_id, "member")
+    assert member.client.get("/api/auth/me").json()["recent_connections"] == []
+
+
+def test_a_waiting_connection_is_not_recent(db: Database, google: FakeGoogle) -> None:
+    api = _api(db)
+    member = api.new_signed("member")
+    _connect(api, google, member)  # waiting
+    assert member.client.get("/api/auth/me").json()["recent_connections"] == []
+
+
+@pytest.mark.parametrize(
+    ("method", "path"), [("GET", "/api/auth/identities"), ("POST", f"/api/auth/identities/{ANY_ID}/remove")]
+)
+def test_identity_routes_are_404_while_off(db: Database, method: str, path: str) -> None:
+    reply = (
+        Api(db, settings=make_settings())
+        .client()
+        .request(method, path, json=None if method == "GET" else {"password": PASSWORD}, headers=CSRF)
+    )
+    assert (reply.status_code, reply.json()["error"]["code"]) == (404, "not_found")

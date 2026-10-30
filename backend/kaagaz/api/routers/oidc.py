@@ -35,6 +35,11 @@ provider's own routes: while that one is off), before anything else is read.
   {provider, identity_id, status}; the session version is raised and this browser re-signed;
   a security notice is emailed. Back to /settings/sign-in?connected=google, ?waiting=google
   or ?error=<code>.
+* ``GET /auth/identities``: Ways to sign in's ``{providers, identities}``: the providers
+  switched on and the user's own connections. ``POST /auth/identities/{id}/remove``
+  {password}: disconnect (or cancel a waiting) one of the user's own (someone else's: 404),
+  audited ``auth.identity_unlinked``; every other browser is signed out, this one stays, the
+  password keeps working, and a security notice is emailed.
 * ``GET /auth/oidc/notice``: "isn't connected" names the provider's email, which never goes in
   a URL (history, logs): the callback leaves it in a signed 60-second cookie, read here once.
 * ``POST /auth/oidc/code`` {code}: the second step, ``routers/auth.py``'s ``_finish_second_step``
@@ -53,7 +58,8 @@ import logging
 import re
 import secrets
 import urllib.parse
-from typing import Annotated
+import uuid
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -103,6 +109,7 @@ from kaagaz.api.routers.auth import (
 )
 from kaagaz.api.twostep import refused as _refused
 from kaagaz.api.twostep import unix
+from kaagaz.api.views import iso
 from kaagaz.db import admin as admin_sql
 from kaagaz.db import audit, identities
 from kaagaz.db import users as users_sql
@@ -134,6 +141,12 @@ class ConnectBody(BaseModel):
 
     password: str = Field(min_length=1, max_length=MAX_PASSWORD)
     code: str | None = Field(default=None, max_length=MAX_CODE)  # with two-step sign-in on
+
+
+class PasswordBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    password: str = Field(min_length=1, max_length=MAX_PASSWORD)
 
 
 class CodeBody(BaseModel):
@@ -297,6 +310,64 @@ def second_step(body: CodeBody, request: Request, context: Context) -> JSONRespo
     response = _finish_second_step(context, attempt, body.code, details={"via": pending.provider})
     clear_pending_cookie(response, context.settings)
     return response
+
+
+@router.get("/auth/identities", dependencies=[Depends(_any_on)])
+def my_identities(user: User, context: Context) -> dict[str, Any]:
+    return _identities_json(context, user)
+
+
+@router.post("/auth/identities/{identity_id}/remove", dependencies=[Depends(_any_on)])
+def remove_identity(
+    identity_id: uuid.UUID, body: PasswordBody, user: User, request: Request, context: Context
+) -> JSONResponse:
+    """Disconnect (or cancel a waiting) connection of the user's own, with the password. Every
+    other browser is signed out, this one stays; the password keeps working."""
+    now = context.clock()
+    _check_current_password(context, user, body.password, now)
+    with context.db.customer(user.customer_id) as conn:
+        users_sql.attempt_succeeded(conn, user.customer_id, user.user_id, now=now)
+    with context.db.customer(user.customer_id) as conn:
+        removed = identities.remove(conn, user.customer_id, str(identity_id), user_id=user.user_id)
+        if removed is None:
+            raise ApiError(404, "not_found")
+        version = users_sql.bump_session_version(conn, user.customer_id, user.user_id)
+        details: dict[str, audit.DetailValue] = {
+            "provider": str(removed["provider"]),
+            "identity_id": str(identity_id),
+        }
+        _record(
+            conn,
+            user.customer_id,
+            "auth.identity_unlinked",
+            actor=user.user_id,
+            target=user.user_id,
+            details=details,
+        )
+    response = JSONResponse(_identities_json(context, user))
+    _keep_signed_in(request, context, response, version)
+    emails.notify(context, user.customer_id, user.user_id, "identity_unlinked", emails.google_disconnected)
+    return response
+
+
+def _identities_json(context: AppContext, user: CurrentUser) -> dict[str, Any]:
+    """Ways to sign in: the providers switched on, and the user's own connections."""
+    with context.db.customer(user.customer_id) as conn:
+        rows = identities.for_user(conn, user.customer_id, user.user_id)
+    return {
+        "providers": [name for name in oidc.PROVIDERS if oidc.enabled(context.settings, name)],
+        "identities": [
+            {
+                "id": str(row["id"]),
+                "provider": row["provider"],
+                "email": row["email_at_link"],
+                "status": row["status"],
+                "linked_at": iso(row["linked_at"]),
+                "last_used_at": None if row["last_used_at"] is None else iso(row["last_used_at"]),
+            }
+            for row in rows
+        ],
+    }
 
 
 # --- the steps -------------------------------------------------------------------------------

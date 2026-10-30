@@ -397,6 +397,7 @@ def test_login_sets_the_cookie_and_me_works(db: Database) -> None:
         },
         "customer": {"id": customer_id, "name": "Sharma Traders"},
         "session": {"scope": "app"},
+        "recent_connections": [],  # Changed on purpose (#457 phase 1): the "Google connected" banner
     }
     cookie = reply.headers["set-cookie"]
     assert cookie.startswith(f"{SESSION_COOKIE}=")

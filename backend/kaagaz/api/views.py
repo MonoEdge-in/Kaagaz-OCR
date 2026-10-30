@@ -836,11 +836,15 @@ def conversation_summary(row: RowMapping) -> dict[str, Any]:
     return {"id": str(row["id"]), "title": row["title"], "created_at": iso(row["created_at"])}
 
 
-def me_json(user: CurrentUser, *, email_on: bool) -> dict[str, Any]:
+def me_json(
+    user: CurrentUser, *, email_on: bool, recent_connections: Sequence[dict[str, str]] = ()
+) -> dict[str, Any]:
     """``Me``: who is signed in, their customer, and the session's scope ("app" for a
     member or reviewer, "admin" for an admin; the screen shows Admin only for "admin").
     ``email_confirmed`` false shows the "Confirm your email" banner (#457), so it is true
-    while email is off: nothing could be sent to confirm it."""
+    while email is off: nothing could be sent to confirm it. ``recent_connections``: the
+    "Google connected on 30 Oct." banner's ``{provider, linked_at}`` (#457 phase 1; only
+    /auth/me and /auth/session read them, every other reply leaves the list empty)."""
     return {
         "user": {
             "id": user.user_id,
@@ -854,6 +858,7 @@ def me_json(user: CurrentUser, *, email_on: bool) -> dict[str, Any]:
         },
         "customer": {"id": user.customer_id, "name": user.customer_name},
         "session": {"scope": user.scope},
+        "recent_connections": list(recent_connections),
     }
 
 
