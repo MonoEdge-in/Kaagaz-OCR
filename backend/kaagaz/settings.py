@@ -146,6 +146,27 @@ def _openrouter_base_url(value: str) -> str:
     return value.rstrip("/")
 
 
+def _app_url(value: str) -> str:
+    """APP_URL: an https origin (http only on a loopback host), with no user, path, query or
+    fragment, since every emailed link starts with it. Kept without a trailing slash."""
+    parts = urllib.parse.urlsplit(value)
+    host = parts.hostname or ""
+    secure = parts.scheme == "https" and bool(host)
+    if (
+        parts.username is not None
+        or parts.password is not None
+        or parts.path not in ("", "/")
+        or parts.query
+        or parts.fragment
+        or not (secure or (parts.scheme == "http" and host in _LOOPBACK_HOSTS))
+    ):
+        raise SettingsError(
+            "APP_URL must be an https origin such as https://kaagaz.example.com"
+            " (http only for localhost, 127.0.0.1 or ::1)"
+        )
+    return value.rstrip("/")
+
+
 class SettingsError(Exception):
     """A setting is missing or malformed. The message names the variable only."""
 
@@ -409,11 +430,20 @@ class Settings:
     db_worker_statement_timeout_seconds: int = 900
     db_worker_lock_timeout_seconds: int = 300
     db_idle_in_transaction_timeout_seconds: int = 900  # both
+    # Email (#457 phase 0): Amazon SES from EMAIL_FROM, in SES_REGION. Off unless
+    # EMAIL_ENABLED=true; on, EMAIL_FROM and APP_URL are required. APP_URL is the https origin
+    # the links in an email open (http only on a loopback host).
+    email_enabled: bool = False
+    email_from: str | None = None
+    ses_region: str = "ap-south-1"
+    app_url: str | None = None
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "Settings":
         env = _Env(os.environ if environ is None else environ)
         session_secret = env.secret("SESSION_SECRET")
+        # Off unless set to true, as SELF_SIGNUP_ENABLED.
+        email_enabled = env.optional("EMAIL_ENABLED") is not None and env.boolean("EMAIL_ENABLED")
         totp_encryption_key = env.secret("TOTP_ENCRYPTION_KEY")
         if totp_encryption_key == session_secret:
             raise SettingsError("TOTP_ENCRYPTION_KEY must differ from SESSION_SECRET")
@@ -686,6 +716,10 @@ class Settings:
             rate_limit_per_minute=env.integer("RATE_LIMIT_PER_MINUTE"),
             chat_questions_per_minute=env.at_least("CHAT_QUESTIONS_PER_MINUTE", 1, default=20),
             log_level=env.text("LOG_LEVEL"),
+            email_enabled=email_enabled,
+            email_from=env.text("EMAIL_FROM") if email_enabled else env.optional("EMAIL_FROM"),
+            ses_region=env.optional("SES_REGION") or "ap-south-1",
+            app_url=_app_url(env.text("APP_URL")) if email_enabled else env.optional("APP_URL"),
         )
 
 

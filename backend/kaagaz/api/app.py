@@ -21,6 +21,7 @@ from datetime import UTC, datetime
 
 from fastapi import Depends, FastAPI
 
+from kaagaz.adapters.email import Mailer
 from kaagaz.ai.client import ModelClient
 from kaagaz.api import errors
 from kaagaz.api.auth import csrf_guard
@@ -70,6 +71,7 @@ def create_app(
     answers: Answers | None = None,
     clock: Callable[[], datetime] | None = None,
     model: ModelClient | None = None,
+    mailer: Mailer | None = None,
 ) -> FastAPI:
     owns_db = db is None
     if db is None:
@@ -91,6 +93,7 @@ def create_app(
         answers=answers if answers is not None else _default_answers(settings, database, now),
         clock=now,
         model=model if model is not None else _default_model(settings, database),
+        mailer=mailer if mailer is not None else _default_mailer(settings),
     )
 
     @asynccontextmanager
@@ -176,6 +179,15 @@ def _default_queue(settings: Settings) -> ApiQueue:
     from kaagaz.adapters.queue import SqsQueue
 
     return SqsQueue(settings)
+
+
+def _default_mailer(settings: Settings) -> Mailer | None:
+    """Amazon SES while EMAIL_ENABLED is on (#457 phase 0); none while it is off."""
+    if not settings.email_enabled or settings.email_from is None:
+        return None
+    from kaagaz.adapters.email import SesMailer
+
+    return SesMailer(settings.ses_region, settings.email_from)
 
 
 def _default_model(settings: Settings, db: Database) -> ModelClient | None:
