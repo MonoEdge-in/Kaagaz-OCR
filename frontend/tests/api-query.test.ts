@@ -12,6 +12,8 @@ import {
   resetUserPassword,
   setDeleteForever,
   signUp,
+  startTwoStep,
+  turnOffTwoStep,
   unlockUser,
 } from "@/lib/api";
 import type { AdminUser, Me } from "@/lib/types";
@@ -66,6 +68,7 @@ describe("sign-in and admin calls", () => {
       role: "admin",
       must_change_password: false,
       totp_enabled: false,
+      two_step_turned_off: false,
       can_delete_forever: false,
     },
     customer: { id: "c1", name: "Sharma Traders" },
@@ -80,6 +83,7 @@ describe("sign-in and admin calls", () => {
     created_at: "2026-09-01T10:00:00+00:00",
     locked_until: null,
     totp_enabled: false,
+    two_step_turned_off: false,
     can_delete_forever: false,
     must_change_password: false,
   };
@@ -165,6 +169,39 @@ describe("sign-in and admin calls", () => {
       url: "/api/auth/admin/enrol",
       method: "POST",
       body: { enrol_token: "tok", code: "654321" },
+    });
+  });
+
+  // Tushar, 30 Oct 2026: an admin turns their own two-step sign-in off, and on again.
+  it("turns the admin's own two-step off with the password and a code", async () => {
+    const off = { ...ME, user: { ...ME.user, totp_enabled: false, two_step_turned_off: true } };
+    reply(200, off);
+    expect(await turnOffTwoStep("a long password", "123456")).toEqual(off);
+    expect(sent(0)).toMatchObject({
+      url: "/api/auth/admin/2fa/off",
+      method: "POST",
+      headers: { "X-Requested-With": "kaagaz" },
+      body: { password: "a long password", code: "123456" },
+    });
+  });
+
+  it("starts turning it on again with the password, for the set-up enrol finishes", async () => {
+    const setup = { enrol_token: "tok", secret: "JBSW Y3DP", otpauth_uri: "otpauth://totp/x" };
+    reply(200, setup);
+    expect(await startTwoStep("a long password")).toEqual(setup);
+    expect(sent(0)).toMatchObject({
+      url: "/api/auth/admin/2fa/start",
+      method: "POST",
+      headers: { "X-Requested-With": "kaagaz" },
+      body: { password: "a long password" },
+    });
+  });
+
+  it("keeps the server's plain words when turning off is refused", async () => {
+    reply(409, { error: { code: "conflict", message: "Two-step sign-in is already off." } });
+    await expect(turnOffTwoStep("a long password", "123456")).rejects.toMatchObject({
+      status: 409,
+      message: "Two-step sign-in is already off.",
     });
   });
 

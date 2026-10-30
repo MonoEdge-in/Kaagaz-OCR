@@ -305,6 +305,7 @@ def test_login_sets_the_cookie_and_me_works(db: Database) -> None:
             "role": "reviewer",
             "must_change_password": False,
             "totp_enabled": False,
+            "two_step_turned_off": False,
             "can_delete_forever": False,
         },
         "customer": {"id": customer_id, "name": "Sharma Traders"},

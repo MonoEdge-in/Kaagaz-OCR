@@ -8,17 +8,23 @@
   secret, otpauth_uri} and no session; one with a code set up gets 401 ``code_required``
   (counted like a failure) until it is sent. An admin with a temporary password and no
   code yet gets a session that can only set the new password (``current_user``); the
-  next sign-in then sets up the code.
+  next sign-in then sets up the code. An admin who turned two-step off themselves
+  (``users.totp_off_at``, 0061b) gets the admin session on the password alone.
 * ``POST /auth/admin/login``: 410 ``gone``, whatever is sent. Not kept as an alias: one
   route to sign in is one set of rules to get right, and an old page gets a clear answer.
 * ``POST /auth/admin/2fa/start`` {password} (admin session): with the current
-  password, ``{enrol_token, secret, otpauth_uri}`` for turning it on. Asking
+  password, ``{enrol_token, secret, otpauth_uri}`` for turning it on again. Asking
   for the password means a stolen admin cookie alone cannot put its own key
   on the account. Nothing is stored yet.
-* ``POST /auth/admin/enrol`` {enrol_token, code}: turns the code on and starts
-  an admin session. The session version stays, so other browsers stay in.
-* ``POST /auth/admin/2fa/off``: 403 ``two_step_required``. Admins keep two-step sign-in
-  on; the operator can reset a lost one, and the admin sets it up again at sign-in.
+* ``POST /auth/admin/enrol`` {enrol_token, code}: turns the code on (clearing "turned
+  off") and starts an admin session. The session version stays, so other browsers stay in.
+* ``POST /auth/admin/2fa/off`` {password, code} (admin session, Tushar, 30 Oct 2026): the
+  admin turns their own two-step sign-in off, and it stays off until they turn it on
+  again. The current password and a right code, each counted like a sign-in, else a 400
+  that says which; 409 when it is already off. ``Me``; every other browser is signed
+  out, this one is re-signed. Delete forever and deleting a tag still need it on
+  (``require_admin_with_two_step``). A reset of the code (another admin, the operator,
+  the CLI) is not "turned off": the admin sets one up at the next sign-in.
 * ``POST /auth/password`` {current_password, new_password}: a new password;
   every other browser is signed out, this one is re-signed.
 * ``POST /auth/confirm-password`` {password}: only for a member or reviewer an
@@ -123,7 +129,8 @@ Context = Annotated[AppContext, Depends(get_context)]
 
 MAX_CODE = 16  # 6 digits, plus room for the spaces people type
 ENROL_FIRST = "Set up two-step sign-in to continue. Admins need it to keep your organisation safe."
-KEEP_TWO_STEP = "Admins keep two-step sign-in on to keep your organisation safe."
+CODE_MISSING = "Enter the 6-digit code from your authenticator app."
+WRONG_CODE = "That code is not right. Use the newest code from your authenticator app."
 ADMIN_LOGIN_GONE = "Sign in on the sign-in page. Admins and members use the same one now."
 # Sign-ups an hour (PROVISIONAL). Behind the Next.js proxy every visitor shares the proxy's
 # address (kaagaz/api/middleware.py), so in production this is one cap for the whole site,
@@ -159,6 +166,13 @@ class CurrentPasswordBody(BaseModel):
     password: str = Field(min_length=1, max_length=MAX_PASSWORD)
 
 
+class TurnOffBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    password: str = Field(min_length=1, max_length=MAX_PASSWORD)
+    code: str | None = Field(default=None, max_length=MAX_CODE)  # missing: counted, then a 400
+
+
 class PasswordBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -184,9 +198,9 @@ def login(body: LoginBody, context: Context) -> JSONResponse:
     if attempt.role != "admin":
         return _start_session(context, attempt.customer_id, attempt.user_id, scope="app", action="auth.login")
     if attempt.totp_enabled_at is None:
-        if attempt.must_change_password:
+        if attempt.must_change_password or attempt.totp_off_at is not None:
             # The set-new-password screen first (current_user keeps every other route
-            # shut); the next sign-in then sets up the code.
+            # shut); the next sign-in then sets up the code. Or turned off by the admin.
             return _start_session(
                 context, attempt.customer_id, attempt.user_id, scope="admin", action="auth.login"
             )
@@ -197,18 +211,10 @@ def login(body: LoginBody, context: Context) -> JSONResponse:
         raise ApiError(403, "mfa_enrol_required", ENROL_FIRST, details=_enrol_offer(context, user))
     if not _digits(body.code):
         _failed(context, attempt, "code_required")  # counted: a wrong code next can't reset it
-        raise ApiError(401, "code_required", "Enter the 6-digit code from your authenticator app.")
+        raise ApiError(401, "code_required", CODE_MISSING)
 
-    try:  # a missing secret ("") does not open either
-        secret = _box(context.settings.totp_encryption_key).open(
-            attempt.totp_secret_enc or "", aad=attempt.user_id
-        )
-    except SecretBoxError:
-        _failed(context, attempt, "totp_unreadable")  # another admin or the CLI resets it
-        raise _refused(context) from None
-    step = totp.matching_step(secret, _digits(body.code), _unix(context.clock()), attempt.totp_last_step)
+    step = _code_step(context, attempt, body.code)
     if step is None:
-        _failed(context, attempt, "wrong_code")
         raise _refused(context)
     with context.db.customer(attempt.customer_id) as conn:
         accepted = users_sql.accept_totp_step(conn, attempt.customer_id, attempt.user_id, step)
@@ -337,9 +343,29 @@ def turn_on_two_step(body: CurrentPasswordBody, user: AdminSession, context: Con
 
 
 @router.post("/auth/admin/2fa/off")
-def turn_off_two_step(user: AdminSession) -> None:
-    """Refused: every admin keeps two-step sign-in on (MFA required, 16 Oct 2026)."""
-    raise ApiError(403, "two_step_required", KEEP_TWO_STEP)
+def turn_off_two_step(
+    body: TurnOffBody, user: AdminSession, request: Request, context: Context
+) -> JSONResponse:
+    if not user.totp_enabled:
+        raise ApiError(409, "conflict", "Two-step sign-in is already off.")
+    now = context.clock()
+    attempt = _check_current_password(context, user, body.password, now)
+    if not _digits(body.code):
+        _failed(context, attempt, "code_required")
+        raise ApiError(400, "bad_request", CODE_MISSING)
+    step = _code_step(context, attempt, body.code)
+    if step is None:
+        raise ApiError(400, "bad_request", WRONG_CODE)
+    with context.db.customer(user.customer_id) as conn:
+        version = users_sql.turn_off_totp(conn, user.customer_id, user.user_id, step=step, now=now)
+        if version is not None:
+            users_sql.attempt_succeeded(conn, user.customer_id, user.user_id, now=now)
+            _record(conn, user.customer_id, "auth.totp_off", actor=user.user_id, target=user.user_id)
+    if version is None:  # another request used this code, or turned it off, a moment ago
+        _failed(context, attempt, "code_reused")
+        raise ApiError(400, "bad_request", WRONG_CODE)
+    changed = dataclasses.replace(user, session_version=version, totp_enabled=False, two_step_turned_off=True)
+    return _keep_this_browser(request, context, changed, now)
 
 
 @router.post("/auth/password")
@@ -463,9 +489,12 @@ def _begin(context: AppContext, customer_id: str, user_id: str, now: datetime) -
         )
 
 
-def _check_current_password(context: AppContext, user: CurrentUser, password: str, now: datetime) -> None:
+def _check_current_password(
+    context: AppContext, user: CurrentUser, password: str, now: datetime
+) -> AttemptRow:
     """The signed-in user's own password, counted like a sign-in (so wrong ones
-    lead to the lockout), else a 400 that says what is wrong."""
+    lead to the lockout), else a 400 that says what is wrong. The counted attempt;
+    the caller clears it with ``attempt_succeeded``."""
     attempt = _begin(context, user.customer_id, user.user_id, now)
     if attempt is None:
         # The lock stays on for a signed-in session too: letting a session check
@@ -481,6 +510,23 @@ def _check_current_password(context: AppContext, user: CurrentUser, password: st
     if not verify_password(password, attempt.password_hash):
         _failed(context, attempt, "wrong_password")
         raise ApiError(400, "bad_request", "Your current password is not right.")
+    return attempt
+
+
+def _code_step(context: AppContext, attempt: AttemptRow, code: str | None) -> int | None:
+    """The step of ``code`` from the attempt's stored secret, not used before; else None,
+    the failure audited (the attempt stays counted). Signing in and turning it off share it."""
+    try:  # a missing secret ("") does not open either
+        secret = _box(context.settings.totp_encryption_key).open(
+            attempt.totp_secret_enc or "", aad=attempt.user_id
+        )
+    except SecretBoxError:
+        _failed(context, attempt, "totp_unreadable")  # another admin or the CLI resets it
+        return None
+    step = totp.matching_step(secret, _digits(code), _unix(context.clock()), attempt.totp_last_step)
+    if step is None:
+        _failed(context, attempt, "wrong_code")
+    return step
 
 
 def _keep_this_browser(

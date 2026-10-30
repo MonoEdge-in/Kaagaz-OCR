@@ -374,7 +374,7 @@ class Api:
                     text(
                         "SELECT password_hash, failed_logins, locked_until, session_version,"
                         " must_change_password, totp_secret_enc, totp_enabled_at, totp_last_step,"
-                        " disabled, role"
+                        " totp_off_at, disabled, role"
                         " FROM users WHERE customer_id = :c AND id = :u"
                     ),
                     {"c": customer_id, "u": user_id},

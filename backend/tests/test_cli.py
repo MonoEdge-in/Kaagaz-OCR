@@ -206,6 +206,24 @@ def _two_step(db: Database, customer_id: str, user_id: str) -> tuple[object, ...
     return tuple(row)
 
 
+def test_reset_admin_2fa_after_the_admin_turned_it_off_means_set_it_up_again(db: Database) -> None:
+    """Not "turned off" (30 Oct 2026): the next sign-in asks for the set-up again."""
+    customer_id, user_id = new_customer(db)
+    with db.customer(customer_id) as conn:
+        email = str(
+            conn.execute(
+                text("UPDATE users SET totp_off_at = now() WHERE id = :u RETURNING email"), {"u": user_id}
+            ).scalar_one()
+        )
+
+    reset = main(["reset-admin-2fa", "--email", email], db=db, environ={}, out=io.StringIO(), ask=_never_ask)
+    assert reset == 0
+
+    with db.customer(customer_id) as conn:
+        off_at = conn.execute(text("SELECT totp_off_at FROM users WHERE id = :u"), {"u": user_id}).scalar()
+    assert off_at is None
+
+
 def test_reset_admin_2fa_clears_the_code_and_ends_the_sessions(db: Database) -> None:
     customer_id, user_id, email = _enrolled_admin(db)
     out = io.StringIO()

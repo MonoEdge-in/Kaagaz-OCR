@@ -375,6 +375,46 @@
   }
 }
 
+/* An admin's own Two-step sign-in dialog (TwoStepDialog.tsx, 30 Oct 2026). Its forms are the
+   sign-in's paper-form lines (app/login/login.module.css); below 480px each label sits over
+   its line, so the line keeps its width in a 320px window. */
+.twoStep {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.twoStep p {
+  margin: 0;
+}
+
+.twoStepWarning {
+  color: var(--warning);
+  font-weight: 600;
+}
+
+.twoStepButtons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+@media (max-width: 479.98px) {
+  .twoStepButtons {
+    flex-direction: column-reverse;
+    align-items: stretch;
+  }
+
+  .twoStep form :global(.field) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .twoStep form :global(.field) > * {
+    grid-column: 1;
+  }
+}
+
 /* --- Content: the one main scroller --------------------------------------------------- */
 
 .main {
