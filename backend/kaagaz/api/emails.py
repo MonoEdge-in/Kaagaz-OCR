@@ -2,7 +2,8 @@
 
 The texts: one function per email, returning ``(subject, text)``, plain text only. Each is
 told a person's name, their organisation's name or a link, never a document, its name or
-its content, and never an id (tests/test_email.py checks every one).
+its content, and never an id (tests/test_email.py checks every one). A link email goes to an
+address nobody has proven yet, so it is never told a name (anyone can type one at sign-up).
 
 * A link email (confirm, invite, reset) carries a link of 32 random bytes, stored only as
   its SHA-256 hash (``email_links``, 0061), with a purpose, an expiry and a used time. The
@@ -98,28 +99,28 @@ def notify(
 # --- the texts ------------------------------------------------------------------------------
 
 
-def confirm_email(name: str, link: str) -> Message:
+def confirm_email(link: str) -> Message:
     return (
         "Confirm your email for Kaagaz",
-        f"Hello {name},\n\nConfirm your email address for Kaagaz by opening this link:\n\n{link}\n\n"
+        f"Hello,\n\nConfirm your email address for Kaagaz by opening this link:\n\n{link}\n\n"
         "The link works once, for 24 hours. If you did not sign up for Kaagaz, you can ignore"
         " this email." + _SIGN_OFF,
     )
 
 
-def invite(name: str, organisation: str, link: str) -> Message:
+def invite(organisation: str, link: str) -> Message:
     return (
         "You're invited to Kaagaz",
-        f"Hello {name},\n\nYou have been added to {organisation} on Kaagaz. Choose your password"
+        f"Hello,\n\nYou have been added to {organisation} on Kaagaz. Choose your password"
         f" here:\n\n{link}\n\nThe link works once, for 7 days. If you did not expect this, you can"
         " ignore this email." + _SIGN_OFF,
     )
 
 
-def reset_password(name: str, link: str) -> Message:
+def reset_password(link: str) -> Message:
     return (
         "Reset your Kaagaz password",
-        f"Hello {name},\n\nSomeone asked to reset the password of your Kaagaz account. To choose a"
+        f"Hello,\n\nSomeone asked to reset the password of your Kaagaz account. To choose a"
         f" new one, open this link:\n\n{link}\n\nThe link works once, for 30 minutes, and signs"
         " you out on every browser. If you did not ask for this, you can ignore this email: your"
         " password stays as it is." + _SIGN_OFF,

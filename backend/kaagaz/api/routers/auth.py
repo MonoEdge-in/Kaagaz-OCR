@@ -323,7 +323,7 @@ def signup(body: SignupBody, request: Request, context: Context) -> JSONResponse
         with context.db.customer(customer_id) as conn:
             _record(conn, customer_id, "org.self_signup", actor=found.user_id, target=found.user_id)
         link = new_link(context, customer_id, found.user_id, "confirm")
-        send(context, email, "confirm", emails.confirm_email(body.name, link))
+        send(context, email, "confirm", emails.confirm_email(link))
         return JSONResponse({"status": "confirm_email"}, status_code=201)
     user = load_user(context.db, customer_id, found.user_id, scope="admin")
     if user is None:  # never: made in this transaction

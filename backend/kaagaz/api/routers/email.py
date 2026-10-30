@@ -113,7 +113,7 @@ def send_confirm(user: User, context: Context) -> dict[str, bool]:
     if not confirm_limits.allow(user.user_id):
         raise ApiError(429, "rate_limited", TOO_MANY_LINKS, headers={"Retry-After": "3600"})
     link = new_link(context, user.customer_id, user.user_id, "confirm")
-    send(context, user.email, "confirm", emails.confirm_email(user.display_name, link))
+    send(context, user.email, "confirm", emails.confirm_email(link))
     return {"ok": True}
 
 
@@ -159,7 +159,7 @@ def _send_reset(context: AppContext, email: str) -> None:
     if contact is None:  # removed a moment ago
         return
     link = new_link(context, found.customer_id, found.user_id, "reset")
-    send(context, contact[0], "reset", emails.reset_password(contact[1], link))
+    send(context, contact[0], "reset", emails.reset_password(link))
 
 
 def _resend_confirm(context: AppContext, email: str) -> None:
@@ -175,7 +175,7 @@ def _resend_confirm(context: AppContext, email: str) -> None:
     if contact is None:
         return
     link = new_link(context, found.customer_id, found.user_id, "confirm")
-    send(context, contact[0], "confirm", emails.confirm_email(contact[1], link))
+    send(context, contact[0], "confirm", emails.confirm_email(link))
 
 
 def _set_password(context: AppContext, body: NewPasswordBody, purpose: str, action: str) -> LinkRow:

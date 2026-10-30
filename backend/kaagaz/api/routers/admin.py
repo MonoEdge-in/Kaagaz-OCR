@@ -217,7 +217,7 @@ def create_user(body: NewUserBody, user: AdminSession, context: Context) -> JSON
         return JSONResponse(admin_user(row, now=context.clock()), status_code=201)
     target = str(row["id"])
     link = emails.new_link(context, user.customer_id, target, "invite")
-    invited = emails.send(context, email, "invite", emails.invite(name, user.customer_name, link))
+    invited = emails.send(context, email, "invite", emails.invite(user.customer_name, link))
     with context.db.customer(user.customer_id) as conn:
         if invited:
             _audit_user(conn, user, "auth.invite_sent", target)

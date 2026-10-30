@@ -161,3 +161,16 @@ def test_a_security_notice_has_no_link() -> None:
     ):
         _, text = notice(name="Ramesh")
         assert "http" not in text
+
+
+def test_an_email_to_an_address_not_yet_proven_is_never_given_a_name() -> None:
+    """Confirm, invite and reset go to an address nobody has proven yet, so a name someone
+    typed (at sign-up, say, with another person's address) never rides on them (#457 review)."""
+    for template in (emails.confirm_email, emails.invite, emails.reset_password):
+        assert "name" not in inspect.signature(template).parameters, template.__name__
+        _, text = template(
+            **{"organisation": "Sharma Traders", "link": "https://kaagaz.example.com/x#t=abc"}
+            if template is emails.invite
+            else {"link": "https://kaagaz.example.com/x#t=abc"}
+        )
+        assert text.startswith("Hello,\n\n")
