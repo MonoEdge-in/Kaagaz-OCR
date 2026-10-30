@@ -5,13 +5,25 @@
 // (feature 28), shown only once the platform has allowed it, saved by the same Save.
 // UI audit AD6 (16 Oct 2026): each in its own section (Uploads, Filing), and the Save
 // bar sticks to the foot of the screen only while something is changed.
+// #457 phase 1: "Approve new sign-in connections automatically", saved at once (turning it on
+// asks first, with the spec's warning), shown only while a provider is on (Connections
+// answers).
 
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import libraryStyles from "@/components/documents/Library.module.css";
-import { ApiError, getSettings, updateSettings } from "@/lib/api";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { ApiError, getSettings, pendingConnections, setAutoApprove, updateSettings } from "@/lib/api";
 import type { CustomerSettings } from "@/lib/types";
-import { AUTOFILE_HELP, AUTOFILE_LABEL, parseUploadLimit, settingsChanged, settingsErrorText } from "./logic";
+import {
+  AUTO_APPROVE_LABEL,
+  AUTO_APPROVE_WARNING,
+  AUTOFILE_HELP,
+  AUTOFILE_LABEL,
+  parseUploadLimit,
+  settingsChanged,
+  settingsErrorText,
+} from "./logic";
 import styles from "./Admin.module.css";
 
 export function SettingsPanel() {
@@ -125,6 +137,7 @@ export function SettingsPanel() {
               )}
             </div>
           </fieldset>
+          <AutoApproveSwitch settings={settings} onSaved={setSettings} />
           {settings.autofile.granted && (
             <fieldset className={styles.settingsGroup}>
               <legend className={styles.settingsLegend}>Filing</legend>
@@ -151,6 +164,79 @@ export function SettingsPanel() {
         </form>
       )}
     </section>
+  );
+}
+
+/** "Approve new sign-in connections automatically" (#457 phase 1): saved at once, apart from the
+ * form's Save. Turning it on asks first with the warning; nothing shows while no provider is on. */
+function AutoApproveSwitch({ settings, onSaved }: { settings: CustomerSettings; onSaved(next: CustomerSettings): void }) {
+  const [providersOn, setProvidersOn] = useState(false);
+  const [asking, setAsking] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    pendingConnections().then(
+      () => {
+        if (live) setProvidersOn(true);
+      },
+      () => undefined, // 404 while no provider is on
+    );
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  async function save(on: boolean) {
+    setBusy(true);
+    setError(null);
+    try {
+      onSaved(await setAutoApprove(on));
+      setAsking(false);
+    } catch (caught) {
+      setError(settingsErrorText(caught));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!providersOn) return null;
+  return (
+    <fieldset className={styles.settingsGroup}>
+      <legend className={styles.settingsLegend}>Sign-in</legend>
+      <div className="field">
+        <label className={libraryStyles.check}>
+          <input
+            type="checkbox"
+            checked={settings.auto_approve_connections}
+            disabled={busy}
+            onChange={(event) => (event.target.checked ? setAsking(true) : void save(false))}
+            aria-describedby="auto-approve-hint"
+          />
+          {AUTO_APPROVE_LABEL}
+        </label>
+        <span id="auto-approve-hint" className="hint">
+          {AUTO_APPROVE_WARNING}
+        </span>
+        {error && !asking && (
+          <span className="error-text" role="alert">
+            {error}
+          </span>
+        )}
+      </div>
+      <ConfirmDialog
+        open={asking}
+        title="Approve new connections automatically?"
+        confirmLabel="Turn on"
+        busy={busy}
+        error={asking ? error : null}
+        onConfirm={() => void save(true)}
+        onCancel={() => setAsking(false)}
+      >
+        <p>{AUTO_APPROVE_WARNING}</p>
+      </ConfirmDialog>
+    </fieldset>
   );
 }
 

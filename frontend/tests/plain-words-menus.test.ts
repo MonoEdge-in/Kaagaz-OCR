@@ -68,7 +68,7 @@ describe("the admin's user menu", () => {
   it("gives every item a plain line saying what it does", () => {
     for (const text of Object.values(USER_MENU_HELP)) plainLine(text);
     const labels = items.match(/\blabel: "/g)?.length ?? 0;
-    expect(labels).toBe(7);
+    expect(labels).toBe(8); // Changed on purpose (#457 phase 1): Remove connected accounts
     expect(items.match(/\bdescription: USER_MENU_HELP\.\w+/g)).toHaveLength(labels);
     // Reset password makes a one-time password the admin gives them (POST .../reset-password).
     expect(USER_MENU_HELP.password).toMatch(/one-time password for you to give them/);

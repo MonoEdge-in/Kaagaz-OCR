@@ -17,6 +17,7 @@ import type {
   MemberNumbers,
   MemberPeriod,
   PageRoute,
+  PendingConnection,
   Role,
   Stats,
   UsageBudget,
@@ -263,6 +264,27 @@ export const AUTOFILE_HELP =
   "Files already uploaded stay where they are. Files you put in a folder yourself are never moved. " +
   "If a file lands in the wrong folder, press Undo or move it.";
 export const AUTOFILE_NOT_AVAILABLE = "Auto-filing isn't available for your organisation yet.";
+
+// Connected accounts (#457 phase 1): the People and Settings words.
+export const AUTO_APPROVE_LABEL = "Approve new sign-in connections automatically";
+export const AUTO_APPROVE_WARNING = "Members' Google or Microsoft accounts will work at once, without your review.";
+export const REMOVE_CONNECTIONS_CONFIRM =
+  "Stops this person signing in with Google or Microsoft. Their password still works.";
+
+const WAY_NAMES: Record<string, string> = { password: "Password", google: "Google" };
+
+/** "Password, Google": how this person signs in (every account keeps its password). */
+export function signsInWith(ways: readonly string[] | undefined): string {
+  return (ways ?? ["password"]).map((way) => WAY_NAMES[way] ?? way).join(", ");
+}
+
+const askedDay = new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "short", timeZone: "Asia/Kolkata" });
+
+/** A waiting connection in one line: "Ramesh Kumar · Google · ramesh.k@gmail.com · asked 30 Oct". */
+export function pendingLine(row: PendingConnection): string {
+  const parts = [row.display_name, WAY_NAMES[row.provider] ?? row.provider, row.email ?? "no email given"];
+  return `${parts.join(" · ")} · asked ${askedDay.format(new Date(row.linked_at))}`;
+}
 
 /** AD6: the form differs from what is saved (the Save bar shows only then). */
 export function settingsChanged(
@@ -547,6 +569,13 @@ const ACTION_WORDS: Record<string, string> = {
   "auth.invite_sent": "Sent an invite",
   "auth.invite_accepted": "Accepted an invite",
   "auth.logout_everywhere": "Signed out everywhere",
+  // #457 phase 1: connected accounts.
+  "auth.identity_linked": "Connected a Google account",
+  "auth.identity_approved": "Approved a Google account",
+  "auth.identity_declined": "Declined a Google account",
+  "auth.identity_unlinked": "Disconnected a Google account",
+  "settings.auto_approve_on": "Turned automatic approval of sign-in connections on",
+  "settings.auto_approve_off": "Turned automatic approval of sign-in connections off",
   "user.unlock": "Unlocked a user",
   "user.reset_password": "Reset a user's password",
   "user.reset_totp": "Reset a user's two-step sign-in",

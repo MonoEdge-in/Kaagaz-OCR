@@ -13,6 +13,10 @@
 // reviewer to delete forever (asked first; needs the admin's own two-step
 // sign-in), and stop it again.
 //
+// Connected accounts (#457 phase 1): "Connections to approve" above the list while any wait
+// (Approve, Decline), a "Signs in with" column, and "Remove connected accounts" in a row's
+// menu, asked first. None of it shows while no provider is switched on (the server's 404).
+//
 // A reset password comes back once, in the reply. It is shown in a card above
 // the list, with Copy, until Done or until the tab is left; it is never stored.
 
@@ -27,8 +31,12 @@ import { IconButton } from "@/components/ui/IconButton";
 import { PasswordField } from "@/components/ui/PasswordField";
 import {
   ApiError,
+  approveConnection,
   createUser,
+  declineConnection,
   listUsers,
+  pendingConnections,
+  removeConnections,
   resetUser2fa,
   resetUserPassword,
   setDeleteForever,
@@ -36,7 +44,7 @@ import {
   updateUser,
 } from "@/lib/api";
 import { formatDate } from "@/lib/format";
-import type { AddedUser, AdminUser, Role } from "@/lib/types";
+import type { AddedUser, AdminUser, PendingConnection, Role } from "@/lib/types";
 import table from "@/components/documents/Table.module.css";
 import { CopyButton } from "./CopyButton";
 import { MoreRows, useRowCap } from "./RowCap";
@@ -47,12 +55,15 @@ import type { Notice } from "./Toast";
 import {
   MIN_PASSWORD_LENGTH,
   NEW_USER_FIELD_IDS,
+  REMOVE_CONNECTIONS_CONFIRM,
   addedNotice,
   ROLES,
   allowForeverQuestion,
   firstInvalidField,
   foreverControl,
   generatePassword,
+  pendingLine,
+  signsInWith,
   twoStepNote,
   userActions,
   userStatus,
@@ -113,13 +124,15 @@ export function UsersPanel({
   const failed = error !== null && error.attempt === attempt ? error.message : null;
 
   function replace(user: AdminUser) {
+    // A reply without signs_in_with (#457) changed no connection: the row keeps what it had.
     setUsers((current) =>
-      current ? current.map((existing) => (existing.id === user.id ? user : existing)) : current,
+      current ? current.map((existing) => (existing.id === user.id ? { ...existing, ...user } : existing)) : current,
     );
   }
 
   return (
     <div className={styles.panelStack}>
+      <ConnectionsToApprove onApproved={() => setAttempt((n) => n + 1)} onNotice={setNotice} />
       <section className={styles.section} aria-labelledby="users-heading">
         <div className={styles.sectionHead}>
           <h2 id="users-heading" className={styles.sectionHeading}>
@@ -177,6 +190,9 @@ export function UsersPanel({
                   <th scope="col" role="columnheader" className={styles.statusColumn}>
                     Status
                   </th>
+                  <th scope="col" role="columnheader">
+                    Signs in with
+                  </th>
                   <th scope="col" role="columnheader" className={styles.addedColumn}>
                     Added
                   </th>
@@ -226,9 +242,10 @@ export function UsersPanel({
 
 /** Disabling and the two resets ask first (each signs the user out on every device), and
  * so does allowing Delete forever (UI audit AD2: every action that takes something away). */
-type Confirming = "disable" | "password" | "2fa" | "forever";
+type Confirming = "disable" | "password" | "2fa" | "forever" | "connections";
 
 const CONFIRM_TEXT: Record<Confirming, (name: string) => string> = {
+  connections: () => REMOVE_CONNECTIONS_CONFIRM,
   disable: (name) => `Disable ${name}'s account? They are signed out and can't sign in until it is enabled again.`,
   password: (name) =>
     `Reset ${name}'s password? They are signed out everywhere and must choose a new one.`,
@@ -244,6 +261,7 @@ const CONFIRM_BUTTON: Record<Confirming, string> = {
   password: "Reset password",
   "2fa": "Reset two-step code",
   forever: "Allow Delete forever",
+  connections: "Remove connected accounts",
 };
 
 /** What each item in a user's menu does, in one plain line under it (plain words, 25 Oct 2026). */
@@ -255,6 +273,7 @@ export const USER_MENU_HELP = {
   password: "Makes a one-time password for you to give them. They are signed out, then choose their own when they sign in.",
   twoStep: "For a lost phone: turns off their two-step code and signs them out, so they can set up a new one.",
   disable: "Signs them out and stops them signing in until you enable them again.",
+  connections: "Stops them signing in with Google. Their password still works.",
 } as const;
 
 function UserRow({
@@ -303,6 +322,7 @@ function UserRow({
     if (kind === "disable") return change({ disabled: true }, "disabled.");
     if (kind === "forever") return act(() => setDeleteForever(user.id, true), "Delete forever allowed.");
     if (kind === "2fa") return act(() => resetUser2fa(user.id), "two-step code reset.");
+    if (kind === "connections") return act(() => removeConnections(user.id), "connected accounts removed.");
     return act(async () => {
       const reset = await resetUserPassword(user.id);
       onPasswordReset({ name: user.display_name, password: reset.temporary_password });
@@ -339,6 +359,9 @@ function UserRow({
       : []),
     ...(can.reset2fa
       ? [{ label: "Reset two-step code", description: USER_MENU_HELP.twoStep, onSelect: () => setConfirming("2fa") }]
+      : []),
+    ...((user.signs_in_with ?? []).some((way) => way !== "password")
+      ? [{ label: "Remove connected accounts", description: USER_MENU_HELP.connections, onSelect: () => setConfirming("connections") }]
       : []),
     ...(can.toggleDisabled && !user.disabled
       ? [{ label: "Disable", description: USER_MENU_HELP.disable, onSelect: () => setConfirming("disable"), destructive: true }]
@@ -387,6 +410,9 @@ function UserRow({
           ))}
         </span>
       </td>
+      <td role="cell" data-label="Signs in with">
+        {signsInWith(user.signs_in_with)}
+      </td>
       <td role="cell" data-label="Added" className="tabular">
         <span className={styles.date}>{formatDate(user.created_at)}</span>
       </td>
@@ -418,6 +444,68 @@ function UserRow({
         )}
       </td>
     </tr>
+  );
+}
+
+/** Connections to approve (#457 phase 1): each waiting Google account, its person, email and
+ * day, with Approve and Decline; shown only while any wait (and never while no provider is on). */
+function ConnectionsToApprove({ onApproved, onNotice }: { onApproved(): void; onNotice(notice: Notice): void }) {
+  const [pending, setPending] = useState<PendingConnection[]>([]);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    pendingConnections().then(
+      (reply) => {
+        if (live) setPending(reply.items);
+      },
+      () => undefined, // 404 while no provider is on, or no answer: nothing to approve shows
+    );
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  async function decide(row: PendingConnection, approve: boolean) {
+    setBusy(row.id);
+    try {
+      const reply = await (approve ? approveConnection(row.id) : declineConnection(row.id));
+      setPending(reply.items);
+      onNotice({ text: `${row.display_name}: Google ${approve ? "approved" : "declined"}.` });
+      if (approve) onApproved();
+    } catch (caught) {
+      onNotice({
+        problem: true,
+        text: caught instanceof ApiError ? caught.message : "Could not save the change. Check your connection, then try again.",
+      });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  if (pending.length === 0) return null;
+  return (
+    <section className={styles.section} aria-labelledby="connections-heading">
+      <h2 id="connections-heading" className={styles.sectionHeading}>
+        Connections to approve
+      </h2>
+      <ul className={styles.connections}>
+        {pending.map((row) => (
+          <li key={row.id} className={styles.connection}>
+            <span className={styles.connectionText}>{pendingLine(row)}</span>
+            <span className={styles.rowActions}>
+              <button type="button" className="btn btn-primary" disabled={busy !== null} onClick={() => void decide(row, true)}>
+                Approve
+              </button>
+              <button type="button" className="btn" disabled={busy !== null} onClick={() => void decide(row, false)}>
+                Decline
+              </button>
+              {busy === row.id && <span className="spinner" aria-hidden="true" />}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 
