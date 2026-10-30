@@ -425,3 +425,57 @@ def test_chat_questions_per_minute_is_20_when_unset_and_at_least_1() -> None:
     assert Settings.from_env(shipped(CHAT_QUESTIONS_PER_MINUTE="5")).chat_questions_per_minute == 5
     with pytest.raises(SettingsError, match="CHAT_QUESTIONS_PER_MINUTE"):
         Settings.from_env(shipped(CHAT_QUESTIONS_PER_MINUTE="0"))
+
+
+# --- Google sign-in (#457 phase 1) ---------------------------------------------------------
+
+GOOGLE_CALLBACK = "https://kaagaz.example.com/api/auth/oidc/google/callback"
+GOOGLE_ON = {
+    "GOOGLE_SIGNIN_ENABLED": "true",
+    "GOOGLE_CLIENT_ID": "made-up-client.apps.googleusercontent.com",
+    "GOOGLE_CLIENT_SECRET": "made-up-google-secret",
+    "GOOGLE_REDIRECT_URI": GOOGLE_CALLBACK,
+}
+
+
+def test_google_signin_is_off_by_default() -> None:
+    settings = Settings.from_env(shipped())
+    assert settings.google_signin_enabled is False
+    assert (settings.google_client_id, settings.google_client_secret, settings.google_redirect_uri) == (
+        None,
+        None,
+        None,
+    )
+
+
+@pytest.mark.parametrize("missing", ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REDIRECT_URI"])
+def test_google_signin_needs_its_three_values(missing: str) -> None:
+    with pytest.raises(SettingsError, match=missing):
+        Settings.from_env(shipped(**{**GOOGLE_ON, missing: None}))
+
+
+@pytest.mark.parametrize(
+    ("uri", "ok"),
+    [
+        ("http://kaagaz.example.com/api/auth/oidc/google/callback", False),
+        ("https://kaagaz.example.com/other", False),
+        ("https://kaagaz.example.com/api/auth/oidc/google/callback?x=1", False),
+        (GOOGLE_CALLBACK, True),
+        ("http://localhost:3000/api/auth/oidc/google/callback", True),
+    ],
+)
+def test_google_redirect_must_be_https_and_the_callback_path(uri: str, ok: bool) -> None:
+    env = shipped(**{**GOOGLE_ON, "GOOGLE_REDIRECT_URI": uri})
+    if ok:
+        settings = Settings.from_env(env)
+        assert settings.google_signin_enabled is True
+        assert settings.google_redirect_uri == uri
+    else:
+        with pytest.raises(SettingsError, match="GOOGLE_REDIRECT_URI"):
+            Settings.from_env(env)
+
+
+def test_google_client_secret_is_never_in_repr() -> None:
+    settings = Settings.from_env(shipped(**GOOGLE_ON))
+    assert settings.google_client_secret == "made-up-google-secret"
+    assert "made-up-google-secret" not in repr(settings)
