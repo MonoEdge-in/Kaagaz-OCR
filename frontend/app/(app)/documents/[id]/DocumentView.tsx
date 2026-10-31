@@ -627,6 +627,7 @@ export function DocumentView({
               active={selection?.region ?? null}
               onShow={showSpot}
               reviewer={canReview(me.user.role) && detail.deleted_at === null}
+              userId={me.user.id}
               onResolved={(value, message) => {
                 // #453: the reply's value in place at once, never undone by an older reply; the
                 // words asked for again (a flagged value is one of them); said aloud.

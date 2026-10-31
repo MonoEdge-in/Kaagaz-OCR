@@ -47,7 +47,7 @@ const detail = (values: ExtractedValue[], shown: DocumentCard = card) =>
   ({ id: "d1", status: "ready", understanding: false, card: shown, values, pages: [], reviewer_fixes: 0 }) as unknown as DocumentDetail;
 const render = (shown: DocumentDetail, reviewer: boolean) =>
   renderToStaticMarkup(
-    createElement(SummaryCard, { detail: shown, active: null, onShow: () => undefined, reviewer, onResolved: () => undefined, onStale: () => undefined }),
+    createElement(SummaryCard, { detail: shown, active: null, onShow: () => undefined, reviewer, onResolved: () => undefined, onStale: () => undefined, userId: "u-1" }), // Changed on purpose (issue 468): drafts are per person
   );
 const waiting = [value("v1", OWNERS[0]!, 0.1, "needs_review"), value("v2", OWNERS[1]!, 0.2, "verified")];
 
