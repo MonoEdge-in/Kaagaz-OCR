@@ -24,7 +24,7 @@ import table from "@/components/documents/Table.module.css";
 import { WrapName } from "@/components/documents/WrapName";
 import { Icon } from "@/components/ui/Icon";
 import { IconButton } from "@/components/ui/IconButton";
-import { ApiError, auditExportUrl, listAudit, listDocuments, listFolders, listPeople } from "@/lib/api";
+import { auditExportUrl, listAudit, listDocuments, listFolders, listPeople } from "@/lib/api";
 import { errorWords } from "@/lib/errorWords";
 import { formatDateTime } from "@/lib/format";
 import type { ActivityEntry, DocumentSummary, Folder, Person } from "@/lib/types";
@@ -581,5 +581,5 @@ function FileFinder({ onPick }: { onPick(document: { id: string; name: string })
 }
 
 function errorText(caught: unknown): string {
-  return caught instanceof ApiError ? errorWords(caught) : "Check your internet connection, then try again.";
+  return errorWords(caught);
 }

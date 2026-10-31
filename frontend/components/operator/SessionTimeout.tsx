@@ -133,7 +133,16 @@ export function SessionTimeoutView() {
 }
 
 /** The Manage menu's "Session timeout" for one organisation: super admin only. */
-export function OrgSessionTimeoutDialog({ org, onClose }: { org: Organisation; onClose(): void }) {
+/** `onDone`: each change's words, for the page's Toast too, so they outlast the dialog (#468 review). */
+export function OrgSessionTimeoutDialog({
+  org,
+  onClose,
+  onDone,
+}: {
+  org: Organisation;
+  onClose(): void;
+  onDone(message: string): void;
+}) {
   const { value, failed, reload } = useTimeout(org.id);
   const [changing, setChanging] = useState<Confirm | null>(null);
   const [done, setDone] = useState<string | null>(null);
@@ -165,6 +174,7 @@ export function OrgSessionTimeoutDialog({ org, onClose }: { org: Organisation; o
           onDone={(message) => {
             setChanging((open) => afterDone(open, changing));
             setDone(message);
+            onDone(message);
             reload();
           }}
         />

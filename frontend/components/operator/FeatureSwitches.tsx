@@ -211,7 +211,16 @@ export function orgSwitchConfirm(org: Organisation, each: OrgFeatureSwitch): Con
 }
 
 /** The Manage menu's "Feature switches" for one organisation: super admin only. */
-export function OrgFeatureSwitchesDialog({ org, onClose }: { org: Organisation; onClose(): void }) {
+/** `onDone`: each change's words, for the page's Toast too, so they outlast the dialog (#468 review). */
+export function OrgFeatureSwitchesDialog({
+  org,
+  onClose,
+  onDone,
+}: {
+  org: Organisation;
+  onClose(): void;
+  onDone(message: string): void;
+}) {
   const [attempt, setAttempt] = useState(0);
   const [switches, setSwitches] = useState<OrgFeatureSwitch[] | null>(null);
   const [error, setError] = useState<{ attempt: number; message: string } | null>(null);
@@ -250,6 +259,7 @@ export function OrgFeatureSwitchesDialog({ org, onClose }: { org: Organisation; 
           onDone={(message) => {
             setChanging((open) => afterDone(open, changing));
             setDone(message);
+            onDone(message);
             setAttempt((n) => n + 1);
           }}
         />

@@ -4,7 +4,8 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { aiChangesToKeep, orgDraftOver, settingsDraft, settingsFromDraft } from "@/components/admin/logic";
-import { ASK_DRAFT, askDraft } from "@/components/chat/logic";
+import { waysLoadText } from "@/components/account/signInWays";
+import { ASK_DRAFT, askDraft, askHref, askWithWordsHref, conversationLoadText } from "@/components/chat/logic";
 import { operatorErrorMessage } from "@/components/operator/logic";
 import { storyFailure } from "@/components/viewer/story";
 import { ViewerFailed } from "@/components/viewer/ViewerBoundary";
@@ -12,7 +13,9 @@ import { endedPath, pathAfterSignIn, SEARCH_DRAFT, searchToKeep } from "@/compon
 import { ApiError, GET_TIMEOUT_MS, TOO_SLOW, getDocument } from "@/lib/api";
 import { changedOnly, orgDraftOf } from "@/lib/aiSettings";
 import { DRAFT_KEPT, clearDrafts, readDraft, saveDraft, saveDraftSoon } from "@/lib/drafts";
+import { NETWORK_FAILURE } from "@/lib/emailLinks";
 import { SERVER_PROBLEM, errorWords } from "@/lib/errorWords";
+import { SESSION_ENDING_TEXT } from "@/lib/operatorSession";
 import type { AiSettings, AiTaskSetting, CustomerSettings, TaskLevel } from "@/lib/types";
 
 // The #468 council review's fixes. Each describe names its item.
@@ -340,5 +343,101 @@ describe("CR6: the viewer's Download link is a download, so it never fires the u
   it("carries the download attribute", () => {
     const html = renderToStaticMarkup(createElement(ViewerFailed, { onRetry: () => undefined, download: "/api/documents/d-1/file" }));
     expect(html).toMatch(/<a class="btn" href="\/api\/documents\/d-1\/file" download="">Download<\/a>/);
+  });
+});
+
+describe("PT2 / UX9: errorWords takes any failure; one network wording everywhere (NETWORK_FAILURE)", () => {
+  it("anything that is not an ApiError is the network wording", () => {
+    expect(errorWords(new TypeError("Failed to fetch"))).toBe(NETWORK_FAILURE);
+    expect(errorWords(undefined)).toBe(NETWORK_FAILURE);
+    expect(errorWords(new ApiError(0, "timeout", TOO_SLOW))).toBe(TOO_SLOW); // the slow case stays its own
+  });
+
+  it("no screen keeps its own ternary and offline sentence", () => {
+    for (const file of [
+      "components/account/signInWays.ts",
+      "components/admin/ActivityPanel.tsx",
+      "components/admin/AiSettingsPanel.tsx",
+      "components/admin/DepartmentsPanel.tsx",
+      "components/admin/logic.ts",
+      "components/admin/MembersTable.tsx",
+      "components/admin/NumbersPanel.tsx",
+      "components/admin/SettingsPanel.tsx",
+      "components/admin/UsagePanel.tsx",
+      "components/admin/UsersPanel.tsx",
+      "components/chat/logic.ts",
+    ]) {
+      expect(read(file), file).not.toMatch(/instanceof ApiError\s*\?\s*errorWords\(/);
+    }
+  });
+
+  it("the departments' load error says what and why; the conversation and ways-to-sign-in loads too", () => {
+    expect(read("components/admin/DepartmentsPanel.tsx")).toContain("setError(`The departments did not load. ${errorWords(caught)}`)");
+    expect(conversationLoadText(new TypeError("x"))).toBe(`Could not load this conversation. ${NETWORK_FAILURE}`);
+    expect(waysLoadText(new TypeError("x"))).toBe(`Could not load your ways to sign in. ${NETWORK_FAILURE}`);
+  });
+});
+
+describe("PT3: Organisations loads with the shared skeleton rows (structural)", () => {
+  it("uses LoadingRows, not its own copy", () => {
+    const view = read("components/operator/OrganisationsView.tsx");
+    expect(view).toContain('{!orgs && !failed && <LoadingRows what="the organisations" />}');
+    expect(view).not.toContain("SKELETON_ROWS");
+  });
+});
+
+describe("PT4: StillLoading waits Ask's own time (one constant)", () => {
+  it("imports STILL_LOOKING_AFTER_MS instead of a second constant", () => {
+    const source = read("components/shell/StillLoading.tsx");
+    expect(source).toContain('import { STILL_LOOKING_AFTER_MS } from "@/components/chat/logic";');
+    expect(source).toContain("STILL_LOOKING_AFTER_MS)");
+    expect(source).not.toContain("STILL_LOADING_AFTER_MS");
+  });
+});
+
+describe("PT7: one ?q= contract for Ask, and one lost-connection test", () => {
+  it("askWithWordsHref sits next to askHref; only send=1 sends", () => {
+    expect(askWithWordsHref("rent paid & GST")).toBe("/chat?q=rent%20paid%20%26%20GST");
+    expect(askHref("rent")).toBe("/chat?q=rent&send=1");
+    expect(read("components/documents/insideSearch.ts")).not.toContain("export function askWithWordsHref");
+  });
+
+  it("the upload retry uses lostConnection()", () => {
+    expect(read("lib/api.ts")).toContain("const lost = lostConnection(error);");
+  });
+});
+
+describe("UX5: the operator's banners sit inside OperatorShell, after the skip link (structural)", () => {
+  it("renders the offline line and the session warning between the skip link and the top bar", () => {
+    const shell = read("components/operator/OperatorShell.tsx");
+    expect(shell).toMatch(
+      /Skip to content\s*<\/a>\s*<OfflineBanner \/>\s*<SessionEndingNotice expiresAt=\{session\.expires_at\} \/>\s*<header/,
+    );
+    expect(read("lib/operatorSession.tsx")).toMatch(/<OperatorContext\.Provider value=\{state\.me\}>\{children\}<\/OperatorContext\.Provider>/);
+  });
+});
+
+describe("UX6: the session warning never shows a count that goes stale", () => {
+  it("says under 2 minutes", () => {
+    expect(SESSION_ENDING_TEXT).toBe("Your session ends in under 2 minutes. Save your changes now.");
+  });
+});
+
+describe("UX7: Search's slow notice starts over for a new search (structural)", () => {
+  it("is keyed on the words and the tab", () => {
+    expect(read("components/search/SearchScreen.tsx")).toContain(
+      "<StillLoading key={`${q}|${mode}`} onRetry={() => setAttempt((n) => n + 1)} />",
+    );
+  });
+});
+
+describe("UX10: an organisation dialog's confirmation also goes to the page's Toast (structural)", () => {
+  it("survives the dialog closing", () => {
+    const view = read("components/operator/OrganisationsView.tsx");
+    expect(view).toContain("<OrgFeatureSwitchesDialog org={switchesOf} onClose={() => setSwitchesOf(null)} onDone={setDone} />");
+    expect(view).toContain("<OrgSessionTimeoutDialog org={timeoutOf} onClose={() => setTimeoutOf(null)} onDone={setDone} />");
+    for (const file of ["components/operator/FeatureSwitches.tsx", "components/operator/SessionTimeout.tsx"]) {
+      expect(read(file), file).toMatch(/setDone\(message\);\s*onDone\(message\);/);
+    }
   });
 });

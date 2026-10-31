@@ -15,7 +15,8 @@ import { useBackFrom, withFrom } from "@/lib/backLink";
 import { STORY_NOTE_SEARCH, storyMatchesFrom, storyStatusText } from "@/lib/storyMatches";
 import type { DocumentSearch } from "@/lib/types";
 import { LabelChip } from "@/components/files/LabelChip";
-import { alsoSearchedText, askAboutLabel, askWithWordsHref, foundCountText, highlightParts, resultView } from "./insideSearch";
+import { askWithWordsHref } from "@/components/chat/logic";
+import { alsoSearchedText, askAboutLabel, foundCountText, highlightParts, resultView } from "./insideSearch";
 import styles from "./Documents.module.css";
 import libraryStyles from "./Library.module.css";
 

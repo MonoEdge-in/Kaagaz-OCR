@@ -20,14 +20,6 @@ import type { LibraryState } from "./libraryQuery";
 
 export type SearchMode = "inside" | "names";
 
-// #468: a search that finds nothing offers Ask with the same words, filled in, never sent
-// (/chat?q= without send=1 puts them in the box: ChatScreen, questionFromSearch).
-
-/** The chat address with these words in the question box. */
-export function askWithWordsHref(q: string): string {
-  return `/chat?q=${encodeURIComponent(q)}`;
-}
-
 const ASK_LABEL_WORDS = 40; // a long search is cut short on the button
 
 /** "Ask Kaagaz about “rent”". */

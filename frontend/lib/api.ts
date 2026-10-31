@@ -581,7 +581,7 @@ async function retryWhileOffline<T>(work: () => Promise<T>, onWaiting?: UploadWa
         await waitForNetwork(paced);
         continue;
       }
-      const lost = error instanceof ApiError ? error.status === 0 : error instanceof TypeError;
+      const lost = lostConnection(error);
       const busy = error instanceof ApiError && error.status >= 500;
       if (!lost && !(busy && serverTries++ < SERVER_RETRIES)) throw error;
       onWaiting?.(true, lost ? "connection" : "server"); // issue 357: a 5xx is not a lost connection

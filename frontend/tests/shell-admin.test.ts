@@ -495,8 +495,9 @@ describe("the failed documents tab", () => {
     const busy = new ApiError(429, "rate_limited", "Please wait and try again.");
     expect(retryErrorText(stale)).toBe("This document can't be read again now.");
     expect(retryErrorText(busy)).toBe("Please wait and try again.");
+    // Changed on purpose (#468 review, PT2/UX9): the one network wording (NETWORK_FAILURE).
     expect(retryErrorText(new TypeError("fetch failed"))).toBe(
-      "Could not reach the server. Check your connection, then try again.",
+      "Could not reach Kaagaz. Check your internet connection and try again.",
     );
   });
 });

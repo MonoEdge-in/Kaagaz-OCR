@@ -34,6 +34,7 @@ import type { OrgChange } from "./confirms";
 import { CreateDialog } from "./CreateDialog";
 import { ManageMenu } from "./ManageMenu";
 import { OrgFeatureSwitchesDialog } from "./FeatureSwitches";
+import { LoadingRows } from "./LoadingRows";
 import { OrgAiSettings, orgAiFocusId } from "./OrgAiSettings";
 import { OrgModelRates } from "./OrgModelRates";
 import { OrgSessionTimeoutDialog } from "./SessionTimeout";
@@ -41,8 +42,6 @@ import { afterDone, countText, deleteCountdown, filterOrgs, GRACE_DAYS, lastActi
 import { MoreRows, useRowCap } from "@/components/admin/RowCap";
 import admin from "@/components/admin/Admin.module.css";
 import styles from "./Operator.module.css";
-
-const SKELETON_ROWS = [0, 1, 2];
 
 // The header row; Name has the room the short columns leave.
 const COLUMNS: { label: string; className?: string }[] = [
@@ -144,18 +143,7 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
           </button>
         </div>
       )}
-      {!orgs && !failed && (
-        <>
-          <p className="visually-hidden" role="status">
-            Loading the organisations…
-          </p>
-          <div className={`delayed ${admin.skeletons}`} aria-hidden="true">
-            {SKELETON_ROWS.map((row) => (
-              <span key={row} className={`skeleton ${admin.skeletonRow}`} />
-            ))}
-          </div>
-        </>
-      )}
+      {!orgs && !failed && <LoadingRows what="the organisations" />}
       {orgs && orgs.length === 0 && (
         <EmptyState icon="admin" title="No organisations yet" action={create}>
           Create the first one with its first admin.
@@ -238,8 +226,8 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
       {adminsOf && <AdminsDialog org={adminsOf} onClose={() => setAdminsOf(null)} />}
       {modelsOf && <OrgAiSettings org={modelsOf} onClose={() => setModelsOf(null)} onSaved={setDone} />}
       {ratesOf && <OrgModelRates org={ratesOf} onClose={() => setRatesOf(null)} onSaved={setDone} />}
-      {switchesOf && <OrgFeatureSwitchesDialog org={switchesOf} onClose={() => setSwitchesOf(null)} />}
-      {timeoutOf && <OrgSessionTimeoutDialog org={timeoutOf} onClose={() => setTimeoutOf(null)} />}
+      {switchesOf && <OrgFeatureSwitchesDialog org={switchesOf} onClose={() => setSwitchesOf(null)} onDone={setDone} />}
+      {timeoutOf && <OrgSessionTimeoutDialog org={timeoutOf} onClose={() => setTimeoutOf(null)} onDone={setDone} />}
       {changing && (
         <ConfirmDialog
           confirm={changing}

@@ -124,10 +124,7 @@ export function UsersPanel({
         if (!cancelled) {
           setError({
             attempt,
-            message:
-              caught instanceof ApiError
-                ? errorWords(caught)
-                : "Check your internet connection, then try again.",
+            message: errorWords(caught),
           });
         }
       },
@@ -325,10 +322,7 @@ function UserRow({
     } catch (caught) {
       onNotice({
         problem: true,
-        text:
-          caught instanceof ApiError
-            ? errorWords(caught)
-            : "Could not save the change. Check your connection, then try again.",
+        text: errorWords(caught),
       });
     } finally {
       setBusy(false);
@@ -517,7 +511,7 @@ function ConnectionsToApprove({ onApproved, onNotice }: { onApproved(): void; on
       }
       onNotice({
         problem: true,
-        text: caught instanceof ApiError ? errorWords(caught) : "Could not save the change. Check your connection, then try again.",
+        text: errorWords(caught),
       });
     }
   }
@@ -696,10 +690,7 @@ function AddUserPanel({
       clearDraft(userId, ADD_USER_DRAFT);
       onAdded(user);
     } catch (caught) {
-      const message =
-        caught instanceof ApiError
-          ? errorWords(caught)
-          : "Could not add the user. Check your connection, then try again.";
+      const message = errorWords(caught);
       if (caught instanceof ApiError && caught.code === "conflict") {
         setErrors({ email: message });
       } else {

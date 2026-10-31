@@ -3,7 +3,6 @@
 // asks for the code, the disconnect question and the app's "Google connected" banner.
 
 import { BUSY } from "@/app/login/providerMessages";
-import { ApiError } from "@/lib/api";
 import { errorWords } from "@/lib/errorWords";
 import { formatDate } from "@/lib/format";
 import type { ConnectedIdentity, Me } from "@/lib/types";
@@ -14,10 +13,7 @@ export const WAITING = "Waiting for your admin's approval";
 const NAMES: Record<string, string> = { google: "Google" };
 
 /** Why the list did not load, and what to do (issue 468): Try again sits beside it. */
-export function waysLoadText(caught: unknown): string {
-  const cause = caught instanceof ApiError ? errorWords(caught) : "Check your internet connection and try again.";
-  return `Could not load your ways to sign in. ${cause}`;
-}
+export const waysLoadText = (caught: unknown): string => `Could not load your ways to sign in. ${errorWords(caught)}`;
 
 /** "Google" for google; an unknown provider keeps its own name. */
 export function providerName(provider: string): string {

@@ -423,9 +423,7 @@ export function tabChangeAllowed(unsaved: boolean, confirmLeave: () => boolean):
 /** What a Save that did not work says: the plain words for a switch not allowed yet, else the server's. */
 export function settingsErrorText(caught: unknown): string {
   if (caught instanceof ApiError && caught.code === "not_granted") return AUTOFILE_NOT_AVAILABLE;
-  return caught instanceof ApiError
-    ? errorWords(caught)
-    : "Could not save the settings. Check your connection, then try again.";
+  return errorWords(caught);
 }
 
 export interface Tile {
@@ -778,9 +776,7 @@ export function lastRunText(lastRunAt: string | null): string {
  * (409, someone already retried it; 429, too many at once), else a network hint.
  */
 export function retryErrorText(caught: unknown): string {
-  return caught instanceof ApiError
-    ? errorWords(caught)
-    : "Could not reach the server. Check your connection, then try again.";
+  return errorWords(caught);
 }
 
 // --- The Usage tab (model choice SP2, SP4) ---------------------------------------

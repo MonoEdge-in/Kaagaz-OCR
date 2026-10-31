@@ -18,7 +18,7 @@ import type { FormEvent, ReactNode } from "react";
 import libraryStyles from "@/components/documents/Library.module.css";
 import { LoadFailed } from "@/components/operator/LoadFailed";
 import reviewStyles from "@/components/review/Review.module.css";
-import { ApiError, FEATURE_OFF, getAiSettings, putMyAiSettings, putOrgAiSettings } from "@/lib/api";
+import { FEATURE_OFF, getAiSettings, putMyAiSettings, putOrgAiSettings } from "@/lib/api";
 import { errorWords } from "@/lib/errorWords";
 import {
   AI_LEVELS,
@@ -90,7 +90,7 @@ export function AiSettingsPanel({ scope, onUnsaved }: { scope: AiScope; onUnsave
       },
       (caught: unknown) =>
         !cancelled &&
-        setLoadError(caught instanceof ApiError ? errorWords(caught) : "Check your internet connection, then try again."),
+        setLoadError(errorWords(caught)),
     );
     return () => {
       cancelled = true;

@@ -4,7 +4,6 @@
 // answer, what a source card says about its page, and what a failed question
 // tells the person to do.
 
-import { ApiError } from "@/lib/api";
 import { flushDrafts, readDraft, saveDraft } from "@/lib/drafts";
 import { errorWords } from "@/lib/errorWords";
 import type { Draft } from "@/lib/drafts";
@@ -226,10 +225,7 @@ export function askErrorText(error: { status: number; message: string } | null):
 }
 
 /** Why a conversation did not load, and what to do (issue 468): Try again sits beside it. */
-export function conversationLoadText(caught: unknown): string {
-  const cause = caught instanceof ApiError ? errorWords(caught) : "Check your internet connection and try again.";
-  return `Could not load this conversation. ${cause}`;
-}
+export const conversationLoadText = (caught: unknown): string => `Could not load this conversation. ${errorWords(caught)}`;
 
 // --- The question box's draft (issue 468) -------------------------------------
 // Kept in this tab for the same person (lib/drafts.ts): the words typed, and the question
@@ -298,9 +294,16 @@ export function questionFromSearch(search: string): string | null {
   return question ? question.slice(0, 1000) : null;
 }
 
+// One ?q= contract: /chat?q= puts the words in the box (questionFromSearch); send=1 also sends them.
+
 /** The chat address that submits a question sent from Home. */
 export function askHref(question: string): string {
   return `/chat?q=${encodeURIComponent(question)}&send=1`;
+}
+
+/** The chat address with these words in the question box, never sent (#468: a search that found nothing). */
+export function askWithWordsHref(q: string): string {
+  return `/chat?q=${encodeURIComponent(q)}`;
 }
 
 /** The chat address that asks about one document. */

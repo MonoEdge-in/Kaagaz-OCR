@@ -12,7 +12,9 @@ import { ActivityDates, ActivityEmpty } from "@/components/admin/ActivityPanel";
 import { DATES_BACKWARDS, NO_ACTIVITY, NO_ACTIVITY_MATCHES, activityEmptyText, datesError } from "@/components/admin/logic";
 import { questionFromSearch } from "@/components/chat/logic";
 import { InsideSearchResults } from "@/components/documents/InsideResults";
-import { askAboutLabel, askWithWordsHref } from "@/components/documents/insideSearch";
+// Changed on purpose (#468 review, PT7): askWithWordsHref sits next to askHref in chat/logic.
+import { askWithWordsHref } from "@/components/chat/logic";
+import { askAboutLabel } from "@/components/documents/insideSearch";
 import { NameResults } from "@/components/search/SearchScreen";
 
 const read = (path: string) => readFileSync(join(__dirname, "..", path), "utf8");

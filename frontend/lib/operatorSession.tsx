@@ -12,11 +12,10 @@
 // nothing of the console stays in the tab's memory.
 // Issue 468: two minutes before the end, a line says so (SessionEndingNotice). The session lasts
 // a fixed 30 minutes and has no way to be made longer, so it says to save, not to stay signed in.
-// The offline line (OfflineBanner) sits above the console too.
+// OperatorShell shows it, with the offline line (OfflineBanner), after its skip link.
 
 import { createContext, useContext, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { OfflineBanner } from "@/components/shell/OfflineBanner";
 import styles from "@/components/shell/Shell.module.css";
 import { Icon } from "@/components/ui/Icon";
 import { OPERATOR_CHANNEL, RECHECK_MS, SIGNED_OUT, exitUrl, expiryDelay, meFailed, recheckAfter } from "@/components/operator/logic";
@@ -50,30 +49,24 @@ export function warningDelay(expiresAt: number, now: number): number {
   return expiryDelay(expiresAt - WARN_BEFORE_MS / 1000, now);
 }
 
-/** What the warning says, with the minutes left when it shows (at least one). */
-export function sessionEndingText(expiresAt: number, now: number): string {
-  const minutes = Math.max(1, Math.round((expiresAt * 1000 - now) / 60_000));
-  return `Your session ends in ${minutes === 1 ? "1 minute" : `${minutes} minutes`}. Save your changes now.`;
-}
+/** What the warning says: no count of minutes, which would go stale while it shows (#468 review). */
+export const SESSION_ENDING_TEXT = "Your session ends in under 2 minutes. Save your changes now.";
 
 /** The warning before the session ends: a polite live region, there from the start, and dismissable. */
-function SessionEndingNotice({ expiresAt }: { expiresAt: number }) {
-  const [shown, setShown] = useState<{ expiresAt: number; text: string } | null>(null);
+export function SessionEndingNotice({ expiresAt }: { expiresAt: number }) {
+  const [shown, setShown] = useState<number | null>(null); // the expiresAt it was shown for
   const [dismissed, setDismissed] = useState<number | null>(null);
   useEffect(() => {
-    const timer = window.setTimeout(
-      () => setShown({ expiresAt, text: sessionEndingText(expiresAt, Date.now()) }),
-      warningDelay(expiresAt, Date.now()),
-    );
+    const timer = window.setTimeout(() => setShown(expiresAt), warningDelay(expiresAt, Date.now()));
     return () => window.clearTimeout(timer);
   }, [expiresAt]);
-  const text = shown !== null && shown.expiresAt === expiresAt && dismissed !== expiresAt ? shown.text : null;
+  const showing = shown === expiresAt && dismissed !== expiresAt;
   return (
     <div role="status" aria-live="polite">
-      {text !== null ? (
+      {showing ? (
         <div className={styles.sessionNotice}>
           <Icon name="alert" />
-          <p className={styles.sessionNoticeText}>{text}</p>
+          <p className={styles.sessionNoticeText}>{SESSION_ENDING_TEXT}</p>
           <button type="button" className="btn" onClick={() => setDismissed(expiresAt)}>
             Dismiss
           </button>
@@ -166,13 +159,7 @@ export function OperatorSessionProvider({ children }: { children: ReactNode }) {
   }, []);
 
   if (state.kind === "signed_in") {
-    return (
-      <OperatorContext.Provider value={state.me}>
-        <OfflineBanner />
-        <SessionEndingNotice expiresAt={state.me.session.expires_at} />
-        {children}
-      </OperatorContext.Provider>
-    );
+    return <OperatorContext.Provider value={state.me}>{children}</OperatorContext.Provider>;
   }
 
   return (

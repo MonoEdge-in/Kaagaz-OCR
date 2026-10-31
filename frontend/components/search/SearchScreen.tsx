@@ -180,7 +180,7 @@ export function SearchScreen({ q, mode }: { q: string; mode: SearchMode }) {
           onSearchInside={() => router.replace(searchHref(q, "inside"))}
         />
       )}
-      {q !== "" && current === null ? <StillLoading onRetry={() => setAttempt((n) => n + 1)} /> : null}
+      {q !== "" && current === null ? <StillLoading key={`${q}|${mode}`} onRetry={() => setAttempt((n) => n + 1)} /> : null}
     </div>
   );
 }

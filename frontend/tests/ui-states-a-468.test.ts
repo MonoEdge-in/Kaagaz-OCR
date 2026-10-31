@@ -7,7 +7,8 @@ import { LOST_PHONE_HELP } from "@/app/login/twoStep";
 import { conversationLoadText } from "@/components/chat/logic";
 import { waysLoadText } from "@/components/account/signInWays";
 import { OFFLINE_TEXT, OfflineBanner, isOffline } from "@/components/shell/OfflineBanner";
-import { STILL_LOADING_AFTER_MS, STILL_LOADING_RETRY, STILL_LOADING_TEXT, StillLoading } from "@/components/shell/StillLoading";
+import { STILL_LOOKING_AFTER_MS } from "@/components/chat/logic";
+import { STILL_LOADING_RETRY, STILL_LOADING_TEXT, StillLoading } from "@/components/shell/StillLoading";
 import {
   ApiError,
   GET_TIMEOUT_MS,
@@ -21,7 +22,7 @@ import { aiSaveErrorText } from "@/lib/aiSettings";
 import { CONFIRM_DOWN, CONFIRM_NETWORK_FAILURE, LINK_GONE, confirmError } from "@/lib/emailLinks";
 import { SERVER_PROBLEM } from "@/lib/errorWords";
 import { leavePage, leavingPage } from "@/lib/sessionChannel";
-import { WARN_BEFORE_MS, sessionEndingText, warningDelay } from "@/lib/operatorSession";
+import { SESSION_ENDING_TEXT, WARN_BEFORE_MS, warningDelay } from "@/lib/operatorSession";
 
 // Issue 468, builder A: timeouts and slow loads (A2), the offline line (A3), the code step's
 // lost-phone line and the confirm page's words (A4), and load errors with a cause (A5), and the
@@ -123,7 +124,8 @@ describe("a GET that gets no answer (lib/api.ts request)", () => {
 
 describe("a slow load says so (components/shell/StillLoading.tsx)", () => {
   it("waits about ten seconds, as Ask does, in a polite live region that is there from the start", () => {
-    expect(STILL_LOADING_AFTER_MS).toBe(10_000);
+    // Changed on purpose (#468 review, PT4): Ask's own constant, not a second one.
+    expect(STILL_LOOKING_AFTER_MS).toBe(10_000);
     expect(`${STILL_LOADING_TEXT} ${STILL_LOADING_RETRY}.`).toBe(
       "Still loading — your connection may be slow. Keep waiting or Try again.",
     );
@@ -137,7 +139,8 @@ describe("a slow load says so (components/shell/StillLoading.tsx)", () => {
     const chat = read("components/chat/ChatScreen.tsx");
     expect(chat).toMatch(/Loading the conversation…[\s\S]{0,80}<StillLoading onRetry=\{\(\) => void open\(activeId\)\} \/>/);
     const search = read("components/search/SearchScreen.tsx");
-    expect(search).toContain('{q !== "" && current === null ? <StillLoading onRetry={() => setAttempt((n) => n + 1)} /> : null}');
+    // Changed on purpose (#468 review, UX7): keyed, so a new search starts the wait over.
+    expect(search).toContain('{q !== "" && current === null ? <StillLoading key={`${q}|${mode}`} onRetry={() => setAttempt((n) => n + 1)} /> : null}');
     const queue = read("components/review/ReviewQueue.tsx");
     expect(queue).toMatch(/Loading the review queue…\s*<\/p>\s*<StillLoading onRetry=\{\(\) => setAttempt\(\(n\) => n \+ 1\)\} \/>/);
   });
@@ -173,7 +176,8 @@ describe("the offline line (components/shell/OfflineBanner.tsx)", () => {
 
   it("sits in the app shell and the operator console", () => {
     expect(read("components/shell/AppShell.tsx")).toMatch(/<main[\s\S]*<OfflineBanner \/>[\s\S]*<\/main>/);
-    expect(read("lib/operatorSession.tsx")).toMatch(/<OperatorContext\.Provider value=\{state\.me\}>\s*<OfflineBanner \/>/);
+    // Changed on purpose (#468 review, UX5): in OperatorShell, after its skip link.
+    expect(read("components/operator/OperatorShell.tsx")).toMatch(/Skip to content\s*<\/a>\s*<OfflineBanner \/>/);
   });
 
   it("the document view keeps what it shows when asking again finds no connection, and asks again once online", () => {
@@ -200,17 +204,17 @@ describe("the operator's warning before the session ends (lib/operatorSession.ts
     expect(warningDelay(ends, ends * 1000 + 5_000)).toBe(0);
   });
 
+  // Changed on purpose (#468 review, UX6): "under 2 minutes", never a count that goes stale.
   it("says to save, as the session cannot be made longer (no endpoint for it)", () => {
-    expect(sessionEndingText(ends, ends * 1000 - 120_000)).toBe("Your session ends in 2 minutes. Save your changes now.");
-    expect(sessionEndingText(ends, ends * 1000 - 50_000)).toBe("Your session ends in 1 minute. Save your changes now.");
-    expect(sessionEndingText(ends, ends * 1000 + 1_000)).toBe("Your session ends in 1 minute. Save your changes now.");
+    expect(SESSION_ENDING_TEXT).toBe("Your session ends in under 2 minutes. Save your changes now.");
     expect(read("lib/operatorSession.tsx")).not.toMatch(/Stay signed in/);
   });
 
   it("is a polite live region with Dismiss, shown above the console", () => {
     const source = read("lib/operatorSession.tsx");
     expect(source).toMatch(/function SessionEndingNotice[\s\S]*<div role="status" aria-live="polite">[\s\S]*onClick=\{\(\) => setDismissed\(expiresAt\)\}[\s\S]*Dismiss/);
-    expect(source).toContain("<SessionEndingNotice expiresAt={state.me.session.expires_at} />");
+    // Changed on purpose (#468 review, UX5): OperatorShell shows it, after its skip link.
+    expect(read("components/operator/OperatorShell.tsx")).toContain("<SessionEndingNotice expiresAt={session.expires_at} />");
   });
 });
 
@@ -233,8 +237,9 @@ describe("the code step and the confirm page (A4)", () => {
 
 describe("load errors with a cause and Try again (A5)", () => {
   it("the conversation says why it did not load", () => {
+    // Changed on purpose (#468 review, PT2/UX9): the one network wording (NETWORK_FAILURE).
     expect(conversationLoadText(new TypeError("Failed to fetch"))).toBe(
-      "Could not load this conversation. Check your internet connection and try again.",
+      "Could not load this conversation. Could not reach Kaagaz. Check your internet connection and try again.",
     );
     expect(conversationLoadText(new ApiError(0, "timeout", TOO_SLOW))).toBe(`Could not load this conversation. ${TOO_SLOW}`);
     expect(conversationLoadText(new ApiError(502, "error", "Something went wrong."))).toBe(
@@ -246,8 +251,9 @@ describe("load errors with a cause and Try again (A5)", () => {
   });
 
   it("Ways to sign in says why, with Try again (not when Google is switched off)", () => {
+    // Changed on purpose (#468 review, PT2/UX9): the one network wording (NETWORK_FAILURE).
     expect(waysLoadText(new TypeError("Failed to fetch"))).toBe(
-      "Could not load your ways to sign in. Check your internet connection and try again.",
+      "Could not load your ways to sign in. Could not reach Kaagaz. Check your internet connection and try again.",
     );
     expect(waysLoadText(new ApiError(500, "error", "x"))).toBe(
       "Could not load your ways to sign in. Kaagaz had a problem. Try again in a minute.",

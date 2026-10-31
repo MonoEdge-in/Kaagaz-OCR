@@ -16,7 +16,7 @@ import type { FormEvent } from "react";
 import libraryStyles from "@/components/documents/Library.module.css";
 import { LoadFailed } from "@/components/operator/LoadFailed";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
-import { ApiError, getSettings, setAutoApprove, updateSettings } from "@/lib/api";
+import { getSettings, setAutoApprove, updateSettings } from "@/lib/api";
 import { clearDraft, readDraft, saveDraftSoon } from "@/lib/drafts";
 import { errorWords } from "@/lib/errorWords";
 import { useSession } from "@/lib/session";
@@ -67,11 +67,7 @@ export function SettingsPanel({
       },
       (caught: unknown) => {
         if (!cancelled) {
-          setLoadError(
-            caught instanceof ApiError
-              ? errorWords(caught)
-              : "Check your internet connection, then try again.",
-          );
+          setLoadError(errorWords(caught));
         }
       },
     );

@@ -3,9 +3,10 @@
 // ApiError texts and backend/kaagaz/api/errors.py MESSAGES are written for customers: "That
 // e-mail is already in use.", "Turn on two-step sign-in in Account to do this."). Its generic
 // refusals, every 404 and 5xx, and a reply with no code of the API's (lib/api.ts errorFrom
-// gives such a reply, a proxy's error page, the code "error") get the sentences here.
+// gives such a reply, a proxy's error page, the code "error") get the sentences here. Anything
+// that is not an ApiError (no answer at all: fetch's TypeError) is the one network wording.
 
-import type { ApiError } from "./api";
+import { ApiError } from "./api";
 import { NETWORK_FAILURE } from "./emailLinks";
 
 export const FORBIDDEN = "You don't have permission to do this. Ask your admin.";
@@ -15,7 +16,8 @@ export const TOO_MANY_REQUESTS = "Too many requests. Wait a minute and try again
 export const SERVER_PROBLEM = "Kaagaz had a problem. Try again in a minute.";
 
 /** What to say for a failed request. ``who``: an operator is told a different fix for a 403. */
-export function errorWords(error: ApiError, who: "customer" | "operator" = "customer"): string {
+export function errorWords(error: unknown, who: "customer" | "operator" = "customer"): string {
+  if (!(error instanceof ApiError)) return NETWORK_FAILURE;
   const fromApi = error.code !== "error"; // the reply carried the backend's own code and words
   if (error.status === 0) return error.message || NETWORK_FAILURE;
   if (error.status >= 500) return SERVER_PROBLEM;
