@@ -140,7 +140,9 @@ def test_a_page_keeps_the_settings_of_the_read_that_produced_its_text() -> None:
     other = reader(again)
     with other.document(harder):
         reread = other.read_page(page(), page_no=1)
-    assert (reread.read_thinking, reread.read_resolution) == ("minimal", "low")  # read again: the pair
+    # Changed on purpose (#463 review): a page read again keeps its first read's settings (the
+    # document's: the env's here), so the free signal counts it by its first read.
+    assert (reread.read_thinking, reread.read_resolution, reread.read_pass) == ("low", "high", "again")
 
     record = _with_result(PageRecord(PageInfo(1, 100.0, 100.0, "px"), True, route="ocr"), read, 0)
     assert (record.read_thinking, record.read_resolution) == ("low", "low")

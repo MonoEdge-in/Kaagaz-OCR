@@ -178,7 +178,11 @@ class MarkExhaustedTest(unittest.TestCase):
     def test_the_document_is_marked_and_logged_with_ids_and_the_code_only(self) -> None:
         marked: list[tuple[str, str]] = []
         with self.assertLogs("kaagaz.worker", "WARNING") as logs:
-            MarkExhausted(lambda customer_id, document_id: marked.append((customer_id, document_id)))(FIRST)
+            # Changed on purpose (#463 review): the check's handler is required.
+            MarkExhausted(
+                lambda customer_id, document_id: marked.append((customer_id, document_id)),
+                mark_check=lambda customer_id, check_id: None,
+            )(FIRST)
         self.assertEqual(marked, [(FIRST.customer_id, FIRST.document_id)])
         (record,) = logs.records
         fields = record.__dict__
@@ -197,7 +201,9 @@ class MarkExhaustedTest(unittest.TestCase):
             raise JobFailed("scanner_down", retryable=True)
 
         on_exhausted = MarkExhausted(
-            lambda customer_id, document_id: marked.append((customer_id, document_id))
+            lambda customer_id, document_id: marked.append((customer_id, document_id)),
+            # Changed on purpose (#463 review): the check's handler is required.
+            mark_check=lambda customer_id, check_id: None,
         )
         worker = Worker(queue, LoggedHandler(down), max_attempts=MAX_ATTEMPTS, on_exhausted=on_exhausted)
         with self.assertLogs("kaagaz.worker", "WARNING"):
@@ -450,6 +456,8 @@ class AttemptsTest(unittest.TestCase):
             max_attempts=MAX_ATTEMPTS,
             mark_exhausted=lambda customer_id, document_id: None,
             record_attempt=lambda c, d, attempt, most: recorded.append((c, d, attempt, most)),
+            # Changed on purpose (#463 review): the check's handler is required.
+            mark_check_exhausted=lambda customer_id, check_id: None,
         )
         with self.assertLogs("kaagaz.worker", "INFO"):
             self.assertTrue(worker.run_once())

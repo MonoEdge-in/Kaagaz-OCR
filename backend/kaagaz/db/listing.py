@@ -1009,7 +1009,8 @@ def ai_budget(conn: Connection, customer_id: str) -> float | None:
 
 # The spend CSV (SP2): one line per day in TIMEZONE, user, model and kind. The user is
 # grouped by id, so two users with one name stay apart; a NULL user (work no user asked
-# for, or a removed user) has no name. The index model_usage_period.
+# for, or a removed user) has no name. The index model_usage_period. #463 review: an
+# operator's accuracy checks are the operator's, never in the admin's file.
 _USAGE_ROWS = (
     "SELECT (u.created_at AT TIME ZONE :tz)::date AS day, max(us.display_name) AS user_name,"
     " u.model, u.kind, sum(u.calls) AS calls, sum(u.input_tokens + u.output_tokens) AS tokens,"
@@ -1017,7 +1018,8 @@ _USAGE_ROWS = (
     " bool_or(u.cost_usd IS NULL) AS cost_part_unknown"
     " FROM model_usage u"
     " LEFT JOIN users us ON us.customer_id = u.customer_id AND us.id = u.user_id"
-    " WHERE u.customer_id = :c AND u.created_at >= :start AND u.created_at < :end"
+    " WHERE u.customer_id = :c AND u.kind <> 'accuracy_check'"
+    " AND u.created_at >= :start AND u.created_at < :end"
 )
 _USAGE_ROWS_ORDER = " GROUP BY 1, u.user_id, u.model, u.kind ORDER BY 1, 2 NULLS FIRST, u.model, u.kind"
 

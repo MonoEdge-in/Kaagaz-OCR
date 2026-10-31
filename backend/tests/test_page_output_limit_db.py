@@ -30,9 +30,9 @@ pytestmark = pytest.mark.db
 __all__ = ["old_checks", "platform"]  # the fixtures, used by name
 GEMINI = make_settings(ocr_engine="gemini")
 _USAGE = (
-    "INSERT INTO model_usage (customer_id, kind, model, cached, calls, input_tokens, output_tokens,"
+    "INSERT INTO model_usage (customer_id, kind, model, cached, calls, pages, input_tokens, output_tokens,"
     " reasoning_tokens, cost_usd, cost_estimated, thinking, resolution, limit_hits)"
-    " VALUES (:c, 'scan', :m, :cached, :calls, :tin, :tout, 0, NULL, false, :t, 'high', :hits)"
+    " VALUES (:c, 'scan', :m, :cached, :calls, :calls, :tin, :tout, 0, NULL, false, :t, 'high', :hits)"
 )
 
 
@@ -66,13 +66,21 @@ def test_the_limit_inherits_and_is_saved_with_a_fresh_code_and_audited(db: Datab
     assert set_defaults(db, platform, defaults) == "done"
     assert reading_of(db, inherits).page_max_output_tokens == 16384  # the platform's
     assert reading_of(db, own).page_max_output_tokens == 8192  # its own
+    # Changed on purpose (#463 review, X1): only the operator's own audit holds the limit.
     [(details,)] = as_owner(
         db,
         "SELECT details FROM audit_log WHERE customer_id = :c AND action = 'org.ai_settings_set'"
         " ORDER BY created_at DESC LIMIT 1",
         {"c": own},
     )
-    assert details["page_max_output_tokens"] == 8192
+    assert "page_max_output_tokens" not in details
+    [(operator_details,)] = as_owner(
+        db,
+        "SELECT details FROM platform_audit WHERE subject_customer_id = :c AND action = 'org.ai_settings_set'"
+        " ORDER BY id DESC LIMIT 1",
+        {"c": own},
+    )
+    assert operator_details["page_max_output_tokens"] == 8192
     [(saved,)] = as_owner(
         db,
         "SELECT details FROM platform_audit WHERE operator_id = :o AND action = 'platform.ai_defaults_set'"
@@ -165,9 +173,10 @@ def test_the_estimates_tokens_are_measured(db: Database, platform: str) -> None:
         set_org(db, platform, customer, ops.AiChoice([lead], lead, page_max_output_tokens=8192)).code
         == "done"
     )
+    # Changed on purpose (#463 review, P2): every figure is the organisation's own, a page once.
     rows = (
         (customer, 4, 4000, 2000, 1, "low", False),
-        (other, 6, 9000, 6000, 2, "low", False),  # every organisation's averages; its hits are its own
+        (other, 6, 9000, 6000, 2, "low", False),  # another organisation's: never
         (customer, 50, 1, 1, 0, "low", True),  # cached: never
         (customer, 50, 1, 1, 9, "high", False),  # another level: never
     )
@@ -184,12 +193,12 @@ def test_the_estimates_tokens_are_measured(db: Database, platform: str) -> None:
     body = {"customer_id": customer, "scan_thinking": "low", "page_max_output_tokens": 8192}
     tokens = client.post("/api/operator/scan-cost", json=body, headers=CSRF).json()["tokens"]
     assert tokens == {
-        "input_per_page": 1300,
-        "output_per_page": 800,
+        "input_per_page": 1000,
+        "output_per_page": 500,
         "output_p99": None,
         "limit": 8192,
         "limit_hits": 1,
-        "pages": 10,
+        "pages": 4,
     }
     empty = client.post("/api/operator/scan-cost", json={**body, "scan_resolution": "low"}, headers=CSRF)
     assert empty.json()["tokens"] == {

@@ -291,14 +291,16 @@ def check_queue_redrive(max_receives: int, max_attempts: int) -> None:
 class MarkExhausted:
     """The worker's ``on_exhausted``: marks the job's document (``mark`` is
     PgDocuments.mark_exhausted), or an Ensemble run's run (``mark_run``:
-    EnsembleRuns.exhausted; the document stays as it is), and logs it, with ids and the
-    code only."""
+    EnsembleRuns.exhausted; the document stays as it is), or an accuracy check (``mark_check``:
+    AccuracyChecks.exhausted, required, #463 review: a check is never left running), and logs
+    it, with ids and the code only."""
 
     def __init__(
         self,
         mark: Callable[[str, str], None],
         mark_run: Callable[[str, str], None] | None = None,
-        mark_check: Callable[[str, str], None] | None = None,
+        *,
+        mark_check: Callable[[str, str], None],
     ) -> None:
         self._mark = mark
         self._mark_run = mark_run
@@ -306,8 +308,7 @@ class MarkExhausted:
 
     def __call__(self, job: Job) -> None:
         if job.check_id is not None:  # an accuracy check (#463): the check fails
-            if self._mark_check is not None:
-                self._mark_check(job.customer_id, job.check_id)
+            self._mark_check(job.customer_id, job.check_id)
         elif job.run_id is None:
             self._mark(job.customer_id, job.document_id)
         elif self._mark_run is not None:
@@ -386,12 +387,13 @@ def beating(handler: Handler, beat: Callable[[], None]) -> Handler:
     return handle
 
 
-def dispatch(pipeline: Handler, ensemble: Handler, accuracy: Handler | None = None) -> Handler:
+def dispatch(pipeline: Handler, ensemble: Handler, accuracy: Handler) -> Handler:
     """Each job to its handler: an Ensemble run's (``run_id``) to ``ensemble``, an accuracy
-    check's (``check_id``, #463) to ``accuracy``, every other to ``pipeline``."""
+    check's (``check_id``, #463; required, #463 review: never read as a document) to
+    ``accuracy``, every other to ``pipeline``."""
 
     def handle(job: Job, heartbeat: Heartbeat) -> None:
-        if job.check_id is not None and accuracy is not None:
+        if job.check_id is not None:
             accuracy(job, heartbeat)
             return
         (pipeline if job.run_id is None else ensemble)(job, heartbeat)
@@ -406,20 +408,21 @@ def job_worker(
     max_attempts: int,
     mark_exhausted: Callable[[str, str], None],
     record_attempt: Callable[[str, str, int, int], None],
+    mark_check_exhausted: Callable[[str, str], None],
     admit: Admit | None = None,
     mark_run_exhausted: Callable[[str, str], None] | None = None,
     record_run_attempt: Callable[[str, str, int], None] | None = None,
-    mark_check_exhausted: Callable[[str, str], None] | None = None,
 ) -> Worker:
     """The Worker _serve runs: each outcome logged, each try recorded, the delivery after
     the last attempt marked, a lease renewed at most every LEASE_RENEW_SECONDS on
     time.monotonic, and ``admit`` (``admission``) around each try. An Ensemble run's try and
-    last delivery go to ``record_run_attempt`` and ``mark_run_exhausted``."""
+    last delivery go to ``record_run_attempt`` and ``mark_run_exhausted``; an accuracy check's
+    last delivery to ``mark_check_exhausted`` (#463 review: required)."""
     return Worker(
         queue,
         LoggedHandler(handler),
         max_attempts=max_attempts,
-        on_exhausted=MarkExhausted(mark_exhausted, mark_run_exhausted, mark_check_exhausted),
+        on_exhausted=MarkExhausted(mark_exhausted, mark_run_exhausted, mark_check=mark_check_exhausted),
         on_attempt=RecordAttempt(record_attempt, max_attempts, record_run_attempt),
         clock=time.monotonic,
         admit=admit,

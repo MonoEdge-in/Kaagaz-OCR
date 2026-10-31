@@ -230,11 +230,13 @@ OWNER_RIGHTS = {
     # 0063: a pending, unconfirmed sign-up older than 24 hours no longer holds its e-mail.
     "kaagaz_release_stale_signup": ("boolean", EMPTY_PATH),
     # 0064 (#463): the worker claims and ends its own organisation's accuracy check (numbers only).
+    # Changed on purpose (#463 review): its Dynamic, and the job's heartbeat.
     "kaagaz_accuracy_check_claim": (
         "TABLE(model text, scan_thinking text, scan_resolution text, careful_thinking text,"
-        " careful_resolution text, page_max_output_tokens integer, max_pages integer)",
+        " careful_resolution text, page_max_output_tokens integer, dynamic boolean, max_pages integer)",
         EMPTY_PATH,
     ),
+    "kaagaz_accuracy_check_beat": ("boolean", EMPTY_PATH),
     "kaagaz_accuracy_check_finish": ("boolean", EMPTY_PATH),
 }
 # The platform operator's (0015): only kaagaz_operator may run these, never the app.
@@ -354,8 +356,8 @@ OPERATOR_RIGHTS = {
     "kaagaz_op_scan_cost": (
         "TABLE(first_usd numeric, first_pages bigint, careful_usd numeric, careful_pages bigint,"
         " scan_calls bigint, careful_calls bigint, quality_pages bigint, clean_pages bigint,"
-        " max_quality_pages bigint, max_clean_pages bigint, tokens_in numeric, tokens_out numeric,"
-        " token_pages bigint, limit_hits bigint)",
+        " max_quality_pages bigint, max_clean_pages bigint, output_p99 integer, tokens_in numeric,"
+        " tokens_out numeric, token_pages bigint, limit_hits bigint)",  # Changed on purpose (#463 review)
         EMPTY_PATH,
     ),
     # 0064 (#463): an organisation's accuracy check, started with a fresh code, and read back
@@ -363,8 +365,8 @@ OPERATOR_RIGHTS = {
     "kaagaz_op_start_accuracy_check": ("record", EMPTY_PATH),
     "kaagaz_op_accuracy_check": (
         "TABLE(id uuid, status text, model text, scan_thinking text, scan_resolution text,"
-        " careful_thinking text, careful_resolution text, page_max_output_tokens integer, max_pages integer,"
-        " pages_checked integer,"
+        " careful_thinking text, careful_resolution text, page_max_output_tokens integer,"
+        " dynamic boolean, max_pages integer, pages_checked integer,"  # Changed on purpose (#463 review)
         " pages_failed integer, word_match double precision, numbers_match double precision,"
         " cost_usd numeric, started_at timestamp with time zone, finished_at timestamp with time zone)",
         EMPTY_PATH,

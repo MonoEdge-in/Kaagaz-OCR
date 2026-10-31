@@ -133,6 +133,7 @@ def test_a_customer_never_reads_another_customers_ai_settings_or_answer_models(d
         "careful_resolution": None,
         "page_max_output_tokens": None,
         "dynamic": False,
+        "cost_saving": True,  # Changed on purpose (#463 review): whether the switches allow Dynamic
         "ensemble": False,
     }  # the platform's, never B's
     assert refused.value.code == "model_not_allowed"
@@ -348,11 +349,7 @@ def test_the_organisations_own_log_holds_no_budget_and_the_operators_does(db: Da
         "scan_default": scan,
         "chat_models": [answer],
         "chat_default": answer,
-        "scan_thinking": None,
-        "scan_resolution": None,  # Changed on purpose (#463, 31 Oct 2026): the scan cost settings
-        "careful_thinking": None,
-        "careful_resolution": None,
-        "page_max_output_tokens": None,
+        # Changed on purpose (#463 review, X1): no scan cost setting in the organisation's own log.
         "chat_levels": ["low"],
         "chat_default_level": "low",
         "dynamic": None,
@@ -361,7 +358,14 @@ def test_the_organisations_own_log_holds_no_budget_and_the_operators_does(db: Da
     [(platform_details,)] = as_owner(
         db, "SELECT details FROM platform_audit WHERE subject_customer_id = :c", {"c": customer}
     )
-    assert platform_details == {**details, "budget_usd": 12.5}
+    hidden = {
+        "scan_thinking": None,
+        "scan_resolution": None,
+        "careful_thinking": None,
+        "careful_resolution": None,
+        "page_max_output_tokens": None,
+    }  # the scan cost settings: the operator's log only
+    assert platform_details == {**details, **hidden, "budget_usd": 12.5}
     with OperatorDatabase(db.engine).operator() as conn:
         own = ops.org_ai(conn, operator, customer)
     assert own is not None and own["ai_budget_usd"] == Decimal("12.50")

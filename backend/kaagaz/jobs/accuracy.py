@@ -2,14 +2,16 @@
 
 ``AccuracyChecks`` is the worker's handler for a job with a ``check_id`` (kaagaz/worker_main.py):
 
-* The organisation's running check is claimed (``kaagaz_accuracy_check_claim``: its own only,
-  by the connection's customer); one already ended is a duplicate delivery, acked with nothing
-  read. No scan reader (OCR_ENGINE is not gemini), or a lead that is no longer the check's
-  model: the check fails.
+* The organisation's running check is claimed once (``kaagaz_accuracy_check_claim``: its own
+  only, by the connection's customer); one already ended or claimed is a duplicate delivery,
+  acked with nothing read (#463 review: a redelivery never reads or bills a page again). No
+  scan reader (OCR_ENGINE is not gemini), or a lead that is no longer the check's model: the
+  check fails. Each page beats first (``kaagaz_accuracy_check_beat``): a check with no beat
+  for 0064's CHECK_STALE is failed for the console, and one ended meanwhile stops.
 * Up to the check's ``max_pages`` of the organisation's most recently read pages that a model
   read and whose picture is kept (``pages.has_image``) are each read twice through the scan
   reader, from the stored picture: at the check's settings, the way a real scan reads them
-  (``models.scope_reading``: Dynamic's first read and Careful when Dynamic is on), and at max
+  (``models.scope_reading``: Dynamic's first read and Careful when the check's Dynamic is on), and at max
   settings (the same lead, single, its highest thinking level, high picture detail, the
   output limit PAGE_MAX_OUTPUT_TOKENS; the draft reads at the check's limit). Never from
   the page cache, and nothing is cached: a check reads afresh and changes no document.
@@ -19,8 +21,10 @@
   is one word among hundreds): tokens with a digit, "," and a ₹ or Rs prefix taken off, and the
   share of the max read's that the check's read has as often (``numbers_matched``, a multiset,
   so lines read in another order lose nothing); ``numbers_match`` null with no number.
-* A page whose picture is gone or that a model did not read both ways (an outage, a refusal,
-  the local reader) is skipped and counted (``pages_failed``).
+* A page whose picture is gone or can't be opened, or that a model did not read both ways at
+  the settings asked (an outage, a refusal, the local reader, a low read alongside: #463
+  review), is skipped and counted (``pages_failed``). A check that compared no page fails; a
+  key problem fails it and goes up, so the worker waits as for any job.
 * Every call is billed to the organisation as ``accuracy_check`` (Careful's too:
   ``kaagaz.ai.usage``), never its budget; ``cost_usd`` is OpenRouter's reported cost of the
   check's calls, null when one came without it.
@@ -45,13 +49,14 @@ from kaagaz.db.engine import Database, unavailable
 from kaagaz.db.page_reads import PageKey
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import BlobNotFound, Job
-from kaagaz.jobs.worker import Heartbeat
+from kaagaz.jobs.worker import KEY_PROBLEM, Heartbeat
 from kaagaz.reading.ocr import DocumentPages, OcrEngine, PageRead, as_page_engine, reading_document
 from kaagaz.settings import Settings
 
 logger = logging.getLogger("kaagaz.worker")
 
 _CLAIM = text("SELECT * FROM kaagaz_accuracy_check_claim(:k)")
+_BEAT = text("SELECT kaagaz_accuracy_check_beat(:k)")
 _FINISH = text("SELECT kaagaz_accuracy_check_finish(:k, :s, :n, :f, :w, :x, CAST(:cost AS numeric))")
 # The organisation's pages a model read (its id has a "/") with their picture kept, of current,
 # ready documents out of Trash, the most recently read first (their document's last run).
@@ -138,19 +143,11 @@ class AccuracyChecks:
             rows = models.usable_models(conn, customer_id, settings=self._settings)
             allowed = dict(models.effective_settings(conn, customer_id))
             picked = conn.execute(_PAGES, {"c": customer_id, "n": claimed["max_pages"]}).all()
-        levels = (
-            "scan_thinking",
-            "scan_resolution",
-            "careful_thinking",
-            "careful_resolution",
-            "page_max_output_tokens",
-        )
-        draft = models.scope_reading(
-            rows, {**allowed, **{name: claimed[name] for name in levels}}, settings=self._settings
-        )
+        asked = {name: claimed[name] for name in (*models.SCAN_COST_FIELDS, "dynamic")}
+        draft = models.scope_reading(rows, {**allowed, **asked}, settings=self._settings)
         engine = self._engine
         if engine is None or draft.lead.model != claimed["model"]:
-            self._finish(customer_id, check_id, "failed")
+            finish(self._db, customer_id, check_id, "failed")
             logger.info(
                 "accuracy check ended", extra={**ids, "outcome": "failed", "code": "check_unreadable"}
             )
@@ -163,10 +160,25 @@ class AccuracyChecks:
         with usage_scope(self._db, customer_id=customer_id, user_id=None, kind=ACCURACY_CHECK) as scope:
             for document_id, page_no in picked:
                 heartbeat()
+                if not self._beat(customer_id, check_id):  # ended meanwhile: nothing more is read
+                    logger.info(
+                        "accuracy check ended", extra={**ids, "outcome": "stopped", "code": "check_settled"}
+                    )
+                    return
                 image = self._picture(customer_id, str(document_id), int(page_no))
                 at = (customer_id, str(document_id), int(page_no))
-                draft_read = None if image is None else _read(engine, draft, *at, image)
-                max_read = None if image is None or draft_read is None else _read(engine, best, *at, image)
+                try:
+                    draft_read = (
+                        None if image is None else _read(engine, draft, *at, image, settings=self._settings)
+                    )
+                    max_read = (
+                        None
+                        if image is None or draft_read is None
+                        else _read(engine, best, *at, image, settings=self._settings)
+                    )
+                except BackendUnavailable:  # the key (``_read``): the check fails, the worker waits
+                    finish(self._db, customer_id, check_id, "failed", checked, failed)
+                    raise
                 if draft_read is None or max_read is None:
                     failed += 1
                     continue
@@ -180,44 +192,59 @@ class AccuracyChecks:
         cost = None if any(value is None for value in costs) else sum(value or 0.0 for value in costs)
         word_match = None if not reference_words else max(0.0, 1 - errors / reference_words)
         numbers_match = None if not reference_numbers else matched / reference_numbers
-        self._finish(customer_id, check_id, "done", checked, failed, word_match, numbers_match, cost)
-        logger.info("accuracy check ended", extra={**ids, "outcome": "done", "code": "done"})
+        status = "done" if checked else "failed"  # #463 review: no page compared is no answer
+        finish(self._db, customer_id, check_id, status, checked, failed, word_match, numbers_match, cost)
+        logger.info("accuracy check ended", extra={**ids, "outcome": status, "code": status})
 
     def exhausted(self, customer_id: str, check_id: str) -> None:
         """The job's last delivery came: the check fails."""
-        self._finish(customer_id, check_id, "failed")
+        finish(self._db, customer_id, check_id, "failed")
 
-    def _finish(
-        self,
-        customer_id: str,
-        check_id: str,
-        status: str,
-        checked: int = 0,
-        failed: int = 0,
-        word_match: float | None = None,
-        numbers_match: float | None = None,
-        cost: float | None = None,
-    ) -> None:
-        params = {
-            "k": check_id,
-            "s": status,
-            "n": checked,
-            "f": failed,
-            "w": word_match,
-            "x": numbers_match,
-            "cost": cost,
-        }
+    def _beat(self, customer_id: str, check_id: str) -> bool:
+        """#463 review: the check is alive (its own short transaction); False when it ended."""
         with unavailable(), self._db.customer(customer_id) as conn:
-            conn.execute(_FINISH, params)
+            return bool(conn.execute(_BEAT, {"k": check_id}).scalar_one())
 
     def _picture(self, customer_id: str, document_id: str, page_no: int) -> Image.Image | None:
-        """The page's stored picture in RGB, or None when it is gone."""
+        """The page's stored picture in RGB, or None when it is gone or can't be opened (#463
+        review: one broken picture is one page not compared, logged by code)."""
         try:
             data = self._storage.get_page_image(customer_id, document_id, page_no)
         except BlobNotFound:
             return None
-        with Image.open(io.BytesIO(data)) as stored:
-            return stored.convert("RGB")
+        try:
+            with Image.open(io.BytesIO(data)) as stored:
+                return stored.convert("RGB")
+        except (OSError, Image.DecompressionBombError):
+            ids = {"customer_id": customer_id, "document_id": document_id}
+            logger.warning("check page skipped", extra={**ids, "code": "picture_unreadable"})
+            return None
+
+
+def finish(
+    db: Database,
+    customer_id: str,
+    check_id: str,
+    status: str,
+    checked: int = 0,
+    failed: int = 0,
+    word_match: float | None = None,
+    numbers_match: float | None = None,
+    cost: float | None = None,
+) -> None:
+    """End ``customer_id``'s running check ``check_id`` as ``status`` (done or failed) with its
+    numbers (``kaagaz_accuracy_check_finish``); nothing when it is no longer running."""
+    params = {
+        "k": check_id,
+        "s": status,
+        "n": checked,
+        "f": failed,
+        "w": word_match,
+        "x": numbers_match,
+        "cost": cost,
+    }
+    with unavailable(), db.customer(customer_id) as conn:
+        conn.execute(_FINISH, params)
 
 
 def _read(
@@ -227,17 +254,26 @@ def _read(
     document_id: str,
     page_no: int,
     image: Image.Image,
+    *,
+    settings: Settings,
 ) -> PageRead | None:
     """The page as ``reading`` reads it through the scan reader, or None when a model of it did
-    not read it (an outage, a refusal, the local reader)."""
+    not read it (an outage, a refusal, the local reader) or not at the first read's settings
+    ``reading`` asks (#463 review: a low read alongside is never taken for the max read). A key
+    problem goes up."""
     pages = document_pages(reading, customer_id, document_id)
     try:
         with reading_document(engine, pages):
             read = as_page_engine(engine).read_page(image, page_no=page_no)
-    except BackendUnavailable:
+    except BackendUnavailable as error:
+        if str(error) == KEY_PROBLEM:
+            raise
         return None
     readers = {reading.lead.model} | ({reading.careful.model} if reading.careful is not None else set())
-    return read if read.read_by in readers else None
+    asked = (reading.thinking, reading.resolution or settings.ocr_media_resolution)
+    if read.read_by not in readers or (read.read_thinking, read.read_resolution) != asked:
+        return None
+    return read
 
 
 def document_pages(reading: models.Reading, customer_id: str, document_id: str) -> DocumentPages:
@@ -256,6 +292,7 @@ def document_pages(reading: models.Reading, customer_id: str, document_id: str) 
         careful_thinking=reading.careful_thinking,
         careful_resolution=reading.careful_resolution,
         max_output_tokens=reading.page_max_output_tokens,  # max settings: None, PAGE_MAX_OUTPUT_TOKENS
+        levels=reading.accepted(),  # #463 review: Careful is sent a level its model takes
         careful=None if careful is None else (careful.model, careful.provider),
         memo=None if careful is None else {},
         inline_careful=careful is not None,

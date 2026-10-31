@@ -107,6 +107,8 @@ READER_PROMPT_VERSION = "g3"
 LOCAL_READ_BY = "rapidocr"
 # PRD 5 F3: the span qualities that mark one word of a line, not the line.
 WORD_MARK_QUALITIES = frozenset({"unsure", "illegible"})
+# #463 review: pages.read_pass, the pass that produced a page's text (0064's CHECK).
+FIRST_PASS, AGAIN_PASS = "first", "again"
 # Features 26 and 27 (council 15 Oct 2026, C5, C6): at most this many pages of a document are
 # read again with Careful (Dynamic), worst first; a page of at least CROWDED_LINES lines is
 # crowded; the other readers of Ensemble read the pages numbered up to ENSEMBLE_MAX_PAGES.
@@ -234,7 +236,11 @@ class PageRead:
     * ``others`` (Ensemble, F27): the page as each other chosen model read it, for the
       vote on the values that need review; never stored.
     * ``read_thinking``, ``read_resolution`` (#463): the thinking level and picture detail
-      the model was sent for the read whose text this is; None when no model read it.
+      the model was sent for the page's first read (#463 review: whichever pass produced its
+      text, so a page counts at the settings it was first read at); ``read_pass`` the pass
+      whose text it is, FIRST_PASS or AGAIN_PASS (Careful's re-read, Careful's words, a page
+      read again); ``read_output_tokens`` the first read's output tokens (every call of it;
+      None for a page read again). Each None when no model read it.
 
     The counts F1 stores are worked out from the lines, so they always agree with
     them: ``unsure_words`` (every word listed as unsure), ``illegible_words``
@@ -255,6 +261,8 @@ class PageRead:
     others: tuple["OtherRead", ...] = ()
     read_thinking: str | None = None
     read_resolution: str | None = None
+    read_pass: str | None = None
+    read_output_tokens: int | None = None
 
     @property
     def unsure_words(self) -> int:
@@ -592,7 +600,10 @@ class DocumentPages:
     (None: OCR_MEDIA_RESOLUTION); ``careful_thinking`` and ``careful_resolution`` Careful's
     re-reads' and the read-again pages' (None: OCR_RETRY_THINKING_LEVEL and
     OCR_RETRY_MEDIA_RESOLUTION); ``max_output_tokens`` every page read's output limit (None:
-    PAGE_MAX_OUTPUT_TOKENS; a reply that reaches it is read in halves, as before)."""
+    PAGE_MAX_OUTPUT_TOKENS; a reply that reaches it is read in halves, as before). #463 review:
+    ``levels`` the thinking levels each of the document's models with any takes
+    (``models.accepted_levels``; a model not in it is sent the level asked for): a Careful or
+    read-again level its model does not take is sent as OCR_RETRY_THINKING_LEVEL."""
 
     customer_id: str
     document_id: str
@@ -625,6 +636,7 @@ class DocumentPages:
     careful_thinking: str | None = None
     careful_resolution: str | None = None
     max_output_tokens: int | None = None
+    levels: Mapping[str, frozenset[str]] = dataclasses.field(default_factory=dict)
 
 
 @runtime_checkable

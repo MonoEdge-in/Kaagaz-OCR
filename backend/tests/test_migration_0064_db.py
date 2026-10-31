@@ -16,13 +16,14 @@ from tests.test_migration_0037 import _load
 pytestmark = pytest.mark.db
 fresh = base.fresh
 M0064 = _load("0064_scan_cost_settings.py")
+# Changed on purpose (#463 review): the job's heartbeat (kaagaz_accuracy_check_beat) too.
 _BODIES = text(
     "SELECT p.proname, pg_get_functiondef(p.oid), obj_description(p.oid, 'pg_proc'), p.proacl::text"
     " FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace"
     " AND p.proname IN ('kaagaz_op_org_ai', 'kaagaz_op_set_org_ai', 'kaagaz_op_ai_defaults',"
     " 'kaagaz_op_set_ai_defaults', 'kaagaz_op_scan_cost', 'kaagaz_op_start_accuracy_check',"
     " 'kaagaz_op_accuracy_check', 'kaagaz_accuracy_check_claim', 'kaagaz_accuracy_check_finish',"
-    " 'kaagaz_op_org_health') ORDER BY 1"
+    " 'kaagaz_accuracy_check_beat', 'kaagaz_op_org_health') ORDER BY 1"
 )
 _NEW_COLUMNS = {"scan_resolution", "careful_thinking", "careful_resolution", "page_max_output_tokens"}
 
@@ -50,8 +51,14 @@ def test_0064_up_down_up(fresh: tuple[str, Database]) -> None:
             row[1] for row in at_0063["columns"] if row[0] == table
         }
         assert added == _NEW_COLUMNS
-    assert {row[1] for row in at_0064["columns"] if row[0] == "model_usage"} >= {"thinking", "resolution"}
+    # Changed on purpose (#463 review): a page counted once, the pass and the first read's tokens.
+    assert {row[1] for row in at_0064["columns"] if row[0] == "model_usage"} >= {
+        "thinking",
+        "resolution",
+        "pages",
+    }
     assert [row[0] for row in bodies_0064] == [
+        "kaagaz_accuracy_check_beat",  # Changed on purpose (#463 review): the job's heartbeat
         "kaagaz_accuracy_check_claim",
         "kaagaz_accuracy_check_finish",
         "kaagaz_op_accuracy_check",
@@ -75,7 +82,12 @@ def test_0064_up_down_up(fresh: tuple[str, Database]) -> None:
     assert health_0064 == health_0063.replace(M0064.HEALTH_OLD, M0064.HEALTH_NEW) != health_0063
     accuracy = {row[1]: row for row in at_0064["columns"] if row[0] == "scan_accuracy_checks"}
     assert "word_match" in accuracy and not {"text", "words", "customer_id"} & set(accuracy)
-    assert {row[1] for row in at_0064["columns"] if row[0] == "pages"} >= {"read_thinking", "read_resolution"}
+    assert {row[1] for row in at_0064["columns"] if row[0] == "pages"} >= {
+        "read_thinking",
+        "read_resolution",
+        "read_pass",
+        "read_output_tokens",
+    }
 
     # Minimal for the scan levels (both tables), never for the answer levels; detail low or high.
     as_owner(db, "UPDATE platform_ai_settings SET scan_thinking = 'minimal', careful_thinking = 'minimal'")

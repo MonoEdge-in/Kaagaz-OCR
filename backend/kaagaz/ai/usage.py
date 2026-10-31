@@ -17,7 +17,8 @@ When the scope ends, with or without an error (the calls were billed either way)
 tallies are saved in one INSERT in ``db.customer()``: one row per (model, kind, cached,
 thinking, resolution). #463 (Tushar, 31 Oct 2026): a page read (PAGE_READ_KINDS) records the
 thinking level and picture detail it was sent at, so the operator's estimate measures a page
-at given settings; every other kind records neither.
+at given settings; every other kind records neither. #463 review: a page read is counted once
+on its row (``record_page``), however many calls it took, so the estimate prices a page.
 A failure to save logs ``usage_not_saved`` and never fails the work. A scope opened inside
 another is its own scope; the outer one is current again when it ends.
 
@@ -72,6 +73,7 @@ class _Tally:
     reasoning_tokens: int = 0
     cost_usd: float | None = 0.0  # None once a call came without a cost
     limit_hits: int = 0  # #463: calls whose reply hit the page read's output limit
+    pages: int = 0  # #463 review: page reads among the calls, each counted once
 
 
 _Key = tuple[str, str, bool, str | None, str | None]  # (model, kind, cached, thinking, resolution)
@@ -107,9 +109,7 @@ class UsageScope:
     ) -> None:
         """Count one call (thread-safe), as ``kind`` (None: the scope's); ``thinking`` and
         ``resolution`` are kept for a page read's kind only (PAGE_READ_KINDS)."""
-        kind = self.kind if self.kind == ACCURACY_CHECK else kind or self.kind
-        page = kind in PAGE_READ_KINDS
-        key = (model, kind, cached, thinking if page else None, resolution if page else None)
+        key = self._key(model, kind, cached, thinking, resolution)
         with self._lock:
             tally = self._tallies.setdefault(key, _Tally())
             tally.calls += 1
@@ -122,13 +122,29 @@ class UsageScope:
 
     def hit_limit(self, model: str, *, kind: str | None, thinking: str, resolution: str) -> None:
         """#463: the call just counted for this page read hit its output limit (thread-safe)."""
-        kind = self.kind if self.kind == ACCURACY_CHECK else kind or self.kind
-        page = kind in PAGE_READ_KINDS
-        key = (model, kind, False, thinking if page else None, resolution if page else None)
+        key = self._key(model, kind, False, thinking, resolution)
         with self._lock:
             tally = self._tallies.get(key)
             if tally is not None:  # always: the client counts the call before reading its text
                 tally.limit_hits += 1
+
+    def count_page(self, model: str, *, kind: str | None, thinking: str, resolution: str) -> None:
+        """#463 review: one page read on the row of its calls (thread-safe); nothing when no
+        call of it was counted (a page with no billed call is never a page of the cost)."""
+        key = self._key(model, kind, False, thinking, resolution)
+        with self._lock:
+            tally = self._tallies.get(key)
+            if tally is not None:
+                tally.pages += 1
+
+    def _key(
+        self, model: str, kind: str | None, cached: bool, thinking: str | None, resolution: str | None
+    ) -> _Key:
+        """A call's row: billed as ``kind`` (None: the scope's; an accuracy check's scope bills
+        every call as itself), with a page read's settings only (PAGE_READ_KINDS)."""
+        billed = self.kind if self.kind == ACCURACY_CHECK else kind or self.kind
+        page = billed in PAGE_READ_KINDS
+        return (model, billed, cached, thinking if page else None, resolution if page else None)
 
     def rows(self) -> list[UsageRow]:
         """The ledger rows so far, one per (model, kind, cached, thinking, resolution)."""
@@ -151,6 +167,7 @@ class UsageScope:
                     thinking=thinking,
                     resolution=resolution,
                     limit_hits=tally.limit_hits,
+                    pages=tally.pages,
                 )
                 for (model, kind, cached, thinking, resolution), tally in self._tallies.items()
             ]
@@ -215,6 +232,15 @@ def record_limit_hit(model: str, *, thinking: str, resolution: str) -> None:
     scope = _CURRENT.get()
     if scope is not None:
         scope.hit_limit(model, kind=_BILLED_AS.get(), thinking=thinking, resolution=resolution)
+
+
+def record_page(model: str, *, thinking: str, resolution: str) -> None:
+    """#463 review: one page read (its calls, halves and repairs counted with ``record_call``,
+    sent at ``thinking`` and ``resolution``) is one page on their ledger row, so the estimate
+    prices a page, not a call; nothing when no scope is open."""
+    scope = _CURRENT.get()
+    if scope is not None:
+        scope.count_page(model, kind=_BILLED_AS.get(), thinking=thinking, resolution=resolution)
 
 
 def record_call(

@@ -113,11 +113,13 @@ def model_page(
         "read_quality": "good",
         **page,
     }
+    # Changed on purpose (#463 review): a page with its first read's settings was read once.
+    read_pass = None if columns["read_thinking"] is None else "first"
     _owner(
         db,
         "INSERT INTO pages (customer_id, document_id, page_no, width, height, unit, has_image, route,"
-        " read_by, read_quality, read_thinking, read_resolution) VALUES (:c, :d, 1, 200, 300, 'px', :i,"
-        " 'ocr', :by, :q, :t, :r)",
+        " read_by, read_quality, read_thinking, read_resolution, read_pass) VALUES (:c, :d, 1, 200, 300,"
+        " 'px', :i, 'ocr', :by, :q, :t, :r, :p)",
         {
             "c": customer,
             "d": document,
@@ -126,6 +128,7 @@ def model_page(
             "q": columns["read_quality"],
             "t": columns["read_thinking"],
             "r": columns["read_resolution"],
+            "p": read_pass,
         },
     )
     _owner(

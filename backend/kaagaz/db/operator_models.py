@@ -82,11 +82,11 @@ _SCAN_COST = text(
 )
 _START_CHECK = text(
     "SELECT outcome, result_id FROM kaagaz_op_start_accuracy_check(:o, :c, :m, :st, :sr, :ct, :cr,"
-    " CAST(:pm AS integer), :n, :step)"
+    " CAST(:pm AS integer), CAST(:dyn AS boolean), :n, :step)"
 )
 _CHECK = text(
     "SELECT * FROM kaagaz_op_accuracy_check(:o, :c, CAST(:m AS text), CAST(:st AS text), CAST(:sr AS text),"
-    " CAST(:ct AS text), CAST(:cr AS text), CAST(:pm AS integer))"
+    " CAST(:ct AS text), CAST(:cr AS text), CAST(:pm AS integer), CAST(:dyn AS boolean))"
 )
 _MODEL_RATES = text("SELECT * FROM kaagaz_op_model_rates(:o, :c)")
 _SET_MODEL_RATE = text("SELECT kaagaz_op_set_model_rate(:o, :c, :u, :rpm, :step)")
@@ -350,8 +350,9 @@ def clear_test_model(conn: Connection, operator_id: str, *, step: int) -> str:
 
 Sent = tuple[str, str, str]  # (model, thinking level, picture detail) as a page read sends them
 # An accuracy check's settings: (model, scan_thinking, scan_resolution, careful_thinking,
-# careful_resolution, page_max_output_tokens), every one a value (the estimate's, after inheritance).
-CheckSettings = tuple[str, str, str, str, str, int]
+# careful_resolution, page_max_output_tokens, dynamic), every one a value (the estimate's, after
+# inheritance; #463 review: Dynamic after the Cost saving switches).
+CheckSettings = tuple[str, str, str, str, str, int, bool]
 
 
 def scan_cost(
@@ -364,12 +365,13 @@ def scan_cost(
 ) -> RowMapping | None:
     """#463: first_usd and first_pages (the first reads at ``first``), careful_usd and
     careful_pages (Careful's at ``careful``; none with None) over every organisation's ledger
-    of the last 30 days, OpenRouter's reported cost only; scan_calls and careful_calls of
-    ``customer_id``'s (None: every organisation's); and its pages ``first``'s model read in
-    those days, at ``first``'s settings (quality_pages, clean_pages) and at ``best``'s
-    (thinking, picture detail: max settings; max_quality_pages, max_clean_pages); the first
-    reads' tokens_in, tokens_out and token_pages (every organisation's, not cached) and the
-    scope's limit_hits among them. None for an operator who is not enabled."""
+    of the last 30 days, OpenRouter's reported cost only, a page counted once (#463 review);
+    scan_calls and careful_calls of ``customer_id``'s (None: every organisation's); and its
+    pages ``first``'s model first read in those days at ``first``'s settings (quality_pages,
+    clean_pages; output_p99, the 99th percentile of their output tokens, None under 20) and
+    read once at ``best``'s (thinking, picture detail: max settings; max_quality_pages,
+    max_clean_pages); its first reads' tokens_in, tokens_out, token_pages and limit_hits (not
+    cached). None for an operator who is not enabled."""
     model, thinking, resolution = first
     careful_model, careful_thinking, careful_resolution = careful or (None, None, None)
     params = {
@@ -388,7 +390,7 @@ def scan_cost(
 
 
 def _check_params(settings: CheckSettings | None) -> dict[str, object]:
-    names = ("m", "st", "sr", "ct", "cr", "pm")
+    names = ("m", "st", "sr", "ct", "cr", "pm", "dyn")
     return dict(zip(names, settings or (None,) * len(names), strict=True))
 
 

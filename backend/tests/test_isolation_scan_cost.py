@@ -114,7 +114,8 @@ def test_a_save_for_one_organisation_never_touches_another(db: Database, platfor
     spent(db, a, lead, kind="careful", calls=1, thinking="minimal", resolution="low")
     spent(db, b, lead, calls=1000, thinking="minimal")
     spent(db, b, lead, kind="careful", calls=900, thinking="minimal", resolution="low")
-    body = {"customer_id": a, **_fields(SAVED), "scan_thinking": None}
+    # Changed on purpose (#463 review, U2): the draft's Cost saving is sent (null: the platform's).
+    body = {"customer_id": a, **_fields(SAVED), "scan_thinking": None, "dynamic": True}
     reply = client.post("/api/operator/scan-cost", json=body, headers=CSRF).json()
     assert reply["re_read"]["share"] == pytest.approx(0.1)
 

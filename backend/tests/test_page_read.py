@@ -75,6 +75,9 @@ def test_a_page_read_is_frozen_and_built_by_name_only() -> None:
         # Changed on purpose (#463, 31 Oct 2026): the settings of the read that produced the text.
         "read_thinking",
         "read_resolution",
+        # Changed on purpose (#463 review): the pass that produced the text, the first read's tokens.
+        "read_pass",
+        "read_output_tokens",
     ]
 
 

@@ -43,10 +43,11 @@ __all__ = ["platform"]  # the fixture, used by name
 
 SETTINGS = make_settings()  # OCR_THINKING_LEVEL low, OCR_MEDIA_RESOLUTION high, OCR_RETRY_* high
 EVERY_LEVEL = ("minimal", "low", "medium", "high")
+# Changed on purpose (#463 review, C3): each call here is one page read.
 _USAGE = (
-    "INSERT INTO model_usage (customer_id, kind, model, cached, calls, input_tokens, output_tokens,"
+    "INSERT INTO model_usage (customer_id, kind, model, cached, calls, pages, input_tokens, output_tokens,"
     " reasoning_tokens, cost_usd, cost_estimated, thinking, resolution)"
-    " VALUES (:c, :kind, :m, :cached, :calls, 10, 10, 0, :cost, :estimated, :t, :r)"
+    " VALUES (:c, :kind, :m, :cached, :calls, :calls, 10, 10, 0, :cost, :estimated, :t, :r)"
 )
 
 
@@ -174,15 +175,20 @@ def test_both_audits_hold_the_scan_cost_settings(db: Database, platform: str) ->
         "SELECT details FROM audit_log WHERE customer_id = :c AND action = 'org.ai_settings_set'",
         {"c": customer},
     )
-    assert (details["scan_resolution"], details["careful_thinking"], details["careful_resolution"]) == (
-        "low",
-        "minimal",
-        "high",
-    )
     [(platform_details,)] = as_owner(
         db, "SELECT details FROM platform_audit WHERE subject_customer_id = :c", {"c": customer}
     )
-    assert platform_details == {**details, "budget_usd": 3}
+    # Changed on purpose (#463 review, X1): the organisation's own log never holds the scan cost
+    # settings (scan_thinking too); the operator's holds them, and the budget.
+    hidden = {
+        "scan_thinking": None,
+        "scan_resolution": "low",
+        "careful_thinking": "minimal",
+        "careful_resolution": "high",
+        "page_max_output_tokens": None,
+    }
+    assert not set(hidden) & set(details)
+    assert platform_details == {**details, **hidden, "budget_usd": 3}
 
     inheriting = ops.AiChoice(
         chat_levels=["low"], chat_default_level="low", dynamic=False, careful_resolution="low"
@@ -261,7 +267,8 @@ def test_the_estimate_with_dynamic_adds_the_share_read_again(db: Database, platf
     choice = ops.AiChoice([lead], lead, scan_thinking="minimal", dynamic=True, careful_thinking="high")
     assert set_org(db, platform, customer, choice).code == "done"
     spent(db, customer, lead, calls=40, cost="0.04", thinking="minimal")
-    draft = {"customer_id": customer, "scan_thinking": "minimal", "careful_thinking": "high"}
+    # Changed on purpose (#463 review, U2): the draft's Cost saving is sent (null: the platform's).
+    draft = {"customer_id": customer, "scan_thinking": "minimal", "careful_thinking": "high", "dynamic": True}
     reply = _estimate(client, **draft)
     assert reply["first_read"]["thinking"] == "minimal"  # Dynamic's first read stays at minimal
     assert reply["re_read"] == {

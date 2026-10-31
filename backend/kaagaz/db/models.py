@@ -77,6 +77,14 @@ MINIMAL = "minimal"  # #463: the lowest scan level, which Dynamic's first read k
 # #463: max settings, the accuracy reference: a model's highest thinking level, high picture detail.
 SCAN_LEVELS = ("minimal", "low", "medium", "high")  # lowest first
 MAX_RESOLUTION = "high"
+# #463: the scan cost settings, in the operator's AI settings, its estimate and accuracy check.
+SCAN_COST_FIELDS = (
+    "scan_thinking",
+    "scan_resolution",
+    "careful_thinking",
+    "careful_resolution",
+    "page_max_output_tokens",
+)
 
 # The organisation's own models of an area, else the platform's (only when it has none of
 # its own), each with the catalogue row and the average tokens of its scan calls (not
@@ -129,6 +137,7 @@ _SETTINGS = text(
     " COALESCE(s.careful_resolution, p.careful_resolution) AS careful_resolution,"
     " COALESCE(s.page_max_output_tokens, p.page_max_output_tokens) AS page_max_output_tokens,"
     " COALESCE(s.dynamic, p.dynamic) AND COALESCE(w.cost_saving, true) AS dynamic,"
+    " COALESCE(w.cost_saving, true) AS cost_saving,"
     " COALESCE(s.ensemble, false) AND COALESCE(w.ensemble, true) AS ensemble"
     " FROM (SELECT 1) one"
     " LEFT JOIN platform_ai_settings p ON true"
@@ -160,6 +169,8 @@ class Agent:
     provider: str
     name: str
     thinks: bool = True
+    # #463 review: the thinking levels its catalogue row lists (none: no row, or no levels).
+    efforts: tuple[str, ...] = field(default=(), compare=False)
 
     def level(self, thinking: str) -> str:
         """The level this model is called at for ``thinking``: NO_THINKING when it has none."""
@@ -199,6 +210,14 @@ class Reading:
     def reader(self) -> str:
         """Who reads the pages (#398): local (no model), save (routed) or ai (every page)."""
         return "local" if self.mode == "local" else "save" if self.routes else "ai"
+
+    def accepted(self) -> dict[str, frozenset[str]]:
+        """#463 review: ``DocumentPages.levels``, the thinking levels the lead and Careful each
+        take (one with none, or no catalogue row, is left out)."""
+        agents = (self.lead, self.careful)
+        return {
+            agent.model: frozenset(agent.efforts) for agent in agents if agent is not None and agent.efforts
+        }
 
     def config(self) -> dict[str, Any]:
         """``processing_runs.config.reading`` (S5a): ids, providers, mode and thinking."""
@@ -268,7 +287,23 @@ def _provider(row: RowMapping, settings: Settings) -> str | None:
 
 
 def _agent(row: RowMapping, settings: Settings) -> Agent:
-    return Agent(row["id"], str(_provider(row, settings)), row["name"] or row["id"], bool(row["efforts"]))
+    return Agent(
+        row["id"],
+        str(_provider(row, settings)),
+        row["name"] or row["id"],
+        bool(row["efforts"]),
+        tuple(row["efforts"]),
+    )
+
+
+def fit_level(agent: Agent, level: str, env: str) -> str:
+    """#463 review: the level ``agent`` is sent for ``level``, by the scan level's rule
+    (``_thinking``): NO_THINKING for a model with no thinking levels, ``level`` when it takes it,
+    else ``env`` (the server's level for that read). A model with no catalogue row (OCR_MODEL)
+    is sent ``level``, as the reader sends it. O(levels)."""
+    if not agent.thinks:
+        return NO_THINKING
+    return level if not agent.efforts or level in agent.efforts else env
 
 
 def _takes(row: Mapping[Any, Any], level: str) -> bool:
@@ -305,7 +340,8 @@ def usable_chat_models(conn: Connection, customer_id: str, *, settings: Settings
 def effective_settings(conn: Connection, customer_id: str) -> RowMapping:
     """The organisation's AI settings after inheritance: scan_thinking (None: the env's),
     chat_levels, chat_default_level (None: low only), scan_resolution, careful_thinking,
-    careful_resolution, page_max_output_tokens (#463; None: the env's), dynamic, ensemble."""
+    careful_resolution, page_max_output_tokens (#463; None: the env's), dynamic, ensemble, and
+    cost_saving (#463 review: whether the switches let Dynamic on at all)."""
     return conn.execute(_SETTINGS, {"customer": customer_id}).mappings().one()
 
 
@@ -350,7 +386,14 @@ def _thinking(level: str | None, lead: RowMapping | None, settings: Settings) ->
     return env, ("thinking_fallback",)
 
 
-def resolve_scan(conn: Connection, customer_id: str, document_id: str, *, settings: Settings) -> Reading:
+def resolve_scan(
+    conn: Connection,
+    customer_id: str,
+    document_id: str,
+    *,
+    settings: Settings,
+    allowed: Mapping[Any, Any] | None = None,
+) -> Reading:
     """The ``Reading`` of ``document_id`` (C3), on a ``Database.customer()`` connection of
     ``customer_id``. Lead: its ``read_model`` when usable, else the area's default, else
     OCR_MODEL on DEFAULT_PROVIDER (as before model choice). Mode: ensemble (an old
@@ -366,7 +409,10 @@ def resolve_scan(conn: Connection, customer_id: str, document_id: str, *, settin
     (mode ``local``, an explicit "Read with" too); with no explicit "Read with", Save and Low
     are dynamic, High single at high thinking, Max high thinking with Careful (mode dynamic).
     Nothing saved: as before. #384, #398: only Save (the reader choice "Save cost", allowed
-    with PAGE_ROUTING and Cost saving) routes a dynamic reading's pages (``Reading.routes``)."""
+    with PAGE_ROUTING and Cost saving) routes a dynamic reading's pages (``Reading.routes``).
+    #463 review: the default path (dynamic, no "Read with", no task level) is
+    ``scope_reading``'s, the estimate's own rule; ``allowed``: ``effective_settings`` already
+    read (``resolve_ensemble``)."""
     document = conn.execute(_DOCUMENT, {"customer": customer_id, "document": document_id}).mappings().first()
     rows = [] if document is None else usable_models(conn, customer_id, settings=settings)
     by_id = {row["id"]: row for row in rows}
@@ -379,7 +425,7 @@ def resolve_scan(conn: Connection, customer_id: str, document_id: str, *, settin
         if lead_row is not None
         else Agent(settings.ocr_model, DEFAULT_PROVIDER, settings.ocr_model)
     )
-    allowed = effective_settings(conn, customer_id)
+    allowed = effective_settings(conn, customer_id) if allowed is None else allowed
     thinking, notes = _thinking(allowed["scan_thinking"], lead_row, settings)
     levels = _levels(allowed)
 
@@ -407,6 +453,8 @@ def resolve_scan(conn: Connection, customer_id: str, document_id: str, *, settin
 
     if mode == "ensemble":
         return Reading("single", lead, thinking=thinking, notes=(*notes, "ensemble_after_scan"), **levels)
+    if mode == "dynamic" and level is None and read_model is None and allowed["dynamic"]:
+        return scope_reading(rows, allowed, settings=settings)  # #463 review: the default, one rule
     if mode == "dynamic":
         if not allowed["dynamic"]:
             return Reading("single", lead, thinking=thinking, notes=(*notes, "mode_revoked"), **levels)
@@ -500,16 +548,19 @@ def resolve_ensemble(conn: Connection, customer_id: str, document_id: str, *, se
     Raises ``AiNotAllowed("ensemble_not_allowed")`` when the organisation's Ensemble grant is
     off, scans are not read by a model (OCR_ENGINE is not gemini), or no other model is
     usable. The API checks it before a run and the job again when it starts (S2)."""
-    if settings.ocr_engine != GEMINI or not effective_settings(conn, customer_id)["ensemble"]:
+    if settings.ocr_engine != GEMINI:
         raise AiNotAllowed("ensemble_not_allowed")
-    scan = resolve_scan(conn, customer_id, document_id, settings=settings)
+    allowed = effective_settings(conn, customer_id)  # #463 review: read once
+    if not allowed["ensemble"]:
+        raise AiNotAllowed("ensemble_not_allowed")
+    scan = resolve_scan(conn, customer_id, document_id, settings=settings, allowed=allowed)
     rows = usable_models(conn, customer_id, settings=settings)
     others = tuple(_agent(row, settings) for row in rows if row["id"] != scan.lead.model)[: MAX_AGENTS - 1]
     if not others:
         raise AiNotAllowed("ensemble_not_allowed")
     # #463 (Tushar, 31 Oct 2026): the other models read at the organisation's own scan level and
-    # picture detail (the env's when it has none), never above what the super admin set.
-    allowed = effective_settings(conn, customer_id)
+    # picture detail (the env's when it has none), never above what the super admin set; each is
+    # sent a level it takes (``fit_level``, #463 review: the job).
     thinking = allowed["scan_thinking"] or settings.ocr_thinking_level
     return Reading(
         "ensemble",
