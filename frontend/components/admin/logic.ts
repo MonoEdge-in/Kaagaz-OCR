@@ -5,13 +5,16 @@
 import { sessionScope } from "@/components/shell/gate";
 import { roleName } from "@/components/shell/nav";
 import { providersText } from "@/components/account/signInWays";
+import type { MineDraft, OrgDraft } from "@/lib/aiSettings";
 import { ApiError } from "@/lib/api";
+import type { Draft } from "@/lib/drafts";
 import { errorWords } from "@/lib/errorWords";
 import { formatDateTime, formatNumber, formatUsd, PART_NOT_KNOWN, statusChip } from "@/lib/format";
 import type { StatusTone } from "@/lib/format";
 import type {
   AddedUser,
   AdminUser,
+  AiSettings,
   AuditEntry,
   CustomerSettings,
   DocumentStatus,
@@ -320,6 +323,85 @@ export function settingsChanged(
 ): boolean {
   const savedText = saved.max_upload_mb === null ? "" : String(saved.max_upload_mb);
   return text.trim() !== savedText || (saved.autofile.granted && autofileOn !== saved.autofile.on);
+}
+
+// --- Drafts (#468): unsent admin work kept in this tab for the same admin (lib/drafts.ts) ---
+
+export const ADD_USER_DRAFT = "admin:add-user";
+export const SETTINGS_DRAFT = "admin:settings";
+/** The admin's AI settings tab and a member's own (/settings/ai) keep separate drafts. */
+export const aiSettingsDraft = (scope: "organisation" | "member") =>
+  scope === "organisation" ? "admin:ai-settings" : "settings:ai";
+
+/** Add a user's draft: email, name and role, never the temporary password; null until something is typed. */
+export function newUserDraft(input: NewUserInput): Draft | null {
+  if (input.email === "" && input.display_name === "") return null;
+  return { email: input.email, display_name: input.display_name, role: input.role };
+}
+
+/** The form from a kept draft; a value of the wrong kind is the empty form's. The password is always empty. */
+export function newUserFromDraft(draft: Draft | null): NewUserInput {
+  const role = ROLES.find((each) => each === draft?.role) ?? "member";
+  const text = (value: unknown) => (typeof value === "string" ? value : "");
+  return { email: text(draft?.email), display_name: text(draft?.display_name), role, password: "" };
+}
+
+/** Settings' draft: only what differs from what is saved; null when nothing does. */
+export function settingsDraft(saved: CustomerSettings, text: string, autofileOn: boolean): Draft | null {
+  return settingsChanged(saved, text, autofileOn) ? { uploadLimit: text, autofile: autofileOn } : null;
+}
+
+/** The Settings form from what is saved, with a kept draft over it (auto-filing only while allowed). */
+export function settingsFromDraft(draft: Draft | null, saved: CustomerSettings): { text: string; autofileOn: boolean } {
+  const savedText = saved.max_upload_mb === null ? "" : String(saved.max_upload_mb);
+  return {
+    text: typeof draft?.uploadLimit === "string" ? draft.uploadLimit : savedText,
+    autofileOn: saved.autofile.granted && typeof draft?.autofile === "boolean" ? draft.autofile : saved.autofile.on,
+  };
+}
+
+/** AI settings' changed tasks as plain values to keep; null when none changed. */
+export function aiChangesToKeep(changes: OrgDraft | MineDraft): Draft | null {
+  const kept: Draft = {};
+  for (const [task, value] of Object.entries(changes)) {
+    if (value === undefined) continue;
+    kept[task] = value === null || typeof value === "string" ? value : { level: value.level, locked: value.locked };
+  }
+  return Object.keys(kept).length > 0 ? kept : null;
+}
+
+/** An organisation's kept changes over what is saved: tasks the reply has, with a level allowed now. */
+export function orgDraftOver(saved: OrgDraft, kept: Draft | null, settings: AiSettings): OrgDraft {
+  const draft = { ...saved };
+  for (const task of settings.tasks) {
+    const value = kept?.[task.task];
+    if (typeof value !== "object" || value === null || Array.isArray(value)) continue;
+    const level = task.allowed.find((each) => each === value.level);
+    if (level && typeof value.locked === "boolean") draft[task.task] = { level, locked: value.locked };
+  }
+  return draft;
+}
+
+/** A member's kept changes over what is saved: tasks not locked, an allowed level or null (the organisation's). */
+export function mineDraftOver(saved: MineDraft, kept: Draft | null, settings: AiSettings): MineDraft {
+  const draft = { ...saved };
+  for (const task of settings.tasks) {
+    if (task.locked || !kept || !(task.task in kept)) continue;
+    const value = kept[task.task];
+    if (value === null) draft[task.task] = null;
+    else {
+      const level = task.allowed.find((each) => each === value);
+      if (level) draft[task.task] = level;
+    }
+  }
+  return draft;
+}
+
+export const LEAVE_UNSAVED = "You have unsaved changes. Leave without saving?";
+
+/** Another admin tab may open: at once with nothing unsaved, else only once the admin says leave. */
+export function tabChangeAllowed(unsaved: boolean, confirmLeave: () => boolean): boolean {
+  return !unsaved || confirmLeave();
 }
 
 /** What a Save that did not work says: the plain words for a switch not allowed yet, else the server's. */

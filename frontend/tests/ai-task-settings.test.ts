@@ -129,7 +129,8 @@ describe("the API calls", () => {
 describe("the admin's AI settings tab", () => {
   it("is a tab of Admin", () => {
     expect(TABS.map((tab) => tab.label)).toContain("AI settings");
-    expect(read("components/admin/AdminView.tsx")).toContain('<AiSettingsPanel scope="organisation" />');
+    // Changed on purpose (#468): it tells AdminView about unsaved changes (onUnsaved).
+    expect(read("components/admin/AdminView.tsx")).toContain('<AiSettingsPanel scope="organisation" onUnsaved={setUnsaved} />');
   });
 
   it("shows one row per task by its job, with no model names or cost words", () => {

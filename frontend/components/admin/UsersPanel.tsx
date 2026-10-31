@@ -46,6 +46,7 @@ import {
   unlockUser,
   updateUser,
 } from "@/lib/api";
+import { clearDraft, readDraft, saveDraftSoon } from "@/lib/drafts";
 import { errorWords } from "@/lib/errorWords";
 import { formatDate } from "@/lib/format";
 import type { AddedUser, AdminUser, PendingConnection, Role } from "@/lib/types";
@@ -57,6 +58,7 @@ import type { RowMenuItem } from "./RowMenu";
 import { Toast } from "./Toast";
 import type { Notice } from "./Toast";
 import {
+  ADD_USER_DRAFT,
   ALREADY_DECIDED,
   CONNECTIONS_FAILED,
   MIN_PASSWORD_LENGTH,
@@ -68,6 +70,8 @@ import {
   firstInvalidField,
   foreverControl,
   generatePassword,
+  newUserDraft,
+  newUserFromDraft,
   pendingLine,
   removeConnectionsQuestion,
   signsInWith,
@@ -240,6 +244,7 @@ export function UsersPanel({
       </section>
       {adding && (
         <AddUserPanel
+          userId={currentUserId}
           onClose={() => setAdding(false)}
           onAdded={(user) => {
             setUsers((current) => (current ? [...current, user] : [user]));
@@ -612,7 +617,6 @@ function TemporaryPassword({ revealed, onDone }: { revealed: Revealed; onDone: (
   );
 }
 
-const EMPTY_USER: NewUserInput = { email: "", display_name: "", role: "member", password: "" };
 const ADD_USER_TITLE_ID = "add-user-heading";
 const UNSAVED_QUESTION = "Close without adding? What you typed here will be lost.";
 
@@ -621,18 +625,34 @@ const UNSAVED_QUESTION = "Close without adding? What you typed here will be lost
  * Esc, inert page). Esc, the backdrop (press and release both on it) and Close ask
  * first when something is typed; focus goes back to "Add user" when it closes.
  */
-function AddUserPanel({ onClose, onAdded }: { onClose: () => void; onAdded: (user: AddedUser) => void }) {
+function AddUserPanel({
+  userId,
+  onClose,
+  onAdded,
+}: {
+  userId: string; // #468: the draft (email, name, role) is this admin's only
+  onClose: () => void;
+  onAdded: (user: AddedUser) => void;
+}) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const pressTarget = useRef<EventTarget | null>(null);
-  const [input, setInput] = useState<NewUserInput>(EMPTY_USER);
+  // #468: what was typed before a session ended comes back; the password never does.
+  const [input, setInput] = useState<NewUserInput>(() => newUserFromDraft(readDraft(userId, ADD_USER_DRAFT)));
   const [errors, setErrors] = useState<NewUserErrors>({});
   const [serverError, setServerError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [masked, setMasked] = useState(true);
   const unsaved = input.email !== "" || input.display_name !== "" || input.password !== "";
   const askClose = () => {
-    if (!busy && closeAllowed(unsaved, () => window.confirm(UNSAVED_QUESTION))) onClose();
+    if (!busy && closeAllowed(unsaved, () => window.confirm(UNSAVED_QUESTION))) {
+      clearDraft(userId, ADD_USER_DRAFT); // closed on purpose: what was typed is let go
+      onClose();
+    }
   };
+
+  useEffect(() => {
+    saveDraftSoon(userId, ADD_USER_DRAFT, newUserDraft(input));
+  }, [userId, input]);
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -665,6 +685,7 @@ function AddUserPanel({ onClose, onAdded }: { onClose: () => void; onAdded: (use
         email: input.email.trim(),
         display_name: input.display_name.trim(),
       });
+      clearDraft(userId, ADD_USER_DRAFT);
       onAdded(user);
     } catch (caught) {
       const message =
