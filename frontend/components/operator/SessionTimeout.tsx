@@ -15,6 +15,7 @@ import type { Organisation, SessionTimeout } from "@/lib/types";
 import { ConfirmDialog } from "./ConfirmDialog";
 import type { Confirm } from "./ConfirmDialog";
 import { LoadFailed } from "./LoadFailed";
+import { LoadingRows } from "./LoadingRows";
 import { afterDone, operatorErrorMessage } from "./logic";
 import admin from "@/components/admin/Admin.module.css";
 import styles from "./Operator.module.css";
@@ -111,11 +112,7 @@ export function SessionTimeoutView() {
       </h2>
       <p className={styles.summary}>{EXPLAIN}</p>
       {failed && !value && <LoadFailed what="the sign-in timeout" message={failed} onRetry={reload} />}
-      {!value && !failed && (
-        <p className="visually-hidden" role="status">
-          Loading the sign-in timeout…
-        </p>
-      )}
+      {!value && !failed && <LoadingRows what="the sign-in timeout" />}
       {value && (
         <TimeoutForm key={String(value.hours)} saved={value.hours} none={none} onSave={(hours) => setChanging(timeoutConfirm(hours, none))} />
       )}
@@ -139,7 +136,7 @@ export function SessionTimeoutView() {
 export function OrgSessionTimeoutDialog({ org, onClose }: { org: Organisation; onClose(): void }) {
   const { value, failed, reload } = useTimeout(org.id);
   const [changing, setChanging] = useState<Confirm | null>(null);
-  const [done, setDone] = useState("");
+  const [done, setDone] = useState<string | null>(null);
   const none = value ? noneLabel(value, true) : "Follow the platform";
   return (
     <>
@@ -147,7 +144,7 @@ export function OrgSessionTimeoutDialog({ org, onClose }: { org: Organisation; o
         <div className={styles.dialogForm}>
           <p className={styles.summary}>{EXPLAIN} This organisation only.</p>
           <p className="visually-hidden" role="status">
-            {done || (!value && !failed ? "Loading the sign-in timeout…" : "")}
+            {!value && !failed ? "Loading the sign-in timeout…" : ""}
           </p>
           {failed && !value && <LoadFailed what="the sign-in timeout" message={failed} onRetry={reload} />}
           {value && (
@@ -158,6 +155,7 @@ export function OrgSessionTimeoutDialog({ org, onClose }: { org: Organisation; o
               onSave={(hours) => setChanging(timeoutConfirm(hours, none, org))}
             />
           )}
+          <Toast message={done} onClose={() => setDone(null)} />
         </div>
       </ActionDialog>
       {changing && (

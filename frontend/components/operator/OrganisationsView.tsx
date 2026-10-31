@@ -22,6 +22,7 @@ import { useMinuteNow } from "@/components/chat/hooks";
 import table from "@/components/documents/Table.module.css";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Icon } from "@/components/ui/Icon";
+import { Toast } from "@/components/ui/Toast";
 import { listOrgs } from "@/lib/api";
 import { formatBytes, formatNumber } from "@/lib/format";
 import type { Organisation } from "@/lib/types";
@@ -72,7 +73,7 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
   const [ratesOf, setRatesOf] = useState<Organisation | null>(null);
   const [switchesOf, setSwitchesOf] = useState<Organisation | null>(null);
   const [timeoutOf, setTimeoutOf] = useState<Organisation | null>(null);
-  const [done, setDone] = useState("");
+  const [done, setDone] = useState<string | null>(null);
   const now = useMinuteNow();
 
   useEffect(() => {
@@ -128,9 +129,7 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
         </div>
         {orgs && orgs.length > 0 && create}
       </div>
-      <p className="visually-hidden" role="status">
-        {done}
-      </p>
+      <Toast message={done} onClose={() => setDone(null)} />
 
       {failed && !orgs && (
         <div className={admin.errorBanner} role="alert">

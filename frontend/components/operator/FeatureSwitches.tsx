@@ -30,6 +30,7 @@ import type { FeatureSwitch, OperatorModel, OrgFeatureSwitch, Organisation, Test
 import { ConfirmDialog } from "./ConfirmDialog";
 import type { Confirm } from "./ConfirmDialog";
 import { LoadFailed } from "./LoadFailed";
+import { LoadingRows } from "./LoadingRows";
 import { afterDone, countText, operatorErrorMessage } from "./logic";
 import admin from "@/components/admin/Admin.module.css";
 import styles from "./Operator.module.css";
@@ -120,11 +121,7 @@ export function FeatureSwitchesView({ testModel, onTestModel }: { testModel: Tes
         </h2>
         <p className={styles.summary}>Each switch turns a feature on or off for every organisation at once.</p>
         {failed && !switches && <LoadFailed what="the feature switches" message={failed} onRetry={() => setAttempt((n) => n + 1)} />}
-        {!switches && !failed && (
-          <p className="visually-hidden" role="status">
-            Loading the feature switches…
-          </p>
-        )}
+        {!switches && !failed && <LoadingRows what="the feature switches" />}
         {switches && (
           <SwitchList
             switches={switches}
@@ -219,7 +216,7 @@ export function OrgFeatureSwitchesDialog({ org, onClose }: { org: Organisation; 
   const [switches, setSwitches] = useState<OrgFeatureSwitch[] | null>(null);
   const [error, setError] = useState<{ attempt: number; message: string } | null>(null);
   const [changing, setChanging] = useState<Confirm | null>(null);
-  const [done, setDone] = useState("");
+  const [done, setDone] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -239,10 +236,11 @@ export function OrgFeatureSwitchesDialog({ org, onClose }: { org: Organisation; 
         <div className={styles.dialogForm}>
           <p className={styles.summary}>Each switch turns a feature on or off for this organisation only.</p>
           <p className="visually-hidden" role="status">
-            {done || (!switches && !failed ? "Loading the feature switches…" : "")}
+            {!switches && !failed ? "Loading the feature switches…" : ""}
           </p>
           {failed && !switches && <LoadFailed what="the feature switches" message={failed} onRetry={() => setAttempt((n) => n + 1)} />}
           {switches && <SwitchList switches={switches} onFlip={(each) => setChanging(orgSwitchConfirm(org, each))} />}
+          <Toast message={done} onClose={() => setDone(null)} />
         </div>
       </ActionDialog>
       {changing && (
