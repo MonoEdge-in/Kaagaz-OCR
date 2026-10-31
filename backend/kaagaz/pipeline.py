@@ -385,6 +385,9 @@ class PageRecord:
     unsure_words: int = 0
     illegible_words: int = 0
     unpinned_lines: int = 0
+    # #463: the thinking level and picture detail of the model read whose text it keeps.
+    read_thinking: str | None = None
+    read_resolution: str | None = None
     # G3, CX1: its last line's sentence goes on at the top of the next page. Kept for the
     # pieces (the page cache keeps it with the page's read); not a pages column.
     continues_on_next_page: bool = False
@@ -1946,6 +1949,8 @@ def _with_result(page: PageRecord, read: PageRead | None, disputed: int) -> Page
         illegible_words=read.illegible_words,
         unpinned_lines=read.unpinned_lines,
         continues_on_next_page=read.continues_on_next_page,
+        read_thinking=read.read_thinking,
+        read_resolution=read.read_resolution,
     )
 
 

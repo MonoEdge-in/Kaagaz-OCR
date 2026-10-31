@@ -20,8 +20,10 @@ until it is told to stop:
 * Each attempt is written on the document (``attempts``, ``max_attempts``),
   so the file list can say "Try 2 of 5".
 * A job with a ``run_id`` is an Ensemble run after the scan (``dispatch``, kaagaz/jobs/
-  ensemble.py), every other one the document's reading. A run's tries are written on the
-  run, and its last delivery fails the run (``retries_exhausted``), never the document.
+  ensemble.py), one with a ``check_id`` an operator's accuracy check (#463, kaagaz/jobs/
+  accuracy.py), every other one the document's reading. A run's tries are written on the
+  run, and its last delivery fails the run (``retries_exhausted``), never the document; a
+  check's last delivery fails the check, and its tries are written nowhere.
 * The queue's maximum receives is read from the queue once, at start-up. It
   must be above JOB_MAX_ATTEMPTS + 1, so a delivery is left to mark the
   document even if the database is down at the first try. A queue without a
@@ -269,6 +271,8 @@ class RecordAttempt:
         self._record_run = record_run
 
     def __call__(self, job: Job, attempt: int) -> None:
+        if job.check_id is not None:  # an accuracy check (#463) keeps no tries
+            return
         if job.run_id is None:
             self._record(job.customer_id, job.document_id, attempt, self._max_attempts)
         elif self._record_run is not None:
@@ -291,13 +295,20 @@ class MarkExhausted:
     code only."""
 
     def __init__(
-        self, mark: Callable[[str, str], None], mark_run: Callable[[str, str], None] | None = None
+        self,
+        mark: Callable[[str, str], None],
+        mark_run: Callable[[str, str], None] | None = None,
+        mark_check: Callable[[str, str], None] | None = None,
     ) -> None:
         self._mark = mark
         self._mark_run = mark_run
+        self._mark_check = mark_check
 
     def __call__(self, job: Job) -> None:
-        if job.run_id is None:
+        if job.check_id is not None:  # an accuracy check (#463): the check fails
+            if self._mark_check is not None:
+                self._mark_check(job.customer_id, job.check_id)
+        elif job.run_id is None:
             self._mark(job.customer_id, job.document_id)
         elif self._mark_run is not None:
             self._mark_run(job.customer_id, job.run_id)
@@ -375,11 +386,14 @@ def beating(handler: Handler, beat: Callable[[], None]) -> Handler:
     return handle
 
 
-def dispatch(pipeline: Handler, ensemble: Handler) -> Handler:
-    """Each job to its handler: an Ensemble run's (``run_id``) to ``ensemble``, every other
-    to ``pipeline``."""
+def dispatch(pipeline: Handler, ensemble: Handler, accuracy: Handler | None = None) -> Handler:
+    """Each job to its handler: an Ensemble run's (``run_id``) to ``ensemble``, an accuracy
+    check's (``check_id``, #463) to ``accuracy``, every other to ``pipeline``."""
 
     def handle(job: Job, heartbeat: Heartbeat) -> None:
+        if job.check_id is not None and accuracy is not None:
+            accuracy(job, heartbeat)
+            return
         (pipeline if job.run_id is None else ensemble)(job, heartbeat)
 
     return handle
@@ -395,6 +409,7 @@ def job_worker(
     admit: Admit | None = None,
     mark_run_exhausted: Callable[[str, str], None] | None = None,
     record_run_attempt: Callable[[str, str, int], None] | None = None,
+    mark_check_exhausted: Callable[[str, str], None] | None = None,
 ) -> Worker:
     """The Worker _serve runs: each outcome logged, each try recorded, the delivery after
     the last attempt marked, a lease renewed at most every LEASE_RENEW_SECONDS on
@@ -404,7 +419,7 @@ def job_worker(
         queue,
         LoggedHandler(handler),
         max_attempts=max_attempts,
-        on_exhausted=MarkExhausted(mark_exhausted, mark_run_exhausted),
+        on_exhausted=MarkExhausted(mark_exhausted, mark_run_exhausted, mark_check_exhausted),
         on_attempt=RecordAttempt(record_attempt, max_attempts, record_run_attempt),
         clock=time.monotonic,
         admit=admit,
@@ -811,6 +826,7 @@ def _serve(settings: Settings) -> None:
     """Build the worker and run jobs until it is told to stop."""
     # Imported here, not at the top: these modules pull in every reader, the
     # OCR engine and the AI client, and the loop above is tested without them.
+    from kaagaz.jobs.accuracy import AccuracyChecks
     from kaagaz.jobs.ensemble import EnsembleRuns
     from kaagaz.pipeline import build_processor
     from kaagaz.reading.ocr import GEMINI
@@ -835,6 +851,7 @@ def _serve(settings: Settings) -> None:
     # Ensemble after the scan reads with a scan reader of its own (the same gate and pool).
     reader = build_ocr_engine(settings, db=db) if settings.ocr_engine == GEMINI else None
     ensemble = EnsembleRuns(db, storage, reader, settings=settings, clock=_utc_now)
+    accuracy = AccuracyChecks(db, storage, reader, settings=settings)  # #463, the same reader
 
     stop = threading.Event()
     install_stop_handlers(stop)
@@ -860,7 +877,7 @@ def _serve(settings: Settings) -> None:
 
     jobs = job_worker(
         queue,
-        beating(dispatch(processor, ensemble), worker_heartbeat.beat),
+        beating(dispatch(processor, ensemble, accuracy), worker_heartbeat.beat),
         max_attempts=settings.job_max_attempts,
         # The last delivery also ends the document's runs still running (AR11), on the worker's clock.
         mark_exhausted=lambda customer, document: documents.mark_exhausted(
@@ -876,6 +893,7 @@ def _serve(settings: Settings) -> None:
         ),
         mark_run_exhausted=ensemble.exhausted,
         record_run_attempt=ensemble.record_attempt,
+        mark_check_exhausted=accuracy.exhausted,
     )
     purge = functools.partial(_purge, db, storage, settings.trash_days)
     embed = None if model is None else functools.partial(embed_missing, db, model, limit=EMBED_PASS_PIECES)

@@ -20,7 +20,9 @@ _BODIES = text(
     "SELECT p.proname, pg_get_functiondef(p.oid), obj_description(p.oid, 'pg_proc'), p.proacl::text"
     " FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace"
     " AND p.proname IN ('kaagaz_op_org_ai', 'kaagaz_op_set_org_ai', 'kaagaz_op_ai_defaults',"
-    " 'kaagaz_op_set_ai_defaults', 'kaagaz_op_scan_cost') ORDER BY 1"
+    " 'kaagaz_op_set_ai_defaults', 'kaagaz_op_scan_cost', 'kaagaz_op_start_accuracy_check',"
+    " 'kaagaz_op_accuracy_check', 'kaagaz_accuracy_check_claim', 'kaagaz_accuracy_check_finish',"
+    " 'kaagaz_op_org_health') ORDER BY 1"
 )
 _NEW_COLUMNS = {"scan_resolution", "careful_thinking", "careful_resolution"}
 
@@ -50,15 +52,30 @@ def test_0064_up_down_up(fresh: tuple[str, Database]) -> None:
         assert added == _NEW_COLUMNS
     assert {row[1] for row in at_0064["columns"] if row[0] == "model_usage"} >= {"thinking", "resolution"}
     assert [row[0] for row in bodies_0064] == [
+        "kaagaz_accuracy_check_claim",
+        "kaagaz_accuracy_check_finish",
+        "kaagaz_op_accuracy_check",
         "kaagaz_op_ai_defaults",
         "kaagaz_op_org_ai",
+        "kaagaz_op_org_health",
         "kaagaz_op_scan_cost",
         "kaagaz_op_set_ai_defaults",
         "kaagaz_op_set_org_ai",
+        "kaagaz_op_start_accuracy_check",
     ]
-    for _name, body, comment, acl in bodies_0064:  # the house pattern: definer, empty path, operator only
+    for name, body, comment, acl in bodies_0064:  # the house pattern: definer, empty path, one role
         assert "SECURITY DEFINER" in body and "SET search_path TO ''" in body
-        assert comment and "kaagaz_operator=X" in acl and "kaagaz_app" not in acl
+        role, other = (
+            ("kaagaz_app", "kaagaz_operator") if "_op_" not in name else ("kaagaz_operator", "kaagaz_app")
+        )
+        assert comment and f"{role}=X" in acl and other not in acl, name
+    # The budget's month spend leaves the operator's accuracy checks out (only that line changed).
+    [health_0063] = [body for name, body, *_ in bodies_0063 if name == "kaagaz_op_org_health"]
+    [health_0064] = [body for name, body, *_ in bodies_0064 if name == "kaagaz_op_org_health"]
+    assert health_0064 == health_0063.replace(M0064.HEALTH_OLD, M0064.HEALTH_NEW) != health_0063
+    accuracy = {row[1]: row for row in at_0064["columns"] if row[0] == "scan_accuracy_checks"}
+    assert "word_match" in accuracy and not {"text", "words", "customer_id"} & set(accuracy)
+    assert {row[1] for row in at_0064["columns"] if row[0] == "pages"} >= {"read_thinking", "read_resolution"}
 
     # Minimal for the scan levels (both tables), never for the answer levels; detail low or high.
     as_owner(db, "UPDATE platform_ai_settings SET scan_thinking = 'minimal', careful_thinking = 'minimal'")

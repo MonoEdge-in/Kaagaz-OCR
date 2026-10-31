@@ -123,9 +123,11 @@ _REPORT = text(
 )
 
 # The dollars spent in a period (unknown costs count nothing), and whether any was unknown.
+# #463: an operator's accuracy checks are never the organisation's budget.
 _SPENT = text(
     "SELECT COALESCE(sum(u.cost_usd), 0), COALESCE(bool_or(u.cost_usd IS NULL), false) FROM model_usage u"
-    " WHERE u.customer_id = :c AND u.created_at >= :start_at AND u.created_at < :end_at"
+    " WHERE u.customer_id = :c AND u.kind <> 'accuracy_check'"
+    " AND u.created_at >= :start_at AND u.created_at < :end_at"
 )
 
 

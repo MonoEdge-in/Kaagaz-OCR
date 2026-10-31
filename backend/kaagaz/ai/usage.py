@@ -37,6 +37,9 @@ from kaagaz.db.engine import Database, unavailable
 from kaagaz.db.usage import UsageRow, insert_usage
 from kaagaz.ingestion.errors import BackendUnavailable
 
+# #463: an operator's accuracy check. Every call inside its scope is billed as it, Careful's
+# too (``UsageScope.add``), and it never counts in an organisation's budget (db.usage, 0064).
+ACCURACY_CHECK = "accuracy_check"
 # The kinds of work a ledger row is billed as (0023's CHECK allows ^[a-z_]{1,32}$).
 KINDS = (
     "scan",
@@ -53,6 +56,7 @@ KINDS = (
     "ensemble_scan",
     "ensemble_chat",
     "land",  # PRD 6 D2 and D3: the land windows, on upload and in the land-facts re-read
+    ACCURACY_CHECK,
 )
 # #463: the kinds whose calls read a page and record their thinking level and picture detail.
 PAGE_READ_KINDS = frozenset({"scan", "careful", "upgrade", "ensemble_scan"})
@@ -102,7 +106,7 @@ class UsageScope:
     ) -> None:
         """Count one call (thread-safe), as ``kind`` (None: the scope's); ``thinking`` and
         ``resolution`` are kept for a page read's kind only (PAGE_READ_KINDS)."""
-        kind = kind or self.kind
+        kind = self.kind if self.kind == ACCURACY_CHECK else kind or self.kind
         page = kind in PAGE_READ_KINDS
         key = (model, kind, cached, thinking if page else None, resolution if page else None)
         with self._lock:

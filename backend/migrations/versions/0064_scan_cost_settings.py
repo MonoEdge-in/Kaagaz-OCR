@@ -21,7 +21,23 @@ Tushar, 31 Oct 2026).
 * ``kaagaz_op_scan_cost`` (new): for the operator's estimate, the cost OpenRouter reported
   for the first reads and Careful's re-reads of one (model, thinking, resolution) each, in
   every organisation's ledger of the last LEDGER_DAYS days, and the scope's scan and careful
-  calls (the share of pages read again). Numbers only.
+  calls (the share of pages read again); and the scope's pages read by the model in those
+  days at the first read's settings and at max settings, and how many of each were clean
+  (read_quality good). Numbers only.
+* ``pages.read_thinking`` and ``read_resolution``: the settings of the read that produced a
+  page's stored text (the pipeline writes them); NULL for old pages and pages no model read.
+* ``scan_accuracy_checks`` (new; accuracy against max settings): one organisation's check,
+  its settings, how many pages it read and the share of words and numbers that matched,
+  never a word of text. An operator table as ``platform_audit`` is (its organisation in
+  ``subject_customer_id``, row level security on, no policy, no grant): the operator starts
+  and reads it through ``kaagaz_op_start_accuracy_check`` (a fresh code; ``check_running``,
+  ``rate_limited`` past ACCURACY_CHECKS_PER_HOUR platform-wide, ``no_pages``; audited as
+  ``org.accuracy_check``) and ``kaagaz_op_accuracy_check``; the worker claims and finishes
+  its own organisation's running check only (``kaagaz_current_customer()``) through
+  ``kaagaz_accuracy_check_claim`` and ``kaagaz_accuracy_check_finish``, the app's only rights.
+* ``kaagaz_op_org_health`` (0024): a month's spend against the budget leaves out the
+  ``accuracy_check`` ledger kind (the check is the operator's, never the organisation's
+  budget); its live body has the one line changed exactly once (0061's way).
 
 No index: the estimate reads the same days of every organisation's ledger that
 ``kaagaz_op_models`` already reads (0026); ``model_usage_period`` serves the scope's part.
@@ -82,7 +98,23 @@ SET_AI_DEFAULTS = (
     "kaagaz_op_set_ai_defaults(uuid, text[], text, text[], text, text, text, text, text, text[], text,"
     " boolean, text, text, bigint)"
 )
-SCAN_COST = "kaagaz_op_scan_cost(uuid, uuid, text, text, text, text, text, text)"
+SCAN_COST = "kaagaz_op_scan_cost(uuid, uuid, text, text, text, text, text, text, text, text)"
+START_CHECK = "kaagaz_op_start_accuracy_check(uuid, uuid, text, text, text, text, text, integer, bigint)"
+LATEST_CHECK = "kaagaz_op_accuracy_check(uuid, uuid, text, text, text, text, text)"
+CLAIM_CHECK = "kaagaz_accuracy_check_claim(uuid)"
+FINISH_CHECK = (
+    "kaagaz_accuracy_check_finish(uuid, text, integer, integer, double precision, double precision, numeric)"
+)
+ORG_HEALTH = "kaagaz_op_org_health(uuid, date, text)"
+APP_ROLE = "kaagaz_app"
+# shortcut: a fixed platform-wide cap on accuracy checks an hour (Tushar, 31 Oct 2026), not a setting.
+ACCURACY_CHECKS_PER_HOUR = 6
+CHECK_PAGES = (20, 50, 100)  # the sample sizes an operator may ask for
+# A running check older than this is taken as abandoned (a lost queue message): it no longer
+# blocks a new one. shortcut: no sweep marks it failed; the next check's start makes it moot.
+CHECK_RUNNING_FOR = "interval '1 hour'"
+# A page a model read (its id has a "/": never rapidocr, text_layer or cells) with its picture kept.
+MODEL_READ = "p.has_image AND p.route = 'ocr' AND p.read_by LIKE '%/%'"
 
 SCAN_LEVELS = "('minimal', 'low', 'medium', 'high')"  # kaagaz.settings.THINKING_LEVELS
 RESOLUTIONS = "('low', 'high')"  # kaagaz.settings.SENDABLE_MEDIA_RESOLUTIONS["detail"]
@@ -257,14 +289,19 @@ NEW = {
 # never cached, with OpenRouter's own cost only (an estimated or unknown one is never counted);
 # the first reads (scan) of p_model at p_thinking and p_resolution, Careful's re-reads (careful)
 # of its own three; and the scope's scan and careful calls (every organisation's when
-# p_customer is NULL). No row for an operator who is not enabled (HAVING on the one group).
+# p_customer is NULL). The quality: the scope's pages p_model read (its stored read) in a
+# document read in those days, at the first read's settings and at max ones (p_max_*), and
+# the clean ones (good) of each. shortcut: the pages are read whole (no index on the settings;
+# the operator asks rarely). No row for an operator who is not enabled.
 SCAN_COST_SQL = f"""
     CREATE FUNCTION public.kaagaz_op_scan_cost(
         p_operator uuid, p_customer uuid, p_model text, p_thinking text, p_resolution text,
-        p_careful_model text, p_careful_thinking text, p_careful_resolution text
+        p_careful_model text, p_careful_thinking text, p_careful_resolution text,
+        p_max_thinking text, p_max_resolution text
     )
     RETURNS TABLE (first_usd numeric, first_pages bigint, careful_usd numeric, careful_pages bigint,
-                   scan_calls bigint, careful_calls bigint)
+                   scan_calls bigint, careful_calls bigint, quality_pages bigint, clean_pages bigint,
+                   max_quality_pages bigint, max_clean_pages bigint)
     LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '' AS $$
         WITH u AS (
             SELECT u.kind, u.calls, u.cost_usd,
@@ -277,22 +314,208 @@ SCAN_COST_SQL = f"""
             FROM public.model_usage u
             WHERE u.kind IN ('scan', 'careful') AND NOT u.cached
               AND u.created_at >= now() - make_interval(days => {LEDGER_DAYS})
+        ), cost AS (
+            SELECT sum(u.cost_usd) FILTER (WHERE u.measured AND u.kind = 'scan') AS first_usd,
+                   COALESCE(sum(u.calls) FILTER (WHERE u.measured AND u.kind = 'scan'), 0)::bigint AS first_pages,
+                   sum(u.cost_usd) FILTER (WHERE u.measured AND u.kind = 'careful') AS careful_usd,
+                   COALESCE(sum(u.calls) FILTER (WHERE u.measured AND u.kind = 'careful'), 0)::bigint
+                       AS careful_pages,
+                   COALESCE(sum(u.calls) FILTER (WHERE u.in_scope AND u.kind = 'scan'), 0)::bigint AS scan_calls,
+                   COALESCE(sum(u.calls) FILTER (WHERE u.in_scope AND u.kind = 'careful'), 0)::bigint
+                       AS careful_calls
+            FROM u
+        ), q AS (
+            SELECT count(*) FILTER (WHERE p.read_thinking = p_thinking AND p.read_resolution = p_resolution)
+                       AS quality_pages,
+                   count(*) FILTER (WHERE p.read_thinking = p_thinking AND p.read_resolution = p_resolution
+                                    AND p.read_quality = 'good') AS clean_pages,
+                   count(*) FILTER (WHERE p.read_thinking = p_max_thinking
+                                    AND p.read_resolution = p_max_resolution) AS max_quality_pages,
+                   count(*) FILTER (WHERE p.read_thinking = p_max_thinking AND p.read_resolution = p_max_resolution
+                                    AND p.read_quality = 'good') AS max_clean_pages
+            FROM public.pages p
+            WHERE p.read_by = p_model AND (p_customer IS NULL OR p.customer_id = p_customer)
+              AND EXISTS (SELECT 1 FROM public.processing_runs r
+                          WHERE r.customer_id = p.customer_id AND r.document_id = p.document_id
+                            AND r.started_at >= now() - make_interval(days => {LEDGER_DAYS}))
         )
-        SELECT sum(u.cost_usd) FILTER (WHERE u.measured AND u.kind = 'scan'),
-               COALESCE(sum(u.calls) FILTER (WHERE u.measured AND u.kind = 'scan'), 0)::bigint,
-               sum(u.cost_usd) FILTER (WHERE u.measured AND u.kind = 'careful'),
-               COALESCE(sum(u.calls) FILTER (WHERE u.measured AND u.kind = 'careful'), 0)::bigint,
-               COALESCE(sum(u.calls) FILTER (WHERE u.in_scope AND u.kind = 'scan'), 0)::bigint,
-               COALESCE(sum(u.calls) FILTER (WHERE u.in_scope AND u.kind = 'careful'), 0)::bigint
-        FROM u
-        HAVING EXISTS (SELECT 1 FROM public.operators o WHERE {_ENABLED})
+        SELECT cost.*, q.* FROM cost CROSS JOIN q
+        WHERE EXISTS (SELECT 1 FROM public.operators o WHERE {_ENABLED})
     $$
 """
 SCAN_COST_COMMENT = (
     "Operator: the cost OpenRouter reported for first reads and Careful re-reads at the given"
     " model, thinking level and picture detail over the last 30 days of every organisation's ledger,"
-    " and the scope's scan and careful calls. Numbers only."
+    " the scope's scan and careful calls, and its pages read at these and at max settings and how"
+    " many were clean. Numbers only."
 )
+
+# --- accuracy against max settings -----------------------------------------------------------
+ACCURACY_TABLE = f"""
+    CREATE TABLE scan_accuracy_checks (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        subject_customer_id uuid NOT NULL REFERENCES customers (id) ON DELETE CASCADE,
+        operator_id uuid NOT NULL REFERENCES operators (id),
+        status text NOT NULL DEFAULT 'running' CHECK (status IN ('running', 'done', 'failed')),
+        model text NOT NULL CHECK (length(model) BETWEEN 1 AND 300),
+        scan_thinking text NOT NULL CHECK (scan_thinking IN {SCAN_LEVELS} OR scan_thinking = 'none'),
+        scan_resolution text NOT NULL CHECK (scan_resolution IN {RESOLUTIONS}),
+        careful_thinking text NOT NULL CHECK (careful_thinking IN {SCAN_LEVELS} OR careful_thinking = 'none'),
+        careful_resolution text NOT NULL CHECK (careful_resolution IN {RESOLUTIONS}),
+        max_pages integer NOT NULL CHECK (max_pages IN {CHECK_PAGES}),
+        pages_checked integer NOT NULL DEFAULT 0 CHECK (pages_checked >= 0),
+        pages_failed integer NOT NULL DEFAULT 0 CHECK (pages_failed >= 0),
+        word_match double precision NULL CHECK (word_match BETWEEN 0 AND 1),
+        numbers_match double precision NULL CHECK (numbers_match BETWEEN 0 AND 1),
+        cost_usd numeric(14,6) NULL CHECK (cost_usd >= 0),
+        started_at timestamptz NOT NULL DEFAULT now(),
+        finished_at timestamptz NULL,
+        CONSTRAINT accuracy_checks_finished CHECK ((status = 'running') = (finished_at IS NULL))
+    )
+"""
+_ACTOR = _0026._ACTOR
+_STEP_UP = _0026._STEP_UP
+# The check's settings, as the operator's estimate resolved them (every one a value, never NULL).
+_SETTINGS_OUT = (
+    "model text, scan_thinking text, scan_resolution text, careful_thinking text, careful_resolution text"
+)
+CHECK_FUNCTIONS = {
+    # Start one organisation's check, with a fresh code: one running at a time per organisation,
+    # ACCURACY_CHECKS_PER_HOUR started an hour on the platform, and a page to read. Audited.
+    START_CHECK: f"""
+    CREATE FUNCTION public.kaagaz_op_start_accuracy_check(
+        p_operator uuid, p_customer uuid, p_model text, p_scan_thinking text, p_scan_resolution text,
+        p_careful_thinking text, p_careful_resolution text, p_pages integer, p_step bigint,
+        OUT outcome text, OUT result_id uuid
+    )
+    LANGUAGE plpgsql SECURITY DEFINER SET search_path = '' AS $$
+    DECLARE
+        v_status text;
+    BEGIN
+        {_ACTOR}
+        {_STEP_UP}
+        SELECT c.status INTO v_status FROM public.customers c WHERE c.id = p_customer FOR UPDATE;
+        IF NOT FOUND THEN
+            outcome := 'missing';
+            RETURN;
+        END IF;
+        IF v_status = 'deleting' THEN
+            outcome := 'deleting';
+            RETURN;
+        END IF;
+        IF EXISTS (SELECT 1 FROM public.scan_accuracy_checks a
+                   WHERE a.subject_customer_id = p_customer AND a.status = 'running'
+                     AND a.started_at > now() - {CHECK_RUNNING_FOR}) THEN
+            outcome := 'check_running';
+            RETURN;
+        END IF;
+        -- shortcut: two organisations' starts at the same instant may both pass this count.
+        IF (SELECT count(*) FROM public.scan_accuracy_checks a WHERE a.started_at > now() - interval '1 hour')
+           >= {ACCURACY_CHECKS_PER_HOUR} THEN
+            outcome := 'rate_limited';
+            RETURN;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM public.pages p WHERE p.customer_id = p_customer AND {MODEL_READ}) THEN
+            outcome := 'no_pages';
+            RETURN;
+        END IF;
+        INSERT INTO public.scan_accuracy_checks (subject_customer_id, operator_id, model, scan_thinking,
+            scan_resolution, careful_thinking, careful_resolution, max_pages)
+        VALUES (p_customer, p_operator, p_model, p_scan_thinking, p_scan_resolution, p_careful_thinking,
+                p_careful_resolution, p_pages)
+        RETURNING id INTO result_id;
+        INSERT INTO public.platform_audit (operator_id, action, subject_customer_id, target_type, target_id,
+                                           details)
+        VALUES (p_operator, 'org.accuracy_check', p_customer, 'customer', p_customer::text, jsonb_build_object(
+            'check_id', result_id, 'model', p_model, 'scan_thinking', p_scan_thinking,
+            'scan_resolution', p_scan_resolution, 'careful_thinking', p_careful_thinking,
+            'careful_resolution', p_careful_resolution, 'pages', p_pages));
+        outcome := 'done';
+    END
+    $$
+    """,
+    # One organisation's latest check (p_model NULL), else its latest done check at exactly these
+    # settings. No row: none, or the operator is not enabled.
+    LATEST_CHECK: f"""
+    CREATE FUNCTION public.kaagaz_op_accuracy_check(
+        p_operator uuid, p_customer uuid, p_model text, p_scan_thinking text, p_scan_resolution text,
+        p_careful_thinking text, p_careful_resolution text
+    )
+    RETURNS TABLE (id uuid, status text, {_SETTINGS_OUT}, max_pages integer, pages_checked integer,
+                   pages_failed integer, word_match double precision, numbers_match double precision,
+                   cost_usd numeric, started_at timestamptz, finished_at timestamptz)
+    LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '' AS $$
+        SELECT a.id, a.status, a.model, a.scan_thinking, a.scan_resolution, a.careful_thinking,
+               a.careful_resolution, a.max_pages, a.pages_checked, a.pages_failed, a.word_match,
+               a.numbers_match, a.cost_usd, a.started_at, a.finished_at
+        FROM public.scan_accuracy_checks a
+        WHERE a.subject_customer_id = p_customer AND EXISTS (SELECT 1 FROM public.operators o WHERE {_ENABLED})
+          AND (p_model IS NULL
+               OR (a.status = 'done' AND a.model = p_model AND a.scan_thinking = p_scan_thinking
+                   AND a.scan_resolution = p_scan_resolution AND a.careful_thinking = p_careful_thinking
+                   AND a.careful_resolution = p_careful_resolution))
+        ORDER BY a.started_at DESC, a.id
+        LIMIT 1
+    $$
+    """,
+}
+APP_CHECK_FUNCTIONS = {
+    # The worker's: the current organisation's running check (its settings and sample size).
+    CLAIM_CHECK: f"""
+    CREATE FUNCTION public.kaagaz_accuracy_check_claim(p_check uuid)
+    RETURNS TABLE ({_SETTINGS_OUT}, max_pages integer)
+    LANGUAGE sql STABLE SECURITY DEFINER SET search_path = '' AS $$
+        SELECT a.model, a.scan_thinking, a.scan_resolution, a.careful_thinking, a.careful_resolution, a.max_pages
+        FROM public.scan_accuracy_checks a
+        WHERE a.id = p_check AND a.subject_customer_id = public.kaagaz_current_customer()
+          AND a.status = 'running'
+    $$
+    """,
+    # The worker's: end the current organisation's running check with its numbers (no text).
+    FINISH_CHECK: """
+    CREATE FUNCTION public.kaagaz_accuracy_check_finish(
+        p_check uuid, p_status text, p_checked integer, p_failed integer, p_word double precision,
+        p_numbers double precision, p_cost numeric
+    ) RETURNS boolean
+    LANGUAGE sql SECURITY DEFINER SET search_path = '' AS $$
+        WITH done AS (
+            UPDATE public.scan_accuracy_checks AS a
+            SET status = p_status, pages_checked = p_checked, pages_failed = p_failed, word_match = p_word,
+                numbers_match = p_numbers, cost_usd = p_cost, finished_at = now()
+            WHERE a.id = p_check AND a.subject_customer_id = public.kaagaz_current_customer()
+              AND a.status = 'running' AND p_status IN ('done', 'failed')
+            RETURNING 1
+        )
+        SELECT EXISTS (SELECT 1 FROM done)
+    $$
+    """,
+}
+CHECK_COMMENTS = {
+    START_CHECK: "Operator, with a fresh code: start one organisation's accuracy check against max"
+    " settings (one running at a time, a few an hour on the platform, a page read by a model needed)."
+    " Audited.",
+    LATEST_CHECK: "Operator: one organisation's latest accuracy check, or its latest done one at the"
+    " given settings. Numbers only, never text.",
+    CLAIM_CHECK: "Worker: the current organisation's running accuracy check, its settings and sample size.",
+    FINISH_CHECK: "Worker: end the current organisation's running accuracy check with its numbers."
+    " True when it was running.",
+}
+# A month's spend against the budget (0024) leaves out the operator's accuracy checks.
+HEALTH_OLD = "WHERE u.customer_id = c.id AND u.created_at < v_hi"
+HEALTH_NEW = "WHERE u.customer_id = c.id AND u.kind <> 'accuracy_check' AND u.created_at < v_hi"
+
+
+def _load_0061() -> ModuleType:
+    path = Path(__file__).with_name("0061_email.py")
+    spec = importlib.util.spec_from_file_location("migration_0061_for_0064", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_REWRITE = _load_0061()._REWRITE
 
 # {table.column: comment} (0007's rule: every column has one).
 COMMENTS = {
@@ -323,6 +546,33 @@ COMMENTS = {
     " levels). NULL for every kind but scan, careful, upgrade and ensemble_scan, and for older rows.",
     "model_usage.resolution": "The picture detail a page read was sent at, low or high. NULL for every"
     " kind but scan, careful, upgrade and ensemble_scan, and for older rows.",
+    "pages.read_thinking": "The thinking level of the read that produced the page's text. NULL for"
+    " older pages and pages no model read.",
+    "pages.read_resolution": "The picture detail of the read that produced the page's text. NULL for"
+    " older pages and pages no model read.",
+}
+TABLE_COMMENT = (
+    "Operator only: one organisation's scan accuracy check against max settings, its settings and"
+    " numbers (the share of words and numbers that matched), never text."
+)
+ACCURACY_COMMENTS = {
+    "id": "The check.",
+    "subject_customer_id": "The organisation whose pages were read.",
+    "operator_id": "The operator who started it.",
+    "status": "running, done or failed.",
+    "model": "The first read's model.",
+    "scan_thinking": "The first read's thinking level, as asked (before Dynamic's rule).",
+    "scan_resolution": "The first read's picture detail.",
+    "careful_thinking": "Careful's thinking level.",
+    "careful_resolution": "Careful's picture detail.",
+    "max_pages": "The most pages it reads, 20, 50 or 100.",
+    "pages_checked": "Pages read at both settings and compared.",
+    "pages_failed": "Pages skipped: a read failed or the picture is gone.",
+    "word_match": "1 - the word error rate against the max read, every page's words together. NULL, none.",
+    "numbers_match": "The share of the max read's numbers the check's read has too. NULL, no number.",
+    "cost_usd": "What its model calls cost, OpenRouter's reported cost. NULL when one was not known.",
+    "started_at": "When it was started.",
+    "finished_at": "When it ended. NULL while running.",
 }
 
 
@@ -354,13 +604,13 @@ def _settings_columns_back(table: str, prefix: str, old_check: str) -> str:
     """
 
 
-def _create(signature: str, create: str, comment: str) -> list[str]:
-    """``create``, its comment, and EXECUTE for the operator role alone (0026's grants)."""
+def _create(signature: str, create: str, comment: str, role: str = OPERATOR_ROLE) -> list[str]:
+    """``create``, its comment, and EXECUTE for ``role`` alone (0026's grants)."""
     return [
         create,
         f"COMMENT ON FUNCTION public.{signature} IS {_literal(comment)}",
         f"REVOKE ALL ON FUNCTION public.{signature} FROM PUBLIC",
-        f"GRANT EXECUTE ON FUNCTION public.{signature} TO {OPERATOR_ROLE}",
+        f"GRANT EXECUTE ON FUNCTION public.{signature} TO {role}",
     ]
 
 
@@ -381,20 +631,51 @@ UPGRADE = [
     _settings_columns("platform_ai_settings", "ai_platform_settings", PLATFORM_CHECK),
     # The ledger: what each page read was sent (no default, so no table rewrite).
     "ALTER TABLE model_usage ADD COLUMN thinking text NULL, ADD COLUMN resolution text NULL",
-    # Every new column's comment.
-    *[f"COMMENT ON COLUMN {column} IS {_literal(comment)}" for column, comment in COMMENTS.items()],
     # The four functions again, with the three fields; the same comments and grants.
     *[
         statement
         for signature, body in NEW.items()
         for statement in _create(signature, body, _comment(signature))
     ],
-    # The estimate's measured cost (new).
+    # The settings of the read that produced each page's text (the pipeline writes them).
+    "ALTER TABLE pages ADD COLUMN read_thinking text NULL, ADD COLUMN read_resolution text NULL",
+    # Every new column's comment.
+    *[f"COMMENT ON COLUMN {column} IS {_literal(comment)}" for column, comment in COMMENTS.items()],
+    # The estimate's measured cost and quality (new).
     *_create(SCAN_COST, SCAN_COST_SQL, SCAN_COST_COMMENT),
+    # The accuracy checks: an operator table (row level security on, no policy, no grant).
+    ACCURACY_TABLE,
+    "CREATE INDEX scan_accuracy_checks_latest ON scan_accuracy_checks (subject_customer_id, started_at)",
+    "ALTER TABLE scan_accuracy_checks ENABLE ROW LEVEL SECURITY",
+    f"COMMENT ON TABLE scan_accuracy_checks IS {_literal(TABLE_COMMENT)}",
+    *[
+        f"COMMENT ON COLUMN scan_accuracy_checks.{column} IS {_literal(comment)}"
+        for column, comment in ACCURACY_COMMENTS.items()
+    ],
+    "COMMENT ON INDEX scan_accuracy_checks_latest IS 'An organisation''s checks, newest last.'",
+    # The operator starts and reads checks; the worker claims and ends its organisation's own.
+    *[
+        statement
+        for signature, body in CHECK_FUNCTIONS.items()
+        for statement in _create(signature, body, CHECK_COMMENTS[signature])
+    ],
+    *[
+        statement
+        for signature, body in APP_CHECK_FUNCTIONS.items()
+        for statement in _create(signature, body, CHECK_COMMENTS[signature], APP_ROLE)
+    ],
+    # The budget's month spend leaves the checks out.
+    _REWRITE.format(function=ORG_HEALTH, old=HEALTH_OLD, new=HEALTH_NEW),
 ]
 
 DOWNGRADE = [
-    # The new function and the four new bodies go first.
+    # The budget's month spend as it was; the checks, their functions and table go.
+    _REWRITE.format(function=ORG_HEALTH, old=HEALTH_NEW, new=HEALTH_OLD),
+    *[f"DROP FUNCTION public.{signature}" for signature in (*APP_CHECK_FUNCTIONS, *CHECK_FUNCTIONS)],
+    "DROP TABLE scan_accuracy_checks",
+    # The pages' two columns go.
+    "ALTER TABLE pages DROP COLUMN read_resolution, DROP COLUMN read_thinking",
+    # The estimate's function and the four new bodies go.
     f"DROP FUNCTION public.{SCAN_COST}",
     *[f"DROP FUNCTION public.{signature}" for signature in NEW],
     # A minimal scan level inherits again (the old CHECK refuses it).

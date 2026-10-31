@@ -233,6 +233,8 @@ class PageRead:
 
     * ``others`` (Ensemble, F27): the page as each other chosen model read it, for the
       vote on the values that need review; never stored.
+    * ``read_thinking``, ``read_resolution`` (#463): the thinking level and picture detail
+      the model was sent for the read whose text this is; None when no model read it.
 
     The counts F1 stores are worked out from the lines, so they always agree with
     them: ``unsure_words`` (every word listed as unsure), ``illegible_words``
@@ -251,6 +253,8 @@ class PageRead:
     cached: bool = False
     continues_on_next_page: bool = False
     others: tuple["OtherRead", ...] = ()
+    read_thinking: str | None = None
+    read_resolution: str | None = None
 
     @property
     def unsure_words(self) -> int:

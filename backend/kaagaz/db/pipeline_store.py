@@ -166,9 +166,10 @@ _DELETES = [
 _INSERT_PAGE = text(
     "INSERT INTO pages (customer_id, document_id, page_no, width, height, unit, has_image, route,"
     " effective_dpi, low_resolution, read_by, read_quality, read_issues, unsure_words, illegible_words,"
-    " unpinned_lines, accepted_by, accepted_at) VALUES (:c, :d, :page_no, :width, :height, :unit, :has_image,"
-    " :route, :effective_dpi, :low_resolution, :read_by, :read_quality, CAST(:read_issues AS text[]),"
-    " :unsure_words, :illegible_words, :unpinned_lines, :accepted_by, :accepted_at)"
+    " unpinned_lines, accepted_by, accepted_at, read_thinking, read_resolution) VALUES (:c, :d, :page_no,"
+    " :width, :height, :unit, :has_image, :route, :effective_dpi, :low_resolution, :read_by, :read_quality,"
+    " CAST(:read_issues AS text[]), :unsure_words, :illegible_words, :unpinned_lines, :accepted_by,"
+    " :accepted_at, CAST(:read_thinking AS text), CAST(:read_resolution AS text))"
 )
 # PRD 5 RT2 and F1: a page's reading result, by its PageRecord field name, with the value a
 # page record without it is saved with: good, no issues, nobody named (kaagaz.pipeline
@@ -181,6 +182,8 @@ PAGE_READING_DEFAULTS: Mapping[str, Any] = MappingProxyType(
         "unsure_words": 0,
         "illegible_words": 0,
         "unpinned_lines": 0,
+        "read_thinking": None,  # #463: the settings of the model read (0064)
+        "read_resolution": None,
     }
 )
 _INSERT_OUTPUT = text(

@@ -33,7 +33,15 @@ writes its own audit rows.
   nothing): the approximate cost of a page at those settings, measured on every
   organisation's ledger of the last LEDGER_DAYS days, never guessed (null when nothing was
   read so). The model is the scope's default (``usable_models``, ``scope_reading``: the
-  same rules as a scan); the share read again is the scope's own.
+  same rules as a scan); the share read again is the scope's own. ``quality``: the
+  share of the scope's pages read clean (read_quality good) at these settings and at max
+  settings (the same model, its highest thinking, high picture detail), from the pages' own
+  settings; ``accuracy``: an organisation's latest done check at exactly these settings.
+* ``POST /operator/orgs/{id}/accuracy-check`` {the four fields, pages: 20, 50 or 100, code}
+  (a fresh code): a worker job (``kaagaz.jobs.accuracy``) reads the organisation's recent
+  model-read pages at the draft's settings and at max, and keeps the share of words and of
+  numbers that matched, never text; billed to it as ``accuracy_check``, never its budget.
+  ``GET .../accuracy-check/latest``: its latest check, any settings (404 with none).
 * ``GET /operator/usage?from&to``: tokens and dollars per organisation and model, days in
   TIMEZONE with both ends included (this month so far when left out), at most
   ``MAX_DAYS``. Never a user or a document: the function has no column for either.
@@ -65,6 +73,7 @@ A refused change is said in plain words; an unknown organisation or model gets 4
 """
 
 import uuid
+from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
 from typing import Annotated, Any, Literal
@@ -88,6 +97,7 @@ from kaagaz.db.engine import OperatorDatabase
 from kaagaz.db.models import LEDGER_DAYS, MAX_AGENTS, vendor
 from kaagaz.db.operator_models import AiChoice
 from kaagaz.db.operator_orgs import Outcome
+from kaagaz.ingestion.ports import Job
 from kaagaz.reading.ocr import READER_PROMPT_VERSION
 from kaagaz.settings import Settings, valid_model_id
 
@@ -135,6 +145,14 @@ _REFUSALS = {
         "level_not_supported",
         "A chosen model does not accept one of these thinking levels. Choose levels every model accepts.",
     ),
+    # #463, an accuracy check.
+    "check_running": (409, "check_running", "A check of this organisation is running. Wait for it to end."),
+    "rate_limited": (
+        429,
+        "rate_limited",
+        "Too many accuracy checks in the last hour. Try again later.",
+    ),
+    "no_pages": (400, "no_pages", "This organisation has no page read by AI to check yet."),
 }
 
 Level = Literal["low", "medium", "high"]
@@ -282,6 +300,20 @@ class ScanCostBody(BaseModel):
     careful_resolution: Resolution | None = None
 
 
+class AccuracyCheckBody(BaseModel):
+    """#463: the scan settings to check, each null for what the save would inherit, the
+    pages to read (20, 50 or 100) and a fresh code."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    scan_thinking: ScanLevel | None = None
+    scan_resolution: Resolution | None = None
+    careful_thinking: ScanLevel | None = None
+    careful_resolution: Resolution | None = None
+    pages: Literal[20, 50, 100] = 20
+    code: str = Field(min_length=1, max_length=MAX_CODE)
+
+
 class ModelRateBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -423,16 +455,30 @@ def set_org_ai(
     return {**saved, "ensemble_off": body.ensemble and not saved["ensemble"]}
 
 
-@router.post("/scan-cost")
-def scan_cost(
-    body: ScanCostBody, operator: OperatorSession, db: OperatorDb, context: Context
-) -> dict[str, Any]:
-    """#463: the approximate cost of a page at the draft's scan settings (module notes). The
-    first read and, while Dynamic is on, Careful's re-read are each priced at what they would
-    really be sent (model, thinking after Dynamic's rule, picture detail); the total is the
-    first read plus the share read again times the re-read, or the first read alone."""
+@dataclass(frozen=True, slots=True)
+class _Plan:
+    """A draft's scan settings resolved as a scan would read them (#463): ``first`` and
+    ``careful`` (None: Dynamic off) as a page read sends them, ``best`` the max settings'
+    (thinking, picture detail) for the same lead, ``asked`` the check's settings (every one a
+    value), and the lead's catalogue row (None: OCR_MODEL)."""
+
+    first: models_sql.Sent
+    careful: models_sql.Sent | None
+    best: tuple[str, str]
+    asked: models_sql.CheckSettings
+    lead_row: RowMapping | None
+
+
+def _plan(
+    db: OperatorDatabase,
+    operator: CurrentOperator,
+    context: AppContext,
+    customer: str | None,
+    draft_fields: ScanCostBody | AccuracyCheckBody,
+) -> _Plan:
+    """The draft's ``_Plan`` for ``customer`` (None: the platform defaults); 401 for an operator
+    disabled meanwhile, 404 for an unknown organisation."""
     settings = context.settings
-    customer = None if body.customer_id is None else str(body.customer_id)
     with db.operator() as conn:
         defaults = models_sql.ai_defaults(conn, operator.operator_id)
         own = None if customer is None else models_sql.org_ai(conn, operator.operator_id, customer)
@@ -442,7 +488,7 @@ def scan_cost(
         raise ApiError(404, "not_found")
     # What the save would inherit: an organisation's the platform's; the platform's the server's.
     draft = {
-        name: getattr(body, name) or (defaults[name] if customer is not None else None)
+        name: getattr(draft_fields, name) or (defaults[name] if customer is not None else None)
         for name in SCAN_COST_FIELDS
     }
     # The scope's models and Dynamic as a scan resolves them, on its own customer connection.
@@ -451,16 +497,45 @@ def scan_cost(
         rows = models.usable_models(conn, scope, settings=settings)
         allowed = models.effective_settings(conn, scope)
     reading = models.scope_reading(rows, {**allowed, **draft}, settings=settings)
-    first = (reading.lead.model, reading.thinking, reading.resolution or settings.ocr_media_resolution)
+    lead = reading.lead.model
     careful = None
+    careful_thinking = draft["careful_thinking"] or settings.ocr_retry_thinking_level
+    careful_resolution = draft["careful_resolution"] or settings.ocr_retry_media_resolution
     if reading.careful is not None:
-        careful = (
-            reading.careful.model,
-            reading.careful.level(reading.careful_thinking or settings.ocr_retry_thinking_level),
-            reading.careful_resolution or settings.ocr_retry_media_resolution,
-        )
+        careful = (reading.careful.model, reading.careful.level(careful_thinking), careful_resolution)
+    resolution = draft["scan_resolution"] or settings.ocr_media_resolution
+    asked = (
+        lead,
+        draft["scan_thinking"] or settings.ocr_thinking_level,
+        resolution,
+        careful_thinking,
+        careful_resolution,
+    )
+    lead_row = next((row for row in rows if row["id"] == lead), None)
+    best = (models.max_thinking(lead_row), models.MAX_RESOLUTION)
+    return _Plan((lead, reading.thinking, resolution), careful, best, asked, lead_row)
+
+
+@router.post("/scan-cost")
+def scan_cost(
+    body: ScanCostBody, operator: OperatorSession, db: OperatorDb, context: Context
+) -> dict[str, Any]:
+    """#463: the approximate cost of a page at the draft's scan settings (module notes). The
+    first read and, while Dynamic is on, Careful's re-read are each priced at what they would
+    really be sent (model, thinking after Dynamic's rule, picture detail); the total is the
+    first read plus the share read again times the re-read, or the first read alone. With
+    ``quality`` (the scope's clean pages at these and at max settings) and, for an
+    organisation, ``accuracy``: its latest done check at exactly these settings."""
+    customer = None if body.customer_id is None else str(body.customer_id)
+    plan = _plan(db, operator, context, customer, body)
+    first, careful = plan.first, plan.careful
     with db.operator() as conn:
-        row = models_sql.scan_cost(conn, operator.operator_id, customer, first, careful)
+        row = models_sql.scan_cost(conn, operator.operator_id, customer, first, careful, plan.best)
+        check = (
+            None
+            if customer is None
+            else models_sql.accuracy_check(conn, operator.operator_id, customer, plan.asked)
+        )
     if row is None:
         raise ApiError(401, "not_signed_in")
     first_usd = _per_page(row["first_usd"], row["first_pages"])
@@ -473,7 +548,84 @@ def scan_cost(
         re_read = {**_read(careful, careful_usd, row["careful_pages"]), "share": share}
         if first_usd is not None and share is not None and careful_usd is not None:
             total = first_usd + share * careful_usd
-    return {"days": LEDGER_DAYS, "first_read": first_read, "re_read": re_read, "usd_per_page": total}
+    quality = {
+        "clean_share": _share(row["clean_pages"], row["quality_pages"]),
+        "pages": int(row["quality_pages"]),
+        "max_clean_share": _share(row["max_clean_pages"], row["max_quality_pages"]),
+        "max_pages": int(row["max_quality_pages"]),
+    }
+    return {
+        "days": LEDGER_DAYS,
+        "first_read": first_read,
+        "re_read": re_read,
+        "usd_per_page": total,
+        "quality": quality,
+        "accuracy": None if check is None else _check_view(check),
+    }
+
+
+@router.post("/orgs/{customer_id}/accuracy-check", status_code=202)
+def start_accuracy_check(
+    customer_id: uuid.UUID,
+    body: AccuracyCheckBody,
+    operator: OperatorSession,
+    db: OperatorDb,
+    context: Context,
+) -> dict[str, Any]:
+    """#463: check the organisation's accuracy at the draft's scan settings against max settings
+    (a fresh code first): a worker job reads up to ``pages`` of its recent model-read pages both
+    ways and compares the words and numbers. 202 with the check's id; 400
+    ``level_not_supported`` (the lead does not take a draft level) or ``no_pages``, 409
+    ``check_running``, 429 ``rate_limited`` (ACCURACY_CHECKS_PER_HOUR on the platform)."""
+    customer = str(customer_id)
+    plan = _plan(db, operator, context, customer, body)
+    efforts = () if plan.lead_row is None else tuple(plan.lead_row["efforts"])
+    if efforts and not {plan.asked[1], plan.asked[3]} <= set(efforts):
+        raise ApiError(400, "level_not_supported", _REFUSALS["level_not_supported"][2])
+    step_up = _step_up(db, context, operator, body.code)
+    with db.operator() as conn:
+        outcome = models_sql.start_accuracy_check(
+            conn, operator.operator_id, customer, plan.asked, body.pages, step=step_up.step
+        )
+    _refuse(db, operator, outcome.code, step_up)
+    check_id = str(outcome.result_id)
+    # The check's own job: its id is the message's document id too (no document is read whole).
+    context.queue.enqueue(Job(customer, check_id, check_id=check_id))
+    return {"id": check_id}
+
+
+@router.get("/orgs/{customer_id}/accuracy-check/latest")
+def latest_accuracy_check(
+    customer_id: uuid.UUID, operator: OperatorSession, db: OperatorDb
+) -> dict[str, Any]:
+    """#463: the organisation's latest accuracy check, at any settings; 404 with none."""
+    with db.operator() as conn:
+        check = models_sql.accuracy_check(conn, operator.operator_id, str(customer_id))
+    if check is None:
+        raise ApiError(404, "not_found")
+    return _check_view(check)
+
+
+def _check_view(row: RowMapping) -> dict[str, Any]:
+    """An accuracy check as the console shows it: settings and numbers, never text."""
+    return {
+        "id": str(row["id"]),
+        "status": row["status"],
+        "settings": {name: row[name] for name in ("model", *SCAN_COST_FIELDS)},
+        "pages_checked": int(row["pages_checked"]),
+        "pages_failed": int(row["pages_failed"]),
+        "word_match": row["word_match"],
+        "numbers_match": row["numbers_match"],
+        "max_pages": int(row["max_pages"]),
+        "cost_usd": _number(row["cost_usd"]),
+        "started_at": iso(row["started_at"]),
+        "finished_at": None if row["finished_at"] is None else iso(row["finished_at"]),
+    }
+
+
+def _share(part: int, whole: int) -> float | None:
+    """``part`` of ``whole``; null with none."""
+    return None if not whole else int(part) / int(whole)
 
 
 def _per_page(usd: Decimal | None, pages: int) -> float | None:

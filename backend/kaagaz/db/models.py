@@ -73,6 +73,9 @@ MAX_AGENTS = 3  # the lead and at most two others (documents.read_also holds two
 DEARER = 1.1
 DYNAMIC_FIRST_THINKING = "low"  # Dynamic's quick first read (Tushar, 16 Oct 2026)
 MINIMAL = "minimal"  # #463: the lowest scan level, which Dynamic's first read keeps (31 Oct 2026)
+# #463: max settings, the accuracy reference: a model's highest thinking level, high picture detail.
+SCAN_LEVELS = ("minimal", "low", "medium", "high")  # lowest first
+MAX_RESOLUTION = "high"
 
 # The organisation's own models of an area, else the platform's (only when it has none of
 # its own), each with the catalogue row and the average tokens of its scan calls (not
@@ -467,6 +470,15 @@ def scope_reading(rows: Sequence[RowMapping], allowed: Mapping[Any, Any], *, set
     thinking, notes = _dynamic_first(thinking, notes, lead_row)
     careful = _careful(rows, lead, settings)
     return Reading("dynamic", lead, careful=careful, thinking=thinking, notes=notes, **_levels(allowed))
+
+
+def max_thinking(row: Mapping[Any, Any] | None) -> str:
+    """#463: the highest scan level the model takes (high for a model with no catalogue row,
+    OCR_MODEL; NO_THINKING for one with no levels). O(levels)."""
+    if row is None:
+        return SCAN_LEVELS[-1]
+    taken = [level for level in SCAN_LEVELS if level in row["efforts"]]
+    return taken[-1] if taken else NO_THINKING
 
 
 def _careful(rows: Sequence[RowMapping], lead: Agent, settings: Settings) -> Agent:

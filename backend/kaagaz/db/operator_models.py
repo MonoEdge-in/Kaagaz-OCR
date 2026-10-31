@@ -25,7 +25,12 @@ audit rows.
   organisations inherit each area; the same outcomes but missing and deleting.
 * ``usage``: tokens and dollars per organisation and model. No user, no document.
 * ``scan_cost`` (#463, 0064): the measured cost of a page at one first read's and one
-  Careful re-read's (model, thinking, picture detail), and the scope's share read again.
+  Careful re-read's (model, thinking, picture detail), the scope's share read again, and its
+  pages read at the first read's and at max settings, and the clean ones.
+* ``start_accuracy_check`` and ``accuracy_check`` (#463, 0064): an organisation's accuracy
+  check against max settings, started with a fresh code (``done``, ``missing``, ``deleting``,
+  ``check_running``, ``rate_limited``, ``no_pages``, ``step_up`` or ``signed_out``), and its
+  latest (or its latest done at given settings). Numbers only.
 * ``feature_switches`` and ``set_feature_switch`` (0038): the platform feature switches;
   ``org_feature_switches`` and ``set_org_feature_switch`` (0039): one organisation's.
 * ``session_timeout`` and ``set_session_timeout`` (0040): the sign-in idle timeout, the
@@ -71,6 +76,13 @@ _SET_AI_DEFAULTS = text(
 )
 _SCAN_COST = text(
     "SELECT * FROM kaagaz_op_scan_cost(:o, CAST(:c AS uuid), :m, :t, :r, CAST(:cm AS text),"
+    " CAST(:ct AS text), CAST(:cr AS text), :mt, :mr)"
+)
+_START_CHECK = text(
+    "SELECT outcome, result_id FROM kaagaz_op_start_accuracy_check(:o, :c, :m, :st, :sr, :ct, :cr, :n, :step)"
+)
+_CHECK = text(
+    "SELECT * FROM kaagaz_op_accuracy_check(:o, :c, CAST(:m AS text), CAST(:st AS text), CAST(:sr AS text),"
     " CAST(:ct AS text), CAST(:cr AS text))"
 )
 _MODEL_RATES = text("SELECT * FROM kaagaz_op_model_rates(:o, :c)")
@@ -331,15 +343,26 @@ def clear_test_model(conn: Connection, operator_id: str, *, step: int) -> str:
 
 
 Sent = tuple[str, str, str]  # (model, thinking level, picture detail) as a page read sends them
+# An accuracy check's settings: (model, scan_thinking, scan_resolution, careful_thinking,
+# careful_resolution), every one a value (the estimate's, after inheritance).
+CheckSettings = tuple[str, str, str, str, str]
 
 
 def scan_cost(
-    conn: Connection, operator_id: str, customer_id: str | None, first: Sent, careful: Sent | None
+    conn: Connection,
+    operator_id: str,
+    customer_id: str | None,
+    first: Sent,
+    careful: Sent | None,
+    best: tuple[str, str],
 ) -> RowMapping | None:
     """#463: first_usd and first_pages (the first reads at ``first``), careful_usd and
     careful_pages (Careful's at ``careful``; none with None) over every organisation's ledger
     of the last 30 days, OpenRouter's reported cost only; scan_calls and careful_calls of
-    ``customer_id``'s (None: every organisation's). None for an operator who is not enabled."""
+    ``customer_id``'s (None: every organisation's); and its pages ``first``'s model read in
+    those days, at ``first``'s settings (quality_pages, clean_pages) and at ``best``'s
+    (thinking, picture detail: max settings; max_quality_pages, max_clean_pages). None for an
+    operator who is not enabled."""
     model, thinking, resolution = first
     careful_model, careful_thinking, careful_resolution = careful or (None, None, None)
     params = {
@@ -351,8 +374,40 @@ def scan_cost(
         "cm": careful_model,
         "ct": careful_thinking,
         "cr": careful_resolution,
+        "mt": best[0],
+        "mr": best[1],
     }
     return conn.execute(_SCAN_COST, params).mappings().first()
+
+
+def _check_params(settings: CheckSettings | None) -> dict[str, str | None]:
+    model, scan_thinking, scan_resolution, careful_thinking, careful_resolution = settings or (None,) * 5
+    return {
+        "m": model,
+        "st": scan_thinking,
+        "sr": scan_resolution,
+        "ct": careful_thinking,
+        "cr": careful_resolution,
+    }
+
+
+def start_accuracy_check(
+    conn: Connection, operator_id: str, customer_id: str, settings: CheckSettings, pages: int, *, step: int
+) -> Outcome:
+    """Start ``customer_id``'s accuracy check of up to ``pages`` pages at ``settings`` (a fresh
+    code's ``step``; audited); the outcome, with the check's id when ``done``."""
+    params = {"o": operator_id, "c": customer_id, **_check_params(settings), "n": pages, "step": step}
+    row = conn.execute(_START_CHECK, params).one()
+    return Outcome(str(row[0]), None if row[1] is None else str(row[1]))
+
+
+def accuracy_check(
+    conn: Connection, operator_id: str, customer_id: str, settings: CheckSettings | None = None
+) -> RowMapping | None:
+    """``customer_id``'s latest accuracy check (``settings`` None), else its latest done one at
+    exactly ``settings``; None with none (or an operator who is not enabled)."""
+    params = {"o": operator_id, "c": customer_id, **_check_params(settings)}
+    return conn.execute(_CHECK, params).mappings().first()
 
 
 def usage(conn: Connection, operator_id: str, start: datetime, end: datetime) -> Sequence[RowMapping]:

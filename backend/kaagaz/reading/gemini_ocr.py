@@ -1009,11 +1009,14 @@ class GeminiEngine:
         key = None
         if pages is not None:
             key = self._key(pages, sha or pixels_sha256(image), page_no, model, thinking)
+        # #463: the settings of the read, kept on the page (a cached read was cached at them).
+        sent = (self._sent(model, thinking), self._resolution(pages))
         if pages is not None and key is not None and not again:
             reply = _cached(pages.cache.get(key))
             if reply is not None:
                 record_call(model, None, 0, 0, 0, 0.0, cached=True)  # SP1: a cached page costs 0
-                return self._page(reply, image, page_no, model, cached=True, boxes=boxes)
+                page = self._page(reply, image, page_no, model, cached=True, boxes=boxes)
+                return dataclasses.replace(page, read_thinking=sent[0], read_resolution=sent[1])
         started = self._client.now()
         careful_read = pages is not None and pages.careful_read
         if self._left() < MIN_CALL_SECONDS:  # the document's budget ran out (never failed)
@@ -1036,8 +1039,12 @@ class GeminiEngine:
             )
             if read_low:
                 thinking = LOW_THINKING
+                sent = (self._sent(model, thinking), sent[1])
                 if pages is not None:
                     key = self._key(pages, sha or pixels_sha256(image), page_no, model, thinking)
+            elif again:  # read harder, at the Careful pair (a low read alongside is not)
+                resolution, harder = self._harder_of(pages)
+                sent = (self._sent(model, harder), resolution)
         except ModelUnavailable as error:
             if error.code == PAGE_TIMEOUT and careful_read:
                 # Careful ran out of time: dropped (``_careful``), the first read stays; no local read.
@@ -1060,7 +1067,8 @@ class GeminiEngine:
             self._last_failure.pop(model, None)
         if pages is not None and key is not None:
             pages.cache.put(key, result, input_tokens, output_tokens)
-        return self._page(reply, image, page_no, model, tokens=(input_tokens, output_tokens), boxes=boxes)
+        page = self._page(reply, image, page_no, model, tokens=(input_tokens, output_tokens), boxes=boxes)
+        return dataclasses.replace(page, read_thinking=sent[0], read_resolution=sent[1])
 
     def _ask_in_time(
         self,
