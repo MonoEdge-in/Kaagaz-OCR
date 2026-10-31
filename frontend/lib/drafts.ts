@@ -109,17 +109,17 @@ export function flushDrafts(): void {
   for (const { write } of [...waiting.values()]) write();
 }
 
-/** This user's draft for this screen, or null. Drafts of anyone else are dropped unread. */
+/** This user's draft for this screen, or null: only ever read under this user's own key. A save
+ * of it still waiting is written first, so a quick remount gets the last keystrokes back. */
 export function readDraft(userId: string, screen: string): Draft | null {
-  keepDraftsOf(userId);
+  const key = keyOf(userId, screen);
+  waiting.get(key)?.write();
   try {
-    const raw = sessionStorage.getItem(keyOf(userId, screen));
+    const raw = sessionStorage.getItem(key);
     if (raw === null) return null;
     const stored: unknown = JSON.parse(raw);
-    if (typeof stored !== "object" || stored === null || !("userId" in stored) || !("fields" in stored)) return null;
-    if (stored.userId !== userId) return null;
-    const fields = plain(stored.fields);
-    return fields !== undefined && typeof fields === "object" && fields !== null && !Array.isArray(fields) ? fields : null;
+    const fields = typeof stored === "object" && stored !== null && "fields" in stored ? stored.fields : null;
+    return typeof fields === "object" && fields !== null && !Array.isArray(fields) ? (fields as Draft) : null;
   } catch {
     return null;
   }

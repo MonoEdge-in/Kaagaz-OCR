@@ -58,17 +58,20 @@ describe("drafts (lib/drafts.ts)", () => {
     expect(readDraft(A, "summary")).toBeNull();
   });
 
-  it("are discarded for another user, and never shown to them", () => {
+  // Changed on purpose (#468 review, PT5): reading never shows another user's draft (the key is the
+  // user's own), and no longer drops it; keepDraftsOf does that when someone signs in.
+  it("are never shown to another user", () => {
     saveDraft(A, "ask", { question: "A's question" });
     expect(readDraft(B, "ask")).toBeNull();
-    // Dropped unread: A gets nothing back either once B has been here.
-    expect(storage.items.size).toBe(0);
-    expect(readDraft(A, "ask")).toBeNull();
+    expect([...storage.items.keys()]).toEqual([`kaagaz-draft:${A}:ask`]);
   });
 
-  it("are discarded when the stored owner is not the one asking, whatever the key says", () => {
-    storage.setItem(`kaagaz-draft:${A}:ask`, JSON.stringify({ userId: B, fields: { question: "B's" } }));
-    expect(readDraft(A, "ask")).toBeNull();
+  // Changed on purpose (#468 review, PT5): the owner re-check inside the value is gone; only
+  // saveDraft writes these keys, always under the user's own id.
+  it("are read under the user's own key only", () => {
+    storage.setItem(`kaagaz-draft:${A}:ask`, JSON.stringify({ userId: A, fields: { question: "A's" } }));
+    expect(readDraft(A, "ask")).toEqual({ question: "A's" });
+    expect(readDraft(B, "ask")).toBeNull();
   });
 
   it("keepDraftsOf drops everyone else's drafts, waiting ones included", () => {
@@ -154,8 +157,10 @@ describe("drafts (lib/drafts.ts)", () => {
     vi.useFakeTimers();
     saveDraftSoon(A, "summary", { text: "fir" });
     saveDraftSoon(A, "summary", { text: "first draft" });
-    expect(readDraft(A, "summary")).toBeNull();
+    expect(storage.items.size).toBe(0);
     flushDrafts();
+    // Changed on purpose (#468 review, CR5): the storage is checked, as readDraft writes a waiting save first.
+    expect(storage.items.size).toBe(1);
     expect(readDraft(A, "summary")).toEqual({ text: "first draft" });
     saveDraftSoon(A, "summary", { text: "second" });
     vi.advanceTimersByTime(600);

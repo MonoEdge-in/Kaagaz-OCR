@@ -74,7 +74,8 @@ describe("Add a user: email, name and role, never the password", () => {
     saveDraft(ADMIN, ADD_USER_DRAFT, newUserDraft(typed));
     expect(newUserFromDraft(readDraft(ADMIN, ADD_USER_DRAFT))).toEqual({ ...typed, password: "" });
     expect(readDraft(OTHER, ADD_USER_DRAFT)).toBeNull();
-    expect(storage.items.size).toBe(0); // dropped unread once someone else reads drafts
+    // Changed on purpose (#468 review, PT5): reading no longer drops other people's drafts; the
+    // session does that once who is signed in is known (keepDraftsOf).
   });
 
   it("an odd kept value falls back to the empty form's", () => {

@@ -23,7 +23,8 @@ export function ViewerFailed({ onRetry, download }: { onRetry: () => void; downl
               Try again
             </button>
             {download ? (
-              <a className="btn" href={download}>
+              // download: a file, not a page to leave for, so the upload's leave prompt never asks (#468 review)
+              <a className="btn" href={download} download>
                 Download
               </a>
             ) : null}

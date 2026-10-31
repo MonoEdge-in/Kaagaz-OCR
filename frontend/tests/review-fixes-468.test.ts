@@ -1,14 +1,17 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { aiChangesToKeep, orgDraftOver, settingsDraft, settingsFromDraft } from "@/components/admin/logic";
 import { ASK_DRAFT, askDraft } from "@/components/chat/logic";
 import { operatorErrorMessage } from "@/components/operator/logic";
 import { storyFailure } from "@/components/viewer/story";
+import { ViewerFailed } from "@/components/viewer/ViewerBoundary";
 import { endedPath, pathAfterSignIn, SEARCH_DRAFT, searchToKeep } from "@/components/shell/gate";
 import { ApiError, GET_TIMEOUT_MS, TOO_SLOW, getDocument } from "@/lib/api";
 import { changedOnly, orgDraftOf } from "@/lib/aiSettings";
-import { DRAFT_KEPT, clearDrafts, readDraft, saveDraft } from "@/lib/drafts";
+import { DRAFT_KEPT, clearDrafts, readDraft, saveDraft, saveDraftSoon } from "@/lib/drafts";
 import { SERVER_PROBLEM, errorWords } from "@/lib/errorWords";
 import type { AiSettings, AiTaskSetting, CustomerSettings, TaskLevel } from "@/lib/types";
 
@@ -300,5 +303,42 @@ describe("SF5: an unknown 4xx with no code of the API's (a proxy's page) is SERV
     }
     // The backend's own words for its own code stay.
     expect(errorWords(new ApiError(400, "invalid_email", "That e-mail is not valid."))).toBe("That e-mail is not valid.");
+  });
+});
+
+describe("CR5: reading a draft first writes that screen's save still waiting", () => {
+  it("a quick remount keeps the last keystrokes", () => {
+    vi.useFakeTimers();
+    saveDraftSoon(A, "ask", { typed: "What is the tot" });
+    saveDraftSoon(A, "ask", { typed: "What is the total?" });
+    expect(readDraft(A, "ask")).toEqual({ typed: "What is the total?" });
+    vi.runAllTimers();
+    expect(readDraft(A, "ask")).toEqual({ typed: "What is the total?" });
+  });
+
+  it("only that screen's: another screen's waiting save still waits", () => {
+    vi.useFakeTimers();
+    saveDraftSoon(A, "summary", { text: "waiting" });
+    readDraft(A, "ask");
+    expect(storage.items.size).toBe(0);
+    vi.runAllTimers();
+    expect(storage.items.size).toBe(1);
+  });
+});
+
+describe("PT5: readDraft reads only its own key, and leaves other people's drafts to the sign-in", () => {
+  it("drops nobody else's draft by reading (lib/session.tsx does that once who is signed in is known)", () => {
+    saveDraft(A, "ask", { typed: "A's" });
+    expect(readDraft(B, "ask")).toBeNull();
+    expect(readDraft(A, "ask")).toEqual({ typed: "A's" });
+    expect(read("lib/drafts.ts")).not.toMatch(/export function readDraft[\s\S]*?keepDraftsOf\(userId\)[\s\S]*?\n\}/);
+    expect(read("lib/session.tsx")).toMatch(/if \(signedInId !== null\) keepDraftsOf\(signedInId\)/);
+  });
+});
+
+describe("CR6: the viewer's Download link is a download, so it never fires the upload leave prompt", () => {
+  it("carries the download attribute", () => {
+    const html = renderToStaticMarkup(createElement(ViewerFailed, { onRetry: () => undefined, download: "/api/documents/d-1/file" }));
+    expect(html).toMatch(/<a class="btn" href="\/api\/documents\/d-1\/file" download="">Download<\/a>/);
   });
 });
