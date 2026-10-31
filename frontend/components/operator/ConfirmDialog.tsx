@@ -10,7 +10,7 @@
 // It cannot close while busy; after a change the focus goes to the row's name.
 
 import { useRef, useState } from "react";
-import type { FormEvent } from "react";
+import type { FormEvent, ReactNode } from "react";
 import { CodeField } from "@/app/login/CodeField";
 import { codeError, normalizeCode } from "@/app/login/twoStep";
 import { ActionDialog } from "@/components/documents/ActionDialog";
@@ -32,6 +32,10 @@ export interface Confirm {
   /** Where the focus goes after the change: the row's name. */
   focusId: string;
   run(code: string, name: string): Promise<unknown>;
+  /** More to choose, under the effect (an accuracy check's pages). */
+  fields?: ReactNode;
+  /** A refusal in this change's own words; else operatorErrorMessage's. */
+  errorText?(caught: unknown): string;
 }
 
 const CODE_ID = "step-up-code";
@@ -64,7 +68,7 @@ export function ConfirmDialog({ confirm, onClose, onDone }: { confirm: Confirm; 
       changed.current = true;
       onDone(confirm.done);
     } catch (caught) {
-      setFailure(operatorErrorMessage(caught));
+      setFailure((confirm.errorText ?? operatorErrorMessage)(caught));
       setCode("");
       setBusy(false);
     }
@@ -79,6 +83,7 @@ export function ConfirmDialog({ confirm, onClose, onDone }: { confirm: Confirm; 
     >
       <form className={styles.dialogForm} onSubmit={submit} noValidate>
         <p>{confirm.effect}</p>
+        {confirm.fields}
         {confirm.typeName !== undefined && (
           <div className="field">
             <label htmlFor={NAME_ID}>Type the organisation name</label>

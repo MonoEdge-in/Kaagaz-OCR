@@ -8,6 +8,7 @@ import type { DocumentSearchParams } from "@/components/documents/insideSearch";
 import type { DocumentListParams } from "@/components/documents/libraryQuery";
 import type { StoryMatchBody } from "./storyMatches";
 import type {
+  AccuracyCheck,
   ActivityPage,
   AddedUser,
   AdminChange,
@@ -82,6 +83,8 @@ import type {
   ReviewStatus,
   Role,
   VerifyAllResult,
+  ScanCost,
+  ScanCostAsk,
   ScopeBody,
   SessionTimeout,
   SheetCells,
@@ -923,6 +926,19 @@ export const getAiDefaults = () => request<AiDefaults>("GET", "/operator/ai-defa
 /** Save them, with a fresh code: every organisation still on them follows. */
 export const putAiDefaults = (body: AiValues, code: string) =>
   request<AiDefaults>("PUT", "/operator/ai-defaults", { ...body, code });
+/** The approximate scan cost a page at these settings (#463): read only, no code. */
+export const postScanCost = (body: ScanCostAsk) => request<ScanCost>("POST", "/operator/scan-cost", body);
+/** Check an organisation's accuracy against max settings at these scan settings, on 20, 50
+ * or 100 recent pages, with a fresh code (step-up), as the AI settings save. 409
+ * check_running, 429, 400 no_pages. */
+export const postAccuracyCheck = (orgId: string, body: Omit<ScanCostAsk, "customer_id"> & { pages: 20 | 50 | 100 }, code: string) =>
+  request<{ id: string }>("POST", `/operator/orgs/${orgId}/accuracy-check`, { ...body, code });
+/** The organisation's latest accuracy check, at any settings; null when it has none (404). */
+export const getLatestAccuracyCheck = (orgId: string) =>
+  request<AccuracyCheck>("GET", `/operator/orgs/${orgId}/accuracy-check/latest`).catch((caught: unknown) => {
+    if (caught instanceof ApiError && caught.status === 404) return null;
+    throw caught;
+  });
 /** Enable or disable one model on the platform, with a fresh code (step-up). The id's
  * slash stays a slash: the route takes the whole author/slug. */
 export const setOperatorModelEnabled = (id: string, enabled: boolean, code: string) =>

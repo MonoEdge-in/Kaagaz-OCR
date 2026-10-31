@@ -254,12 +254,22 @@ const values = (overrides: Partial<AiValues> = {}): AiValues => ({
   chat_models: [],
   chat_default: null,
   scan_thinking: null,
+  scan_resolution: null,
+  careful_thinking: null,
+  careful_resolution: null,
   chat_levels: null,
   chat_default_level: null,
   dynamic: null,
   ...overrides,
 });
-const ENV = { scan_model: "google/env-scan", chat_model: "google/env-chat", scan_thinking: "low" };
+const ENV = {
+  scan_model: "google/env-scan",
+  chat_model: "google/env-chat",
+  scan_thinking: "low",
+  scan_resolution: "high",
+  careful_thinking: "high",
+  careful_resolution: "high",
+};
 const DEFAULTS = values({
   scan_models: ["m/one", "m/two"],
   scan_default: "m/two",
@@ -267,7 +277,16 @@ const DEFAULTS = values({
   chat_default_level: "low",
   dynamic: true,
 });
-const COUNTS: AiDefaults["orgs_inheriting"] = { scan_models: 4, chat_models: 7, scan_thinking: 1, chat_levels: 7, dynamic: 5 };
+const COUNTS: AiDefaults["orgs_inheriting"] = {
+  scan_models: 4,
+  chat_models: 7,
+  scan_thinking: 1,
+  scan_resolution: 1,
+  careful_thinking: 1,
+  careful_resolution: 1,
+  chat_levels: 7,
+  dynamic: 5,
+};
 const catalogue = [
   model({ id: "m/one", name: "One", enabled_at: "2026-10-11T00:00:00Z", chat_verified: false }),
   model({ id: "m/two", name: "Two", enabled_at: "2026-10-11T00:00:00Z" }),
@@ -289,6 +308,7 @@ describe("a model with no thinking levels (Tushar, 18 Oct 2026)", () => {
       return renderToStaticMarkup(
         createElement(AiFields, {
           platform: false,
+          customerId: "org-1",
           catalogue: [...catalogue, plain],
           saved: own,
           defaults: DEFAULTS,
@@ -352,7 +372,9 @@ describe("the AI settings form's rules", () => {
 
   it("says per area whether it follows the platform defaults (C12)", () => {
     expect(statusText(values())).toBe("Scanning: platform defaults · Answering: platform defaults");
-    expect(statusText(values({ scan_models: ["m/one"], scan_thinking: "high", dynamic: false }))).toBe(
+    // Changed on purpose (#463, 31 Oct 2026): picture detail and pages read again are scanning settings too.
+    const scanOwn = { scan_resolution: "low", careful_thinking: "high", careful_resolution: "high" } as const;
+    expect(statusText(values({ scan_models: ["m/one"], scan_thinking: "high", dynamic: false, ...scanOwn }))).toBe(
       "Scanning: own settings · Answering: platform defaults",
     );
     expect(statusText(values({ dynamic: true, chat_models: ["m/two"], chat_levels: ["low"] }))).toBe(
@@ -438,7 +460,7 @@ describe("the AI settings form's rules", () => {
   it("says which organisations still on the defaults a platform save changes, as a short list", () => {
     expect(defaultsImpact(DEFAULTS, DEFAULTS, COUNTS)).toEqual({ lead: "Nothing changes.", areas: [] });
     const all = { ...DEFAULTS, scan_default: "m/one", scan_thinking: "high" as const, dynamic: false, chat_models: ["m/two"], chat_default: "m/two" };
-    const one = { scan_models: 1, chat_models: 1, scan_thinking: 1, chat_levels: 1, dynamic: 1 };
+    const one = { ...COUNTS, scan_models: 1, chat_models: 1, chat_levels: 1, dynamic: 1 };
     expect(defaultsImpact(DEFAULTS, all, one)).toEqual({
       lead: "This save changes, for 1 organisation still on platform defaults:",
       areas: ["Scanning models", "Scanning level", "Cost saving", "Answering models"],
@@ -497,6 +519,7 @@ describe("the AI settings fields", () => {
     return renderToStaticMarkup(
       createElement(AiFields, {
         platform: props.platform ?? false,
+        customerId: props.platform ? null : "org-1",
         orgName: props.orgName,
         spent: props.spent,
         catalogue,
@@ -529,7 +552,8 @@ describe("the AI settings fields", () => {
     expect(html).toContain("Platform default (the server&#x27;s level (low))");
     expect(html).toContain("Platform default (On)");
     // Changed on purpose (Cost saving, 16 Oct 2026): the switch is "Cost saving", with its hint.
-    expect(html).toContain('<label for="ai-dynamic">Cost saving</label>');
+    // Changed on purpose (#463, 31 Oct 2026): each setting's label shares a row with its own-or-followed mark.
+    expect(html).toContain('<label for="ai-dynamic" class="label">Cost saving</label>');
     expect(html).toContain("Reads clear pages quickly and spends extra effort only on hard-to-read words.");
     expect(html).not.toMatch(/>Dynamic</);
     expect(fields({ platform: true })).toContain("<span>Cost saving</span>");
@@ -612,7 +636,8 @@ describe("any number of scanning models (Tushar, 16 Oct 2026)", () => {
       "Saved the AI settings of Sharma Traders. Ensemble is off: it needs a second scanning model.",
     );
     const dialog = read("components/operator/OrgAiSettings.tsx");
-    expect(dialog).toContain("onSaved(savedText(org.name, ensembleTurnedOff));");
+    // Changed on purpose (#463, 31 Oct 2026): the confirmation also says the cost a page and the accuracy.
+    expect(dialog).toContain("onSaved(withCost(savedText(org.name, ensembleTurnedOff), cost, true));");
     expect(dialog).toMatch(/\{ensembleOff && \(\s*<p className="hint" role="status">\s*\{ENSEMBLE_OFF\}/);
   });
 });

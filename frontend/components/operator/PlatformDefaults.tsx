@@ -8,17 +8,20 @@
 // Ensemble and budget; before saving it says which organisations the change reaches, and
 // it asks for a fresh code (step-up). A refusal is said next to the field it is about. The
 // focus goes back to the button when the dialog closes.
+// Scan cost settings (#463, Tushar, 31 Oct 2026): the same scanning fields and Cost per page
+// panel as an organisation's (without its accuracy check), and the Save confirmation says
+// the cost a page now.
 
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { CodeField } from "@/app/login/CodeField";
 import { codeError, normalizeCode } from "@/app/login/twoStep";
 import { ActionDialog } from "@/components/documents/ActionDialog";
-import { getAiDefaults, putAiDefaults } from "@/lib/api";
+import { getAiDefaults, postScanCost, putAiDefaults } from "@/lib/api";
 import type { AiDefaults, OperatorModel } from "@/lib/types";
 import { LoadFailed } from "./LoadFailed";
 import { canCloseDialog, countText, operatorErrorMessage } from "./logic";
-import { COST_SAVING, KEEP_OWN, aiBody, aiErrors, defaultsImpact, draftOf, inheritedText } from "./models";
+import { COST_SAVING, KEEP_OWN, aiBody, aiErrors, costAsk, defaultsImpact, draftOf, inheritedText, withCost } from "./models";
 import type { AiDraft, AiErrors } from "./models";
 import { AiFields, CODE_ID, fieldId, firstProblem, refusalOf } from "./OrgAiSettings";
 import admin from "@/components/admin/Admin.module.css";
@@ -73,9 +76,9 @@ export function PlatformDefaults({ catalogue, onSaved }: { catalogue: OperatorMo
           reply={reply}
           catalogue={catalogue}
           onClose={() => setEditing(false)}
-          onSaved={(next) => {
+          onSaved={(next, message) => {
             setReply(next);
-            onSaved("Saved the platform defaults.");
+            onSaved(message);
           }}
         />
       )}
@@ -89,6 +92,17 @@ export function DefaultsSummary({ reply, catalogue }: { reply: AiDefaults; catal
   const rows: { label: string; value: string; count: number }[] = [
     { label: "Scanning models", value: inheritedText("scan_models", defaults, env, catalogue), count: counts.scan_models },
     { label: "Scanning thinking level", value: inheritedText("scan_thinking", defaults, env, catalogue), count: counts.scan_thinking },
+    { label: "Picture detail", value: inheritedText("scan_resolution", defaults, env, catalogue), count: counts.scan_resolution },
+    {
+      label: "Thinking for pages read again",
+      value: inheritedText("careful_thinking", defaults, env, catalogue),
+      count: counts.careful_thinking,
+    },
+    {
+      label: "Picture detail for pages read again",
+      value: inheritedText("careful_resolution", defaults, env, catalogue),
+      count: counts.careful_resolution,
+    },
     { label: COST_SAVING, value: inheritedText("dynamic", defaults, env, catalogue), count: counts.dynamic },
     { label: "Answering models", value: inheritedText("chat_models", defaults, env, catalogue), count: counts.chat_models },
     { label: "Answering levels", value: inheritedText("chat_levels", defaults, env, catalogue), count: counts.chat_levels },
@@ -108,7 +122,12 @@ export function DefaultsSummary({ reply, catalogue }: { reply: AiDefaults; catal
   );
 }
 
-function DefaultsDialog(props: { reply: AiDefaults; catalogue: OperatorModel[]; onClose(): void; onSaved(reply: AiDefaults): void }) {
+function DefaultsDialog(props: {
+  reply: AiDefaults;
+  catalogue: OperatorModel[];
+  onClose(): void;
+  onSaved(reply: AiDefaults, message: string): void;
+}) {
   const { reply, catalogue, onClose, onSaved } = props;
   const [draft, setDraft] = useState<AiDraft>(() => draftOf(reply.defaults));
   const [errors, setErrors] = useState<AiErrors>({});
@@ -130,7 +149,10 @@ function DefaultsDialog(props: { reply: AiDefaults; catalogue: OperatorModel[]; 
     }
     setBusy(true);
     try {
-      onSaved(await putAiDefaults(aiBody(draft), normalizeCode(code)));
+      const next = await putAiDefaults(aiBody(draft), normalizeCode(code));
+      // Saved: the confirmation says the cost a page now; without it, it just says saved.
+      const cost = await postScanCost(costAsk(null, next.defaults)).catch(() => null);
+      onSaved(next, withCost("Saved the platform defaults.", cost, false));
       onClose();
     } catch (caught) {
       const refusal = refusalOf(caught);
@@ -144,6 +166,7 @@ function DefaultsDialog(props: { reply: AiDefaults; catalogue: OperatorModel[]; 
 
   return (
     <ActionDialog
+      wide
       title="Change platform defaults"
       onClose={onClose}
       canClose={(way) => canCloseDialog({ busy }, way)}
@@ -152,6 +175,7 @@ function DefaultsDialog(props: { reply: AiDefaults; catalogue: OperatorModel[]; 
       <form className={styles.dialogForm} onSubmit={submit} noValidate>
         <AiFields
           platform
+          customerId={null}
           catalogue={catalogue}
           saved={reply.defaults}
           defaults={reply.defaults}

@@ -1354,6 +1354,10 @@ export interface OperatorModel {
 
 /** A thinking level, as the operator console says it (High / Medium / Low). */
 export type AiLevel = "low" | "medium" | "high";
+/** A scan's thinking level: Minimal too, for scanning only, never answering (#463). */
+export type ScanLevel = "minimal" | AiLevel;
+/** How much picture detail a page is sent with (#463). */
+export type Resolution = "low" | "high";
 
 /** One organisation's own AI settings or the platform defaults (features 25-27, C10). For an
  * organisation, an empty list or a null field follows the platform defaults; for the
@@ -1363,17 +1367,23 @@ export interface AiValues {
   scan_default: string | null;
   chat_models: string[];
   chat_default: string | null;
-  scan_thinking: AiLevel | null;
+  scan_thinking: ScanLevel | null;
+  scan_resolution: Resolution | null;
+  careful_thinking: ScanLevel | null; // pages read again
+  careful_resolution: Resolution | null;
   chat_levels: AiLevel[] | null;
   chat_default_level: AiLevel | null;
   dynamic: boolean | null;
 }
 
-/** What the server uses when the platform defaults name no model or scan level. */
+/** What the server uses when the platform defaults name no model or scan setting. */
 export interface AiEnv {
   scan_model: string;
   chat_model: string;
   scan_thinking: string;
+  scan_resolution: string;
+  careful_thinking: string;
+  careful_resolution: string;
 }
 
 /** GET /operator/orgs/{id}/ai (operator only: the budget is in US dollars). */
@@ -1390,7 +1400,58 @@ export interface OrgAiReply {
 export interface AiDefaults {
   defaults: AiValues;
   env: AiEnv;
-  orgs_inheriting: Record<"scan_models" | "chat_models" | "scan_thinking" | "chat_levels" | "dynamic", number>;
+  orgs_inheriting: Record<
+    "scan_models" | "chat_models" | "scan_thinking" | "scan_resolution" | "careful_thinking" | "careful_resolution" | "chat_levels" | "dynamic",
+    number
+  >;
+}
+
+/** POST /operator/scan-cost (#463): the scan settings to price; null is what a save would
+ * inherit. customer_id null: the platform defaults. */
+export type ScanCostAsk = { customer_id: string | null } & Pick<
+  AiValues,
+  "scan_thinking" | "scan_resolution" | "careful_thinking" | "careful_resolution"
+>;
+
+/** One kind of page read, as measured in the last `days`: usd_per_page null when no page
+ * was read with these settings. */
+export interface ScanCostRead {
+  model: string;
+  thinking: string;
+  resolution: string;
+  usd_per_page: number | null;
+  pages: number;
+}
+
+/** The approximate cost a page: the first read, plus the share of pages read again (re_read
+ * null when Dynamic is off) at their cost. usd_per_page null when the first read is not
+ * measured; the first read's alone when the pages read again are not. quality: the share of
+ * pages read cleanly (no word the AI was unsure of) at these settings and at max settings
+ * (the same model, highest thinking, high picture detail). accuracy: the latest finished
+ * check at these settings; always null for the platform defaults. */
+export interface ScanCost {
+  days: number;
+  first_read: ScanCostRead;
+  re_read: (ScanCostRead & { share: number | null }) | null;
+  usd_per_page: number | null;
+  quality: { clean_share: number | null; pages: number; max_clean_share: number | null; max_pages: number };
+  accuracy: AccuracyCheck | null;
+}
+
+/** One organisation's accuracy check (#463): recent pages read at its settings and at max
+ * settings, and the share of words that match. No text is shown or kept. */
+export interface AccuracyCheck {
+  id: string;
+  status: "running" | "done" | "failed";
+  settings: { model: string } & Pick<AiValues, "scan_thinking" | "scan_resolution" | "careful_thinking" | "careful_resolution">;
+  pages_checked: number;
+  pages_failed: number;
+  word_match: number | null;
+  numbers_match: number | null; // amounts, dates and numbers; null: none on the checked pages
+  max_pages: number; // the pages it reads
+  cost_usd: number | null;
+  started_at: string;
+  finished_at: string | null;
 }
 
 /** One row of GET /operator/usage: one organisation's use of one model. No user or document. */

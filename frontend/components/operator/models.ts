@@ -6,8 +6,23 @@
 // money (Tushar, 15 Oct 2026).
 
 import { PART_NOT_KNOWN, formatUsd } from "@/lib/format";
-import type { AiDefaults, AiEnv, AiLevel, AiValues, OperatorModel, OperatorUsageRow, OrgInsight, UsageTotals } from "@/lib/types";
-import { countText } from "./logic";
+import type {
+  AiDefaults,
+  AiEnv,
+  AiLevel,
+  AiValues,
+  OperatorModel,
+  OperatorUsageRow,
+  OrgInsight,
+  AccuracyCheck,
+  Resolution,
+  ScanCost,
+  ScanCostAsk,
+  ScanLevel,
+  UsageTotals,
+} from "@/lib/types";
+import { ApiError } from "@/lib/api";
+import { REFUSALS, countText, operatorErrorMessage } from "./logic";
 
 // numeric(12,2): the largest budget the server's column holds.
 export const MAX_BUDGET = 9_999_999_999.99;
@@ -133,7 +148,15 @@ export const hasNoLevels = (model: Pick<OperatorModel, "efforts">) => (model.eff
 // --- AI settings: one organisation's, or the platform defaults (features 25-27) ----------
 
 export const LEVELS: AiLevel[] = ["low", "medium", "high"];
-export const LEVEL_WORDS: Record<AiLevel, string> = { low: "Low", medium: "Medium", high: "High" };
+// Minimal is for scanning only (#463, Tushar, 31 Oct 2026): the answering lists keep LEVELS.
+export const SCAN_LEVELS: ScanLevel[] = ["minimal", ...LEVELS];
+export const LEVEL_WORDS: Record<ScanLevel, string> = { minimal: "Minimal", low: "Low", medium: "Medium", high: "High" };
+export const RESOLUTIONS: Resolution[] = ["high", "low"];
+export const RESOLUTION_WORDS: Record<Resolution, string> = { high: "High", low: "Low" };
+export const RESOLUTION_HINT = "Low reads fewer picture details: cheaper, but small handwriting gets harder.";
+export const CAREFUL_THINKING_HINT =
+  "How hard the model thinks when a hard page is read again, by Cost saving or Read this page again. Higher costs more.";
+export const CAREFUL_RESOLUTION_HINT = "The picture detail a page is read again with. Low is cheaper, but small handwriting gets harder.";
 // Cost saving (Tushar, 16 Oct 2026): the super admin's name for Dynamic (its id and the
 // `dynamic` field stay). Organisations never see it: their "Read with" calls it "Automatic".
 export const COST_SAVING = "Cost saving";
@@ -155,7 +178,10 @@ export interface AiDraft {
   scan_default: string | null;
   chat_models: string[];
   chat_default: string | null;
-  scan_thinking: AiLevel | null;
+  scan_thinking: ScanLevel | null;
+  scan_resolution: Resolution | null;
+  careful_thinking: ScanLevel | null;
+  careful_resolution: Resolution | null;
   chat_levels: AiLevel[];
   chat_default_level: AiLevel | null;
   dynamic: boolean | null;
@@ -170,6 +196,9 @@ export function draftOf(values: AiValues, extra: { ensemble: boolean; ai_budget_
     chat_models: [...values.chat_models],
     chat_default: values.chat_default,
     scan_thinking: values.scan_thinking,
+    scan_resolution: values.scan_resolution,
+    careful_thinking: values.careful_thinking,
+    careful_resolution: values.careful_resolution,
     chat_levels: [...(values.chat_levels ?? [])],
     chat_default_level: values.chat_default_level,
     dynamic: values.dynamic,
@@ -193,7 +222,16 @@ export function sameAsDefault(draft: AiDraft, section: Section): boolean {
 export function resetSection(draft: AiDraft, section: Section): AiDraft {
   switch (section) {
     case "scan":
-      return { ...draft, scan_models: [], scan_default: null, scan_thinking: null, dynamic: null };
+      return {
+        ...draft,
+        scan_models: [],
+        scan_default: null,
+        scan_thinking: null,
+        scan_resolution: null,
+        careful_thinking: null,
+        careful_resolution: null,
+        dynamic: null,
+      };
     case "chat":
       return { ...draft, chat_models: [], chat_default: null, chat_levels: [], chat_default_level: null };
     case "ensemble":
@@ -266,6 +304,9 @@ export function aiBody(draft: AiDraft): AiValues {
     chat_models: draft.chat_models,
     chat_default: draft.chat_models.length > 0 ? draft.chat_default : null,
     scan_thinking: draft.scan_thinking,
+    scan_resolution: draft.scan_resolution,
+    careful_thinking: draft.careful_thinking,
+    careful_resolution: draft.careful_resolution,
     chat_levels: levels ? draft.chat_levels : null,
     chat_default_level: levels ? draft.chat_default_level : null,
     dynamic: draft.dynamic,
@@ -279,12 +320,20 @@ export function offered(catalogue: OperatorModel[], area: Area, saved: string[])
 }
 
 /** Does an organisation's own value follow the platform defaults? Per area: scanning is
- * its models, scan level and Dynamic; answering its models and levels. */
+ * its models, scan level, picture detail, pages read again and Dynamic; answering its
+ * models and levels. */
 export function follows(own: AiValues): { scan: "all" | "some" | "none"; chat: "all" | "some" | "none" } {
   const part = (inherited: boolean[]) =>
     inherited.every(Boolean) ? "all" : inherited.some(Boolean) ? "some" : "none";
   return {
-    scan: part([own.scan_models.length === 0, own.scan_thinking === null, own.dynamic === null]),
+    scan: part([
+      own.scan_models.length === 0,
+      own.scan_thinking === null,
+      own.scan_resolution === null,
+      own.careful_thinking === null,
+      own.careful_resolution === null,
+      own.dynamic === null,
+    ]),
     chat: part([own.chat_models.length === 0, own.chat_levels === null]),
   };
 }
@@ -306,7 +355,7 @@ export function namesOf(ids: string[], catalogue: OperatorModel[], first: string
 /** What an organisation that follows the platform gets, in words, for "From platform
  * defaults: …". An empty platform list is the server's own model. */
 export function inheritedText(
-  field: "scan_models" | "chat_models" | "scan_thinking" | "chat_levels" | "dynamic",
+  field: "scan_models" | "chat_models" | ScanSetting | "chat_levels" | "dynamic",
   defaults: AiValues,
   env: AiEnv,
   catalogue: OperatorModel[],
@@ -317,12 +366,28 @@ export function inheritedText(
     case "chat_models":
       return defaults.chat_models.length > 0 ? namesOf(defaults.chat_models, catalogue, defaults.chat_default) : `the server's model (${env.chat_model})`;
     case "scan_thinking":
-      return defaults.scan_thinking !== null ? LEVEL_WORDS[defaults.scan_thinking] : `the server's level (${env.scan_thinking})`;
+    case "scan_resolution":
+    case "careful_thinking":
+    case "careful_resolution":
+      return settingWords(field, defaults) ?? `the server's level (${env[field]})`;
     case "chat_levels":
       return levelText(defaults);
     case "dynamic":
       return defaults.dynamic ? "On" : "Off";
   }
+}
+
+/** The scan settings (#463) that each follow the platform, then the server, on their own. */
+export type ScanSetting = "scan_thinking" | "scan_resolution" | "careful_thinking" | "careful_resolution";
+
+/** A scan setting's value in words ("Minimal", "High"), or null when it follows. */
+export function settingWords(field: ScanSetting, values: Pick<AiValues, ScanSetting>): string | null {
+  if (field === "scan_resolution" || field === "careful_resolution") {
+    const value = values[field];
+    return value === null ? null : RESOLUTION_WORDS[value];
+  }
+  const level = values[field];
+  return level === null ? null : LEVEL_WORDS[level];
 }
 
 /** "High, Medium; default Medium". */
@@ -354,12 +419,19 @@ const DEFAULT_AREAS: {
     changed: (a, b) => !same(a.scan_models, b.scan_models) || a.scan_default !== b.scan_default,
     now: (v, catalogue) => (v.scan_models.length > 0 ? namesOf(v.scan_models, catalogue, v.scan_default) : "platform defaults"),
   },
-  {
-    area: "scan_thinking",
-    label: "scanning level",
-    changed: (a, b) => a.scan_thinking !== b.scan_thinking,
-    now: (v) => (v.scan_thinking ? LEVEL_WORDS[v.scan_thinking] : "platform default"),
-  },
+  ...(
+    [
+      ["scan_thinking", "scanning level"],
+      ["scan_resolution", "picture detail"],
+      ["careful_thinking", "thinking for pages read again"],
+      ["careful_resolution", "picture detail for pages read again"],
+    ] as const
+  ).map(([area, label]) => ({
+    area,
+    label,
+    changed: (a: AiValues, b: AiValues) => a[area] !== b[area],
+    now: (v: AiValues) => settingWords(area, v) ?? "platform default",
+  })),
   {
     area: "dynamic",
     label: COST_SAVING,
@@ -435,6 +507,207 @@ export function refusalField(code: string): AiField {
     default: // unavailable, default_not_allowed, level_not_supported: either area
       return "form";
   }
+}
+
+// --- The approximate cost a page and the accuracy (#463, Tushar, 31 Oct 2026) -----------
+
+export const COST_DELAY_MS = 400; // the draft rests this long before the cost is asked
+export const COST_WORKING = "Working out the cost…";
+export const COST_NOT_MEASURED = "Not measured yet at these settings. Scan a few pages with them to see the cost.";
+export const COST_FAILED = "Couldn't work out the cost right now.";
+export const APPLIES_NOTE = "Applies to new scans and pages read again from now on. Text already read stays as it is.";
+export const CLEAN_HINT = "Read cleanly means the AI wasn't unsure about any word.";
+export const CHECK_ON_ORG = "Check accuracy on an organisation's page.";
+export const CHECK_LABEL = "Check accuracy against max settings";
+// The pages a check may read (council, 31 Oct 2026): more give a surer answer.
+export const CHECK_PAGE_CHOICES = [20, 50, 100] as const;
+export type CheckPages = (typeof CHECK_PAGE_CHOICES)[number];
+export const CHECK_PAGES_HINT = "More pages give a surer answer. 100 is best before a big decision.";
+export const OTHER_SETTINGS = "Your last check was at different settings.";
+export const CHECK_RUNNING = "A check is already running for this organisation.";
+export const TOO_MANY_CHECKS = "Too many checks in the last hour. Try again later.";
+export const NO_PAGES = "This organisation has no scanned pages to check yet.";
+
+/** What the cost endpoint has said for one set of scan settings: null while asking. */
+export type CostReply = ScanCost | "failed" | null;
+
+/** The cost endpoint's question for these scan settings; null fields are what a save inherits. */
+export const costAsk = (customerId: string | null, values: Pick<AiValues, ScanSetting>): ScanCostAsk => ({
+  customer_id: customerId,
+  ...scanSettings(values),
+});
+
+/** Just the four scan settings (an accuracy check's body, with its code). */
+export const scanSettings = (values: Pick<AiValues, ScanSetting>): Pick<AiValues, ScanSetting> => ({
+  scan_thinking: values.scan_thinking,
+  scan_resolution: values.scan_resolution,
+  careful_thinking: values.careful_thinking,
+  careful_resolution: values.careful_resolution,
+});
+
+/** Do two sets of scan settings ask the same cost? */
+export const sameSettings = (a: Pick<AiValues, ScanSetting>, b: Pick<AiValues, ScanSetting>) =>
+  a.scan_thinking === b.scan_thinking &&
+  a.scan_resolution === b.scan_resolution &&
+  a.careful_thinking === b.careful_thinking &&
+  a.careful_resolution === b.careful_resolution;
+
+/**
+ * Ask the cost once the draft has rested COST_DELAY_MS, then show the reply, or "failed"
+ * once (no retry: the next change asks again). The returned cancel, called when the draft
+ * changes again, also drops the reply of an ask already out, so the last reply wins.
+ */
+export function askScanCost(
+  ask: ScanCostAsk,
+  fetch: (ask: ScanCostAsk) => Promise<ScanCost>,
+  show: (reply: ScanCost | "failed") => void,
+): () => void {
+  let current = true;
+  const timer = setTimeout(() => {
+    fetch(ask).then(
+      (reply) => current && show(reply),
+      () => current && show("failed"),
+    );
+  }, COST_DELAY_MS);
+  return () => {
+    current = false;
+    clearTimeout(timer);
+  };
+}
+
+const perPage = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 4, maximumFractionDigits: 4 });
+const paise = new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const dayMonth = new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "short", timeZone: "Asia/Kolkata" });
+
+/** "₹0.24": dollars in rupees at INR_PER_USD. */
+export const rupeeText = (dollars: number) => paise.format(dollars * INR_PER_USD);
+/** "94%", and "under 1%" for a share above none that rounds to none. */
+const percent = (share: number) => (share > 0 && share < 0.005 ? "under 1%" : `${Math.round(share * 100)}%`);
+
+/** The Cost per page panel's words: the figure (large), the dollars, then the lines. */
+export interface CostWords {
+  figure: string | null;
+  dollars: string | null;
+  lines: string[];
+}
+
+export function costWords(reply: CostReply): CostWords {
+  if (reply === null) return { figure: null, dollars: null, lines: [COST_WORKING] };
+  if (reply === "failed") return { figure: null, dollars: null, lines: [COST_FAILED] };
+  const { first_read: first, re_read: again, usd_per_page: total, days } = reply;
+  if (total === null || first.usd_per_page === null) return { figure: null, dollars: null, lines: [COST_NOT_MEASURED] };
+  const lines = [
+    `First read: ${perPage.format(first.usd_per_page)} a page, measured on ${countText(first.pages, "page", "pages")} in the last ${days} days.`,
+  ];
+  const leftOut = "so the cost above leaves them out.";
+  if (again === null) lines.push("Cost saving is off, so no page is read again.");
+  else if (again.share === null)
+    lines.push(
+      again.usd_per_page === null
+        ? `Read again: not measured yet at these settings, ${leftOut}`
+        : `Read again: ${perPage.format(again.usd_per_page)} each, but how many pages need it is not known yet, ${leftOut}`,
+    );
+  else
+    lines.push(
+      again.usd_per_page === null
+        ? `Read again: ${percent(again.share)} of pages, not measured yet at these settings, ${leftOut}`
+        : `Read again: ${percent(again.share)} of pages, ${perPage.format(again.usd_per_page)} each.`,
+    );
+  return { figure: `About ${rupeeText(total)} a page`, dollars: `${perPage.format(total)} a page`, lines };
+}
+
+/** While the draft differs from what is saved and both are measured: "Now ₹0.31 → ₹0.18 a
+ * page" and "42% cheaper", "35% dearer" or "about the same", in words (never colour alone). */
+export function costChange(saved: CostReply, draft: CostReply): { from: string; to: string; verdict: string } | null {
+  if (saved === null || saved === "failed" || draft === null || draft === "failed") return null;
+  const [before, after] = [saved.usd_per_page, draft.usd_per_page];
+  if (before === null || after === null || before <= 0) return null;
+  const change = Math.round((Math.abs(after - before) / before) * 100);
+  const verdict = change === 0 ? "about the same" : `${change}% ${after < before ? "cheaper" : "dearer"}`;
+  return { from: rupeeText(before), to: rupeeText(after), verdict };
+}
+
+/** The free signal: "Pages read cleanly: 94% at these settings, 97% at max settings (last 30 days)". */
+export function cleanText(reply: ScanCost): string {
+  const { clean_share: share, pages, max_clean_share: max, max_pages: maxPages } = reply.quality;
+  if (share === null || pages === 0) return "Not enough scans at these settings yet.";
+  const atMax = max !== null && maxPages > 0 ? `, ${percent(max)} at max settings` : "";
+  return `Pages read cleanly: ${percent(share)} at these settings${atMax} (last ${reply.days} days)`;
+}
+
+const checkedOn = (check: AccuracyCheck) => dayMonth.format(new Date(check.finished_at ?? check.started_at));
+
+/** A finished check's result, numbers first, since a wrong amount matters more than a wrong
+ * word (council, 31 Oct 2026): "Amounts, dates and numbers: 99% match max settings", then
+ * "All words: 98%. Checked on 50 pages, 31 Oct."; `saved` is the Save confirmation's words.
+ * Null when it has none (running, failed, or no words to compare). */
+export function checkResult(check: AccuracyCheck): { figure: string; detail: string; saved: string } | null {
+  if (check.status !== "done" || check.word_match === null) return null;
+  const day = checkedOn(check);
+  const checked = `Checked on ${countText(check.pages_checked, "page", "pages")}, ${day}.`;
+  const words = percent(check.word_match);
+  if (check.numbers_match === null)
+    return {
+      figure: `All words: ${words} match max settings`,
+      detail: `No numbers on the checked pages. ${checked}`,
+      saved: `${words} of words match max settings (checked ${day})`,
+    };
+  const numbers = percent(check.numbers_match);
+  return {
+    figure: `Amounts, dates and numbers: ${numbers} match max settings`,
+    detail: `All words: ${words}. ${checked}`,
+    saved: `${numbers} of amounts, dates and numbers match max settings (checked ${day})`,
+  };
+}
+
+/** The Accuracy part of an organisation's panel, after the free signal: a running check, the
+ * result at these settings, or that the last check was at other settings. */
+export function accuracyWords(atThese: AccuracyCheck | null, latest: AccuracyCheck | null): { figure: string | null; line: string | null } {
+  if (latest?.status === "running") return { figure: null, line: `Checking ${countText(latest.max_pages, "page", "pages")}…` };
+  const result = atThese ? checkResult(atThese) : null;
+  if (result) return { figure: result.figure, line: result.detail };
+  if (atThese) return { figure: null, line: "The last check at these settings did not finish. Check again." };
+  return { figure: null, line: latest ? OTHER_SETTINGS : null };
+}
+
+/** The check's confirm: what it does and roughly what it costs for `pages`, from the last
+ * check's measured cost a page (both reads); "a small cost" without one. */
+export function checkEffect(orgName: string, latest: AccuracyCheck | null, pages: CheckPages): string {
+  const perCheckedPage = latest && latest.cost_usd !== null && latest.pages_checked > 0 ? latest.cost_usd / latest.pages_checked : null;
+  const cost = perCheckedPage === null ? "It has a small cost" : `It costs about ${rupeeText(pages * perCheckedPage)}`;
+  return (
+    `Kaagaz reads ${pages} recent pages of ${orgName} twice, at these settings and at max, and compares the words. ` +
+    `${cost} and takes a few minutes. No text is shown or kept.`
+  );
+}
+
+/** A refused check in plain words: one running already, too many in the hour, no pages. A
+ * refused code says what the AI settings save says. */
+export function checkRefusal(caught: unknown): string {
+  if (caught instanceof ApiError && !Object.hasOwn(REFUSALS, caught.code)) {
+    if (caught.status === 409) return CHECK_RUNNING;
+    if (caught.status === 429) return TOO_MANY_CHECKS;
+    if (caught.code === "no_pages") return NO_PAGES;
+  }
+  return operatorErrorMessage(caught);
+}
+
+/** Ask again while the check runs; stop once it has finished (or there is none). */
+export const checkRunning = (check: AccuracyCheck | null) => check?.status === "running";
+
+/** The Save confirmation with the cost a page now and, for an organisation, the accuracy:
+ * "Saved …. Scans now cost about ₹0.18 a page, and 99% of amounts, dates and numbers match
+ * max settings (checked 31 Oct)." Without a reply (it failed) the message alone. */
+export function withCost(message: string, reply: ScanCost | null, checks: boolean): string {
+  if (reply === null) return message;
+  const cost =
+    reply.usd_per_page === null
+      ? "The cost a page is not measured yet at these settings"
+      : `Scans now cost about ${rupeeText(reply.usd_per_page)} a page`;
+  if (!checks) return `${message} ${cost}.`;
+  const result = reply.accuracy ? checkResult(reply.accuracy) : null;
+  if (!result) return `${message} ${cost}. Accuracy against max settings isn't checked yet.`;
+  return reply.usd_per_page === null ? `${message} ${cost}. ${result.saved}.` : `${message} ${cost}, and ${result.saved}.`;
 }
 
 // --- AI spend ---------------------------------------------------------------------------
