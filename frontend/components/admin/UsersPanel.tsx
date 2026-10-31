@@ -46,7 +46,7 @@ import {
   unlockUser,
   updateUser,
 } from "@/lib/api";
-import { clearDraft, readDraft, saveDraftSoon } from "@/lib/drafts";
+import { DRAFT_KEPT, clearDraft, readDraft, saveDraftSoon } from "@/lib/drafts";
 import { errorWords } from "@/lib/errorWords";
 import { formatDate } from "@/lib/format";
 import type { AddedUser, AdminUser, PendingConnection, Role } from "@/lib/types";
@@ -636,8 +636,15 @@ function AddUserPanel({
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const pressTarget = useRef<EventTarget | null>(null);
-  // #468: what was typed before a session ended comes back; the password never does.
-  const [input, setInput] = useState<NewUserInput>(() => newUserFromDraft(readDraft(userId, ADD_USER_DRAFT)));
+  // #468: what was typed before a session ended comes back; the password never does. A line says
+  // so (DRAFT_KEPT) until the form is edited or sent.
+  const [kept] = useState(() => readDraft(userId, ADD_USER_DRAFT));
+  const [input, setInput] = useState<NewUserInput>(() => newUserFromDraft(kept));
+  const [keptNote, setKeptNote] = useState(kept !== null);
+  const edit = (next: NewUserInput) => {
+    setKeptNote(false);
+    setInput(next);
+  };
   const [errors, setErrors] = useState<NewUserErrors>({});
   const [serverError, setServerError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -669,6 +676,7 @@ function AddUserPanel({
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (busy) return; // Enter in a field while adding: never a second user
+    setKeptNote(false);
     setMasked(true); // never leave a password showing once it is sent
     setServerError(null);
     const found = validateNewUser(input);
@@ -725,6 +733,7 @@ function AddUserPanel({
           </h2>
           <IconButton icon="close" label="Close" className="btn-quiet" onClick={askClose} />
         </div>
+        {keptNote && <p className="muted">{DRAFT_KEPT}</p>}
         <form className={styles.form} onSubmit={submit} noValidate>
           <Field
             id={NEW_USER_FIELD_IDS.email}
@@ -732,7 +741,7 @@ function AddUserPanel({
             error={errors.email}
             type="email"
             value={input.email}
-            onChange={(email) => setInput({ ...input, email })}
+            onChange={(email) => edit({ ...input, email })}
           />
           <Field
             id={NEW_USER_FIELD_IDS.display_name}
@@ -740,7 +749,7 @@ function AddUserPanel({
             error={errors.display_name}
             type="text"
             value={input.display_name}
-            onChange={(display_name) => setInput({ ...input, display_name })}
+            onChange={(display_name) => edit({ ...input, display_name })}
           />
           <div className="field">
             <label htmlFor="new-user-role">Role</label>
@@ -750,7 +759,7 @@ function AddUserPanel({
               value={input.role}
               onChange={(event) => {
                 const role = ROLES.find((option) => option === event.target.value);
-                if (role) setInput({ ...input, role });
+                if (role) edit({ ...input, role });
               }}
             >
               {ROLES.map((role) => (
@@ -768,7 +777,7 @@ function AddUserPanel({
               autoComplete="new-password"
               hint={`At least ${MIN_PASSWORD_LENGTH} characters. Give it to them yourself; they set their own when they sign in.`}
               value={input.password}
-              onChange={(password) => setInput({ ...input, password })}
+              onChange={(password) => edit({ ...input, password })}
               error={errors.password ?? null}
               masked={masked}
               onMaskedChange={setMasked}
@@ -778,7 +787,7 @@ function AddUserPanel({
                 type="button"
                 className="btn"
                 onClick={() => {
-                  setInput({ ...input, password: generatePassword() });
+                  edit({ ...input, password: generatePassword() });
                   setMasked(false); // shown, so it can be copied and given to them
                 }}
               >

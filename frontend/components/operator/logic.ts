@@ -152,7 +152,7 @@ export function operatorErrorMessage(caught: unknown): string {
   if (caught.status === 400) return CHECK_INPUT;
   if (caught.status === 401) return "Your session ended. Sign in again.";
   if (caught.status === 429) return TOO_MANY_ATTEMPTS;
-  if (caught.status === 0) return NETWORK_FAILURE;
+  if (caught.status === 0) return caught.code === "timeout" ? caught.message : NETWORK_FAILURE;
   return OPERATOR_DOWN;
 }
 

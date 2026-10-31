@@ -670,6 +670,13 @@
   color: var(--text-primary);
 }
 
+/* Issue 468 review: in view however far the screen is scrolled, above what scrolls under it. */
+.offlineBanner {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
 .sessionNoticeText {
   flex: 1 1 16rem;
   margin: 0;

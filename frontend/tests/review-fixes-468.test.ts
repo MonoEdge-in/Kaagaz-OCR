@@ -3,10 +3,13 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { aiChangesToKeep, orgDraftOver, settingsDraft, settingsFromDraft } from "@/components/admin/logic";
 import { ASK_DRAFT, askDraft } from "@/components/chat/logic";
+import { operatorErrorMessage } from "@/components/operator/logic";
+import { storyFailure } from "@/components/viewer/story";
 import { endedPath, pathAfterSignIn, SEARCH_DRAFT, searchToKeep } from "@/components/shell/gate";
 import { ApiError, GET_TIMEOUT_MS, TOO_SLOW, getDocument } from "@/lib/api";
 import { changedOnly, orgDraftOf } from "@/lib/aiSettings";
-import { clearDrafts, readDraft, saveDraft } from "@/lib/drafts";
+import { DRAFT_KEPT, clearDrafts, readDraft, saveDraft } from "@/lib/drafts";
+import { SERVER_PROBLEM, errorWords } from "@/lib/errorWords";
 import type { AiSettings, AiTaskSetting, CustomerSettings, TaskLevel } from "@/lib/types";
 
 // The #468 council review's fixes. Each describe names its item.
@@ -207,5 +210,95 @@ describe("SF3: leaving one admin tab drops only that tab's draft (structural)", 
     expect(view).toContain('if (active === "settings") clearDraft(me.user.id, SETTINGS_DRAFT);');
     expect(view).toContain('if (active === "ai") clearDraft(me.user.id, aiSettingsDraft("organisation"));');
     expect(view).not.toMatch(/clearDraft\(me\.user\.id, SETTINGS_DRAFT\);\s*clearDraft\(me\.user\.id, aiSettingsDraft/);
+  });
+});
+
+describe("SF2: an operator or story timeout says it is slow, not to check the internet", () => {
+  const timeout = new ApiError(0, "timeout", TOO_SLOW);
+  it("the operator console says TOO_SLOW for a timeout, the network words for a lost connection", () => {
+    expect(operatorErrorMessage(timeout)).toBe(TOO_SLOW);
+    expect(operatorErrorMessage(new ApiError(0, "network", "x"))).toBe(operatorErrorMessage(new TypeError("Failed to fetch")));
+  });
+
+  it("a story says TOO_SLOW after what did not happen", () => {
+    expect(storyFailure(timeout, "load")).toEqual({ kind: "alert", message: `Your story could not be loaded. ${TOO_SLOW}` });
+    expect(storyFailure(new TypeError("Failed to fetch"), "save").message).not.toContain(TOO_SLOW);
+  });
+});
+
+describe("UX4: a restored draft says so, in one muted line (structural)", () => {
+  it("has the words", () => {
+    expect(DRAFT_KEPT).toBe("We kept what you were typing. It hasn't been sent.");
+  });
+
+  it("Ask shows it while the restored words are unchanged; editing or sending takes it away", () => {
+    const chat = read("components/chat/ChatScreen.tsx");
+    expect(chat).toMatch(/setDraft\(kept\);\s*setKeptNote\(kept\);/);
+    expect(chat).toContain("setKeptNote((shown) => (shown !== null && shown !== text ? null : shown));");
+    expect(chat).toMatch(/const onAsk = async \([^)]*\): Promise<boolean> => \{\s*setKeptNote\(null\);/);
+    expect(chat).toContain("{keptNote !== null ? <p className={styles.composerNote}>{DRAFT_KEPT}</p> : null}");
+  });
+
+  it("Add a user shows it when a draft came back, until an edit or a send (structural)", () => {
+    const users = read("components/admin/UsersPanel.tsx");
+    expect(users).toContain("const [keptNote, setKeptNote] = useState(kept !== null);");
+    expect(users).toMatch(/const edit = \(next: NewUserInput\) => \{\s*setKeptNote\(false\);\s*setInput\(next\);/);
+    expect(users).toMatch(/if \(busy\) return;[^\n]*\n\s*setKeptNote\(false\);/);
+    expect(users).toContain('{keptNote && <p className="muted">{DRAFT_KEPT}</p>}');
+    // No live region, no focus move: a plain line.
+    for (const source of [read("components/chat/ChatScreen.tsx"), users]) {
+      expect(source).not.toMatch(/role="status"[^>]*>\{DRAFT_KEPT\}/);
+    }
+  });
+});
+
+describe("UX1: cancelling the leave question keeps focus on the tab still open (structural)", () => {
+  it("Tabs' onChange says whether the tab changed, and focus moves only then", () => {
+    const tabs = read("components/admin/Tabs.tsx");
+    expect(tabs).toContain("onChange(id: T): boolean;");
+    expect(tabs).toContain("if (onChange(tab.id)) document.getElementById(tabId(prefix, tab.id))?.focus();");
+  });
+
+  it("AdminView's openTab returns false when the admin stays, true once the tab opens", () => {
+    const view = read("components/admin/AdminView.tsx");
+    expect(view).toMatch(/function openTab\(next: TabId\): boolean \{/);
+    expect(view).toContain("if (!tabChangeAllowed(unsaved, () => window.confirm(LEAVE_UNSAVED))) return false;");
+    expect(view).toMatch(/setActive\(next\);\s*return true;/);
+    expect(read("components/operator/OperatorConsole.tsx")).toMatch(/function choose\(id: TabId\): boolean \{[\s\S]*?return true;/);
+  });
+});
+
+describe("PT1 / SF4 / UX2 / CR2: Clear filters with the Date panel open empties its inputs (structural)", () => {
+  // Not a key on the panel: a pick changes the filters too, and a remount would take focus out of
+  // the date being typed. The inputs follow the filters' dates when those change from outside.
+  it("the Date panel's inputs start over whenever the filters' dates change from outside", () => {
+    const panel = read("components/admin/ActivityPanel.tsx");
+    expect(panel).toMatch(
+      /if \(shown\.from !== startFrom \|\| shown\.to !== startTo\) \{\s*setShown\(\{ from: startFrom, to: startTo \}\);\s*setFrom\(startFrom \?\? ""\);\s*setTo\(startTo \?\? ""\);/,
+    );
+    expect(panel).not.toMatch(/<ActivityDates\s+key=/);
+    // The operator's Activity has no Date panel.
+    expect(read("components/operator/ActivityView.tsx")).not.toContain("ActivityDates");
+  });
+});
+
+describe("UX3: the offline line stays in view however far the screen is scrolled (structural)", () => {
+  it("is sticky at the top, above the screen, in the app and the operator console (one component)", () => {
+    const css = read("components/shell/Shell.module.css");
+    expect(css).toMatch(/\.offlineBanner \{\s*position: sticky;\s*top: 0;\s*z-index: 1;\s*\}/);
+    // Sticky on the live region itself: a sticky child of a box its own height never sticks.
+    expect(read("components/shell/OfflineBanner.tsx")).toContain(
+      '<div role="status" aria-live="polite" className={offline ? styles.offlineBanner : undefined}>',
+    );
+  });
+});
+
+describe("SF5: an unknown 4xx with no code of the API's (a proxy's page) is SERVER_PROBLEM", () => {
+  it("never shows the bare \"Something went wrong.\"", () => {
+    for (const status of [400, 405, 413, 418, 422]) {
+      expect(errorWords(new ApiError(status, "error", "Something went wrong.")), String(status)).toBe(SERVER_PROBLEM);
+    }
+    // The backend's own words for its own code stay.
+    expect(errorWords(new ApiError(400, "invalid_email", "That e-mail is not valid."))).toBe("That e-mail is not valid.");
   });
 });

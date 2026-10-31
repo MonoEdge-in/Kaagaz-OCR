@@ -36,8 +36,9 @@ const SEVEN = [
 
 const tabs = (items: readonly { id: string; label: string; count?: number }[], active: string) =>
   renderToStaticMarkup(
+    // Changed on purpose (#468 review, UX1): onChange says whether the tab opened.
     // eslint-disable-next-line react/no-children-prop -- Tabs types children as a required prop
-    createElement(Tabs<string>, { prefix: "t", label: "Sections", tabs: items, active, onChange: () => undefined, children: "Body" }),
+    createElement(Tabs<string>, { prefix: "t", label: "Sections", tabs: items, active, onChange: () => true, children: "Body" }),
   );
 
 describe("the tabs spec", () => {

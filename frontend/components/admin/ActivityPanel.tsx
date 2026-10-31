@@ -411,6 +411,15 @@ export function ActivityDates({
   const id = useId();
   const [from, setFrom] = useState(startFrom ?? "");
   const [to, setTo] = useState(startTo ?? "");
+  // #468 review: the filters' dates changed from outside (Clear filters, with this panel open):
+  // the inputs start over from them, so old dates never come back on the next pick. A pick made
+  // here only changes them to what the inputs hold already, so typing is never interrupted.
+  const [shown, setShown] = useState({ from: startFrom, to: startTo });
+  if (shown.from !== startFrom || shown.to !== startTo) {
+    setShown({ from: startFrom, to: startTo });
+    setFrom(startFrom ?? "");
+    setTo(startTo ?? "");
+  }
   const [changed, setChanged] = useState<"from" | "to">("from");
   const error = datesError(from, to);
 

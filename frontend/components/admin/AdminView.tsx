@@ -47,8 +47,10 @@ export function AdminView({ twoStep }: { twoStep: ReactNode }) {
     if (gate === "admin_sign_in") leavePage("/login?next=/admin");
   }, [gate]);
 
-  function openTab(next: TabId) {
-    if (next === active || !tabChangeAllowed(unsaved, () => window.confirm(LEAVE_UNSAVED))) return;
+  /** Opens the tab, and says whether it did: not when the admin stays with unsaved changes. */
+  function openTab(next: TabId): boolean {
+    if (next === active) return true;
+    if (!tabChangeAllowed(unsaved, () => window.confirm(LEAVE_UNSAVED))) return false;
     if (unsaved) {
       // Only the draft of the tab being left: the other tab's unsaved changes stay kept.
       if (active === "settings") clearDraft(me.user.id, SETTINGS_DRAFT);
@@ -56,6 +58,7 @@ export function AdminView({ twoStep }: { twoStep: ReactNode }) {
     }
     setUnsaved(false);
     setActive(next);
+    return true;
   }
 
   if (gate === "no_access") {

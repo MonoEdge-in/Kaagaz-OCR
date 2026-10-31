@@ -82,7 +82,8 @@ describe("Ask's draft (components/chat/logic.ts)", () => {
     const screen = read("components/chat/ChatScreen.tsx");
     expect(screen).toMatch(/if \(hydrated && !draftRead\) \{/);
     // Only when nothing else fills the box: a picked-up question or a ?q= link wins.
-    expect(screen).toContain("if (kept !== null && draft === undefined && resumed === null && autoQuestion === null) setDraft(kept);");
+    // Changed on purpose (#468 review, UX4): the restored words also show the kept-draft line.
+    expect(screen).toContain("if (kept !== null && draft === undefined && resumed === null && autoQuestion === null) {");
     // The kept words only fill the box (setDraft): no onAsk with them.
     expect(screen).not.toMatch(/onAsk\(kept/);
     // Sending keeps the question as waiting at once; settled, it is no longer waiting.

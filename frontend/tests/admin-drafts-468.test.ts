@@ -89,7 +89,9 @@ describe("Add a user: email, name and role, never the password", () => {
 
   it("the panel restores on open, saves as it is typed, clears when added or closed", () => {
     const panel = read("components/admin/UsersPanel.tsx");
-    expect(panel).toMatch(/useState<NewUserInput>\(\(\) => newUserFromDraft\(readDraft\(userId, ADD_USER_DRAFT\)\)\)/);
+    // Changed on purpose (#468 review, UX4): the kept draft is read once, then fills the form.
+    expect(panel).toContain("const [kept] = useState(() => readDraft(userId, ADD_USER_DRAFT));");
+    expect(panel).toContain("useState<NewUserInput>(() => newUserFromDraft(kept))");
     expect(panel).toMatch(/saveDraftSoon\(userId, ADD_USER_DRAFT, newUserDraft\(input\)\)/);
     expect(panel.match(/clearDraft\(userId, ADD_USER_DRAFT\)/g)?.length).toBeGreaterThanOrEqual(2);
   });

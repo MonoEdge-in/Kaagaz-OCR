@@ -64,9 +64,10 @@ export function OperatorConsole() {
   }, [testAsk]);
   const reloadTestModel = () => setTestAsk((n) => n + 1);
 
-  function choose(id: TabId) {
+  function choose(id: TabId): boolean {
     setActive(id);
     setOrgSearch("");
+    return true; // a tab here always opens (Tabs moves focus to it)
   }
 
   function openTab(id: "health" | "models") {

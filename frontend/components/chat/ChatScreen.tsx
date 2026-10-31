@@ -55,7 +55,7 @@ import {
   renameConversation,
 } from "@/lib/api";
 import { MODE_TEXTS, modeLockedText, readMode, saveMode, sendPlan, startMode, STORY_SEARCH_LIMIT } from "@/lib/chatMode";
-import { readDraft, saveDraft, saveDraftSoon } from "@/lib/drafts";
+import { DRAFT_KEPT, readDraft, saveDraft, saveDraftSoon } from "@/lib/drafts";
 import { useSession } from "@/lib/session";
 import type { ChatMode } from "@/lib/chatMode";
 import {
@@ -244,10 +244,15 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
   const typedNow = useRef("");
   const waitingNow = useRef<string | null>(waiting ? resumed!.question : null);
   const [draftRead, setDraftRead] = useState(false);
+  // The words put back, while the box still holds them unchanged: a line says they were kept (DRAFT_KEPT).
+  const [keptNote, setKeptNote] = useState<string | null>(null);
   if (hydrated && !draftRead) {
     setDraftRead(true);
     const kept = askDraftText(readDraft(userId, ASK_DRAFT));
-    if (kept !== null && draft === undefined && resumed === null && autoQuestion === null) setDraft(kept);
+    if (kept !== null && draft === undefined && resumed === null && autoQuestion === null) {
+      setDraft(kept);
+      setKeptNote(kept);
+    }
   }
   const keepDraft = useCallback(
     () => saveDraftSoon(userId, ASK_DRAFT, askDraft(typedNow.current, waitingNow.current)),
@@ -257,6 +262,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
     (text: string) => {
       typedNow.current = text;
       keepDraft();
+      setKeptNote((shown) => (shown !== null && shown !== text ? null : shown));
     },
     [keepDraft],
   );
@@ -661,6 +667,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
   /** Send a question, kept as the draft's waiting question until it settles (issue 468). Not
    * answered, it stays as typing: the box gets it back, and so does a page a session's end left. */
   const onAsk = async (question: string, only?: ChosenScope, chose?: ClarifyReply): Promise<boolean> => {
+    setKeptNote(null);
     waitingNow.current = question;
     saveDraft(userId, ASK_DRAFT, askDraft(typedNow.current, question));
     const sent = await sendQuestion(question, only, chose);
@@ -930,6 +937,8 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
             {askOff || askError === FEATURE_OFF ? (
               <p className={styles.composerNote}>{FEATURE_OFF}</p>
             ) : (
+            <>
+            {keptNote !== null ? <p className={styles.composerNote}>{DRAFT_KEPT}</p> : null}
             <QuestionBox
               pending={busy || search.kind === "loading"}
               onStop={busy ? () => asking_.current && stopAsk(asking_.current) : undefined}
@@ -960,6 +969,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
                 ) : null
               }
             />
+            </>
             )}
           </div>
         </div>

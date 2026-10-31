@@ -14,6 +14,9 @@
 export type DraftValue = string | number | boolean | null | DraftValue[] | { [field: string]: DraftValue };
 export type Draft = { [field: string]: DraftValue };
 
+/** The muted line under a form that got a draft back (Ask, Add a user), until it is edited or sent. */
+export const DRAFT_KEPT = "We kept what you were typing. It hasn't been sent.";
+
 const PREFIX = "kaagaz-draft:";
 const WAIT_MS = 500;
 const SECRET_WORDS = new Set(["password", "passcode", "code", "codes", "token", "secret", "otp", "totp", "file", "files"]);

@@ -30,6 +30,8 @@ export function errorWords(error: ApiError, who: "customer" | "operator" = "cust
     case 429:
       return fromApi ? error.message : TOO_MANY_REQUESTS;
     default:
-      return error.message; // 400, 401 (the session's end is handled in lib/session.tsx), 413...
+      // 400, 401 (the session's end is handled in lib/session.tsx), 413...: the backend's own
+      // words; a reply without its code (a proxy's page) has none worth showing.
+      return fromApi ? error.message : SERVER_PROBLEM;
   }
 }
