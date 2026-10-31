@@ -124,11 +124,16 @@ def test_a_customer_never_reads_another_customers_ai_settings_or_answer_models(d
         with pytest.raises(models.AiNotAllowed) as refused:
             models.resolve_chat(conn, a, [theirs], None, settings=SETTINGS)
     assert (settings, rows, theirs_seen) == ([], [], [])
-    assert effective == {
+    assert effective == {  # Changed on purpose (#463, 31 Oct 2026): the scan cost settings too
         "scan_thinking": None,
         "chat_levels": ["low"],
         "chat_default_level": "low",
+        "scan_resolution": None,
+        "careful_thinking": None,
+        "careful_resolution": None,
+        "page_max_output_tokens": None,
         "dynamic": False,
+        "cost_saving": True,  # Changed on purpose (#463 review): whether the switches allow Dynamic
         "ensemble": False,
     }  # the platform's, never B's
     assert refused.value.code == "model_not_allowed"
@@ -163,13 +168,17 @@ def test_the_app_only_reads_the_ai_settings_and_never_verifies_a_model(db: Datab
         conn.execute(text("SELECT * FROM platform_models, platform_ai_settings, customer_ai_settings")).all()
 
 
+# Changed on purpose (#463, 31 Oct 2026): both saves take the three scan cost settings after the
+# scan level (0064), and the estimate's function is the operator's too.
 OP_CALLS = (
     "SELECT * FROM kaagaz_op_org_ai(gen_random_uuid(), gen_random_uuid())",
     "SELECT * FROM kaagaz_op_set_org_ai(gen_random_uuid(), gen_random_uuid(), ARRAY['a/b'], 'a/b',"
-    " '{}', NULL, NULL, NULL, NULL, NULL, false, NULL, 'g2', NULL, 1)",
+    " '{}', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, false, NULL, 'g2', NULL, 1)",
     "SELECT * FROM kaagaz_op_ai_defaults(gen_random_uuid())",
-    "SELECT kaagaz_op_set_ai_defaults(gen_random_uuid(), '{}', NULL, '{}', NULL, NULL, ARRAY['low'], 'low',"
-    " false, 'g2', NULL, 1)",
+    "SELECT kaagaz_op_set_ai_defaults(gen_random_uuid(), '{}', NULL, '{}', NULL, NULL, NULL, NULL, NULL,"
+    " NULL, ARRAY['low'], 'low', false, 'g2', NULL, 1)",
+    "SELECT * FROM kaagaz_op_scan_cost(gen_random_uuid(), NULL, 'a/b', 'low', 'high', NULL, NULL, NULL,"
+    " 'high', 'high')",
     "SELECT kaagaz_op_set_model_enabled(gen_random_uuid(), 'a/b', true, 'g2', NULL, 1)",
 )
 
@@ -313,8 +322,8 @@ def test_both_saves_need_a_fresh_code(db: Database, platform: str) -> None:
         no_code = str(
             conn.execute(
                 text(
-                    "SELECT kaagaz_op_set_ai_defaults(:o, '{}', NULL, '{}', NULL, NULL, ARRAY['low'], 'low',"
-                    " false, :p, :h, NULL)"
+                    "SELECT kaagaz_op_set_ai_defaults(:o, '{}', NULL, '{}', NULL, NULL, NULL, NULL, NULL,"
+                    " NULL, ARRAY['low'], 'low', false, :p, :h, NULL)"
                 ),
                 {"o": platform, "p": PROMPT, "h": ANSWER_PROMPT_HASH},
             ).scalar_one()
@@ -340,7 +349,7 @@ def test_the_organisations_own_log_holds_no_budget_and_the_operators_does(db: Da
         "scan_default": scan,
         "chat_models": [answer],
         "chat_default": answer,
-        "scan_thinking": None,
+        # Changed on purpose (#463 review, X1): no scan cost setting in the organisation's own log.
         "chat_levels": ["low"],
         "chat_default_level": "low",
         "dynamic": None,
@@ -349,7 +358,14 @@ def test_the_organisations_own_log_holds_no_budget_and_the_operators_does(db: Da
     [(platform_details,)] = as_owner(
         db, "SELECT details FROM platform_audit WHERE subject_customer_id = :c", {"c": customer}
     )
-    assert platform_details == {**details, "budget_usd": 12.5}
+    hidden = {
+        "scan_thinking": None,
+        "scan_resolution": None,
+        "careful_thinking": None,
+        "careful_resolution": None,
+        "page_max_output_tokens": None,
+    }  # the scan cost settings: the operator's log only
+    assert platform_details == {**details, **hidden, "budget_usd": 12.5}
     with OperatorDatabase(db.engine).operator() as conn:
         own = ops.org_ai(conn, operator, customer)
     assert own is not None and own["ai_budget_usd"] == Decimal("12.50")

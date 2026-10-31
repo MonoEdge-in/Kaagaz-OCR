@@ -385,6 +385,13 @@ class PageRecord:
     unsure_words: int = 0
     illegible_words: int = 0
     unpinned_lines: int = 0
+    # #463: the thinking level and picture detail of the page's first model read (#463 review:
+    # whichever pass produced its text), that pass (first or again) and the first read's output
+    # tokens.
+    read_thinking: str | None = None
+    read_resolution: str | None = None
+    read_pass: str | None = None
+    read_output_tokens: int | None = None
     # G3, CX1: its last line's sentence goes on at the top of the next page. Kept for the
     # pieces (the page cache keeps it with the page's read); not a pages column.
     continues_on_next_page: bool = False
@@ -1538,6 +1545,10 @@ class DocumentProcessor:
             model=run.model,
             provider=run.provider,
             thinking=None if reading is None else reading.thinking,
+            resolution=None if reading is None else reading.resolution,  # #463: the organisation's
+            careful_thinking=None if reading is None else reading.careful_thinking,
+            careful_resolution=None if reading is None else reading.careful_resolution,
+            max_output_tokens=None if reading is None else reading.page_max_output_tokens,
             others=()
             if reading is None
             else tuple((agent.model, agent.provider) for agent in reading.others),
@@ -1558,6 +1569,8 @@ class DocumentProcessor:
                 for agent in (reading.lead, reading.careful, *reading.others)
                 if agent is not None and not agent.thinks
             ),
+            # #463 review: a Careful or read-again level its model does not take is not sent.
+            levels={} if reading is None else reading.accepted(),
         )
         return meter.document(pages)
 
@@ -1943,6 +1956,10 @@ def _with_result(page: PageRecord, read: PageRead | None, disputed: int) -> Page
         illegible_words=read.illegible_words,
         unpinned_lines=read.unpinned_lines,
         continues_on_next_page=read.continues_on_next_page,
+        read_thinking=read.read_thinking,
+        read_resolution=read.read_resolution,
+        read_pass=read.read_pass,
+        read_output_tokens=read.read_output_tokens,
     )
 
 

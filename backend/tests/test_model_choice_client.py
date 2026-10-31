@@ -321,6 +321,8 @@ def test_a_read_page_is_one_ledger_row_with_its_tokens_cost_and_provider(
             output_tokens=500,
             reasoning_tokens=200,
             cost_usd=0.012,
+            thinking="low",  # Changed on purpose (#463, 31 Oct 2026): what the page read was sent
+            resolution="high",
         )
     ]
 

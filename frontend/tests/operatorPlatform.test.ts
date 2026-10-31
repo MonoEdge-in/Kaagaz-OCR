@@ -39,6 +39,10 @@ describe("activity in words", () => {
     expect(actionWords("")).toBe("Unknown");
   });
 
+  it("says an accuracy check plainly (#463 review, L3)", () => {
+    expect(actionWords("org.accuracy_check")).toBe("Checked scan accuracy");
+  });
+
   it("names who acted as a kind only, and the target's type", () => {
     expect(["user", "operator", "system"].map(byWords)).toEqual(["A user", "An operator", "The system"]);
     expect(byWords("toString")).toBe("ToString");

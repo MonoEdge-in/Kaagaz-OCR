@@ -35,12 +35,14 @@ def test_0048_up_down_up(fresh: tuple[str, Database]) -> None:
     migrate(url, "0047")
     at_0047 = base._schema(db)
     assert _bodies(db) == _sources(M0048.DOWNGRADE)
-    migrate(url, "head")
-    at_head = base._schema(db)
+    # Changed on purpose (#463, 31 Oct 2026): 0064 replaces both functions, so 0048's bodies are
+    # checked at 0048 itself, not at head.
+    migrate(url, "0048")
+    at_0048 = base._schema(db)
     assert _bodies(db) == _sources(M0048.UPGRADE)
     base._downgrade(url, "0047")
     assert base._schema(db) == at_0047
     assert _bodies(db) == _sources(M0048.DOWNGRADE)
-    migrate(url, "head")
-    assert base._schema(db) == at_head
+    migrate(url, "0048")
+    assert base._schema(db) == at_0048
     assert _bodies(db) == _sources(M0048.UPGRADE)

@@ -283,6 +283,15 @@ class EnsembleRuns:
             model=agent.model,
             provider=agent.provider,
             plain=frozenset() if agent.thinks else frozenset({agent.model}),  # no reasoning field
+            # #463: the organisation's scan level and picture detail (``resolve_ensemble``); #463
+            # review: a level this model does not take is the server's (``models.fit_level``).
+            thinking=models.fit_level(
+                agent,
+                read.reading.thinking or self._settings.ocr_thinking_level,
+                self._settings.ocr_thinking_level,
+            ),
+            resolution=read.reading.resolution,
+            max_output_tokens=read.reading.page_max_output_tokens,
         )
         read_by: dict[str, list[Span] | None] = dict.fromkeys(images)
         code = None

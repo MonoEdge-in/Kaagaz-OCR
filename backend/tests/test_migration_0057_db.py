@@ -10,11 +10,10 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 from kaagaz.db.engine import Database
-from kaagaz.db.pipeline_store import PgPipelineStore
 from tests import test_migration_0002_db as base
 from tests.db_support import migrate, new_customer
 from tests.test_migration_0037 import _load
-from tests.test_pipeline_store_db import content, new_document
+from tests.test_pipeline_store_db import new_document
 
 pytestmark = pytest.mark.db
 fresh = base.fresh
@@ -27,6 +26,10 @@ _SET = text(
     "UPDATE pages SET read_again_regions = CAST(:r AS jsonb) WHERE document_id = :d AND page_no = 1"
     " RETURNING read_again_regions"
 )
+_PAGE = text(
+    "INSERT INTO pages (customer_id, document_id, page_no, width, height, unit, has_image, route, read_by)"
+    " VALUES (:c, :d, 1, 612, 792, 'pt', true, 'ocr', 'rapidocr')"
+)
 BOX = [0.1, 0.2, 0.3, 0.4]
 
 
@@ -37,7 +40,10 @@ def test_0057_up_down_up(fresh: tuple[str, Database]) -> None:
     customer_id, _user = new_customer(db)
     other_id, _other = new_customer(db, name="Other customer")
     document_id = new_document(db, customer_id)
-    PgPipelineStore(db).save(content(customer_id, document_id))  # pages saved before 0057
+    # Changed on purpose (#463, 31 Oct 2026): the pipeline store now writes 0064's columns, so the
+    # page saved before 0057 is written as the store then wrote it, by SQL.
+    with db.customer(customer_id) as conn:
+        conn.execute(_PAGE, {"c": customer_id, "d": document_id})  # a page saved before 0057
 
     migrate(url, "0057")
     at_0057 = base._schema(db)

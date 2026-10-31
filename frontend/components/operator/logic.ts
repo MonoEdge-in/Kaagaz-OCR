@@ -117,6 +117,8 @@ const SERVER_FALLBACK = "Something went wrong."; // lib/api.ts, when the reply h
 export const OPERATOR_DOWN = "Something went wrong on our side. Try again in a minute.";
 export const NAME_MISMATCH = "That is not the organisation's name. Type it exactly, with the same capitals and spaces.";
 export const CONFLICT = "That change is not possible now. Reload the list and try again.";
+/** The most output tokens a page the server accepts (#463), said on the field and for its refusal. */
+export const TOKENS_RANGE = "Choose a number from 1,024 to 65,536.";
 
 /** The server's error codes in plain words (the server sends most refusals as
  * 409 "conflict" with its own sentence, which is used then). */
@@ -138,6 +140,7 @@ export const REFUSALS: Record<string, string> = {
   unavailable: "One of these models is not enabled on the platform now, or can't do this work. Reload and choose again.",
   default_not_allowed: "Choose each default from its own ticked list.",
   level_not_supported: "A chosen model does not accept one of these thinking levels. Choose levels every model accepts.",
+  limit_out_of_range: TOKENS_RANGE, // the most output tokens a page (#463)
 };
 
 /** Plain words for a refused change. A 409 keeps the server's own sentence

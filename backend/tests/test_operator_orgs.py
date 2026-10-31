@@ -66,6 +66,9 @@ ORG_ROUTES = {
     ("PUT", f"{ORGS}/{ANY_ID}/model-rates"),
     ("PUT", f"{ORGS}/{ANY_ID}/users/{ANY_ID}/model-rate"),
     ("POST", f"{ORGS}/{ANY_ID}/approve"),  # Changed on purpose (#457): a pending sign-up
+    # Changed on purpose (#463, 31 Oct 2026): one organisation's accuracy check against max settings.
+    ("POST", f"{ORGS}/{ANY_ID}/accuracy-check"),
+    ("GET", f"{ORGS}/{ANY_ID}/accuracy-check/latest"),
 }
 ORG_ROW = {
     "customer_id": CID,

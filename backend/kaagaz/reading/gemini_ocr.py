@@ -110,7 +110,10 @@ and cached under ``cache_prompt_version`` (C4). Dynamic reads a document twice t
 readers: the second time each page's first read comes back from ``memo`` with no call, and
 the pages in ``escalate`` are read with Careful (``_dynamic``), at OCR_RETRY_THINKING_LEVEL
 (Tushar, 16 Oct 2026); Careful may be the lead model itself (one allowed model): its low
-first read and high Careful read are two different calls. A document of at most
+first read and high Careful read are two different calls. #463 (Tushar, 31 Oct 2026): a first
+read is sent at the document's picture detail (``DocumentPages.resolution``), and Careful's
+re-reads and the pages read again at its Careful pair (``careful_thinking``,
+``careful_resolution``), each the env's (OCR_MEDIA_RESOLUTION, OCR_RETRY_*) when None. A document of at most
 DYNAMIC_MAX_PAGES pages is read once, each page's Careful read on its own thread
 (``_inline_careful``, fast scan, council 16 Oct 2026). Cost saving (Tushar, 16 Oct 2026:
 Dynamic as the super admin names it) decides how (``ocr.careful_plan``): a page whose hard
@@ -171,12 +174,14 @@ from PIL import Image, ImageDraw
 
 from kaagaz.ai.openrouter import OpenRouterClient, PageReply, ProviderNotAllowed, process_gate
 from kaagaz.ai.replies import ModelOutputError, ModelUnavailable, billed, schema_problem
-from kaagaz.ai.usage import billed_as, record_call
+from kaagaz.ai.usage import billed_as, record_call, record_page
 from kaagaz.db.engine import Database
 from kaagaz.db.page_reads import PageKey
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.reading.ocr import (
+    AGAIN_PASS,
     ENSEMBLE_MAX_PAGES,
+    FIRST_PASS,
     MAX_BLOCK_CHARS,
     MAX_BLOCKS_PER_PAGE,
     MAX_OCR_PIXELS,
@@ -455,6 +460,7 @@ class PageClient(Protocol):
         model: str | None = None,
         provider: str | None = None,
         validate: Callable[[dict[str, Any]], str | None] | None = None,
+        max_output_tokens: int | None = None,
     ) -> PageReply: ...
 
     def now(self) -> float: ...
@@ -673,7 +679,7 @@ class GeminiEngine:
         model = pages.model or self._model
         thinking = pages.thinking or self._normal[1]
         found = self._read_regions(
-            image, local.lines, unsure, model, pages.provider, self._normal[0], thinking
+            image, local.lines, unsure, model, pages.provider, self._resolution(pages), thinking
         )
         if found is None:
             return None, (0, 0)
@@ -720,7 +726,7 @@ class GeminiEngine:
         hard = sorted(meets | set(hard_lines(first)))
         if not meets or len(hard) > self._limits[0]:
             return page(pages=pages)
-        found = self._read_regions(image, first.lines, hard, model, provider, *self._harder)
+        found = self._read_regions(image, first.lines, hard, model, provider, *self._harder_of(pages, model))
         if found is None:
             return page(pages=pages)
         crops, value, spent = found
@@ -728,7 +734,13 @@ class GeminiEngine:
             return _plus(page(pages=pages), *spent)
         merged = with_crop_lines(reply, crops, value, hard)
         pages.cache.put(key, as_result(merged), hit[1] + spent[0], hit[2] + spent[1])
-        return self._page(merged, image, page_no, model, tokens=spent, boxes=boxes)
+        # #463 review: read again, at the settings of the page's first read (the cached one).
+        return dataclasses.replace(
+            self._page(merged, image, page_no, model, tokens=spent, boxes=boxes),
+            read_thinking=self._sent(model, pages.thinking or self._normal[1]),
+            read_resolution=self._resolution(pages),
+            read_pass=AGAIN_PASS,
+        )
 
     def _read_regions(
         self,
@@ -767,6 +779,7 @@ class GeminiEngine:
                 model=model,
                 provider=provider,
                 validate=check,
+                max_output_tokens=self._max_tokens(),
             )
         except (ModelUnavailable, ModelOutputError) as error:
             _log.warning("regions not read again", extra={"code": error.code})
@@ -830,7 +843,10 @@ class GeminiEngine:
             started = None
             # Not when Careful would be the very same call (same model, provider and level as
             # the first read): it would be a duplicate paid for and waited on, never better.
-            same = agent == (lead, pages.provider) and self._harder[1] == (pages.thinking or self._normal[1])
+            same = agent == (lead, pages.provider) and self._harder_of(pages, lead) == (
+                self._resolution(pages),
+                pages.thinking or self._normal[1],
+            )
             if agent is not None and not again and not same and 0 < pages.page_count <= self._early_max:
                 started = early.submit(contextvars.copy_context().run, self._careful, page, pages, agent)
             memo[key] = first = page(pages=pages)
@@ -858,14 +874,16 @@ class GeminiEngine:
         """The page read again by Careful the way ``path`` says (``careful_plan``): its hard
         lines only (PATH_WORDS, ``_careful_words``), else the whole page (``_careful``)."""
         if path == PATH_WORDS:
-            return self._careful_words(image, first, agent)
+            return self._careful_words(image, first, pages, agent)
         return _kept(first, self._careful(page, pages, agent), agent[0])
 
-    def _careful_words(self, image: Image.Image, first: PageRead, agent: tuple[str, str]) -> PageRead:
+    def _careful_words(
+        self, image: Image.Image, first: PageRead, pages: DocumentPages | None, agent: tuple[str, str]
+    ) -> PageRead:
         """Cost saving (16 Oct 2026): the first read with its hard lines read again by Careful
-        at OCR_RETRY_THINKING_LEVEL, in one call for the page: their crops (``crop_boxes``)
-        stacked into one picture (``crop_strip``), the reply following CROPS_SCHEMA, each
-        strip's line count checked (``crops_problem``, one repair turn through the client).
+        at its Careful pair (#463; OCR_RETRY_* when None), in one call for the page: their
+        crops (``crop_boxes``) stacked into one picture (``crop_strip``), the reply following
+        CROPS_SCHEMA, each strip's line count checked (``crops_problem``, one repair turn through the client).
         Billed as careful, on the page's deadline, with no low read alongside (Careful's rule:
         its first read stays). Only the hard lines take the new reading, their boxes kept
         (``with_hard_words``); a call that fails, runs out of time or gives an unusable reply
@@ -881,18 +899,20 @@ class GeminiEngine:
         with crop_strip(image, [box for box, _members in crops]) as strip:
             png = png_of(strip)
         model, provider = agent
+        resolution, thinking = self._harder_of(pages, model)
         try:
-            with billed_as("careful"):
+            with billed_as("careful"), _page_counted(model, self._sent(model, thinking), resolution):
                 reply = self._client.read_page(
                     png=png,
                     instruction=crops_instruction(counts),
                     schema=CROPS_SCHEMA,
-                    media_resolution=self._normal[0],
-                    thinking_level=self._sent(model, self._harder[1]),
+                    media_resolution=resolution,
+                    thinking_level=self._sent(model, thinking),
                     deadline=self._page_deadline(),
                     model=model,
                     provider=provider,
                     validate=check,
+                    max_output_tokens=self._max_tokens(),
                 )
         except (ModelUnavailable, ModelOutputError) as error:
             _log.warning("hard words kept as first read", extra={"code": error.code})
@@ -903,22 +923,26 @@ class GeminiEngine:
         # The client checked both already; checked again so nothing here can fail the page.
         if schema_problem(reply.value, CROPS_SCHEMA) is not None or check(reply.value) is not None:
             return _plus(first, reply.input_tokens, reply.output_tokens)
-        return with_hard_words(first, crops, reply.value, (reply.input_tokens, reply.output_tokens))
+        read = with_hard_words(first, crops, reply.value, (reply.input_tokens, reply.output_tokens))
+        return dataclasses.replace(read, read_pass=AGAIN_PASS)  # #463 review: its words read again
 
     def _careful(
         self, page: Callable[..., PageRead], pages: DocumentPages, agent: tuple[str, str]
     ) -> PageRead | None:
-        """Careful's read of the page (C5): the normal resolution at OCR_RETRY_THINKING_LEVEL
-        (Tushar, 16 Oct 2026: the first read is at the document's level, low under Dynamic,
-        Careful always harder; with no Careful tier, the lead model itself), cached under
-        Careful's model and level, billed as careful; None when it fails (an outage: the
-        first read stays)."""
+        """Careful's read of the page (C5) at its Careful pair (#463, Tushar, 31 Oct 2026: the
+        organisation's, else OCR_RETRY_*; before, the normal resolution at
+        OCR_RETRY_THINKING_LEVEL) (Tushar, 16 Oct 2026: the first read is at the document's
+        level, low under Dynamic, Careful always harder; with no Careful tier, the lead model
+        itself), cached under Careful's model and level, billed as careful; None when it fails
+        (an outage: the first read stays)."""
         model, provider = agent
+        resolution, thinking = self._harder_of(pages, model)
         careful_pages = dataclasses.replace(
             pages,
             model=model,
             provider=provider,
-            thinking=self._harder[1],
+            thinking=thinking,
+            resolution=resolution,
             read_again=frozenset(),
             escalate=frozenset(),
             memo=None,
@@ -997,11 +1021,21 @@ class GeminiEngine:
         key = None
         if pages is not None:
             key = self._key(pages, sha or pixels_sha256(image), page_no, model, thinking)
+        # #463: the settings of the read, kept on the page (a cached read was cached at them).
+        sent = (self._sent(model, thinking), self._resolution(pages))
         if pages is not None and key is not None and not again:
-            reply = _cached(pages.cache.get(key))
+            hit = pages.cache.get(key)
+            reply = _cached(hit)
             if reply is not None:
                 record_call(model, None, 0, 0, 0, 0.0, cached=True)  # SP1: a cached page costs 0
-                return self._page(reply, image, page_no, model, cached=True, boxes=boxes)
+                page = self._page(reply, image, page_no, model, cached=True, boxes=boxes)
+                return dataclasses.replace(
+                    page,
+                    read_thinking=sent[0],
+                    read_resolution=sent[1],
+                    read_pass=FIRST_PASS,
+                    read_output_tokens=None if hit is None else hit[2],  # the read cached
+                )
         started = self._client.now()
         careful_read = pages is not None and pages.careful_read
         if self._left() < MIN_CALL_SECONDS:  # the document's budget ran out (never failed)
@@ -1010,13 +1044,24 @@ class GeminiEngine:
             return self._read_locally(image, page_no, READER_REFUSED, DOCUMENT_BUDGET)
         # Tushar (16 Oct 2026): at most OCR_TIMEOUT_SECONDS a page; above low thinking a low read
         # runs alongside once the high one is slow, and the high reply wins when it comes in time.
-        alongside = not careful_read and (again or thinking not in QUICKEST_THINKING)
+        # #463 review: decided on the level really sent (a page read again: its Careful pair's).
+        harder = self._harder_of(pages, model)
+        alongside = not careful_read and ((harder[1] if again else thinking) not in QUICKEST_THINKING)
         try:
             reply, result, input_tokens, output_tokens, read_low = self._ask_in_time(
-                image, model, provider, again=again, thinking=thinking, alongside=alongside
+                image,
+                model,
+                provider,
+                again=again,
+                thinking=thinking,
+                alongside=alongside,
+                resolution=self._resolution(pages),
+                harder=harder,
             )
             if read_low:
                 thinking = LOW_THINKING
+                if not again:  # the low read is the page's first read
+                    sent = (self._sent(model, thinking), sent[1])
                 if pages is not None:
                     key = self._key(pages, sha or pixels_sha256(image), page_no, model, thinking)
         except ModelUnavailable as error:
@@ -1041,7 +1086,15 @@ class GeminiEngine:
             self._last_failure.pop(model, None)
         if pages is not None and key is not None:
             pages.cache.put(key, result, input_tokens, output_tokens)
-        return self._page(reply, image, page_no, model, tokens=(input_tokens, output_tokens), boxes=boxes)
+        page = self._page(reply, image, page_no, model, tokens=(input_tokens, output_tokens), boxes=boxes)
+        # #463 review: a page read again keeps the settings its first read is at, never its tokens.
+        return dataclasses.replace(
+            page,
+            read_thinking=sent[0],
+            read_resolution=sent[1],
+            read_pass=AGAIN_PASS if again else FIRST_PASS,
+            read_output_tokens=None if again else output_tokens,
+        )
 
     def _ask_in_time(
         self,
@@ -1052,6 +1105,8 @@ class GeminiEngine:
         again: bool,
         thinking: str,
         alongside: bool,
+        resolution: str,
+        harder: tuple[str, str],
     ) -> tuple[_Reply, dict[str, Any], int, int, bool]:
         """``_ask`` within one page deadline, and whether the low read was used. With
         ``alongside``, a low read starts once the high one has used LOW_ALONGSIDE_SHARE of the
@@ -1060,7 +1115,9 @@ class GeminiEngine:
         raised as before. The read not used ends by the same deadline on its own thread (billed,
         never cached). O(1) besides the calls; at most 2 reads of the page at once."""
         deadline = self._page_deadline()
-        ask = functools.partial(self._ask, image, model, provider, deadline=deadline)
+        ask = functools.partial(
+            self._ask, image, model, provider, deadline=deadline, resolution=resolution, retry=harder
+        )
         if not alongside:
             return (*ask(harder=again, thinking=thinking), False)
         started = self._client.now()
@@ -1073,7 +1130,14 @@ class GeminiEngine:
             if deadline - self._client.now() < MIN_CALL_SECONDS and high.done():
                 return (*high.result(), False)  # timed out, with no time left for a low read
             _log.info("page read at low alongside", extra={"code": "low_alongside"})
-            low = pool.submit(contextvars.copy_context().run, ask, harder=False, thinking=LOW_THINKING)
+            # #463 review: a page read again's low read at its Careful pair's picture detail.
+            low = pool.submit(
+                contextvars.copy_context().run,
+                ask,
+                harder=False,
+                thinking=LOW_THINKING,
+                resolution=harder[0] if again else resolution,
+            )
             try:
                 return (*high.result(), False)
             except ModelUnavailable as error:
@@ -1084,14 +1148,13 @@ class GeminiEngine:
             pool.shutdown(wait=False)  # the read not used ends by the deadline on its own
 
     def _key(self, pages: DocumentPages, sha: str, page_no: int, model: str, thinking: str) -> PageKey:
-        return PageKey(
-            pages.customer_id,
-            pages.document_id,
-            page_no,
-            sha,
-            model,
-            cache_prompt_version(thinking, self._normal[1]),
-        )
+        # #463: a page read at another picture detail than OCR_MEDIA_RESOLUTION is cached apart
+        # ("+<detail>"), so a saved detail takes effect; the reads cached before stay valid.
+        version = cache_prompt_version(thinking, self._normal[1])
+        resolution = self._resolution(pages)
+        if resolution != self._normal[0]:
+            version += f"+{resolution}"
+        return PageKey(pages.customer_id, pages.document_id, page_no, sha, model, version)
 
     def _ask(
         self,
@@ -1102,13 +1165,17 @@ class GeminiEngine:
         harder: bool,
         thinking: str,
         deadline: float | None = None,
+        resolution: str | None = None,
+        retry: tuple[str, str] | None = None,
     ) -> tuple[_Reply, dict[str, Any], int, int]:
         """(the checked reply, its JSON to cache, input tokens, output tokens); halves when
         the whole page's reply is cut off (G6). The tokens are every call's for the page:
         the cut-off whole page's too. A ``ModelOutputError`` raised here carries the tokens
         of every call made for the page before it, its own included (G9). ``thinking`` is
-        the normal level (C4); a page read again is read harder."""
-        resolution, thinking = self._harder if harder else (self._normal[0], thinking)
+        the normal level (C4), sent at ``resolution``; a page read again is read harder, at
+        ``retry`` (#463: the document's (picture detail, thinking); None, the env's)."""
+        retry = retry or self._harder
+        resolution, thinking = retry if harder else (resolution or self._normal[0], thinking)
         # One budget for the page (stuck reading, 16 Oct 2026): the whole page, its halves and
         # any repair all end by OCR_TIMEOUT_SECONDS from now, never three times that, and never
         # after the document's reading budget (``document``).
@@ -1116,7 +1183,8 @@ class GeminiEngine:
             deadline = self._page_deadline()
         ask = functools.partial(self._call, model=model, provider=provider, deadline=deadline)
         try:
-            whole = ask(image, resolution, thinking)
+            with _page_counted(model, self._sent(model, thinking), resolution):  # #463 review: once
+                whole = ask(image, resolution, thinking)
         except ModelOutputError as error:
             if error.code != TRUNCATED or image.height < 2:
                 raise
@@ -1186,7 +1254,30 @@ class GeminiEngine:
             model=model,
             provider=provider,
             validate=repair_problem,
+            max_output_tokens=self._max_tokens(),
         )
+
+    def _resolution(self, pages: DocumentPages | None) -> str:
+        """A first read's picture detail: the document's (#463), else OCR_MEDIA_RESOLUTION. O(1)."""
+        return self._normal[0] if pages is None or pages.resolution is None else pages.resolution
+
+    def _harder_of(self, pages: DocumentPages | None, model: str) -> tuple[str, str]:
+        """(picture detail, thinking) of Careful's re-reads and the pages read again by
+        ``model``: the document's Careful pair (#463), each else OCR_RETRY_*; a level ``model``
+        does not take (``DocumentPages.levels``) is OCR_RETRY_THINKING_LEVEL (#463 review, the
+        scan level's rule, ``models._thinking``). O(1)."""
+        if pages is None:
+            return self._harder
+        thinking = pages.careful_thinking or self._harder[1]
+        taken = pages.levels.get(model)
+        if taken is not None and thinking not in taken:
+            thinking = self._harder[1]
+        return pages.careful_resolution or self._harder[0], thinking
+
+    def _max_tokens(self) -> int | None:
+        """The open document's page read output limit (#463; None: PAGE_MAX_OUTPUT_TOKENS). O(1)."""
+        pages = self._pages
+        return None if pages is None else pages.max_output_tokens
 
     def _sent(self, model: str, thinking: str) -> str:
         """The level sent to ``model``: NO_THINKING for one of the open document's models with
@@ -1306,6 +1397,19 @@ def _rapidocr_pages() -> PageEngine:
     return as_page_engine(RapidOcrEngine())
 
 
+@contextlib.contextmanager
+def _page_counted(model: str, thinking: str, resolution: str) -> Iterator[None]:
+    """#463 review: the page read inside (its calls, halves and repairs) is one page on its
+    calls' ledger row (``record_page``) once a call of it was billed: it returned, or its reply
+    was refused (``ModelOutputError``); never for a call that did not come back."""
+    try:
+        yield
+    except ModelOutputError:
+        record_page(model, thinking=thinking, resolution=resolution)
+        raise
+    record_page(model, thinking=thinking, resolution=resolution)
+
+
 def _timed_out(future: "Future[Any]") -> bool:
     """A finished read that ran out of its time (``ModelUnavailable("timeout")``)."""
     error = future.exception()
@@ -1317,7 +1421,15 @@ def _kept(first: PageRead, careful: PageRead | None, model: str) -> PageRead:
     else ``first`` (a Careful read that failed: an outage, a refusal, the local reader)."""
     if careful is None:
         return first
-    kept = careful if careful.read_by == model else first
+    kept = first
+    if careful.read_by == model:  # #463 review: Careful's text, at its page's first read's settings
+        kept = dataclasses.replace(
+            careful,
+            read_thinking=first.read_thinking,
+            read_resolution=first.read_resolution,
+            read_output_tokens=first.read_output_tokens,
+            read_pass=AGAIN_PASS,
+        )
     return dataclasses.replace(
         kept,
         input_tokens=first.input_tokens + careful.input_tokens,

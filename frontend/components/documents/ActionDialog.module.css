@@ -22,6 +22,11 @@
   flex-direction: column;
 }
 
+/* A form with a panel beside its fields (the AI settings, issue 463). */
+.wide {
+  width: min(100% - 2 * var(--space-4), 56rem);
+}
+
 .dialog::backdrop {
   background: var(--backdrop);
 }

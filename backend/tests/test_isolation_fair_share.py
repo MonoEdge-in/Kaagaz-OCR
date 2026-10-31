@@ -42,6 +42,8 @@ def run_until_b_is_done(a_jobs: list[Job]) -> tuple[list[str], list[str], list[J
         max_attempts=5,
         mark_exhausted=lambda customer, document: None,
         record_attempt=lambda customer, document, attempt, most: None,
+        # Changed on purpose (#463 review): the check's handler is required.
+        mark_check_exhausted=lambda customer, check: None,
         admit=admission(lambda: "working", FairShare(locks, 2).slot),
     )
     stream = io.StringIO()

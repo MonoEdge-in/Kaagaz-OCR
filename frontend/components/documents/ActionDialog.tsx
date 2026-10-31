@@ -24,10 +24,12 @@ export interface ActionDialogProps {
   onClose(): void;
   onClosed?(): void;
   canClose?(way: CloseWay): boolean;
+  /** Up to 56rem wide, for a form with a panel beside its fields (#463); else 30rem. */
+  wide?: boolean;
   children: ReactNode;
 }
 
-export function ActionDialog({ title, onClose, onClosed, canClose = () => true, children }: ActionDialogProps) {
+export function ActionDialog({ title, onClose, onClosed, canClose = () => true, wide = false, children }: ActionDialogProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const pressTarget = useRef<EventTarget | null>(null);
   const titleId = useId();
@@ -49,7 +51,7 @@ export function ActionDialog({ title, onClose, onClosed, canClose = () => true, 
   return (
     <dialog
       ref={dialogRef}
-      className={styles.dialog}
+      className={wide ? `${styles.dialog} ${styles.wide}` : styles.dialog}
       aria-modal="true"
       aria-labelledby={titleId}
       onCancel={(event) => {

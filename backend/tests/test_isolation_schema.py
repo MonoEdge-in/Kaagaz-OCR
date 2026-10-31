@@ -229,6 +229,15 @@ OWNER_RIGHTS = {
     "kaagaz_email_belongs_to_other": ("boolean", EMPTY_PATH),
     # 0063: a pending, unconfirmed sign-up older than 24 hours no longer holds its e-mail.
     "kaagaz_release_stale_signup": ("boolean", EMPTY_PATH),
+    # 0064 (#463): the worker claims and ends its own organisation's accuracy check (numbers only).
+    # Changed on purpose (#463 review): its Dynamic, and the job's heartbeat.
+    "kaagaz_accuracy_check_claim": (
+        "TABLE(model text, scan_thinking text, scan_resolution text, careful_thinking text,"
+        " careful_resolution text, page_max_output_tokens integer, dynamic boolean, max_pages integer)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_accuracy_check_beat": ("boolean", EMPTY_PATH),
+    "kaagaz_accuracy_check_finish": ("boolean", EMPTY_PATH),
 }
 # The platform operator's (0015): only kaagaz_operator may run these, never the app.
 OPERATOR = "kaagaz_operator"
@@ -322,20 +331,46 @@ OPERATOR_RIGHTS = {
     # organisations each area reaches, and the two saves (step-up). Pinned: no user, no document.
     "kaagaz_op_org_ai": (
         "TABLE(scan_models text[], scan_default text, chat_models text[], chat_default text,"
-        " scan_thinking text, chat_levels text[], chat_default_level text, dynamic boolean, ensemble boolean,"
-        " ai_budget_usd numeric)",
+        " scan_thinking text, chat_levels text[], chat_default_level text, dynamic boolean,"
+        " scan_resolution text, careful_thinking text, careful_resolution text,"
+        " page_max_output_tokens integer,"
+        " ensemble boolean,"
+        " ai_budget_usd numeric)",  # 0064 (#463): the scan cost settings
         EMPTY_PATH,
     ),
     "kaagaz_op_set_org_ai": ("record", EMPTY_PATH),
     "kaagaz_op_ai_defaults": (
         "TABLE(scan_models text[], scan_default text, chat_models text[], chat_default text,"
         " scan_thinking text, chat_levels text[], chat_default_level text, dynamic boolean,"
+        " scan_resolution text, careful_thinking text, careful_resolution text,"
+        " page_max_output_tokens integer,"
         " orgs_inheriting_scan_models bigint, orgs_inheriting_chat_models bigint,"
         " orgs_inheriting_scan_thinking bigint, orgs_inheriting_chat_levels bigint,"
-        " orgs_inheriting_dynamic bigint)",
+        " orgs_inheriting_dynamic bigint, orgs_inheriting_scan_resolution bigint,"
+        " orgs_inheriting_careful_thinking bigint, orgs_inheriting_careful_resolution bigint,"
+        " orgs_inheriting_page_max_output_tokens bigint)",
         EMPTY_PATH,
     ),
     "kaagaz_op_set_ai_defaults": ("text", EMPTY_PATH),
+    # 0064 (#463): the estimate's measured cost, sums and counts only (no customer column).
+    "kaagaz_op_scan_cost": (
+        "TABLE(first_usd numeric, first_pages bigint, careful_usd numeric, careful_pages bigint,"
+        " scan_calls bigint, careful_calls bigint, quality_pages bigint, clean_pages bigint,"
+        " max_quality_pages bigint, max_clean_pages bigint, output_p99 integer, tokens_in numeric,"
+        " tokens_out numeric, token_pages bigint, limit_hits bigint)",  # Changed on purpose (#463 review)
+        EMPTY_PATH,
+    ),
+    # 0064 (#463): an organisation's accuracy check, started with a fresh code, and read back
+    # (settings and numbers, never text).
+    "kaagaz_op_start_accuracy_check": ("record", EMPTY_PATH),
+    "kaagaz_op_accuracy_check": (
+        "TABLE(id uuid, status text, model text, scan_thinking text, scan_resolution text,"
+        " careful_thinking text, careful_resolution text, page_max_output_tokens integer,"
+        " dynamic boolean, max_pages integer, pages_checked integer,"  # Changed on purpose (#463 review)
+        " pages_failed integer, word_match double precision, numbers_match double precision,"
+        " cost_usd numeric, started_at timestamp with time zone, finished_at timestamp with time zone)",
+        EMPTY_PATH,
+    ),
     "kaagaz_op_set_org_autofile": ("record", EMPTY_PATH),  # 0025: allow or stop auto-filing
     "kaagaz_op_usage": (
         "TABLE(customer_id uuid, customer_name text, model text, calls bigint, cached_calls bigint,"
@@ -438,7 +473,8 @@ OPERATOR_RIGHTS = {
 # The only tables without customer_id: the customers themselves, alembic's own, the
 # platform operator's (0015), the workers' reader status (0022) and the model catalogue
 # (0023) and the platform AI defaults (0026), which belong to no customer.
-OPERATOR_TABLES = {"operators", "platform_audit"}
+# Changed on purpose (#463, 0064): the accuracy checks are the operator's too.
+OPERATOR_TABLES = {"operators", "platform_audit", "scan_accuracy_checks"}
 PLATFORM_DEFAULTS = {"platform_models", "platform_ai_settings", "feature_switches", "platform_model_override"}
 NO_CUSTOMER_ID = (
     {"customers", "alembic_version", "reader_status", "model_catalog", "model_rate_scheduler"}
@@ -776,7 +812,11 @@ def test_the_operator_role_has_no_table_rights_and_its_tables_no_grants_and_no_p
             {"t": sorted(OPERATOR_TABLES)},
         ).all()
     assert (tuple(role), granted) == ((False, False, False), [])
-    assert sorted(tuple(row) for row in locked) == [("operators", True, 0), ("platform_audit", True, 0)]
+    assert sorted(tuple(row) for row in locked) == [
+        ("operators", True, 0),
+        ("platform_audit", True, 0),
+        ("scan_accuracy_checks", True, 0),
+    ]
 
 
 # 0024's readers (F1-F4): read-only, no dynamic SQL, the operator check, and no column

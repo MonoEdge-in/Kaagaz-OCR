@@ -242,7 +242,10 @@ def test_the_queue_carries_run_id_only_when_set() -> None:
 def test_the_worker_sends_a_run_to_its_handler_and_marks_the_run_never_the_document() -> None:
     seen: list[tuple[str, Job]] = []
     handle = dispatch(
-        lambda job, beat: seen.append(("pipeline", job)), lambda job, beat: seen.append(("ensemble", job))
+        lambda job, beat: seen.append(("pipeline", job)),
+        lambda job, beat: seen.append(("ensemble", job)),
+        # Changed on purpose (#463 review): the check's handler is required.
+        lambda job, beat: seen.append(("accuracy", job)),
     )
     handle(Job("c", "d"), lambda: None)
     handle(Job("c", "d", run_id="r"), lambda: None)
@@ -250,7 +253,10 @@ def test_the_worker_sends_a_run_to_its_handler_and_marks_the_run_never_the_docum
 
     marked: list[tuple[str, ...]] = []
     exhausted = MarkExhausted(
-        lambda c, d: marked.append(("document", c, d)), lambda c, r: marked.append(("run", c, r))
+        lambda c, d: marked.append(("document", c, d)),
+        lambda c, r: marked.append(("run", c, r)),
+        # Changed on purpose (#463 review): the check's handler is required.
+        mark_check=lambda c, k: marked.append(("check", c, k)),
     )
     exhausted(Job("c", "d"))
     exhausted(Job("c", "d", run_id="r"))

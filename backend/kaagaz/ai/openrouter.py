@@ -48,7 +48,8 @@ part of it. ``read_page`` returns them per page; ``usage()`` keeps the process's
 the summed ``usage.cost`` when replies carry one. Every billed reply (a blocked, cut off,
 mid-reply error or repaired one too) also goes to the current usage scope's ledger
 (``kaagaz.ai.usage.record_call``, SP1) with its model, the reply's ``provider`` and its
-thinking tokens and cost.
+thinking tokens and cost; a page read with the thinking level and picture detail it was sent
+at (#463).
 
 **Failures** (G6), each a code:
 
@@ -546,6 +547,19 @@ def _billed_text(reply: Mapping[str, Any], before: tuple[int, int]) -> tuple[str
     except ModelOutputError as error:
         input_tokens, output_tokens = reply_usage(reply)
         raise replies.billed(error, before[0] + input_tokens, before[1] + output_tokens) from None
+
+
+def _page_text(
+    reply: Mapping[str, Any], before: tuple[int, int], model: str, sent: tuple[str, str]
+) -> tuple[str, str]:
+    """``_billed_text`` of a page read; a reply cut off at the output limit is counted on the
+    ledger as a limit hit (#463) before its ``output_truncated`` goes up."""
+    try:
+        return _billed_text(reply, before)
+    except ModelOutputError as error:
+        if error.code == "output_truncated":
+            usage.record_limit_hit(model, thinking=sent[0], resolution=sent[1])
+        raise
 
 
 def _valid_reply(
@@ -1062,6 +1076,7 @@ class OpenRouterClient:
         model: str | None = None,
         provider: str | None = None,
         validate: Callable[[dict[str, Any]], str | None] | None = None,
+        max_output_tokens: int | None = None,
     ) -> PageReply:
         """One page read by ``model`` through ``provider`` (None: OCR_MODEL through
         DEFAULT_PROVIDER, as before model choice) as a JSON object following ``schema``,
@@ -1069,7 +1084,10 @@ class OpenRouterClient:
         provider outside OPENROUTER_PROVIDERS raises ``ProviderNotAllowed`` before anything is
         sent. A first reply that does not follow the schema, or that ``validate`` refuses (it
         gives the problem in words, None when the value is good), is sent back once for a
-        repair, with the page again; the tokens of both calls are counted."""
+        repair, with the page again; the tokens of both calls are counted. ``max_output_tokens``
+        (#463: the organisation's limit; None: PAGE_MAX_OUTPUT_TOKENS) is sent as
+        max_completion_tokens; a reply that reaches it raises ``output_truncated`` as before,
+        counted on the ledger as a limit hit."""
         if model is not None and not valid_model_id(model):
             raise ValueError("a model ID must be an OpenRouter author/slug with no :variant")
         self._check_provider(DEFAULT_PROVIDER if provider is None else provider)
@@ -1080,18 +1098,19 @@ class OpenRouterClient:
             schema=schema,
             media_resolution=media_resolution,
             thinking=thinking_level,
-            max_output_tokens=PAGE_MAX_OUTPUT_TOKENS,
+            max_output_tokens=PAGE_MAX_OUTPUT_TOKENS if max_output_tokens is None else max_output_tokens,
             provider_slug=DEFAULT_PROVIDER if provider is None else provider,
         )
-        reply = self._call(CHAT_PATH, body, deadline)
+        sent = (thinking_level, media_resolution)  # #463: the ledger's settings of a page read
+        reply = self._call(CHAT_PATH, body, deadline, sent=sent)
         input_tokens, output_tokens = reply_usage(reply)
-        content, finish = _billed_text(reply, (0, 0))
+        content, finish = _page_text(reply, (0, 0), str(body["model"]), sent)
         value, problem = _valid_reply(content, schema, validate)
         if value is None:
             body["messages"].append({"role": "assistant", "content": content})
             body["messages"].append({"role": "user", "content": REPAIR.format(problem=problem)})
-            reply = self._call(CHAT_PATH, body, deadline)
-            content, finish = _billed_text(reply, (input_tokens, output_tokens))
+            reply = self._call(CHAT_PATH, body, deadline, sent=sent)
+            content, finish = _page_text(reply, (input_tokens, output_tokens), str(body["model"]), sent)
             more_in, more_out = reply_usage(reply)
             input_tokens, output_tokens = input_tokens + more_in, output_tokens + more_out
             value, _ = _valid_reply(content, schema, validate)
@@ -1167,9 +1186,12 @@ class OpenRouterClient:
             vector.append(float(number))
         return vector
 
-    def _call(self, path: str, body: Mapping[str, Any], deadline: float) -> dict[str, Any]:
+    def _call(
+        self, path: str, body: Mapping[str, Any], deadline: float, *, sent: tuple[str, str] | None = None
+    ) -> dict[str, Any]:
         """One request with the latch, the body's model's breaker, the limiter and retries
-        (G6, G9). Returns the reply object of a 200; raises a coded error otherwise."""
+        (G6, G9). Returns the reply object of a 200; raises a coded error otherwise. ``sent``:
+        a page read's (thinking, picture detail), for the ledger (#463)."""
         gate = self.gate
         model = str(body["model"])
         attempt = 0
@@ -1194,9 +1216,9 @@ class OpenRouterClient:
                     raise ModelUnavailable(reply.failure or "bad_response")
                 if not failed_mid_reply(reply.body):
                     gate.record(model, failed=False)
-                    self._count(reply.body, model)
+                    self._count(reply.body, model, sent)
                     return reply.body
-                self._count(reply.body, model)  # a reply that failed part way may still be billed
+                self._count(reply.body, model, sent)  # a reply that failed part way may still be billed
                 code = "server_error"
             elif reply.status in _KEY_STATUSES:
                 if reply.status == 403 and (
@@ -1237,7 +1259,7 @@ class OpenRouterClient:
             gate.sleep(wait)
             attempt += 1
 
-    def _count(self, reply: Mapping[str, Any], model: str) -> None:
+    def _count(self, reply: Mapping[str, Any], model: str, sent: tuple[str, str] | None = None) -> None:
         """Count one billed reply (G9): this client's totals, and the current usage scope's
         ledger (SP1, ``kaagaz.ai.usage``) under the model asked for and the provider the
         reply names, if it looks like a name. Every billed reply comes here: a blocked, cut
@@ -1246,7 +1268,17 @@ class OpenRouterClient:
         cost = reply_cost(reply)
         named = reply.get("provider")
         provider_name = named if isinstance(named, str) and _PROVIDER_NAME.fullmatch(named) else None
-        usage.record_call(model, provider_name, input_tokens, output_tokens, reasoning_tokens(reply), cost)
+        thinking, resolution = sent or (None, None)
+        usage.record_call(
+            model,
+            provider_name,
+            input_tokens,
+            output_tokens,
+            reasoning_tokens(reply),
+            cost,
+            thinking=thinking,
+            resolution=resolution,
+        )
         with self._lock:
             self._input_tokens += input_tokens
             self._output_tokens += output_tokens
