@@ -40,7 +40,8 @@ describe("leaving while a file is waiting or sending asks first", () => {
     expect(area).toMatch(
       /const atRisk = uploadsAtRisk\(queue\.entries\);\s*useEffect\(\(\) => \{\s*if \(!atRisk\) return;[\s\S]{0,300}window\.addEventListener\("beforeunload", warn\);\s*return \(\) => window\.removeEventListener\("beforeunload", warn\);\s*\}, \[atRisk\]\);/,
     );
-    expect(area).toMatch(/const warn = \(event: BeforeUnloadEvent\) => \{\s*event\.preventDefault\(\);/);
+    // Changed on purpose (#468, builder A): a page left on purpose (leavePage) is not asked about.
+    expect(area).toMatch(/const warn = \(event: BeforeUnloadEvent\) => \{\s*if \(leavingPage\(\)\) return;[^\n]*\s*event\.preventDefault\(\);/);
   });
 });
 

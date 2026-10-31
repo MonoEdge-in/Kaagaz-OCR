@@ -17,7 +17,10 @@ import {
   lostConnection,
   withTimeout,
 } from "@/lib/api";
+import { aiSaveErrorText } from "@/lib/aiSettings";
 import { CONFIRM_DOWN, CONFIRM_NETWORK_FAILURE, LINK_GONE, confirmError } from "@/lib/emailLinks";
+import { SERVER_PROBLEM } from "@/lib/errorWords";
+import { leavePage, leavingPage } from "@/lib/sessionChannel";
 import { WARN_BEFORE_MS, sessionEndingText, warningDelay } from "@/lib/operatorSession";
 
 // Issue 468, builder A: timeouts and slow loads (A2), the offline line (A3), the code step's
@@ -126,11 +129,13 @@ describe("a slow load says so (components/shell/StillLoading.tsx)", () => {
     expect(html).toMatch(/^<div class="[^"]*" role="status" aria-live="polite"><\/div>$/);
   });
 
-  it("sits beside the document view's, the conversation's and the review queue's loading states", () => {
+  it("sits beside the document view's, search's, the conversation's and the review queue's loading states", () => {
     const view = read("app/(app)/documents/[id]/DocumentView.tsx");
     expect(view).toMatch(/Loading the document…\s*<\/p>\s*<StillLoading onRetry=\{\(\) => setAttempt\(\(n\) => n \+ 1\)\} \/>/);
     const chat = read("components/chat/ChatScreen.tsx");
     expect(chat).toMatch(/Loading the conversation…[\s\S]{0,80}<StillLoading onRetry=\{\(\) => void open\(activeId\)\} \/>/);
+    const search = read("components/search/SearchScreen.tsx");
+    expect(search).toContain('{q !== "" && current === null ? <StillLoading onRetry={() => setAttempt((n) => n + 1)} /> : null}');
     const queue = read("components/review/ReviewQueue.tsx");
     expect(queue).toMatch(/Loading the review queue…\s*<\/p>\s*<StillLoading onRetry=\{\(\) => setAttempt\(\(n\) => n \+ 1\)\} \/>/);
   });
@@ -249,5 +254,28 @@ describe("load errors with a cause and Try again (A5)", () => {
     expect(ways).toContain("setFailure(off ? { text: OFF, retry: false } : { text: waysLoadText(caught), retry: true });");
     expect(ways).toMatch(/\{failure\.retry && \([\s\S]*setAttempt\(\(n\) => n \+ 1\);[\s\S]*Try again/);
     expect(ways).toContain("}, [attempt]);");
+  });
+});
+
+describe("a page left on purpose is not stopped by the upload prompt (lib/sessionChannel.ts)", () => {
+  it("leavePage marks the tab as leaving, and the upload guard lets it go", () => {
+    const replace = vi.fn();
+    vi.stubGlobal("window", { location: { replace } });
+    expect(leavingPage()).toBe(false);
+    leavePage("/login?ended=1");
+    expect(replace).toHaveBeenCalledWith("/login?ended=1");
+    expect(leavingPage()).toBe(true);
+    expect(read("components/documents/UploadArea.tsx")).toMatch(
+      /const warn = \(event: BeforeUnloadEvent\) => \{\s*if \(leavingPage\(\)\) return;[^\n]*\s*event\.preventDefault\(\);/,
+    );
+  });
+});
+
+describe("a refused AI settings save says why in plain words (lib/aiSettings.ts)", () => {
+  it("never passes a proxy's page through, and keeps the backend's own words", () => {
+    expect(aiSaveErrorText(new ApiError(502, "error", "Something went wrong."))).toBe(SERVER_PROBLEM);
+    expect(aiSaveErrorText(new ApiError(400, "invalid", "Choose a level."))).toBe("Choose a level.");
+    expect(aiSaveErrorText(new ApiError(400, "locked", "x"))).toBe("Your admin has set this, so it can't be changed here.");
+    expect(aiSaveErrorText(new TypeError("Failed to fetch"))).toBe("Could not save. Check your connection, then try again.");
   });
 });

@@ -53,6 +53,7 @@ import { progressSignature } from "@/lib/poll";
 import { advance, barValue } from "@/lib/progress";
 import type { ShownProgress } from "@/lib/progress";
 import { useSession } from "@/lib/session";
+import { leavingPage } from "@/lib/sessionChannel";
 import { useTick } from "@/lib/tick";
 import type { BatchView, DocumentSummary, UploadLimits, UploadReader, UploadResult } from "@/lib/types";
 import { usePoll } from "@/lib/usePoll";
@@ -223,6 +224,7 @@ export function useUploads(onUploaded: () => void) {
   useEffect(() => {
     if (!atRisk) return;
     const warn = (event: BeforeUnloadEvent) => {
+      if (leavingPage()) return; // a session's end or a sign-out reloads on purpose; the uploads stop anyway
       event.preventDefault();
       event.returnValue = ""; // older browsers ask only with this set
     };

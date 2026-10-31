@@ -6,6 +6,7 @@
 // documents by name (GET /api/documents?q=). The question and the choice live in the
 // address (?q=…&in=names), so a search can be shared, reloaded and gone back to. The
 // filters, sorting and "show more" stay on the documents screen (NB-26, NB-27).
+// Issue 468: a search still waiting after about ten seconds says so, with Try again (StillLoading).
 
 import Form from "next/form";
 import Link from "next/link";
@@ -15,6 +16,7 @@ import { AskAboutLink, InsideSearchResults } from "@/components/documents/Inside
 import { MAX_SEARCH_LENGTH } from "@/components/documents/insideSearch";
 import type { SearchMode } from "@/components/documents/insideSearch";
 import { LabelChip } from "@/components/files/LabelChip";
+import { StillLoading } from "@/components/shell/StillLoading";
 import { Button } from "@/components/ui/Button/Button";
 import { EmptyState } from "@/components/ui/EmptyState/EmptyState";
 import { Icon } from "@/components/ui/Icon/Icon";
@@ -165,6 +167,7 @@ export function SearchScreen({ q, mode }: { q: string; mode: SearchMode }) {
           onSearchInside={() => router.replace(searchHref(q, "inside"))}
         />
       )}
+      {q !== "" && current === null ? <StillLoading onRetry={() => setAttempt((n) => n + 1)} /> : null}
     </div>
   );
 }
