@@ -309,6 +309,79 @@ The limits are checked at start-up (`COST_SAVING_HARD_LINES_MAX` 1 to 60, `COST_
 After the change, `cost-saving` shows the new limits under `limits seen`. Unset is the default
 (12, 0.4, 0.5).
 
+## Measure true accuracy with a truth set
+
+Agreement with a careful read cannot see an error both reads share, and a word score hides a
+wrong amount (one wrong digit in a total still scores 99.7% on words). So before a setting
+change reaches a customer, score it against pages typed by hand (#465), on the server, with
+`dc` and `setenv` as above.
+
+**Build the set once: 100 pages,** each kind in its own share: 40 printed invoices, 20
+handwritten or mixed pages, 20 Hindi or Marathi pages, 20 tables or land records. Keep it on
+the server only, never in the repository. One folder per document, named by its kind and a
+number (`printed-01`, `handwritten-01`, `indic-01`, `tables-01`), holding the document as
+`doc.pdf` (or `doc.jpg`, `doc.png`), and for each page n:
+
+- `n.txt`, UTF-8: every word on the page as printed, in reading order, one printed line a
+  line. Type amounts, dates and numbers exactly as printed ("11,800.00"), Hindi and Marathi in
+  Devanagari. Never correct the page and never guess: leave out a page a person cannot read.
+  A page with no `n.txt` is not scored.
+- `n.fields.json`, optional, for a page with these fields: `{"gstin": "...",
+  "invoice_number": "...", "date": "...", "amounts": ["...", "..."], "names": ["..."]}`, each
+  a text or a list of texts, exactly as printed. A GSTIN whose check character is wrong is a
+  typo in the truth: the page line shows `field_gstin truth_bad` and it is not counted.
+
+**Run one setting** over the whole set (each page is a real model call: paid):
+
+```
+TRUTH=~/truth-set   # chmod -R a+rX it: the container reads it as its own user
+run() {             # run NAME [-e SETTING=value ...]: one "truth" line per document in NAME.txt
+  name=$1; shift
+  for doc in "$TRUTH"/*/; do d=$(basename "$doc"); f=$(cd "$doc" && ls doc.*)
+    dc run --rm --no-deps -T "$@" -v "$TRUTH:/truth:ro" worker \
+      python -m kaagaz.cli measure --file "/truth/$d/$f" --truth "/truth/$d" \
+      | grep '^truth ' | sed "s/^truth/${d%%-*}/"
+  done > "$name.txt"
+}
+run now                                # the settings in .env
+run low -e OCR_THINKING_LEVEL=low      # the setting to try (any setting the worker reads)
+```
+
+Each page line adds `cer` and `wer` (on NFC text, so a nukta or matra typed another way is no
+error), `values`, `value_errors` and `ver`: the values in the truth (words with a digit:
+amounts, dates, numbers, GSTINs) that the read got wrong or missed, in any order, and their
+share. Each document's `truth` line adds them up with the counts, the field matches
+(`field_amounts 37/40`) and the reader's `input_tokens_per_page` and `output_tokens_per_page`.
+
+**Add up each run,** by kind and over all:
+
+```
+sum() { awk '{ for (i = 2; i < NF; i += 2) { n = $i; x = $(i + 1)
+    if (x ~ /\//) { split(x, p, "/"); ok[$1, n] += p[1]; all[$1, n] += p[2]; ok["all", n] += p[1]; all["all", n] += p[2] }
+    else { s[$1, n] += x; s["all", n] += x } }
+  kind[$1] = 1; kind["all"] = 1 }
+  function r(a, b) { return b ? a / b : 0 }
+  END { for (g in kind) {
+    printf "%s pages %d scored %d cer %.3f wer %.3f values %d value_errors %d in/page %.0f out/page %.0f", g,
+      s[g, "pages"], s[g, "scored"], r(s[g, "char_edits"], s[g, "chars"]), r(s[g, "word_edits"], s[g, "words"]),
+      s[g, "values"], s[g, "value_errors"], r(s[g, "input_tokens"], s[g, "pages"]), r(s[g, "output_tokens"], s[g, "pages"])
+    for (k in all) { split(k, q, SUBSEP); if (q[1] == g) printf " %s %d/%d", q[2], ok[k], all[k] }
+    print "" } }' "$1"; }
+sum now.txt; sum low.txt
+```
+
+**The price of a page** comes from the tokens and the model's live list prices (the operator
+console's Models screen, from `model_catalog`; no price is written into the code):
+₹ a page = (in/page × input price + out/page × output price) ÷ 1,000,000 × the day's rupees to
+the dollar. For example, with made-up numbers, 1,200 in and 2,700 out a page at $0.50 and
+$3.00 a million and ₹88 to the dollar is (600 + 8,100) ÷ 1,000,000 × 88 = ₹0.77 a page.
+
+**Compare** the two runs kind by kind, not only over all: `value_errors` first (a wrong amount
+is the costly mistake), then the field matches, then CER and WER, then ₹ a page. With 100
+pages a difference of one or two value errors can be chance: look at those pages' lines in a
+run without the `grep` before deciding. The bar a cheaper setting must meet is the council's
+call; these are the counts it decides on.
+
 ## Decisions
 
 **Made**

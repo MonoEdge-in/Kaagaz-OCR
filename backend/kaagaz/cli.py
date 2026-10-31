@@ -43,7 +43,14 @@
   thresholds and timeouts from real numbers. It touches no database, file storage or
   queue, and it does NOT run the virus scan: use it only on files you trust.
   ``--truth`` names a folder of the right text for each page (``1.txt``, ``2.txt``,
-  ..., UTF-8), and adds each page's character and word error rates (CER, WER).
+  ..., UTF-8), and adds each page's character and word error rates (CER, WER), on NFC
+  text, and its value error rate (#465): of the values in the truth (``values_of``: words
+  with a digit, such as amounts, dates and GSTINs), the share the read got wrong or missed,
+  in any order. A page's optional ``<n>.fields.json`` (gstin, invoice_number, date,
+  amounts, names: a text or a list of texts each) adds each field's exact matches, a
+  truth GSTIN with a wrong check character ``truth_bad``. A ``truth`` line then adds them
+  up, with the reader's tokens per page (the price sum: docs/architecture.md, "Measure true
+  accuracy with a truth set").
   ``--engine`` (PRD 5 PR 1, the measurement) reads scans with that reader instead of
   OCR_ENGINE's, with every OCR_ENGINE check of the settings, and each page read by
   OCR adds who read it, its tokens (in and out, 0 from the page cache), its unsure
@@ -115,11 +122,13 @@ terminal instead of logging): ids and e-mails only, never a password.
 import argparse
 import functools
 import getpass
+import json
 import os
 import sys
 import time
 import unicodedata
 import uuid
+from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
@@ -144,6 +153,7 @@ from kaagaz.db import operators as operators_sql
 from kaagaz.db import users as users_sql
 from kaagaz.db.document_stories import recipe_tag as story_tag
 from kaagaz.db.engine import Database, make_engine
+from kaagaz.extraction.checks import GSTIN_FIELDS, gstin_valid
 from kaagaz.ingestion import sniff
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.spool import HEAD_SIZE
@@ -151,7 +161,16 @@ from kaagaz.jobs import catalog, land_facts
 from kaagaz.jobs.purge import CustomerStorage, purge_customer
 from kaagaz.preparing.page_checks import BlankMeasure, measure_blank
 from kaagaz.preparing.pages import PreparedPages, prepare_pages
-from kaagaz.reading.ocr import PATH_PAGE, PATH_WORDS, READER_PROMPT_VERSION, MeteredOcrEngine, PageRead
+from kaagaz.reading.ocr import (
+    PATH_PAGE,
+    PATH_WORDS,
+    READER_PROMPT_VERSION,
+    VALUE_PUNCTUATION,
+    MeteredOcrEngine,
+    PageRead,
+    is_word_mark,
+    values_of,
+)
 from kaagaz.reading.rapid_pool import shared_pool
 from kaagaz.reading.route import RouteDecision
 from kaagaz.reading.socket import NoReader
@@ -167,6 +186,8 @@ MEASURE_ENGINES = ("gemini", "rapidocr")
 # measure --truth: each page's texts are cut to these before the edit distance (council PR 3, low 10).
 MAX_TRUTH_CHARS = 5000
 MAX_TRUTH_WORDS = 1000
+# measure --truth (#465): the fields a page's <n>.fields.json may name.
+TRUTH_FIELDS = ("gstin", "invoice_number", "date", "amounts", "names")
 ADMIN_ENV_VAR = "KAAGAZ_ADMIN_PASSWORD"
 DEMO_ENV_VAR = "KAAGAZ_DEMO_PASSWORD"
 # reembed embeds this once before it clears anything (a check that the model answers).
@@ -940,6 +961,7 @@ def _measure(
     )
     out.write(f"type {detected} size {len(data) / (1024 * 1024):.2f} MB pages {len(pages)}\n")
     by_page: dict[int, list[Span]] = {}
+    scores: Counter[str] = Counter()  # --truth: the scored pages' counts, for the totals
     for span in spans:
         by_page.setdefault(span.location.page, []).append(span)
     for index, (page, unit) in enumerate(pages):
@@ -954,9 +976,12 @@ def _measure(
         line += _reader_numbers(page_reads.get(page))
         if len(stamps) == len(pages) + 1:
             line += f" seconds {stamps[index + 1] - stamps[index]:.2f}"
-        if truth is not None:
-            line += _truth_scores(truth / f"{page}.txt", " ".join(span.text for span in page_spans))
+        if truth is not None:  # the read's lines; its word marks repeat their words
+            read_text = " ".join(span.text for span in page_spans if not is_word_mark(span))
+            line += _truth_scores(truth, page, read_text, scores)
         out.write(line + "\n")
+    if truth is not None:
+        out.write(_truth_totals(len(pages), scores, list(page_reads.values())) + "\n")
     ocr_pages, ocr_seconds = meter.take() if meter is not None else (0, 0.0)
     per_page = ocr_seconds / ocr_pages if ocr_pages else 0.0
     if meter is not None:
@@ -1045,23 +1070,118 @@ def _script_shares(text: str) -> tuple[float, float]:
     return (devanagari / letters, foreign / letters) if letters else (0.0, 0.0)
 
 
-def _truth_scores(truth_file: Path, read: str) -> str:
-    """ " cer X wer Y" against the page's truth, or " truth none" without a file.
-    Both texts are cut at MAX_TRUTH_CHARS characters and MAX_TRUTH_WORDS words
-    first (" truth_cut yes"), so one page costs at most MAX_TRUTH_CHARS squared."""
+def _truth_scores(folder: Path, page: int, read: str, scores: Counter[str]) -> str:
+    """ " cer X wer Y values V value_errors E ver R" against the page's truth (``<page>.txt``
+    in ``folder``), then its field scores (``_field_scores``), or " truth none" without a
+    file; its counts are added to ``scores``. Both texts are NFC first, so a nukta or matra
+    typed another way is no error. For the CER and WER both are cut at MAX_TRUTH_CHARS
+    characters and MAX_TRUTH_WORDS words (" truth_cut yes"), so one page costs at most
+    MAX_TRUTH_CHARS squared. The value errors are the truth's values (``values_of``) the read
+    does not have, counted as a multiset, so lines read in another order are none."""
     try:
-        truth = truth_file.read_text(encoding="utf-8")
+        truth = unicodedata.normalize("NFC", (folder / f"{page}.txt").read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError):
         return " truth none"
+    read = unicodedata.normalize("NFC", read)
     truth_words, read_words = truth.split(), read.split()
+    wanted, values_read = values_of(truth_words), values_of(read_words)
+    value_errors, values = sum((wanted - values_read).values()), sum(wanted.values())
+    fields = _field_scores(folder / f"{page}.fields.json", read_words, scores)
     truth_chars, read_chars = " ".join(truth_words), " ".join(read_words)
     cut = max(len(truth_chars), len(read_chars)) > MAX_TRUTH_CHARS
     cut = cut or max(len(truth_words), len(read_words)) > MAX_TRUTH_WORDS
     truth_chars, read_chars = truth_chars[:MAX_TRUTH_CHARS], read_chars[:MAX_TRUTH_CHARS]
     truth_words, read_words = truth_words[:MAX_TRUTH_WORDS], read_words[:MAX_TRUTH_WORDS]
-    cer = _edits(read_chars, truth_chars) / max(1, len(truth_chars))
-    wer = _edits(read_words, truth_words) / max(1, len(truth_words))
-    return f" cer {cer:.3f} wer {wer:.3f}" + (" truth_cut yes" if cut else "")
+    char_edits, word_edits = _edits(read_chars, truth_chars), _edits(read_words, truth_words)
+    scores.update(
+        scored=1,
+        chars=len(truth_chars),
+        char_edits=char_edits,
+        words=len(truth_words),
+        word_edits=word_edits,
+        values=values,
+        value_errors=value_errors,
+    )
+    line = f" cer {_share(char_edits, len(truth_chars))} wer {_share(word_edits, len(truth_words))}"
+    line += " truth_cut yes" if cut else ""
+    return line + f" values {values} value_errors {value_errors} ver {_share(value_errors, values)}" + fields
+
+
+def _share(part: int, whole: int) -> str:
+    """``part / whole`` to 3 places, as the error rates print (0 of nothing is 0.000)."""
+    return f"{part / max(1, whole):.3f}"
+
+
+def _field_scores(fields_file: Path, read_words: list[str], scores: Counter[str]) -> str:
+    """ " field_<name> ok/all" for each field (TRUTH_FIELDS order) the page's fields file
+    names, a text or a list of texts: a text is ok when the read has its words in a row, as
+    typed, outer punctuation stripped (VALUE_PUNCTUATION). A GSTIN field follows the GSTIN
+    rule (``checks.gstin_valid``: spaces and case do not count), and is "truth_bad", and not
+    counted, when a truth GSTIN fails its check character: a typo in the truth. Its counts
+    are added to ``scores``. "" without a file; " fields bad" when it is not such a JSON
+    object. O(the fields' words x the read's words)."""
+    try:
+        fields = json.loads(fields_file.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return ""
+    except (OSError, ValueError):
+        return " fields bad"
+    if not isinstance(fields, dict) or not set(fields) <= set(TRUTH_FIELDS):
+        return " fields bad"
+    wanted = {name: [value] if isinstance(value, str) else value for name, value in fields.items()}
+    if not all(
+        isinstance(texts, list) and texts and all(isinstance(text, str) and text.strip() for text in texts)
+        for texts in wanted.values()
+    ):
+        return " fields bad"
+    read = [word.strip(VALUE_PUNCTUATION) for word in read_words]
+    line = ""
+    for name in (name for name in TRUTH_FIELDS if name in wanted):
+        texts = [unicodedata.normalize("NFC", text) for text in wanted[name]]
+        if name in GSTIN_FIELDS:
+            if not all(gstin_valid(text) for text in texts):
+                line += f" field_{name} truth_bad"
+                continue
+            found = {word.upper() for word in read}
+            ok = sum("".join(text.split()).upper() in found for text in texts)
+        else:
+            ok = sum(
+                _in_a_row([word.strip(VALUE_PUNCTUATION) for word in text.split()], read) for text in texts
+            )
+        scores[f"field_{name}_ok"] += ok
+        scores[f"field_{name}_all"] += len(texts)
+        line += f" field_{name} {ok}/{len(texts)}"
+    return line
+
+
+def _in_a_row(words: list[str], read: list[str]) -> bool:
+    """Whether ``read`` has ``words`` one after the other. O(len(words) x len(read))."""
+    return any(read[start : start + len(words)] == words for start in range(len(read) - len(words) + 1))
+
+
+def _truth_totals(pages: int, scores: Counter[str], reads: list[PageRead]) -> str:
+    """The ``truth`` line: the scored pages' counts and rates added up (``_truth_scores``),
+    each field's exact matches, and the reader's tokens over the file's ``pages`` and per
+    page. Numbers only, each after its name, so the lines of several files add up."""
+    tokens_in = sum(read.input_tokens for read in reads)
+    tokens_out = sum(read.output_tokens for read in reads)
+    line = (
+        f"truth pages {pages} scored {scores['scored']}"
+        f" chars {scores['chars']} char_edits {scores['char_edits']}"
+        f" cer {_share(scores['char_edits'], scores['chars'])}"
+        f" words {scores['words']} word_edits {scores['word_edits']}"
+        f" wer {_share(scores['word_edits'], scores['words'])}"
+        f" values {scores['values']} value_errors {scores['value_errors']}"
+        f" ver {_share(scores['value_errors'], scores['values'])}"
+    )
+    for name in TRUTH_FIELDS:
+        if f"field_{name}_all" in scores:
+            line += f" field_{name} {scores[f'field_{name}_ok']}/{scores[f'field_{name}_all']}"
+    return line + (
+        f" input_tokens {tokens_in} output_tokens {tokens_out}"
+        f" input_tokens_per_page {tokens_in / max(1, pages):.0f}"
+        f" output_tokens_per_page {tokens_out / max(1, pages):.0f}"
+    )
 
 
 def _edits(a: Sequence[str], b: Sequence[str]) -> int:
