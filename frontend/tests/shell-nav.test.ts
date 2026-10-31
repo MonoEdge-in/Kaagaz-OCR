@@ -136,8 +136,9 @@ describe("where to sign in", () => {
   // Critical #5: once a session existed, the sign-in page is a full page load,
   // so nothing of that person stays in the tab's memory.
   it("adds why, for the sign-in page's note", () => {
-    expect(endedPath("/documents/d-1")).toBe("/login?ended=1");
-    expect(endedPath("/admin")).toBe("/login?next=/admin&ended=1");
+    // Changed on purpose (issue 468): a session's end comes back to the screen it was on.
+    expect(endedPath("/documents/d-1")).toBe("/login?next=%2Fdocuments%2Fd-1&ended=1");
+    expect(endedPath("/admin")).toBe("/login?next=%2Fadmin&ended=1");
     expect(signedOutPath("/documents")).toBe("/login?signed_out=1");
     expect(signedOutPath("/admin")).toBe("/login?next=/admin&signed_out=1");
     expect(signedOutMessage({ signed_out: "1" })).toBe("You signed out.");
@@ -148,7 +149,8 @@ describe("where to sign in", () => {
 
   it("loads a fresh page when a session existed, and keeps a quick redirect on a first visit", () => {
     const session = readFileSync(join(__dirname, "..", "lib", "session.tsx"), "utf8");
-    expect(session).toContain("leavePage(endedPath(pathname))");
+    // Changed on purpose (issue 468): the path and its query, from the address bar.
+    expect(session).toContain("leavePage(endedPath(window.location.pathname + window.location.search))");
     expect(session).toMatch(/if \(event\.persisted\) window\.location\.reload\(\)/);
     // Put away for the back button: blank, so it never shows before the reload.
     expect(session).toMatch(/if \(event\.persisted\) document\.documentElement\.style\.visibility = "hidden"/);

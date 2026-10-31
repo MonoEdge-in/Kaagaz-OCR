@@ -24,6 +24,7 @@ import { appGate, endedPath, pageAfterSessionChange, signInPath, twoStepPath } f
 import { SetPasswordScreen } from "@/components/shell/SetPasswordScreen";
 import styles from "@/components/shell/Shell.module.css";
 import { ApiError, currentSession, logout, onSessionEnded } from "./api";
+import { clearDrafts, flushDrafts, keepDraftsOf } from "./drafts";
 import { announceSession, leavePage, watchSession } from "./sessionChannel";
 import type { Me } from "./types";
 
@@ -76,13 +77,23 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   // Once a session existed, the sign-in page is a full page load, so nothing
   // of that person (cached PDFs, earlier screens) stays in this tab's memory.
   // A first visit with no session has nothing to clear: a quick move is fine.
+  // Issue 468: the sign-in comes back to this screen (endedPath's ?next=), and unsent work
+  // waiting to be kept is written first (lib/drafts.ts), for the same person to get back.
   const hadSession = useRef(false);
   useEffect(() => {
     if (state.kind === "signed_in") hadSession.current = true;
     if (state.kind !== "signed_out") return;
-    if (hadSession.current) leavePage(endedPath(pathname));
-    else router.replace(signInPath(pathname));
+    if (hadSession.current) {
+      flushDrafts();
+      leavePage(endedPath(window.location.pathname + window.location.search));
+    } else router.replace(signInPath(pathname));
   }, [state.kind, router, pathname]);
+
+  // Drafts kept in this tab by anyone else are dropped as soon as who is signed in is known.
+  const signedInId = state.kind === "signed_in" ? state.me.user.id : null;
+  useEffect(() => {
+    if (signedInId !== null) keepDraftsOf(signedInId);
+  }, [signedInId]);
 
   // Another tab signed out, or someone else signed in (lib/sessionChannel.ts).
   // Heard from the start: a tab that does not know yet who is signed in
@@ -93,7 +104,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       watchSession((now) => {
         if (state.kind === "signed_in") {
           const to = pageAfterSessionChange(state.me.user.id, now, window.location);
-          if (to !== null) leavePage(to);
+          if (to === null) return;
+          clearDrafts(); // signed out, or someone else signed in: nothing of this person is kept
+          leavePage(to);
         } else if (state.kind !== "signed_out") {
           setAttempt((n) => n + 1);
         }

@@ -41,9 +41,13 @@ function withNote(path: string, note: string): string {
   return `${path}${path.includes("?") ? "&" : "?"}${note}=1`;
 }
 
-/** The sign-in page after a session ended while a screen was open (it says so). */
-export function endedPath(pathname: string): string {
-  return withNote(signInPath(pathname), "ended");
+/**
+ * The sign-in page after a session ended while a screen was open (it says so). `place` is the
+ * screen's path and query; signing in comes back to it (issue 468), when it is a safe path.
+ */
+export function endedPath(place: string): string {
+  if (safeNextPath(place) === null) return withNote(signInPath(place.split("?", 1)[0] ?? ""), "ended");
+  return `/login?next=${encodeURIComponent(place)}&ended=1`;
 }
 
 /** The sign-in page after signing out (it says so). */
@@ -66,11 +70,43 @@ export function signedOutMessage(query: Record<string, string | string[] | undef
   return null;
 }
 
-/** Where a sign-in goes: /admin when it came from there (?next=/admin), else the dashboard,
- * the home screen (File management D1). Only these two, so the address can never send anyone
- * to another site. */
+/**
+ * A path on this site to come back to after signing in, or null (issue 468). Only a path that
+ * starts with one "/": never "//" or "/\" (another site), no backslash or control character
+ * anywhere (a browser drops a tab or new line, turning "/\t/x" into "//x"), and no ":" before
+ * its query (no scheme). Each layer of %-encoding of the path is checked the same way.
+ */
+export function safeNextPath(next: unknown): string | null {
+  if (typeof next !== "string" || next.length > MAX_NEXT_LENGTH || hasUnsafeCharacter(next)) return null;
+  let route = next.split(/[?#]/, 1)[0] ?? "";
+  for (let layer = 0; layer < MAX_ENCODINGS; layer++) {
+    if (!route.startsWith("/") || route.startsWith("//") || route.includes(":") || hasUnsafeCharacter(route)) {
+      return null;
+    }
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(route);
+    } catch {
+      return null;
+    }
+    if (decoded === route) return next;
+    route = decoded;
+  }
+  return null; // still encoded after this many layers: refused rather than guessed
+}
+
+const MAX_NEXT_LENGTH = 2000;
+const MAX_ENCODINGS = 4;
+
+/** A control character (below space, or DEL) or a backslash. */
+const hasUnsafeCharacter = (text: string) =>
+  Array.from(text).some((char) => char.charCodeAt(0) < 0x20 || char.charCodeAt(0) === 0x7f || char === "\\");
+
+/** Where a sign-in goes: the safe ?next= path it came from (safeNextPath), else the dashboard,
+ * the home screen (File management D1), so the address can never send anyone to another site.
+ * An /admin path stays one: the admin screen itself shows a non-admin it is for admins. */
 export function pathAfterSignIn(query: Record<string, string | string[] | undefined>): string {
-  return query.next === "/admin" ? "/admin" : "/dashboard";
+  return safeNextPath(query.next) ?? "/dashboard";
 }
 
 /**

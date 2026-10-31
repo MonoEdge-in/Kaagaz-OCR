@@ -28,6 +28,7 @@ import { PalettePicker } from "@/components/ui/PalettePicker";
 import { ThemeToggle } from "@/components/ui/ThemeToggle";
 import { Toast } from "@/components/ui/Toast";
 import { ApiError, logout, logoutEverywhere } from "@/lib/api";
+import { clearDrafts } from "@/lib/drafts";
 import { announceSession, leavePage } from "@/lib/sessionChannel";
 import type { Me } from "@/lib/types";
 import { ChangePasswordDialog } from "./ChangePasswordDialog";
@@ -91,6 +92,7 @@ export function AccountMenu({ me, onChanged }: { me: Me; onChanged(): void }) {
       }
     }
     clearStored(); // the upload tray's drops (PRD 5 U1) are this person's
+    clearDrafts(); // and so is unsent work kept in this tab (lib/drafts.ts, issue 468)
     announceSession(null);
     leavePage(signedOutPath(pathname));
   }
