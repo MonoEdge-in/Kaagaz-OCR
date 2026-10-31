@@ -40,6 +40,9 @@ export function codeNeeded(caught: unknown): boolean {
 /** After a wrong code, the server's one refusal text, then this. */
 export const CODE_ADVICE = "Use the newest code from the app.";
 
+/** Under the code field, at sign-in and after Google (issue 468): what to do without the phone. */
+export const LOST_PHONE_HELP = "Lost your phone? Ask another admin, or Kaagaz support, to reset your two-step sign-in.";
+
 // --- Setting two-step up (MFA required for admins) ---------------------------
 
 export const ENROL_REQUIRED =

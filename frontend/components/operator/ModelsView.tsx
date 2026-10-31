@@ -12,6 +12,7 @@
 import { useEffect, useState } from "react";
 import table from "@/components/documents/Table.module.css";
 import { EmptyState } from "@/components/ui/EmptyState";
+import { Toast } from "@/components/ui/Toast";
 import { getOperatorModels } from "@/lib/api";
 import { formatDate } from "@/lib/format";
 import type { OperatorModel } from "@/lib/types";
@@ -19,6 +20,7 @@ import { ConfirmDialog } from "./ConfirmDialog";
 import type { Confirm } from "./ConfirmDialog";
 import { modelConfirm, modelFocusId } from "./confirms";
 import { LoadFailed } from "./LoadFailed";
+import { LoadingRows } from "./LoadingRows";
 import { afterDone, operatorErrorMessage } from "./logic";
 import { NO_LEVELS, VENDOR_NOT_ALLOWED, hasNoLevels, modelAction, notEnabledReason, priceText, realCostText, yesNo } from "./models";
 import { PlatformDefaults } from "./PlatformDefaults";
@@ -30,7 +32,7 @@ export function ModelsView() {
   const [models, setModels] = useState<OperatorModel[] | null>(null);
   const [error, setError] = useState<{ attempt: number; message: string } | null>(null);
   const [changing, setChanging] = useState<Confirm | null>(null);
-  const [done, setDone] = useState("");
+  const [done, setDone] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -54,9 +56,7 @@ export function ModelsView() {
           From OpenRouter&apos;s live list, refreshed daily. Only models Kaagaz can use are listed. A model can be
           enabled once it passes verify-models; then organisations can be given it.
         </p>
-        <p className="visually-hidden" role="status">
-          {done || (!models && !failed ? "Loading the models…" : "")}
-        </p>
+        {!models && !failed && <LoadingRows what="the models" />}
         {failed && !models && <LoadFailed what="the models" message={failed} onRetry={() => setAttempt((n) => n + 1)} />}
         {models && models.length === 0 && (
           <EmptyState icon="admin" title="No models yet">
@@ -79,6 +79,7 @@ export function ModelsView() {
         )}
       </section>
       {models && <PlatformDefaults catalogue={models} onSaved={setDone} />}
+      <Toast message={done} onClose={() => setDone(null)} />
     </>
   );
 }

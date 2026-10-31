@@ -8,7 +8,7 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { confirmEmail } from "@/lib/api";
-import { LINK_MISSING, confirmedText, linkError, takeToken } from "@/lib/emailLinks";
+import { LINK_MISSING, confirmError, confirmedText, takeToken } from "@/lib/emailLinks";
 import login from "../../login/login.module.css";
 
 type State = { kind: "working" } | { kind: "done"; text: string } | { kind: "failed"; message: string };
@@ -25,7 +25,7 @@ export function ConfirmEmail() {
     sent.then(
       (reply) => setState({ kind: "done", text: confirmedText(reply.pending) }),
       (caught: unknown) =>
-        setState({ kind: "failed", message: token === null ? LINK_MISSING : linkError(caught, "confirm") }),
+        setState({ kind: "failed", message: token === null ? LINK_MISSING : confirmError(caught) }),
     );
   }, []);
 

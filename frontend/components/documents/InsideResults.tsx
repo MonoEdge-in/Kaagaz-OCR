@@ -5,7 +5,7 @@
 // spot. Every text is React text, so markup in a document or a name shows as
 // plain characters. The logic is in insideSearch.ts. Above them, "From your
 // stories" shows the reply's story_matches (lib/storyMatches.ts), never mixed
-// into the results.
+// into the results. Nothing found offers the other search and Ask with the same words (#468).
 
 import Link from "next/link";
 import { StoryMatches } from "@/components/stories/StoryMatches";
@@ -15,7 +15,8 @@ import { useBackFrom, withFrom } from "@/lib/backLink";
 import { STORY_NOTE_SEARCH, storyMatchesFrom, storyStatusText } from "@/lib/storyMatches";
 import type { DocumentSearch } from "@/lib/types";
 import { LabelChip } from "@/components/files/LabelChip";
-import { alsoSearchedText, foundCountText, highlightParts, resultView } from "./insideSearch";
+import { askWithWordsHref } from "@/components/chat/logic";
+import { alsoSearchedText, askAboutLabel, foundCountText, highlightParts, resultView } from "./insideSearch";
 import styles from "./Documents.module.css";
 import libraryStyles from "./Library.module.css";
 
@@ -27,6 +28,17 @@ export interface InsideSearchResultsProps {
   datesIgnored: boolean; // the upload dates narrow the list only
   onRetry(): void;
   onClear(): void;
+  /** The same words as a search of the names (#468). */
+  onSearchNames?(): void;
+}
+
+/** Ask Kaagaz about the words: chat opens with them in the box, never sent (#468). */
+export function AskAboutLink({ q }: { q: string }) {
+  return (
+    <Link className="btn" href={askWithWordsHref(q)}>
+      {askAboutLabel(q)}
+    </Link>
+  );
 }
 
 export function InsideSearchResults({
@@ -37,6 +49,7 @@ export function InsideSearchResults({
   datesIgnored,
   onRetry,
   onClear,
+  onSearchNames,
 }: InsideSearchResultsProps) {
   const from = useBackFrom(); // set on /search, not on the documents screen (#436)
   const note = datesIgnored && (
@@ -84,9 +97,17 @@ export function InsideSearchResults({
           title={noResults}
           headingLevel={3}
           action={
-            <button type="button" className="btn" onClick={onClear}>
-              Clear search
-            </button>
+            <>
+              <button type="button" className="btn" onClick={onClear}>
+                Clear search
+              </button>
+              {onSearchNames && (
+                <button type="button" className="btn" onClick={onSearchNames}>
+                  Search names instead
+                </button>
+              )}
+              <AskAboutLink q={q} />
+            </>
           }
         />
       </>

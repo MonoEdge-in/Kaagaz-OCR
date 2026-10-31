@@ -23,6 +23,7 @@ import { PasswordField } from "@/components/ui/PasswordField";
 import { useHydrated } from "@/components/ui/useHydrated";
 import { MIN_PASSWORD_LENGTH } from "@/components/admin/logic";
 import { changePassword, logout } from "@/lib/api";
+import { clearDrafts } from "@/lib/drafts";
 import { announceSession, leavePage } from "@/lib/sessionChannel";
 import type { Me } from "@/lib/types";
 import { signedOutPath } from "./gate";
@@ -102,6 +103,7 @@ export function SetPasswordScreen({ me, onChanged }: { me: Me; onChanged(): void
       // Already signed out, or unreachable: the sign-in page is right either way.
     }
     // A full page load, as in AppShell: nothing of this person stays in memory.
+    clearDrafts();
     announceSession(null);
     leavePage(signedOutPath(pathname));
   }

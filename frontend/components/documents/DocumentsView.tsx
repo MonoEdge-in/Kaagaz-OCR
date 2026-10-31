@@ -872,6 +872,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
                         setSearchAgain((n) => n + 1);
                       }}
                       onClear={clearSearch}
+                      onSearchNames={() => setModeChoice("names")}
                     />
                   )}
 

@@ -53,6 +53,7 @@ import { progressSignature } from "@/lib/poll";
 import { advance, barValue } from "@/lib/progress";
 import type { ShownProgress } from "@/lib/progress";
 import { useSession } from "@/lib/session";
+import { leavingPage } from "@/lib/sessionChannel";
 import { useTick } from "@/lib/tick";
 import type { BatchView, DocumentSummary, UploadLimits, UploadReader, UploadResult } from "@/lib/types";
 import { usePoll } from "@/lib/usePoll";
@@ -63,8 +64,10 @@ import {
   batchStore,
   filedText,
   inBatches,
+  keptCounts,
   leftText,
   newBatchId,
+  notSentText,
   readStored,
   rowKind,
   statusBarText,
@@ -97,7 +100,7 @@ import type { UploadState } from "./logic";
 import { checkPages } from "./pageCount";
 import { capReaders, effectiveOf, startReader, useAiSettings } from "@/lib/aiSettings";
 import { DUPLICATE_READER_NOTE, offersChoice, pickedReader, readerOptions, readingToSend } from "./readers";
-import { EMPTY_QUEUE, UPLOADS_AT_ONCE, askBatches, createSlots, followed, isBusy, queueReducer } from "./uploadQueue";
+import { EMPTY_QUEUE, UPLOADS_AT_ONCE, askBatches, createSlots, followed, isBusy, queueReducer, uploadsAtRisk } from "./uploadQueue";
 import type { Followed, UploadEntry } from "./uploadQueue";
 import { NO_TIMES, jobFraction, nextShown, stageOf, valueText } from "./uploadStages";
 import type { Shown, Stage, StageTimes } from "./uploadStages";
@@ -209,15 +212,25 @@ export function useUploads(onUploaded: () => void) {
 
   // Remember each drop with the counts the batch API does not keep: already uploaded, not sent.
   useEffect(() => {
-    const counted = stored.map((batch) => {
-      const rows = queue.entries.filter((entry) => entry.batchId === batch.id);
-      if (rows.length === 0) return batch;
-      const already = rows.filter((entry) => rowKind(entry) === "already").length;
-      const notSent = rows.filter((entry) => entry.state.kind === "error").length;
-      return { ...batch, already, notSent };
-    });
+    const counted = stored.map((batch) =>
+      keptCounts(batch, queue.entries.filter((entry) => entry.batchId === batch.id), restored.has(batch.id)),
+    );
     writeStored(batchStore(), counted, Date.now());
-  }, [stored, queue.entries]);
+  }, [stored, queue.entries, restored]);
+
+  // #468: leaving while a file is still waiting or sending asks first; the question goes once
+  // every file has reached the server (or stopped).
+  const atRisk = uploadsAtRisk(queue.entries);
+  useEffect(() => {
+    if (!atRisk) return;
+    const warn = (event: BeforeUnloadEvent) => {
+      if (leavingPage()) return; // a session's end or a sign-out reloads on purpose; the uploads stop anyway
+      event.preventDefault();
+      event.returnValue = ""; // older browsers ask only with this set
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [atRisk]);
 
   /** Send it: sending, saving, then (follow) followed while it is read; or say why not. */
   async function send(key: string, start: Start, follow: boolean) {
@@ -653,6 +666,8 @@ export function BatchTray({
       {storyPrompt && <p className={`muted ${styles.small}`}>{STORY_PROMPT}</p>}
       {[...batches].map(([id, rows]) => {
         const view = views[id] ?? null;
+        const counts = trayCounts(rows, stored.find((batch) => batch.id === id));
+        const notSent = notSentText(counts);
         const busy = rows.some(isBusy);
         const left = busy ? leftText(view) : null;
         // File management V5: the files of this drop that look like new versions, and Review.
@@ -663,10 +678,15 @@ export function BatchTray({
           <div key={id} className={styles.batch}>
             <div className={styles.batchHead}>
               <p className={styles.batchSummary}>
-                {summaryText(trayCounts(rows, stored.find((batch) => batch.id === id)))}
+                {summaryText(counts)}
               </p>
               {left && <span className={`muted ${styles.small} ${styles.timeLeft}`}>{left}</span>}
             </div>
+            {notSent && (
+              <p className={`error-text ${styles.small}`}>
+                <strong>{notSent}</strong>
+              </p>
+            )}
             {versions && first && (
               <p className={styles.small}>
                 {versions} ·{" "}

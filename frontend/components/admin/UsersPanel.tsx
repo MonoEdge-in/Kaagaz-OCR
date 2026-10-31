@@ -46,6 +46,8 @@ import {
   unlockUser,
   updateUser,
 } from "@/lib/api";
+import { DRAFT_KEPT, clearDraft, readDraft, saveDraftSoon } from "@/lib/drafts";
+import { errorWords } from "@/lib/errorWords";
 import { formatDate } from "@/lib/format";
 import type { AddedUser, AdminUser, PendingConnection, Role } from "@/lib/types";
 import table from "@/components/documents/Table.module.css";
@@ -56,6 +58,7 @@ import type { RowMenuItem } from "./RowMenu";
 import { Toast } from "./Toast";
 import type { Notice } from "./Toast";
 import {
+  ADD_USER_DRAFT,
   ALREADY_DECIDED,
   CONNECTIONS_FAILED,
   MIN_PASSWORD_LENGTH,
@@ -67,6 +70,8 @@ import {
   firstInvalidField,
   foreverControl,
   generatePassword,
+  newUserDraft,
+  newUserFromDraft,
   pendingLine,
   removeConnectionsQuestion,
   signsInWith,
@@ -119,10 +124,7 @@ export function UsersPanel({
         if (!cancelled) {
           setError({
             attempt,
-            message:
-              caught instanceof ApiError
-                ? caught.message
-                : "Check your internet connection, then try again.",
+            message: errorWords(caught),
           });
         }
       },
@@ -239,6 +241,7 @@ export function UsersPanel({
       </section>
       {adding && (
         <AddUserPanel
+          userId={currentUserId}
           onClose={() => setAdding(false)}
           onAdded={(user) => {
             setUsers((current) => (current ? [...current, user] : [user]));
@@ -319,10 +322,7 @@ function UserRow({
     } catch (caught) {
       onNotice({
         problem: true,
-        text:
-          caught instanceof ApiError
-            ? caught.message
-            : "Could not save the change. Check your connection, then try again.",
+        text: errorWords(caught),
       });
     } finally {
       setBusy(false);
@@ -511,7 +511,7 @@ function ConnectionsToApprove({ onApproved, onNotice }: { onApproved(): void; on
       }
       onNotice({
         problem: true,
-        text: caught instanceof ApiError ? caught.message : "Could not save the change. Check your connection, then try again.",
+        text: errorWords(caught),
       });
     }
   }
@@ -611,7 +611,6 @@ function TemporaryPassword({ revealed, onDone }: { revealed: Revealed; onDone: (
   );
 }
 
-const EMPTY_USER: NewUserInput = { email: "", display_name: "", role: "member", password: "" };
 const ADD_USER_TITLE_ID = "add-user-heading";
 const UNSAVED_QUESTION = "Close without adding? What you typed here will be lost.";
 
@@ -620,18 +619,41 @@ const UNSAVED_QUESTION = "Close without adding? What you typed here will be lost
  * Esc, inert page). Esc, the backdrop (press and release both on it) and Close ask
  * first when something is typed; focus goes back to "Add user" when it closes.
  */
-function AddUserPanel({ onClose, onAdded }: { onClose: () => void; onAdded: (user: AddedUser) => void }) {
+function AddUserPanel({
+  userId,
+  onClose,
+  onAdded,
+}: {
+  userId: string; // #468: the draft (email, name, role) is this admin's only
+  onClose: () => void;
+  onAdded: (user: AddedUser) => void;
+}) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const pressTarget = useRef<EventTarget | null>(null);
-  const [input, setInput] = useState<NewUserInput>(EMPTY_USER);
+  // #468: what was typed before a session ended comes back; the password never does. A line says
+  // so (DRAFT_KEPT) until the form is edited or sent.
+  const [kept] = useState(() => readDraft(userId, ADD_USER_DRAFT));
+  const [input, setInput] = useState<NewUserInput>(() => newUserFromDraft(kept));
+  const [keptNote, setKeptNote] = useState(kept !== null);
+  const edit = (next: NewUserInput) => {
+    setKeptNote(false);
+    setInput(next);
+  };
   const [errors, setErrors] = useState<NewUserErrors>({});
   const [serverError, setServerError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [masked, setMasked] = useState(true);
   const unsaved = input.email !== "" || input.display_name !== "" || input.password !== "";
   const askClose = () => {
-    if (!busy && closeAllowed(unsaved, () => window.confirm(UNSAVED_QUESTION))) onClose();
+    if (!busy && closeAllowed(unsaved, () => window.confirm(UNSAVED_QUESTION))) {
+      clearDraft(userId, ADD_USER_DRAFT); // closed on purpose: what was typed is let go
+      onClose();
+    }
   };
+
+  useEffect(() => {
+    saveDraftSoon(userId, ADD_USER_DRAFT, newUserDraft(input));
+  }, [userId, input]);
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -648,6 +670,7 @@ function AddUserPanel({ onClose, onAdded }: { onClose: () => void; onAdded: (use
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (busy) return; // Enter in a field while adding: never a second user
+    setKeptNote(false);
     setMasked(true); // never leave a password showing once it is sent
     setServerError(null);
     const found = validateNewUser(input);
@@ -664,12 +687,10 @@ function AddUserPanel({ onClose, onAdded }: { onClose: () => void; onAdded: (use
         email: input.email.trim(),
         display_name: input.display_name.trim(),
       });
+      clearDraft(userId, ADD_USER_DRAFT);
       onAdded(user);
     } catch (caught) {
-      const message =
-        caught instanceof ApiError
-          ? caught.message
-          : "Could not add the user. Check your connection, then try again.";
+      const message = errorWords(caught);
       if (caught instanceof ApiError && caught.code === "conflict") {
         setErrors({ email: message });
       } else {
@@ -703,6 +724,7 @@ function AddUserPanel({ onClose, onAdded }: { onClose: () => void; onAdded: (use
           </h2>
           <IconButton icon="close" label="Close" className="btn-quiet" onClick={askClose} />
         </div>
+        {keptNote && <p className="muted">{DRAFT_KEPT}</p>}
         <form className={styles.form} onSubmit={submit} noValidate>
           <Field
             id={NEW_USER_FIELD_IDS.email}
@@ -710,7 +732,7 @@ function AddUserPanel({ onClose, onAdded }: { onClose: () => void; onAdded: (use
             error={errors.email}
             type="email"
             value={input.email}
-            onChange={(email) => setInput({ ...input, email })}
+            onChange={(email) => edit({ ...input, email })}
           />
           <Field
             id={NEW_USER_FIELD_IDS.display_name}
@@ -718,7 +740,7 @@ function AddUserPanel({ onClose, onAdded }: { onClose: () => void; onAdded: (use
             error={errors.display_name}
             type="text"
             value={input.display_name}
-            onChange={(display_name) => setInput({ ...input, display_name })}
+            onChange={(display_name) => edit({ ...input, display_name })}
           />
           <div className="field">
             <label htmlFor="new-user-role">Role</label>
@@ -728,7 +750,7 @@ function AddUserPanel({ onClose, onAdded }: { onClose: () => void; onAdded: (use
               value={input.role}
               onChange={(event) => {
                 const role = ROLES.find((option) => option === event.target.value);
-                if (role) setInput({ ...input, role });
+                if (role) edit({ ...input, role });
               }}
             >
               {ROLES.map((role) => (
@@ -746,7 +768,7 @@ function AddUserPanel({ onClose, onAdded }: { onClose: () => void; onAdded: (use
               autoComplete="new-password"
               hint={`At least ${MIN_PASSWORD_LENGTH} characters. Give it to them yourself; they set their own when they sign in.`}
               value={input.password}
-              onChange={(password) => setInput({ ...input, password })}
+              onChange={(password) => edit({ ...input, password })}
               error={errors.password ?? null}
               masked={masked}
               onMaskedChange={setMasked}
@@ -756,7 +778,7 @@ function AddUserPanel({ onClose, onAdded }: { onClose: () => void; onAdded: (use
                 type="button"
                 className="btn"
                 onClick={() => {
-                  setInput({ ...input, password: generatePassword() });
+                  edit({ ...input, password: generatePassword() });
                   setMasked(false); // shown, so it can be copied and given to them
                 }}
               >

@@ -11,6 +11,7 @@ import { getOperatorUsage } from "@/lib/api";
 import { formatCost, formatNumber } from "@/lib/format";
 import type { OperatorUsageRow, UsageTotals } from "@/lib/types";
 import { LoadFailed } from "./LoadFailed";
+import { LoadingRows } from "./LoadingRows";
 import { operatorErrorMessage } from "./logic";
 import { PERIODS, periodRange, spendTotals } from "./models";
 import { Freshness } from "./OverviewView";
@@ -71,9 +72,7 @@ export function SpendView() {
           </div>
         )}
       </div>
-      <p className="visually-hidden" role="status">
-        {!rows && !failed ? "Loading the spend…" : ""}
-      </p>
+      {!rows && !failed && <LoadingRows what="the spend" />}
       {failed && <LoadFailed what="the spend" message={failed} onRetry={() => setAttempt((n) => n + 1)} />}
       {rows && rows.length === 0 && <p className={admin.emptyLine}>No AI use in this period.</p>}
       {rows && rows.length > 0 && <SpendTable rows={rows} />}

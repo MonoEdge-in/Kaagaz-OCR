@@ -109,6 +109,7 @@ export interface TrayCounts {
   failed: number;
   stopped: number;
   already: number;
+  notSent: number; // #468: not sent before a reload, so the file must be chosen again (no row of its own)
 }
 
 /** The counts of one drop's rows; ``stored`` adds what a reload lost (already uploaded, not sent). */
@@ -126,12 +127,22 @@ export function trayCounts(
     failed: 0,
     stopped: 0,
     already: 0,
+    notSent: 0,
   };
   for (const entry of entries) counts[rowKind(entry)] += 1;
   counts.already = Math.max(counts.already, stored.already);
-  counts.failed = Math.max(counts.failed, stored.notSent);
-  counts.total = ROW_KINDS.reduce((sum, kind) => sum + counts[kind], 0);
+  // In this tab each file not sent has its row (counted as failed, with Retry); after a reload
+  // none has, and only the remembered count is left (#468: no longer folded into failed).
+  const notSentRows = entries.filter((entry) => entry.state.kind === "error").length;
+  counts.notSent = Math.max(0, stored.notSent - notSentRows);
+  counts.total = ROW_KINDS.reduce((sum, kind) => sum + counts[kind], counts.notSent);
   return counts;
+}
+
+/** "2 not sent — choose them again": files lost with a reload (#468); null when none. */
+export function notSentText(counts: Pick<TrayCounts, "notSent">): string | null {
+  if (counts.notSent === 0) return null;
+  return `${counts.notSent} not sent — choose ${counts.notSent === 1 ? "it" : "them"} again`;
 }
 
 const files = (n: number) => `${n} ${n === 1 ? "file" : "files"}`;
@@ -390,6 +401,21 @@ export function writeStored(store: Store | null, batches: readonly StoredBatch[]
   } catch {
     // not remembered; the tray still works on this page
   }
+}
+
+/**
+ * What to remember for a drop: the counts of its rows in this tab; a drop from before a reload
+ * keeps the counts it had, since the batch API's rows never hold these two (#468).
+ */
+export function keptCounts(
+  batch: StoredBatch,
+  rows: readonly Pick<UploadEntry, "state">[],
+  restored: boolean,
+): StoredBatch {
+  if (rows.length === 0 || restored) return batch;
+  const already = rows.filter((entry) => rowKind(entry) === "already").length;
+  const notSent = rows.filter((entry) => entry.state.kind === "error").length;
+  return { ...batch, already, notSent };
 }
 
 /** Forget every drop (signing out). */

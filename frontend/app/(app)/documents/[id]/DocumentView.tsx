@@ -110,7 +110,7 @@ import { FILES_TEXT } from "@/components/files/words";
 import { VersionBanner } from "@/components/versions/VersionBanner";
 import { VersionsPanel } from "@/components/versions/VersionsPanel";
 import { VERSION_TEXT } from "@/components/versions/words";
-import { documentActivity, getDocument, getDocumentSummary, getPageReadings } from "@/lib/api";
+import { documentActivity, getDocument, getDocumentSummary, getPageReadings, lostConnection } from "@/lib/api";
 import { formatDate, formatDateTime, statusChip, typeLabel } from "@/lib/format";
 import type { StatusTone } from "@/lib/format";
 import { progressSignature } from "@/lib/poll";
@@ -118,6 +118,7 @@ import { markReceived } from "@/lib/timeLeft";
 import { decodeRegion } from "@/lib/regions";
 import { useSession } from "@/lib/session";
 import { backFrom } from "@/lib/backLink";
+import { StillLoading } from "@/components/shell/StillLoading";
 import type {
   DocumentDetail,
   DocumentSummary,
@@ -256,9 +257,13 @@ export function DocumentView({
 
   // #453: counts the changes made here (a value verified or saved on the summary card). A reply
   // asked for before one would put the old value back, so it is dropped and asked for again.
+  // Issue 468: a document already shown stays when asking again fails while the browser is
+  // offline (as the documents list does); it is asked for again once back online. Online, any
+  // failure (a timeout, Wi-Fi with no internet) shows the error with Try again.
   const changes = useRef(0);
   useEffect(() => {
     let cancelled = false;
+    let onOnline: (() => void) | null = null;
     const asked = changes.current;
     getDocument(documentId)
       .then((detail) => {
@@ -275,10 +280,18 @@ export function DocumentView({
       .catch((error: unknown) => {
         if (cancelled) return;
         if (asked !== changes.current) return setReloads((n) => n + 1);
-        setLoaded({ attempt, error: loadFailure(error) });
+        const lost = lostConnection(error) && navigator.onLine === false;
+        setLoaded((shown) =>
+          lost && shown && "detail" in shown && shown.attempt === attempt ? shown : { attempt, error: loadFailure(error) },
+        );
+        if (lost) {
+          onOnline = () => setReloads((n) => n + 1);
+          window.addEventListener("online", onOnline, { once: true });
+        }
       });
     return () => {
       cancelled = true;
+      if (onOnline) window.removeEventListener("online", onOnline);
       poll.stop();
     };
   }, [poll, documentId, attempt, reloads]);
@@ -310,6 +323,7 @@ export function DocumentView({
         <p className="visually-hidden" role="status">
           Loading the document…
         </p>
+        <StillLoading onRetry={() => setAttempt((n) => n + 1)} />
         <div className={`delayed ${styles.loading}`} aria-hidden="true">
           <span className={`skeleton ${styles.titleSkeleton}`} />
           <div className={styles.layout}>
@@ -627,6 +641,7 @@ export function DocumentView({
               active={selection?.region ?? null}
               onShow={showSpot}
               reviewer={canReview(me.user.role) && detail.deleted_at === null}
+              userId={me.user.id}
               onResolved={(value, message) => {
                 // #453: the reply's value in place at once, never undone by an older reply; the
                 // words asked for again (a flagged value is one of them); said aloud.

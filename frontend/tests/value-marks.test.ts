@@ -99,7 +99,7 @@ const detail = (values: ExtractedValue[]) =>
 // Changed on purpose (owner, 29 Oct 2026, #453): the card takes onResolved and onStale for a value's menu.
 const summary = (values: ExtractedValue[], reviewer: boolean) =>
   renderToStaticMarkup(
-    createElement(SummaryCard, { detail: detail(values), active: null, onShow: () => undefined, reviewer, onResolved: () => undefined, onStale: () => undefined }),
+    createElement(SummaryCard, { detail: detail(values), active: null, onShow: () => undefined, reviewer, onResolved: () => undefined, onStale: () => undefined, userId: "u-1" }), // Changed on purpose (issue 468): drafts are per person
   );
 
 describe("the summary card's one line about checking", () => {

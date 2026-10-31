@@ -70,6 +70,20 @@ export function linkError(caught: unknown, page?: LinkPage): string {
   return EMAIL_DOWN;
 }
 
+/** Issue 468: what the confirm page says when the request failed. The page already took the
+ * token out of the address bar, so reloading cannot help: a lost connection or a server problem
+ * says to open the email link again. */
+export const CONFIRM_NETWORK_FAILURE =
+  "Could not reach Kaagaz. Check your internet connection, then open the email link again.";
+export const CONFIRM_DOWN = "This is not working right now. In a minute, open the email link again.";
+
+export function confirmError(caught: unknown): string {
+  const said = linkError(caught, "confirm");
+  if (said === NETWORK_FAILURE) return CONFIRM_NETWORK_FAILURE;
+  if (said === EMAIL_DOWN) return CONFIRM_DOWN;
+  return said;
+}
+
 /** The app's banner while the signed-in person's email is not confirmed. ``sent``: this browser
  * sent a link just now. People made before email had none sent, so "We sent" waits for it. */
 export function confirmBanner(email: string, sent: boolean): { text: string; button: string } {

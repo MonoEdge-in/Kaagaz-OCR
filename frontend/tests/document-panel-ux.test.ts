@@ -44,7 +44,7 @@ const detail = (over: Partial<DocumentDetail> = {}) =>
 // Changed on purpose (owner, 29 Oct 2026, #453): and onResolved and onStale, for a value's menu (fact-actions.test.ts).
 const summary = (shown: DocumentDetail) =>
   renderToStaticMarkup(
-    createElement(SummaryCard, { detail: shown, active: null, onShow: () => undefined, reviewer: false, onResolved: () => undefined, onStale: () => undefined }),
+    createElement(SummaryCard, { detail: shown, active: null, onShow: () => undefined, reviewer: false, onResolved: () => undefined, onStale: () => undefined, userId: "u-1" }), // Changed on purpose (issue 468): drafts are per person
   );
 
 describe("the summary at the top of the panel", () => {

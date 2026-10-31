@@ -8,12 +8,18 @@
 // #457 phase 1: "Approve new sign-in connections automatically", saved at once (turning it on
 // asks first, with the warning; "Saved." after each change), shown only while a provider is on
 // (the settings reply leaves it out otherwise).
+// #468: unsaved changes are kept in this tab for the same admin (lib/drafts.ts) and come back over
+// the saved settings; onUnsaved tells AdminView, which asks before another tab opens.
 
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import libraryStyles from "@/components/documents/Library.module.css";
+import { LoadFailed } from "@/components/operator/LoadFailed";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
-import { ApiError, getSettings, setAutoApprove, updateSettings } from "@/lib/api";
+import { getSettings, setAutoApprove, updateSettings } from "@/lib/api";
+import { clearDraft, readDraft, saveDraftSoon } from "@/lib/drafts";
+import { errorWords } from "@/lib/errorWords";
+import { useSession } from "@/lib/session";
 import type { CustomerSettings } from "@/lib/types";
 import {
   AUTO_APPROVE_LABEL,
@@ -22,14 +28,24 @@ import {
   autoApproveWarning,
   AUTOFILE_HELP,
   AUTOFILE_LABEL,
+  SETTINGS_DRAFT,
   parseUploadLimit,
   settingsChanged,
+  settingsDraft,
   settingsErrorText,
+  settingsFromDraft,
 } from "./logic";
 import styles from "./Admin.module.css";
 
 /** providers: the sign-in providers switched on (Me's), for the auto-approval warning. */
-export function SettingsPanel({ providers }: { providers: readonly string[] }) {
+export function SettingsPanel({
+  providers,
+  onUnsaved,
+}: {
+  providers: readonly string[];
+  onUnsaved?(unsaved: boolean): void;
+}) {
+  const userId = useSession().me.user.id;
   const [settings, setSettings] = useState<CustomerSettings | null>(null);
   const [text, setText] = useState("");
   const [autofileOn, setAutofileOn] = useState(false);
@@ -37,6 +53,7 @@ export function SettingsPanel({ providers }: { providers: readonly string[] }) {
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -44,23 +61,20 @@ export function SettingsPanel({ providers }: { providers: readonly string[] }) {
       (result) => {
         if (cancelled) return;
         setSettings(result);
-        setText(result.max_upload_mb === null ? "" : String(result.max_upload_mb));
-        setAutofileOn(result.autofile.on);
+        const form = settingsFromDraft(readDraft(userId, SETTINGS_DRAFT), result);
+        setText(form.text);
+        setAutofileOn(form.autofileOn);
       },
       (caught: unknown) => {
         if (!cancelled) {
-          setLoadError(
-            caught instanceof ApiError
-              ? caught.message
-              : "Could not load the settings. Check your connection, then try again.",
-          );
+          setLoadError(errorWords(caught));
         }
       },
     );
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [attempt, userId]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -79,6 +93,7 @@ export function SettingsPanel({ providers }: { providers: readonly string[] }) {
       setSettings(result);
       setText(result.max_upload_mb === null ? "" : String(result.max_upload_mb));
       setAutofileOn(result.autofile.on);
+      clearDraft(userId, SETTINGS_DRAFT);
       setSaved("Saved.");
     } catch (caught) {
       setError(settingsErrorText(caught));
@@ -89,15 +104,27 @@ export function SettingsPanel({ providers }: { providers: readonly string[] }) {
 
   const changed = settings !== null && settingsChanged(settings, text, autofileOn);
 
+  useEffect(() => {
+    if (!settings) return; // not loaded yet: a kept draft is still to be read
+    saveDraftSoon(userId, SETTINGS_DRAFT, settingsDraft(settings, text, autofileOn));
+  }, [userId, settings, text, autofileOn]);
+
+  useEffect(() => onUnsaved?.(changed), [changed, onUnsaved]);
+
   return (
     <section className="card stack" aria-labelledby="settings-heading">
       <h2 id="settings-heading" className={styles.sectionHeading}>
         Settings
       </h2>
       {loadError && (
-        <p className="error-text" role="alert">
-          {loadError}
-        </p>
+        <LoadFailed
+          what="the settings"
+          message={loadError}
+          onRetry={() => {
+            setLoadError(null);
+            setAttempt((n) => n + 1);
+          }}
+        />
       )}
       {!settings && !loadError && (
         <>

@@ -37,6 +37,7 @@ import { Toast } from "@/components/admin/Toast";
 import type { Notice } from "@/components/admin/Toast";
 import { StoryMatches } from "@/components/stories/StoryMatches";
 import { Drawer } from "@/components/ui/Drawer";
+import { StillLoading } from "@/components/shell/StillLoading";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Icon } from "@/components/ui/Icon";
 import { IconButton } from "@/components/ui/IconButton";
@@ -54,6 +55,8 @@ import {
   renameConversation,
 } from "@/lib/api";
 import { MODE_TEXTS, modeLockedText, readMode, saveMode, sendPlan, startMode, STORY_SEARCH_LIMIT } from "@/lib/chatMode";
+import { DRAFT_KEPT, readDraft, saveDraft, saveDraftSoon } from "@/lib/drafts";
+import { useSession } from "@/lib/session";
 import type { ChatMode } from "@/lib/chatMode";
 import {
   findStoryMatches,
@@ -65,7 +68,15 @@ import {
   storyStatusText,
 } from "@/lib/storyMatches";
 import type { ChatOptions, ClarifyReply, ConversationSummary, Message } from "@/lib/types";
-import { answerCardId, answerStatusText, ASKING_STATUS, LOADED_STATUS, questionsByAnswer, STOPPED_STATUS } from "./answer";
+import {
+  answerCardId,
+  answerStatusText,
+  ASKING_STATUS,
+  LOADED_STATUS,
+  questionsByAnswer,
+  restoreAfterFailure,
+  STOPPED_STATUS,
+} from "./answer";
 import { AnswerSettings } from "./AnswerSettings";
 import { askInFlight, resumable, resumedConversation, settleAsk, startAsk, stopAsk } from "./askStore";
 import type { InFlight } from "./askStore";
@@ -75,11 +86,15 @@ import { ClarifyView } from "./ClarifyView";
 import { ConversationList } from "./ConversationList";
 import { scrollBehavior } from "./hooks";
 import {
+  ASK_DRAFT,
   answerScrollTop,
+  askDraft,
+  askDraftText,
   askErrorText,
   chatHref,
   choiceBody,
   conversationFromSearch,
+  conversationLoadText,
   defaultPick,
   documentFromSearch,
   hasChoices,
@@ -88,6 +103,7 @@ import {
   STILL_LOOKING_AFTER_MS,
   questionFromSearch,
   savePick,
+  settleWaitingDraft,
   starterQuestions,
   usablePick,
 } from "./logic";
@@ -169,6 +185,7 @@ function showInUrl(conversationId: string | null): void {
 /** `initialSearch`: the address's query string when chat opened (app/(app)/chat/page.tsx), read once. */
 export function ChatScreen({ initialSearch }: { initialSearch: string }) {
   const pathname = usePathname();
+  const userId = useSession().me.user.id;
   const [conversations, setConversations] = useState<ConversationSummary[] | null>(null);
   const [listFailed, setListFailed] = useState(false);
   // A question sent before Ask was left (askStore.ts), picked up once at mount.
@@ -187,6 +204,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
     restoreId ? keptScope() : startScope(documentFromSearch(initialSearch)),
   );
   const [messages, setMessages] = useState<Message[]>([]);
+  const [threadError, setThreadError] = useState(""); // why, once threadState is "error"
   const [threadState, setThreadState] = useState<"idle" | "loading" | "error">(
     restoreId ? "loading" : "idle",
   );
@@ -220,6 +238,34 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
   // Ask documents or search my stories: the tab's kept mode, read once React runs
   // in the browser (the server has no sessionStorage), until one is chosen here.
   const hydrated = useHydrated();
+  // Issue 468: the box's draft, kept in this tab (lib/drafts.ts, ASK_DRAFT): the words typed and
+  // the question still waiting for its answer. Read once in the browser, and put back in the box
+  // only when nothing else fills it (a question picked up from askStore.ts, or a ?q= link).
+  const typedNow = useRef("");
+  const waitingNow = useRef<string | null>(waiting ? resumed!.question : null);
+  const [draftRead, setDraftRead] = useState(false);
+  // The words put back, while the box still holds them unchanged: a line says they were kept (DRAFT_KEPT).
+  const [keptNote, setKeptNote] = useState<string | null>(null);
+  if (hydrated && !draftRead) {
+    setDraftRead(true);
+    const kept = askDraftText(readDraft(userId, ASK_DRAFT));
+    if (kept !== null && draft === undefined && resumed === null && autoQuestion === null) {
+      setDraft(kept);
+      setKeptNote(kept);
+    }
+  }
+  const keepDraft = useCallback(
+    () => saveDraftSoon(userId, ASK_DRAFT, askDraft(typedNow.current, waitingNow.current)),
+    [userId],
+  );
+  const onTyped = useCallback(
+    (text: string) => {
+      typedNow.current = text;
+      keepDraft();
+      setKeptNote((shown) => (shown !== null && shown !== text ? null : shown));
+    },
+    [keepDraft],
+  );
   const [chosenMode, setChosenMode] = useState<ChatMode | null>(null);
   const mode: ChatMode =
     chosenMode ??
@@ -351,6 +397,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
             setThreadState("idle");
             showInUrl(null);
           } else {
+            setThreadError(conversationLoadText(error));
             setThreadState("error");
           }
         })
@@ -376,6 +423,8 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
               })
               .catch(() => undefined);
           }
+          waitingNow.current = null;
+          keepDraft();
           load(reply.conversation_id, () => {
             setPending(null);
             setStatus(answerStatusText(reply.answer.answer));
@@ -385,6 +434,9 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
         (error: unknown) => {
           if (cancelled) return;
           settleAsk(resumed);
+          waitingNow.current = null;
+          typedNow.current = restoreAfterFailure(typedNow.current, resumed.question);
+          keepDraft();
           setPending(null);
           setAskError(errorText(error));
           setDraft(resumed.question);
@@ -394,7 +446,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
     return () => {
       cancelled = true;
     };
-  }, [restoreId, resumed, waiting]);
+  }, [restoreId, resumed, waiting, keepDraft]);
 
   // One small call tells the empty screen whether there is anything to ask about.
   useEffect(() => {
@@ -495,8 +547,10 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
       setScope(restoredScope(conversation.messages));
       setThreadState("idle");
       setStatus(LOADED_STATUS);
-    } catch {
-      if (request === openRequest.current) setThreadState("error");
+    } catch (error) {
+      if (request !== openRequest.current) return;
+      setThreadError(conversationLoadText(error));
+      setThreadState("error");
     }
   };
 
@@ -545,7 +599,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
 
   /** `only`: ask about these documents this once (A4 "Search all documents", A5's examples).
    * `chose`: the clarify choices tapped; typed words answer the open clarify too (PRD 6 B2). */
-  const onAsk = async (question: string, only?: ChosenScope, chose?: ClarifyReply): Promise<boolean> => {
+  const sendQuestion = async (question: string, only?: ChosenScope, chose?: ClarifyReply): Promise<boolean> => {
     const plan = sendPlan(mode);
     if (!plan.chat) return searchStories(question);
     const answering = chose ?? (asking && answersClarify(question) ? { message_id: asking.id, choice_ids: [] } : undefined);
@@ -608,6 +662,23 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
       setPending(null);
       if (asking_.current === entry) asking_.current = null;
     }
+  };
+
+  /** Send a question, kept as the draft's waiting question until it settles (issue 468). Not
+   * answered, it stays as typing: the box gets it back, and so does a page a session's end left. */
+  const onAsk = async (question: string, only?: ChosenScope, chose?: ClarifyReply): Promise<boolean> => {
+    setKeptNote(null);
+    waitingNow.current = question;
+    saveDraft(userId, ASK_DRAFT, askDraft(typedNow.current, question));
+    const sent = await sendQuestion(question, only, chose);
+    if (!alive.current) {
+      settleWaitingDraft(userId, question, sent); // this screen is gone; the next one has its own
+      return sent;
+    }
+    waitingNow.current = null;
+    if (!sent) typedNow.current = restoreAfterFailure(typedNow.current, question);
+    keepDraft();
+    return sent;
   };
 
   // Home submitted this question before navigating here. Consume the marker before
@@ -784,15 +855,18 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
               />
             ) : null}
             {mode === "documents" && threadState === "loading" ? (
-              <p className={`${styles.threadStatus} delayed`}>
-                <span className="spinner" aria-hidden="true" />
-                Loading the conversation…
-              </p>
+              <>
+                <p className={`${styles.threadStatus} delayed`}>
+                  <span className="spinner" aria-hidden="true" />
+                  Loading the conversation…
+                </p>
+                {activeId !== null ? <StillLoading onRetry={() => void open(activeId)} /> : null}
+              </>
             ) : null}
             {mode === "documents" && threadState === "error" ? (
               <div className={styles.threadError}>
                 <p className="error-text" role="alert">
-                  Could not load this conversation.
+                  {threadError}
                 </p>
                 <button
                   type="button"
@@ -863,12 +937,15 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
             {askOff || askError === FEATURE_OFF ? (
               <p className={styles.composerNote}>{FEATURE_OFF}</p>
             ) : (
+            <>
+            {keptNote !== null ? <p className={styles.composerNote}>{DRAFT_KEPT}</p> : null}
             <QuestionBox
               pending={busy || search.kind === "loading"}
               onStop={busy ? () => asking_.current && stopAsk(asking_.current) : undefined}
               error={mode === "documents" ? askError : null}
               onAsk={onAsk}
               draft={draft}
+              onTyped={onTyped}
               inputRef={inputRef}
               texts={MODE_TEXTS[mode]}
               answering={
@@ -892,6 +969,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
                 ) : null
               }
             />
+            </>
             )}
           </div>
         </div>

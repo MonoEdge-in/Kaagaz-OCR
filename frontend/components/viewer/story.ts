@@ -100,7 +100,9 @@ const NOT = { load: "Your story could not be loaded.", save: "Not saved.", delet
 export function storyFailure(caught: unknown, action: StoryAction): StoryFailure {
   const not = NOT[action];
   if (!(caught instanceof ApiError) || caught.status === 0) {
-    return { kind: "alert", message: `${not} Check your internet connection, then try again.` };
+    // #468: a GET that took too long says so (TOO_SLOW), not to check the internet.
+    const why = caught instanceof ApiError && caught.code === "timeout" ? caught.message : "Check your internet connection, then try again.";
+    return { kind: "alert", message: `${not} ${why}` };
   }
   const { status, code, message } = caught;
   if (status === 400 && action === "save") return { kind: "field", message };

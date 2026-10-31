@@ -30,6 +30,9 @@ export function leavePage(to: string): void {
   window.location.replace(to);
 }
 
+/** The tab is leaving on purpose (leavePage): a "leave this page?" prompt must not stop it (issue 468). */
+export const leavingPage = (): boolean => leaving;
+
 /** Tell the other tabs who is signed in now: a user id, or null after signing out. */
 export function announceSession(userId: string | null): void {
   tabChannel()?.postMessage({ userId });

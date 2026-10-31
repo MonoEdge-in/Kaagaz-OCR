@@ -164,6 +164,31 @@ export function rateLimitWait(caught: unknown, fallback: number): number | null 
   return caught.retryAfter !== undefined ? caught.retryAfter * 1000 : fallback;
 }
 
+/**
+ * Issue 468: a GET whose answer has not started in this long stops, and fails as a lost
+ * connection does (status 0), in these words. Only the wait for the answer to start (its
+ * headers) is timed: reading the body is not, so a big answer on a slow link still arrives.
+ * Only GETs: Ask's answer, uploads and every change are POST, PUT, PATCH or DELETE, and keep
+ * waiting as long as they take.
+ */
+export const GET_TIMEOUT_MS = 30_000;
+export const TOO_SLOW = "Kaagaz is taking too long to answer. Check your connection and try again.";
+
+/** The request never got an answer: no connection (fetch's TypeError), or status 0 (TOO_SLOW). */
+export const lostConnection = (caught: unknown) =>
+  caught instanceof ApiError ? caught.status === 0 : caught instanceof TypeError;
+
+/** Aborts when either does: the caller's own signal (its abort stays the caller's) or the timeout. */
+export function withTimeout(timeout: AbortSignal, signal?: AbortSignal): AbortSignal {
+  if (!signal) return timeout;
+  const both = new AbortController();
+  for (const each of [signal, timeout]) {
+    if (each.aborted) both.abort(each.reason);
+    else each.addEventListener("abort", () => both.abort(each.reason), { once: true });
+  }
+  return both.signal;
+}
+
 async function request<T>(
   method: string,
   path: string,
@@ -172,13 +197,23 @@ async function request<T>(
 ): Promise<T> {
   const headers: Record<string, string> = method === "GET" ? {} : { ...CSRF_HEADER };
   if (body !== undefined) headers["Content-Type"] = "application/json";
-  const response = await fetch(`/api${path}`, {
-    method,
-    headers,
-    credentials: "same-origin",
-    body: body === undefined ? undefined : JSON.stringify(body),
-    signal,
-  });
+  const timeout = method === "GET" ? new AbortController() : null;
+  const timer = timeout ? setTimeout(() => timeout.abort(), GET_TIMEOUT_MS) : undefined;
+  let response: Response;
+  try {
+    response = await fetch(`/api${path}`, {
+      method,
+      headers,
+      credentials: "same-origin",
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: timeout ? withTimeout(timeout.signal, signal) : signal,
+    });
+  } catch (caught) {
+    if (timeout?.signal.aborted && !signal?.aborted) throw new ApiError(0, "timeout", TOO_SLOW);
+    throw caught;
+  } finally {
+    clearTimeout(timer); // the answer started (or failed): its body is read untimed
+  }
   if (!response.ok) throw noticeSessionEnd(await errorFrom(response));
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
@@ -546,7 +581,7 @@ async function retryWhileOffline<T>(work: () => Promise<T>, onWaiting?: UploadWa
         await waitForNetwork(paced);
         continue;
       }
-      const lost = error instanceof ApiError ? error.status === 0 : error instanceof TypeError;
+      const lost = lostConnection(error);
       const busy = error instanceof ApiError && error.status >= 500;
       if (!lost && !(busy && serverTries++ < SERVER_RETRIES)) throw error;
       onWaiting?.(true, lost ? "connection" : "server"); // issue 357: a 5xx is not a lost connection

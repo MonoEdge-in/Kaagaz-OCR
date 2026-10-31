@@ -4,6 +4,7 @@
 
 import { useEffect, useState } from "react";
 import { ApiError, getAiSettings } from "./api";
+import { errorWords } from "./errorWords";
 import type {
   TaskLevel,
   AiSettings,
@@ -212,5 +213,5 @@ export function aiSaveErrorText(caught: unknown): string {
   if (!(caught instanceof ApiError)) return "Could not save. Check your connection, then try again.";
   if (caught.code === "not_allowed") return "One of these choices is not available for your organisation. Choose again.";
   if (caught.code === "locked") return "Your admin has set this, so it can't be changed here.";
-  return caught.message;
+  return errorWords(caught, "customer"); // issue 468: never a proxy's "Something went wrong."
 }

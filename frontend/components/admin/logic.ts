@@ -5,12 +5,17 @@
 import { sessionScope } from "@/components/shell/gate";
 import { roleName } from "@/components/shell/nav";
 import { providersText } from "@/components/account/signInWays";
+import type { MineDraft, OrgDraft } from "@/lib/aiSettings";
 import { ApiError } from "@/lib/api";
+import type { Draft } from "@/lib/drafts";
+import { errorWords } from "@/lib/errorWords";
 import { formatDateTime, formatNumber, formatUsd, PART_NOT_KNOWN, statusChip } from "@/lib/format";
 import type { StatusTone } from "@/lib/format";
 import type {
   AddedUser,
   AdminUser,
+  AiSettings,
+  AiTask,
   AuditEntry,
   CustomerSettings,
   DocumentStatus,
@@ -321,12 +326,104 @@ export function settingsChanged(
   return text.trim() !== savedText || (saved.autofile.granted && autofileOn !== saved.autofile.on);
 }
 
+// --- Drafts (#468): unsent admin work kept in this tab for the same admin (lib/drafts.ts) ---
+
+export const ADD_USER_DRAFT = "admin:add-user";
+export const SETTINGS_DRAFT = "admin:settings";
+/** The admin's AI settings tab and a member's own (/settings/ai) keep separate drafts. */
+export const aiSettingsDraft = (scope: "organisation" | "member") =>
+  scope === "organisation" ? "admin:ai-settings" : "settings:ai";
+
+/** Add a user's draft: email, name and role, never the temporary password; null until something is typed. */
+export function newUserDraft(input: NewUserInput): Draft | null {
+  if (input.email === "" && input.display_name === "") return null;
+  return { email: input.email, display_name: input.display_name, role: input.role };
+}
+
+/** The form from a kept draft; a value of the wrong kind is the empty form's. The password is always empty. */
+export function newUserFromDraft(draft: Draft | null): NewUserInput {
+  const role = ROLES.find((each) => each === draft?.role) ?? "member";
+  const text = (value: unknown) => (typeof value === "string" ? value : "");
+  return { email: text(draft?.email), display_name: text(draft?.display_name), role, password: "" };
+}
+
+/** Settings' draft: only the fields that differ from what is saved, so restoring it never undoes
+ * another admin's change to the other one (#468 review, CR1); null when nothing does. */
+export function settingsDraft(saved: CustomerSettings, text: string, autofileOn: boolean): Draft | null {
+  const draft: Draft = {};
+  if (text.trim() !== (saved.max_upload_mb === null ? "" : String(saved.max_upload_mb))) draft.uploadLimit = text;
+  if (saved.autofile.granted && autofileOn !== saved.autofile.on) draft.autofile = autofileOn;
+  return Object.keys(draft).length > 0 ? draft : null;
+}
+
+/** The Settings form from what is saved, with a kept draft over it (auto-filing only while allowed). */
+export function settingsFromDraft(draft: Draft | null, saved: CustomerSettings): { text: string; autofileOn: boolean } {
+  const savedText = saved.max_upload_mb === null ? "" : String(saved.max_upload_mb);
+  return {
+    text: typeof draft?.uploadLimit === "string" ? draft.uploadLimit : savedText,
+    autofileOn: saved.autofile.granted && typeof draft?.autofile === "boolean" ? draft.autofile : saved.autofile.on,
+  };
+}
+
+/** AI settings' changed tasks as plain values to keep; of an organisation's task, only the part
+ * changed from `saved` (its level, its lock), as Settings does (CR1); null when none changed. */
+export function aiChangesToKeep(saved: OrgDraft | MineDraft, changes: OrgDraft | MineDraft): Draft | null {
+  const kept: Draft = {};
+  for (const [task, value] of Object.entries(changes)) {
+    if (value === undefined) continue;
+    if (value === null || typeof value === "string") {
+      kept[task] = value;
+      continue;
+    }
+    const before = (saved as OrgDraft)[task as AiTask];
+    const part: Draft = {};
+    if (value.level !== before?.level) part.level = value.level;
+    if (value.locked !== before?.locked) part.locked = value.locked;
+    kept[task] = part;
+  }
+  return Object.keys(kept).length > 0 ? kept : null;
+}
+
+/** An organisation's kept changes over what is saved: tasks the reply has, with a level allowed
+ * now; only the parts kept, the rest as saved now. */
+export function orgDraftOver(saved: OrgDraft, kept: Draft | null, settings: AiSettings): OrgDraft {
+  const draft = { ...saved };
+  for (const task of settings.tasks) {
+    const value = kept?.[task.task];
+    const now = saved[task.task];
+    if (typeof value !== "object" || value === null || Array.isArray(value) || !now) continue;
+    const level = "level" in value ? task.allowed.find((each) => each === value.level) : now.level;
+    if (level) draft[task.task] = { level, locked: typeof value.locked === "boolean" ? value.locked : now.locked };
+  }
+  return draft;
+}
+
+/** A member's kept changes over what is saved: tasks not locked, an allowed level or null (the organisation's). */
+export function mineDraftOver(saved: MineDraft, kept: Draft | null, settings: AiSettings): MineDraft {
+  const draft = { ...saved };
+  for (const task of settings.tasks) {
+    if (task.locked || !kept || !(task.task in kept)) continue;
+    const value = kept[task.task];
+    if (value === null) draft[task.task] = null;
+    else {
+      const level = task.allowed.find((each) => each === value);
+      if (level) draft[task.task] = level;
+    }
+  }
+  return draft;
+}
+
+export const LEAVE_UNSAVED = "You have unsaved changes. Leave without saving?";
+
+/** Another admin tab may open: at once with nothing unsaved, else only once the admin says leave. */
+export function tabChangeAllowed(unsaved: boolean, confirmLeave: () => boolean): boolean {
+  return !unsaved || confirmLeave();
+}
+
 /** What a Save that did not work says: the plain words for a switch not allowed yet, else the server's. */
 export function settingsErrorText(caught: unknown): string {
   if (caught instanceof ApiError && caught.code === "not_granted") return AUTOFILE_NOT_AVAILABLE;
-  return caught instanceof ApiError
-    ? caught.message
-    : "Could not save the settings. Check your connection, then try again.";
+  return errorWords(caught);
 }
 
 export interface Tile {
@@ -511,6 +608,19 @@ function detailText(key: string, value: unknown): string | null {
   return null;
 }
 
+// #468: an empty Activity list says whether filters hid everything or nothing has happened yet
+// (the admin's and the operator's tabs), and a date range may not end before it starts.
+export const NO_ACTIVITY = "No activity yet.";
+export const NO_ACTIVITY_MATCHES = "No activity matches these filters.";
+export const activityEmptyText = (filtered: boolean) => (filtered ? NO_ACTIVITY_MATCHES : NO_ACTIVITY);
+
+export const DATES_BACKWARDS = "From must be on or before To.";
+
+/** DATES_BACKWARDS for From after To (YYYY-MM-DD, compared as text); null otherwise or while one is empty. */
+export function datesError(from: string, to: string): string | null {
+  return from !== "" && to !== "" && from > to ? DATES_BACKWARDS : null;
+}
+
 /** An audit row's details as one line of plain text: "Page 3, Status: Ready". */
 export function describeDetails(details: Record<string, unknown>): string {
   return Object.keys(details)
@@ -666,9 +776,7 @@ export function lastRunText(lastRunAt: string | null): string {
  * (409, someone already retried it; 429, too many at once), else a network hint.
  */
 export function retryErrorText(caught: unknown): string {
-  return caught instanceof ApiError
-    ? caught.message
-    : "Could not reach the server. Check your connection, then try again.";
+  return errorWords(caught);
 }
 
 // --- The Usage tab (model choice SP2, SP4) ---------------------------------------

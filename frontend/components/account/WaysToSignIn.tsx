@@ -23,13 +23,21 @@ import { PasswordField } from "@/components/ui/PasswordField";
 import { ApiError, connectProvider, identities, removeIdentity } from "@/lib/api";
 import { useSession } from "@/lib/session";
 import type { ConnectedIdentity, WaysToSignIn as Ways } from "@/lib/types";
-import { disconnectQuestion, introText, needsCode, pageNotice, passwordRow, providerName, rowText } from "./signInWays";
+import {
+  disconnectQuestion,
+  introText,
+  needsCode,
+  pageNotice,
+  passwordRow,
+  providerName,
+  rowText,
+  waysLoadText,
+} from "./signInWays";
 import styles from "./WaysToSignIn.module.css";
 
 type Asking = { kind: "connect"; provider: string } | { kind: "remove"; provider: string; identity: ConnectedIdentity };
 
 const OFF = "Signing in with Google isn't switched on for Kaagaz yet.";
-const NO_ANSWER = "Could not load your ways to sign in. Check your internet connection, then try again.";
 const PASSWORD_ID = "ways-password";
 const CODE_ID = "ways-code";
 
@@ -43,7 +51,9 @@ export function WaysIntro() {
 export function WaysToSignIn({ params }: { params: Record<string, string | undefined> }) {
   const { me } = useSession();
   const [ways, setWays] = useState<Ways | null>(null);
-  const [failure, setFailure] = useState<string | null>(null);
+  // Issue 468: why the list did not load, with Try again (not when Google is switched off).
+  const [failure, setFailure] = useState<{ text: string; retry: boolean } | null>(null);
+  const [attempt, setAttempt] = useState(0);
   const [asking, setAsking] = useState<Asking | null>(null);
   const [said, setSaid] = useState<string | null>(null);
 
@@ -54,13 +64,15 @@ export function WaysToSignIn({ params }: { params: Record<string, string | undef
         if (live) setWays(reply);
       },
       (caught: unknown) => {
-        if (live) setFailure(caught instanceof ApiError && caught.status === 404 ? OFF : NO_ANSWER);
+        if (!live) return;
+        const off = caught instanceof ApiError && caught.status === 404;
+        setFailure(off ? { text: OFF, retry: false } : { text: waysLoadText(caught), retry: true });
       },
     );
     return () => {
       live = false;
     };
-  }, []);
+  }, [attempt]);
 
   const connected = params.connected ? ways?.identities.find((row) => row.provider === params.connected) : undefined;
   const notice = said
@@ -104,9 +116,24 @@ export function WaysToSignIn({ params }: { params: Record<string, string | undef
         })}
       </ul>
       {failure && (
-        <p className="hint" role="status">
-          {failure}
-        </p>
+        <div className={styles.loadFailed}>
+          <p className="hint" role="status">
+            {failure.text}
+          </p>
+          {failure.retry && (
+            <button
+              type="button"
+              className="btn"
+              onClick={() => {
+                setFailure(null);
+                setAttempt((n) => n + 1);
+              }}
+            >
+              <Icon name="refresh" />
+              Try again
+            </button>
+          )}
+        </div>
       )}
       {asking && (
         <PasswordDialog

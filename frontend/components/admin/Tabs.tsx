@@ -34,7 +34,8 @@ export function Tabs<T extends string>(props: {
   label: string;
   tabs: readonly TabItem<T>[];
   active: T;
-  onChange(id: T): void;
+  /** Open this tab; false when it did not open (#468: the admin chose to stay), so focus stays put. */
+  onChange(id: T): boolean;
   children: ReactNode;
 }) {
   const { prefix, label, tabs, active, onChange, children } = props;
@@ -79,8 +80,7 @@ export function Tabs<T extends string>(props: {
     const tab = next === null ? undefined : tabs[next];
     if (!tab) return;
     event.preventDefault();
-    onChange(tab.id);
-    document.getElementById(tabId(prefix, tab.id))?.focus();
+    if (onChange(tab.id)) document.getElementById(tabId(prefix, tab.id))?.focus();
   }
 
   const scrollBy = (side: -1 | 1) => listRef.current?.scrollBy({ left: side * listRef.current.clientWidth * 0.8 });

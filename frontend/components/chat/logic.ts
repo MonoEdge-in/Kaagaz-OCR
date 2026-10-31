@@ -4,6 +4,9 @@
 // answer, what a source card says about its page, and what a failed question
 // tells the person to do.
 
+import { flushDrafts, readDraft, saveDraft } from "@/lib/drafts";
+import { errorWords } from "@/lib/errorWords";
+import type { Draft } from "@/lib/drafts";
 import { formatDate, typeLabel } from "@/lib/format";
 import { pageLink } from "@/lib/regions";
 import type {
@@ -17,7 +20,7 @@ import type {
   Region,
   ThinkingLevel,
 } from "@/lib/types";
-import { citationRegion, linkWords } from "./answer";
+import { citationRegion, linkWords, restoreAfterFailure } from "./answer";
 
 // --- Grouping the conversation list by day ------------------------------------
 
@@ -221,6 +224,41 @@ export function askErrorText(error: { status: number; message: string } | null):
   return "Could not get an answer right now. Try again in a minute.";
 }
 
+/** Why a conversation did not load, and what to do (issue 468): Try again sits beside it. */
+export const conversationLoadText = (caught: unknown): string => `Could not load this conversation. ${errorWords(caught)}`;
+
+// --- The question box's draft (issue 468) -------------------------------------
+// Kept in this tab for the same person (lib/drafts.ts): the words typed, and the question
+// still waiting for its answer. Back on Ask it goes back in the box, never sent by itself.
+
+export const ASK_DRAFT = "ask";
+
+/** What Ask keeps, or null for nothing. */
+export function askDraft(typed: string, waiting: string | null): Draft | null {
+  const fields: Draft = {};
+  if (typed.trim()) fields.typed = typed;
+  if (waiting?.trim()) fields.waiting = waiting;
+  return Object.keys(fields).length > 0 ? fields : null;
+}
+
+/** The words a kept draft puts back in the box: the question that got no answer, else the typing. */
+export function askDraftText(draft: Draft | null): string | null {
+  const words = (value: unknown) => (typeof value === "string" && value.trim() ? value : null);
+  return words(draft?.waiting) ?? words(draft?.typed);
+}
+
+/**
+ * A question settled after its chat screen was gone: forget it as waiting. Answered, it is
+ * done; not, it stays as typing (unless something else was typed), as the box would keep it.
+ */
+export function settleWaitingDraft(userId: string, question: string, answered: boolean): void {
+  flushDrafts();
+  const kept = readDraft(userId, ASK_DRAFT);
+  if (kept?.waiting !== question) return;
+  const typed = typeof kept.typed === "string" ? kept.typed : "";
+  saveDraft(userId, ASK_DRAFT, askDraft(answered ? typed : restoreAfterFailure(typed, question), null));
+}
+
 // --- The open conversation lives in the URL (/chat?c=<id>) --------------------
 // so a reload, or a link, brings the same conversation back. Only an id shaped
 // like a UUID is read; the server still decides whether it is this person's.
@@ -256,9 +294,16 @@ export function questionFromSearch(search: string): string | null {
   return question ? question.slice(0, 1000) : null;
 }
 
+// One ?q= contract: /chat?q= puts the words in the box (questionFromSearch); send=1 also sends them.
+
 /** The chat address that submits a question sent from Home. */
 export function askHref(question: string): string {
   return `/chat?q=${encodeURIComponent(question)}&send=1`;
+}
+
+/** The chat address with these words in the question box, never sent (#468: a search that found nothing). */
+export function askWithWordsHref(q: string): string {
+  return `/chat?q=${encodeURIComponent(q)}`;
 }
 
 /** The chat address that asks about one document. */

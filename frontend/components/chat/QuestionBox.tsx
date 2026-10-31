@@ -13,7 +13,7 @@
 // While an answer is on its way, Send becomes Stop (Tushar, 24 Oct 2026): pressed, the request
 // is cancelled and the question comes back in the box, with no error.
 
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode, RefObject } from "react";
 import { Icon } from "@/components/ui/Icon";
 import type { ModeTexts } from "@/lib/chatMode";
@@ -40,6 +40,7 @@ export function QuestionBox({
   error,
   onAsk,
   draft,
+  onTyped,
   inputRef,
   texts,
   tools,
@@ -59,6 +60,8 @@ export function QuestionBox({
   onAsk: (question: string) => Promise<boolean>;
   /** A question that failed while Ask was left (askStore.ts): back into the box, as after any failure. */
   draft?: string;
+  /** Told the box's words after every change, to keep them as a draft (issue 468). */
+  onTyped?: (text: string) => void;
   inputRef: RefObject<HTMLTextAreaElement | null>;
 }) {
   const [text, setText] = useState(draft ?? "");
@@ -81,6 +84,10 @@ export function QuestionBox({
     if (text) fitToText(input);
     else input.style.height = "";
   }, [text, inputRef]);
+
+  useEffect(() => {
+    onTyped?.(text);
+  }, [text, onTyped]);
 
   const submit = async () => {
     if (pending || sending.current) return;
