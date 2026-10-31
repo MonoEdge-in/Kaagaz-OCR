@@ -18,8 +18,9 @@ provider's own routes: while that one is off), before anything else is read.
   is ``refused`` and audited). The connection is marked used only once every check passed.
   Without two-step sign-in a member or reviewer gets an app session and goes to ``next``,
   audited ``auth.login`` ``{"via": "google"}``. Anyone with codes on gets the 5-minute second
-  step cookie and /login?step=code; an admin with no code yet is sent to sign in with the
-  password first (``password_first``). Every failure is 303 /login?oidc_error=<code>:
+  step cookie and /login?step=code; an admin who turned two-step off themselves (0061b) gets
+  the admin session as a member does; any other admin with no code yet is sent to sign in
+  with the password first (``password_first``). Every failure is 303 /login?oidc_error=<code>:
   ``cancelled``, ``expired``, ``not_connected``, ``refused``, ``locked``, ``unavailable``,
   ``busy`` or ``password_first``. The reply carries ``Referrer-Policy: no-referrer``.
 * ``POST /auth/oidc/{provider}/connect`` {password, code?} (signed in, any role): Account, Ways
@@ -437,7 +438,7 @@ def _sign_in(
     if not attempt.customer_active:  # disabled, being deleted, or a sign-up still pending
         _audit_failure(context, attempt.customer_id, attempt.user_id, "customer_disabled")
         raise _Refused("refused")
-    if attempt.totp_enabled_at is None and attempt.role == "admin":
+    if attempt.totp_enabled_at is None and attempt.role == "admin" and attempt.totp_off_at is None:
         raise _Refused("password_first")  # an admin sets up the code at a password sign-in first
     with context.db.customer(found.customer_id) as conn:  # a sign-in that passed every check
         identities.touch_used(conn, found.customer_id, found.id, now)

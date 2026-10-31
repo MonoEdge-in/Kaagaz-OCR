@@ -208,6 +208,26 @@ def test_admin_without_two_step_must_use_password_first(db: Database, google: Fa
     assert not client.cookies.get(SESSION_COOKIE) and not client.cookies.get(PENDING_COOKIE)
 
 
+def test_admin_who_turned_two_step_off_signs_in_with_google_alone(db: Database, google: FakeGoogle) -> None:
+    # #457 with #460 (Tushar, 30 Oct 2026): turned off by the admin is not "no code set up yet".
+    api = _api(db)
+    customer_id, admin_id = api.customer()
+    with db.customer(customer_id) as conn:
+        turned_off = text("UPDATE users SET totp_off_at = :t WHERE id = :u")
+        conn.execute(turned_off, {"t": api.clock(), "u": admin_id})
+    subject = _connect(api, customer_id, admin_id)
+    client = api.client()
+
+    reply = _sign_in_at_google(api, google, client, subject)
+
+    assert (reply.status_code, reply.headers["location"]) == (303, "/documents")
+    assert not client.cookies.get(PENDING_COOKIE)
+    me = client.get("/api/auth/me").json()
+    assert (me["session"]["scope"], me["user"]["two_step_turned_off"]) == ("admin", True)
+    assert client.get("/api/admin/users").status_code == 200
+    assert ("auth.login", "user", admin_id, {"via": "google"}) in api.audit_rows(customer_id)
+
+
 def test_password_first_counts_nothing(db: Database, google: FakeGoogle) -> None:
     api = _api(db)
     customer_id, admin_id = api.customer()

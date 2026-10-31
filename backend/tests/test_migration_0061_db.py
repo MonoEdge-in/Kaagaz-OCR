@@ -30,9 +30,10 @@ def _set(db: Database, customer_id: str, status: str, disabled_at: datetime | No
 
 
 def test_0061_up_down_up(fresh: tuple[str, Database]) -> None:
+    # Changed on purpose (#457 with #460, 30 Oct 2026): 0061 follows production's 0061b now.
     url, db = fresh
-    migrate(url, "0060")
-    at_0060 = base._schema(db)
+    migrate(url, "0061b")
+    at_0061b = base._schema(db)
     customer_id, user_id = new_customer(db)
 
     migrate(url, "0061")
@@ -43,8 +44,8 @@ def test_0061_up_down_up(fresh: tuple[str, Database]) -> None:
             text("SELECT email_verified_at FROM users WHERE id = :u"), {"u": user_id}
         ).one() == (None,)
 
-    base._downgrade(url, "0060")
-    assert base._schema(db) == at_0060
+    base._downgrade(url, "0061b")
+    assert base._schema(db) == at_0061b
     migrate(url, "0061")
     assert base._schema(db) == at_0061
 
@@ -56,12 +57,12 @@ def test_the_downgrade_refuses_while_a_customer_is_pending(fresh: tuple[str, Dat
     _set(db, customer_id, "pending")
 
     with pytest.raises(subprocess.CalledProcessError) as refused:
-        base._downgrade(url, "0060")
+        base._downgrade(url, "0061b")
     assert b"approve or disable it before downgrading" in refused.value.stderr
     assert _current(url) == _head()  # one transaction
 
     _set(db, customer_id, "active")
-    base._downgrade(url, "0060")
+    base._downgrade(url, "0061b")
 
 
 @pytest.mark.parametrize(

@@ -1,15 +1,17 @@
 // Account, Two-step sign-in (#457 phase 3), kept pure so vitest can prove it: which panel
-// shows and what it says. Admins keep their code on (the server refuses Turn off); a member
-// or reviewer turns it on and off. The panel itself is TwoStepDialog.tsx.
+// shows and what it says. Anyone turns it on and off, an admin too (Tushar, 30 Oct 2026):
+// an admin's then stays off until they turn it on again, and they sign in with e-mail and
+// password only. The panel itself is TwoStepDialog.tsx.
 
 import { ApiError } from "@/lib/api";
 import type { Me } from "@/lib/types";
 import { setPasswordError } from "./setPassword";
 
-export const MEMBER_OFF =
+export const OFF_TEXT =
   "Turn it on and sign-in asks for your password and a 6-digit code from an authenticator app on your phone.";
-export const MEMBER_ON = "Sign-in asks for your password and a 6-digit code from your authenticator app.";
+export const ON_TEXT = "Sign-in asks for your password and a 6-digit code from your authenticator app.";
 export const LOST_CODE = "New phone, or lost it? Your admin can reset your two-step code.";
+export const OFF_WARNING = "Anyone who learns your password can then sign in as you.";
 export const TURNED_ON = "Two-step sign-in is on.";
 export const TURNED_OFF = "Two-step sign-in is off. Your other devices are signed out.";
 const SIGNED_OUT = "Your session has ended. Sign in again, then try again.";
@@ -29,10 +31,9 @@ export function proofField(caught: unknown): "password" | "code" | null {
   return CODE_REFUSALS.includes(said) ? "code" : null;
 }
 
-/** "admin": always on, nothing to change; "on" or "off": a member's or reviewer's own choice. */
-export function twoStepView(me: Me): "admin" | "on" | "off" {
-  if (me.user.role === "admin") return "admin";
-  return me.user.totp_enabled ? "on" : "off";
+/** "on" or "off", the same for every role. Deny by default, like gate.ts: only true is on. */
+export function twoStepView(me: Me): "on" | "off" {
+  return me.user.totp_enabled === true ? "on" : "off";
 }
 
 /** The server's 400 and 409 say what is wrong in plain words; the rest as Change password says it. */

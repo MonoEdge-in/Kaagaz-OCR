@@ -28,6 +28,7 @@ const me = (role: Role, scope: SessionScope = "app", totp_enabled = true): Me =>
     role,
     must_change_password: false,
     totp_enabled,
+    two_step_turned_off: false,
     can_delete_forever: false,
     email_confirmed: true, // #457
   },

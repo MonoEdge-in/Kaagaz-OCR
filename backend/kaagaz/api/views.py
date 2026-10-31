@@ -859,6 +859,7 @@ def me_json(
             "role": user.role,
             "must_change_password": user.must_change_password,
             "totp_enabled": user.totp_enabled,
+            "two_step_turned_off": user.two_step_turned_off,  # by the admin; sign-in is the password
             "can_delete_forever": user.delete_forever_allowed and user.role != "admin",  # the grant
             "email_confirmed": user.email_confirmed or not email_on,
         },
@@ -887,6 +888,7 @@ def admin_user(
         "created_at": iso(row["created_at"]),
         "locked_until": iso(locked_until) if locked_until is not None and locked_until > now else None,
         "totp_enabled": row["totp_enabled_at"] is not None,
+        "two_step_turned_off": row["totp_off_at"] is not None,
         "must_change_password": bool(row["must_change_password"]),
         "can_delete_forever": row["delete_forever_allowed_at"] is not None and row["role"] != "admin",
     }

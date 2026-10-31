@@ -329,7 +329,7 @@ def set_delete_forever(
 ) -> dict[str, Any]:
     """Allow or stop a member's or reviewer's Delete forever. Audited with ids only."""
     if body.allowed and not user.totp_enabled:
-        raise ApiError(403, "two_step_required", "Turn on two-step sign-in in Admin, Settings to allow this.")
+        raise ApiError(403, "two_step_required", "Turn on two-step sign-in in Account to allow this.")
     target = str(user_id)
     with context.db.customer(user.customer_id) as conn:
         row = users_sql.set_delete_forever(

@@ -52,8 +52,9 @@ TRASH_FUNCTION = "kaagaz_customer_ids_with_trash(timestamptz)"
 
 def _downgrade(url: str, revision: str) -> None:
     """Downgrade the database at ``url`` to ``revision`` (db_support has only upgrade)."""
-    if not (len(revision) == 4 and revision.isdigit()):
-        raise ValueError("revision must be a 4-digit revision id")
+    # Changed on purpose (#457 with #460, 30 Oct 2026): an optional letter too ("0061b").
+    if not re.fullmatch(r"\d{4}[a-z]?", revision):
+        raise ValueError("revision must be a 4-digit revision id, perhaps with a letter")
     subprocess.run(  # noqa: S603 - fixed command; the revision is checked above
         [sys.executable, "-m", "alembic", "downgrade", revision],
         cwd=BACKEND,

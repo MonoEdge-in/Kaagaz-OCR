@@ -43,7 +43,8 @@ export interface Me {
     display_name: string;
     role: Role;
     must_change_password: boolean;
-    totp_enabled: boolean; // two-step sign-in is on (required for an admin)
+    totp_enabled: boolean; // two-step sign-in is on (required for an admin unless they turned it off)
+    two_step_turned_off: boolean; // an admin turned their own two-step off (Tushar, 30 Oct 2026)
     can_delete_forever: boolean; // an admin allowed this member or reviewer (never an admin)
     email_confirmed: boolean; // false: the "Confirm your email" banner (#457; true while email is off)
   };
@@ -1016,6 +1017,7 @@ export interface AdminUser {
   created_at: string;
   locked_until: string | null; // ISO 8601; null when not locked (a passed lock is sent as null)
   totp_enabled: boolean;
+  two_step_turned_off: boolean; // this admin turned their own two-step off
   must_change_password: boolean;
   can_delete_forever: boolean; // an admin allowed Delete forever (never set for an admin)
   // #457 phase 1: "password" and each approved provider. Only the list and the replies that

@@ -9,7 +9,9 @@
   member or reviewer who turned it on, #457) gets 401 ``code_required`` (counted like a
   failure) until it is sent: ``_finish_second_step``, for every role. An admin with a
   temporary password and no code yet gets a session that can only set the new password
-  (``current_user``); the next sign-in then sets up the code.
+  (``current_user``); the next sign-in then sets up the code. An admin who turned two-step
+  off themselves (``users.totp_off_at``, 0061b) gets the admin session on the password
+  alone, after Google too.
 * ``POST /auth/admin/login``: 410 ``gone``, whatever is sent. Not kept as an alias: one
   route to sign in is one set of rules to get right, and an old page gets a clear answer.
 * ``POST /auth/2fa/start`` {password} (any session; #457 opened it to every role, it was
@@ -17,15 +19,17 @@
   otpauth_uri}`` for turning it on. Asking for the password means a stolen cookie alone
   cannot put its own key on the account. Nothing is stored yet. 409 when it is on.
 * ``POST /auth/admin/enrol`` {enrol_token, code}: turns the code on (audited
-  ``auth.totp_on``, a security notice) and starts a session of the user's scope (an admin's
-  at sign-in or sign-up; a member's or reviewer's from Account, Two-step sign-in). The
-  session version stays, so other browsers stay in.
-* ``POST /auth/2fa/off`` {password, code}: a member or reviewer turns it off, with the
-  password and a current code (both counted like a sign-in). Every other browser is signed
-  out, this one is re-signed; audited ``auth.totp_off``, a security notice. 409 when it is
-  off. An admin: 403 ``two_step_required``, nothing read or counted. Admins keep two-step
-  sign-in on; another admin or the operator resets a lost one, and the admin sets it up
-  again at sign-in. A member's or reviewer's lost code: an admin resets it
+  ``auth.totp_on``, a security notice; clearing "turned off") and starts a session of the
+  user's scope (an admin's at sign-in or sign-up, or from Account, Two-step sign-in, like a
+  member's or reviewer's). The session version stays, so other browsers stay in.
+* ``POST /auth/2fa/off`` {password, code}: anyone turns their own two-step sign-in off, with
+  the password and a current code (both counted like a sign-in, else a 400 that says
+  which). Every other browser is signed out, this one is re-signed; audited
+  ``auth.totp_off``, a security notice. 409 when it is off. An admin's stays off until they
+  turn it on again (0061b, Tushar, 30 Oct 2026): they sign in with the password alone, and
+  Delete forever and deleting a tag still need it on (``require_admin_with_two_step``). A
+  reset of the code (another admin, the operator, the CLI) is not "turned off": an admin
+  sets one up at the next sign-in. A member's or reviewer's lost code: an admin resets it
   (``routers/admin.py``).
 * ``POST /auth/password`` {current_password, new_password, code?}: a new password;
   every other browser is signed out, this one is re-signed. Anyone with two-step sign-in on
@@ -146,7 +150,6 @@ Context = Annotated[AppContext, Depends(get_context)]
 
 MAX_CODE = 16  # 6 digits, plus room for the spaces people type
 ENROL_FIRST = "Set up two-step sign-in to continue. Admins need it to keep your organisation safe."
-KEEP_TWO_STEP = "Admins keep two-step sign-in on to keep your organisation safe."
 ADMIN_LOGIN_GONE = "Sign in on the sign-in page. Admins and members use the same one now."
 CODE_REQUIRED = "Enter the 6-digit code from your authenticator app."
 WRONG_CODE = "That code is not right. Wait for the next code and try again."
@@ -191,7 +194,7 @@ class TurnOffBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     password: str = Field(min_length=1, max_length=MAX_PASSWORD)
-    code: str | None = Field(default=None, max_length=MAX_CODE)
+    code: str | None = Field(default=None, max_length=MAX_CODE)  # missing: counted, then a 400
 
 
 class PasswordBody(BaseModel):
@@ -357,20 +360,21 @@ def turn_on_two_step(body: CurrentPasswordBody, user: User, context: Context) ->
 def turn_off_two_step(
     body: TurnOffBody, user: User, request: Request, background: BackgroundTasks, context: Context
 ) -> JSONResponse:
-    """A member or reviewer, with the password and a code. Refused for an admin: every admin
-    keeps two-step sign-in on (MFA required, 16 Oct 2026)."""
-    if user.role == "admin":
-        raise ApiError(403, "two_step_required", KEEP_TWO_STEP)
+    """Anyone, with the password and a code. An admin's stays off until they turn it on
+    again (0061b, Tushar, 30 Oct 2026)."""
     if not user.totp_enabled:
         raise ApiError(409, "conflict", "Two-step sign-in is already off.")
     now = context.clock()
     _prove(context, user, body.password, body.code)
     with context.db.customer(user.customer_id) as conn:
-        row = users_sql.reset_totp(conn, user.customer_id, user.user_id)
-        if row is None:
-            raise ApiError(401, "not_signed_in")
-        _record(conn, user.customer_id, "auth.totp_off", actor=user.user_id, target=user.user_id)
-    changed = dataclasses.replace(user, session_version=int(row["session_version"]), totp_enabled=False)
+        version = users_sql.turn_off_totp(conn, user.customer_id, user.user_id, now=now)
+        if version is not None:
+            _record(conn, user.customer_id, "auth.totp_off", actor=user.user_id, target=user.user_id)
+    if version is None:  # another request turned it off a moment ago
+        raise ApiError(409, "conflict", "Two-step sign-in is already off.")
+    changed = dataclasses.replace(
+        user, session_version=version, totp_enabled=False, two_step_turned_off=user.role == "admin"
+    )
     response = _keep_this_browser(request, context, changed, now)
     notice = emails.two_step_off(user.display_name)
     emails.after(background, "two_step_off", send, context, user.email, "two_step_off", notice)
@@ -596,18 +600,19 @@ def _finish_second_step(
     ``attempt`` is the counted attempt of an enabled user; ``details`` go on its ``auth.login``
     audit row (a provider sign-in's ``{"via": "google"}``).
 
-    * No code set up: a member or reviewer gets their app session. An admin must set one up
-      first: 403 ``mfa_enrol_required`` with the set-up offer and no session, except with a
-      temporary password (the set-new-password screen first; the next sign-in sets it up).
+    * No code set up: a member or reviewer gets their app session, and an admin who turned it
+      off themselves (``totp_off_at``, 0061b) their admin session. Any other admin must set
+      one up first: 403 ``mfa_enrol_required`` with the set-up offer and no session, except
+      with a temporary password (the set-new-password screen first; the next sign-in sets it up).
     * A code set up: 401 ``code_required`` until it is sent, else the next unused code
       (``_code_problem``: the replay check). A missing or wrong code is counted like a wrong
       password, so it leads to the lock too, and audited with its reason.
     """
     scope = _scope(attempt)
     if attempt.totp_enabled_at is None:
-        if attempt.role != "admin" or attempt.must_change_password:
+        if attempt.role != "admin" or attempt.must_change_password or attempt.totp_off_at is not None:
             # An admin's set-new-password screen first (current_user keeps every other route
-            # shut); the next sign-in then sets up the code.
+            # shut); the next sign-in then sets up the code. Or turned off by the admin.
             return _start_session(
                 context, attempt.customer_id, attempt.user_id, scope=scope, action="auth.login"
             )

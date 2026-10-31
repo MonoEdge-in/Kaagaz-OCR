@@ -5,7 +5,8 @@ is not a session and works once, a code works once, a wrong code counts toward
 the lockout, and every /api/admin route needs the admin session. Two-step sign-in
 is required for every admin (0035, 16 Oct 2026), on the one sign-in (/auth/login):
 an admin without it gets the set-up offer and no session; with it, the code is
-always needed. /auth/admin/login is gone (410).
+always needed. /auth/admin/login is gone (410). An admin may turn their own off (0061b,
+30 Oct 2026) and then signs in with the password alone, until they turn it on again.
 """
 
 import base64
@@ -26,6 +27,7 @@ from tests.test_api_support import (
     CSRF,
     PASSWORD,
     Api,
+    Signed,
     TestClient,
     call,
     route_calls,
@@ -43,6 +45,7 @@ ADMIN_SESSION_REFUSED = {
     }
 }
 ENROL_FIRST = "Set up two-step sign-in to continue. Admins need it to keep your organisation safe."
+WRONG_CODE = "That code is not right. Wait for the next code and try again."
 
 
 def _secret_from(grouped: str) -> bytes:
@@ -53,8 +56,9 @@ def _turn_on(client: TestClient, password: str = PASSWORD) -> httpx.Response:
     return client.post("/api/auth/2fa/start", json={"password": password}, headers=CSRF)
 
 
-def _turn_off(client: TestClient, password: str = PASSWORD) -> httpx.Response:
-    return client.post("/api/auth/2fa/off", json={"password": password}, headers=CSRF)
+def _turn_off(client: TestClient, password: str = PASSWORD, code: str | None = None) -> httpx.Response:
+    body = {"password": password} if code is None else {"password": password, "code": code}
+    return client.post("/api/auth/2fa/off", json=body, headers=CSRF)
 
 
 def _session_client(api: Api, customer_id: str, user_id: str, *, scope: str) -> TestClient:
@@ -298,20 +302,180 @@ def test_an_enrolled_admin_without_a_code_is_asked_for_it_and_never_offered_enro
     assert after["failed_logins"] == 3  # each missing code is counted
 
 
-# --- turning 2FA off: refused for admins ----------------------------------------------------
+# --- an admin turns their own two-step off, and on again (Tushar, 30 Oct 2026) -------------
 
 
-def test_turn_off_is_refused_for_an_admin_and_changes_nothing(db: Database) -> None:
+def _turned_off(api: Api) -> Signed:
+    """A new admin who signed in with a code, then turned two-step sign-in off."""
+    signed = api.new_admin()
+    assert signed.totp_secret is not None
+    api.clock.advance(totp.STEP_SECONDS)  # the sign-in's code works once
+    reply = _turn_off(signed.client, code=api.code(signed.totp_secret))
+    assert reply.status_code == 200, reply.text
+    return signed
+
+
+def test_turning_off_keeps_this_browser_and_signs_out_every_other(db: Database) -> None:
     api = Api(db)
     signed = api.new_admin()
+    assert signed.totp_secret is not None
+    api.clock.advance(totp.STEP_SECONDS)
+    other = api.client()
+    assert api.admin_login(other, signed.email, code=api.code(signed.totp_secret)).status_code == 200
+    version = api.user_state(signed.customer_id, signed.user_id)["session_version"]
+    api.clock.advance(totp.STEP_SECONDS)
+
+    reply = _turn_off(signed.client, code=api.code(signed.totp_secret))
+
+    assert reply.status_code == 200, reply.text
+    me = reply.json()
+    assert me["user"]["totp_enabled"] is False
+    assert me["user"]["two_step_turned_off"] is True
+    assert me["session"] == {"scope": "admin"}
+    assert signed.client.get("/api/auth/me").json() == me  # this browser stays in, re-signed
+    assert signed.client.get("/api/admin/users").status_code == 200
+    assert other.get("/api/auth/me").status_code == 401  # every other browser is signed out
+    state = api.user_state(signed.customer_id, signed.user_id)
+    assert state["session_version"] == version + 1
+    assert (state["totp_secret_enc"], state["totp_enabled_at"], state["totp_last_step"]) == (None, None, None)
+    assert state["totp_off_at"] == api.clock()
+    assert state["failed_logins"] == 0
+    assert api.audit_rows(signed.customer_id)[-1] == ("auth.totp_off", "user", signed.user_id, {})
+
+
+def test_turned_off_the_admin_signs_in_with_email_and_password_only(db: Database) -> None:
+    api = Api(db)
+    signed = _turned_off(api)
+    client = api.client()
+
+    reply = api.admin_login(client, signed.email)
+
+    assert reply.status_code == 200, reply.text
+    assert reply.json()["session"] == {"scope": "admin"}
+    assert reply.json()["user"]["two_step_turned_off"] is True
+    assert client.get("/api/admin/users").status_code == 200
+    assert client.get("/api/documents").status_code == 200
+    assert api.admin_login(api.client(), signed.email, code="123456").status_code == 200  # ignored
+    wrong = api.admin_login(api.client(), signed.email, password=WRONG)
+    assert (wrong.status_code, wrong.json()["error"]["code"]) == (401, "bad_credentials")
+    assert api.user_state(signed.customer_id, signed.user_id)["totp_off_at"] is not None  # stays off
+
+
+def test_turning_off_needs_the_password_and_a_right_code_each_failure_counted(db: Database) -> None:
+    api = Api(db)
+    signed = api.new_admin()
+    assert signed.totp_secret is not None
+    used = api.code(signed.totp_secret)  # the sign-in's code: used once already
+    api.clock.advance(totp.STEP_SECONDS)
+    right = api.code(signed.totp_secret)
     before = api.user_state(signed.customer_id, signed.user_id)
 
-    for password in (PASSWORD, WRONG):
-        reply = _turn_off(signed.client, password)
-        assert (reply.status_code, reply.json()["error"]["code"]) == (403, "two_step_required")
-    assert api.user_state(signed.customer_id, signed.user_id) == before  # nothing counted either
-    assert signed.client.get("/api/admin/users").status_code == 200
-    assert _turn_off(api.client()).status_code == 401
+    for password, code, message in (
+        (WRONG, right, "Your current password is not right."),
+        (PASSWORD, None, "Enter the 6-digit code from your authenticator app."),
+        (PASSWORD, "", "Enter the 6-digit code from your authenticator app."),
+        (PASSWORD, wrong_code(api, signed.totp_secret), WRONG_CODE),
+        (PASSWORD, used, WRONG_CODE),
+    ):
+        reply = _turn_off(signed.client, password, code)
+        assert reply.status_code == 400, (password, code)
+        assert reply.json()["error"] == {"code": "bad_request", "message": message}
+
+    after = api.user_state(signed.customer_id, signed.user_id)
+    assert after["failed_logins"] == 5
+    assert after["locked_until"] is not None  # counted like a sign-in, so the lockout too
+    assert {key: after[key] for key in ("totp_secret_enc", "totp_enabled_at", "totp_off_at")} == {
+        "totp_secret_enc": before["totp_secret_enc"],
+        "totp_enabled_at": before["totp_enabled_at"],
+        "totp_off_at": None,
+    }
+    assert "auth.totp_off" not in api.audit_actions(signed.customer_id)
+    assert signed.client.get("/api/admin/users").status_code == 200  # still signed in
+
+
+def test_turning_off_when_already_off_is_409_and_needs_a_session(db: Database) -> None:
+    api = Api(db)
+    signed = _turned_off(api)
+
+    reply = _turn_off(signed.client, WRONG, "123456")  # 409 comes before the password check
+
+    assert reply.status_code == 409
+    assert reply.json()["error"] == {"code": "conflict", "message": "Two-step sign-in is already off."}
+    assert api.user_state(signed.customer_id, signed.user_id)["failed_logins"] == 0
+    assert _turn_off(api.client(), code="123456").status_code == 401
+    # Changed on purpose (#457 with #460): one route for every role; a member's is off too.
+    member = api.sign_in(signed.customer_id, "member")
+    assert _turn_off(member.client, code="123456").status_code == 409
+
+
+def test_turning_back_on_clears_turned_off_and_the_code_is_needed_again(db: Database) -> None:
+    api = Api(db)
+    signed = _turned_off(api)
+    offer = _turn_on(signed.client)
+    assert offer.status_code == 200, offer.text
+    secret = _secret_from(offer.json()["secret"])
+
+    on = signed.client.post(
+        "/api/auth/admin/enrol",
+        json={"enrol_token": offer.json()["enrol_token"], "code": api.code(secret)},
+        headers=CSRF,
+    )
+
+    assert on.status_code == 200, on.text
+    assert (on.json()["user"]["totp_enabled"], on.json()["user"]["two_step_turned_off"]) == (True, False)
+    state = api.user_state(signed.customer_id, signed.user_id)
+    assert (state["totp_enabled_at"], state["totp_off_at"]) == (api.clock(), None)
+    assert "auth.totp_on" in api.audit_actions(signed.customer_id)[-2:]
+    api.clock.advance(totp.STEP_SECONDS)
+    assert api.admin_login(api.client(), signed.email).json()["error"]["code"] == "code_required"
+    assert api.admin_login(api.client(), signed.email, code=api.code(secret)).status_code == 200
+
+
+def test_another_admins_reset_means_set_it_up_again_not_turned_off(db: Database) -> None:
+    api = Api(db)
+    signed = _turned_off(api)
+    other = api.new_admin_of(signed.customer_id)
+    listed = {item["id"]: item for item in other.client.get("/api/admin/users").json()["items"]}
+    assert (listed[signed.user_id]["totp_enabled"], listed[signed.user_id]["two_step_turned_off"]) == (
+        False,
+        True,
+    )
+    assert listed[other.user_id]["two_step_turned_off"] is False
+
+    reset = other.client.post(f"/api/admin/users/{signed.user_id}/reset-2fa", headers=CSRF)
+
+    assert reset.status_code == 200, reset.text
+    assert reset.json()["two_step_turned_off"] is False
+    assert api.user_state(signed.customer_id, signed.user_id)["totp_off_at"] is None
+    assert signed.client.get("/api/auth/me").status_code == 401  # signed out
+    again = api.admin_login(api.client(), signed.email)
+    assert (again.status_code, again.json()["error"]["code"]) == (403, "mfa_enrol_required")
+
+
+def test_turned_off_what_cant_be_undone_still_needs_two_step(db: Database) -> None:
+    api = Api(db)
+    signed = _turned_off(api)
+    document = api.add_document(signed.customer_id, deleted_at=api.clock())
+    tag = api.add_tag(signed.customer_id, signed.user_id, "Paid")
+    refused = {
+        "error": {"code": "two_step_required", "message": "Turn on two-step sign-in in Account to do this."}
+    }
+
+    forever = signed.client.delete(f"/api/documents/{document}/permanent", headers=CSRF)
+    untag = signed.client.delete(f"/api/tags/{tag}", headers=CSRF)
+
+    assert (forever.status_code, forever.json()) == (403, refused)
+    assert (untag.status_code, untag.json()) == (403, refused)
+    assert signed.client.get(f"/api/documents/{document}").status_code == 200  # still there
+    # Allowing a member to delete forever too, pointed where the switch is now (#457 with #460).
+    member_id, _ = api.add_user(signed.customer_id, "member")
+    allow = signed.client.put(
+        f"/api/admin/users/{member_id}/delete-forever", json={"allowed": True}, headers=CSRF
+    )
+    assert (allow.status_code, allow.json()["error"]["message"]) == (
+        403,
+        "Turn on two-step sign-in in Account to allow this.",
+    )
 
 
 # --- codes -------------------------------------------------------------------------------
@@ -534,7 +698,9 @@ def test_no_secret_reaches_logs_audit_or_the_api(db: Database, caplog: pytest.Lo
     api.clock.advance(totp.STEP_SECONDS)
     replies.append(api.admin_login(client, enrolling.email, code=api.code(enrolling.secret)))
     sealed = str(api.user_state(enrolling.customer_id, enrolling.user_id)["totp_secret_enc"])
-    replies.append(_turn_off(client))
+    api.clock.advance(totp.STEP_SECONDS)
+    replies.append(_turn_off(client, code=api.code(enrolling.secret)))
+    assert replies[-1].status_code == 200, replies[-1].text
 
     secrets = {
         "the secret": totp.b32(enrolling.secret),

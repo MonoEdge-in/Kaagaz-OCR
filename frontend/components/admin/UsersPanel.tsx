@@ -231,8 +231,9 @@ export function UsersPanel({
           </div>
         )}
         {users && <MoreRows shown={Math.min(cap.limit, users.length)} total={users.length} what="users" onMore={cap.showMore} />}
-        {/* AD7: two-step is required for admins (0035); one without it sets it up at the next sign-in. */}
-        {users?.some((user) => user.role === "admin" && !user.totp_enabled) && (
+        {/* AD7: two-step is required for admins (0035); one without it sets it up at the next sign-in,
+            except an admin who turned their own off (30 Oct 2026). */}
+        {users?.some((user) => user.role === "admin" && !user.totp_enabled && !user.two_step_turned_off) && (
           <p className="hint">{twoStepNote()}</p>
         )}
       </section>

@@ -717,8 +717,9 @@ class CurrentUser:
     scope: str  # the session's: "app" or "admin"
     session_version: int
     must_change_password: bool
-    totp_enabled: bool  # two-step sign-in is on (required for an admin)
+    totp_enabled: bool  # two-step sign-in is on (required for an admin, unless turned off)
     delete_forever_allowed: bool  # an admin allowed Delete forever (ignored for an admin)
+    two_step_turned_off: bool = False  # the admin turned it off themselves (0061b)
     idle_hours: int | None = None  # the idle timeout in effect (0040); None: no idle limit
     seen_at: datetime | None = None  # the session's last use or sign-in, the idle clock
     email_confirmed: bool = False  # the user proved their e-mail with a link (0061)
@@ -772,11 +773,12 @@ def current_user(request: Request) -> CurrentUser:
     401 ``not_signed_in`` unless the session is genuine and still matches the
     user (enabled, same role, same session version). Then 403
     ``password_change_required`` while the user must set a new password, and 403
-    ``mfa_enrol_required`` for an admin without two-step sign-in set up."""
+    ``mfa_enrol_required`` for an admin without two-step sign-in set up (one who turned it
+    off themselves, 0061b, signs in with the password and is let through)."""
     user = _signed_in(request)
     if user.must_change_password:
         raise ApiError(403, "password_change_required")
-    if user.role == "admin" and not user.totp_enabled:
+    if user.role == "admin" and not user.totp_enabled and not user.two_step_turned_off:
         raise ApiError(403, "mfa_enrol_required")
     return user
 
@@ -831,6 +833,7 @@ def load_user(db: Database, customer_id: str, user_id: str, *, scope: str) -> Cu
         must_change_password=bool(row["must_change_password"]),
         totp_enabled=bool(row["totp_enabled"]),
         delete_forever_allowed=bool(row["delete_forever_allowed"]),
+        two_step_turned_off=bool(row["two_step_turned_off"]),
         idle_hours=row["idle_hours"],
         seen_at=row["seen_at"],
         email_confirmed=bool(row["email_confirmed"]),
@@ -855,10 +858,10 @@ AdminSession = Annotated[CurrentUser, Depends(require_admin_session)]
 def require_admin_with_two_step(user: AdminSession) -> CurrentUser:
     """For what can't be undone (deleting a document forever, deleting a tag): an
     admin session whose admin has two-step sign-in on, else 403
-    ``two_step_required``. ``current_user`` already requires two-step sign-in for
-    every admin; this stays as a second check on what can't be undone."""
+    ``two_step_required``. ``current_user`` lets through only an admin with two-step
+    sign-in on or one who turned it off themselves (0061b), whom this refuses."""
     if not user.totp_enabled:
-        raise ApiError(403, "two_step_required", "Turn on two-step sign-in in Admin, Settings to do this.")
+        raise ApiError(403, "two_step_required", "Turn on two-step sign-in in Account to do this.")
     return user
 
 
