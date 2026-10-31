@@ -8,6 +8,7 @@
 // next page with the reply's cursor (keyset), so no row is repeated or skipped.
 
 import { useEffect, useState } from "react";
+import { activityEmptyText } from "@/components/admin/logic";
 import table from "@/components/documents/Table.module.css";
 import { listActivity, listOrgs } from "@/lib/api";
 import { formatDateTime, formatNumber } from "@/lib/format";
@@ -62,6 +63,14 @@ export function ActivityView() {
   const current = page?.key === key ? page : null;
   const more = moreFor(moreState, key); // a Load more of another filter is forgotten
   const failed = !current && error?.key === key ? error.message : null;
+  const filtered = org !== "" || action !== "";
+
+  /** #468: back to every organisation and action; the focus goes to the first filter. */
+  function clearFilters() {
+    setOrg("");
+    setAction("");
+    document.getElementById("activity-org")?.focus();
+  }
 
   async function loadMore() {
     if (!current?.next || more.busy) return;
@@ -107,13 +116,18 @@ export function ActivityView() {
       <p className={styles.summary} role="status">
         {current
           ? current.items.length === 0
-            ? "No activity matches."
+            ? activityEmptyText(filtered)
             : `${formatNumber(current.items.length)} shown, newest first.`
           : failed
             ? ""
             : "Loading the activity…"}
       </p>
       {failed && <LoadFailed what="the activity" message={failed} onRetry={() => setAttempt((n) => n + 1)} />}
+      {current && current.items.length === 0 && filtered && (
+        <button type="button" className="btn" onClick={clearFilters}>
+          Clear filters
+        </button>
+      )}
       {current && current.items.length > 0 && (
         <div className={`${table.reflowWrap} ${admin.tableScroll}`}>
           <table className={`table ${table.reflow}`} role="table">

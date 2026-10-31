@@ -512,6 +512,19 @@ function detailText(key: string, value: unknown): string | null {
   return null;
 }
 
+// #468: an empty Activity list says whether filters hid everything or nothing has happened yet
+// (the admin's and the operator's tabs), and a date range may not end before it starts.
+export const NO_ACTIVITY = "No activity yet.";
+export const NO_ACTIVITY_MATCHES = "No activity matches these filters.";
+export const activityEmptyText = (filtered: boolean) => (filtered ? NO_ACTIVITY_MATCHES : NO_ACTIVITY);
+
+export const DATES_BACKWARDS = "From must be on or before To.";
+
+/** DATES_BACKWARDS for From after To (YYYY-MM-DD, compared as text); null otherwise or while one is empty. */
+export function datesError(from: string, to: string): string | null {
+  return from !== "" && to !== "" && from > to ? DATES_BACKWARDS : null;
+}
+
 /** An audit row's details as one line of plain text: "Page 3, Status: Ready". */
 export function describeDetails(details: Record<string, unknown>): string {
   return Object.keys(details)

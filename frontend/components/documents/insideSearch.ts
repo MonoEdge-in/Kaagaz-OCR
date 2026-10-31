@@ -20,6 +20,22 @@ import type { LibraryState } from "./libraryQuery";
 
 export type SearchMode = "inside" | "names";
 
+// #468: a search that finds nothing offers Ask with the same words, filled in, never sent
+// (/chat?q= without send=1 puts them in the box: ChatScreen, questionFromSearch).
+
+/** The chat address with these words in the question box. */
+export function askWithWordsHref(q: string): string {
+  return `/chat?q=${encodeURIComponent(q)}`;
+}
+
+const ASK_LABEL_WORDS = 40; // a long search is cut short on the button
+
+/** "Ask Kaagaz about “rent”". */
+export function askAboutLabel(q: string): string {
+  const words = q.length > ASK_LABEL_WORDS ? `${q.slice(0, ASK_LABEL_WORDS)}…` : q;
+  return `Ask Kaagaz about “${words}”`;
+}
+
 export const DEFAULT_SEARCH_MODE: SearchMode = "inside";
 /** The longest search both routes take (q, 200 characters). */
 export const MAX_SEARCH_LENGTH = 200;

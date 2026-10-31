@@ -11,7 +11,7 @@ import Form from "next/form";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { InsideSearchResults } from "@/components/documents/InsideResults";
+import { AskAboutLink, InsideSearchResults } from "@/components/documents/InsideResults";
 import { MAX_SEARCH_LENGTH } from "@/components/documents/insideSearch";
 import type { SearchMode } from "@/components/documents/insideSearch";
 import { LabelChip } from "@/components/files/LabelChip";
@@ -154,6 +154,7 @@ export function SearchScreen({ q, mode }: { q: string; mode: SearchMode }) {
           datesIgnored={false}
           onRetry={() => setAttempt((n) => n + 1)}
           onClear={() => router.push(searchHref("", mode))}
+          onSearchNames={() => router.replace(searchHref(q, "names"))}
         />
       ) : (
         <NameResults
@@ -161,22 +162,26 @@ export function SearchScreen({ q, mode }: { q: string; mode: SearchMode }) {
           error={error}
           q={q}
           onRetry={() => setAttempt((n) => n + 1)}
+          onSearchInside={() => router.replace(searchHref(q, "inside"))}
         />
       )}
     </div>
   );
 }
 
-function NameResults({
+/** The Names search's results. Exported for the render test. */
+export function NameResults({
   names,
   error,
   q,
   onRetry,
+  onSearchInside,
 }: {
-  names: DocumentList | null;
+  names: Pick<DocumentList, "items" | "total"> | null;
   error: string | null;
   q: string;
   onRetry(): void;
+  onSearchInside(): void; // #468: the same words, inside the documents
 }) {
   const from = useBackFrom(); // this search, for the documents' back link (#436)
   if (error !== null) {
@@ -199,7 +204,21 @@ function NameResults({
     );
   }
   if (names.items.length === 0) {
-    return <EmptyState title="No document is named like this.">Try fewer words, or search inside documents.</EmptyState>;
+    return (
+      <EmptyState
+        title="No document is named like this."
+        action={
+          <div className="row">
+            <button type="button" className="btn" onClick={onSearchInside}>
+              Search inside documents instead
+            </button>
+            <AskAboutLink q={q} />
+          </div>
+        }
+      >
+        Try fewer words, or search inside documents.
+      </EmptyState>
+    );
   }
   return (
     <>
