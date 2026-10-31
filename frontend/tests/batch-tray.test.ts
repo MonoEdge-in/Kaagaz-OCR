@@ -162,6 +162,7 @@ describe("each file's place in the tray", () => {
 
   it("sums the drop up in one line", () => {
     const counts = trayCounts(rows);
+    // Changed on purpose (#468): notSent, a reload's files not sent, is counted on its own.
     expect(counts).toEqual({
       total: 9,
       ready: 1,
@@ -172,6 +173,7 @@ describe("each file's place in the tray", () => {
       failed: 2,
       stopped: 0,
       already: 1,
+      notSent: 0,
     });
     expect(summaryText(counts)).toBe(
       "Batch of 9 files · 1 ready · 2 sending · 1 reading · 1 waiting · 1 needs attention · 2 failed · 1 already uploaded",
@@ -189,6 +191,7 @@ describe("each file's place in the tray", () => {
       failed: 0,
       stopped: 0,
       already: 1,
+      notSent: 0, // Changed on purpose (#468): the new count
     };
     expect(summaryText(counts)).toBe(
       "Batch of 50 files · 31 ready · 12 reading · 4 waiting · 2 need attention · 1 already uploaded",
@@ -254,7 +257,8 @@ describe("each file's place in the tray", () => {
 
   it("keeps a reload's counts the batch API does not have: already uploaded and not sent", () => {
     const counts = trayCounts([row("ready", done(doc("r")))], { already: 2, notSent: 1 });
-    expect(counts).toMatchObject({ total: 4, ready: 1, already: 2, failed: 1 });
+    // Changed on purpose (#468): not sent is its own count ("1 not sent — choose it again"), not failed.
+    expect(counts).toMatchObject({ total: 4, ready: 1, already: 2, failed: 0, notSent: 1 });
   });
 });
 

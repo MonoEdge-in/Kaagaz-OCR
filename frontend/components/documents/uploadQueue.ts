@@ -60,6 +60,10 @@ export const isBusy = (entry: UploadEntry) =>
   entry.state.kind === "reading" ||
   entry.state.kind === "restoring";
 
+/** #468: a file still in this tab only (waiting or sending): leaving the page now would lose it. */
+export const uploadsAtRisk = (entries: readonly Pick<UploadEntry, "state">[]) =>
+  entries.some((entry) => ["waiting", "sending", "offline", "saving"].includes(entry.state.kind));
+
 /** A stored document's row state: reading while it is checked or read, then done. */
 export function followed(document: DocumentSummary): UploadState {
   return beingRead(document.status)
