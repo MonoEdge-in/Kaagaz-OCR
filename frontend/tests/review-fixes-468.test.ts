@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ASK_DRAFT, askDraft } from "@/components/chat/logic";
 import { endedPath, pathAfterSignIn, SEARCH_DRAFT, searchToKeep } from "@/components/shell/gate";
+import { ApiError, GET_TIMEOUT_MS, TOO_SLOW, getDocument } from "@/lib/api";
 import { clearDrafts, readDraft, saveDraft } from "@/lib/drafts";
 
 // The #468 council review's fixes. Each describe names its item.
@@ -42,6 +43,7 @@ beforeEach(() => {
 afterEach(() => {
   clearDrafts();
   vi.useRealTimers();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
@@ -89,5 +91,66 @@ describe("SEC1: ?next= never carries one person's words to the next", () => {
     saveDraft(A, ASK_DRAFT, askDraft("What did I pay Mehta?", null));
     expect(readDraft(A, ASK_DRAFT)).toEqual({ typed: "What did I pay Mehta?" });
     expect(readDraft(B, ASK_DRAFT)).toBeNull();
+  });
+});
+
+describe("SF1 / CR4: a failed document refresh is silent only while the browser is offline (structural)", () => {
+  it("keeps the old page only when offline; a timeout or no internet while online shows the error with Try again", () => {
+    const view = read("app/(app)/documents/[id]/DocumentView.tsx");
+    expect(view).toContain("const lost = lostConnection(error) && navigator.onLine === false;");
+    expect(view).toContain('lost && shown && "detail" in shown && shown.attempt === attempt ? shown : { attempt, error: loadFailure(error) }');
+  });
+});
+
+describe("CR3: a GET is timed only until its answer starts, never while its body is read", () => {
+  // Whatever the timer, it runs on the test's clock: AbortSignal.timeout too, if anything uses it.
+  function fakeClock() {
+    vi.useFakeTimers();
+    vi.spyOn(AbortSignal, "timeout").mockImplementation((ms: number) => {
+      const timer = new AbortController();
+      setTimeout(() => timer.abort(new DOMException("The operation timed out.", "TimeoutError")), ms);
+      return timer.signal;
+    });
+  }
+
+  it("a slow body still arrives: the answer started in time", async () => {
+    fakeClock();
+    vi.stubGlobal("fetch", async (_url: string, init?: RequestInit) => {
+      const body = new ReadableStream<Uint8Array>({
+        start(stream) {
+          init?.signal?.addEventListener("abort", () => stream.error(init.signal?.reason));
+          setTimeout(() => {
+            stream.enqueue(new TextEncoder().encode(JSON.stringify({ id: "d-1" })));
+            stream.close();
+          }, GET_TIMEOUT_MS + 30_000);
+        },
+      });
+      return new Response(body, { status: 200 });
+    });
+    const pending = getDocument("d-1").catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(GET_TIMEOUT_MS + 30_000);
+    expect(await pending).toEqual({ id: "d-1" });
+  });
+
+  it("no answer at all within 30 s is TOO_SLOW, status 0", async () => {
+    fakeClock();
+    vi.stubGlobal(
+      "fetch",
+      (_url: string, init?: RequestInit) =>
+        new Promise((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(init.signal?.reason))),
+    );
+    const pending = getDocument("d-1").catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(GET_TIMEOUT_MS - 1);
+    await vi.advanceTimersByTimeAsync(1);
+    const caught = await pending;
+    expect(caught).toBeInstanceOf(ApiError);
+    expect(caught).toMatchObject({ status: 0, code: "timeout", message: TOO_SLOW });
+  });
+
+  it("the timer is cleared once the answer starts", async () => {
+    fakeClock();
+    vi.stubGlobal("fetch", async () => new Response(JSON.stringify({ id: "d-1" }), { status: 200 }));
+    await expect(getDocument("d-1")).resolves.toEqual({ id: "d-1" });
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

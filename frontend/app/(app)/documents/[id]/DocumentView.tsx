@@ -257,8 +257,9 @@ export function DocumentView({
 
   // #453: counts the changes made here (a value verified or saved on the summary card). A reply
   // asked for before one would put the old value back, so it is dropped and asked for again.
-  // Issue 468: a document already shown stays when asking again finds no connection (as the
-  // documents list does); it is asked for again once the browser is back online.
+  // Issue 468: a document already shown stays when asking again fails while the browser is
+  // offline (as the documents list does); it is asked for again once back online. Online, any
+  // failure (a timeout, Wi-Fi with no internet) shows the error with Try again.
   const changes = useRef(0);
   useEffect(() => {
     let cancelled = false;
@@ -279,7 +280,7 @@ export function DocumentView({
       .catch((error: unknown) => {
         if (cancelled) return;
         if (asked !== changes.current) return setReloads((n) => n + 1);
-        const lost = lostConnection(error);
+        const lost = lostConnection(error) && navigator.onLine === false;
         setLoaded((shown) =>
           lost && shown && "detail" in shown && shown.attempt === attempt ? shown : { attempt, error: loadFailure(error) },
         );

@@ -45,21 +45,19 @@ describe("a GET that gets no answer (lib/api.ts request)", () => {
     });
   }
 
+  // Changed on purpose (#468 review, CR3): a timer cleared once the answer starts, not AbortSignal.timeout.
   it("stops after 30 s and fails as a lost connection does (status 0), in plain words", async () => {
-    const timeout = new AbortController();
-    const asked: number[] = [];
-    vi.spyOn(AbortSignal, "timeout").mockImplementation((ms: number) => {
-      asked.push(ms);
-      return timeout.signal;
-    });
+    vi.useFakeTimers();
     let sentSignal: AbortSignal | null | undefined;
     hang((init) => (sentSignal = init?.signal));
-    const pending = getDocument("d-1");
-    expect(asked).toEqual([GET_TIMEOUT_MS]);
+    const pending = getDocument("d-1").catch((error: unknown) => error);
     expect(GET_TIMEOUT_MS).toBe(30_000);
-    expect(sentSignal).toBe(timeout.signal);
-    timeout.abort(new DOMException("The operation timed out.", "TimeoutError"));
-    const caught = await pending.catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(GET_TIMEOUT_MS - 1);
+    expect(sentSignal?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(sentSignal?.aborted).toBe(true);
+    const caught = await pending;
+    vi.useRealTimers();
     expect(caught).toBeInstanceOf(ApiError);
     expect(caught).toMatchObject({ status: 0, code: "timeout", message: TOO_SLOW });
     expect(TOO_SLOW).toBe("Kaagaz is taking too long to answer. Check your connection and try again.");
@@ -80,13 +78,15 @@ describe("a GET that gets no answer (lib/api.ts request)", () => {
     await expect(getDocument("d-1")).rejects.toMatchObject({ status: 404, code: "not_found" });
   });
 
+  // Changed on purpose (#468 review, CR3): no timer started, rather than no AbortSignal.timeout.
   it("never times out Ask's answer or any change (not a GET), and leaves the caller's own signal alone", async () => {
-    const timeout = vi.spyOn(AbortSignal, "timeout");
+    vi.useFakeTimers();
     const mine = new AbortController();
     let sentSignal: AbortSignal | null | undefined;
     hang((init) => (sentSignal = init?.signal));
     const pending = ask("What is the total?", undefined, undefined, undefined, undefined, mine.signal);
-    expect(timeout).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+    vi.useRealTimers();
     expect(sentSignal).toBe(mine.signal);
     mine.abort();
     const caught = await pending.catch((error: unknown) => error);
@@ -112,10 +112,12 @@ describe("a GET that gets no answer (lib/api.ts request)", () => {
     expect(withTimeout(new AbortController().signal, already.signal).aborted).toBe(true);
   });
 
+  // Changed on purpose (#468 review, CR3): the timer covers fetch() only, and is cleared after it.
   it("has the GET timeout in request() only, with uploads sent by XHR and POST", () => {
     const api = read("lib/api.ts");
-    expect(api).toContain('const timeout = method === "GET" ? AbortSignal.timeout(GET_TIMEOUT_MS) : null;');
-    expect(api).toMatch(/if \(timeout\?\.aborted && !signal\?\.aborted && !\(caught instanceof ApiError\)\) \{\s*throw new ApiError\(0, "timeout", TOO_SLOW\);/);
+    expect(api).toContain('const timeout = method === "GET" ? new AbortController() : null;');
+    expect(api).toContain("if (timeout?.signal.aborted && !signal?.aborted) throw new ApiError(0, \"timeout\", TOO_SLOW);");
+    expect(api).toMatch(/\} finally \{\s*clearTimeout\(timer\);/);
   });
 });
 

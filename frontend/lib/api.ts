@@ -165,9 +165,11 @@ export function rateLimitWait(caught: unknown, fallback: number): number | null 
 }
 
 /**
- * Issue 468: a GET with no answer in this long stops, and fails as a lost connection does
- * (status 0), in these words. Only GETs: Ask's answer, uploads and every change are POST, PUT,
- * PATCH or DELETE, and keep waiting as long as they take.
+ * Issue 468: a GET whose answer has not started in this long stops, and fails as a lost
+ * connection does (status 0), in these words. Only the wait for the answer to start (its
+ * headers) is timed: reading the body is not, so a big answer on a slow link still arrives.
+ * Only GETs: Ask's answer, uploads and every change are POST, PUT, PATCH or DELETE, and keep
+ * waiting as long as they take.
  */
 export const GET_TIMEOUT_MS = 30_000;
 export const TOO_SLOW = "Kaagaz is taking too long to answer. Check your connection and try again.";
@@ -195,24 +197,26 @@ async function request<T>(
 ): Promise<T> {
   const headers: Record<string, string> = method === "GET" ? {} : { ...CSRF_HEADER };
   if (body !== undefined) headers["Content-Type"] = "application/json";
-  const timeout = method === "GET" ? AbortSignal.timeout(GET_TIMEOUT_MS) : null;
+  const timeout = method === "GET" ? new AbortController() : null;
+  const timer = timeout ? setTimeout(() => timeout.abort(), GET_TIMEOUT_MS) : undefined;
+  let response: Response;
   try {
-    const response = await fetch(`/api${path}`, {
+    response = await fetch(`/api${path}`, {
       method,
       headers,
       credentials: "same-origin",
       body: body === undefined ? undefined : JSON.stringify(body),
-      signal: timeout ? withTimeout(timeout, signal) : signal,
+      signal: timeout ? withTimeout(timeout.signal, signal) : signal,
     });
-    if (!response.ok) throw noticeSessionEnd(await errorFrom(response));
-    if (response.status === 204) return undefined as T;
-    return (await response.json()) as T;
   } catch (caught) {
-    if (timeout?.aborted && !signal?.aborted && !(caught instanceof ApiError)) {
-      throw new ApiError(0, "timeout", TOO_SLOW);
-    }
+    if (timeout?.signal.aborted && !signal?.aborted) throw new ApiError(0, "timeout", TOO_SLOW);
     throw caught;
+  } finally {
+    clearTimeout(timer); // the answer started (or failed): its body is read untimed
   }
+  if (!response.ok) throw noticeSessionEnd(await errorFrom(response));
+  if (response.status === 204) return undefined as T;
+  return (await response.json()) as T;
 }
 
 export type QueryValue = string | number | boolean | readonly (string | number)[] | undefined;
