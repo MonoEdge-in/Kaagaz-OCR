@@ -18,8 +18,17 @@ import {
   CHECK_ON_ORG,
   CHECK_PAGES_HINT,
   CHECK_PAGE_CHOICES,
+  CHECK_DIDNT_FINISH,
   CHECK_RUNNING,
   CLEAN_HINT,
+  COST_SAVED_MODELS,
+  LIMIT_NOT_MEASURED,
+  TOKENS_UNDER_AVERAGE,
+  TOO_FEW_PAGES,
+  levelNote,
+  onlyLimitDiffers,
+  scanModelsDiffer,
+  tokensUnderAverage,
   COST_DELAY_MS,
   COST_FAILED,
   COST_NOT_MEASURED,
@@ -55,11 +64,12 @@ import {
   tokensWords,
   withCost,
 } from "@/components/operator/models";
-import { STEP_UP_FAILED } from "@/components/operator/logic";
+import { REFUSALS, STEP_UP_FAILED } from "@/components/operator/logic";
 import { AiFields, firstProblem, refusalOf } from "@/components/operator/OrgAiSettings";
 import { DefaultsSummary } from "@/components/operator/PlatformDefaults";
 import { ApiError, getLatestAccuracyCheck, postAccuracyCheck, postScanCost, putAiDefaults, putOrgAi } from "@/lib/api";
 import { createPoller } from "@/lib/poll";
+import type { AiDraft, CostReply } from "@/components/operator/models";
 import type { AccuracyCheck, AiDefaults, AiValues, OperatorModel, ScanCost } from "@/lib/types";
 
 const read = (path: string) => readFileSync(join(__dirname, "..", path), "utf8");
@@ -301,6 +311,7 @@ describe("the scan settings' draft and save", () => {
       expect(await postScanCost(costAsk("org-1", own))).toEqual(measured());
       expect(sent[0]?.body).toMatchObject({ scan_resolution: "low", careful_thinking: "medium", careful_resolution: "high", code: "123456" });
       expect(sent[1]?.body).toMatchObject({ scan_thinking: null, scan_resolution: null, careful_thinking: null, careful_resolution: null });
+      // Changed on purpose (#463 review): Cost saving (`dynamic`) joins the cost's question.
       expect(sent[2]).toEqual({
         url: "/api/operator/scan-cost",
         method: "POST",
@@ -311,6 +322,7 @@ describe("the scan settings' draft and save", () => {
           careful_thinking: "medium",
           careful_resolution: "high",
           page_max_output_tokens: null,
+          dynamic: null,
         },
       });
       expect(costAsk(null, values())).toEqual({
@@ -320,12 +332,14 @@ describe("the scan settings' draft and save", () => {
         careful_thinking: null,
         careful_resolution: null,
         page_max_output_tokens: null,
+        dynamic: null,
       });
     });
 
     it("start a check with the draft's scan settings and a fresh code, and read the latest", async () => {
       const sent = capture({ id: "c-1" }, 202);
-      const limited = { ...own, page_max_output_tokens: 8192 };
+      // Changed on purpose (#463 review): Cost saving (`dynamic`) joins the check's body.
+      const limited = { ...own, page_max_output_tokens: 8192, dynamic: true };
       expect(await postAccuracyCheck("org-1", { ...scanSettings(aiBody(draftOf(limited))), pages: 50 }, "123456")).toEqual({ id: "c-1" });
       expect(sent[0]).toEqual({
         url: "/api/operator/orgs/org-1/accuracy-check",
@@ -336,6 +350,7 @@ describe("the scan settings' draft and save", () => {
           careful_thinking: "medium",
           careful_resolution: "high",
           page_max_output_tokens: 8192,
+          dynamic: true,
           pages: 50,
           code: "123456",
         },
@@ -391,8 +406,11 @@ describe("the Cost per page panel", () => {
     );
   });
 
-  it("says no page is read again when Cost saving is off", () => {
-    expect(costWords(measured({ re_read: null, usd_per_page: 0.0021 })).lines[1]).toBe("Cost saving is off, so no page is read again.");
+  it("says pages are read again only when asked while Cost saving is off", () => {
+    // Changed on purpose (#463 review, U7): Read this page again still reads a page again.
+    expect(costWords(measured({ re_read: null, usd_per_page: 0.0021 })).lines[1]).toBe(
+      "Cost saving is off, so pages are read again only when someone asks.",
+    );
   });
 
   it("says the change from what is saved, and which is cheaper, in words", () => {
@@ -409,11 +427,13 @@ describe("the Cost per page panel", () => {
   it("asks the saved and the draft settings apart, and the draft only while it differs", () => {
     const source = read("components/operator/OrgAiSettings.tsx");
     expect(source).toContain("askScanCost(costAsk(customerId, saved), postScanCost, setSavedCost), [customerId, saved, finished]");
+    // Changed on purpose (#463 review): Cost saving (`dynamic`) is asked too (U2), and an
+    // output limit out of range is never asked (S6).
     expect(source).toContain(
-      "costAsk(customerId, { scan_thinking, scan_resolution, careful_thinking, careful_resolution, page_max_output_tokens }),",
+      "costAsk(customerId, { scan_thinking, scan_resolution, careful_thinking, careful_resolution, page_max_output_tokens, dynamic }),",
     );
     expect(source).toContain(
-      "[customerId, differs, finished, scan_thinking, scan_resolution, careful_thinking, careful_resolution, page_max_output_tokens]",
+      "[customerId, differs, badLimit, finished, scan_thinking, scan_resolution, careful_thinking, careful_resolution, page_max_output_tokens, dynamic]",
     );
     expect(source).toContain("const shown = differs ? draftCost : savedCost;");
     expect(sameSettings(values(), values({ scan_models: ["m/one"] }))).toBe(true); // models are not asked
@@ -452,7 +472,11 @@ describe("the accuracy", () => {
     });
     expect(accuracyWords(null, check())).toEqual({ figure: null, line: OTHER_SETTINGS });
     expect(OTHER_SETTINGS).toBe("Your last check was at different settings.");
+    // Changed on purpose (#463 review, S2): a failed last check is said before the settings.
     expect(accuracyWords(check({ status: "failed", word_match: null }), check({ status: "failed" })).line).toBe(
+      "The last check didn't finish. Check again.",
+    );
+    expect(accuracyWords(check({ status: "failed", word_match: null }), check()).line).toBe(
       "The last check at these settings did not finish. Check again.",
     );
     expect(accuracyWords(null, null)).toEqual({ figure: null, line: null });
@@ -621,8 +645,8 @@ describe("asking the cost as the draft changes", () => {
     await vi.advanceTimersByTimeAsync(COST_DELAY_MS);
     answerOld(measured());
     await vi.runAllTimersAsync();
-    expect(show).toHaveBeenCalledTimes(1);
-    expect(show).toHaveBeenCalledWith(measured({ usd_per_page: 0.0021 }));
+    // Changed on purpose (#463 review, U8): each ask first shows null ("Working out the cost…").
+    expect(show.mock.calls.filter(([reply]) => reply !== null)).toEqual([[measured({ usd_per_page: 0.0021 })]]);
   });
 
   it("says a failure once and asks no more until the draft changes", async () => {
@@ -634,8 +658,8 @@ describe("asking the cost as the draft changes", () => {
     askScanCost(costAsk(null, values()), fetch, show);
     await vi.advanceTimersByTimeAsync(10 * COST_DELAY_MS);
     expect(fetch).toHaveBeenCalledTimes(1);
-    expect(show).toHaveBeenCalledTimes(1);
-    expect(show).toHaveBeenCalledWith("failed");
+    // Changed on purpose (#463 review, U8): the ask first shows null ("Working out the cost…").
+    expect(show.mock.calls).toEqual([[null], ["failed"]]);
   });
 });
 
@@ -752,5 +776,159 @@ describe("only the operator console", () => {
     const panel = read("components/admin/AiSettingsPanel.tsx");
     for (const word of ["Picture detail", "pages read again", "scan_resolution", "careful_", "Cost per page", "scan-cost", "accuracy-check", "Minimal"])
       expect(panel, word).not.toContain(word);
+  });
+});
+
+describe("the #463 review (council, 31 Oct 2026)", () => {
+  afterEach(() => vi.useRealTimers());
+  const DIALOG = "components/operator/OrgAiSettings.tsx";
+  /** An organisation's fields with this draft, saved values and latest check. */
+  const panel = (draft: AiDraft, saved: AiValues = values(), latest: AccuracyCheck | null = null) =>
+    renderToStaticMarkup(
+      createElement(AiFields, {
+        platform: false,
+        customerId: "org-1",
+        check: { latest, onCheck: () => undefined },
+        catalogue,
+        saved,
+        defaults: DEFAULTS,
+        env: ENV,
+        maxAgents: 3,
+        draft,
+        errors: {},
+        busy: false,
+        onChange: () => undefined,
+      }),
+    );
+  /** What a live region says. */
+  const regionOf = (html: string, id: string) => html.match(new RegExp(`<div id="${id}" aria-live="polite">([\\s\\S]*?)</div>`))?.[1] ?? "";
+
+  it("U1: the check's confirm is the settings dialog's sibling, so its Esc never closes them, even while sending", () => {
+    const dialog = read(DIALOG);
+    expect(dialog).toMatch(/return \(\s*<>\s*<ActionDialog/);
+    expect(dialog.indexOf("<ConfirmDialog")).toBeGreaterThan(dialog.lastIndexOf("</ActionDialog>"));
+  });
+
+  it("U2: asks the cost with the draft's Cost saving, and says when the draft's models are not saved yet", () => {
+    expect(costAsk("org-1", values({ dynamic: false })).dynamic).toBe(false);
+    expect(scanSettings(values({ dynamic: true })).dynamic).toBe(true);
+    const two = values({ scan_models: ["m/one", "m/two"], scan_default: "m/one" });
+    expect(scanModelsDiffer(values(), values({ scan_models: ["m/one"], scan_default: "m/one" }))).toBe(true);
+    expect(scanModelsDiffer(two, { ...two, scan_models: ["m/two", "m/one"] })).toBe(false);
+    expect(scanModelsDiffer(two, { ...two, scan_default: "m/two" })).toBe(true);
+    expect(COST_SAVED_MODELS).toBe("This cost is for the saved models. Save to see the new one.");
+    expect(regionOf(panel(draftOf(values({ scan_models: ["m/one"], scan_default: "m/one" }))), "ai-scan-cost")).toContain(COST_SAVED_MODELS);
+    expect(panel(draftOf(values()))).not.toContain(COST_SAVED_MODELS);
+  });
+
+  it("U3: says no change when either side leaves the pages read again out, and the save says they're not counted", () => {
+    const noCost = measured({ re_read: { ...measured().re_read!, usd_per_page: null }, usd_per_page: 0.0021 });
+    const noShare = measured({ re_read: { ...measured().re_read!, share: null }, usd_per_page: 0.0021 });
+    for (const partial of [noCost, noShare]) {
+      expect(costChange(measured(), partial)).toBeNull();
+      expect(costChange(partial, measured())).toBeNull();
+    }
+    expect(costChange(measured({ re_read: null }), measured())).not.toBeNull(); // Cost saving off: nothing left out
+    expect(withCost("Saved.", noShare, false)).toBe("Saved. Scans now cost about ₹0.18 a page (pages read again not counted).");
+    expect(withCost("Saved.", noCost, true)).toBe(
+      "Saved. Scans now cost about ₹0.18 a page (pages read again not counted). Accuracy against max settings isn't checked yet.",
+    );
+    expect(withCost("Saved.", measured(), false)).toBe("Saved. Scans now cost about ₹0.24 a page.");
+  });
+
+  it("U4: warns when the limit is below an average page while 1 in 100 is not known, and says a limit alone isn't priced", () => {
+    const noP99 = measured({ tokens: { ...measured().tokens, output_p99: null } });
+    expect(tokensUnderAverage(noP99, 2048)).toBe(true); // under 3,100
+    expect(tokensUnderAverage(noP99, 4096)).toBe(false);
+    expect(tokensUnderAverage(noP99, null)).toBe(false); // the priced limit, 65,536
+    expect(tokensUnderAverage(measured(), 2048)).toBe(false); // 1 in 100 known: TOKENS_LOW says it
+    expect(tokensUnderAverage(measured({ tokens: { ...noP99.tokens, output_per_page: null } }), 1024)).toBe(false);
+    expect(TOKENS_UNDER_AVERAGE).toBe(
+      "This is below what a page needs on average. Many pages will be cut off and read again in two halves, which costs more and is slower.",
+    );
+    expect(read(DIALOG)).toMatch(/\{underAverage && \(\s*<p id="ai-tokens-low" className="error-text">\s*\{TOKENS_UNDER_AVERAGE\}/);
+    expect(onlyLimitDiffers(values(), values({ page_max_output_tokens: 8192 }))).toBe(true);
+    expect(onlyLimitDiffers(values(), values({ page_max_output_tokens: 8192, scan_resolution: "low" }))).toBe(false);
+    expect(onlyLimitDiffers(values(), values())).toBe(false);
+    expect(LIMIT_NOT_MEASURED).toBe("The limit's effect on cost isn't measured yet.");
+    expect(regionOf(panel({ ...draftOf(values()), page_max_output_tokens: "8192" }), "ai-scan-cost")).toContain(
+      "The limit&#x27;s effect on cost isn&#x27;t measured yet.",
+    );
+    expect(panel({ ...draftOf(values()), scan_resolution: "low" })).not.toContain("The limit&#x27;s effect");
+    expect(read(DIALOG)).toContain("const change = differs && !limitOnly && !badLimit ? costChange(savedCost, draftCost) : null;");
+  });
+
+  it("U8: a new ask says Working out at once: A, then saved, then B never shows A's figure", async () => {
+    vi.useFakeTimers();
+    const shown: CostReply[] = [];
+    const [a, b] = [measured({ usd_per_page: 0.001 }), measured({ usd_per_page: 0.002 })];
+    const fetch = vi.fn().mockResolvedValueOnce(a).mockResolvedValueOnce(b);
+    const cancelA = askScanCost(costAsk("org-1", values({ scan_resolution: "low" })), fetch, (reply) => shown.push(reply));
+    await vi.advanceTimersByTimeAsync(COST_DELAY_MS);
+    expect(shown.at(-1)).toEqual(a);
+    cancelA(); // the draft is back to what is saved: it is not asked
+    askScanCost(costAsk("org-1", values({ scan_thinking: "high" })), fetch, (reply) => shown.push(reply));
+    expect(shown.at(-1)).toBeNull(); // B is waiting: A's figure is gone
+    await vi.advanceTimersByTimeAsync(COST_DELAY_MS);
+    expect(shown.at(-1)).toEqual(b);
+    expect(read(DIALOG)).toContain("postScanCost,\n            setDraftCost,");
+  });
+
+  it("S1 and S2: a failed last check says so first, and the check is offered again", () => {
+    expect(CHECK_DIDNT_FINISH).toBe("The last check didn't finish. Check again.");
+    expect(accuracyWords(null, check({ status: "failed", word_match: null }))).toEqual({ figure: null, line: CHECK_DIDNT_FINISH });
+    expect(accuracyWords(check(), check({ id: "c-2", status: "failed", word_match: null }))).toEqual({ figure: null, line: CHECK_DIDNT_FINISH });
+    const html = panel(draftOf(values()), values(), check({ status: "failed", word_match: null }));
+    expect(regionOf(html, "ai-accuracy")).toContain("The last check didn&#x27;t finish. Check again.");
+    expect(html).toContain(`<button id="ai-check-accuracy" type="button" class="btn">${CHECK_LABEL}</button>`);
+  });
+
+  it("S6: an output limit out of range is never priced, and no check starts while the form has a problem", () => {
+    const bad = panel({ ...draftOf(values()), page_max_output_tokens: "500" });
+    expect(regionOf(bad, "ai-scan-cost")).toBe(`<p class="${bad.match(/class="([^"]*costSmall[^"]*)"/)?.[1]}">${TOKENS_RANGE}</p>`);
+    expect(bad).toMatch(/<button id="ai-check-accuracy"[^>]*disabled=""/);
+    expect(panel({ ...draftOf(values()), budget: "lots" })).toMatch(/<button id="ai-check-accuracy"[^>]*disabled=""/);
+    expect(panel(draftOf(values()))).not.toMatch(/<button id="ai-check-accuracy"[^>]*disabled/);
+    expect(read(DIALOG)).toContain("differs && !badLimit");
+  });
+
+  it("S8: says when the model reads at another level, the pages not compared, and too few pages", () => {
+    const at = (thinking: string, saving: boolean) =>
+      measured({ first_read: { ...measured().first_read, thinking }, re_read: saving ? measured().re_read : null });
+    expect(levelNote(at("low", false), "minimal")).toBe("Reads at Low: this model doesn't take Minimal.");
+    expect(levelNote(at("low", true), "minimal")).toBe("Reads at Low: this model doesn't take Minimal.");
+    expect(levelNote(at("low", false), "high")).toBe("Reads at Low: this model doesn't take High.");
+    expect(levelNote(at("low", true), "high")).toBeNull(); // Cost saving's quick first read
+    expect(levelNote(at("high", true), "high")).toBe("Reads at High: this model doesn't take Low.");
+    expect(levelNote(at("minimal", false), "minimal")).toBeNull();
+    expect(levelNote(at("none", false), "minimal")).toBeNull(); // a model with no levels has one mode
+    expect(read(DIALOG)).toMatch(/\{readsAt && <p className=\{styles\.costSmall\}>\{readsAt\}<\/p>\}/);
+    expect(accuracyWords(check({ pages_failed: 2 }), check()).line).toBe(
+      "All words: 98%. Checked on 20 pages, 31 Oct. 2 pages couldn't be compared.",
+    );
+    expect(accuracyWords(check({ pages_checked: 9, pages_failed: 1 }), check()).line).toBe(
+      "All words: 98%. Checked on 9 pages, 31 Oct. 1 page couldn't be compared. Too few pages for a sure answer.",
+    );
+    expect(accuracyWords(check({ pages_checked: 10 }), check()).line).not.toContain(TOO_FEW_PAGES);
+    expect(TOO_FEW_PAGES).toBe("Too few pages for a sure answer.");
+  });
+
+  it("P8: compares every setting a cost is asked for, Cost saving too", () => {
+    expect(sameSettings(values(), values({ dynamic: true }))).toBe(false);
+    expect(sameSettings(values({ dynamic: false }), values({ dynamic: false }))).toBe(true);
+    expect(Object.keys(scanSettings(values()))).toEqual([
+      "scan_thinking",
+      "scan_resolution",
+      "careful_thinking",
+      "careful_resolution",
+      "page_max_output_tokens",
+      "dynamic",
+    ]);
+  });
+
+  it("P10: says the output limit's range in one place", () => {
+    expect(REFUSALS.limit_out_of_range).toBe(TOKENS_RANGE);
+    const both = read("components/operator/logic.ts") + read("components/operator/models.ts");
+    expect(both.split("Choose a number from 1,024 to 65,536.")).toHaveLength(2);
   });
 });

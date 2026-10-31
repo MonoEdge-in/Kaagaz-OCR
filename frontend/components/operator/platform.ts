@@ -21,6 +21,7 @@ const PLATFORM_ACTIONS: Record<string, string> = {
   "org.purge_now": "Organisation deleted at once (server)",
   "org.autofile_grant": "Allowed auto-filing",
   "org.autofile_revoke": "Stopped auto-filing",
+  "org.accuracy_check": "Checked scan accuracy", // #463
   "admin.create": "Created an admin",
   "admin.create_refused": "Admin not created: e-mail in use",
   "admin.disable": "Disabled an admin",

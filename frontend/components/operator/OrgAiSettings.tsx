@@ -55,11 +55,13 @@ import {
   CHECK_PAGE_CHOICES,
   CHECK_ON_ORG,
   CLEAN_HINT,
+  COST_SAVED_MODELS,
   COST_SAVING,
   DYNAMIC_HINT,
   ENSEMBLE_OFF,
   LEVELS,
   LEVEL_WORDS,
+  LIMIT_NOT_MEASURED,
   NO_LEVELS,
   RESOLUTIONS,
   RESOLUTION_HINT,
@@ -67,6 +69,8 @@ import {
   SCAN_LEVELS,
   TOKENS_HINT,
   TOKENS_LOW,
+  TOKENS_RANGE,
+  TOKENS_UNDER_AVERAGE,
   VENDOR_NOT_ALLOWED,
   accuracyWords,
   aiBody,
@@ -85,8 +89,10 @@ import {
   hasNoLevels,
   inheritedText,
   inrText,
+  levelNote,
   monthSpentText,
   offered,
+  onlyLimitDiffers,
   parseBudget,
   parseTokens,
   pickerText,
@@ -96,11 +102,13 @@ import {
   sameAsDefault,
   sameSettings,
   savedText,
+  scanModelsDiffer,
   scanSettings,
   statusText,
   toggled,
   toggledLevel,
   tokensTooLow,
+  tokensUnderAverage,
   tokensWords,
   withCost,
 } from "./models";
@@ -227,141 +235,144 @@ export function OrgAiSettings({ org, onClose, onSaved }: { org: Organisation; on
   }
 
   return (
-    <ActionDialog
-      wide
-      title={`AI settings of ${org.name}`}
-      onClose={() => (unchanged ? onClose() : setLeaving(true))}
-      canClose={(way) => canCloseDialog({ busy }, way)}
-      onClosed={() => document.getElementById(orgAiFocusId(org.id))?.focus()}
-    >
-      {loadFailed && (
-        <div className="stack">
-          <p className="error-text" role="alert">
-            {loadFailed}
-          </p>
-          <div>
-            <button type="button" className="btn" data-autofocus onClick={() => setAttempt((n) => n + 1)}>
-              Try again
-            </button>
-          </div>
-        </div>
-      )}
-      {!loaded && !loadFailed && (
-        <p className="muted" role="status">
-          Loading the AI settings…
-        </p>
-      )}
-      {loaded && draft && (
-        <form ref={focusFirst} className={styles.dialogForm} onSubmit={submit} noValidate>
-          <p role="status">{statusText(aiBody(draft))}</p>
-          <div>
-            <button
-              type="button"
-              className="btn"
-              disabled={busy}
-              aria-describedby={reset ? "ai-reset-note" : undefined}
-              onClick={() => {
-                setDraft(followDefaults(draft));
-                setErrors({});
-                setReset(true);
-              }}
-            >
-              Use platform defaults
-            </button>
-            {reset && (
-              <p id="ai-reset-note" className="hint" aria-live="polite">
-                Scanning and answering will both follow the platform defaults, and Ensemble is off. Save to apply.
-              </p>
-            )}
-          </div>
-          <AiFields
-            platform={false}
-            customerId={org.id}
-            check={{ latest, onCheck: () => setChecking(true) }}
-            orgName={org.name}
-            spent={loaded.spent}
-            catalogue={loaded.catalogue}
-            saved={loaded.reply.own}
-            defaults={loaded.reply.defaults}
-            env={loaded.reply.env}
-            maxAgents={loaded.reply.max_agents}
-            draft={draft}
-            errors={errors}
-            busy={busy}
-            onChange={(next) => {
-              setDraft(next);
-              setReset(false);
-              setEnsembleOff(false);
-            }}
-          />
-          {ensembleOff && (
-            <p className="hint" role="status">
-              {ENSEMBLE_OFF}
+    <>
+      <ActionDialog
+        wide
+        title={`AI settings of ${org.name}`}
+        onClose={() => (unchanged ? onClose() : setLeaving(true))}
+        canClose={(way) => canCloseDialog({ busy }, way)}
+        onClosed={() => document.getElementById(orgAiFocusId(org.id))?.focus()}
+      >
+        {loadFailed && (
+          <div className="stack">
+            <p className="error-text" role="alert">
+              {loadFailed}
             </p>
-          )}
-          <CodeField
-            id={CODE_ID}
-            label="A new 6-digit code from your app"
-            value={code}
-            onChange={setCode}
-            error={codeProblem}
-            hint="Saving needs a new code: the one you signed in with does not work again."
-          />
-          {errors.form && (
-            <p id={`${fieldId("form")}-error`} className="error-text" role="alert">
-              {errors.form}
-            </p>
-          )}
-          <div className={styles.saveBar}>
-            {asking && (
-              <div className={styles.leaveAsk} role="alert">
-                <p>Close without saving? Your {countText(changes.length, "unsaved change", "unsaved changes")} will be lost.</p>
-                <div className={styles.buttons}>
-                  <button type="button" className={`btn btn-danger ${styles.destructive}`} onClick={onClose}>
-                    Close without saving
-                  </button>
-                  <button ref={focusKeep} type="button" className="btn" onClick={() => setLeaving(false)}>
-                    Keep editing
-                  </button>
-                </div>
-              </div>
-            )}
-            <p className={styles.changes}>
-              <strong id="ai-changes-count" aria-live="polite">
-                {unchanged ? "No unsaved changes" : countText(changes.length, "unsaved change", "unsaved changes")}
-              </strong>
-              {!unchanged && <span id="ai-changes"> {changes.join(" · ")}</span>}
-            </p>
-            <div className={styles.buttons}>
-              <button
-                type="button"
-                className="btn"
-                disabled={busy || unchanged}
-                onClick={(event) => {
-                  // The button goes off: the focus moves to the form's first control.
-                  event.currentTarget.form?.querySelector<HTMLElement>("input, select, button")?.focus();
-                  setDraft(saved);
-                  setErrors({});
-                  setReset(false);
-                }}
-              >
-                Discard
-              </button>
-              <button
-                type="submit"
-                className={`btn btn-primary ${busy ? admin.busy : ""}`}
-                disabled={busy || unchanged}
-                aria-busy={busy || undefined}
-                aria-describedby={unchanged ? "ai-changes-count" : "ai-changes-count ai-changes"}
-              >
-                {busy && <span className="spinner" aria-hidden="true" />}
-                Save
+            <div>
+              <button type="button" className="btn" data-autofocus onClick={() => setAttempt((n) => n + 1)}>
+                Try again
               </button>
             </div>
           </div>
-        </form>
-      )}
-      {/* Outside the form: its own form's submit must never reach the settings' Save. */}
+        )}
+        {!loaded && !loadFailed && (
+          <p className="muted" role="status">
+            Loading the AI settings…
+          </p>
+        )}
+        {loaded && draft && (
+          <form ref={focusFirst} className={styles.dialogForm} onSubmit={submit} noValidate>
+            <p role="status">{statusText(aiBody(draft))}</p>
+            <div>
+              <button
+                type="button"
+                className="btn"
+                disabled={busy}
+                aria-describedby={reset ? "ai-reset-note" : undefined}
+                onClick={() => {
+                  setDraft(followDefaults(draft));
+                  setErrors({});
+                  setReset(true);
+                }}
+              >
+                Use platform defaults
+              </button>
+              {reset && (
+                <p id="ai-reset-note" className="hint" aria-live="polite">
+                  Scanning and answering will both follow the platform defaults, and Ensemble is off. Save to apply.
+                </p>
+              )}
+            </div>
+            <AiFields
+              platform={false}
+              customerId={org.id}
+              check={{ latest, onCheck: () => setChecking(true) }}
+              orgName={org.name}
+              spent={loaded.spent}
+              catalogue={loaded.catalogue}
+              saved={loaded.reply.own}
+              defaults={loaded.reply.defaults}
+              env={loaded.reply.env}
+              maxAgents={loaded.reply.max_agents}
+              draft={draft}
+              errors={errors}
+              busy={busy}
+              onChange={(next) => {
+                setDraft(next);
+                setReset(false);
+                setEnsembleOff(false);
+              }}
+            />
+            {ensembleOff && (
+              <p className="hint" role="status">
+                {ENSEMBLE_OFF}
+              </p>
+            )}
+            <CodeField
+              id={CODE_ID}
+              label="A new 6-digit code from your app"
+              value={code}
+              onChange={setCode}
+              error={codeProblem}
+              hint="Saving needs a new code: the one you signed in with does not work again."
+            />
+            {errors.form && (
+              <p id={`${fieldId("form")}-error`} className="error-text" role="alert">
+                {errors.form}
+              </p>
+            )}
+            <div className={styles.saveBar}>
+              {asking && (
+                <div className={styles.leaveAsk} role="alert">
+                  <p>Close without saving? Your {countText(changes.length, "unsaved change", "unsaved changes")} will be lost.</p>
+                  <div className={styles.buttons}>
+                    <button type="button" className={`btn btn-danger ${styles.destructive}`} onClick={onClose}>
+                      Close without saving
+                    </button>
+                    <button ref={focusKeep} type="button" className="btn" onClick={() => setLeaving(false)}>
+                      Keep editing
+                    </button>
+                  </div>
+                </div>
+              )}
+              <p className={styles.changes}>
+                <strong id="ai-changes-count" aria-live="polite">
+                  {unchanged ? "No unsaved changes" : countText(changes.length, "unsaved change", "unsaved changes")}
+                </strong>
+                {!unchanged && <span id="ai-changes"> {changes.join(" · ")}</span>}
+              </p>
+              <div className={styles.buttons}>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={busy || unchanged}
+                  onClick={(event) => {
+                    // The button goes off: the focus moves to the form's first control.
+                    event.currentTarget.form?.querySelector<HTMLElement>("input, select, button")?.focus();
+                    setDraft(saved);
+                    setErrors({});
+                    setReset(false);
+                  }}
+                >
+                  Discard
+                </button>
+                <button
+                  type="submit"
+                  className={`btn btn-primary ${busy ? admin.busy : ""}`}
+                  disabled={busy || unchanged}
+                  aria-busy={busy || undefined}
+                  aria-describedby={unchanged ? "ai-changes-count" : "ai-changes-count ai-changes"}
+                >
+                  {busy && <span className="spinner" aria-hidden="true" />}
+                  Save
+                </button>
+              </div>
+            </div>
+          </form>
+        )}
+      </ActionDialog>
+      {/* Beside the settings dialog, not in it (AdminsDialog's way): its Esc and its form's
+          submit must never reach the settings, even while the check is sending. */}
       {checking && draft && (
         <ConfirmDialog
           confirm={{
@@ -402,7 +413,7 @@ export function OrgAiSettings({ org, onClose, onSaved }: { org: Organisation; on
           }}
         />
       )}
-    </ActionDialog>
+    </>
   );
 }
 
@@ -598,7 +609,14 @@ export function AiFields(props: {
                 {...setting("careful_resolution", RESOLUTIONS, RESOLUTION_WORDS)}
               />
             </div>
-            <CostPanel platform={platform} customerId={customerId} saved={saved} draft={draft} check={check} />
+            <CostPanel
+              platform={platform}
+              customerId={customerId}
+              saved={saved}
+              draft={draft}
+              level={draft.scan_thinking ?? (platform ? null : defaults.scan_thinking) ?? env.scan_thinking}
+              check={check}
+            />
           </div>
         </div>
       </SectionBox>
@@ -799,18 +817,24 @@ function SettingSelect(props: {
 
 /** The Cost per page panel (#463): the measured cost a page at the draft's scan settings,
  * the change from what is saved while they differ, the pages read cleanly and, for an
- * organisation, its accuracy against max settings. Never an empty box. */
+ * organisation, its accuracy against max settings. Never an empty box. The #463 review:
+ * an output limit out of range is never priced (its range is said instead); a limit alone
+ * is not priced; the draft's models are not priced until saved; a level the model doesn't
+ * take is said; no check starts while the form has a problem. */
 function CostPanel(props: {
   platform: boolean;
   customerId: string | null;
   saved: AiValues;
   draft: AiDraft;
+  level: string; // the first read's thinking level asked: the draft's, else the one it follows
   check?: { latest: AccuracyCheck | null; onCheck(): void };
 }) {
-  const { platform, customerId, saved, draft, check } = props;
+  const { platform, customerId, saved, draft, level, check } = props;
   const draftAsk = scanSettings(aiBody(draft));
-  const { scan_thinking, scan_resolution, careful_thinking, careful_resolution, page_max_output_tokens } = draftAsk;
+  const { scan_thinking, scan_resolution, careful_thinking, careful_resolution, page_max_output_tokens, dynamic } = draftAsk;
   const differs = !sameSettings(saved, draftAsk);
+  const limit = parseTokens(draft.page_max_output_tokens);
+  const badLimit = limit === undefined; // never priced as the limit it would follow
   const finished = check?.latest?.finished_at ?? null; // a finished check: ask again for its result
   const [savedCost, setSavedCost] = useState<CostReply>(null);
   const [draftCost, setDraftCost] = useState<CostReply>(null);
@@ -819,22 +843,27 @@ function CostPanel(props: {
   // The draft, only while it differs: asked once it rests, the last reply winning.
   useEffect(
     () =>
-      differs
+      differs && !badLimit
         ? askScanCost(
-            costAsk(customerId, { scan_thinking, scan_resolution, careful_thinking, careful_resolution, page_max_output_tokens }),
+            costAsk(customerId, { scan_thinking, scan_resolution, careful_thinking, careful_resolution, page_max_output_tokens, dynamic }),
             postScanCost,
             setDraftCost,
           )
         : undefined,
-    [customerId, differs, finished, scan_thinking, scan_resolution, careful_thinking, careful_resolution, page_max_output_tokens],
+    [customerId, differs, badLimit, finished, scan_thinking, scan_resolution, careful_thinking, careful_resolution, page_max_output_tokens, dynamic],
   );
   const shown = differs ? draftCost : savedCost;
-  const words = costWords(shown);
-  const change = differs ? costChange(savedCost, draftCost) : null;
-  const reply = shown !== null && shown !== "failed" ? shown : null;
+  const words = badLimit ? { figure: null, dollars: null, lines: [TOKENS_RANGE] } : costWords(shown);
+  const limitOnly = !badLimit && differs && onlyLimitDiffers(saved, draftAsk);
+  const change = differs && !limitOnly && !badLimit ? costChange(savedCost, draftCost) : null;
+  const reply = !badLimit && shown !== null && shown !== "failed" ? shown : null;
+  const modelsDiffer = scanModelsDiffer(saved, aiBody(draft));
+  const readsAt = reply && levelNote(reply, level);
   const accuracy = check ? accuracyWords(reply?.accuracy ?? null, check.latest) : null;
   const running = checkRunning(check?.latest ?? null);
-  const tooLow = reply !== null && tokensTooLow(reply, parseTokens(draft.page_max_output_tokens) ?? null);
+  const tooLow = reply !== null && tokensTooLow(reply, limit ?? null);
+  const underAverage = reply !== null && tokensUnderAverage(reply, limit ?? null);
+  const blocked = Object.keys(aiErrors(draft, platform)).length > 0; // a check reads the draft as it would save
   return (
     <div className={styles.costColumn}>
       <section className={styles.costPanel} aria-labelledby="ai-cost-heading">
@@ -850,11 +879,14 @@ function CostPanel(props: {
               <span className="visually-hidden">to</span> {change.to} a page: <strong>{change.verdict}</strong>
             </p>
           )}
+          {limitOnly && <p className={styles.costSmall}>{LIMIT_NOT_MEASURED}</p>}
           {words.lines.map((line) => (
             <p key={line} className={styles.costSmall}>
               {line}
             </p>
           ))}
+          {readsAt && <p className={styles.costSmall}>{readsAt}</p>}
+          {modelsDiffer && <p className={styles.costSmall}>{COST_SAVED_MODELS}</p>}
         </div>
         <div className={styles.accuracy}>
           <h3 className={styles.subHeading}>Tokens a page</h3>
@@ -867,6 +899,11 @@ function CostPanel(props: {
             {tooLow && (
               <p id="ai-tokens-low" className="error-text">
                 {TOKENS_LOW}
+              </p>
+            )}
+            {underAverage && (
+              <p id="ai-tokens-low" className="error-text">
+                {TOKENS_UNDER_AVERAGE}
               </p>
             )}
           </div>
@@ -884,7 +921,7 @@ function CostPanel(props: {
           {platform && <p className="hint">{CHECK_ON_ORG}</p>}
           {check && !running && (
             <div>
-              <button id="ai-check-accuracy" type="button" className="btn" onClick={check.onCheck}>
+              <button id="ai-check-accuracy" type="button" className="btn" disabled={blocked} onClick={check.onCheck}>
                 {CHECK_LABEL}
               </button>
             </div>

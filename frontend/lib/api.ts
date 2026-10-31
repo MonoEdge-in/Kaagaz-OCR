@@ -929,7 +929,7 @@ export const putAiDefaults = (body: AiValues, code: string) =>
 /** The approximate scan cost a page at these settings (#463): read only, no code. */
 export const postScanCost = (body: ScanCostAsk) => request<ScanCost>("POST", "/operator/scan-cost", body);
 /** Check an organisation's accuracy against max settings at these scan settings (with the
- * most output tokens a page), on 20, 50 or 100 recent pages, with a fresh code (step-up), as
+ * most output tokens a page and `dynamic`), on 20, 50 or 100 recent pages, with a fresh code (step-up), as
  * the AI settings save. 409 check_running, 429, 400 no_pages. */
 export const postAccuracyCheck = (orgId: string, body: Omit<ScanCostAsk, "customer_id"> & { pages: 20 | 50 | 100 }, code: string) =>
   request<{ id: string }>("POST", `/operator/orgs/${orgId}/accuracy-check`, { ...body, code });

@@ -1416,11 +1416,11 @@ export interface AiDefaults {
   >;
 }
 
-/** POST /operator/scan-cost (#463): the scan settings to price; null is what a save would
- * inherit. customer_id null: the platform defaults. */
+/** POST /operator/scan-cost (#463): the scan settings and `dynamic` to price;
+ * null is what a save would inherit. customer_id null: the platform defaults. */
 export type ScanCostAsk = { customer_id: string | null } & Pick<
   AiValues,
-  "scan_thinking" | "scan_resolution" | "careful_thinking" | "careful_resolution" | "page_max_output_tokens"
+  "scan_thinking" | "scan_resolution" | "careful_thinking" | "careful_resolution" | "page_max_output_tokens" | "dynamic"
 >;
 
 /** One kind of page read, as measured in the last `days`: usd_per_page null when no page

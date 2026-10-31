@@ -22,7 +22,7 @@ import type {
   UsageTotals,
 } from "@/lib/types";
 import { ApiError } from "@/lib/api";
-import { REFUSALS, countText, operatorErrorMessage } from "./logic";
+import { REFUSALS, TOKENS_RANGE, countText, operatorErrorMessage } from "./logic";
 
 // numeric(12,2): the largest budget the server's column holds.
 export const MAX_BUDGET = 9_999_999_999.99;
@@ -280,7 +280,7 @@ export const MIN_PAGE_TOKENS = 1024;
 export const MAX_PAGE_TOKENS = 65536;
 export const TOKENS_HINT =
   "The most the AI may write and think for one page. Too low, and long pages get cut off and read again in two halves, which costs more.";
-export const TOKENS_RANGE = "Choose a number from 1,024 to 65,536.";
+export { TOKENS_RANGE }; // the same words as the server's refusal (logic.ts)
 
 /** The most output tokens a page as a number, null to follow, or undefined when it is not one. */
 export function parseTokens(text: string): number | null | undefined {
@@ -448,7 +448,7 @@ const DEFAULT_AREAS: {
   {
     area: "scan_models",
     label: "scanning models",
-    changed: (a, b) => !same(a.scan_models, b.scan_models) || a.scan_default !== b.scan_default,
+    changed: scanModelsDiffer,
     now: (v, catalogue) => (v.scan_models.length > 0 ? namesOf(v.scan_models, catalogue, v.scan_default) : "platform defaults"),
   },
   ...(
@@ -509,6 +509,11 @@ export function changesText(saved: AiDraft, draft: AiDraft, catalogue: OperatorM
 
 const same = (a: string[], b: string[]) => [...a].sort().join("\n") === [...b].sort().join("\n");
 
+/** Do two sets of values scan with different models, or a different default? */
+export function scanModelsDiffer(a: AiValues, b: AiValues): boolean {
+  return !same(a.scan_models, b.scan_models) || a.scan_default !== b.scan_default;
+}
+
 export const KEEP_OWN = "Organisations with their own settings keep them.";
 
 /** Before a platform defaults save (C12), as a short list (Tushar, 16 Oct 2026): "This save
@@ -567,6 +572,12 @@ export const OTHER_SETTINGS = "Your last check was at different settings.";
 export const CHECK_RUNNING = "A check is already running for this organisation.";
 export const TOO_MANY_CHECKS = "Too many checks in the last hour. Try again later.";
 export const NO_PAGES = "This organisation has no scanned pages to check yet.";
+// The #463 review (council, 31 Oct 2026).
+export const COST_SAVED_MODELS = "This cost is for the saved models. Save to see the new one.";
+export const LIMIT_NOT_MEASURED = "The limit's effect on cost isn't measured yet.";
+export const CHECK_DIDNT_FINISH = "The last check didn't finish. Check again.";
+export const TOO_FEW_PAGES = "Too few pages for a sure answer.";
+const SURE_PAGES = 10; // fewer compared pages than this give no sure answer
 
 /** What the cost endpoint has said for one set of scan settings: null while asking. */
 export type CostReply = ScanCost | "failed" | null;
@@ -577,9 +588,11 @@ export const costAsk = (customerId: string | null, values: ScanAsk): ScanCostAsk
   ...scanSettings(values),
 });
 
-/** The settings a cost or an accuracy check is asked for: the four scan settings and the
- * most output tokens a page. */
-export type ScanAsk = Pick<AiValues, ScanSetting | "page_max_output_tokens">;
+// The settings a cost or an accuracy check is asked for: the four scan settings, the most
+// output tokens a page and Cost saving. The scan models are never asked: the cost is the
+// saved models'.
+const SCAN_ASK = ["scan_thinking", "scan_resolution", "careful_thinking", "careful_resolution", "page_max_output_tokens", "dynamic"] as const;
+export type ScanAsk = Pick<AiValues, (typeof SCAN_ASK)[number]>;
 
 /** Just those settings (an accuracy check's body, with its pages and code). */
 export const scanSettings = (values: ScanAsk): ScanAsk => ({
@@ -588,27 +601,32 @@ export const scanSettings = (values: ScanAsk): ScanAsk => ({
   careful_thinking: values.careful_thinking,
   careful_resolution: values.careful_resolution,
   page_max_output_tokens: values.page_max_output_tokens,
+  dynamic: values.dynamic,
 });
 
 /** Do two sets of scan settings ask the same cost? */
-export const sameSettings = (a: ScanAsk, b: ScanAsk) =>
-  a.scan_thinking === b.scan_thinking &&
-  a.scan_resolution === b.scan_resolution &&
-  a.careful_thinking === b.careful_thinking &&
-  a.careful_resolution === b.careful_resolution &&
-  a.page_max_output_tokens === b.page_max_output_tokens;
+export const sameSettings = (a: ScanAsk, b: ScanAsk) => SCAN_ASK.every((key) => a[key] === b[key]);
+
+/** Does the draft differ from what is saved only in its most output tokens a page? The cost
+ * is measured per settings, not per limit, so that change is not priced. */
+export const onlyLimitDiffers = (saved: ScanAsk, draft: ScanAsk) =>
+  saved.page_max_output_tokens !== draft.page_max_output_tokens &&
+  sameSettings(saved, { ...draft, page_max_output_tokens: saved.page_max_output_tokens });
 
 /**
  * Ask the cost once the draft has rested COST_DELAY_MS, then show the reply, or "failed"
- * once (no retry: the next change asks again). The returned cancel, called when the draft
- * changes again, also drops the reply of an ask already out, so the last reply wins.
+ * once (no retry: the next change asks again). It shows null ("Working out the cost…") at
+ * once, so an older figure never stands for these settings. The returned cancel, called
+ * when the draft changes again, also drops the reply of an ask already out, so the last
+ * reply wins.
  */
 export function askScanCost(
   ask: ScanCostAsk,
   fetch: (ask: ScanCostAsk) => Promise<ScanCost>,
-  show: (reply: ScanCost | "failed") => void,
+  show: (reply: CostReply) => void,
 ): () => void {
   let current = true;
+  show(null);
   const timer = setTimeout(() => {
     fetch(ask).then(
       (reply) => current && show(reply),
@@ -646,7 +664,7 @@ export function costWords(reply: CostReply): CostWords {
     `First read: ${perPage.format(first.usd_per_page)} a page, measured on ${countText(first.pages, "page", "pages")} in the last ${days} days.`,
   ];
   const leftOut = "so the cost above leaves them out.";
-  if (again === null) lines.push("Cost saving is off, so no page is read again.");
+  if (again === null) lines.push("Cost saving is off, so pages are read again only when someone asks.");
   else if (again.share === null)
     lines.push(
       again.usd_per_page === null
@@ -684,10 +702,27 @@ export function tokensTooLow(reply: ScanCost, draftLimit: number | null): boolea
   return p99 !== null && (draftLimit ?? reply.tokens.limit) < p99;
 }
 
-/** While the draft differs from what is saved and both are measured: "Now ₹0.31 → ₹0.18 a
- * page" and "42% cheaper", "35% dearer" or "about the same", in words (never colour alone). */
+export const TOKENS_UNDER_AVERAGE =
+  "This is below what a page needs on average. Many pages will be cut off and read again in two halves, which costs more and is slower.";
+
+/** While what 1 in 100 pages needs is not known: is the draft's limit (its own, else the
+ * priced one) below what a page needs on average? */
+export function tokensUnderAverage(reply: ScanCost, draftLimit: number | null): boolean {
+  const { output_p99: p99, output_per_page: average, limit } = reply.tokens;
+  return p99 === null && average !== null && (draftLimit ?? limit) < average;
+}
+
+/** Does the cost leave out the pages read again (Cost saving on, but their cost or share
+ * not measured)? */
+const reReadLeftOut = (reply: ScanCost) =>
+  reply.re_read !== null && (reply.re_read.usd_per_page === null || reply.re_read.share === null);
+
+/** While the draft differs from what is saved and both are measured in full: "Now ₹0.31 →
+ * ₹0.18 a page" and "42% cheaper", "35% dearer" or "about the same", in words (never colour
+ * alone). None when either leaves the pages read again out: the two would not compare. */
 export function costChange(saved: CostReply, draft: CostReply): { from: string; to: string; verdict: string } | null {
   if (saved === null || saved === "failed" || draft === null || draft === "failed") return null;
+  if (reReadLeftOut(saved) || reReadLeftOut(draft)) return null;
   const [before, after] = [saved.usd_per_page, draft.usd_per_page];
   if (before === null || after === null || before <= 0) return null;
   const change = Math.round((Math.abs(after - before) / before) * 100);
@@ -703,6 +738,21 @@ export function cleanText(reply: ScanCost): string {
   return `Pages read cleanly: ${percent(share)} at these settings${atMax} (last ${reply.days} days)`;
 }
 
+const isLevel = (level: string): level is ScanLevel => Object.hasOwn(LEVEL_WORDS, level);
+
+/**
+ * When the first read is not at the level asked, since the model doesn't take it: "Reads at
+ * Low: this model doesn't take Minimal." Cost saving (re_read set) reads first at Low, or
+ * Minimal when that is asked, so that is what it is held to. Null when it reads as asked, or
+ * for a model with no levels (its one mode).
+ */
+export function levelNote(reply: ScanCost, asked: string): string | null {
+  const read = reply.first_read.thinking;
+  const expected = reply.re_read !== null && asked !== "minimal" ? "low" : asked;
+  if (read === expected || !isLevel(read) || !isLevel(expected)) return null;
+  return `Reads at ${LEVEL_WORDS[read]}: this model doesn't take ${LEVEL_WORDS[expected]}.`;
+}
+
 const checkedOn = (check: AccuracyCheck) => dayMonth.format(new Date(check.finished_at ?? check.started_at));
 
 /** A finished check's result, numbers first, since a wrong amount matters more than a wrong
@@ -712,7 +762,9 @@ const checkedOn = (check: AccuracyCheck) => dayMonth.format(new Date(check.finis
 export function checkResult(check: AccuracyCheck): { figure: string; detail: string; saved: string } | null {
   if (check.status !== "done" || check.word_match === null) return null;
   const day = checkedOn(check);
-  const checked = `Checked on ${countText(check.pages_checked, "page", "pages")}, ${day}.`;
+  const notCompared = check.pages_failed > 0 ? ` ${countText(check.pages_failed, "page", "pages")} couldn't be compared.` : "";
+  const tooFew = check.pages_checked < SURE_PAGES ? ` ${TOO_FEW_PAGES}` : "";
+  const checked = `Checked on ${countText(check.pages_checked, "page", "pages")}, ${day}.${notCompared}${tooFew}`;
   const words = percent(check.word_match);
   if (check.numbers_match === null)
     return {
@@ -728,10 +780,12 @@ export function checkResult(check: AccuracyCheck): { figure: string; detail: str
   };
 }
 
-/** The Accuracy part of an organisation's panel, after the free signal: a running check, the
- * result at these settings, or that the last check was at other settings. */
+/** The Accuracy part of an organisation's panel, after the free signal: a running check, a
+ * last check that didn't finish, the result at these settings, or that the last check was
+ * at other settings. */
 export function accuracyWords(atThese: AccuracyCheck | null, latest: AccuracyCheck | null): { figure: string | null; line: string | null } {
   if (latest?.status === "running") return { figure: null, line: `Checking ${countText(latest.max_pages, "page", "pages")}…` };
+  if (latest?.status === "failed") return { figure: null, line: CHECK_DIDNT_FINISH };
   const result = atThese ? checkResult(atThese) : null;
   if (result) return { figure: result.figure, line: result.detail };
   if (atThese) return { figure: null, line: "The last check at these settings did not finish. Check again." };
@@ -765,13 +819,15 @@ export const checkRunning = (check: AccuracyCheck | null) => check?.status === "
 
 /** The Save confirmation with the cost a page now and, for an organisation, the accuracy:
  * "Saved …. Scans now cost about ₹0.18 a page, and 99% of amounts, dates and numbers match
- * max settings (checked 31 Oct)." Without a reply (it failed) the message alone. */
+ * max settings (checked 31 Oct)." Without a reply (it failed) the message alone. A cost
+ * that leaves the pages read again out says so. */
 export function withCost(message: string, reply: ScanCost | null, checks: boolean): string {
   if (reply === null) return message;
+  const leftOut = reReadLeftOut(reply) ? " (pages read again not counted)" : "";
   const cost =
     reply.usd_per_page === null
       ? "The cost a page is not measured yet at these settings"
-      : `Scans now cost about ${rupeeText(reply.usd_per_page)} a page`;
+      : `Scans now cost about ${rupeeText(reply.usd_per_page)} a page${leftOut}`;
   if (!checks) return `${message} ${cost}.`;
   const result = reply.accuracy ? checkResult(reply.accuracy) : null;
   if (!result) return `${message} ${cost}. Accuracy against max settings isn't checked yet.`;
