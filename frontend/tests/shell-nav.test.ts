@@ -149,8 +149,8 @@ describe("where to sign in", () => {
 
   it("loads a fresh page when a session existed, and keeps a quick redirect on a first visit", () => {
     const session = readFileSync(join(__dirname, "..", "lib", "session.tsx"), "utf8");
-    // Changed on purpose (issue 468): the path and its query, from the address bar.
-    expect(session).toContain("leavePage(endedPath(window.location.pathname + window.location.search))");
+    // Changed on purpose (#468 review, SEC1): the path only, never its query.
+    expect(session).toContain("leavePage(endedPath(window.location.pathname))");
     expect(session).toMatch(/if \(event\.persisted\) window\.location\.reload\(\)/);
     // Put away for the back button: blank, so it never shows before the reload.
     expect(session).toMatch(/if \(event\.persisted\) document\.documentElement\.style\.visibility = "hidden"/);

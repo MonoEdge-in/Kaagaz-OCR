@@ -85,13 +85,14 @@ describe("where a sign-in goes (pathAfterSignIn)", () => {
 });
 
 describe("the sign-in page after a session ends (endedPath)", () => {
-  it("carries the screen's path and query in ?next=, encoded, with the note", () => {
+  // Changed on purpose (#468 review, SEC1): the path only, never its query (a person's words).
+  it("carries the screen's path in ?next=, encoded, with the note", () => {
     expect(endedPath("/documents/d-1")).toBe("/login?next=%2Fdocuments%2Fd-1&ended=1");
-    expect(endedPath("/chat?c=abc&x=1")).toBe("/login?next=%2Fchat%3Fc%3Dabc%26x%3D1&ended=1");
+    expect(endedPath("/chat?c=abc&x=1")).toBe("/login?next=%2Fchat&ended=1");
     expect(endedPath("/admin")).toBe("/login?next=%2Fadmin&ended=1");
-    // Read back the way the sign-in page reads it: the same place.
+    // Read back the way the sign-in page reads it: the same screen.
     const next = new URLSearchParams(endedPath("/search?q=a%26b&tab=names").split("?")[1]).get("next");
-    expect(pathAfterSignIn({ next: next ?? undefined })).toBe("/search?q=a%26b&tab=names");
+    expect(pathAfterSignIn({ next: next ?? undefined })).toBe("/search");
   });
 
   it("falls back to the plain sign-in when the place is not a safe path", () => {
@@ -99,9 +100,10 @@ describe("the sign-in page after a session ends (endedPath)", () => {
     expect(endedPath("/x:y")).toBe("/login?ended=1");
   });
 
-  it("is given the address bar's path and query, and drafts are written just before leaving", () => {
+  // Changed on purpose (#468 review, SEC1): the address bar's path only.
+  it("is given the address bar's path, and drafts are written just before leaving", () => {
     const session = read("lib/session.tsx");
-    expect(session).toMatch(/flushDrafts\(\);\s*leavePage\(endedPath\(window\.location\.pathname \+ window\.location\.search\)\)/);
+    expect(session).toMatch(/flushDrafts\(\);\s*leavePage\(endedPath\(window\.location\.pathname\)\)/);
   });
 });
 

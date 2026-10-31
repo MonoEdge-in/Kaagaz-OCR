@@ -20,11 +20,19 @@
 import { usePathname, useRouter } from "next/navigation";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { appGate, endedPath, pageAfterSessionChange, signInPath, twoStepPath } from "@/components/shell/gate";
+import {
+  appGate,
+  endedPath,
+  pageAfterSessionChange,
+  SEARCH_DRAFT,
+  searchToKeep,
+  signInPath,
+  twoStepPath,
+} from "@/components/shell/gate";
 import { SetPasswordScreen } from "@/components/shell/SetPasswordScreen";
 import styles from "@/components/shell/Shell.module.css";
 import { ApiError, currentSession, logout, onSessionEnded } from "./api";
-import { clearDrafts, flushDrafts, keepDraftsOf } from "./drafts";
+import { clearDrafts, flushDrafts, keepDraftsOf, saveDraft } from "./drafts";
 import { announceSession, leavePage, watchSession } from "./sessionChannel";
 import type { Me } from "./types";
 
@@ -77,20 +85,27 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   // Once a session existed, the sign-in page is a full page load, so nothing
   // of that person (cached PDFs, earlier screens) stays in this tab's memory.
   // A first visit with no session has nothing to clear: a quick move is fine.
-  // Issue 468: the sign-in comes back to this screen (endedPath's ?next=), and unsent work
-  // waiting to be kept is written first (lib/drafts.ts), for the same person to get back.
+  // Issue 468: the sign-in comes back to this screen's path (endedPath's ?next=), and unsent work
+  // waiting to be kept is written first (lib/drafts.ts), for the same person to get back. A
+  // search's words go in that person's draft, not the address (SearchScreen restores them).
+  const signedInId = state.kind === "signed_in" ? state.me.user.id : null;
   const hadSession = useRef(false);
+  const lastUserId = useRef<string | null>(null);
   useEffect(() => {
-    if (state.kind === "signed_in") hadSession.current = true;
+    if (signedInId !== null) {
+      hadSession.current = true;
+      lastUserId.current = signedInId;
+    }
     if (state.kind !== "signed_out") return;
     if (hadSession.current) {
+      const kept = searchToKeep(window.location.pathname, window.location.search);
+      if (kept !== null && lastUserId.current !== null) saveDraft(lastUserId.current, SEARCH_DRAFT, kept);
       flushDrafts();
-      leavePage(endedPath(window.location.pathname + window.location.search));
+      leavePage(endedPath(window.location.pathname));
     } else router.replace(signInPath(pathname));
-  }, [state.kind, router, pathname]);
+  }, [state.kind, signedInId, router, pathname]);
 
   // Drafts kept in this tab by anyone else are dropped as soon as who is signed in is known.
-  const signedInId = state.kind === "signed_in" ? state.me.user.id : null;
   useEffect(() => {
     if (signedInId !== null) keepDraftsOf(signedInId);
   }, [signedInId]);

@@ -7,6 +7,8 @@
 // address (?q=…&in=names), so a search can be shared, reloaded and gone back to. The
 // filters, sorting and "show more" stay on the documents screen (NB-26, NB-27).
 // Issue 468: a search still waiting after about ten seconds says so, with Try again (StillLoading).
+// A session that ended here kept the search's words as this person's draft, not in the sign-in's
+// ?next= (lib/session.tsx, SEC1): back on /search with no words, the same person gets them back.
 
 import Form from "next/form";
 import Link from "next/link";
@@ -16,6 +18,7 @@ import { AskAboutLink, InsideSearchResults } from "@/components/documents/Inside
 import { MAX_SEARCH_LENGTH } from "@/components/documents/insideSearch";
 import type { SearchMode } from "@/components/documents/insideSearch";
 import { LabelChip } from "@/components/files/LabelChip";
+import { SEARCH_DRAFT } from "@/components/shell/gate";
 import { StillLoading } from "@/components/shell/StillLoading";
 import { Button } from "@/components/ui/Button/Button";
 import { EmptyState } from "@/components/ui/EmptyState/EmptyState";
@@ -23,7 +26,9 @@ import { Icon } from "@/components/ui/Icon/Icon";
 import { RadioPill } from "@/components/ui/Segmented/Segmented";
 import { ApiError, listDocuments, searchDocuments } from "@/lib/api";
 import { useBackFrom, withFrom } from "@/lib/backLink";
+import { clearDraft, readDraft } from "@/lib/drafts";
 import { docTypeLabel, statusChip } from "@/lib/format";
+import { useSession } from "@/lib/session";
 import type { DocumentList, DocumentSearch } from "@/lib/types";
 import styles from "./Search.module.css";
 
@@ -61,6 +66,7 @@ type Result =
 
 export function SearchScreen({ q, mode }: { q: string; mode: SearchMode }) {
   const router = useRouter();
+  const userId = useSession().me.user.id;
   const [draft, setDraft] = useState(q);
   const [result, setResult] = useState<Result | null>(null);
   const [attempt, setAttempt] = useState(0);
@@ -72,6 +78,13 @@ export function SearchScreen({ q, mode }: { q: string; mode: SearchMode }) {
     setShownQ(q);
     setDraft(q);
   }
+
+  // The search a session's end kept for this person, read once and forgotten.
+  useEffect(() => {
+    const kept = readDraft(userId, SEARCH_DRAFT)?.q;
+    clearDraft(userId, SEARCH_DRAFT);
+    if (q === "" && typeof kept === "string" && kept.trim()) router.replace(searchHref(kept, mode));
+  }, [userId, q, mode, router]);
 
   useEffect(() => {
     if (q === "") return;

@@ -42,12 +42,26 @@ function withNote(path: string, note: string): string {
 }
 
 /**
- * The sign-in page after a session ended while a screen was open (it says so). `place` is the
- * screen's path and query; signing in comes back to it (issue 468), when it is a safe path.
+ * The sign-in page after a session ended while a screen was open (it says so). Signing in comes
+ * back to the screen's path (issue 468), when it is a safe one. The path only, never its query:
+ * the address is left in the tab, and a query holds the person's own words (a search, a
+ * question), which the next person to sign in on this tab must not get. A search's words are
+ * kept as that person's draft instead (searchToKeep).
  */
 export function endedPath(place: string): string {
-  if (safeNextPath(place) === null) return withNote(signInPath(place.split("?", 1)[0] ?? ""), "ended");
-  return `/login?next=${encodeURIComponent(place)}&ended=1`;
+  const path = place.split(/[?#]/, 1)[0] ?? "";
+  if (safeNextPath(path) === null) return withNote(signInPath(path), "ended");
+  return `/login?next=${encodeURIComponent(path)}&ended=1`;
+}
+
+/** The draft screen that keeps a search's words when a session ends on /search (SEC1, #468). */
+export const SEARCH_DRAFT = "search";
+
+/** The words of the search open at a session's end, for that person's draft, or null. */
+export function searchToKeep(pathname: string, search: string): { q: string } | null {
+  if (pathname !== "/search") return null;
+  const q = (new URLSearchParams(search).get("q") ?? "").trim();
+  return q ? { q } : null;
 }
 
 /** The sign-in page after signing out (it says so). */
