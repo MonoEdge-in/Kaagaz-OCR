@@ -14,8 +14,10 @@
 import { useEffect, useId, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import libraryStyles from "@/components/documents/Library.module.css";
+import { LoadFailed } from "@/components/operator/LoadFailed";
 import reviewStyles from "@/components/review/Review.module.css";
 import { ApiError, FEATURE_OFF, getAiSettings, putMyAiSettings, putOrgAiSettings } from "@/lib/api";
+import { errorWords } from "@/lib/errorWords";
 import {
   AI_LEVELS,
   CHOICES,
@@ -59,6 +61,7 @@ export function AiSettingsPanel({ scope }: { scope: AiScope }) {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [busy, setBusy] = useState(false);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -70,12 +73,12 @@ export function AiSettingsPanel({ scope }: { scope: AiScope }) {
       },
       (caught: unknown) =>
         !cancelled &&
-        setLoadError(caught instanceof ApiError ? caught.message : "Could not load the AI settings. Check your connection, then try again."),
+        setLoadError(caught instanceof ApiError ? errorWords(caught) : "Check your internet connection, then try again."),
     );
     return () => {
       cancelled = true;
     };
-  }, [scope]);
+  }, [scope, attempt]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -102,9 +105,14 @@ export function AiSettingsPanel({ scope }: { scope: AiScope }) {
         AI settings
       </h2>
       {loadError && (
-        <p className="error-text" role="alert">
-          {loadError}
-        </p>
+        <LoadFailed
+          what="the AI settings"
+          message={loadError}
+          onRetry={() => {
+            setLoadError(null);
+            setAttempt((n) => n + 1);
+          }}
+        />
       )}
       {!settings && !loadError && (
         <>

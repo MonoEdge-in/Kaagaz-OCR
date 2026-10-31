@@ -12,8 +12,10 @@
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import libraryStyles from "@/components/documents/Library.module.css";
+import { LoadFailed } from "@/components/operator/LoadFailed";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { ApiError, getSettings, setAutoApprove, updateSettings } from "@/lib/api";
+import { errorWords } from "@/lib/errorWords";
 import type { CustomerSettings } from "@/lib/types";
 import {
   AUTO_APPROVE_LABEL,
@@ -37,6 +39,7 @@ export function SettingsPanel({ providers }: { providers: readonly string[] }) {
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -51,8 +54,8 @@ export function SettingsPanel({ providers }: { providers: readonly string[] }) {
         if (!cancelled) {
           setLoadError(
             caught instanceof ApiError
-              ? caught.message
-              : "Could not load the settings. Check your connection, then try again.",
+              ? errorWords(caught)
+              : "Check your internet connection, then try again.",
           );
         }
       },
@@ -60,7 +63,7 @@ export function SettingsPanel({ providers }: { providers: readonly string[] }) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [attempt]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -95,9 +98,14 @@ export function SettingsPanel({ providers }: { providers: readonly string[] }) {
         Settings
       </h2>
       {loadError && (
-        <p className="error-text" role="alert">
-          {loadError}
-        </p>
+        <LoadFailed
+          what="the settings"
+          message={loadError}
+          onRetry={() => {
+            setLoadError(null);
+            setAttempt((n) => n + 1);
+          }}
+        />
       )}
       {!settings && !loadError && (
         <>

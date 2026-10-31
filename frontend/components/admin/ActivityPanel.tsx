@@ -25,6 +25,7 @@ import { WrapName } from "@/components/documents/WrapName";
 import { Icon } from "@/components/ui/Icon";
 import { IconButton } from "@/components/ui/IconButton";
 import { ApiError, auditExportUrl, listAudit, listDocuments, listFolders, listPeople } from "@/lib/api";
+import { errorWords } from "@/lib/errorWords";
 import { formatDateTime } from "@/lib/format";
 import type { ActivityEntry, DocumentSummary, Folder, Person } from "@/lib/types";
 import { AUDIT_PAGE_SIZE, describeDetails } from "./logic";
@@ -436,14 +437,22 @@ function FileFinder({ onPick }: { onPick(document: { id: string; name: string })
   const id = useId();
   const [text, setText] = useState("");
   const [found, setFound] = useState<DocumentSummary[] | null>(null);
-  function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  const [findFailed, setFindFailed] = useState<string | null>(null); // #468: a failure is not "no file"
+  function find() {
     const q = text.trim();
     if (q === "") return;
+    setFindFailed(null);
     listDocuments({ q, limit: 8 }).then(
       (list) => setFound(list.items),
-      () => setFound([]),
+      (caught: unknown) => {
+        setFound(null);
+        setFindFailed(errorText(caught));
+      },
     );
+  }
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    find();
   }
   return (
     <form onSubmit={submit}>
@@ -465,6 +474,17 @@ function FileFinder({ onPick }: { onPick(document: { id: string; name: string })
             Find
           </button>
         </div>
+        {findFailed && (
+          <div role="alert">
+            <p className="error-text">
+              Could not search the file names. {findFailed}
+            </p>
+            <button type="button" className="btn" onClick={find}>
+              <Icon name="refresh" />
+              Try again
+            </button>
+          </div>
+        )}
         {found !== null && found.length === 0 && <p className="muted">{ACTIVITY_TEXT.noFiles}</p>}
         {found !== null && found.length > 0 && (
           <ul className={library.choices}>
@@ -487,5 +507,5 @@ function FileFinder({ onPick }: { onPick(document: { id: string; name: string })
 }
 
 function errorText(caught: unknown): string {
-  return caught instanceof ApiError ? caught.message : "Check your internet connection, then try again.";
+  return caught instanceof ApiError ? errorWords(caught) : "Check your internet connection, then try again.";
 }

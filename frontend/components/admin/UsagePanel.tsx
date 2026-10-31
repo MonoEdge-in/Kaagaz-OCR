@@ -16,6 +16,7 @@ import type { ReactNode } from "react";
 import table from "@/components/documents/Table.module.css";
 import { Icon } from "@/components/ui/Icon";
 import { ApiError, getAdminUsage, listUsers } from "@/lib/api";
+import { errorWords } from "@/lib/errorWords";
 import { formatDate, formatDateTime, formatNumber } from "@/lib/format";
 import type { AdminUser, UsageReport, UsageTokens } from "@/lib/types";
 import {
@@ -378,7 +379,7 @@ export function UsagePanel() {
       (caught: unknown) => {
         if (!cancelled) {
           const message =
-            caught instanceof ApiError ? caught.message : "Check your internet connection, then try again.";
+            caught instanceof ApiError ? errorWords(caught) : "Check your internet connection, then try again.";
           setResult({ key, report: null, error: message, at: Date.now() });
         }
       },

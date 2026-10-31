@@ -46,6 +46,7 @@ import {
   unlockUser,
   updateUser,
 } from "@/lib/api";
+import { errorWords } from "@/lib/errorWords";
 import { formatDate } from "@/lib/format";
 import type { AddedUser, AdminUser, PendingConnection, Role } from "@/lib/types";
 import table from "@/components/documents/Table.module.css";
@@ -121,7 +122,7 @@ export function UsersPanel({
             attempt,
             message:
               caught instanceof ApiError
-                ? caught.message
+                ? errorWords(caught)
                 : "Check your internet connection, then try again.",
           });
         }
@@ -321,7 +322,7 @@ function UserRow({
         problem: true,
         text:
           caught instanceof ApiError
-            ? caught.message
+            ? errorWords(caught)
             : "Could not save the change. Check your connection, then try again.",
       });
     } finally {
@@ -511,7 +512,7 @@ function ConnectionsToApprove({ onApproved, onNotice }: { onApproved(): void; on
       }
       onNotice({
         problem: true,
-        text: caught instanceof ApiError ? caught.message : "Could not save the change. Check your connection, then try again.",
+        text: caught instanceof ApiError ? errorWords(caught) : "Could not save the change. Check your connection, then try again.",
       });
     }
   }
@@ -668,7 +669,7 @@ function AddUserPanel({ onClose, onAdded }: { onClose: () => void; onAdded: (use
     } catch (caught) {
       const message =
         caught instanceof ApiError
-          ? caught.message
+          ? errorWords(caught)
           : "Could not add the user. Check your connection, then try again.";
       if (caught instanceof ApiError && caught.code === "conflict") {
         setErrors({ email: message });

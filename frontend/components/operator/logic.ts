@@ -6,6 +6,7 @@ import { codeError } from "@/app/login/twoStep";
 import { NETWORK_FAILURE, SIGN_IN_DOWN, TOO_MANY_ATTEMPTS, emailError, passwordError } from "@/app/login/signIn";
 import type { CloseWay } from "@/components/documents/ActionDialog";
 import { ApiError } from "@/lib/api";
+import { errorWords } from "@/lib/errorWords";
 import { formatDate, formatNumber, formatRelative } from "@/lib/format";
 import type { StatusTone } from "@/lib/format";
 import type { OrgAdmin, OrgStatus, Organisation } from "@/lib/types";
@@ -145,6 +146,7 @@ export function operatorErrorMessage(caught: unknown): string {
   if (!(caught instanceof ApiError)) return caught instanceof TypeError ? NETWORK_FAILURE : OPERATOR_DOWN;
   const known = Object.hasOwn(REFUSALS, caught.code) ? REFUSALS[caught.code] : undefined;
   if (known) return known;
+  if (caught.status === 403) return errorWords(caught, "operator"); // #468: never "on our side"
   if (caught.status === 409) return caught.message && caught.message !== SERVER_FALLBACK ? caught.message : CONFLICT;
   if (caught.status === 404) return ORG_NOT_FOUND;
   if (caught.status === 400) return CHECK_INPUT;

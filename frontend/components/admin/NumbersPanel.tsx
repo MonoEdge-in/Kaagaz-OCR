@@ -12,6 +12,7 @@ import { useEffect, useState } from "react";
 import { Icon } from "@/components/ui/Icon";
 import { Tip } from "@/components/ui/Tip";
 import { ApiError, getStats } from "@/lib/api";
+import { errorWords } from "@/lib/errorWords";
 import type { Stats } from "@/lib/types";
 import { breakdowns, kpiTiles } from "./logic";
 import { MembersTable } from "./MembersTable";
@@ -36,7 +37,7 @@ export function NumbersPanel() {
             attempt,
             message:
               caught instanceof ApiError
-                ? caught.message
+                ? errorWords(caught)
                 : "Check your internet connection, then try again.",
           });
         }

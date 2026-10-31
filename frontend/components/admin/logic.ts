@@ -6,6 +6,7 @@ import { sessionScope } from "@/components/shell/gate";
 import { roleName } from "@/components/shell/nav";
 import { providersText } from "@/components/account/signInWays";
 import { ApiError } from "@/lib/api";
+import { errorWords } from "@/lib/errorWords";
 import { formatDateTime, formatNumber, formatUsd, PART_NOT_KNOWN, statusChip } from "@/lib/format";
 import type { StatusTone } from "@/lib/format";
 import type {
@@ -325,7 +326,7 @@ export function settingsChanged(
 export function settingsErrorText(caught: unknown): string {
   if (caught instanceof ApiError && caught.code === "not_granted") return AUTOFILE_NOT_AVAILABLE;
   return caught instanceof ApiError
-    ? caught.message
+    ? errorWords(caught)
     : "Could not save the settings. Check your connection, then try again.";
 }
 
@@ -667,7 +668,7 @@ export function lastRunText(lastRunAt: string | null): string {
  */
 export function retryErrorText(caught: unknown): string {
   return caught instanceof ApiError
-    ? caught.message
+    ? errorWords(caught)
     : "Could not reach the server. Check your connection, then try again.";
 }
 

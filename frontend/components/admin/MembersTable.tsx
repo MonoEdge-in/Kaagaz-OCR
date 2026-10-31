@@ -12,6 +12,7 @@ import table from "@/components/documents/Table.module.css";
 import { roleName } from "@/components/shell/nav";
 import { Icon } from "@/components/ui/Icon";
 import { ApiError, getMemberNumbers } from "@/lib/api";
+import { errorWords } from "@/lib/errorWords";
 import { formatDateTime, formatNumber } from "@/lib/format";
 import type { MemberPeriod, MembersReply } from "@/lib/types";
 import { MEMBER_COLUMNS, MEMBER_PERIODS, nextSort, sortMembers } from "./logic";
@@ -41,7 +42,7 @@ export function MembersTable() {
       (caught: unknown) =>
         done({
           kind: "error",
-          message: caught instanceof ApiError ? caught.message : "Check your internet connection, then try again.",
+          message: caught instanceof ApiError ? errorWords(caught) : "Check your internet connection, then try again.",
         }),
     );
     return () => {
