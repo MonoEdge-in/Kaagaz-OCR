@@ -103,8 +103,10 @@ describe("Settings: the unsaved upload limit and auto-filing", () => {
     autofile: { granted: true, on: false },
   };
 
+  // Changed on purpose (#468 review, CR1): only the fields that differ, each on its own.
   it("keeps only what differs from what is saved", () => {
     expect(settingsDraft(saved, "30", true)).toEqual({ uploadLimit: "30", autofile: true });
+    expect(settingsDraft(saved, "30", false)).toEqual({ uploadLimit: "30" });
     expect(settingsDraft(saved, "20", false)).toBeNull();
   });
 
@@ -143,10 +145,12 @@ describe("AI settings: the unsaved levels", () => {
     can_edit_organisation: true,
   };
 
+  // Changed on purpose (#468 review, CR1): given what is saved, an organisation's task keeps only its changed part.
   it("keeps the changed tasks only, as plain values", () => {
-    expect(aiChangesToKeep({ ask: { level: "high", locked: true } })).toEqual({ ask: { level: "high", locked: true } });
-    expect(aiChangesToKeep({ ask: null, ensemble: "low" })).toEqual({ ask: null, ensemble: "low" });
-    expect(aiChangesToKeep({})).toBeNull();
+    const before = { ask: { level: "low" as const, locked: false } };
+    expect(aiChangesToKeep(before, { ask: { level: "high", locked: true } })).toEqual({ ask: { level: "high", locked: true } });
+    expect(aiChangesToKeep({ ask: "low" }, { ask: null, ensemble: "low" })).toEqual({ ask: null, ensemble: "low" });
+    expect(aiChangesToKeep(before, {})).toBeNull();
   });
 
   it("an organisation's draft comes back only for tasks there, with a level allowed now", () => {
@@ -173,7 +177,7 @@ describe("AI settings: the unsaved levels", () => {
     expect(aiSettingsDraft("organisation")).not.toBe(aiSettingsDraft("member"));
     const panel = read("components/admin/AiSettingsPanel.tsx");
     expect(panel).toContain("readDraft(userId, aiSettingsDraft(scope))");
-    expect(panel).toMatch(/saveDraftSoon\(userId, aiSettingsDraft\(scope\), aiChangesToKeep\(/);
+    expect(panel).toMatch(/saveDraftSoon\(userId, aiSettingsDraft\(scope\), aiChangesToKeep\(draftOf\(scope, settings\), changes\)\)/);
     expect(panel).toContain("clearDraft(userId, aiSettingsDraft(scope))");
   });
 });
@@ -193,6 +197,8 @@ describe("switching admin tabs with unsaved changes asks first", () => {
     expect(view).toContain("tabChangeAllowed(unsaved, () => window.confirm(LEAVE_UNSAVED))");
     expect(view).toContain("<SettingsPanel providers={me.providers} onUnsaved={setUnsaved} />");
     expect(view).toContain('<AiSettingsPanel scope="organisation" onUnsaved={setUnsaved} />');
-    expect(view).toMatch(/clearDraft\(me\.user\.id, SETTINGS_DRAFT\);\s*clearDraft\(me\.user\.id, aiSettingsDraft\("organisation"\)\);/);
+    // Changed on purpose (#468 review, SF3): only the draft of the tab being left.
+    expect(view).toContain('if (active === "settings") clearDraft(me.user.id, SETTINGS_DRAFT);');
+    expect(view).toContain('if (active === "ai") clearDraft(me.user.id, aiSettingsDraft("organisation"));');
   });
 });

@@ -1,10 +1,13 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { aiChangesToKeep, orgDraftOver, settingsDraft, settingsFromDraft } from "@/components/admin/logic";
 import { ASK_DRAFT, askDraft } from "@/components/chat/logic";
 import { endedPath, pathAfterSignIn, SEARCH_DRAFT, searchToKeep } from "@/components/shell/gate";
 import { ApiError, GET_TIMEOUT_MS, TOO_SLOW, getDocument } from "@/lib/api";
+import { changedOnly, orgDraftOf } from "@/lib/aiSettings";
 import { clearDrafts, readDraft, saveDraft } from "@/lib/drafts";
+import type { AiSettings, AiTaskSetting, CustomerSettings, TaskLevel } from "@/lib/types";
 
 // The #468 council review's fixes. Each describe names its item.
 
@@ -152,5 +155,57 @@ describe("CR3: a GET is timed only until its answer starts, never while its body
     vi.stubGlobal("fetch", async () => new Response(JSON.stringify({ id: "d-1" }), { status: 200 }));
     await expect(getDocument("d-1")).resolves.toEqual({ id: "d-1" });
     expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe("CR1: a Settings draft keeps only what this admin changed, so another admin's change survives", () => {
+  it("A changes the upload limit only, B turns auto-filing on, and A's restore keeps B's auto-filing", () => {
+    const before: CustomerSettings = {
+      customer_name: "Acme",
+      max_upload_mb: 20,
+      platform_max_upload_mb: 50,
+      autofile: { granted: true, on: false },
+    };
+    const kept = settingsDraft(before, "30", false);
+    expect(kept).toEqual({ uploadLimit: "30" });
+    const afterB = { ...before, autofile: { granted: true, on: true } };
+    expect(settingsFromDraft(kept, afterB)).toEqual({ text: "30", autofileOn: true });
+    // Only auto-filing changed: the upload limit is not kept, so B's new limit would stand.
+    expect(settingsDraft(before, "20", true)).toEqual({ autofile: true });
+    expect(settingsFromDraft({ autofile: true }, { ...before, max_upload_mb: 40 })).toEqual({ text: "40", autofileOn: true });
+  });
+
+  it("the AI settings draft too: A raises a task's level, B locks it, and A's restore keeps B's lock", () => {
+    const task = (more: Partial<AiTaskSetting>): AiTaskSetting => ({
+      task: "ask",
+      effective: "low",
+      mine: null,
+      organisation: "low",
+      locked: false,
+      allowed: ["low", "high", "max"],
+      available: true,
+      ...more,
+    });
+    const before: AiSettings = { tasks: [task({})], can_edit_organisation: true };
+    const saved = orgDraftOf(before);
+    const changes = changedOnly<{ level: TaskLevel; locked: boolean }>(saved, { ask: { level: "high", locked: false } });
+    const kept = aiChangesToKeep(saved, changes);
+    expect(kept).toEqual({ ask: { level: "high" } });
+    const afterB: AiSettings = { tasks: [task({ locked: true })], can_edit_organisation: true };
+    expect(orgDraftOver(orgDraftOf(afterB), kept, afterB)).toEqual({ ask: { level: "high", locked: true } });
+    // And the other way round: A's lock only, B's new level stays.
+    const lockOnly = aiChangesToKeep(saved, changedOnly<{ level: TaskLevel; locked: boolean }>(saved, { ask: { level: "low", locked: true } }));
+    expect(lockOnly).toEqual({ ask: { locked: true } });
+    const raisedByB: AiSettings = { tasks: [task({ organisation: "max", effective: "max" })], can_edit_organisation: true };
+    expect(orgDraftOver(orgDraftOf(raisedByB), lockOnly, raisedByB)).toEqual({ ask: { level: "max", locked: true } });
+  });
+});
+
+describe("SF3: leaving one admin tab drops only that tab's draft (structural)", () => {
+  it("clears the Settings draft leaving Settings, and the AI settings draft leaving AI settings", () => {
+    const view = read("components/admin/AdminView.tsx");
+    expect(view).toContain('if (active === "settings") clearDraft(me.user.id, SETTINGS_DRAFT);');
+    expect(view).toContain('if (active === "ai") clearDraft(me.user.id, aiSettingsDraft("organisation"));');
+    expect(view).not.toMatch(/clearDraft\(me\.user\.id, SETTINGS_DRAFT\);\s*clearDraft\(me\.user\.id, aiSettingsDraft/);
   });
 });

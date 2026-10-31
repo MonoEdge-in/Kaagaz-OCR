@@ -50,8 +50,9 @@ export function AdminView({ twoStep }: { twoStep: ReactNode }) {
   function openTab(next: TabId) {
     if (next === active || !tabChangeAllowed(unsaved, () => window.confirm(LEAVE_UNSAVED))) return;
     if (unsaved) {
-      clearDraft(me.user.id, SETTINGS_DRAFT);
-      clearDraft(me.user.id, aiSettingsDraft("organisation"));
+      // Only the draft of the tab being left: the other tab's unsaved changes stay kept.
+      if (active === "settings") clearDraft(me.user.id, SETTINGS_DRAFT);
+      if (active === "ai") clearDraft(me.user.id, aiSettingsDraft("organisation"));
     }
     setUnsaved(false);
     setActive(next);

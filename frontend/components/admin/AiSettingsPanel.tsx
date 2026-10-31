@@ -100,9 +100,9 @@ export function AiSettingsPanel({ scope, onUnsaved }: { scope: AiScope; onUnsave
   const changes = useMemo(() => (settings === null ? null : changesOf(scope, settings, draft)), [scope, settings, draft]);
   const unsaved = changes !== null && Object.keys(changes).length > 0;
   useEffect(() => {
-    if (changes === null) return; // not loaded yet: a kept draft is still to be read
-    saveDraftSoon(userId, aiSettingsDraft(scope), aiChangesToKeep(changes));
-  }, [userId, scope, changes]);
+    if (settings === null || changes === null) return; // not loaded yet: a kept draft is still to be read
+    saveDraftSoon(userId, aiSettingsDraft(scope), aiChangesToKeep(draftOf(scope, settings), changes));
+  }, [userId, scope, settings, changes]);
   useEffect(() => onUnsaved?.(unsaved), [unsaved, onUnsaved]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {

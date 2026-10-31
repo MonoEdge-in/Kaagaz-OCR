@@ -15,6 +15,7 @@ import type {
   AddedUser,
   AdminUser,
   AiSettings,
+  AiTask,
   AuditEntry,
   CustomerSettings,
   DocumentStatus,
@@ -346,9 +347,13 @@ export function newUserFromDraft(draft: Draft | null): NewUserInput {
   return { email: text(draft?.email), display_name: text(draft?.display_name), role, password: "" };
 }
 
-/** Settings' draft: only what differs from what is saved; null when nothing does. */
+/** Settings' draft: only the fields that differ from what is saved, so restoring it never undoes
+ * another admin's change to the other one (#468 review, CR1); null when nothing does. */
 export function settingsDraft(saved: CustomerSettings, text: string, autofileOn: boolean): Draft | null {
-  return settingsChanged(saved, text, autofileOn) ? { uploadLimit: text, autofile: autofileOn } : null;
+  const draft: Draft = {};
+  if (text.trim() !== (saved.max_upload_mb === null ? "" : String(saved.max_upload_mb))) draft.uploadLimit = text;
+  if (saved.autofile.granted && autofileOn !== saved.autofile.on) draft.autofile = autofileOn;
+  return Object.keys(draft).length > 0 ? draft : null;
 }
 
 /** The Settings form from what is saved, with a kept draft over it (auto-filing only while allowed). */
@@ -360,24 +365,35 @@ export function settingsFromDraft(draft: Draft | null, saved: CustomerSettings):
   };
 }
 
-/** AI settings' changed tasks as plain values to keep; null when none changed. */
-export function aiChangesToKeep(changes: OrgDraft | MineDraft): Draft | null {
+/** AI settings' changed tasks as plain values to keep; of an organisation's task, only the part
+ * changed from `saved` (its level, its lock), as Settings does (CR1); null when none changed. */
+export function aiChangesToKeep(saved: OrgDraft | MineDraft, changes: OrgDraft | MineDraft): Draft | null {
   const kept: Draft = {};
   for (const [task, value] of Object.entries(changes)) {
     if (value === undefined) continue;
-    kept[task] = value === null || typeof value === "string" ? value : { level: value.level, locked: value.locked };
+    if (value === null || typeof value === "string") {
+      kept[task] = value;
+      continue;
+    }
+    const before = (saved as OrgDraft)[task as AiTask];
+    const part: Draft = {};
+    if (value.level !== before?.level) part.level = value.level;
+    if (value.locked !== before?.locked) part.locked = value.locked;
+    kept[task] = part;
   }
   return Object.keys(kept).length > 0 ? kept : null;
 }
 
-/** An organisation's kept changes over what is saved: tasks the reply has, with a level allowed now. */
+/** An organisation's kept changes over what is saved: tasks the reply has, with a level allowed
+ * now; only the parts kept, the rest as saved now. */
 export function orgDraftOver(saved: OrgDraft, kept: Draft | null, settings: AiSettings): OrgDraft {
   const draft = { ...saved };
   for (const task of settings.tasks) {
     const value = kept?.[task.task];
-    if (typeof value !== "object" || value === null || Array.isArray(value)) continue;
-    const level = task.allowed.find((each) => each === value.level);
-    if (level && typeof value.locked === "boolean") draft[task.task] = { level, locked: value.locked };
+    const now = saved[task.task];
+    if (typeof value !== "object" || value === null || Array.isArray(value) || !now) continue;
+    const level = "level" in value ? task.allowed.find((each) => each === value.level) : now.level;
+    if (level) draft[task.task] = { level, locked: typeof value.locked === "boolean" ? value.locked : now.locked };
   }
   return draft;
 }
