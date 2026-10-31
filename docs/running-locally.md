@@ -665,7 +665,7 @@ The demo users are `admin@`, `reviewer@` and `member@` on `sharma-traders.exampl
 - Check: run the seed command twice; `docker compose exec -T -e KAAGAZ_ADMIN_PASSWORD=long-password-1 api python -m kaagaz.cli create-customer --name Test --admin-email a@test.example --admin-name A`.
 - Expect: the first seed prints both customers and their e-mails, the second prints "already there, skipped"; `create-customer` prints `customer <uuid>`. A missing or short password stops with `error: ...` and exit code 2.
 - Tests: `test_cli.py`.
-- Measure (PRD 2 X4): from `backend/` with `.env` loaded, `python -m kaagaz.cli measure --file <a local file> [--truth <folder of 1.txt, 2.txt, ...>]`. It prints each page's route and why, the route check's numbers and the seconds, then the totals; no text and no file name. It uses no database, storage or queue, and it skips the virus scan, so use it only on files you trust. Tests: `test_cli_measure.py`.
+- Measure (PRD 2 X4): from `backend/` with `.env` loaded, `python -m kaagaz.cli measure --file <a local file> [--truth <folder of 1.txt, 2.txt, ...>]`. It prints each page's route and why, the route check's numbers and the seconds, then the totals; no text and no file name. With `--truth`, each page adds CER, WER and the value error rate (and field matches from an optional `n.fields.json`), and a `truth` line adds them up; building a truth set and comparing two settings: docs/architecture.md, "Measure true accuracy with a truth set". It uses no database, storage or queue, and it skips the virus scan, so use it only on files you trust. Tests: `test_cli_measure.py`.
 
 **28. Settings checks at start-up**
 - Check: `docker compose run --rm -e SESSION_SECRET=short worker`, and again with `-e OCR_ENGINE=x`.

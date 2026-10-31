@@ -58,7 +58,8 @@ import math
 import re
 import statistics
 import threading
-from collections.abc import Callable, Collection, Iterator, Mapping
+from collections import Counter
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from importlib import metadata
 from typing import TYPE_CHECKING, Any, NoReturn, Protocol, runtime_checkable
@@ -143,6 +144,8 @@ PATH_WORDS, PATH_PAGE = "path_words", "path_page"
 # Handwriting stays page wide (Tushar's accuracy first, 16 Oct 2026): a quick read of a
 # handwritten page can be sure of every word and still be wrong (7/12 extracts).
 PAGE_WIDE = frozenset({*(CAREFUL_ISSUES - {ILLEGIBLE_WORDS}), "quality_poor", "handwritten"})
+# values_of: the outer punctuation a value word loses ("1,180.00." is "1,180.00").
+VALUE_PUNCTUATION = ".,;:()[]{}\"'"
 # #385: a region of a page asked to be read again, as page fractions (x0, y0, x1, y1).
 Region = tuple[float, float, float, float]
 
@@ -331,6 +334,12 @@ def hard_lines(read: PageRead) -> list[int]:
     or a part it could not read (ILLEGIBLE_MARK). The checker's disagreement comes after the
     reading, so it is not known here. O(the page's text)."""
     return [index for index, line in enumerate(read.lines) if line.unsure or ILLEGIBLE_MARK in line.text]
+
+
+def values_of(words: Iterable[str]) -> Counter[str]:
+    """The words with a digit (amounts, dates, numbers, GSTINs), outer punctuation stripped:
+    what scripts/tune_cost_saving.py and ``cli measure --truth`` compare. O(the words)."""
+    return Counter(word.strip(VALUE_PUNCTUATION) for word in words if any(char.isdigit() for char in word))
 
 
 def careful_reasons(read: PageRead, *, lead: str, again: bool = False) -> list[str]:

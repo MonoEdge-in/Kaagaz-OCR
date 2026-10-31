@@ -18,6 +18,7 @@ from PIL import Image
 from kaagaz import cli
 from kaagaz.db.models import Agent, Reading
 from kaagaz.pipeline import JobReading
+from kaagaz.reading import ocr
 from kaagaz.reading.gemini_ocr import CROP_GAP, CROPS_SCHEMA, crop_boxes
 from kaagaz.reading.ocr import PATH_PAGE, PATH_WORDS, PageRead, careful_pages, careful_plan
 from kaagaz.reading.wiring import reader_config
@@ -369,6 +370,11 @@ class TuneTest(unittest.TestCase):
         self.assertEqual(tune.compare(read, reference), (3, 5, 1))  # 1,18O.00; the "." is stripped
         self.assertEqual(tune.compare(reference, reference), (5, 5, 0))
         self.assertEqual(tune.compare(page_read(["Total"], unsure={}), reference), (1, 5, 2))
+
+    def test_the_values_rule_is_the_one_measure_truth_uses(self) -> None:
+        """#465: one copy of ``values_of``, in kaagaz, for this script and ``cli measure --truth``."""
+        self.assertIs(vars(tune)["values_of"], ocr.values_of)
+        self.assertIs(vars(cli)["values_of"], ocr.values_of)
 
     def test_each_setting_routes_and_scores_its_pages_against_the_reference(self) -> None:
         # Three hard lines of ten: words at 12 / 0.4, whole at 2 / 0.4.
