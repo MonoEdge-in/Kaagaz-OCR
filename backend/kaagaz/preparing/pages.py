@@ -233,14 +233,15 @@ def check_page_count(count: int, max_pages: int) -> None:
         raise TooManyPages(count)
 
 
-def render_pdf_page(page: Any, *, dpi: int, max_image_pixels: int) -> Image.Image:
-    """Draw one pypdfium2 page at ``dpi`` as an RGB picture, after the pixel check."""
+def render_pdf_page(page: Any, *, dpi: int, max_image_pixels: int, smooth_text: bool = True) -> Image.Image:
+    """Draw one pypdfium2 page at ``dpi`` as an RGB picture, after the pixel check.
+    ``smooth_text=False`` draws text without anti-aliasing: each glyph pixel is the text's own colour."""
     scale = dpi / _POINTS_PER_INCH
     width, height = page.get_size()  # points, with the page's rotation applied
     if math.ceil(width * scale) * math.ceil(height * scale) > max_image_pixels:
         raise ReadError("image_too_large")
     try:
-        bitmap = page.render(scale=scale)
+        bitmap = page.render(scale=scale, no_smoothtext=not smooth_text)
         try:
             return _to_rgb(bitmap.to_pil())
         finally:

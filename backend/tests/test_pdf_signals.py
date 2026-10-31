@@ -34,7 +34,7 @@ from kaagaz.reading.route import RouteDecision
 from kaagaz.reading.socket import NoReader
 from kaagaz.reading.spans import ReadError
 from kaagaz.reading.text_quality import PageSignals, TextLayerRules, text_layer_ok
-from tests.pdf_builder import Page, Picture, Text, _assemble, _stream, make_pdf
+from tests.pdf_builder import Page, Picture, Text, _assemble, _image_object, _stream, make_pdf
 from tests.picture_support import text_like_picture
 from tests.test_page_checks import image, raw_pdf
 from tests.test_pdf_second_reader import box_of, first, iou, second
@@ -458,6 +458,134 @@ class LightTextTest(unittest.TestCase):
             ]
         )
         self.assertEqual(both_readers(data), (["Grand Total"], ["Grand Total"]))
+
+
+SEEN = b"BT /F1 12 Tf 72 600 Td (Seen words here) Tj ET\n"
+BLACK = b"BT /F1 12 Tf 72 700 Td (" + INJECTION.encode() + b") Tj ET\n"  # dark, opaque, full size
+
+
+def layered_page(
+    content: bytes, *, resources: bytes = b"", catalog: bytes = b"", extra: bytes = b""
+) -> bytes:
+    """One page drawing ``content``, with more ``resources`` and ``catalog`` entries;
+    ``extra`` is object 6 (an image or an optional-content group)."""
+    return _assemble(
+        [
+            b"<< /Type /Catalog /Pages 2 0 R " + catalog + b">>",
+            b"<< /Type /Pages /Kids [4 0 R] /Count 1 >>",
+            HELVETICA,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 5 0 R "
+            b"/Resources << /Font << /F1 3 0 R >> " + resources + b">> >>",
+            _stream(b"", content),
+            *([extra] if extra else []),
+        ],
+        b"",
+    )
+
+
+def layer_page(state: bytes) -> bytes:
+    """BLACK in an optional-content layer that is ``state`` (ON or OFF) by default."""
+    return layered_page(
+        SEEN + b"/OC /L1 BDC " + BLACK + b"EMC\n",
+        resources=b"/Properties << /L1 6 0 R >> ",
+        catalog=b"/OCProperties << /OCGs [6 0 R] /D << /" + state + b" [6 0 R] >> >> ",
+        extra=b"<< /Type /OCG /Name (Layer) >>",
+    )
+
+
+class DarkTextTest(unittest.TestCase):
+    """#464 (security council, 31 Oct 2026): opaque dark text is checked on the drawn page
+    too, so text a shape or an image covers, a clipping path cuts away or a layer that is
+    off leaves out is hidden; dark text a customer can see loses no word."""
+
+    def assert_only_seen(self, data: bytes) -> None:
+        self.assertEqual(both_readers(data), (["Seen words here"], ["Seen words here"]))
+        self.assertAlmostEqual(signals_of(data).hidden_share, 40 / 53)  # INJECTION's 40 of 53 characters
+
+    def assert_kept(self, data: bytes, lines: list[str]) -> None:
+        self.assertEqual(signals_of(data).hidden_share, 0.0)
+        self.assertEqual(both_readers(data), (lines, lines))
+
+    def test_black_text_under_a_later_white_rectangle_is_hidden(self) -> None:
+        self.assert_only_seen(drawn_page(SEEN + BLACK + b"q 1 1 1 rg 60 690 400 30 re f Q\n"))
+
+    def test_black_text_under_a_later_image_is_hidden(self) -> None:
+        for colour in ((255, 255, 255), (20, 30, 90)):
+            image = _image_object(Image.new("RGB", (8, 8), colour))
+            data = layered_page(
+                SEEN + BLACK + b"q 400 0 0 30 60 690 cm /Im1 Do Q\n",
+                resources=b"/XObject << /Im1 6 0 R >> ",
+                extra=image,
+            )
+            with self.subTest(colour=colour):
+                self.assert_only_seen(data)
+
+    def test_black_text_outside_a_clipping_path_is_hidden(self) -> None:
+        self.assert_only_seen(drawn_page(SEEN + b"q 0 0 612 650 re W n " + BLACK + b"Q\n"))
+
+    def test_text_in_a_layer_that_is_off_is_hidden_and_on_it_is_kept(self) -> None:
+        self.assert_only_seen(layer_page(b"OFF"))
+        self.assert_kept(layer_page(b"ON"), [INJECTION, "Seen words here"])
+
+    def test_only_the_covered_word_of_a_line_is_dropped(self) -> None:
+        content = (
+            b"BT /F1 12 Tf 72 700 Td (Total due) Tj ET\n"
+            b"BT /F1 12 Tf 300 700 Td (Rs. 99,999.00) Tj ET\n"
+            b"q 1 1 1 rg 290 690 120 30 re f Q\n"
+        )
+        self.assertEqual(both_readers(drawn_page(content)), (["Total due"], ["Total due"]))
+
+    def test_black_text_on_a_black_rectangle_is_hidden(self) -> None:
+        self.assert_only_seen(drawn_page(SEEN + b"q 0 0 0 rg 60 690 400 30 re f Q\n" + BLACK))
+
+    def test_dark_text_on_light_coloured_boxes_is_kept(self) -> None:
+        for fill in (b"1 0.95 0.6", b"0.75 0.85 1", b"0.85 0.85 0.85", b"1 0.6 0.6"):
+            with self.subTest(fill=fill):
+                self.assert_kept(
+                    drawn_page(b"q " + fill + b" rg 60 690 400 30 re f Q\n" + BLACK), [INJECTION]
+                )
+
+    def test_text_in_a_table_with_borders_is_kept(self) -> None:
+        rows = [["Item", "Qty", "Rate", "Amount"], ["Cotton fabric", "40", "250.00", "10,000.00"]]
+        rows += [[f"Item {n}", str(n), f"{n}.50", f"{n * 3}.00"] for n in range(1, 9)]
+        content = b"q 0.85 0.85 0.85 rg 60 680 480 20 re f Q\n"  # a grey header row
+        for number, row in enumerate(rows):
+            y = 686 - 20 * number
+            for column, cell in enumerate(row):
+                content += b"BT /F1 9 Tf %d %d Td (%s) Tj ET\n" % (64 + 120 * column, y, cell.encode())
+        grid = b"".join(b"60 %d m 540 %d l " % (700 - 20 * n, 700 - 20 * n) for n in range(len(rows) + 1))
+        grid += b"".join(b"%d 500 m %d 700 l " % (60 + 120 * n, 60 + 120 * n) for n in range(5))
+        data = drawn_page(content + b"q 0 0 0 RG 0.75 w " + grid + b"S Q\n")
+        self.assert_kept(data, [cell for row in rows for cell in row])  # each cell its own span
+
+    def test_ordinary_typed_pages_lose_no_word(self) -> None:
+        for size in (4, 6, 7, 9, 12):
+            with self.subTest(size=size):
+                texts = [
+                    Text(72, 700 - 2 * size * n, line, size=size) for n, line in enumerate(INVOICE_LINES)
+                ]
+                self.assert_kept(make_pdf([Page(texts=texts)]), INVOICE_LINES)
+        grey = [
+            Text(72, 700 - 20 * n, line, color=(0.35, 0.35, 0.35)) for n, line in enumerate(INVOICE_LINES)
+        ]
+        bold = [Text(72, 500 - 20 * n, line, bold=True) for n, line in enumerate(INVOICE_LINES)]
+        self.assert_kept(make_pdf([Page(texts=grey + bold)]), INVOICE_LINES * 2)
+
+    def test_when_the_page_cannot_be_drawn_or_has_too_many_dark_glyphs_they_are_seen_as_before(self) -> None:
+        covered = drawn_page(SEEN + BLACK + b"q 1 1 1 rg 60 690 400 30 re f Q\n")
+        lines = [INJECTION, "Seen words here"]
+        with mock.patch("kaagaz.reading.pdf_signals.render_pdf_page", side_effect=ReadError("corrupt_file")):
+            self.assert_kept(covered, lines)
+        with (
+            mock.patch("kaagaz.reading.pdf_signals.MAX_DARK_GLYPHS", 52),  # 53 dark characters
+            mock.patch("kaagaz.reading.pdf_signals.render_pdf_page", wraps=render_pdf_page) as drawn,
+        ):
+            self.assert_kept(covered, lines)
+        drawn.assert_not_called()
+
+    def test_dark_text_on_a_big_page_drawn_at_a_bounded_scale_is_kept(self) -> None:
+        texts = [Text(72, 2200 - 20 * n, line, size=9) for n, line in enumerate(INVOICE_LINES)]
+        self.assert_kept(make_pdf([Page(width=1684, height=2384, texts=texts)]), INVOICE_LINES)
 
 
 class MapErrorTest(unittest.TestCase):
