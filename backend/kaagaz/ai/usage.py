@@ -14,7 +14,10 @@ from ``scan`` and ``chat``. It is a ContextVar too, so it reaches threads starte
 ``copy_context().run`` inside it.
 
 When the scope ends, with or without an error (the calls were billed either way), its
-tallies are saved in one INSERT in ``db.customer()``: one row per (model, kind, cached).
+tallies are saved in one INSERT in ``db.customer()``: one row per (model, kind, cached,
+thinking, resolution). #463 (Tushar, 31 Oct 2026): a page read (PAGE_READ_KINDS) records the
+thinking level and picture detail it was sent at, so the operator's estimate measures a page
+at given settings; every other kind records neither.
 A failure to save logs ``usage_not_saved`` and never fails the work. A scope opened inside
 another is its own scope; the outer one is current again when it ends.
 
@@ -51,6 +54,8 @@ KINDS = (
     "ensemble_chat",
     "land",  # PRD 6 D2 and D3: the land windows, on upload and in the land-facts re-read
 )
+# #463: the kinds whose calls read a page and record their thinking level and picture detail.
+PAGE_READ_KINDS = frozenset({"scan", "careful", "upgrade", "ensemble_scan"})
 
 _log = logging.getLogger(__name__)
 
@@ -64,18 +69,21 @@ class _Tally:
     cost_usd: float | None = 0.0  # None once a call came without a cost
 
 
+_Key = tuple[str, str, bool, str | None, str | None]  # (model, kind, cached, thinking, resolution)
+
+
 @dataclass(slots=True)
 class UsageScope:
-    """One piece of work's model calls, tallied by (model, kind, cached), with the last
-    provider OpenRouter named for each."""
+    """One piece of work's model calls, tallied by (model, kind, cached, thinking,
+    resolution), with the last provider OpenRouter named for each."""
 
     customer_id: str
     user_id: str | None
     kind: str
     document_id: str | None = None
     conversation_id: str | None = None
-    _tallies: dict[tuple[str, str, bool], _Tally] = field(default_factory=dict, repr=False)
-    _providers: dict[tuple[str, str, bool], str | None] = field(default_factory=dict, repr=False)
+    _tallies: dict[_Key, _Tally] = field(default_factory=dict, repr=False)
+    _providers: dict[_Key, str | None] = field(default_factory=dict, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def add(
@@ -89,9 +97,14 @@ class UsageScope:
         *,
         cached: bool = False,
         kind: str | None = None,
+        thinking: str | None = None,
+        resolution: str | None = None,
     ) -> None:
-        """Count one call (thread-safe), as ``kind`` (None: the scope's)."""
-        key = (model, kind or self.kind, cached)
+        """Count one call (thread-safe), as ``kind`` (None: the scope's); ``thinking`` and
+        ``resolution`` are kept for a page read's kind only (PAGE_READ_KINDS)."""
+        kind = kind or self.kind
+        page = kind in PAGE_READ_KINDS
+        key = (model, kind, cached, thinking if page else None, resolution if page else None)
         with self._lock:
             tally = self._tallies.setdefault(key, _Tally())
             tally.calls += 1
@@ -103,7 +116,7 @@ class UsageScope:
                 self._providers[key] = provider
 
     def rows(self) -> list[UsageRow]:
-        """The ledger rows so far, one per (model, kind, cached)."""
+        """The ledger rows so far, one per (model, kind, cached, thinking, resolution)."""
         with self._lock:
             return [
                 UsageRow(
@@ -113,15 +126,17 @@ class UsageScope:
                     conversation_id=self.conversation_id,
                     kind=kind,
                     model=model,
-                    provider_name=self._providers[(model, kind, cached)],
+                    provider_name=self._providers[(model, kind, cached, thinking, resolution)],
                     cached=cached,
                     calls=tally.calls,
                     input_tokens=tally.input_tokens,
                     output_tokens=tally.output_tokens,
                     reasoning_tokens=tally.reasoning_tokens,
                     cost_usd=tally.cost_usd,
+                    thinking=thinking,
+                    resolution=resolution,
                 )
-                for (model, kind, cached), tally in self._tallies.items()
+                for (model, kind, cached, thinking, resolution), tally in self._tallies.items()
             ]
 
 
@@ -187,10 +202,12 @@ def record_call(
     cost_usd: float | None,
     *,
     cached: bool = False,
+    thinking: str | None = None,
+    resolution: str | None = None,
 ) -> None:
     """Count one billed reply (or, with ``cached``, one page taken from the page cache, at
     cost 0) in the current scope, as ``billed_as``'s kind when one is open; nothing when no
-    scope is open."""
+    scope is open. ``thinking`` and ``resolution``: what a page read was sent at (#463)."""
     scope = _CURRENT.get()
     if scope is not None:
         scope.add(
@@ -202,4 +219,6 @@ def record_call(
             cost_usd,
             cached=cached,
             kind=_BILLED_AS.get(),
+            thinking=thinking,
+            resolution=resolution,
         )

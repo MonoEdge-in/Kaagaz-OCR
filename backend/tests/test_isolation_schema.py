@@ -322,20 +322,29 @@ OPERATOR_RIGHTS = {
     # organisations each area reaches, and the two saves (step-up). Pinned: no user, no document.
     "kaagaz_op_org_ai": (
         "TABLE(scan_models text[], scan_default text, chat_models text[], chat_default text,"
-        " scan_thinking text, chat_levels text[], chat_default_level text, dynamic boolean, ensemble boolean,"
-        " ai_budget_usd numeric)",
+        " scan_thinking text, chat_levels text[], chat_default_level text, dynamic boolean,"
+        " scan_resolution text, careful_thinking text, careful_resolution text, ensemble boolean,"
+        " ai_budget_usd numeric)",  # 0064 (#463): the scan cost settings
         EMPTY_PATH,
     ),
     "kaagaz_op_set_org_ai": ("record", EMPTY_PATH),
     "kaagaz_op_ai_defaults": (
         "TABLE(scan_models text[], scan_default text, chat_models text[], chat_default text,"
         " scan_thinking text, chat_levels text[], chat_default_level text, dynamic boolean,"
+        " scan_resolution text, careful_thinking text, careful_resolution text,"
         " orgs_inheriting_scan_models bigint, orgs_inheriting_chat_models bigint,"
         " orgs_inheriting_scan_thinking bigint, orgs_inheriting_chat_levels bigint,"
-        " orgs_inheriting_dynamic bigint)",
+        " orgs_inheriting_dynamic bigint, orgs_inheriting_scan_resolution bigint,"
+        " orgs_inheriting_careful_thinking bigint, orgs_inheriting_careful_resolution bigint)",
         EMPTY_PATH,
     ),
     "kaagaz_op_set_ai_defaults": ("text", EMPTY_PATH),
+    # 0064 (#463): the estimate's measured cost, sums and counts only (no customer column).
+    "kaagaz_op_scan_cost": (
+        "TABLE(first_usd numeric, first_pages bigint, careful_usd numeric, careful_pages bigint,"
+        " scan_calls bigint, careful_calls bigint)",
+        EMPTY_PATH,
+    ),
     "kaagaz_op_set_org_autofile": ("record", EMPTY_PATH),  # 0025: allow or stop auto-filing
     "kaagaz_op_usage": (
         "TABLE(customer_id uuid, customer_name text, model text, calls bigint, cached_calls bigint,"

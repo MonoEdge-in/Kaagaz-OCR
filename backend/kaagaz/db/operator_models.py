@@ -24,6 +24,8 @@ audit rows.
 * ``ai_defaults`` and ``set_ai_defaults``: the platform defaults and how many
   organisations inherit each area; the same outcomes but missing and deleting.
 * ``usage``: tokens and dollars per organisation and model. No user, no document.
+* ``scan_cost`` (#463, 0064): the measured cost of a page at one first read's and one
+  Careful re-read's (model, thinking, picture detail), and the scope's share read again.
 * ``feature_switches`` and ``set_feature_switch`` (0038): the platform feature switches;
   ``org_feature_switches`` and ``set_org_feature_switch`` (0039): one organisation's.
 * ``session_timeout`` and ``set_session_timeout`` (0040): the sign-in idle timeout, the
@@ -55,16 +57,21 @@ _RECORD = text(
 _RECORD_CHAT = text(
     "UPDATE model_catalog SET chat_verified_prompt = :prompt, chat_verified_at = now() WHERE id = :model"
 )
-# An AiChoice's parameters (sm to dyn) are in the functions' order.
+# An AiChoice's parameters (sm to dyn) are in the functions' order (0064: sr, ct, cr after st).
 _SET_ORG_AI = text(
     "SELECT outcome, result_id FROM kaagaz_op_set_org_ai(:o, :c, CAST(:sm AS text[]), CAST(:sd AS text),"
-    " CAST(:cm AS text[]), CAST(:cd AS text), CAST(:st AS text), CAST(:cl AS text[]), CAST(:cdl AS text),"
-    " CAST(:dyn AS boolean), :ensemble, CAST(:budget AS numeric), :scan, :chat, :step)"
+    " CAST(:cm AS text[]), CAST(:cd AS text), CAST(:st AS text), CAST(:sr AS text), CAST(:ct AS text),"
+    " CAST(:cr AS text), CAST(:cl AS text[]), CAST(:cdl AS text), CAST(:dyn AS boolean), :ensemble,"
+    " CAST(:budget AS numeric), :scan, :chat, :step)"
 )
 _SET_AI_DEFAULTS = text(
     "SELECT kaagaz_op_set_ai_defaults(:o, CAST(:sm AS text[]), CAST(:sd AS text), CAST(:cm AS text[]),"
-    " CAST(:cd AS text), CAST(:st AS text), CAST(:cl AS text[]), CAST(:cdl AS text), CAST(:dyn AS boolean),"
-    " :scan, :chat, :step)"
+    " CAST(:cd AS text), CAST(:st AS text), CAST(:sr AS text), CAST(:ct AS text), CAST(:cr AS text),"
+    " CAST(:cl AS text[]), CAST(:cdl AS text), CAST(:dyn AS boolean), :scan, :chat, :step)"
+)
+_SCAN_COST = text(
+    "SELECT * FROM kaagaz_op_scan_cost(:o, CAST(:c AS uuid), :m, :t, :r, CAST(:cm AS text),"
+    " CAST(:ct AS text), CAST(:cr AS text))"
 )
 _MODEL_RATES = text("SELECT * FROM kaagaz_op_model_rates(:o, :c)")
 _SET_MODEL_RATE = text("SELECT kaagaz_op_set_model_rate(:o, :c, :u, :rpm, :step)")
@@ -75,7 +82,9 @@ class AiChoice:
     """One AI settings save, an organisation's or the platform's (C10): the scan and answer
     models with their defaults (an empty list: the platform's; for the platform, the
     environment's OCR_MODEL and MODEL_CHAT), the scan thinking level, the answer levels and
-    default level, and Dynamic. For an organisation, None inherits that field."""
+    default level, and Dynamic. For an organisation, None inherits that field. #463 (0064): the
+    scan picture detail and Careful's pair (pages read again), last so the order above holds;
+    for the platform, None is the server's (OCR_MEDIA_RESOLUTION, OCR_RETRY_*)."""
 
     scan_models: Sequence[str] = ()
     scan_default: str | None = None
@@ -85,6 +94,9 @@ class AiChoice:
     chat_levels: Sequence[str] | None = None
     chat_default_level: str | None = None
     dynamic: bool | None = None
+    scan_resolution: str | None = None
+    careful_thinking: str | None = None
+    careful_resolution: str | None = None
 
     def params(self) -> dict[str, object]:
         return {
@@ -93,6 +105,9 @@ class AiChoice:
             "cm": list(self.chat_models),
             "cd": self.chat_default,
             "st": self.scan_thinking,
+            "sr": self.scan_resolution,
+            "ct": self.careful_thinking,
+            "cr": self.careful_resolution,
             "cl": None if self.chat_levels is None else list(self.chat_levels),
             "cdl": self.chat_default_level,
             "dyn": self.dynamic,
@@ -133,9 +148,9 @@ def set_model_enabled(
 
 def org_ai(conn: Connection, operator_id: str, customer_id: str) -> RowMapping | None:
     """One organisation's own settings (scan_models, scan_default, chat_models,
-    chat_default, scan_thinking, chat_levels, chat_default_level, dynamic, ensemble) and
-    ai_budget_usd; an empty list or a NULL field inherits. None when there is no such
-    organisation (or the operator is not enabled)."""
+    chat_default, scan_thinking, chat_levels, chat_default_level, dynamic, scan_resolution,
+    careful_thinking, careful_resolution, ensemble) and ai_budget_usd; an empty list or a
+    NULL field inherits. None when there is no such organisation (or the operator is not enabled)."""
     return (
         conn.execute(text("SELECT * FROM kaagaz_op_org_ai(:o, :c)"), {"o": operator_id, "c": customer_id})
         .mappings()
@@ -176,7 +191,8 @@ def set_org_ai(
 
 def ai_defaults(conn: Connection, operator_id: str) -> RowMapping | None:
     """The platform defaults (as ``org_ai``, without ensemble and budget) and
-    orgs_inheriting_{scan_models, chat_models, scan_thinking, chat_levels, dynamic}: the
+    orgs_inheriting_{scan_models, chat_models, scan_thinking, chat_levels, dynamic,
+    scan_resolution, careful_thinking, careful_resolution}: the
     organisations (not being deleted) a change of that area reaches. None for an operator
     who is not enabled."""
     return (
@@ -312,6 +328,31 @@ def clear_test_model(conn: Connection, operator_id: str, *, step: int) -> str:
     ``unchanged``, ``step_up`` or ``signed_out``."""
     params = {"o": operator_id, "step": step}
     return str(conn.execute(text("SELECT kaagaz_op_clear_test_model(:o, :step)"), params).scalar_one())
+
+
+Sent = tuple[str, str, str]  # (model, thinking level, picture detail) as a page read sends them
+
+
+def scan_cost(
+    conn: Connection, operator_id: str, customer_id: str | None, first: Sent, careful: Sent | None
+) -> RowMapping | None:
+    """#463: first_usd and first_pages (the first reads at ``first``), careful_usd and
+    careful_pages (Careful's at ``careful``; none with None) over every organisation's ledger
+    of the last 30 days, OpenRouter's reported cost only; scan_calls and careful_calls of
+    ``customer_id``'s (None: every organisation's). None for an operator who is not enabled."""
+    model, thinking, resolution = first
+    careful_model, careful_thinking, careful_resolution = careful or (None, None, None)
+    params = {
+        "o": operator_id,
+        "c": customer_id,
+        "m": model,
+        "t": thinking,
+        "r": resolution,
+        "cm": careful_model,
+        "ct": careful_thinking,
+        "cr": careful_resolution,
+    }
+    return conn.execute(_SCAN_COST, params).mappings().first()
 
 
 def usage(conn: Connection, operator_id: str, start: datetime, end: datetime) -> Sequence[RowMapping]:

@@ -81,12 +81,16 @@ def test_enabling_takes_a_fresh_code_and_a_pass_for_the_current_prompt(db: Datab
 
 # Changed on purpose (features 25-27, 15 Oct 2026): /orgs/{id}/models became /orgs/{id}/ai,
 # with the answer models, the levels, Dynamic, Ensemble and a fresh code for every save.
+# Changed on purpose (#463, 31 Oct 2026): the scan cost settings too.
 FOLLOWS_DEFAULTS: dict[str, Any] = {
     "scan_models": [],
     "scan_default": None,
     "chat_models": [],
     "chat_default": None,
     "scan_thinking": None,
+    "scan_resolution": None,
+    "careful_thinking": None,
+    "careful_resolution": None,
     "chat_levels": None,
     "chat_default_level": None,
     "dynamic": None,

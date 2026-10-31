@@ -26,7 +26,16 @@ CUSTOMER = "00000000-0000-0000-0000-00000000000a"
 DOCUMENT = "00000000-0000-0000-0000-00000000000c"
 SETTINGS = make_settings()
 FLASH, PRO, SONNET = "google/gemini-3.8-flash", "google/gemini-3.1-pro-preview", "anthropic/claude-sonnet-5.5"
-INHERIT = {"scan_thinking": None, "chat_levels": ["low"], "chat_default_level": "low", "dynamic": False}
+# Changed on purpose (#463, 31 Oct 2026): the effective settings carry the scan cost settings too.
+INHERIT = {
+    "scan_thinking": None,
+    "chat_levels": ["low"],
+    "chat_default_level": "low",
+    "dynamic": False,
+    "scan_resolution": None,
+    "careful_thinking": None,
+    "careful_resolution": None,
+}
 
 
 class _Result:

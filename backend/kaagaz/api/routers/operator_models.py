@@ -22,6 +22,18 @@ writes its own audit rows.
   never in the organisation's own log or screens). Any number of scanning models (0037):
   Ensemble asked with fewer than two in effect is saved off and the PUT says
   ``ensemble_off``.
+* The scan cost settings (#463, Tushar, 31 Oct 2026; 0064): both AI settings carry
+  ``scan_resolution`` (the picture detail of first reads), ``careful_thinking`` and
+  ``careful_resolution`` (Careful's re-reads and "Read this page again"), each null to
+  inherit; a scan level may be minimal (an answer level may not); ``env`` names the server's
+  three, and the defaults count the organisations inheriting each. A save reaches what is
+  read from then on (new scans, Careful's re-reads, pages read again), never text already read.
+* ``POST /operator/scan-cost`` {customer_id, scan_thinking, scan_resolution, careful_thinking,
+  careful_resolution}, each null for what the save would inherit (no code: it changes
+  nothing): the approximate cost of a page at those settings, measured on every
+  organisation's ledger of the last LEDGER_DAYS days, never guessed (null when nothing was
+  read so). The model is the scope's default (``usable_models``, ``scope_reading``: the
+  same rules as a scan); the share read again is the scope's own.
 * ``GET /operator/usage?from&to``: tokens and dollars per organisation and model, days in
   TIMEZONE with both ends included (this month so far when left out), at most
   ``MAX_DAYS``. Never a user or a document: the function has no column for either.
@@ -70,9 +82,10 @@ from kaagaz.api.routers.auth import MAX_CODE
 from kaagaz.api.routers.documents import day_start
 from kaagaz.api.routers.operator_orgs import StepUp, StepUpBody, _check, _step_up
 from kaagaz.api.views import iso
+from kaagaz.db import models
 from kaagaz.db import operator_models as models_sql
 from kaagaz.db.engine import OperatorDatabase
-from kaagaz.db.models import MAX_AGENTS, vendor
+from kaagaz.db.models import LEDGER_DAYS, MAX_AGENTS, vendor
 from kaagaz.db.operator_models import AiChoice
 from kaagaz.db.operator_orgs import Outcome
 from kaagaz.reading.ocr import READER_PROMPT_VERSION
@@ -125,6 +138,13 @@ _REFUSALS = {
 }
 
 Level = Literal["low", "medium", "high"]
+ScanLevel = Literal["minimal", "low", "medium", "high"]  # #463: minimal for scanning only
+Resolution = Literal["low", "high"]  # #463: the picture detail OpenRouter can send (settings)
+# #463: the scan cost settings, in the AI settings and the estimate alike.
+SCAN_COST_FIELDS = ("scan_thinking", "scan_resolution", "careful_thinking", "careful_resolution")
+# #463: the estimate's organisation with nothing of its own, so its connection sees the platform
+# defaults alone (row level security shows no organisation this id).
+NO_ORGANISATION = str(uuid.UUID(int=0))
 ModelId = Annotated[str, Field(max_length=257)]  # MODEL_ID: 128 + "/" + 128 at most
 ModelList = Annotated[list[ModelId], Field(max_length=MAX_ORG_MODELS)]
 Levels = Annotated[list[Level], Field(min_length=1, max_length=3)]
@@ -147,7 +167,10 @@ class OrgAiBody(BaseModel):
     scan_default: ModelId | None
     chat_models: ModelList
     chat_default: ModelId | None
-    scan_thinking: Level | None
+    scan_thinking: ScanLevel | None
+    scan_resolution: Resolution | None
+    careful_thinking: ScanLevel | None
+    careful_resolution: Resolution | None
     chat_levels: Levels | None
     chat_default_level: Level | None
     dynamic: bool | None
@@ -226,7 +249,8 @@ class TestModelBody(BaseModel):
 
 class DefaultsBody(BaseModel):
     """The platform defaults (no Ensemble, no budget: those are an organisation's own);
-    empty model lists use OCR_MODEL and MODEL_CHAT, a null scan level OCR_THINKING_LEVEL."""
+    empty model lists use OCR_MODEL and MODEL_CHAT, a null scan level OCR_THINKING_LEVEL, a
+    null picture detail or Careful pair OCR_MEDIA_RESOLUTION and OCR_RETRY_* (#463)."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -234,11 +258,28 @@ class DefaultsBody(BaseModel):
     scan_default: ModelId | None
     chat_models: ModelList
     chat_default: ModelId | None
-    scan_thinking: Level | None
+    scan_thinking: ScanLevel | None
+    scan_resolution: Resolution | None
+    careful_thinking: ScanLevel | None
+    careful_resolution: Resolution | None
     chat_levels: Levels
     chat_default_level: Level
     dynamic: bool
     code: str = Field(min_length=1, max_length=MAX_CODE)
+
+
+class ScanCostBody(BaseModel):
+    """#463: the scan settings to price, each null for what the save would inherit (an
+    organisation's: the platform's, else the server's; the platform's: the server's).
+    ``customer_id`` null prices the platform defaults."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    customer_id: uuid.UUID | None = None
+    scan_thinking: ScanLevel | None = None
+    scan_resolution: Resolution | None = None
+    careful_thinking: ScanLevel | None = None
+    careful_resolution: Resolution | None = None
 
 
 class ModelRateBody(BaseModel):
@@ -302,7 +343,16 @@ def get_ai_defaults(operator: OperatorSession, db: OperatorDb, context: Context)
         "env": _env(context.settings),
         "orgs_inheriting": {
             area: int(row[f"orgs_inheriting_{area}"])
-            for area in ("scan_models", "chat_models", "scan_thinking", "chat_levels", "dynamic")
+            for area in (
+                "scan_models",
+                "chat_models",
+                "scan_thinking",
+                "chat_levels",
+                "dynamic",
+                "scan_resolution",
+                "careful_thinking",
+                "careful_resolution",
+            )
         },
     }
 
@@ -371,6 +421,75 @@ def set_org_ai(
     saved = get_org_ai(customer_id, operator, db, context)
     # Ensemble with fewer than two scanning models in effect is saved off, not refused (0037).
     return {**saved, "ensemble_off": body.ensemble and not saved["ensemble"]}
+
+
+@router.post("/scan-cost")
+def scan_cost(
+    body: ScanCostBody, operator: OperatorSession, db: OperatorDb, context: Context
+) -> dict[str, Any]:
+    """#463: the approximate cost of a page at the draft's scan settings (module notes). The
+    first read and, while Dynamic is on, Careful's re-read are each priced at what they would
+    really be sent (model, thinking after Dynamic's rule, picture detail); the total is the
+    first read plus the share read again times the re-read, or the first read alone."""
+    settings = context.settings
+    customer = None if body.customer_id is None else str(body.customer_id)
+    with db.operator() as conn:
+        defaults = models_sql.ai_defaults(conn, operator.operator_id)
+        own = None if customer is None else models_sql.org_ai(conn, operator.operator_id, customer)
+    if defaults is None:  # the operator was disabled meanwhile
+        raise ApiError(401, "not_signed_in")
+    if customer is not None and own is None:
+        raise ApiError(404, "not_found")
+    # What the save would inherit: an organisation's the platform's; the platform's the server's.
+    draft = {
+        name: getattr(body, name) or (defaults[name] if customer is not None else None)
+        for name in SCAN_COST_FIELDS
+    }
+    # The scope's models and Dynamic as a scan resolves them, on its own customer connection.
+    scope = customer or NO_ORGANISATION
+    with context.db.customer(scope) as conn:
+        rows = models.usable_models(conn, scope, settings=settings)
+        allowed = models.effective_settings(conn, scope)
+    reading = models.scope_reading(rows, {**allowed, **draft}, settings=settings)
+    first = (reading.lead.model, reading.thinking, reading.resolution or settings.ocr_media_resolution)
+    careful = None
+    if reading.careful is not None:
+        careful = (
+            reading.careful.model,
+            reading.careful.level(reading.careful_thinking or settings.ocr_retry_thinking_level),
+            reading.careful_resolution or settings.ocr_retry_media_resolution,
+        )
+    with db.operator() as conn:
+        row = models_sql.scan_cost(conn, operator.operator_id, customer, first, careful)
+    if row is None:
+        raise ApiError(401, "not_signed_in")
+    first_usd = _per_page(row["first_usd"], row["first_pages"])
+    first_read = _read(first, first_usd, row["first_pages"])
+    re_read = None
+    total = first_usd
+    if careful is not None:
+        share = None if not row["scan_calls"] else int(row["careful_calls"]) / int(row["scan_calls"])
+        careful_usd = _per_page(row["careful_usd"], row["careful_pages"])
+        re_read = {**_read(careful, careful_usd, row["careful_pages"]), "share": share}
+        if first_usd is not None and share is not None and careful_usd is not None:
+            total = first_usd + share * careful_usd
+    return {"days": LEDGER_DAYS, "first_read": first_read, "re_read": re_read, "usd_per_page": total}
+
+
+def _per_page(usd: Decimal | None, pages: int) -> float | None:
+    """The measured dollars a page: null with no page (never guessed)."""
+    return None if usd is None or not pages else float(usd) / int(pages)
+
+
+def _read(sent: models_sql.Sent, usd_per_page: float | None, pages: int) -> dict[str, Any]:
+    model, thinking, resolution = sent
+    return {
+        "model": model,
+        "thinking": thinking,
+        "resolution": resolution,
+        "usd_per_page": usd_per_page,
+        "pages": int(pages),
+    }
 
 
 @router.get("/feature-switches")
@@ -739,6 +858,9 @@ def _choice(body: OrgAiBody | DefaultsBody) -> AiChoice:
         chat_levels=body.chat_levels,
         chat_default_level=body.chat_default_level,
         dynamic=body.dynamic,
+        scan_resolution=body.scan_resolution,
+        careful_thinking=body.careful_thinking,
+        careful_resolution=body.careful_resolution,
     )
 
 
@@ -750,6 +872,9 @@ def _ai(row: RowMapping) -> dict[str, Any]:
         "chat_models": list(row["chat_models"]),
         "chat_default": row["chat_default"],
         "scan_thinking": row["scan_thinking"],
+        "scan_resolution": row["scan_resolution"],
+        "careful_thinking": row["careful_thinking"],
+        "careful_resolution": row["careful_resolution"],
         "chat_levels": None if row["chat_levels"] is None else list(row["chat_levels"]),
         "chat_default_level": row["chat_default_level"],
         "dynamic": row["dynamic"],
@@ -757,11 +882,14 @@ def _ai(row: RowMapping) -> dict[str, Any]:
 
 
 def _env(settings: Settings) -> dict[str, str]:
-    """What the server uses when the platform defaults name no model or scan level."""
+    """What the server uses when the platform defaults name no model or scan setting."""
     return {
         "scan_model": settings.ocr_model,
         "chat_model": settings.model_chat,
         "scan_thinking": settings.ocr_thinking_level,
+        "scan_resolution": settings.ocr_media_resolution,  # #463
+        "careful_thinking": settings.ocr_retry_thinking_level,
+        "careful_resolution": settings.ocr_retry_media_resolution,
     }
 
 

@@ -1,12 +1,13 @@
 """The AI spend ledger (model choice, council 11 Oct 2026, SP1): ``model_usage`` rows,
 written by ``kaagaz.ai.usage`` when a usage scope ends.
 
-One row per (scope, model, kind, cached): how many calls, their tokens and their cost in US
-dollars. The cost is the sum of OpenRouter's ``usage.cost`` when every call carried one;
-otherwise the catalogue's price times the tokens, marked ``cost_estimated``; NULL when the
-model is not in the catalogue either. A row holds ids, codes and numbers only, never content.
-A sum counts the known costs; ``cost_part_unknown`` says some row's cost was not known, so
-the screens never show a partial sum as the whole one.
+One row per (scope, model, kind, cached, thinking, resolution): how many calls, their tokens
+and their cost in US dollars; ``thinking`` and ``resolution`` what a page read was sent at
+(#463), NULL for every other kind. The cost is the sum of OpenRouter's ``usage.cost`` when
+every call carried one; otherwise the catalogue's price times the tokens, marked
+``cost_estimated``; NULL when the model is not in the catalogue either. A row holds ids,
+codes and numbers only, never content. A sum counts the known costs; ``cost_part_unknown``
+says some row's cost was not known, so the screens never show a partial sum as the whole one.
 
 The admin's Usage screen (SP2) reads one organisation's rows back over a period
 [``start``, ``end``) (the route turns its days into one: ``api.routers.admin``):
@@ -36,12 +37,13 @@ TABLE = "model_usage"  # migration 0023; _INSERT spells it out (no SQL is built 
 _INSERT = text(
     "INSERT INTO model_usage (customer_id, user_id, document_id, conversation_id, kind, model,"
     " provider_name, cached, calls, input_tokens, output_tokens, reasoning_tokens, cost_usd,"
-    " cost_estimated)"
+    " cost_estimated, thinking, resolution)"
     " VALUES (:customer_id, :user_id, :document_id, :conversation_id, :kind, :model,"
     " :provider_name, :cached, :calls, :input_tokens, :output_tokens, :reasoning_tokens,"
     " COALESCE(CAST(:cost_usd AS numeric), (SELECT (:input_tokens * c.price_in_usd_per_m"
     " + :output_tokens * c.price_out_usd_per_m) / 1000000 FROM model_catalog c WHERE c.id = :model)),"
-    " CAST(:cost_usd AS numeric) IS NULL AND EXISTS (SELECT 1 FROM model_catalog c WHERE c.id = :model))"
+    " CAST(:cost_usd AS numeric) IS NULL AND EXISTS (SELECT 1 FROM model_catalog c WHERE c.id = :model),"
+    " CAST(:thinking AS text), CAST(:resolution AS text))"
 )
 
 
@@ -49,7 +51,8 @@ _INSERT = text(
 class UsageRow:
     """One ledger row. ``user_id`` None: work no user asked for (the upgrade sweep, the
     missing-vector pass); ``provider_name`` the last provider OpenRouter named, or None;
-    ``cost_usd`` None when a call carried no ``usage.cost`` (the catalogue price is used)."""
+    ``cost_usd`` None when a call carried no ``usage.cost`` (the catalogue price is used);
+    ``thinking`` and ``resolution`` a page read's (#463), else None."""
 
     customer_id: str
     user_id: str | None
@@ -64,6 +67,8 @@ class UsageRow:
     output_tokens: int
     reasoning_tokens: int
     cost_usd: float | None
+    thinking: str | None = None
+    resolution: str | None = None
 
 
 def insert_usage(conn: Connection, rows: Sequence[UsageRow]) -> None:

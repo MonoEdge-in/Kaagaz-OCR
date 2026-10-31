@@ -48,7 +48,8 @@ part of it. ``read_page`` returns them per page; ``usage()`` keeps the process's
 the summed ``usage.cost`` when replies carry one. Every billed reply (a blocked, cut off,
 mid-reply error or repaired one too) also goes to the current usage scope's ledger
 (``kaagaz.ai.usage.record_call``, SP1) with its model, the reply's ``provider`` and its
-thinking tokens and cost.
+thinking tokens and cost; a page read with the thinking level and picture detail it was sent
+at (#463).
 
 **Failures** (G6), each a code:
 
@@ -1083,14 +1084,15 @@ class OpenRouterClient:
             max_output_tokens=PAGE_MAX_OUTPUT_TOKENS,
             provider_slug=DEFAULT_PROVIDER if provider is None else provider,
         )
-        reply = self._call(CHAT_PATH, body, deadline)
+        sent = (thinking_level, media_resolution)  # #463: the ledger's settings of a page read
+        reply = self._call(CHAT_PATH, body, deadline, sent=sent)
         input_tokens, output_tokens = reply_usage(reply)
         content, finish = _billed_text(reply, (0, 0))
         value, problem = _valid_reply(content, schema, validate)
         if value is None:
             body["messages"].append({"role": "assistant", "content": content})
             body["messages"].append({"role": "user", "content": REPAIR.format(problem=problem)})
-            reply = self._call(CHAT_PATH, body, deadline)
+            reply = self._call(CHAT_PATH, body, deadline, sent=sent)
             content, finish = _billed_text(reply, (input_tokens, output_tokens))
             more_in, more_out = reply_usage(reply)
             input_tokens, output_tokens = input_tokens + more_in, output_tokens + more_out
@@ -1167,9 +1169,12 @@ class OpenRouterClient:
             vector.append(float(number))
         return vector
 
-    def _call(self, path: str, body: Mapping[str, Any], deadline: float) -> dict[str, Any]:
+    def _call(
+        self, path: str, body: Mapping[str, Any], deadline: float, *, sent: tuple[str, str] | None = None
+    ) -> dict[str, Any]:
         """One request with the latch, the body's model's breaker, the limiter and retries
-        (G6, G9). Returns the reply object of a 200; raises a coded error otherwise."""
+        (G6, G9). Returns the reply object of a 200; raises a coded error otherwise. ``sent``:
+        a page read's (thinking, picture detail), for the ledger (#463)."""
         gate = self.gate
         model = str(body["model"])
         attempt = 0
@@ -1194,9 +1199,9 @@ class OpenRouterClient:
                     raise ModelUnavailable(reply.failure or "bad_response")
                 if not failed_mid_reply(reply.body):
                     gate.record(model, failed=False)
-                    self._count(reply.body, model)
+                    self._count(reply.body, model, sent)
                     return reply.body
-                self._count(reply.body, model)  # a reply that failed part way may still be billed
+                self._count(reply.body, model, sent)  # a reply that failed part way may still be billed
                 code = "server_error"
             elif reply.status in _KEY_STATUSES:
                 if reply.status == 403 and (
@@ -1237,7 +1242,7 @@ class OpenRouterClient:
             gate.sleep(wait)
             attempt += 1
 
-    def _count(self, reply: Mapping[str, Any], model: str) -> None:
+    def _count(self, reply: Mapping[str, Any], model: str, sent: tuple[str, str] | None = None) -> None:
         """Count one billed reply (G9): this client's totals, and the current usage scope's
         ledger (SP1, ``kaagaz.ai.usage``) under the model asked for and the provider the
         reply names, if it looks like a name. Every billed reply comes here: a blocked, cut
@@ -1246,7 +1251,17 @@ class OpenRouterClient:
         cost = reply_cost(reply)
         named = reply.get("provider")
         provider_name = named if isinstance(named, str) and _PROVIDER_NAME.fullmatch(named) else None
-        usage.record_call(model, provider_name, input_tokens, output_tokens, reasoning_tokens(reply), cost)
+        thinking, resolution = sent or (None, None)
+        usage.record_call(
+            model,
+            provider_name,
+            input_tokens,
+            output_tokens,
+            reasoning_tokens(reply),
+            cost,
+            thinking=thinking,
+            resolution=resolution,
+        )
         with self._lock:
             self._input_tokens += input_tokens
             self._output_tokens += output_tokens

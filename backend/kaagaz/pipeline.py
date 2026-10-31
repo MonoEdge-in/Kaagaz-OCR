@@ -1538,6 +1538,9 @@ class DocumentProcessor:
             model=run.model,
             provider=run.provider,
             thinking=None if reading is None else reading.thinking,
+            resolution=None if reading is None else reading.resolution,  # #463: the organisation's
+            careful_thinking=None if reading is None else reading.careful_thinking,
+            careful_resolution=None if reading is None else reading.careful_resolution,
             others=()
             if reading is None
             else tuple((agent.model, agent.provider) for agent in reading.others),

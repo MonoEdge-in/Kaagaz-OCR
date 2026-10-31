@@ -288,7 +288,7 @@ def live_pages(
             words = None
             if any(plan[-1:] == [PATH_WORDS] for plan in plans):
                 # The reader's own crops call, at COST_SAVING_CROP_PAD.
-                words = engine._careful_words(image, first, (careful, provider))
+                words = engine._careful_words(image, first, None, (careful, provider))
             pages.append(Page(name, first, reference, words))
             out.write(f"read {name}\n")
     return pages, lead

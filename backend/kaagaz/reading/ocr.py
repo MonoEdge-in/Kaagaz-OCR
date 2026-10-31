@@ -582,7 +582,12 @@ class DocumentPages:
 
     Never failed (16 Oct 2026): a page read above low thinking gets a low read alongside once
     it is slow, on the same 60 s page deadline (``careful_read`` reads do not: their first read
-    stays)."""
+    stays).
+
+    #463 (``kaagaz.db.models.Reading``): ``resolution`` the picture detail of a first read
+    (None: OCR_MEDIA_RESOLUTION); ``careful_thinking`` and ``careful_resolution`` Careful's
+    re-reads' and the read-again pages' (None: OCR_RETRY_THINKING_LEVEL and
+    OCR_RETRY_MEDIA_RESOLUTION)."""
 
     customer_id: str
     document_id: str
@@ -611,6 +616,9 @@ class DocumentPages:
     # #385: for a page asked to be read again for some of its regions (page fractions x0, y0,
     # x1, y1; ``pages.read_again_regions``), only those regions are read again.
     read_again_regions: Mapping[int, tuple[Region, ...]] = dataclasses.field(default_factory=dict)
+    resolution: str | None = None
+    careful_thinking: str | None = None
+    careful_resolution: str | None = None
 
 
 @runtime_checkable
