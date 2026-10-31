@@ -28,9 +28,12 @@ import {
   LEVELS,
   NO_PAGES,
   OTHER_SETTINGS,
+  TOKENS_LOW,
+  TOKENS_RANGE,
   TOO_MANY_CHECKS,
   accuracyWords,
   aiBody,
+  aiErrors,
   askScanCost,
   changesText,
   checkEffect,
@@ -44,13 +47,16 @@ import {
   draftOf,
   follows,
   inheritedText,
+  parseTokens,
   resetSection,
   sameSettings,
   scanSettings,
+  tokensTooLow,
+  tokensWords,
   withCost,
 } from "@/components/operator/models";
 import { STEP_UP_FAILED } from "@/components/operator/logic";
-import { AiFields } from "@/components/operator/OrgAiSettings";
+import { AiFields, firstProblem, refusalOf } from "@/components/operator/OrgAiSettings";
 import { DefaultsSummary } from "@/components/operator/PlatformDefaults";
 import { ApiError, getLatestAccuracyCheck, postAccuracyCheck, postScanCost, putAiDefaults, putOrgAi } from "@/lib/api";
 import { createPoller } from "@/lib/poll";
@@ -67,6 +73,7 @@ const values = (overrides: Partial<AiValues> = {}): AiValues => ({
   scan_resolution: null,
   careful_thinking: null,
   careful_resolution: null,
+  page_max_output_tokens: null,
   chat_levels: null,
   chat_default_level: null,
   dynamic: null,
@@ -79,6 +86,7 @@ const ENV = {
   scan_resolution: "high",
   careful_thinking: "high",
   careful_resolution: "low",
+  page_max_output_tokens: 65536,
 };
 const DEFAULTS = values({ chat_levels: ["low"], chat_default_level: "low", scan_resolution: "low", careful_thinking: "minimal" });
 const COUNTS: AiDefaults["orgs_inheriting"] = {
@@ -88,6 +96,7 @@ const COUNTS: AiDefaults["orgs_inheriting"] = {
   scan_resolution: 2,
   careful_thinking: 3,
   careful_resolution: 6,
+  page_max_output_tokens: 8,
   chat_levels: 7,
   dynamic: 5,
 };
@@ -114,6 +123,7 @@ const measured = (overrides: Partial<ScanCost> = {}): ScanCost => ({
   re_read: { model: "m/two", thinking: "high", resolution: "high", usd_per_page: 0.015, pages: 52, share: 0.042 },
   usd_per_page: 0.00273,
   quality: { clean_share: 0.94, pages: 1240, max_clean_share: 0.97, max_pages: 60 },
+  tokens: { input_per_page: 2050, output_per_page: 3100, output_p99: 6200, limit: 65536, limit_hits: 3, pages: 1240 },
   accuracy: null,
   ...overrides,
 });
@@ -226,7 +236,8 @@ describe("the scan settings' selects", () => {
   it("sends null for a setting set back to the platform default", () => {
     const source = read("components/operator/OrgAiSettings.tsx");
     expect(source).toContain("onPick: (value: string) => onChange({ ...draft, [field]: value || null })");
-    expect(source).toMatch(/document\.getElementById\(id\)\?\.focus\(\);\s*onPick\(""\);/);
+    expect(source).toMatch(/document\.getElementById\(id\)\?\.focus\(\);\s*onFollow\(\);/);
+    expect(source).toContain('onFollow={() => onPick("")}');
     expect(aiBody({ ...draftOf(values({ scan_resolution: "low" })), scan_resolution: null })).toEqual(values());
   });
 });
@@ -287,13 +298,20 @@ describe("the scan settings' draft and save", () => {
       const sent = capture(measured());
       await putAiDefaults(own, "123456");
       await putOrgAi("org-1", { ...values(), ensemble: false, ai_budget_usd: null }, "654321");
-      expect(await postScanCost(costAsk("org-1", draftOf(own)))).toEqual(measured());
+      expect(await postScanCost(costAsk("org-1", own))).toEqual(measured());
       expect(sent[0]?.body).toMatchObject({ scan_resolution: "low", careful_thinking: "medium", careful_resolution: "high", code: "123456" });
       expect(sent[1]?.body).toMatchObject({ scan_thinking: null, scan_resolution: null, careful_thinking: null, careful_resolution: null });
       expect(sent[2]).toEqual({
         url: "/api/operator/scan-cost",
         method: "POST",
-        body: { customer_id: "org-1", scan_thinking: "minimal", scan_resolution: "low", careful_thinking: "medium", careful_resolution: "high" },
+        body: {
+          customer_id: "org-1",
+          scan_thinking: "minimal",
+          scan_resolution: "low",
+          careful_thinking: "medium",
+          careful_resolution: "high",
+          page_max_output_tokens: null,
+        },
       });
       expect(costAsk(null, values())).toEqual({
         customer_id: null,
@@ -301,16 +319,26 @@ describe("the scan settings' draft and save", () => {
         scan_resolution: null,
         careful_thinking: null,
         careful_resolution: null,
+        page_max_output_tokens: null,
       });
     });
 
     it("start a check with the draft's scan settings and a fresh code, and read the latest", async () => {
       const sent = capture({ id: "c-1" }, 202);
-      expect(await postAccuracyCheck("org-1", { ...scanSettings(draftOf(own)), pages: 50 }, "123456")).toEqual({ id: "c-1" });
+      const limited = { ...own, page_max_output_tokens: 8192 };
+      expect(await postAccuracyCheck("org-1", { ...scanSettings(aiBody(draftOf(limited))), pages: 50 }, "123456")).toEqual({ id: "c-1" });
       expect(sent[0]).toEqual({
         url: "/api/operator/orgs/org-1/accuracy-check",
         method: "POST",
-        body: { scan_thinking: "minimal", scan_resolution: "low", careful_thinking: "medium", careful_resolution: "high", pages: 50, code: "123456" },
+        body: {
+          scan_thinking: "minimal",
+          scan_resolution: "low",
+          careful_thinking: "medium",
+          careful_resolution: "high",
+          page_max_output_tokens: 8192,
+          pages: 50,
+          code: "123456",
+        },
       });
       capture(check());
       expect(await getLatestAccuracyCheck("org-1")).toEqual(check());
@@ -382,12 +410,15 @@ describe("the Cost per page panel", () => {
     const source = read("components/operator/OrgAiSettings.tsx");
     expect(source).toContain("askScanCost(costAsk(customerId, saved), postScanCost, setSavedCost), [customerId, saved, finished]");
     expect(source).toContain(
-      "askScanCost(costAsk(customerId, { scan_thinking, scan_resolution, careful_thinking, careful_resolution }), postScanCost, setDraftCost)",
+      "costAsk(customerId, { scan_thinking, scan_resolution, careful_thinking, careful_resolution, page_max_output_tokens }),",
     );
-    expect(source).toContain("[customerId, differs, finished, scan_thinking, scan_resolution, careful_thinking, careful_resolution]");
+    expect(source).toContain(
+      "[customerId, differs, finished, scan_thinking, scan_resolution, careful_thinking, careful_resolution, page_max_output_tokens]",
+    );
     expect(source).toContain("const shown = differs ? draftCost : savedCost;");
-    expect(sameSettings(values(), draftOf(values({ scan_models: ["m/one"] })))).toBe(true); // models are not asked
-    expect(sameSettings(values(), draftOf(values({ careful_resolution: "low" })))).toBe(false);
+    expect(sameSettings(values(), values({ scan_models: ["m/one"] }))).toBe(true); // models are not asked
+    expect(sameSettings(values(), values({ careful_resolution: "low" }))).toBe(false);
+    expect(sameSettings(values(), values({ page_max_output_tokens: 8192 }))).toBe(false);
   });
 
   it("sits beside the fields on a wide dialog and under them on a phone", () => {
@@ -463,7 +494,7 @@ describe("the accuracy", () => {
     const dialog = read("components/operator/OrgAiSettings.tsx");
     expect(dialog).toContain("effect: checkEffect(org.name, latest, checkPages),");
     expect(dialog).toContain("stepUp: true,");
-    expect(dialog).toContain("run: (stepUpCode) => postAccuracyCheck(org.id, { ...scanSettings(draft), pages: checkPages }, stepUpCode),");
+    expect(dialog).toContain("run: (stepUpCode) => postAccuracyCheck(org.id, { ...scanSettings(aiBody(draft)), pages: checkPages }, stepUpCode),");
     // The confirm's form sits outside the settings' form: its submit never reaches Save.
     expect(dialog.indexOf("<ConfirmDialog")).toBeGreaterThan(dialog.lastIndexOf("</form>"));
   });
@@ -605,6 +636,114 @@ describe("asking the cost as the draft changes", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(show).toHaveBeenCalledTimes(1);
     expect(show).toHaveBeenCalledWith("failed");
+  });
+});
+
+describe("the most output tokens a page (Tushar, 31 Oct 2026)", () => {
+  const TOKENS_ID = "ai-page-max-output-tokens";
+
+  it("sits under First read after Picture detail, labelled, with its hint and the inherit text", () => {
+    const html = fields(false);
+    const at = (part: string) => html.search(new RegExp(part));
+    expect(at('id="ai-scan-resolution"')).toBeLessThan(at(`id="${TOKENS_ID}"`));
+    expect(at(`id="${TOKENS_ID}"`)).toBeLessThan(at("<h3[^>]*>Pages read again</h3>"));
+    expect(html).toContain(`<label for="${TOKENS_ID}" class="label">Most output tokens a page</label>`);
+    expect(html).toMatch(new RegExp(`<input id="${TOKENS_ID}" class="input" type="number"[^>]*placeholder="Platform default \\(65,536\\)"`));
+    expect(html).toMatch(new RegExp(`id="${TOKENS_ID}"[^>]*aria-describedby="${TOKENS_ID}-origin ${TOKENS_ID}-hint"`));
+    expect(html).toContain(
+      "The most the AI may write and think for one page. Too low, and long pages get cut off and read again in two halves, which costs more.",
+    );
+    expect(fields(true)).toContain('placeholder="The server&#x27;s setting (65,536)"');
+    expect(inheritedText("page_max_output_tokens", values({ page_max_output_tokens: 8192 }), ENV, catalogue)).toBe("8,192");
+  });
+
+  it("marks it own or followed, and Use platform default sends null", () => {
+    const own = fields(false, values({ page_max_output_tokens: 8192 }));
+    expect(originOf(own, TOKENS_ID)).toBe("Own setting");
+    expect(own).toContain('aria-label="Use platform default: Most output tokens a page"');
+    expect(originOf(fields(false), TOKENS_ID)).toBe("Platform default");
+    expect(originOf(fields(true, values({ page_max_output_tokens: 4096 })), TOKENS_ID)).toBe("Set here");
+    expect(read("components/operator/OrgAiSettings.tsx")).toContain(
+      'onFollow={() => onChange({ ...draft, page_max_output_tokens: "" })}',
+    );
+    expect(aiBody({ ...draftOf(values({ page_max_output_tokens: 8192 })), page_max_output_tokens: "" }).page_max_output_tokens).toBeNull();
+  });
+
+  it("checks 1,024 to 65,536 on the field before Save, and says the server's refusal there too", () => {
+    expect(["", " 1024 ", "65536", "8192"].map(parseTokens)).toEqual([null, 1024, 65536, 8192]);
+    for (const bad of ["1023", "65537", "0", "-5", "2048.5", "1e4", "lots"]) expect(parseTokens(bad), bad).toBeUndefined();
+    const draft = { ...draftOf(values()), page_max_output_tokens: "500" };
+    expect(aiErrors(draft, false)).toEqual({ page_max_output_tokens: "Choose a number from 1,024 to 65,536." });
+    expect(aiErrors({ ...draft, chat_levels: ["low"], chat_default_level: "low" }, true)).toEqual({
+      page_max_output_tokens: TOKENS_RANGE,
+    });
+    expect(firstProblem({ budget: "x", page_max_output_tokens: "y" })).toBe("page_max_output_tokens");
+    const html = renderToStaticMarkup(
+      createElement(AiFields, {
+        platform: false,
+        customerId: "org-1",
+        catalogue,
+        saved: values(),
+        defaults: DEFAULTS,
+        env: ENV,
+        maxAgents: 3,
+        draft,
+        errors: { page_max_output_tokens: TOKENS_RANGE },
+        busy: false,
+        onChange: () => undefined,
+      }),
+    );
+    expect(html).toMatch(
+      new RegExp(`id="${TOKENS_ID}"[^>]*aria-invalid="true" aria-describedby="${TOKENS_ID}-error ${TOKENS_ID}-origin ${TOKENS_ID}-hint"`),
+    );
+    expect(html).toContain(`<span id="${TOKENS_ID}-error" class="error-text" role="alert">Choose a number from 1,024 to 65,536.</span>`);
+    const refused = refusalOf(new ApiError(400, "limit_out_of_range", "Bad request."));
+    expect(refused).toEqual({ field: "page_max_output_tokens", message: "Choose a number from 1,024 to 65,536." });
+  });
+
+  it("saves it, null following, and lists it in the changes, the counts and the summary", () => {
+    expect(aiBody(draftOf(values({ page_max_output_tokens: 8192 })))).toEqual(values({ page_max_output_tokens: 8192 }));
+    expect(aiBody(draftOf(values()))).toEqual(values());
+    expect(follows(values({ page_max_output_tokens: 8192 })).scan).toBe("some");
+    expect(resetSection(draftOf(values({ page_max_output_tokens: 8192 })), "scan").page_max_output_tokens).toBe("");
+    const saved = draftOf(values());
+    expect(changesText(saved, { ...saved, page_max_output_tokens: "8192" }, catalogue)).toEqual(["Most output tokens a page: 8,192"]);
+    expect(changesText(draftOf(values({ page_max_output_tokens: 8192 })), saved, catalogue)).toEqual([
+      "Most output tokens a page: platform default",
+    ]);
+    expect(defaultsImpact(DEFAULTS, { ...DEFAULTS, page_max_output_tokens: 16384 }, COUNTS)).toEqual({
+      lead: "This save changes, for 8 organisations still on platform defaults:",
+      areas: ["Most output tokens a page"],
+    });
+    const summary = renderToStaticMarkup(createElement(DefaultsSummary, { reply: { defaults: DEFAULTS, env: ENV, orgs_inheriting: COUNTS }, catalogue }));
+    expect(summary).toMatch(/<dt[^>]*>Most output tokens a page<\/dt><dd>65,536<span[^>]*>Followed by 8 organisations/);
+  });
+
+  it("says the tokens a page in the Cost per page panel, or that they are not measured", () => {
+    expect(tokensWords(measured())).toEqual([
+      "Input: about 2,050 a page (picture and instructions; lower it with Picture detail).",
+      "Output: about 3,100 a page; 99% of pages use under 6,200.",
+      "Pages that hit the limit in the last 30 days: 3 of 1,240.",
+    ]);
+    const none = { input_per_page: null, output_per_page: null, output_p99: null, limit: 65536, limit_hits: 0, pages: 0 };
+    expect(tokensWords(measured({ tokens: none }))).toEqual(["Not measured yet at these settings."]);
+    const html = fields(false);
+    expect(html).toMatch(/<h3[^>]*>Tokens a page<\/h3><div id="ai-tokens" aria-live="polite">/);
+  });
+
+  it("warns, in words, when the limit is below what 1 in 100 pages needs", () => {
+    expect(TOKENS_LOW).toBe(
+      "This is below what 1 in 100 pages needs. Those pages will be cut off and read again in two halves, which costs more and is slower.",
+    );
+    expect(tokensTooLow(measured(), 4096)).toBe(true); // the draft's own limit, under 6,200
+    expect(tokensTooLow(measured(), 8192)).toBe(false);
+    expect(tokensTooLow(measured(), null)).toBe(false); // follows: the priced limit, 65,536
+    const tight = measured({ tokens: { ...measured().tokens, limit: 4096 } });
+    expect(tokensTooLow(tight, null)).toBe(true);
+    expect(tokensTooLow(measured({ tokens: { ...measured().tokens, output_p99: null } }), 1024)).toBe(false); // no data
+    expect(read("components/operator/OrgAiSettings.tsx")).toMatch(
+      /\{tooLow && \(\s*<p id="ai-tokens-low" className="error-text">\s*\{TOKENS_LOW\}/,
+    );
   });
 });
 

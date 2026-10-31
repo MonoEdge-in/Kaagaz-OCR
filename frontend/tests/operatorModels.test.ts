@@ -257,6 +257,7 @@ const values = (overrides: Partial<AiValues> = {}): AiValues => ({
   scan_resolution: null,
   careful_thinking: null,
   careful_resolution: null,
+  page_max_output_tokens: null,
   chat_levels: null,
   chat_default_level: null,
   dynamic: null,
@@ -269,6 +270,7 @@ const ENV = {
   scan_resolution: "high",
   careful_thinking: "high",
   careful_resolution: "high",
+  page_max_output_tokens: 65536,
 };
 const DEFAULTS = values({
   scan_models: ["m/one", "m/two"],
@@ -284,6 +286,7 @@ const COUNTS: AiDefaults["orgs_inheriting"] = {
   scan_resolution: 1,
   careful_thinking: 1,
   careful_resolution: 1,
+  page_max_output_tokens: 1,
   chat_levels: 7,
   dynamic: 5,
 };
@@ -373,7 +376,7 @@ describe("the AI settings form's rules", () => {
   it("says per area whether it follows the platform defaults (C12)", () => {
     expect(statusText(values())).toBe("Scanning: platform defaults · Answering: platform defaults");
     // Changed on purpose (#463, 31 Oct 2026): picture detail and pages read again are scanning settings too.
-    const scanOwn = { scan_resolution: "low", careful_thinking: "high", careful_resolution: "high" } as const;
+    const scanOwn = { scan_resolution: "low", careful_thinking: "high", careful_resolution: "high", page_max_output_tokens: 8192 } as const;
     expect(statusText(values({ scan_models: ["m/one"], scan_thinking: "high", dynamic: false, ...scanOwn }))).toBe(
       "Scanning: own settings · Answering: platform defaults",
     );

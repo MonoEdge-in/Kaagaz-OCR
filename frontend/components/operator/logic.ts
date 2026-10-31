@@ -137,6 +137,7 @@ export const REFUSALS: Record<string, string> = {
   unavailable: "One of these models is not enabled on the platform now, or can't do this work. Reload and choose again.",
   default_not_allowed: "Choose each default from its own ticked list.",
   level_not_supported: "A chosen model does not accept one of these thinking levels. Choose levels every model accepts.",
+  limit_out_of_range: "Choose a number from 1,024 to 65,536.", // the most output tokens a page (#463)
 };
 
 /** Plain words for a refused change. A 409 keeps the server's own sentence

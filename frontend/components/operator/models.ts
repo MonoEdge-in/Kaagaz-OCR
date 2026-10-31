@@ -5,7 +5,7 @@
 // can prove them. Dollars stay in the operator console: org admins and members never see
 // money (Tushar, 15 Oct 2026).
 
-import { PART_NOT_KNOWN, formatUsd } from "@/lib/format";
+import { PART_NOT_KNOWN, formatNumber, formatUsd } from "@/lib/format";
 import type {
   AiDefaults,
   AiEnv,
@@ -182,6 +182,7 @@ export interface AiDraft {
   scan_resolution: Resolution | null;
   careful_thinking: ScanLevel | null;
   careful_resolution: Resolution | null;
+  page_max_output_tokens: string; // as typed; empty follows
   chat_levels: AiLevel[];
   chat_default_level: AiLevel | null;
   dynamic: boolean | null;
@@ -199,6 +200,7 @@ export function draftOf(values: AiValues, extra: { ensemble: boolean; ai_budget_
     scan_resolution: values.scan_resolution,
     careful_thinking: values.careful_thinking,
     careful_resolution: values.careful_resolution,
+    page_max_output_tokens: values.page_max_output_tokens === null ? "" : String(values.page_max_output_tokens),
     chat_levels: [...(values.chat_levels ?? [])],
     chat_default_level: values.chat_default_level,
     dynamic: values.dynamic,
@@ -230,6 +232,7 @@ export function resetSection(draft: AiDraft, section: Section): AiDraft {
         scan_resolution: null,
         careful_thinking: null,
         careful_resolution: null,
+        page_max_output_tokens: "",
         dynamic: null,
       };
     case "chat":
@@ -272,8 +275,32 @@ export function parseBudget(text: string): number | null | undefined {
   return value > 0 && value <= MAX_BUDGET ? value : undefined;
 }
 
+// The most output tokens a page (#463, Tushar, 31 Oct 2026): what the server accepts.
+export const MIN_PAGE_TOKENS = 1024;
+export const MAX_PAGE_TOKENS = 65536;
+export const TOKENS_HINT =
+  "The most the AI may write and think for one page. Too low, and long pages get cut off and read again in two halves, which costs more.";
+export const TOKENS_RANGE = "Choose a number from 1,024 to 65,536.";
+
+/** The most output tokens a page as a number, null to follow, or undefined when it is not one. */
+export function parseTokens(text: string): number | null | undefined {
+  const trimmed = text.trim();
+  if (trimmed === "") return null;
+  if (!/^\d{1,6}$/.test(trimmed)) return undefined;
+  const value = Number(trimmed);
+  return value >= MIN_PAGE_TOKENS && value <= MAX_PAGE_TOKENS ? value : undefined;
+}
+
 /** Where a problem is shown: next to its field. "form" is the form's own line. */
-export type AiField = "scan_models" | "scan_default" | "chat_models" | "chat_default" | "chat_levels" | "budget" | "form";
+export type AiField =
+  | "scan_models"
+  | "scan_default"
+  | "page_max_output_tokens"
+  | "chat_models"
+  | "chat_default"
+  | "chat_levels"
+  | "budget"
+  | "form";
 export type AiErrors = Partial<Record<AiField, string>>;
 
 /** The form's own checks, before a code is asked for or anything is sent. */
@@ -283,6 +310,7 @@ export function aiErrors(draft: AiDraft, platform: boolean): AiErrors {
     errors.scan_default = "Choose the default scanning model from the ticked models.";
   if (draft.chat_models.length > 0 && (draft.chat_default === null || !draft.chat_models.includes(draft.chat_default)))
     errors.chat_default = "Choose the default answering model from the ticked models.";
+  if (parseTokens(draft.page_max_output_tokens) === undefined) errors.page_max_output_tokens = TOKENS_RANGE;
   if (platform && draft.chat_levels.length === 0) errors.chat_levels = "Tick at least one thinking level.";
   else if (
     draft.chat_levels.length > 0 &&
@@ -307,6 +335,7 @@ export function aiBody(draft: AiDraft): AiValues {
     scan_resolution: draft.scan_resolution,
     careful_thinking: draft.careful_thinking,
     careful_resolution: draft.careful_resolution,
+    page_max_output_tokens: parseTokens(draft.page_max_output_tokens) ?? null,
     chat_levels: levels ? draft.chat_levels : null,
     chat_default_level: levels ? draft.chat_default_level : null,
     dynamic: draft.dynamic,
@@ -332,6 +361,7 @@ export function follows(own: AiValues): { scan: "all" | "some" | "none"; chat: "
       own.scan_resolution === null,
       own.careful_thinking === null,
       own.careful_resolution === null,
+      own.page_max_output_tokens === null,
       own.dynamic === null,
     ]),
     chat: part([own.chat_models.length === 0, own.chat_levels === null]),
@@ -355,7 +385,7 @@ export function namesOf(ids: string[], catalogue: OperatorModel[], first: string
 /** What an organisation that follows the platform gets, in words, for "From platform
  * defaults: …". An empty platform list is the server's own model. */
 export function inheritedText(
-  field: "scan_models" | "chat_models" | ScanSetting | "chat_levels" | "dynamic",
+  field: "scan_models" | "chat_models" | ScanSetting | "page_max_output_tokens" | "chat_levels" | "dynamic",
   defaults: AiValues,
   env: AiEnv,
   catalogue: OperatorModel[],
@@ -370,6 +400,8 @@ export function inheritedText(
     case "careful_thinking":
     case "careful_resolution":
       return settingWords(field, defaults) ?? `the server's level (${env[field]})`;
+    case "page_max_output_tokens":
+      return formatNumber(defaults.page_max_output_tokens ?? env.page_max_output_tokens);
     case "chat_levels":
       return levelText(defaults);
     case "dynamic":
@@ -432,6 +464,12 @@ const DEFAULT_AREAS: {
     changed: (a: AiValues, b: AiValues) => a[area] !== b[area],
     now: (v: AiValues) => settingWords(area, v) ?? "platform default",
   })),
+  {
+    area: "page_max_output_tokens",
+    label: "most output tokens a page",
+    changed: (a, b) => a.page_max_output_tokens !== b.page_max_output_tokens,
+    now: (v) => (v.page_max_output_tokens === null ? "platform default" : formatNumber(v.page_max_output_tokens)),
+  },
   {
     area: "dynamic",
     label: COST_SAVING,
@@ -504,6 +542,8 @@ export function refusalField(code: string): AiField {
       return "scan_models";
     case "chat_not_verified":
       return "chat_models";
+    case "limit_out_of_range":
+      return "page_max_output_tokens";
     default: // unavailable, default_not_allowed, level_not_supported: either area
       return "form";
   }
@@ -532,25 +572,31 @@ export const NO_PAGES = "This organisation has no scanned pages to check yet.";
 export type CostReply = ScanCost | "failed" | null;
 
 /** The cost endpoint's question for these scan settings; null fields are what a save inherits. */
-export const costAsk = (customerId: string | null, values: Pick<AiValues, ScanSetting>): ScanCostAsk => ({
+export const costAsk = (customerId: string | null, values: ScanAsk): ScanCostAsk => ({
   customer_id: customerId,
   ...scanSettings(values),
 });
 
-/** Just the four scan settings (an accuracy check's body, with its code). */
-export const scanSettings = (values: Pick<AiValues, ScanSetting>): Pick<AiValues, ScanSetting> => ({
+/** The settings a cost or an accuracy check is asked for: the four scan settings and the
+ * most output tokens a page. */
+export type ScanAsk = Pick<AiValues, ScanSetting | "page_max_output_tokens">;
+
+/** Just those settings (an accuracy check's body, with its pages and code). */
+export const scanSettings = (values: ScanAsk): ScanAsk => ({
   scan_thinking: values.scan_thinking,
   scan_resolution: values.scan_resolution,
   careful_thinking: values.careful_thinking,
   careful_resolution: values.careful_resolution,
+  page_max_output_tokens: values.page_max_output_tokens,
 });
 
 /** Do two sets of scan settings ask the same cost? */
-export const sameSettings = (a: Pick<AiValues, ScanSetting>, b: Pick<AiValues, ScanSetting>) =>
+export const sameSettings = (a: ScanAsk, b: ScanAsk) =>
   a.scan_thinking === b.scan_thinking &&
   a.scan_resolution === b.scan_resolution &&
   a.careful_thinking === b.careful_thinking &&
-  a.careful_resolution === b.careful_resolution;
+  a.careful_resolution === b.careful_resolution &&
+  a.page_max_output_tokens === b.page_max_output_tokens;
 
 /**
  * Ask the cost once the draft has rested COST_DELAY_MS, then show the reply, or "failed"
@@ -614,6 +660,28 @@ export function costWords(reply: CostReply): CostWords {
         : `Read again: ${percent(again.share)} of pages, ${perPage.format(again.usd_per_page)} each.`,
     );
   return { figure: `About ${rupeeText(total)} a page`, dollars: `${perPage.format(total)} a page`, lines };
+}
+
+/** The Tokens a page part of the panel: input, output with the 99th percentile, and the
+ * pages that hit the limit; one line when nothing is measured. */
+export function tokensWords(reply: ScanCost): string[] {
+  const { input_per_page: input, output_per_page: output, output_p99: p99, limit_hits: hits, pages } = reply.tokens;
+  if (pages === 0 || (input === null && output === null)) return ["Not measured yet at these settings."];
+  const lines: string[] = [];
+  if (input !== null) lines.push(`Input: about ${formatNumber(input)} a page (picture and instructions; lower it with Picture detail).`);
+  if (output !== null)
+    lines.push(`Output: about ${formatNumber(output)} a page${p99 === null ? "." : `; 99% of pages use under ${formatNumber(p99)}.`}`);
+  lines.push(`Pages that hit the limit in the last ${reply.days} days: ${formatNumber(hits)} of ${formatNumber(pages)}.`);
+  return lines;
+}
+
+export const TOKENS_LOW =
+  "This is below what 1 in 100 pages needs. Those pages will be cut off and read again in two halves, which costs more and is slower.";
+
+/** Is the draft's limit (its own, else the one the reply priced) below what 1 in 100 pages needs? */
+export function tokensTooLow(reply: ScanCost, draftLimit: number | null): boolean {
+  const p99 = reply.tokens.output_p99;
+  return p99 !== null && (draftLimit ?? reply.tokens.limit) < p99;
 }
 
 /** While the draft differs from what is saved and both are measured: "Now ₹0.31 → ₹0.18 a

@@ -103,6 +103,11 @@ export function DefaultsSummary({ reply, catalogue }: { reply: AiDefaults; catal
       value: inheritedText("careful_resolution", defaults, env, catalogue),
       count: counts.careful_resolution,
     },
+    {
+      label: "Most output tokens a page",
+      value: inheritedText("page_max_output_tokens", defaults, env, catalogue),
+      count: counts.page_max_output_tokens,
+    },
     { label: COST_SAVING, value: inheritedText("dynamic", defaults, env, catalogue), count: counts.dynamic },
     { label: "Answering models", value: inheritedText("chat_models", defaults, env, catalogue), count: counts.chat_models },
     { label: "Answering levels", value: inheritedText("chat_levels", defaults, env, catalogue), count: counts.chat_levels },

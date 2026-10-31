@@ -65,6 +65,8 @@ import {
   RESOLUTION_HINT,
   RESOLUTION_WORDS,
   SCAN_LEVELS,
+  TOKENS_HINT,
+  TOKENS_LOW,
   VENDOR_NOT_ALLOWED,
   accuracyWords,
   aiBody,
@@ -86,6 +88,7 @@ import {
   monthSpentText,
   offered,
   parseBudget,
+  parseTokens,
   pickerText,
   realCostText,
   refusalField,
@@ -97,6 +100,8 @@ import {
   statusText,
   toggled,
   toggledLevel,
+  tokensTooLow,
+  tokensWords,
   withCost,
 } from "./models";
 import type { AiDraft, AiErrors, AiField, Area, CheckPages, CostReply, ScanSetting, Section } from "./models";
@@ -122,7 +127,7 @@ export function refusalOf(caught: unknown): { field: AiField | "code"; message: 
 
 /** The first field with a problem, in the form's order, for the focus. */
 export function firstProblem(errors: AiErrors): AiField | null {
-  const order: AiField[] = ["scan_models", "scan_default", "chat_models", "chat_default", "chat_levels", "budget", "form"];
+  const order: AiField[] = ["scan_models", "scan_default", "page_max_output_tokens", "chat_models", "chat_default", "chat_levels", "budget", "form"];
   return order.find((field) => errors[field]) ?? null;
 }
 
@@ -387,7 +392,7 @@ export function OrgAiSettings({ org, onClose, onSaved }: { org: Organisation; on
             danger: false,
             stepUp: true,
             focusId: ACCURACY_ID,
-            run: (stepUpCode) => postAccuracyCheck(org.id, { ...scanSettings(draft), pages: checkPages }, stepUpCode),
+            run: (stepUpCode) => postAccuracyCheck(org.id, { ...scanSettings(aiBody(draft)), pages: checkPages }, stepUpCode),
             errorText: checkRefusal,
           }}
           onClose={() => setChecking(false)}
@@ -516,6 +521,38 @@ export function AiFields(props: {
                 label="Picture detail"
                 hint={RESOLUTION_HINT}
                 {...setting("scan_resolution", RESOLUTIONS, RESOLUTION_WORDS)}
+              />
+              <SettingField
+                id={fieldId("page_max_output_tokens")}
+                label="Most output tokens a page"
+                platform={platform}
+                own={draft.page_max_output_tokens.trim() !== ""}
+                hint={TOKENS_HINT}
+                onFollow={() => onChange({ ...draft, page_max_output_tokens: "" })}
+                control={(describedBy) => (
+                  <input
+                    id={fieldId("page_max_output_tokens")}
+                    className="input"
+                    type="number"
+                    inputMode="numeric"
+                    min="1024"
+                    max="65536"
+                    step="1"
+                    placeholder={
+                      platform
+                        ? `The server's setting (${from("page_max_output_tokens")})`
+                        : `Platform default (${from("page_max_output_tokens")})`
+                    }
+                    value={draft.page_max_output_tokens}
+                    // The wheel scrolls the dialog, never the number: the box lets go of the focus first.
+                    onWheel={(event) => event.currentTarget.blur()}
+                    onChange={(event) => onChange({ ...draft, page_max_output_tokens: event.target.value })}
+                    aria-invalid={errors.page_max_output_tokens ? true : undefined}
+                    aria-describedby={describedBy}
+                  />
+                )}
+                problem={errors.page_max_output_tokens ? <FieldError field="page_max_output_tokens" errors={errors} /> : null}
+                problemId={`${fieldId("page_max_output_tokens")}-error`}
               />
               <h3 className={styles.subHeading}>Pages read again</h3>
               {platform ? (
@@ -672,9 +709,61 @@ export function AiFields(props: {
   );
 }
 
-/** One scan setting's select (#463): its label, whether the value is the organisation's own
- * (set here, on the platform) or followed, its hint, and a way back to the followed value.
- * "" is the followed value. */
+/** One scan setting (#463): its label, whether the value is the organisation's own (set
+ * here, on the platform) or followed, its control, its hint and problem, and a way back to
+ * the followed value. */
+function SettingField(props: {
+  id: string;
+  label: string;
+  platform: boolean;
+  own: boolean;
+  hint?: string;
+  problem?: ReactNode; // said next to it, with problemId
+  problemId?: string;
+  onFollow(): void;
+  control(describedBy: string): ReactNode;
+}) {
+  const { id, label, platform, own, hint, problem, problemId, onFollow, control } = props;
+  const back = platform ? "Use the server's setting" : "Use platform default";
+  const describedBy = [problem && problemId ? problemId : "", `${id}-origin`, hint ? `${id}-hint` : ""].filter(Boolean).join(" ");
+  return (
+    <div className="field">
+      <div className={styles.fieldHead}>
+        <label htmlFor={id} className="label">
+          {label}
+        </label>
+        <span id={`${id}-origin`} className={styles.origin}>
+          {own ? (platform ? "Set here" : "Own setting") : platform ? "The server's setting" : "Platform default"}
+        </span>
+      </div>
+      {control(describedBy)}
+      {hint && (
+        <span id={`${id}-hint`} className="hint">
+          {hint}
+        </span>
+      )}
+      {problem}
+      {own && (
+        <div>
+          <button
+            type="button"
+            className="btn btn-quiet"
+            aria-label={`${back}: ${label}`}
+            onClick={() => {
+              // The button goes once the value follows: the focus moves to its control.
+              document.getElementById(id)?.focus();
+              onFollow();
+            }}
+          >
+            {back}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** A scan setting's select; "" is the followed value. */
 function SettingSelect(props: {
   id: string;
   label: string;
@@ -686,54 +775,25 @@ function SettingSelect(props: {
   onPick(value: string): void;
 }) {
   const { id, label, platform, inherit, value, options, hint, onPick } = props;
-  const own = value !== "";
-  const back = platform ? "Use the server's setting" : "Use platform default";
   return (
-    <div className="field">
-      <div className={styles.fieldHead}>
-        <label htmlFor={id} className="label">
-          {label}
-        </label>
-        <span id={`${id}-origin`} className={styles.origin}>
-          {own ? (platform ? "Set here" : "Own setting") : platform ? "The server's setting" : "Platform default"}
-        </span>
-      </div>
-      <select
-        id={id}
-        className="input"
-        value={value}
-        aria-describedby={hint ? `${id}-origin ${id}-hint` : `${id}-origin`}
-        onChange={(event) => onPick(event.target.value)}
-      >
-        <option value="">{inherit}</option>
-        {options.map((option) => (
-          <option key={option.value} value={option.value}>
-            {option.words}
-          </option>
-        ))}
-      </select>
-      {hint && (
-        <span id={`${id}-hint`} className="hint">
-          {hint}
-        </span>
+    <SettingField
+      id={id}
+      label={label}
+      platform={platform}
+      own={value !== ""}
+      hint={hint}
+      onFollow={() => onPick("")}
+      control={(describedBy) => (
+        <select id={id} className="input" value={value} aria-describedby={describedBy} onChange={(event) => onPick(event.target.value)}>
+          <option value="">{inherit}</option>
+          {options.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.words}
+            </option>
+          ))}
+        </select>
       )}
-      {own && (
-        <div>
-          <button
-            type="button"
-            className="btn btn-quiet"
-            aria-label={`${back}: ${label}`}
-            onClick={() => {
-              // The button goes once the value follows: the focus moves to its select.
-              document.getElementById(id)?.focus();
-              onPick("");
-            }}
-          >
-            {back}
-          </button>
-        </div>
-      )}
-    </div>
+    />
   );
 }
 
@@ -748,8 +808,9 @@ function CostPanel(props: {
   check?: { latest: AccuracyCheck | null; onCheck(): void };
 }) {
   const { platform, customerId, saved, draft, check } = props;
-  const { scan_thinking, scan_resolution, careful_thinking, careful_resolution } = draft;
-  const differs = !sameSettings(saved, draft);
+  const draftAsk = scanSettings(aiBody(draft));
+  const { scan_thinking, scan_resolution, careful_thinking, careful_resolution, page_max_output_tokens } = draftAsk;
+  const differs = !sameSettings(saved, draftAsk);
   const finished = check?.latest?.finished_at ?? null; // a finished check: ask again for its result
   const [savedCost, setSavedCost] = useState<CostReply>(null);
   const [draftCost, setDraftCost] = useState<CostReply>(null);
@@ -759,9 +820,13 @@ function CostPanel(props: {
   useEffect(
     () =>
       differs
-        ? askScanCost(costAsk(customerId, { scan_thinking, scan_resolution, careful_thinking, careful_resolution }), postScanCost, setDraftCost)
+        ? askScanCost(
+            costAsk(customerId, { scan_thinking, scan_resolution, careful_thinking, careful_resolution, page_max_output_tokens }),
+            postScanCost,
+            setDraftCost,
+          )
         : undefined,
-    [customerId, differs, finished, scan_thinking, scan_resolution, careful_thinking, careful_resolution],
+    [customerId, differs, finished, scan_thinking, scan_resolution, careful_thinking, careful_resolution, page_max_output_tokens],
   );
   const shown = differs ? draftCost : savedCost;
   const words = costWords(shown);
@@ -769,6 +834,7 @@ function CostPanel(props: {
   const reply = shown !== null && shown !== "failed" ? shown : null;
   const accuracy = check ? accuracyWords(reply?.accuracy ?? null, check.latest) : null;
   const running = checkRunning(check?.latest ?? null);
+  const tooLow = reply !== null && tokensTooLow(reply, parseTokens(draft.page_max_output_tokens) ?? null);
   return (
     <div className={styles.costColumn}>
       <section className={styles.costPanel} aria-labelledby="ai-cost-heading">
@@ -789,6 +855,21 @@ function CostPanel(props: {
               {line}
             </p>
           ))}
+        </div>
+        <div className={styles.accuracy}>
+          <h3 className={styles.subHeading}>Tokens a page</h3>
+          <div id="ai-tokens" aria-live="polite">
+            {reply && tokensWords(reply).map((line) => (
+              <p key={line} className={styles.costSmall}>
+                {line}
+              </p>
+            ))}
+            {tooLow && (
+              <p id="ai-tokens-low" className="error-text">
+                {TOKENS_LOW}
+              </p>
+            )}
+          </div>
         </div>
         <div className={styles.accuracy}>
           <h3 id={ACCURACY_ID} className={styles.subHeading} tabIndex={-1}>

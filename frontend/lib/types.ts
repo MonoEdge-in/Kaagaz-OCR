@@ -1371,6 +1371,7 @@ export interface AiValues {
   scan_resolution: Resolution | null;
   careful_thinking: ScanLevel | null; // pages read again
   careful_resolution: Resolution | null;
+  page_max_output_tokens: number | null; // the most a page's read may write and think
   chat_levels: AiLevel[] | null;
   chat_default_level: AiLevel | null;
   dynamic: boolean | null;
@@ -1384,6 +1385,7 @@ export interface AiEnv {
   scan_resolution: string;
   careful_thinking: string;
   careful_resolution: string;
+  page_max_output_tokens: number;
 }
 
 /** GET /operator/orgs/{id}/ai (operator only: the budget is in US dollars). */
@@ -1401,7 +1403,15 @@ export interface AiDefaults {
   defaults: AiValues;
   env: AiEnv;
   orgs_inheriting: Record<
-    "scan_models" | "chat_models" | "scan_thinking" | "scan_resolution" | "careful_thinking" | "careful_resolution" | "chat_levels" | "dynamic",
+    | "scan_models"
+    | "chat_models"
+    | "scan_thinking"
+    | "scan_resolution"
+    | "careful_thinking"
+    | "careful_resolution"
+    | "page_max_output_tokens"
+    | "chat_levels"
+    | "dynamic",
     number
   >;
 }
@@ -1410,7 +1420,7 @@ export interface AiDefaults {
  * inherit. customer_id null: the platform defaults. */
 export type ScanCostAsk = { customer_id: string | null } & Pick<
   AiValues,
-  "scan_thinking" | "scan_resolution" | "careful_thinking" | "careful_resolution"
+  "scan_thinking" | "scan_resolution" | "careful_thinking" | "careful_resolution" | "page_max_output_tokens"
 >;
 
 /** One kind of page read, as measured in the last `days`: usd_per_page null when no page
@@ -1435,6 +1445,16 @@ export interface ScanCost {
   re_read: (ScanCostRead & { share: number | null }) | null;
   usd_per_page: number | null;
   quality: { clean_share: number | null; pages: number; max_clean_share: number | null; max_pages: number };
+  // Tokens a page at these settings in the last `days`: null without data; limit_hits: pages
+  // whose read reached the limit (cut off and read again in two halves).
+  tokens: {
+    input_per_page: number | null;
+    output_per_page: number | null;
+    output_p99: number | null;
+    limit: number;
+    limit_hits: number;
+    pages: number;
+  };
   accuracy: AccuracyCheck | null;
 }
 
