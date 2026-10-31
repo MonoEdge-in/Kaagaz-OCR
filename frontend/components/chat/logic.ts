@@ -4,7 +4,9 @@
 // answer, what a source card says about its page, and what a failed question
 // tells the person to do.
 
+import { ApiError } from "@/lib/api";
 import { flushDrafts, readDraft, saveDraft } from "@/lib/drafts";
+import { errorWords } from "@/lib/errorWords";
 import type { Draft } from "@/lib/drafts";
 import { formatDate, typeLabel } from "@/lib/format";
 import { pageLink } from "@/lib/regions";
@@ -221,6 +223,12 @@ export function askErrorText(error: { status: number; message: string } | null):
     return message;
   }
   return "Could not get an answer right now. Try again in a minute.";
+}
+
+/** Why a conversation did not load, and what to do (issue 468): Try again sits beside it. */
+export function conversationLoadText(caught: unknown): string {
+  const cause = caught instanceof ApiError ? errorWords(caught) : "Check your internet connection and try again.";
+  return `Could not load this conversation. ${cause}`;
 }
 
 // --- The question box's draft (issue 468) -------------------------------------

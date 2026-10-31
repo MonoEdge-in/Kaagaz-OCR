@@ -15,6 +15,7 @@
 // <main id="main"> has no padding; screens use .page (the chat fills it).
 // #457: while the person's email is not confirmed, EmailBanner sits at the top of <main>;
 // an account connected in the last 14 days, ConnectedBanner (phase 1).
+// Issue 468: above them, while the browser has no connection, OfflineBanner.
 
 import Form from "next/form";
 import Link from "next/link";
@@ -37,6 +38,7 @@ import { StatusBarSlot } from "./StatusBar";
 import { SHELL_UPLOAD_INPUT_ID, UploadsProvider } from "./Uploads";
 import { ClockPeek } from "./ClockPeek";
 import { EmailBanner } from "./EmailBanner";
+import { OfflineBanner } from "./OfflineBanner";
 import { Wordmark } from "./Wordmark";
 import styles from "./Shell.module.css";
 
@@ -178,6 +180,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           // A 1px edge under the header once the content has scrolled (UI audit G11).
           onScroll={(event) => event.currentTarget.toggleAttribute("data-scrolled", event.currentTarget.scrollTop > 0)}
         >
+          <OfflineBanner />
           {!me.user.email_confirmed && <EmailBanner email={me.user.email} />}
           <ConnectedBanner items={me.recent_connections ?? NONE} />
           <StatusBarSlot value={statusBar}>

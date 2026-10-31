@@ -15,7 +15,7 @@ import { announceSession, leavePage } from "@/lib/sessionChannel";
 import { CodeField } from "./CodeField";
 import { EXPIRED } from "./providerMessages";
 import { signInErrorMessage } from "./signIn";
-import { CODE_ADVICE, codeError, normalizeCode } from "./twoStep";
+import { CODE_ADVICE, LOST_PHONE_HELP, codeError, normalizeCode } from "./twoStep";
 import styles from "./login.module.css";
 
 const CODE_ID = "login-provider-code";
@@ -77,6 +77,7 @@ export function ProviderCodeStep({ next }: { next: string }) {
           hint="From your authenticator app. A new code shows every 30 seconds."
         />
       )}
+      {!expired && <p className="hint">{LOST_PHONE_HELP}</p>}
       {serverError && (
         <div className={styles.banner} role="alert">
           <Icon name="alert" />

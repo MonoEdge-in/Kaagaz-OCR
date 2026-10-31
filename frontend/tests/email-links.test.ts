@@ -96,7 +96,8 @@ describe("what the email screens say", () => {
     );
     const page = read("app/email/confirm/ConfirmEmail.tsx");
     expect(page).toContain("confirmedText(reply.pending)");
-    expect(page).toContain('linkError(caught, "confirm")');
+    // Changed on purpose (issue 468): confirmError, linkError's words with "open the email link again".
+    expect(page).toContain("confirmError(caught)");
   });
 
   it("uses the spec's words", () => {

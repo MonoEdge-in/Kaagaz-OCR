@@ -44,7 +44,7 @@ import {
 } from "./signIn";
 import type { SignInErrors, SignInField } from "./signIn";
 import { SignedOutNotice } from "./SignedOutNotice";
-import { CODE_ADVICE, codeError, codeNeeded, enrolOffer, normalizeCode } from "./twoStep";
+import { CODE_ADVICE, LOST_PHONE_HELP, codeError, codeNeeded, enrolOffer, normalizeCode } from "./twoStep";
 import styles from "./login.module.css";
 
 const FIELD_IDS: Record<SignInField | "code", string> = {
@@ -260,6 +260,7 @@ export function SignInForm({
           hint={CODE_HINT}
         />
       )}
+      {askCode && <p className="hint">{LOST_PHONE_HELP}</p>}
 
       {serverError && (
         <div className={styles.banner} role="alert">

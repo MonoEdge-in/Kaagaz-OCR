@@ -37,6 +37,7 @@ import { Toast } from "@/components/admin/Toast";
 import type { Notice } from "@/components/admin/Toast";
 import { StoryMatches } from "@/components/stories/StoryMatches";
 import { Drawer } from "@/components/ui/Drawer";
+import { StillLoading } from "@/components/shell/StillLoading";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Icon } from "@/components/ui/Icon";
 import { IconButton } from "@/components/ui/IconButton";
@@ -93,6 +94,7 @@ import {
   chatHref,
   choiceBody,
   conversationFromSearch,
+  conversationLoadText,
   defaultPick,
   documentFromSearch,
   hasChoices,
@@ -202,6 +204,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
     restoreId ? keptScope() : startScope(documentFromSearch(initialSearch)),
   );
   const [messages, setMessages] = useState<Message[]>([]);
+  const [threadError, setThreadError] = useState(""); // why, once threadState is "error"
   const [threadState, setThreadState] = useState<"idle" | "loading" | "error">(
     restoreId ? "loading" : "idle",
   );
@@ -388,6 +391,7 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
             setThreadState("idle");
             showInUrl(null);
           } else {
+            setThreadError(conversationLoadText(error));
             setThreadState("error");
           }
         })
@@ -537,8 +541,10 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
       setScope(restoredScope(conversation.messages));
       setThreadState("idle");
       setStatus(LOADED_STATUS);
-    } catch {
-      if (request === openRequest.current) setThreadState("error");
+    } catch (error) {
+      if (request !== openRequest.current) return;
+      setThreadError(conversationLoadText(error));
+      setThreadState("error");
     }
   };
 
@@ -842,15 +848,18 @@ export function ChatScreen({ initialSearch }: { initialSearch: string }) {
               />
             ) : null}
             {mode === "documents" && threadState === "loading" ? (
-              <p className={`${styles.threadStatus} delayed`}>
-                <span className="spinner" aria-hidden="true" />
-                Loading the conversation…
-              </p>
+              <>
+                <p className={`${styles.threadStatus} delayed`}>
+                  <span className="spinner" aria-hidden="true" />
+                  Loading the conversation…
+                </p>
+                {activeId !== null ? <StillLoading onRetry={() => void open(activeId)} /> : null}
+              </>
             ) : null}
             {mode === "documents" && threadState === "error" ? (
               <div className={styles.threadError}>
                 <p className="error-text" role="alert">
-                  Could not load this conversation.
+                  {threadError}
                 </p>
                 <button
                   type="button"

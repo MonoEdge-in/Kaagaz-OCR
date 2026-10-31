@@ -164,6 +164,29 @@ export function rateLimitWait(caught: unknown, fallback: number): number | null 
   return caught.retryAfter !== undefined ? caught.retryAfter * 1000 : fallback;
 }
 
+/**
+ * Issue 468: a GET with no answer in this long stops, and fails as a lost connection does
+ * (status 0), in these words. Only GETs: Ask's answer, uploads and every change are POST, PUT,
+ * PATCH or DELETE, and keep waiting as long as they take.
+ */
+export const GET_TIMEOUT_MS = 30_000;
+export const TOO_SLOW = "Kaagaz is taking too long to answer. Check your connection and try again.";
+
+/** The request never got an answer: no connection (fetch's TypeError), or status 0 (TOO_SLOW). */
+export const lostConnection = (caught: unknown) =>
+  caught instanceof ApiError ? caught.status === 0 : caught instanceof TypeError;
+
+/** Aborts when either does: the caller's own signal (its abort stays the caller's) or the timeout. */
+export function withTimeout(timeout: AbortSignal, signal?: AbortSignal): AbortSignal {
+  if (!signal) return timeout;
+  const both = new AbortController();
+  for (const each of [signal, timeout]) {
+    if (each.aborted) both.abort(each.reason);
+    else each.addEventListener("abort", () => both.abort(each.reason), { once: true });
+  }
+  return both.signal;
+}
+
 async function request<T>(
   method: string,
   path: string,
@@ -172,16 +195,24 @@ async function request<T>(
 ): Promise<T> {
   const headers: Record<string, string> = method === "GET" ? {} : { ...CSRF_HEADER };
   if (body !== undefined) headers["Content-Type"] = "application/json";
-  const response = await fetch(`/api${path}`, {
-    method,
-    headers,
-    credentials: "same-origin",
-    body: body === undefined ? undefined : JSON.stringify(body),
-    signal,
-  });
-  if (!response.ok) throw noticeSessionEnd(await errorFrom(response));
-  if (response.status === 204) return undefined as T;
-  return (await response.json()) as T;
+  const timeout = method === "GET" ? AbortSignal.timeout(GET_TIMEOUT_MS) : null;
+  try {
+    const response = await fetch(`/api${path}`, {
+      method,
+      headers,
+      credentials: "same-origin",
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: timeout ? withTimeout(timeout, signal) : signal,
+    });
+    if (!response.ok) throw noticeSessionEnd(await errorFrom(response));
+    if (response.status === 204) return undefined as T;
+    return (await response.json()) as T;
+  } catch (caught) {
+    if (timeout?.aborted && !signal?.aborted && !(caught instanceof ApiError)) {
+      throw new ApiError(0, "timeout", TOO_SLOW);
+    }
+    throw caught;
+  }
 }
 
 export type QueryValue = string | number | boolean | readonly (string | number)[] | undefined;

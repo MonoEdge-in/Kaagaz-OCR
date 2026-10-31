@@ -654,3 +654,31 @@
     display: none;
   }
 }
+
+/* --- Issue 468: the offline line, the operator's session warning, a slow load's note ------- */
+
+.offlineBanner,
+.sessionNotice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  margin: 0;
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--border-strong);
+  background: var(--review-bg);
+  color: var(--text-primary);
+}
+
+.sessionNoticeText {
+  flex: 1 1 16rem;
+  margin: 0;
+}
+
+.stillLoading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  color: var(--fg-muted);
+}
