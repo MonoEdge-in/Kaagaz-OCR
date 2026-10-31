@@ -458,6 +458,7 @@ class PageClient(Protocol):
         model: str | None = None,
         provider: str | None = None,
         validate: Callable[[dict[str, Any]], str | None] | None = None,
+        max_output_tokens: int | None = None,
     ) -> PageReply: ...
 
     def now(self) -> float: ...
@@ -770,6 +771,7 @@ class GeminiEngine:
                 model=model,
                 provider=provider,
                 validate=check,
+                max_output_tokens=self._max_tokens(),
             )
         except (ModelUnavailable, ModelOutputError) as error:
             _log.warning("regions not read again", extra={"code": error.code})
@@ -902,6 +904,7 @@ class GeminiEngine:
                     model=model,
                     provider=provider,
                     validate=check,
+                    max_output_tokens=self._max_tokens(),
                 )
         except (ModelUnavailable, ModelOutputError) as error:
             _log.warning("hard words kept as first read", extra={"code": error.code})
@@ -1220,6 +1223,7 @@ class GeminiEngine:
             model=model,
             provider=provider,
             validate=repair_problem,
+            max_output_tokens=self._max_tokens(),
         )
 
     def _resolution(self, pages: DocumentPages | None) -> str:
@@ -1232,6 +1236,11 @@ class GeminiEngine:
         if pages is None:
             return self._harder
         return (pages.careful_resolution or self._harder[0], pages.careful_thinking or self._harder[1])
+
+    def _max_tokens(self) -> int | None:
+        """The open document's page read output limit (#463; None: PAGE_MAX_OUTPUT_TOKENS). O(1)."""
+        pages = self._pages
+        return None if pages is None else pages.max_output_tokens
 
     def _sent(self, model: str, thinking: str) -> str:
         """The level sent to ``model``: NO_THINKING for one of the open document's models with

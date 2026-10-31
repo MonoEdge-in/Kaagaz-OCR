@@ -10,7 +10,8 @@
   read and whose picture is kept (``pages.has_image``) are each read twice through the scan
   reader, from the stored picture: at the check's settings, the way a real scan reads them
   (``models.scope_reading``: Dynamic's first read and Careful when Dynamic is on), and at max
-  settings (the same lead, single, its highest thinking level, high picture detail). Never from
+  settings (the same lead, single, its highest thinking level, high picture detail, the
+  output limit PAGE_MAX_OUTPUT_TOKENS; the draft reads at the check's limit). Never from
   the page cache, and nothing is cached: a check reads afresh and changes no document.
 * The words compared: whitespace normalised, the word error rate of the check's read against
   the max read (``word_errors``, a word-level edit distance), every page's words together, as
@@ -137,7 +138,13 @@ class AccuracyChecks:
             rows = models.usable_models(conn, customer_id, settings=self._settings)
             allowed = dict(models.effective_settings(conn, customer_id))
             picked = conn.execute(_PAGES, {"c": customer_id, "n": claimed["max_pages"]}).all()
-        levels = ("scan_thinking", "scan_resolution", "careful_thinking", "careful_resolution")
+        levels = (
+            "scan_thinking",
+            "scan_resolution",
+            "careful_thinking",
+            "careful_resolution",
+            "page_max_output_tokens",
+        )
         draft = models.scope_reading(
             rows, {**allowed, **{name: claimed[name] for name in levels}}, settings=self._settings
         )
@@ -248,6 +255,7 @@ def document_pages(reading: models.Reading, customer_id: str, document_id: str) 
         resolution=reading.resolution,
         careful_thinking=reading.careful_thinking,
         careful_resolution=reading.careful_resolution,
+        max_output_tokens=reading.page_max_output_tokens,  # max settings: None, PAGE_MAX_OUTPUT_TOKENS
         careful=None if careful is None else (careful.model, careful.provider),
         memo=None if careful is None else {},
         inline_careful=careful is not None,

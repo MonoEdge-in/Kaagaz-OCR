@@ -199,6 +199,7 @@ def test_a_check_reads_only_that_organisations_pages_both_ways_and_keeps_numbers
         "scan_resolution": "low",
         "careful_thinking": GEMINI.ocr_retry_thinking_level,
         "careful_resolution": GEMINI.ocr_retry_media_resolution,
+        "page_max_output_tokens": 65536,
     }
     # Numbers only: no word read is in the table or the log.
     stored = as_owner(

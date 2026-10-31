@@ -549,6 +549,19 @@ def _billed_text(reply: Mapping[str, Any], before: tuple[int, int]) -> tuple[str
         raise replies.billed(error, before[0] + input_tokens, before[1] + output_tokens) from None
 
 
+def _page_text(
+    reply: Mapping[str, Any], before: tuple[int, int], model: str, sent: tuple[str, str]
+) -> tuple[str, str]:
+    """``_billed_text`` of a page read; a reply cut off at the output limit is counted on the
+    ledger as a limit hit (#463) before its ``output_truncated`` goes up."""
+    try:
+        return _billed_text(reply, before)
+    except ModelOutputError as error:
+        if error.code == "output_truncated":
+            usage.record_limit_hit(model, thinking=sent[0], resolution=sent[1])
+        raise
+
+
 def _valid_reply(
     content: str, schema: Mapping[str, Any], validate: Callable[[dict[str, Any]], str | None] | None
 ) -> tuple[dict[str, Any] | None, str]:
@@ -1063,6 +1076,7 @@ class OpenRouterClient:
         model: str | None = None,
         provider: str | None = None,
         validate: Callable[[dict[str, Any]], str | None] | None = None,
+        max_output_tokens: int | None = None,
     ) -> PageReply:
         """One page read by ``model`` through ``provider`` (None: OCR_MODEL through
         DEFAULT_PROVIDER, as before model choice) as a JSON object following ``schema``,
@@ -1070,7 +1084,10 @@ class OpenRouterClient:
         provider outside OPENROUTER_PROVIDERS raises ``ProviderNotAllowed`` before anything is
         sent. A first reply that does not follow the schema, or that ``validate`` refuses (it
         gives the problem in words, None when the value is good), is sent back once for a
-        repair, with the page again; the tokens of both calls are counted."""
+        repair, with the page again; the tokens of both calls are counted. ``max_output_tokens``
+        (#463: the organisation's limit; None: PAGE_MAX_OUTPUT_TOKENS) is sent as
+        max_completion_tokens; a reply that reaches it raises ``output_truncated`` as before,
+        counted on the ledger as a limit hit."""
         if model is not None and not valid_model_id(model):
             raise ValueError("a model ID must be an OpenRouter author/slug with no :variant")
         self._check_provider(DEFAULT_PROVIDER if provider is None else provider)
@@ -1081,19 +1098,19 @@ class OpenRouterClient:
             schema=schema,
             media_resolution=media_resolution,
             thinking=thinking_level,
-            max_output_tokens=PAGE_MAX_OUTPUT_TOKENS,
+            max_output_tokens=PAGE_MAX_OUTPUT_TOKENS if max_output_tokens is None else max_output_tokens,
             provider_slug=DEFAULT_PROVIDER if provider is None else provider,
         )
         sent = (thinking_level, media_resolution)  # #463: the ledger's settings of a page read
         reply = self._call(CHAT_PATH, body, deadline, sent=sent)
         input_tokens, output_tokens = reply_usage(reply)
-        content, finish = _billed_text(reply, (0, 0))
+        content, finish = _page_text(reply, (0, 0), str(body["model"]), sent)
         value, problem = _valid_reply(content, schema, validate)
         if value is None:
             body["messages"].append({"role": "assistant", "content": content})
             body["messages"].append({"role": "user", "content": REPAIR.format(problem=problem)})
             reply = self._call(CHAT_PATH, body, deadline, sent=sent)
-            content, finish = _billed_text(reply, (input_tokens, output_tokens))
+            content, finish = _page_text(reply, (input_tokens, output_tokens), str(body["model"]), sent)
             more_in, more_out = reply_usage(reply)
             input_tokens, output_tokens = input_tokens + more_in, output_tokens + more_out
             value, _ = _valid_reply(content, schema, validate)

@@ -37,13 +37,13 @@ TABLE = "model_usage"  # migration 0023; _INSERT spells it out (no SQL is built 
 _INSERT = text(
     "INSERT INTO model_usage (customer_id, user_id, document_id, conversation_id, kind, model,"
     " provider_name, cached, calls, input_tokens, output_tokens, reasoning_tokens, cost_usd,"
-    " cost_estimated, thinking, resolution)"
+    " cost_estimated, thinking, resolution, limit_hits)"
     " VALUES (:customer_id, :user_id, :document_id, :conversation_id, :kind, :model,"
     " :provider_name, :cached, :calls, :input_tokens, :output_tokens, :reasoning_tokens,"
     " COALESCE(CAST(:cost_usd AS numeric), (SELECT (:input_tokens * c.price_in_usd_per_m"
     " + :output_tokens * c.price_out_usd_per_m) / 1000000 FROM model_catalog c WHERE c.id = :model)),"
     " CAST(:cost_usd AS numeric) IS NULL AND EXISTS (SELECT 1 FROM model_catalog c WHERE c.id = :model),"
-    " CAST(:thinking AS text), CAST(:resolution AS text))"
+    " CAST(:thinking AS text), CAST(:resolution AS text), :limit_hits)"
 )
 
 
@@ -69,6 +69,7 @@ class UsageRow:
     cost_usd: float | None
     thinking: str | None = None
     resolution: str | None = None
+    limit_hits: int = 0  # #463: calls that hit the page read's output limit
 
 
 def insert_usage(conn: Connection, rows: Sequence[UsageRow]) -> None:

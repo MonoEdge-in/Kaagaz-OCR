@@ -24,7 +24,7 @@ _BODIES = text(
     " 'kaagaz_op_accuracy_check', 'kaagaz_accuracy_check_claim', 'kaagaz_accuracy_check_finish',"
     " 'kaagaz_op_org_health') ORDER BY 1"
 )
-_NEW_COLUMNS = {"scan_resolution", "careful_thinking", "careful_resolution"}
+_NEW_COLUMNS = {"scan_resolution", "careful_thinking", "careful_resolution", "page_max_output_tokens"}
 
 
 def _bodies(db: Database) -> list[tuple[str, ...]]:

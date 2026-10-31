@@ -267,6 +267,7 @@ def test_an_organisations_models_and_budget_are_replaced_and_audited_in_both_log
         "scan_resolution": None,  # Changed on purpose (#463, 31 Oct 2026): the scan cost settings
         "careful_thinking": None,
         "careful_resolution": None,
+        "page_max_output_tokens": None,
         "chat_levels": None,
         "chat_default_level": None,
         "dynamic": None,

@@ -131,6 +131,7 @@ def test_a_customer_never_reads_another_customers_ai_settings_or_answer_models(d
         "scan_resolution": None,
         "careful_thinking": None,
         "careful_resolution": None,
+        "page_max_output_tokens": None,
         "dynamic": False,
         "ensemble": False,
     }  # the platform's, never B's
@@ -171,11 +172,12 @@ def test_the_app_only_reads_the_ai_settings_and_never_verifies_a_model(db: Datab
 OP_CALLS = (
     "SELECT * FROM kaagaz_op_org_ai(gen_random_uuid(), gen_random_uuid())",
     "SELECT * FROM kaagaz_op_set_org_ai(gen_random_uuid(), gen_random_uuid(), ARRAY['a/b'], 'a/b',"
-    " '{}', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, false, NULL, 'g2', NULL, 1)",
+    " '{}', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, false, NULL, 'g2', NULL, 1)",
     "SELECT * FROM kaagaz_op_ai_defaults(gen_random_uuid())",
     "SELECT kaagaz_op_set_ai_defaults(gen_random_uuid(), '{}', NULL, '{}', NULL, NULL, NULL, NULL, NULL,"
-    " ARRAY['low'], 'low', false, 'g2', NULL, 1)",
-    "SELECT * FROM kaagaz_op_scan_cost(gen_random_uuid(), NULL, 'a/b', 'low', 'high', NULL, NULL, NULL)",
+    " NULL, ARRAY['low'], 'low', false, 'g2', NULL, 1)",
+    "SELECT * FROM kaagaz_op_scan_cost(gen_random_uuid(), NULL, 'a/b', 'low', 'high', NULL, NULL, NULL,"
+    " 'high', 'high')",
     "SELECT kaagaz_op_set_model_enabled(gen_random_uuid(), 'a/b', true, 'g2', NULL, 1)",
 )
 
@@ -320,7 +322,7 @@ def test_both_saves_need_a_fresh_code(db: Database, platform: str) -> None:
             conn.execute(
                 text(
                     "SELECT kaagaz_op_set_ai_defaults(:o, '{}', NULL, '{}', NULL, NULL, NULL, NULL, NULL,"
-                    " ARRAY['low'], 'low', false, :p, :h, NULL)"
+                    " NULL, ARRAY['low'], 'low', false, :p, :h, NULL)"
                 ),
                 {"o": platform, "p": PROMPT, "h": ANSWER_PROMPT_HASH},
             ).scalar_one()
@@ -350,6 +352,7 @@ def test_the_organisations_own_log_holds_no_budget_and_the_operators_does(db: Da
         "scan_resolution": None,  # Changed on purpose (#463, 31 Oct 2026): the scan cost settings
         "careful_thinking": None,
         "careful_resolution": None,
+        "page_max_output_tokens": None,
         "chat_levels": ["low"],
         "chat_default_level": "low",
         "dynamic": None,

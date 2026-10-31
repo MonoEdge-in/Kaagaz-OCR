@@ -62,28 +62,31 @@ _RECORD = text(
 _RECORD_CHAT = text(
     "UPDATE model_catalog SET chat_verified_prompt = :prompt, chat_verified_at = now() WHERE id = :model"
 )
-# An AiChoice's parameters (sm to dyn) are in the functions' order (0064: sr, ct, cr after st).
+# An AiChoice's parameters (sm to dyn) are in the functions' order (0064: sr, ct, cr, pm after st).
 _SET_ORG_AI = text(
     "SELECT outcome, result_id FROM kaagaz_op_set_org_ai(:o, :c, CAST(:sm AS text[]), CAST(:sd AS text),"
     " CAST(:cm AS text[]), CAST(:cd AS text), CAST(:st AS text), CAST(:sr AS text), CAST(:ct AS text),"
-    " CAST(:cr AS text), CAST(:cl AS text[]), CAST(:cdl AS text), CAST(:dyn AS boolean), :ensemble,"
+    " CAST(:cr AS text), CAST(:pm AS integer), CAST(:cl AS text[]), CAST(:cdl AS text),"
+    " CAST(:dyn AS boolean), :ensemble,"
     " CAST(:budget AS numeric), :scan, :chat, :step)"
 )
 _SET_AI_DEFAULTS = text(
     "SELECT kaagaz_op_set_ai_defaults(:o, CAST(:sm AS text[]), CAST(:sd AS text), CAST(:cm AS text[]),"
     " CAST(:cd AS text), CAST(:st AS text), CAST(:sr AS text), CAST(:ct AS text), CAST(:cr AS text),"
-    " CAST(:cl AS text[]), CAST(:cdl AS text), CAST(:dyn AS boolean), :scan, :chat, :step)"
+    " CAST(:pm AS integer), CAST(:cl AS text[]), CAST(:cdl AS text), CAST(:dyn AS boolean), :scan, :chat,"
+    " :step)"
 )
 _SCAN_COST = text(
     "SELECT * FROM kaagaz_op_scan_cost(:o, CAST(:c AS uuid), :m, :t, :r, CAST(:cm AS text),"
     " CAST(:ct AS text), CAST(:cr AS text), :mt, :mr)"
 )
 _START_CHECK = text(
-    "SELECT outcome, result_id FROM kaagaz_op_start_accuracy_check(:o, :c, :m, :st, :sr, :ct, :cr, :n, :step)"
+    "SELECT outcome, result_id FROM kaagaz_op_start_accuracy_check(:o, :c, :m, :st, :sr, :ct, :cr,"
+    " CAST(:pm AS integer), :n, :step)"
 )
 _CHECK = text(
     "SELECT * FROM kaagaz_op_accuracy_check(:o, :c, CAST(:m AS text), CAST(:st AS text), CAST(:sr AS text),"
-    " CAST(:ct AS text), CAST(:cr AS text))"
+    " CAST(:ct AS text), CAST(:cr AS text), CAST(:pm AS integer))"
 )
 _MODEL_RATES = text("SELECT * FROM kaagaz_op_model_rates(:o, :c)")
 _SET_MODEL_RATE = text("SELECT kaagaz_op_set_model_rate(:o, :c, :u, :rpm, :step)")
@@ -95,8 +98,9 @@ class AiChoice:
     models with their defaults (an empty list: the platform's; for the platform, the
     environment's OCR_MODEL and MODEL_CHAT), the scan thinking level, the answer levels and
     default level, and Dynamic. For an organisation, None inherits that field. #463 (0064): the
-    scan picture detail and Careful's pair (pages read again), last so the order above holds;
-    for the platform, None is the server's (OCR_MEDIA_RESOLUTION, OCR_RETRY_*)."""
+    scan picture detail, Careful's pair (pages read again) and a page read's output limit, last
+    so the order above holds; for the platform, None is the server's (OCR_MEDIA_RESOLUTION,
+    OCR_RETRY_*, PAGE_MAX_OUTPUT_TOKENS)."""
 
     scan_models: Sequence[str] = ()
     scan_default: str | None = None
@@ -109,6 +113,7 @@ class AiChoice:
     scan_resolution: str | None = None
     careful_thinking: str | None = None
     careful_resolution: str | None = None
+    page_max_output_tokens: int | None = None
 
     def params(self) -> dict[str, object]:
         return {
@@ -120,6 +125,7 @@ class AiChoice:
             "sr": self.scan_resolution,
             "ct": self.careful_thinking,
             "cr": self.careful_resolution,
+            "pm": self.page_max_output_tokens,
             "cl": None if self.chat_levels is None else list(self.chat_levels),
             "cdl": self.chat_default_level,
             "dyn": self.dynamic,
@@ -344,8 +350,8 @@ def clear_test_model(conn: Connection, operator_id: str, *, step: int) -> str:
 
 Sent = tuple[str, str, str]  # (model, thinking level, picture detail) as a page read sends them
 # An accuracy check's settings: (model, scan_thinking, scan_resolution, careful_thinking,
-# careful_resolution), every one a value (the estimate's, after inheritance).
-CheckSettings = tuple[str, str, str, str, str]
+# careful_resolution, page_max_output_tokens), every one a value (the estimate's, after inheritance).
+CheckSettings = tuple[str, str, str, str, str, int]
 
 
 def scan_cost(
@@ -361,8 +367,9 @@ def scan_cost(
     of the last 30 days, OpenRouter's reported cost only; scan_calls and careful_calls of
     ``customer_id``'s (None: every organisation's); and its pages ``first``'s model read in
     those days, at ``first``'s settings (quality_pages, clean_pages) and at ``best``'s
-    (thinking, picture detail: max settings; max_quality_pages, max_clean_pages). None for an
-    operator who is not enabled."""
+    (thinking, picture detail: max settings; max_quality_pages, max_clean_pages); the first
+    reads' tokens_in, tokens_out and token_pages (every organisation's, not cached) and the
+    scope's limit_hits among them. None for an operator who is not enabled."""
     model, thinking, resolution = first
     careful_model, careful_thinking, careful_resolution = careful or (None, None, None)
     params = {
@@ -380,15 +387,9 @@ def scan_cost(
     return conn.execute(_SCAN_COST, params).mappings().first()
 
 
-def _check_params(settings: CheckSettings | None) -> dict[str, str | None]:
-    model, scan_thinking, scan_resolution, careful_thinking, careful_resolution = settings or (None,) * 5
-    return {
-        "m": model,
-        "st": scan_thinking,
-        "sr": scan_resolution,
-        "ct": careful_thinking,
-        "cr": careful_resolution,
-    }
+def _check_params(settings: CheckSettings | None) -> dict[str, object]:
+    names = ("m", "st", "sr", "ct", "cr", "pm")
+    return dict(zip(names, settings or (None,) * len(names), strict=True))
 
 
 def start_accuracy_check(

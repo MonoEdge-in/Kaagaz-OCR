@@ -72,6 +72,9 @@ def test_a_page_read_is_frozen_and_built_by_name_only() -> None:
         "continues_on_next_page",
         # Changed on purpose (features 25-27, 15 Oct 2026): Ensemble's other models' reads of the page.
         "others",
+        # Changed on purpose (#463, 31 Oct 2026): the settings of the read that produced the text.
+        "read_thinking",
+        "read_resolution",
     ]
 
 

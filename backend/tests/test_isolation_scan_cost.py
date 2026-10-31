@@ -30,7 +30,7 @@ pytestmark = pytest.mark.db
 __all__ = ["platform"]  # the fixture, used by name
 GEMINI = make_settings(ocr_engine="gemini")
 SAVED = ops.AiChoice(scan_resolution="low", careful_thinking="minimal", careful_resolution="low")
-NEW_FIELDS = ("scan_resolution", "careful_thinking", "careful_resolution")
+NEW_FIELDS = ("scan_resolution", "careful_thinking", "careful_resolution", "page_max_output_tokens")
 
 
 def test_no_customer_session_reaches_the_estimate(db: Database) -> None:
@@ -52,10 +52,12 @@ def test_an_organisations_own_routes_neither_take_nor_show_the_new_fields(
     member = api.sign_in(admin.customer_id)
     shown = member.client.get("/api/ai-settings")
     assert shown.status_code == 200
-    assert not any(field in shown.text for field in (*NEW_FIELDS, "resolution", "minimal"))
+    assert not any(field in shown.text for field in (*NEW_FIELDS, "resolution", "minimal", "tokens"))
     for signed, path, body in (
         (member, "me", {"tasks": {}, "scan_resolution": "high"}),
         (admin, "organisation", {"tasks": {}, "careful_thinking": "high"}),
+        (admin, "organisation", {"tasks": {}, "page_max_output_tokens": 65536}),
+        (member, "me", {"tasks": {}, "page_max_output_tokens": 65536}),
         (admin, "organisation", {"tasks": {"scan": {"level": "low", "careful_resolution": "high"}}}),
     ):
         reply = signed.client.put(f"/api/ai-settings/{path}", json=body, headers=CSRF)

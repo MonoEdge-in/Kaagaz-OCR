@@ -22,7 +22,12 @@ from tests.test_openrouter_client import GOOD, SCHEMA, Clock, _client, _read, fa
 
 __all__ = ["fake"]  # the fixture, used by name
 GEMINI = make_settings(ocr_engine="gemini")
-SAVED = {"scan_resolution": "low", "careful_thinking": "minimal", "careful_resolution": "high"}
+SAVED: dict[str, Any] = {
+    "scan_resolution": "low",
+    "careful_thinking": "minimal",
+    "careful_resolution": "high",
+    "page_max_output_tokens": None,
+}
 LEAD = "google/gemini-3.8-flash"
 
 

@@ -35,6 +35,7 @@ INHERIT = {
     "scan_resolution": None,
     "careful_thinking": None,
     "careful_resolution": None,
+    "page_max_output_tokens": None,
 }
 
 

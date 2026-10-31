@@ -71,6 +71,7 @@ class _Tally:
     output_tokens: int = 0
     reasoning_tokens: int = 0
     cost_usd: float | None = 0.0  # None once a call came without a cost
+    limit_hits: int = 0  # #463: calls whose reply hit the page read's output limit
 
 
 _Key = tuple[str, str, bool, str | None, str | None]  # (model, kind, cached, thinking, resolution)
@@ -119,6 +120,16 @@ class UsageScope:
             if provider is not None or key not in self._providers:
                 self._providers[key] = provider
 
+    def hit_limit(self, model: str, *, kind: str | None, thinking: str, resolution: str) -> None:
+        """#463: the call just counted for this page read hit its output limit (thread-safe)."""
+        kind = self.kind if self.kind == ACCURACY_CHECK else kind or self.kind
+        page = kind in PAGE_READ_KINDS
+        key = (model, kind, False, thinking if page else None, resolution if page else None)
+        with self._lock:
+            tally = self._tallies.get(key)
+            if tally is not None:  # always: the client counts the call before reading its text
+                tally.limit_hits += 1
+
     def rows(self) -> list[UsageRow]:
         """The ledger rows so far, one per (model, kind, cached, thinking, resolution)."""
         with self._lock:
@@ -139,6 +150,7 @@ class UsageScope:
                     cost_usd=tally.cost_usd,
                     thinking=thinking,
                     resolution=resolution,
+                    limit_hits=tally.limit_hits,
                 )
                 for (model, kind, cached, thinking, resolution), tally in self._tallies.items()
             ]
@@ -195,6 +207,14 @@ def billed_as(kind: str) -> Iterator[None]:
         yield
     finally:
         _BILLED_AS.reset(token)
+
+
+def record_limit_hit(model: str, *, thinking: str, resolution: str) -> None:
+    """#463: the page read just counted (``record_call``) hit its output limit and is read in
+    halves; counted on its ledger row; nothing when no scope is open."""
+    scope = _CURRENT.get()
+    if scope is not None:
+        scope.hit_limit(model, kind=_BILLED_AS.get(), thinking=thinking, resolution=resolution)
 
 
 def record_call(

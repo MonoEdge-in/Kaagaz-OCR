@@ -101,6 +101,7 @@ ORG_ROW = {
     "scan_resolution": "low",
     "careful_thinking": None,
     "careful_resolution": "high",
+    "page_max_output_tokens": 32768,
     "ensemble": True,
     "ai_budget_usd": Decimal("50.00"),
 }
@@ -116,6 +117,7 @@ DEFAULTS_ROW = {
     "scan_resolution": None,
     "careful_thinking": "minimal",
     "careful_resolution": None,
+    "page_max_output_tokens": None,
     "orgs_inheriting_scan_models": 4,
     "orgs_inheriting_chat_models": 7,
     "orgs_inheriting_scan_thinking": 6,
@@ -124,6 +126,7 @@ DEFAULTS_ROW = {
     "orgs_inheriting_scan_resolution": 3,
     "orgs_inheriting_careful_thinking": 2,
     "orgs_inheriting_careful_resolution": 1,
+    "orgs_inheriting_page_max_output_tokens": 9,
 }
 ORG_BODY: dict[str, Any] = {
     "scan_models": [MODEL, OTHER],
@@ -137,6 +140,7 @@ ORG_BODY: dict[str, Any] = {
     "scan_resolution": "low",
     "careful_thinking": None,
     "careful_resolution": "high",
+    "page_max_output_tokens": 32768,
     "ensemble": True,
     "ai_budget_usd": 12.5,
 }
@@ -152,6 +156,7 @@ DEFAULTS_BODY: dict[str, Any] = {
     "scan_resolution": None,
     "careful_thinking": "minimal",
     "careful_resolution": "low",
+    "page_max_output_tokens": None,
 }
 USAGE_ROW = {
     "customer_id": CID,
@@ -188,6 +193,7 @@ ENV = {
     "scan_resolution": "high",
     "careful_thinking": "high",
     "careful_resolution": "high",
+    "page_max_output_tokens": 65536,
 }
 
 
@@ -440,6 +446,7 @@ def test_an_organisations_ai_settings_round_trip_with_the_defaults_it_follows(of
             "scan_resolution": "low",
             "careful_thinking": None,
             "careful_resolution": "high",
+            "page_max_output_tokens": 32768,
             "chat_levels": None,
             "chat_default_level": None,
             "dynamic": None,
@@ -453,6 +460,7 @@ def test_an_organisations_ai_settings_round_trip_with_the_defaults_it_follows(of
             "scan_resolution": None,
             "careful_thinking": "minimal",
             "careful_resolution": None,
+            "page_max_output_tokens": None,
             "chat_levels": ["low", "medium"],
             "chat_default_level": "low",
             "dynamic": False,
@@ -481,6 +489,7 @@ def test_an_organisations_ai_settings_round_trip_with_the_defaults_it_follows(of
             scan_resolution="low",
             careful_thinking=None,
             careful_resolution="high",
+            page_max_output_tokens=32768,
         ),
     )
     assert kwargs == {
@@ -561,6 +570,8 @@ def test_each_org_ai_outcome_gets_its_reply(
         {"scan_resolution": "medium"},  # #463: low or high only
         {"careful_thinking": "max"},
         {"careful_resolution": "ultra_high"},
+        {"page_max_output_tokens": "4096"},  # #463: a whole number, strictly
+        {"page_max_output_tokens": 4096.5},
         {"chat_levels": ["minimal"]},  # #463: minimal is for scanning only
         {"chat_default_level": "minimal"},
         {"chat_levels": []},
@@ -602,6 +613,7 @@ def test_the_platform_defaults_say_how_many_organisations_follow_each_area(offli
             "scan_resolution": None,
             "careful_thinking": "minimal",
             "careful_resolution": None,
+            "page_max_output_tokens": None,
             "chat_levels": ["low", "medium"],
             "chat_default_level": "low",
             "dynamic": False,
@@ -616,6 +628,7 @@ def test_the_platform_defaults_say_how_many_organisations_follow_each_area(offli
             "scan_resolution": 3,
             "careful_thinking": 2,
             "careful_resolution": 1,
+            "page_max_output_tokens": 9,
         },
     }
     offline.defaults = None  # the operator was disabled meanwhile

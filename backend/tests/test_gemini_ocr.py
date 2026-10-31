@@ -141,6 +141,7 @@ class Call:
     model: str | None = None
     provider: str | None = None
     validate: Callable[[dict[str, Any]], str | None] | None = None
+    max_output_tokens: int | None = None  # Changed on purpose (#463): the page read's output limit
 
 
 Outcome = PageReply | Exception
@@ -172,6 +173,7 @@ class FakeClient:
         model: str | None = None,
         provider: str | None = None,
         validate: Callable[[dict[str, Any]], str | None] | None = None,
+        max_output_tokens: int | None = None,
     ) -> PageReply:
         image = Image.open(io.BytesIO(png))
         image.load()
@@ -187,6 +189,7 @@ class FakeClient:
                     model,
                     provider,
                     validate,
+                    max_output_tokens,
                 )
             )
             outcome = self.script.pop(0) if self.script else None

@@ -286,6 +286,7 @@ class EnsembleRuns:
             # #463: the organisation's scan level and picture detail (``resolve_ensemble``).
             thinking=read.reading.thinking or None,
             resolution=read.reading.resolution,
+            max_output_tokens=read.reading.page_max_output_tokens,
         )
         read_by: dict[str, list[Span] | None] = dict.fromkeys(images)
         code = None

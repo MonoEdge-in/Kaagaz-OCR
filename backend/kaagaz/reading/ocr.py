@@ -591,7 +591,8 @@ class DocumentPages:
     #463 (``kaagaz.db.models.Reading``): ``resolution`` the picture detail of a first read
     (None: OCR_MEDIA_RESOLUTION); ``careful_thinking`` and ``careful_resolution`` Careful's
     re-reads' and the read-again pages' (None: OCR_RETRY_THINKING_LEVEL and
-    OCR_RETRY_MEDIA_RESOLUTION)."""
+    OCR_RETRY_MEDIA_RESOLUTION); ``max_output_tokens`` every page read's output limit (None:
+    PAGE_MAX_OUTPUT_TOKENS; a reply that reaches it is read in halves, as before)."""
 
     customer_id: str
     document_id: str
@@ -623,6 +624,7 @@ class DocumentPages:
     resolution: str | None = None
     careful_thinking: str | None = None
     careful_resolution: str | None = None
+    max_output_tokens: int | None = None
 
 
 @runtime_checkable

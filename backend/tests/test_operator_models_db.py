@@ -91,6 +91,7 @@ FOLLOWS_DEFAULTS: dict[str, Any] = {
     "scan_resolution": None,
     "careful_thinking": None,
     "careful_resolution": None,
+    "page_max_output_tokens": None,
     "chat_levels": None,
     "chat_default_level": None,
     "dynamic": None,

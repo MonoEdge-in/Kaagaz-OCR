@@ -35,6 +35,7 @@ The scan cost settings (#463, Tushar, 31 Oct 2026; 0064): the scan level may be 
 Dynamic's first read stays at minimal then (never raised to low). The picture detail of first
 reads (``scan_resolution``) and Careful's pair (``careful_thinking``, ``careful_resolution``:
 Careful's re-reads and "Read this page again") inherit field by field as the scan level does,
+and so does a page read's output limit (``page_max_output_tokens``, None: PAGE_MAX_OUTPUT_TOKENS),
 and ride on the ``Reading`` (None: the env's), so the worker never asks again. A change
 reaches what is read from then on: new scans, Careful's re-reads and pages read again; text
 already read is never read again for it.
@@ -126,6 +127,7 @@ _SETTINGS = text(
     " COALESCE(s.scan_resolution, p.scan_resolution) AS scan_resolution,"
     " COALESCE(s.careful_thinking, p.careful_thinking) AS careful_thinking,"
     " COALESCE(s.careful_resolution, p.careful_resolution) AS careful_resolution,"
+    " COALESCE(s.page_max_output_tokens, p.page_max_output_tokens) AS page_max_output_tokens,"
     " COALESCE(s.dynamic, p.dynamic) AND COALESCE(w.cost_saving, true) AS dynamic,"
     " COALESCE(s.ensemble, false) AND COALESCE(w.ensemble, true) AS ensemble"
     " FROM (SELECT 1) one"
@@ -178,7 +180,8 @@ class Reading:
     model). ``reader`` (#398, in the run's config): local, save (routed) or ai. #463: the
     picture detail of first reads (``resolution``) and Careful's pair for re-reads and
     pages read again (``careful_thinking``, ``careful_resolution``), the organisation's
-    after inheritance; None, the env's (OCR_MEDIA_RESOLUTION, OCR_RETRY_*)."""
+    after inheritance; None, the env's (OCR_MEDIA_RESOLUTION, OCR_RETRY_*); and
+    ``page_max_output_tokens``, a page read's output limit (None: PAGE_MAX_OUTPUT_TOKENS)."""
 
     mode: str
     lead: Agent
@@ -190,6 +193,7 @@ class Reading:
     resolution: str | None = None
     careful_thinking: str | None = None
     careful_resolution: str | None = None
+    page_max_output_tokens: int | None = None
 
     @property
     def reader(self) -> str:
@@ -301,7 +305,7 @@ def usable_chat_models(conn: Connection, customer_id: str, *, settings: Settings
 def effective_settings(conn: Connection, customer_id: str) -> RowMapping:
     """The organisation's AI settings after inheritance: scan_thinking (None: the env's),
     chat_levels, chat_default_level (None: low only), scan_resolution, careful_thinking,
-    careful_resolution (#463; None: the env's), dynamic, ensemble."""
+    careful_resolution, page_max_output_tokens (#463; None: the env's), dynamic, ensemble."""
     return conn.execute(_SETTINGS, {"customer": customer_id}).mappings().one()
 
 
@@ -426,6 +430,7 @@ class _Levels(TypedDict):
     resolution: str | None
     careful_thinking: str | None
     careful_resolution: str | None
+    page_max_output_tokens: int | None
 
 
 def _levels(allowed: Mapping[Any, Any]) -> _Levels:
@@ -434,6 +439,7 @@ def _levels(allowed: Mapping[Any, Any]) -> _Levels:
         "resolution": allowed["scan_resolution"],
         "careful_thinking": allowed["careful_thinking"],
         "careful_resolution": allowed["careful_resolution"],
+        "page_max_output_tokens": allowed["page_max_output_tokens"],
     }
 
 
@@ -506,7 +512,13 @@ def resolve_ensemble(conn: Connection, customer_id: str, document_id: str, *, se
     allowed = effective_settings(conn, customer_id)
     thinking = allowed["scan_thinking"] or settings.ocr_thinking_level
     return Reading(
-        "ensemble", scan.lead, others, thinking=thinking, notes=scan.notes, resolution=scan.resolution
+        "ensemble",
+        scan.lead,
+        others,
+        thinking=thinking,
+        notes=scan.notes,
+        resolution=scan.resolution,
+        page_max_output_tokens=scan.page_max_output_tokens,
     )
 
 
