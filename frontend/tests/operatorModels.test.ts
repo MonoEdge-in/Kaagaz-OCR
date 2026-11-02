@@ -49,7 +49,7 @@ import { AiFields, CODE_ID, fieldId, firstProblem, refusalOf } from "@/component
 import { DefaultsImpact, DefaultsSummary, SAVE_LABEL } from "@/components/operator/PlatformDefaults";
 import { SpendTable } from "@/components/operator/SpendView";
 import { ApiError } from "@/lib/api";
-import type { AiDefaults, AiValues, OperatorModel, OperatorUsageRow, OrgInsight } from "@/lib/types";
+import type { AiDefaults, AiEnv, AiValues, OperatorModel, OperatorUsageRow, OrgInsight } from "@/lib/types";
 
 const read = (path: string) => readFileSync(join(__dirname, "..", path), "utf8");
 
@@ -261,9 +261,11 @@ const values = (overrides: Partial<AiValues> = {}): AiValues => ({
   chat_levels: null,
   chat_default_level: null,
   dynamic: null,
+  scan_reader: null, // Changed on purpose (#473): who reads the pages, and the Mistral model
+  mistral_model: null,
   ...overrides,
 });
-const ENV = {
+const ENV: AiEnv = {
   scan_model: "google/env-scan",
   chat_model: "google/env-chat",
   scan_thinking: "low",
@@ -271,6 +273,13 @@ const ENV = {
   careful_thinking: "high",
   careful_resolution: "high",
   page_max_output_tokens: 65536,
+  // Changed on purpose (#473): the env says the server's reader and whether Mistral is set up.
+  scan_reader: "openrouter",
+  mistral_model: "mistral-ocr-4-1",
+  mistral_ready: true,
+  mistral_missing: null,
+  mistral_models: [],
+  mistral_status: { stopped: false, code: null, since: null, documents_waiting: 0 },
 };
 const DEFAULTS = values({
   scan_models: ["m/one", "m/two"],
@@ -289,6 +298,8 @@ const COUNTS: AiDefaults["orgs_inheriting"] = {
   page_max_output_tokens: 1,
   chat_levels: 7,
   dynamic: 5,
+  scan_reader: 5, // Changed on purpose (#473)
+  mistral_model: 5,
 };
 const catalogue = [
   model({ id: "m/one", name: "One", enabled_at: "2026-10-11T00:00:00Z", chat_verified: false }),
@@ -376,7 +387,14 @@ describe("the AI settings form's rules", () => {
   it("says per area whether it follows the platform defaults (C12)", () => {
     expect(statusText(values())).toBe("Scanning: platform defaults · Answering: platform defaults");
     // Changed on purpose (#463, 31 Oct 2026): picture detail and pages read again are scanning settings too.
-    const scanOwn = { scan_resolution: "low", careful_thinking: "high", careful_resolution: "high", page_max_output_tokens: 8192 } as const;
+    // Changed on purpose (#473): who reads the pages is a scanning setting too.
+    const scanOwn = {
+      scan_resolution: "low",
+      careful_thinking: "high",
+      careful_resolution: "high",
+      page_max_output_tokens: 8192,
+      scan_reader: "openrouter",
+    } as const;
     expect(statusText(values({ scan_models: ["m/one"], scan_thinking: "high", dynamic: false, ...scanOwn }))).toBe(
       "Scanning: own settings · Answering: platform defaults",
     );

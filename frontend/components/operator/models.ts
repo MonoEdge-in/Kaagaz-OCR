@@ -5,7 +5,7 @@
 // can prove them. Dollars stay in the operator console: org admins and members never see
 // money (Tushar, 15 Oct 2026).
 
-import { PART_NOT_KNOWN, formatNumber, formatUsd } from "@/lib/format";
+import { PART_NOT_KNOWN, formatDateTime, formatNumber, formatUsd } from "@/lib/format";
 import type {
   AiDefaults,
   AiEnv,
@@ -15,10 +15,13 @@ import type {
   OperatorUsageRow,
   OrgInsight,
   AccuracyCheck,
+  MistralModelId,
+  MistralStatus,
   Resolution,
   ScanCost,
   ScanCostAsk,
   ScanLevel,
+  ScanReader,
   UsageTotals,
 } from "@/lib/types";
 import { ApiError } from "@/lib/api";
@@ -165,6 +168,54 @@ export const DYNAMIC_HINT = "Reads clear pages quickly and spends extra effort o
 // in effect is saved off, and the save says so calmly (0037).
 export const ENSEMBLE_OFF = "Ensemble is off: it needs a second scanning model.";
 
+// Who reads the pages (#473, Tushar, 2 Nov 2026): Gemini through OpenRouter or Mistral OCR.
+export const READERS: ScanReader[] = ["openrouter", "mistral"];
+export const READER_WORDS: Record<ScanReader, string> = { openrouter: "Gemini, through OpenRouter", mistral: "Mistral OCR" };
+export const MISTRAL_MODEL_WORDS: Record<MistralModelId, string> = { "mistral-ocr-4-1": "Mistral OCR 4.1", "mistral-ocr-2512": "Mistral OCR 3" };
+/** The reader the server uses when the platform names none: "Gemini". */
+export const serverReader = (env: Pick<AiEnv, "scan_reader">) => (env.scan_reader === "mistral" ? READER_WORDS.mistral : "Gemini");
+export const MISTRAL_NOT_SET_UP = "Mistral OCR (not set up on this server)";
+export const MISTRAL_MISSING: Record<"key" | "zdr", string> = {
+  key: "Mistral isn't set up on this server: its key is missing.",
+  zdr: "Mistral isn't set up on this server: zero data retention isn't confirmed.",
+};
+export const MISTRAL_WAITING = "Saved as Mistral, but Mistral isn't set up on this server, so this organisation's pages wait.";
+export const NO_BLOCKS_HINT =
+  "This model doesn't say where each line is on the page, so answers can't point to the spot and every amount waits for a person to check it.";
+export const ENSEMBLE_NOT_WITH_MISTRAL = "Ensemble isn't used while Mistral reads the pages.";
+/** Over the Gemini fields while Mistral reads: they stay, unused. */
+export const geminiNotUsed = (platform: boolean) =>
+  `Not used while Mistral reads ${platform ? "the" : "this organisation's"} pages. Kept for when you switch back to Gemini.`;
+
+/** "Mistral OCR 4.1, about ₹0.35 a page". */
+export const mistralModelText = (model: { name: string; usd_per_page: number }) => `${model.name}, about ${rupeeText(model.usd_per_page)} a page`;
+
+/** The reader a scan really uses: the draft's, else the one it follows (the platform's for an
+ * organisation), else the server's. Everything about the reader follows it. */
+export const readerOf = (draft: Pick<AiDraft, "scan_reader">, defaults: AiValues, env: AiEnv, platform: boolean): ScanReader =>
+  draft.scan_reader ?? (platform ? null : defaults.scan_reader) ?? env.scan_reader;
+/** The Mistral model a scan really uses, the same way. */
+export const mistralModelOf = (draft: Pick<AiDraft, "mistral_model">, defaults: AiValues, env: AiEnv, platform: boolean): MistralModelId =>
+  draft.mistral_model ?? (platform ? null : defaults.mistral_model) ?? env.mistral_model;
+
+/** Pick a reader ("" follows); picking Gemini lets go of the Mistral model. */
+export const pickedReader = (draft: AiDraft, value: string): AiDraft => ({
+  ...draft,
+  scan_reader: (value || null) as ScanReader | null,
+  mistral_model: value === "openrouter" ? null : draft.mistral_model,
+});
+
+/** The banner's lines while Mistral is stopped; null while it reads. */
+export function mistralStoppedText(status: MistralStatus): string[] | null {
+  if (!status.stopped) return null;
+  const at = status.since ? ` at ${formatDateTime(status.since)}` : "";
+  const why = status.code === "mistral_key" ? "out of credit or key refused" : "not answering";
+  const waiting = `${countText(status.documents_waiting, "document", "documents")} ${status.documents_waiting === 1 ? "is" : "are"} waiting`;
+  const lines = [`Mistral stopped reading pages${at} (${why}). ${waiting}. They're read automatically once Mistral works again.`];
+  if (status.code === "mistral_key") lines.push("In Mistral's console, check the Mistral key and credit.");
+  return lines;
+}
+
 /** What a saved organisation's AI settings say, with the Ensemble note when the server turned it off. */
 export const savedText = (orgName: string, ensembleOff: boolean) =>
   `Saved the AI settings of ${orgName}.${ensembleOff ? ` ${ENSEMBLE_OFF}` : ""}`;
@@ -186,6 +237,8 @@ export interface AiDraft {
   chat_levels: AiLevel[];
   chat_default_level: AiLevel | null;
   dynamic: boolean | null;
+  scan_reader: ScanReader | null; // #473
+  mistral_model: MistralModelId | null;
   ensemble: boolean; // an organisation's own; never a platform default
   budget: string; // US dollars as typed; empty: no budget (organisation only)
 }
@@ -204,6 +257,8 @@ export function draftOf(values: AiValues, extra: { ensemble: boolean; ai_budget_
     chat_levels: [...(values.chat_levels ?? [])],
     chat_default_level: values.chat_default_level,
     dynamic: values.dynamic,
+    scan_reader: values.scan_reader,
+    mistral_model: values.mistral_model,
     ensemble: extra.ensemble,
     budget: extra.ai_budget_usd === null ? "" : String(extra.ai_budget_usd),
   };
@@ -234,6 +289,8 @@ export function resetSection(draft: AiDraft, section: Section): AiDraft {
         careful_resolution: null,
         page_max_output_tokens: "",
         dynamic: null,
+        scan_reader: null,
+        mistral_model: null,
       };
     case "chat":
       return { ...draft, chat_models: [], chat_default: null, chat_levels: [], chat_default_level: null };
@@ -293,6 +350,8 @@ export function parseTokens(text: string): number | null | undefined {
 
 /** Where a problem is shown: next to its field. "form" is the form's own line. */
 export type AiField =
+  | "scan_reader"
+  | "mistral_model"
   | "scan_models"
   | "scan_default"
   | "page_max_output_tokens"
@@ -339,6 +398,8 @@ export function aiBody(draft: AiDraft): AiValues {
     chat_levels: levels ? draft.chat_levels : null,
     chat_default_level: levels ? draft.chat_default_level : null,
     dynamic: draft.dynamic,
+    scan_reader: draft.scan_reader,
+    mistral_model: draft.mistral_model,
   };
 }
 
@@ -363,6 +424,9 @@ export function follows(own: AiValues): { scan: "all" | "some" | "none"; chat: "
       own.careful_resolution === null,
       own.page_max_output_tokens === null,
       own.dynamic === null,
+      own.scan_reader === null,
+      // #473: the Mistral model counts unless the organisation reads with Gemini itself.
+      ...(own.scan_reader === "openrouter" ? [] : [own.mistral_model === null]),
     ]),
     chat: part([own.chat_models.length === 0, own.chat_levels === null]),
   };
@@ -385,7 +449,7 @@ export function namesOf(ids: string[], catalogue: OperatorModel[], first: string
 /** What an organisation that follows the platform gets, in words, for "From platform
  * defaults: …". An empty platform list is the server's own model. */
 export function inheritedText(
-  field: "scan_models" | "chat_models" | ScanSetting | "page_max_output_tokens" | "chat_levels" | "dynamic",
+  field: "scan_models" | "chat_models" | ScanSetting | ReaderSetting | "page_max_output_tokens" | "chat_levels" | "dynamic",
   defaults: AiValues,
   env: AiEnv,
   catalogue: OperatorModel[],
@@ -400,6 +464,10 @@ export function inheritedText(
     case "careful_thinking":
     case "careful_resolution":
       return settingWords(field, defaults) ?? `the server's level (${env[field]})`;
+    case "scan_reader":
+      return settingWords(field, defaults) ?? `the server's reader (${serverReader(env)})`;
+    case "mistral_model":
+      return settingWords(field, defaults) ?? `the server's model (${MISTRAL_MODEL_WORDS[env.mistral_model]})`;
     case "page_max_output_tokens":
       return formatNumber(defaults.page_max_output_tokens ?? env.page_max_output_tokens);
     case "chat_levels":
@@ -412,8 +480,13 @@ export function inheritedText(
 /** The scan settings (#463) that each follow the platform, then the server, on their own. */
 export type ScanSetting = "scan_thinking" | "scan_resolution" | "careful_thinking" | "careful_resolution";
 
-/** A scan setting's value in words ("Minimal", "High"), or null when it follows. */
-export function settingWords(field: ScanSetting, values: Pick<AiValues, ScanSetting>): string | null {
+/** Who reads the pages and which Mistral model (#473), each following on its own too. */
+export type ReaderSetting = "scan_reader" | "mistral_model";
+
+/** A scan setting's value in words ("Minimal", "High", "Mistral OCR"), or null when it follows. */
+export function settingWords(field: ScanSetting | ReaderSetting, values: Pick<AiValues, ScanSetting | ReaderSetting>): string | null {
+  if (field === "scan_reader") return values.scan_reader === null ? null : READER_WORDS[values.scan_reader];
+  if (field === "mistral_model") return values.mistral_model === null ? null : MISTRAL_MODEL_WORDS[values.mistral_model];
   if (field === "scan_resolution" || field === "careful_resolution") {
     const value = values[field];
     return value === null ? null : RESOLUTION_WORDS[value];
@@ -453,6 +526,8 @@ const DEFAULT_AREAS: {
   },
   ...(
     [
+      ["scan_reader", "who reads the pages"],
+      ["mistral_model", "Mistral model"],
       ["scan_thinking", "scanning level"],
       ["scan_resolution", "picture detail"],
       ["careful_thinking", "thinking for pages read again"],
@@ -549,6 +624,8 @@ export function refusalField(code: string): AiField {
       return "chat_models";
     case "limit_out_of_range":
       return "page_max_output_tokens";
+    case "mistral_not_set_up": // #473
+      return "scan_reader";
     default: // unavailable, default_not_allowed, level_not_supported: either area
       return "form";
   }
@@ -589,9 +666,18 @@ export const costAsk = (customerId: string | null, values: ScanAsk): ScanCostAsk
 });
 
 // The settings a cost or an accuracy check is asked for: the four scan settings, the most
-// output tokens a page and Cost saving. The scan models are never asked: the cost is the
-// saved models'.
-const SCAN_ASK = ["scan_thinking", "scan_resolution", "careful_thinking", "careful_resolution", "page_max_output_tokens", "dynamic"] as const;
+// output tokens a page, Cost saving, and who reads the pages with which Mistral model (#473).
+// The scan models are never asked: the cost is the saved models'.
+const SCAN_ASK = [
+  "scan_thinking",
+  "scan_resolution",
+  "careful_thinking",
+  "careful_resolution",
+  "page_max_output_tokens",
+  "dynamic",
+  "scan_reader",
+  "mistral_model",
+] as const;
 export type ScanAsk = Pick<AiValues, (typeof SCAN_ASK)[number]>;
 
 /** Just those settings (an accuracy check's body, with its pages and code). */
@@ -602,6 +688,8 @@ export const scanSettings = (values: ScanAsk): ScanAsk => ({
   careful_resolution: values.careful_resolution,
   page_max_output_tokens: values.page_max_output_tokens,
   dynamic: values.dynamic,
+  scan_reader: values.scan_reader,
+  mistral_model: values.mistral_model,
 });
 
 /** Do two sets of scan settings ask the same cost? */
@@ -655,14 +743,26 @@ export interface CostWords {
   lines: string[];
 }
 
+export const MISTRAL_FIXED = "Mistral's fixed price.";
+export const MISTRAL_BY_PAGE = "Mistral charges by the page, not by tokens.";
+
+/** The cost a page: Mistral's fixed price (#473), else the measured one. */
+const pagePrice = (reply: ScanCost) => (reply.fixed_price ? reply.fixed_usd_per_page : reply.usd_per_page);
+
 export function costWords(reply: CostReply): CostWords {
   if (reply === null) return { figure: null, dollars: null, lines: [COST_WORKING] };
   if (reply === "failed") return { figure: null, dollars: null, lines: [COST_FAILED] };
-  const { first_read: first, re_read: again, usd_per_page: total, days } = reply;
+  const { first_read: first, re_read: again, days } = reply;
+  const total = pagePrice(reply);
+  const measured = (usd: number) =>
+    `First read: ${perPage.format(usd)} a page, measured on ${countText(first.pages, "page", "pages")} in the last ${days} days.`;
+  // Mistral (#473): its fixed price, with what was measured when there is some.
+  if (reply.fixed_price && total !== null) {
+    const lines = first.usd_per_page === null ? [MISTRAL_FIXED] : [MISTRAL_FIXED, measured(first.usd_per_page)];
+    return { figure: `About ${rupeeText(total)} a page`, dollars: `${perPage.format(total)} a page`, lines };
+  }
   if (total === null || first.usd_per_page === null) return { figure: null, dollars: null, lines: [COST_NOT_MEASURED] };
-  const lines = [
-    `First read: ${perPage.format(first.usd_per_page)} a page, measured on ${countText(first.pages, "page", "pages")} in the last ${days} days.`,
-  ];
+  const lines = [measured(first.usd_per_page)];
   const leftOut = "so the cost above leaves them out.";
   if (again === null) lines.push("Cost saving is off, so pages are read again only when someone asks.");
   else if (again.share === null)
@@ -683,6 +783,7 @@ export function costWords(reply: CostReply): CostWords {
 /** The Tokens a page part of the panel: input, output with the 99th percentile, and the
  * pages that hit the limit; one line when nothing is measured. */
 export function tokensWords(reply: ScanCost): string[] {
+  if (reply.fixed_price) return [MISTRAL_BY_PAGE];
   const { input_per_page: input, output_per_page: output, output_p99: p99, limit_hits: hits, pages } = reply.tokens;
   if (pages === 0 || (input === null && output === null)) return ["Not measured yet at these settings."];
   const lines: string[] = [];
@@ -723,7 +824,7 @@ const reReadLeftOut = (reply: ScanCost) =>
 export function costChange(saved: CostReply, draft: CostReply): { from: string; to: string; verdict: string } | null {
   if (saved === null || saved === "failed" || draft === null || draft === "failed") return null;
   if (reReadLeftOut(saved) || reReadLeftOut(draft)) return null;
-  const [before, after] = [saved.usd_per_page, draft.usd_per_page];
+  const [before, after] = [pagePrice(saved), pagePrice(draft)];
   if (before === null || after === null || before <= 0) return null;
   const change = Math.round((Math.abs(after - before) / before) * 100);
   const verdict = change === 0 ? "about the same" : `${change}% ${after < before ? "cheaper" : "dearer"}`;
@@ -747,6 +848,7 @@ const isLevel = (level: string): level is ScanLevel => Object.hasOwn(LEVEL_WORDS
  * for a model with no levels (its one mode).
  */
 export function levelNote(reply: ScanCost, asked: string): string | null {
+  if (reply.fixed_price) return null; // Mistral has no thinking levels
   const read = reply.first_read.thinking;
   const expected = reply.re_read !== null && asked !== "minimal" ? "low" : asked;
   if (read === expected || !isLevel(read) || !isLevel(expected)) return null;
@@ -824,14 +926,15 @@ export const checkRunning = (check: AccuracyCheck | null) => check?.status === "
 export function withCost(message: string, reply: ScanCost | null, checks: boolean): string {
   if (reply === null) return message;
   const leftOut = reReadLeftOut(reply) ? " (pages read again not counted)" : "";
+  const price = pagePrice(reply);
   const cost =
-    reply.usd_per_page === null
+    price === null
       ? "The cost a page is not measured yet at these settings"
-      : `Scans now cost about ${rupeeText(reply.usd_per_page)} a page${leftOut}`;
+      : `Scans now cost about ${rupeeText(price)} a page${leftOut}`;
   if (!checks) return `${message} ${cost}.`;
   const result = reply.accuracy ? checkResult(reply.accuracy) : null;
   if (!result) return `${message} ${cost}. Accuracy against max settings isn't checked yet.`;
-  return reply.usd_per_page === null ? `${message} ${cost}. ${result.saved}.` : `${message} ${cost}, and ${result.saved}.`;
+  return price === null ? `${message} ${cost}. ${result.saved}.` : `${message} ${cost}, and ${result.saved}.`;
 }
 
 // --- AI spend ---------------------------------------------------------------------------
