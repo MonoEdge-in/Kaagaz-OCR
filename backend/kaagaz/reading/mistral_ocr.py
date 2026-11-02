@@ -9,7 +9,10 @@ Mistral counts as set up on a server only with MISTRAL_API_KEY and MISTRAL_ZDR_A
 (zero data retention confirmed with Mistral; council 2 Nov 2026). Only ``/v1/ocr`` is called:
 zero data retention does not cover Mistral's Files or Batch endpoints.
 
-Stdlib only, so the API can import the model list without the reader's plumbing.
+Stdlib only, so the API can import the model list without the reader's plumbing. The reader
+itself, ``MistralClient`` (one POST to ``/v1/ocr`` a page) and ``page_read`` (a reply page as a
+``PageRead``), is in ``kaagaz.reading.mistral_reader``, which imports the Gemini reader's
+pinning and so is never loaded by the API (#473, 2 Nov 2026).
 """
 
 from dataclasses import dataclass
@@ -19,6 +22,8 @@ OPENROUTER = "openrouter"
 SCAN_READERS = (OPENROUTER, MISTRAL)
 
 MISTRAL_OCR_URL = "https://api.mistral.ai/v1/ocr"
+# The most one page's call may take, capped by the page's time left on the engine's clock.
+MISTRAL_TIMEOUT_SECONDS = 30
 
 
 @dataclass(frozen=True, slots=True)
