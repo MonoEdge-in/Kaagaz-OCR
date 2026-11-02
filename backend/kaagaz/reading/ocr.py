@@ -68,6 +68,7 @@ from PIL import Image
 
 from kaagaz.chunking.script import ocr_script_suspect, ocr_suspect_count
 from kaagaz.reading.lines import PageFrame, WordBox, line_spans
+from kaagaz.reading.mistral_ocr import DEFAULT_MISTRAL_MODEL, OPENROUTER
 from kaagaz.reading.page_quality import ILLEGIBLE_MARK, ILLEGIBLE_WORDS, NO_TEXT
 from kaagaz.reading.rapid_pool import (
     DEVANAGARI_REC_MODEL,
@@ -612,7 +613,11 @@ class DocumentPages:
     PAGE_MAX_OUTPUT_TOKENS; a reply that reaches it is read in halves, as before). #463 review:
     ``levels`` the thinking levels each of the document's models with any takes
     (``models.accepted_levels``; a model not in it is sent the level asked for): a Careful or
-    read-again level its model does not take is sent as OCR_RETRY_THINKING_LEVEL."""
+    read-again level its model does not take is sent as OCR_RETRY_THINKING_LEVEL.
+
+    #473 (Tushar, 2 Nov 2026; ``kaagaz.db.models.Reading``): ``scan_reader`` who reads the pages
+    a model would read, openrouter (the fields above) or mistral (Mistral OCR's ``mistral_model``
+    in place of every model call: never Gemini, Careful or Ensemble)."""
 
     customer_id: str
     document_id: str
@@ -646,6 +651,8 @@ class DocumentPages:
     careful_resolution: str | None = None
     max_output_tokens: int | None = None
     levels: Mapping[str, frozenset[str]] = dataclasses.field(default_factory=dict)
+    scan_reader: str = OPENROUTER
+    mistral_model: str = DEFAULT_MISTRAL_MODEL
 
 
 @runtime_checkable

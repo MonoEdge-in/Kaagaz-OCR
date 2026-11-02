@@ -460,6 +460,17 @@ class Settings:
     google_client_id: str | None = None
     google_client_secret: str | None = field(default=None, repr=False)
     google_redirect_uri: str | None = None
+    # Mistral OCR, the second page reader the operator may choose per organisation (#473, Tushar,
+    # 2 Nov 2026). Optional: unset, Mistral can't be chosen. The key is a secret repr never shows,
+    # checked as OPENROUTER_API_KEY is. mistral_zdr_approved: zero data retention confirmed with
+    # Mistral (council 2 Nov 2026); off unless MISTRAL_ZDR_APPROVED=true.
+    mistral_api_key: str | None = field(default=None, repr=False)
+    mistral_zdr_approved: bool = False
+
+    @property
+    def mistral_ready(self) -> bool:
+        """Mistral is set up on this server: its key and zero data retention, both."""
+        return self.mistral_api_key is not None and self.mistral_zdr_approved
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "Settings":
@@ -602,6 +613,9 @@ class Settings:
             )
         if openrouter_api_key is not None and _API_KEY.fullmatch(openrouter_api_key) is None:
             raise SettingsError("OPENROUTER_API_KEY must be printable ASCII with no spaces")
+        mistral_api_key = env.optional("MISTRAL_API_KEY")
+        if mistral_api_key is not None and _API_KEY.fullmatch(mistral_api_key) is None:
+            raise SettingsError("MISTRAL_API_KEY must be printable ASCII with no spaces")
         queue_url = env.text("QUEUE_URL")
         queue_express_url = (
             None if env.optional("QUEUE_EXPRESS_URL") is None else env.url("QUEUE_EXPRESS_URL")
@@ -752,6 +766,9 @@ class Settings:
             google_redirect_uri=_redirect_uri(env.text("GOOGLE_REDIRECT_URI"), "google")
             if google_on
             else env.optional("GOOGLE_REDIRECT_URI"),
+            mistral_api_key=mistral_api_key,
+            mistral_zdr_approved=env.optional("MISTRAL_ZDR_APPROVED") is not None
+            and env.boolean("MISTRAL_ZDR_APPROVED"),
         )
 
 

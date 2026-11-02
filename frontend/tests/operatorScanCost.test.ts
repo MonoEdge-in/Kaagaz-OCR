@@ -70,7 +70,7 @@ import { DefaultsSummary } from "@/components/operator/PlatformDefaults";
 import { ApiError, getLatestAccuracyCheck, postAccuracyCheck, postScanCost, putAiDefaults, putOrgAi } from "@/lib/api";
 import { createPoller } from "@/lib/poll";
 import type { AiDraft, CostReply } from "@/components/operator/models";
-import type { AccuracyCheck, AiDefaults, AiValues, OperatorModel, ScanCost } from "@/lib/types";
+import type { AccuracyCheck, AiDefaults, AiEnv, AiValues, OperatorModel, ScanCost } from "@/lib/types";
 
 const read = (path: string) => readFileSync(join(__dirname, "..", path), "utf8");
 
@@ -87,9 +87,11 @@ const values = (overrides: Partial<AiValues> = {}): AiValues => ({
   chat_levels: null,
   chat_default_level: null,
   dynamic: null,
+  scan_reader: null, // Changed on purpose (#473): who reads the pages, and the Mistral model
+  mistral_model: null,
   ...overrides,
 });
-const ENV = {
+const ENV: AiEnv = {
   scan_model: "m/env-scan",
   chat_model: "m/env-chat",
   scan_thinking: "low",
@@ -97,6 +99,13 @@ const ENV = {
   careful_thinking: "high",
   careful_resolution: "low",
   page_max_output_tokens: 65536,
+  // Changed on purpose (#473): the env says the server's reader and whether Mistral is set up.
+  scan_reader: "openrouter",
+  mistral_model: "mistral-ocr-4-1",
+  mistral_ready: true,
+  mistral_missing: null,
+  mistral_models: [],
+  mistral_status: { stopped: false, code: null, since: null, documents_waiting: 0 },
 };
 const DEFAULTS = values({ chat_levels: ["low"], chat_default_level: "low", scan_resolution: "low", careful_thinking: "minimal" });
 const COUNTS: AiDefaults["orgs_inheriting"] = {
@@ -109,6 +118,8 @@ const COUNTS: AiDefaults["orgs_inheriting"] = {
   page_max_output_tokens: 8,
   chat_levels: 7,
   dynamic: 5,
+  scan_reader: 5, // Changed on purpose (#473)
+  mistral_model: 5,
 };
 const catalogue: OperatorModel[] = [];
 
@@ -135,6 +146,8 @@ const measured = (overrides: Partial<ScanCost> = {}): ScanCost => ({
   quality: { clean_share: 0.94, pages: 1240, max_clean_share: 0.97, max_pages: 60 },
   tokens: { input_per_page: 2050, output_per_page: 3100, output_p99: 6200, limit: 65536, limit_hits: 3, pages: 1240 },
   accuracy: null,
+  fixed_price: false, // Changed on purpose (#473): Gemini's cost is measured, not fixed
+  fixed_usd_per_page: null,
   ...overrides,
 });
 const unmeasured = () => measured({ first_read: { ...measured().first_read, usd_per_page: null, pages: 0 }, usd_per_page: null });
@@ -312,6 +325,7 @@ describe("the scan settings' draft and save", () => {
       expect(sent[0]?.body).toMatchObject({ scan_resolution: "low", careful_thinking: "medium", careful_resolution: "high", code: "123456" });
       expect(sent[1]?.body).toMatchObject({ scan_thinking: null, scan_resolution: null, careful_thinking: null, careful_resolution: null });
       // Changed on purpose (#463 review): Cost saving (`dynamic`) joins the cost's question.
+      // Changed on purpose (#473): so do who reads the pages and the Mistral model.
       expect(sent[2]).toEqual({
         url: "/api/operator/scan-cost",
         method: "POST",
@@ -323,6 +337,8 @@ describe("the scan settings' draft and save", () => {
           careful_resolution: "high",
           page_max_output_tokens: null,
           dynamic: null,
+          scan_reader: null,
+          mistral_model: null,
         },
       });
       expect(costAsk(null, values())).toEqual({
@@ -333,12 +349,15 @@ describe("the scan settings' draft and save", () => {
         careful_resolution: null,
         page_max_output_tokens: null,
         dynamic: null,
+        scan_reader: null,
+        mistral_model: null,
       });
     });
 
     it("start a check with the draft's scan settings and a fresh code, and read the latest", async () => {
       const sent = capture({ id: "c-1" }, 202);
       // Changed on purpose (#463 review): Cost saving (`dynamic`) joins the check's body.
+      // Changed on purpose (#473): so do who reads the pages and the Mistral model.
       const limited = { ...own, page_max_output_tokens: 8192, dynamic: true };
       expect(await postAccuracyCheck("org-1", { ...scanSettings(aiBody(draftOf(limited))), pages: 50 }, "123456")).toEqual({ id: "c-1" });
       expect(sent[0]).toEqual({
@@ -351,6 +370,8 @@ describe("the scan settings' draft and save", () => {
           careful_resolution: "high",
           page_max_output_tokens: 8192,
           dynamic: true,
+          scan_reader: null,
+          mistral_model: null,
           pages: 50,
           code: "123456",
         },
@@ -429,12 +450,11 @@ describe("the Cost per page panel", () => {
     expect(source).toContain("askScanCost(costAsk(customerId, saved), postScanCost, setSavedCost), [customerId, saved, finished]");
     // Changed on purpose (#463 review): Cost saving (`dynamic`) is asked too (U2), and an
     // output limit out of range is never asked (S6).
-    expect(source).toContain(
-      "costAsk(customerId, { scan_thinking, scan_resolution, careful_thinking, careful_resolution, page_max_output_tokens, dynamic }),",
-    );
-    expect(source).toContain(
-      "[customerId, differs, badLimit, finished, scan_thinking, scan_resolution, careful_thinking, careful_resolution, page_max_output_tokens, dynamic]",
-    );
+    // Changed on purpose (#473): who reads the pages and the Mistral model are asked too.
+    const asked = "scan_thinking, scan_resolution, careful_thinking, careful_resolution, page_max_output_tokens, dynamic, scan_reader, mistral_model";
+    const flat = source.replace(/\s+/g, " ").replace(/, \}/g, " }").replace(/, \]/g, " ]");
+    expect(flat).toContain(`costAsk(customerId, { ${asked} }),`);
+    expect(flat).toContain(`[ customerId, differs, badLimit, finished, ${asked} ]`);
     expect(source).toContain("const shown = differs ? draftCost : savedCost;");
     expect(sameSettings(values(), values({ scan_models: ["m/one"] }))).toBe(true); // models are not asked
     expect(sameSettings(values(), values({ careful_resolution: "low" }))).toBe(false);
@@ -516,7 +536,8 @@ describe("the accuracy", () => {
     expect(checkEffect("Asha Stores", null, 20)).toContain("It has a small cost and takes a few minutes.");
     expect(checkEffect("Asha Stores", check({ cost_usd: null }), 50)).toContain("It has a small cost");
     const dialog = read("components/operator/OrgAiSettings.tsx");
-    expect(dialog).toContain("effect: checkEffect(org.name, latest, checkPages),");
+    // Changed on purpose (#473): a Mistral scope says Gemini reads the pages to compare.
+    expect(dialog).toContain("effect: checkEffect(org.name, latest, checkPages, checkMistral),");
     expect(dialog).toContain("stepUp: true,");
     expect(dialog).toContain("run: (stepUpCode) => postAccuracyCheck(org.id, { ...scanSettings(aiBody(draft)), pages: checkPages }, stepUpCode),");
     // The confirm's form sits outside the settings' form: its submit never reaches Save.
@@ -923,6 +944,8 @@ describe("the #463 review (council, 31 Oct 2026)", () => {
       "careful_resolution",
       "page_max_output_tokens",
       "dynamic",
+      "scan_reader", // Changed on purpose (#473)
+      "mistral_model",
     ]);
   });
 

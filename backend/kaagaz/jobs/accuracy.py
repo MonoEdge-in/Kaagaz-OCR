@@ -25,6 +25,11 @@
   the settings asked (an outage, a refusal, the local reader, a low read alongside: #463
   review), is skipped and counted (``pages_failed``). A check that compared no page fails; a
   key problem fails it and goes up, so the worker waits as for any job.
+* #473: a check started on a Mistral draft names its model "mistral/<id>" (``read_by``), and
+  "your settings" are read by that Mistral model (``DocumentPages.scan_reader``); the max side
+  stays Gemini at max settings, the operator's own comparison. Mistral not reading (down, its
+  key or credit, or not set up here) fails the check as Gemini's key does, its reason logged
+  (review, 2 Nov 2026): no page is quietly skipped for it.
 * Every call is billed to the organisation as ``accuracy_check`` (Careful's too:
   ``kaagaz.ai.usage``), never its budget; ``cost_usd`` is OpenRouter's reported cost of the
   check's calls, null when one came without it.
@@ -49,7 +54,15 @@ from kaagaz.db.engine import Database, unavailable
 from kaagaz.db.page_reads import PageKey
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import BlobNotFound, Job
-from kaagaz.jobs.worker import KEY_PROBLEM, Heartbeat
+from kaagaz.jobs.worker import KEY_PROBLEMS, Heartbeat
+from kaagaz.reading.mistral_ocr import (
+    MISTRAL,
+    MISTRAL_OCR_MODELS,
+    MISTRAL_RESOLUTION,
+    MISTRAL_THINKING,
+    OPENROUTER,
+    read_by,
+)
 from kaagaz.reading.ocr import DocumentPages, OcrEngine, PageRead, as_page_engine, reading_document
 from kaagaz.settings import Settings
 
@@ -144,9 +157,16 @@ class AccuracyChecks:
             allowed = dict(models.effective_settings(conn, customer_id))
             picked = conn.execute(_PAGES, {"c": customer_id, "n": claimed["max_pages"]}).all()
         asked = {name: claimed[name] for name in (*models.SCAN_COST_FIELDS, "dynamic")}
-        draft = models.scope_reading(rows, {**allowed, **asked}, settings=self._settings)
+        # #473: the reader the check was started on, from its model ("mistral/<id>": Mistral).
+        mistral = next((model for model in MISTRAL_OCR_MODELS if read_by(model) == claimed["model"]), None)
+        reader = (
+            {"scan_reader": OPENROUTER}
+            if mistral is None
+            else {"scan_reader": MISTRAL, "mistral_model": mistral}
+        )
+        draft = models.scope_reading(rows, {**allowed, **asked, **reader}, settings=self._settings)
         engine = self._engine
-        if engine is None or draft.lead.model != claimed["model"]:
+        if engine is None or (mistral is None and draft.lead.model != claimed["model"]):
             finish(self._db, customer_id, check_id, "failed")
             logger.info(
                 "accuracy check ended", extra={**ids, "outcome": "failed", "code": "check_unreadable"}
@@ -176,8 +196,10 @@ class AccuracyChecks:
                         if image is None or draft_read is None
                         else _read(engine, best, *at, image, settings=self._settings)
                     )
-                except BackendUnavailable:  # the key (``_read``): the check fails, the worker waits
+                except BackendUnavailable as error:  # a key or Mistral (``_read``): fails, goes up
                     finish(self._db, customer_id, check_id, "failed", checked, failed)
+                    code = f"{error}_unavailable"
+                    logger.info("accuracy check ended", extra={**ids, "outcome": "failed", "code": code})
                     raise
                 if draft_read is None or max_read is None:
                     failed += 1
@@ -260,17 +282,19 @@ def _read(
     """The page as ``reading`` reads it through the scan reader, or None when a model of it did
     not read it (an outage, a refusal, the local reader) or not at the first read's settings
     ``reading`` asks (#463 review: a low read alongside is never taken for the max read). A key
-    problem goes up."""
+    problem goes up, and so does any for a ``reading`` on Mistral (#473 review)."""
     pages = document_pages(reading, customer_id, document_id)
     try:
         with reading_document(engine, pages):
             read = as_page_engine(engine).read_page(image, page_no=page_no)
     except BackendUnavailable as error:
-        if str(error) == KEY_PROBLEM:
+        if str(error) in KEY_PROBLEMS or reading.scan_reader == MISTRAL:
             raise
         return None
     readers = {reading.lead.model} | ({reading.careful.model} if reading.careful is not None else set())
     asked = (reading.thinking, reading.resolution or settings.ocr_media_resolution)
+    if reading.scan_reader == MISTRAL:  # #473: Mistral alone, at its one setting
+        readers, asked = {read_by(reading.mistral_model)}, (MISTRAL_THINKING, MISTRAL_RESOLUTION)
     if read.read_by not in readers or (read.read_thinking, read.read_resolution) != asked:
         return None
     return read
@@ -279,7 +303,8 @@ def _read(
 def document_pages(reading: models.Reading, customer_id: str, document_id: str) -> DocumentPages:
     """One page's ``DocumentPages`` for ``reading``, as the pipeline gives a one-page document
     (``pipeline._reading_document``): Dynamic's Careful on the page's own thread
-    (``inline_careful``) when it has one; no cache and nothing read again."""
+    (``inline_careful``) when it has one; no cache and nothing read again; its reader and
+    Mistral model (#473)."""
     careful = reading.careful
     return DocumentPages(
         customer_id=customer_id,
@@ -301,4 +326,6 @@ def document_pages(reading: models.Reading, customer_id: str, document_id: str) 
         plain=frozenset(
             agent.model for agent in (reading.lead, careful) if agent is not None and not agent.thinks
         ),
+        scan_reader=reading.scan_reader,
+        mistral_model=reading.mistral_model,
     )

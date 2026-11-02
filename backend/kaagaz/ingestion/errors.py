@@ -46,4 +46,9 @@ class BackendUnavailable(Exception):
 
     Adapters raise this for failures the caller may retry. The upload service
     catches only this type, never a blanket Exception.
+
+    ``seconds`` (#473 review, 2 Nov 2026): how long the backend is known to stay off, which
+    the worker waits at least (0.0: not known). Only Mistral's switch-off sets it.
     """
+
+    seconds: float = 0.0

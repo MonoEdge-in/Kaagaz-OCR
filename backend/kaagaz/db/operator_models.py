@@ -24,6 +24,8 @@ audit rows.
 * ``ai_defaults`` and ``set_ai_defaults``: the platform defaults and how many
   organisations inherit each area; the same outcomes but missing and deleting.
 * ``usage``: tokens and dollars per organisation and model. No user, no document.
+* ``mistral_status`` (#473, 0065): whether Mistral stopped reading pages, from the runs that
+  waited on it (no worker memory). Codes and counts only.
 * ``scan_cost`` (#463, 0064): the measured cost of a page at one first read's and one
   Careful re-read's (model, thinking, picture detail), the scope's share read again, and its
   pages read at the first read's and at max settings, and the clean ones.
@@ -62,19 +64,20 @@ _RECORD = text(
 _RECORD_CHAT = text(
     "UPDATE model_catalog SET chat_verified_prompt = :prompt, chat_verified_at = now() WHERE id = :model"
 )
-# An AiChoice's parameters (sm to dyn) are in the functions' order (0064: sr, ct, cr, pm after st).
+# An AiChoice's parameters (sm to dyn) are in the functions' order (0064: sr, ct, cr, pm after st;
+# #473, 0065: rd and mm after the step).
 _SET_ORG_AI = text(
     "SELECT outcome, result_id FROM kaagaz_op_set_org_ai(:o, :c, CAST(:sm AS text[]), CAST(:sd AS text),"
     " CAST(:cm AS text[]), CAST(:cd AS text), CAST(:st AS text), CAST(:sr AS text), CAST(:ct AS text),"
     " CAST(:cr AS text), CAST(:pm AS integer), CAST(:cl AS text[]), CAST(:cdl AS text),"
     " CAST(:dyn AS boolean), :ensemble,"
-    " CAST(:budget AS numeric), :scan, :chat, :step)"
+    " CAST(:budget AS numeric), :scan, :chat, :step, CAST(:rd AS text), CAST(:mm AS text))"
 )
 _SET_AI_DEFAULTS = text(
     "SELECT kaagaz_op_set_ai_defaults(:o, CAST(:sm AS text[]), CAST(:sd AS text), CAST(:cm AS text[]),"
     " CAST(:cd AS text), CAST(:st AS text), CAST(:sr AS text), CAST(:ct AS text), CAST(:cr AS text),"
     " CAST(:pm AS integer), CAST(:cl AS text[]), CAST(:cdl AS text), CAST(:dyn AS boolean), :scan, :chat,"
-    " :step)"
+    " :step, CAST(:rd AS text), CAST(:mm AS text))"
 )
 _SCAN_COST = text(
     "SELECT * FROM kaagaz_op_scan_cost(:o, CAST(:c AS uuid), :m, :t, :r, CAST(:cm AS text),"
@@ -100,7 +103,9 @@ class AiChoice:
     default level, and Dynamic. For an organisation, None inherits that field. #463 (0064): the
     scan picture detail, Careful's pair (pages read again) and a page read's output limit, last
     so the order above holds; for the platform, None is the server's (OCR_MEDIA_RESOLUTION,
-    OCR_RETRY_*, PAGE_MAX_OUTPUT_TOKENS)."""
+    OCR_RETRY_*, PAGE_MAX_OUTPUT_TOKENS). #473 (0065): who reads scanned pages (``scan_reader``,
+    openrouter or mistral) and the Mistral model; for the platform, None is openrouter and
+    DEFAULT_MISTRAL_MODEL. Whether Mistral is set up is the API's check, not the database's."""
 
     scan_models: Sequence[str] = ()
     scan_default: str | None = None
@@ -114,6 +119,8 @@ class AiChoice:
     careful_thinking: str | None = None
     careful_resolution: str | None = None
     page_max_output_tokens: int | None = None
+    scan_reader: str | None = None
+    mistral_model: str | None = None
 
     def params(self) -> dict[str, object]:
         return {
@@ -129,6 +136,8 @@ class AiChoice:
             "cl": None if self.chat_levels is None else list(self.chat_levels),
             "cdl": self.chat_default_level,
             "dyn": self.dynamic,
+            "rd": self.scan_reader,
+            "mm": self.mistral_model,
         }
 
 
@@ -167,7 +176,8 @@ def set_model_enabled(
 def org_ai(conn: Connection, operator_id: str, customer_id: str) -> RowMapping | None:
     """One organisation's own settings (scan_models, scan_default, chat_models,
     chat_default, scan_thinking, chat_levels, chat_default_level, dynamic, scan_resolution,
-    careful_thinking, careful_resolution, ensemble) and ai_budget_usd; an empty list or a
+    careful_thinking, careful_resolution, page_max_output_tokens, scan_reader, mistral_model,
+    ensemble) and ai_budget_usd; an empty list or a
     NULL field inherits. None when there is no such organisation (or the operator is not enabled)."""
     return (
         conn.execute(text("SELECT * FROM kaagaz_op_org_ai(:o, :c)"), {"o": operator_id, "c": customer_id})
@@ -210,7 +220,8 @@ def set_org_ai(
 def ai_defaults(conn: Connection, operator_id: str) -> RowMapping | None:
     """The platform defaults (as ``org_ai``, without ensemble and budget) and
     orgs_inheriting_{scan_models, chat_models, scan_thinking, chat_levels, dynamic,
-    scan_resolution, careful_thinking, careful_resolution}: the
+    scan_resolution, careful_thinking, careful_resolution, page_max_output_tokens, scan_reader,
+    mistral_model}: the
     organisations (not being deleted) a change of that area reaches. None for an operator
     who is not enabled."""
     return (
@@ -226,6 +237,18 @@ def set_ai_defaults(
     params = {"o": operator_id, **choice.params(), "scan": scan_prompt, "chat": chat_prompt, "step": step}
     row = conn.execute(_SET_AI_DEFAULTS, params).one()
     return str(row[0])
+
+
+def mistral_status(conn: Connection, operator_id: str) -> RowMapping | None:
+    """#473 (0065): code (the newest wait's run error code, ``mistral_key_unavailable`` or
+    ``mistral_unavailable``; None when no document waits), since (when the first of the waiting
+    documents' Mistral waits ended) and documents_waiting, over the last 24 hours, every
+    organisation's together. None for an operator who is not enabled."""
+    return (
+        conn.execute(text("SELECT * FROM kaagaz_op_mistral_status(:o)"), {"o": operator_id})
+        .mappings()
+        .first()
+    )
 
 
 def feature_switches(conn: Connection, operator_id: str) -> Sequence[RowMapping]:

@@ -40,6 +40,11 @@ and ride on the ``Reading`` (None: the env's), so the worker never asks again. A
 reaches what is read from then on: new scans, Careful's re-reads and pages read again; text
 already read is never read again for it.
 
+Who reads scanned pages (#473, Tushar, 2 Nov 2026; 0065): ``scan_reader`` (openrouter, Gemini
+through OpenRouter, or mistral, Mistral OCR) and ``mistral_model`` inherit field by field as
+well, else the code's (OPENROUTER, DEFAULT_MISTRAL_MODEL), and ride on the ``Reading``. A
+Mistral organisation never gets Ensemble (``resolve_ensemble``): what is chosen is what reads.
+
 The ledger columns (``ledger_tokens_in``/``_out``) are the average tokens a scanned page
 took in the organisation's own ledger of the last LEDGER_DAYS days (MC3); prices never
 leave the server (Tushar, 15 Oct 2026: org admins and members never see cost).
@@ -62,6 +67,7 @@ from sqlalchemy import Connection, RowMapping, text
 
 from kaagaz.answering.draft import ANSWER_PROMPT_HASH
 from kaagaz.db import ai_settings
+from kaagaz.reading.mistral_ocr import DEFAULT_MISTRAL_MODEL, MISTRAL, OPENROUTER
 from kaagaz.reading.ocr import GEMINI, READER_PROMPT_VERSION
 from kaagaz.settings import DEFAULT_PROVIDER, NO_THINKING, Settings
 
@@ -136,6 +142,8 @@ _SETTINGS = text(
     " COALESCE(s.careful_thinking, p.careful_thinking) AS careful_thinking,"
     " COALESCE(s.careful_resolution, p.careful_resolution) AS careful_resolution,"
     " COALESCE(s.page_max_output_tokens, p.page_max_output_tokens) AS page_max_output_tokens,"
+    " COALESCE(s.scan_reader, p.scan_reader) AS scan_reader,"  # #473
+    " COALESCE(s.mistral_model, p.mistral_model) AS mistral_model,"
     " COALESCE(s.dynamic, p.dynamic) AND COALESCE(w.cost_saving, true) AS dynamic,"
     " COALESCE(w.cost_saving, true) AS cost_saving,"
     " COALESCE(s.ensemble, false) AND COALESCE(w.ensemble, true) AS ensemble"
@@ -192,7 +200,9 @@ class Reading:
     picture detail of first reads (``resolution``) and Careful's pair for re-reads and
     pages read again (``careful_thinking``, ``careful_resolution``), the organisation's
     after inheritance; None, the env's (OCR_MEDIA_RESOLUTION, OCR_RETRY_*); and
-    ``page_max_output_tokens``, a page read's output limit (None: PAGE_MAX_OUTPUT_TOKENS)."""
+    ``page_max_output_tokens``, a page read's output limit (None: PAGE_MAX_OUTPUT_TOKENS). #473:
+    ``scan_reader`` who reads the pages (openrouter or mistral; not ``reader``, the choice above)
+    and ``mistral_model``, the organisation's after inheritance, else the code's."""
 
     mode: str
     lead: Agent
@@ -205,6 +215,8 @@ class Reading:
     careful_thinking: str | None = None
     careful_resolution: str | None = None
     page_max_output_tokens: int | None = None
+    scan_reader: str = OPENROUTER
+    mistral_model: str = DEFAULT_MISTRAL_MODEL
 
     @property
     def reader(self) -> str:
@@ -233,6 +245,8 @@ class Reading:
             "careful": None if self.careful is None else agent(self.careful),
             "thinking": self.thinking,
             "notes": list(self.notes),
+            "scan_reader": self.scan_reader,  # #473
+            "mistral_model": self.mistral_model,
         }
 
 
@@ -479,15 +493,20 @@ class _Levels(TypedDict):
     careful_thinking: str | None
     careful_resolution: str | None
     page_max_output_tokens: int | None
+    scan_reader: str
+    mistral_model: str
 
 
 def _levels(allowed: Mapping[Any, Any]) -> _Levels:
-    """#463: the ``Reading``'s picture detail and Careful pair from ``effective_settings``."""
+    """#463: the ``Reading``'s picture detail and Careful pair from ``effective_settings``; #473:
+    who reads the pages and the Mistral model, the code's when nothing is saved."""
     return {
         "resolution": allowed["scan_resolution"],
         "careful_thinking": allowed["careful_thinking"],
         "careful_resolution": allowed["careful_resolution"],
         "page_max_output_tokens": allowed["page_max_output_tokens"],
+        "scan_reader": allowed["scan_reader"] or OPENROUTER,
+        "mistral_model": allowed["mistral_model"] or DEFAULT_MISTRAL_MODEL,
     }
 
 
@@ -546,12 +565,13 @@ def resolve_ensemble(conn: Connection, customer_id: str, document_id: str, *, se
     Oct 2026): ``lead`` is ``resolve_scan``'s (the stored reading's own model), ``others`` the
     first two usable scan models that are not the lead (the default first, then by name).
     Raises ``AiNotAllowed("ensemble_not_allowed")`` when the organisation's Ensemble grant is
-    off, scans are not read by a model (OCR_ENGINE is not gemini), or no other model is
+    off, scans are not read by a model (OCR_ENGINE is not gemini), Mistral reads its pages
+    (#473: never Gemini for a Mistral organisation), or no other model is
     usable. The API checks it before a run and the job again when it starts (S2)."""
     if settings.ocr_engine != GEMINI:
         raise AiNotAllowed("ensemble_not_allowed")
     allowed = effective_settings(conn, customer_id)  # #463 review: read once
-    if not allowed["ensemble"]:
+    if not allowed["ensemble"] or allowed["scan_reader"] == MISTRAL:
         raise AiNotAllowed("ensemble_not_allowed")
     scan = resolve_scan(conn, customer_id, document_id, settings=settings, allowed=allowed)
     rows = usable_models(conn, customer_id, settings=settings)

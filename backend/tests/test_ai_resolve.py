@@ -36,6 +36,8 @@ INHERIT = {
     "careful_thinking": None,
     "careful_resolution": None,
     "page_max_output_tokens": None,
+    "scan_reader": None,  # Changed on purpose (#473): who reads the pages, inherited
+    "mistral_model": None,
 }
 
 
@@ -220,6 +222,8 @@ def test_an_old_ensemble_document_is_read_by_its_lead_alone() -> None:
         "careful": None,
         "thinking": "low",
         "notes": ["ensemble_after_scan"],
+        "scan_reader": "openrouter",  # Changed on purpose (#473): who read the pages, in the run's config
+        "mistral_model": "mistral-ocr-4-1",
     }
 
 

@@ -92,6 +92,8 @@ FOLLOWS_DEFAULTS: dict[str, Any] = {
     "careful_thinking": None,
     "careful_resolution": None,
     "page_max_output_tokens": None,
+    "scan_reader": None,  # Changed on purpose (#473): who reads the pages, and the Mistral model
+    "mistral_model": None,
     "chat_levels": None,
     "chat_default_level": None,
     "dynamic": None,

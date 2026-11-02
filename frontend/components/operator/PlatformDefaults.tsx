@@ -11,6 +11,8 @@
 // Scan cost settings (#463, Tushar, 31 Oct 2026): the same scanning fields and Cost per page
 // panel as an organisation's (without its accuracy check), and the Save confirmation says
 // the cost a page now.
+// Who reads the pages (#473): the default reader and Mistral model with the same fields, its
+// row in the summary, and the banner while Mistral has stopped.
 
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
@@ -23,7 +25,7 @@ import { LoadFailed } from "./LoadFailed";
 import { canCloseDialog, countText, operatorErrorMessage } from "./logic";
 import { COST_SAVING, KEEP_OWN, aiBody, aiErrors, costAsk, defaultsImpact, draftOf, inheritedText, withCost } from "./models";
 import type { AiDraft, AiErrors } from "./models";
-import { AiFields, CODE_ID, fieldId, firstProblem, refusalOf } from "./OrgAiSettings";
+import { AiFields, CODE_ID, MistralStopped, fieldId, firstProblem, refusalOf } from "./OrgAiSettings";
 import admin from "@/components/admin/Admin.module.css";
 import styles from "./Operator.module.css";
 
@@ -63,6 +65,7 @@ export function PlatformDefaults({ catalogue, onSaved }: { catalogue: OperatorMo
       {failed && !reply && <LoadFailed what="the platform defaults" message={failed} onRetry={() => setAttempt((n) => n + 1)} />}
       {reply && (
         <>
+          <MistralStopped env={reply.env} />
           <DefaultsSummary reply={reply} catalogue={catalogue} />
           <div>
             <button id={CHANGE_ID} type="button" className="btn" onClick={() => setEditing(true)}>
@@ -90,6 +93,11 @@ export function PlatformDefaults({ catalogue, onSaved }: { catalogue: OperatorMo
 export function DefaultsSummary({ reply, catalogue }: { reply: AiDefaults; catalogue: OperatorModel[] }) {
   const { defaults, env, orgs_inheriting: counts } = reply;
   const rows: { label: string; value: string; count: number }[] = [
+    { label: "Who reads the pages", value: inheritedText("scan_reader", defaults, env, catalogue), count: counts.scan_reader },
+    // #473: the Mistral model only while the platform reads with Mistral.
+    ...((defaults.scan_reader ?? env.scan_reader) === "mistral"
+      ? [{ label: "Mistral model", value: inheritedText("mistral_model", defaults, env, catalogue), count: counts.mistral_model }]
+      : []),
     { label: "Scanning models", value: inheritedText("scan_models", defaults, env, catalogue), count: counts.scan_models },
     { label: "Scanning thinking level", value: inheritedText("scan_thinking", defaults, env, catalogue), count: counts.scan_thinking },
     { label: "Picture detail", value: inheritedText("scan_resolution", defaults, env, catalogue), count: counts.scan_resolution },

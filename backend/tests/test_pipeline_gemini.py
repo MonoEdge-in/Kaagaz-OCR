@@ -818,7 +818,12 @@ class FakeGeminiModule:
         class GeminiEngine(ScriptedReader):
             @classmethod
             def from_settings(
-                cls, settings: Settings, *, pool: RapidOcrPool, db: Database | None = None
+                cls,
+                settings: Settings,
+                *,
+                pool: RapidOcrPool,
+                db: Database | None = None,
+                mistral: object = None,  # Changed on purpose (#473): the Mistral client, when set up
             ) -> ScriptedReader:
                 outer.built.append(pool)
                 return cls({})

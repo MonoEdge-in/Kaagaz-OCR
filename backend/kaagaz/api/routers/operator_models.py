@@ -50,6 +50,22 @@ writes its own audit rows.
   queue that can't take the job ends the check as failed (#463 review).
   ``GET .../accuracy-check/latest``: its latest check, any settings (404 with none); one
   whose job stopped beating is failed.
+* Who reads scanned pages (#473, Tushar, 2 Nov 2026; 0065): both AI settings carry
+  ``scan_reader`` (openrouter or mistral) and ``mistral_model``, each null to inherit (the
+  platform's: openrouter and mistral-ocr-4-1). Mistral can be newly chosen only when the server
+  has MISTRAL_API_KEY and MISTRAL_ZDR_APPROVED=true (409 ``mistral_not_set_up``, before a code
+  is used); a save that keeps an already saved Mistral goes through (review, 2 Nov 2026), and a
+  Mistral model may be kept while Gemini reads. ``env`` names the server's reader and
+  model, ``mistral_ready``, ``mistral_missing`` (key or zdr), ``mistral_models`` (the code's
+  list with each price a page) and ``mistral_status`` (whether Mistral stopped, from the runs
+  that waited on it in the last day, every organisation's together). The key never leaves the
+  server. The estimate and the accuracy check take both fields, each null for what the save
+  would inherit: with Mistral in effect the estimate prices Mistral's first reads
+  ("mistral/<id>" at none and page; never Careful) and says ``fixed_price`` with Mistral's
+  ``fixed_usd_per_page`` (its measured figures still shown when its ledger has any), and the
+  check's model is "mistral/<id>" at Mistral's one setting (none, page; review, 2 Nov 2026), so
+  its job reads "your settings" with Mistral; it takes no Gemini level test, and is refused
+  (409 ``mistral_not_set_up``) while Mistral is not set up here.
 * ``GET /operator/usage?from&to``: tokens and dollars per organisation and model, days in
   TIMEZONE with both ends included (this month so far when left out), at most
   ``MAX_DAYS``. Never a user or a document: the function has no column for either.
@@ -81,6 +97,7 @@ A refused change is said in plain words; an unknown organisation or model gets 4
 """
 
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
@@ -108,6 +125,15 @@ from kaagaz.db.operator_models import AiChoice
 from kaagaz.db.operator_orgs import Outcome
 from kaagaz.ingestion.ports import Job
 from kaagaz.jobs import accuracy
+from kaagaz.reading.mistral_ocr import (
+    DEFAULT_MISTRAL_MODEL,
+    MISTRAL,
+    MISTRAL_OCR_MODELS,
+    MISTRAL_RESOLUTION,
+    MISTRAL_THINKING,
+    OPENROUTER,
+    read_by,
+)
 from kaagaz.reading.ocr import READER_PROMPT_VERSION
 from kaagaz.settings import Settings, valid_model_id
 
@@ -169,11 +195,17 @@ _REFUSALS = {
         "limit_out_of_range",
         f"Choose an output limit from {TOKENS_LOW} to {PAGE_MAX_OUTPUT_TOKENS} tokens.",
     ),
+    # #473: Mistral chosen on a server without its key or zero data retention confirmed.
+    "mistral_not_set_up": (409, "mistral_not_set_up", "Mistral isn't set up on this server yet."),
 }
 
 Level = Literal["low", "medium", "high"]
 ScanLevel = Literal["minimal", "low", "medium", "high"]  # #463: minimal for scanning only
 Resolution = Literal["low", "high"]  # #463: the picture detail OpenRouter can send (settings)
+# #473: who reads scanned pages (mistral_ocr.OPENROUTER, MISTRAL) and the Mistral models
+# (MISTRAL_OCR_MODELS' ids; migration 0065's CHECKs list the same).
+ScanReader = Literal["openrouter", "mistral"]
+MistralModelId = Literal["mistral-ocr-4-1", "mistral-ocr-2512"]
 # #463: a page read's output limit, in tokens (TOKENS_LOW to openrouter.PAGE_MAX_OUTPUT_TOKENS).
 OutputTokens = Annotated[int, Field(strict=True)]
 # #463: the estimate's organisation with nothing of its own, so its connection sees the platform
@@ -206,6 +238,8 @@ class OrgAiBody(BaseModel):
     careful_thinking: ScanLevel | None
     careful_resolution: Resolution | None
     page_max_output_tokens: OutputTokens | None
+    scan_reader: ScanReader | None  # #473
+    mistral_model: MistralModelId | None
     chat_levels: Levels | None
     chat_default_level: Level | None
     dynamic: bool | None
@@ -298,6 +332,8 @@ class DefaultsBody(BaseModel):
     careful_thinking: ScanLevel | None
     careful_resolution: Resolution | None
     page_max_output_tokens: OutputTokens | None
+    scan_reader: ScanReader | None  # #473: null, openrouter
+    mistral_model: MistralModelId | None  # null, DEFAULT_MISTRAL_MODEL
     chat_levels: Levels
     chat_default_level: Level
     dynamic: bool
@@ -317,6 +353,9 @@ class ScanSettingsBody(BaseModel):
     careful_resolution: Resolution | None = None
     page_max_output_tokens: OutputTokens | None = None
     dynamic: bool | None = None
+    # #473: the draft's reader and Mistral model (null: inherited), as the scan settings are.
+    scan_reader: ScanReader | None = None
+    mistral_model: MistralModelId | None = None
 
 
 class ScanCostBody(ScanSettingsBody):
@@ -386,11 +425,12 @@ def get_ai_defaults(operator: OperatorSession, db: OperatorDb, context: Context)
     """The platform defaults and how many organisations follow each area now (D8)."""
     with db.operator() as conn:
         row = models_sql.ai_defaults(conn, operator.operator_id)
-    if row is None:  # the operator was disabled meanwhile
+        status = models_sql.mistral_status(conn, operator.operator_id)
+    if row is None or status is None:  # the operator was disabled meanwhile
         raise ApiError(401, "not_signed_in")
     return {
         "defaults": _ai(row),
-        "env": _env(context.settings),
+        "env": {**_env(context.settings), "mistral_status": _mistral_status(status)},
         "orgs_inheriting": {
             area: int(row[f"orgs_inheriting_{area}"])
             for area in (
@@ -403,6 +443,8 @@ def get_ai_defaults(operator: OperatorSession, db: OperatorDb, context: Context)
                 "careful_thinking",
                 "careful_resolution",
                 "page_max_output_tokens",
+                "scan_reader",  # #473
+                "mistral_model",
             )
         },
     }
@@ -413,7 +455,13 @@ def set_ai_defaults(
     body: DefaultsBody, operator: OperatorSession, db: OperatorDb, context: Context
 ) -> dict[str, Any]:
     """Replace the platform defaults (C10): every organisation still on them follows."""
-    choice = _choice(body)
+
+    def saved_reader() -> str | None:
+        with db.operator() as conn:
+            row = models_sql.ai_defaults(conn, operator.operator_id)
+        return None if row is None else row["scan_reader"]
+
+    choice = _choice(body, context.settings, saved_reader)
     step_up = _step_up(db, context, operator, body.code)
     with db.operator() as conn:
         outcome = models_sql.set_ai_defaults(
@@ -437,12 +485,13 @@ def get_org_ai(
     with db.operator() as conn:
         own = models_sql.org_ai(conn, operator.operator_id, str(customer_id))
         defaults = models_sql.ai_defaults(conn, operator.operator_id)
-    if own is None or defaults is None:
+        status = models_sql.mistral_status(conn, operator.operator_id)
+    if own is None or defaults is None or status is None:
         raise ApiError(404, "not_found")
     return {
         "own": _ai(own),
         "defaults": _ai(defaults),
-        "env": _env(context.settings),
+        "env": {**_env(context.settings), "mistral_status": _mistral_status(status)},
         "ensemble": bool(own["ensemble"]),
         "max_agents": MAX_AGENTS,
         "ai_budget_usd": _number(own["ai_budget_usd"]),
@@ -454,7 +503,13 @@ def set_org_ai(
     customer_id: uuid.UUID, body: OrgAiBody, operator: OperatorSession, db: OperatorDb, context: Context
 ) -> dict[str, Any]:
     """Replace the organisation's AI settings, Ensemble switch and budget (C10, SP4)."""
-    choice = _choice(body)
+
+    def saved_reader() -> str | None:
+        with db.operator() as conn:
+            row = models_sql.org_ai(conn, operator.operator_id, str(customer_id))
+        return None if row is None else row["scan_reader"]
+
+    choice = _choice(body, context.settings, saved_reader)
     step_up = _step_up(db, context, operator, body.code)
     with db.operator() as conn:
         outcome = models_sql.set_org_ai(
@@ -513,7 +568,7 @@ def _plan(
     # What the save would inherit: an organisation's the platform's; the platform's the server's.
     draft: dict[str, Any] = {
         name: getattr(draft_fields, name) or (platform[name] if customer is not None else None)
-        for name in SCAN_COST_FIELDS
+        for name in (*SCAN_COST_FIELDS, "scan_reader", "mistral_model")  # #473: the reader too
     }
     # #463 review: the draft's Cost saving (null: the platform's), never past the switches.
     dynamic = platform["dynamic"] if draft_fields.dynamic is None else draft_fields.dynamic
@@ -527,10 +582,13 @@ def _plan(
         sent = models.fit_level(reading.careful, careful_thinking, settings.ocr_retry_thinking_level)
         careful = (reading.careful.model, sent, careful_resolution)
     resolution = draft["scan_resolution"] or settings.ocr_media_resolution
+    first = (lead, reading.thinking, resolution)
+    asked_first = (lead, draft["scan_thinking"] or settings.ocr_thinking_level, resolution)
+    if reading.scan_reader == MISTRAL:  # #473: Mistral reads every page at its one setting, alone
+        first, careful = (read_by(reading.mistral_model), MISTRAL_THINKING, MISTRAL_RESOLUTION), None
+        asked_first = first  # review, 2 Nov 2026: a Gemini level in the draft never hides its check
     asked = (
-        lead,
-        draft["scan_thinking"] or settings.ocr_thinking_level,
-        resolution,
+        *asked_first,
         careful_thinking,
         careful_resolution,
         draft["page_max_output_tokens"] or PAGE_MAX_OUTPUT_TOKENS,
@@ -538,7 +596,7 @@ def _plan(
     )
     lead_row = next((row for row in rows if row["id"] == lead), None)
     best = (models.max_thinking(lead_row), models.MAX_RESOLUTION)
-    return _Plan((lead, reading.thinking, resolution), careful, best, asked, reading)
+    return _Plan(first, careful, best, asked, reading)
 
 
 @router.post("/scan-cost")
@@ -550,10 +608,12 @@ def scan_cost(
     really be sent (model, thinking after Dynamic's rule, picture detail); the total is the
     first read plus the share read again times the re-read, or the first read alone. With
     ``quality`` (the scope's clean pages at these and at max settings) and, for an
-    organisation, ``accuracy``: its latest done check at exactly these settings."""
+    organisation, ``accuracy``: its latest done check at exactly these settings. #473: with
+    Mistral in effect, ``fixed_price`` and Mistral's price a page."""
     customer = None if body.customer_id is None else str(body.customer_id)
     plan = _plan(db, operator, context, customer, body)
     first, careful = plan.first, plan.careful
+    mistral = plan.reading.scan_reader == MISTRAL
     with db.operator() as conn:
         row = models_sql.scan_cost(conn, operator.operator_id, customer, first, careful, plan.best)
         check = (
@@ -596,6 +656,11 @@ def scan_cost(
         "quality": quality,
         "tokens": tokens,
         "accuracy": None if check is None else _check_view(check),
+        # #473: Mistral's fixed price a page; Gemini's is measured only.
+        "fixed_price": mistral,
+        "fixed_usd_per_page": MISTRAL_OCR_MODELS[plan.reading.mistral_model].usd_per_page
+        if mistral
+        else None,
     }
 
 
@@ -611,12 +676,16 @@ def start_accuracy_check(
     (a fresh code first): a worker job reads up to ``pages`` of its recent model-read pages both
     ways and compares the words and numbers. 202 with the check's id; 400
     ``level_not_supported`` (the lead does not take the scan level, or Careful's model its
-    level, #463 review) or ``no_pages``, 409 ``check_running``, 429 ``rate_limited``
-    (ACCURACY_CHECKS_PER_HOUR on the platform)."""
+    level, #463 review; never for Mistral) or ``no_pages``, 409 ``check_running`` or
+    ``mistral_not_set_up`` (#473), 429 ``rate_limited`` (ACCURACY_CHECKS_PER_HOUR on the
+    platform)."""
     customer = str(customer_id)
     plan = _plan(db, operator, context, customer, body)
     lead, careful = plan.reading.lead, plan.reading.careful
-    if (lead.efforts and plan.asked[1] not in lead.efforts) or (
+    if plan.reading.scan_reader == MISTRAL:  # #473 review: Mistral takes no Gemini level
+        if not context.settings.mistral_ready:
+            raise ApiError(*_REFUSALS["mistral_not_set_up"])
+    elif (lead.efforts and plan.asked[1] not in lead.efforts) or (
         careful is not None and careful.efforts and plan.asked[3] not in careful.efforts
     ):
         raise ApiError(400, "level_not_supported", _REFUSALS["level_not_supported"][2])
@@ -1043,13 +1112,17 @@ def _number(value: Decimal | float | None) -> float | None:
     return None if value is None else float(value)
 
 
-def _choice(body: OrgAiBody | DefaultsBody) -> AiChoice:
+def _choice(body: OrgAiBody | DefaultsBody, settings: Settings, saved: Callable[[], str | None]) -> AiChoice:
     """The save's models and levels, after every named model is an OpenRouter model ID
-    (400 before a code is used up)."""
+    (400) and Mistral is newly chosen only on a server where it is set up (#473: 409
+    ``mistral_not_set_up``; ``saved()`` the reader saved now, asked only then), both before a
+    code is used up."""
     named = [*body.scan_models, *body.chat_models, body.scan_default, body.chat_default]
     if not all(valid_model_id(model) for model in named if model is not None):
         raise ApiError(400, "bad_request", "A model is not an OpenRouter model ID.")
     _limit(body.page_max_output_tokens)
+    if body.scan_reader == MISTRAL and not settings.mistral_ready and saved() != MISTRAL:
+        raise ApiError(*_REFUSALS["mistral_not_set_up"])
     return AiChoice(
         scan_models=body.scan_models,
         scan_default=body.scan_default,
@@ -1063,6 +1136,8 @@ def _choice(body: OrgAiBody | DefaultsBody) -> AiChoice:
         careful_thinking=body.careful_thinking,
         careful_resolution=body.careful_resolution,
         page_max_output_tokens=body.page_max_output_tokens,
+        scan_reader=body.scan_reader,
+        mistral_model=body.mistral_model,
     )
 
 
@@ -1078,14 +1153,19 @@ def _ai(row: RowMapping) -> dict[str, Any]:
         "careful_thinking": row["careful_thinking"],
         "careful_resolution": row["careful_resolution"],
         "page_max_output_tokens": row["page_max_output_tokens"],
+        "scan_reader": row["scan_reader"],  # #473
+        "mistral_model": row["mistral_model"],
         "chat_levels": None if row["chat_levels"] is None else list(row["chat_levels"]),
         "chat_default_level": row["chat_default_level"],
         "dynamic": row["dynamic"],
     }
 
 
-def _env(settings: Settings) -> dict[str, str | int]:
-    """What the server uses when the platform defaults name no model or scan setting."""
+def _env(settings: Settings) -> dict[str, Any]:
+    """What the server uses when the platform defaults name no model or scan setting. #473: the
+    code's reader and Mistral model, whether Mistral is set up here and what is missing (``key``
+    first, else ``zdr``; never the key itself), and the Mistral models with their price a page."""
+    missing = "key" if settings.mistral_api_key is None else None if settings.mistral_zdr_approved else "zdr"
     return {
         "scan_model": settings.ocr_model,
         "chat_model": settings.model_chat,
@@ -1094,6 +1174,28 @@ def _env(settings: Settings) -> dict[str, str | int]:
         "careful_thinking": settings.ocr_retry_thinking_level,
         "careful_resolution": settings.ocr_retry_media_resolution,
         "page_max_output_tokens": PAGE_MAX_OUTPUT_TOKENS,
+        "scan_reader": OPENROUTER,
+        "mistral_model": DEFAULT_MISTRAL_MODEL,
+        "mistral_ready": settings.mistral_ready,
+        "mistral_missing": missing,
+        "mistral_models": [
+            {"id": m.id, "name": m.name, "usd_per_page": m.usd_per_page, "has_blocks": m.has_blocks}
+            for m in MISTRAL_OCR_MODELS.values()
+        ],
+    }
+
+
+def _mistral_status(row: RowMapping) -> dict[str, Any]:
+    """#473: whether Mistral stopped reading pages: ``code`` mistral_key (a key or credit problem),
+    mistral_setup (chosen but not set up here) or mistral (not answering), from the newest wait;
+    ``since`` when the first waiting document waited; how many documents wait. No worker memory:
+    the runs that waited on it say so."""
+    code = row["code"]
+    return {
+        "stopped": int(row["documents_waiting"]) > 0,
+        "code": None if code is None else code.removesuffix("_unavailable"),
+        "since": None if row["since"] is None else iso(row["since"]),
+        "documents_waiting": int(row["documents_waiting"]),
     }
 
 

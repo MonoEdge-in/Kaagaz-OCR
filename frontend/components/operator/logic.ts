@@ -141,6 +141,7 @@ export const REFUSALS: Record<string, string> = {
   default_not_allowed: "Choose each default from its own ticked list.",
   level_not_supported: "A chosen model does not accept one of these thinking levels. Choose levels every model accepts.",
   limit_out_of_range: TOKENS_RANGE, // the most output tokens a page (#463)
+  mistral_not_set_up: "Mistral isn't set up on this server yet.", // #473
 };
 
 /** Plain words for a refused change. A 409 keeps the server's own sentence

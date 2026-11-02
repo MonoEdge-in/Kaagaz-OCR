@@ -334,6 +334,7 @@ OPERATOR_RIGHTS = {
         " scan_thinking text, chat_levels text[], chat_default_level text, dynamic boolean,"
         " scan_resolution text, careful_thinking text, careful_resolution text,"
         " page_max_output_tokens integer,"
+        " scan_reader text, mistral_model text,"  # Changed on purpose (#473, 0065): who reads the pages
         " ensemble boolean,"
         " ai_budget_usd numeric)",  # 0064 (#463): the scan cost settings
         EMPTY_PATH,
@@ -344,11 +345,13 @@ OPERATOR_RIGHTS = {
         " scan_thinking text, chat_levels text[], chat_default_level text, dynamic boolean,"
         " scan_resolution text, careful_thinking text, careful_resolution text,"
         " page_max_output_tokens integer,"
+        " scan_reader text, mistral_model text,"  # Changed on purpose (#473, 0065)
         " orgs_inheriting_scan_models bigint, orgs_inheriting_chat_models bigint,"
         " orgs_inheriting_scan_thinking bigint, orgs_inheriting_chat_levels bigint,"
         " orgs_inheriting_dynamic bigint, orgs_inheriting_scan_resolution bigint,"
         " orgs_inheriting_careful_thinking bigint, orgs_inheriting_careful_resolution bigint,"
-        " orgs_inheriting_page_max_output_tokens bigint)",
+        " orgs_inheriting_page_max_output_tokens bigint, orgs_inheriting_scan_reader bigint,"
+        " orgs_inheriting_mistral_model bigint)",
         EMPTY_PATH,
     ),
     "kaagaz_op_set_ai_defaults": ("text", EMPTY_PATH),
@@ -369,6 +372,12 @@ OPERATOR_RIGHTS = {
         " dynamic boolean, max_pages integer, pages_checked integer,"  # Changed on purpose (#463 review)
         " pages_failed integer, word_match double precision, numbers_match double precision,"
         " cost_usd numeric, started_at timestamp with time zone, finished_at timestamp with time zone)",
+        EMPTY_PATH,
+    ),
+    # 0065 (#473): whether Mistral stopped reading pages, every organisation's together (a code,
+    # a time and a count; no customer column).
+    "kaagaz_op_mistral_status": (
+        "TABLE(code text, since timestamp with time zone, documents_waiting bigint)",
         EMPTY_PATH,
     ),
     "kaagaz_op_set_org_autofile": ("record", EMPTY_PATH),  # 0025: allow or stop auto-filing

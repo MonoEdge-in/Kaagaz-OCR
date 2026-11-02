@@ -285,6 +285,8 @@ def test_an_organisations_models_and_budget_are_replaced_and_audited_in_both_log
                 "careful_thinking": None,
                 "careful_resolution": None,
                 "page_max_output_tokens": None,
+                "scan_reader": None,  # Changed on purpose (#473, 0065): the operator's log only
+                "mistral_model": None,
                 "budget_usd": 12.5,
             },
         )

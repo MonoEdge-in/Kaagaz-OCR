@@ -169,15 +169,20 @@ class PagePoolWiringTest(unittest.TestCase):
 
 class GeminiEngineWiringTest(unittest.TestCase):
     def test_the_gemini_reader_is_imported_by_its_path_and_built_from_the_settings(self) -> None:
-        built: list[tuple[Settings, RapidOcrPool]] = []
+        built: list[tuple[Settings, RapidOcrPool, object]] = []
         engine = ThreadNoting()
 
         class GeminiEngine:
             @classmethod
             def from_settings(
-                cls, settings: Settings, *, pool: RapidOcrPool, db: Database | None = None
+                cls,
+                settings: Settings,
+                *,
+                pool: RapidOcrPool,
+                db: Database | None = None,
+                mistral: object = None,  # Changed on purpose (#473): the Mistral client, when set up
             ) -> ThreadNoting:
-                built.append((settings, pool))
+                built.append((settings, pool, mistral))
                 return engine
 
         module = ModuleType(GEMINI_OCR_MODULE)
@@ -186,7 +191,7 @@ class GeminiEngineWiringTest(unittest.TestCase):
         self.assertEqual(GEMINI_OCR_MODULE, "kaagaz.reading.gemini_ocr")
         with mock.patch.dict(sys.modules, {GEMINI_OCR_MODULE: module}):
             self.assertIs(build_gemini_engine(GEMINI, pool=pool), engine)
-        self.assertEqual(built, [(GEMINI, pool)])
+        self.assertEqual(built, [(GEMINI, pool, None)])  # Mistral not set up: no client
 
 
 if __name__ == "__main__":

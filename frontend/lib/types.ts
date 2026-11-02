@@ -1358,6 +1358,25 @@ export type AiLevel = "low" | "medium" | "high";
 export type ScanLevel = "minimal" | AiLevel;
 /** How much picture detail a page is sent with (#463). */
 export type Resolution = "low" | "high";
+/** Who reads scanned pages (#473): Gemini through OpenRouter, or Mistral OCR. */
+export type ScanReader = "openrouter" | "mistral";
+export type MistralModelId = "mistral-ocr-4-1" | "mistral-ocr-2512";
+/** A Mistral OCR model (#473); has_blocks: it says where each line is on the page. */
+export interface MistralModel {
+  id: MistralModelId;
+  name: string;
+  usd_per_page: number;
+  has_blocks: boolean;
+}
+/** Whether Mistral has stopped reading pages (#473): code mistral_key for a refused key or no
+ * credit, mistral when it isn't answering, mistral_setup when it is chosen but the server isn't
+ * set up for it; since when, and the documents waiting for it. */
+export interface MistralStatus {
+  stopped: boolean;
+  code: "mistral_key" | "mistral" | "mistral_setup" | null;
+  since: string | null;
+  documents_waiting: number;
+}
 
 /** One organisation's own AI settings or the platform defaults (features 25-27, C10). For an
  * organisation, an empty list or a null field follows the platform defaults; for the
@@ -1375,9 +1394,12 @@ export interface AiValues {
   chat_levels: AiLevel[] | null;
   chat_default_level: AiLevel | null;
   dynamic: boolean | null;
+  scan_reader: ScanReader | null; // #473
+  mistral_model: MistralModelId | null;
 }
 
-/** What the server uses when the platform defaults name no model or scan setting. */
+/** What the server uses when the platform defaults name no model or scan setting, and
+ * whether Mistral is set up on it (#473): mistral_missing says which half is not. */
 export interface AiEnv {
   scan_model: string;
   chat_model: string;
@@ -1386,6 +1408,12 @@ export interface AiEnv {
   careful_thinking: string;
   careful_resolution: string;
   page_max_output_tokens: number;
+  scan_reader: ScanReader;
+  mistral_model: MistralModelId;
+  mistral_ready: boolean;
+  mistral_missing: "key" | "zdr" | null;
+  mistral_models: MistralModel[];
+  mistral_status: MistralStatus;
 }
 
 /** GET /operator/orgs/{id}/ai (operator only: the budget is in US dollars). */
@@ -1411,7 +1439,9 @@ export interface AiDefaults {
     | "careful_resolution"
     | "page_max_output_tokens"
     | "chat_levels"
-    | "dynamic",
+    | "dynamic"
+    | "scan_reader"
+    | "mistral_model",
     number
   >;
 }
@@ -1420,7 +1450,14 @@ export interface AiDefaults {
  * null is what a save would inherit. customer_id null: the platform defaults. */
 export type ScanCostAsk = { customer_id: string | null } & Pick<
   AiValues,
-  "scan_thinking" | "scan_resolution" | "careful_thinking" | "careful_resolution" | "page_max_output_tokens" | "dynamic"
+  | "scan_thinking"
+  | "scan_resolution"
+  | "careful_thinking"
+  | "careful_resolution"
+  | "page_max_output_tokens"
+  | "dynamic"
+  | "scan_reader"
+  | "mistral_model"
 >;
 
 /** One kind of page read, as measured in the last `days`: usd_per_page null when no page
@@ -1456,6 +1493,9 @@ export interface ScanCost {
     pages: number;
   };
   accuracy: AccuracyCheck | null;
+  // #473: Mistral charges a fixed price a page, not by tokens.
+  fixed_price: boolean;
+  fixed_usd_per_page: number | null;
 }
 
 /** One organisation's accuracy check (#463): recent pages read at its settings and at max

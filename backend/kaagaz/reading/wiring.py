@@ -107,9 +107,16 @@ def pdf_text_layer_checks(settings: Settings, data: bytes) -> list[PdfPageCheck]
 def build_gemini_engine(settings: Settings, *, pool: RapidOcrPool, db: Database | None = None) -> PageEngine:
     """The Gemini reader for OCR_ENGINE=gemini (PRD 5 G1): ``GeminiEngine.from_settings``
     in ``GEMINI_OCR_MODULE``, imported here, on first need, and nowhere else.
-    ``kaagaz.reading.ocr.GeminiEngineFactory`` in the product."""
+    ``kaagaz.reading.ocr.GeminiEngineFactory`` in the product. #473: with Mistral set up (its
+    key and zero data retention confirmed), its client too, for the documents on Mistral."""
     module = importlib.import_module(GEMINI_OCR_MODULE)
-    engine: PageEngine = module.GeminiEngine.from_settings(settings, pool=pool, db=db)
+    key = settings.mistral_api_key if settings.mistral_ready else None
+    mistral = None
+    if key is not None:
+        from kaagaz.reading.mistral_reader import MistralClient  # only where Mistral is set up
+
+        mistral = MistralClient(key)
+    engine: PageEngine = module.GeminiEngine.from_settings(settings, pool=pool, db=db, mistral=mistral)
     return engine
 
 

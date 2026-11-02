@@ -69,7 +69,14 @@ def test_dynamic_keeps_a_minimal_first_read_and_reads_low_otherwise() -> None:
         )
         assert models.resolve_scan(conn.conn(), "c", "d", settings=GEMINI).thinking == first, level
     # The estimate's Reading follows the same rule (no document, the default model).
-    allowed = {"scan_thinking": "minimal", "dynamic": True, **dict.fromkeys(SAVED)}
+    # Changed on purpose (#473): the effective settings carry the page reader and Mistral model.
+    allowed = {
+        "scan_thinking": "minimal",
+        "dynamic": True,
+        **dict.fromkeys(SAVED),
+        "scan_reader": None,
+        "mistral_model": None,
+    }
     assert models.scope_reading(cast(Any, every), allowed, settings=GEMINI).thinking == "minimal"
     assert (
         models.scope_reading(cast(Any, every), {**allowed, "dynamic": False}, settings=GEMINI).careful is None

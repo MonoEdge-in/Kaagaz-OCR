@@ -144,6 +144,22 @@ and Ensemble's models, a cut-off page's halves and an early Careful read each ru
 small pool of their own (never the page pool: a page thread waiting on it could wait for
 itself), each call in its own copy of the context, so it is billed to the same scope.
 
+**Mistral OCR** (#473, Tushar, 2 Nov 2026: what is chosen is what is used). A document whose
+``DocumentPages.scan_reader`` is mistral has each page the model would read sent to Mistral OCR
+instead (``mistral``, a ``MistralReader``: ``mistral_reader.MistralClient``, which
+``wiring.build_gemini_engine`` builds when Mistral is set up), at the same point: after local
+mode, Dynamic's memo and the routing to the local reader (#384), which stay free. Never Gemini:
+not Careful, not Ensemble, not a page's regions (a page #384 would read through its regions is
+read whole by Mistral; one asked to be read again is read again whole), and never a fallback.
+When Mistral can't read, ``BackendUnavailable("mistral_key")`` (the key or the credit),
+``("mistral_setup")`` (Mistral chosen but not set up on this server) or ``("mistral")`` (not
+answering): the document waits and nothing is read locally, however long it lasts;
+``mistral_ready`` says so before a document's pages are drawn (review, 2 Nov 2026). Each call
+is given the page's time left (the client caps it at MISTRAL_TIMEOUT_SECONDS), and the open
+document's ``version`` names the Mistral model. The page cache, the ledger and a refused page
+are the client's (``MistralClient.read_page``); this module never imports it, so the two never
+import each other.
+
 Nothing here logs page text: warnings carry a code only. The page is data: the
 instruction tells the model to copy any instruction written on it, never follow it.
 
@@ -178,6 +194,7 @@ from kaagaz.ai.usage import billed_as, record_call, record_page
 from kaagaz.db.engine import Database
 from kaagaz.db.page_reads import PageKey
 from kaagaz.ingestion.errors import BackendUnavailable
+from kaagaz.reading.mistral_ocr import MISTRAL, MISTRAL_SETUP, read_by
 from kaagaz.reading.ocr import (
     AGAIN_PASS,
     ENSEMBLE_MAX_PAGES,
@@ -466,6 +483,26 @@ class PageClient(Protocol):
     def now(self) -> float: ...
 
 
+class MistralReader(Protocol):
+    """#473: Mistral OCR's client, ``kaagaz.reading.mistral_reader.MistralClient``: ``read_page``
+    the page read (or taken from the page cache) by ``pages``'s Mistral model, or
+    ``BackendUnavailable`` when Mistral can't read; ``ready`` that error at once while Mistral
+    is switched off."""
+
+    def ready(self) -> None: ...
+
+    def read_page(
+        self,
+        image: Image.Image,
+        *,
+        page_no: int,
+        pages: DocumentPages,
+        sha: str,
+        found: Callable[[], list[PixelBox]],
+        seconds: float,
+    ) -> PageRead: ...
+
+
 class BoxFinder(Protocol):
     """RapidOCR's text finder (G5): ``kaagaz.reading.rapid_pool.RapidOcrPool``."""
 
@@ -500,7 +537,8 @@ class _Reply:
 class GeminiEngine:
     """The Gemini reader (see the module notes). ``client`` reads a page (the model
     client); ``pool`` finds the boxes to pin to; ``local`` builds the local reader for
-    Q7, on its first need, once (RapidOCR in the product). Thread-safe."""
+    Q7, on its first need, once (RapidOCR in the product); ``mistral`` reads the pages of a
+    document on Mistral OCR (#473; None: Mistral is not set up here). Thread-safe."""
 
     name = "gemini"
 
@@ -511,6 +549,7 @@ class GeminiEngine:
         client: PageClient,
         pool: BoxFinder,
         local: Callable[[], PageEngine] | None = None,
+        mistral: MistralReader | None = None,
     ) -> None:
         self._model = settings.ocr_model
         self._timeout = settings.ocr_timeout_seconds
@@ -549,21 +588,28 @@ class GeminiEngine:
         self._last_failure: dict[str, float] = {}
         self._pages: DocumentPages | None = None
         self._read_with = self._model  # the last document's model, for ``version``
+        self._mistral = mistral
 
     @classmethod
     def from_settings(
-        cls, settings: Settings, *, pool: RapidOcrPool, db: Database | None = None
+        cls,
+        settings: Settings,
+        *,
+        pool: RapidOcrPool,
+        db: Database | None = None,
+        mistral: MistralReader | None = None,
     ) -> "GeminiEngine":
-        """The product's reader: the model client on this process's one gate (G9), and the
-        process's ``RapidOcrPool`` (``wiring.build_gemini_engine`` gives it)."""
+        """The product's reader: the model client on this process's one gate (G9), the
+        process's ``RapidOcrPool`` and, when Mistral is set up, its client (#473)
+        (``wiring.build_gemini_engine`` gives both)."""
         gate = process_gate(settings) if db is None else process_gate(settings, database=db)
-        return cls(settings, client=OpenRouterClient(settings, gate=gate), pool=pool)
+        return cls(settings, client=OpenRouterClient(settings, gate=gate), pool=pool, mistral=mistral)
 
     @property
     def version(self) -> str:
         """The model of the document open, or of the last one (the pipeline asks after the
-        document closed, as RapidOCR's version), else OCR_MODEL; plus
-        GEMINI_OCR_PROMPT_VERSION (G1, model choice)."""
+        document closed, as RapidOCR's version; #473: "mistral/<id>" for one on Mistral), else
+        OCR_MODEL; plus GEMINI_OCR_PROMPT_VERSION (G1, model choice)."""
         with self._lock:
             return f"{self._read_with};prompt={GEMINI_OCR_PROMPT_VERSION}"
 
@@ -577,7 +623,10 @@ class GeminiEngine:
                 raise RuntimeError("the Gemini reader is already reading a document")
             self._pages = pages
             self._region_pages = 0
-            self._read_with = self._model if pages.model is None else pages.model
+            if pages.scan_reader == MISTRAL:  # #473 review: the run names the model that read it
+                self._read_with = read_by(pages.mistral_model)
+            else:
+                self._read_with = self._model if pages.model is None else pages.model
             # O(1): max(seconds per page x pages, one page's read); no budget without a page
             # count (Dynamic's second reading of a long document: each page keeps its own).
             floor = self._timeout
@@ -599,7 +648,8 @@ class GeminiEngine:
     def read_page(self, image: Image.Image, *, page_no: int) -> PageRead:
         """Page ``page_no`` (from 1) of the open document, or of none (see the module notes),
         read as the document's ``DocumentPages`` says: Dynamic's readings (``memo``) or
-        Ensemble's other models (``others``), else the one model. With a document, the page's
+        Ensemble's other models (``others``), else the one model; Mistral OCR in place of all
+        of them for a document on Mistral (#473). With a document, the page's
         boxes are found once, alongside its model calls, for every read of it (G5), and its
         pixels hashed once (G7; fast scan, council 16 Oct 2026)."""
         pages = self._pages
@@ -611,7 +661,8 @@ class GeminiEngine:
             )
         sha = pixels_sha256(image)
         first = None if pages.memo is None or pages.inline_careful else pages.memo.get((page_no, sha))
-        if first is not None and (page_no not in pages.escalate or pages.careful is None):
+        mistral = pages.scan_reader == MISTRAL  # #473: never Careful, so its memo always holds
+        if first is not None and (mistral or page_no not in pages.escalate or pages.careful is None):
             return first  # Dynamic's second reading: no call, so no boxes to find
         again = page_no in pages.read_again
         spent = (0, 0)
@@ -623,6 +674,16 @@ class GeminiEngine:
                 return routed
         with ThreadPoolExecutor(1) as finder:
             boxes = finder.submit(self._pool.find_boxes, image)
+            if mistral:  # #473: Mistral where the model would be called, and nothing else
+                if self._mistral is None:  # chosen, but not set up on this server: wait, never Gemini
+                    raise BackendUnavailable(MISTRAL_SETUP)
+                seconds = self._page_deadline() - self._client.now()  # the client caps it
+                read = self._mistral.read_page(
+                    image, page_no=page_no, pages=pages, sha=sha, found=boxes.result, seconds=seconds
+                )
+                if pages.memo is not None:
+                    pages.memo[(page_no, sha)] = read
+                return read
             page = functools.partial(self._read, image, page_no=page_no, sha=sha, boxes=boxes)
             regions = pages.read_again_regions.get(page_no) if again else None
             if regions:  # #385: only the asked-for regions read again, harder
@@ -649,6 +710,10 @@ class GeminiEngine:
         page's route and reason go in ``pages.routed``. O(the local read + its lines)."""
         local = dataclasses.replace(self._local_reader().read_page(image, page_no=page_no), page_no=page_no)
         decision = route_page(local, self._route_rules)
+        if decision.route == REGIONS and pages.scan_reader == MISTRAL:
+            decision = PageRoute(
+                MODEL, MISTRAL
+            )  # #473: its regions are Gemini's call; Mistral reads it whole
         if decision.route == REGIONS:
             with self._lock:
                 allowed = self._region_pages < self._region_pages_max
@@ -791,6 +856,16 @@ class GeminiEngine:
         if schema_problem(reply.value, CROPS_SCHEMA) is not None or check(reply.value) is not None:
             return crops, None, spent
         return crops, reply.value, spent
+
+    # Mistral OCR (#473).
+
+    def mistral_ready(self) -> None:
+        """Review (2 Nov 2026): ``BackendUnavailable`` at once when a document on Mistral can't
+        be read here, so it waits before its pages are drawn: ``mistral_setup`` (not set up),
+        or Mistral switched off (its code, and the ``seconds`` left). Nothing is sent. O(1)."""
+        if self._mistral is None:
+            raise BackendUnavailable(MISTRAL_SETUP)
+        self._mistral.ready()
 
     # Dynamic and Ensemble (features 26 and 27, council 15 Oct 2026).
 
