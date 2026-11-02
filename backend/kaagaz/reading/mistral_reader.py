@@ -1,80 +1,42 @@
-"""The Mistral OCR page reader (#473, Tushar 2 Nov 2026): one call to Mistral's ``/v1/ocr`` a
-page (``MistralClient``), and its reply as a ``PageRead`` (``page_read``). The model list and
-names are in ``kaagaz.reading.mistral_ocr``, which the API imports; this module is for the
-Gemini reader's engine only.
+"""The Mistral OCR page reader (#473, Tushar 2 Nov 2026): ``MistralClient`` posts one page to
+Mistral's ``/v1/ocr`` (``read``) and gives the Gemini reader's engine the page as a ``PageRead``
+(``read_page``, with the page cache and the ledger); ``page_read`` reads a reply page. The model
+list and names are in ``kaagaz.reading.mistral_ocr``, which the API imports.
 
-**The call.** ``MistralClient.read`` posts the page's PNG as a data URI with
-``include_image_base64: false`` and word confidences, and never ``table_format``, so tables
-stay inline as Markdown. It returns ``(page, pages_processed)`` on every HTTP 200, because
-Mistral bills a 200: ``page`` is the reply's ``pages[0]`` (``{}`` when the body is not one,
-which ``page_read`` then refuses), ``pages_processed`` its ``usage_info.pages_processed``
-(1 when missing: one page was sent). It never retries: waiting is the retry. Each call has
-MISTRAL_TIMEOUT_SECONDS, capped by ``seconds`` (the page's time left).
+**When Mistral can't read,** ``read`` raises ``MistralUnavailable(code)`` and ``read_page``
+``BackendUnavailable(code)``, so the document waits:
 
-**When Mistral can't read** it raises ``MistralUnavailable`` with ``code``:
+* ``mistral_key`` (401, 402, 403, 404: the key, the credit or a withdrawn model, each a person's
+  fix): Mistral is switched off on this client for KEY_OFF_SECONDS.
+* ``mistral`` (any other status, the network, a timeout, or a 200 whose body was lost, which is
+  billed all the same): after OUTAGES_IN_A_ROW in a row it is switched off for
+  OUTAGE_OFF_SECONDS. A 200 resets the count.
 
-* ``mistral_key`` (401, 402, 403: the key is wrong or the credit is used up; 404: the model
-  id was withdrawn; each a person fixes): Mistral is switched off on this client for
-  KEY_OFF_SECONDS.
-* ``mistral`` (408, 429, 5xx, any other status, the network, a timeout): after
-  OUTAGES_IN_A_ROW of these in a row it is switched off for OUTAGE_OFF_SECONDS. A 200 resets
-  the count.
+While it is switched off nothing is sent: ``read`` and ``ready`` (asked before a document's
+pages are drawn) raise at once, and ``off_seconds`` says how long is left, which the document
+waits (review, 2 Nov 2026).
 
-A 400, 413 or 422 refuses this page, not Mistral (lead, 2 Nov 2026): ``BadReply``, never
-billed (no 200), with no switch-off and no outage counted.
+**A page refused,** not Mistral: no lines, the issue ``reader_refused``, never cached, no
+outage counted, logged with its ids and the code ``refused_request`` (400, 413, 422; not
+billed), ``bad_reply`` (a 200 ``page_read`` can't read; billed) or ``mistral_no_time`` (the
+page's time was spent; nothing sent). A cached page this code no longer reads is logged
+``cache_stale`` and read again.
 
-While switched off, ``read`` raises at once and sends nothing. Only the status and the error
-reply's ``type`` and ``code`` (short codes, ``openrouter._code``) are logged; its message,
-which can echo page text, is never read into a log, and the key is never in a log or an
-exception (``raise ... from None``).
+**Never logged,** nor in an exception (``raise ... from None``): the key, the page's text, and
+the error reply's message, which can echo it. Only the status and the reply's ``type`` and
+``code`` (``openrouter._code``).
 
-**The page** (``page_read``). Lines come from the reply's blocks in order, or from its
-Markdown when it has none (Mistral OCR 3), split on newlines, with only Markdown's own marks
-taken off: ``#`` headings, ``**``/``__`` emphasis, a ``-``/``*``/``+`` bullet followed by a
-space, and backslash escapes ("1." and "-500" are kept). Image lines and ``[tbl-...]``
-placeholders are dropped; a table row becomes one line, its cells joined by two spaces, and
-its separator row is dropped. Every line is NFC, with Gemini's limits (controls dropped, a
-lone surrogate, a line over MAX_BLOCK_CHARS or more than MAX_BLOCKS_PER_PAGE lines or blocks
-is a ``BadReply``). A block's box is scaled by the reply's own ``dimensions``. Only a block
-of one line is pinned to the found boxes (``gemini_ocr.pinned``); every other line keeps its
-block's box (the whole page with no block box) as ``box_source`` "model", and the page gets
-``unpinned``. A word under UNSURE_BELOW is unsure on the line its ``start_index`` falls in,
-else on the first line holding it. One in no line is never dropped (lead, 2 Nov 2026): the
-line nearest its ``start_index`` (the first line with none) gets its whole text as an unsure
-entry, so the whole line goes to review. The page's
-grade comes from ``average_page_confidence_score``. Any shape it can't read is ``BadReply``.
-
-**The page cache** (#473 Task 4). ``trimmed(page)`` is the part of a page ``page_read`` reads
-(the Markdown, dimensions, block types, texts and boxes, the average and the unsure words),
-for the cache to keep; ``page_read`` on it gives the same ``PageRead``.
-
-**The engine's read** (#473 Task 4, ``MistralClient.read_page``, the Gemini reader's
-``MistralReader`` for a document on Mistral). The page is looked up in the page cache under
-``mistral/<id>`` and CACHE_VERSION unless it is to be read again; a hit is read again with
-``page_read`` and billed as a cached call at 0 with no page. Otherwise ``read``: each 200 is
-billed at once, ``record_call("mistral/<id>", "mistral", 0, 0, 0, pages processed x the
-model's price)`` at MISTRAL_THINKING and MISTRAL_RESOLUTION, then counted as one page
-(``record_page``), and the page is cached when it has text. ``MistralUnavailable`` becomes
-``BackendUnavailable(code)`` (the document waits). A page refused (``BadReply``: a 400, 413 or
-422, not billed; or a 200 ``page_read`` can't read, billed) has no lines and the issue
-``reader_refused``, and is never cached, so the next reading asks again.
-
-``gemini_ocr`` is imported inside the functions that need it, never at load, so this module
-loads without the Gemini reader. The Gemini reader never imports this one (it takes the client
-as its ``MistralReader``, built in ``wiring``), so the two never import each other
-(tests/test_import_graph.py counts the imports inside functions too).
-
-Cost: one HTTP call a page; O(markdown + blocks + words x log lines) to read the reply, plus
-``pinned``'s O(lines x found) for the one-line blocks.
+**Imports.** ``gemini_ocr`` is imported inside the functions that need it, never at load, and
+never imports this module (it takes the client as its ``MistralReader``, built in ``wiring``),
+so the two never import each other (tests/test_import_graph.py counts the imports inside
+functions too).
 """
 
 import base64
 import bisect
-import contextlib
 import dataclasses
 import json
 import logging
-import math
 import re
 import threading
 import time
@@ -97,6 +59,7 @@ from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.reading.mistral_ocr import (
     MISTRAL,
     MISTRAL_ENDPOINT,
+    MISTRAL_KEY,
     MISTRAL_OCR_MODELS,
     MISTRAL_RESOLUTION,
     MISTRAL_THINKING,
@@ -116,13 +79,14 @@ from kaagaz.reading.ocr import (
 from kaagaz.reading.page_quality import NO_TEXT, READER_REFUSED, UNPINNED
 from kaagaz.reading.rapid_pool import PixelBox
 
-# MistralUnavailable's codes, and the backend names a document waits on (the run's
-# <code>_unavailable): the key or the credit, which a person fixes; Mistral not answering.
-KEY_PROBLEM = "mistral_key"
-OUTAGE = MISTRAL
 KEY_STATUSES = frozenset({401, 402, 403, 404})
 # This page or request refused (lead, 2 Nov 2026): a BadReply, not an outage.
 REFUSED_STATUSES = frozenset({400, 413, 422})
+# A refused page's log codes (the module notes; review, 2 Nov 2026), and a stale cached page's.
+REFUSED_REQUEST = "refused_request"
+BAD_REPLY = "bad_reply"
+NO_TIME = "mistral_no_time"
+CACHE_STALE = "cache_stale"
 # Tushar's rule 2 (2 Nov 2026): Mistral's organisations wait, then retry.
 KEY_OFF_SECONDS = 300.0
 OUTAGE_OFF_SECONDS = 60.0
@@ -159,18 +123,18 @@ _log = logging.getLogger(__name__)
 
 
 class MistralUnavailable(Exception):
-    """Mistral could not read the page: ``code`` is KEY_PROBLEM or OUTAGE, short and safe to
-    log. Never the key or the reply's message."""
+    """Mistral could not read the page: ``code`` is MISTRAL_KEY or MISTRAL, short and safe to
+    log, never the key or the reply's message. ``billed``: Mistral had answered 200 first, so
+    the page is billed though nothing was read (review, 2 Nov 2026)."""
 
-    def __init__(self, code: str) -> None:
+    def __init__(self, code: str, *, billed: bool = False) -> None:
         super().__init__(code)
         self.code = code
+        self.billed = billed
 
 
 class BadReply(Exception):
-    """A page ``page_read`` can't read: a missing field, a wrong type, a box outside the page,
-    a line or a page over Gemini's limits; or, from ``MistralClient.read``, a 400, 413 or 422
-    (the page refused, not billed). The message is "bad_reply" only, never page text."""
+    """A page refused (the module notes): its message is the log code only, never page text."""
 
 
 class MistralClient:
@@ -200,15 +164,33 @@ class MistralClient:
         self._off: tuple[float, str] | None = None  # (until when on ``now``, the code)
         self._outages = 0
 
+    def off_seconds(self) -> float:
+        """How long Mistral stays switched off on this client; 0.0 while it is on. O(1)."""
+        off = self._switched_off()
+        return 0.0 if off is None else off[1]
+
+    def ready(self) -> None:
+        """``BackendUnavailable`` at once while Mistral is switched off here, its ``seconds``
+        the time left (review, 2 Nov 2026: a document waits before its pages are drawn, not
+        once a minute after drawing them all). Nothing is sent. O(1)."""
+        off = self._switched_off()
+        if off is not None:
+            raise _waits(*off)
+
     def read(self, png: bytes, *, model: str, seconds: float) -> tuple[dict[str, Any], int]:
-        """``(page, pages_processed)`` for one page's PNG read by ``model``, or
-        ``MistralUnavailable``. ``seconds``: the page's time left; nothing is sent without any."""
-        with self._lock:
-            if self._off is not None and self.now() < self._off[0]:
-                raise MistralUnavailable(self._off[1])
+        """``(page, pages_processed)`` for one page's PNG read by ``model`` on every HTTP 200,
+        because Mistral bills a 200: ``page`` its ``pages[0]`` (``{}`` when the body is not one,
+        which ``page_read`` then refuses), ``pages_processed`` its ``usage_info`` (1 when
+        missing). ``MistralUnavailable`` when Mistral can't read; ``BadReply`` for a refused
+        request, or with no time left (``seconds``, the page's: then nothing is sent). Never
+        tables as placeholders (no ``table_format``); never a retry: waiting is the retry.
+        At most MISTRAL_TIMEOUT_SECONDS."""
+        off = self._switched_off()
+        if off is not None:
+            raise MistralUnavailable(off[0])
         timeout = min(MISTRAL_TIMEOUT_SECONDS, seconds)
-        if timeout <= 0:
-            raise MistralUnavailable(OUTAGE)
+        if timeout <= 0:  # review, 2 Nov 2026: the page's time is spent, Mistral is not down
+            raise BadReply(NO_TIME)
         body = {
             "model": model,
             "document": {
@@ -230,15 +212,17 @@ class MistralClient:
         raw: bytes | None = None
         status = 0
         codes: tuple[str | None, str | None] = (None, None)
+        answered = False  # a 200 came: billed, whatever happens to its body (review, 2 Nov 2026)
         try:
             with self._opener.open(request, timeout=timeout) as response:
+                answered = True
                 raw = _read_until(response, ends, MAX_RESPONSE_BYTES + 1)
         except urllib.error.HTTPError as error:
             status, codes = error.code, _error_codes(error)
         except (OSError, HTTPException):  # the network, a timeout (URLError is an OSError)
             status = 0
         if raw is None:
-            self._failed(status, *codes)
+            self._failed(status, *codes, billed=answered)
         with self._lock:
             self._outages = 0
         return _reply_page(raw)
@@ -254,13 +238,17 @@ class MistralClient:
         seconds: float,
     ) -> PageRead:
         """Page ``page_no`` (its pixels' hash ``sha``) of ``pages``'s document read by its Mistral
-        model (see the module notes, the engine's read): ``found()`` the boxes to pin to,
-        ``seconds`` the page's time left; ``BackendUnavailable`` when Mistral can't read. One call
-        at most; O(the reply) besides it."""
+        model: ``found()`` the boxes to pin to, ``seconds`` the page's time left;
+        ``BackendUnavailable`` when Mistral can't read (the module notes). The page cache under
+        ``mistral/<id>`` and CACHE_VERSION unless it is to be read again (a hit is billed as a
+        cached call at 0, with no page). Each 200 is billed at once, ``record_call`` at the
+        model's price a page processed and ``record_page``, at MISTRAL_THINKING and
+        MISTRAL_RESOLUTION; a page with text is cached. One call at most; O(the reply) besides."""
         from kaagaz.reading.gemini_ocr import png_of  # not at load (module notes)
 
         model = MISTRAL_OCR_MODELS[pages.mistral_model]
         name = read_by(model.id)
+        ids = {"customer_id": pages.customer_id, "document_id": pages.document_id, "page_no": page_no}
         key = PageKey(pages.customer_id, pages.document_id, page_no, sha, name, CACHE_VERSION)
         again = page_no in pages.read_again
         hit = None if again else pages.cache.get(key)
@@ -271,57 +259,84 @@ class MistralClient:
                 page, page_no=page_no, model=model, found=found(), width=image.width, height=image.height
             )
 
+        def billed(processed: int) -> None:
+            record_call(name, MISTRAL, 0, 0, 0, processed * model.usd_per_page, cached=False, **sent)
+            record_page(name, **sent)  # a 200 is billed, whatever it holds
+
         if hit is not None:
-            with contextlib.suppress(BadReply):  # one this code no longer reads is asked again
+            try:
                 cached = as_read(hit[0])
+            except BadReply:  # one this code no longer reads is asked again
+                _log.warning("cached page unreadable, read again", extra={**ids, "code": CACHE_STALE})
+            else:
                 record_call(name, MISTRAL, 0, 0, 0, 0.0, cached=True, **sent)  # SP1: costs 0
                 return dataclasses.replace(cached, cached=True)
+        if seconds <= 0:  # the page's time is spent: refused, never an outage (module notes)
+            return _refused(page_no, name, ids, NO_TIME)
         try:
             reply, processed = self.read(png_of(image), model=model.id, seconds=seconds)
         except MistralUnavailable as error:
-            raise BackendUnavailable(error.code) from None
-        except BadReply:  # refused before a 200: not billed
-            return _refused(page_no, name)
-        record_call(name, MISTRAL, 0, 0, 0, processed * model.usd_per_page, cached=False, **sent)
-        record_page(name, **sent)  # a 200 is billed, whatever it holds
+            if error.billed:
+                billed(1)
+            raise _waits(error.code, self.off_seconds()) from None
+        except BadReply as error:  # refused before a 200: not billed
+            return _refused(page_no, name, ids, str(error))
+        billed(processed)
         try:
             result = as_read(reply)
-        except BadReply:
-            return _refused(page_no, name)
+        except BadReply as error:
+            return _refused(page_no, name, ids, str(error))
         if result.lines:  # a page with no text is not cached
             pages.cache.put(key, trimmed(reply), 0, 0)
         return dataclasses.replace(result, read_pass=AGAIN_PASS) if again else result
 
-    def _failed(self, status: int, error_type: str | None, code: str | None) -> NoReturn:
-        """Logs the status and the two codes, then raises ``BadReply`` for a refused page, else
-        switches Mistral off when it is time to and raises ``MistralUnavailable``."""
+    def _switched_off(self) -> tuple[str, float] | None:
+        """(the code, the seconds left) while Mistral is switched off here, else None. O(1)."""
+        with self._lock:
+            if self._off is None:
+                return None
+            left = self._off[0] - self.now()
+            return (self._off[1], left) if left > 0 else None
+
+    def _failed(self, status: int, error_type: str | None, code: str | None, *, billed: bool) -> NoReturn:
+        """Logs the status and the two codes, then raises ``BadReply`` for a refused request,
+        else switches Mistral off when it is time to and raises ``MistralUnavailable``."""
         refused = status in REFUSED_STATUSES
-        problem = KEY_PROBLEM if status in KEY_STATUSES else OUTAGE
-        level = logging.ERROR if problem == KEY_PROBLEM else logging.WARNING
+        problem = MISTRAL_KEY if status in KEY_STATUSES else MISTRAL
+        level = logging.ERROR if problem == MISTRAL_KEY else logging.WARNING
         _log.log(
             level,
             "mistral ocr failed: status %s, type %s, code %s",
             status,
             error_type,
             code,
-            extra={"code": "bad_reply" if refused else problem},
+            extra={"code": REFUSED_REQUEST if refused else problem},
         )
         if refused:
-            raise BadReply("bad_reply") from None
+            raise BadReply(REFUSED_REQUEST) from None
         with self._lock:
-            if problem == KEY_PROBLEM:
-                self._off = (self.now() + KEY_OFF_SECONDS, KEY_PROBLEM)
+            if problem == MISTRAL_KEY:
+                self._off = (self.now() + KEY_OFF_SECONDS, MISTRAL_KEY)
             else:
                 self._outages += 1
                 if self._outages >= OUTAGES_IN_A_ROW:
-                    self._off, self._outages = (self.now() + OUTAGE_OFF_SECONDS, OUTAGE), 0
-        raise MistralUnavailable(problem) from None
+                    self._off, self._outages = (self.now() + OUTAGE_OFF_SECONDS, MISTRAL), 0
+        raise MistralUnavailable(problem, billed=billed) from None
 
 
-def _refused(page_no: int, name: str) -> PageRead:
+def _waits(code: str, seconds: float) -> BackendUnavailable:
+    """``BackendUnavailable(code)`` whose ``seconds`` is how long Mistral stays switched off
+    here (0.0: it is not), for the worker to wait at least that long."""
+    error = BackendUnavailable(code)
+    error.seconds = seconds
+    return error
+
+
+def _refused(page_no: int, name: str, ids: dict[str, Any], code: str) -> PageRead:
     """#473 Task 4: a page Mistral (``name``) would not or could not read: no lines,
-    ``reader_refused`` (its values can't be shown as read), never cached. Logs the code only."""
-    _log.warning("page refused by the reader", extra={"code": "bad_reply"})
+    ``reader_refused`` (its values can't be shown as read), never cached. Logs its ids and
+    ``code`` only."""
+    _log.warning("page refused by the reader", extra={**ids, "code": code})
     return PageRead(
         page_no=page_no,
         lines=(),
@@ -392,21 +407,26 @@ class _Text:
 def page_read(
     page: dict[str, Any], *, page_no: int, model: MistralModel, found: list[PixelBox], width: int, height: int
 ) -> PageRead:
-    """Mistral's reply page as a ``PageRead`` on an image ``width`` x ``height``, its one-line
-    blocks pinned to ``found`` (see the module notes); ``BadReply`` when it can't be read."""
+    """Mistral's reply page as a ``PageRead`` on an image ``width`` x ``height``; ``BadReply``
+    when its shape is not the one read here (``_valid``) or a line or the page is over
+    Gemini's limits (a lone surrogate, a line over MAX_BLOCK_CHARS, more than
+    MAX_BLOCKS_PER_PAGE lines or blocks). Any other error is ours and goes up.
+
+    Lines come from the reply's blocks in order, or from its Markdown when it has none
+    (Mistral OCR 3), cleaned (``_clean``). A block's box is scaled by the reply's own
+    ``dimensions`` and clamped to the page (``_block_box``). Only a block of one line is pinned
+    to ``found`` (``gemini_ocr.pinned``); every other line keeps its block's box (the whole page
+    with none) as ``box_source`` "model", and the page gets ``unpinned``. The unsure words are
+    ``_unsure``'s; the grade comes from ``average_page_confidence_score``. O(markdown + blocks +
+    words x log lines), plus ``pinned``'s O(lines x found)."""
     from kaagaz.reading.gemini_ocr import BOX_SCALE, _Line, pinned  # not at load (module notes)
 
-    try:
-        if not isinstance(page, dict):
-            raise TypeError
-        markdown = page["markdown"]
-        if not isinstance(markdown, str):
-            raise TypeError
-        texts = _texts(page, markdown, width, height)
-        unsure = _unsure(page, markdown, texts)
-        quality = _quality(page)
-    except (KeyError, TypeError, ValueError):
-        raise BadReply("bad_reply") from None
+    if not _valid(page):
+        raise BadReply(BAD_REPLY) from None
+    markdown = page["markdown"]
+    texts = _texts(page, markdown, width, height)
+    unsure = _unsure(page, markdown, texts)
+    quality = _quality(page)
     pin = {}
     for index, text in enumerate(texts):
         if text.single and text.box is not None:  # a one-line block's line (block is set)
@@ -471,13 +491,67 @@ def trimmed(page: dict[str, Any]) -> dict[str, Any]:
     return kept
 
 
+def _valid(page: object) -> bool:
+    """Review (2 Nov 2026): whether a reply page has the shape ``page_read`` reads, checked
+    before any of it is read: ``markdown`` text; ``blocks`` none or a list of objects with a
+    text ``type`` and ``content`` and the four corners all missing or all numbers, and then
+    ``dimensions`` with a ``width`` and ``height`` above 0; ``confidence_scores`` none or an
+    object whose average is none or a number and whose ``word_confidence_scores`` are none or
+    a list of objects with a text ``text``, a number ``confidence`` and a ``start_index`` none
+    or a whole number of 0 or more. O(blocks + words)."""
+    from kaagaz.reading.gemini_ocr import _is_finite  # not at load (module notes)
+
+    if not isinstance(page, dict) or not isinstance(page.get("markdown"), str):
+        return False
+    blocks = page.get("blocks")
+    if blocks is not None and not isinstance(blocks, list):
+        return False
+    boxed = False
+    for block in blocks or []:
+        if not (isinstance(block, dict) and isinstance(block.get("type"), str)):
+            return False
+        if not isinstance(block.get("content"), str):
+            return False
+        corners = [block.get(name) for name in _CORNERS]
+        if any(corner is not None for corner in corners):
+            if not all(map(_is_finite, corners)):
+                return False
+            boxed = True
+    if boxed:
+        dimensions = page.get("dimensions")
+        if not isinstance(dimensions, dict):
+            return False
+        sides = (dimensions.get("width", 0), dimensions.get("height", 0))
+        if not all(_is_finite(side) and side > 0 for side in sides):
+            return False
+    scores = page.get("confidence_scores")
+    if scores is None:
+        return True
+    if not isinstance(scores, dict):
+        return False
+    average, words = scores.get("average_page_confidence_score"), scores.get("word_confidence_scores")
+    if (average is not None and not _is_finite(average)) or (
+        words is not None and not isinstance(words, list)
+    ):
+        return False
+    for word in words or []:
+        if not (
+            isinstance(word, dict)
+            and isinstance(word.get("text"), str)
+            and _is_finite(word.get("confidence"))
+        ):
+            return False
+        start = word.get("start_index")
+        if start is not None and (isinstance(start, bool) or not isinstance(start, int) or start < 0):
+            return False
+    return True
+
+
 def _texts(page: dict[str, Any], markdown: str, width: int, height: int) -> list[_Text]:
     """The page's lines from its blocks in order, or from its Markdown with no blocks."""
     blocks = page.get("blocks") or []
-    if not isinstance(blocks, list):
-        raise TypeError
     if len(blocks) > MAX_BLOCKS_PER_PAGE:
-        raise ValueError
+        raise BadReply(BAD_REPLY) from None
     if not blocks:
         texts = [
             _Text(text, _PARAGRAPH, None, None, False, start, end) for text, start, end in _lines(markdown, 0)
@@ -485,11 +559,7 @@ def _texts(page: dict[str, Any], markdown: str, width: int, height: int) -> list
     else:
         texts, cursor = [], 0
         for index, block in enumerate(blocks):
-            if not isinstance(block, dict):
-                raise TypeError
             content, kind = block["content"], block["type"]
-            if not isinstance(content, str) or not isinstance(kind, str):
-                raise TypeError
             box = _block_box(block, page, width, height)
             base = markdown.find(content, cursor) if content else -1
             if base >= 0:
@@ -500,7 +570,7 @@ def _texts(page: dict[str, Any], markdown: str, width: int, height: int) -> list
                 for text, start, end in lines
             )
     if len(texts) > MAX_BLOCKS_PER_PAGE:
-        raise ValueError
+        raise BadReply(BAD_REPLY) from None
     return texts
 
 
@@ -520,11 +590,16 @@ def _lines(content: str, base: int | None) -> list[tuple[str, int | None, int]]:
 
 
 def _clean(raw: str) -> str:
-    """One Markdown line as plain text (see the module notes); "" when nothing is left."""
+    """One Markdown line as plain text, "" when nothing is left: only Markdown's own marks
+    taken off (``#`` headings, ``**``/``__`` emphasis, a ``-``/``*``/``+`` bullet followed by a
+    space, backslash escapes; "1." and "-500" are kept); image lines and ``[tbl-...]``
+    placeholders dropped; a table row as one line, its cells joined by two spaces (its
+    separator row ""); NFC, with Gemini's controls dropped. ``BadReply`` for a lone surrogate
+    or a line over MAX_BLOCK_CHARS."""
     from kaagaz.reading.gemini_ocr import _CONTROL, _SURROGATE  # not at load (module notes)
 
     if len(raw) > MAX_BLOCK_CHARS or _SURROGATE.search(raw):
-        raise ValueError
+        raise BadReply(BAD_REPLY) from None
     line = _PLACEHOLDER.sub("", raw).strip()
     if line.startswith("|"):
         # shortcut: rows as paragraphs, not OcrTable cells; upgrade if Ask needs cells
@@ -540,31 +615,18 @@ def _clean(raw: str) -> str:
 
 
 def _block_box(block: dict[str, Any], page: dict[str, Any], width: int, height: int) -> PixelBox | None:
-    """A block's box in our pixels, scaled by the reply's own dimensions; None when it has
-    none. A box outside the page, or with no area, is a ValueError."""
+    """A block's box in our pixels, scaled by the reply's own dimensions and clamped to the
+    page; None when it has none, or no area is left on the page (review, 2 Nov 2026: such a
+    line is unpinned, never a refused page)."""
     corners = [block.get(name) for name in _CORNERS]
     if all(corner is None for corner in corners):
         return None
-    dimensions = page["dimensions"]
-    if not isinstance(dimensions, dict):
-        raise TypeError
-    their_width, their_height = dimensions["width"], dimensions["height"]
-    if (
-        not all(map(_is_finite, [*corners, their_width, their_height]))
-        or their_width <= 0
-        or their_height <= 0
-    ):
-        raise ValueError
+    their_width, their_height = page["dimensions"]["width"], page["dimensions"]["height"]
     x0, y0, x1, y1 = corners
-    box = (
-        x0 / their_width * width,
-        y0 / their_height * height,
-        x1 / their_width * width,
-        y1 / their_height * height,
-    )
-    if not (0 <= box[0] < box[2] <= width and 0 <= box[1] < box[3] <= height):
-        raise ValueError
-    return box
+    left, top = max(0.0, x0 / their_width * width), max(0.0, y0 / their_height * height)
+    right = min(float(width), x1 / their_width * width)
+    bottom = min(float(height), y1 / their_height * height)
+    return (left, top, right, bottom) if left < right and top < bottom else None
 
 
 def _scaled(box: PixelBox, width: int, height: int, scale: float) -> tuple[float, float, float, float]:
@@ -575,40 +637,35 @@ def _scaled(box: PixelBox, width: int, height: int, scale: float) -> tuple[float
 
 
 def _unsure(page: dict[str, Any], markdown: str, texts: list[_Text]) -> list[tuple[str, ...]]:
-    """Each line's unsure words (see the module notes): a word on no line marks the nearest
-    line whole. O(words x log lines + words x lines for those whose start doesn't place them)."""
+    """Each line's unsure words: a word under UNSURE_BELOW is unsure on the line its
+    ``start_index`` falls in, else on every line holding it (review, 2 Nov 2026). One in no
+    line is never dropped (lead, 2 Nov 2026): the line nearest its ``start_index`` (the first
+    line with none) gets its whole text as an unsure entry, so the whole line goes to review.
+    O(words x log lines + words x lines for those whose start doesn't place them)."""
     unsure: list[list[str]] = [[] for _ in texts]
     words = _scores(page).get("word_confidence_scores") or []
-    if not isinstance(words, list):
-        raise TypeError
     ranged = [(text.start, text.end, index) for index, text in enumerate(texts) if text.start is not None]
     starts = [start for start, _end, _index in ranged]
     for word in words:
-        if not isinstance(word, dict):
-            raise TypeError
         raw, confidence, start = word["text"], word["confidence"], word.get("start_index")
-        if not isinstance(raw, str) or not _is_finite(confidence):
-            raise TypeError
-        if start is not None and (isinstance(start, bool) or not isinstance(start, int) or start < 0):
-            raise ValueError
         if confidence >= UNSURE_BELOW:
             continue
         wanted = _clean(raw)
-        index = None
+        lines: list[int] = []
         if wanted and start is not None and _starts_with(markdown, start, raw):
             at = bisect.bisect_right(starts, start) - 1
             if at >= 0 and start < ranged[at][1] and wanted in texts[ranged[at][2]].text:
-                index = ranged[at][2]
-        if index is None and wanted:
-            index = next((i for i, text in enumerate(texts) if wanted in text.text), None)
-        if index is None:
+                lines = [ranged[at][2]]
+        if not lines and wanted:
+            lines = [index for index, text in enumerate(texts) if wanted in text.text]
+        if not lines:
             if not texts:
                 continue  # no line at all: the page is no_text
-            # Lead, 2 Nov 2026: never dropped. The nearest line, whole, so it all goes to review.
-            index = _nearest(ranged, start)
-            wanted = texts[index].text
-        if wanted not in unsure[index]:
-            unsure[index].append(wanted)
+            nearest = _nearest(ranged, start)
+            lines, wanted = [nearest], texts[nearest].text
+        for index in lines:
+            if wanted not in unsure[index]:
+                unsure[index].append(wanted)
     return [tuple(line) for line in unsure]
 
 
@@ -636,22 +693,9 @@ def _quality(page: dict[str, Any]) -> str | None:
     average = _scores(page).get("average_page_confidence_score")
     if average is None:
         return None
-    if not _is_finite(average):
-        raise ValueError
     return "good" if average >= GOOD_FROM else "fair" if average >= FAIR_FROM else "poor"
 
 
 def _scores(page: dict[str, Any]) -> dict[str, Any]:
-    scores = page.get("confidence_scores")
-    if scores is None:
-        return {}
-    if not isinstance(scores, dict):
-        raise TypeError
+    scores: dict[str, Any] = page.get("confidence_scores") or {}
     return scores
-
-
-def _is_finite(number: object) -> bool:
-    """A whole number or a finite float; a boolean is neither."""
-    if isinstance(number, bool):
-        return False
-    return isinstance(number, int) or (isinstance(number, float) and math.isfinite(number))

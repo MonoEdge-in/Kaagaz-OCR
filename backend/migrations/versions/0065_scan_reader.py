@@ -10,22 +10,27 @@
 * The operator's four AI functions (0064's) read, save and audit both, and the defaults count
   the organisations inheriting each. They take both as new trailing parameters, so each is
   dropped and created again from 0064's text with each change made exactly once, with the
-  same comment, grants, SECURITY DEFINER and empty search path. The organisation's own audit
-  log never holds them (as the scan cost settings: org admins never see who reads their
-  pages); the operator's platform audit holds them, before and after for the defaults.
+  same comment, grants, SECURITY DEFINER and empty search path. Org admins never see or set
+  the reader in their settings or their audit log (the organisation's own audit row never
+  holds them, as the scan cost settings); a page's read_by is shown to them as it was for the
+  Gemini models. The operator's platform audit holds them, before and after for the defaults.
   Whether Mistral is set up on the server (its key and zero data retention) is the API's
   check (409 ``mistral_not_set_up``): the database does not know the server's settings.
 * ``kaagaz_op_scan_cost`` (0064): the scope's scan calls count the priced model's alone, so a
   Mistral organisation's first reads never lower a Gemini model's share read again.
+* ``scan_accuracy_checks.scan_resolution`` (0064) also takes ``page``: a check on Mistral is
+  kept at Mistral's one setting (none, page; review, 2 Nov 2026).
 * ``kaagaz_op_mistral_status`` (new): for the console's banner, the documents whose newest
   finished run, in the last STATUS_HOURS hours, waited on Mistral (error code
-  ``mistral_key_unavailable`` or ``mistral_unavailable``), the newest such code and when the
-  first of them waited. Numbers and codes only, every organisation's together; no worker
-  memory. ``processing_runs_mistral_waits`` keeps it to the few runs that waited on Mistral.
+  ``mistral_key_unavailable``, ``mistral_setup_unavailable`` or ``mistral_unavailable``), the
+  newest such code and when the first of them waited. Numbers and codes only, every
+  organisation's together; no worker memory. ``processing_runs_mistral_waits`` keeps it to the
+  few runs that waited on Mistral.
 
 The downgrade drops the new function and index, puts 0064's scan cost function and four
-functions back exactly, then drops the columns (their CHECKs go with them). Lost on downgrade:
-the two settings (every organisation is read by Gemini again).
+functions back exactly, deletes the Mistral accuracy checks and puts 0064's resolution CHECK
+back, then drops the columns (their CHECKs go with them). Lost on downgrade: the two settings
+(every organisation is read by Gemini again) and the checks on Mistral.
 
 Revision ID: 0065
 Revises: 0064 (scan cost settings)
@@ -70,11 +75,14 @@ SET_AI_DEFAULTS = SET_AI_DEFAULTS_OLD.removesuffix(")") + ", text, text)"
 SCAN_COST = _0064.SCAN_COST
 MISTRAL_STATUS = "kaagaz_op_mistral_status(uuid)"
 
-READERS = "('openrouter', 'mistral')"  # kaagaz.reading.mistral_ocr.SCAN_READERS
+READERS = "('openrouter', 'mistral')"  # kaagaz.reading.mistral_ocr.OPENROUTER, MISTRAL
 MISTRAL_MODELS = "('mistral-ocr-4-1', 'mistral-ocr-2512')"  # mistral_ocr.MISTRAL_OCR_MODELS' ids
 # The run error codes of a document waiting on Mistral (pipeline._unavailable_code of
-# BackendUnavailable("mistral_key") and ("mistral")).
-MISTRAL_WAITS = "('mistral_key_unavailable', 'mistral_unavailable')"
+# BackendUnavailable("mistral_key"), ("mistral_setup") and ("mistral")).
+MISTRAL_WAITS = "('mistral_key_unavailable', 'mistral_setup_unavailable', 'mistral_unavailable')"
+# A check's picture detail (0064's inline CHECK, by Postgres's own name): Mistral's "page" too.
+CHECK_RESOLUTION = "scan_accuracy_checks_scan_resolution_check"
+_RESOLUTIONS_0064 = f"scan_resolution IN {_0064.RESOLUTIONS}"
 STATUS_HOURS = 24  # an older wait is not shown: Mistral has been stopped for a day, or not at all
 
 NEW_FIELDS = ("scan_reader", "mistral_model")
@@ -270,6 +278,9 @@ UPGRADE = [
     # The estimate's scan calls: the priced model's alone.
     f"DROP FUNCTION public.{SCAN_COST}",
     *_create(SCAN_COST, SCAN_COST_SQL, SCAN_COST_COMMENT),
+    # A check on Mistral, at its one setting.
+    f"ALTER TABLE scan_accuracy_checks DROP CONSTRAINT {CHECK_RESOLUTION},"
+    f" ADD CONSTRAINT {CHECK_RESOLUTION} CHECK ({_RESOLUTIONS_0064} OR scan_resolution = 'page')",
     # Mistral's stop for the console: the few runs that waited on it.
     "CREATE INDEX processing_runs_mistral_waits ON processing_runs (started_at)"
     f" WHERE error_code IN {MISTRAL_WAITS}",
@@ -283,6 +294,9 @@ DOWNGRADE = [
     "DROP INDEX processing_runs_mistral_waits",
     f"DROP FUNCTION public.{SCAN_COST}",
     *_create(SCAN_COST, _0064.SCAN_COST_SQL, _0064.SCAN_COST_COMMENT),
+    "DELETE FROM scan_accuracy_checks WHERE scan_resolution = 'page'",
+    f"ALTER TABLE scan_accuracy_checks DROP CONSTRAINT {CHECK_RESOLUTION},"
+    f" ADD CONSTRAINT {CHECK_RESOLUTION} CHECK ({_RESOLUTIONS_0064})",
     *[f"DROP FUNCTION public.{signature}" for signature in NEW],
     "ALTER TABLE customer_ai_settings DROP COLUMN mistral_model, DROP COLUMN scan_reader",
     "ALTER TABLE platform_ai_settings DROP COLUMN mistral_model, DROP COLUMN scan_reader",

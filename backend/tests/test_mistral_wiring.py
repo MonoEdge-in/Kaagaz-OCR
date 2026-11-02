@@ -12,8 +12,11 @@ fails the test), and the ledger is kept in memory.
 """
 
 import dataclasses
+import logging
 import threading
-from typing import Any
+import urllib.request
+from collections.abc import Iterator
+from typing import Any, cast
 from unittest import mock
 
 import pytest
@@ -33,7 +36,6 @@ from kaagaz.jobs.accuracy import AccuracyChecks
 from kaagaz.jobs.worker import Worker
 from kaagaz.reading import gemini_ocr, mistral_reader, wiring
 from kaagaz.reading.gemini_ocr import GeminiEngine, pixels_sha256
-from kaagaz.reading.mistral_ocr import MISTRAL_TIMEOUT_SECONDS
 from kaagaz.reading.mistral_reader import BadReply, MistralClient, MistralUnavailable
 from kaagaz.reading.ocr import DocumentPages, PageRead, as_page_engine
 from kaagaz.reading.page_quality import READER_REFUSED
@@ -158,6 +160,17 @@ def texts(read: PageRead) -> list[str]:
     return [item.text for item in read.lines]
 
 
+def codes(caplog: pytest.LogCaptureFixture) -> list[Any]:
+    return [getattr(record, "code", None) for record in caplog.records]
+
+
+@pytest.fixture
+def no_jitter() -> Iterator[None]:
+    """The worker's 0-20% jitter on a Mistral wait left out, so the wait is exact."""
+    with mock.patch("kaagaz.jobs.worker.random.uniform", return_value=1.0):
+        yield
+
+
 # --- who reads --------------------------------------------------------------------------------
 
 
@@ -168,7 +181,8 @@ def test_mistral_org_reads_with_mistral() -> None:
     read = rig.read(on_mistral(FakeCache(), page_count=1))
     assert texts(read) == ["INVOICE 1042"]
     assert (read.read_by, read.read_thinking, read.read_resolution) == (BY_4, "none", "page")
-    assert rig.mistral is not None and rig.mistral.calls == [(OCR_4, MISTRAL_TIMEOUT_SECONDS)]
+    # Changed on purpose (review, 2 Nov 2026): the page's whole time left; the client caps it.
+    assert rig.mistral is not None and rig.mistral.calls == [(OCR_4, 60)]
     assert (rig.client.calls, rig.local.pages) == ([], 0)
 
 
@@ -243,7 +257,7 @@ def _worker(error: Exception) -> tuple[Worker, LeaseQueue, FakeClock, list[Job]]
     return Worker(queue, handler, max_attempts=3, on_exhausted=lambda job: None), queue, clock, ran
 
 
-def test_no_credit_defers_only_mistral_jobs() -> None:
+def test_no_credit_defers_only_mistral_jobs(no_jitter: None) -> None:
     worker, queue, clock, ran = _worker(BackendUnavailable("mistral_key"))
     assert worker.run_once() and worker.run_once()  # neither raises: nothing pauses the loop
     mistral_job, gemini_job = ran
@@ -257,7 +271,7 @@ def test_no_credit_defers_only_mistral_jobs() -> None:
     assert delivery.attempt == 1  # the wait cost no try
 
 
-def test_worker_not_paused_by_mistral() -> None:
+def test_worker_not_paused_by_mistral(no_jitter: None) -> None:
     worker, queue, clock, ran = _worker(BackendUnavailable("mistral"))
     assert worker.run_once() is True  # no BackendUnavailable goes up, so the loop never pauses
     assert worker.run_once() is True
@@ -275,7 +289,10 @@ def test_not_set_up_later_waits_never_gemini() -> None:
     rig = Rig(None)  # saved as Mistral, then its key or ZDR went from this server
     with pytest.raises(BackendUnavailable) as waited:
         rig.read(on_mistral(FakeCache()))
-    assert str(waited.value) == "mistral_key"
+    # Changed on purpose (review, 2 Nov 2026): its own name, not the key's.
+    assert str(waited.value) == "mistral_setup"
+    with pytest.raises(BackendUnavailable, match=r"^mistral_setup$"):
+        rig.engine.mistral_ready()  # before the document's pages are drawn, too
     assert (rig.client.calls, rig.local.pages) == ([], 0)
     with (
         mock.patch.object(gemini_ocr, "process_gate"),
@@ -445,11 +462,148 @@ def test_the_pipeline_passes_the_reader_and_checks_mistrals_pages() -> None:
     (opened,) = reader.opened
     assert (opened.scan_reader, opened.mistral_model) == ("mistral", OCR_3)
     assert checker.crops  # a page Mistral read is the run's model's: its values are checked
+    assert opened.model == BY_3  # review, 2 Nov 2026: the run names the Mistral model
+    # Dynamic's Careful is Gemini: a Mistral document never has its memo or Careful.
+    dynamic = models.Reading("dynamic", lead, careful=lead, scan_reader="mistral", mistral_model=OCR_3)
+    job_reading.reading = dataclasses.replace(job_reading.reading, reading=dynamic)
+    reader = ScriptedReader({1: page_read(TOTAL, read_by=BY_3)})
+    gemini_rig(reader, checker=FakeChecker(), job_reading=job_reading).run(make_pdf([SCANNED]))
+    (opened,) = reader.opened
+    assert (opened.model, opened.careful, opened.memo) == (BY_3, None, None)
+
+
+def test_a_mistral_document_names_its_model_in_the_engine_version() -> None:
+    rig = Rig(FakeMistral((mistral_reply("A"), 1)), reply(value(line("B"))))
+    rig.read(on_mistral(FakeCache(), model=OCR_3))
+    assert rig.engine.version.startswith(f"{BY_3};")
+    rig.read(on_gemini(FakeCache()))
+    assert rig.engine.version.startswith(f"{MODEL};")
+
+
+# --- review fixes (2 Nov 2026) ----------------------------------------------------------------
+
+
+def test_a_lost_200_is_billed_then_waits() -> None:
+    with ledger() as kept, pytest.raises(BackendUnavailable) as waited:
+        Rig(FakeMistral(MistralUnavailable("mistral", billed=True))).read(on_mistral(FakeCache()))
+    assert str(waited.value) == "mistral"
+    [row] = kept.rows
+    assert (row.model, row.calls, row.pages) == (BY_4, 1, 1) and row.cost_usd == pytest.approx(0.004)
+    with ledger() as kept, pytest.raises(BackendUnavailable):
+        Rig(FakeMistral(MistralUnavailable("mistral"))).read(on_mistral(FakeCache()))  # no 200
+    assert kept.rows == []
+
+
+def test_refused_pages_are_logged_with_their_ids(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.WARNING)
+    rig = Rig(FakeMistral(BadReply("refused_request"), ({"markdown": 5}, 1)))
+    for _ in range(2):
+        assert rig.read(on_mistral(FakeCache())).issues == (READER_REFUSED,)
+    refused = [record for record in caplog.records if record.getMessage() == "page refused by the reader"]
+    assert [
+        tuple(getattr(record, name) for name in ("code", "customer_id", "document_id", "page_no"))
+        for record in refused
+    ] == [("refused_request", CUSTOMER, DOCUMENT, 1), ("bad_reply", CUSTOMER, DOCUMENT, 1)]
+
+
+def test_no_time_left_refuses_the_page_and_never_waits(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.WARNING)
+    mistral = FakeMistral()
+    rig = Rig(mistral, ocr_timeout_seconds=60, ocr_seconds_per_page=60)
+    cache = FakeCache()
+    with ledger() as kept, rig.engine.document(on_mistral(cache, page_count=1)):
+        rig.client.clock += 60  # the document's time is spent
+        read = rig.engine.read_page(page(), page_no=1)
+    assert (read.lines, read.issues, read.read_by) == ((), (READER_REFUSED,), BY_4)
+    assert mistral.calls == [] and kept.rows == [] and cache.puts == []  # nothing sent or billed
+    assert "mistral_no_time" in codes(caplog)
+
+
+def test_a_stale_cached_page_is_logged_then_read_again(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.WARNING)
+    cache = FakeCache()
+    cache.rows[PageKey(CUSTOMER, DOCUMENT, 1, pixels_sha256(page()), BY_4, "mistral-1")] = (
+        {"markdown": 5},
+        0,
+        0,
+    )
+    mistral = FakeMistral((mistral_reply("fresh"), 1))
+    assert texts(Rig(mistral).read(on_mistral(cache))) == ["fresh"]
+    assert len(mistral.calls) == 1 and codes(caplog).count("cache_stale") == 1
+
+
+class _Down:
+    """An opener for a Mistral that never answers."""
+
+    def open(self, request: urllib.request.Request, timeout: float) -> Any:
+        raise TimeoutError
+
+
+def test_switched_off_mistral_waits_before_any_page_is_drawn(no_jitter: None) -> None:
+    """Review B8: while Mistral is switched off, a document on it waits before its pages are
+    drawn, for at least the switch-off; Gemini's documents never ask."""
+    client = MistralClient(KEY, opener=cast(urllib.request.OpenerDirector, _Down()), now=lambda: 1000.0)
+    engine = GeminiEngine(READY, client=FakeClient(), pool=FakeFinder(), mistral=client)
+    engine.mistral_ready()  # on: nothing to wait for
+    for _ in range(3):
+        with pytest.raises(BackendUnavailable), engine.document(on_mistral(FakeCache())):
+            engine.read_page(page(), page_no=1)
+    with pytest.raises(BackendUnavailable) as off:
+        engine.mistral_ready()
+    assert (str(off.value), off.value.seconds) == ("mistral", 60.0)
+
+    lead = models.Agent(MODEL, "google-vertex", "Gemini")
+    job_reading = _Reading(None, MODEL)
+    asked: list[str] = []
+
+    def mistral_ready() -> None:
+        asked.append("asked")
+        raise off.value
+
+    for reader_name, waits in (("mistral", True), ("openrouter", False)):
+        reading = models.Reading("single", lead, scan_reader=reader_name, mistral_model=OCR_3)
+        job_reading.reading = dataclasses.replace(job_reading.reading, reading=reading)
+        reader = ScriptedReader({1: page_read(TOTAL, read_by=BY_3 if waits else MODEL)})
+        system = gemini_rig(
+            reader, checker=FakeChecker(), job_reading=job_reading, mistral_ready=mistral_ready
+        )
+        job = system.job(make_pdf([SCANNED]))
+        if waits:
+            with pytest.raises(BackendUnavailable) as waited:
+                system.processor(job, beat)
+            assert waited.value is off.value
+            assert reader.opened == [] and system.pages(job) == []  # nothing drawn or read
+            assert system.totals(job).error_code == "mistral_unavailable"
+        else:
+            system.processor(job, beat)
+            assert len(reader.opened) == 1
+    assert asked == ["asked"]
+
+
+def test_the_worker_waits_out_the_switch_off_with_jitter() -> None:
+    long, short = BackendUnavailable("mistral"), BackendUnavailable("mistral")
+    long.seconds = 200.0
+    for error, jitter, expected in ((long, 1.0, 200), (long, 1.2, 240), (short, 1.0, 60), (short, 1.2, 72)):
+        worker, queue, _clock, ran = _worker(error)
+        with mock.patch("kaagaz.jobs.worker.random.uniform", return_value=jitter) as uniform:
+            assert worker.run_once()
+        uniform.assert_called_once_with(1.0, 1.2)
+        assert queue.deferred == [(ran[0], expected)]
+
+
+def test_not_set_up_waits_as_the_key_does(no_jitter: None) -> None:
+    worker, queue, _clock, ran = _worker(BackendUnavailable("mistral_setup"))
+    assert worker.run_once() and worker.run_once()  # never paused
+    assert queue.deferred == [(ran[0], 300)]
 
 
 @pytest.mark.parametrize(
     ("code", "words"),
-    [("mistral_key", views.READER_STOPPED), ("mistral", views.READER_WAITING)],
+    [
+        ("mistral_key", views.READER_STOPPED),
+        ("mistral_setup", views.READER_STOPPED),
+        ("mistral", views.READER_WAITING),
+    ],
 )
 def test_document_shows_stopped_words(code: str, words: str) -> None:
     system = gemini_rig(ScriptedReader({1: BackendUnavailable(code)}), checker=FakeChecker())
@@ -475,7 +629,7 @@ def test_document_shows_stopped_words(code: str, words: str) -> None:
 
 
 class _Engine:
-    def __init__(self, read: PageRead) -> None:
+    def __init__(self, read: PageRead | Exception) -> None:
         self.page = read
 
     name, version = "gemini", "x"
@@ -484,6 +638,8 @@ class _Engine:
         raise AssertionError("numbered pages only")
 
     def read_page(self, image: Image.Image, *, page_no: int) -> PageRead:
+        if isinstance(self.page, Exception):
+            raise self.page
         return self.page
 
 
@@ -507,6 +663,13 @@ def test_accuracy_your_side_uses_mistral() -> None:
     assert accuracy._read(_Engine(read), reading, *at, settings=READY) is read
     gemini_read = dataclasses.replace(read, read_by=MODEL, read_thinking="low", read_resolution="high")
     assert accuracy._read(_Engine(gemini_read), reading, *at, settings=READY) is None
+    # Review B6: Mistral down or not set up fails the check (its reason goes up), never a page
+    # quietly skipped; a Gemini outage still skips the page.
+    for code in ("mistral", "mistral_key", "mistral_setup"):
+        with pytest.raises(BackendUnavailable, match=rf"^{code}$"):
+            accuracy._read(_Engine(BackendUnavailable(code)), reading, *at, settings=READY)
+    gemini = models.Reading("single", lead, thinking="low")
+    assert accuracy._read(_Engine(BackendUnavailable("gemini")), gemini, *at, settings=READY) is None
 
 
 @pytest.mark.db
@@ -565,3 +728,44 @@ def test_scan_cost_mistral_fixed_price(db: Database, platform: str, old_checks: 
         "/api/operator/scan-cost", json={**draft, "customer_id": str(customer)}, headers=CSRF
     ).json()
     assert again["accuracy"] == done  # found at the same settings: asked[0] is Mistral's
+    # Review B10: stored at Mistral's one setting, so a Gemini level in the draft never hides it.
+    assert (done["settings"]["scan_thinking"], done["settings"]["scan_resolution"]) == ("none", "page")
+    other = client.post(
+        "/api/operator/scan-cost",
+        json={**draft, "customer_id": str(customer), "scan_thinking": "high", "scan_resolution": "low"},
+        headers=CSRF,
+    ).json()
+    assert other["accuracy"] == done
+
+
+@pytest.mark.db
+def test_accuracy_check_on_mistral_start_and_fail(
+    db: Database, platform: str, old_checks: None, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Review B10: a Mistral check skips the Gemini level test and is refused while Mistral is
+    not set up; review B6: Mistral not reading during the check fails it with its reason."""
+    caplog.set_level(logging.INFO)
+    api = Api(db, settings=READY)
+    operator, client = _signed_in(api)
+    lead = scan_model(db, efforts=("low",))  # takes no "high": a Gemini check at high is refused
+    customer = api.customer("Mistral Check")[0]
+    assert set_org(db, platform, customer, ops.AiChoice([lead], lead, scan_reader="mistral")).code == "done"
+    images = PageImages()
+    model_page(db, images, customer, read_by=BY_4)
+    refused = start(api, operator, client, customer, pages=20, scan_reader="openrouter", scan_thinking="high")
+    assert (refused.status_code, refused.json()["error"]["code"]) == (400, "level_not_supported")
+    started = start(api, operator, client, customer, pages=20, scan_reader="mistral", scan_thinking="high")
+    assert started.status_code == 202, started.text
+    not_set_up = GeminiEngine(
+        READY, client=Reads(), pool=FakeFinder(), local=lambda: as_page_engine(FakeRapidOcr())
+    )
+    with pytest.raises(BackendUnavailable, match=r"^mistral_setup$"):
+        AccuracyChecks(db, images, not_set_up, settings=READY)(api.queue.jobs[-1], lambda: None)
+    failed = client.get(f"/api/operator/orgs/{customer}/accuracy-check/latest").json()
+    assert (failed["status"], failed["settings"]["model"]) == ("failed", BY_4)
+    assert "mistral_setup_unavailable" in codes(caplog)
+
+    off = Api(db, settings=make_settings(ocr_engine="gemini"))
+    operator, client = _signed_in(off)
+    refused = start(off, operator, client, customer, pages=20, scan_reader="mistral")
+    assert (refused.status_code, refused.json()["error"]["code"]) == (409, "mistral_not_set_up")

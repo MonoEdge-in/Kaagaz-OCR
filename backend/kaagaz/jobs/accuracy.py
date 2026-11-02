@@ -27,8 +27,9 @@
   key problem fails it and goes up, so the worker waits as for any job.
 * #473: a check started on a Mistral draft names its model "mistral/<id>" (``read_by``), and
   "your settings" are read by that Mistral model (``DocumentPages.scan_reader``); the max side
-  stays Gemini at max settings, the operator's own comparison. Mistral's key or credit fails
-  the check as Gemini's key does.
+  stays Gemini at max settings, the operator's own comparison. Mistral not reading (down, its
+  key or credit, or not set up here) fails the check as Gemini's key does, its reason logged
+  (review, 2 Nov 2026): no page is quietly skipped for it.
 * Every call is billed to the organisation as ``accuracy_check`` (Careful's too:
   ``kaagaz.ai.usage``), never its budget; ``cost_usd`` is OpenRouter's reported cost of the
   check's calls, null when one came without it.
@@ -53,7 +54,7 @@ from kaagaz.db.engine import Database, unavailable
 from kaagaz.db.page_reads import PageKey
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import BlobNotFound, Job
-from kaagaz.jobs.worker import KEY_PROBLEM, Heartbeat
+from kaagaz.jobs.worker import KEY_PROBLEMS, Heartbeat
 from kaagaz.reading.mistral_ocr import (
     MISTRAL,
     MISTRAL_OCR_MODELS,
@@ -82,8 +83,6 @@ _PAGES = text(
     " p.document_id, p.page_no"
     " LIMIT :n"
 )
-# #473: the BackendUnavailable names of a key problem, which fail the check and go up.
-_KEY_PROBLEMS = frozenset({KEY_PROBLEM, "mistral_key"})
 # A number's ₹ or Rs prefix (the council's normalisation).
 _PREFIX = re.compile(r"^(?:₹|rs\.?)", re.IGNORECASE)
 
@@ -197,8 +196,10 @@ class AccuracyChecks:
                         if image is None or draft_read is None
                         else _read(engine, best, *at, image, settings=self._settings)
                     )
-                except BackendUnavailable:  # a key (``_read``): the check fails, the worker waits
+                except BackendUnavailable as error:  # a key or Mistral (``_read``): fails, goes up
                     finish(self._db, customer_id, check_id, "failed", checked, failed)
+                    code = f"{error}_unavailable"
+                    logger.info("accuracy check ended", extra={**ids, "outcome": "failed", "code": code})
                     raise
                 if draft_read is None or max_read is None:
                     failed += 1
@@ -281,13 +282,13 @@ def _read(
     """The page as ``reading`` reads it through the scan reader, or None when a model of it did
     not read it (an outage, a refusal, the local reader) or not at the first read's settings
     ``reading`` asks (#463 review: a low read alongside is never taken for the max read). A key
-    problem goes up."""
+    problem goes up, and so does any for a ``reading`` on Mistral (#473 review)."""
     pages = document_pages(reading, customer_id, document_id)
     try:
         with reading_document(engine, pages):
             read = as_page_engine(engine).read_page(image, page_no=page_no)
     except BackendUnavailable as error:
-        if str(error) in _KEY_PROBLEMS:
+        if str(error) in KEY_PROBLEMS or reading.scan_reader == MISTRAL:
             raise
         return None
     readers = {reading.lead.model} | ({reading.careful.model} if reading.careful is not None else set())

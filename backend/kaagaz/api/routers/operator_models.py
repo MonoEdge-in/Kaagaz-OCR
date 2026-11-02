@@ -52,9 +52,10 @@ writes its own audit rows.
   whose job stopped beating is failed.
 * Who reads scanned pages (#473, Tushar, 2 Nov 2026; 0065): both AI settings carry
   ``scan_reader`` (openrouter or mistral) and ``mistral_model``, each null to inherit (the
-  platform's: openrouter and mistral-ocr-4-1). Mistral can be saved only when the server has
-  MISTRAL_API_KEY and MISTRAL_ZDR_APPROVED=true (409 ``mistral_not_set_up``, before a code is
-  used); a Mistral model may be kept while Gemini reads. ``env`` names the server's reader and
+  platform's: openrouter and mistral-ocr-4-1). Mistral can be newly chosen only when the server
+  has MISTRAL_API_KEY and MISTRAL_ZDR_APPROVED=true (409 ``mistral_not_set_up``, before a code
+  is used); a save that keeps an already saved Mistral goes through (review, 2 Nov 2026), and a
+  Mistral model may be kept while Gemini reads. ``env`` names the server's reader and
   model, ``mistral_ready``, ``mistral_missing`` (key or zdr), ``mistral_models`` (the code's
   list with each price a page) and ``mistral_status`` (whether Mistral stopped, from the runs
   that waited on it in the last day, every organisation's together). The key never leaves the
@@ -62,7 +63,9 @@ writes its own audit rows.
   would inherit: with Mistral in effect the estimate prices Mistral's first reads
   ("mistral/<id>" at none and page; never Careful) and says ``fixed_price`` with Mistral's
   ``fixed_usd_per_page`` (its measured figures still shown when its ledger has any), and the
-  check's model is "mistral/<id>", so its job reads "your settings" with Mistral.
+  check's model is "mistral/<id>" at Mistral's one setting (none, page; review, 2 Nov 2026), so
+  its job reads "your settings" with Mistral; it takes no Gemini level test, and is refused
+  (409 ``mistral_not_set_up``) while Mistral is not set up here.
 * ``GET /operator/usage?from&to``: tokens and dollars per organisation and model, days in
   TIMEZONE with both ends included (this month so far when left out), at most
   ``MAX_DAYS``. Never a user or a document: the function has no column for either.
@@ -94,6 +97,7 @@ A refused change is said in plain words; an unknown organisation or model gets 4
 """
 
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
@@ -198,7 +202,7 @@ _REFUSALS = {
 Level = Literal["low", "medium", "high"]
 ScanLevel = Literal["minimal", "low", "medium", "high"]  # #463: minimal for scanning only
 Resolution = Literal["low", "high"]  # #463: the picture detail OpenRouter can send (settings)
-# #473: who reads scanned pages (mistral_ocr.SCAN_READERS) and the Mistral models
+# #473: who reads scanned pages (mistral_ocr.OPENROUTER, MISTRAL) and the Mistral models
 # (MISTRAL_OCR_MODELS' ids; migration 0065's CHECKs list the same).
 ScanReader = Literal["openrouter", "mistral"]
 MistralModelId = Literal["mistral-ocr-4-1", "mistral-ocr-2512"]
@@ -451,7 +455,13 @@ def set_ai_defaults(
     body: DefaultsBody, operator: OperatorSession, db: OperatorDb, context: Context
 ) -> dict[str, Any]:
     """Replace the platform defaults (C10): every organisation still on them follows."""
-    choice = _choice(body, context.settings)
+
+    def saved_reader() -> str | None:
+        with db.operator() as conn:
+            row = models_sql.ai_defaults(conn, operator.operator_id)
+        return None if row is None else row["scan_reader"]
+
+    choice = _choice(body, context.settings, saved_reader)
     step_up = _step_up(db, context, operator, body.code)
     with db.operator() as conn:
         outcome = models_sql.set_ai_defaults(
@@ -493,7 +503,13 @@ def set_org_ai(
     customer_id: uuid.UUID, body: OrgAiBody, operator: OperatorSession, db: OperatorDb, context: Context
 ) -> dict[str, Any]:
     """Replace the organisation's AI settings, Ensemble switch and budget (C10, SP4)."""
-    choice = _choice(body, context.settings)
+
+    def saved_reader() -> str | None:
+        with db.operator() as conn:
+            row = models_sql.org_ai(conn, operator.operator_id, str(customer_id))
+        return None if row is None else row["scan_reader"]
+
+    choice = _choice(body, context.settings, saved_reader)
     step_up = _step_up(db, context, operator, body.code)
     with db.operator() as conn:
         outcome = models_sql.set_org_ai(
@@ -567,12 +583,12 @@ def _plan(
         careful = (reading.careful.model, sent, careful_resolution)
     resolution = draft["scan_resolution"] or settings.ocr_media_resolution
     first = (lead, reading.thinking, resolution)
+    asked_first = (lead, draft["scan_thinking"] or settings.ocr_thinking_level, resolution)
     if reading.scan_reader == MISTRAL:  # #473: Mistral reads every page at its one setting, alone
         first, careful = (read_by(reading.mistral_model), MISTRAL_THINKING, MISTRAL_RESOLUTION), None
+        asked_first = first  # review, 2 Nov 2026: a Gemini level in the draft never hides its check
     asked = (
-        first[0],
-        draft["scan_thinking"] or settings.ocr_thinking_level,
-        resolution,
+        *asked_first,
         careful_thinking,
         careful_resolution,
         draft["page_max_output_tokens"] or PAGE_MAX_OUTPUT_TOKENS,
@@ -660,12 +676,16 @@ def start_accuracy_check(
     (a fresh code first): a worker job reads up to ``pages`` of its recent model-read pages both
     ways and compares the words and numbers. 202 with the check's id; 400
     ``level_not_supported`` (the lead does not take the scan level, or Careful's model its
-    level, #463 review) or ``no_pages``, 409 ``check_running``, 429 ``rate_limited``
-    (ACCURACY_CHECKS_PER_HOUR on the platform)."""
+    level, #463 review; never for Mistral) or ``no_pages``, 409 ``check_running`` or
+    ``mistral_not_set_up`` (#473), 429 ``rate_limited`` (ACCURACY_CHECKS_PER_HOUR on the
+    platform)."""
     customer = str(customer_id)
     plan = _plan(db, operator, context, customer, body)
     lead, careful = plan.reading.lead, plan.reading.careful
-    if (lead.efforts and plan.asked[1] not in lead.efforts) or (
+    if plan.reading.scan_reader == MISTRAL:  # #473 review: Mistral takes no Gemini level
+        if not context.settings.mistral_ready:
+            raise ApiError(*_REFUSALS["mistral_not_set_up"])
+    elif (lead.efforts and plan.asked[1] not in lead.efforts) or (
         careful is not None and careful.efforts and plan.asked[3] not in careful.efforts
     ):
         raise ApiError(400, "level_not_supported", _REFUSALS["level_not_supported"][2])
@@ -1092,15 +1112,16 @@ def _number(value: Decimal | float | None) -> float | None:
     return None if value is None else float(value)
 
 
-def _choice(body: OrgAiBody | DefaultsBody, settings: Settings) -> AiChoice:
+def _choice(body: OrgAiBody | DefaultsBody, settings: Settings, saved: Callable[[], str | None]) -> AiChoice:
     """The save's models and levels, after every named model is an OpenRouter model ID
-    (400) and Mistral is chosen only on a server where it is set up (#473: 409
-    ``mistral_not_set_up``), both before a code is used up."""
+    (400) and Mistral is newly chosen only on a server where it is set up (#473: 409
+    ``mistral_not_set_up``; ``saved()`` the reader saved now, asked only then), both before a
+    code is used up."""
     named = [*body.scan_models, *body.chat_models, body.scan_default, body.chat_default]
     if not all(valid_model_id(model) for model in named if model is not None):
         raise ApiError(400, "bad_request", "A model is not an OpenRouter model ID.")
     _limit(body.page_max_output_tokens)
-    if body.scan_reader == MISTRAL and not settings.mistral_ready:
+    if body.scan_reader == MISTRAL and not settings.mistral_ready and saved() != MISTRAL:
         raise ApiError(*_REFUSALS["mistral_not_set_up"])
     return AiChoice(
         scan_models=body.scan_models,
@@ -1165,9 +1186,10 @@ def _env(settings: Settings) -> dict[str, Any]:
 
 
 def _mistral_status(row: RowMapping) -> dict[str, Any]:
-    """#473: whether Mistral stopped reading pages: ``code`` mistral_key (a key or credit problem)
-    or mistral (not answering), from the newest wait; ``since`` when the first waiting document
-    waited; how many documents wait. No worker memory: the runs that waited on it say so."""
+    """#473: whether Mistral stopped reading pages: ``code`` mistral_key (a key or credit problem),
+    mistral_setup (chosen but not set up here) or mistral (not answering), from the newest wait;
+    ``since`` when the first waiting document waited; how many documents wait. No worker memory:
+    the runs that waited on it say so."""
     code = row["code"]
     return {
         "stopped": int(row["documents_waiting"]) > 0,

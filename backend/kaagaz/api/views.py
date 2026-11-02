@@ -21,6 +21,7 @@ from kaagaz.db.folders import FolderRow
 from kaagaz.db.listing import CLEAR_COPY_LINES, CLEAR_COPY_TEXT, MAX_READING_LINES, MAX_READING_TEXT
 from kaagaz.db.tags import TagRow
 from kaagaz.eta import time_left
+from kaagaz.jobs.worker import KEY_PROBLEMS
 from kaagaz.reading.page_quality import ILLEGIBLE_WORDS, READERS_DISAGREE, UNPINNED, fix, says
 from kaagaz.scanning.gate import CUSTOMER_MESSAGES
 
@@ -48,12 +49,12 @@ _WAITING_AGAIN = "Waiting to try again."
 READER_WAITING = "Reading is paused for now. It will continue on its own."
 _WAITING_STEP = "waiting"
 # Issue 407: the wait's run ended with a key problem (pipeline: a wrong key, a spent cap, a
-# model ID that names no model; #473: Mistral's key or credit). No wait fixes that, so the words
-# never say it goes on by itself. PROVISIONAL wording.
+# model ID that names no model; #473: Mistral's key or credit, or Mistral not set up here). No
+# wait fixes that, so the words never say it goes on by itself. PROVISIONAL wording.
 READER_STOPPED = (
     "Reading is stopped until the Kaagaz team fixes the reading service. It starts again after that."
 )
-_KEY_WAITS = frozenset({"gemini_key_unavailable", "mistral_key_unavailable"})
+_KEY_WAITS = frozenset(f"{name}_unavailable" for name in KEY_PROBLEMS)  # #473: Mistral's too
 
 
 def files_ahead_message(count: int) -> str:

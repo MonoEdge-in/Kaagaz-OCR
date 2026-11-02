@@ -158,8 +158,10 @@ The Gemini reader (PRD 5), when the processor is given its parts:
   backend that is down: the document waits for the next try, nothing falls back
   here (the reader does that itself after READER_OUTAGE_FALLBACK_MINUTES, Q7). #473: a
   document on Mistral OCR (``Reading.scan_reader``, passed on in ``DocumentPages`` with its
-  model) waits the same way on ``("mistral")`` and ``("mistral_key")`` (logged at error), and
-  its pages, read by "mistral/<id>", are the run's model's (``run.models``).
+  model) waits the same way on ``("mistral")``, ``("mistral_key")`` and ``("mistral_setup")``
+  (the last two logged at error), asked first (``mistral_ready``, review 2 Nov 2026) so a
+  document waits before its pages are drawn; its run's model is "mistral/<id>"
+  (``run.model``), and it never gets Dynamic's Careful or memo (Careful is Gemini).
 * With OCR_ENGINE=rapidocr and no model there is no checker, no page counted as
   the model's and no model call: everything is as before.
 
@@ -267,9 +269,16 @@ from kaagaz.ingestion import sniff
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import BlobStorage, DocumentRecord, Job
 from kaagaz.jobs.ports import LeaseLost
-from kaagaz.jobs.worker import Heartbeat, JobFailed, Superseded
+from kaagaz.jobs.worker import KEY_PROBLEMS, Heartbeat, JobFailed, Superseded
 from kaagaz.preparing.page_checks import PageCheck
-from kaagaz.reading.mistral_ocr import DEFAULT_MISTRAL_MODEL, MISTRAL, OPENROUTER, read_by
+from kaagaz.reading.mistral_ocr import (
+    DEFAULT_MISTRAL_MODEL,
+    MISTRAL,
+    MISTRAL_KEY,
+    MISTRAL_SETUP,
+    OPENROUTER,
+    read_by,
+)
 from kaagaz.reading.ocr import (
     DYNAMIC_MAX_PAGES,
     HARD_LINES_MAX,
@@ -349,9 +358,6 @@ MAX_CHECK_CROPS = 200
 # V1, question 9: the checker's crop is the value's box grown by this share of its own width
 # and height on each side.
 CHECK_MARGIN = 0.04
-# G6: BackendUnavailable's name for a wrong key or a spent cap (a person's fix, logged at error);
-# #473: Mistral's key or credit too.
-_KEY_PROBLEMS = frozenset({"gemini_key", "mistral_key"})
 # PRD 5 Q6: the run codes of a reader that is down (Gemini, Mistral (#473), or the OCR server) or
 # has a key problem: the document shows "Reading is paused for now" until its job returns, or,
 # for a key problem, that reading is stopped until it is fixed (kaagaz/api/views.py, issue 407).
@@ -360,8 +366,7 @@ _READER_WAITS = frozenset(
         "gemini_unavailable",
         "gemini_key_unavailable",
         "ocr_unavailable",
-        "mistral_unavailable",
-        "mistral_key_unavailable",
+        *(f"{name}_unavailable" for name in (MISTRAL, MISTRAL_KEY, MISTRAL_SETUP)),
     }
 )
 # V1: a line with any Devanagari character is read by the Devanagari recogniser.
@@ -855,6 +860,7 @@ class DocumentProcessor:
         cost_saving: tuple[int, float] = (HARD_LINES_MAX, HARD_SHARE),
         index_seconds: float | None = None,
         land_on: Callable[[str], bool] | None = None,
+        mistral_ready: Callable[[], None] | None = None,
     ) -> None:
         """``embed(customer_id, document_id, on_batch=...)`` gives the saved pieces their vectors;
         failing with one of ``model_errors`` is logged and skipped, never a failed document.
@@ -894,7 +900,10 @@ class DocumentProcessor:
         ``index_seconds`` (MODEL_TIMEOUT_SECONDS): how long the job's own indexing may go on
         before it hands the vectors left to the worker's EmbedMissing (never stuck, 17 Oct
         2026); None, until done. ``land_on(customer_id)``: the ``land_facts`` switch (PRD 6,
-        0052), asked once a job that has a chat model; None (tests with fakes) asks nothing."""
+        0052), asked once a job that has a chat model; None (tests with fakes) asks nothing.
+        ``mistral_ready()`` (#473, ``GeminiEngine.mistral_ready``) is asked at the start of a job
+        whose ``Reading`` is on Mistral, and raises BackendUnavailable while Mistral can't read
+        here, before anything is drawn; None asks nothing."""
         if runs is not None and (clock is None or timer is None):
             raise ValueError("runs need a clock and a timer")
         if max_check_crops < 0:
@@ -937,6 +946,7 @@ class DocumentProcessor:
         self._ocr_page_concurrency = ocr_page_concurrency
         self._cost_saving = cost_saving
         self._index_seconds = index_seconds
+        self._mistral_ready = mistral_ready
 
     def __call__(self, job: Job, heartbeat: Heartbeat) -> None:
         record = self._documents.get(job.customer_id, job.document_id)
@@ -976,7 +986,7 @@ class DocumentProcessor:
         except BackendUnavailable as error:
             settled = True
             code = _unavailable_code(error)
-            if str(error) in _KEY_PROBLEMS:
+            if str(error) in KEY_PROBLEMS:
                 # G6, Q7: not an outage. Documents wait and nothing falls back: the fix is a person's.
                 _log.error(
                     "reader key rejected, documents wait",
@@ -1006,11 +1016,14 @@ class DocumentProcessor:
             if reading.model is not None:
                 run.model, run.provider = reading.model, reading.provider
             run.reading = reading.reading
+        if run.reading is not None and run.reading.scan_reader == MISTRAL:  # #473: Mistral reads it
+            if self._mistral_ready is not None:
+                self._mistral_ready()  # review, 2 Nov 2026: wait now, before any page is drawn
+            run.model = read_by(run.reading.mistral_model)
         extra = () if run.reading is None else (run.reading.careful, *run.reading.others)
-        readers = [run.model, *(agent.model for agent in extra if agent is not None)]
-        if run.reading is not None and run.reading.scan_reader == MISTRAL:  # #473: "mistral/<id>" reads
-            readers.append(read_by(run.reading.mistral_model))
-        run.models = frozenset(model for model in readers if model)
+        run.models = frozenset(
+            model for model in (run.model, *(agent.model for agent in extra if agent is not None)) if model
+        )
         with self._billed(job, run, "scan" if run.user_id is not None else "upgrade"), pages_at_once(at_once):
             self._read_and_save(job, record, heartbeat, run)
 
@@ -1546,6 +1559,8 @@ class DocumentProcessor:
         if routes and run.routed is None:
             run.routed = {}
         careful = None if reading is None or reading.mode != "dynamic" else reading.careful
+        if reading is not None and reading.scan_reader == MISTRAL:
+            careful = None  # #473: Careful is Gemini; Mistral's first read is its only one
         if careful is not None and run.memo is None:
             run.memo = {}
         inline = careful is not None and 0 < page_count <= DYNAMIC_MAX_PAGES
@@ -2292,6 +2307,8 @@ def build_processor(
         ocr_page_concurrency=settings.ocr_page_concurrency,
         cost_saving=(settings.cost_saving_hard_lines_max, settings.cost_saving_hard_share),
         index_seconds=settings.model_timeout_seconds,
+        # #473: the Gemini reader's own check that Mistral can read (RapidOCR has none).
+        mistral_ready=getattr(engine, "mistral_ready", None),
         land_on=land_on if model is not None else None,
     )
 

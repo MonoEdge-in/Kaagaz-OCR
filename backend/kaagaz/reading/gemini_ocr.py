@@ -151,12 +151,14 @@ instead (``mistral``, a ``MistralReader``: ``mistral_reader.MistralClient``, whi
 mode, Dynamic's memo and the routing to the local reader (#384), which stay free. Never Gemini:
 not Careful, not Ensemble, not a page's regions (a page #384 would read through its regions is
 read whole by Mistral; one asked to be read again is read again whole), and never a fallback.
-When Mistral can't read, ``BackendUnavailable("mistral_key")`` (the key or the credit, or
-Mistral chosen but not set up on this server) or ``("mistral")`` (not answering): the document
-waits and nothing is read locally, however long it lasts. Each call has
-MISTRAL_TIMEOUT_SECONDS, never past the page's time left. The page cache, the ledger and a
-refused page are the client's (``MistralClient.read_page``); this module never imports it, so
-the two never import each other.
+When Mistral can't read, ``BackendUnavailable("mistral_key")`` (the key or the credit),
+``("mistral_setup")`` (Mistral chosen but not set up on this server) or ``("mistral")`` (not
+answering): the document waits and nothing is read locally, however long it lasts;
+``mistral_ready`` says so before a document's pages are drawn (review, 2 Nov 2026). Each call
+is given the page's time left (the client caps it at MISTRAL_TIMEOUT_SECONDS), and the open
+document's ``version`` names the Mistral model. The page cache, the ledger and a refused page
+are the client's (``MistralClient.read_page``); this module never imports it, so the two never
+import each other.
 
 Nothing here logs page text: warnings carry a code only. The page is data: the
 instruction tells the model to copy any instruction written on it, never follow it.
@@ -192,7 +194,7 @@ from kaagaz.ai.usage import billed_as, record_call, record_page
 from kaagaz.db.engine import Database
 from kaagaz.db.page_reads import PageKey
 from kaagaz.ingestion.errors import BackendUnavailable
-from kaagaz.reading.mistral_ocr import MISTRAL, MISTRAL_TIMEOUT_SECONDS
+from kaagaz.reading.mistral_ocr import MISTRAL, MISTRAL_SETUP, read_by
 from kaagaz.reading.ocr import (
     AGAIN_PASS,
     ENSEMBLE_MAX_PAGES,
@@ -257,9 +259,6 @@ KEY_BACKEND = "gemini_key"
 # model (404), and a base URL that redirects. http_error (a status nothing else names)
 # stays an outage.
 KEY_CODES = frozenset({"key_rejected", "model_not_found", "redirect_refused"})
-# #473: the backend a document on Mistral waits on when Mistral is chosen but not set up here
-# (mistral_reader's KEY_PROBLEM: a person's fix, as for its key).
-MISTRAL_KEY_BACKEND = "mistral_key"
 # Model choice (council 11 Oct 2026): the client's code for a model OpenRouter does not know.
 # For a document's chosen model (not OCR_MODEL) it is never a key wait (one withdrawn model
 # must not pause everyone): the page is read locally as reader_refused.
@@ -485,9 +484,12 @@ class PageClient(Protocol):
 
 
 class MistralReader(Protocol):
-    """#473: Mistral OCR's page read, ``kaagaz.reading.mistral_reader.MistralClient.read_page``:
+    """#473: Mistral OCR's client, ``kaagaz.reading.mistral_reader.MistralClient``: ``read_page``
     the page read (or taken from the page cache) by ``pages``'s Mistral model, or
-    ``BackendUnavailable`` when Mistral can't read."""
+    ``BackendUnavailable`` when Mistral can't read; ``ready`` that error at once while Mistral
+    is switched off."""
+
+    def ready(self) -> None: ...
 
     def read_page(
         self,
@@ -606,8 +608,8 @@ class GeminiEngine:
     @property
     def version(self) -> str:
         """The model of the document open, or of the last one (the pipeline asks after the
-        document closed, as RapidOCR's version), else OCR_MODEL; plus
-        GEMINI_OCR_PROMPT_VERSION (G1, model choice)."""
+        document closed, as RapidOCR's version; #473: "mistral/<id>" for one on Mistral), else
+        OCR_MODEL; plus GEMINI_OCR_PROMPT_VERSION (G1, model choice)."""
         with self._lock:
             return f"{self._read_with};prompt={GEMINI_OCR_PROMPT_VERSION}"
 
@@ -621,7 +623,10 @@ class GeminiEngine:
                 raise RuntimeError("the Gemini reader is already reading a document")
             self._pages = pages
             self._region_pages = 0
-            self._read_with = self._model if pages.model is None else pages.model
+            if pages.scan_reader == MISTRAL:  # #473 review: the run names the model that read it
+                self._read_with = read_by(pages.mistral_model)
+            else:
+                self._read_with = self._model if pages.model is None else pages.model
             # O(1): max(seconds per page x pages, one page's read); no budget without a page
             # count (Dynamic's second reading of a long document: each page keeps its own).
             floor = self._timeout
@@ -670,7 +675,12 @@ class GeminiEngine:
         with ThreadPoolExecutor(1) as finder:
             boxes = finder.submit(self._pool.find_boxes, image)
             if mistral:  # #473: Mistral where the model would be called, and nothing else
-                read = self._mistral_page(image, page_no, pages, sha, boxes)
+                if self._mistral is None:  # chosen, but not set up on this server: wait, never Gemini
+                    raise BackendUnavailable(MISTRAL_SETUP)
+                seconds = self._page_deadline() - self._client.now()  # the client caps it
+                read = self._mistral.read_page(
+                    image, page_no=page_no, pages=pages, sha=sha, found=boxes.result, seconds=seconds
+                )
                 if pages.memo is not None:
                     pages.memo[(page_no, sha)] = read
                 return read
@@ -849,23 +859,13 @@ class GeminiEngine:
 
     # Mistral OCR (#473).
 
-    def _mistral_page(
-        self,
-        image: Image.Image,
-        page_no: int,
-        pages: DocumentPages,
-        sha: str,
-        boxes: "Future[list[PixelBox]]",
-    ) -> PageRead:
-        """The page read by the document's Mistral model (``MistralReader``), given at most
-        MISTRAL_TIMEOUT_SECONDS of the page's time left; ``BackendUnavailable`` when Mistral can't
-        read, or is chosen but not set up here: never Gemini. O(1) besides its read."""
-        if self._mistral is None:  # chosen, but not set up on this server: wait, never Gemini
-            raise BackendUnavailable(MISTRAL_KEY_BACKEND)
-        seconds = min(MISTRAL_TIMEOUT_SECONDS, self._page_deadline() - self._client.now())
-        return self._mistral.read_page(
-            image, page_no=page_no, pages=pages, sha=sha, found=boxes.result, seconds=seconds
-        )
+    def mistral_ready(self) -> None:
+        """Review (2 Nov 2026): ``BackendUnavailable`` at once when a document on Mistral can't
+        be read here, so it waits before its pages are drawn: ``mistral_setup`` (not set up),
+        or Mistral switched off (its code, and the ``seconds`` left). Nothing is sent. O(1)."""
+        if self._mistral is None:
+            raise BackendUnavailable(MISTRAL_SETUP)
+        self._mistral.ready()
 
     # Dynamic and Ensemble (features 26 and 27, council 15 Oct 2026).
 

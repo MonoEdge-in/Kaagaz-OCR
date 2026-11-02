@@ -10,14 +10,18 @@ import logging
 import time
 import unicodedata
 import urllib.request
+from http.client import IncompleteRead
 from typing import Any, cast
+from unittest import mock
 
 import pytest
 
+from kaagaz.reading import mistral_reader
 from kaagaz.reading.mistral_ocr import MISTRAL_ENDPOINT, MISTRAL_OCR_MODELS, MISTRAL_TIMEOUT_SECONDS
 from kaagaz.reading.mistral_reader import (
     KEY_OFF_SECONDS,
     OUTAGE_OFF_SECONDS,
+    OUTAGES_IN_A_ROW,
     BadReply,
     MistralClient,
     MistralUnavailable,
@@ -106,6 +110,40 @@ def texts(result: PageRead) -> list[str]:
     return [line.text for line in result.lines]
 
 
+def box(line: Any) -> tuple[float, float, float, float]:
+    return line.x0, line.y0, line.x1, line.y1
+
+
+class Body:
+    """A 200 whose body can't be read whole: ``failure`` raised by each read, or (None) one
+    that keeps trickling in past the deadline."""
+
+    def __init__(self, failure: Exception | None) -> None:
+        self.failure = failure
+
+    def __enter__(self) -> "Body":
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        return None
+
+    def read1(self, size: int) -> bytes:
+        if self.failure is not None:
+            raise self.failure
+        time.sleep(0.05)
+        return b" "
+
+
+class Answers:
+    """An opener whose every ``open`` answers 200 with ``body``."""
+
+    def __init__(self, body: Body) -> None:
+        self.body = body
+
+    def open(self, request: urllib.request.Request, timeout: float) -> Body:
+        return self.body
+
+
 # The client.
 
 
@@ -148,13 +186,16 @@ def test_401_402_switch_off_300s(status: int) -> None:
         mistral = client(fake, clock)
         with pytest.raises(MistralUnavailable) as raised:
             mistral.read(PNG, model="mistral-ocr-4-1", seconds=10)
-        assert raised.value.code == "mistral_key"
+        assert raised.value.code == "mistral_key" and not raised.value.billed  # no 200: not billed
+        assert mistral.off_seconds() == KEY_OFF_SECONDS
         clock.t += KEY_OFF_SECONDS - 1
         with pytest.raises(MistralUnavailable) as again:
             mistral.read(PNG, model="mistral-ocr-4-1", seconds=10)
         assert again.value.code == "mistral_key"
         assert len(fake.requests) == 1  # switched off: raised at once, nothing sent
+        assert mistral.off_seconds() == 1
         clock.t += 1
+        assert mistral.off_seconds() == 0.0
         mistral.read(PNG, model="mistral-ocr-4-1", seconds=10)
     assert KEY_OFF_SECONDS == 300
     assert len(fake.requests) == 2
@@ -176,7 +217,7 @@ def test_a_refused_request_is_bad_reply_never_a_switch_off(
             with pytest.raises(BadReply) as refused:
                 mistral.read(PNG, model="mistral-ocr-4-1", seconds=10)
             assert refused.value.__cause__ is None and refused.value.__suppress_context__
-            assert SECRET not in str(refused.value) and KEY not in str(refused.value)
+            assert str(refused.value) == "refused_request"  # review B2: not an unreadable 200
         with pytest.raises(MistralUnavailable) as third:  # the third outage in a row switches off
             mistral.read(PNG, model="mistral-ocr-4-1", seconds=10)
         assert third.value.code == "mistral"
@@ -184,6 +225,8 @@ def test_a_refused_request_is_bad_reply_never_a_switch_off(
             mistral.read(PNG, model="mistral-ocr-4-1", seconds=10)
     assert len(fake.requests) == 6
     assert str(status) in caplog.text and SECRET not in caplog.text
+    codes = [getattr(record, "code", None) for record in caplog.records]
+    assert codes.count("refused_request") == 3 and "bad_reply" not in codes
 
 
 @pytest.mark.parametrize("status", [408, 302, 418])
@@ -261,9 +304,24 @@ def test_seconds_cap_timeout() -> None:
             capped.read(PNG, model="mistral-ocr-4-1", seconds=seconds)
     assert opener.timeouts == [MISTRAL_TIMEOUT_SECONDS, 7.5]
     assert MISTRAL_TIMEOUT_SECONDS == 30
-    with pytest.raises(MistralUnavailable):
-        capped.read(PNG, model="mistral-ocr-4-1", seconds=0)
+    for _ in range(OUTAGES_IN_A_ROW):  # review B4: no time left is not an outage
+        with pytest.raises(BadReply, match=r"^mistral_no_time$"):
+            capped.read(PNG, model="mistral-ocr-4-1", seconds=0)
     assert opener.timeouts == [MISTRAL_TIMEOUT_SECONDS, 7.5]  # no time left: nothing sent
+    assert capped.off_seconds() == 0.0  # and never switched off
+
+
+@pytest.mark.parametrize("failure", [ConnectionResetError(), IncompleteRead(b"{"), None])
+def test_a_200_whose_body_fails_is_billed_then_an_outage(failure: Exception | None) -> None:
+    """Review B1: once Mistral answered 200 the page is billed, whatever then happens to its
+    body (a reset, a short read, a body trickling past the deadline); then it is an outage."""
+    opener = cast(urllib.request.OpenerDirector, Answers(Body(failure)))
+    mistral = MistralClient(KEY, opener=opener, now=Clock())
+    for _ in range(OUTAGES_IN_A_ROW):
+        with pytest.raises(MistralUnavailable) as raised:
+            mistral.read(PNG, model="mistral-ocr-4-1", seconds=0.02)
+        assert (raised.value.code, raised.value.billed) == ("mistral", True)
+    assert mistral.off_seconds() == OUTAGE_OFF_SECONDS  # each counted as an outage
 
 
 def test_key_and_markdown_never_in_logs(caplog: pytest.LogCaptureFixture) -> None:
@@ -284,7 +342,7 @@ def test_key_and_markdown_never_in_logs(caplog: pytest.LogCaptureFixture) -> Non
         read(got)
     raised.append(bad.value)
     with pytest.raises(BadReply) as bad_blocks:
-        read(page(SECRET, [block("text", SECRET, (0, 0, 99999, 10))]))
+        read(page(SECRET, [block("text", SECRET, (0, 0, float("inf"), 10))]))
     raised.append(bad_blocks.value)
     for error_raised in raised:
         assert error_raised.__cause__ is None and error_raised.__suppress_context__
@@ -349,9 +407,19 @@ def test_boxes_scaled_by_reply_dimensions() -> None:
         assert (line.x0, line.y0, line.x1, line.y1) == (100, 50, 500, 150)
     edge = read(page("A", [block("text", "A", (0, 0, 2000, 1000))]))
     assert (edge.lines[0].x0, edge.lines[0].y0, edge.lines[0].x1, edge.lines[0].y1) == (0, 0, WIDTH, HEIGHT)
-    for box in [(0, 0, 2001, 10), (10, 0, 10, 10), (-1, 0, 10, 10), (0, 20, 10, 10)]:
-        with pytest.raises(BadReply):
-            read(page("A", [block("text", "A", box)]))
+
+
+def test_boxes_clamped_to_the_page_and_a_flat_box_is_no_box() -> None:
+    """Review B3: a box past the page is clamped to it; one with no area left is no box (the
+    line is unpinned, on the whole page). Never a BadReply."""
+    past = read(page("A\nB", [block("text", "A\nB", (-4, 0, 2001, 1001))]))  # 1 px past
+    assert [box(line) for line in past.lines] == [(0, 0, WIDTH, HEIGHT)] * 2
+    for flat in [(100, 200, 900, 200), (900, 0, 100, 10), (2100, 0, 2200, 10)]:  # no height, no width, off
+        for content in ("A", "A\nB"):
+            result = read(page(content, [block("text", content, flat)]), [(0.0, 0.0, 10.0, 10.0)])
+            assert [box(line) for line in result.lines] == [(0, 0, WIDTH, HEIGHT)] * len(result.lines)
+            assert {line.box_source for line in result.lines} == {"model"}
+            assert "unpinned" in result.issues
 
 
 def test_only_single_line_blocks_are_pinned() -> None:
@@ -471,6 +539,22 @@ def test_unsure_by_start_index_inside_blocks() -> None:
     assert [line.unsure for line in result.lines] == [(), ("Total",)]
 
 
+def test_unsure_word_with_no_place_marks_every_line_holding_it() -> None:
+    """Review B9: an unsure word its start_index does not place is unsure on every line that
+    holds it, not only the first."""
+    markdown = "कुल राशि\nकुल 500\nबाकी"
+    for start in (None, 999, markdown.index("बाकी")):
+        result = read(page(markdown, words=[word("कुल", 0.4, start)]))
+        assert [line.unsure for line in result.lines] == [("कुल",), ("कुल",), ()]
+
+
+def test_a_fault_in_our_own_reading_is_never_a_bad_reply() -> None:
+    """Review B2: only a reply whose shape is wrong is a BadReply; our own code failing on a
+    good one is a bug and goes up as it is."""
+    with mock.patch.object(mistral_reader, "_clean", side_effect=TypeError("ours")), pytest.raises(TypeError):
+        read(page("Total"))
+
+
 def test_unsure_word_on_no_line_marks_the_nearest_line_whole() -> None:
     """Lead decision (2 Nov 2026): an unsure word placed neither by start_index nor by text
     goes to the line nearest its start_index, whole, so that whole line goes to review."""
@@ -518,6 +602,20 @@ def test_unicode_limits_and_controls() -> None:
         {"markdown": "A", "blocks": [{"type": "text", "content": 5}]},
         {"markdown": "A", "blocks": [{"type": 5, "content": "A"}]},
         {"markdown": "A", "blocks": [block("text", "A", (0, 0, 10, 10))]},  # no dimensions
+        {
+            "markdown": "A",
+            "dimensions": dict(DIMS),
+            "blocks": [{"type": "text", "content": "A", "top_left_x": 0}],
+        },
+        {"markdown": "A", "dimensions": {"width": 10}, "blocks": [block("text", "A", (0, 0, 1, 1))]},
+        {
+            "markdown": "A",
+            "dimensions": {"width": True, "height": 10},
+            "blocks": [block("text", "A", (0, 0, 1, 1))],
+        },
+        {"markdown": "A", "confidence_scores": {"word_confidence_scores": "A"}},
+        {"markdown": "A", "confidence_scores": {"word_confidence_scores": ["A"]}},
+        {"markdown": "A", "confidence_scores": {"word_confidence_scores": [{"confidence": 0.1}]}},
         {
             "markdown": "A",
             "dimensions": {"width": 0, "height": 10},

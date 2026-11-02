@@ -389,13 +389,15 @@ class NoDirectReaderCallsTest(unittest.TestCase):
         "rapid_pool",
     }
     # Changed on purpose (#473, 2 Nov 2026): the operator's settings and the scan's Reading name
-    # Mistral's readers and models, so these constants of the Mistral reader may be imported from
-    # anywhere; its client and page reading may not (they stay behind the socket, gemini_ocr).
+    # Mistral's readers and models, and the worker its wait names, so these constants of the
+    # Mistral reader may be imported from anywhere; its client and page reading may not (they
+    # stay behind the socket, gemini_ocr).
     CONSTANTS: ClassVar[dict[str, set[str]]] = {
         "kaagaz.reading.mistral_ocr": {
             "MISTRAL",
             "OPENROUTER",
-            "SCAN_READERS",
+            "MISTRAL_KEY",
+            "MISTRAL_SETUP",
             "MISTRAL_OCR_MODELS",
             "DEFAULT_MISTRAL_MODEL",
             "MISTRAL_THINKING",

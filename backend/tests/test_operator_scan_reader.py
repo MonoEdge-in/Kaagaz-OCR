@@ -16,7 +16,7 @@ from kaagaz.api.routers import operator_models as router
 from kaagaz.db import models
 from kaagaz.db import operator_models as ops
 from kaagaz.db.engine import Database
-from kaagaz.reading.mistral_ocr import DEFAULT_MISTRAL_MODEL, MISTRAL_OCR_MODELS, SCAN_READERS
+from kaagaz.reading.mistral_ocr import DEFAULT_MISTRAL_MODEL, MISTRAL, MISTRAL_OCR_MODELS, OPENROUTER
 from kaagaz.settings import Settings, SettingsError
 from tests.db_support import insert_document, new_customer
 from tests.settings_factory import make_settings
@@ -79,7 +79,7 @@ def test_config_records_reader() -> None:
 
 
 def test_the_bodies_offer_exactly_the_readers_and_models() -> None:
-    assert set(get_args(router.ScanReader)) == set(SCAN_READERS)
+    assert set(get_args(router.ScanReader)) == {OPENROUTER, MISTRAL}
     assert set(get_args(router.MistralModelId)) == set(MISTRAL_OCR_MODELS)
 
 
@@ -191,6 +191,34 @@ def test_mistral_refused_when_not_set_up(db: Database, platform: str) -> None:
     assert reply["defaults"]["scan_reader"] == "mistral"
     assert {"scan_reader", "mistral_model"} <= set(reply["orgs_inheriting"])
     assert reply["orgs_inheriting"]["scan_reader"] >= 1
+
+
+@pytest.mark.db
+def test_resaving_a_saved_mistral_is_never_refused(db: Database, platform: str) -> None:
+    """Review (2 Nov 2026): only newly choosing Mistral needs it set up here. A save that sends
+    the Mistral already saved, with other changes, goes through after the setup went away."""
+    ready = Api(db, settings=READY)
+    operator, client = _signed_in(ready)
+    customer = ready.customer("Saved On Mistral")[0]
+    other = ready.customer("New To Mistral")[0]
+    org = {**ORG_BODY, "scan_reader": "mistral"}
+    on_platform = {**PLATFORM_BODY, "scan_reader": "mistral"}
+    assert _save(ready, operator, client, f"/api/operator/orgs/{customer}/ai", org).status_code == 200
+    assert _save(ready, operator, client, "/api/operator/ai-defaults", on_platform).status_code == 200
+
+    gone = Api(db, settings=make_settings())  # the key or ZDR went from this server
+    operator, client = _signed_in(gone)
+    changed = {**org, "mistral_model": "mistral-ocr-2512"}
+    saved = _save(gone, operator, client, f"/api/operator/orgs/{customer}/ai", changed)
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["own"]["mistral_model"] == "mistral-ocr-2512"
+    defaults = _save(gone, operator, client, "/api/operator/ai-defaults", {**on_platform, "dynamic": True})
+    assert defaults.status_code == 200, defaults.text
+    refused = _save(gone, operator, client, f"/api/operator/orgs/{other}/ai", org)
+    assert (refused.status_code, refused.json()["error"]["code"]) == (409, "mistral_not_set_up")
+    assert set_defaults(db, platform, NO_DEFAULTS) == "done"
+    refused = _save(gone, operator, client, "/api/operator/ai-defaults", on_platform)
+    assert (refused.status_code, refused.json()["error"]["code"]) == (409, "mistral_not_set_up")
 
 
 @pytest.mark.db
@@ -310,5 +338,10 @@ def test_status_counts_waiting_mistral_documents(db: Database) -> None:
     after = status()
     assert after["documents_waiting"] - before == 2  # waits and retrying, each once
     assert after["stopped"] is True and after["code"] == "mistral_key"
+    with db.customer(customer) as conn:
+        not_set_up = insert_document(conn, customer)
+    run(not_set_up, 0.5, "failed", "mistral_setup_unavailable")  # review, 2 Nov 2026: its own code
+    newest = status()
+    assert newest["documents_waiting"] - before == 3 and newest["code"] == "mistral_setup"
     assert datetime.fromisoformat(after["since"]) <= now - timedelta(minutes=5)
     assert customer not in str(after)  # counts and codes only

@@ -19,10 +19,14 @@ from dataclasses import dataclass
 
 MISTRAL = "mistral"
 OPENROUTER = "openrouter"
-SCAN_READERS = (OPENROUTER, MISTRAL)
+# The BackendUnavailable names a document on Mistral waits on (the run's <name>_unavailable):
+# MISTRAL itself (not answering), its key or credit, and Mistral chosen but not set up on this
+# server (no key or no zero data retention); the last two are a person's fix (#473 review).
+MISTRAL_KEY = "mistral_key"
+MISTRAL_SETUP = "mistral_setup"
 
 MISTRAL_ENDPOINT = "https://api.mistral.ai/v1/ocr"
-# The most one page's call may take, capped by the page's time left on the engine's clock.
+# The most one page's call may take; the client caps it by the page's time left.
 MISTRAL_TIMEOUT_SECONDS = 30
 
 
