@@ -21,7 +21,7 @@ MISTRAL = "mistral"
 OPENROUTER = "openrouter"
 SCAN_READERS = (OPENROUTER, MISTRAL)
 
-MISTRAL_OCR_URL = "https://api.mistral.ai/v1/ocr"
+MISTRAL_ENDPOINT = "https://api.mistral.ai/v1/ocr"
 # The most one page's call may take, capped by the page's time left on the engine's clock.
 MISTRAL_TIMEOUT_SECONDS = 30
 

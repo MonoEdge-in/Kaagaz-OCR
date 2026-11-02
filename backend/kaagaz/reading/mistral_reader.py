@@ -13,10 +13,15 @@ MISTRAL_TIMEOUT_SECONDS, capped by ``seconds`` (the page's time left).
 
 **When Mistral can't read** it raises ``MistralUnavailable`` with ``code``:
 
-* ``mistral_key`` (401, 402, 403: the key is wrong or the credit is used up, which a person
-  fixes): Mistral is switched off on this client for KEY_OFF_SECONDS.
-* ``mistral`` (429, any other status, the network, a timeout): after OUTAGES_IN_A_ROW of
-  these in a row it is switched off for OUTAGE_OFF_SECONDS. A 200 resets the count.
+* ``mistral_key`` (401, 402, 403: the key is wrong or the credit is used up; 404: the model
+  id was withdrawn; each a person fixes): Mistral is switched off on this client for
+  KEY_OFF_SECONDS.
+* ``mistral`` (408, 429, 5xx, any other status, the network, a timeout): after
+  OUTAGES_IN_A_ROW of these in a row it is switched off for OUTAGE_OFF_SECONDS. A 200 resets
+  the count.
+
+A 400, 413 or 422 refuses this page, not Mistral (lead, 2 Nov 2026): ``BadReply``, never
+billed (no 200), with no switch-off and no outage counted.
 
 While switched off, ``read`` raises at once and sends nothing. Only the status and the error
 reply's ``type`` and ``code`` (short codes, ``openrouter._code``) are logged; its message,
@@ -34,7 +39,9 @@ is a ``BadReply``). A block's box is scaled by the reply's own ``dimensions``. O
 of one line is pinned to the found boxes (``gemini_ocr.pinned``); every other line keeps its
 block's box (the whole page with no block box) as ``box_source`` "model", and the page gets
 ``unpinned``. A word under UNSURE_BELOW is unsure on the line its ``start_index`` falls in,
-else on the first line holding it; one in no line flags the page UNSURE_UNPLACED. The page's
+else on the first line holding it. One in no line is never dropped (lead, 2 Nov 2026): the
+line nearest its ``start_index`` (the first line with none) gets its whole text as an unsure
+entry, so the whole line goes to review. The page's
 grade comes from ``average_page_confidence_score``. Any shape it can't read is ``BadReply``.
 
 **The page cache** (#473 Task 4). ``trimmed(page)`` is the part of a page ``page_read`` reads
@@ -69,7 +76,7 @@ from kaagaz.ai.openrouter import _ERROR_BODY_BYTES, _LOOPBACK_HOSTS, _code, _rea
 from kaagaz.ai.replies import MAX_RESPONSE_BYTES
 from kaagaz.reading.mistral_ocr import (
     MISTRAL,
-    MISTRAL_OCR_URL,
+    MISTRAL_ENDPOINT,
     MISTRAL_RESOLUTION,
     MISTRAL_THINKING,
     MISTRAL_TIMEOUT_SECONDS,
@@ -84,7 +91,9 @@ from kaagaz.reading.rapid_pool import PixelBox
 # <code>_unavailable): the key or the credit, which a person fixes; Mistral not answering.
 KEY_PROBLEM = "mistral_key"
 OUTAGE = MISTRAL
-KEY_STATUSES = frozenset({401, 402, 403})
+KEY_STATUSES = frozenset({401, 402, 403, 404})
+# This page or request refused (lead, 2 Nov 2026): a BadReply, not an outage.
+REFUSED_STATUSES = frozenset({400, 413, 422})
 # Tushar's rule 2 (2 Nov 2026): Mistral's organisations wait, then retry.
 KEY_OFF_SECONDS = 300.0
 OUTAGE_OFF_SECONDS = 60.0
@@ -93,8 +102,6 @@ OUTAGES_IN_A_ROW = 3
 UNSURE_BELOW = 0.80
 # The page's grade from Mistral's average word confidence: good from 0.92, fair from 0.80.
 GOOD_FROM, FAIR_FROM = 0.92, 0.80
-# An unsure word found on no line. Not in page_quality's F1 table (#473 Task 3 report).
-UNSURE_UNPLACED = "unsure_unplaced"
 # Mistral's block types that are a line kind of their own (gemini_ocr.LINE_KINDS); every
 # other type is a paragraph.
 _KINDS = {
@@ -130,12 +137,13 @@ class MistralUnavailable(Exception):
 
 class BadReply(Exception):
     """A page ``page_read`` can't read: a missing field, a wrong type, a box outside the page,
-    a line or a page over Gemini's limits. The message is "bad_reply" only, never page text."""
+    a line or a page over Gemini's limits; or, from ``MistralClient.read``, a 400, 413 or 422
+    (the page refused, not billed). The message is "bad_reply" only, never page text."""
 
 
 class MistralClient:
     """One call to Mistral's ``/v1/ocr`` a page (see the module notes). ``url`` is
-    MISTRAL_OCR_URL but in tests (https, or http on a loopback host); ``opener`` defaults to
+    MISTRAL_ENDPOINT but in tests (https, or http on a loopback host); ``opener`` defaults to
     ``openrouter.build_opener()`` (no proxy, no redirects); ``now`` is the clock the switch-off
     is kept on. Thread-safe: the switch-off and the count are under a lock."""
 
@@ -143,7 +151,7 @@ class MistralClient:
         self,
         key: str,
         *,
-        url: str = MISTRAL_OCR_URL,
+        url: str = MISTRAL_ENDPOINT,
         opener: urllib.request.OpenerDirector | None = None,
         now: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -204,8 +212,9 @@ class MistralClient:
         return _reply_page(raw)
 
     def _failed(self, status: int, error_type: str | None, code: str | None) -> NoReturn:
-        """Logs the status and the two codes, switches Mistral off when it is time to, and
-        raises ``MistralUnavailable``."""
+        """Logs the status and the two codes, then raises ``BadReply`` for a refused page, else
+        switches Mistral off when it is time to and raises ``MistralUnavailable``."""
+        refused = status in REFUSED_STATUSES
         problem = KEY_PROBLEM if status in KEY_STATUSES else OUTAGE
         level = logging.ERROR if problem == KEY_PROBLEM else logging.WARNING
         _log.log(
@@ -214,8 +223,10 @@ class MistralClient:
             status,
             error_type,
             code,
-            extra={"code": problem},
+            extra={"code": "bad_reply" if refused else problem},
         )
+        if refused:
+            raise BadReply("bad_reply") from None
         with self._lock:
             if problem == KEY_PROBLEM:
                 self._off = (self.now() + KEY_OFF_SECONDS, KEY_PROBLEM)
@@ -293,7 +304,7 @@ def page_read(
         if not isinstance(markdown, str):
             raise TypeError
         texts = _texts(page, markdown, width, height)
-        unsure, unplaced = _unsure(page, markdown, texts)
+        unsure = _unsure(page, markdown, texts)
         quality = _quality(page)
     except (KeyError, TypeError, ValueError):
         raise BadReply("bad_reply") from None
@@ -318,9 +329,6 @@ def page_read(
         for index, text in enumerate(texts)
     )
     issues = []
-    if unplaced:
-        _log.warning("mistral unsure word on no line", extra={"code": UNSURE_UNPLACED})
-        issues.append(UNSURE_UNPLACED)
     if any(line.box_source == "model" for line in result):
         issues.append(UNPINNED)
     if not result:
@@ -467,16 +475,15 @@ def _scaled(box: PixelBox, width: int, height: int, scale: float) -> tuple[float
     return y0 / height * scale, x0 / width * scale, y1 / height * scale, x1 / width * scale
 
 
-def _unsure(page: dict[str, Any], markdown: str, texts: list[_Text]) -> tuple[list[tuple[str, ...]], bool]:
-    """Each line's unsure words, and whether one was found on no line (see the module notes).
-    O(words x log lines + words x lines for those whose start doesn't place them)."""
+def _unsure(page: dict[str, Any], markdown: str, texts: list[_Text]) -> list[tuple[str, ...]]:
+    """Each line's unsure words (see the module notes): a word on no line marks the nearest
+    line whole. O(words x log lines + words x lines for those whose start doesn't place them)."""
     unsure: list[list[str]] = [[] for _ in texts]
     words = _scores(page).get("word_confidence_scores") or []
     if not isinstance(words, list):
         raise TypeError
     ranged = [(text.start, text.end, index) for index, text in enumerate(texts) if text.start is not None]
     starts = [start for start, _end, _index in ranged]
-    unplaced = False
     for word in words:
         if not isinstance(word, dict):
             raise TypeError
@@ -488,20 +495,34 @@ def _unsure(page: dict[str, Any], markdown: str, texts: list[_Text]) -> tuple[li
         if confidence >= UNSURE_BELOW:
             continue
         wanted = _clean(raw)
-        if not wanted:
-            continue
         index = None
-        if start is not None and _starts_with(markdown, start, raw):
+        if wanted and start is not None and _starts_with(markdown, start, raw):
             at = bisect.bisect_right(starts, start) - 1
             if at >= 0 and start < ranged[at][1] and wanted in texts[ranged[at][2]].text:
                 index = ranged[at][2]
-        if index is None:
+        if index is None and wanted:
             index = next((i for i, text in enumerate(texts) if wanted in text.text), None)
         if index is None:
-            unplaced = True
-        elif wanted not in unsure[index]:
+            if not texts:
+                continue  # no line at all: the page is no_text
+            # Lead, 2 Nov 2026: never dropped. The nearest line, whole, so it all goes to review.
+            index = _nearest(ranged, start)
+            wanted = texts[index].text
+        if wanted not in unsure[index]:
             unsure[index].append(wanted)
-    return [tuple(line) for line in unsure], unplaced
+    return [tuple(line) for line in unsure]
+
+
+def _nearest(ranged: list[tuple[int, int, int]], start: int | None) -> int:
+    """The line whose raw Markdown range [start, end) is nearest ``start`` (the earlier on a
+    tie); the first line when ``start`` is None or no line was found in the Markdown."""
+    if start is None or not ranged:
+        return 0
+
+    def distance(line: tuple[int, int, int]) -> int:
+        return line[0] - start if start < line[0] else max(0, start - line[1] + 1)
+
+    return min(ranged, key=distance)[2]
 
 
 def _starts_with(markdown: str, start: int, word: str) -> bool:

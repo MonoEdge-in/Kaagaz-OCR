@@ -14,11 +14,10 @@ from typing import Any, cast
 
 import pytest
 
-from kaagaz.reading.mistral_ocr import MISTRAL_OCR_MODELS, MISTRAL_OCR_URL, MISTRAL_TIMEOUT_SECONDS
+from kaagaz.reading.mistral_ocr import MISTRAL_ENDPOINT, MISTRAL_OCR_MODELS, MISTRAL_TIMEOUT_SECONDS
 from kaagaz.reading.mistral_reader import (
     KEY_OFF_SECONDS,
     OUTAGE_OFF_SECONDS,
-    UNSURE_UNPLACED,
     BadReply,
     MistralClient,
     MistralUnavailable,
@@ -111,7 +110,7 @@ def texts(result: PageRead) -> list[str]:
 
 
 def test_request_exact() -> None:
-    assert MISTRAL_OCR_URL == "https://api.mistral.ai/v1/ocr"
+    assert MISTRAL_ENDPOINT == "https://api.mistral.ai/v1/ocr"
     value = page("Total 500")
     with running_fake() as fake:
         fake.script("ocr", ok(value, processed=1))
@@ -141,7 +140,7 @@ def test_a_garbage_200_is_returned_as_an_empty_page_then_bad_reply() -> None:
         read({})
 
 
-@pytest.mark.parametrize("status", [401, 402, 403])
+@pytest.mark.parametrize("status", [401, 402, 403, 404])
 def test_401_402_switch_off_300s(status: int) -> None:
     clock = Clock()
     with running_fake() as fake:
@@ -159,6 +158,41 @@ def test_401_402_switch_off_300s(status: int) -> None:
         mistral.read(PNG, model="mistral-ocr-4-1", seconds=10)
     assert KEY_OFF_SECONDS == 300
     assert len(fake.requests) == 2
+
+
+@pytest.mark.parametrize("status", [400, 413, 422])
+def test_a_refused_request_is_bad_reply_never_a_switch_off(
+    status: int, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Lead decision (2 Nov 2026): 400, 413 and 422 refuse this page, not Mistral: BadReply
+    (a refused page, not billed: no 200), no switch-off and no outage counted."""
+    with running_fake() as fake:
+        fake.script("ocr", error(500), error(500), *[error(status)] * 3, error(500), ok(page("Total")))
+        mistral = client(fake)
+        for _ in range(2):
+            with pytest.raises(MistralUnavailable):
+                mistral.read(PNG, model="mistral-ocr-4-1", seconds=10)
+        for _ in range(3):
+            with pytest.raises(BadReply) as refused:
+                mistral.read(PNG, model="mistral-ocr-4-1", seconds=10)
+            assert refused.value.__cause__ is None and refused.value.__suppress_context__
+            assert SECRET not in str(refused.value) and KEY not in str(refused.value)
+        with pytest.raises(MistralUnavailable) as third:  # the third outage in a row switches off
+            mistral.read(PNG, model="mistral-ocr-4-1", seconds=10)
+        assert third.value.code == "mistral"
+        with pytest.raises(MistralUnavailable):
+            mistral.read(PNG, model="mistral-ocr-4-1", seconds=10)
+    assert len(fake.requests) == 6
+    assert str(status) in caplog.text and SECRET not in caplog.text
+
+
+@pytest.mark.parametrize("status", [408, 302, 418])
+def test_other_statuses_are_outages(status: int) -> None:
+    with running_fake() as fake:
+        fake.script("ocr", Reply(status, {"object": "error", "message": SECRET}))
+        with pytest.raises(MistralUnavailable) as raised:
+            client(fake).read(PNG, model="mistral-ocr-4-1", seconds=10)
+    assert raised.value.code == "mistral"
 
 
 def test_three_outages_switch_off_60s() -> None:
@@ -428,7 +462,6 @@ def test_unsure_by_start_index_devanagari() -> None:
     nfc = unicodedata.normalize("NFC", decomposed)
     assert texts(result) == [unicodedata.normalize("NFC", first), unicodedata.normalize("NFC", second)]
     assert [line.unsure for line in result.lines] == [(), (nfc,)]
-    assert UNSURE_UNPLACED not in result.issues
 
 
 def test_unsure_by_start_index_inside_blocks() -> None:
@@ -438,15 +471,24 @@ def test_unsure_by_start_index_inside_blocks() -> None:
     assert [line.unsure for line in result.lines] == [(), ("Total",)]
 
 
-def test_unsure_unplaced_flags_page() -> None:
+def test_unsure_word_on_no_line_marks_the_nearest_line_whole() -> None:
+    """Lead decision (2 Nov 2026): an unsure word placed neither by start_index nor by text
+    goes to the line nearest its start_index, whole, so that whole line goes to review."""
+    markdown = "Seller: Asha\nBuyer: Ravi\n\nTotal 500"
     words = [
         word("Asha", 0.4, 999),  # a wrong start: falls back to the first line holding it
-        word("Ghost", 0.4, 0),  # in no line at all
+        word("Ghost", 0.4, markdown.index("Ravi")),  # in no line: the line its start is in
+        word("Gone", 0.4, markdown.index("Total") - 1),  # in no line, start between lines: nearest
+        word("Lost", 0.4, None),  # in no line, no start: the first line
     ]
-    result = read(page("Seller: Asha\nBuyer: Asha", words=words))
-    assert [line.unsure for line in result.lines] == [("Asha",), ()]
-    assert UNSURE_UNPLACED in result.issues
-    assert UNSURE_UNPLACED == "unsure_unplaced"
+    result = read(page(markdown, words=words))
+    assert [line.unsure for line in result.lines] == [
+        ("Asha", "Seller: Asha"),
+        ("Buyer: Ravi",),
+        ("Total 500",),
+    ]
+    assert result.issues == ("unpinned",)  # no blocks; no issue of its own for the words
+    assert all(entry in line.text for line in result.lines for entry in line.unsure)
 
 
 @pytest.mark.parametrize(
