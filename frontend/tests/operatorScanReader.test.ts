@@ -10,8 +10,12 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import {
+  CHECK_MISTRAL_NOT_SET_UP,
   aiBody,
   changesText,
+  checkEffect,
+  checkRefusal,
+  costChange,
   costWords,
   defaultsImpact,
   draftOf,
@@ -138,10 +142,16 @@ describe("who reads the pages: the save", () => {
   });
 
   it("picking gemini nulls mistral_model", () => {
-    const draft = draftOf(values({ scan_reader: "mistral", mistral_model: "mistral-ocr-2512" }));
-    expect(pickedReader(draft, "openrouter")).toMatchObject({ scan_reader: "openrouter", mistral_model: null });
-    expect(pickedReader(draft, "")).toMatchObject({ scan_reader: null, mistral_model: "mistral-ocr-2512" });
-    expect(pickedReader(draftOf(values()), "mistral")).toMatchObject({ scan_reader: "mistral", mistral_model: null });
+    const draft = draftOf(values({ scan_reader: "mistral", mistral_model: "mistral-ocr-2512", scan_thinking: "high" }));
+    expect(pickedReader(draft, "openrouter", values(), env(), false)).toMatchObject({ scan_reader: "openrouter", mistral_model: null });
+    // Changed on purpose (#473): following a platform that reads with Gemini lets go of the model too.
+    expect(pickedReader(draft, "", values(), env(), false)).toMatchObject({ scan_reader: null, mistral_model: null });
+    expect(pickedReader(draft, "", MISTRAL, env(), false)).toMatchObject({ scan_reader: null, mistral_model: "mistral-ocr-2512" });
+    expect(pickedReader(draft, "", MISTRAL, env(), true)).toMatchObject({ scan_reader: null, mistral_model: null }); // the server reads with Gemini
+    expect(pickedReader(draftOf(values()), "mistral", values(), env(), false)).toMatchObject({ scan_reader: "mistral", mistral_model: null });
+    expect(pickedReader(draft, "openrouter", values(), env(), false).scan_thinking).toBe("high"); // Gemini's settings untouched
+    const source = read("components/operator/OrgAiSettings.tsx");
+    expect(source).toContain("onPick={(value) => onChange(pickedReader(draft, value, defaults, env, platform))}");
   });
 
   it("reset clears both", () => {
@@ -166,11 +176,15 @@ describe("who reads the pages: the save", () => {
 
   it("lists both in the save bar's changes", () => {
     const after = draftOf(values({ scan_reader: "mistral", mistral_model: "mistral-ocr-2512" }));
-    expect(changesText(draftOf(values()), after, [])).toEqual(["Who reads the pages: Mistral OCR", "Mistral model: Mistral OCR 3"]);
-    expect(changesText(after, draftOf(values()), [])).toEqual([
+    const gemini = { defaults: values(), env: env() };
+    expect(changesText(draftOf(values()), after, [], gemini)).toEqual(["Who reads the pages: Mistral OCR", "Mistral model: Mistral OCR 3"]);
+    // Changed on purpose (#473): back on Gemini, the Mistral model is no change worth saying.
+    expect(changesText(after, draftOf(values()), [], gemini)).toEqual(["Who reads the pages: platform default"]);
+    expect(changesText(after, draftOf(values()), [], { defaults: MISTRAL, env: env() })).toEqual([
       "Who reads the pages: platform default",
       "Mistral model: platform default",
     ]);
+    expect(read("components/operator/OrgAiSettings.tsx")).toContain("changesText(saved, draft, loaded?.catalogue ?? [], loaded?.reply)");
   });
 
   it("defaults impact counts reader followers", () => {
@@ -185,7 +199,16 @@ describe("who reads the pages: the save", () => {
     const summary = renderToStaticMarkup(
       createElement(DefaultsSummary, { reply: { defaults: values(), env: env(), orgs_inheriting: COUNTS }, catalogue: [] }),
     );
-    expect(summary).toMatch(/<dt[^>]*>Who reads the pages<\/dt><dd>the server&#x27;s reader \(Gemini\)<span[^>]*>Followed by 3 organisations/);
+    // Changed on purpose (#473): plain "Gemini", and no Mistral model row while the platform reads with Gemini.
+    expect(summary).toMatch(/<dt[^>]*>Who reads the pages<\/dt><dd>Gemini<span[^>]*>Followed by 3 organisations/);
+    expect(summary).not.toContain(">Mistral model<");
+  });
+
+  it("defaults summary shows the Mistral model while the platform reads with Mistral", () => {
+    const summary = (defaults: AiValues) =>
+      renderToStaticMarkup(createElement(DefaultsSummary, { reply: { defaults, env: env(), orgs_inheriting: COUNTS }, catalogue: [] }));
+    expect(summary(MISTRAL)).toMatch(/<dt[^>]*>Mistral model<\/dt><dd>Mistral OCR 4.1<span[^>]*>Followed by 2 organisations/);
+    expect(summary(values({ scan_reader: "mistral", mistral_model: "mistral-ocr-2512" }))).toMatch(/<dd>Mistral OCR 3<span/);
   });
 });
 
@@ -195,11 +218,8 @@ describe("who reads the pages: the field", () => {
     expect(org.indexOf('id="ai-scan-reader"')).toBeGreaterThan(0);
     expect(org.indexOf('id="ai-scan-reader"')).toBeLessThan(org.search(/<h3[^>]*>First read<\/h3>/));
     expect(org).toContain('<label for="ai-scan-reader" class="label">Who reads the pages</label>');
-    expect(optionsOf(org, "ai-scan-reader")).toEqual([
-      "Platform default (the server&#x27;s reader (Gemini))",
-      "Gemini, through OpenRouter",
-      "Mistral OCR",
-    ]);
+    // Changed on purpose (#473): plain "Gemini", with no nested brackets.
+    expect(optionsOf(org, "ai-scan-reader")).toEqual(["Platform default (Gemini)", "Gemini", "Mistral OCR"]);
     expect(optionsOf(fields({ defaults: MISTRAL }), "ai-scan-reader")[0]).toBe("Platform default (Mistral OCR)");
     expect(optionsOf(fields({ platform: true }), "ai-scan-reader")[0]).toBe("The server&#x27;s reader (Gemini)");
     expect(org).toMatch(/<span id="ai-scan-reader-origin"[^>]*>Platform default<\/span>/);
@@ -211,13 +231,14 @@ describe("who reads the pages: the field", () => {
     const html = fields({ env: env({ mistral_ready: false, mistral_missing: "key" }) });
     expect(html).toContain('<option value="mistral" disabled="">Mistral OCR (not set up on this server)</option>');
     expect(describedByOf(html, "ai-scan-reader").split(" ")).toContain("ai-scan-reader-hint");
-    expect(html).toContain('<span id="ai-scan-reader-hint" class="hint">Mistral isn&#x27;t set up on this server: its key is missing.</span>');
+    // Changed on purpose (#473): plain words for why it can't be chosen.
+    expect(html).toContain('<span id="ai-scan-reader-hint" class="hint">Mistral can&#x27;t be chosen yet: the server has no Mistral key.</span>');
   });
 
   it("hint says key or zdr", () => {
     const zdr = fields({ env: env({ mistral_ready: false, mistral_missing: "zdr" }) });
     expect(zdr).toContain(
-      '<span id="ai-scan-reader-hint" class="hint">Mistral isn&#x27;t set up on this server: zero data retention isn&#x27;t confirmed.</span>',
+      '<span id="ai-scan-reader-hint" class="hint">Mistral can&#x27;t be chosen yet: we haven&#x27;t confirmed that Mistral keeps no copy of our pages.</span>',
     );
     const ready = fields();
     expect(ready).toContain('<option value="mistral">Mistral OCR</option>');
@@ -227,7 +248,8 @@ describe("who reads the pages: the field", () => {
   it("saved mistral not set up shows waiting line", () => {
     const html = fields({ own: MISTRAL, env: env({ mistral_ready: false, mistral_missing: "zdr" }) });
     expect(html).toContain(
-      '<span id="ai-scan-reader-waiting" class="error-text">Saved as Mistral, but Mistral isn&#x27;t set up on this server, so this organisation&#x27;s pages wait.</span>',
+      // Changed on purpose (#473): says what to do.
+      '<span id="ai-scan-reader-waiting" class="error-text">Saved as Mistral, but Mistral isn&#x27;t set up on this server, so this organisation&#x27;s pages are waiting. Choose Gemini to read them now.</span>',
     );
     expect(describedByOf(html, "ai-scan-reader").split(" ")).toContain("ai-scan-reader-waiting");
     expect(fields({ own: MISTRAL })).not.toContain("ai-scan-reader-waiting"); // set up: nothing waits
@@ -251,12 +273,20 @@ describe("the Mistral model and the Gemini fields", () => {
 
   it("model options show rupees", () => {
     const html = fields({ own: MISTRAL });
+    // Changed on purpose (#473): what each model gives, and no nested brackets.
     expect(optionsOf(html, "ai-mistral-model")).toEqual([
-      "Platform default (the server&#x27;s model (Mistral OCR 4.1))",
-      "Mistral OCR 4.1, about ₹0.35 a page",
-      "Mistral OCR 3, about ₹0.18 a page",
+      "Platform default (Mistral OCR 4.1)",
+      "Mistral OCR 4.1: about ₹0.35 a page, shows where each line is",
+      "Mistral OCR 3: about ₹0.18 a page, no page spots, every amount checked by a person",
     ]);
     expect(optionsOf(fields({ platform: true, own: MISTRAL }), "ai-mistral-model")[0]).toBe("The server&#x27;s model (Mistral OCR 4.1)");
+    // The names are the server's.
+    const renamed = env({ mistral_models: env().mistral_models.map((each) => ({ ...each, name: `${each.name} beta` })) });
+    expect(optionsOf(fields({ own: MISTRAL, env: renamed }), "ai-mistral-model")).toEqual([
+      "Platform default (Mistral OCR 4.1 beta)",
+      "Mistral OCR 4.1 beta: about ₹0.35 a page, shows where each line is",
+      "Mistral OCR 3 beta: about ₹0.18 a page, no page spots, every amount checked by a person",
+    ]);
   });
 
   it("no-blocks hint linked", () => {
@@ -268,50 +298,120 @@ describe("the Mistral model and the Gemini fields", () => {
     expect(fields({ own: MISTRAL })).not.toContain("ai-mistral-model-hint"); // 4.1 says where
   });
 
-  it("gemini fields carry the not-used note", () => {
-    const note = "Not used while Mistral reads this organisation&#x27;s pages. Kept for when you switch back to Gemini.";
-    const html = fields({ own: MISTRAL });
-    expect(html.indexOf(note)).toBeGreaterThan(html.indexOf('id="ai-mistral-model"'));
-    expect(html.indexOf(note)).toBeLessThan(html.search(/<h3[^>]*>First read<\/h3>/));
-    expect(html).toContain('id="ai-scan-thinking"'); // kept where it is
-    expect(fields()).not.toContain(note);
+  it("gemini fields are hidden while Mistral reads", () => {
+    // Changed on purpose (#473): hidden, not kept on show as unused; the draft keeps their values.
+    const note = "Gemini&#x27;s reading settings are hidden while Mistral reads the pages. They come back if you switch to Gemini.";
+    const geminiOnly = [
+      "Models its scans may be read with",
+      'id="ai-scan-thinking"',
+      'id="ai-scan-resolution"',
+      'id="ai-page-max-output-tokens"',
+      'id="ai-dynamic"',
+      'id="ai-careful-thinking"',
+      'id="ai-careful-resolution"',
+    ];
+    for (const html of [fields({ own: MISTRAL }), fields({ defaults: MISTRAL }), fields({ platform: true, own: MISTRAL })]) {
+      expect(html).toContain(`<p class="hint">${note}</p>`);
+      expect(html.indexOf(note)).toBeGreaterThan(html.indexOf('id="ai-mistral-model"'));
+      expect(html).not.toMatch(/<h3[^>]*>First read<\/h3>/);
+      for (const field of geminiOnly) expect(html).not.toContain(field);
+    }
+    const gemini = fields();
+    expect(gemini).not.toContain(note);
+    for (const field of geminiOnly) expect(gemini).toContain(field);
   });
 
   it("ensemble hint", () => {
     const html = fields({ own: MISTRAL });
     expect(html).toContain('<span id="ai-ensemble-mistral" class="hint">Ensemble isn&#x27;t used while Mistral reads the pages.</span>');
-    expect(html).toContain('aria-describedby="ai-ensemble-hint ai-ensemble-mistral"');
+    // Changed on purpose (#473): off while Mistral reads.
+    expect(html).toContain('<input type="checkbox" disabled="" aria-describedby="ai-ensemble-hint ai-ensemble-mistral"/>');
     expect(fields()).not.toContain("ai-ensemble-mistral");
+    expect(fields()).toContain('<input type="checkbox" aria-describedby="ai-ensemble-hint"/>');
   });
 });
 
 describe("Mistral stopped and Mistral's fixed price", () => {
   it("banner shows stopped words and count", () => {
     const since = "2026-11-02T09:00:00Z";
-    const key = renderToStaticMarkup(
-      createElement(MistralStopped, { status: { stopped: true, code: "mistral_key", since, documents_waiting: 3 } }),
-    );
+    const banner = (status: MistralStatus, overrides: Partial<AiEnv> = {}) =>
+      renderToStaticMarkup(createElement(MistralStopped, { env: env({ mistral_status: status, ...overrides }) }));
+    const key = banner({ stopped: true, code: "mistral_key", since, documents_waiting: 3 });
     expect(key).toContain('role="status"');
+    // Changed on purpose (#473): "since", and the count is every organisation's.
     expect(key).toContain(
-      `Mistral stopped reading pages at ${formatDateTime(since)} (out of credit or key refused). 3 documents are waiting. They&#x27;re read automatically once Mistral works again.`,
+      `Mistral hasn&#x27;t read pages since ${formatDateTime(since)} (out of credit or key refused). 3 documents are waiting across all organisations. They&#x27;re read automatically once Mistral works again.`,
     );
     expect(key).toContain("In Mistral&#x27;s console, check the Mistral key and credit.");
-    const down = renderToStaticMarkup(
-      createElement(MistralStopped, { status: { stopped: true, code: "mistral", since, documents_waiting: 1 } }),
-    );
-    expect(down).toContain("(not answering). 1 document is waiting.");
+    const down = banner({ stopped: true, code: "mistral", since, documents_waiting: 1 });
+    expect(down).toContain("(not answering). 1 document is waiting across all organisations.");
     expect(down).not.toContain("check the Mistral key");
-    expect(renderToStaticMarkup(createElement(MistralStopped, { status: NOT_STOPPED }))).toBe("");
-    expect(read("components/operator/OrgAiSettings.tsx")).toContain("<MistralStopped status={loaded.reply.env.mistral_status} />");
-    expect(read("components/operator/PlatformDefaults.tsx")).toContain("<MistralStopped status={reply.env.mistral_status} />");
+    expect(banner(NOT_STOPPED)).toBe("");
+    // Changed on purpose (#473): the banner reads the server's setup too.
+    expect(read("components/operator/OrgAiSettings.tsx")).toContain("<MistralStopped env={loaded.reply.env} />");
+    expect(read("components/operator/PlatformDefaults.tsx")).toContain("<MistralStopped env={reply.env} />");
+  });
+
+  it("banner says Mistral isn't set up, with why", () => {
+    const status: MistralStatus = { stopped: true, code: "mistral_setup", since: "2026-11-02T09:00:00Z", documents_waiting: 4 };
+    const setup =
+      "Mistral isn&#x27;t set up on this server, so 4 documents are waiting across all organisations. They&#x27;ll be read once it&#x27;s set up, or switch these organisations to Gemini.";
+    const notReady = renderToStaticMarkup(
+      createElement(MistralStopped, { env: env({ mistral_status: status, mistral_ready: false, mistral_missing: "key" }) }),
+    );
+    expect(notReady).toContain(`<p>${setup}</p><p>Mistral can&#x27;t be chosen yet: the server has no Mistral key.</p>`);
+    expect(notReady).not.toContain("check the Mistral key");
+    // The server not ready says so, whatever the newest wait's code.
+    const zdr = renderToStaticMarkup(
+      createElement(MistralStopped, {
+        env: env({ mistral_status: { ...status, code: "mistral_key" }, mistral_ready: false, mistral_missing: "zdr" }),
+      }),
+    );
+    expect(zdr).toContain(setup);
+    expect(zdr).toContain("we haven&#x27;t confirmed that Mistral keeps no copy of our pages.");
+    expect(renderToStaticMarkup(createElement(MistralStopped, { env: env({ mistral_status: status }) }))).toContain(setup);
   });
 
   it("fixed price panel has no tokens lines", () => {
-    expect(costWords(fixed())).toEqual({ figure: "About ₹0.35 a page", dollars: "$0.0040 a page", lines: ["Mistral's fixed price."] });
+    // Changed on purpose (#473): a list price, the same for every page.
+    const list = "Mistral's list price, the same for every page.";
+    expect(costWords(fixed())).toEqual({ figure: "About ₹0.35 a page", dollars: "$0.0040 a page", lines: [list] });
     const seen = fixed({ first_read: { ...fixed().first_read, usd_per_page: 0.004, pages: 12 } });
-    expect(costWords(seen).lines).toEqual(["Mistral's fixed price.", "First read: $0.0040 a page, measured on 12 pages in the last 30 days."]);
+    expect(costWords(seen).lines).toEqual([list, "First read: $0.0040 a page, measured on 12 pages in the last 30 days."]);
     expect(tokensWords(fixed())).toEqual(["Mistral charges by the page, not by tokens."]);
     expect(levelNote(fixed(), "minimal")).toBeNull();
     expect(read("components/operator/OrgAiSettings.tsx")).toContain("{!fixedPrice && <h3 className={styles.subHeading}>Tokens a page</h3>}");
+  });
+
+  it("says when the change compares measured Gemini with Mistral's list price", () => {
+    const gemini = fixed({
+      first_read: { model: "m/one", thinking: "low", resolution: "high", usd_per_page: 0.002, pages: 10 },
+      usd_per_page: 0.002,
+      fixed_price: false,
+      fixed_usd_per_page: null,
+    });
+    expect(costChange(gemini, fixed())).toEqual({ from: "₹0.18", to: "₹0.35", verdict: "100% dearer (Gemini measured, Mistral list price)" });
+    expect(costChange(fixed(), gemini)?.verdict).toBe("50% cheaper (Gemini measured, Mistral list price)");
+    expect(costChange(gemini, gemini)?.verdict).toBe("about the same");
+    expect(costChange(fixed(), fixed({ fixed_usd_per_page: 0.002 }))?.verdict).toBe("50% cheaper");
+  });
+});
+
+describe("the accuracy check while Mistral reads", () => {
+  it("says Gemini reads the pages to compare, on a Mistral scope", () => {
+    const gemini = "To compare, this check also has Gemini read these pages at its highest settings.";
+    expect(checkEffect("Asha Stores", null, 20, true)).toBe(
+      "Kaagaz reads 20 recent pages of Asha Stores twice, at these settings and at max, and compares the words. " +
+        `${gemini} It has a small cost and takes a few minutes. No text is shown or kept.`,
+    );
+    expect(checkEffect("Asha Stores", null, 20, false)).not.toContain(gemini);
+    expect(read("components/operator/OrgAiSettings.tsx")).toContain("effect: checkEffect(org.name, latest, checkPages, checkMistral),");
+  });
+
+  it("says why a check can't start while Mistral isn't set up", () => {
+    expect(checkRefusal(new ApiError(409, "mistral_not_set_up", "Mistral isn't set up on this server yet."))).toBe(CHECK_MISTRAL_NOT_SET_UP);
+    expect(CHECK_MISTRAL_NOT_SET_UP).toBe(
+      "Mistral isn't set up on this server, so this check can't read with Mistral. Choose Gemini as the reader to check now.",
+    );
   });
 });

@@ -536,7 +536,8 @@ describe("the accuracy", () => {
     expect(checkEffect("Asha Stores", null, 20)).toContain("It has a small cost and takes a few minutes.");
     expect(checkEffect("Asha Stores", check({ cost_usd: null }), 50)).toContain("It has a small cost");
     const dialog = read("components/operator/OrgAiSettings.tsx");
-    expect(dialog).toContain("effect: checkEffect(org.name, latest, checkPages),");
+    // Changed on purpose (#473): a Mistral scope says Gemini reads the pages to compare.
+    expect(dialog).toContain("effect: checkEffect(org.name, latest, checkPages, checkMistral),");
     expect(dialog).toContain("stepUp: true,");
     expect(dialog).toContain("run: (stepUpCode) => postAccuracyCheck(org.id, { ...scanSettings(aiBody(draft)), pages: checkPages }, stepUpCode),");
     // The confirm's form sits outside the settings' form: its submit never reaches Save.

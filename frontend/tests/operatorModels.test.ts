@@ -677,7 +677,8 @@ describe("the AI settings dialogs", () => {
 
   it("keeps a save bar at the dialog's foot that lists the changes, with Discard and Save off while nothing changed", () => {
     const dialog = read("components/operator/OrgAiSettings.tsx");
-    expect(dialog).toContain("changesText(saved, draft, loaded?.catalogue ?? [])");
+    // Changed on purpose (#473): with the reply, for who reads the pages after the save.
+    expect(dialog).toContain("changesText(saved, draft, loaded?.catalogue ?? [], loaded?.reply)");
     expect(dialog.match(/disabled=\{busy \|\| unchanged\}/g)).toHaveLength(2); // Discard and Save
     expect(dialog).toContain('"No unsaved changes"');
     expect(dialog).toContain("setDraft(saved);");

@@ -1369,10 +1369,11 @@ export interface MistralModel {
   has_blocks: boolean;
 }
 /** Whether Mistral has stopped reading pages (#473): code mistral_key for a refused key or no
- * credit, mistral when it isn't answering; since when, and the documents waiting for it. */
+ * credit, mistral when it isn't answering, mistral_setup when it is chosen but the server isn't
+ * set up for it; since when, and the documents waiting for it. */
 export interface MistralStatus {
   stopped: boolean;
-  code: "mistral_key" | "mistral" | null;
+  code: "mistral_key" | "mistral" | "mistral_setup" | null;
   since: string | null;
   documents_waiting: number;
 }

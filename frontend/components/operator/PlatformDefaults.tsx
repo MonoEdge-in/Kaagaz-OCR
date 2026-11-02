@@ -65,7 +65,7 @@ export function PlatformDefaults({ catalogue, onSaved }: { catalogue: OperatorMo
       {failed && !reply && <LoadFailed what="the platform defaults" message={failed} onRetry={() => setAttempt((n) => n + 1)} />}
       {reply && (
         <>
-          <MistralStopped status={reply.env.mistral_status} />
+          <MistralStopped env={reply.env} />
           <DefaultsSummary reply={reply} catalogue={catalogue} />
           <div>
             <button id={CHANGE_ID} type="button" className="btn" onClick={() => setEditing(true)}>
@@ -94,6 +94,10 @@ export function DefaultsSummary({ reply, catalogue }: { reply: AiDefaults; catal
   const { defaults, env, orgs_inheriting: counts } = reply;
   const rows: { label: string; value: string; count: number }[] = [
     { label: "Who reads the pages", value: inheritedText("scan_reader", defaults, env, catalogue), count: counts.scan_reader },
+    // #473: the Mistral model only while the platform reads with Mistral.
+    ...((defaults.scan_reader ?? env.scan_reader) === "mistral"
+      ? [{ label: "Mistral model", value: inheritedText("mistral_model", defaults, env, catalogue), count: counts.mistral_model }]
+      : []),
     { label: "Scanning models", value: inheritedText("scan_models", defaults, env, catalogue), count: counts.scan_models },
     { label: "Scanning thinking level", value: inheritedText("scan_thinking", defaults, env, catalogue), count: counts.scan_thinking },
     { label: "Picture detail", value: inheritedText("scan_resolution", defaults, env, catalogue), count: counts.scan_resolution },

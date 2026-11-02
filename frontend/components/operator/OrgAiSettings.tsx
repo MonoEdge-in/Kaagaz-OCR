@@ -28,8 +28,9 @@
 // a fresh code, polled while it runs). The Save confirmation says the cost and accuracy.
 // Who reads the pages (#473, Tushar, 2 Nov 2026): Scanning's first field chooses Gemini
 // through OpenRouter or Mistral OCR (offered only once Mistral is set up on the server), then
-// the Mistral model while Mistral reads; the Gemini fields stay, marked as unused then. A
-// banner says when Mistral has stopped and how many documents wait for it.
+// the Mistral model while Mistral reads; the Gemini-only fields are hidden then (the draft
+// keeps them) and Ensemble is off. A banner says when Mistral has stopped or isn't set up,
+// and how many documents wait for it.
 
 import { useCallback, useEffect, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
@@ -54,7 +55,6 @@ import type {
   AiLevel,
   AiValues,
   MistralModelId,
-  MistralStatus,
   OperatorModel,
   Organisation,
   OrgAiReply,
@@ -75,11 +75,11 @@ import {
   DYNAMIC_HINT,
   ENSEMBLE_NOT_WITH_MISTRAL,
   ENSEMBLE_OFF,
+  GEMINI_HIDDEN,
   LEVELS,
   LEVEL_WORDS,
   LIMIT_NOT_MEASURED,
   MISTRAL_MISSING,
-  MISTRAL_MODEL_WORDS,
   MISTRAL_NOT_SET_UP,
   MISTRAL_WAITING,
   NO_BLOCKS_HINT,
@@ -109,13 +109,13 @@ import {
   costWords,
   draftOf,
   followDefaults,
-  geminiNotUsed,
   hasNoLevels,
   inheritedText,
   inrText,
   levelNote,
   mistralModelOf,
   mistralModelText,
+  mistralName,
   mistralStoppedText,
   monthSpentText,
   offered,
@@ -133,7 +133,6 @@ import {
   savedText,
   scanModelsDiffer,
   scanSettings,
-  serverReader,
   statusText,
   toggled,
   toggledLevel,
@@ -218,7 +217,9 @@ export function OrgAiSettings({ org, onClose, onSaved }: { org: Organisation; on
   }, [org.id, attempt]);
 
   const saved = loaded ? draftOf(loaded.reply.own, loaded.reply) : null;
-  const changes = saved && draft ? changesText(saved, draft, loaded?.catalogue ?? []) : [];
+  const changes = saved && draft ? changesText(saved, draft, loaded?.catalogue ?? [], loaded?.reply) : [];
+  // #473: on a Mistral scope the check's max settings are still Gemini's; its confirm says so.
+  const checkMistral = loaded !== null && draft !== null && readerOf(draft, loaded.reply.defaults, loaded.reply.env, false) === "mistral";
   const unchanged = changes.length === 0;
   const asking = leaving && !unchanged;
   // Keep editing takes the focus when the question opens: never the button that loses the changes.
@@ -292,7 +293,7 @@ export function OrgAiSettings({ org, onClose, onSaved }: { org: Organisation; on
         )}
         {loaded && draft && (
           <form ref={focusFirst} className={styles.dialogForm} onSubmit={submit} noValidate>
-            <MistralStopped status={loaded.reply.env.mistral_status} />
+            <MistralStopped env={loaded.reply.env} />
             <p role="status">{statusText(aiBody(draft))}</p>
             <div>
               <button
@@ -408,7 +409,7 @@ export function OrgAiSettings({ org, onClose, onSaved }: { org: Organisation; on
         <ConfirmDialog
           confirm={{
             title: "Check accuracy against max settings?",
-            effect: checkEffect(org.name, latest, checkPages),
+            effect: checkEffect(org.name, latest, checkPages, checkMistral),
             fields: (
               <fieldset className={styles.choices}>
                 <legend className="label">Pages to check</legend>
@@ -461,8 +462,8 @@ const describedBy = (field: AiField, errors: AiErrors, hint?: string) =>
   [errors[field] ? `${fieldId(field)}-error` : "", hint ?? ""].filter(Boolean).join(" ") || undefined;
 
 /** At the top of the AI settings and the platform defaults while Mistral has stopped (#473). */
-export function MistralStopped({ status }: { status: MistralStatus }) {
-  const lines = mistralStoppedText(status);
+export function MistralStopped({ env }: { env: AiEnv }) {
+  const lines = mistralStoppedText(env);
   if (!lines) return null;
   return (
     <div className={admin.errorBanner} role="status">
@@ -564,7 +565,7 @@ export function AiFields(props: {
                 id={readerId}
                 label="Who reads the pages"
                 platform={platform}
-                inherit={platform ? `The server's reader (${serverReader(env)})` : `Platform default (${from("scan_reader")})`}
+                inherit={platform ? `The server's reader (${READER_WORDS.openrouter})` : `Platform default (${from("scan_reader")})`}
                 value={draft.scan_reader ?? ""}
                 options={READERS.map((value) =>
                   value === "mistral" && !env.mistral_ready
@@ -583,7 +584,7 @@ export function AiFields(props: {
                   </>
                 }
                 problemId={[errors.scan_reader ? `${readerId}-error` : "", waiting ? `${readerId}-waiting` : ""].filter(Boolean).join(" ")}
-                onPick={(value) => onChange(pickedReader(draft, value))}
+                onPick={(value) => onChange(pickedReader(draft, value, defaults, env, platform))}
               />
               {mistral && (
                 <SettingSelect
@@ -591,7 +592,9 @@ export function AiFields(props: {
                   label="Mistral model"
                   platform={platform}
                   inherit={
-                    platform ? `The server's model (${MISTRAL_MODEL_WORDS[env.mistral_model]})` : `Platform default (${from("mistral_model")})`
+                    platform
+                      ? `The server's model (${mistralName(env.mistral_model, env.mistral_models)})`
+                      : `Platform default (${from("mistral_model")})`
                   }
                   value={draft.mistral_model ?? ""}
                   options={env.mistral_models.map((each) => ({ value: each.id, words: mistralModelText(each) }))}
@@ -599,107 +602,112 @@ export function AiFields(props: {
                   onPick={(value) => onChange({ ...draft, mistral_model: (value || null) as MistralModelId | null })}
                 />
               )}
-              {mistral && <p className="hint">{geminiNotUsed(platform)}</p>}
-              <h3 className={styles.subHeading}>First read</h3>
-              <ModelChoices
-                area="scan"
-                title="Models its scans may be read with"
-                none={platform ? `None ticked: the server's model (${env.scan_model}).` : `None ticked: from platform defaults, ${from("scan_models")}.`}
-                models={offered(catalogue, "scan", saved.scan_models)}
-                draft={draft}
-                errors={errors}
-                onChange={onChange}
-              />
-              {scanNoLevels ? (
-                // Every ticked scan model has no thinking levels: nothing to choose (Tushar, 18 Oct 2026).
-                <div className="field">
-                  <span className="label">Thinking level</span>
-                  <p className="hint">{NO_LEVELS}: the ticked models have one mode.</p>
-                </div>
+              {mistral ? (
+                <p className="hint">{GEMINI_HIDDEN}</p>
               ) : (
-                <SettingSelect id="ai-scan-thinking" label="Thinking level" {...setting("scan_thinking", SCAN_LEVELS, LEVEL_WORDS)} />
-              )}
-              <SettingSelect
-                id="ai-scan-resolution"
-                label="Picture detail"
-                hint={RESOLUTION_HINT}
-                {...setting("scan_resolution", RESOLUTIONS, RESOLUTION_WORDS)}
-              />
-              <SettingField
-                id={fieldId("page_max_output_tokens")}
-                label="Most output tokens a page"
-                platform={platform}
-                own={draft.page_max_output_tokens.trim() !== ""}
-                hint={TOKENS_HINT}
-                onFollow={() => onChange({ ...draft, page_max_output_tokens: "" })}
-                control={(describedBy) => (
-                  <input
+                <>
+                  <h3 className={styles.subHeading}>First read</h3>
+                  <ModelChoices
+                    area="scan"
+                    title="Models its scans may be read with"
+                    none={platform ? `None ticked: the server's model (${env.scan_model}).` : `None ticked: from platform defaults, ${from("scan_models")}.`}
+                    models={offered(catalogue, "scan", saved.scan_models)}
+                    draft={draft}
+                    errors={errors}
+                    onChange={onChange}
+                  />
+                  {scanNoLevels ? (
+                    // Every ticked scan model has no thinking levels: nothing to choose (Tushar, 18 Oct 2026).
+                    <div className="field">
+                      <span className="label">Thinking level</span>
+                      <p className="hint">{NO_LEVELS}: the ticked models have one mode.</p>
+                    </div>
+                  ) : (
+                    <SettingSelect id="ai-scan-thinking" label="Thinking level" {...setting("scan_thinking", SCAN_LEVELS, LEVEL_WORDS)} />
+                  )}
+                  <SettingSelect
+                    id="ai-scan-resolution"
+                    label="Picture detail"
+                    hint={RESOLUTION_HINT}
+                    {...setting("scan_resolution", RESOLUTIONS, RESOLUTION_WORDS)}
+                  />
+                  <SettingField
                     id={fieldId("page_max_output_tokens")}
-                    className="input"
-                    type="number"
-                    inputMode="numeric"
-                    min="1024"
-                    max="65536"
-                    step="1"
-                    placeholder={
-                      platform
-                        ? `The server's setting (${from("page_max_output_tokens")})`
-                        : `Platform default (${from("page_max_output_tokens")})`
-                    }
-                    value={draft.page_max_output_tokens}
-                    // The wheel scrolls the dialog, never the number: the box lets go of the focus first.
-                    onWheel={(event) => event.currentTarget.blur()}
-                    onChange={(event) => onChange({ ...draft, page_max_output_tokens: event.target.value })}
-                    aria-invalid={errors.page_max_output_tokens ? true : undefined}
-                    aria-describedby={describedBy}
+                    label="Most output tokens a page"
+                    platform={platform}
+                    own={draft.page_max_output_tokens.trim() !== ""}
+                    hint={TOKENS_HINT}
+                    onFollow={() => onChange({ ...draft, page_max_output_tokens: "" })}
+                    control={(describedBy) => (
+                      <input
+                        id={fieldId("page_max_output_tokens")}
+                        className="input"
+                        type="number"
+                        inputMode="numeric"
+                        min="1024"
+                        max="65536"
+                        step="1"
+                        placeholder={
+                          platform
+                            ? `The server's setting (${from("page_max_output_tokens")})`
+                            : `Platform default (${from("page_max_output_tokens")})`
+                        }
+                        value={draft.page_max_output_tokens}
+                        // The wheel scrolls the dialog, never the number: the box lets go of the focus first.
+                        onWheel={(event) => event.currentTarget.blur()}
+                        onChange={(event) => onChange({ ...draft, page_max_output_tokens: event.target.value })}
+                        aria-invalid={errors.page_max_output_tokens ? true : undefined}
+                        aria-describedby={describedBy}
+                      />
+                    )}
+                    problem={errors.page_max_output_tokens ? <FieldError field="page_max_output_tokens" errors={errors} /> : null}
+                    problemId={`${fieldId("page_max_output_tokens")}-error`}
                   />
-                )}
-                problem={errors.page_max_output_tokens ? <FieldError field="page_max_output_tokens" errors={errors} /> : null}
-                problemId={`${fieldId("page_max_output_tokens")}-error`}
-              />
-              <h3 className={styles.subHeading}>Pages read again</h3>
-              {platform ? (
-                <label className={styles.choice}>
-                  <input
-                    type="checkbox"
-                    checked={draft.dynamic === true}
-                    aria-describedby="ai-dynamic-hint"
-                    onChange={(event) => onChange({ ...draft, dynamic: event.target.checked })}
+                  <h3 className={styles.subHeading}>Pages read again</h3>
+                  {platform ? (
+                    <label className={styles.choice}>
+                      <input
+                        type="checkbox"
+                        checked={draft.dynamic === true}
+                        aria-describedby="ai-dynamic-hint"
+                        onChange={(event) => onChange({ ...draft, dynamic: event.target.checked })}
+                      />
+                      <span>{COST_SAVING}</span>
+                    </label>
+                  ) : (
+                    <SettingSelect
+                      id="ai-dynamic"
+                      label={COST_SAVING}
+                      platform={false}
+                      hint={DYNAMIC_HINT}
+                      inherit={`Platform default (${from("dynamic")})`}
+                      value={draft.dynamic === null ? "" : draft.dynamic ? "on" : "off"}
+                      options={[
+                        { value: "on", words: "On" },
+                        { value: "off", words: "Off" },
+                      ]}
+                      onPick={(value) => onChange({ ...draft, dynamic: value === "" ? null : value === "on" })}
+                    />
+                  )}
+                  {platform && (
+                    <span id="ai-dynamic-hint" className="hint">
+                      {DYNAMIC_HINT}
+                    </span>
+                  )}
+                  <SettingSelect
+                    id="ai-careful-thinking"
+                    label="Thinking for pages read again"
+                    hint={CAREFUL_THINKING_HINT}
+                    {...setting("careful_thinking", SCAN_LEVELS, LEVEL_WORDS)}
                   />
-                  <span>{COST_SAVING}</span>
-                </label>
-              ) : (
-                <SettingSelect
-                  id="ai-dynamic"
-                  label={COST_SAVING}
-                  platform={false}
-                  hint={DYNAMIC_HINT}
-                  inherit={`Platform default (${from("dynamic")})`}
-                  value={draft.dynamic === null ? "" : draft.dynamic ? "on" : "off"}
-                  options={[
-                    { value: "on", words: "On" },
-                    { value: "off", words: "Off" },
-                  ]}
-                  onPick={(value) => onChange({ ...draft, dynamic: value === "" ? null : value === "on" })}
-                />
+                  <SettingSelect
+                    id="ai-careful-resolution"
+                    label="Picture detail for pages read again"
+                    hint={CAREFUL_RESOLUTION_HINT}
+                    {...setting("careful_resolution", RESOLUTIONS, RESOLUTION_WORDS)}
+                  />
+                </>
               )}
-              {platform && (
-                <span id="ai-dynamic-hint" className="hint">
-                  {DYNAMIC_HINT}
-                </span>
-              )}
-              <SettingSelect
-                id="ai-careful-thinking"
-                label="Thinking for pages read again"
-                hint={CAREFUL_THINKING_HINT}
-                {...setting("careful_thinking", SCAN_LEVELS, LEVEL_WORDS)}
-              />
-              <SettingSelect
-                id="ai-careful-resolution"
-                label="Picture detail for pages read again"
-                hint={CAREFUL_RESOLUTION_HINT}
-                {...setting("careful_resolution", RESOLUTIONS, RESOLUTION_WORDS)}
-              />
             </div>
             <CostPanel
               platform={platform}
@@ -770,7 +778,7 @@ export function AiFields(props: {
                 <input
                   type="checkbox"
                   checked={draft.ensemble}
-                  disabled={busy}
+                  disabled={busy || mistral}
                   aria-describedby={mistral ? "ai-ensemble-hint ai-ensemble-mistral" : "ai-ensemble-hint"}
                   onChange={(event) => onChange({ ...draft, ensemble: event.target.checked })}
                 />
