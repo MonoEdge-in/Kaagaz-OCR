@@ -102,6 +102,8 @@ ORG_ROW = {
     "careful_thinking": None,
     "careful_resolution": "high",
     "page_max_output_tokens": 32768,
+    "scan_reader": None,  # Changed on purpose (#473)
+    "mistral_model": None,
     "ensemble": True,
     "ai_budget_usd": Decimal("50.00"),
 }
@@ -118,6 +120,8 @@ DEFAULTS_ROW = {
     "careful_thinking": "minimal",
     "careful_resolution": None,
     "page_max_output_tokens": None,
+    "scan_reader": None,  # Changed on purpose (#473)
+    "mistral_model": None,
     "orgs_inheriting_scan_models": 4,
     "orgs_inheriting_chat_models": 7,
     "orgs_inheriting_scan_thinking": 6,
@@ -127,6 +131,8 @@ DEFAULTS_ROW = {
     "orgs_inheriting_careful_thinking": 2,
     "orgs_inheriting_careful_resolution": 1,
     "orgs_inheriting_page_max_output_tokens": 9,
+    "orgs_inheriting_scan_reader": 8,  # Changed on purpose (#473)
+    "orgs_inheriting_mistral_model": 8,
 }
 ORG_BODY: dict[str, Any] = {
     "scan_models": [MODEL, OTHER],
@@ -141,6 +147,8 @@ ORG_BODY: dict[str, Any] = {
     "careful_thinking": None,
     "careful_resolution": "high",
     "page_max_output_tokens": 32768,
+    "scan_reader": None,  # Changed on purpose (#473)
+    "mistral_model": None,
     "ensemble": True,
     "ai_budget_usd": 12.5,
 }
@@ -157,6 +165,8 @@ DEFAULTS_BODY: dict[str, Any] = {
     "careful_thinking": "minimal",
     "careful_resolution": "low",
     "page_max_output_tokens": None,
+    "scan_reader": None,  # Changed on purpose (#473)
+    "mistral_model": None,
 }
 USAGE_ROW = {
     "customer_id": CID,
@@ -194,7 +204,19 @@ ENV = {
     "careful_thinking": "high",
     "careful_resolution": "high",
     "page_max_output_tokens": 65536,
+    # Changed on purpose (#473): the server's reader and Mistral model, Mistral not set up here (no
+    # key in settings_factory), the Mistral models, and Mistral's status from the runs.
+    "scan_reader": "openrouter",
+    "mistral_model": "mistral-ocr-4-1",
+    "mistral_ready": False,
+    "mistral_missing": "key",
+    "mistral_models": [
+        {"id": "mistral-ocr-4-1", "name": "Mistral OCR 4.1", "usd_per_page": 0.004, "has_blocks": True},
+        {"id": "mistral-ocr-2512", "name": "Mistral OCR 3", "usd_per_page": 0.002, "has_blocks": False},
+    ],
+    "mistral_status": {"stopped": False, "code": None, "since": None, "documents_waiting": 0},
 }
+MISTRAL_ROW = {"code": None, "since": None, "documents_waiting": 0}  # #473: no document waits
 
 
 class _NoDatabase(OperatorDatabase):
@@ -237,6 +259,7 @@ class _Offline:
             models_sql, "set_ai_defaults", self._recorder("set_ai_defaults", lambda: self.outcome)
         )
         monkeypatch.setattr(models_sql, "ai_defaults", self._recorder("ai_defaults", lambda: self.defaults))
+        monkeypatch.setattr(models_sql, "mistral_status", self._recorder("mistral_status", MISTRAL_ROW))
         token = sign_operator(
             OperatorClaims(operator_id=OID, session_version=2, expires_at=AT + 600),
             self.settings.session_secret,
@@ -447,6 +470,8 @@ def test_an_organisations_ai_settings_round_trip_with_the_defaults_it_follows(of
             "careful_thinking": None,
             "careful_resolution": "high",
             "page_max_output_tokens": 32768,
+            "scan_reader": None,  # Changed on purpose (#473)
+            "mistral_model": None,
             "chat_levels": None,
             "chat_default_level": None,
             "dynamic": None,
@@ -461,6 +486,8 @@ def test_an_organisations_ai_settings_round_trip_with_the_defaults_it_follows(of
             "careful_thinking": "minimal",
             "careful_resolution": None,
             "page_max_output_tokens": None,
+            "scan_reader": None,  # Changed on purpose (#473)
+            "mistral_model": None,
             "chat_levels": ["low", "medium"],
             "chat_default_level": "low",
             "dynamic": False,
@@ -614,6 +641,8 @@ def test_the_platform_defaults_say_how_many_organisations_follow_each_area(offli
             "careful_thinking": "minimal",
             "careful_resolution": None,
             "page_max_output_tokens": None,
+            "scan_reader": None,  # Changed on purpose (#473)
+            "mistral_model": None,
             "chat_levels": ["low", "medium"],
             "chat_default_level": "low",
             "dynamic": False,
@@ -629,6 +658,8 @@ def test_the_platform_defaults_say_how_many_organisations_follow_each_area(offli
             "careful_thinking": 2,
             "careful_resolution": 1,
             "page_max_output_tokens": 9,
+            "scan_reader": 8,  # Changed on purpose (#473)
+            "mistral_model": 8,
         },
     }
     offline.defaults = None  # the operator was disabled meanwhile

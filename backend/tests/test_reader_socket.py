@@ -388,6 +388,22 @@ class NoDirectReaderCallsTest(unittest.TestCase):
         "page_quality",
         "rapid_pool",
     }
+    # Changed on purpose (#473, 2 Nov 2026): the operator's settings and the scan's Reading name
+    # Mistral's readers and models, so these constants of the Mistral reader may be imported from
+    # anywhere; its client and page reading may not (they stay behind the socket, gemini_ocr).
+    CONSTANTS: ClassVar[dict[str, set[str]]] = {
+        "kaagaz.reading.mistral_ocr": {
+            "MISTRAL",
+            "OPENROUTER",
+            "SCAN_READERS",
+            "MISTRAL_OCR_MODELS",
+            "DEFAULT_MISTRAL_MODEL",
+            "MISTRAL_THINKING",
+            "MISTRAL_RESOLUTION",
+            "MistralModel",
+            "read_by",
+        }
+    }
 
     def reader_modules(self) -> set[str]:
         return {
@@ -419,6 +435,9 @@ class NoDirectReaderCallsTest(unittest.TestCase):
                 names: list[str] = []
                 if isinstance(node, ast.Import):
                     names = [alias.name for alias in node.names]
+                elif isinstance(node, ast.ImportFrom) and node.module in self.CONSTANTS:
+                    allowed = self.CONSTANTS[node.module]
+                    names = [node.module] if any(alias.name not in allowed for alias in node.names) else []
                 elif isinstance(node, ast.ImportFrom) and node.module:
                     # Covers both "from kaagaz.reading.csv_reader import X"
                     # and "from kaagaz.reading import csv_reader".

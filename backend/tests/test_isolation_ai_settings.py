@@ -132,6 +132,8 @@ def test_a_customer_never_reads_another_customers_ai_settings_or_answer_models(d
         "careful_thinking": None,
         "careful_resolution": None,
         "page_max_output_tokens": None,
+        "scan_reader": None,  # Changed on purpose (#473): who reads the pages, inherited
+        "mistral_model": None,
         "dynamic": False,
         "cost_saving": True,  # Changed on purpose (#463 review): whether the switches allow Dynamic
         "ensemble": False,

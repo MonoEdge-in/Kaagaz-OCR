@@ -291,4 +291,10 @@ def test_ensemble_reads_the_settings_once() -> None:
 def test_the_five_scan_cost_fields_are_declared_once() -> None:
     assert issubclass(router.ScanCostBody, router.ScanSettingsBody)
     assert issubclass(router.AccuracyCheckBody, router.ScanSettingsBody)
-    assert set(router.ScanSettingsBody.model_fields) == {*models.SCAN_COST_FIELDS, "dynamic"}
+    # Changed on purpose (#473): the draft's page reader and Mistral model too.
+    assert set(router.ScanSettingsBody.model_fields) == {
+        *models.SCAN_COST_FIELDS,
+        "dynamic",
+        "scan_reader",
+        "mistral_model",
+    }
