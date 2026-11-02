@@ -580,7 +580,12 @@ class GeminiFactoryTest(unittest.TestCase):
         class GeminiEngine:
             @classmethod
             def from_settings(
-                cls, settings: Settings, *, pool: RapidOcrPool, db: Database | None = None
+                cls,
+                settings: Settings,
+                *,
+                pool: RapidOcrPool,
+                db: Database | None = None,
+                mistral: object = None,  # Changed on purpose (#473): the Mistral client, when set up
             ) -> PageEngine:
                 return factory(settings, pool=pool)
 

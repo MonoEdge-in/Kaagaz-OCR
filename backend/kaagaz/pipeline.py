@@ -156,7 +156,10 @@ The Gemini reader (PRD 5), when the processor is given its parts:
 * ``BackendUnavailable("gemini")`` (an outage) and ``BackendUnavailable("gemini_key")``
   (a wrong key or a spent cap, logged at error) come out of the reading as any
   backend that is down: the document waits for the next try, nothing falls back
-  here (the reader does that itself after READER_OUTAGE_FALLBACK_MINUTES, Q7).
+  here (the reader does that itself after READER_OUTAGE_FALLBACK_MINUTES, Q7). #473: a
+  document on Mistral OCR (``Reading.scan_reader``, passed on in ``DocumentPages`` with its
+  model) waits the same way on ``("mistral")`` and ``("mistral_key")`` (logged at error), and
+  its pages, read by "mistral/<id>", are the run's model's (``run.models``).
 * With OCR_ENGINE=rapidocr and no model there is no checker, no page counted as
   the model's and no model call: everything is as before.
 
@@ -266,6 +269,7 @@ from kaagaz.ingestion.ports import BlobStorage, DocumentRecord, Job
 from kaagaz.jobs.ports import LeaseLost
 from kaagaz.jobs.worker import Heartbeat, JobFailed, Superseded
 from kaagaz.preparing.page_checks import PageCheck
+from kaagaz.reading.mistral_ocr import DEFAULT_MISTRAL_MODEL, MISTRAL, OPENROUTER, read_by
 from kaagaz.reading.ocr import (
     DYNAMIC_MAX_PAGES,
     HARD_LINES_MAX,
@@ -345,12 +349,21 @@ MAX_CHECK_CROPS = 200
 # V1, question 9: the checker's crop is the value's box grown by this share of its own width
 # and height on each side.
 CHECK_MARGIN = 0.04
-# G6: BackendUnavailable's name for a wrong key or a spent cap (a person's fix, logged at error).
-_KEY_PROBLEM = "gemini_key"
-# PRD 5 Q6: the run codes of a reader that is down (Gemini, or the OCR server) or has a key
-# problem: the document shows "Reading is paused for now" until its job returns, or, for a key
-# problem, that reading is stopped until it is fixed (kaagaz/api/views.py, issue 407).
-_READER_WAITS = frozenset({"gemini_unavailable", "gemini_key_unavailable", "ocr_unavailable"})
+# G6: BackendUnavailable's name for a wrong key or a spent cap (a person's fix, logged at error);
+# #473: Mistral's key or credit too.
+_KEY_PROBLEMS = frozenset({"gemini_key", "mistral_key"})
+# PRD 5 Q6: the run codes of a reader that is down (Gemini, Mistral (#473), or the OCR server) or
+# has a key problem: the document shows "Reading is paused for now" until its job returns, or,
+# for a key problem, that reading is stopped until it is fixed (kaagaz/api/views.py, issue 407).
+_READER_WAITS = frozenset(
+    {
+        "gemini_unavailable",
+        "gemini_key_unavailable",
+        "ocr_unavailable",
+        "mistral_unavailable",
+        "mistral_key_unavailable",
+    }
+)
 # V1: a line with any Devanagari character is read by the Devanagari recogniser.
 _DEVANAGARI = re.compile("[ऀ-ॿ]")
 # "ocr", "storage", "gemini_key", ...: a run's <backend>_unavailable (PRD 5 G6: a wrong key or a
@@ -963,7 +976,7 @@ class DocumentProcessor:
         except BackendUnavailable as error:
             settled = True
             code = _unavailable_code(error)
-            if str(error) == _KEY_PROBLEM:
+            if str(error) in _KEY_PROBLEMS:
                 # G6, Q7: not an outage. Documents wait and nothing falls back: the fix is a person's.
                 _log.error(
                     "reader key rejected, documents wait",
@@ -994,9 +1007,10 @@ class DocumentProcessor:
                 run.model, run.provider = reading.model, reading.provider
             run.reading = reading.reading
         extra = () if run.reading is None else (run.reading.careful, *run.reading.others)
-        run.models = frozenset(
-            model for model in (run.model, *(agent.model for agent in extra if agent is not None)) if model
-        )
+        readers = [run.model, *(agent.model for agent in extra if agent is not None)]
+        if run.reading is not None and run.reading.scan_reader == MISTRAL:  # #473: "mistral/<id>" reads
+            readers.append(read_by(run.reading.mistral_model))
+        run.models = frozenset(model for model in readers if model)
         with self._billed(job, run, "scan" if run.user_id is not None else "upgrade"), pages_at_once(at_once):
             self._read_and_save(job, record, heartbeat, run)
 
@@ -1571,6 +1585,8 @@ class DocumentProcessor:
             ),
             # #463 review: a Careful or read-again level its model does not take is not sent.
             levels={} if reading is None else reading.accepted(),
+            scan_reader=OPENROUTER if reading is None else reading.scan_reader,  # #473: who reads
+            mistral_model=DEFAULT_MISTRAL_MODEL if reading is None else reading.mistral_model,
         )
         return meter.document(pages)
 

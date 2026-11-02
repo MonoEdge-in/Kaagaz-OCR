@@ -48,12 +48,12 @@ _WAITING_AGAIN = "Waiting to try again."
 READER_WAITING = "Reading is paused for now. It will continue on its own."
 _WAITING_STEP = "waiting"
 # Issue 407: the wait's run ended with a key problem (pipeline: a wrong key, a spent cap, a
-# model ID that names no model). No wait fixes that, so the words never say it goes on by
-# itself. PROVISIONAL wording.
+# model ID that names no model; #473: Mistral's key or credit). No wait fixes that, so the words
+# never say it goes on by itself. PROVISIONAL wording.
 READER_STOPPED = (
     "Reading is stopped until the Kaagaz team fixes the reading service. It starts again after that."
 )
-_KEY_WAIT = "gemini_key_unavailable"
+_KEY_WAITS = frozenset({"gemini_key_unavailable", "mistral_key_unavailable"})
 
 
 def files_ahead_message(count: int) -> str:
@@ -120,7 +120,7 @@ def status_message(
         return f"Ready. {pages} to check."
     message = _STATUS_MESSAGES.get(status, "")
     if status in _IN_PROGRESS and progress is not None and progress.get("step") == _WAITING_STEP:
-        message = READER_STOPPED if waiting_code == _KEY_WAIT else READER_WAITING
+        message = READER_STOPPED if waiting_code in _KEY_WAITS else READER_WAITING
     elif status in _IN_PROGRESS and progress is not None:
         message = progress_message(progress) or message
     elif status in _IN_PROGRESS and batch_ahead > 0:

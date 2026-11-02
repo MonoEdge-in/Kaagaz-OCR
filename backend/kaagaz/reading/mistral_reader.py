@@ -48,8 +48,21 @@ grade comes from ``average_page_confidence_score``. Any shape it can't read is `
 (the Markdown, dimensions, block types, texts and boxes, the average and the unsure words),
 for the cache to keep; ``page_read`` on it gives the same ``PageRead``.
 
-``gemini_ocr`` is imported inside the functions that need it, never at load: it imports this
-module for the client, so a load-time import would be a cycle.
+**The engine's read** (#473 Task 4, ``MistralClient.read_page``, the Gemini reader's
+``MistralReader`` for a document on Mistral). The page is looked up in the page cache under
+``mistral/<id>`` and CACHE_VERSION unless it is to be read again; a hit is read again with
+``page_read`` and billed as a cached call at 0 with no page. Otherwise ``read``: each 200 is
+billed at once, ``record_call("mistral/<id>", "mistral", 0, 0, 0, pages processed x the
+model's price)`` at MISTRAL_THINKING and MISTRAL_RESOLUTION, then counted as one page
+(``record_page``), and the page is cached when it has text. ``MistralUnavailable`` becomes
+``BackendUnavailable(code)`` (the document waits). A page refused (``BadReply``: a 400, 413 or
+422, not billed; or a 200 ``page_read`` can't read, billed) has no lines and the issue
+``reader_refused``, and is never cached, so the next reading asks again.
+
+``gemini_ocr`` is imported inside the functions that need it, never at load, so this module
+loads without the Gemini reader. The Gemini reader never imports this one (it takes the client
+as its ``MistralReader``, built in ``wiring``), so the two never import each other
+(tests/test_import_graph.py counts the imports inside functions too).
 
 Cost: one HTTP call a page; O(markdown + blocks + words x log lines) to read the reply, plus
 ``pinned``'s O(lines x found) for the one-line blocks.
@@ -57,6 +70,8 @@ Cost: one HTTP call a page; O(markdown + blocks + words x log lines) to read the
 
 import base64
 import bisect
+import contextlib
+import dataclasses
 import json
 import logging
 import math
@@ -72,19 +87,33 @@ from dataclasses import dataclass
 from http.client import HTTPException
 from typing import Any, NoReturn
 
+from PIL import Image
+
 from kaagaz.ai.openrouter import _ERROR_BODY_BYTES, _LOOPBACK_HOSTS, _code, _read_until, build_opener
 from kaagaz.ai.replies import MAX_RESPONSE_BYTES
+from kaagaz.ai.usage import record_call, record_page
+from kaagaz.db.page_reads import PageKey
+from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.reading.mistral_ocr import (
     MISTRAL,
     MISTRAL_ENDPOINT,
+    MISTRAL_OCR_MODELS,
     MISTRAL_RESOLUTION,
     MISTRAL_THINKING,
     MISTRAL_TIMEOUT_SECONDS,
     MistralModel,
     read_by,
 )
-from kaagaz.reading.ocr import FIRST_PASS, MAX_BLOCK_CHARS, MAX_BLOCKS_PER_PAGE, OcrLine, PageRead
-from kaagaz.reading.page_quality import NO_TEXT, UNPINNED
+from kaagaz.reading.ocr import (
+    AGAIN_PASS,
+    FIRST_PASS,
+    MAX_BLOCK_CHARS,
+    MAX_BLOCKS_PER_PAGE,
+    DocumentPages,
+    OcrLine,
+    PageRead,
+)
+from kaagaz.reading.page_quality import NO_TEXT, READER_REFUSED, UNPINNED
 from kaagaz.reading.rapid_pool import PixelBox
 
 # MistralUnavailable's codes, and the backend names a document waits on (the run's
@@ -98,6 +127,9 @@ REFUSED_STATUSES = frozenset({400, 413, 422})
 KEY_OFF_SECONDS = 300.0
 OUTAGE_OFF_SECONDS = 60.0
 OUTAGES_IN_A_ROW = 3
+# The page cache's prompt_version for a Mistral read (#473 Task 4): change it with any change to
+# what ``trimmed`` keeps or how ``page_read`` reads it, so an older cached page is read again.
+CACHE_VERSION = "mistral-1"
 # A word Mistral is less sure of than this is an unsure word (its values go to review).
 UNSURE_BELOW = 0.80
 # The page's grade from Mistral's average word confidence: good from 0.92, fair from 0.80.
@@ -211,6 +243,55 @@ class MistralClient:
             self._outages = 0
         return _reply_page(raw)
 
+    def read_page(
+        self,
+        image: Image.Image,
+        *,
+        page_no: int,
+        pages: DocumentPages,
+        sha: str,
+        found: Callable[[], list[PixelBox]],
+        seconds: float,
+    ) -> PageRead:
+        """Page ``page_no`` (its pixels' hash ``sha``) of ``pages``'s document read by its Mistral
+        model (see the module notes, the engine's read): ``found()`` the boxes to pin to,
+        ``seconds`` the page's time left; ``BackendUnavailable`` when Mistral can't read. One call
+        at most; O(the reply) besides it."""
+        from kaagaz.reading.gemini_ocr import png_of  # not at load (module notes)
+
+        model = MISTRAL_OCR_MODELS[pages.mistral_model]
+        name = read_by(model.id)
+        key = PageKey(pages.customer_id, pages.document_id, page_no, sha, name, CACHE_VERSION)
+        again = page_no in pages.read_again
+        hit = None if again else pages.cache.get(key)
+        sent = {"thinking": MISTRAL_THINKING, "resolution": MISTRAL_RESOLUTION}
+
+        def as_read(page: dict[str, Any]) -> PageRead:
+            return page_read(
+                page, page_no=page_no, model=model, found=found(), width=image.width, height=image.height
+            )
+
+        if hit is not None:
+            with contextlib.suppress(BadReply):  # one this code no longer reads is asked again
+                cached = as_read(hit[0])
+                record_call(name, MISTRAL, 0, 0, 0, 0.0, cached=True, **sent)  # SP1: costs 0
+                return dataclasses.replace(cached, cached=True)
+        try:
+            reply, processed = self.read(png_of(image), model=model.id, seconds=seconds)
+        except MistralUnavailable as error:
+            raise BackendUnavailable(error.code) from None
+        except BadReply:  # refused before a 200: not billed
+            return _refused(page_no, name)
+        record_call(name, MISTRAL, 0, 0, 0, processed * model.usd_per_page, cached=False, **sent)
+        record_page(name, **sent)  # a 200 is billed, whatever it holds
+        try:
+            result = as_read(reply)
+        except BadReply:
+            return _refused(page_no, name)
+        if result.lines:  # a page with no text is not cached
+            pages.cache.put(key, trimmed(reply), 0, 0)
+        return dataclasses.replace(result, read_pass=AGAIN_PASS) if again else result
+
     def _failed(self, status: int, error_type: str | None, code: str | None) -> NoReturn:
         """Logs the status and the two codes, then raises ``BadReply`` for a refused page, else
         switches Mistral off when it is time to and raises ``MistralUnavailable``."""
@@ -235,6 +316,24 @@ class MistralClient:
                 if self._outages >= OUTAGES_IN_A_ROW:
                     self._off, self._outages = (self.now() + OUTAGE_OFF_SECONDS, OUTAGE), 0
         raise MistralUnavailable(problem) from None
+
+
+def _refused(page_no: int, name: str) -> PageRead:
+    """#473 Task 4: a page Mistral (``name``) would not or could not read: no lines,
+    ``reader_refused`` (its values can't be shown as read), never cached. Logs the code only."""
+    _log.warning("page refused by the reader", extra={"code": "bad_reply"})
+    return PageRead(
+        page_no=page_no,
+        lines=(),
+        quality=None,
+        handwritten=False,
+        scripts=(),
+        issues=(READER_REFUSED,),
+        read_by=name,
+        read_thinking=MISTRAL_THINKING,
+        read_resolution=MISTRAL_RESOLUTION,
+        read_pass=FIRST_PASS,
+    )
 
 
 def _error_codes(error: urllib.error.HTTPError) -> tuple[str | None, str | None]:
@@ -295,7 +394,7 @@ def page_read(
 ) -> PageRead:
     """Mistral's reply page as a ``PageRead`` on an image ``width`` x ``height``, its one-line
     blocks pinned to ``found`` (see the module notes); ``BadReply`` when it can't be read."""
-    from kaagaz.reading.gemini_ocr import BOX_SCALE, _Line, pinned  # not at load: a cycle
+    from kaagaz.reading.gemini_ocr import BOX_SCALE, _Line, pinned  # not at load (module notes)
 
     try:
         if not isinstance(page, dict):
@@ -422,7 +521,7 @@ def _lines(content: str, base: int | None) -> list[tuple[str, int | None, int]]:
 
 def _clean(raw: str) -> str:
     """One Markdown line as plain text (see the module notes); "" when nothing is left."""
-    from kaagaz.reading.gemini_ocr import _CONTROL, _SURROGATE  # not at load: a cycle
+    from kaagaz.reading.gemini_ocr import _CONTROL, _SURROGATE  # not at load (module notes)
 
     if len(raw) > MAX_BLOCK_CHARS or _SURROGATE.search(raw):
         raise ValueError

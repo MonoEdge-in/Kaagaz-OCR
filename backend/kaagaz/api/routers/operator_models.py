@@ -58,7 +58,11 @@ writes its own audit rows.
   model, ``mistral_ready``, ``mistral_missing`` (key or zdr), ``mistral_models`` (the code's
   list with each price a page) and ``mistral_status`` (whether Mistral stopped, from the runs
   that waited on it in the last day, every organisation's together). The key never leaves the
-  server. The estimate and the accuracy check take both fields (their use comes with the reader).
+  server. The estimate and the accuracy check take both fields, each null for what the save
+  would inherit: with Mistral in effect the estimate prices Mistral's first reads
+  ("mistral/<id>" at none and page; never Careful) and says ``fixed_price`` with Mistral's
+  ``fixed_usd_per_page`` (its measured figures still shown when its ledger has any), and the
+  check's model is "mistral/<id>", so its job reads "your settings" with Mistral.
 * ``GET /operator/usage?from&to``: tokens and dollars per organisation and model, days in
   TIMEZONE with both ends included (this month so far when left out), at most
   ``MAX_DAYS``. Never a user or a document: the function has no column for either.
@@ -117,7 +121,15 @@ from kaagaz.db.operator_models import AiChoice
 from kaagaz.db.operator_orgs import Outcome
 from kaagaz.ingestion.ports import Job
 from kaagaz.jobs import accuracy
-from kaagaz.reading.mistral_ocr import DEFAULT_MISTRAL_MODEL, MISTRAL, MISTRAL_OCR_MODELS, OPENROUTER
+from kaagaz.reading.mistral_ocr import (
+    DEFAULT_MISTRAL_MODEL,
+    MISTRAL,
+    MISTRAL_OCR_MODELS,
+    MISTRAL_RESOLUTION,
+    MISTRAL_THINKING,
+    OPENROUTER,
+    read_by,
+)
 from kaagaz.reading.ocr import READER_PROMPT_VERSION
 from kaagaz.settings import Settings, valid_model_id
 
@@ -337,8 +349,7 @@ class ScanSettingsBody(BaseModel):
     careful_resolution: Resolution | None = None
     page_max_output_tokens: OutputTokens | None = None
     dynamic: bool | None = None
-    # #473: the draft's reader and Mistral model (null: inherited), taken so the console can send
-    # its whole draft; the Mistral estimate uses them (Task 4).
+    # #473: the draft's reader and Mistral model (null: inherited), as the scan settings are.
     scan_reader: ScanReader | None = None
     mistral_model: MistralModelId | None = None
 
@@ -541,7 +552,7 @@ def _plan(
     # What the save would inherit: an organisation's the platform's; the platform's the server's.
     draft: dict[str, Any] = {
         name: getattr(draft_fields, name) or (platform[name] if customer is not None else None)
-        for name in SCAN_COST_FIELDS
+        for name in (*SCAN_COST_FIELDS, "scan_reader", "mistral_model")  # #473: the reader too
     }
     # #463 review: the draft's Cost saving (null: the platform's), never past the switches.
     dynamic = platform["dynamic"] if draft_fields.dynamic is None else draft_fields.dynamic
@@ -555,8 +566,11 @@ def _plan(
         sent = models.fit_level(reading.careful, careful_thinking, settings.ocr_retry_thinking_level)
         careful = (reading.careful.model, sent, careful_resolution)
     resolution = draft["scan_resolution"] or settings.ocr_media_resolution
+    first = (lead, reading.thinking, resolution)
+    if reading.scan_reader == MISTRAL:  # #473: Mistral reads every page at its one setting, alone
+        first, careful = (read_by(reading.mistral_model), MISTRAL_THINKING, MISTRAL_RESOLUTION), None
     asked = (
-        lead,
+        first[0],
         draft["scan_thinking"] or settings.ocr_thinking_level,
         resolution,
         careful_thinking,
@@ -566,7 +580,7 @@ def _plan(
     )
     lead_row = next((row for row in rows if row["id"] == lead), None)
     best = (models.max_thinking(lead_row), models.MAX_RESOLUTION)
-    return _Plan((lead, reading.thinking, resolution), careful, best, asked, reading)
+    return _Plan(first, careful, best, asked, reading)
 
 
 @router.post("/scan-cost")
@@ -578,10 +592,12 @@ def scan_cost(
     really be sent (model, thinking after Dynamic's rule, picture detail); the total is the
     first read plus the share read again times the re-read, or the first read alone. With
     ``quality`` (the scope's clean pages at these and at max settings) and, for an
-    organisation, ``accuracy``: its latest done check at exactly these settings."""
+    organisation, ``accuracy``: its latest done check at exactly these settings. #473: with
+    Mistral in effect, ``fixed_price`` and Mistral's price a page."""
     customer = None if body.customer_id is None else str(body.customer_id)
     plan = _plan(db, operator, context, customer, body)
     first, careful = plan.first, plan.careful
+    mistral = plan.reading.scan_reader == MISTRAL
     with db.operator() as conn:
         row = models_sql.scan_cost(conn, operator.operator_id, customer, first, careful, plan.best)
         check = (
@@ -624,9 +640,11 @@ def scan_cost(
         "quality": quality,
         "tokens": tokens,
         "accuracy": None if check is None else _check_view(check),
-        # #473: Mistral's fixed price a page, set by the Mistral estimate (Task 4); Gemini's is measured.
-        "fixed_price": False,
-        "fixed_usd_per_page": None,
+        # #473: Mistral's fixed price a page; Gemini's is measured only.
+        "fixed_price": mistral,
+        "fixed_usd_per_page": MISTRAL_OCR_MODELS[plan.reading.mistral_model].usd_per_page
+        if mistral
+        else None,
     }
 
 

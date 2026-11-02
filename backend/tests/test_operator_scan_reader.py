@@ -217,7 +217,8 @@ def test_unknown_values_400(db: Database) -> None:
     draft = {"scan_reader": "mistral", "mistral_model": "mistral-ocr-2512"}
     estimate = client.post("/api/operator/scan-cost", json=draft, headers=CSRF)
     assert estimate.status_code == 200, estimate.text
-    assert (estimate.json()["fixed_price"], estimate.json()["fixed_usd_per_page"]) == (False, None)
+    # Changed on purpose (#473 Task 4): the Mistral draft is priced at Mistral's fixed price.
+    assert (estimate.json()["fixed_price"], estimate.json()["fixed_usd_per_page"]) == (True, 0.002)
 
 
 @pytest.mark.db

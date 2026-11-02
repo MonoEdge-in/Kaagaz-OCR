@@ -46,6 +46,11 @@
   PRD 5 G6) is not a try either: the job is handed back for
   KEY_PROBLEM_DEFER_SECONDS (300) and the error goes on up, so the loop still
   pauses. Every other BackendUnavailable goes up as before and the lease runs out.
+* #473 (Tushar, 2 Nov 2026: only Mistral's organisations wait): a handler's
+  ``BackendUnavailable("mistral_key")`` (Mistral's key or credit) hands the job back for
+  KEY_PROBLEM_DEFER_SECONDS (300) and ``("mistral")`` (Mistral not answering) for
+  MISTRAL_DEFER_SECONDS (60). Neither is a try, and neither goes up: the loop never pauses, so
+  the next job, a Gemini organisation's too, runs at once.
 
 PROVISIONAL: the retry back-off has no jitter; that needs the queue settings, which are Vrushit's.
 
@@ -80,6 +85,10 @@ RETRIES_EXHAUSTED = "retries_exhausted"
 # (kaagaz.pipeline), and how long its job waits: the fix is a person's.
 KEY_PROBLEM = "gemini_key"
 KEY_PROBLEM_DEFER_SECONDS = 300
+# #473: how long a document on Mistral OCR waits, by the reader's BackendUnavailable name
+# (kaagaz.reading.mistral_reader's KEY_PROBLEM and OUTAGE).
+MISTRAL_DEFER_SECONDS = 60
+MISTRAL_WAITS = {"mistral_key": KEY_PROBLEM_DEFER_SECONDS, "mistral": MISTRAL_DEFER_SECONDS}
 
 # Holds what a job needs for its whole try (its fair-share slot), or raises Deferred.
 Admit = Callable[[Job], AbstractContextManager[object]]
@@ -226,6 +235,10 @@ class Worker:
             except Deferred as deferred:
                 self._queue.defer(delivery.receipt, deferred.seconds)
             except BackendUnavailable as error:
+                wait = MISTRAL_WAITS.get(str(error))
+                if wait is not None:  # #473: this document waits; the worker goes on
+                    self._queue.defer(delivery.receipt, wait)
+                    return True
                 if str(error) == KEY_PROBLEM:
                     with contextlib.suppress(LeaseLost):  # another delivery owns it: nothing to hand back
                         self._queue.defer(delivery.receipt, KEY_PROBLEM_DEFER_SECONDS)
