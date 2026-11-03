@@ -127,6 +127,7 @@ SHOWN_DETAILS: dict[str, tuple[str, ...]] = {
     "folder.create": ("parent_id",),
     "folder.move": ("parent_id",),
     "folder.kind": ("kind",),
+    "folder.upload": ("files", "folders_created"),  # #484
     "version.suggested": _VERSION_DETAILS,
     "version.accepted": _VERSION_DETAILS,
     "version.rejected": _VERSION_DETAILS,

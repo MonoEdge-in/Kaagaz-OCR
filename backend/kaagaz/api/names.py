@@ -11,6 +11,7 @@ there the path is stripped and the name is cut, because nobody typed it.
 """
 
 import re
+import unicodedata
 
 FOLDER_NAME_MAX = 100
 TAG_NAME_MAX = 40
@@ -29,6 +30,25 @@ def clean_name(name: str, *, max_length: int) -> str | None:
 def clean_document_name(name: str) -> str | None:
     """A document's new name (PATCH): the same rule, 1 to 255 characters. O(len(name))."""
     return clean_name(name, max_length=DOCUMENT_NAME_MAX)
+
+
+# Folder upload (#484, council 3 Nov 2026): a folder or file name from a person's computer is
+# one path segment that can't hide or reorder what is shown. It is refused, never changed, when
+# it holds a C0 or C1 control, a bidi mark, override or isolate, a zero-width space, a word
+# joiner or a byte order mark, "/" or "\", or is "." or "..". NFC first (a Mac sends NFD), so
+# "é" is one name however it was typed. ZWNJ and ZWJ (U+200C, U+200D) stay: Devanagari needs them.
+_UNSAFE_IN_UPLOAD = re.compile(
+    "[\x00-\x1f\x7f-\x9f\u061c\u200b\u200e\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff/\\\\]"
+)
+
+
+def upload_name(name: str, *, max_length: int) -> str | None:
+    """``name`` NFC-normalised and trimmed; None when it is unsafe (above), empty, "." or "..",
+    or longer than ``max_length``. O(len(name))."""
+    cleaned = unicodedata.normalize("NFC", name).strip()
+    if _UNSAFE_IN_UPLOAD.search(cleaned) or cleaned in (".", ".."):
+        return None
+    return cleaned if 1 <= len(cleaned) <= max_length else None
 
 
 # An organisation's name (UI audit G12, 16 Oct 2026): "asd" once became an admin screen's
