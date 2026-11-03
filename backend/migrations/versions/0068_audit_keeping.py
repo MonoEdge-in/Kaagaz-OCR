@@ -26,7 +26,7 @@ The downgrade drops the functions, the column, the index and the table (the kept
 lost), and puts 0047's finish back.
 
 Revision ID: 0068
-Revises: 0065 (the lead re-chains it after 0067)
+Revises: 0067 (limited logins)
 """
 
 import importlib.util
@@ -35,7 +35,7 @@ from types import ModuleType
 
 from alembic import op
 
-PREVIOUS = "0065"  # the one line to change when the migrations are chained
+PREVIOUS = "0067"
 revision = "0068"
 down_revision = PREVIOUS
 branch_labels = None

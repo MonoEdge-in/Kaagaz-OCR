@@ -15,7 +15,7 @@ from tests.test_migration_0037 import _load
 pytestmark = pytest.mark.db
 fresh = base.fresh
 M0068 = _load("0068_audit_keeping.py")
-PREVIOUS = "0065"  # M0068.PREVIOUS; the one line to change when the migrations are chained
+PREVIOUS = "0067"  # M0068.PREVIOUS
 FINISH = "public.kaagaz_finish_customer_delete(uuid)"
 NEW_FUNCTIONS = {"kaagaz_forget_kept_audit", "kaagaz_op_admin_two_step", "kaagaz_op_set_admin_two_step"}
 

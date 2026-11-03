@@ -32,13 +32,13 @@ server may use them. Drop them by hand once nothing logs in with them
 (``DROP ROLE kaagaz_api, kaagaz_ops``).
 
 Revision ID: 0067
-Revises: 0065 (the lead re-chains it after 0066 when merging)
+Revises: 0066 (reading pause)
 """
 
 from alembic import op
 
 revision = "0067"
-PREVIOUS = "0065"
+PREVIOUS = "0066"
 down_revision = PREVIOUS
 branch_labels = None
 depends_on = None

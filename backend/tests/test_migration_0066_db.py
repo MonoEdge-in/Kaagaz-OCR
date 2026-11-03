@@ -17,7 +17,7 @@ from tests.test_migration_0065_db import _BODIES as _BODIES_0065
 pytestmark = pytest.mark.db
 fresh = base.fresh
 M0066 = _load("0066_reading_pause.py")
-PREVIOUS = "0065"  # the lead re-chains the safety plan's migrations: change this line with 0066's
+PREVIOUS = "0065"
 _BODIES = text(
     str(_BODIES_0065).replace(
         "'kaagaz_op_mistral_status')",

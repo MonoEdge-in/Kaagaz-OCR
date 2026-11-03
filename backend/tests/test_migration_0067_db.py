@@ -13,7 +13,7 @@ from tests.test_migration_0037 import _load
 
 pytestmark = pytest.mark.db
 fresh = base.fresh
-PREVIOUS = "0065"  # the lead re-chains it when merging (0067 after 0066)
+PREVIOUS = "0066"
 M0067 = _load("0067_limited_logins.py")
 _TEMP = text("SELECT has_database_privilege('kaagaz_app', current_database(), 'TEMPORARY')")
 _PATHS = text(
