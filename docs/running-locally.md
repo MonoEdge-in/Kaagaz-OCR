@@ -276,7 +276,7 @@ Lambda's `INSTANCE_ID` and `WAKE_TOKEN` live only in the Lambda console.
    ```
    sudo mkdir -p /etc/kaagaz && sudo touch /etc/kaagaz/no-idle-stop
    sudo cp ~/kaagaz/infra/ec2/*.service ~/kaagaz/infra/ec2/*.timer /etc/systemd/system/
-   sudo systemctl daemon-reload && sudo systemctl enable --now kaagaz-deploy.timer kaagaz-pgdump.timer kaagaz-idle.timer
+   sudo systemctl daemon-reload && sudo systemctl enable --now kaagaz-deploy.timer kaagaz-pgdump.timer kaagaz-idle.timer kaagaz-disk.timer
    ```
 
 5. The first deploy (several minutes):
@@ -427,6 +427,46 @@ afterwards. Two things start the server:
   404 and no AWS call. Its role allows only `ec2:StartInstances` on this
   instance, `ec2:DescribeInstances` and CloudWatch Logs. After a start the site
   opens in about 3 minutes.
+
+**Alerts (#480).** Two pieces, both email:
+
+* The monitor: the Lambda `kaagaz-monitor` (Python 3.12, `infra/aws/monitor/handler.py`),
+  every 5 minutes. Once the server has run 10 minutes it checks `/api/health` and `/` over
+  HTTPS and that the certificate has 14 days or more left; once it has run an hour, that the
+  newest backup `done` is under 26 hours old; on weekdays from 09:45 to 10:00 IST, that the
+  schedule started it. A check failing twice in a row sends one email through SNS, naming
+  the check and why (an HTTP status or an error name); a pass sends one more. The counts are
+  one SSM parameter, `/kaagaz/monitor/failures` (free; a CloudWatch alarm per check would
+  cost money and could not say why). Set up once, by Vrushit, in ap-south-1:
+  ```
+  aws sns create-topic --name kaagaz-alerts --query TopicArn --output text
+  aws sns subscribe --topic-arn <TOPIC_ARN> --protocol email --notification-endpoint <address>   # then confirm the email's link
+  aws iam create-role --role-name kaagaz-monitor --assume-role-policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"lambda.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
+  aws iam attach-role-policy --role-name kaagaz-monitor --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+  aws iam put-role-policy --role-name kaagaz-monitor --policy-name kaagaz-monitor --policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"ec2:DescribeInstances","Resource":"*"},{"Effect":"Allow","Action":"s3:ListBucket","Resource":"arn:aws:s3:::<BUCKET>"},{"Effect":"Allow","Action":["ssm:GetParameter","ssm:PutParameter"],"Resource":"arn:aws:ssm:ap-south-1:<ACCOUNT>:parameter/kaagaz/monitor/failures"},{"Effect":"Allow","Action":"sns:Publish","Resource":"<TOPIC_ARN>"}]}'
+  (cd infra/aws/monitor && python -m zipfile -c /tmp/monitor.zip handler.py)
+  aws lambda create-function --function-name kaagaz-monitor --runtime python3.12 --handler handler.handler --timeout 60 --role arn:aws:iam::<ACCOUNT>:role/kaagaz-monitor --zip-file fileb:///tmp/monitor.zip --environment 'Variables={INSTANCE_ID=<INSTANCE_ID>,SITE_DOMAIN=<DOMAIN>,BACKUP_BUCKET=<BUCKET>,TOPIC_ARN=<TOPIC_ARN>}'
+  aws lambda put-function-concurrency --function-name kaagaz-monitor --reserved-concurrent-executions 1
+  aws lambda put-function-event-invoke-config --function-name kaagaz-monitor --maximum-retry-attempts 0 --destination-config 'OnFailure={Destination=<TOPIC_ARN>}'
+  aws events put-rule --name kaagaz-monitor --schedule-expression 'rate(5 minutes)' --query RuleArn --output text
+  aws lambda add-permission --function-name kaagaz-monitor --statement-id kaagaz-monitor-schedule --action lambda:InvokeFunction --principal events.amazonaws.com --source-arn <RULE_ARN>
+  aws events put-targets --rule kaagaz-monitor --targets Id=monitor,Arn=<FUNCTION_ARN>
+  ```
+  The failure destination emails when the monitor itself fails to run. Check:
+  `aws lambda invoke --function-name kaagaz-monitor out.json` writes `{"alerted": false}`;
+  on the test server, `dc stop frontend` for 10 minutes brings one email, and
+  `dc up -d --no-deps frontend` a second. A new version: zip again and
+  `aws lambda update-function-code --function-name kaagaz-monitor --zip-file fileb:///tmp/monitor.zip`.
+* The disk: `kaagaz-disk.timer` runs `infra/ec2/disk-alert.sh` hourly; over 80% used on `/`
+  it emails `OPS_ALERT_EMAIL` (set it in `.env`) from `EMAIL_FROM` through SES, at most once a
+  day (`~/.kaagaz-disk-alert` holds the day). No CloudWatch agent. It runs in a one-off worker
+  container, which reaches the server's role only with an instance metadata hop limit of 2:
+  `aws ec2 modify-instance-metadata-options --instance-id <INSTANCE_ID> --http-tokens required --http-put-response-hop-limit 2`.
+  While SES is in its sandbox, the address must be verified too. Install:
+  `sudo cp ~/kaagaz/infra/ec2/kaagaz-disk.* /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now kaagaz-disk.timer`.
+  Check: `dc run --rm -T --no-deps worker python -m kaagaz.cli disk-alert --used 81` prints
+  `disk alert sent` and the email arrives; on a test box, `fallocate -l <GB>G ~/fill` past 80%
+  then `sudo systemctl start kaagaz-disk.service` sends it, and `rm ~/fill`.
 
 **Go-live checks** (EC2 PRD section 10). Report each one with its command and
 its output; until then it is NOT RUN.
@@ -893,7 +933,7 @@ For a real restore on a new laptop, run the same commands without `-p kaagaz-dri
 
 ### Backups off the server (#476)
 
-Each night, after its local dump, `infra/ec2/pgdump.sh` streams three parts into an S3 bucket in ap-south-1 under `<YYYYMMDD>/`: `kaagaz.dump.cms` (that dump), `roles.sql.cms` (the logins, `pg_dumpall --roles-only --no-role-passwords`) and `files.tar.cms` (every stored file, read through the S3 API by `kaagaz.cli backup-files`, so SeaweedFS keeps running). Each is encrypted on the server with `openssl cms -encrypt -aes256` to a certificate whose private key never touches the server; nothing encrypted is written to its disk. `<YYYYMMDD>/done` goes last, only when all three are in. The upload runs `kaagaz.cli backup-upload` in the backend image on the host network, with the server's own role: no AWS key on the server. Without `BACKUP_BUCKET` and `BACKUP_CERT` in `.env` it stops after the local dump. The run holds the deploy lock, so no deploy or idle stop cuts it. `journalctl -u kaagaz-pgdump -n 20` ends `copied the backup of <day> off the server`; the monitor (below) alerts when no `done` is under 26 hours old.
+Each night, after its local dump, `infra/ec2/pgdump.sh` streams three parts into an S3 bucket in ap-south-1 under `<YYYYMMDD>/`: `kaagaz.dump.cms` (that dump), `roles.sql.cms` (the logins, `pg_dumpall --roles-only --no-role-passwords`) and `files.tar.cms` (every stored file, read through the S3 API by `kaagaz.cli backup-files`, so SeaweedFS keeps running). Each is encrypted on the server with `openssl cms -encrypt -aes256` to a certificate whose private key never touches the server; nothing encrypted is written to its disk. `<YYYYMMDD>/done` goes last, only when all three are in. The upload runs `kaagaz.cli backup-upload` in the backend image on the host network, with the server's own role: no AWS key on the server. Without `BACKUP_BUCKET` and `BACKUP_CERT` in `.env` it stops after the local dump. The run holds the deploy lock, so no deploy or idle stop cuts it. `journalctl -u kaagaz-pgdump -n 20` ends `copied the backup of <day> off the server`; the monitor (section 2c, "Alerts") emails when no `done` is under 26 hours old.
 
 **Once, by Vrushit** (AWS account admin; `<BUCKET>`, `<ACCOUNT>` and `<INSTANCE_ROLE>`, the server's role, are yours):
 

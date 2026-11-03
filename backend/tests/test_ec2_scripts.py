@@ -65,7 +65,7 @@ def test_deploy_holds_the_lock_and_follows_only_production() -> None:
 
 def test_every_script_runs_the_base_and_prod_files_with_no_profiles() -> None:
     """PRD 5 section 7: the stack is two files and every service runs without a profile."""
-    for name in ("deploy.sh", "pgdump.sh", "idle-stop.sh"):
+    for name in ("deploy.sh", "pgdump.sh", "idle-stop.sh", "disk-alert.sh"):
         script = text(name)
         files = re.findall(r"-f (docker-compose[\w.]*)", script)
         assert files == ["docker-compose.yml", "docker-compose.prod.yml"], name
@@ -435,3 +435,25 @@ def test_the_units_run_as_ubuntu_on_the_prd_schedule() -> None:
         timer = unit(name)
         assert section(timer, "Timer") == schedule
         assert section(timer, "Install") == {"Install.WantedBy": "timers.target"}
+
+
+def test_the_disk_alert_emails_over_80_percent_at_most_once_a_day() -> None:
+    """#480: no CloudWatch agent; the backend's own SES mailer sends it."""
+    script = text("disk-alert.sh")
+    assert script.startswith("#!/usr/bin/env bash\n") and "\nset -euo pipefail\n" in script
+    assert "\nLIMIT_PERCENT=80\n" in script and "\nSENT_FILE=/home/ubuntu/.kaagaz-disk-alert\n" in script
+    assert "used=\"$(df --output=pcent / | tail -n 1 | tr -dc '0-9')\"" in script
+    send = f'{DC} run --rm -T --no-deps worker \\\n  python -m kaagaz.cli disk-alert --used "$used"\n'
+    skip = 'if [[ -f "$SENT_FILE" && "$(cat "$SENT_FILE")" == "$day" ]]; then'
+    record = 'printf \'%s\\n\' "$day" >"$SENT_FILE"'
+    assert script.index("((used <= LIMIT_PERCENT))") < script.index(skip) < script.index(send)
+    assert script.index(send) < script.index(record)  # recorded only once it was sent
+    assert section(unit("kaagaz-disk.service"), "Service") == {
+        "Service.Type": "oneshot",
+        "Service.User": "ubuntu",
+        "Service.WorkingDirectory": "/home/ubuntu/kaagaz",
+        "Service.ExecStart": "/home/ubuntu/kaagaz/infra/ec2/disk-alert.sh",
+    }
+    timer = unit("kaagaz-disk.timer")
+    assert section(timer, "Timer") == {"Timer.OnBootSec": "15min", "Timer.OnUnitActiveSec": "1h"}
+    assert section(timer, "Install") == {"Install.WantedBy": "timers.target"}
