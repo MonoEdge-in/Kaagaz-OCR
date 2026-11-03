@@ -741,6 +741,7 @@ const ACTION_WORDS: Record<string, string> = {
   "usage.export": "Exported the AI usage",
   "org.admin_two_step_on": "Two-step sign-in required for admins",
   "org.admin_two_step_off": "Two-step sign-in no longer required for admins",
+  "document.reading_released": "Reading started again after a pause", // QA P2: a held file let go
 };
 
 /** The audit action in words; an action this screen does not know is shown as is. */
@@ -756,6 +757,7 @@ const BY_KAAGAZ = new Set([
   "org.autofile_revoke",
   "org.admin_two_step_on", // #481: the super admin's, as auto-filing's grant
   "org.admin_two_step_off",
+  "document.reading_released", // QA P2: the release sweep's, after a reading pause
 ]);
 // Issue 375: with no person at all (actor_id null), these come from Kaagaz's own set-up
 // commands (backend kaagaz/cli.py create-user and reset-admin-2fa), never from a screen.
@@ -835,15 +837,15 @@ export function usageRange(
 export type UsageState =
   | { kind: "loading" }
   | { kind: "error"; message: string }
-  | { kind: "off" }
-  | { kind: "empty" }
+  | { kind: "off"; report: UsageReport }
+  | { kind: "empty"; report: UsageReport }
   | { kind: "ready"; report: UsageReport };
 
 export function usageState(report: UsageReport | null, error: string | null): UsageState {
   if (error !== null) return { kind: "error", message: error };
   if (report === null) return { kind: "loading" };
   if (report.totals.calls > 0) return { kind: "ready", report };
-  return report.ai_enabled === false ? { kind: "off" } : { kind: "empty" };
+  return report.ai_enabled === false ? { kind: "off", report } : { kind: "empty", report };
 }
 
 /** #478 (Tushar, 3 Nov 2026): "Pages read today: 1,240 of 2,000." while a daily page limit is
@@ -853,7 +855,7 @@ export function pagesTodayLine(report: Pick<UsageReport, "reading_today">): stri
   const today = report.reading_today;
   if (!today || today.limit === null) return null;
   const line = `Pages read today: ${formatNumber(today.pages)} of ${formatNumber(today.limit)}.`;
-  return today.pages >= today.limit ? `${line} Reading is paused until tomorrow morning.` : line; // #478 review
+  return today.pages >= today.limit ? `${line} Reading is paused until the limit resets, or until it is raised.` : line; // QA C4
 }
 
 /** "$12.40 of $50.00 this month", or that there is no budget. */

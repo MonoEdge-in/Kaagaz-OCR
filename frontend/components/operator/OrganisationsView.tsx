@@ -251,7 +251,7 @@ export function OrganisationsView({ initialSearch = "" }: { initialSearch?: stri
 /** What each Manage item does, in one plain line under it (plain words, 25 Oct 2026). */
 export const MENU_HELP = {
   admins: "See this organisation's admins. Add one, or disable, unlock or reset one's two-step sign-in.",
-  ai: "Choose which AI reads its scans and answers its questions, Ensemble and its monthly budget.",
+  ai: "Choose who reads its pages, which AI answers, Ensemble, its daily page limit and its monthly budget.",
   switches: "Turn features on or off for this organisation only.",
   timeout: "Choose how long its people can be idle before they are signed out.",
   twoStep: "Require every admin here to sign in with a code from their phone.",

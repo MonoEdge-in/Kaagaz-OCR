@@ -364,7 +364,7 @@ export function parseTokens(text: string): number | null | undefined {
 // The daily page limit (#478, Tushar, 3 Nov 2026): the pages AI may read in one India day.
 export const MAX_PAGES_A_DAY = 1_000_000;
 export const DAILY_PAGES_HINT =
-  "The most pages AI may read in one day (India time). Past it, new files wait and are read next morning, or as soon as you raise it. A file already being read finishes.";
+  "The most pages AI may read in one day (India time). Past it, new files wait and are read when the limit resets, or as soon as you raise it. A file already being read finishes.";
 export { DAILY_PAGES_RANGE };
 
 /** The daily page limit as a number, null to follow (no limit on the platform), or undefined when it is not one. */
@@ -377,11 +377,12 @@ export function parseDailyPages(text: string): number | null | undefined {
 }
 
 /** "Pages read today: 1,240 of 2,000 ($0.42)." for the operator, the India day's counter, against
- * the limit in effect when there is one (#478 review, 3 Nov 2026). */
+ * the limit in effect when there is one (#478 review, 3 Nov 2026), and that reading is paused once
+ * it is reached (QA C4). */
 export const pagesTodayText = (today: { pages: number; cost_usd: number | null }, limit: number | null = null) =>
   `Pages read today: ${formatNumber(today.pages)}${limit === null ? "" : ` of ${formatNumber(limit)}`}${
     today.cost_usd ? ` (${usd(today.cost_usd)})` : ""
-  }.`;
+  }.${limit !== null && today.pages >= limit ? " Reading is paused until the limit resets, or until you raise it." : ""}`;
 
 /** Where a problem is shown: next to its field. "form" is the form's own line. */
 export type AiField =

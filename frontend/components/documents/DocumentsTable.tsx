@@ -1091,10 +1091,12 @@ export function StatusCell({
   if (beingRead(document.status) && document.deleted_at === null) {
     const words = scanWords(document);
     const detail = words ? words.detail : document.status_message;
+    // QA U10: a file held for the reader or by a reading pause waits; its words say why.
+    const chip = words ? words.chip : document.progress?.step === "waiting" ? "Waiting" : "Queued";
     return (
       <span className={styles.statusContent} key="scanning">
         <span className={styles.statusLine}>
-          <StatusChip status={document.status} text={words ? words.chip : "Queued"} />
+          <StatusChip status={document.status} text={chip} />
           <span className={styles.statusText} title={detail}>
             {detail}
           </span>

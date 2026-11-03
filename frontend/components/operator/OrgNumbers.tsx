@@ -38,7 +38,7 @@ export const ROUTE_WORDS: Readonly<Record<string, string>> = {
 const ROUTE_ORDER = Object.keys(ROUTE_WORDS);
 
 export const ORG_NUMBERS_NOTE =
-  "Files uploaded in the period, every version, those in Trash too; files deleted for good are not counted. Pages read are the pages of those files that were read, each page once, by how they were read. Active people did anything the activity log records. Questions do not count a question asked back. AI cost is what OpenRouter reported. Refused requests are not counted here: the server writes them to its log only.";
+  "Files uploaded in the period, every version, those in Trash too; files deleted for good are not counted. Pages read are the pages of those files that were read, each page once, by how they were read. Active people did anything the activity log records. Questions do not count a question asked back. AI cost is what OpenRouter reported for Gemini, and Mistral's price a page for Mistral. Refused requests are not counted here: the server writes them to its log only.";
 
 export interface OrgNumbersData {
   reply: OrgNumbersReply;

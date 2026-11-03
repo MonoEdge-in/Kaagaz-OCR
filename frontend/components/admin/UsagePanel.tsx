@@ -276,19 +276,33 @@ export function UsageReportView({ state, onRetry }: { state: UsageState; onRetry
       </>
     );
   }
+  // QA P7 (4 Nov 2026): today's pages against the limit, even in a period with no AI calls.
+  const pagesToday = pagesTodayLine(state.report);
+  const pagesLine = pagesToday && <p>{pagesToday}</p>;
   if (state.kind === "off") {
-    return <p className={styles.emptyLine}>AI is off on this server, so no tokens are used.</p>;
+    return (
+      <>
+        {pagesLine}
+        <p className={styles.emptyLine}>AI is off on this server, so no tokens are used.</p>
+      </>
+    );
   }
-  if (state.kind === "empty") return <p className={styles.emptyLine}>No AI use in this period.</p>;
+  if (state.kind === "empty") {
+    return (
+      <>
+        {pagesLine}
+        <p className={styles.emptyLine}>No AI use in this period.</p>
+      </>
+    );
+  }
 
   const { report } = state;
   const total = usageTokens(report.totals);
   const days = periodDays(report.from, report.to).length;
   const active = activeDays(report);
-  const pagesToday = pagesTodayLine(report);
   return (
     <>
-      {pagesToday && <p>{pagesToday}</p>}
+      {pagesLine}
       <dl className={styles.tiles}>
         <div className={`${styles.tile} ${styles.usageTile}`}>
           <dt className={styles.usageTileHead}>
