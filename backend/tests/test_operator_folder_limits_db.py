@@ -112,7 +112,7 @@ def test_a_value_over_its_ceiling_is_400_before_a_code_is_used_and_an_unknown_or
     api = Api(db)
     operator, client = _operator(api)
     code = api.code(operator.secret, 1)
-    for over in ({"max_files": 200_001}, {"max_gb": 1025}, {"max_folders": 50_001}, {"max_files": 0}):
+    for over in ({"max_files": 200_001}, {"max_gb": 21}, {"max_folders": 50_001}, {"max_files": 0}):
         reply = client.put(PLATFORM, json={**NONE, **over, "code": code}, headers=CSRF)
         assert reply.status_code == 400, over
     assert (
@@ -121,4 +121,4 @@ def test_a_value_over_its_ceiling_is_400_before_a_code_is_used_and_an_unknown_or
     )
     assert client.get(f"/api/operator/orgs/{ANY_ID}/folder-upload-limits").status_code == 404
     with platform_reset(db):
-        assert _put(api, operator, client, PLATFORM, {**NONE, "max_gb": 1024}).json()["max_gb"] == 1024
+        assert _put(api, operator, client, PLATFORM, {**NONE, "max_gb": 20}).json()["max_gb"] == 20

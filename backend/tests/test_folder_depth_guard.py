@@ -4,13 +4,13 @@ bounded at 101, none at 6, so no level past the 5th is cut off. No database."""
 import re
 from pathlib import Path
 
-from kaagaz.db.folders import _MAX_DEPTH
+from kaagaz.db.folders import MAX_DEPTH
 
 KAAGAZ = Path(__file__).resolve().parents[1] / "kaagaz"
 
 
 def test_max_depth_is_100() -> None:
-    assert _MAX_DEPTH == 100
+    assert MAX_DEPTH == 100
 
 
 def test_every_recursive_folder_walk_is_bounded_at_101() -> None:

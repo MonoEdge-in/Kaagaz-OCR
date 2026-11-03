@@ -62,7 +62,7 @@ from sqlalchemy import Connection, RowMapping, text
 
 from kaagaz.chunking.script import fold_digits, is_devanagari, latin_spelling, sound_key
 from kaagaz.db import ai_settings, audit
-from kaagaz.db.folders import _DEPTH, _MAX_DEPTH, _lock_tree, prune_empty
+from kaagaz.db.folders import _DEPTH, MAX_DEPTH, _lock_tree, prune_empty
 from kaagaz.db.trash import InTrash, lock_live_family
 from kaagaz.extraction.checks import gstin_valid
 
@@ -411,7 +411,7 @@ def _child(
         conn.execute(text(_ADOPT), {**params, "f": same[0]})
         return str(same[0])
     depth: int | None = conn.execute(text(_DEPTH), {"c": customer_id, "f": parent}).scalar_one()
-    if owner is None or depth is None or depth >= _MAX_DEPTH:
+    if owner is None or depth is None or depth >= MAX_DEPTH:
         return parent
     return _create(conn, customer_id, parent, name, owner, key, kind)
 
@@ -487,7 +487,7 @@ def _party_folder(
     _, key, name = own
     gstin = key.removeprefix("party:")
     depth: int | None = conn.execute(text(_DEPTH), {"c": customer_id, "f": type_folder}).scalar_one()
-    if owner is None or depth is None or depth >= _MAX_DEPTH:
+    if owner is None or depth is None or depth >= MAX_DEPTH:
         return type_folder
     for candidate in (name, f"{name} ({gstin})"):
         taken = conn.execute(text(_CHILD_NAMED), {"c": customer_id, "p": type_folder, "name": candidate})

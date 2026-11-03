@@ -14,8 +14,9 @@ _UPLOAD = (
     " VALUES (:u, :c, :usr, 'folder', NULL, :root, 'A', 'A', true, :files, :bytes, 0)"
 )
 _FOLDERS = (
-    "INSERT INTO folder_upload_folders (customer_id, folder_upload_id, idx, folder_id)"
-    " SELECT :c, :u, i - 1, f FROM unnest(CAST(:f AS uuid[])) WITH ORDINALITY AS w (f, i)"
+    "INSERT INTO folder_upload_folders (customer_id, folder_upload_id, idx, path_key, folder_id)"
+    " SELECT :c, :u, i - 1, encode(sha256(convert_to('A/' || i, 'UTF8')), 'hex'), f"
+    " FROM unnest(CAST(:f AS uuid[])) WITH ORDINALITY AS w (f, i)"
 )
 
 

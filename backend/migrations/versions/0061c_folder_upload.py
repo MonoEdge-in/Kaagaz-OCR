@@ -8,11 +8,14 @@ or a "Continue upload" after a reload lands in the folder recorded here, never a
   reused id never clashes across customers. Where it went, the counts it declared and the
   counts it registered (``items_registered``, ``bytes_registered``: the limits are checked
   against these, never against a declared number alone).
-* ``folder_upload_folders``: the manifest index of each folder (``idx``) and the folder it
-  became, so a re-plan reuses the same folder even after a rename in Kaagaz. No key to
+* ``folder_upload_folders``: each folder of the plan by its path in the picked folder
+  (``path_key``, SHA-256 of it) with its index in the last plan (``idx``) and the folder it
+  became, so a re-plan reuses the same folder by path, whatever order the browser lists it
+  in, even after a rename in Kaagaz. No key to
   ``folders``: a folder delete is never blocked by an old upload.
 * ``folder_upload_items``: one row a file: its key (SHA-256 of its path), its folder and
-  batch (fixed at registration, never changed), its size and state. No key to ``folders``
+  batch (fixed at registration; a re-plan that makes a deleted folder again moves its waiting
+  items to the new one), its size and state. No key to ``folders``
   or ``documents``: a deleted folder makes the item ``folder_gone``, it does not vanish.
 * ``org_upload_limits``: one organisation's own limits (no row: the platform's). The app
   reads four columns; only the operator's function writes.
@@ -21,7 +24,7 @@ or a "Continue upload" after a reload lands in the folder recorded here, never a
 * ``kaagaz_op_folder_upload_limits`` and ``kaagaz_op_set_folder_upload_limits``: 0040's
   pattern (step-up, one ``platform_audit`` row with the old and new limits, numbers only).
 * The ``folders`` comment: nested at most 100 levels (was 5). The depth is a code rule
-  (``kaagaz.db.folders._MAX_DEPTH``); no CHECK or trigger held it.
+  (``kaagaz.db.folders.MAX_DEPTH``); no CHECK or trigger held it.
 
 The customer tables have row level security with ``customer_only`` and least grants: the app
 never deletes an upload or an item (they go with the customer). New tables and nullable
@@ -60,9 +63,9 @@ APP_ROLE = _OLD.APP_ROLE
 OPERATOR_ROLE = _OLD.OPERATOR_ROLE
 _ENABLED = _OLD._ENABLED
 _literal = _OLD._literal
-FILES, GB, FOLDERS = "BETWEEN 1 AND 200000", "BETWEEN 1 AND 1024", "BETWEEN 1 AND 50000"
+FILES, GB, FOLDERS = "BETWEEN 1 AND 200000", "BETWEEN 1 AND 20", "BETWEEN 1 AND 50000"
 STATES = "('waiting', 'stored', 'duplicate', 'failed')"
-FAILURES = "('too_large', 'unsupported_type', 'empty_file', 'folder_gone')"
+FAILURES = "('too_large', 'unsupported_type', 'empty_file', 'folder_gone', 'bad_name')"
 POLICY = "customer_id = kaagaz_current_customer()"
 _LIMITS = "jsonb_build_object('max_files', {0}max_files, 'max_gb', {0}max_gb, 'max_folders', {0}max_folders)"
 
@@ -183,7 +186,8 @@ COMMENTS = {
         {
             "customer_id": "→ customers.id, the organisation (row level security filters on it).",
             "folder_upload_id": UPLOAD,
-            "idx": "Its index in the plan's list of folders (0 is the picked folder).",
+            "idx": "Its index in the last plan's list of folders (0 is the picked folder).",
+            "path_key": "SHA-256 hex of its path in the picked folder (NFC names joined by /).",
             "folder_id": "The folder in Kaagaz. No key: a folder delete is never blocked.",
         },
     ),
@@ -196,11 +200,13 @@ COMMENTS = {
             "seq": "Its number in the upload, from 0; gives its batch (seq / MAX_FILES_PER_BATCH).",
             "path_key": "SHA-256 hex of its path in the picked folder, made by the browser.",
             "name": "The file's name, cleaned, 1 to 255 characters.",
-            "folder_id": "The folder it goes into, never changed. No key: a deleted one makes it folder_gone.",
+            "folder_id": "The folder it goes into; a re-plan that makes it again moves a waiting item."
+            " No key: a deleted one makes it folder_gone.",
             "size_bytes": "Its size; the file sent must be exactly this.",
             "batch_id": "The batch its document goes into.",
             "state": "waiting, stored, duplicate (the same file was already in Kaagaz) or failed.",
-            "failure_code": "Why it failed: too_large, unsupported_type, empty_file or folder_gone; NULL otherwise.",
+            "failure_code": "Why it failed: too_large, unsupported_type, empty_file, folder_gone or bad_name"
+            " (an unsafe name, or another file's in its folder); NULL otherwise.",
             "document_id": "The document it became, or the one it duplicates. No key: kept if deleted.",
             "updated_at": "When its state changed last.",
         },
@@ -210,7 +216,7 @@ COMMENTS = {
         {
             "customer_id": "→ customers.id, the organisation (row level security filters on it).",
             "max_files": "The most files one folder upload may hold, 1 to 200,000.",
-            "max_gb": "The most gigabytes one folder upload may hold, 1 to 1,024.",
+            "max_gb": "The most gigabytes one folder upload may hold, 1 to 20.",
             "max_folders": "The most folders one folder upload may make, 1 to 50,000.",
             "updated_by": "→ operators.id, who set it last (the app can't read this column).",
             "updated_at": "When it was set last (the app can't read this column).",
@@ -221,7 +227,7 @@ COLUMN_COMMENTS = {
     "platform_ai_settings.folder_upload_max_files": "The most files one folder upload may hold, 1 to"
     " 200,000; NULL: 50,000. An organisation's own wins.",
     "platform_ai_settings.folder_upload_max_gb": "The most gigabytes one folder upload may hold, 1 to"
-    " 1,024; NULL: 5. An organisation's own wins.",
+    " 20; NULL: 5. An organisation's own wins.",
     "platform_ai_settings.folder_upload_max_folders": "The most folders one folder upload may make, 1 to"
     " 50,000; NULL: 10,000. An organisation's own wins.",
 }
@@ -266,8 +272,9 @@ UPGRADE = [
         customer_id uuid NOT NULL,
         folder_upload_id uuid NOT NULL,
         idx integer NOT NULL CHECK (idx >= 0),
+        path_key text NOT NULL CHECK (path_key ~ '^[0-9a-f]{64}$'),
         folder_id uuid NOT NULL,
-        PRIMARY KEY (customer_id, folder_upload_id, idx),
+        PRIMARY KEY (customer_id, folder_upload_id, path_key),
         FOREIGN KEY (customer_id, folder_upload_id) REFERENCES folder_uploads (customer_id, id) ON DELETE CASCADE
     )
     """,

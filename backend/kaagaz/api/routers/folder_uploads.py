@@ -9,9 +9,11 @@ batches and duplicates stay exactly as for any upload.
   into a folder (no per-folder rights: any signed-in user may change folders); "As a new
   department" is an admin's. Every folder and file name follows ``names.upload_name``. Audited
   once (``folder.upload``, counts and ids only) on the first plan and on a re-plan that made
-  folders.
+  folders. One upload sends at a time per organisation (409 ``upload_in_progress``) and one plan
+  is built at a time (429 ``plan_busy``, ``Retry-After: 2``).
 * ``POST /folder-uploads/{id}/items``: a page of at most 1,000 files; each gets its folder and
-  batch now, for good (``db/folder_upload_items.py``).
+  batch now (``db/folder_upload_items.py``). A file with an unsafe name is registered failed
+  ``bad_name``, never a 400 for the page.
 * ``GET /folder-uploads`` (this user's of the last 7 days, counts by state only),
   ``GET /folder-uploads/{id}`` (also where its stored files' reading is) and
   ``GET /folder-uploads/{id}/items?view=waiting|attention|duplicate|all&after=-1&limit=500``.
@@ -29,8 +31,8 @@ from starlette.concurrency import run_in_threadpool
 from kaagaz.api.auth import CurrentUser, User
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
-from kaagaz.api.names import DOCUMENT_NAME_MAX, FOLDER_NAME_MAX, upload_name
-from kaagaz.api.routers.documents import _same_user, _upload_policy
+from kaagaz.api.names import DOCUMENT_NAME_MAX, FOLDER_NAME_MAX, shown_upload_name, upload_name
+from kaagaz.api.routers.documents import same_user, user_upload_policy
 from kaagaz.api.views import folder_upload_item, iso
 from kaagaz.db import audit
 from kaagaz.db import folder_upload_items as items_sql
@@ -46,7 +48,7 @@ from kaagaz.db.folder_uploads import (
     effective_limits,
     plan_folders,
 )
-from kaagaz.db.folders import FolderError
+from kaagaz.db.folders import MAX_DEPTH, FolderError
 
 router = APIRouter()
 
@@ -55,7 +57,6 @@ Context = Annotated[AppContext, Depends(get_context)]
 MAX_PLAN_BYTES = 8 * 1024 * 1024  # 50,000 folders' names fit with room to spare
 REGISTER_PAGE = 1000
 _BAD_NAME = "A folder name is empty, longer than 100 characters, or holds a character Kaagaz can't keep."
-_BAD_FILE_NAME = "A file name is empty, longer than 255 characters, or holds a character Kaagaz can't keep."
 
 
 class PlanFolderBody(BaseModel):
@@ -86,7 +87,7 @@ class ItemBody(BaseModel):
     name: str = Field(max_length=4 * DOCUMENT_NAME_MAX)  # checked by upload_name
     folder_id: uuid.UUID
     size: int = Field(ge=0, le=MOST_GB * GIB)
-    refused: Literal["unsupported_type", "too_large", "empty_file"] | None = None
+    refused: Literal["unsupported_type"] | None = None  # too_large and empty_file: the server's
 
 
 class RegisterBody(BaseModel):
@@ -102,7 +103,9 @@ def _words(code: str, limits: FolderUploadLimits) -> str:
         "too_large_upload": f"A folder upload can hold at most {limits.max_bytes // GIB:,} GB.",
         "too_many_folders": f"A folder upload can make at most {limits.max_folders:,} folders.",
         "plan_changed": "This upload was started with a different folder or place. Start a new upload.",
-        "folder_too_deep": "This folder would go deeper than 100 levels here.",
+        "folder_too_deep": f"This folder would go deeper than {MAX_DEPTH} levels here.",
+        "upload_in_progress": "Another folder upload is still sending in this organisation."
+        " Wait for it to finish, or stop it.",
     }.get(code, "")
 
 
@@ -130,7 +133,7 @@ async def plan_upload(request: Request, user: User, context: Context) -> dict[st
 
 
 def _plan(context: AppContext, user: CurrentUser, body: PlanBody) -> dict[str, Any]:
-    _same_user(body.user_id, user)
+    same_user(body.user_id, user)
     if body.target == "department" and user.role != "admin":
         raise ApiError(403, "forbidden", "Only an admin can add a department.")
     if body.target == "department" and body.parent_folder_id is not None:
@@ -152,6 +155,13 @@ def _plan(context: AppContext, user: CurrentUser, body: PlanBody) -> dict[str, A
     except FolderError as refused:  # out of the block first: the plan is rolled back
         if refused.code == "not_found":
             raise ApiError(404, "not_found") from None
+        if refused.code == "plan_busy":
+            raise ApiError(
+                429,
+                "plan_busy",
+                "Another folder upload is being planned in this organisation. Trying again in a moment.",
+                headers={"Retry-After": "2"},
+            ) from None
         raise ApiError(409, refused.code, _words(refused.code, limits) or None) from None
     return {
         "id": plan.upload_id,
@@ -210,14 +220,15 @@ def _plan_and_audit(
 
 @router.post("/folder-uploads/{upload_id}/items")
 def register_items(upload_id: uuid.UUID, body: RegisterBody, user: User, context: Context) -> dict[str, Any]:
-    _same_user(body.user_id, user)
+    same_user(body.user_id, user)
     items = []
     for entry in body.items:
         name = upload_name(entry.name, max_length=DOCUMENT_NAME_MAX)
+        refused: str | None = entry.refused
         if name is None:
-            raise ApiError(400, "bad_request", _BAD_FILE_NAME)
-        items.append(NewItem(entry.path_key, name, str(entry.folder_id), entry.size, entry.refused))
-    largest = _upload_policy(context, user).largest_limit
+            name, refused = shown_upload_name(entry.name, max_length=DOCUMENT_NAME_MAX), "bad_name"
+        items.append(NewItem(entry.path_key, name, str(entry.folder_id), entry.size, refused))
+    largest = user_upload_policy(context, user).largest_limit
     customer_id = user.customer_id
     with context.db.customer(customer_id) as conn:
         limits = effective_limits(conn, customer_id)
@@ -284,7 +295,10 @@ def summary_json(row: Summary) -> dict[str, Any]:
         "id": row.id,
         "root_folder_id": row.root_folder_id,
         "root_name": row.root_name,
+        "source_name": row.source_name,
         "target": row.target,
+        "parent_folder_id": row.parent_folder_id,
+        "merge": row.merge,
         "created_at": iso(row.created_at),
         "file_count": row.file_count,
         "total_bytes": row.total_bytes,

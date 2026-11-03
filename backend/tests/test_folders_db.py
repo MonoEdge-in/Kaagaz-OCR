@@ -15,7 +15,7 @@ from sqlalchemy import Connection, text
 
 from kaagaz.db.engine import Database
 from kaagaz.db.folders import (
-    _MAX_DEPTH,
+    MAX_DEPTH,
     FolderCycle,
     FolderError,
     FolderNameTaken,
@@ -79,7 +79,7 @@ def test_create_returns_the_row_and_lists_it_by_name(db: Database) -> None:
 def test_create_at_depth_101_is_refused(db: Database) -> None:
     customer, admin = new_customer(db)
     with db.customer(customer) as conn:
-        chain = _chain(conn, customer, admin, _MAX_DEPTH, prefix="L")
+        chain = _chain(conn, customer, admin, MAX_DEPTH, prefix="L")
 
     with pytest.raises(FolderTooDeep) as refused, db.customer(customer) as conn:
         create_folder(conn, customer, name="101", parent_id=chain[-1].id, created_by=admin)
@@ -88,7 +88,7 @@ def test_create_at_depth_101_is_refused(db: Database) -> None:
     with db.customer(customer) as conn:
         deepest = create_folder(conn, customer, name="Also 100", parent_id=chain[-2].id, created_by=admin)
         assert deepest.parent_id == chain[-2].id
-        assert len(list_folders(conn, customer)) == _MAX_DEPTH + 1
+        assert len(list_folders(conn, customer)) == MAX_DEPTH + 1
 
 
 def test_create_under_a_missing_or_other_customers_parent_is_not_found(db: Database) -> None:
@@ -147,7 +147,7 @@ def test_rename_changes_only_the_name(db: Database) -> None:
 def test_a_leaf_moves_under_depth_99_but_not_under_depth_100(db: Database) -> None:
     customer, admin = new_customer(db)
     with db.customer(customer) as conn:
-        chain = _chain(conn, customer, admin, _MAX_DEPTH, prefix="L")
+        chain = _chain(conn, customer, admin, MAX_DEPTH, prefix="L")
         leaf = create_folder(conn, customer, name="Leaf", parent_id=None, created_by=admin)
 
     with pytest.raises(FolderTooDeep), db.customer(customer) as conn:
@@ -164,7 +164,7 @@ def test_a_leaf_moves_under_depth_99_but_not_under_depth_100(db: Database) -> No
 def test_a_two_level_subtree_moves_under_depth_98_but_not_under_depth_99(db: Database) -> None:
     customer, admin = new_customer(db)
     with db.customer(customer) as conn:
-        chain = _chain(conn, customer, admin, _MAX_DEPTH, prefix="L")
+        chain = _chain(conn, customer, admin, MAX_DEPTH, prefix="L")
         top = create_folder(conn, customer, name="Subtree", parent_id=None, created_by=admin)
         below = create_folder(conn, customer, name="Below", parent_id=top.id, created_by=admin)
 
@@ -181,7 +181,7 @@ def test_a_two_level_subtree_moves_under_depth_98_but_not_under_depth_99(db: Dat
 def test_descendant_ids_and_path_reach_100_levels(db: Database) -> None:
     customer, admin = new_customer(db)
     with db.customer(customer) as conn:
-        chain = _chain(conn, customer, admin, _MAX_DEPTH, prefix="D")
+        chain = _chain(conn, customer, admin, MAX_DEPTH, prefix="D")
         assert folder_path(conn, customer, chain[-1].id) == chain
         assert descendant_ids(conn, customer, chain[0].id) == [folder.id for folder in chain]
 
@@ -370,7 +370,7 @@ def test_parallel_same_name_creates_give_one_folder_and_one_name_taken(db: Datab
 def test_a_create_inside_a_folder_being_moved_deeper_is_too_deep(db: Database) -> None:
     customer, admin = new_customer(db)
     with db.customer(customer) as conn:
-        chain = _chain(conn, customer, admin, _MAX_DEPTH - 1, prefix="L")  # Changed on purpose (#484)
+        chain = _chain(conn, customer, admin, MAX_DEPTH - 1, prefix="L")  # Changed on purpose (#484)
         lone = create_folder(conn, customer, name="Lone", parent_id=None, created_by=admin)
     session = _session_name()
 

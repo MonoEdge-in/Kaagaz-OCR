@@ -227,6 +227,28 @@ def test_sends_past_the_caps_are_429_with_a_short_retry_after(db: Database) -> N
     assert send(other, theirs["id"], PDF_BYTES).status_code == 201
 
 
+def test_the_send_slot_is_taken_only_once_the_file_is_read_and_checked(db: Database) -> None:
+    api = Api(db, settings=make_settings(folder_upload_files_at_once_per_org=1))
+    signed = api.new_signed()
+    _, (one,) = planned(signed, {"A/bill.pdf": PDF_BYTES})
+    with api.app.state.kaagaz.sends.held(signed.customer_id, per_org=1, total=8):
+        reply = send(signed, one["id"], PDF_BYTES + b"changed since")
+    assert (reply.status_code, reply.json()["error"]["code"]) == (409, "size_changed")
+
+
+def test_a_backend_outage_inside_a_send_frees_its_slot_and_leaves_the_item_waiting(db: Database) -> None:
+    api = Api(
+        db, settings=make_settings(folder_upload_files_at_once_per_org=1, folder_upload_files_at_once=1)
+    )
+    signed = api.new_signed()
+    body, (one,) = planned(signed, {"A/bill.pdf": PDF_BYTES})
+    api.queue.fail_enqueue = True
+    assert send(signed, one["id"], PDF_BYTES).status_code == 503
+    assert _item(signed, body["id"], 0)["state"] == "waiting"
+    api.queue.fail_enqueue = False
+    assert send(signed, one["id"], PDF_BYTES).status_code == 201  # not 429: the slot was given back
+
+
 class ResumableStorage(ApiFakeStorage):
     """The resumable calls in memory: parts by key until completed, then one file."""
 
@@ -308,6 +330,35 @@ def test_a_resumable_send_of_an_item_finishes_it_in_its_folder(db: Database) -> 
     )
 
 
+def test_a_resumable_start_and_complete_for_an_item_already_stored_reply_200_with_it(db: Database) -> None:
+    api = Api(db, storage=ResumableStorage())
+    signed = api.new_signed()
+    _, (one,) = planned(signed, {"A/big.pdf": PDF_BYTES})
+    sessions = "/api/documents/upload-sessions"
+    start = {
+        "file_name": "big.pdf",
+        "file_size": len(PDF_BYTES),
+        "fingerprint": _fingerprint(PDF_BYTES),
+        "user_id": signed.user_id,
+        "folder_upload_item_id": one["id"],
+    }
+    session = signed.client.post(sessions, json=start, headers=CSRF).json()["id"]
+    assert (
+        signed.client.put(f"{sessions}/{session}/parts/1", content=PDF_BYTES, headers=CSRF).status_code == 204
+    )
+    stored = send(signed, one["id"], PDF_BYTES).json()  # another tab sent it meanwhile
+    for reply in (
+        signed.client.post(sessions, json=start, headers=CSRF),
+        signed.client.post(f"{sessions}/{session}/complete", headers=CSRF),
+    ):
+        assert reply.status_code == 200, reply.text
+        assert (reply.json()["item"]["state"], reply.json()["document"]["id"]) == (
+            "stored",
+            stored["document"]["id"],
+        )
+    assert len(api.queue.jobs) == 1
+
+
 def _batch_of(api: Api, signed: Signed, item_id: str) -> str:
     with api.db.customer(signed.customer_id) as conn:
         found = conn.execute(
@@ -326,8 +377,9 @@ def test_upload_limits_say_the_folder_limits_and_whether_kaagaz_can_sort(db: Dat
         "max_folders": 10_000,
         "max_depth": 100,
         "calls_per_minute": api.settings.folder_upload_calls_per_minute,
-        "files_at_once": api.settings.folder_upload_files_at_once_per_org,
+        "files_at_once": 4,  # the default; 8 of every organisation's
     }
+    assert api.settings.folder_upload_files_at_once == 8
     assert limits["sort_available"] is False
     _owner(db, _GRANT, {"c": signed.customer_id})
     assert signed.client.get("/api/upload-limits").json()["sort_available"] is True

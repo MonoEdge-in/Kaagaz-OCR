@@ -1,7 +1,8 @@
 """The files of a folder upload (#484, Tushar, 3 Nov 2026): registered, sent, and read back.
 
 Why here: an item is the server's record of one file: its folder and batch are fixed when it
-is registered and never change, so a retry, a second tab or a "Continue upload" after a reload
+is registered (a re-plan that makes a deleted folder again moves its waiting items to the new
+one, ``db/folder_uploads.py``), so a retry, a second tab or a "Continue upload" after a reload
 always sends the file to the folder recorded here. Every function takes a connection from
 ``Database.customer(customer_id)`` and also filters on ``customer_id``; only the uploader sees
 an upload.
@@ -9,9 +10,10 @@ an upload.
 * ``register_items``: a page of at most 1,000 files, idempotent by ``path_key`` (an item
   already there comes back as it is). The counts registered are kept on the upload row, so
   the limits are checked in O(1) a page, never by counting the items again. A file Kaagaz
-  can't take (empty, too large, or a type the browser refused) is registered ``failed`` with
-  its code, so nothing is dropped. Item ``seq`` goes into batch ``seq // cap`` (``batch_for``),
-  so a batch never holds more than MAX_FILES_PER_BATCH and ``batch_full`` can't happen.
+  can't take (empty, too large, a type the browser refused, or ``bad_name``: an unsafe name, or
+  the name of another file of its folder once NFC) is registered ``failed`` with its code, so
+  nothing is dropped. Item ``seq`` goes into batch ``seq // cap`` (``batch_for``), so a batch
+  never holds more than MAX_FILES_PER_BATCH and ``batch_full`` can't happen.
 * ``finish_item`` and ``fail_item`` move a ``waiting`` item only, in one statement each, so two
   sends of one item end in one state. A send whose document already exists is ``stored`` when
   that document is this item's own (the same uploader, folder, batch and name: an earlier send
@@ -30,7 +32,7 @@ from sqlalchemy import Connection, text
 
 from kaagaz.db.folder_uploads import FolderUploadLimits
 
-FAILURE_CODES = ("too_large", "unsupported_type", "empty_file", "folder_gone")
+FAILURE_CODES = ("too_large", "unsupported_type", "empty_file", "folder_gone", "bad_name")
 View = Literal["waiting", "attention", "duplicate", "all"]
 RECENT_DAYS, RECENT_MAX = 7, 20
 TIMEOUT_MS = 5000
@@ -39,10 +41,10 @@ TIMEOUT_MS = 5000
 @dataclass(frozen=True, slots=True)
 class NewItem:
     path_key: str
-    name: str  # already cleaned by the caller
+    name: str  # already cleaned (NFC) by the caller
     folder_id: str
     size: int
-    refused: str | None = None  # what the browser already knows: unsupported_type, too_large, empty_file
+    refused: str | None = None  # unsupported_type (the browser's), or bad_name (the caller's)
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,7 +71,10 @@ class Summary:
     id: str
     root_folder_id: str | None
     root_name: str
+    source_name: str
     target: str
+    parent_folder_id: str | None
+    merge: bool
     created_at: datetime
     file_count: int
     total_bytes: int
@@ -130,6 +135,14 @@ _COUNTED = text(
     "UPDATE folder_uploads SET items_registered = :n, bytes_registered = :bytes, updated_at = now()"
     " WHERE customer_id = :c AND id = :u"
 )
+# shortcut: no index on (folder_id, name), so this reads the upload's items, O(n) a page; add
+# one to 0061c if registering a 200,000-file upload gets slow.
+_SAME_NAMES = text(
+    "SELECT i.folder_id, i.name FROM folder_upload_items i"
+    " JOIN unnest(CAST(:folders AS uuid[]), CAST(:names AS text[])) AS w (f, n)"
+    " ON i.folder_id = w.f AND i.name = w.n"
+    " WHERE i.customer_id = :c AND i.folder_upload_id = :u"
+)
 _BY_KEYS = text(
     _COLUMNS
     + " WHERE i.customer_id = :c AND i.folder_upload_id = :u AND i.path_key = ANY(CAST(:keys AS text[]))"
@@ -150,8 +163,8 @@ def register_items(
     """Register these files of this user's upload (module notes); every item, new or known, in
     the request's order. Raises ItemsRefused before anything is written: not_found (no such
     upload of this user), bad_request (a folder not in its plan, a key twice), too_many_files
-    or too_large_upload (past the plan's count or the limit). Six statements: O(k log n) for
-    k items in a page of an upload of n."""
+    or too_large_upload (past the plan's count or the limit). Seven statements: O(k log n) for
+    k items in a page of an upload of n, and O(n) for the names (_SAME_NAMES)."""
     keys = [item.path_key for item in items]
     if len(set(keys)) != len(keys):
         raise ItemsRefused("bad_request")
@@ -172,6 +185,13 @@ def register_items(
         raise ItemsRefused("too_large_upload")
     if new:
         seqs = list(range(registered, count))
+        places = {"folders": [item.folder_id for item in new], "names": [item.name for item in new]}
+        taken = {(str(f), str(n)) for f, n in conn.execute(_SAME_NAMES, {**params, **places})}
+        codes = []
+        for item in new:  # names are NFC already, so equal here is equal once NFC
+            code = _refused(item, largest_limit)
+            codes.append("bad_name" if code is None and (item.folder_id, item.name) in taken else code)
+            taken.add((item.folder_id, item.name))
         rows = {
             **params,
             "seqs": seqs,
@@ -180,7 +200,7 @@ def register_items(
             "folders": [item.folder_id for item in new],
             "sizes": [item.size for item in new],
             "batches": [batch_for(upload_id, seq, batch_cap) for seq in seqs],
-            "codes": [_refused(item, largest_limit) for item in new],
+            "codes": codes,
         }
         conn.execute(_INSERT, rows)
         conn.execute(_COUNTED, {**params, "n": count, "bytes": size})
@@ -248,7 +268,8 @@ def fail_item(conn: Connection, customer_id: str, item_id: str, code: str) -> No
 
 _UPLOADS = (
     "SELECT id, root_folder_id, root_name, target, created_at, file_count, total_bytes, skipped_count,"
-    " items_registered FROM folder_uploads WHERE customer_id = :c AND user_id = :usr"
+    " items_registered, source_name, parent_folder_id, merge"
+    " FROM folder_uploads WHERE customer_id = :c AND user_id = :usr"
 )
 _RECENT = text(
     _UPLOADS + " AND created_at > now() - make_interval(days => :days) ORDER BY created_at DESC LIMIT :limit"
@@ -299,7 +320,10 @@ def _summaries(conn: Connection, params: dict[str, Any], uploads: Sequence[Any])
             id=str(row[0]),
             root_folder_id=None if row[1] is None else str(row[1]),
             root_name=str(row[2]),
+            source_name=str(row[9]),
             target=str(row[3]),
+            parent_folder_id=None if row[10] is None else str(row[10]),
+            merge=bool(row[11]),
             created_at=row[4],
             file_count=int(row[5]),
             total_bytes=int(row[6]),

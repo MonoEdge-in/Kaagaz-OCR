@@ -36,6 +36,12 @@ def test_0061c_up_down_up(fresh: tuple[str, Database]) -> None:
     assert base._names(after, "relations") >= TABLES
     with db.system() as conn:
         assert conn.execute(_COMMENT).scalar_one() == "Folders for documents, nested at most 100 levels."
+    customer, user = new_customer(db)  # a row in each of the four tables, and a platform limit
+    with db.customer(customer) as conn:
+        folder = insert_folder(conn, customer, user, "A")
+    _item(db, customer, new_folder_upload(db, customer, user, folder_ids=[folder]), folder)
+    _owner(db, "INSERT INTO org_upload_limits (customer_id, max_gb) VALUES (:c, 2)", {"c": customer})
+    _owner(db, "UPDATE platform_ai_settings SET folder_upload_max_gb = 3", {})
     base._downgrade(url, "0061b")
     assert base._schema(db) == before
     with db.system() as conn:
@@ -69,8 +75,9 @@ def test_items_state_failure_code_and_document_must_agree(db: Database) -> None:
             _item(db, customer, upload, folder, **wrong)
     _item(db, customer, upload, folder, state="failed", code="too_large")
     _item(db, customer, upload, folder, seq=1, k=path_key("A/b.pdf"), state="stored", d=document)
+    _item(db, customer, upload, folder, seq=2, k=path_key("A/c\u202e.pdf"), state="failed", code="bad_name")
     with pytest.raises(DBAPIError):  # one item a path in one upload
-        _item(db, customer, upload, folder, seq=2)
+        _item(db, customer, upload, folder, seq=3)
 
 
 def test_limits_stay_inside_their_ceilings_and_an_org_row_names_one(db: Database) -> None:
@@ -78,12 +85,12 @@ def test_limits_stay_inside_their_ceilings_and_an_org_row_names_one(db: Database
     row = (
         "INSERT INTO org_upload_limits (customer_id, max_files, max_gb, max_folders) VALUES (:c, :f, :g, :d)"
     )
-    over = ((200_001, None, None), (None, 1025, None), (None, None, 50_001), (0, None, None))
+    over = ((200_001, None, None), (None, 21, None), (None, None, 50_001), (0, None, None))
     for files, gb, folders in over:
         with pytest.raises(DBAPIError):
             _owner(db, row, {"c": customer, "f": files, "g": gb, "d": folders})
     with pytest.raises(DBAPIError):  # a row with no limit in it
         _owner(db, row, {"c": customer, "f": None, "g": None, "d": None})
     with pytest.raises(DBAPIError):
-        _owner(db, "UPDATE platform_ai_settings SET folder_upload_max_gb = 1025", {})
-    _owner(db, row, {"c": customer, "f": 200_000, "g": 1024, "d": 50_000})
+        _owner(db, "UPDATE platform_ai_settings SET folder_upload_max_gb = 21", {})
+    _owner(db, row, {"c": customer, "f": 200_000, "g": 20, "d": 50_000})

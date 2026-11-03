@@ -39,7 +39,7 @@ from sqlalchemy.exc import IntegrityError
 from kaagaz.db import audit
 from kaagaz.db.sqlstate import CHECK_VIOLATION, FOREIGN_KEY_VIOLATION, UNIQUE_VIOLATION, sqlstate
 
-_MAX_DEPTH = 100  # Tushar, 3 Nov 2026 (#484): was 5
+MAX_DEPTH = 100  # Tushar, 3 Nov 2026 (#484): was 5
 
 
 @dataclass(frozen=True, slots=True)
@@ -239,7 +239,7 @@ def create_folder(
         parent_depth: int | None = conn.execute(text(_DEPTH), {"c": customer_id, "f": parent_id}).scalar_one()
         if parent_depth is None:
             raise FolderNotFound()
-        if parent_depth >= _MAX_DEPTH:
+        if parent_depth >= MAX_DEPTH:
             raise FolderTooDeep()
     params = {
         "c": customer_id,
@@ -304,7 +304,7 @@ def move_folder(conn: Connection, customer_id: str, folder_id: str, *, parent_id
             raise FolderNotFound()
         if cycle:
             raise FolderCycle()
-        if int(target_depth) + int(height) > _MAX_DEPTH:
+        if int(target_depth) + int(height) > MAX_DEPTH:
             raise FolderTooDeep()
     before = conn.execute(text(_PARENT), {"c": customer_id, "f": folder_id}).scalar()
     row = _write_named(conn, _MOVE, {"c": customer_id, "f": folder_id, "p": parent_id}).first()

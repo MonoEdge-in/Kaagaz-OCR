@@ -107,22 +107,13 @@ Why some choices:
   list but stays flagged on the page itself and in answers (``accept_page``, under
   the family lock). One ``document.page_accept`` audit row names the page. A
   document in Trash is 409 ``in_trash``; a page it does not have is 404.
-* **A folder upload's file** (#484, Tushar, 3 Nov 2026): ``POST /documents`` with
-  ``?folder_upload_item_id=`` (in the query, so the rate limit can give it the folder upload's
-  own bucket without reading the body), or the resumable start with ``folder_upload_item_id``.
-  The item (``db/folder_upload_items.py``) names the folder, the batch and the name, never the
-  browser: a ``folder_id``, ``department_id`` or ``batch_id`` beside it is 400. It must be this
-  user's (404) and not failed (409 ``item_refused``); one already in is answered as it is,
-  storing nothing. The file must be exactly the registered size (409 ``size_changed``, the item
-  still waits), else Kaagaz would trust a declared size for the upload's limit. Its folder
-  deleted since is 409 ``folder_gone`` and the item fails: it never lands at the top level.
-  A refusal of the file itself (empty, too large, not a type Kaagaz takes) fails the item
-  with that code. It is never auto-filed (``keep_place``), skips the batch's cap (registration
-  fills a batch to MAX_FILES_PER_BATCH at most) and is taken only while this process holds
-  fewer than FOLDER_UPLOAD_FILES_AT_ONCE_PER_ORG of the organisation's and
-  FOLDER_UPLOAD_FILES_AT_ONCE of all (429 ``rate_limited``, ``Retry-After: 2``, before the
-  body is read). The reply adds ``item``, and ``duplicate`` is the item's (an earlier send of
-  this same item that stored the file is not a duplicate of itself).
+* **A folder upload's file** (#484): ``POST /documents?folder_upload_item_id=`` or the
+  resumable start with ``folder_upload_item_id``. The item names the folder, batch and name (a
+  ``folder_id``, ``department_id`` or ``batch_id`` beside it is 400); it is this user's (404),
+  not failed (409 ``item_refused``), exactly its registered size (409 ``size_changed``); one
+  already in is 200 with the item, storing nothing. A folder deleted since or a refused file
+  fails the item with that code. Never auto-filed. ``_accept_item`` holds a send slot (429
+  ``rate_limited``, ``Retry-After: 2``, past FOLDER_UPLOAD_FILES_AT_ONCE[_PER_ORG]).
 * **Undo auto-filing** (feature 28, R16): any user of the customer may move a family
   Kaagaz filed back to the top level, under the family lock; the folder stays. In Trash
   is 409 ``in_trash``; filed no more (moved since, or its folder deleted) is 409
@@ -133,7 +124,7 @@ import hashlib
 import math
 import uuid
 from collections.abc import Mapping
-from contextlib import AbstractContextManager, nullcontext
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from os.path import splitext
@@ -193,7 +184,7 @@ from kaagaz.db.documents import (
 from kaagaz.db.engine import Database, unavailable
 from kaagaz.db.folder_upload_items import ItemRow
 from kaagaz.db.folder_uploads import effective_limits
-from kaagaz.db.folders import _MAX_DEPTH
+from kaagaz.db.folders import MAX_DEPTH
 from kaagaz.ingestion import sniff
 from kaagaz.ingestion.errors import RejectCode, UploadRejected
 from kaagaz.ingestion.messages import over_every_limit_message, too_large_message
@@ -403,7 +394,7 @@ def upload_policy(settings: Settings, customer_max_mb: int | None) -> UploadPoli
     )
 
 
-def _upload_policy(context: AppContext, user: CurrentUser) -> UploadPolicy:
+def user_upload_policy(context: AppContext, user: CurrentUser) -> UploadPolicy:
     with context.db.customer(user.customer_id) as conn:
         row = admin_sql.get_settings(conn, user.customer_id)
     customer_max_mb = None if row is None or row["max_upload_mb"] is None else int(row["max_upload_mb"])
@@ -417,7 +408,7 @@ def get_upload_limits(user: User, context: Context) -> dict[str, Any]:
     before sending it (PRD 1 U2) and count a PDF's pages first (``max_pages``).
     ``readers`` is the readings an upload may ask for, the default first, or Auto alone
     (``kaagaz/api/readers.py``). The server still checks everything itself. Three queries."""
-    policy = _upload_policy(context, user)
+    policy = user_upload_policy(context, user)
     with context.db.customer(user.customer_id) as conn:
         readers = offer(conn, user.customer_id, context.settings)
         folders = effective_limits(conn, user.customer_id)  # #484
@@ -435,7 +426,7 @@ def get_upload_limits(user: User, context: Context) -> dict[str, Any]:
             "max_files": folders.max_files,
             "max_bytes": folders.max_bytes,
             "max_folders": folders.max_folders,
-            "max_depth": _MAX_DEPTH,
+            "max_depth": MAX_DEPTH,
             "calls_per_minute": settings.folder_upload_calls_per_minute,
             "files_at_once": settings.folder_upload_files_at_once_per_org,
         },
@@ -465,7 +456,7 @@ def _form_uuid(value: str | UploadFile | None) -> str | None:
         raise ApiError(400, "bad_request") from None
 
 
-def _same_user(value: str | UploadFile | None, user: CurrentUser, message: str | None = None) -> None:
+def same_user(value: str | UploadFile | None, user: CurrentUser, message: str | None = None) -> None:
     """The optional ``user_id`` form field: who the browser tab had signed in when
         the file was chosen. Someone else signed in since (in another tab, critical
         #5) gets 409 ``session_changed`` before anything is stored, so the file never
@@ -664,6 +655,8 @@ _ITEM_REFUSED = {
     "unsupported_type": "This file can't be uploaded: Kaagaz doesn't take this kind of file.",
     "empty_file": "This file can't be uploaded: it is empty.",
     "folder_gone": _FOLDER_GONE,
+    "bad_name": "This file can't be uploaded: its name holds a character Kaagaz can't keep,"
+    " or another file in its folder has the same name.",
 }
 
 
@@ -691,7 +684,8 @@ def _fail_if_folder_gone(context: AppContext, user: CurrentUser, item: ItemRow) 
 
 
 def _send_slot(context: AppContext, user: CurrentUser) -> AbstractContextManager[None]:
-    """#484: one of the sends at once this process takes (429 past the caps)."""
+    """#484: one of the sends at once this process takes (429 past the caps), held only around
+    ``_accept_item``, never while a body is read."""
     settings = context.settings
     return context.sends.held(
         user.customer_id,
@@ -760,17 +754,17 @@ async def _upload_item(
     item = await run_in_threadpool(_sendable_item, context, user, item_id)
     if item.state != "waiting":
         return JSONResponse(await run_in_threadpool(_item_reply, context, user, item), status_code=200)
-    with _send_slot(context, user):
-        async with request.form(max_files=1, max_fields=10) as form:
-            upload = form.get("file")
-            if not isinstance(upload, UploadFile):
-                raise ApiError(400, "bad_request", "Choose a file to upload.")
-            _same_user(form.get("user_id"), user)
-            if any(form.get(name) is not None for name in ("folder_id", "department_id", "batch_id")):
-                raise ApiError(400, "bad_request", _OWN_PLACE)
-            if upload.size != item.size:
-                raise ApiError(409, "size_changed", _SIZE_CHANGED)
-            asked = _form_reading(form)
+    async with request.form(max_files=1, max_fields=10) as form:
+        upload = form.get("file")
+        if not isinstance(upload, UploadFile):
+            raise ApiError(400, "bad_request", "Choose a file to upload.")
+        same_user(form.get("user_id"), user)
+        if any(form.get(name) is not None for name in ("folder_id", "department_id", "batch_id")):
+            raise ApiError(400, "bad_request", _OWN_PLACE)
+        if upload.size != item.size:
+            raise ApiError(409, "size_changed", _SIZE_CHANGED)
+        asked = _form_reading(form)
+        with _send_slot(context, user):
             body = await run_in_threadpool(_accept_item, context, user, upload, policy, item, asked)
     return JSONResponse(body, status_code=200 if body["duplicate"] else 201)
 
@@ -782,7 +776,7 @@ async def upload_document(
     context: Context,
     folder_upload_item_id: uuid.UUID | None = None,  # #484: a folder upload's file
 ) -> JSONResponse:
-    policy = await run_in_threadpool(_upload_policy, context, user)
+    policy = await run_in_threadpool(user_upload_policy, context, user)
     check_upload_request(request, policy)
     if folder_upload_item_id is not None:
         return await _upload_item(request, user, context, policy, str(folder_upload_item_id))
@@ -790,7 +784,7 @@ async def upload_document(
         upload = form.get("file")
         if not isinstance(upload, UploadFile):
             raise ApiError(400, "bad_request", "Choose a file to upload.")
-        _same_user(form.get("user_id"), user)
+        same_user(form.get("user_id"), user)
         folder_id = _form_uuid(form.get("folder_id"))  # ocr_choice: accepted and ignored (RT3)
         # File management F2: the department, used when no folder is named (a folder wins).
         department_id = _form_uuid(form.get("department_id"))
@@ -848,13 +842,13 @@ async def upload_version(
 ) -> JSONResponse:
     """A new version of the document's family (PRD 1 F6), with an optional ``version_note``
     form field (File management V9). Any user of the customer."""
-    policy = await run_in_threadpool(_upload_policy, context, user)
+    policy = await run_in_threadpool(user_upload_policy, context, user)
     check_upload_request(request, policy)
     async with request.form(max_files=1, max_fields=10) as form:
         upload = form.get("file")
         if not isinstance(upload, UploadFile):
             raise ApiError(400, "bad_request", "Choose a file to upload.")
-        _same_user(form.get("user_id"), user)  # ocr_choice: accepted and ignored (RT3)
+        same_user(form.get("user_id"), user)  # ocr_choice: accepted and ignored (RT3)
         asked = _form_reading(form)
         written = form.get("version_note")  # V9: optional, checked before anything is stored
         note = clean_note(written if isinstance(written, str) else None)
@@ -867,8 +861,8 @@ async def upload_version(
 @router.post("/documents/upload-sessions/candidates")
 def resumable_candidates(body: ResumableUploadStart, user: User, context: Context) -> dict[str, Any]:
     """Find this user's pending same-name, same-size uploads; the browser verifies saved chunks."""
-    _same_user(body.user_id, user)
-    policy = _upload_policy(context, user)
+    same_user(body.user_id, user)
+    policy = user_upload_policy(context, user)
     if body.file_size <= 0 or body.file_size > policy.largest_limit:
         raise ApiError(413, "too_large", over_every_limit_message(policy.largest_limit))
     filename = display_name(body.file_name)
@@ -882,8 +876,10 @@ def resumable_candidates(body: ResumableUploadStart, user: User, context: Contex
 
 @router.post("/documents/upload-sessions")
 def create_resumable_session(body: ResumableUploadStart, user: User, context: Context) -> dict[str, Any]:
-    _same_user(body.user_id, user)
-    policy = _upload_policy(context, user)
+    """The session (``id``, ``part_size``, ``part_count``); for a folder upload's item already in,
+    the upload reply with the item instead (nothing to send)."""
+    same_user(body.user_id, user)
+    policy = user_upload_policy(context, user)
     if body.file_size <= 0 or body.file_size > policy.largest_limit:
         raise ApiError(413, "too_large", over_every_limit_message(policy.largest_limit))
     count = math.ceil(body.file_size / _UPLOAD_PART_BYTES)
@@ -898,7 +894,7 @@ def create_resumable_session(body: ResumableUploadStart, user: User, context: Co
         if body.folder_upload_id is not None and _form_uuid(body.folder_upload_id) != item.upload_id:
             raise ApiError(404, "not_found")
         if item.state != "waiting":
-            raise ApiError(409, "item_refused", "This file is already uploaded.")
+            return _item_reply(context, user, item)
         if body.file_size != item.size:
             raise ApiError(409, "size_changed", _SIZE_CHANGED)
         _fail_if_folder_gone(context, user, item)
@@ -1050,20 +1046,20 @@ def complete_resumable_upload(session_id: uuid.UUID, user: User, context: Contex
             str(session["storage_upload_id"]),
             [(number, etag) for number, _, etag in parts],
         )
-    item_id = metadata.get("folder_upload_item_id")  # #484: a 429 here keeps the session
-    slot = _send_slot(context, user) if item_id else nullcontext()
-    with slot, context.storage.open_resumable(str(session["storage_key"])) as stream:
+    item_id = metadata.get("folder_upload_item_id")  # #484
+    status = None
+    with context.storage.open_resumable(str(session["storage_key"])) as stream:
         try:
             upload = UploadFile(filename=str(metadata["filename"]), file=stream)
-            policy = _upload_policy(context, user)
+            policy = user_upload_policy(context, user)
             asked = _Asked(metadata.get("read_mode"), metadata.get("read_model"))
             if item_id:
                 item = _sendable_item(context, user, str(item_id))
-                waiting = item.state == "waiting"
-                if waiting:
-                    result = _accept_item(context, user, upload, policy, item, asked)
+                if item.state == "waiting":
+                    with _send_slot(context, user):
+                        result = _accept_item(context, user, upload, policy, item, asked)
                 else:
-                    result = _item_reply(context, user, item)
+                    result, status = _item_reply(context, user, item), 200
             elif metadata.get("version_document_id"):
                 result = _accept_version(
                     context,
@@ -1078,7 +1074,9 @@ def complete_resumable_upload(session_id: uuid.UUID, user: User, context: Contex
                 result = _accept(
                     context, user, upload, policy, metadata.get("folder_id"), metadata.get("batch_id"), asked
                 )
-        except ApiError:
+        except ApiError as refused:
+            if refused.status == 429:  # a send slot: the session is kept for the retry
+                raise
             context.storage.delete_resumable(str(session["storage_key"]))
             with context.db.customer(user.customer_id) as conn:
                 upload_sessions_sql.delete(conn, user.customer_id, user.user_id, str(session_id))
@@ -1086,7 +1084,7 @@ def complete_resumable_upload(session_id: uuid.UUID, user: User, context: Contex
     context.storage.delete_resumable(str(session["storage_key"]))
     with context.db.customer(user.customer_id) as conn:
         upload_sessions_sql.delete(conn, user.customer_id, user.user_id, str(session_id))
-    return JSONResponse(result, status_code=200 if result["duplicate"] else 201)
+    return JSONResponse(result, status_code=status or (200 if result["duplicate"] else 201))
 
 
 def _document_or_404(conn: Connection, user: CurrentUser, document_id: uuid.UUID) -> RowMapping:

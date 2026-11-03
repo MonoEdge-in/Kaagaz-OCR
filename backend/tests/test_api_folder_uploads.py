@@ -1,20 +1,27 @@
 """The folder upload routes (#484) against PostgreSQL: the plan (names, the list's order, the
-department rule, the limits in words, the body cap, one audit row with counts and ids only),
-registering files (idempotent, their folder and batch fixed, the limits from registered sizes)
-and reading progress. Sending the files: test_api_folder_upload_files."""
+department rule, one upload sending and one plan at a time per organisation, the body cap, one
+audit row with counts and ids only), registering files (idempotent, their folder and batch fixed,
+the limits from registered sizes, a bad name failed) and reading progress. The limits and the
+depth: test_folder_uploads_plan_db. Sending the files: test_api_folder_upload_files."""
 
 import unicodedata
 import uuid
 from typing import Any
 
 import pytest
+from sqlalchemy import text
 
 from kaagaz.db.engine import Database
 from kaagaz.db.folder_upload_items import batch_for
 from tests.folder_upload_support import path_key
 from tests.test_api_support import CSRF, Api, Signed
+from tests.test_operator_auth_db import _owner
 
 pytestmark = pytest.mark.db
+# The organisation's plan lock (db/folder_uploads.py), held here as another plan would hold it.
+_PLAN_LOCK = (
+    "SELECT pg_advisory_xact_lock(hashtextextended('kaagaz.folder_plan:' || CAST(:c AS uuid)::text, 0))"
+)
 
 TREE: list[dict[str, Any]] = [
     {"name": "A", "parent": None},
@@ -107,33 +114,31 @@ def test_a_bad_list_or_name_is_400_and_a_mac_name_is_kept_as_one(db: Database) -
     ]
     for folders in bad:
         assert _error(plan(signed, folders))[:2] == (400, "bad_request")
-    for name in ("a/b", "..", "a\\b", "evil\u202etxt.exe", "zero\u200bwidth", " ", "x" * 101, "bell\x07"):
+    unsafe = (
+        "line\u2028break",
+        "para\u2029",
+        "private\ue000",
+        "tag\U000e0041",
+        "unassigned\u0378",
+        "\u061cx",
+    )
+    for name in (
+        "a/b",
+        "..",
+        "a\\b",
+        "evil\u202etxt.exe",
+        "zero\u200bwidth",
+        " ",
+        "x" * 101,
+        "bell\x07",
+        *unsafe,
+    ):
         assert _error(plan(signed, [{"name": name, "parent": None}]))[:2] == (400, "bad_folder_name"), name
     nfd = unicodedata.normalize("NFD", "Café")
-    made = plan(signed, [{"name": nfd, "parent": None}, {"name": "मराठी\u200dफाइल", "parent": 0}])
+    made = plan(signed, [{"name": nfd, "parent": None}, {"name": "मराठी\u200cफाइल\u200d", "parent": 0}])
     assert made.status_code == 200, made.text
     assert made.json()["root_name"] == "Café" == unicodedata.normalize("NFC", nfd)
-
-
-def test_the_limits_and_the_depth_are_refused_in_words_before_anything_is_made(db: Database) -> None:
-    signed = Api(db).new_signed()
-    assert _error(plan(signed, file_count=50_001)) == (
-        409,
-        "too_many_files",
-        "A folder upload can hold at most 50,000 files.",
-    )
-    assert _error(plan(signed, total_bytes=5 * 1024**3 + 1)) == (
-        409,
-        "too_large_upload",
-        "A folder upload can hold at most 5 GB.",
-    )
-    chain = [{"name": f"L{i}", "parent": None if i == 0 else i - 1} for i in range(101)]
-    assert _error(plan(signed, chain)) == (
-        409,
-        "folder_too_deep",
-        "This folder would go deeper than 100 levels here.",
-    )
-    assert signed.client.get("/api/folders").json()["items"] == []
+    assert _error(plan(signed, total_bytes=20 * 1024**3 + 1))[:2] == (400, "bad_request")  # the 20 GB ceiling
 
 
 def test_a_plan_over_8_mb_is_413_before_it_is_read(db: Database) -> None:
@@ -169,18 +174,14 @@ def test_past_the_planned_count_or_bytes_is_refused_and_a_folder_not_planned_is_
     signed = api.new_signed()
     planned = plan(signed).json()  # 3 files, 3,000 bytes
     upload, (a, _b, _c) = planned["id"], planned["folder_ids"]
+    other = plan(signed).json()  # Changed on purpose (#484): planned before a file waits
     assert register(signed, upload, [item(f"A/{n}.pdf", a) for n in range(3)]).status_code == 200
     assert _error(register(signed, upload, [item("A/4.pdf", a)]))[:2] == (409, "too_many_files")
-    other = plan(signed).json()
     assert _error(register(signed, other["id"], [item("A/x.pdf", a, 3_001)]))[:2] == (409, "too_large_upload")
     elsewhere = api.add_folder(signed.customer_id, signed.user_id, "Elsewhere")
     assert _error(register(signed, other["id"], [item("A/y.pdf", elsewhere)]))[:2] == (400, "bad_request")
     twice = [item("A/z.pdf", other["folder_ids"][0]), item("A/z.pdf", other["folder_ids"][0])]
     assert _error(register(signed, other["id"], twice))[:2] == (400, "bad_request")
-    assert _error(register(signed, other["id"], [{**item("A/q.pdf", a), "name": "a/b"}]))[:2] == (
-        400,
-        "bad_request",
-    )
 
 
 def test_a_file_kaagaz_cant_take_is_registered_failed_with_its_reason(db: Database) -> None:
@@ -199,6 +200,73 @@ def test_a_file_kaagaz_cant_take_is_registered_failed_with_its_reason(db: Databa
         ("failed", "too_large"),
         ("failed", "unsupported_type"),
     ]
+    for told in ("too_large", "empty_file"):  # the server decides these itself
+        reply = register(signed, planned["id"], [item(f"A/{told}.pdf", a, 10, refused=told)])
+        assert _error(reply)[:2] == (400, "bad_request"), told
+
+
+def test_an_unsafe_or_nfc_colliding_file_name_is_failed_bad_name_and_the_rest_register(db: Database) -> None:
+    signed = Api(db).new_signed()
+    planned = plan(signed, file_count=7, total_bytes=10**6).json()
+    upload, (a, b, _c) = planned["id"], planned["folder_ids"]
+    nfc, nfd = "Café.pdf", unicodedata.normalize("NFD", "Café.pdf")
+    page = [
+        item("A/ok.pdf", a),
+        {**item("A/evil", a), "name": "evil\u202etxt.pdf"},
+        item(f"A/{nfc}", a),
+        item(f"A/{nfd}", a),  # the path before it, once NFC
+        item(f"A/B/{nfd}", b),  # another folder: no clash
+        item("A/मराठी\u200cफाइल\u200d.pdf", a),  # ZWNJ and ZWJ: Devanagari needs them
+    ]
+    reply = register(signed, upload, page)
+    assert reply.status_code == 200, reply.text
+    rows = reply.json()["items"]
+    assert [(row["state"], row["failure_code"]) for row in rows] == [
+        ("waiting", None),
+        ("failed", "bad_name"),
+        ("waiting", None),
+        ("failed", "bad_name"),
+        ("waiting", None),
+        ("waiting", None),
+    ]
+    assert (rows[1]["name"], rows[3]["name"], rows[4]["name"]) == ("evil\ufffdtxt.pdf", nfc, nfc)
+    later = register(signed, upload, [{**item("A/later", a), "name": nfd}])  # a registered one has it
+    assert [(row["state"], row["failure_code"]) for row in later.json()["items"]] == [("failed", "bad_name")]
+
+
+def test_a_new_upload_waits_while_another_of_the_organisation_still_has_files_waiting(db: Database) -> None:
+    api = Api(db)
+    signed = api.new_signed()
+    colleague = api.sign_in(signed.customer_id)
+    first = plan(signed).json()
+    register(signed, first["id"], [item("A/one.pdf", first["folder_ids"][0])])
+    assert _error(plan(colleague)) == (
+        409,
+        "upload_in_progress",
+        "Another folder upload is still sending in this organisation. Wait for it to finish, or stop it.",
+    )
+    assert plan(signed, id=first["id"]).status_code == 200  # a re-plan of the same upload
+    assert plan(api.new_signed()).status_code == 200  # another organisation
+    _owner(
+        db,
+        "UPDATE folder_upload_items SET state = 'failed', failure_code = 'too_large'"
+        " WHERE folder_upload_id = :u",
+        {"u": first["id"]},
+    )
+    assert plan(colleague).status_code == 200  # nothing waits any more
+
+
+def test_a_plan_while_another_of_the_organisation_is_being_built_is_429_plan_busy(db: Database) -> None:
+    signed = Api(db).new_signed()
+    with db.customer(signed.customer_id) as conn:
+        conn.execute(text(_PLAN_LOCK), {"c": signed.customer_id})
+        busy = plan(signed)
+    assert (busy.status_code, busy.headers["Retry-After"], busy.json()["error"]["code"]) == (
+        429,
+        "2",
+        "plan_busy",
+    )
+    assert plan(signed).status_code == 200
 
 
 def test_items_go_in_batches_of_max_files_per_batch(db: Database) -> None:
@@ -225,6 +293,8 @@ def test_progress_counts_by_state_and_pages_the_items(db: Database) -> None:
         0,
         0,
     )
+    assert (one["source_name"], one["parent_folder_id"], one["merge"]) == ("A", None, True)
+    assert (listed[0]["source_name"], listed[0]["parent_folder_id"], listed[0]["merge"]) == ("A", None, True)
     page = signed.client.get(f"/api/folder-uploads/{upload}/items?view=waiting&limit=1").json()
     assert ([row["seq"] for row in page["items"]], page["next_after"]) == ([0], 0)
     rest = signed.client.get(f"/api/folder-uploads/{upload}/items?view=waiting&after=0&limit=1").json()

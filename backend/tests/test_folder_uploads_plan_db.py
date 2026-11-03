@@ -2,13 +2,16 @@
 transaction under the tree lock, their ids in the list's order; a re-plan reuses them by index;
 the limits, the depth of 100 and the department rule hold, and a refusal writes nothing."""
 
+import unicodedata
 import uuid
 from collections.abc import Sequence
 from typing import Any
 
 import pytest
+from sqlalchemy import text
 
 from kaagaz.db.engine import Database
+from kaagaz.db.folder_upload_items import NewItem, register_items
 from kaagaz.db.folder_uploads import (
     GIB,
     FolderUploadLimits,
@@ -23,11 +26,13 @@ from kaagaz.db.folders import (
     create_folder,
     delete_folder,
     list_folders,
+    move_folder,
     prune_empty,
     rename_folder,
 )
 from kaagaz.db.users import create_user
-from tests.db_support import new_customer
+from tests.db_support import insert_folder, new_customer
+from tests.folder_upload_support import path_key
 
 pytestmark = pytest.mark.db
 
@@ -170,6 +175,103 @@ def test_folders_made_past_the_limit_across_plans_roll_the_plan_back(db: Databas
         _plan(db, customer, user, TREE[:3], upload_id=upload, limits=small)
     assert refused.value.code == "too_many_folders"  # 3 made + 3 again > 4
     assert _tree(db, customer) == {}
+
+
+def test_a_replan_after_a_planned_folder_was_deleted_moves_its_waiting_items_to_the_new_one(
+    db: Database,
+) -> None:
+    customer, user = new_customer(db)
+    upload = str(uuid.uuid4())
+    first = _plan(db, customer, user, upload_id=upload)
+    b, c, e = first.folder_ids[1], first.folder_ids[2], first.folder_ids[4]
+    files = [
+        NewItem(path_key(f"A/{n}"), n, folder, 10) for n, folder in (("c.pdf", c), ("e.pdf", e), ("b.pdf", b))
+    ]
+    with db.customer(customer) as conn:
+        register_items(
+            conn,
+            customer,
+            upload,
+            user_id=user,
+            items=files,
+            batch_cap=100,
+            largest_limit=10**6,
+            limits=LIMITS,
+        )
+        for folder in (e, c):  # E is inside C
+            delete_folder(conn, customer, folder)
+    again = _plan(db, customer, user, upload_id=upload)
+    assert (again.created, again.folder_ids[1]) == (2, b)
+    with db.customer(customer) as conn:
+        moved = conn.execute(text("SELECT name, folder_id::text FROM folder_upload_items ORDER BY seq")).all()
+    assert [tuple(row) for row in moved] == [
+        ("c.pdf", again.folder_ids[2]),
+        ("e.pdf", again.folder_ids[4]),
+        ("b.pdf", b),
+    ]
+
+
+def test_a_replan_listing_the_folders_in_another_order_reuses_them_by_path(db: Database) -> None:
+    customer, user = new_customer(db)
+    upload = str(uuid.uuid4())
+    first = _plan(
+        db,
+        customer,
+        user,
+        [PlannedFolder("A", None), PlannedFolder("x", 0), PlannedFolder("y", 0)],
+        upload_id=upload,
+    )
+    _, x, y = first.folder_ids
+    with db.customer(customer) as conn:
+        register_items(
+            conn,
+            customer,
+            upload,
+            user_id=user,
+            items=[NewItem(path_key("A/y/a.pdf"), "a.pdf", y, 10)],
+            batch_cap=100,
+            largest_limit=10**6,
+            limits=LIMITS,
+        )
+    # After a reload: another walk lists an empty z first, then y before x.
+    again_list = [
+        PlannedFolder("A", None),
+        PlannedFolder("z", 0),
+        PlannedFolder("y", 0),
+        PlannedFolder("x", 0),
+    ]
+    again = _plan(db, customer, user, again_list, upload_id=upload)
+    assert (again.folder_ids[2:], again.created) == ([y, x], 1)
+    with db.customer(customer) as conn:
+        assert conn.execute(text("SELECT folder_id::text FROM folder_upload_items")).scalar_one() == y
+    assert _tree(db, customer)[again.folder_ids[1]][:2] == (first.root_folder_id, "z")
+
+
+def test_a_replan_measures_a_reused_folder_moved_deeper_since(db: Database) -> None:
+    customer, user = new_customer(db)
+    upload = str(uuid.uuid4())
+    two = [PlannedFolder("A", None), PlannedFolder("B", 0)]
+    first = _plan(db, customer, user, two, upload_id=upload)
+    with db.customer(customer) as conn:
+        parent = None
+        for level in range(98):
+            parent = create_folder(conn, customer, name=f"L{level}", parent_id=parent, created_by=user).id
+        move_folder(conn, customer, first.folder_ids[1], parent_id=parent)  # B is at level 99 now
+    fits = _plan(db, customer, user, [*two, PlannedFolder("C", 1)], upload_id=upload)  # C at 100
+    assert fits.created == 1
+    with pytest.raises(FolderTooDeep):  # D would be at 101
+        _plan(db, customer, user, [*two, PlannedFolder("C", 1), PlannedFolder("D", 2)], upload_id=upload)
+
+
+def test_merge_compares_names_as_nfc_so_a_mac_folder_already_there_is_used(db: Database) -> None:
+    customer, user = new_customer(db)
+    with db.customer(customer) as conn:
+        root = insert_folder(conn, customer, user, unicodedata.normalize("NFD", "Café"))
+        child = insert_folder(conn, customer, user, unicodedata.normalize("NFD", "Reçus"), root)
+    plan = _plan(db, customer, user, [PlannedFolder("Café", None), PlannedFolder("Reçus", 0)])
+    assert (plan.folder_ids, plan.created) == ([root, child], 0)
+    separate = _plan(db, customer, user, [PlannedFolder("Café", None)], merge=False)
+    assert separate.root_name == "Café (2)"
 
 
 def test_another_users_upload_is_not_found_and_another_place_is_plan_changed(db: Database) -> None:

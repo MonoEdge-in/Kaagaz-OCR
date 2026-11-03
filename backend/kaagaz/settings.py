@@ -414,8 +414,8 @@ class Settings:
     # folder_upload_files_at_once_per_org of one organisation's files at once and
     # folder_upload_files_at_once of every organisation's (429 past either). Optional.
     folder_upload_calls_per_minute: int = 600
-    folder_upload_files_at_once_per_org: int = 6
-    folder_upload_files_at_once: int = 12
+    folder_upload_files_at_once_per_org: int = 4
+    folder_upload_files_at_once: int = 8
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "Settings":
@@ -633,8 +633,8 @@ class Settings:
                 "DB_IDLE_IN_TRANSACTION_TIMEOUT_SECONDS", 0, default=900
             ),
             folder_upload_calls_per_minute=env.positive_or("FOLDER_UPLOAD_CALLS_PER_MINUTE", 600),
-            folder_upload_files_at_once_per_org=env.positive_or("FOLDER_UPLOAD_FILES_AT_ONCE_PER_ORG", 6),
-            folder_upload_files_at_once=env.positive_or("FOLDER_UPLOAD_FILES_AT_ONCE", 12),
+            folder_upload_files_at_once_per_org=env.positive_or("FOLDER_UPLOAD_FILES_AT_ONCE_PER_ORG", 4),
+            folder_upload_files_at_once=env.positive_or("FOLDER_UPLOAD_FILES_AT_ONCE", 8),
             cpu_workers=env.positive("CPU_WORKERS"),
             max_check_crops=env.positive("MAX_CHECK_CROPS"),
             model_rpm=env.between("MODEL_RPM", 1, 1200),

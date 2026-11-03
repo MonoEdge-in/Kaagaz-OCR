@@ -45,7 +45,7 @@ writes its own audit rows.
 * ``GET`` and ``PUT`` {max_files, max_gb, max_folders, code} ``/operator/folder-upload-limits``
   and ``/operator/orgs/{id}/folder-upload-limits`` (PUT with a fresh code): the most files, GB
   and folders one folder upload may hold; the organisation's own, else the platform's, else
-  ``defaults`` (50,000 files, 5 GB, 10,000 folders), each at most 200,000, 1,024 and 50,000
+  ``defaults`` (50,000 files, 5 GB, 10,000 folders), each at most 200,000, 20 and 50,000
   (400 before a code is used up). An organisation's all null follows the platform (0061c, #484).
 * ``GET``, ``POST`` {scan_model, chat_model, note, code} and ``DELETE`` {code}
   ``/operator/test-model`` (POST and DELETE with a fresh code): the platform test model, one

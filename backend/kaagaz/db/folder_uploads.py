@@ -13,19 +13,26 @@ docs/architecture.md).
   level), and their ids come back in the list's order: the path to folder_id map.
   - The counts are checked against the limits before the lock; the folders it would make,
     after it (``too_many_folders`` rolls the whole plan back).
+  - One plan is built at a time per organisation (``plan_busy`` at once, never a wait: a
+    transaction advisory lock), and a new upload is refused while another of the organisation
+    still has files waiting (``upload_in_progress``); a re-plan of the same upload is not.
   - Merge (the default): a same-name folder already there (any letter case, as
-    ``folders_sibling_name`` compares) is used at every level. Keep separate makes the root
-    ``Name (2)`` or the first free ``(n)``. "As a new department" merges only into a top-level
-    department, never into a custom folder of that name.
-  - A re-plan of the same upload (``id``) reuses the folder each index got the first time
-    (``folder_upload_folders.idx``), even after a rename or move in Kaagaz; only new indexes,
-    or folders deleted since, are made or merged again. The browser sends the old list first,
-    in the same order, and new folders after it.
+    ``folders_sibling_name`` compares, and NFC on both sides, so a folder a Mac made is found)
+    is used at every level. Keep separate makes the root ``Name (2)`` or the first free
+    ``(n)``. "As a new department" merges only into a top-level department, never into a
+    custom folder of that name.
+  - A re-plan of the same upload (``id``) reuses the folder each path in the picked folder got
+    before (``folder_upload_folders.path_key``: SHA-256 of the NFC names joined by "/"), in
+    whatever order the list comes (another walk after a reload), even after a rename or move
+    in Kaagaz; only new paths, or folders deleted since, are made or merged again, and a remade
+    folder's waiting items move to it. The depth is measured again at each reused folder a new
+    one goes in.
   - The uploader's folders are never pruned: ``folders.prune_empty`` deletes only folders
     audited ``folder.create`` with ``auto``, and the plan writes no such row.
-  Cost: O(F) rows in at most 2H + 8 statements for F folders H levels deep (H <= 100).
+  Cost: O(F) rows in at most 2H + 12 statements for F folders H levels deep (H <= 100).
 """
 
+import hashlib
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -34,7 +41,7 @@ from sqlalchemy import Connection, text
 
 from kaagaz.db.folders import (
     _DEPTH,
-    _MAX_DEPTH,
+    MAX_DEPTH,
     FolderError,
     FolderNameTaken,
     FolderNotFound,
@@ -45,7 +52,7 @@ from kaagaz.db.folders import (
 GIB = 1024**3
 # The server's defaults (Tushar, 3 Nov 2026) and the most the super admin may set (0061c's CHECKs).
 DEFAULT_MAX_FILES, DEFAULT_MAX_GB, DEFAULT_MAX_FOLDERS = 50_000, 5, 10_000
-MOST_FILES, MOST_GB, MOST_FOLDERS = 200_000, 1024, 50_000
+MOST_FILES, MOST_GB, MOST_FOLDERS = 200_000, 20, 50_000  # 20 GB until a free-disk check exists
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,43 +104,72 @@ class Plan:
 
 
 class PlanRefused(FolderError):
-    """``code``: too_many_files, too_large_upload, too_many_folders or plan_changed."""
+    """``code``: too_many_files, too_large_upload, too_many_folders, plan_changed, plan_busy or
+    upload_in_progress."""
+
+
+_PLAN_LOCK = text(
+    "SELECT pg_try_advisory_xact_lock(hashtextextended('kaagaz.folder_plan:' || CAST(:c AS uuid)::text, 0))"
+)
+# Another upload of the organisation with a file still waiting, upload by upload on the state index.
+_SENDING = text(
+    "SELECT EXISTS (SELECT 1 FROM folder_uploads u WHERE u.customer_id = :c AND EXISTS ("
+    "SELECT 1 FROM folder_upload_items i WHERE i.customer_id = :c AND i.folder_upload_id = u.id"
+    " AND i.state = 'waiting'))"
+)
 
 
 _UPLOAD = text(
     "SELECT user_id, target, parent_folder_id, source_name, folders_created FROM folder_uploads"
     " WHERE customer_id = :c AND id = :u FOR UPDATE"
 )
-# The folder each index got before, while it still exists (a re-plan), and its name now.
+# The folder each path of this list got before, while it still exists (a re-plan), and its name now.
 _REUSE = text(
-    "SELECT m.idx, f.id, f.name FROM folder_upload_folders m"
+    "SELECT w.i - 1, f.id, f.name FROM unnest(CAST(:keys AS text[])) WITH ORDINALITY AS w (k, i)"
+    " JOIN folder_upload_folders m ON m.customer_id = :c AND m.folder_upload_id = :u AND m.path_key = w.k"
     " JOIN folders f ON f.customer_id = :c AND f.id = m.folder_id"
-    " WHERE m.customer_id = :c AND m.folder_upload_id = :u"
 )
-_SAME_NAME = "SELECT id, name FROM folders WHERE customer_id = :c AND lower(name) = lower(:name) AND {where}"
-# The first candidate name no sibling has, compared as folders_sibling_name compares (lower()).
+# The planned names are NFC already; a folder's own name is made NFC here (a Mac's is NFD).
+_SAME_NAME = (
+    "SELECT id, name FROM folders WHERE customer_id = :c AND lower(normalize(name, NFC)) = lower(:name)"
+    " AND {where}"
+)
+# The first candidate name no sibling has, compared as folders_sibling_name compares (lower()), NFC.
 _FREE = (
     "SELECT w.n FROM unnest(CAST(:names AS text[])) WITH ORDINALITY AS w (n, i)"
     " WHERE NOT EXISTS (SELECT 1 FROM folders f WHERE f.customer_id = :c AND {where}"
-    " AND lower(f.name) = lower(w.n)) ORDER BY w.i LIMIT 1"
+    " AND lower(normalize(f.name, NFC)) = lower(w.n)) ORDER BY w.i LIMIT 1"
 )
 _INSERT_ROOT = text(
     "INSERT INTO folders (customer_id, parent_id, name, created_by, kind)"
     " VALUES (:c, :p, :name, :usr, :kind) RETURNING id"
 )
-# One level: every new folder in one insert (a same-name one already there, or one earlier in
-# this insert, is kept: DO NOTHING), then every folder of the level found by name, on the
-# folders_sibling_name index.
+# One level: every new folder in one insert (a same-name one already there, NFC, or one earlier
+# in this insert, is kept: NOT EXISTS, DO NOTHING), then every folder of the level found by name.
 _INSERT_LEVEL = text(
     "INSERT INTO folders (customer_id, parent_id, name, created_by, kind)"
     " SELECT :c, w.p, w.n, :usr, 'custom'"
     " FROM unnest(CAST(:parents AS uuid[]), CAST(:names AS text[])) AS w (p, n)"
+    " WHERE NOT EXISTS (SELECT 1 FROM folders f WHERE f.customer_id = :c AND f.parent_id = w.p"
+    " AND lower(normalize(f.name, NFC)) = lower(w.n))"
     " ON CONFLICT DO NOTHING"
 )
 _FIND_LEVEL = text(
     "SELECT w.i, f.id"
     " FROM unnest(CAST(:parents AS uuid[]), CAST(:names AS text[]), CAST(:idx AS integer[])) AS w (p, n, i)"
-    " JOIN folders f ON f.customer_id = :c AND f.parent_id = w.p AND lower(f.name) = lower(w.n)"
+    " JOIN folders f ON f.customer_id = :c AND f.parent_id = w.p"
+    " AND lower(normalize(f.name, NFC)) = lower(w.n)"
+)
+# The depth of each of these folders now (1: the top level), bounded as _DEPTH is.
+_DEPTHS = text(
+    "WITH RECURSIVE up (start, parent_id, depth) AS ("
+    " SELECT f.id, f.parent_id, 1 FROM folders f"
+    " WHERE f.customer_id = :c AND f.id = ANY(CAST(:ids AS uuid[]))"
+    " UNION ALL"
+    " SELECT up.start, f.parent_id, up.depth + 1 FROM up"
+    " JOIN folders f ON f.id = up.parent_id"
+    " WHERE f.customer_id = :c AND up.depth < 101)"
+    " SELECT start, max(depth) FROM up GROUP BY start"
 )
 _SAVE_UPLOAD = text(
     "INSERT INTO folder_uploads (id, customer_id, user_id, target, parent_folder_id, root_folder_id,"
@@ -144,12 +180,27 @@ _SAVE_UPLOAD = text(
     " root_name = EXCLUDED.root_name, file_count = EXCLUDED.file_count,"
     " total_bytes = EXCLUDED.total_bytes, skipped_count = EXCLUDED.skipped_count,"
     " folders_created = folder_uploads.folders_created + EXCLUDED.folders_created, updated_at = now()"
+    " WHERE folder_uploads.user_id = EXCLUDED.user_id"
 )
+# A path whose folder was deleted and made again: its waiting items go to the new folder
+# (before _SAVE_FOLDERS writes the new id over the old one).
+_MOVE_WAITING = text(
+    "UPDATE folder_upload_items i SET folder_id = w.f, updated_at = now()"
+    " FROM unnest(CAST(:ids AS uuid[]), CAST(:keys AS text[])) AS w (f, k)"
+    " JOIN folder_upload_folders m ON m.customer_id = :c AND m.folder_upload_id = :u AND m.path_key = w.k"
+    " WHERE i.customer_id = :c AND i.folder_upload_id = :u AND i.state = 'waiting'"
+    " AND i.folder_id = m.folder_id AND m.folder_id <> w.f"
+)
+# Each path once (two names equal once NFC are one path, one folder), with this list's index.
 _SAVE_FOLDERS = text(
-    "INSERT INTO folder_upload_folders (customer_id, folder_upload_id, idx, folder_id)"
-    " SELECT :c, :u, w.i - 1, w.f FROM unnest(CAST(:ids AS uuid[])) WITH ORDINALITY AS w (f, i)"
-    " ON CONFLICT (customer_id, folder_upload_id, idx) DO UPDATE SET folder_id = EXCLUDED.folder_id"
-    " WHERE folder_upload_folders.folder_id <> EXCLUDED.folder_id"
+    "INSERT INTO folder_upload_folders (customer_id, folder_upload_id, idx, path_key, folder_id)"
+    " SELECT DISTINCT ON (w.k) :c, :u, w.i - 1, w.k, w.f"
+    " FROM unnest(CAST(:ids AS uuid[]), CAST(:keys AS text[])) WITH ORDINALITY AS w (f, k, i)"
+    " ORDER BY w.k, w.i"
+    " ON CONFLICT (customer_id, folder_upload_id, path_key)"
+    " DO UPDATE SET idx = EXCLUDED.idx, folder_id = EXCLUDED.folder_id"
+    " WHERE (folder_upload_folders.idx, folder_upload_folders.folder_id)"
+    " IS DISTINCT FROM (EXCLUDED.idx, EXCLUDED.folder_id)"
 )
 
 
@@ -172,16 +223,24 @@ def plan_folders(
     PlanRefused, FolderNotFound (the parent, or another user's upload of this id) or
     FolderTooDeep; after PlanRefused("too_many_folders") the caller's transaction must roll
     back. The caller checks the list: entry 0 alone has no parent, every parent is earlier.
-    O(F) rows in at most 2H + 8 statements."""
+    O(F) rows in at most 2H + 12 statements."""
     if file_count > limits.max_files:
         raise PlanRefused("too_many_files")
     if total_bytes > limits.max_bytes:
         raise PlanRefused("too_large_upload")
     if len(folders) > limits.max_folders:
         raise PlanRefused("too_many_folders")
-    _lock_tree(conn, customer_id)
     params: dict[str, Any] = {"c": customer_id, "u": upload_id, "usr": user_id}
+    if not conn.execute(_PLAN_LOCK, params).scalar_one():
+        raise PlanRefused("plan_busy")
+    _lock_tree(conn, customer_id)
     before = conn.execute(_UPLOAD, params).first()
+    if before is None and conn.execute(_SENDING, params).scalar_one():
+        raise PlanRefused("upload_in_progress")
+    paths = [folders[0].name]
+    for folder in folders[1:]:
+        paths.append(f"{paths[folder.parent or 0]}/{folder.name}")
+    params["keys"] = [hashlib.sha256(path.encode()).hexdigest() for path in paths]
     reuse: dict[int, tuple[str, str]] = {}
     if before is not None:
         if str(before[0]) != user_id:
@@ -193,16 +252,7 @@ def plan_folders(
     levels = [1] * len(folders)
     for index, folder in enumerate(folders[1:], start=1):
         levels[index] = levels[folder.parent or 0] + 1
-    # ponytail: a reused folder moved deeper in Kaagaz since is not measured again, only the root.
-    start = reuse[0][0] if 0 in reuse else parent_folder_id
-    base = 0
-    if start is not None:
-        depth = conn.execute(text(_DEPTH), {"c": customer_id, "f": start}).scalar_one()
-        if depth is None:
-            raise FolderNotFound()
-        base = int(depth) - (1 if 0 in reuse else 0)
-    if base + max(levels) > _MAX_DEPTH:
-        raise FolderTooDeep()
+    _check_depth(conn, customer_id, folders, reuse, parent_folder_id)
 
     created = 0
     if 0 in reuse:
@@ -246,9 +296,43 @@ def plan_folders(
         "skipped": skipped_count,
         "created": created,
     }
-    conn.execute(_SAVE_UPLOAD, upload)
+    if not conn.execute(_SAVE_UPLOAD, upload).rowcount:  # another user's upload of this id meanwhile
+        raise FolderNotFound()
+    if before is not None:
+        conn.execute(_MOVE_WAITING, {**params, "ids": ids})
     conn.execute(_SAVE_FOLDERS, {**params, "ids": ids})
     return Plan(upload_id, root, root_name, ids, created, len(folders) - created, before is None)
+
+
+def _check_depth(
+    conn: Connection,
+    customer_id: str,
+    folders: Sequence[PlannedFolder],
+    reuse: dict[int, tuple[str, str]],
+    parent_folder_id: str | None,
+) -> None:
+    """FolderTooDeep when a folder to make would land deeper than MAX_DEPTH: each reused folder
+    a new one goes in is measured now (it may have moved since), the rest follow the list.
+    FolderNotFound for a missing parent. Two statements, O(k d) for k reused parents d deep."""
+    at = [1] * len(folders)  # the level each entry is at in Kaagaz
+    if 0 not in reuse and parent_folder_id is not None:
+        depth = conn.execute(text(_DEPTH), {"c": customer_id, "f": parent_folder_id}).scalar_one()
+        if depth is None:
+            raise FolderNotFound()
+        at[0] = int(depth) + 1
+    made = [index for index in range(len(folders)) if index not in reuse]
+    parents = {reuse[parent][0]: parent for index in made if (parent := folders[index].parent) in reuse}
+    measured: dict[int, int] = {}
+    if parents:
+        for folder, depth in conn.execute(_DEPTHS, {"c": customer_id, "ids": list(parents)}):
+            measured[parents[str(folder)]] = int(depth)
+    for index in range(len(folders)):
+        if index in measured:
+            at[index] = measured[index]
+        elif index:
+            at[index] = at[folders[index].parent or 0] + 1
+    if max((at[index] for index in made), default=0) > MAX_DEPTH:
+        raise FolderTooDeep()
 
 
 def _root(

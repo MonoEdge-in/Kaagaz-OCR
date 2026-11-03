@@ -44,10 +44,10 @@ def test_another_customer_sees_and_writes_nothing_of_a_folder_upload(db: Databas
     with pytest.raises(DBAPIError), db.customer(b) as conn:
         conn.execute(
             text(
-                "INSERT INTO folder_upload_folders (customer_id, folder_upload_id, idx, folder_id)"
-                " VALUES (:c, :u, 1, :f)"
+                "INSERT INTO folder_upload_folders (customer_id, folder_upload_id, idx, path_key, folder_id)"
+                " VALUES (:c, :u, 1, :k, :f)"
             ),
-            {"c": a, "u": upload, "f": folder},
+            {"c": a, "u": upload, "k": path_key("A/B"), "f": folder},
         )
     with pytest.raises(DBAPIError), db.customer(b) as conn:  # the same upload id is B's own
         conn.execute(
