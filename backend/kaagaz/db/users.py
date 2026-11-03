@@ -30,8 +30,8 @@ lock. Times always come in as ``now`` from the injected clock, never SQL
 Every admin-facing statement (list, create, update, set_password, unlock,
 reset_totp, set_delete_forever) returns the same columns: the ``AdminUser``
 columns plus ``locked_until``, ``totp_enabled_at``, ``totp_off_at``, ``must_change_password``,
-``session_version`` and ``delete_forever_allowed_at``. None means there is no
-such user in this customer (404).
+``session_version``, ``delete_forever_allowed_at`` and ``two_step_required`` (0068). None
+means there is no such user in this customer (404).
 
 Each call is one indexed statement: O(log n) in the number of users, except
 ``list_users``, which is O(users of this customer).
@@ -224,6 +224,16 @@ _ATTEMPT_COLUMNS = (
 )
 
 
+# The admin-facing columns (the docstring above). ``two_step_required`` (0068, #481): while the
+# organisation requires two-step for admins, an admin's "turned off" does not count (views).
+_ADMIN_COLUMNS = (
+    " u.id, u.email, u.display_name, u.role, u.disabled, u.created_at,"
+    " u.locked_until, u.totp_enabled_at, u.totp_off_at, u.must_change_password,"
+    " u.session_version, u.delete_forever_allowed_at, EXISTS (SELECT 1 FROM customers c"
+    " WHERE c.id = u.customer_id AND c.admin_two_step_required) AS two_step_required"
+)
+
+
 def _attempt(row: RowMapping) -> AttemptRow:
     last_step = row["totp_last_step"]
     return AttemptRow(
@@ -278,11 +288,9 @@ def unlock(conn: Connection, customer_id: str, user_id: str) -> RowMapping | Non
     return (
         conn.execute(
             text(
-                "UPDATE users AS u SET failed_logins = 0, locked_until = NULL"
+                "UPDATE users AS u SET failed_logins = 0, locked_until = NULL"  # noqa: S608 - a fixed fragment, _ADMIN_COLUMNS
                 " WHERE u.customer_id = :c AND u.id = :u"
-                " RETURNING u.id, u.email, u.display_name, u.role, u.disabled, u.created_at,"
-                " u.locked_until, u.totp_enabled_at, u.totp_off_at, u.must_change_password,"
-                " u.session_version, u.delete_forever_allowed_at"
+                " RETURNING" + _ADMIN_COLUMNS
             ),
             {"c": customer_id, "u": user_id},
         )
@@ -320,12 +328,10 @@ def set_password(
     return (
         conn.execute(
             text(
-                "UPDATE users AS u SET password_hash = :hash, must_change_password = :must_change,"
+                "UPDATE users AS u SET password_hash = :hash, must_change_password = :must_change,"  # noqa: S608 - a fixed fragment, _ADMIN_COLUMNS
                 " session_version = u.session_version + 1"
                 " WHERE u.customer_id = :c AND u.id = :u"
-                " RETURNING u.id, u.email, u.display_name, u.role, u.disabled, u.created_at,"
-                " u.locked_until, u.totp_enabled_at, u.totp_off_at, u.must_change_password,"
-                " u.session_version, u.delete_forever_allowed_at"
+                " RETURNING" + _ADMIN_COLUMNS
             ),
             {"c": customer_id, "u": user_id, "hash": password_hash, "must_change": must_change},
         )
@@ -389,12 +395,10 @@ def reset_totp(conn: Connection, customer_id: str, user_id: str) -> RowMapping |
     return (
         conn.execute(
             text(
-                "UPDATE users AS u SET totp_secret_enc = NULL, totp_enabled_at = NULL,"
+                "UPDATE users AS u SET totp_secret_enc = NULL, totp_enabled_at = NULL,"  # noqa: S608 - a fixed fragment, _ADMIN_COLUMNS
                 " totp_last_step = NULL, totp_off_at = NULL, session_version = u.session_version + 1"
                 " WHERE u.customer_id = :c AND u.id = :u"
-                " RETURNING u.id, u.email, u.display_name, u.role, u.disabled, u.created_at,"
-                " u.locked_until, u.totp_enabled_at, u.totp_off_at, u.must_change_password,"
-                " u.session_version, u.delete_forever_allowed_at"
+                " RETURNING" + _ADMIN_COLUMNS
             ),
             {"c": customer_id, "u": user_id},
         )
@@ -524,10 +528,7 @@ def list_users(conn: Connection, customer_id: str) -> Sequence[RowMapping]:
     return (
         conn.execute(
             text(
-                "SELECT u.id, u.email, u.display_name, u.role, u.disabled, u.created_at,"
-                " u.locked_until, u.totp_enabled_at, u.totp_off_at, u.must_change_password,"
-                " u.session_version, u.delete_forever_allowed_at"
-                " FROM users u WHERE u.customer_id = :c"
+                "SELECT" + _ADMIN_COLUMNS + " FROM users u WHERE u.customer_id = :c"
                 " ORDER BY u.created_at, u.email"
             ),
             {"c": customer_id},
@@ -555,12 +556,10 @@ def create_user(
         return (
             conn.execute(
                 text(
-                    "INSERT INTO users AS u"
+                    "INSERT INTO users AS u"  # noqa: S608 - a fixed fragment, _ADMIN_COLUMNS
                     " (customer_id, email, display_name, role, password_hash, must_change_password)"
                     " VALUES (:c, :email, :name, :role, :hash, :must_change)"
-                    " RETURNING u.id, u.email, u.display_name, u.role, u.disabled, u.created_at,"
-                    " u.locked_until, u.totp_enabled_at, u.totp_off_at, u.must_change_password,"
-                    " u.session_version, u.delete_forever_allowed_at"
+                    " RETURNING" + _ADMIN_COLUMNS
                 ),
                 {
                     "c": customer_id,
@@ -613,9 +612,7 @@ def update_user(
                 "   WHEN CAST(:role AS text) IS NOT NULL AND CAST(:role AS text) <> u.role THEN NULL"
                 "   ELSE u.delete_forever_allowed_at END"
                 " WHERE u.customer_id = :c AND u.id = :u"
-                " RETURNING u.id, u.email, u.display_name, u.role, u.disabled, u.created_at,"
-                " u.locked_until, u.totp_enabled_at, u.totp_off_at, u.must_change_password,"
-                " u.session_version, u.delete_forever_allowed_at"
+                " RETURNING" + _ADMIN_COLUMNS
             ),
             {
                 "c": customer_id,
@@ -640,12 +637,10 @@ def set_delete_forever(
     return (
         conn.execute(
             text(
-                "UPDATE users AS u SET delete_forever_allowed_at = CASE WHEN CAST(:allowed AS boolean)"
+                "UPDATE users AS u SET delete_forever_allowed_at = CASE WHEN CAST(:allowed AS boolean)"  # noqa: S608 - a fixed fragment, _ADMIN_COLUMNS
                 "   THEN COALESCE(u.delete_forever_allowed_at, :now) ELSE NULL END"
                 " WHERE u.customer_id = :c AND u.id = :u AND u.role <> 'admin'"
-                " RETURNING u.id, u.email, u.display_name, u.role, u.disabled, u.created_at,"
-                " u.locked_until, u.totp_enabled_at, u.totp_off_at, u.must_change_password,"
-                " u.session_version, u.delete_forever_allowed_at"
+                " RETURNING" + _ADMIN_COLUMNS
             ),
             {"c": customer_id, "u": user_id, "allowed": allowed, "now": now},
         )
