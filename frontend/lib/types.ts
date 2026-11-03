@@ -1675,6 +1675,23 @@ export interface SessionTimeout {
   default_hours: number;
 }
 
+/** The three folder upload limits (#484): null means "not set here" (follow the platform, or
+ * the platform's default). Most total size is in whole GB. */
+export type FolderLimitName = "max_files" | "max_gb" | "max_folders";
+export type FolderLimits = Record<FolderLimitName, number | null>;
+
+/** GET /operator/folder-upload-limits: the platform's own values and the defaults below them. */
+export interface PlatformFolderLimits extends FolderLimits {
+  defaults: Record<FolderLimitName, number>;
+}
+
+/** GET /operator/orgs/{id}/folder-upload-limits: the organisation's own, the platform's, the defaults. */
+export interface OrgFolderLimits {
+  own: FolderLimits;
+  platform: FolderLimits;
+  defaults: Record<FolderLimitName, number>;
+}
+
 /** GET /operator/speed (package S, 0053): each speed control's saved value (null: the server's
  * setting) and the most this server allows, set when it is deployed. */
 export type SpeedName = "model_rpm" | "documents_at_once" | "pages_at_once";

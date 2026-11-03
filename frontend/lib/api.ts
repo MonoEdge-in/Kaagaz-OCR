@@ -45,6 +45,7 @@ import type {
   FeatureSwitch,
   FlagState,
   Folder,
+  FolderLimits,
   InsightsReply,
   Me,
   MemberPeriod,
@@ -60,6 +61,7 @@ import type {
   OrgAdmin,
   OrgAiReply,
   OrgFeatureSwitch,
+  OrgFolderLimits,
   Organisation,
   OrgModelRates,
   OrgNumbersReply,
@@ -69,6 +71,7 @@ import type {
   DocumentWords,
   PasswordReset,
   PlatformEvent,
+  PlatformFolderLimits,
   PlatformHealth,
   LearnedDocument,
   QualityReply,
@@ -947,6 +950,16 @@ export const getSessionTimeout = (orgId?: string) => request<SessionTimeout>("GE
 /** Set it, with a fresh code (step-up); null: the default, or follow the platform. */
 export const setSessionTimeout = (hours: number | null, code: string, orgId?: string) =>
   request<SessionTimeout>("PUT", timeoutPath(orgId), { hours, code });
+
+/** Operator: the folder upload limits (#484), the platform's or one organisation's; saving needs a fresh code. */
+const folderLimitsPath = (orgId?: string) =>
+  orgId ? `/operator/orgs/${encodeURIComponent(orgId)}/folder-upload-limits` : "/operator/folder-upload-limits";
+export const getFolderUploadLimits = () => request<PlatformFolderLimits>("GET", folderLimitsPath());
+export const setFolderUploadLimits = (limits: FolderLimits, code: string) =>
+  request<PlatformFolderLimits>("PUT", folderLimitsPath(), { ...limits, code });
+export const getOrgFolderUploadLimits = (orgId: string) => request<OrgFolderLimits>("GET", folderLimitsPath(orgId));
+export const setOrgFolderUploadLimits = (orgId: string, limits: FolderLimits, code: string) =>
+  request<OrgFolderLimits>("PUT", folderLimitsPath(orgId), { ...limits, code });
 
 /** Operator: the speed controls (package S, 0053); saving needs a fresh code, null: the server's setting. */
 export const getSpeed = () => request<Speed>("GET", "/operator/speed");
