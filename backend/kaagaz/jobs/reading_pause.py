@@ -179,7 +179,8 @@ def email_text(reason: str, org: State) -> tuple[str, str]:
     if reason == DAILY_LIMIT:
         why = (
             f"It reached its daily page limit: {org.pages_today:,} of {org.page_limit:,} pages read today"
-            " (India time). New files wait and are read next morning, or as soon as you raise the limit."
+            " (India time). New files wait and are read after midnight India time (over a weekend,"
+            " once the server is on again), or as soon as you raise the limit."
         )
     else:
         why = (

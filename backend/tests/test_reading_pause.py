@@ -198,7 +198,8 @@ def test_why_an_organisation_is_paused() -> None:
 def test_the_super_admins_email_says_who_why_and_what_happens_next() -> None:
     subject, text = email_text(DAILY_LIMIT, ORG)
     assert subject == "Kaagaz: reading is paused for Sharma Traders"
-    assert "2,000 of 2,000 pages read today (India time)" in text and "next morning" in text
+    assert "2,000 of 2,000 pages read today (India time)" in text and "next morning" not in text
+    assert "once the server is on again" in text  # QA P5: it stays off over weekends
     _, budget = email_text(BUDGET, ORG)
     assert "$12.40 of $50.00 used this month" in budget and "Ask keeps working" in budget
     mailer = MemoryMailer()
