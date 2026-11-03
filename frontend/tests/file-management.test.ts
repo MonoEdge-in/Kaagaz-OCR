@@ -669,8 +669,9 @@ describe("the folder screen (F5)", () => {
     onNavigate: () => undefined,
   };
 
+  // Changed on purpose (#484): a folder's folders show once it is open, as here, the folder shown.
   it("groups the tree: Departments in order, then Other with the folders in none, then Trash", () => {
-    const html = render(createElement(FolderNav, props));
+    const html = render(createElement(FolderNav, { ...props, library: { ...ALL_DOCUMENTS, folderId: LAND } }));
     const order = ["All documents", "Departments", "Land &amp; Legal", "Land records", "Accounts", "Other", "Not in a department", "Old scans", "Trash"];
     const at = order.map((words) => html.indexOf(words));
     expect(at.every((i) => i >= 0)).toBe(true);

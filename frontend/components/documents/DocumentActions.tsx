@@ -24,7 +24,8 @@ import type { DocumentSummary, Tag } from "@/lib/types";
 import { ActionDialog } from "./ActionDialog";
 import { BusyLabel } from "./BusyLabel";
 import { NameChips } from "./FolderActions";
-import { inTreeOrder, pathLabel } from "./folderTree";
+import { pathLabel } from "./folderTree";
+import { FolderPicker } from "./FolderPicker";
 import type { FolderTree } from "./folderTree";
 import {
   ACTION_HELP,
@@ -430,7 +431,8 @@ function RenameForm({ item, onSaved, onCancel }: FormProps) {
 
 // Move to folder (Tushar, 16 Oct 2026: files already here had no clear way into a folder):
 // radio buttons, so arrows move between choices and a disabled one is skipped. All documents
-// (no folder), then every folder in tree order, indented by depth; where the documents are now is
+// (no folder), then the folders as a tree that opens one folder at a time (FolderPicker, #484:
+// thousands of folders, 100 levels), the way to where they are now open; where they are now is
 // marked Current and can't be chosen. First, marked Suggested, the folder named for their kind of
 // document, or a new folder of that name (moveSuggestion); last, New folder… with a name box and
 // suggested names, which makes the folder at the top level and moves into it in one go. One
@@ -464,11 +466,11 @@ export function MoveForm({ items, tree, suggestions = [], onSaved, onFolderCreat
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const id = useId();
-  // Every folder once, in tree order; the suggested one is tagged where it is and chosen
-  // at first (Tushar, 16 Oct 2026: no second copy of it breaking the column).
-  const folders = inTreeOrder(tree);
+  // The suggested folder is tagged where it is in the tree and chosen at first (Tushar, 16 Oct
+  // 2026: no second copy of it breaking the column); the way to it and to the current place starts open.
+  const [openTo] = useState(() => [choice, current ?? null]);
   // Focus starts on the choice made, else on the first one that can be chosen.
-  const focusValue = choice ?? (current === TOP ? (folders[0]?.folder.id ?? NEW) : TOP);
+  const focusValue = choice ?? (current === TOP ? (tree.roots[0]?.folder.id ?? NEW) : TOP);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -515,10 +517,10 @@ export function MoveForm({ items, tree, suggestions = [], onSaved, onFolderCreat
     onSaved(movedMessage(result.done.length, ids.length, where, reason), true, undo);
   }
 
-  const option = (value: string, key: string, words: ReactNode, depth = 0) => {
+  const option = (value: string, key: string, words: ReactNode) => {
     const here = value === current;
     return (
-      <li key={key} style={depth > 0 ? { paddingInlineStart: `calc(${depth} * var(--space-4))` } : undefined}>
+      <li key={key}>
         <label className={styles.check}>
           <input
             type="radio"
@@ -553,20 +555,29 @@ export function MoveForm({ items, tree, suggestions = [], onSaved, onFolderCreat
               </>,
             )}
           {option(TOP, "top", "All documents (no folder)")}
-          {folders.map((node) =>
-            option(
-              node.folder.id,
-              node.folder.id,
-              node.folder.id === suggestedId ? (
+          <FolderPicker
+            tree={tree}
+            name={`${id}-to`}
+            choice={choice}
+            onChoose={(value) => {
+              setChoice(value);
+              setError(null);
+            }}
+            disabled={(node) => node.folder.id === current}
+            note={(node) =>
+              node.folder.id === current ? (
+                <span className={styles.tag}>Current</span>
+              ) : node.folder.id === suggestedId ? (
                 <>
-                  {node.folder.name} <span className={styles.tag}>Suggested</span>
+                  {" "}
+                  <span className={styles.tag}>Suggested</span>
                 </>
-              ) : (
-                node.folder.name
-              ),
-              node.depth,
-            ),
-          )}
+              ) : null
+            }
+            openTo={openTo}
+            busy={busy}
+            focusId={focusValue}
+          />
           {option(NEW, "new", "New folder…")}
         </ul>
       </fieldset>
