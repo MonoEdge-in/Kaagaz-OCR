@@ -113,10 +113,12 @@
 * ``backup-files`` and ``restore-files`` (#476, 3 Nov 2026): every stored file, every
   customer's, as one tar on stdout, read through the S3 API (``S3Storage.write_tar``), for the
   nightly backup (infra/ec2/pgdump.sh); and that tar from stdin back into an EMPTY bucket, made
-  first if missing (the restore drill, infra/ec2/restore-drill.sh). The file count goes to stderr.
+  first if missing (the restore drill, infra/ec2/restore-drill.sh). The file count goes to stderr;
+  a backup of no files fails (code 2).
 * ``backup-upload --bucket NAME --key KEY``: stdin, already encrypted, to the off-server backup
-  bucket in ap-south-1, in parts, with the machine's own AWS role. It reads no settings and no
-  database, so pgdump.sh runs it beside the app on the host network.
+  bucket in ap-south-1, in parts, never over an object already there, with the machine's own AWS
+  role; prints its size and sha256. It reads no settings and no database, so pgdump.sh runs it
+  beside the app on the host network.
 * ``disk-alert --used PERCENT``: emails OPS_ALERT_EMAIL from EMAIL_FROM through SES that the
   server's disk is that full (#480; infra/ec2/disk-alert.sh decides when, once a day at most), by
   the operations alerts' one rule (kaagaz.ops_alert); an email not sent fails the command.
@@ -132,6 +134,7 @@ terminal instead of logging): ids and e-mails only, never a password.
 import argparse
 import functools
 import getpass
+import hashlib
 import json
 import os
 import sys
@@ -146,7 +149,6 @@ from pathlib import Path
 from typing import IO, Any, Protocol, TextIO
 
 import boto3
-from boto3.s3.transfer import TransferConfig
 from sqlalchemy import Connection, RowMapping, text
 
 from kaagaz import ops_alert, verify_models
@@ -223,11 +225,10 @@ CUSTOMER_STATUS = {
 SECRET_COMMANDS = ("create-operator", "reset-operator-2fa")
 # cost-saving: the limits a run's config names (``reader_config``), after "cost_saving_".
 LIMIT_NAMES = ("hard_lines_max", "hard_share", "crop_pad")
-# backup-upload (#476): the off-server backup bucket's region, and its upload parts: 32 MB, 4 at
-# a time, so S3's 10,000 parts hold up to 320 GB in about 128 MB of memory.
+# backup-upload (#476): the off-server backup bucket's region, and its upload parts: 32 MB, one
+# at a time, so S3's 10,000 parts hold up to 320 GB in about 32 MB of memory.
 BACKUP_REGION = "ap-south-1"
 BACKUP_PART_BYTES = 32 * 1024 * 1024
-BACKUP_PART_THREADS = 4
 # The commands that read the settings but no database.
 NO_DATABASE = ("backup-files", "restore-files", "disk-alert")
 
@@ -1234,15 +1235,36 @@ def _edits(a: Sequence[str], b: Sequence[str]) -> int:
     return previous[-1]
 
 
-def _backup_bucket_client() -> Any:
-    """The off-server backup bucket's client. No keys: boto3 finds the machine's own role."""
-    return boto3.client("s3", region_name=BACKUP_REGION)
-
-
-def _backup_upload(bucket_client: Any, bucket: str, key: str, source: IO[bytes]) -> None:
-    """``source`` to ``bucket``/``key`` in parts, as it is read (it need not fit on the disk)."""
-    config = TransferConfig(multipart_chunksize=BACKUP_PART_BYTES, max_concurrency=BACKUP_PART_THREADS)
-    bucket_client.upload_fileobj(source, bucket, key, Config=config)
+def _backup_upload(client: Any, bucket: str, key: str, source: IO[bytes]) -> str:
+    """``source`` to ``bucket``/``key`` as it is read (it need not fit on the disk), never over
+    an object already there: If-None-Match, which the bucket's policy requires (boto3's managed
+    upload cannot send it). Returns its size and sha256, done's line for the part (pgdump.sh)."""
+    target = {"Bucket": bucket, "Key": key}
+    chunk = source.read(BACKUP_PART_BYTES)
+    if len(chunk) < BACKUP_PART_BYTES:  # all of it in one request
+        client.put_object(Body=chunk, IfNoneMatch="*", **target)
+        return f"{len(chunk)} {hashlib.sha256(chunk).hexdigest()}"
+    digest, size = hashlib.sha256(), 0
+    parts: list[dict[str, Any]] = []
+    # CRC32 on every part, as boto3's own upload does (Object Lock needs a checksum).
+    upload_id = client.create_multipart_upload(ChecksumAlgorithm="CRC32", **target)["UploadId"]
+    try:
+        while chunk:
+            digest.update(chunk)
+            size += len(chunk)
+            number = len(parts) + 1
+            sent = client.upload_part(
+                Body=chunk, PartNumber=number, UploadId=upload_id, ChecksumAlgorithm="CRC32", **target
+            )
+            parts.append({"PartNumber": number, "ETag": sent["ETag"], "ChecksumCRC32": sent["ChecksumCRC32"]})
+            chunk = source.read(BACKUP_PART_BYTES)
+        client.complete_multipart_upload(
+            UploadId=upload_id, MultipartUpload={"Parts": parts}, IfNoneMatch="*", **target
+        )
+    except BaseException:
+        client.abort_multipart_upload(UploadId=upload_id, **target)
+        raise
+    return f"{size} {digest.hexdigest()}"
 
 
 def _disk_alert(settings: Settings, mailer: Mailer | None, used: int) -> None:
@@ -1265,7 +1287,10 @@ def _disk_alert(settings: Settings, mailer: Mailer | None, used: int) -> None:
 def _file_backup(command: str, files: FileBackup, source: IO[bytes], out: IO[bytes]) -> str:
     """backup-files or restore-files; the line for stderr (stdout may be the tar)."""
     if command == "backup-files":
-        return f"backup-files: {files.write_tar(out)} files"
+        count = files.write_tar(out)
+        if count == 0:  # a storage that reads as empty is broken, not backed up (#476)
+            raise CliError("backup-files: the storage bucket gave no files, so nothing was backed up")
+        return f"backup-files: {count} files"
     files.ensure_bucket()
     try:
         return f"restore-files: {files.read_tar(source)} files"
@@ -1327,8 +1352,9 @@ def main(
             )
         if args.command == "backup-upload":  # no settings either: it runs on the host network
             source = sys.stdin.buffer if binary_in is None else binary_in
-            _backup_upload(backup_bucket or _backup_bucket_client(), args.bucket, args.key, source)
-            stdout.write(f"uploaded {args.key}\n")
+            # No keys: boto3 finds the machine's own role.
+            client = backup_bucket or boto3.client("s3", region_name=BACKUP_REGION)
+            stdout.write(_backup_upload(client, args.bucket, args.key, source) + "\n")
             return 0
         if args.command in NO_DATABASE:
             checked = settings or Settings.from_env(env)

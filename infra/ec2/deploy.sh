@@ -73,11 +73,12 @@ case "${1:-}" in
     ;;
 esac
 
-# Held for the whole run. If another deploy still holds it, leave quietly.
+# Held for the whole run. If another deploy or the nightly backup (pgdump.sh)
+# still holds it, leave quietly.
 exec 9>"$LOCK_FILE"
 if ! flock -n 9; then
   if [[ "$rollback" == true ]]; then
-    echo "a deploy is running; try --rollback again in a few minutes" >&2
+    echo "a deploy or the nightly backup holds $LOCK_FILE (journalctl -u kaagaz-deploy -u kaagaz-pgdump -n 5); try --rollback again when it ends" >&2
     exit 1
   fi
   exit 0

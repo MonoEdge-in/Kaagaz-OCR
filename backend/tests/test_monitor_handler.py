@@ -91,8 +91,8 @@ def fresh_backup(now: datetime) -> FakeS3:
     return FakeS3(
         [
             [
-                ("20261102/kaagaz.dump.cms", now - timedelta(hours=2)),
-                ("20261102/done", now - timedelta(hours=2)),
+                ("20261102T200012Z/kaagaz.dump.enc", now - timedelta(hours=2)),
+                ("20261102T200012Z/done", now - timedelta(hours=2)),
             ]
         ]
     )
@@ -209,9 +209,9 @@ def test_the_backup_must_be_under_26_hours_old_once_the_server_has_run_an_hour()
 
     old = AFTERNOON - timedelta(hours=27)
     assert backup_result(fresh_backup(AFTERNOON)) is None
-    assert backup_result(FakeS3([[("20261101/done", old)]])) == "the newest is 27 hours old"
+    assert backup_result(FakeS3([[("20261101T200012Z/done", old)]])) == "the newest is 27 hours old"
     # Only done counts: a night that never finished is no backup.
-    assert backup_result(FakeS3([[("20261103/files.tar.cms", AFTERNOON)]])) == "none found"
+    assert backup_result(FakeS3([[("20261103T200012Z/files.tar.enc", AFTERNOON)]])) == "none found"
     assert backup_result(FakeS3([])) == "none found"
     assert backup_result(FakeS3([]), hours_up=0.5) == "not run"  # the boot-time backup may still run
 
@@ -220,8 +220,10 @@ def test_newest_done_reads_every_page() -> None:
     late = AFTERNOON - timedelta(hours=1)
     s3 = FakeS3(
         [
-            [("20261101/done", AFTERNOON - timedelta(days=2))],
-            [("20261103/done", late), ("x/done.txt", AFTERNOON)],
+            [("20261101T200012Z/done", AFTERNOON - timedelta(days=2))],
+            # Two runs on one day each keep their own done (pgdump.sh's run folders).
+            [("20261103T030000Z/done", late - timedelta(hours=1)), ("20261103T040000Z/done", late)],
+            [("x/done.txt", AFTERNOON)],
         ]
     )
     assert monitor.newest_done(s3, ENV["BACKUP_BUCKET"]) == late
@@ -266,6 +268,26 @@ def test_reasons_are_short_codes_never_bodies() -> None:
     assert monitor.reason(urllib.error.HTTPError("u", 502, "Bad Gateway", Message(), None)) == "HTTP 502"
     assert monitor.reason(urllib.error.URLError(TimeoutError("timed out"))) == "TimeoutError"
     assert monitor.reason(ConnectionResetError()) == "ConnectionResetError"
+
+
+def test_a_failed_publish_alerts_on_the_next_round() -> None:
+    """The counts are saved only after the email went: a failed publish is sent again."""
+
+    class BrokenSns(FakeSns):
+        def publish(self, TopicArn: str, Subject: str, Message: str) -> None:
+            raise ClientError({"Error": {"Code": "Throttling"}}, "Publish")
+
+    server = Round()
+    backup = fresh_backup(AFTERNOON)
+    server.run(up_for(3), backup, AFTERNOON, get=down)  # 1: counted, no email yet
+    working = server.sns
+    server.sns = BrokenSns()
+    with pytest.raises(ClientError):
+        server.run(up_for(3), backup, AFTERNOON, get=down)  # 2: the email fails
+    assert server.ssm.counts() == {"api": 1, "site": 1}
+    server.sns = working
+    assert server.run(up_for(3), backup, AFTERNOON, get=down).startswith("FAILING: ")  # 3: sent now
+    assert len(working.sent) == 1 and server.ssm.counts() == {"api": 2, "site": 2}
 
 
 def test_a_state_read_error_other_than_not_found_stops_the_round() -> None:

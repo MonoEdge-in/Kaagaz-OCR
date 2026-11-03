@@ -21,10 +21,11 @@
 #     signatures. A container over its limit is killed and restarted
 #     (restart: unless-stopped); a worker's job then goes back to the queue.
 #
-# The server's .env sets KAAGAZ_DOMAIN, ACME_EMAIL, SEAWEEDFS_S3_CONFIG (the
-# path of its s3.json), STORAGE_ADMIN_ACCESS_KEY and STORAGE_ADMIN_SECRET_KEY
-# (s3.json's admin identity, migrate's alone); compose stops with the name of
-# any that is missing.
+# The server's .env sets KAAGAZ_DOMAIN, ACME_EMAIL and SEAWEEDFS_S3_CONFIG (the
+# path of its s3.json); compose stops with the name of any that is missing. It
+# also sets STORAGE_ADMIN_ACCESS_KEY and STORAGE_ADMIN_SECRET_KEY (s3.json's
+# admin identity, migrate's alone): without them only migrate stops, naming
+# them, so logs, exec, pgdump.sh and idle-stop.sh keep working.
 
 x-logging: &logging
   driver: json-file
@@ -63,8 +64,8 @@ services:
   migrate:
     logging: *logging
     environment:
-      STORAGE_ACCESS_KEY: ${STORAGE_ADMIN_ACCESS_KEY:?set STORAGE_ADMIN_ACCESS_KEY in .env}
-      STORAGE_SECRET_KEY: ${STORAGE_ADMIN_SECRET_KEY:?set STORAGE_ADMIN_SECRET_KEY in .env}
+      STORAGE_ACCESS_KEY: ${STORAGE_ADMIN_ACCESS_KEY:-}
+      STORAGE_SECRET_KEY: ${STORAGE_ADMIN_SECRET_KEY:-}
 
   api:
     ports: !reset []

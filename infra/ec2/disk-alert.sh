@@ -3,15 +3,20 @@
 #
 # kaagaz-disk.timer runs this as ubuntu every hour. Over LIMIT_PERCENT used on
 # /, it sends one email to OPS_ALERT_EMAIL through the backend's SES mailer
-# (kaagaz.cli disk-alert, in a one-off worker container with the .env
-# settings), at most once a UTC day: SENT_FILE holds the day of the last one,
-# written only once it was sent. No CloudWatch agent (no new tool).
+# (kaagaz.cli disk-alert), at most once a UTC day: SENT_FILE holds the day of
+# the last one, written only once it was sent. No CloudWatch agent (no new
+# tool). The command runs in the backend image on the host network, as
+# pgdump.sh's backup-upload does, so boto3 reaches the server's own role with
+# the instance metadata hop limit left at 1. --env-file hands it .env as Docker
+# reads it: each value exactly as written, so quotes there stay in the value.
+# When the email cannot go (OPS_ALERT_EMAIL or EMAIL_FROM unset, SES refused,
+# or the disk too full to start a container), it says so in the journal and
+# the unit fails, so `systemctl --failed` lists it.
 set -euo pipefail
 
 KAAGAZ_DIR=/home/ubuntu/kaagaz
 LIMIT_PERCENT=80
 SENT_FILE=/home/ubuntu/.kaagaz-disk-alert
-COMPOSE=(-f docker-compose.yml -f docker-compose.prod.yml)
 
 used="$(df --output=pcent / | tail -n 1 | tr -dc '0-9')"
 if ((used <= LIMIT_PERCENT)); then
@@ -24,8 +29,10 @@ if [[ -f "$SENT_FILE" && "$(cat "$SENT_FILE")" == "$day" ]]; then
   exit 0
 fi
 cd "$KAAGAZ_DIR"
-# --no-deps: a plain run would start migrate first (deploy.sh, 24 Oct 2026).
-docker compose "${COMPOSE[@]}" run --rm -T --no-deps worker \
-  python -m kaagaz.cli disk-alert --used "$used"
+if ! docker run --rm --network host --env-file .env kaagaz-backend:local \
+  python -m kaagaz.cli disk-alert --used "$used"; then
+  echo "DISK ${used}% USED and the alert email was NOT sent: the lines above say why" >&2
+  exit 1
+fi
 printf '%s\n' "$day" >"$SENT_FILE"
 echo "disk ${used}% used; emailed"

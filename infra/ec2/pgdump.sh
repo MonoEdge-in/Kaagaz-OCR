@@ -10,14 +10,20 @@
 # Then, when .env sets BACKUP_BUCKET and BACKUP_CERT, the copy off the server
 # (#476, 3 Nov 2026): this dump, the database logins (pg_dumpall --roles-only
 # --no-role-passwords) and every stored file (kaagaz.cli backup-files, a tar
-# read through the S3 API). Each is encrypted with openssl cms to BACKUP_CERT,
-# the public certificate of a key kept offline, and streamed into the bucket as
-# <day>/kaagaz.dump.cms, <day>/roles.sql.cms and <day>/files.tar.cms by
-# kaagaz.cli backup-upload in the backend image, on the host network so it uses
-# the server's own AWS role. Nothing encrypted is written to this disk.
-# <day>/done goes last, only when all three are in: the monitor
-# (infra/aws/monitor) and the restore drill (restore-drill.sh) look for it.
-# Without the two settings it stops after the local dump, as before.
+# read through the S3 API), into the bucket under one folder per run,
+# <run> = YYYYMMDDTHHMMSSZ, so a second run never writes over the first.
+# Each part is encrypted as it streams (openssl enc -aes-256-ctr) with its own
+# random 256-bit key, and only that key is sealed with openssl cms to
+# BACKUP_CERT, the public certificate of a key kept offline: cms reads its
+# whole input into memory to decrypt it, so a large part sealed with it could
+# not be restored (400 MB took 1.07 GB). Each part goes up as <part>.enc beside
+# <part>.key.cms, through kaagaz.cli backup-upload in the backend image on the
+# host network (the server's own AWS role), which prints its size and sha256.
+# Nothing encrypted is written to this disk. <run>/done goes last, only when
+# every part is in: one line per part (object, size, sha256), then the file
+# count. The monitor (infra/aws/monitor) and the restore drill
+# (restore-drill.sh) read it. Without the two settings it stops after the
+# local dump, as before.
 #
 # The whole run holds the deploy lock, so no deploy swaps images and the idle
 # stop (idle-stop.sh) does not power off half way.
@@ -114,23 +120,46 @@ if [[ -z "$bucket" || -z "$cert" ]]; then
   exit 0
 fi
 
-# stdin to the bucket as <day>/$1.
+run="$(date -u +%Y%m%dT%H%M%SZ)"
+
+# stdin to the bucket as <run>/$1, never over an object already there; prints
+# its size and sha256.
 send() {
   docker run --rm -i --network host kaagaz-backend:local \
-    python -m kaagaz.cli backup-upload --bucket "$bucket" --key "$day/$1"
+    python -m kaagaz.cli backup-upload --bucket "$bucket" --key "$run/$1"
 }
 
-# stdin, encrypted to BACKUP_CERT, to the bucket as <day>/$1. -stream encrypts
-# as it reads, so a large tar never sits in memory.
+# stdin to <run>/$1.enc, encrypted as it is read, and its key to
+# <run>/$1.key.cms; prints done's line for the part. Each step is checked
+# here: set -e does not reach into a $(...).
 seal() {
-  openssl cms -encrypt -binary -aes256 -stream -outform DER "$cert" | send "$1"
+  local secret iv sent
+  secret="$(openssl rand -hex 32)" && iv="$(openssl rand -hex 16)" || return 1
+  printf '%s %s\n' "$secret" "$iv" |
+    openssl cms -encrypt -binary -aes256 -outform DER "$cert" | send "$1.key.cms" >/dev/null || return 1
+  sent="$(openssl enc -aes-256-ctr -K "$secret" -iv "$iv" | send "$1.enc")" || return 1
+  printf '%s/%s.enc %s\n' "$run" "$1" "$sent"
 }
 
-seal kaagaz.dump.cms <"$dump"
-docker compose "${COMPOSE[@]}" exec -T postgres \
-  pg_dumpall -U "$pg_user" --roles-only --no-role-passwords | seal roles.sql.cms
+dump_line="$(seal kaagaz.dump <"$dump")"
+roles_line="$(docker compose "${COMPOSE[@]}" exec -T postgres \
+  pg_dumpall -U "$pg_user" --roles-only --no-role-passwords | seal roles.sql)"
+# backup-files prints its file count on stderr (stdout is the tar): kept for
+# done, then shown.
+counted="$(mktemp "$BACKUP_DIR/.files-count.XXXXXX")"
+trap 'rm -f "$counted"' EXIT
 # --no-deps: a plain run would start migrate first (deploy.sh, 24 Oct 2026).
-docker compose "${COMPOSE[@]}" run --rm -T --no-deps worker \
-  python -m kaagaz.cli backup-files | seal files.tar.cms
-printf '%s\n' "$day" | send "done"
-echo "copied the backup of $day off the server"
+if ! files_line="$(docker compose "${COMPOSE[@]}" run --rm -T --no-deps worker \
+  python -m kaagaz.cli backup-files 2>"$counted" | seal files.tar)"; then
+  cat "$counted" >&2
+  echo "the stored files were not copied; no done written" >&2
+  exit 1
+fi
+cat "$counted" >&2
+files="$(sed -n 's/^backup-files: \([0-9][0-9]*\) files$/\1/p' "$counted")"
+if [[ -z "$files" ]]; then
+  echo "backup-files printed no file count; no done written" >&2
+  exit 1
+fi
+printf '%s\n' "$dump_line" "$roles_line" "$files_line" "files $files" | send "done" >/dev/null
+echo "copied backup $run off the server ($files files)"

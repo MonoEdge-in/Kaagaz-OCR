@@ -79,8 +79,8 @@ def test_the_worker_opens_only_the_app_login() -> None:
 
 
 def _rendered(tmp_path: Path, **env: str) -> dict[str, dict[str, str]]:
-    """Each backend service's environment, as Compose makes it from the two server files and
-    a made-up ``.env`` (as CI's "Production compose renders" step)."""
+    """Every service's environment, as Compose makes it from the two server files and a
+    made-up ``.env`` (as CI's "Production compose renders" step)."""
     assert DOCKER is not None
     server = {
         "KAAGAZ_DOMAIN": "kaagaz.example.test",
@@ -95,7 +95,7 @@ def _rendered(tmp_path: Path, **env: str) -> dict[str, dict[str, str]]:
     command = [DOCKER, "compose", "--project-directory", str(tmp_path), *files, "config", "--format", "json"]
     done = subprocess.run(command, capture_output=True, check=True, timeout=60)  # noqa: S603 - fixed arguments
     services = json.loads(done.stdout)["services"]
-    return {name: services[name]["environment"] for name in ("migrate", "api", "worker")}
+    return {name: service.get("environment", {}) for name, service in services.items()}
 
 
 MASTER = "a1b2c3d4e5f6a7b8c9d0e1f2"  # a made-up owner password, to find anywhere it leaks
@@ -126,6 +126,27 @@ def test_after_the_rollout_only_migrate_holds_the_master_password(tmp_path: Path
 @pytest.mark.skipif(DOCKER is None, reason="needs the docker command (CI has it)")
 def test_on_release_day_every_backend_service_keeps_the_owner_login(tmp_path: Path) -> None:
     env = _rendered(tmp_path, **OWNER_ENV)
-    assert {name: env[name]["DATABASE_URL"] for name in env} == dict.fromkeys(env, OWNER_IN_DOCKER)
+    backend = ("migrate", "api", "worker")
+    assert {name: env[name]["DATABASE_URL"] for name in backend} == dict.fromkeys(backend, OWNER_IN_DOCKER)
     assert not env["api"]["OPS_DATABASE_URL"]  # unset: Settings falls back to DATABASE_URL
     assert not env["api"]["POSTGRES_PASSWORD"]  # read by no backend code
+
+
+ADMIN_SECRET = "f0e1d2c3b4a5968778695a4b"  # a made-up storage admin secret, to find where it leaks
+
+
+@pytest.mark.skipif(DOCKER is None, reason="needs the docker command (CI has it)")
+def test_master_password_only_in_migrate_and_postgres(tmp_path: Path) -> None:
+    """Over every service compose renders, the master password and the storage admin key
+    reach only the containers that use them (#477, #479), whatever else .env holds."""
+    env = _rendered(
+        tmp_path,
+        **OWNER_ENV,
+        APP_DATABASE_URL=APP_IN_DOCKER,
+        STORAGE_ADMIN_ACCESS_KEY="kaagaz-admin-made-up",
+        STORAGE_ADMIN_SECRET_KEY=ADMIN_SECRET,
+    )
+    assert len(env) == 9  # the eight of docker-compose.yml and caddy
+    assert sorted(name for name in env if MASTER in json.dumps(env[name])) == ["migrate", "postgres"]
+    assert [name for name in env if ADMIN_SECRET in json.dumps(env[name])] == ["migrate"]
+    assert env["migrate"]["STORAGE_SECRET_KEY"] == ADMIN_SECRET
