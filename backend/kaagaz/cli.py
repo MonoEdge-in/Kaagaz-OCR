@@ -455,8 +455,9 @@ def _owner(db: Database) -> Iterator[Connection]:
     ``kaagaz_app`` may not do, so no code on the customer side can: a customer's
     status (0014), create-customer's and every command's ``platform_audit`` row and
     the operator commands (0015). Every statement names its one customer or operator.
-    PROVISIONAL: it needs DATABASE_URL to log in as the owner, as it does today
-    (change plan, open question 8)."""
+    It needs DATABASE_URL to log in as the owner: on the server only migrate has that
+    login, so these commands run there (``dc run --rm migrate python -m kaagaz.cli ...``);
+    in api, which logs in as ``kaagaz_api`` (#479), PostgreSQL refuses them."""
     with db.engine.begin() as conn:
         yield conn
 
@@ -1214,7 +1215,9 @@ def main(
     stdout = sys.stdout if out is None else out
     try:
         if args.command in SECRET_COMMANDS and ask is getpass.getpass and not sys.stdin.isatty():
-            raise CliError("run it at a terminal (docker compose exec WITHOUT -T): it shows a secret")
+            raise CliError(
+                "run it at a terminal (docker compose run --rm migrate, WITHOUT -T): it shows a secret"
+            )
         if args.command == "measure":  # before any database is built: it never uses one
             chosen = env if args.engine is None else {**env, "OCR_ENGINE": args.engine}
             _measure(Settings.from_env(chosen), args.file, args.truth, stdout, timer=timer)

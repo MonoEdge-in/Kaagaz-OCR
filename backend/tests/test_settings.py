@@ -192,6 +192,8 @@ def test_a_bad_page_route_setting_stops_start_up_by_name(name: str, value: str) 
 # The settings that are secrets (council security note 7): repr never shows them.
 SECRET_FIELDS = [
     "database_url",
+    "app_database_url",  # #479
+    "ops_database_url",
     "storage_access_key",
     "storage_secret_key",
     "session_secret",

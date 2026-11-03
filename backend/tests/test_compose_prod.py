@@ -59,6 +59,10 @@ def test_the_base_file_runs_only_the_app_and_its_stand_ins() -> None:
     backend = text[text.index("x-backend:") : text.index("\nservices:\n")]
     assert re.findall(r"^    ([A-Z_]+):", backend, re.MULTILINE) == [
         "DATABASE_URL",
+        # Changed on purpose (#479, 3 Nov 2026): blanked for api and worker, so neither holds
+        # the master password or (the workers) the super admin's login (tests/test_db_logins.py).
+        "POSTGRES_PASSWORD",
+        "OPS_DATABASE_URL",
         "STORAGE_ENDPOINT_URL",
         "QUEUE_ENDPOINT_URL",
         "QUEUE_URL",

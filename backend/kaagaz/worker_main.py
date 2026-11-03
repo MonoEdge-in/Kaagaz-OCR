@@ -841,9 +841,10 @@ def _serve(settings: Settings) -> None:
     from kaagaz.reading.wiring import build_ocr_engine
 
     # The worker's PostgreSQL timeouts (#246 A1): long, so a big document's save or a sweep is
-    # never cut, but a stuck statement, lock wait or open transaction still ends.
+    # never cut, but a stuck statement, lock wait or open transaction still ends. The app's
+    # login (#479); a worker never builds the operator's engine.
     engine = make_engine(
-        settings.database_url,
+        settings.app_database_url,
         statement_timeout_seconds=settings.db_worker_statement_timeout_seconds,
         lock_timeout_seconds=settings.db_worker_lock_timeout_seconds,
         idle_in_transaction_timeout_seconds=settings.db_idle_in_transaction_timeout_seconds,

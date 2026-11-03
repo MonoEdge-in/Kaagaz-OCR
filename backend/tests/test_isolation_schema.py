@@ -196,11 +196,12 @@ RUN_OUTCOME = {
 # customers or users give ids only.
 EMPTY_PATH = ['search_path=""']
 OWNER_RIGHTS = {
+    # Changed on purpose (#479, 3 Nov 2026): 0067 gives 0001's two the empty path as well.
     "kaagaz_login_lookup": (
         "TABLE(user_id uuid, customer_id uuid, password_hash text, role text, disabled boolean)",
-        ["search_path=public, pg_temp"],
+        EMPTY_PATH,
     ),  # 0001, sign-in
-    "kaagaz_create_customer": ("uuid", ["search_path=public, pg_temp"]),  # 0001
+    "kaagaz_create_customer": ("uuid", EMPTY_PATH),  # 0001
     "kaagaz_customer_ids_with_trash": ("SETOF uuid", EMPTY_PATH),  # 0002, the purge
     "kaagaz_customer_ids": ("SETOF uuid", EMPTY_PATH),  # 0006, reembed
     "kaagaz_stories_to_embed": ("TABLE(customer_id uuid, user_id uuid, family_id uuid)", EMPTY_PATH),  # 0010

@@ -52,7 +52,8 @@ def test_the_secret_commands_refuse_to_run_without_a_terminal(
     )
     out = io.StringIO()
     assert main(argv, environ={}, out=out, ask=getpass.getpass) == 2  # before any database or prompt
-    assert out.getvalue() == "" and "WITHOUT -T" in capsys.readouterr().err
+    # Changed on purpose (#479, 3 Nov 2026): the owner's commands run in migrate, not api.
+    assert out.getvalue() == "" and "run --rm migrate, WITHOUT -T" in capsys.readouterr().err
 
 
 @pytest.mark.db
