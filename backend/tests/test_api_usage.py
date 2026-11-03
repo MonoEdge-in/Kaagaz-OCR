@@ -30,6 +30,7 @@ from kaagaz.api.context import AppContext
 from kaagaz.api.errors import ApiError
 from kaagaz.api.routers import chat, search, stories
 from kaagaz.api.routers.admin import ai_enabled, csv_cell, usage_csv, usage_days
+from kaagaz.db import audit
 from kaagaz.db import document_stories as stories_sql
 from kaagaz.db.engine import Database
 from kaagaz.db.usage import UsageRow
@@ -166,6 +167,8 @@ def test_sp1_a_search_calls_no_model_and_bills_nothing(monkeypatch: pytest.Monke
     monkeypatch.setattr(search, "narrow", lambda conn, customer, scope, asked: scope)
     monkeypatch.setattr(search, "search_documents", lambda *args, **kwargs: [])
     monkeypatch.setattr(PgWords, "words", lambda self, customer_id, user_id, *, document_id=None: [])
+    # Changed on purpose (#482): the search's audit row, which needs the database this test has not.
+    monkeypatch.setattr(audit, "record", lambda *args, **kwargs: None)
 
     reply = search.search_inside_documents(
         search.SearchParams(q="total"), user, _context(ledger, _BillingEmbedder())

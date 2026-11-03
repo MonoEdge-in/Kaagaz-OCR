@@ -21,6 +21,11 @@ Q3 filters (``FileFilters``). Anything else is 400 ``bad_request``, as every inv
 request. ``q`` is never logged (the access line has no query string). Snippets go through
 ``clean_snippet``; only well-formed regions are sent.
 
+Logged (#482, 3 Nov 2026): every search that runs writes one ``search.run`` row in the
+search's own transaction, with how many documents came back and whether the list was capped,
+never the words (the audit log holds ids and counts only). A scope that matches nothing runs
+no search and writes none.
+
 The cap (issue 374): the search asks for one document more than SEARCH_MAX_DOCUMENTS, and
 a reply that had more says ``capped: true`` (the key is left out otherwise), so the screen
 never calls a cut list the whole count. The true total is not counted: the candidate lists
@@ -38,6 +43,7 @@ from kaagaz.answering.sanitize import clean_snippet
 from kaagaz.api.auth import User
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.routers.documents import DetectedTypeParam
+from kaagaz.db import audit
 from kaagaz.search.hybrid import DocumentResult, search_documents
 from kaagaz.search.indexing import recipe_tag
 from kaagaz.search.scope import FileFilters, ScopeBody, narrow, resolve
@@ -95,7 +101,16 @@ def search_inside_documents(
             scope=scope,
             expansion=expansion,
         )
-    capped = len(found) > settings.search_max_documents
+        capped = len(found) > settings.search_max_documents
+        audit.record(
+            conn,
+            customer_id,
+            actor_user_id=user.user_id,
+            action="search.run",
+            target_type="customer",
+            target_id=customer_id,
+            details={"documents": min(len(found), settings.search_max_documents), "capped": capped},
+        )
     return {
         "documents": [_document(result) for result in found[: settings.search_max_documents]],
         "story_matches": [],

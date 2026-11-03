@@ -107,6 +107,11 @@ Why some choices:
   list but stays flagged on the page itself and in answers (``accept_page``, under
   the family lock). One ``document.page_accept`` audit row names the page. A
   document in Trash is 409 ``in_trash``; a page it does not have is 404.
+* **Every read is logged** (#482, 3 Nov 2026): the detail, and each way of reading a document
+  one by one (the viewer's own file fetch, page images, word lists, readings, cells), write
+  ``document.view`` at most once per person per document every half hour (``audit.record_view``,
+  ``{"via": ...}`` naming the way), in the transaction that found the document readable; the
+  Download button's ``document.download`` stays as it was.
 * **Undo auto-filing** (feature 28, R16): any user of the customer may move a family
   Kaagaz filed back to the top level, under the family lock; the folder stays. In Trash
   is 409 ``in_trash``; filed no more (moved since, or its folder deleted) is 409
@@ -1355,9 +1360,11 @@ def undo_autofile(document_id: uuid.UUID, user: User, context: Context) -> dict[
 @router.get("/documents/{document_id}/file")
 def get_file(document_id: uuid.UUID, user: User, context: Context, download: bool = False) -> Response:
     """The original file. File management A2: the Download button asks ``download=1``, which
-    logs ``document.download`` once the file is found; the viewer's own fetch is not logged."""
+    logs ``document.download`` once the file is found; the viewer's own fetch is a view (#482)."""
     with context.db.customer(user.customer_id) as conn:
         row = _readable_or_409(conn, user, document_id)
+        if not download and row["status"] in _SERVABLE:
+            _viewed(conn, user, document_id, "file")
     if row["status"] not in _SERVABLE:
         raise ApiError(404, "not_found")
     try:
@@ -1395,8 +1402,9 @@ def get_file(document_id: uuid.UUID, user: User, context: Context, download: boo
 def get_page_image(document_id: uuid.UUID, page_no: int, user: User, context: Context) -> Response:
     with context.db.customer(user.customer_id) as conn:
         row = _readable_or_409(conn, user, document_id)
-    if row["status"] == "rejected" or page_no < 1:
-        raise ApiError(404, "not_found")
+        if row["status"] == "rejected" or page_no < 1:
+            raise ApiError(404, "not_found")
+        _viewed(conn, user, document_id, "page_image")
     try:
         image = context.storage.get_page_image(user.customer_id, str(document_id), page_no)
     except BlobNotFound:
@@ -1412,7 +1420,7 @@ def get_page_image(document_id: uuid.UUID, page_no: int, user: User, context: Co
 def get_page_readings(document_id: uuid.UUID, page_no: int, user: User, context: Context) -> dict[str, Any]:
     """Scanned text: every line each reader read on this page, as read. Who may see it
     is exactly who may see the page image (above): any version out of Trash (T1: 409
-    ``in_trash``), never a rejected one; and the page must exist. Never logged."""
+    ``in_trash``), never a rejected one; and the page must exist. A view (#482)."""
     customer_id, target = user.customer_id, str(document_id)
     with context.db.customer(customer_id) as conn:
         row = _readable_or_409(conn, user, document_id)
@@ -1422,6 +1430,7 @@ def get_page_readings(document_id: uuid.UUID, page_no: int, user: User, context:
             raise ApiError(404, "not_found")
         rows = listing.page_readings(conn, customer_id, target, page_no)
         marks = listing.page_marks(conn, customer_id, target, page_no)  # PRD 5 U3
+        _viewed(conn, user, document_id, "readings")
     return page_readings(page_no, rows, marks)
 
 
@@ -1439,17 +1448,18 @@ def get_document_words(
     words: the viewer keeps it while its pages change. Who may ask is who may see the page
     image: another customer's id and a rejected file are 404, a family in Trash 409
     ``in_trash`` (T1). Regions, page numbers and the asker's own words only, never the
-    document's text. One statement."""
+    document's text. One statement, and the view (#482)."""
     words = page_words.clean_words(w or [])
     with context.db.customer(user.customer_id) as conn:
         found = listing.word_lines(conn, user.customer_id, str(document_id))
-    if found is None:
-        raise ApiError(404, "not_found")
-    in_trash, status, pieces = found
-    if in_trash:
-        raise ApiError(409, "in_trash", "This document is in the Trash. Restore it first.")
-    if status == "rejected":
-        raise ApiError(404, "not_found")
+        if found is None:
+            raise ApiError(404, "not_found")
+        in_trash, status, pieces = found
+        if in_trash:
+            raise ApiError(409, "in_trash", "This document is in the Trash. Restore it first.")
+        if status == "rejected":
+            raise ApiError(404, "not_found")
+        _viewed(conn, user, document_id, "words")
     return page_words.word_finds(pieces, words)
 
 
@@ -1471,12 +1481,20 @@ def get_sheet_cells(
         if page is None or page["unit"] != "cells":
             raise ApiError(404, "not_found")
         cells = listing.sheet_cells(conn, user.customer_id, str(document_id), page_no, row_from, row_to)
+        _viewed(conn, user, document_id, "cells")
     rows: list[dict[str, Any]] = []
     for cell in cells:
         if not rows or rows[-1]["row"] != cell["row_no"]:
             rows.append({"row": int(cell["row_no"]), "cells": []})
         rows[-1]["cells"].append({"column": int(cell["column_no"]), "text": cell["text"] or ""})
     return {"page_no": page_no, "total_rows": int(page["height"]), "rows": rows}
+
+
+def _viewed(conn: Connection, user: CurrentUser, document_id: uuid.UUID, via: str) -> None:
+    """#482: this read is a view of the document, once per person per half hour (A1)."""
+    audit.record_view(
+        conn, user.customer_id, actor_user_id=user.user_id, document_id=str(document_id), via=via
+    )
 
 
 # --- Trash (PRD 1 F5) -------------------------------------------------------------

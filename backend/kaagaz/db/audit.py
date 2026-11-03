@@ -14,7 +14,9 @@ File management (Phase 2 PRD 1):
 * A3: a row about a document also keeps the document's folder and family at write time
   (one lookup inside the insert); a row about a folder keeps the folder. Ids only.
 * A1: ``record_view`` writes ``document.view`` at most once per person per document every
-  VIEW_EVERY_MINUTES.
+  VIEW_EVERY_MINUTES. #482 (3 Nov 2026): every other way of reading a document one by one (the
+  viewer's file, page images, word lists, readings, cells, the clear copy, compare) shares that
+  row and its half hour, with ``{"via": ...}`` saying which; the detail writes none.
 * A5: ``entries`` is the one timeline query: the document timeline (a family), the folder
   timeline (a subtree), the dashboard's last 20 and the admin log with its filters, newest
   first with a cursor. Names are read when shown (``names``), never stored.
@@ -48,7 +50,9 @@ _INSERT = text(
     " FROM (SELECT 1) AS one"
     " LEFT JOIN documents d ON d.customer_id = CAST(:c AS uuid) AND d.id = CAST(:document AS uuid)"
 )
-# A1: on the index audit_log_actor, this person's rows of the last VIEW_EVERY_MINUTES.
+# #482: views of one document by one person wait for each other here, so two at once write one row.
+_VIEW_LOCK = text("SELECT pg_advisory_xact_lock(hashtextextended(:c || ':' || :u || ':' || :d, 0))")
+# A1: on the partial index audit_log_views (0068), this person's views of it in VIEW_EVERY_MINUTES.
 _VIEWED = text(
     "SELECT 1 FROM audit_log WHERE customer_id = :c AND actor_user_id = :u AND action = 'document.view'"
     " AND target_id = :d AND created_at > now() - make_interval(mins => :m) LIMIT 1"
@@ -91,11 +95,15 @@ def record(
     )
 
 
-def record_view(conn: Connection, customer_id: str, *, actor_user_id: str, document_id: str) -> bool:
+def record_view(
+    conn: Connection, customer_id: str, *, actor_user_id: str, document_id: str, via: str | None = None
+) -> bool:
     """A1: ``document.view``, unless this person viewed it in the last VIEW_EVERY_MINUTES.
-    True when a row was written. Two indexed statements.
-    ponytail: two opens in the same instant may both write; a lock per person if that matters."""
+    True when a row was written. ``via``: how it was read, when not the document's detail
+    (#482). Three statements, O(log n): a transaction lock on (customer, person, document),
+    held to the commit, so views at the same moment write one row; then the index probe."""
     params = {"c": customer_id, "u": actor_user_id, "d": document_id, "m": VIEW_EVERY_MINUTES}
+    conn.execute(_VIEW_LOCK, params)
     if conn.execute(_VIEWED, params).first() is not None:
         return False
     record(
@@ -105,6 +113,7 @@ def record_view(conn: Connection, customer_id: str, *, actor_user_id: str, docum
         action="document.view",
         target_type="document",
         target_id=document_id,
+        details=None if via is None else {"via": via},
     )
     return True
 

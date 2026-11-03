@@ -50,6 +50,10 @@ spellings written again, never deleted by the app (a key goes with its value).
 
 Page layout (0056, #383, #382): a page's blocks and its tables' cells, deleted and inserted by
 the replacing save, never updated.
+
+Audit keeping (0068, #482): a deleted organisation's audit rows, granted to no role (only the
+owner reads them); the worker's sweep that removes them after 365 days; and the operator's
+switch that requires two-step sign-in for an organisation's admins (#481).
 """
 
 import re
@@ -147,6 +151,8 @@ FROM_0061 = {"email_links": (True, True, False, False)}
 # last-used columns may change (a column grant).
 FROM_0062 = {"user_identities": (True, True, False, True)}
 UPDATES_0062 = {"user_identities": {"status", "approved_at", "approved_by", "last_used_at"}}
+# Audit keeping (0068, #482): a deleted organisation's audit rows, no right for the app at all.
+FROM_0068 = {"audit_log_kept": (False, False, False, False)}
 UPDATES_0030 = {
     "word_changes": {"applied", "undone_at", "undone_by"},
     "ensemble_runs": {
@@ -238,6 +244,8 @@ OWNER_RIGHTS = {
     ),
     "kaagaz_accuracy_check_beat": ("boolean", EMPTY_PATH),
     "kaagaz_accuracy_check_finish": ("boolean", EMPTY_PATH),
+    # 0068 (#482): the worker removes deleted organisations' audit rows after 365 days (a count).
+    "kaagaz_forget_kept_audit": ("bigint", EMPTY_PATH),
 }
 # The platform operator's (0015): only kaagaz_operator may run these, never the app.
 OPERATOR = "kaagaz_operator"
@@ -451,6 +459,9 @@ OPERATOR_RIGHTS = {
     # Changed on purpose (0040): the sign-in idle timeout, and its write (step-up).
     "kaagaz_op_session_timeout": ("TABLE(org_hours integer, platform_hours integer)", EMPTY_PATH),
     "kaagaz_op_set_session_timeout": ("text", EMPTY_PATH),
+    # 0068 (#481): two-step sign-in required for an organisation's admins, and its write (step-up).
+    "kaagaz_op_admin_two_step": ("boolean", EMPTY_PATH),
+    "kaagaz_op_set_admin_two_step": ("text", EMPTY_PATH),
     # 0046: operator-only read/write for customer and user RPM overrides.
     "kaagaz_op_model_rates": (
         "TABLE(org_rpm integer, user_id uuid, email text, user_rpm integer)",
@@ -528,6 +539,7 @@ def test_every_customer_table_has_row_level_security_and_the_customer_only_polic
         | set(FROM_0056)
         | set(FROM_0061)
         | set(FROM_0062)
+        | set(FROM_0068)
     )
 
     with db.system() as conn:
@@ -574,7 +586,8 @@ def test_every_customer_table_is_granted_to_the_app_role(db: Database) -> None:
         # An organisation's models and settings are the operator's. Changed on purpose (0039):
         # its feature switches too.
         # Changed on purpose (0040): and its sign-in idle timeout.
-        if table not in FROM_0023 | FROM_0026 | FROM_0039 | FROM_0040 | FROM_0043:
+        # Changed on purpose (#482, 0068): and a deleted organisation's kept audit rows.
+        if table not in FROM_0023 | FROM_0026 | FROM_0039 | FROM_0040 | FROM_0043 | FROM_0068:
             assert (select, insert) == (True, True), table
     for table in FROM_0002:
         assert granted[table] == (True, True, True, True), table
@@ -597,6 +610,7 @@ def test_every_customer_table_is_granted_to_the_app_role(db: Database) -> None:
         | FROM_0056
         | FROM_0061
         | FROM_0062
+        | FROM_0068
     ).items():
         assert granted[table] == expected, table
 
