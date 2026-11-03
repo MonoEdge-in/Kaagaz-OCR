@@ -183,7 +183,9 @@ Model choice and AI spend (council 11 Oct 2026), when the processor is given the
   ``ReadingPaused`` (never a reader outage: nothing is read locally): the run ends with its code
   (``paused_daily_limit`` or ``paused_budget``), the list shows it waiting, and the job is acked:
   the document is held in the database until the release sweep queues it again. A document let
-  in is read to its end.
+  in is read to its end. A spreadsheet is asked with no AI pages (the budget only, QA P4); the
+  upgrade sweep's read again (no one asked) is never asked: its document was ready, and a hold
+  would take it out of search (QA P1, 4 Nov 2026). Its pages are counted, as Ensemble's.
 
 Dynamic and Ensemble reading (features 26 and 27, council 15 Oct 2026): ``job_reading``
 gives the document's whole ``Reading`` (``kaagaz.db.models.resolve_scan``, checked again
@@ -351,6 +353,8 @@ _VERDICT_CODES = REJECTION_CODES - {"rejected"}
 _SETTLED = frozenset({DocumentStatus.READY, DocumentStatus.FAILED, DocumentStatus.NEEDS_READER})
 # The detected types whose every page is a picture read by OCR (the time left, fast scan).
 _PHOTO_TYPES = frozenset({sniff.PNG, sniff.JPEG, sniff.TIFF})
+# Read from their cells, never by AI (kaagaz/reading/wiring.py): the daily page limit never holds them.
+_SHEET_TYPES = frozenset({sniff.TEXT, sniff.ZIP})
 
 # Stored page pictures are for people to look at (PRD 1, S1), so they are WebP.
 # Method 2 (R2 finding 2): several times faster to encode than 4, for under 1 dB
@@ -731,9 +735,12 @@ class JobReading:
 
 class ReadingAdmission(Protocol):
     """``kaagaz.jobs.reading_pause.ReadingPause.admit`` (#478): the document may be read inside,
-    or its organisation is paused and it raises ReadingPaused (the document held)."""
+    or its organisation is paused and it raises ReadingPaused (the document held). ``ai_pages``
+    False: a spreadsheet, never held by the daily page limit."""
 
-    def __call__(self, customer_id: str, document_id: str) -> contextlib.AbstractContextManager[object]: ...
+    def __call__(
+        self, customer_id: str, document_id: str, *, ai_pages: bool = True
+    ) -> contextlib.AbstractContextManager[object]: ...
 
 
 class UsageScopes(Protocol):
@@ -1049,10 +1056,13 @@ class DocumentProcessor:
         run.models = frozenset(
             model for model in (run.model, *(agent.model for agent in extra if agent is not None)) if model
         )
+        upgrade = self._job_reading is not None and run.user_id is None  # the upgrade sweep's
         admitted = (
             contextlib.nullcontext()
-            if self._reading_pause is None
-            else self._reading_pause(job.customer_id, job.document_id)  # #478: or ReadingPaused
+            if self._reading_pause is None or upgrade  # QA P1: an upgrade never holds a ready document
+            else self._reading_pause(  # #478: or ReadingPaused
+                job.customer_id, job.document_id, ai_pages=record.detected_type not in _SHEET_TYPES
+            )
         )
         with (
             admitted,

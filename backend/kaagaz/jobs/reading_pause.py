@@ -9,7 +9,9 @@ at its daily page limit, and for the month at its monthly budget; Ask keeps work
   page is given back when it ends; its pages were counted as they were read. The day it was
   let in is kept on it (``documents.reading_admitted``) until it is read to its end, so a
   retry that day (a reader that dropped out, a Mistral wait, a lost lease) is let in again
-  with no claim, never held half read (review, 3 Nov 2026).
+  with no claim, never held half read (review, 3 Nov 2026). A spreadsheet has no page for AI
+  to read (``ai_pages`` False): the budget is asked, never the day's limit (QA P4, 4 Nov 2026).
+  The upgrade sweep's read again is never asked (kaagaz/pipeline.py, QA P1).
 * **Its own signal.** A paused document raises ``ReadingPaused``, never ``ModelUnavailable``
   (which starts the reader's outage clock, then reads locally with RapidOCR and reads again
   later, paid twice) and never a Mistral wait. The pipeline ends the try (its run's code
@@ -17,12 +19,14 @@ at its daily page limit, and for the month at its monthly budget; Ask keeps work
   job is acked: the document is held in the database (``documents.reading_held``), not in
   the queue, so the server can still switch itself off at night (infra/ec2/idle-stop.sh).
 * **Released by a sweep.** ``ReleaseHeld`` runs ``release_held`` every RELEASE_EVERY between
-  jobs under the sweep lock: each organisation with held documents and no pause now (a new
-  India day, a raised limit or budget, a new month) has its waiting documents queued again,
+  jobs under the sweep lock: each active organisation with held documents and no pause now (a
+  new India day, a raised limit or budget, a new month) has its waiting documents queued again,
   oldest first, only as many as the pages left today (one page each at least) and at most
   RELEASE_PER_PASS, never one in the Trash. Each hold ends only once its job is queued, so a
-  queue that is down keeps every hold it did not queue. One organisation's error is logged
-  and the others go on (review, 3 Nov 2026). The first turn after a start runs it, so a
+  queue that is down keeps every hold it did not queue; its end is audited
+  (``document.reading_released``) and its "waiting" progress cleared (``reading_days.unhold``).
+  A disabled or deleting organisation's holds are kept (QA T1, 4 Nov 2026). One
+  organisation's error is logged and the others go on (review, 3 Nov 2026). The first turn after a start runs it, so a
   server started in the morning queues them at once.
 * **The super admin is told** once per organisation per India day, by email to
   OPS_ALERT_EMAIL (``pause_alert``, the operations alerts' one rule: kaagaz.ops_alert); the
@@ -44,6 +48,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from kaagaz import ops_alert
 from kaagaz.adapters.email import Mailer
 from kaagaz.db import reading_days
+from kaagaz.db.customers import is_active
 from kaagaz.db.engine import Database, unavailable
 from kaagaz.db.reading_days import State, india_day
 from kaagaz.ingestion.errors import BackendUnavailable
@@ -98,10 +103,11 @@ class ReadingPause:
         self._alert = alert
 
     @contextmanager
-    def admit(self, customer_id: str, document_id: str) -> Iterator[None]:
+    def admit(self, customer_id: str, document_id: str, *, ai_pages: bool = True) -> Iterator[None]:
         """Let the document be read, holding one page of today's limit to the end of the block;
         or hold it and raise ReadingPaused (the super admin emailed on the day's first pause).
-        A document let in today already is let in again with no claim. An organisation with no
+        A document let in today already is let in again with no claim; one with no ``ai_pages``
+        (a spreadsheet) is asked about the budget only. An organisation with no
         limit and no budget writes nothing. One transaction of 1 to 3 statements; one more when
         the block ends, if a page was claimed or the day noted."""
         now = self._clock()
@@ -112,7 +118,7 @@ class ReadingPause:
             again = org.admitted == day  # a retry of a document let in today: read to its end
             if not again and pause_reason(org) == BUDGET:
                 reason = BUDGET
-            elif not again and org.page_limit is not None:
+            elif not again and ai_pages and org.page_limit is not None:
                 claimed = reading_days.claim(conn, customer_id, day, org.page_limit)
                 reason = None if claimed else DAILY_LIMIT
             limited = org.page_limit is not None or org.budget is not None
@@ -202,8 +208,8 @@ def release_held(db: Database, send: Send, *, now: datetime) -> list[Job]:
     """Queue the waiting documents of every organisation no longer paused at ``now`` (the
     module notes); the jobs sent. One organisation's database or queue error is logged with its
     id and the next one goes on. One statement for the organisations with holds; then, for
-    each, one transaction of 1 to 3 statements, and a send and a one-statement transaction per
-    document queued."""
+    each, one transaction of 1 to 4 statements, and a send and a transaction of 1 or 2 statements
+    per document queued."""
     day = india_day(now)
     with db.system() as conn:
         customers = reading_days.held_customers(conn)
@@ -222,6 +228,8 @@ def release_held(db: Database, send: Send, *, now: datetime) -> list[Job]:
 def _release(db: Database, send: Send, customer: str, day: date, sent: list[Job]) -> None:
     """One organisation's pass: each job queued is added to ``sent``, then its hold ended."""
     with unavailable(), db.customer(customer) as conn:
+        if not is_active(conn, customer):
+            return  # disabled or being deleted: kept held, as the upgrade sweep passes it over
         org = reading_days.state(conn, customer, day)
         if pause_reason(org) is not None:
             return

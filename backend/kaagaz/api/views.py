@@ -57,12 +57,16 @@ READER_STOPPED = (
 )
 _KEY_WAITS = frozenset(f"{name}_unavailable" for name in KEY_PROBLEMS)  # #473: Mistral's too
 # #478 (Tushar, 3 Nov 2026): the organisation's reading pause held it; never a sum of money.
-# Review, 3 Nov 2026: the super admin is told, not the organisation's admin.
+# Review, 3 Nov 2026: the super admin is told, not the organisation's admin. QA C4 (4 Nov 2026):
+# never "tomorrow morning" (a weekend, a raised limit), and the budget is the "monthly AI limit".
 PAUSED_FOR_TODAY = (
-    "Reading is paused for today. Your organisation has read its pages for the day."
-    " This file will be read tomorrow morning."
+    "Reading is paused. Your organisation has reached its daily page limit. This file will be read"
+    " on its own when the limit resets, or sooner if it is raised."
 )
-PAUSED_BUDGET = "Reading is paused for now. The Kaagaz team has been told. It will continue on its own."
+PAUSED_BUDGET = (
+    "Reading is paused. Your organisation has reached its monthly AI limit. It starts again when the"
+    " limit is raised or the new month begins."
+)
 _PAUSE_WORDS = {CODES[DAILY_LIMIT]: PAUSED_FOR_TODAY, CODES[BUDGET]: PAUSED_BUDGET}
 
 

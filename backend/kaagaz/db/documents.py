@@ -221,13 +221,14 @@ REPROCESS_COOLDOWN_MINUTES = 10
 # counts, on the index audit_log_family), whichever is later. Never ``updated_at``: every try,
 # step and hand-back moves it, so a document that keeps waiting would never get old enough.
 # Never one held by a reading pause (#478 review, 3 Nov 2026): it waits on purpose, and the
-# release sweep queues it.
+# release sweep queues it; once queued, it is asked for again then (``document.reading_released``,
+# QA P2, 4 Nov 2026).
 RETRY_STUCK_HOURS = 6
 STUCK = (
     "CASE WHEN d.status IN ('received', 'clean') AND d.reading_held IS NULL THEN GREATEST(d.created_at,"  # noqa: S608 - a fixed number
     " (SELECT max(a.created_at) FROM audit_log a WHERE a.customer_id = d.customer_id"
     " AND a.family_id = d.family_id AND a.target_id = d.id::text"
-    " AND a.action IN ('document.reprocess', 'document.read_upgrade')))"
+    " AND a.action IN ('document.reprocess', 'document.read_upgrade', 'document.reading_released')))"
     f" < now() - make_interval(hours => {RETRY_STUCK_HOURS}) ELSE false END"
 )
 

@@ -16,6 +16,7 @@ from botocore.exceptions import ClientError
 
 from kaagaz.adapters.email import MemoryMailer
 from kaagaz.api import views
+from kaagaz.db import models
 from kaagaz.db.reading_days import State
 from kaagaz.ingestion.ports import Job
 from kaagaz.jobs import reading_pause
@@ -33,7 +34,18 @@ from kaagaz.scanning.gate import DocumentStatus
 from kaagaz.settings import Settings
 from tests.pdf_builder import make_pdf
 from tests.settings_factory import make_settings
-from tests.test_pipeline_gemini import SCANNED, TOTAL, FakeChecker, ScriptedReader, beat, page_read, rig
+from tests.test_model_choice_pipeline import _Reading
+from tests.test_pipeline import CSV
+from tests.test_pipeline_gemini import (
+    MODEL,
+    SCANNED,
+    TOTAL,
+    FakeChecker,
+    ScriptedReader,
+    beat,
+    page_read,
+    rig,
+)
 
 MONEY = views._MONEY_KEY  # usd, price, budget, cost: never to an organisation
 ORG = State(
@@ -50,7 +62,7 @@ def test_a_paused_document_is_held_never_read_nor_read_locally_and_its_job_is_do
     asked: list[str] = []
 
     @contextmanager
-    def paused(customer_id: str, document_id: str) -> Iterator[None]:
+    def paused(customer_id: str, document_id: str, *, ai_pages: bool = True) -> Iterator[None]:
         asked.append(document_id)
         raise ReadingPaused(DAILY_LIMIT)
         yield  # never: a paused document is not read
@@ -71,7 +83,7 @@ def test_a_document_let_in_is_read_inside_the_pauses_block() -> None:
     reader = ScriptedReader({1: page_read(TOTAL)})
 
     @contextmanager
-    def admit(customer_id: str, document_id: str) -> Iterator[None]:
+    def admit(customer_id: str, document_id: str, *, ai_pages: bool = True) -> Iterator[None]:
         inside.append(True)
         yield
         inside.append(bool(reader.opened))  # its claimed page is given back after the reading
@@ -81,18 +93,84 @@ def test_a_document_let_in_is_read_inside_the_pauses_block() -> None:
     assert inside == [True, True] and system.status(job) == DocumentStatus.READY
 
 
+class Asked:
+    """A reading pause that notes each document asked about and whether it has AI pages;
+    ``paused``: it raises ReadingPaused, the document held."""
+
+    def __init__(self, *, paused: bool = False) -> None:
+        self.paused = paused
+        self.asked: list[tuple[str, bool]] = []
+
+    @contextmanager
+    def __call__(self, customer_id: str, document_id: str, *, ai_pages: bool = True) -> Iterator[None]:
+        self.asked.append((document_id, ai_pages))
+        if self.paused:
+            raise ReadingPaused(DAILY_LIMIT)
+        yield
+
+
+def test_an_upgrade_run_is_never_held_so_its_ready_document_stays_in_search() -> None:
+    """QA P1 (4 Nov 2026): the upgrade sweep's read again (no one asked) is counted, never paused,
+    as Ensemble's runs after the scan; a reading someone asked for is asked."""
+    pause = Asked(paused=True)
+    upgrade = rig(
+        ScriptedReader({1: page_read(TOTAL)}),
+        checker=FakeChecker(),
+        job_reading=_Reading(None, MODEL),
+        reading_pause=pause,
+    )
+    job = upgrade.run(make_pdf([SCANNED]))
+    assert pause.asked == [] and upgrade.status(job) == DocumentStatus.READY
+    asked = rig(
+        ScriptedReader({1: page_read(TOTAL)}),
+        checker=FakeChecker(),
+        job_reading=_Reading("u1", MODEL),
+        reading_pause=pause,
+    )
+    held = asked.job(make_pdf([SCANNED]))
+    asked.processor(held, beat)
+    assert pause.asked == [(held.document_id, True)] and asked.status(held) is None  # held
+
+
+def test_a_paused_mistral_document_never_calls_mistral() -> None:
+    """Missing test c (QA, 4 Nov 2026): held before any page is drawn, so Mistral reads nothing."""
+    lead = models.Agent(MODEL, "google-vertex", "Gemini")
+    job_reading = _Reading("u1", MODEL)
+    mistral = models.Reading("single", lead, scan_reader="mistral", mistral_model="mistral-ocr-2512")
+    job_reading.reading = replace(job_reading.reading, reading=mistral)
+    reader, pause = ScriptedReader({1: page_read(TOTAL)}), Asked(paused=True)
+    system = rig(reader, checker=FakeChecker(), job_reading=job_reading, reading_pause=pause)
+    job = system.job(make_pdf([SCANNED]))
+    system.processor(job, beat)
+    assert reader.opened == [] and reader.read_inside == [] and system.pages(job) == []
+    assert system.totals(job).error_code == "paused_daily_limit"
+
+
+def test_a_spreadsheet_is_asked_with_no_ai_pages() -> None:
+    """QA P4 (4 Nov 2026): a spreadsheet has no page for AI to read, so the daily page limit is
+    never asked for it (the budget is: its card and search still call a model)."""
+    pause = Asked()
+    system = rig(ScriptedReader({1: page_read(TOTAL)}), checker=FakeChecker(), reading_pause=pause)
+    sheet = system.run(CSV)
+    scan = system.run(make_pdf([SCANNED]))
+    assert pause.asked == [(sheet.document_id, False), (scan.document_id, True)]
+    assert system.status(sheet) == DocumentStatus.READY
+
+
 @pytest.mark.parametrize(
     ("code", "words"),
     [
-        # Changed on purpose (#478 review, 3 Nov 2026): who was told, and when it is read.
+        # Changed on purpose (QA C4, 4 Nov 2026): never "tomorrow morning" (a weekend, a raised
+        # limit), and the monthly AI limit named, never money.
         (
             "paused_daily_limit",
-            "Reading is paused for today. Your organisation has read its pages for the day."
-            " This file will be read tomorrow morning.",
+            "Reading is paused. Your organisation has reached its daily page limit. This file will be"
+            " read on its own when the limit resets, or sooner if it is raised.",
         ),
         (
             "paused_budget",
-            "Reading is paused for now. The Kaagaz team has been told. It will continue on its own.",
+            "Reading is paused. Your organisation has reached its monthly AI limit. It starts again"
+            " when the limit is raised or the new month begins.",
         ),
     ],
 )

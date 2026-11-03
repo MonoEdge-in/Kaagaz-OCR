@@ -16,7 +16,10 @@ only when a document's reading ends. The day is the India date (IST: no daylight
 * ``hold``: a document waiting for the pause to end, in the database, not the queue (the server
   switches itself off while the queue is empty); ``held_customers`` (on a ``Database.system()``
   connection, owner rights, ids only) the organisations with one; ``waiting`` the ones the release
-  sweep queues, oldest first; ``unhold`` ends one hold, once its job is queued.
+  sweep queues, oldest first; ``unhold`` ends one hold, once its job is queued: audited as
+  ``document.reading_released`` (no actor, ids only), which the Retry clock counts from
+  (``documents.STUCK``), and its "waiting" progress cleared, so the list stops saying it is
+  paused (QA P2, P5, 4 Nov 2026).
 * ``let_in`` and ``read_to_end``: the day a document was let in, kept until it is read to its end,
   so a retry that day is let in again (review, 3 Nov 2026).
 * ``note_alerted``: the super admin was told today (once the email is sent).
@@ -32,6 +35,8 @@ from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import Connection, text
+
+from kaagaz.db import audit
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -114,8 +119,11 @@ _ALERTED = text(
     " WHERE r.alerted_at IS NULL"
 )
 _HOLD = text("UPDATE documents SET reading_held = :reason WHERE customer_id = :c AND id = :d")
+# Only "waiting" is cleared: a worker that started it in the moment since writes its own steps.
 _UNHOLD = text(
-    "UPDATE documents SET reading_held = NULL WHERE customer_id = :c AND id = :d AND reading_held IS NOT NULL"
+    "UPDATE documents SET reading_held = NULL,"
+    " progress = CASE WHEN progress ->> 'step' = 'waiting' THEN NULL ELSE progress END"
+    " WHERE customer_id = :c AND id = :d AND reading_held IS NOT NULL RETURNING id"
 )
 _LET_IN = text(
     "UPDATE documents SET reading_held = NULL, reading_admitted = :day WHERE customer_id = :c AND id = :d"
@@ -203,8 +211,17 @@ def hold(conn: Connection, customer_id: str, document_id: str, reason: str) -> N
 
 
 def unhold(conn: Connection, customer_id: str, document_id: str) -> None:
-    """The document is no longer held (its job is queued). One statement."""
-    conn.execute(_UNHOLD, {"c": customer_id, "d": document_id})
+    """The document is no longer held (its job is queued), and that is audited. Two statements;
+    one when it was not held (let in by a worker meanwhile)."""
+    if conn.execute(_UNHOLD, {"c": customer_id, "d": document_id}).first() is not None:
+        audit.record(
+            conn,
+            customer_id,
+            actor_user_id=None,
+            action="document.reading_released",
+            target_type="document",
+            target_id=document_id,
+        )
 
 
 def let_in(conn: Connection, customer_id: str, document_id: str, day: date) -> None:

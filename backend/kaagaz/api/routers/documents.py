@@ -95,6 +95,10 @@ Why some choices:
   ``read_model`` in an optional JSON body, checked as an upload's, and its audit row
   names it; a page's Read again keeps the document's model (no re-billing of the cache).
   Both make the asker ``read_requested_by``, written by ``mark_for_reprocess`` itself.
+* **While reading is paused** (#478, QA P1 and C3, 4 Nov 2026): a Read again of a ready
+  document, or of one of its pages, is 409 ``reading_paused`` with plain words, and nothing
+  changes: it would be held, out of search and Ask, until the pause ends. A failed or unreadable
+  one is in neither, so it may be read again, and waits for the pause.
 * **Batches** (PRD 5 Q1): an upload may name its drop in the optional ``batch_id`` form
   field, a UUID the browser made (anything else is 400). A drop holds at most
   MAX_FILES_PER_BATCH of the uploader's files: the next is 409 ``batch_full``, checked
@@ -159,7 +163,7 @@ from kaagaz.api.views import (
     timeline,
 )
 from kaagaz.db import admin as admin_sql
-from kaagaz.db import audit, autofile, listing, trash
+from kaagaz.db import audit, autofile, listing, reading_days, trash
 from kaagaz.db import chat as chat_sql
 from kaagaz.db import folders as folders_sql
 from kaagaz.db import tags as tags_sql
@@ -184,6 +188,7 @@ from kaagaz.ingestion.pagecount import goes_express
 from kaagaz.ingestion.policy import UploadPolicy, limits_by_type
 from kaagaz.ingestion.ports import BlobNotFound, Job, JobQueue, UnknownFamily, UnknownFolder
 from kaagaz.ingestion.service import UploadResult, UploadService
+from kaagaz.jobs.reading_pause import BUDGET, DAILY_LIMIT, pause_reason
 from kaagaz.reading.ocr import GEMINI
 from kaagaz.search import page_words
 from kaagaz.settings import Settings
@@ -246,6 +251,13 @@ _NOT_SCANNED = "Only a page read from a scan or photo can be read again."
 _ENSEMBLE_RUNNING = (
     "Ensemble is reading this document. Read it again when Ensemble finishes, or stop it first."
 )
+# QA C3 (4 Nov 2026): never money, as the list's words (kaagaz/api/views.py).
+_READING_PAUSED = {
+    DAILY_LIMIT: "Reading is paused, so this document can't be read again now. It stays searchable."
+    " Try again when the daily limit resets.",
+    BUDGET: "Reading is paused, so this document can't be read again now. It stays searchable."
+    " Try again when the monthly AI limit is raised or the new month begins.",
+}
 _REJECT_STATUS = {
     RejectCode.EMPTY_FILE: 400,
     RejectCode.UNSUPPORTED_TYPE: 400,
@@ -1094,6 +1106,7 @@ def reprocess_document(
             raise ApiError(409, "not_reprocessable") from None
         except ReprocessLimited as limited:
             raise ApiError(429, "rate_limited", _REPROCESS_LIMITED[limited.reason]) from None
+        _refuse_while_paused(conn, customer_id, previous, context.clock())
         if previous is None:  # deleted in the moment since
             raise ApiError(404, "not_found")
         details: dict[str, audit.DetailValue] = {"status": previous, **reading.details()}
@@ -1114,6 +1127,15 @@ def reprocess_document(
         # Last, inside the transaction: a queue that is down rolls everything back (503).
         context.queue.enqueue(Job(customer_id, target), express=_read_again_express(context, row))
     return reply
+
+
+def _refuse_while_paused(conn: Connection, customer_id: str, previous: str | None, now: datetime) -> None:
+    """409 ``reading_paused`` for a document that was ready while its organisation's reading is
+    paused (the module notes); the caller's transaction rolls back. One statement for a ready one."""
+    if previous == "ready":
+        reason = pause_reason(reading_days.state(conn, customer_id, reading_days.india_day(now)))
+        if reason is not None:
+            raise ApiError(409, "reading_paused", _READING_PAUSED[reason])
 
 
 def _read_again_express(context: AppContext, row: RowMapping) -> bool:
@@ -1162,6 +1184,7 @@ def read_page_again(
             raise ApiError(409, "not_reprocessable") from None
         except ReprocessLimited as limited:
             raise ApiError(429, "rate_limited", _REPROCESS_LIMITED[limited.reason]) from None
+        _refuse_while_paused(conn, customer_id, previous, context.clock())
         if previous is None or not request_page_read_again(
             conn, customer_id, target, page_no, now=context.clock(), regions=regions
         ):
