@@ -42,6 +42,11 @@ writes its own audit rows.
   (PUT with a fresh code): the platform's model requests a minute, documents read at once and
   pages of one document read at once, each null for the server's setting and never above it
   (``most``: MODEL_RPM, WORKER_REPLICAS, OCR_PAGE_CONCURRENCY) (package S, 0053).
+* ``GET`` and ``PUT`` {max_files, max_gb, max_folders, code} ``/operator/folder-upload-limits``
+  and ``/operator/orgs/{id}/folder-upload-limits`` (PUT with a fresh code): the most files, GB
+  and folders one folder upload may hold; the organisation's own, else the platform's, else
+  ``defaults`` (50,000 files, 5 GB, 10,000 folders), each at most 200,000, 1,024 and 50,000
+  (400 before a code is used up). An organisation's all null follows the platform (0061c, #484).
 * ``GET``, ``POST`` {scan_model, chat_model, note, code} and ``DELETE`` {code}
   ``/operator/test-model`` (POST and DELETE with a fresh code): the platform test model, one
   allowed model for every organisation's scanning and answering, and its undo (every
@@ -72,6 +77,14 @@ from kaagaz.api.routers.operator_orgs import StepUp, StepUpBody, _check, _step_u
 from kaagaz.api.views import iso
 from kaagaz.db import operator_models as models_sql
 from kaagaz.db.engine import OperatorDatabase
+from kaagaz.db.folder_uploads import (
+    DEFAULT_MAX_FILES,
+    DEFAULT_MAX_FOLDERS,
+    DEFAULT_MAX_GB,
+    MOST_FILES,
+    MOST_FOLDERS,
+    MOST_GB,
+)
 from kaagaz.db.models import MAX_AGENTS, vendor
 from kaagaz.db.operator_models import AiChoice
 from kaagaz.db.operator_orgs import Outcome
@@ -193,6 +206,18 @@ class TimeoutBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     hours: Annotated[int, Field(strict=True, ge=1, le=24)] | None
+    code: str = Field(min_length=1, max_length=MAX_CODE)
+
+
+class FolderLimitsBody(BaseModel):
+    """The folder upload limits (0061c, #484), each null for "not set" (the default, or follow the
+    platform), never above its ceiling. Strict: 1.5, "3" and true are refused."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    max_files: Annotated[int, Field(strict=True, ge=1, le=MOST_FILES)] | None
+    max_gb: Annotated[int, Field(strict=True, ge=1, le=MOST_GB)] | None
+    max_folders: Annotated[int, Field(strict=True, ge=1, le=MOST_FOLDERS)] | None
     code: str = Field(min_length=1, max_length=MAX_CODE)
 
 
@@ -486,6 +511,82 @@ def set_org_session_timeout(
         )
     _refuse(db, operator, outcome, step_up)
     return get_org_session_timeout(customer_id, operator, db, context)
+
+
+_FOLDER_DEFAULTS = {
+    "max_files": DEFAULT_MAX_FILES,
+    "max_gb": DEFAULT_MAX_GB,
+    "max_folders": DEFAULT_MAX_FOLDERS,
+}
+
+
+def _folder_limits(db: OperatorDatabase, operator: CurrentOperator, customer_id: str | None) -> RowMapping:
+    with db.operator() as conn:
+        row = models_sql.folder_upload_limits(conn, operator.operator_id, customer_id)
+    if row is None:  # an unknown organisation, or the operator was disabled meanwhile
+        raise ApiError(404, "not_found") if customer_id else ApiError(401, "not_signed_in")
+    return row
+
+
+def _limits_of(row: RowMapping, prefix: str) -> dict[str, Any]:
+    return {name: row[f"{prefix}_{name}"] for name in _FOLDER_DEFAULTS}
+
+
+@router.get("/folder-upload-limits")
+def get_folder_upload_limits(operator: OperatorSession, db: OperatorDb) -> dict[str, Any]:
+    """The platform's folder upload limits (null: the default)."""
+    return {**_limits_of(_folder_limits(db, operator, None), "platform"), "defaults": _FOLDER_DEFAULTS}
+
+
+@router.put("/folder-upload-limits")
+def set_folder_upload_limits(
+    body: FolderLimitsBody, operator: OperatorSession, db: OperatorDb, context: Context
+) -> dict[str, Any]:
+    """Set them (a fresh code first); every organisation without its own follows at its next upload."""
+    step_up = _step_up(db, context, operator, body.code)
+    with db.operator() as conn:
+        outcome = models_sql.set_folder_upload_limits(
+            conn, operator.operator_id, None, body.max_files, body.max_gb, body.max_folders, step=step_up.step
+        )
+    _refuse(db, operator, outcome, step_up)
+    return get_folder_upload_limits(operator, db)
+
+
+@router.get("/orgs/{customer_id}/folder-upload-limits")
+def get_org_folder_upload_limits(
+    customer_id: uuid.UUID, operator: OperatorSession, db: OperatorDb
+) -> dict[str, Any]:
+    """One organisation's own limits (null: follow the platform), with the platform's and the defaults."""
+    row = _folder_limits(db, operator, str(customer_id))
+    return {
+        "own": _limits_of(row, "org"),
+        "platform": _limits_of(row, "platform"),
+        "defaults": _FOLDER_DEFAULTS,
+    }
+
+
+@router.put("/orgs/{customer_id}/folder-upload-limits")
+def set_org_folder_upload_limits(
+    customer_id: uuid.UUID,
+    body: FolderLimitsBody,
+    operator: OperatorSession,
+    db: OperatorDb,
+    context: Context,
+) -> dict[str, Any]:
+    """Set one organisation's (all null: follow the platform), a fresh code first."""
+    step_up = _step_up(db, context, operator, body.code)
+    with db.operator() as conn:
+        outcome = models_sql.set_folder_upload_limits(
+            conn,
+            operator.operator_id,
+            str(customer_id),
+            body.max_files,
+            body.max_gb,
+            body.max_folders,
+            step=step_up.step,
+        )
+    _refuse(db, operator, outcome, step_up)
+    return get_org_folder_upload_limits(customer_id, operator, db)
 
 
 _SPEED_WORDS = {
