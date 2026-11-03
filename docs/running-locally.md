@@ -313,7 +313,8 @@ and the site keeps serving the old release until step 3:
    no container and logs `migrate failed; site still on <commit>`.
 3. Point `kaagaz-backend:local` and `kaagaz-frontend:local` (what `dc` runs) at
    the new images, start every service but `migrate` with `--no-deps`, and wait
-   up to 3 minutes for api to be healthy.
+   up to 3 minutes for api and frontend to be healthy (frontend since #477;
+   its check fetches `/login` with node, as the slim image has no curl).
 4. If it is not, point `:local` back at the previous images and start those
    (`<commit> rolled back to <previous>`). That commit is held: the timer logs
    `<commit> held` and never tries it again; the next commit on `production`
@@ -322,7 +323,7 @@ and the site keeps serving the old release until step 3:
 `~/.kaagaz-images` holds the live commit, then the one to roll back to, and is
 what `:local` must point at: every timer run puts `:local` back on the live
 images (undoing a hand `dc build`) before starting anything that is down.
-`~/.kaagaz-deployed` holds the live commit too, written only once api is
+`~/.kaagaz-deployed` holds the live commit too, written only once api and frontend are
 healthy, and `~/.kaagaz-rolled-back` the held commit. The live and previous
 images are kept; older commit images are removed after a good deploy. On the
 first deploy with this flow, if api is healthy, the running `:local` images are
@@ -330,7 +331,7 @@ named after the commit in `~/.kaagaz-deployed`; otherwise the log says there is
 no previous release to roll back to yet.
 
 To roll back by hand, as `ubuntu`: `~/kaagaz/infra/ec2/deploy.sh --rollback`.
-It starts the previous images, waits for api to be healthy, holds the commit
+It starts the previous images, waits for api and frontend to be healthy, holds the commit
 the checkout is on, and prints `<commit> rolled back to <previous>`; run it
 again to go forward. It never runs a downgrade migration, so the older code runs
 on the newer schema: this is safe only while migrations only add columns and

@@ -182,3 +182,19 @@ def test_the_caddyfile_sends_api_unchanged_to_the_api_and_the_rest_to_the_fronte
         "}",
         "}",
     ]
+
+
+def test_seaweedfs_is_healthy_only_once_its_s3_port_answers() -> None:
+    """#439: the master port (9333) answered seconds before the S3 port, and migrate's
+    ensure_bucket failed in that gap."""
+    test = '["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8333/healthz"]'
+    assert f"\n      test: {test}\n" in service("seaweedfs")
+
+
+def test_the_frontend_has_a_health_check_that_needs_no_curl() -> None:
+    """#477: deploy.sh waits for it, so a broken website is never reported deployed."""
+    frontend = service("frontend")
+    assert re.search(
+        r'^      test: \["CMD", "node", "-e", "fetch\(\'http://127\.0\.0\.1:3000/login\'', frontend, re.M
+    )
+    assert "process.exit(r.ok ? 0 : 1), () => process.exit(1)" in frontend

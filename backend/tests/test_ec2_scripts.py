@@ -86,7 +86,7 @@ def code(script: str) -> str:
 
 SWITCH = (
     f'  if tag_images "$target" local && {DC} up -d --no-deps "${{INFRA[@]}}" "${{APPS[@]}}" &&\n'
-    "    wait_for_api; then\n"
+    "    wait_for_app; then\n"
 )
 
 
@@ -107,7 +107,7 @@ def test_no_up_runs_migrate_through_depends_on() -> None:
     lines = code(text("deploy.sh"))
     ups = re.findall(r"up -d.*", lines)
     assert ups == [
-        'up -d --no-deps "${APPS[@]}" && wait_for_api',  # roll_back_to
+        'up -d --no-deps "${APPS[@]}" && wait_for_app',  # roll_back_to
         'up -d --no-deps "${INFRA[@]}" "${APPS[@]}" &&',  # the switch
         'up -d --no-deps "${INFRA[@]}" "${APPS[@]}"; then',  # every other run
     ]
@@ -153,18 +153,20 @@ def test_a_failed_build_or_migrate_stops_before_the_switch() -> None:
 def test_a_failed_health_check_holds_the_commit_and_rolls_back() -> None:
     script = text("deploy.sh")
     assert "\nHEALTH_TIMEOUT_SECONDS=180\n" in script
+    # #477: the website too, so a broken frontend is never reported deployed.
     assert (
-        "wait_for_api() {\n"
+        "wait_for_app() {\n"
         "  local waited=0\n"
-        "  until api_healthy; do\n"
+        "  until healthy api && healthy frontend; do\n"
         "    if ((waited >= HEALTH_TIMEOUT_SECONDS)); then\n"
         "      return 1\n"
         "    fi\n"
     ) in script
+    assert f'  id="$({DC} ps -q "$1")" || return 1\n' in script
     assert "docker inspect -f '{{.State.Health.Status}}' \"$id\"" in script
     assert (
         "roll_back_to() {\n"
-        f'  tag_images "$1" local && {DC} up -d --no-deps "${{APPS[@]}}" && wait_for_api\n'
+        f'  tag_images "$1" local && {DC} up -d --no-deps "${{APPS[@]}}" && wait_for_app\n'
         "}\n"
     ) in script
     steps = deploy_steps()
@@ -196,14 +198,14 @@ def test_the_deployed_record_is_written_only_after_a_health_check_passes() -> No
     assert script.count('>"$DEPLOYED_FILE') == 1 and script.count('>"$IMAGES_FILE') == 1  # only there
     # Each save_state follows a passed health check.
     assert re.findall(r"save_state \".*", script) == [
-        'save_state "$previous" "$current"',  # --rollback, after roll_back_to (ends in wait_for_api)
+        'save_state "$previous" "$current"',  # --rollback, after roll_back_to (ends in wait_for_app)
         'save_state "$current" ""',  # first run, api healthy
-        'save_state "$target" "$previous"',  # the switch passed wait_for_api
+        'save_state "$target" "$previous"',  # the switch passed wait_for_app
     ]
     rollback = script[script.index('  if ! roll_back_to "$previous"; then\n') :]
     assert rollback.index("    exit 1\n") < rollback.index('save_state "$previous" "$current"')
     assert (
-        '    if [[ -n "$deployed" ]] && api_healthy && tag_images local "$deployed"; then\n'
+        '    if [[ -n "$deployed" ]] && healthy api && tag_images local "$deployed"; then\n'
         '      current="$deployed"\n'
         '      save_state "$current" ""\n'
         "    else\n"

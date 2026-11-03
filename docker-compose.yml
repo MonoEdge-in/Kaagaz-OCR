@@ -65,7 +65,9 @@ services:
       - seaweedfs-data:/data
       - ./infra/seaweedfs/s3.json:/etc/seaweedfs/s3.json:ro
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9333/cluster/status"]
+      # The S3 port itself (#439, 3 Nov 2026): the master on 9333 answers seconds before
+      # it, and migrate's ensure_bucket then failed.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8333/healthz"]
       interval: 5s
       timeout: 5s
       retries: 30
@@ -205,6 +207,14 @@ services:
     image: kaagaz-frontend:${KAAGAZ_TAG:-local}
     ports:
       - "3000:3000"
+    healthcheck:
+      # The slim image has no curl or wget (#477, 3 Nov 2026). fetch follows redirects;
+      # any answer but 2xx, or none in 5 s, fails the check. infra/ec2/deploy.sh waits for it.
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/login', {signal: AbortSignal.timeout(5000)}).then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 10s
+      timeout: 10s
+      retries: 6
+      start_period: 20s
     depends_on:
       api:
         condition: service_healthy
