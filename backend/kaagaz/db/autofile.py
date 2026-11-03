@@ -30,7 +30,7 @@ same party's folder. There is no per-organisation GSTIN setting, so its own is t
 on the most of its verified invoices (``own_gstin``); when that is not clear, or neither
 side of the invoice is it, the file goes in the type folder. The folder is named after the
 other party as printed (``party_name``); a sibling of that name already there gets
-" (<GSTIN>)" added, and when that is taken too, or there is no room (depth 5) or nobody to
+" (<GSTIN>)" added, and when that is taken too, or there is no room (depth 100) or nobody to
 own a new folder, the type folder is used. Undo still moves the family to the top level.
 
 ``undo`` moves a filed family back to the top level, or to its department when it was filed
@@ -147,7 +147,7 @@ _FILE_FAMILY = (
 )
 _FILED_IN = "SELECT autofile, folder_id FROM documents WHERE customer_id = :c AND id = :f"
 # Undo's way back (File management F3): the department above the filed folder (the top-level
-# folder at most 5 levels up, when it is of kind department), where a file uploaded into a
+# folder at most 100 levels up, when it is of kind department), where a file uploaded into a
 # department was before filing; NULL (the top level) otherwise.
 # ponytail: a type folder a person moved into a department sends Undo there; remember the
 # upload's folder if that matters.
@@ -155,7 +155,7 @@ _DEPARTMENT_ABOVE = (
     "WITH RECURSIVE up (id, parent_id, depth) AS ("
     " SELECT f.id, f.parent_id, 1 FROM folders f WHERE f.customer_id = :c AND f.id = :folder"
     " UNION ALL SELECT f.id, f.parent_id, up.depth + 1 FROM up JOIN folders f ON f.id = up.parent_id"
-    " WHERE f.customer_id = :c AND up.depth < 6)"
+    " WHERE f.customer_id = :c AND up.depth < 101)"
     " SELECT dep.id FROM up JOIN folders dep ON dep.customer_id = :c AND dep.id = up.id"
     " WHERE up.parent_id IS NULL AND dep.kind = 'department'"
 )
@@ -380,7 +380,7 @@ def _child(
 ) -> str:
     """The folder holding ``key`` wherever it now is; else ``parent``'s child of that name
     with no key, adopted; else a new child. ``parent`` itself when the name is taken by a
-    keyed folder, there is no room (depth 5) or no owner."""
+    keyed folder, there is no room (depth 100) or no owner."""
     params = {"c": customer_id, "k": key, "p": parent, "name": name}
     keyed = conn.execute(text(_BY_KEY), params).scalar()
     if keyed is not None:

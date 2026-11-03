@@ -185,13 +185,13 @@ _ORDER = " ORDER BY a.created_at DESC, a.id DESC LIMIT :limit OFFSET :offset"
 _USER_NAMES = text(
     "SELECT id::text, display_name FROM users WHERE customer_id = :c AND id = ANY(CAST(:ids AS uuid[]))"
 )
-# Each folder's path from the top, "Land & Legal / Land records" (5 levels at most).
+# Each folder's path from the top, "Land & Legal / Land records" (100 levels at most).
 _FOLDER_PATHS = text(
     "WITH RECURSIVE up (start, id, parent_id, name, depth) AS ("
     " SELECT id, id, parent_id, name, 1 FROM folders"
     " WHERE customer_id = :c AND id = ANY(CAST(:ids AS uuid[]))"
     " UNION ALL SELECT up.start, f.id, f.parent_id, f.name, up.depth + 1 FROM up"
-    " JOIN folders f ON f.customer_id = :c AND f.id = up.parent_id WHERE up.depth < 6)"
+    " JOIN folders f ON f.customer_id = :c AND f.id = up.parent_id WHERE up.depth < 101)"
     " SELECT start::text, string_agg(name, ' / ' ORDER BY depth DESC) FROM up GROUP BY start"
 )
 
