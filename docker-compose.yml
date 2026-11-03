@@ -22,10 +22,15 @@ x-backend: &backend
       # The commit the image is built from, shown by /api/health (#246 O1).
       KAAGAZ_COMMIT: ${KAAGAZ_TAG:-local}
   env_file: .env
-  environment:
+  environment: &backend-env
     # .env keeps localhost for running on the laptop; inside Docker the
     # services reach each other by service name.
-    DATABASE_URL: postgresql://${POSTGRES_USER:-kaagaz}:${POSTGRES_PASSWORD:-kaagaz}@postgres:5432/${POSTGRES_DB:-kaagaz}
+    # The app's own login (#479): APP_DATABASE_URL once .env sets it (the server, host
+    # postgres), the owner's until then. Only migrate gets the owner's (below), and no
+    # backend container gets the master password itself, nor the workers the super admin's.
+    DATABASE_URL: ${APP_DATABASE_URL:-postgresql://${POSTGRES_USER:-kaagaz}:${POSTGRES_PASSWORD:-kaagaz}@postgres:5432/${POSTGRES_DB:-kaagaz}}
+    POSTGRES_PASSWORD: ""
+    OPS_DATABASE_URL: ""
     STORAGE_ENDPOINT_URL: http://seaweedfs:8333
     QUEUE_ENDPOINT_URL: http://elasticmq:9324
     QUEUE_URL: http://elasticmq:9324/000000000000/kaagaz-jobs
@@ -127,6 +132,10 @@ services:
   # One-shot: database migrations, then the storage bucket, then it exits.
   migrate:
     <<: *backend
+    environment:
+      <<: *backend-env
+      # The owner's login: the migrations and the owner-only CLI commands (#479).
+      DATABASE_URL: postgresql://${POSTGRES_USER:-kaagaz}:${POSTGRES_PASSWORD:-kaagaz}@postgres:5432/${POSTGRES_DB:-kaagaz}
     command:
       - sh
       - -c
@@ -143,6 +152,9 @@ services:
 
   api:
     <<: *backend
+    environment:
+      <<: *backend-env
+      OPS_DATABASE_URL: ${OPS_DATABASE_URL:-} # the super admin's login (#479), only here
     command: ["uvicorn", "kaagaz.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
     ports:
       - "8000:8000"

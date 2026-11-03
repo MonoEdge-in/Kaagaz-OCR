@@ -193,6 +193,12 @@ class Settings:
     # that is not a superuser, does not own the tables and has no BYPASSRLS, so
     # row level security always applies (docs/architecture.md).
     database_url: str = field(repr=False)  # it can hold a password
+    # The limited logins (#479, 0067): the API's and the workers' (``kaagaz_api``, which can
+    # only switch into db_app_role) and the API's super admin engine's (``kaagaz_ops``, only
+    # into kaagaz_operator). Each is DATABASE_URL while unset, so nothing changes until
+    # they are set; DATABASE_URL stays the owner's, for the migrations and the CLI.
+    app_database_url: str = field(repr=False)
+    ops_database_url: str = field(repr=False)
     db_app_role: str
 
     # File storage (S3 API: SeaweedFS on the laptop, Amazon S3 in AWS).
@@ -624,6 +630,8 @@ class Settings:
             raise SettingsError("QUEUE_EXPRESS_URL must name a queue other than QUEUE_URL")
         return cls(
             database_url=env.text("DATABASE_URL"),
+            app_database_url=env.optional("APP_DATABASE_URL") or env.text("DATABASE_URL"),
+            ops_database_url=env.optional("OPS_DATABASE_URL") or env.text("DATABASE_URL"),
             db_app_role=env.text("DB_APP_ROLE"),
             storage_endpoint_url=env.optional("STORAGE_ENDPOINT_URL"),
             storage_region=env.text("STORAGE_REGION"),

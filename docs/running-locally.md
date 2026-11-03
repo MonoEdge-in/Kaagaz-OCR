@@ -281,7 +281,7 @@ Lambda's `INSTANCE_ID` and `WAKE_TOKEN` live only in the Lambda console.
 6. The models, once:
    `dc run --rm worker python -m kaagaz.cli verify-models` says PASS on every line.
 7. The first customer and admin:
-   `dc exec api python -m kaagaz.cli create-customer --name "<Company>" --admin-email <email> --admin-name "<Name>"`
+   `dc run --rm migrate python -m kaagaz.cli create-customer --name "<Company>" --admin-email <email> --admin-name "<Name>"`
    (it asks for the admin's password at a hidden prompt). The admin signs in at
    `https://<DOMAIN>/login` and sets up two-step sign-in there (every admin must have it).
 
@@ -354,6 +354,35 @@ while 0043 to 0045 were already applied, so `upgrade` failed with
 `DuplicateTable`. For each migration after the stamped one, check that the
 tables it creates exist (`SELECT to_regclass('public.<table>')`), then stamp
 the last one that is fully there.
+
+**Limited database logins** (#479, migration 0067, Vrushit's approval). 0067 makes
+`kaagaz_api` (api and worker) and `kaagaz_ops` (api's super admin part) with no password,
+so nothing changes on release day: the app keeps the owner's login until `.env` names the
+new ones. Test server first for a few days, then a full restore drill (section 6), then
+production at a quiet time:
+
+1. Each password, random (`openssl rand -hex 24`), typed at the prompt, never on a command
+   line: `dc exec postgres psql -U <POSTGRES_USER> -d <POSTGRES_DB>`, then
+   `\password kaagaz_api` and `\password kaagaz_ops`.
+2. In `.env`: `APP_DATABASE_URL=postgresql://kaagaz_api:<its password>@postgres:5432/<POSTGRES_DB>`
+   and `OPS_DATABASE_URL=postgresql://kaagaz_ops:<its password>@postgres:5432/<POSTGRES_DB>`.
+   `docker-compose.yml` gives api and worker the first as `DATABASE_URL`, only api the
+   second, only migrate the owner's, and none of them `POSTGRES_PASSWORD`.
+3. `dc up -d --no-deps api worker`. Check: `dc exec api printenv POSTGRES_PASSWORD` prints an
+   empty line; `dc exec postgres psql -U <POSTGRES_USER> -d <POSTGRES_DB> -c "SELECT usename,
+   count(*) FROM pg_stat_activity WHERE datname = current_database() GROUP BY 1"` shows
+   `kaagaz_api` (and `kaagaz_ops` once the console is used); sign in, open a document, ask a
+   question, upload one, and open the operator console.
+4. From then on the owner-only commands run in migrate, the one container with the owner's
+   login: `dc run --rm migrate python -m kaagaz.cli <command>` for `create-customer`,
+   `seed-demo`, `disable-customer`, `enable-customer`, `purge-customer`, `create-operator`,
+   `reset-operator-2fa`, `unlock-operator` and `verify-models --record`. In api, PostgreSQL
+   refuses them.
+5. `kaagaz_api` may hold 80 connections: api, 3 workers and one CLI run, 15 each. Before
+   `WORKER_REPLICAS` goes above 3, `ALTER ROLE kaagaz_api CONNECTION LIMIT <15 x (replicas + 2)>`.
+
+**The undo:** delete the two lines from `.env` and `dc up -d --no-deps api worker`; the app
+logs in as the owner again. The logins stay and do nothing.
 
 **Releases** (EC2 PRD section 6).
 
@@ -829,16 +858,17 @@ docker compose cp seaweedfs:/data ../kaagaz-backup/backup-files
 docker compose up -d
 ```
 
-**Restore**, the reverse, into a fresh stack: a new laptop with the same `.env`, or this one under another project name, which gets its own empty volumes (`docker compose stop` the main stack first to free its ports). The containers are created but not started, so the files go in before SeaweedFS first runs; the copy is owned by root, so the `chown` hands it back to the image's `seaweed` user. `pg_dump` leaves out roles, so the app role is made first, as migration 0001 makes it:
+**Restore**, the reverse, into a fresh stack: a new laptop with the same `.env`, or this one under another project name, which gets its own empty volumes (`docker compose stop` the main stack first to free its ports). The containers are created but not started, so the files go in before SeaweedFS first runs; the copy is owned by root, so the `chown` hands it back to the image's `seaweed` user. `pg_dump` leaves out roles, so the app and operator roles are made first, as migrations 0001 and 0015 make them, and 0067's two logins and its refusal of temporary tables after (#479; set their passwords as in "Limited database logins" if the drill's `.env` names them):
 
 ```
 docker compose -p kaagaz-drill create --build
 docker compose -p kaagaz-drill cp ../kaagaz-backup/backup-files/. seaweedfs:/data
 docker compose -p kaagaz-drill run --rm --no-deps --entrypoint chown seaweedfs -R seaweed:seaweed /data
 docker compose -p kaagaz-drill up -d postgres
-docker compose -p kaagaz-drill exec -T postgres psql -U kaagaz -d kaagaz -c "CREATE ROLE kaagaz_app NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE" -c "GRANT kaagaz_app TO kaagaz"
+docker compose -p kaagaz-drill exec -T postgres psql -U kaagaz -d kaagaz -c "CREATE ROLE kaagaz_app NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE" -c "GRANT kaagaz_app TO kaagaz" -c "CREATE ROLE kaagaz_operator NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE" -c "GRANT kaagaz_operator TO kaagaz"
 docker compose -p kaagaz-drill cp ../kaagaz-backup/kaagaz.dump postgres:/tmp/kaagaz.dump
 docker compose -p kaagaz-drill exec -T postgres pg_restore -U kaagaz -d kaagaz --exit-on-error /tmp/kaagaz.dump
+docker compose -p kaagaz-drill exec -T postgres psql -U kaagaz -d kaagaz -c "CREATE ROLE kaagaz_api LOGIN NOINHERIT CONNECTION LIMIT 80" -c "CREATE ROLE kaagaz_ops LOGIN NOINHERIT CONNECTION LIMIT 15" -c "GRANT kaagaz_app TO kaagaz_api WITH INHERIT FALSE, SET TRUE" -c "GRANT kaagaz_operator TO kaagaz_ops WITH INHERIT FALSE, SET TRUE" -c "REVOKE TEMPORARY ON DATABASE kaagaz FROM PUBLIC"
 docker compose -p kaagaz-drill exec -T postgres rm /tmp/kaagaz.dump
 docker compose -p kaagaz-drill up -d
 ```
