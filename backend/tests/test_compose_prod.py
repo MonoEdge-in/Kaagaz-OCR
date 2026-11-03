@@ -71,6 +71,9 @@ def test_the_base_file_runs_only_the_app_and_its_stand_ins() -> None:
         # the master password or (the workers) the super admin's login (tests/test_db_logins.py).
         "POSTGRES_PASSWORD",
         "OPS_DATABASE_URL",
+        # #477: blanked too, so the .env line reaches only migrate, which sets its own.
+        "STORAGE_ADMIN_ACCESS_KEY",
+        "STORAGE_ADMIN_SECRET_KEY",
         "STORAGE_ENDPOINT_URL",
         "QUEUE_ENDPOINT_URL",
         "QUEUE_URL",
@@ -246,17 +249,25 @@ def test_only_migrate_gets_the_storage_admin_key() -> None:
     """#477: the app's key reads, writes and lists its own bucket; the admin key, which
     creates the bucket, is migrate's alone, and on the server only from its .env."""
     text = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
-    assert "\n  environment: &backend-environment\n" in text
+    shared = text[text.index("\n  environment: &backend-env\n") : text.index("\nservices:\n")]
+    # env_file passes every .env line to api and worker; these blanks take those back.
+    for name in ("POSTGRES_PASSWORD", "STORAGE_ADMIN_ACCESS_KEY", "STORAGE_ADMIN_SECRET_KEY"):
+        assert f'\n    {name}: ""\n' in shared, name
     migrate = service("migrate")
-    assert "    environment:\n      <<: *backend-environment\n" in migrate
+    assert "    environment:\n      <<: *backend-env\n" in migrate
     assert re.findall(r"^      (STORAGE_[A-Z_]+): (.*)$", migrate, re.M) == [
         ("STORAGE_ACCESS_KEY", "${STORAGE_ADMIN_ACCESS_KEY:-kaagaz-local-admin}"),
         ("STORAGE_SECRET_KEY", "${STORAGE_ADMIN_SECRET_KEY:-kaagaz-local-admin-secret-laptop-only}"),
     ]
+    # Not required by compose (`:?`), so logs, exec, pgdump.sh and idle-stop.sh still run
+    # without them; migrate itself stops, naming them, before it migrates anything.
     assert re.findall(r"^      (STORAGE_[A-Z_]+): (.*)$", service("migrate", PROD), re.M) == [
-        ("STORAGE_ACCESS_KEY", "${STORAGE_ADMIN_ACCESS_KEY:?set STORAGE_ADMIN_ACCESS_KEY in .env}"),
-        ("STORAGE_SECRET_KEY", "${STORAGE_ADMIN_SECRET_KEY:?set STORAGE_ADMIN_SECRET_KEY in .env}"),
+        ("STORAGE_ACCESS_KEY", "${STORAGE_ADMIN_ACCESS_KEY:-}"),
+        ("STORAGE_SECRET_KEY", "${STORAGE_ADMIN_SECRET_KEY:-}"),
     ]
+    check = 'test -n "$$STORAGE_ACCESS_KEY" && test -n "$$STORAGE_SECRET_KEY" ||'
+    assert migrate.index(check) < migrate.index("alembic upgrade head")
+    assert "set STORAGE_ADMIN_ACCESS_KEY and STORAGE_ADMIN_SECRET_KEY in .env" in migrate
     for name in BASE_SERVICES:
         if name != "migrate":
             assert "STORAGE_ADMIN" not in service(name).replace("(STORAGE_ADMIN_ACCESS_KEY)", ""), name

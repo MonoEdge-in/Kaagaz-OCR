@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
-# The monthly restore drill (#476, 3 Nov 2026): one night's off-server backup,
-# restored into a throwaway database and file store, then checked.
+# The monthly restore drill (#476, 3 Nov 2026): one run of the off-server
+# backup, restored into a throwaway database and file store, then checked.
 #
-#   infra/ec2/restore-drill.sh <bucket> <YYYYMMDD> <private-key.pem>
+#   infra/ec2/restore-drill.sh <bucket> <run> <private-key.pem>
 #
+# <run> is one of the bucket's folders, YYYYMMDDTHHMMSSZ (pgdump.sh).
 # Run it from a checkout on a laptop or a throwaway machine, never on the
 # production server: it needs docker, openssl, the aws CLI signed in with the
 # restore role (docs/running-locally.md, "Backups off the server"), and the
 # kaagaz-backend:local image (`docker compose build migrate` makes it).
-#   1. Downloads <day>/done, then the three parts pgdump.sh uploaded, and
-#      decrypts each with the private key (openssl asks for its passphrase).
-#      The plain copies go into a private temporary folder, removed at the end.
+#   1. Downloads <run>/done, which lists each part's object, size and sha256.
+#      For each part it opens the sealed key with the private key (openssl
+#      asks for its passphrase), then streams the part down, decrypting as it
+#      reads (openssl enc, so memory stays small at any size), and checks its
+#      size and sha256 against done. The plain copies go into a private
+#      temporary folder, removed at the end.
 #   2. Starts pgvector/pgvector:0.8.7-pg17 and chrislusf/seaweedfs:4.48, the
 #      versions docker-compose.yml runs, on their own network and no host port.
 #   3. Restores the logins (roles.sql), then the database (pg_restore --create,
@@ -36,14 +40,14 @@ ADMIN_KEY=kaagaz-local-admin
 ADMIN_SECRET=kaagaz-local-admin-secret-laptop-only
 
 if [[ $# -ne 3 ]]; then
-  echo "usage: restore-drill.sh <bucket> <YYYYMMDD> <private-key.pem>" >&2
+  echo "usage: restore-drill.sh <bucket> <run> <private-key.pem>" >&2
   exit 2
 fi
 bucket="$1"
-day="$2"
+run="$2"
 key="$3"
-if [[ ! "$day" =~ ^[0-9]{8}$ ]]; then
-  echo "the day is 8 digits, YYYYMMDD" >&2
+if [[ ! "$run" =~ ^[0-9]{8}T[0-9]{6}Z$ ]]; then
+  echo "the run is a folder of the bucket, YYYYMMDDTHHMMSSZ" >&2
   exit 2
 fi
 cd "$(dirname "$0")/../.."
@@ -57,13 +61,34 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# 1. Only a finished night: done goes up last.
-aws s3 cp --quiet "s3://$bucket/$day/done" "$work/done"
+# 1. Only a finished run: done goes up last. Each object is the one done names.
+aws s3 cp --quiet "s3://$bucket/$run/done" "$work/done"
 for part in kaagaz.dump roles.sql files.tar; do
-  aws s3 cp --quiet "s3://$bucket/$day/$part.cms" - |
-    openssl cms -decrypt -binary -inform DER -inkey "$key" -out "$work/$part"
+  read -r object size sha <<<"$(awk -v want="$part.enc" '{ name = $1; sub(/.*\//, "", name) }
+    name == want { print; exit }' "$work/done")"
+  if [[ -z "$sha" ]]; then
+    echo "DRILL FAIL: done lists no $part" >&2
+    exit 1
+  fi
+  aws s3 cp --quiet "s3://$bucket/${object%.enc}.key.cms" "$work/$part.key.cms"
+  sealed="$(openssl cms -decrypt -binary -inform DER -inkey "$key" -in "$work/$part.key.cms")"
+  read -r secret iv <<<"$sealed"
+  # The sha256 of what comes down, read beside the decryption through a pipe.
+  rm -f "$work/stream"
+  mkfifo "$work/stream"
+  openssl dgst -sha256 -r <"$work/stream" >"$work/$part.sha256" &
+  hasher=$!
+  aws s3 cp --quiet "s3://$bucket/$object" - | tee "$work/stream" |
+    openssl enc -d -aes-256-ctr -K "$secret" -iv "$iv" -out "$work/$part"
+  wait "$hasher"
+  read -r got _ <"$work/$part.sha256"
+  # aes-256-ctr adds nothing, so the plain copy is as long as the object.
+  if [[ "$got" != "$sha" || "$(wc -c <"$work/$part" | tr -d ' ')" != "$size" ]]; then
+    echo "DRILL FAIL: $object is not the size and sha256 done lists" >&2
+    exit 1
+  fi
 done
-echo "downloaded and decrypted the backup of $day"
+echo "downloaded, decrypted and checked backup $run"
 
 # 2. The throwaway database and file store. Its superuser has the server's
 # superuser's name (roles.sql's first SUPERUSER), so the grants that one made
@@ -77,17 +102,24 @@ docker run -d --name "$DB" --network "$NETWORK" -e POSTGRES_USER="$superuser" -e
 docker run -d --name "$FILES" --network "$NETWORK" \
   -v "$PWD/infra/seaweedfs/s3.json:/etc/seaweedfs/s3.json:ro" "$FILES_IMAGE" \
   server -dir=/data -ip.bind=0.0.0.0 -s3 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json >/dev/null
+ready=false
 for _ in $(seq 60); do
   if docker exec "$DB" pg_isready -q -U "$superuser" -d postgres >/dev/null 2>&1 &&
     docker exec "$FILES" wget -q -O /dev/null http://127.0.0.1:8333/healthz >/dev/null 2>&1; then
+    ready=true
     break
   fi
   sleep 2
 done
+if [[ "$ready" != true ]]; then
+  echo "DRILL FAIL: the throwaway database or file store did not start in 2 minutes" >&2
+  exit 1
+fi
 
-# 3. Logins first, so the restored tables keep their owner and grants. The
-# superuser's own CREATE ROLE is reported as already there, and skipped.
-docker exec -i "$DB" psql -q -U "$superuser" -d postgres <"$work/roles.sql" >/dev/null
+# 3. Logins first, so the restored tables keep their owner and grants. Any
+# error stops it; the superuser's own CREATE ROLE, already there, is left out.
+awk -v own="CREATE ROLE $superuser;" '$0 != own' "$work/roles.sql" |
+  docker exec -i "$DB" psql -q -v ON_ERROR_STOP=1 -U "$superuser" -d postgres >/dev/null
 docker cp "$work/kaagaz.dump" "$DB:/tmp/kaagaz.dump" >/dev/null
 db_name="$(docker exec "$DB" pg_restore -l /tmp/kaagaz.dump | sed -n 's/^;[[:space:]]*dbname: //p')"
 docker exec "$DB" pg_restore -U "$superuser" -d postgres --create --exit-on-error /tmp/kaagaz.dump
@@ -117,7 +149,7 @@ COMMIT;
 SQL
 )"
 read -r rows page <<<"$found"
-if [[ "$rows" == 0 ]]; then
+if [[ "$rows" != 1 ]]; then
   echo "DRILL FAIL: document $document has no row in the restored database" >&2
   exit 1
 fi
@@ -136,4 +168,4 @@ if [[ "$page" != - ]]; then
   fi
   echo "page $page image found"
 fi
-echo "DRILL PASS $day"
+echo "DRILL PASS $run"

@@ -31,6 +31,10 @@ x-backend: &backend
     DATABASE_URL: ${APP_DATABASE_URL:-postgresql://${POSTGRES_USER:-kaagaz}:${POSTGRES_PASSWORD:-kaagaz}@postgres:5432/${POSTGRES_DB:-kaagaz}}
     POSTGRES_PASSWORD: ""
     OPS_DATABASE_URL: ""
+    # env_file hands every .env line to each container; the storage admin key is migrate's
+    # alone (#477), so it is blanked here and migrate sets its own below.
+    STORAGE_ADMIN_ACCESS_KEY: ""
+    STORAGE_ADMIN_SECRET_KEY: ""
     STORAGE_ENDPOINT_URL: http://seaweedfs:8333
     QUEUE_ENDPOINT_URL: http://elasticmq:9324
     QUEUE_URL: http://elasticmq:9324/000000000000/kaagaz-jobs
@@ -156,7 +160,11 @@ services:
     command:
       - sh
       - -c
+      # Stops before any migration when the server's .env lacks the admin key (#477): compose
+      # itself does not require it, so logs, exec and the backup still work without it.
       - >-
+        test -n "$$STORAGE_ACCESS_KEY" && test -n "$$STORAGE_SECRET_KEY" ||
+        { echo "set STORAGE_ADMIN_ACCESS_KEY and STORAGE_ADMIN_SECRET_KEY in .env: migrate makes the storage bucket with them" >&2; exit 1; };
         alembic upgrade head &&
         python -c "from kaagaz.adapters.storage import S3Storage;
         from kaagaz.settings import Settings;

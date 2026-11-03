@@ -49,7 +49,8 @@ def test_deploy_holds_the_lock_and_follows_only_production() -> None:
         'exec 9>"$LOCK_FILE"\n'
         "if ! flock -n 9; then\n"
         '  if [[ "$rollback" == true ]]; then\n'
-        '    echo "a deploy is running; try --rollback again in a few minutes" >&2\n'
+        '    echo "a deploy or the nightly backup holds $LOCK_FILE'
+        ' (journalctl -u kaagaz-deploy -u kaagaz-pgdump -n 5); try --rollback again when it ends" >&2\n'
         "    exit 1\n"
         "  fi\n"
         "  exit 0\n"
@@ -65,11 +66,12 @@ def test_deploy_holds_the_lock_and_follows_only_production() -> None:
 
 def test_every_script_runs_the_base_and_prod_files_with_no_profiles() -> None:
     """PRD 5 section 7: the stack is two files and every service runs without a profile."""
-    for name in ("deploy.sh", "pgdump.sh", "idle-stop.sh", "disk-alert.sh"):
+    for name in ("deploy.sh", "pgdump.sh", "idle-stop.sh"):
         script = text(name)
         files = re.findall(r"-f (docker-compose[\w.]*)", script)
         assert files == ["docker-compose.yml", "docker-compose.prod.yml"], name
         assert "--profile" not in script and "PROFILES" not in script, name
+    assert "docker compose" not in text("disk-alert.sh")  # one docker run on the host network
 
 
 def deploy_steps() -> str:
@@ -356,14 +358,19 @@ def test_pgdump_never_runs_or_prints_the_env_file() -> None:
         '  echo "pg_dump wrote nothing; no dump saved" >&2',
         'echo "saved $dump"',
         '  echo "BACKUP_BUCKET or BACKUP_CERT is not set in .env; nothing copied off the server" >&2',
-        'printf \'%s\\n\' "$day" | send "done"',  # the day, never a setting
-        'echo "copied the backup of $day off the server"',
+        '  printf \'%s %s\\n\' "$secret" "$iv" |',  # the part's key, into openssl cms only
+        '  printf \'%s/%s.enc %s\\n\' "$run" "$1" "$sent"',  # done's line: object, size, sha256
+        '  echo "the stored files were not copied; no done written" >&2',
+        '  echo "backup-files printed no file count; no done written" >&2',
+        'printf \'%s\\n\' "$dump_line" "$roles_line" "$files_line" "files $files" | send "done" >/dev/null',
+        'echo "copied backup $run off the server ($files files)"',
     ]
 
 
 def test_pgdump_copies_three_encrypted_parts_off_the_server_then_done() -> None:
-    """#476: the dump, the logins and every stored file, each encrypted to BACKUP_CERT
-    (openssl cms, the private key offline) and streamed to the bucket; done goes last."""
+    """#476: the dump, the logins and every stored file, each encrypted as it streams with its
+    own random key, only that key sealed to BACKUP_CERT (openssl cms, the private key offline);
+    done goes last. What they hold: tests/test_ec2_runs.py."""
     script = text("pgdump.sh")
     # The whole run holds the deploy lock, so no deploy or idle stop cuts it.
     assert "\nLOCK_FILE=/tmp/kaagaz-deploy.lock\n" in script
@@ -371,18 +378,26 @@ def test_pgdump_copies_three_encrypted_parts_off_the_server_then_done() -> None:
     assert code(script).index("flock -w") < code(script).index("docker ")
     # Without both settings, the local dump only, as before (nothing changes on release day).
     off = script.index('if [[ -z "$bucket" || -z "$cert" ]]; then')
-    assert script.index('echo "saved $dump"') < off < script.index("seal kaagaz.dump.cms")
-    assert '  openssl cms -encrypt -binary -aes256 -stream -outform DER "$cert" | send "$1"\n' in script
+    assert script.index('echo "saved $dump"') < off < script.index("seal kaagaz.dump")
+    assert '\nrun="$(date -u +%Y%m%dT%H%M%SZ)"\n' in script  # one folder per run, never overwritten
+    # cms buffers its whole input to decrypt (400 MB took 1.07 GB): only the 64-byte key goes through it.
+    assert re.findall(r"openssl \w+ .*", code(script)) == [
+        'openssl rand -hex 32)" && iv="$(openssl rand -hex 16)" || return 1',
+        'openssl cms -encrypt -binary -aes256 -outform DER "$cert"'
+        ' | send "$1.key.cms" >/dev/null || return 1',
+        'openssl enc -aes-256-ctr -K "$secret" -iv "$iv" | send "$1.enc")" || return 1',
+    ]
     assert (
         "  docker run --rm -i --network host kaagaz-backend:local \\\n"
-        '    python -m kaagaz.cli backup-upload --bucket "$bucket" --key "$day/$1"\n'
+        '    python -m kaagaz.cli backup-upload --bucket "$bucket" --key "$run/$1"\n'
     ) in script
     steps = [
-        'seal kaagaz.dump.cms <"$dump"',
-        f"{DC} exec -T postgres \\\n"
-        '  pg_dumpall -U "$pg_user" --roles-only --no-role-passwords | seal roles.sql.cms',
-        f"{DC} run --rm -T --no-deps worker \\\n  python -m kaagaz.cli backup-files | seal files.tar.cms",
-        'printf \'%s\\n\' "$day" | send "done"',
+        'dump_line="$(seal kaagaz.dump <"$dump")"',
+        f'roles_line="$({DC} exec -T postgres \\\n'
+        '  pg_dumpall -U "$pg_user" --roles-only --no-role-passwords | seal roles.sql)"',
+        f'if ! files_line="$({DC} run --rm -T --no-deps worker \\\n'
+        '  python -m kaagaz.cli backup-files 2>"$counted" | seal files.tar)"; then',
+        '| send "done" >/dev/null',
     ]
     places = [script.index(step) for step in steps]
     assert places == sorted(places)
@@ -390,18 +405,23 @@ def test_pgdump_copies_three_encrypted_parts_off_the_server_then_done() -> None:
 
 
 def test_the_restore_drill_restores_into_throwaways_and_checks_through_the_customer_filter() -> None:
-    """#476: the versions compose runs, roles before the dump, files into an empty bucket, and
-    the check as the app role with one customer set (CLAUDE.md: no query without the filter)."""
+    """#476: the versions compose runs, each part checked against done, roles before the dump,
+    files into an empty bucket, and the check as the app role with one customer set (CLAUDE.md:
+    no query without the filter). Run with stand-ins: tests/test_ec2_runs.py."""
     script = text("restore-drill.sh")
     assert script.startswith("#!/usr/bin/env bash\n") and "\nset -euo pipefail\n" in script
     compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
     for image in ("pgvector/pgvector:0.8.7-pg17", "chrislusf/seaweedfs:4.48"):
         assert f"image: {image}\n" in compose and f"={image}\n" in script
     assert "\ntrap cleanup EXIT\n" in script and 'rm -rf "$work"' in script
-    assert 'aws s3 cp --quiet "s3://$bucket/$day/done" "$work/done"' in script
+    assert 'aws s3 cp --quiet "s3://$bucket/$run/done" "$work/done"' in script
     assert script.index("/done") < script.index("for part in kaagaz.dump roles.sql files.tar; do")
-    assert 'openssl cms -decrypt -binary -inform DER -inkey "$key" -out "$work/$part"' in script
-    roles = script.index('psql -q -U "$superuser" -d postgres <"$work/roles.sql"')
+    # The object, its key and its run come from done; the part streams through openssl enc.
+    assert 'aws s3 cp --quiet "s3://$bucket/${object%.enc}.key.cms" "$work/$part.key.cms"' in script
+    assert 'openssl cms -decrypt -binary -inform DER -inkey "$key" -in "$work/$part.key.cms"' in script
+    assert 'openssl enc -d -aes-256-ctr -K "$secret" -iv "$iv" -out "$work/$part"' in script
+    assert '  if [[ "$got" != "$sha" || "$(wc -c <"$work/$part" | tr -d \' \')" != "$size" ]]; then' in script
+    roles = script.index('psql -q -v ON_ERROR_STOP=1 -U "$superuser" -d postgres >/dev/null')
     restore = script.index('pg_restore -U "$superuser" -d postgres --create --exit-on-error /tmp/kaagaz.dump')
     files = script.index("python -m kaagaz.cli restore-files <")
     assert roles < restore < files
@@ -409,8 +429,10 @@ def test_the_restore_drill_restores_into_throwaways_and_checks_through_the_custo
     check = script[script.index("<<'SQL'\n") : script.index("\nSQL\n")]
     assert check.index("SET LOCAL ROLE kaagaz_app;") < check.index("set_config('kaagaz.customer_id'")
     assert check.index("set_config('kaagaz.customer_id'") < check.index("FROM documents")
+    assert '\nif [[ "$rows" != 1 ]]; then\n' in script  # an empty answer fails too
+    assert '\nif [[ "$ready" != true ]]; then\n' in script
     assert "-p " not in code(script)  # no host port: the throwaways meet on their own network
-    assert script.rstrip().endswith('echo "DRILL PASS $day"')
+    assert script.rstrip().endswith('echo "DRILL PASS $run"')
 
 
 def test_the_units_run_as_ubuntu_on_the_prd_schedule() -> None:
@@ -438,12 +460,18 @@ def test_the_units_run_as_ubuntu_on_the_prd_schedule() -> None:
 
 
 def test_the_disk_alert_emails_over_80_percent_at_most_once_a_day() -> None:
-    """#480: no CloudWatch agent; the backend's own SES mailer sends it."""
+    """#480: no CloudWatch agent; the backend's own SES mailer sends it, from the host network so
+    the instance metadata hop limit stays 1. Run with stand-ins: tests/test_ec2_runs.py."""
     script = text("disk-alert.sh")
     assert script.startswith("#!/usr/bin/env bash\n") and "\nset -euo pipefail\n" in script
     assert "\nLIMIT_PERCENT=80\n" in script and "\nSENT_FILE=/home/ubuntu/.kaagaz-disk-alert\n" in script
     assert "used=\"$(df --output=pcent / | tail -n 1 | tr -dc '0-9')\"" in script
-    send = f'{DC} run --rm -T --no-deps worker \\\n  python -m kaagaz.cli disk-alert --used "$used"\n'
+    send = (
+        "if ! docker run --rm --network host --env-file .env kaagaz-backend:local \\\n"
+        '  python -m kaagaz.cli disk-alert --used "$used"; then\n'
+        '  echo "DISK ${used}% USED and the alert email was NOT sent: the lines above say why" >&2\n'
+        "  exit 1\n"
+    )
     skip = 'if [[ -f "$SENT_FILE" && "$(cat "$SENT_FILE")" == "$day" ]]; then'
     record = 'printf \'%s\\n\' "$day" >"$SENT_FILE"'
     assert script.index("((used <= LIMIT_PERCENT))") < script.index(skip) < script.index(send)

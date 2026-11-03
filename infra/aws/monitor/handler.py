@@ -7,12 +7,14 @@ checks only what should hold right now:
 * ``api``, ``site``, ``certificate``: once the server has run 10 minutes, /api/health and / answer
   2xx over HTTPS, and the certificate has 14 days or more left;
 * ``backup``: once it has run an hour (a backup missed while it was stopped runs at boot), the
-  newest ``<day>/done`` in the backup bucket (infra/ec2/pgdump.sh) is under 26 hours old;
+  newest ``<run>/done`` in the backup bucket (infra/ec2/pgdump.sh, one folder per run) is under
+  26 hours old;
 * ``schedule``: on weekdays from 09:45 to 10:00 IST, the server is running or was started today
   at or after 09:30 IST (the weekday schedule; by then it may have stopped itself again).
 
 A check that fails twice in a row emails once through SNS; when it passes again, one more email
-says so. The counts live in one SSM parameter (STATE_PARAMETER), written only when they change.
+says so. The counts live in one SSM parameter (STATE_PARAMETER), written only when they change,
+and only after the email went, so a failed one is sent again on the next round.
 A check that does not run (the server is stopped) is forgotten. INSTANCE_ID, SITE_DOMAIN,
 BACKUP_BUCKET and TOPIC_ARN are set in the Lambda console, never in git. Python 3.12, with only
 the standard library and the boto3 the runtime ships, as infra/aws/wake/handler.py.
@@ -89,7 +91,7 @@ FAILED = (OSError, ValueError, http.client.HTTPException)
 
 
 def newest_done(s3: Any, bucket: str) -> datetime | None:
-    """When the newest ``<day>/done`` was written. The bucket keeps 35 days (a few hundred keys)."""
+    """When the newest ``<run>/done`` was written. The bucket keeps 35 days (a few hundred keys)."""
     newest = None
     for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket):
         for item in page.get("Contents", []):
@@ -177,15 +179,15 @@ def run(ec2: Any, s3: Any, ssm: Any, sns: Any, env: dict[str, str], now: datetim
             raise
         previous = {}
     now_counts = counted(previous, results)
-    if now_counts != previous:
-        ssm.put_parameter(Name=STATE_PARAMETER, Value=json.dumps(now_counts), Type="String", Overwrite=True)
     text = message(previous, now_counts, results)
-    if text:
+    if text:  # before the counts: a failed publish raises, so the next round sends it again
         sns.publish(
             TopicArn=env["TOPIC_ARN"],
             Subject="Kaagaz monitor",
             Message=f"{text}\n\nSite: {env['SITE_DOMAIN']}",
         )
+    if now_counts != previous:
+        ssm.put_parameter(Name=STATE_PARAMETER, Value=json.dumps(now_counts), Type="String", Overwrite=True)
     log.info("monitor: %s", json.dumps(results, sort_keys=True))
     return text
 

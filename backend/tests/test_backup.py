@@ -6,6 +6,7 @@ managed transfer runs on its own threads. infra/ec2/pgdump.sh and infra/ec2/rest
 chain these commands with pg_dump and openssl: tests/test_ec2_scripts.py reads them.
 """
 
+import hashlib
 import io
 import tarfile
 from datetime import UTC, datetime
@@ -18,9 +19,10 @@ from botocore.config import Config
 from botocore.response import StreamingBody
 from botocore.stub import Stubber
 
+from kaagaz import cli
 from kaagaz.adapters.email import MemoryMailer, SentEmail
 from kaagaz.adapters.storage import S3Storage
-from kaagaz.cli import BACKUP_REGION, main
+from kaagaz.cli import main
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.settings import Settings
 from tests.settings_factory import make_settings
@@ -191,37 +193,108 @@ def test_restore_files_into_a_bucket_in_use_stops_with_code_2(capsys: pytest.Cap
     assert "not empty" in capsys.readouterr().err
 
 
+class EmptyStorage(FakeStorage):
+    def write_tar(self, out: IO[bytes]) -> int:
+        return 0
+
+
+def test_backup_files_of_an_empty_bucket_fails(capsys: pytest.CaptureFixture[str]) -> None:
+    """No files is a broken read, not a backup: pgdump.sh then writes no done, and the monitor emails."""
+    code = main(
+        ["backup-files"],
+        settings=make_settings(),
+        file_store=EmptyStorage(),
+        out=io.StringIO(),
+        binary_out=io.BytesIO(),
+    )
+    assert code == 2
+    assert "no files" in capsys.readouterr().err
+
+
 class FakeBackupBucket:
-    def __init__(self) -> None:
-        self.uploads: list[tuple[bytes, str, str, Any]] = []
+    """The calls a write-once upload makes, and a part that fails on request."""
 
-    def upload_fileobj(self, fileobj: IO[bytes], bucket: str, key: str, Config: Any = None) -> None:
-        self.uploads.append((fileobj.read(), bucket, key, Config))
+    def __init__(self, fail_part: int | None = None) -> None:
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.fail_part = fail_part
+
+    def put_object(self, **args: Any) -> None:
+        self.calls.append(("put_object", args))
+
+    def create_multipart_upload(self, **args: Any) -> dict[str, str]:
+        self.calls.append(("create_multipart_upload", args))
+        return {"UploadId": "u1"}
+
+    def upload_part(self, **args: Any) -> dict[str, str]:
+        self.calls.append(("upload_part", args))
+        if args["PartNumber"] == self.fail_part:
+            raise ConnectionResetError
+        return {"ETag": f"e{args['PartNumber']}", "ChecksumCRC32": f"c{args['PartNumber']}"}
+
+    def complete_multipart_upload(self, **args: Any) -> None:
+        self.calls.append(("complete_multipart_upload", args))
+
+    def abort_multipart_upload(self, **args: Any) -> None:
+        self.calls.append(("abort_multipart_upload", args))
 
 
-def test_backup_upload_streams_stdin_to_the_key_in_parts() -> None:
-    bucket = FakeBackupBucket()
+def upload(data: bytes, bucket: FakeBackupBucket) -> str:
     out = io.StringIO()
     code = main(
-        ["backup-upload", "--bucket", "kaagaz-backups", "--key", "20261103/kaagaz.dump.cms"],
+        ["backup-upload", "--bucket", "kaagaz-backups", "--key", "20261103T200012Z/kaagaz.dump.enc"],
         environ={},  # no settings and no database: it runs beside the app, on the host network
         out=out,
-        binary_in=io.BytesIO(b"encrypted"),
+        binary_in=io.BytesIO(data),
         backup_bucket=bucket,
     )
     assert code == 0
-    [(data, name, key, config)] = bucket.uploads
-    assert (data, name, key) == (b"encrypted", "kaagaz-backups", "20261103/kaagaz.dump.cms")
-    # 32 MB parts, 4 at a time: up to 320 GB in S3's 10,000 parts, about 128 MB of memory.
-    assert (config.multipart_chunksize, config.max_concurrency) == (32 * 1024 * 1024, 4)
-    assert out.getvalue() == "uploaded 20261103/kaagaz.dump.cms\n"
+    return out.getvalue()
 
 
-def test_the_backup_bucket_client_is_in_mumbai_with_the_machines_own_role() -> None:
-    from kaagaz.cli import _backup_bucket_client
+TARGET = {"Bucket": "kaagaz-backups", "Key": "20261103T200012Z/kaagaz.dump.enc"}
 
-    client = _backup_bucket_client()  # builds the real client; nothing is sent
-    assert client.meta.region_name == BACKUP_REGION == "ap-south-1"
+
+def test_backup_upload_writes_a_small_object_once_and_prints_its_size_and_sha256() -> None:
+    bucket = FakeBackupBucket()
+    printed = upload(b"encrypted", bucket)
+    # Never over an object already there: the bucket policy refuses a write without it.
+    assert bucket.calls == [("put_object", {**TARGET, "Body": b"encrypted", "IfNoneMatch": "*"})]
+    assert printed == f"9 {hashlib.sha256(b'encrypted').hexdigest()}\n"  # done's line for the part
+
+
+def test_backup_upload_streams_a_large_object_in_parts_as_it_reads(monkeypatch: pytest.MonkeyPatch) -> None:
+    """32 MB parts, one at a time: S3's 10,000 parts hold up to 320 GB in 32 MB of memory."""
+    assert cli.BACKUP_PART_BYTES == 32 * 1024 * 1024
+    monkeypatch.setattr(cli, "BACKUP_PART_BYTES", 4)
+    bucket = FakeBackupBucket()
+    printed = upload(b"0123456789", bucket)
+    assert [name for name, _ in bucket.calls] == [
+        "create_multipart_upload",
+        "upload_part",
+        "upload_part",
+        "upload_part",
+        "complete_multipart_upload",
+    ]
+    assert bucket.calls[0][1] == {**TARGET, "ChecksumAlgorithm": "CRC32"}
+    assert [args["Body"] for _, args in bucket.calls[1:4]] == [b"0123", b"4567", b"89"]
+    assert bucket.calls[-1][1] == {
+        **TARGET,
+        "UploadId": "u1",
+        "IfNoneMatch": "*",
+        "MultipartUpload": {
+            "Parts": [{"PartNumber": n, "ETag": f"e{n}", "ChecksumCRC32": f"c{n}"} for n in (1, 2, 3)]
+        },
+    }
+    assert printed == f"10 {hashlib.sha256(b'0123456789').hexdigest()}\n"
+
+
+def test_a_failed_part_abandons_the_upload_and_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "BACKUP_PART_BYTES", 4)
+    bucket = FakeBackupBucket(fail_part=2)
+    with pytest.raises(ConnectionResetError):
+        upload(b"0123456789", bucket)
+    assert bucket.calls[-1] == ("abort_multipart_upload", {**TARGET, "UploadId": "u1"})
+    assert "complete_multipart_upload" not in [name for name, _ in bucket.calls]
 
 
 # --- the disk alert ----------------------------------------------------------------------
