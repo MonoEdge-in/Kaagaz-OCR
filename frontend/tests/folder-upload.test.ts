@@ -92,12 +92,12 @@ function summaryOf(id: string, items: FolderUploadItem[]): FolderUploadSummary {
     id,
     root_folder_id: "f0",
     root_name: "A",
-    source_name: "A",
     target: "folder",
     created_at: "2026-11-03T10:00:00Z",
     file_count: items.length,
     total_bytes: 0,
     skipped_count: 0,
+    registered: items.length,
     waiting: count("waiting"),
     stored: count("stored"),
     duplicate: count("duplicate"),
@@ -190,6 +190,37 @@ describe("a folder upload's run", () => {
     ]);
   });
 
+  it("sends as many at once as the server takes (files_at_once), never more than 4", async () => {
+    const paths = Array.from({ length: 20 }, (_, n) => `A/f${n}.pdf`);
+    const folderLimits = { max_files: 50000, max_bytes: 5 * 1024 ** 3, max_folders: 10000, max_depth: 100, calls_per_minute: 600 };
+    for (const [filesAtOnce, most] of [[2, 2], [9, 4]] as const) {
+      const pick = pickOf(paths);
+      const server = fakeServer();
+      const limits = { ...FALLBACK_UPLOAD_LIMITS, folder_upload: { ...folderLimits, files_at_once: filesAtOnce } };
+      await startFolderUpload(
+        server.api,
+        { id: `n${filesAtOnce}`, userId: "me", source: { picked: pick, manifest: buildManifest(pick) }, target: { kind: "folder", parentId: null }, merge: true, limits },
+        () => undefined,
+        never,
+      );
+      expect(server.mostInFlight()).toBe(most);
+    }
+  });
+
+  it("leaves a file whose size the server says changed waiting, to send with Continue upload", async () => {
+    const pick = pickOf(["A/a.pdf"]);
+    const server = fakeServer({ refuse: () => new ApiError(409, "size_changed", "This file changed after you chose the folder.") });
+    const events: FolderEvent[] = [];
+    await startFolderUpload(
+      server.api,
+      { id: "u7", userId: "me", source: { picked: pick, manifest: buildManifest(pick) }, target: { kind: "folder", parentId: null }, merge: true },
+      run(events),
+      never,
+    );
+    expect(events.some((event) => event.type === "sent")).toBe(false);
+    expect(events.find((event) => event.type === "notSent")).toMatchObject({ name: "a.pdf", retry: false });
+  });
+
   it("stops every send once another account has signed in, in its words", async () => {
     const pick = pickOf(["A/a.pdf", "A/b.pdf", "A/c.pdf", "A/d.pdf", "A/e.pdf", "A/f.pdf"]);
     const server = fakeServer({
@@ -254,6 +285,23 @@ describe("what the tray and the status bar say", () => {
     ]);
   });
 
+  it("takes the server's counts, keeping the reading counts the list leaves out and the folder's own name", () => {
+    const summary: FolderUploadSummary = {
+      ...summaryOf("u", []),
+      root_name: "A (2)",
+      file_count: 5000,
+      registered: 5000,
+      waiting: 10,
+      stored: 4990,
+      reading: 7,
+      ready: 4983,
+      problem: 0,
+    };
+    let state = folderUploadsReducer(start, { type: "counts", id: "u", summary });
+    state = folderUploadsReducer(state, { type: "counts", id: "u", summary: { ...summary, reading: null, ready: null, problem: null } });
+    expect(state.u).toMatchObject({ rootName: "A", stored: 4990, reading: 7, ready: 4983, problem: 0 });
+  });
+
   it("names the folder to choose again after a reload, and gives a plain fix for a refused file", () => {
     const waiting = folderUploadsReducer(start, { type: "phase", id: "u", phase: "needs_pick" });
     expect(folderLine(waiting.u!)).toBe("Folder “A”: 0 of 5,000 uploaded. Choose “A” again to send the rest.");
@@ -277,10 +325,12 @@ describe("what the tray and the status bar say", () => {
         item({
           state: "stored",
           document_id: "d",
-          document: { status: "rejected", failure_code: "virus_found", status_message: "This file failed the virus check and was not processed.", folder_id: "f", in_trash: false },
+          document: { status: "rejected", failure_code: "virus_found", folder_id: "f", in_trash: false },
         }),
         FALLBACK_UPLOAD_LIMITS,
       ),
-    ).toBe("This file failed the virus check and was not processed. Upload a clean copy of the file.");
+    ).toBe("Virus found. Upload a clean copy of the file.");
+    const failed = item({ state: "stored", document_id: "d", document: { status: "failed", failure_code: null, folder_id: "f", in_trash: false } });
+    expect(itemProblemText(failed, FALLBACK_UPLOAD_LIMITS)).toBe("Failed. Read it again, or try another copy of it.");
   });
 });

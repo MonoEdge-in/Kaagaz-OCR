@@ -50,7 +50,7 @@ interface SharedUploads {
 
 /** The step before a folder upload starts: a dropped folder still being read, or read. */
 type Pending =
-  | { kind: "reading"; name: string; found: number; folderId: string | null }
+  | { kind: "reading"; name: string; found: number; folderId: string | null; failed?: boolean }
   | { kind: "ready"; source: FolderSource; folderId: string | null };
 
 const UploadsContext = createContext<SharedUploads | null>(null);
@@ -120,7 +120,7 @@ export function UploadsProvider({ children }: { children: ReactNode }) {
         if (read === readCount.current) setPending({ kind: "ready", source: { picked, manifest: buildManifest(picked) }, folderId });
       },
       () => {
-        if (read === readCount.current) setPending(null);
+        if (read === readCount.current) setPending({ kind: "reading", name: entry.name, found: 0, folderId, failed: true });
       },
     );
   }
@@ -193,7 +193,9 @@ export function UploadsProvider({ children }: { children: ReactNode }) {
         tabIndex={-1}
         onChange={onFolderChosen}
       />
-      {pending?.kind === "reading" && <FolderReadingDialog name={pending.name} found={pending.found} onClose={closePending} />}
+      {pending?.kind === "reading" && (
+        <FolderReadingDialog name={pending.name} found={pending.found} failed={pending.failed} onClose={closePending} />
+      )}
       {pending?.kind === "ready" && (
         <FolderUploadDialog
           source={pending.source}

@@ -16,7 +16,7 @@ from sqlalchemy import text
 
 from kaagaz.db.engine import Database
 from tests.settings_factory import make_settings
-from tests.test_api_folder_uploads import item, plan, register
+from tests.test_api_folder_uploads import TREE, item, plan, register
 from tests.test_api_support import CSRF, PDF_BYTES, Api, ApiFakeStorage, Signed
 from tests.test_operator_auth_db import _owner
 
@@ -355,3 +355,67 @@ def test_a_resumable_start_after_its_folder_was_deleted_fails_the_item(db: Datab
         "failed",
         "folder_gone",
     )
+
+
+def test_a_three_level_folder_end_to_end_puts_each_file_in_its_folder(db: Database) -> None:
+    """Plan, register, send each file with folder_upload_item_id, read the summary: A, A/B, A/B/C
+    and an empty A/Empty; a copy of a file already sent is a duplicate where the first one is,
+    and a file Kaagaz can't take fails with its reason. Nothing lands anywhere else."""
+    api = Api(db)
+    signed = api.new_signed()
+    program = b"MZ\x90\x00" + b"\x00" * 60
+    files = {
+        "A/top.pdf": PDF_BYTES + b"top",
+        "A/B/mid.pdf": PDF_BYTES + b"mid",
+        "A/B/C/deep.pdf": PDF_BYTES + b"deep",
+        "A/B/C/copy of top.pdf": PDF_BYTES + b"top",
+        "A/B/run.pdf": program,
+    }
+    folders = [*TREE, {"name": "Empty", "parent": 0}]
+    planned_reply = plan(signed, folders, file_count=len(files), total_bytes=sum(map(len, files.values())))
+    assert planned_reply.status_code == 200, planned_reply.text
+    body = planned_reply.json()
+    assert (body["created"], body["merged"]) == (4, 0)
+    where = dict(zip(["A", "A/B", "A/B/C", "A/Empty"], body["folder_ids"], strict=True))
+    rows = [item(path, where[path.rsplit("/", 1)[0]], len(data)) for path, data in files.items()]
+    registered = register(signed, body["id"], rows)
+    assert registered.status_code == 200, registered.text
+    items = dict(zip(files, registered.json()["items"], strict=True))
+
+    replies = {path: send(signed, items[path]["id"], data, name="x.pdf") for path, data in files.items()}
+    assert {path: reply.status_code for path, reply in replies.items()} == {
+        "A/top.pdf": 201,
+        "A/B/mid.pdf": 201,
+        "A/B/C/deep.pdf": 201,
+        "A/B/C/copy of top.pdf": 200,
+        "A/B/run.pdf": 400,
+    }
+    for path in ("A/top.pdf", "A/B/mid.pdf", "A/B/C/deep.pdf"):
+        reply = replies[path].json()
+        assert (reply["duplicate"], reply["item"]["state"]) == (False, "stored")
+        folder, _, autofile, name = _document(api, signed.customer_id, reply["document"]["id"])
+        assert (folder, autofile, name) == (where[path.rsplit("/", 1)[0]], None, path.rsplit("/", 1)[1])
+    copy = replies["A/B/C/copy of top.pdf"].json()
+    assert (copy["duplicate"], copy["item"]["state"]) == (True, "duplicate")
+    assert copy["item"]["document_id"] == replies["A/top.pdf"].json()["document"]["id"]
+    assert copy["item"]["document"]["folder_id"] == where["A"]  # "Already in Kaagaz, in A"
+    assert replies["A/B/run.pdf"].json()["error"]["code"] == "unsupported_type"
+
+    listed = signed.client.get(f"/api/folder-uploads/{body['id']}/items").json()["items"]
+    assert [(row["folder_id"], row["state"], row["failure_code"]) for row in listed] == [
+        (where["A"], "stored", None),
+        (where["A/B"], "stored", None),
+        (where["A/B/C"], "stored", None),
+        (where["A/B/C"], "duplicate", None),
+        (where["A/B"], "failed", "unsupported_type"),
+    ]
+    summary = signed.client.get(f"/api/folder-uploads/{body['id']}").json()
+    counts = ("root_name", "file_count", "registered", "waiting", "stored", "duplicate", "failed")
+    assert tuple(summary[name] for name in counts) == ("A", 5, 5, 0, 3, 1, 1)
+    assert summary["reading"] + summary["ready"] + summary["problem"] == 3
+    (mine,) = signed.client.get("/api/folder-uploads").json()["items"]
+    assert (mine["id"], mine["reading"], mine["ready"], mine["problem"]) == (body["id"], None, None, None)
+
+    tree = {f["id"]: f for f in signed.client.get("/api/folders").json()["items"]}
+    assert (tree[where["A/Empty"]]["name"], tree[where["A/Empty"]]["parent_id"]) == ("Empty", where["A"])
+    assert signed.client.get("/api/documents").json()["total"] == 3

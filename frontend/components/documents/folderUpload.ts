@@ -3,15 +3,17 @@
 // - Start: plan the folders (the server makes them all at once), register every file as an
 //   item with its folder, REGISTER_PAGE at a time, then send what is waiting.
 // - Send (also Continue upload): page the server's waiting items in seq order, match each to
-//   the picked files by path_key, and send FOLDER_UPLOADS_AT_ONCE at a time to that item, so a
-//   retry always lands in the folder the server recorded. A file missing from the pick, or whose
-//   size changed, is said and not sent. Once another account signs in here, nothing more goes.
+//   the picked files by path_key, and send the server's files_at_once (at most
+//   FOLDER_UPLOADS_AT_ONCE) at a time to that item, so a retry always lands in the folder the
+//   server recorded. A file missing from the pick, or whose size changed, is said and not sent.
+//   Once another account signs in here, nothing more goes.
 // - The state keeps counts and at most FOLDER_UPLOADS_AT_ONCE rows being sent, never a row a
 //   file: the lists of what needs attention are read from the server, a page at a time.
 
+import { failureWords } from "@/components/operator/platform";
 import { ApiError } from "@/lib/api";
 import { formatNumber } from "@/lib/format";
-import { failureFix } from "@/lib/status";
+import { documentWords, failureFix } from "@/lib/status";
 import type {
   FolderItemFailure,
   FolderItemView,
@@ -138,15 +140,16 @@ export async function startFolderUpload(
     return;
   }
   source.keys = keys;
-  await sendWaiting(api, { id, userId, source }, emit, stopped);
+  await sendWaiting(api, { id, userId, source, atOnce: args.limits?.folder_upload?.files_at_once }, emit, stopped);
 }
 
 const online = () => typeof navigator === "undefined" || navigator.onLine !== false;
 
-/** Send every item still waiting (or only these, for Retry), each to its own item, matched to the pick by path_key. */
+/** Send every item still waiting (or only these, for Retry), each to its own item, matched to the
+ * pick by path_key; `atOnce` (the server's files_at_once) at a time, at most FOLDER_UPLOADS_AT_ONCE. */
 export async function sendWaiting(
   api: FolderUploadApi,
-  args: { id: string; userId: string; source: FolderSource; only?: readonly FolderUploadItem[] },
+  args: { id: string; userId: string; source: FolderSource; only?: readonly FolderUploadItem[]; atOnce?: number },
   emit: (event: FolderEvent) => void,
   stopped: () => boolean,
 ): Promise<void> {
@@ -154,7 +157,7 @@ export async function sendWaiting(
   const root = source.picked.rootName;
   emit({ type: "phase", id, phase: "sending" });
   const keys = await keyIndex(source);
-  const slots = createSlots(FOLDER_UPLOADS_AT_ONCE);
+  const slots = createSlots(Math.max(1, Math.min(args.atOnce ?? FOLDER_UPLOADS_AT_ONCE, FOLDER_UPLOADS_AT_ONCE)));
   let signedOut: string | null = null;
   const halted = () => signedOut !== null || stopped();
 
@@ -319,17 +322,18 @@ export function folderUploadsReducer(
       break;
     case "counts": {
       const { summary } = event;
+      // The name stays the picked folder's ("A", to choose again), not Kaagaz's "A (2)". The
+      // list (after a reload) leaves the reading counts out (null): the last ones are kept.
       next = {
         ...view,
-        rootName: summary.source_name || view.rootName,
         rootFolderId: summary.root_folder_id,
         total: summary.file_count,
         stored: summary.stored,
         duplicates: summary.duplicate,
         failed: summary.failed,
-        reading: summary.reading,
-        ready: summary.ready,
-        problem: summary.problem,
+        reading: summary.reading ?? view.reading,
+        ready: summary.ready ?? view.ready,
+        problem: summary.problem ?? view.problem,
         unlisted: Math.max(0, summary.file_count - summary.waiting - summary.stored - summary.duplicate - summary.failed),
       };
       break;
@@ -364,7 +368,7 @@ export function viewOfSummary(summary: FolderUploadSummary): FolderUploadView {
   const start = folderUploadsReducer(EMPTY_FOLDER_UPLOADS, {
     type: "start",
     id: summary.id,
-    rootName: summary.source_name || summary.root_name,
+    rootName: summary.root_name,
     total: summary.file_count,
   });
   const counted = folderUploadsReducer(start, { type: "counts", id: summary.id, summary });
@@ -391,7 +395,9 @@ export function itemProblemText(item: FolderUploadItem, limits: UploadLimits): s
   }
   const document = item.document;
   if (document && ["failed", "rejected", "needs_reader"].includes(document.status)) {
-    return `${document.status_message} ${failureFix(document.status, document.failure_code)}`;
+    const code = document.status === "needs_reader" ? "needs_reader" : document.failure_code;
+    const what = code ? failureWords(code) : documentWords(document.status);
+    return `${what}. ${failureFix(document.status, document.failure_code)}`;
   }
   return null;
 }

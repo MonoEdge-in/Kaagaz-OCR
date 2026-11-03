@@ -221,15 +221,33 @@ export function FolderUploadDialog({ source, tree, folderId, admin, limits, onSt
 }
 
 /** While a dropped folder is read: how many files so far, and Cancel. */
-export function FolderReadingDialog({ name, found, onClose }: { name: string; found: number; onClose(): void }) {
+export function FolderReadingDialog({
+  name,
+  found,
+  failed = false,
+  onClose,
+}: {
+  name: string;
+  found: number;
+  failed?: boolean; // the browser couldn't read it (moved, or no permission)
+  onClose(): void;
+}) {
   return (
     <ActionDialog title={`Upload “${name}”`} onClose={onClose}>
       <div className={styles.dialogForm}>
-        <p role="status">Reading the folder…</p>
-        <p className="hint">{plural(found, "file", "files")} found so far.</p>
+        {failed ? (
+          <p className="error-text" role="alert">
+            Kaagaz couldn’t read this folder. Try again, or choose it with Upload a folder.
+          </p>
+        ) : (
+          <>
+            <p role="status">Reading the folder…</p>
+            <p className="hint">{plural(found, "file", "files")} found so far.</p>
+          </>
+        )}
         <div className={styles.formButtons}>
           <button type="button" className="btn" onClick={onClose}>
-            Cancel
+            {failed ? "Close" : "Cancel"}
           </button>
         </div>
       </div>

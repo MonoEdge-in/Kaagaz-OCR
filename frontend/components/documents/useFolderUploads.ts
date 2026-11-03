@@ -4,8 +4,8 @@
 // (components/shell/Uploads.tsx), so an upload keeps going while the person moves between
 // screens. State is counts only (folderUpload.ts); the picked files, the files not sent and the
 // Stop marks are in refs, never copied per event. After a reload, the server's folder uploads
-// with files still waiting come back as "Choose “A” again"; one still being read is followed
-// until it is read.
+// with files still waiting come back as "Choose “A” again" (the list has no reading counts, so
+// one only being read is not brought back). One finished in this tab is followed until it is read.
 
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import {
@@ -20,6 +20,7 @@ import {
 } from "@/lib/api";
 import { POLL_STEPS_MS } from "@/lib/poll";
 import type { UploadLimits, UploadReading } from "@/lib/types";
+import { buildManifest } from "./folderPick";
 import { EMPTY_FOLDER_UPLOADS, folderUploadsReducer, sendWaiting, startFolderUpload } from "./folderUpload";
 import type { FolderEvent, FolderSource, FolderTarget, FolderUploadApi } from "./folderUpload";
 import type { NotSentRow } from "./FolderUploadRow";
@@ -51,6 +52,7 @@ export function useFolderUploads({
   // The folder upload's own pace: 90% of what the server takes, so it is never refused for it.
   const perMinute = limits.folder_upload?.calls_per_minute ?? UPLOAD_CALLS_PER_MINUTE;
   const turn = useMemo(() => createTurn(Math.max(1, Math.floor(perMinute * 0.9))), [perMinute]);
+  const atOnce = limits.folder_upload?.files_at_once;
 
   const api: FolderUploadApi = {
     plan: planFolderUpload,
@@ -103,12 +105,18 @@ export function useFolderUploads({
   /** Send what is still waiting, with the files this tab holds or the folder picked again. */
   function resume(id: string, picked?: FolderSource) {
     const view = state[id];
-    if (picked && view && picked.picked.rootName !== view.rootName) {
+    // After a reload the row has Kaagaz's name, "A (2)" when kept separate: "A" is that folder.
+    const same = (name: string) => view?.rootName === name || view?.rootName.match(/^(.*) \(\d+\)$/)?.[1] === name;
+    if (picked && view && !same(picked.picked.rootName)) {
       const message = `This is “${picked.picked.rootName}”. Choose “${view.rootName}” to continue.`;
       dispatch({ type: "phase", id, phase: view.phase, message });
       return;
     }
-    if (picked) hold(id, picked);
+    // Listed part way: the re-plan needs the first plan's folders first, in their order.
+    const earlier = sources.current.get(id)?.manifest;
+    if (picked && earlier && !listed.current.has(id)) {
+      hold(id, { picked: picked.picked, manifest: buildManifest(picked.picked, earlier) });
+    } else if (picked) hold(id, picked);
     const source = sources.current.get(id);
     if (!source) return;
     stops.current.delete(id);
@@ -122,7 +130,7 @@ export function useFolderUploads({
     if (!listed.current.has(id) && again) {
       void startFolderUpload(api, { id, userId, source, ...again, limits }, emit, stopped(id));
     } else {
-      void sendWaiting(api, { id, userId, source }, emit, stopped(id));
+      void sendWaiting(api, { id, userId, source, atOnce }, emit, stopped(id));
     }
   }
 
@@ -135,7 +143,7 @@ export function useFolderUploads({
     dispatch({ type: "retrying", id, count: chosen.length });
     showNotSent(id);
     stops.current.delete(id);
-    void sendWaiting(api, { id, userId, source, only: chosen.map((row) => row.item) }, emit, stopped(id));
+    void sendWaiting(api, { id, userId, source, only: chosen.map((row) => row.item), atOnce }, emit, stopped(id));
   }
 
   function clear(id: string) {
@@ -156,10 +164,10 @@ export function useFolderUploads({
       ({ items }) => {
         if (cancelled) return;
         for (const summary of items) {
-          if (summary.waiting === 0 && summary.reading === 0) continue;
-          dispatch({ type: "start", id: summary.id, rootName: summary.source_name || summary.root_name, total: summary.file_count });
+          if (summary.waiting === 0) continue;
+          dispatch({ type: "start", id: summary.id, rootName: summary.root_name, total: summary.file_count });
           dispatch({ type: "counts", id: summary.id, summary });
-          dispatch({ type: "phase", id: summary.id, phase: summary.waiting > 0 ? "needs_pick" : "done" });
+          dispatch({ type: "phase", id: summary.id, phase: "needs_pick" });
         }
       },
       () => undefined, // nothing to bring back; the server keeps every item

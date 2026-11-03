@@ -34,16 +34,17 @@ function fakePosts(replies: { status: number; body: unknown }[]) {
 }
 
 describe("sending one file of a folder upload", () => {
-  it("is one POST to /api/documents naming the item, never a folder or a batch", async () => {
+  it("is one POST to /api/documents naming the item in the query, never a folder or a batch", async () => {
     const sent = fakePosts([]);
     const file = new File(["%PDF-1"], "bill.pdf");
     const result = await uploadFolderItem(file, "item-1", "u1", () => undefined, free, { read_mode: "dynamic" });
     expect(result.document.id).toBe("d1");
     expect(sent).toHaveLength(1);
     expect(sent[0]?.method).toBe("POST");
-    expect(sent[0]?.url).toBe("/api/documents");
+    // In the query: the server's rate limit gives it the folder upload's bucket before reading the body.
+    expect(sent[0]?.url).toBe("/api/documents?folder_upload_item_id=item-1");
     const form = sent[0]?.body as FormData;
-    expect(form.get("folder_upload_item_id")).toBe("item-1");
+    expect(form.has("folder_upload_item_id")).toBe(false);
     expect(form.get("user_id")).toBe("u1");
     expect(form.get("read_mode")).toBe("dynamic");
     expect(form.has("folder_id")).toBe(false);
@@ -58,7 +59,10 @@ describe("sending one file of a folder upload", () => {
     const done = uploadFolderItem(new File(["x"], "a.pdf"), "item-7", "u1", () => undefined, free, undefined, (on) => waiting.push(on));
     await vi.advanceTimersByTimeAsync(1500);
     await expect(done).resolves.toMatchObject({ duplicate: false });
-    expect(sent.map((post) => (post.body as FormData).get("folder_upload_item_id"))).toEqual(["item-7", "item-7"]);
+    expect(sent.map((post) => post.url)).toEqual([
+      "/api/documents?folder_upload_item_id=item-7",
+      "/api/documents?folder_upload_item_id=item-7",
+    ]);
     expect(waiting).toEqual([true, false]);
   });
 

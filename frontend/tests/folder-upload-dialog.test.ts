@@ -10,7 +10,7 @@ import { describeAction } from "@/components/admin/logic";
 import { activityWords } from "@/components/activity/words";
 import { buildManifest, fromFileList } from "@/components/documents/folderPick";
 import type { Manifest } from "@/components/documents/folderPick";
-import { FolderUploadDialog, clashOf, dialogProblem, summaryLines } from "@/components/documents/FolderUploadDialog";
+import { FolderReadingDialog, FolderUploadDialog, clashOf, dialogProblem, summaryLines } from "@/components/documents/FolderUploadDialog";
 import { FolderUploadRow } from "@/components/documents/FolderUploadRow";
 import { buildTree } from "@/components/documents/folderTree";
 import { EMPTY_FOLDER_UPLOADS, folderUploadsReducer } from "@/components/documents/folderUpload";
@@ -22,6 +22,7 @@ const LIMITS: FolderUploadLimits = {
   max_folders: 10000,
   max_depth: 100,
   calls_per_minute: 600,
+  files_at_once: 6,
 };
 const folder = (id: string, name: string, parent_id: string | null = null, kind: Folder["kind"] = "custom"): Folder => ({
   id,
@@ -176,6 +177,15 @@ describe("the tray's row for a folder upload", () => {
     expect(row("needs_pick", false)).toContain("Choose “A” again");
     expect(row("stopped", true)).toContain("Continue upload");
     expect(row("stopped", false)).toContain("Choose “A” again");
+  });
+});
+
+describe("reading a dropped folder", () => {
+  it("says so in plain words when the folder can't be read, instead of closing", () => {
+    const html = renderToStaticMarkup(createElement(FolderReadingDialog, { name: "A", found: 12, failed: true, onClose: () => undefined }));
+    expect(html).toContain("Kaagaz couldn’t read this folder. Try again, or choose it with Upload a folder.");
+    expect(html).toContain('role="alert"');
+    expect(html).not.toContain("Reading the folder");
   });
 });
 

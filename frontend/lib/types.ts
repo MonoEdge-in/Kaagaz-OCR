@@ -552,13 +552,14 @@ export interface UploadLimits {
 }
 
 /** The most one folder upload may hold here (the organisation's, else the platform's, else the
- * server's), and how many sends a minute the server takes from this tab. */
+ * server's), how many sends a minute the server takes from this tab, and how many at once. */
 export interface FolderUploadLimits {
   max_files: number;
   max_bytes: number;
   max_folders: number;
   max_depth: number; // 100
   calls_per_minute: number;
+  files_at_once: number; // the organisation's sends at once; the browser sends at most 4
 }
 
 /** POST /folder-uploads: the folders to make, parents first (entry 0 the root), and the counts. */
@@ -607,11 +608,10 @@ export interface FolderUploadItem {
   state: "waiting" | "stored" | "duplicate" | "failed";
   failure_code: FolderItemFailure | null;
   document_id: string | null;
-  // The stored (or matched) document; status_message is safe to show as is.
+  // The stored (or matched) document; null with none, or one deleted for good.
   document: {
     status: DocumentStatus;
     failure_code: string | null;
-    status_message: string;
     folder_id: string | null;
     in_trash: boolean;
   } | null;
@@ -623,24 +623,25 @@ export interface FolderItemsPage {
   next_after: number | null;
 }
 
-/** GET /folder-uploads/{id}: one folder upload's counts, by state, and of its documents. */
+/** GET /folder-uploads/{id}: one folder upload's counts, by state, and of its documents. In the
+ * list (GET /folder-uploads) reading, ready and problem are null. */
 export interface FolderUploadSummary {
   id: string;
   root_folder_id: string | null;
   root_name: string; // the Kaagaz folder, "A (2)" after Keep separate
-  source_name: string; // the folder on the computer, "A"
   target: "department" | "folder";
   created_at: string;
   file_count: number;
   total_bytes: number;
   skipped_count: number;
+  registered: number; // items listed so far
   waiting: number;
   stored: number;
   duplicate: number;
   failed: number;
-  reading: number; // stored, still being checked or read
-  ready: number;
-  problem: number; // stored, but its reading failed or was refused
+  reading: number | null; // stored, still being checked or read
+  ready: number | null;
+  problem: number | null; // stored, but its reading failed or was refused
 }
 
 /** What an upload or a whole document's Read again asks for (feature 26); nothing: the default. */

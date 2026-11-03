@@ -662,11 +662,12 @@ function postFile(path: string, form: FormData, onProgress: (fraction: number) =
 }
 
 /**
- * Send one file of a folder upload to its item. Up to 8 MiB it is one call to POST /documents
- * at the folder upload's own pace (`turn`); a bigger file takes the resumable path at the upload
- * pace. Neither names a folder or a batch: the server takes both from the item. A lost
- * connection, a failing server (5xx) and a 429's Retry-After are waited out as for any upload
- * (retryWhileOffline), always for the same item.
+ * Send one file of a folder upload to its item. Up to 8 MiB it is one call to
+ * POST /documents?folder_upload_item_id= (in the query, so the server's rate limit gives it the
+ * folder upload's bucket) at the folder upload's own pace (`turn`); a bigger file takes the
+ * resumable path at the upload pace. Neither names a folder or a batch: the server takes both
+ * from the item. A lost connection, a failing server (5xx) and a 429's Retry-After are waited out
+ * as for any upload (retryWhileOffline), always for the same item.
  */
 export function uploadFolderItem(
   file: File,
@@ -691,10 +692,9 @@ export function uploadFolderItem(
       const form = new FormData();
       form.append("file", file, file.name);
       form.append("user_id", userId);
-      form.append("folder_upload_item_id", itemId);
       if (reading?.read_mode) form.append("read_mode", reading.read_mode);
       if (reading?.read_model) form.append("read_model", reading.read_model);
-      return postFile("/documents", form, onProgress);
+      return postFile(`/documents${query({ folder_upload_item_id: itemId })}`, form, onProgress);
     },
     onWaiting,
     turn,

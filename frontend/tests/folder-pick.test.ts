@@ -131,6 +131,18 @@ describe("the manifest", () => {
     expect(nameProblem("Bills 2026")).toBeNull();
   });
 
+  it("re-planned from the same folder picked again, keeps the first plan's folders first, in order, and new ones after", () => {
+    const first = fromFileList([picked("A/X/a.pdf"), picked("A/Y/b.pdf")]);
+    const again = fromFileList([picked("A/Z/c.pdf"), picked("A/Y/b.pdf"), picked("A/X/W/d.pdf")]);
+    if (!first || !again) throw new Error("empty");
+    const earlier = buildManifest(first);
+    const manifest = buildManifest(again, earlier);
+    expect(manifest.folders.slice(0, earlier.folders.length)).toEqual(earlier.folders);
+    expect(manifest.folders.slice(earlier.folders.length).map((folder) => folder.name)).toEqual(["Z", "W"]);
+    const named = (name: string) => manifest.folders.findIndex((folder) => folder.name === name);
+    expect(Array.from(manifest.fileFolder)).toEqual([named("Z"), named("Y"), named("W")]);
+  });
+
   it("keeps names in one Unicode form, so a Mac's and a PC's copy are the same path", async () => {
     const mac = fromFileList([picked("A/Café/menu.pdf")]);
     expect(mac?.paths).toEqual(["A/Café/menu.pdf"]);

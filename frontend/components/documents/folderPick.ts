@@ -153,8 +153,12 @@ export interface Manifest {
   badName: { name: string; problem: "long" | "hidden" } | null; // the first folder name Kaagaz can't keep
 }
 
-/** The folders and each file's folder, from a pick. O(n + folders). */
-export function buildManifest(pick: Picked): Manifest {
+/**
+ * The folders and each file's folder, from a pick. O(n + folders). Given the `earlier` manifest
+ * of the same upload (a re-plan of the folder picked again), its folders come first, in the same
+ * order, and new folders after: the server reuses each earlier index's folder.
+ */
+export function buildManifest(pick: Picked, earlier?: Manifest): Manifest {
   const folders: Manifest["folders"] = [];
   const depths: number[] = [];
   let height = 0;
@@ -175,6 +179,11 @@ export function buildManifest(pick: Picked): Manifest {
     return folders.length - 1;
   };
   folderOf(pick.rootName);
+  const earlierPaths: string[] = [];
+  earlier?.folders.forEach(({ name, parent }, at) => {
+    earlierPaths[at] = parent === null ? pick.rootName : `${earlierPaths[parent]}/${name}`;
+    folderOf(earlierPaths[at]!);
+  });
   for (const path of pick.folders) folderOf(path);
   const fileFolder = new Int32Array(pick.paths.length);
   let totalBytes = 0;
