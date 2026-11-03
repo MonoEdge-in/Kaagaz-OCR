@@ -104,6 +104,7 @@ ORG_ROW = {
     "page_max_output_tokens": 32768,
     "scan_reader": None,  # Changed on purpose (#473)
     "mistral_model": None,
+    "daily_page_limit": None,  # Changed on purpose (#478)
     "ensemble": True,
     "ai_budget_usd": Decimal("50.00"),
 }
@@ -122,6 +123,7 @@ DEFAULTS_ROW = {
     "page_max_output_tokens": None,
     "scan_reader": None,  # Changed on purpose (#473)
     "mistral_model": None,
+    "daily_page_limit": None,  # Changed on purpose (#478)
     "orgs_inheriting_scan_models": 4,
     "orgs_inheriting_chat_models": 7,
     "orgs_inheriting_scan_thinking": 6,
@@ -133,6 +135,7 @@ DEFAULTS_ROW = {
     "orgs_inheriting_page_max_output_tokens": 9,
     "orgs_inheriting_scan_reader": 8,  # Changed on purpose (#473)
     "orgs_inheriting_mistral_model": 8,
+    "orgs_inheriting_daily_page_limit": 3,  # Changed on purpose (#478)
 }
 ORG_BODY: dict[str, Any] = {
     "scan_models": [MODEL, OTHER],
@@ -149,6 +152,7 @@ ORG_BODY: dict[str, Any] = {
     "page_max_output_tokens": 32768,
     "scan_reader": None,  # Changed on purpose (#473)
     "mistral_model": None,
+    "daily_page_limit": None,  # Changed on purpose (#478)
     "ensemble": True,
     "ai_budget_usd": 12.5,
 }
@@ -167,6 +171,7 @@ DEFAULTS_BODY: dict[str, Any] = {
     "page_max_output_tokens": None,
     "scan_reader": None,  # Changed on purpose (#473)
     "mistral_model": None,
+    "daily_page_limit": None,  # Changed on purpose (#478)
 }
 USAGE_ROW = {
     "customer_id": CID,
@@ -217,6 +222,7 @@ ENV = {
     "mistral_status": {"stopped": False, "code": None, "since": None, "documents_waiting": 0},
 }
 MISTRAL_ROW = {"code": None, "since": None, "documents_waiting": 0}  # #473: no document waits
+TODAY_ROW = {"pages": 1240, "cost_usd": Decimal("0.42")}  # #478: the reading pause's counter today
 
 
 class _NoDatabase(OperatorDatabase):
@@ -260,6 +266,7 @@ class _Offline:
         )
         monkeypatch.setattr(models_sql, "ai_defaults", self._recorder("ai_defaults", lambda: self.defaults))
         monkeypatch.setattr(models_sql, "mistral_status", self._recorder("mistral_status", MISTRAL_ROW))
+        monkeypatch.setattr(models_sql, "reading_today", self._recorder("reading_today", TODAY_ROW))
         token = sign_operator(
             OperatorClaims(operator_id=OID, session_version=2, expires_at=AT + 600),
             self.settings.session_secret,
@@ -472,6 +479,7 @@ def test_an_organisations_ai_settings_round_trip_with_the_defaults_it_follows(of
             "page_max_output_tokens": 32768,
             "scan_reader": None,  # Changed on purpose (#473)
             "mistral_model": None,
+            "daily_page_limit": None,  # Changed on purpose (#478)
             "chat_levels": None,
             "chat_default_level": None,
             "dynamic": None,
@@ -488,6 +496,7 @@ def test_an_organisations_ai_settings_round_trip_with_the_defaults_it_follows(of
             "page_max_output_tokens": None,
             "scan_reader": None,  # Changed on purpose (#473)
             "mistral_model": None,
+            "daily_page_limit": None,  # Changed on purpose (#478)
             "chat_levels": ["low", "medium"],
             "chat_default_level": "low",
             "dynamic": False,
@@ -496,6 +505,7 @@ def test_an_organisations_ai_settings_round_trip_with_the_defaults_it_follows(of
         "ensemble": True,
         "max_agents": 3,
         "ai_budget_usd": 50.0,
+        "reading_today": {"pages": 1240, "cost_usd": 0.42},  # Changed on purpose (#478): the operator's
     }
     put = offline.client.put(path, json={**ORG_BODY, "code": offline.code()}, headers=offline.headers)
     assert put.status_code == 200, put.text
@@ -643,6 +653,7 @@ def test_the_platform_defaults_say_how_many_organisations_follow_each_area(offli
             "page_max_output_tokens": None,
             "scan_reader": None,  # Changed on purpose (#473)
             "mistral_model": None,
+            "daily_page_limit": None,  # Changed on purpose (#478)
             "chat_levels": ["low", "medium"],
             "chat_default_level": "low",
             "dynamic": False,
@@ -660,6 +671,7 @@ def test_the_platform_defaults_say_how_many_organisations_follow_each_area(offli
             "page_max_output_tokens": 9,
             "scan_reader": 8,  # Changed on purpose (#473)
             "mistral_model": 8,
+            "daily_page_limit": 3,  # Changed on purpose (#478)
         },
     }
     offline.defaults = None  # the operator was disabled meanwhile

@@ -94,6 +94,7 @@ FOLLOWS_DEFAULTS: dict[str, Any] = {
     "page_max_output_tokens": None,
     "scan_reader": None,  # Changed on purpose (#473): who reads the pages, and the Mistral model
     "mistral_model": None,
+    "daily_page_limit": None,  # Changed on purpose (#478)
     "chat_levels": None,
     "chat_default_level": None,
     "dynamic": None,

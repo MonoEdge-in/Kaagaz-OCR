@@ -412,25 +412,26 @@ def mark_for_upgrade(conn: Connection, customer_id: str, document_id: str) -> bo
 
 # --- the stuck-document sweep (stuck reading, 16 Oct 2026, kaagaz/jobs/revive.py) ---------
 
-# In progress, out of Trash, and nothing written on it for :stale seconds, on the database's
-# clock (the touch trigger sets updated_at at every change: each try, each progress step).
+# In progress, out of Trash, not held by a reading pause (#478), and nothing written on it for
+# :stale seconds, on the database's clock (the touch trigger sets updated_at at every change:
+# each try, each progress step).
 # Each statement below repeats it, so a change is made in all three.
 _STUCK_FIND = (
     "SELECT id, attempts FROM documents"
     " WHERE customer_id = :c AND status IN ('received', 'clean') AND deleted_at IS NULL"
-    " AND updated_at < now() - make_interval(secs => :stale)"
+    " AND reading_held IS NULL AND updated_at < now() - make_interval(secs => :stale)"
     " ORDER BY updated_at, id LIMIT :n"
 )
 _STUCK_REQUEUE = (
     "UPDATE documents SET attempts = attempts + 1, max_attempts = :max, progress = NULL"
     " WHERE id = :d AND customer_id = :c AND status IN ('received', 'clean') AND deleted_at IS NULL"
-    " AND updated_at < now() - make_interval(secs => :stale)"
+    " AND reading_held IS NULL AND updated_at < now() - make_interval(secs => :stale)"
     " AND attempts < :max RETURNING attempts"
 )
 _STUCK_FAIL = (
     "UPDATE documents SET status = 'failed', failure_code = :code"
     " WHERE id = :d AND customer_id = :c AND status IN ('received', 'clean') AND deleted_at IS NULL"
-    " AND updated_at < now() - make_interval(secs => :stale)"
+    " AND reading_held IS NULL AND updated_at < now() - make_interval(secs => :stale)"
     " AND attempts >= :max RETURNING id"
 )
 STUCK_NO_JOB = "stuck_no_job"

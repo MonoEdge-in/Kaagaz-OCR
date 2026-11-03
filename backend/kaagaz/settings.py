@@ -453,6 +453,9 @@ class Settings:
     email_from: str | None = None
     ses_region: str = "ap-south-1"
     app_url: str | None = None
+    # The super admin's address for operations alerts (#478: an organisation's reading paused),
+    # sent through the same mailer while EMAIL_ENABLED is on. Optional: unset, none is sent.
+    ops_alert_email: str | None = None
     # Sign in with Google (#457 phase 1). Off unless GOOGLE_SIGNIN_ENABLED=true; on, the
     # client id, secret and redirect URI are required. The redirect URI is https (http only
     # on a loopback host) and ends /api/auth/oidc/google/callback.
@@ -758,6 +761,7 @@ class Settings:
             email_from=env.text("EMAIL_FROM") if email_enabled else env.optional("EMAIL_FROM"),
             ses_region=env.optional("SES_REGION") or "ap-south-1",
             app_url=_app_url(env.text("APP_URL")) if email_enabled else env.optional("APP_URL"),
+            ops_alert_email=env.optional("OPS_ALERT_EMAIL"),
             google_signin_enabled=google_on,
             google_client_id=env.text("GOOGLE_CLIENT_ID") if google_on else env.optional("GOOGLE_CLIENT_ID"),
             google_client_secret=env.text("GOOGLE_CLIENT_SECRET")

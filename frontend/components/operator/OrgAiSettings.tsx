@@ -97,6 +97,7 @@ import {
   VENDOR_NOT_ALLOWED,
   accuracyWords,
   aiBody,
+  DAILY_PAGES_HINT,
   aiErrors,
   askScanCost,
   changesText,
@@ -120,6 +121,7 @@ import {
   monthSpentText,
   offered,
   onlyLimitDiffers,
+  pagesTodayText,
   parseBudget,
   parseTokens,
   pickedReader,
@@ -164,7 +166,7 @@ export function refusalOf(caught: unknown): { field: AiField | "code"; message: 
 
 /** The first field with a problem, in the form's order, for the focus. */
 export function firstProblem(errors: AiErrors): AiField | null {
-  const order: AiField[] = ["scan_models", "scan_default", "page_max_output_tokens", "chat_models", "chat_default", "chat_levels", "budget", "form"];
+  const order: AiField[] = ["scan_models", "scan_default", "page_max_output_tokens", "daily_page_limit", "chat_models", "chat_default", "chat_levels", "budget", "form"];
   return order.find((field) => errors[field]) ?? null;
 }
 
@@ -321,6 +323,7 @@ export function OrgAiSettings({ org, onClose, onSaved }: { org: Organisation; on
               check={{ latest, onCheck: () => setChecking(true) }}
               orgName={org.name}
               spent={loaded.spent}
+              today={loaded.reply.reading_today}
               catalogue={loaded.catalogue}
               saved={loaded.reply.own}
               defaults={loaded.reply.defaults}
@@ -526,6 +529,7 @@ export function AiFields(props: {
   check?: { latest: AccuracyCheck | null; onCheck(): void }; // an organisation's accuracy check
   orgName?: string; // an organisation's: "People at <name> will see"
   spent?: string | null; // an organisation's: "This month: $X used", when known
+  today?: { pages: number; cost_usd: number | null }; // an organisation's pages read today (#478)
   catalogue: OperatorModel[];
   saved: AiValues;
   defaults: AiValues;
@@ -536,7 +540,8 @@ export function AiFields(props: {
   busy: boolean;
   onChange(draft: AiDraft): void;
 }) {
-  const { platform, customerId, check, orgName, spent, catalogue, saved, defaults, env, maxAgents, draft, errors, busy, onChange } = props;
+  const { platform, customerId, check, orgName, spent, today, catalogue, saved, defaults, env, maxAgents, draft, errors, busy, onChange } =
+    props;
   const from = (field: Parameters<typeof inheritedText>[0]) => inheritedText(field, defaults, env, catalogue);
   // A scan setting's select: "" follows the platform default, or the server's on the platform.
   const setting = <T extends string>(field: ScanSetting, values: T[], words: Record<T, string>) => ({
@@ -708,6 +713,36 @@ export function AiFields(props: {
                   />
                 </>
               )}
+              <h3 className={styles.subHeading}>Reading limit</h3>
+              <SettingField
+                id={fieldId("daily_page_limit")}
+                label="Daily page limit"
+                platform={platform}
+                own={draft.daily_page_limit.trim() !== ""}
+                hint={DAILY_PAGES_HINT}
+                onFollow={() => onChange({ ...draft, daily_page_limit: "" })}
+                control={(describedBy) => (
+                  <input
+                    id={fieldId("daily_page_limit")}
+                    className="input"
+                    type="number"
+                    inputMode="numeric"
+                    min="1"
+                    max="1000000"
+                    step="1"
+                    placeholder={platform ? "No limit" : `Platform default (${from("daily_page_limit")})`}
+                    value={draft.daily_page_limit}
+                    // The wheel scrolls the dialog, never the number: the box lets go of the focus first.
+                    onWheel={(event) => event.currentTarget.blur()}
+                    onChange={(event) => onChange({ ...draft, daily_page_limit: event.target.value })}
+                    aria-invalid={errors.daily_page_limit ? true : undefined}
+                    aria-describedby={describedBy}
+                  />
+                )}
+                problem={errors.daily_page_limit ? <FieldError field="daily_page_limit" errors={errors} /> : null}
+                problemId={`${fieldId("daily_page_limit")}-error`}
+              />
+              {today && <p className="hint">{pagesTodayText(today)}</p>}
             </div>
             <CostPanel
               platform={platform}
@@ -815,7 +850,8 @@ export function AiFields(props: {
                 aria-describedby={describedBy("budget", errors, rupees ? "ai-budget-hint ai-budget-inr" : "ai-budget-hint")}
               />
               <span id="ai-budget-hint" className="hint">
-                Warn only, and seen only here. Leave it empty for no budget.
+                Seen only here. When it&apos;s reached, reading stops until next month or until you raise it. Ask keeps
+                working. Leave it empty for no budget.
               </span>
               {rupees && (
                 <span id="ai-budget-inr" className="hint">
