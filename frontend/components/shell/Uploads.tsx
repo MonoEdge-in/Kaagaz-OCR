@@ -13,7 +13,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, ReactNode } from "react";
-import { buildManifest, fromFileList, walkDrop } from "@/components/documents/folderPick";
+import { NO_FOLDER_PICKER, buildManifest, fromFileList, noFolderPaths, walkDrop } from "@/components/documents/folderPick";
 import type { FolderSource } from "@/components/documents/folderUpload";
 import { FolderReadingDialog, FolderUploadDialog } from "@/components/documents/FolderUploadDialog";
 import { FolderUploadRow } from "@/components/documents/FolderUploadRow";
@@ -50,7 +50,7 @@ interface SharedUploads {
 
 /** The step before a folder upload starts: a dropped folder still being read, or read. */
 type Pending =
-  | { kind: "reading"; name: string; found: number; folderId: string | null; failed?: boolean }
+  | { kind: "reading"; name: string; found: number; folderId: string | null; failed?: boolean | string }
   | { kind: "ready"; source: FolderSource; folderId: string | null };
 
 const UploadsContext = createContext<SharedUploads | null>(null);
@@ -143,11 +143,17 @@ export function UploadsProvider({ children }: { children: ReactNode }) {
   };
 
   function onFolderChosen(event: ChangeEvent<HTMLInputElement>) {
-    const picked = fromFileList(event.target.files ?? []);
+    const files = event.target.files ?? [];
+    const { folderId, again } = pickFor.current;
+    if (noFolderPaths(files)) {
+      event.target.value = "";
+      setPending({ kind: "reading", name: "", found: 0, folderId, failed: NO_FOLDER_PICKER });
+      return;
+    }
+    const picked = fromFileList(files);
     event.target.value = "";
     if (!picked) return;
     const source = { picked, manifest: buildManifest(picked) };
-    const { folderId, again } = pickFor.current;
     if (again !== null) folderUploads.resume(again, source);
     else setPending({ kind: "ready", source, folderId });
   }

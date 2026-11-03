@@ -22,19 +22,19 @@ import admin from "@/components/admin/Admin.module.css";
 import styles from "./Operator.module.css";
 
 const NAMES: FolderLimitName[] = ["max_files", "max_gb", "max_folders"];
-export const LIMIT_LABELS: Record<FolderLimitName, string> = {
+const LIMIT_LABELS: Record<FolderLimitName, string> = {
   max_files: "Most files in one folder upload",
   max_gb: "Most total size, in GB",
   max_folders: "Most folders one upload may make",
 };
 /** The highest value each field takes, as the server's checks. */
-export const LIMIT_CEILINGS: Record<FolderLimitName, number> = { max_files: 200_000, max_gb: 1024, max_folders: 50_000 };
+const LIMIT_CEILINGS: Record<FolderLimitName, number> = { max_files: 200_000, max_gb: 20, max_folders: 50_000 };
 const EXPLAIN = "The most one folder upload may hold. Kaagaz checks each upload against these before anything is sent.";
 const SAVE_ID = "folder-limits-save";
 const fieldId = (name: FolderLimitName) => `folder-limit-${name}`;
 
 /** "60,000 files", "5 GB", "10,000 folders". */
-export function limitText(name: FolderLimitName, value: number): string {
+function limitText(name: FolderLimitName, value: number): string {
   if (name === "max_gb") return `${formatNumber(value)} GB`;
   return `${formatNumber(value)} ${name === "max_files" ? "files" : "folders"}`;
 }

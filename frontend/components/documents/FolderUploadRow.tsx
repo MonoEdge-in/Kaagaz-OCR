@@ -1,14 +1,8 @@
 "use client";
 
-// One folder upload in the uploads tray (#484): its line ("Folder “A”: 1,240 of 5,000 uploaded,
-// 3 need attention"), a bar whose value is said in words, the files being sent (at most 4),
-// Stop, then Continue upload (this tab still holds the files) or Choose “A” again (after a
-// reload), and Retry all failed. The files not sent from this tab are listed with their reason
-// and Retry, which sends the same item to the folder the server recorded. What needs attention
-// and what was already in Kaagaz are read from the server, 500 at a time, when opened: each
-// with a plain reason; a file already in Kaagaz offers Open and "Also put it here", which moves
-// that document here after asking (a document is in one folder), or Restore when it is in Trash.
-// Not a live region: the status bar's one line speaks for the uploads (UploadArea.tsx).
+// One folder upload in the uploads tray (#484): its line and bar, Stop, Continue or Choose “A”
+// again, the files not sent from this tab with Retry, and the server's lists of what needs
+// attention and what was already in Kaagaz. Not a live region: UploadArea.tsx's status line speaks.
 
 import Link from "next/link";
 import { useState } from "react";
@@ -30,7 +24,7 @@ export interface NotSentRow {
   retry: boolean;
 }
 
-export interface FolderRowActions {
+interface FolderRowActions {
   stop(): void;
   resume(): void; // this tab still holds the files
   chooseAgain(): void; // pick the folder again (after a reload)
@@ -39,10 +33,6 @@ export interface FolderRowActions {
   clear(): void;
   loadItems(view: "attention" | "duplicate", after: number): Promise<FolderItemsPage>;
 }
-
-/** Files declared at the start but never listed: said, never dropped in silence. */
-export const unlistedText = (count: number, root: string) =>
-  `${formatNumber(count)} ${count === 1 ? "file was" : "files were"} never listed, so not sent. Upload “${root}” again to add ${count === 1 ? "it" : "them"}.`;
 
 const where = (tree: FolderTree, folderId: string | null) =>
   folderId === null ? "All documents" : shortPathLabel(tree, folderId) || "a folder";
@@ -67,16 +57,13 @@ export function FolderUploadRow({
   const retryable = notSent.rows.some((row) => row.retry);
   const settled = view.phase === "done" || view.phase === "refused";
   const reading = readingLine(view);
-  const attention = view.failed + view.problem;
+  const attention = attentionOf(view);
   return (
     <div className={styles.batch}>
       <div className={styles.batchHead}>
         <p className={styles.batchSummary}>{folderLine(view)}</p>
       </div>
       {view.message && <p className={`error-text ${styles.small}`}>{view.message}</p>}
-      {view.unlisted > 0 && !held && (
-        <p className={`error-text ${styles.small}`}>{unlistedText(view.unlisted, view.rootName)}</p>
-      )}
       {view.total > 0 && view.phase !== "refused" && (
         <div className={styles.progressRow}>
           <progress
@@ -162,7 +149,7 @@ export function FolderUploadRow({
           render={(item) => <DuplicateItem key={item.id} item={item} tree={tree} />}
         />
       )}
-      {attentionOf(view) === 0 && view.phase === "done" && view.reading === 0 && (
+      {attention === 0 && notSent.total === 0 && view.duplicates === 0 && view.phase === "done" && view.reading === 0 && (
         <p className={`muted ${styles.small}`}>Every file is in its folder.</p>
       )}
     </div>
@@ -238,7 +225,7 @@ function AttentionItem({ item, tree, limits }: { item: FolderUploadItem; tree: F
   );
 }
 
-/** "Already in Kaagaz, in <path>": Open, and Also put it here (a move, after asking), or Restore. */
+/** "Already in Kaagaz, in <path>": Open, and Move it here (after asking), or Restore. */
 function DuplicateItem({ item, tree }: { item: FolderUploadItem; tree: FolderTree }) {
   const document = item.document;
   const [asking, setAsking] = useState(false);
@@ -287,7 +274,7 @@ function DuplicateItem({ item, tree }: { item: FolderUploadItem; tree: FolderTre
         )}
         {!done && !document.in_trash && !here && !asking && (
           <button type="button" className={`btn ${styles.inlineAction}`} onClick={() => setAsking(true)}>
-            Also put it here<span className="visually-hidden">{`: ${item.name}`}</span>
+            Move it here<span className="visually-hidden">{`: ${item.name}`}</span>
           </button>
         )}
         {asking && (

@@ -591,10 +591,10 @@ export interface NewFolderItem {
   name: string;
   folder_id: string;
   size: number;
-  refused?: FolderItemFailure;
+  refused?: "unsupported_type"; // the server judges size, emptiness and names itself
 }
 
-export type FolderItemFailure = "too_large" | "unsupported_type" | "empty_file" | "folder_gone";
+export type FolderItemFailure = "too_large" | "unsupported_type" | "empty_file" | "folder_gone" | "bad_name";
 export type FolderItemView = "waiting" | "attention" | "duplicate" | "all";
 
 /** One file of a folder upload, as the server keeps it; its folder never changes. */
@@ -629,7 +629,10 @@ export interface FolderUploadSummary {
   id: string;
   root_folder_id: string | null;
   root_name: string; // the Kaagaz folder, "A (2)" after Keep separate
+  source_name: string; // the picked folder's own name, "A"
   target: "department" | "folder";
+  parent_folder_id: string | null;
+  merge: boolean;
   created_at: string;
   file_count: number;
   total_bytes: number;

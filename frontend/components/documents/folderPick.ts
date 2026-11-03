@@ -21,19 +21,20 @@ const SYSTEM_NAMES = new Set([
 ]);
 
 /** How many skipped names are kept to show; the count goes on past it. */
-export const SKIPPED_SHOWN = 100;
+const SKIPPED_SHOWN = 100;
 
 /** The longest folder name Kaagaz keeps (the server's FOLDER_NAME_MAX). */
-export const FOLDER_NAME_MAX = 100;
+const FOLDER_NAME_MAX = 100;
 
 export function isSkipped(name: string): boolean {
   return name.startsWith(".") || name.startsWith("~$") || SYSTEM_NAMES.has(name.toLowerCase());
 }
 
-/** Control characters, bidirectional overrides and zero-width characters, which hide what a name says. */
-const HIDDEN_CHARACTERS = /[\u0000-\u001f\u007f-\u009f​-‏‪-‮⁠-⁤⁦-⁩﻿]/u;
+/** The server's rule: control, format, surrogate, private-use, unassigned, line and paragraph
+ * separator characters, and "/" or "\". The Devanagari joiners (ZWNJ, ZWJ) are allowed. */
+const HIDDEN_CHARACTERS = /(?![\u200C\u200D])[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Cn}\p{Zl}\p{Zp}/\\]/u;
 
-/** Why a folder name can't be kept: "long" (over 100 characters), "hidden" (a hidden character, or "." or ".."), or null. */
+/** Why a folder name can't be kept: "long" (over 100 characters), "hidden" (a character above, or "." or ".."), or null. */
 export function nameProblem(name: string): "long" | "hidden" | null {
   if (HIDDEN_CHARACTERS.test(name) || name === "." || name === ".." || name.trim() === "") return "hidden";
   return [...name].length > FOLDER_NAME_MAX ? "long" : null;
@@ -62,6 +63,11 @@ function skip(pick: Picked, path: string) {
   pick.skippedCount += 1;
   if (pick.skipped.length < SKIPPED_SHOWN) pick.skipped.push(path);
 }
+
+export const NO_FOLDER_PICKER = "This browser can’t pick folders. Use a computer.";
+
+/** A pick of files without their folder paths: a phone's picker ignores webkitdirectory. */
+export const noFolderPaths = (list: ArrayLike<File>) => list.length > 0 && !list[0]!.webkitRelativePath;
 
 /** A folder pick's files (each has webkitRelativePath "A/B/c.pdf"); null for an empty pick. O(n). */
 export function fromFileList(list: ArrayLike<File>): Picked | null {

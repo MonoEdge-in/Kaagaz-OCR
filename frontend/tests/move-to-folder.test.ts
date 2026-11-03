@@ -139,7 +139,7 @@ describe("the Move dialog", () => {
   it("marks where the document is now Current and disables it; the others can be chosen", () => {
     const html = moveForm([doc({ folder_id: "f-26", doc_type: "other" })]);
     expect(radio(html, "2026")).toEqual({ disabled: true, checked: false });
-    expect(html).toMatch(/2026<span[^>]*>Current<\/span>/);
+    expect(html).toMatch(/2026<span class="visually-hidden">, Level 2<\/span><span[^>]*>Current<\/span>/);
     expect(radio(html, "Suppliers").disabled).toBe(false);
     expect(radio(html, "All documents").disabled).toBe(false);
     // Not in a folder: All documents is the current place.

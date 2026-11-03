@@ -49,9 +49,9 @@ describe("each field", () => {
   it("takes empty or a whole number from 1 to the ceiling", () => {
     expect(parseLimit("", "max_files")).toBeNull();
     expect(parseLimit(" 200000 ", "max_files")).toBe(200000);
-    expect(parseLimit("1024", "max_gb")).toBe(1024);
+    expect(parseLimit("20", "max_gb")).toBe(20); // 20 GB until the server checks its free disk
     for (const bad of ["0", "200001", "1.5", "-1", "abc"]) expect(parseLimit(bad, "max_files")).toBeUndefined();
-    expect(parseLimit("1025", "max_gb")).toBeUndefined();
+    expect(parseLimit("21", "max_gb")).toBeUndefined();
     expect(parseLimit("50001", "max_folders")).toBeUndefined();
   });
 
