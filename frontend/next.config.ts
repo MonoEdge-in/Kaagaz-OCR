@@ -4,34 +4,6 @@ import type { NextConfig } from "next";
 // FastAPI backend, so the session cookie stays first-party and no CORS is needed.
 const backend = process.env.BACKEND_URL ?? "http://localhost:8000";
 
-// Everything comes from this app: Next.js's inline scripts and styles, the
-// PDF.js worker (a file under /_next, or a blob: one), page images drawn from
-// data: and blob: URLs, and PDF.js's fonts from data: URLs. The PDF viewer's
-// engine is WebAssembly (served from /_next, compiled under 'wasm-unsafe-eval',
-// which allows no JavaScript eval) and Print frames the file from a blob: URL.
-// Google Analytics (#457 phase 4) adds Google's script, and the hosts it sends page views to,
-// on the public pages that load it only, never app-wide.
-function csp(script = "", collect = ""): string {
-  return [
-    "default-src 'self'",
-    `script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'${script}`,
-    "style-src 'self' 'unsafe-inline'",
-    "worker-src 'self' blob:",
-    `img-src 'self' data: blob:${collect}`,
-    "frame-src 'self' blob:",
-    "font-src 'self' data:",
-    `connect-src 'self'${collect}`,
-    "object-src 'none'",
-    "frame-ancestors 'none'",
-    "base-uri 'self'",
-    "form-action 'self'",
-  ].join("; ");
-}
-const CSP = csp();
-const GA_CSP = csp(
-  " https://www.googletagmanager.com",
-  " https://*.google-analytics.com https://*.analytics.google.com https://*.googletagmanager.com",
-);
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
@@ -54,17 +26,10 @@ const nextConfig: NextConfig = {
           { key: "X-Content-Type-Options", value: "nosniff" },
           { key: "Referrer-Policy", value: "same-origin" },
           { key: "X-Frame-Options", value: "DENY" },
-          // Security checklist (15 Oct 2026): report only, so the browser logs what
-          // would be blocked and blocks nothing, until it is checked on the live site.
-          { key: "Content-Security-Policy-Report-Only", value: CSP },
+          // The content security policy is set by proxy.ts: its script rule carries a fresh
+          // nonce on every page (#481, 3 Nov 2026).
           { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
         ],
-      },
-      {
-        // The pages components/analytics/ga.ts tracks (PAGE_TITLES); /login not while ?step=code.
-        source: "/:page(login|signup|forgot-password)",
-        missing: [{ type: "query", key: "step", value: "code" }],
-        headers: [{ key: "Content-Security-Policy-Report-Only", value: GA_CSP }],
       },
       {
         // The emailed links' pages (#457): their token is in the fragment, never sent anyway;
