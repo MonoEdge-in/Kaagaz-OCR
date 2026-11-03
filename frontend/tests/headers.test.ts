@@ -3,8 +3,10 @@
 // cache. The rules are matched the way Next.js matches them.
 
 import { getPathMatch } from "next/dist/shared/lib/router/utils/path-match";
+import { NextRequest } from "next/server";
 import { describe, expect, it } from "vitest";
 import nextConfig from "@/next.config";
+import { proxy } from "@/proxy";
 
 async function headersFor(path: string): Promise<Record<string, string>> {
   const out: Record<string, string> = {};
@@ -46,14 +48,17 @@ describe("response headers", () => {
   });
 
   it("report a content security policy without enforcing it, and switch off camera, microphone and location", async () => {
-    for (const path of ["/documents/d-1", "/_next/static/chunks/main.js", "/api/documents"]) {
-      const headers = await headersFor(path);
-      expect(headers["Content-Security-Policy"], path).toBeUndefined();
-      const policy = headers["Content-Security-Policy-Report-Only"];
+    // The policy comes from proxy.ts on every page (#481, 3 Nov 2026); see csp-nonce.test.ts.
+    for (const path of ["/documents/d-1", "/login", "/operator"]) {
+      const headers = proxy(new NextRequest(new URL(path, "https://kaagaz.example"))).headers;
+      expect(headers.get("Content-Security-Policy"), path).toBeNull();
+      const policy = headers.get("Content-Security-Policy-Report-Only");
       for (const rule of ["default-src 'self'", "worker-src 'self' blob:", "object-src 'none'", "frame-ancestors 'none'", "connect-src 'self'"]) {
         expect(policy, path).toContain(rule);
       }
-      expect(headers["Permissions-Policy"], path).toBe("camera=(), microphone=(), geolocation=()");
+    }
+    for (const path of ["/documents/d-1", "/_next/static/chunks/main.js", "/api/documents"]) {
+      expect((await headersFor(path))["Permissions-Policy"], path).toBe("camera=(), microphone=(), geolocation=()");
     }
   });
 });

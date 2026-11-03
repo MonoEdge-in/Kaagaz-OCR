@@ -9,6 +9,8 @@
   change ``delete_after`` (0014).
 * ``ids_to_sweep`` and ``mark_swept`` (0019, PR 4b): the second sweep of a purged
   customer's storage, a day later, on a ``Database.system()`` connection (ids only).
+* ``forget_kept_audit`` (0068, #482): the audit rows ``finish_delete`` kept go KEEP_DAYS (365)
+  after the deletion, on a ``Database.system()`` connection (a count only).
 """
 
 from collections.abc import Sequence
@@ -36,6 +38,7 @@ _LOCK = text("SELECT status FROM customers WHERE id = :c FOR UPDATE")
 # The grace period ends now: by both the caller's clock and the database's (0018's finish).
 _PURGE_NOW = text("UPDATE customers SET delete_after = least(now(), :now) WHERE id = :c")
 _TO_SWEEP = text("SELECT t.id FROM kaagaz_purged_ids_to_sweep(:now) AS t (id)")
+_FORGET = text("SELECT kaagaz_forget_kept_audit(:now)")
 
 
 def ids_to_purge(conn: Connection, *, now: datetime) -> list[str]:
@@ -68,9 +71,10 @@ def next_family_to_purge(
 
 
 def finish_delete(conn: Connection, customer_id: str) -> bool:
-    """Delete the customers row, and with it every row left of the customer, and write
-    ``org.purged``: only when it is being deleted, due on the database clock and has no
-    document. False: nothing was done. ``conn`` from ``Database.system()``. O(rows left)."""
+    """Keep its audit rows (``audit_log_kept``, 0068, #482), delete the customers row, and with
+    it every row left of the customer, and write ``org.purged``: only when it is being deleted,
+    due on the database clock and has no document. False: nothing was done. ``conn`` from
+    ``Database.system()``. O(rows left)."""
     return bool(conn.execute(text("SELECT kaagaz_finish_customer_delete(:c)"), {"c": customer_id}).scalar())
 
 
@@ -94,3 +98,10 @@ def mark_swept(conn: Connection, customer_id: str) -> bool:
     """Write ``org.swept`` for a purged customer whose prefixes were emptied again. False:
     not purged, swept already or still there. ``conn`` from ``Database.system()``."""
     return bool(conn.execute(text("SELECT kaagaz_customer_swept(:c)"), {"c": customer_id}).scalar())
+
+
+def forget_kept_audit(conn: Connection, *, now: datetime) -> int:
+    """Delete the kept audit rows of organisations deleted 365 days or more before ``now`` and
+    the database clock (0068, #482); how many. ``conn`` from ``Database.system()``. One
+    statement on ``audit_log_kept_deleted``: O(log n + rows removed)."""
+    return int(conn.execute(_FORGET, {"now": now}).scalar_one())

@@ -6,6 +6,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { getPathMatch } from "next/dist/shared/lib/router/utils/path-match";
+import { NextRequest } from "next/server";
 import { describe, expect, it } from "vitest";
 import {
   BANNER_TEXT,
@@ -20,6 +21,7 @@ import {
   viewFor,
 } from "@/components/analytics/ga";
 import nextConfig from "@/next.config";
+import { proxy } from "@/proxy";
 
 const root = join(__dirname, "..");
 const source = (path: string) => readFileSync(join(root, path), "utf8");
@@ -327,8 +329,14 @@ describe("the content security policy", () => {
     return out;
   }
 
-  async function directives(address: string): Promise<Record<string, string>> {
-    const policy = (await headersFor(address))["Content-Security-Policy-Report-Only"] ?? "";
+  // The policy proxy.ts sends with a page (#481), its nonce written as 'nonce-…' (it changes
+  // on every request; csp-nonce.test.ts checks it).
+  function directives(address: string): Record<string, string> {
+    const response = proxy(new NextRequest(new URL(address, "https://kaagaz.example")));
+    const policy = (response.headers.get("Content-Security-Policy-Report-Only") ?? "").replace(
+      /'nonce-[^']+'/,
+      "'nonce-…'",
+    );
     return Object.fromEntries(
       policy.split("; ").map((part) => {
         const [name, ...values] = part.split(" ");
@@ -340,7 +348,7 @@ describe("the content security policy", () => {
   const collect = "https://*.google-analytics.com https://*.analytics.google.com https://*.googletagmanager.com";
   const base = {
     "default-src": "'self'",
-    "script-src": "'self' 'unsafe-inline' 'wasm-unsafe-eval'",
+    "script-src": "'self' 'nonce-…' 'strict-dynamic' 'wasm-unsafe-eval'",
     "style-src": "'self' 'unsafe-inline'",
     "worker-src": "'self' blob:",
     "img-src": "'self' data: blob:",
@@ -353,11 +361,11 @@ describe("the content security policy", () => {
     "form-action": "'self'",
   };
 
-  it("allows Google's script and its collection hosts on the pages that load it, and nothing else new", async () => {
+  it("allows Google's script and its collection hosts on the pages that load it, and nothing else new", () => {
     for (const path of ["/login", "/signup", "/forgot-password", "/login?next=/documents/abc"]) {
-      expect(await directives(path), path).toEqual({
+      expect(directives(path), path).toEqual({
         ...base,
-        "script-src": "'self' 'unsafe-inline' 'wasm-unsafe-eval' https://www.googletagmanager.com",
+        "script-src": "'self' 'nonce-…' 'strict-dynamic' 'wasm-unsafe-eval' https://www.googletagmanager.com",
         "img-src": `'self' data: blob: ${collect}`,
         "connect-src": `'self' ${collect}`,
       });
@@ -376,10 +384,12 @@ describe("the content security policy", () => {
       "/invite",
       "/email/confirm",
       "/login?step=code",
-      "/api/documents",
-      "/_next/static/chunks/main.js",
     ]) {
-      expect(await directives(path), path).toEqual(base);
+      expect(directives(path), path).toEqual(base);
+    }
+    // Next.js's files and the /api calls get no policy from the proxy (csp-nonce.test.ts), and
+    // no Google host from next.config.ts either.
+    for (const path of ["/login", "/documents", "/api/documents", "/_next/static/chunks/main.js"]) {
       expect(JSON.stringify(await headersFor(path)), path).not.toMatch(/google/);
     }
   });

@@ -134,6 +134,7 @@ from kaagaz.jobs.fair_share import (
 from kaagaz.jobs.ports import LeaseLost, QueueSetupError, WorkQueue
 from kaagaz.jobs.purge import (
     CustomerStorage,
+    forget_kept_audit,
     purge_deleted_customers,
     purge_expired,
     purge_upload_sessions,
@@ -678,11 +679,13 @@ def fingerprint_missing(db: Database, limit: int = FINGERPRINT_PASS) -> int:
 
 def _purge(db: Database, storage: CustomerStorage, trash_days: int) -> int:
     """The hourly turn: old Trash (its count is returned and logged by PurgeHourly), then
-    the organisations whose deletion is due, and their second sweep a day later (logged here)."""
+    the organisations whose deletion is due, their second sweep a day later, and their kept
+    audit rows 365 days later (0068, #482; logged here)."""
     families = purge_expired(db, storage, _utc_now, trash_days)
     logger.info("abandoned uploads removed: %d", purge_upload_sessions(db, storage, _utc_now))
     logger.info("deleted organisations: %d families", purge_deleted_customers(db, storage, _utc_now))
     logger.info("purged organisations swept again: %d", sweep_purged_customers(db, storage, _utc_now))
+    logger.info("kept audit rows of deleted organisations removed: %d", forget_kept_audit(db, _utc_now))
     return families
 
 

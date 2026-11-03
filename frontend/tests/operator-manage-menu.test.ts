@@ -57,7 +57,9 @@ describe("one Manage menu per organisation", () => {
     expect(row).toMatch(/changes=\{CHANGES\[org\.status\]\s*\.filter\(\(\{ change \}\) => change !== "approve" \|\| org\.admin_email_confirmed\)\s*\.map\(/);
     expect(menu).toMatch(/\{safe\.map\(entry\)\}\s*\{safe\.length > 0 && changes\.length > 0 && <div role="separator"/);
     expect(menu.indexOf('role="separator"')).toBeLessThan(menu.indexOf("{changes.map(entry)}"));
-    expect(row).not.toMatch(/two-step|twoStep/i);
+    // Changed on purpose (#481, 3 Nov 2026): 0035's two-step grant stays gone; only the super
+    // admin's "Two-step for admins" item (its own dialog) names two-step here.
+    expect(row.replace(/onTwoStep|MENU_HELP\.twoStep|"Two-step for admins"/g, "")).not.toMatch(/two-step|twoStep/i);
   });
 
   it("is a portal menu with a 1px border and no shadow, keyboard and outside-click safe", () => {

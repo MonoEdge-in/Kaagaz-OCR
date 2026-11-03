@@ -100,6 +100,16 @@ def delete(conn: Connection, customer_id: str, user_id: str, session_id: str) ->
     )
 
 
+def of_customer(conn: Connection, customer_id: str) -> list[tuple[str, str]]:
+    """(storage key, upload id) of every upload session of this customer, open or expired, for
+    deleting the organisation (#482). On ``upload_sessions_owner_size``: O(log n + s)."""
+    rows = conn.execute(
+        text("SELECT storage_key, storage_upload_id FROM upload_sessions WHERE customer_id = :customer"),
+        {"customer": customer_id},
+    )
+    return [(str(key), str(upload_id)) for key, upload_id in rows]
+
+
 def delete_expired(conn: Connection, customer_id: str, session_id: str, before: datetime) -> None:
     conn.execute(
         text(

@@ -882,9 +882,23 @@ def get_usage_csv(
     user_id: uuid.UUID | None = None,
 ) -> Response:
     """The same period as a CSV file to download (SP2): one line per day, user, model and
-    kind, with USAGE_CSV_COLUMNS. One query."""
+    kind, with USAGE_CSV_COLUMNS. One query, and one ``usage.export`` audit row with the
+    period and the person filtered on (#482)."""
     day_from, day_to, start, end = _usage_window(context, first, to)
     with context.db.customer(user.customer_id) as conn:
+        audit.record(
+            conn,
+            user.customer_id,
+            actor_user_id=user.user_id,
+            action="usage.export",
+            target_type="customer",
+            target_id=user.customer_id,
+            details={
+                "from": day_from.isoformat(),
+                "to": day_to.isoformat(),
+                "user_id": None if user_id is None else str(user_id),
+            },
+        )
         rows = listing.usage_rows(
             conn,
             user.customer_id,

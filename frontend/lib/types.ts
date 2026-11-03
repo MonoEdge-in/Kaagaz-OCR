@@ -45,6 +45,7 @@ export interface Me {
     must_change_password: boolean;
     totp_enabled: boolean; // two-step sign-in is on (required for an admin unless they turned it off)
     two_step_turned_off: boolean; // an admin turned their own two-step off (Tushar, 30 Oct 2026)
+    two_step_required?: boolean; // the super admin requires it for this organisation's admins (#481)
     can_delete_forever: boolean; // an admin allowed this member or reviewer (never an admin)
     email_confirmed: boolean; // false: the "Confirm your email" banner (#457; true while email is off)
   };

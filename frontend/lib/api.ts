@@ -1062,6 +1062,13 @@ export const getSessionTimeout = (orgId?: string) => request<SessionTimeout>("GE
 export const setSessionTimeout = (hours: number | null, code: string, orgId?: string) =>
   request<SessionTimeout>("PUT", timeoutPath(orgId), { hours, code });
 
+/** Operator: whether one organisation's admins must have two-step sign-in (#481, 0068); off by default. */
+const adminTwoStepPath = (orgId: string) => `/operator/orgs/${encodeURIComponent(orgId)}/admin-two-step`;
+export const getAdminTwoStep = (orgId: string) => request<{ required: boolean }>("GET", adminTwoStepPath(orgId));
+/** Require it or stop requiring it, with a fresh code (step-up). */
+export const setAdminTwoStep = (orgId: string, required: boolean, code: string) =>
+  request<{ required: boolean }>("PUT", adminTwoStepPath(orgId), { required, code });
+
 /** Operator: the speed controls (package S, 0053); saving needs a fresh code, null: the server's setting. */
 export const getSpeed = () => request<Speed>("GET", "/operator/speed");
 export const setSpeed = (values: Record<SpeedName, number | null>, code: string) =>
