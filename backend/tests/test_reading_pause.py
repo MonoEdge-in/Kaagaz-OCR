@@ -30,6 +30,7 @@ from kaagaz.jobs.reading_pause import (
     pause_reason,
 )
 from kaagaz.scanning.gate import DocumentStatus
+from kaagaz.settings import Settings
 from tests.pdf_builder import make_pdf
 from tests.settings_factory import make_settings
 from tests.test_pipeline_gemini import SCANNED, TOTAL, FakeChecker, ScriptedReader, beat, page_read, rig
@@ -146,14 +147,17 @@ def test_an_email_that_fails_is_logged_by_its_code_and_never_raised(caplog: pyte
 
 
 @pytest.mark.parametrize(
-    ("changes", "named"),
-    [({"ops_alert_email": None}, "OPS_ALERT_EMAIL"), ({"email_from": None}, "EMAIL_FROM")],
+    ("settings", "named"),
+    [
+        (replace(ALERTING, ops_alert_email=None), "OPS_ALERT_EMAIL"),
+        (replace(ALERTING, email_from=None), "EMAIL_FROM"),
+    ],
 )
 def test_alerts_that_are_off_are_said_at_the_start(
-    changes: dict[str, object], named: str, caplog: pytest.LogCaptureFixture
+    settings: Settings, named: str, caplog: pytest.LogCaptureFixture
 ) -> None:
     with caplog.at_level(logging.WARNING, logger=reading_pause.__name__):
-        assert pause_alert(replace(ALERTING, **changes), MemoryMailer()) is None
+        assert pause_alert(settings, MemoryMailer()) is None
     [record] = caplog.records
     assert record.levelno == logging.WARNING and record.__dict__["code"] == "pause_alert_off"
     assert named in record.getMessage()
