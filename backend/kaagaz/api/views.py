@@ -861,6 +861,8 @@ def me_json(
             "must_change_password": user.must_change_password,
             "totp_enabled": user.totp_enabled,
             "two_step_turned_off": user.two_step_turned_off,  # by the admin; sign-in is the password
+            # The organisation requires it for admins (0068, #481): Account offers no Turn off.
+            "two_step_required": user.two_step_required and user.role == "admin",
             "can_delete_forever": user.delete_forever_allowed and user.role != "admin",  # the grant
             "email_confirmed": user.email_confirmed or not email_on,
         },

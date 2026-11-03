@@ -75,7 +75,9 @@ class AttemptRow:
     totp_secret_enc: str | None
     totp_enabled_at: datetime | None
     totp_last_step: int | None
-    totp_off_at: datetime | None  # the admin turned two-step sign-in off themselves (0061b)
+    # The admin turned two-step sign-in off themselves (0061b); None while their organisation
+    # requires it for admins (0068, #481), so they set it up at this sign-in.
+    totp_off_at: datetime | None
     failed_logins: int
     # False while the customer is disabled or being deleted (0014): sign-in is refused.
     customer_active: bool
@@ -209,10 +211,13 @@ def peek_attempt(conn: Connection, customer_id: str, user_id: str, *, now: datet
 
 
 # What a sign-in needs, with whether the customer is active or a pending sign-up (0014, 0061).
+# "Turned off" counts only while the organisation does not require two-step for admins (0068).
 _ATTEMPT_COLUMNS = (
     " u.id, u.customer_id, u.password_hash, u.role, u.disabled, u.session_version,"
     " u.must_change_password, u.totp_secret_enc, u.totp_enabled_at, u.totp_last_step,"
-    " u.totp_off_at, u.failed_logins, EXISTS (SELECT 1 FROM customers c"
+    " CASE WHEN EXISTS (SELECT 1 FROM customers c WHERE c.id = u.customer_id"
+    " AND c.admin_two_step_required) THEN NULL ELSE u.totp_off_at END AS totp_off_at,"
+    " u.failed_logins, EXISTS (SELECT 1 FROM customers c"
     " WHERE c.id = u.customer_id AND c.status = 'active') AS customer_active,"
     " EXISTS (SELECT 1 FROM customers c"
     " WHERE c.id = u.customer_id AND c.status = 'pending') AS customer_pending"
@@ -432,13 +437,15 @@ def session_user(conn: Connection, customer_id: str, user_id: str) -> RowMapping
 
     With the idle timeout (0040) in the same query: ``idle_hours``, the organisation's else
     the platform's (None: no idle limit), and ``seen_at``, the later of ``last_seen_at`` and
-    ``last_login_at``."""
+    ``last_login_at``. ``two_step_required``: the organisation requires two-step sign-in for its
+    admins (0068, #481); while it does, an admin's "turned off" does not count."""
     return (
         conn.execute(
             text(
                 "SELECT u.id, u.email, u.display_name, u.role, u.disabled,"
                 " u.session_version, u.must_change_password, u.totp_enabled_at IS NOT NULL AS totp_enabled,"
-                " u.totp_off_at IS NOT NULL AS two_step_turned_off,"
+                " u.totp_off_at IS NOT NULL AND NOT c.admin_two_step_required AS two_step_turned_off,"
+                " c.admin_two_step_required AS two_step_required,"
                 " u.delete_forever_allowed_at IS NOT NULL AS delete_forever_allowed,"
                 " u.email_verified_at IS NOT NULL AS email_confirmed,"
                 " c.id AS customer_id, c.name AS customer_name,"

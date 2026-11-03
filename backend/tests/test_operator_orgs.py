@@ -61,6 +61,9 @@ ORG_ROUTES = {
     # Changed on purpose (0040): one organisation's sign-in idle timeout.
     ("GET", f"{ORGS}/{ANY_ID}/session-timeout"),
     ("PUT", f"{ORGS}/{ANY_ID}/session-timeout"),
+    # Changed on purpose (#481, 0068): whether its admins must have two-step sign-in.
+    ("GET", f"{ORGS}/{ANY_ID}/admin-two-step"),
+    ("PUT", f"{ORGS}/{ANY_ID}/admin-two-step"),
     # Changed on purpose (#212, 21 Oct 2026): one organisation's model call rates.
     ("GET", f"{ORGS}/{ANY_ID}/model-rates"),
     ("PUT", f"{ORGS}/{ANY_ID}/model-rates"),

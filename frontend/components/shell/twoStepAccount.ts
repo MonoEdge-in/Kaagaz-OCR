@@ -14,6 +14,8 @@ export const LOST_CODE = "New phone, or lost it? Your admin can reset your two-s
 export const OFF_WARNING = "Anyone who learns your password can then sign in as you.";
 export const TURNED_ON = "Two-step sign-in is on.";
 export const TURNED_OFF = "Two-step sign-in is off. Your other devices are signed out.";
+// #481 (3 Nov 2026): the server's own words when it refuses (routers/auth.py TWO_STEP_REQUIRED).
+export const REQUIRED_TEXT = "Your organisation requires two-step sign-in for admins, so it stays on.";
 const SIGNED_OUT = "Your session has ended. Sign in again, then try again.";
 // The server's words for a wrong password, and a missing or wrong code (routers/auth.py).
 export const PASSWORD_NOT_RIGHT = "Your current password is not right.";
@@ -34,6 +36,12 @@ export function proofField(caught: unknown): "password" | "code" | null {
 /** "on" or "off", the same for every role. Deny by default, like gate.ts: only true is on. */
 export function twoStepView(me: Me): "on" | "off" {
   return me.user.totp_enabled === true ? "on" : "off";
+}
+
+/** Whether Turn off is offered: not while the organisation requires it for admins (#481).
+ * The server refuses it all the same (409 two_step_required). */
+export function mayTurnOff(me: Me): boolean {
+  return me.user.two_step_required !== true;
 }
 
 /** The server's 400 and 409 say what is wrong in plain words; the rest as Change password says it. */

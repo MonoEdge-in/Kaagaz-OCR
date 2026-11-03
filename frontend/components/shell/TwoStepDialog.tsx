@@ -27,8 +27,10 @@ import {
   OFF_TEXT,
   OFF_WARNING,
   ON_TEXT,
+  REQUIRED_TEXT,
   TURNED_OFF,
   TURNED_ON,
+  mayTurnOff,
   proofField,
   twoStepError,
   twoStepView,
@@ -110,6 +112,24 @@ export function TwoStepDialog({
           onTurnedOn={() => onDone(TURNED_ON)}
           onRestart={() => setEnrol(null)}
         />
+      </ActionDialog>
+    );
+  }
+
+  if (view === "on" && !mayTurnOff(me)) {
+    // #481: the super admin requires it for this organisation's admins, so there is nothing to turn off.
+    return (
+      <ActionDialog title="Two-step sign-in" onClose={onClose} onClosed={onClosed}>
+        <p className={styles.twoStepText}>
+          Your two-step sign-in: <strong>On</strong>. {ON_TEXT}
+        </p>
+        <p className={styles.note}>{REQUIRED_TEXT}</p>
+        <p className={styles.note}>{LOST_PHONE}</p>
+        <div className="actions">
+          <button type="button" className="btn" onClick={onClose}>
+            Close
+          </button>
+        </div>
       </ActionDialog>
     );
   }
