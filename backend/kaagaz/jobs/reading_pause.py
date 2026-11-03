@@ -26,8 +26,8 @@ at its daily page limit, and for the month at its monthly budget; Ask keeps work
   queue that is down keeps every hold it did not queue; its end is audited
   (``document.reading_released``) and its "waiting" progress cleared (``reading_days.unhold``).
   A disabled or deleting organisation's holds are kept (QA T1, 4 Nov 2026). One
-  organisation's error is logged and the others go on (review, 3 Nov 2026). The first turn after a start runs it, so a
-  server started in the morning queues them at once.
+  organisation's error is logged and the others go on (review, 3 Nov 2026). The first turn
+  after a start runs it, so a server started in the morning queues them at once.
 * **The super admin is told** once per organisation per India day, by email to
   OPS_ALERT_EMAIL (``pause_alert``, the operations alerts' one rule: kaagaz.ops_alert); the
   day is noted only once the email is sent, so one that failed is tried at the next pause. A
