@@ -103,14 +103,15 @@ describe("the Usage tab's states", () => {
 
   it("says No AI use in this period when nothing was called", () => {
     const empty = { ...REPORT, totals: totals({ calls: 0, cost_usd: 0 }) };
-    expect(usageState(empty, null)).toEqual({ kind: "empty" });
-    expect(view({ kind: "empty" })).toContain("No AI use in this period.");
+    // Changed on purpose (QA P7, 4 Nov 2026): the empty state keeps its report, for "Pages read today".
+    expect(usageState(empty, null)).toEqual({ kind: "empty", report: empty });
+    expect(view({ kind: "empty", report: empty })).toContain("No AI use in this period.");
   });
 
   it("says AI is off on this server in keyless mode, not that nothing was used", () => {
     const keyless = { ...REPORT, totals: totals({ calls: 0, cost_usd: 0 }), ai_enabled: false };
-    expect(usageState(keyless, null)).toEqual({ kind: "off" });
-    const html = view({ kind: "off" });
+    expect(usageState(keyless, null)).toEqual({ kind: "off", report: keyless });
+    const html = view({ kind: "off", report: keyless });
     expect(html).toContain("AI is off on this server");
     expect(html).not.toContain("No AI use in this period.");
   });

@@ -5,7 +5,8 @@
 // waited, for the whole platform and per organisation; and how many deleted
 // organisations were removed for good and checked again a day later. PRD 5 U9:
 // each worker's reader status (working, slow, down, key or model problem, or not
-// reporting after 2 minutes) and the jobs waiting in each queue lane. #246 O1: the Release
+// reporting after 2 minutes) and the jobs waiting in each queue lane, under the Mistral stopped
+// banner while it has stopped (QA C2). #246 O1: the Release
 // card, the commit the API runs; the deployer's last attempt and last good release are in
 // files on the server that no container reads, so the card points to the deploy log.
 
@@ -16,6 +17,7 @@ import { formatDateTime, formatNumber } from "@/lib/format";
 import type { PlatformHealth } from "@/lib/types";
 import { LoadFailed } from "./LoadFailed";
 import { countText, operatorErrorMessage, orgStatus } from "./logic";
+import { MistralStopped } from "./OrgAiSettings";
 import {
   commitWords,
   countsInWords,
@@ -89,6 +91,10 @@ export function HealthView() {
         </dl>
         <WordList heading="Documents by status" items={countsInWords(totals.documents_by_status, statusWords)} />
         <WordList heading="Failed, by reason" items={countsInWords(totals.failed_by_code, failureWords)} />
+        {health.mistral_status !== undefined && (
+          // The health has the status only: a server not set up for Mistral says so in its code.
+          <MistralStopped env={{ mistral_status: health.mistral_status, mistral_ready: true, mistral_missing: null }} />
+        )}
         {health.reader !== undefined && (
           <>
             <h3 className={admin.tilesHeading}>Reader, by worker</h3>

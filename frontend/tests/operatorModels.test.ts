@@ -614,8 +614,9 @@ describe("the AI settings fields", () => {
   });
 
   // Changed on purpose (board 9, 16 Oct 2026): Ensemble and Budget are sections of their own.
+  // Changed on purpose (QA U6, 4 Nov 2026): and the Reading limit.
   it("locks every control while saving", () => {
-    expect(fields({ busy: true }).match(/<fieldset[^>]*disabled=""/g)).toHaveLength(4);
+    expect(fields({ busy: true }).match(/<fieldset[^>]*disabled=""/g)).toHaveLength(5);
   });
 
   it("offers Reset section only on a changed section, named by its section", () => {
@@ -691,8 +692,9 @@ describe("the AI settings dialogs", () => {
   });
 
   it("names both areas when the organisation goes back to the platform defaults", () => {
+    // Changed on purpose (QA U6, 4 Nov 2026): and says what stays.
     expect(read("components/operator/OrgAiSettings.tsx")).toContain(
-      "Scanning and answering will both follow the platform defaults, and Ensemble is off. Save to apply.",
+      "Scanning and answering will both follow the platform defaults, and Ensemble is off. The daily page limit and budget stay. Save to apply.",
     );
   });
 

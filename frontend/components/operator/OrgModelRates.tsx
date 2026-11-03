@@ -60,11 +60,12 @@ export function OrgModelRates({ org, onClose, onSaved }: { org: Organisation; on
   return (
     <ActionDialog title={`OpenRouter request limits · ${org.name}`} onClose={onClose} canClose={(way) => canCloseDialog({ busy }, way)} onClosed={() => document.getElementById(orgAiFocusId(org.id))?.focus()}>
       {!rates && !problem && <p className="muted delayed" role="status">Loading request limits…</p>}
-      {problem && <p className="error-text" role="alert">{problem}</p>}
+      {problem && !rates && <p className="error-text" role="alert">{problem}</p>}
       {problem && !rates && <button type="button" className="btn" onClick={() => { setProblem(null); setAttempt((value) => value + 1); }}>Try again</button>}
       {rates && (
         <form ref={focusFirst} className={styles.dialogForm} onSubmit={(event) => event.preventDefault()}>
           <p>One request is one OpenRouter API call. The platform shares a maximum of 1,200 requests per minute across every API and worker. Organisation caps are optional (1–600 RPM); blank uses fair sharing. User overrides are optional (1–120 RPM) and are also bounded by their organisation cap.</p>
+          <CodeField id="model-rate-code" label="Fresh two-step code" value={code} onChange={setCode} error={null} />
           <label htmlFor="org-model-rpm">Organisation cap (RPM; blank uses fair sharing)</label>
           <input id="org-model-rpm" className="input" type="number" min={1} max={600} value={orgRpm} onChange={(event) => setOrgRpm(event.target.value)} />
           <button type="button" className="btn" disabled={busy || (orgRpm !== "" && (!Number.isInteger(Number(orgRpm)) || Number(orgRpm) < 1 || Number(orgRpm) > 600))} onClick={() => void save(() => putOrgModelRate(org.id, orgRpm === "" ? null : Number(orgRpm), normalizeCode(code)), orgRpm === "" ? `Cleared the OpenRouter cap for ${org.name}.` : `Saved the OpenRouter request limit for ${org.name}.`)}>{orgRpm === "" ? "Use fair sharing" : "Save organisation cap"}</button>
@@ -77,7 +78,6 @@ export function OrgModelRates({ org, onClose, onSaved }: { org: Organisation; on
               <button type="button" className="btn" disabled={busy || (users[user.id] !== "" && (!Number.isInteger(Number(users[user.id])) || Number(users[user.id]) < 1 || Number(users[user.id]) > 120))} onClick={() => void save(() => putUserModelRate(org.id, user.id, users[user.id] === "" ? null : Number(users[user.id]), normalizeCode(code)), `Saved the OpenRouter request limit for ${user.email}.`)}>{users[user.id] === "" ? "Use organisation limit" : "Save user limit"}</button>
             </div>
           ))}
-          <CodeField id="model-rate-code" label="Fresh two-step code" value={code} onChange={setCode} error={null} />
           {problem && <p className="error-text" role="alert">{problem}</p>}
         </form>
       )}

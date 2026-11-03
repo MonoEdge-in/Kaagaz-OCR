@@ -299,7 +299,7 @@ describe("the org admin's Usage screen", () => {
   it("shows no money and no model, only tokens", () => {
     const texts = [
       renderToStaticMarkup(createElement(UsageReportView, { state: { kind: "ready", report }, onRetry: () => undefined })),
-      renderToStaticMarkup(createElement(UsageReportView, { state: { kind: "off" }, onRetry: () => undefined })),
+      renderToStaticMarkup(createElement(UsageReportView, { state: { kind: "off", report }, onRetry: () => undefined })),
     ];
     for (const text of texts) {
       expect(text, text).not.toMatch(/[$₹]|\bRs\b|\bUSD\b|spen[dt]|cost/i);

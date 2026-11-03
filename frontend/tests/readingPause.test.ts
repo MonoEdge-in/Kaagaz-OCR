@@ -3,6 +3,8 @@
 // the pages read today), its checks and save words; the budget's words now that reaching it
 // pauses reading; and the org admin's "Pages read today: n of limit." (never money).
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
@@ -119,6 +121,35 @@ describe("the daily page limit field", () => {
     expect(summary(values({ daily_page_limit: 800 }))).toContain("Daily page limit</dt><dd>800 pages");
   });
 
+  it("has its own Reading limit box after Answering, not inside Scanning (QA U6)", () => {
+    for (const html of [fields({}), fields({ platform: true })]) {
+      const box = html.search(/<fieldset class="[^"]*area[^"]*"[^>]*><legend>Reading limit<\/legend>/);
+      expect(box).toBeGreaterThan(html.indexOf("<legend>Answering"));
+      expect(html.indexOf(`<input id="${fieldId("daily_page_limit")}"`)).toBeGreaterThan(box);
+      expect(html).not.toMatch(/<h3[^>]*>Reading limit<\/h3>/);
+    }
+    expect(fields({}).indexOf("<legend>Reading limit")).toBeLessThan(fields({}).indexOf("<legend>Ensemble"));
+    const view = readFileSync(join(__dirname, "../components/operator/OrgAiSettings.tsx"), "utf8");
+    expect(view).toContain(
+      "Scanning and answering will both follow the platform defaults, and Ensemble is off. The daily page limit and budget stay. Save to apply.",
+    );
+  });
+
+  it("says No limit on the platform, and Remove the limit once one is set (QA U7)", () => {
+    const id = fieldId("daily_page_limit");
+    const origin = (html: string) => html.match(new RegExp(`id="${id}-origin"[^>]*>([^<]*)<`))?.[1];
+    expect(origin(fields({ platform: true }))).toBe("No limit");
+    const set = fields({ platform: true, own: values({ daily_page_limit: 800 }) });
+    expect(origin(set)).toBe("Set here");
+    expect(set).toContain('aria-label="Remove the limit: Daily page limit"');
+    expect(set).not.toContain("Use the server&#x27;s setting: Daily page limit");
+    // The other platform settings keep their words.
+    expect(fields({ platform: true })).toMatch(
+      new RegExp(`id="${fieldId("page_max_output_tokens")}-origin"[^>]*>The server&#x27;s setting<`),
+    );
+    expect(origin(fields({}))).toBe("Platform default"); // an organisation's is unchanged
+  });
+
   it("is a whole number of pages from 1 to 1,000,000, or empty", () => {
     expect(parseDailyPages("")).toBeNull();
     expect(parseDailyPages(" 2000 ")).toBe(2000);
@@ -140,6 +171,11 @@ describe("the daily page limit field", () => {
     expect(pagesTodayText({ pages: 3, cost_usd: null })).toBe("Pages read today: 3.");
     expect(pagesTodayText({ pages: 1240, cost_usd: 0.42 }, 2000)).toBe("Pages read today: 1,240 of 2,000 ($0.42).");
     expect(pagesTodayText({ pages: 3, cost_usd: null }, null)).toBe("Pages read today: 3.");
+    // QA C4 (4 Nov 2026): at the limit, the operator is told reading is paused, and who can lift it.
+    const paused = " Reading is paused until the limit resets, or until you raise it.";
+    expect(pagesTodayText({ pages: 2000, cost_usd: null }, 2000)).toBe(`Pages read today: 2,000 of 2,000.${paused}`);
+    expect(pagesTodayText({ pages: 2001, cost_usd: 0.5 }, 2000)).toBe(`Pages read today: 2,001 of 2,000 ($0.50).${paused}`);
+    expect(pagesTodayText({ pages: 1999, cost_usd: null }, 2000)).not.toContain("paused");
   });
 });
 
@@ -150,8 +186,9 @@ describe("the org admin's pages today", () => {
     expect(pagesTodayLine({})).toBeNull();
   });
 
-  it("says reading is paused until tomorrow morning once the limit is reached (#478 review)", () => {
-    const paused = "Reading is paused until tomorrow morning.";
+  // Changed on purpose (QA C4, 4 Nov 2026): never "tomorrow morning", which is wrong when the limit is raised.
+  it("says reading is paused until the limit resets or is raised, once it is reached (#478 review)", () => {
+    const paused = "Reading is paused until the limit resets, or until it is raised.";
     expect(pagesTodayLine({ reading_today: { pages: 2000, limit: 2000 } })).toBe(`Pages read today: 2,000 of 2,000. ${paused}`);
     expect(pagesTodayLine({ reading_today: { pages: 2003, limit: 2000 } })).toBe(`Pages read today: 2,003 of 2,000. ${paused}`);
     expect(pagesTodayLine({ reading_today: { pages: 1999, limit: 2000 } })).not.toContain("paused");

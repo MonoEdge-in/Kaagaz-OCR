@@ -313,7 +313,7 @@ export function OrgAiSettings({ org, onClose, onSaved }: { org: Organisation; on
               </button>
               {reset && (
                 <p id="ai-reset-note" className="hint" aria-live="polite">
-                  Scanning and answering will both follow the platform defaults, and Ensemble is off. Save to apply.
+                  Scanning and answering will both follow the platform defaults, and Ensemble is off. The daily page limit and budget stay. Save to apply.
                 </p>
               )}
             </div>
@@ -464,8 +464,8 @@ function FieldError({ field, errors }: { field: AiField; errors: AiErrors }) {
 const describedBy = (field: AiField, errors: AiErrors, hint?: string) =>
   [errors[field] ? `${fieldId(field)}-error` : "", hint ?? ""].filter(Boolean).join(" ") || undefined;
 
-/** At the top of the AI settings and the platform defaults while Mistral has stopped (#473). */
-export function MistralStopped({ env }: { env: AiEnv }) {
+/** At the top of the AI settings, the platform defaults and the Health tab while Mistral has stopped (#473). */
+export function MistralStopped({ env }: { env: Pick<AiEnv, "mistral_status" | "mistral_ready" | "mistral_missing"> }) {
   const lines = mistralStoppedText(env);
   if (!lines) return null;
   return (
@@ -713,36 +713,6 @@ export function AiFields(props: {
                   />
                 </>
               )}
-              <h3 className={styles.subHeading}>Reading limit</h3>
-              <SettingField
-                id={fieldId("daily_page_limit")}
-                label="Daily page limit"
-                platform={platform}
-                own={draft.daily_page_limit.trim() !== ""}
-                hint={DAILY_PAGES_HINT}
-                onFollow={() => onChange({ ...draft, daily_page_limit: "" })}
-                control={(describedBy) => (
-                  <input
-                    id={fieldId("daily_page_limit")}
-                    className="input"
-                    type="number"
-                    inputMode="numeric"
-                    min="1"
-                    max="1000000"
-                    step="1"
-                    placeholder={platform ? "No limit" : `Platform default (${from("daily_page_limit")})`}
-                    value={draft.daily_page_limit}
-                    // The wheel scrolls the dialog, never the number: the box lets go of the focus first.
-                    onWheel={(event) => event.currentTarget.blur()}
-                    onChange={(event) => onChange({ ...draft, daily_page_limit: event.target.value })}
-                    aria-invalid={errors.daily_page_limit ? true : undefined}
-                    aria-describedby={describedBy}
-                  />
-                )}
-                problem={errors.daily_page_limit ? <FieldError field="daily_page_limit" errors={errors} /> : null}
-                problemId={`${fieldId("daily_page_limit")}-error`}
-              />
-              {today && <p className="hint">{pagesTodayText(today, saved.daily_page_limit ?? defaults.daily_page_limit)}</p>}
             </div>
             <CostPanel
               platform={platform}
@@ -804,6 +774,41 @@ export function AiFields(props: {
         )}
         {orgName && <p className="hint">{pickerText(orgName, draft, defaults, env, catalogue)}</p>}
       </SectionBox>
+
+      {/* QA U6 (4 Nov 2026): its own box, as it is neither a scan setting nor reset with them. */}
+      <fieldset className={styles.area} disabled={busy}>
+        <legend>Reading limit</legend>
+        <SettingField
+          id={fieldId("daily_page_limit")}
+          label="Daily page limit"
+          platform={platform}
+          own={draft.daily_page_limit.trim() !== ""}
+          hint={DAILY_PAGES_HINT}
+          follow={platform ? { origin: "No limit", back: "Remove the limit" } : undefined}
+          onFollow={() => onChange({ ...draft, daily_page_limit: "" })}
+          control={(describedBy) => (
+            <input
+              id={fieldId("daily_page_limit")}
+              className="input"
+              type="number"
+              inputMode="numeric"
+              min="1"
+              max="1000000"
+              step="1"
+              placeholder={platform ? "No limit" : `Platform default (${from("daily_page_limit")})`}
+              value={draft.daily_page_limit}
+              // The wheel scrolls the dialog, never the number: the box lets go of the focus first.
+              onWheel={(event) => event.currentTarget.blur()}
+              onChange={(event) => onChange({ ...draft, daily_page_limit: event.target.value })}
+              aria-invalid={errors.daily_page_limit ? true : undefined}
+              aria-describedby={describedBy}
+            />
+          )}
+          problem={errors.daily_page_limit ? <FieldError field="daily_page_limit" errors={errors} /> : null}
+          problemId={`${fieldId("daily_page_limit")}-error`}
+        />
+        {today && <p className="hint">{pagesTodayText(today, saved.daily_page_limit ?? defaults.daily_page_limit)}</p>}
+      </fieldset>
 
       {!platform && (
         <>
@@ -870,7 +875,8 @@ export function AiFields(props: {
 
 /** One scan setting (#463): its label, whether the value is the organisation's own (set
  * here, on the platform) or followed, its control, its hint and problem, and a way back to
- * the followed value. */
+ * the followed value. `follow` names the followed value and the way back when the usual words
+ * do not fit (the platform's daily page limit: "No limit", QA U7). */
 function SettingField(props: {
   id: string;
   label: string;
@@ -879,11 +885,13 @@ function SettingField(props: {
   hint?: string;
   problem?: ReactNode; // said next to it, with problemId
   problemId?: string;
+  follow?: { origin: string; back: string };
   onFollow(): void;
   control(describedBy: string): ReactNode;
 }) {
-  const { id, label, platform, own, hint, problem, problemId, onFollow, control } = props;
-  const back = platform ? "Use the server's setting" : "Use platform default";
+  const { id, label, platform, own, hint, problem, problemId, follow, onFollow, control } = props;
+  const back = follow?.back ?? (platform ? "Use the server's setting" : "Use platform default");
+  const followed = follow?.origin ?? (platform ? "The server's setting" : "Platform default");
   const describedBy = [problem && problemId ? problemId : "", `${id}-origin`, hint ? `${id}-hint` : ""].filter(Boolean).join(" ");
   return (
     <div className="field">
@@ -892,7 +900,7 @@ function SettingField(props: {
           {label}
         </label>
         <span id={`${id}-origin`} className={styles.origin}>
-          {own ? (platform ? "Set here" : "Own setting") : platform ? "The server's setting" : "Platform default"}
+          {own ? (platform ? "Set here" : "Own setting") : followed}
         </span>
       </div>
       {control(describedBy)}

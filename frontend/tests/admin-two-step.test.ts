@@ -13,6 +13,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { CHANGE_IN_ACCOUNT, LOST_PHONE, TWO_STEP_OFF, TWO_STEP_ON, TwoStepPanel } from "@/app/(app)/admin/TwoStepPanel";
 import { ENROL_REQUIRED, enrolOffer } from "@/app/login/twoStep";
 import { appGate, pathAfterSignIn, signedOutMessage, twoStepPath } from "@/components/shell/gate";
+import { REQUIRED_TEXT } from "@/components/shell/twoStepAccount";
 import { ApiError } from "@/lib/api";
 import type { Me } from "@/lib/types";
 
@@ -100,6 +101,15 @@ describe("the admin's own Two-step panel", () => {
       expect(html).toContain("Turn it off or on from your Account menu.");
       expect(html).not.toContain("<button");
     }
+  });
+
+  it("says it stays on while the organisation requires it, not that the Account menu turns it off (QA U5)", () => {
+    session.me = { ...me("admin", true), user: { ...me("admin", true).user, two_step_required: true } };
+    const required = renderToStaticMarkup(createElement(TwoStepPanel));
+    expect(required).toContain("<strong>On</strong>");
+    expect(required).toContain(REQUIRED_TEXT);
+    expect(required).not.toContain(CHANGE_IN_ACCOUNT);
+    expect(required).toContain(LOST_PHONE);
   });
 });
 

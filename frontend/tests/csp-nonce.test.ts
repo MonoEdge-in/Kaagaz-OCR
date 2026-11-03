@@ -2,6 +2,8 @@
 // instead of 'unsafe-inline', set by proxy.ts. Still report only (security checklist, 15 Oct
 // 2026), and still never on Next.js's own files or the /api calls the backend answers.
 
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import { unstable_doesMiddlewareMatch } from "next/experimental/testing/server";
 import { NextRequest } from "next/server";
 import { describe, expect, it } from "vitest";
@@ -70,5 +72,27 @@ describe("where the proxy runs", () => {
     for (const rule of (await nextConfig.headers?.()) ?? []) {
       for (const { key } of rule.headers) expect(key, rule.source).not.toMatch(/^Content-Security-Policy/);
     }
+  });
+});
+
+// QA test g (4 Nov 2026): a nonce is new on every request only on a page drawn for that request.
+// A page built ahead of time (static) would serve the same scripts to everyone, without the nonce.
+describe("every page is drawn per request, so it gets the nonce", () => {
+  const APP = join(__dirname, "..", "app");
+  const sources = (readdirSync(APP, { recursive: true, encoding: "utf8" }) as string[])
+    .filter((file) => /\.(ts|tsx)$/.test(file))
+    .map((file) => ({ file, text: readFileSync(join(APP, file), "utf8") }));
+
+  it("has no page under app/ made static: no force-static, revalidate or generateStaticParams", () => {
+    expect(sources.some(({ file }) => file.endsWith("page.tsx"))).toBe(true);
+    for (const { file, text } of sources) {
+      expect(text, file).not.toContain("force-static");
+      expect(text, file).not.toMatch(/export\s+(const|let|var)\s+revalidate\b/);
+      expect(text, file).not.toContain("generateStaticParams");
+    }
+  });
+
+  it("reads the cookies in the root layout, which makes every page dynamic", () => {
+    expect(readFileSync(join(APP, "layout.tsx"), "utf8")).toMatch(/await cookies\(\)/);
   });
 });

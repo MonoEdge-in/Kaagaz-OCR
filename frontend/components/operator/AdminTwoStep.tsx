@@ -27,12 +27,12 @@ export const ADMIN_TWO_STEP_HELP =
 /** Turning it on or off for one organisation: always asked first, always with a fresh code. */
 export function adminTwoStepConfirm(org: Organisation, required: boolean): Confirm {
   return {
-    title: `${required ? "Require" : "Stop requiring"} two-step sign-in for ${org.name}'s admins?`,
+    title: `${required ? "Require" : "Stop requiring"} two-step sign-in for admins of ${org.name}?`,
     effect: required
       ? `An admin of ${org.name} without two-step sign-in must set it up before they can use Kaagaz again. Members are not affected.`
-      : `${org.name}'s admins can turn their own two-step sign-in off again. Anyone who has it on keeps it.`,
+      : `Admins of ${org.name} can turn their own two-step sign-in off again. Anyone who has it on keeps it.`,
     action: required ? "Require it" : "Stop requiring it",
-    done: `Two-step sign-in is ${required ? "required" : "no longer required"} for ${org.name}'s admins.`,
+    done: `Two-step sign-in is ${required ? "required" : "no longer required"} for admins of ${org.name}.`,
     danger: !required,
     stepUp: true,
     focusId: SWITCH_ID,
@@ -63,7 +63,7 @@ export function OrgAdminTwoStepDialog({ org, onClose, onDone }: { org: Organisat
   const failed = error?.attempt === attempt ? error.message : null;
   return (
     <>
-      <ActionDialog title={`Two-step for ${org.name}'s admins`} onClose={onClose}>
+      <ActionDialog title={`Two-step sign-in for admins of ${org.name}`} onClose={onClose}>
         <div className={styles.dialogForm}>
           <p className="visually-hidden" role="status">
             {required === null && !failed ? "Loading the two-step setting…" : ""}
