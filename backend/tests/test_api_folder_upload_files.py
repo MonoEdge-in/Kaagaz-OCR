@@ -331,6 +331,12 @@ def test_upload_limits_say_the_folder_limits_and_whether_kaagaz_can_sort(db: Dat
     assert limits["sort_available"] is False
     _owner(db, _GRANT, {"c": signed.customer_id})
     assert signed.client.get("/api/upload-limits").json()["sort_available"] is True
+    # "Let Kaagaz sort them": loose files go in with no folder, marked for auto-filing, which
+    # makes the department and the folders it needs once each is read (db/autofile.py).
+    loose = signed.client.post(
+        "/api/documents", files={"file": ("a.pdf", PDF_BYTES, "application/pdf")}, headers=CSRF
+    )
+    assert _document(api, signed.customer_id, loose.json()["document"]["id"])[:3] == (None, None, "pending")
 
 
 def test_a_resumable_start_after_its_folder_was_deleted_fails_the_item(db: Database) -> None:
