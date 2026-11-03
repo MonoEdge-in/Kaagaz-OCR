@@ -376,9 +376,12 @@ export function parseDailyPages(text: string): number | null | undefined {
   return value >= 1 && value <= MAX_PAGES_A_DAY ? value : undefined;
 }
 
-/** "Pages read today: 1,240 ($0.42)." for the operator, the India day's counter. */
-export const pagesTodayText = (today: { pages: number; cost_usd: number | null }) =>
-  `Pages read today: ${formatNumber(today.pages)}${today.cost_usd ? ` (${usd(today.cost_usd)})` : ""}.`;
+/** "Pages read today: 1,240 of 2,000 ($0.42)." for the operator, the India day's counter, against
+ * the limit in effect when there is one (#478 review, 3 Nov 2026). */
+export const pagesTodayText = (today: { pages: number; cost_usd: number | null }, limit: number | null = null) =>
+  `Pages read today: ${formatNumber(today.pages)}${limit === null ? "" : ` of ${formatNumber(limit)}`}${
+    today.cost_usd ? ` (${usd(today.cost_usd)})` : ""
+  }.`;
 
 /** Where a problem is shown: next to its field. "form" is the form's own line. */
 export type AiField =

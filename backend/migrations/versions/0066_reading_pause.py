@@ -17,7 +17,9 @@ monthly budget that pauses reading when it is reached.
   switch itself off at night); ``documents_reading_held`` finds them. The app's UPDATE on
   documents (kept) covers it. ``kaagaz_customer_ids_held`` (the app's, owner rights, ids only,
   as 0002's ``kaagaz_customer_ids_with_trash``): the organisations with a held document, so the
-  release sweep looks at those alone.
+  release sweep looks at those alone. ``documents.reading_admitted`` (new, review 3 Nov 2026):
+  the India day the document was let in, until it is read to its end, so a retry that day (a
+  reader that dropped out, a lost lease) is never held half read.
 * The operator's four AI functions (0065's) read, save and audit ``daily_page_limit``, refuse
   one outside 1 to MAX_PAGES_A_DAY (``pages_out_of_range``), and the defaults count the
   organisations inheriting it. The operator's platform audit holds it, the organisation's own
@@ -234,6 +236,8 @@ COMMENTS = {
     " that day; NULL: not yet. Once a day.",
     "documents.reading_held": "daily_limit or budget: the document waits for its organisation's reading"
     " pause to end, held here rather than in the queue; NULL: not held.",
+    "documents.reading_admitted": "The India day (IST) the reading pause let the document in, until it is"
+    " read to its end: a retry that day is let in again, never held half read. NULL: not being read.",
     **{
         f"{table}.daily_page_limit": f"The most pages AI may read for an organisation in one India day, 1 to"
         f" {MAX_PAGES_A_DAY}; new documents wait for the next day past it. NULL, " + inherits
@@ -269,6 +273,7 @@ UPGRADE = [
     f"COMMENT ON TABLE reading_days IS {_literal(TABLE_COMMENT)}",
     "ALTER TABLE documents ADD COLUMN reading_held text NULL"
     f" CONSTRAINT documents_reading_held CHECK (reading_held IN {HOLDS})",
+    "ALTER TABLE documents ADD COLUMN reading_admitted date NULL",
     "CREATE INDEX documents_reading_held ON documents (customer_id) WHERE reading_held IS NOT NULL",
     "COMMENT ON INDEX documents_reading_held IS 'The documents held by a reading pause (the release sweep).'",
     *[f"COMMENT ON COLUMN {column} IS {_literal(comment)}" for column, comment in COMMENTS.items()],
@@ -288,6 +293,7 @@ DOWNGRADE = [
     *[f"DROP FUNCTION public.{signature}" for signature in NEW],
     "DROP INDEX documents_reading_held",
     "ALTER TABLE documents DROP COLUMN reading_held",
+    "ALTER TABLE documents DROP COLUMN reading_admitted",
     "DROP TABLE reading_days",
     "ALTER TABLE customer_ai_settings DROP COLUMN daily_page_limit",
     "ALTER TABLE platform_ai_settings DROP COLUMN daily_page_limit",

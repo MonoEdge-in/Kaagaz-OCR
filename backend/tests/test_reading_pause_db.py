@@ -67,9 +67,12 @@ def held(db: Database, customer: str, document_id: str) -> str | None:
 
 
 def gate(db: Database, now: datetime, alerts: list[tuple[str, State]] | None = None) -> ReadingPause:
-    return ReadingPause(
-        db, clock=lambda: now, alert=None if alerts is None else lambda r, s: alerts.append((r, s))
-    )
+    def sent(reason: str, org: State) -> bool:
+        assert alerts is not None
+        alerts.append((reason, org))
+        return True
+
+    return ReadingPause(db, clock=lambda: now, alert=None if alerts is None else sent)
 
 
 def mine(sent: list[Job], customer: str) -> list[str]:

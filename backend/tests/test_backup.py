@@ -15,6 +15,7 @@ import boto3
 import pytest
 from botocore import UNSIGNED
 from botocore.config import Config
+from botocore.exceptions import ClientError
 from botocore.response import StreamingBody
 from botocore.stub import Stubber
 
@@ -262,6 +263,21 @@ def test_disk_alert_needs_the_ops_address_and_a_sender(
         == 2
     )
     assert named in capsys.readouterr().err and mailer.sent == []
+
+
+def test_a_disk_alert_that_fails_says_so_and_is_tried_again_next_hour(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#478 review: the disk alert and the reading pause's share one sender (kaagaz.ops_alert);
+    a refused email is a failed command, so disk-alert.sh notes no day and tries next hour."""
+
+    class Refused(MemoryMailer):
+        def send(self, *, to: str, subject: str, text: str) -> None:
+            raise ClientError({"Error": {"Code": "Throttling", "Message": "x"}}, "SendEmail")
+
+    out = io.StringIO()
+    assert main(["disk-alert", "--used", "85"], settings=alerting(), mailer=Refused(), out=out) == 2
+    assert out.getvalue() == "" and "not sent" in capsys.readouterr().err
 
 
 def test_ops_alert_email_is_read_and_optional() -> None:

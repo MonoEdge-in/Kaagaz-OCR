@@ -71,7 +71,8 @@ until it is told to stop:
 * Documents held by an organisation's reading pause (#478) are queued again once it ends (a new
   India day, a raised limit or budget), looked at every 5 minutes under the sweep lock
   (``ReleaseHeld``, kaagaz/jobs/reading_pause.py); the first turn after a start does it. With
-  EMAIL_ENABLED and OPS_ALERT_EMAIL, the super admin is emailed when one pauses.
+  OPS_ALERT_EMAIL and EMAIL_FROM (kaagaz/ops_alert.py), the super admin is emailed when one
+  pauses; without them, the start logs a warning that these alerts are off.
 * Before a job runs, ``admission`` (PRD 5 Q5) hands it back to the queue, with no
   attempt counted: for KEY_PROBLEM_DEFER_SECONDS (300) while the reader's gate
   has a key problem, and for 30 s when its customer already has
@@ -140,7 +141,7 @@ from kaagaz.jobs.purge import (
     purge_upload_sessions,
     sweep_purged_customers,
 )
-from kaagaz.jobs.reading_pause import ReleaseHeld, mail_alert, release_held
+from kaagaz.jobs.reading_pause import ReleaseHeld, pause_alert, release_held
 from kaagaz.jobs.revive import ReviveStuck, revive_stuck
 from kaagaz.jobs.upgrade import UpgradeLocalReads, upgrade_oldest
 from kaagaz.jobs.worker import (
@@ -859,11 +860,7 @@ def _serve(settings: Settings) -> None:
     check_queue_redrive(max_receives, settings.job_max_attempts)
     scanner = build_scanner(settings)
     model = worker_model(settings, db)
-    alert = None  # #478: the super admin's email when an organisation's reading pauses
-    if settings.email_enabled and settings.email_from and settings.ops_alert_email:
-        from kaagaz.adapters.email import SesMailer
-
-        alert = mail_alert(SesMailer(settings.ses_region, settings.email_from), settings.ops_alert_email)
+    alert = pause_alert(settings)  # #478: the super admin's email when an organisation's reading pauses
     processor = build_processor(
         settings=settings, db=db, storage=storage, scanner=scanner, model=model, alert=alert
     )

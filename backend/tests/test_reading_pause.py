@@ -1,7 +1,8 @@
 """The reading pause without a database (#478, Tushar, 3 Nov 2026): a paused document is held,
 never read and never read locally by RapidOCR, and its job is done (acked, not waiting in the
 queue); a document let in is read inside the pause's block; each person's words; the super
-admin's email; and the release sweep's timing."""
+admin's email (sent by the one operations alert rule, kaagaz.ops_alert); and the release sweep's
+timing."""
 
 import logging
 from collections.abc import Iterator
@@ -25,11 +26,12 @@ from kaagaz.jobs.reading_pause import (
     ReadingPaused,
     ReleaseHeld,
     email_text,
-    mail_alert,
+    pause_alert,
     pause_reason,
 )
 from kaagaz.scanning.gate import DocumentStatus
 from tests.pdf_builder import make_pdf
+from tests.settings_factory import make_settings
 from tests.test_pipeline_gemini import SCANNED, TOTAL, FakeChecker, ScriptedReader, beat, page_read, rig
 
 MONEY = views._MONEY_KEY  # usd, price, budget, cost: never to an organisation
@@ -81,11 +83,16 @@ def test_a_document_let_in_is_read_inside_the_pauses_block() -> None:
 @pytest.mark.parametrize(
     ("code", "words"),
     [
+        # Changed on purpose (#478 review, 3 Nov 2026): who was told, and when it is read.
         (
             "paused_daily_limit",
-            "Reading is paused for today. Your admin has been told. This file will be read next morning.",
+            "Reading is paused for today. Your organisation has read its pages for the day."
+            " This file will be read tomorrow morning.",
         ),
-        ("paused_budget", "Reading is paused. Your admin has been told."),
+        (
+            "paused_budget",
+            "Reading is paused for now. The Kaagaz team has been told. It will continue on its own.",
+        ),
     ],
 )
 def test_the_people_of_the_organisation_are_told_in_plain_words_never_money(code: str, words: str) -> None:
@@ -116,8 +123,12 @@ def test_the_super_admins_email_says_who_why_and_what_happens_next() -> None:
     _, budget = email_text(BUDGET, ORG)
     assert "$12.40 of $50.00 used this month" in budget and "Ask keeps working" in budget
     mailer = MemoryMailer()
-    mail_alert(mailer, "ops@example.test")(BUDGET, ORG)
+    alert = pause_alert(ALERTING, mailer)
+    assert alert is not None and alert(BUDGET, ORG) is True
     assert [(sent.to, sent.subject) for sent in mailer.sent] == [("ops@example.test", subject)]
+
+
+ALERTING = make_settings(ops_alert_email="ops@example.test", email_from="no-reply@example.test")
 
 
 def test_an_email_that_fails_is_logged_by_its_code_and_never_raised(caplog: pytest.LogCaptureFixture) -> None:
@@ -125,11 +136,35 @@ def test_an_email_that_fails_is_logged_by_its_code_and_never_raised(caplog: pyte
         def send(self, *, to: str, subject: str, text: str) -> None:
             raise ClientError({"Error": {"Code": "MessageRejected", "Message": "x"}}, "SendEmail")
 
-    with caplog.at_level(logging.ERROR, logger=reading_pause.__name__):
-        mail_alert(Refused(), "ops@example.test")(DAILY_LIMIT, ORG)
+    alert = pause_alert(ALERTING, Refused())
+    assert alert is not None
+    with caplog.at_level(logging.ERROR):
+        assert alert(DAILY_LIMIT, ORG) is False  # not sent: the day is not noted as told
     [record] = caplog.records
     assert (record.__dict__["purpose"], record.__dict__["error"]) == ("reading_paused", "MessageRejected")
     assert "ops@example.test" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("changes", "named"),
+    [({"ops_alert_email": None}, "OPS_ALERT_EMAIL"), ({"email_from": None}, "EMAIL_FROM")],
+)
+def test_alerts_that_are_off_are_said_at_the_start(
+    changes: dict[str, object], named: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level(logging.WARNING, logger=reading_pause.__name__):
+        assert pause_alert(replace(ALERTING, **changes), MemoryMailer()) is None
+    [record] = caplog.records
+    assert record.levelno == logging.WARNING and record.__dict__["code"] == "pause_alert_off"
+    assert named in record.getMessage()
+
+
+def test_email_enabled_off_never_stops_an_alert() -> None:
+    """One rule for every operations alert (kaagaz.ops_alert): OPS_ALERT_EMAIL and EMAIL_FROM;
+    EMAIL_ENABLED is for the emails people get."""
+    mailer = MemoryMailer()
+    alert = pause_alert(replace(ALERTING, email_enabled=False), mailer)
+    assert alert is not None and alert(DAILY_LIMIT, ORG) and len(mailer.sent) == 1
 
 
 def test_the_release_sweep_runs_on_the_first_turn_then_every_five_minutes() -> None:

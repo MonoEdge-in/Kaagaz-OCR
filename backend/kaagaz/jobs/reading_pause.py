@@ -6,7 +6,10 @@ at its daily page limit, and for the month at its monthly budget; Ask keeps work
   day's limit is claimed in one statement (``reading_days.claim``), so two workers can never
   both pass it. A document let in is read to its end, whatever its pages: nothing is half
   read, so the most the limit is passed by is the documents already being read. Its claimed
-  page is given back when it ends; its pages were counted as they were read.
+  page is given back when it ends; its pages were counted as they were read. The day it was
+  let in is kept on it (``documents.reading_admitted``) until it is read to its end, so a
+  retry that day (a reader that dropped out, a Mistral wait, a lost lease) is let in again
+  with no claim, never held half read (review, 3 Nov 2026).
 * **Its own signal.** A paused document raises ``ReadingPaused``, never ``ModelUnavailable``
   (which starts the reader's outage clock, then reads locally with RapidOCR and reads again
   later, paid twice) and never a Mistral wait. The pipeline ends the try (its run's code
@@ -15,12 +18,16 @@ at its daily page limit, and for the month at its monthly budget; Ask keeps work
   the queue, so the server can still switch itself off at night (infra/ec2/idle-stop.sh).
 * **Released by a sweep.** ``ReleaseHeld`` runs ``release_held`` every RELEASE_EVERY between
   jobs under the sweep lock: each organisation with held documents and no pause now (a new
-  India day, a raised limit or budget, a new month) has every hold ended and its waiting
-  documents queued again, in one transaction per organisation (a queue that is down rolls the
-  release back). The first turn after a start runs it, so a server started in the morning
-  queues them at once.
-* **The super admin is told** once per organisation per India day (``reading_days.alert_once``),
-  by email to OPS_ALERT_EMAIL through the SES mailer; a failure is logged, never raised.
+  India day, a raised limit or budget, a new month) has its waiting documents queued again,
+  oldest first, only as many as the pages left today (one page each at least) and at most
+  RELEASE_PER_PASS, never one in the Trash. Each hold ends only once its job is queued, so a
+  queue that is down keeps every hold it did not queue. One organisation's error is logged
+  and the others go on (review, 3 Nov 2026). The first turn after a start runs it, so a
+  server started in the morning queues them at once.
+* **The super admin is told** once per organisation per India day, by email to
+  OPS_ALERT_EMAIL (``pause_alert``, the operations alerts' one rule: kaagaz.ops_alert); the
+  day is noted only once the email is sent, so one that failed is tried at the next pause. A
+  failure is logged, never raised; alerts that are off are said once, when the worker starts.
 * The operator's accuracy checks never count (kaagaz.ai.usage) and are never paused (their own
   job); Ensemble's runs after the scan are counted, not paused.
 
@@ -32,9 +39,9 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 
-from botocore.exceptions import BotoCoreError, ClientError
 from sqlalchemy.exc import SQLAlchemyError
 
+from kaagaz import ops_alert
 from kaagaz.adapters.email import Mailer
 from kaagaz.db import reading_days
 from kaagaz.db.engine import Database, unavailable
@@ -43,6 +50,7 @@ from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import Job
 from kaagaz.jobs.fair_share import SweepLock, no_lock
 from kaagaz.jobs.worker import RunsJobs
+from kaagaz.settings import Settings
 
 _log = logging.getLogger(__name__)
 
@@ -52,11 +60,14 @@ BUDGET = "budget"
 CODES = {DAILY_LIMIT: "paused_daily_limit", BUDGET: "paused_budget"}
 # PROVISIONAL: how often held documents are looked at (a raised limit reads them this soon).
 RELEASE_EVERY = timedelta(minutes=5)
+# PROVISIONAL: the most of one organisation's held documents one pass queues (each organisation
+# its own, so one with thousands held never keeps the others waiting).
+RELEASE_PER_PASS = 100
 
 # Queues one job (SqsQueue.enqueue).
 Send = Callable[[Job], None]
-# Emails the super admin that an organisation paused, with why (``email_text``).
-Alert = Callable[[str, State], None]
+# Emails the super admin that an organisation paused, with why (``email_text``); whether it was sent.
+Alert = Callable[[str, State], bool]
 
 
 class ReadingPaused(Exception):
@@ -90,45 +101,68 @@ class ReadingPause:
     def admit(self, customer_id: str, document_id: str) -> Iterator[None]:
         """Let the document be read, holding one page of today's limit to the end of the block;
         or hold it and raise ReadingPaused (the super admin emailed on the day's first pause).
-        One transaction of 2 to 4 statements; one more when the block ends."""
+        A document let in today already is let in again with no claim. An organisation with no
+        limit and no budget writes nothing. One transaction of 1 to 3 statements; one more when
+        the block ends, if a page was claimed or the day noted."""
         now = self._clock()
         day = india_day(now)
-        reason, first, claimed = None, False, False
+        reason, claimed = None, False
         with unavailable(), self._db.customer(customer_id) as conn:
             org = reading_days.state(conn, customer_id, day, document_id)
-            if pause_reason(org) == BUDGET:
+            again = org.admitted == day  # a retry of a document let in today: read to its end
+            if not again and pause_reason(org) == BUDGET:
                 reason = BUDGET
-            elif org.page_limit is not None:
+            elif not again and org.page_limit is not None:
                 claimed = reading_days.claim(conn, customer_id, day, org.page_limit)
                 reason = None if claimed else DAILY_LIMIT
+            limited = org.page_limit is not None or org.budget is not None
+            noted = reason is None and (again or limited or org.held is not None)
             if reason is not None:
                 reading_days.hold(conn, customer_id, document_id, reason)
-                first = reading_days.alert_once(conn, customer_id, day, now=now)
-            elif org.held is not None:
-                reading_days.unhold(conn, customer_id, document_id)
+            elif noted and (org.held is not None or not again):
+                reading_days.let_in(conn, customer_id, document_id, day)
         if reason is not None:
             _log.warning(
                 "reading paused",
                 extra={"customer_id": customer_id, "document_id": document_id, "code": CODES[reason]},
             )
-            if first and self._alert is not None:
-                self._alert(reason, org)
+            if self._alert is not None and not org.alerted and self._alert(reason, org):
+                self._note_alerted(customer_id, day, now)  # only once it was sent
             raise ReadingPaused(reason)
+        read = False
         try:
             yield
+            read = True
         finally:
-            if claimed:
-                self._give_back(customer_id, document_id, day)
+            if claimed or (read and noted):
+                self._end(customer_id, document_id, day, give_back=claimed, read=read and noted)
 
-    def _give_back(self, customer_id: str, document_id: str, day: date) -> None:
+    def _note_alerted(self, customer_id: str, day: date, now: datetime) -> None:
         try:
             with unavailable(), self._db.customer(customer_id) as conn:
-                reading_days.give_back(conn, customer_id, day)
+                reading_days.note_alerted(conn, customer_id, day, now=now)
         except (SQLAlchemyError, BackendUnavailable):
-            # One page too many on the counter for the day: never a failed document.
+            # Told, but not noted: the next pause today tells them again.
+            _log.warning("alert not noted", extra={"customer_id": customer_id, "code": "alert_not_noted"})
+
+    def _end(self, customer_id: str, document_id: str, day: date, *, give_back: bool, read: bool) -> None:
+        """The block ended: the claimed page given back, and, read to its end, the day cleared."""
+        try:
+            with unavailable(), self._db.customer(customer_id) as conn:
+                if give_back:
+                    reading_days.give_back(conn, customer_id, day)
+                if read:
+                    reading_days.read_to_end(conn, customer_id, document_id)
+        except (SQLAlchemyError, BackendUnavailable):
+            # One page too many on the counter for the day, or a later reading that day let in
+            # with no claim: never a failed document.
             _log.warning(
-                "claimed page not given back",
-                extra={"customer_id": customer_id, "document_id": document_id, "code": "page_not_given_back"},
+                "reading's end not saved",
+                extra={
+                    "customer_id": customer_id,
+                    "document_id": document_id,
+                    "code": "reading_end_not_saved",
+                },
             )
 
 
@@ -149,46 +183,57 @@ def email_text(reason: str, org: State) -> tuple[str, str]:
     return subject, f"Reading is paused for {org.name}. {why}\n\nChange it in the operator console.\n\nKaagaz"
 
 
-def mail_alert(mailer: Mailer, to: str) -> Alert:
-    """``Alert`` by ``mailer`` to ``to`` (OPS_ALERT_EMAIL); a failure is logged by its code only."""
+def pause_alert(settings: Settings, mailer: Mailer | None = None) -> Alert | None:
+    """The super admin's ``Alert`` (kaagaz.ops_alert's rule; ``mailer``, else SES); None, said
+    once in the log as a warning, when alerts are off."""
+    problem = ops_alert.missing(settings)
+    if problem is not None:
+        _log.warning("reading pause alerts are off: %s", problem, extra={"code": "pause_alert_off"})
+        return None
 
-    def alert(reason: str, org: State) -> None:
+    def alert(reason: str, org: State) -> bool:
         subject, body = email_text(reason, org)
-        try:
-            mailer.send(to=to, subject=subject, text=body)
-        except (BotoCoreError, ClientError) as error:
-            code = error.response.get("Error", {}).get("Code") if isinstance(error, ClientError) else None
-            _log.error(
-                "email failed",
-                extra={
-                    "event": "email_failed",
-                    "purpose": "reading_paused",
-                    "error": code or type(error).__name__,
-                },
-            )
+        return ops_alert.send_ops_alert(settings, subject, body, purpose="reading_paused", mailer=mailer)
 
     return alert
 
 
 def release_held(db: Database, send: Send, *, now: datetime) -> list[Job]:
-    """End the holds of every organisation no longer paused at ``now`` and queue its waiting
-    documents (the module notes); the jobs sent. Database and queue errors propagate: the
-    caller logs them. One statement for the organisations with holds, then one each, and one more
-    and a send per document of those no longer paused."""
+    """Queue the waiting documents of every organisation no longer paused at ``now`` (the
+    module notes); the jobs sent. One organisation's database or queue error is logged with its
+    id and the next one goes on. One statement for the organisations with holds; then, for
+    each, one transaction of 1 to 3 statements, and a send and a one-statement transaction per
+    document queued."""
     day = india_day(now)
     with db.system() as conn:
         customers = reading_days.held_customers(conn)
     sent: list[Job] = []
     for customer in customers:
-        with db.customer(customer) as conn:
-            org = reading_days.state(conn, customer, day)
-            if pause_reason(org) is not None:
-                continue
-            for document in reading_days.release(conn, customer):
-                job = Job(customer, document)
-                send(job)  # inside the transaction: a queue that is down keeps the holds
-                sent.append(job)
+        try:
+            _release(db, send, customer, day, sent)
+        except (SQLAlchemyError, BackendUnavailable) as error:
+            _log.error(
+                "held documents not released",
+                extra={"customer_id": customer, "code": type(error).__name__},
+            )
     return sent
+
+
+def _release(db: Database, send: Send, customer: str, day: date, sent: list[Job]) -> None:
+    """One organisation's pass: each job queued is added to ``sent``, then its hold ended."""
+    with unavailable(), db.customer(customer) as conn:
+        org = reading_days.state(conn, customer, day)
+        if pause_reason(org) is not None:
+            return
+        room = RELEASE_PER_PASS if org.page_limit is None else org.page_limit - org.pages_today
+        reading_days.end_stale_holds(conn, customer)
+        waiting = reading_days.waiting(conn, customer, min(room, RELEASE_PER_PASS))
+    for document in waiting:
+        job = Job(customer, document)
+        send(job)  # first: a queue that is down keeps this hold and the rest
+        sent.append(job)
+        with unavailable(), db.customer(customer) as conn:
+            reading_days.unhold(conn, customer, document)
 
 
 class ReleaseHeld:
