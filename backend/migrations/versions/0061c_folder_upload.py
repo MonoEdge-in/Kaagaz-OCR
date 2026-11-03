@@ -257,7 +257,7 @@ UPGRADE = [
         created_at timestamptz NOT NULL DEFAULT now(),
         updated_at timestamptz NOT NULL DEFAULT now(),
         PRIMARY KEY (customer_id, id),
-        FOREIGN KEY (customer_id, user_id) REFERENCES users (customer_id, id)
+        FOREIGN KEY (customer_id, user_id) REFERENCES users (customer_id, id) ON DELETE CASCADE
     )
     """,
     "CREATE INDEX folder_uploads_owner ON folder_uploads (customer_id, user_id, created_at DESC)",
