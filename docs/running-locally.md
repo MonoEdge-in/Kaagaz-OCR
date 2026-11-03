@@ -160,7 +160,7 @@ model on, every 10 minutes it gives up to 64 pieces their missing meaning vector
 And the web app, from `frontend/`:
 
 ```
-npm ci                                 # once, Node 20 or later
+npm ci                                 # once, Node 24 (as frontend/Dockerfile)
 npm run dev                            # http://localhost:3000
 ```
 
