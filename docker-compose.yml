@@ -44,6 +44,8 @@ x-backend: &backend
 services:
   postgres:
     image: pgvector/pgvector:0.8.7-pg17
+    networks:
+      - data
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-kaagaz}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kaagaz}
@@ -59,10 +61,14 @@ services:
       retries: 20
 
   # File storage with the S3 API (Amazon S3 in AWS). One process runs the
-  # master, volume server, filer and S3 gateway. The access key is in
-  # infra/seaweedfs/s3.json and must match STORAGE_ACCESS_KEY in .env.
+  # master, volume server, filer and S3 gateway. The keys are in
+  # infra/seaweedfs/s3.json (#477, 3 Nov 2026): the app's (STORAGE_ACCESS_KEY in
+  # .env) may read, write and list its own bucket only; the admin key
+  # (STORAGE_ADMIN_ACCESS_KEY) is migrate's alone, to create the bucket.
   seaweedfs:
     image: chrislusf/seaweedfs:4.48
+    networks:
+      - data
     command: server -dir=/data -ip.bind=0.0.0.0 -s3 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json
     ports:
       - "8333:8333"
@@ -70,7 +76,9 @@ services:
       - seaweedfs-data:/data
       - ./infra/seaweedfs/s3.json:/etc/seaweedfs/s3.json:ro
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9333/cluster/status"]
+      # The S3 port itself (#439, 3 Nov 2026): the master on 9333 answers seconds before
+      # it, and migrate's ensure_bucket then failed.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8333/healthz"]
       interval: 5s
       timeout: 5s
       retries: 30
@@ -79,6 +87,8 @@ services:
   # failure bin kaagaz-jobs-failed, set up by infra/elasticmq/elasticmq.conf.
   elasticmq:
     image: softwaremill/elasticmq-native:1.7.1
+    networks:
+      - data
     ports:
       - "9324:9324"
     volumes:
@@ -95,6 +105,8 @@ services:
   # what the long start period allows for.
   clamav:
     image: clamav/clamav:1.5.4
+    networks:
+      - scan
     # Strict scanning. The image writes each CLAMD_CONF_<Option> into clamd.conf
     # at start-up. Deny by default: a file clamd cannot fully look inside (too
     # big, too deep, encrypted) is reported, never passed as OK, and the scan
@@ -132,10 +144,15 @@ services:
   # One-shot: database migrations, then the storage bucket, then it exits.
   migrate:
     <<: *backend
+    networks:
+      - data
     environment:
       <<: *backend-env
       # The owner's login: the migrations and the owner-only CLI commands (#479).
       DATABASE_URL: postgresql://${POSTGRES_USER:-kaagaz}:${POSTGRES_PASSWORD:-kaagaz}@postgres:5432/${POSTGRES_DB:-kaagaz}
+      # Only migrate creates the bucket, so only it gets the storage admin key (#477).
+      STORAGE_ACCESS_KEY: ${STORAGE_ADMIN_ACCESS_KEY:-kaagaz-local-admin}
+      STORAGE_SECRET_KEY: ${STORAGE_ADMIN_SECRET_KEY:-kaagaz-local-admin-secret-laptop-only}
     command:
       - sh
       - -c
@@ -156,6 +173,9 @@ services:
       <<: *backend-env
       OPS_DATABASE_URL: ${OPS_DATABASE_URL:-} # the super admin's login (#479), only here
     command: ["uvicorn", "kaagaz.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    networks:
+      - data
+      - edge
     ports:
       - "8000:8000"
     healthcheck:
@@ -177,6 +197,9 @@ services:
   worker:
     <<: *backend
     command: ["python", "-m", "kaagaz.worker_main"]
+    networks:
+      - data
+      - scan
     # A bug ends the worker on purpose (kaagaz/worker_main.py); this brings it
     # back, and the job returns to the queue.
     restart: unless-stopped
@@ -215,11 +238,31 @@ services:
         # Google Analytics on the public pages (#457 phase 4), from .env; empty, none.
         NEXT_PUBLIC_GA_ID: ${NEXT_PUBLIC_GA_ID:-}
     image: kaagaz-frontend:${KAAGAZ_TAG:-local}
+    networks:
+      - edge
     ports:
       - "3000:3000"
+    healthcheck:
+      # The slim image has no curl or wget (#477, 3 Nov 2026). fetch follows redirects;
+      # any answer but 2xx, or none in 5 s, fails the check. infra/ec2/deploy.sh waits for it.
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/login', {signal: AbortSignal.timeout(5000)}).then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 10s
+      timeout: 10s
+      retries: 6
+      start_period: 20s
     depends_on:
       api:
         condition: service_healthy
+
+# Three closed lines between the app's parts (#477, 3 Nov 2026): a container reaches only
+# the services on a network it shares. data: postgres, seaweedfs, elasticmq and the backend
+# containers; scan: clamav and the worker; edge: the website, the API and Caddy
+# (docker-compose.prod.yml). So the website cannot reach the database, storage or queue.
+# None is internal: the API and the worker call OpenRouter, and clamav fetches signatures.
+networks:
+  data:
+  scan:
+  edge:
 
 volumes:
   postgres-data:

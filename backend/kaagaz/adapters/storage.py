@@ -1,7 +1,8 @@
 """File storage over the S3 API: SeaweedFS on the laptop, Amazon S3 in AWS.
 
 It implements ``BlobStorage`` (upload), ``Quarantine`` (the scan gate) and
-the page image calls the pipeline and the API use.
+the page image calls the pipeline and the API use, and the nightly backup's
+copy of the whole bucket (``write_tar``, ``read_tar``).
 
 Keys are made from ids only, never from file names. Every key starts with
 the customer, so one customer's calls can only ever build keys under that
@@ -27,6 +28,7 @@ his call too; here it does, so a delete leaves nothing of the customer's
 file behind.
 """
 
+import tarfile
 import tempfile
 import uuid
 from collections.abc import Iterator
@@ -349,6 +351,58 @@ class S3Storage:
                 raise BackendUnavailable("storage") from error
         except _UNREACHABLE as error:
             raise BackendUnavailable("storage") from error
+
+    # --- Backup (#476, 3 Nov 2026) -----------------------------------------
+
+    def write_tar(self, out: IO[bytes]) -> int:
+        """Every object in the bucket, every customer's, as one tar stream on ``out``, each under
+        its own key: the nightly backup (infra/ec2/pgdump.sh encrypts and uploads it). Read
+        through the S3 API, so the running SeaweedFS needs no stop. An object deleted after the
+        listing is skipped. Time O(n) for n objects; memory one listing page and one read buffer.
+        Returns n."""
+        count = 0
+        arguments: dict[str, Any] = {"Bucket": self._bucket}
+        with tarfile.open(fileobj=out, mode="w|") as archive:
+            while True:
+                response = self._list_page(arguments)
+                for item in response.get("Contents", []):
+                    member = tarfile.TarInfo(str(item["Key"]))
+                    member.mtime = int(item["LastModified"].timestamp())
+                    member.mode = 0o600
+                    try:
+                        reply = self._client.get_object(Bucket=self._bucket, Key=member.name)
+                        member.size = int(reply["ContentLength"])
+                        archive.addfile(member, reply["Body"])
+                    except ClientError as error:
+                        if _is_missing(error):
+                            continue
+                        raise BackendUnavailable("storage") from error
+                    except _UNREACHABLE as error:
+                        raise BackendUnavailable("storage") from error
+                    count += 1
+                token = response.get("NextContinuationToken")
+                if not response.get("IsTruncated") or not token:
+                    return count
+                arguments["ContinuationToken"] = token
+
+    def read_tar(self, source: IO[bytes]) -> int:
+        """Put every file of a ``write_tar`` stream back under its key (the restore drill).
+        Refuses a bucket that holds anything, so a restore never writes over live files.
+        Memory: one file at a time. Returns the number of files."""
+        if self._list_page({"Bucket": self._bucket, "MaxKeys": 1}).get("Contents"):
+            raise ValueError("the storage bucket is not empty; restore into an empty one")
+        count = 0
+        with tarfile.open(fileobj=source, mode="r|") as archive:
+            for member in archive:
+                data = archive.extractfile(member) if member.isfile() else None
+                if data is None:
+                    continue
+                try:
+                    self._client.put_object(Bucket=self._bucket, Key=member.name, Body=data.read())
+                except _ANY_ERROR as error:
+                    raise BackendUnavailable("storage") from error
+                count += 1
+        return count
 
     # --- Helpers -----------------------------------------------------------
 

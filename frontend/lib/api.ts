@@ -528,7 +528,7 @@ async function digest(blob: Blob): Promise<string> {
 }
 
 function waitForNetwork(delay: number): Promise<void> {
-  // No navigator (Node 20, where CI runs the tests) reads as online; a browser always has one.
+  // No navigator.onLine (Node, where CI runs the tests) reads as online; a browser always has one.
   const online = typeof navigator === "undefined" || navigator.onLine !== false;
   if (online) return new Promise((resolve) => setTimeout(resolve, delay));
   return new Promise((resolve) => window.addEventListener("online", () => resolve(), { once: true }));

@@ -7,15 +7,32 @@
 # file first, so a failed dump never sits under a good dump's name, and old
 # dumps are deleted only after a good one.
 #
-# POSTGRES_USER and POSTGRES_DB are read from .env as plain text: the file is
-# never run, and the values are never printed. When a key is not set, the
-# default is docker-compose.yml's (kaagaz).
+# Then, when .env sets BACKUP_BUCKET and BACKUP_CERT, the copy off the server
+# (#476, 3 Nov 2026): this dump, the database logins (pg_dumpall --roles-only
+# --no-role-passwords) and every stored file (kaagaz.cli backup-files, a tar
+# read through the S3 API). Each is encrypted with openssl cms to BACKUP_CERT,
+# the public certificate of a key kept offline, and streamed into the bucket as
+# <day>/kaagaz.dump.cms, <day>/roles.sql.cms and <day>/files.tar.cms by
+# kaagaz.cli backup-upload in the backend image, on the host network so it uses
+# the server's own AWS role. Nothing encrypted is written to this disk.
+# <day>/done goes last, only when all three are in: the monitor
+# (infra/aws/monitor) and the restore drill (restore-drill.sh) look for it.
+# Without the two settings it stops after the local dump, as before.
+#
+# The whole run holds the deploy lock, so no deploy swaps images and the idle
+# stop (idle-stop.sh) does not power off half way.
+#
+# POSTGRES_USER, POSTGRES_DB, BACKUP_BUCKET and BACKUP_CERT are read from .env
+# as plain text: the file is never run, and the values are never printed. When
+# a POSTGRES_ key is not set, the default is docker-compose.yml's (kaagaz).
 set -euo pipefail
 
 KAAGAZ_DIR=/home/ubuntu/kaagaz
 BACKUP_DIR=/home/ubuntu/backups
 KEEP_DAYS=7
 COMPOSE=(-f docker-compose.yml -f docker-compose.prod.yml)
+LOCK_FILE=/tmp/kaagaz-deploy.lock
+LOCK_WAIT_SECONDS=1800
 
 # One key's value from .env, as docker compose reads it: the last line that
 # sets it wins, one pair of surrounding quotes is removed, and an unquoted
@@ -39,6 +56,13 @@ env_value() {
   fi
   printf '%s' "$value"
 }
+
+# A deploy holds the lock for minutes at most; wait for it.
+exec 9>"$LOCK_FILE"
+if ! flock -w "$LOCK_WAIT_SECONDS" 9; then
+  echo "a deploy held $LOCK_FILE for ${LOCK_WAIT_SECONDS}s; no dump saved" >&2
+  exit 1
+fi
 
 cd "$KAAGAZ_DIR"
 pg_user="$(env_value POSTGRES_USER)"
@@ -82,3 +106,31 @@ for old in "$BACKUP_DIR"/kaagaz-*.dump; do
 done
 
 echo "saved $dump"
+
+bucket="$(env_value BACKUP_BUCKET)"
+cert="$(env_value BACKUP_CERT)"
+if [[ -z "$bucket" || -z "$cert" ]]; then
+  echo "BACKUP_BUCKET or BACKUP_CERT is not set in .env; nothing copied off the server" >&2
+  exit 0
+fi
+
+# stdin to the bucket as <day>/$1.
+send() {
+  docker run --rm -i --network host kaagaz-backend:local \
+    python -m kaagaz.cli backup-upload --bucket "$bucket" --key "$day/$1"
+}
+
+# stdin, encrypted to BACKUP_CERT, to the bucket as <day>/$1. -stream encrypts
+# as it reads, so a large tar never sits in memory.
+seal() {
+  openssl cms -encrypt -binary -aes256 -stream -outform DER "$cert" | send "$1"
+}
+
+seal kaagaz.dump.cms <"$dump"
+docker compose "${COMPOSE[@]}" exec -T postgres \
+  pg_dumpall -U "$pg_user" --roles-only --no-role-passwords | seal roles.sql.cms
+# --no-deps: a plain run would start migrate first (deploy.sh, 24 Oct 2026).
+docker compose "${COMPOSE[@]}" run --rm -T --no-deps worker \
+  python -m kaagaz.cli backup-files | seal files.tar.cms
+printf '%s\n' "$day" | send "done"
+echo "copied the backup of $day off the server"

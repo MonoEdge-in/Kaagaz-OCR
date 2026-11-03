@@ -1,0 +1,12 @@
+# Emails when the disk is nearly full (infra/ec2/disk-alert.sh, #480). Started
+# by kaagaz-disk.timer. Copy to /etc/systemd/system/ (EC2 PRD section 9).
+[Unit]
+Description=Kaagaz: email when the disk is nearly full
+Wants=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/kaagaz
+ExecStart=/home/ubuntu/kaagaz/infra/ec2/disk-alert.sh
