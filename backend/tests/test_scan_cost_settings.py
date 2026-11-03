@@ -76,6 +76,7 @@ def test_dynamic_keeps_a_minimal_first_read_and_reads_low_otherwise() -> None:
         **dict.fromkeys(SAVED),
         "scan_reader": None,
         "mistral_model": None,
+        "daily_page_limit": None,  # Changed on purpose (#478)
     }
     assert models.scope_reading(cast(Any, every), allowed, settings=GEMINI).thinking == "minimal"
     assert (

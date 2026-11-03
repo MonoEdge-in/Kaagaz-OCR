@@ -24,6 +24,8 @@ audit rows.
 * ``ai_defaults`` and ``set_ai_defaults``: the platform defaults and how many
   organisations inherit each area; the same outcomes but missing and deleting.
 * ``usage``: tokens and dollars per organisation and model. No user, no document.
+* ``reading_today`` (#478, 0066): one organisation's pages read by AI and dollars on one India
+  day (the reading pause's counter). Numbers only.
 * ``mistral_status`` (#473, 0065): whether Mistral stopped reading pages, from the runs that
   waited on it (no worker memory). Codes and counts only.
 * ``scan_cost`` (#463, 0064): the measured cost of a page at one first read's and one
@@ -50,7 +52,7 @@ Time: each is one statement; ``usage`` is O(ledger rows in the period).
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import Connection, RowMapping, text
@@ -71,13 +73,14 @@ _SET_ORG_AI = text(
     " CAST(:cm AS text[]), CAST(:cd AS text), CAST(:st AS text), CAST(:sr AS text), CAST(:ct AS text),"
     " CAST(:cr AS text), CAST(:pm AS integer), CAST(:cl AS text[]), CAST(:cdl AS text),"
     " CAST(:dyn AS boolean), :ensemble,"
-    " CAST(:budget AS numeric), :scan, :chat, :step, CAST(:rd AS text), CAST(:mm AS text))"
+    " CAST(:budget AS numeric), :scan, :chat, :step, CAST(:rd AS text), CAST(:mm AS text),"
+    " CAST(:dpl AS integer))"
 )
 _SET_AI_DEFAULTS = text(
     "SELECT kaagaz_op_set_ai_defaults(:o, CAST(:sm AS text[]), CAST(:sd AS text), CAST(:cm AS text[]),"
     " CAST(:cd AS text), CAST(:st AS text), CAST(:sr AS text), CAST(:ct AS text), CAST(:cr AS text),"
     " CAST(:pm AS integer), CAST(:cl AS text[]), CAST(:cdl AS text), CAST(:dyn AS boolean), :scan, :chat,"
-    " :step, CAST(:rd AS text), CAST(:mm AS text))"
+    " :step, CAST(:rd AS text), CAST(:mm AS text), CAST(:dpl AS integer))"
 )
 _SCAN_COST = text(
     "SELECT * FROM kaagaz_op_scan_cost(:o, CAST(:c AS uuid), :m, :t, :r, CAST(:cm AS text),"
@@ -105,7 +108,9 @@ class AiChoice:
     so the order above holds; for the platform, None is the server's (OCR_MEDIA_RESOLUTION,
     OCR_RETRY_*, PAGE_MAX_OUTPUT_TOKENS). #473 (0065): who reads scanned pages (``scan_reader``,
     openrouter or mistral) and the Mistral model; for the platform, None is openrouter and
-    DEFAULT_MISTRAL_MODEL. Whether Mistral is set up is the API's check, not the database's."""
+    DEFAULT_MISTRAL_MODEL. Whether Mistral is set up is the API's check, not the database's.
+    #478 (0066): the daily page limit (pages AI may read in one India day); for the platform,
+    None is no limit."""
 
     scan_models: Sequence[str] = ()
     scan_default: str | None = None
@@ -121,6 +126,7 @@ class AiChoice:
     page_max_output_tokens: int | None = None
     scan_reader: str | None = None
     mistral_model: str | None = None
+    daily_page_limit: int | None = None
 
     def params(self) -> dict[str, object]:
         return {
@@ -138,6 +144,7 @@ class AiChoice:
             "dyn": self.dynamic,
             "rd": self.scan_reader,
             "mm": self.mistral_model,
+            "dpl": self.daily_page_limit,
         }
 
 
@@ -177,7 +184,7 @@ def org_ai(conn: Connection, operator_id: str, customer_id: str) -> RowMapping |
     """One organisation's own settings (scan_models, scan_default, chat_models,
     chat_default, scan_thinking, chat_levels, chat_default_level, dynamic, scan_resolution,
     careful_thinking, careful_resolution, page_max_output_tokens, scan_reader, mistral_model,
-    ensemble) and ai_budget_usd; an empty list or a
+    daily_page_limit, ensemble) and ai_budget_usd; an empty list or a
     NULL field inherits. None when there is no such organisation (or the operator is not enabled)."""
     return (
         conn.execute(text("SELECT * FROM kaagaz_op_org_ai(:o, :c)"), {"o": operator_id, "c": customer_id})
@@ -221,7 +228,7 @@ def ai_defaults(conn: Connection, operator_id: str) -> RowMapping | None:
     """The platform defaults (as ``org_ai``, without ensemble and budget) and
     orgs_inheriting_{scan_models, chat_models, scan_thinking, chat_levels, dynamic,
     scan_resolution, careful_thinking, careful_resolution, page_max_output_tokens, scan_reader,
-    mistral_model}: the
+    mistral_model, daily_page_limit}: the
     organisations (not being deleted) a change of that area reaches. None for an operator
     who is not enabled."""
     return (
@@ -237,6 +244,19 @@ def set_ai_defaults(
     params = {"o": operator_id, **choice.params(), "scan": scan_prompt, "chat": chat_prompt, "step": step}
     row = conn.execute(_SET_AI_DEFAULTS, params).one()
     return str(row[0])
+
+
+def reading_today(conn: Connection, operator_id: str, customer_id: str, day: date) -> RowMapping | None:
+    """#478 (0066): pages and cost_usd, the organisation's counter on ``day`` (0 and 0 with
+    none). None for an operator who is not enabled."""
+    return (
+        conn.execute(
+            text("SELECT * FROM kaagaz_op_reading_today(:o, :c, :day)"),
+            {"o": operator_id, "c": customer_id, "day": day},
+        )
+        .mappings()
+        .first()
+    )
 
 
 def mistral_status(conn: Connection, operator_id: str) -> RowMapping | None:

@@ -119,6 +119,7 @@ export const NAME_MISMATCH = "That is not the organisation's name. Type it exact
 export const CONFLICT = "That change is not possible now. Reload the list and try again.";
 /** The most output tokens a page the server accepts (#463), said on the field and for its refusal. */
 export const TOKENS_RANGE = "Choose a number from 1,024 to 65,536.";
+export const DAILY_PAGES_RANGE = "Choose a daily page limit from 1 to 1,000,000 pages, or leave it empty."; // #478
 
 /** The server's error codes in plain words (the server sends most refusals as
  * 409 "conflict" with its own sentence, which is used then). */
@@ -141,6 +142,7 @@ export const REFUSALS: Record<string, string> = {
   default_not_allowed: "Choose each default from its own ticked list.",
   level_not_supported: "A chosen model does not accept one of these thinking levels. Choose levels every model accepts.",
   limit_out_of_range: TOKENS_RANGE, // the most output tokens a page (#463)
+  pages_out_of_range: DAILY_PAGES_RANGE, // the daily page limit (#478)
   mistral_not_set_up: "Mistral isn't set up on this server yet.", // #473
 };
 

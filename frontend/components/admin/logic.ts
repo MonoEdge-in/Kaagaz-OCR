@@ -835,6 +835,14 @@ export function usageState(report: UsageReport | null, error: string | null): Us
   return report.ai_enabled === false ? { kind: "off" } : { kind: "empty" };
 }
 
+/** #478 (Tushar, 3 Nov 2026): "Pages read today: 1,240 of 2,000." while a daily page limit is
+ * in effect (the India day); null without one. Never money. */
+export function pagesTodayLine(report: Pick<UsageReport, "reading_today">): string | null {
+  const today = report.reading_today;
+  if (!today || today.limit === null) return null;
+  return `Pages read today: ${formatNumber(today.pages)} of ${formatNumber(today.limit)}.`;
+}
+
 /** "$12.40 of $50.00 this month", or that there is no budget. */
 export function budgetLine(
   budget: Pick<UsageBudget, "ai_budget_usd" | "spent_this_month_usd"> & { spent_part_unknown?: boolean },

@@ -26,7 +26,7 @@ import type {
   UsageTotals,
 } from "@/lib/types";
 import { ApiError } from "@/lib/api";
-import { REFUSALS, TOKENS_RANGE, countText, operatorErrorMessage } from "./logic";
+import { DAILY_PAGES_RANGE, REFUSALS, TOKENS_RANGE, countText, operatorErrorMessage } from "./logic";
 
 // numeric(12,2): the largest budget the server's column holds.
 export const MAX_BUDGET = 9_999_999_999.99;
@@ -245,6 +245,7 @@ export interface AiDraft {
   careful_thinking: ScanLevel | null;
   careful_resolution: Resolution | null;
   page_max_output_tokens: string; // as typed; empty follows
+  daily_page_limit: string; // #478: as typed; empty follows (the platform's: no limit)
   chat_levels: AiLevel[];
   chat_default_level: AiLevel | null;
   dynamic: boolean | null;
@@ -265,6 +266,7 @@ export function draftOf(values: AiValues, extra: { ensemble: boolean; ai_budget_
     careful_thinking: values.careful_thinking,
     careful_resolution: values.careful_resolution,
     page_max_output_tokens: values.page_max_output_tokens === null ? "" : String(values.page_max_output_tokens),
+    daily_page_limit: values.daily_page_limit === null ? "" : String(values.daily_page_limit),
     chat_levels: [...(values.chat_levels ?? [])],
     chat_default_level: values.chat_default_level,
     dynamic: values.dynamic,
@@ -313,7 +315,7 @@ export function resetSection(draft: AiDraft, section: Section): AiDraft {
 }
 
 /** Follow the platform defaults in both areas: no own models, levels or switches, and no
- * Ensemble (it is never a default). The budget stays. */
+ * Ensemble (it is never a default). The budget and the daily page limit (#478) stay. */
 export const followDefaults = (draft: AiDraft): AiDraft => resetSection(resetSection(resetSection(draft, "scan"), "chat"), "ensemble");
 
 /** Tick or untick a model of an area. The first ticked becomes the area's default;
@@ -359,6 +361,25 @@ export function parseTokens(text: string): number | null | undefined {
   return value >= MIN_PAGE_TOKENS && value <= MAX_PAGE_TOKENS ? value : undefined;
 }
 
+// The daily page limit (#478, Tushar, 3 Nov 2026): the pages AI may read in one India day.
+export const MAX_PAGES_A_DAY = 1_000_000;
+export const DAILY_PAGES_HINT =
+  "The most pages AI may read in one day (India time). Past it, new files wait and are read next morning, or as soon as you raise it. A file already being read finishes.";
+export { DAILY_PAGES_RANGE };
+
+/** The daily page limit as a number, null to follow (no limit on the platform), or undefined when it is not one. */
+export function parseDailyPages(text: string): number | null | undefined {
+  const trimmed = text.trim();
+  if (trimmed === "") return null;
+  if (!/^\d{1,7}$/.test(trimmed)) return undefined;
+  const value = Number(trimmed);
+  return value >= 1 && value <= MAX_PAGES_A_DAY ? value : undefined;
+}
+
+/** "Pages read today: 1,240 ($0.42)." for the operator, the India day's counter. */
+export const pagesTodayText = (today: { pages: number; cost_usd: number | null }) =>
+  `Pages read today: ${formatNumber(today.pages)}${today.cost_usd ? ` (${usd(today.cost_usd)})` : ""}.`;
+
 /** Where a problem is shown: next to its field. "form" is the form's own line. */
 export type AiField =
   | "scan_reader"
@@ -366,6 +387,7 @@ export type AiField =
   | "scan_models"
   | "scan_default"
   | "page_max_output_tokens"
+  | "daily_page_limit"
   | "chat_models"
   | "chat_default"
   | "chat_levels"
@@ -381,6 +403,7 @@ export function aiErrors(draft: AiDraft, platform: boolean): AiErrors {
   if (draft.chat_models.length > 0 && (draft.chat_default === null || !draft.chat_models.includes(draft.chat_default)))
     errors.chat_default = "Choose the default answering model from the ticked models.";
   if (parseTokens(draft.page_max_output_tokens) === undefined) errors.page_max_output_tokens = TOKENS_RANGE;
+  if (parseDailyPages(draft.daily_page_limit) === undefined) errors.daily_page_limit = DAILY_PAGES_RANGE;
   if (platform && draft.chat_levels.length === 0) errors.chat_levels = "Tick at least one thinking level.";
   else if (
     draft.chat_levels.length > 0 &&
@@ -411,6 +434,7 @@ export function aiBody(draft: AiDraft): AiValues {
     dynamic: draft.dynamic,
     scan_reader: draft.scan_reader,
     mistral_model: draft.mistral_model,
+    daily_page_limit: parseDailyPages(draft.daily_page_limit) ?? null,
   };
 }
 
@@ -460,7 +484,15 @@ export function namesOf(ids: string[], catalogue: OperatorModel[], first: string
 /** What an organisation that follows the platform gets, in words, for "From platform
  * defaults: …". An empty platform list is the server's own model. */
 export function inheritedText(
-  field: "scan_models" | "chat_models" | ScanSetting | ReaderSetting | "page_max_output_tokens" | "chat_levels" | "dynamic",
+  field:
+    | "scan_models"
+    | "chat_models"
+    | ScanSetting
+    | ReaderSetting
+    | "page_max_output_tokens"
+    | "daily_page_limit"
+    | "chat_levels"
+    | "dynamic",
   defaults: AiValues,
   env: AiEnv,
   catalogue: OperatorModel[],
@@ -481,6 +513,8 @@ export function inheritedText(
       return settingWords(field, defaults, env.mistral_models) ?? mistralName(env.mistral_model, env.mistral_models);
     case "page_max_output_tokens":
       return formatNumber(defaults.page_max_output_tokens ?? env.page_max_output_tokens);
+    case "daily_page_limit":
+      return defaults.daily_page_limit === null ? "no limit" : `${formatNumber(defaults.daily_page_limit)} pages`;
     case "chat_levels":
       return levelText(defaults);
     case "dynamic":
@@ -559,6 +593,12 @@ const DEFAULT_AREAS: {
     label: "most output tokens a page",
     changed: (a, b) => a.page_max_output_tokens !== b.page_max_output_tokens,
     now: (v) => (v.page_max_output_tokens === null ? "platform default" : formatNumber(v.page_max_output_tokens)),
+  },
+  {
+    area: "daily_page_limit",
+    label: "daily page limit",
+    changed: (a, b) => a.daily_page_limit !== b.daily_page_limit,
+    now: (v) => (v.daily_page_limit === null ? "platform default" : `${formatNumber(v.daily_page_limit)} pages`),
   },
   {
     area: "dynamic",
@@ -646,6 +686,8 @@ export function refusalField(code: string): AiField {
       return "chat_models";
     case "limit_out_of_range":
       return "page_max_output_tokens";
+    case "pages_out_of_range": // #478
+      return "daily_page_limit";
     case "mistral_not_set_up": // #473
       return "scan_reader";
     default: // unavailable, default_not_allowed, level_not_supported: either area

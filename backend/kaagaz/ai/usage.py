@@ -22,7 +22,14 @@ on its row (``record_page``), however many calls it took, so the estimate prices
 A failure to save logs ``usage_not_saved`` and never fails the work. A scope opened inside
 another is its own scope; the outer one is current again when it ends.
 
-Time: O(1) a call; one statement a scope.
+The reading pause's live counter (#478, Tushar, 3 Nov 2026; ``db.reading_days``): each page read
+(``record_page``, Gemini's and Mistral's alike) adds one page, and the dollars of the scope's
+calls since the last page, to the organisation's India day at once, in its own short
+transaction; every other call's dollars reach the budget through the ledger when its scope
+ends. An operator's accuracy check never counts. A failure logs ``reading_not_counted`` and
+never fails the work.
+
+Time: O(1) a call; one statement a page read; one a scope.
 """
 
 import contextvars
@@ -31,9 +38,11 @@ import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 
 from sqlalchemy.exc import SQLAlchemyError
 
+from kaagaz.db import reading_days
 from kaagaz.db.engine import Database, unavailable
 from kaagaz.db.usage import UsageRow, insert_usage
 from kaagaz.ingestion.errors import BackendUnavailable
@@ -89,6 +98,8 @@ class UsageScope:
     kind: str
     document_id: str | None = None
     conversation_id: str | None = None
+    db: Database | None = field(default=None, repr=False)  # #478: the live counter's (None: none)
+    _live_usd: float = field(default=0.0, repr=False)  # #478: dollars since the last page read
     _tallies: dict[_Key, _Tally] = field(default_factory=dict, repr=False)
     _providers: dict[_Key, str | None] = field(default_factory=dict, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
@@ -117,6 +128,8 @@ class UsageScope:
             tally.output_tokens += output_tokens
             tally.reasoning_tokens += reasoning_tokens
             tally.cost_usd = None if cost_usd is None or tally.cost_usd is None else tally.cost_usd + cost_usd
+            if cost_usd is not None and self.kind != ACCURACY_CHECK:
+                self._live_usd += cost_usd
             if provider is not None or key not in self._providers:
                 self._providers[key] = provider
 
@@ -128,14 +141,31 @@ class UsageScope:
             if tally is not None:  # always: the client counts the call before reading its text
                 tally.limit_hits += 1
 
-    def count_page(self, model: str, *, kind: str | None, thinking: str, resolution: str) -> None:
+    def count_page(self, model: str, *, kind: str | None, thinking: str, resolution: str) -> bool:
         """#463 review: one page read on the row of its calls (thread-safe); nothing when no
-        call of it was counted (a page with no billed call is never a page of the cost)."""
+        call of it was counted (a page with no billed call is never a page of the cost). Whether
+        it was counted."""
         key = self._key(model, kind, False, thinking, resolution)
         with self._lock:
             tally = self._tallies.get(key)
             if tally is not None:
                 tally.pages += 1
+            return tally is not None
+
+    def count_live(self, *, pages: int) -> None:
+        """#478: ``pages`` and the scope's dollars since the last page read onto the
+        organisation's India day, in a transaction of its own; nothing for an accuracy check or
+        a scope with no database."""
+        if self.db is None or self.kind == ACCURACY_CHECK:
+            return
+        with self._lock:
+            usd, self._live_usd = self._live_usd, 0.0
+        try:
+            with unavailable(), self.db.customer(self.customer_id) as conn:
+                day = reading_days.india_day(datetime.now(UTC))
+                reading_days.count(conn, self.customer_id, day, pages=pages, cost_usd=usd)
+        except (SQLAlchemyError, BackendUnavailable):
+            _log.warning("reading not counted", extra={"code": "reading_not_counted"})
 
     def _key(
         self, model: str, kind: str | None, cached: bool, thinking: str | None, resolution: str | None
@@ -197,7 +227,7 @@ def usage_scope(
     of KINDS (ValueError otherwise)."""
     if kind not in KINDS:
         raise ValueError("unknown usage kind")
-    scope = UsageScope(customer_id, user_id, kind, document_id, conversation_id)
+    scope = UsageScope(customer_id, user_id, kind, document_id, conversation_id, db=db)
     token, billed = _CURRENT.set(scope), _BILLED_AS.set(None)  # an outer billed_as is not this work's
     try:
         yield scope
@@ -239,8 +269,10 @@ def record_page(model: str, *, thinking: str, resolution: str) -> None:
     sent at ``thinking`` and ``resolution``) is one page on their ledger row, so the estimate
     prices a page, not a call; nothing when no scope is open."""
     scope = _CURRENT.get()
-    if scope is not None:
-        scope.count_page(model, kind=_BILLED_AS.get(), thinking=thinking, resolution=resolution)
+    if scope is not None and scope.count_page(
+        model, kind=_BILLED_AS.get(), thinking=thinking, resolution=resolution
+    ):
+        scope.count_live(pages=1)  # #478: the reading pause's counter, at once
 
 
 def record_call(

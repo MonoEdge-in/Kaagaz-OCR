@@ -320,7 +320,9 @@ def test_sp2_the_usage_report_has_the_usage_report_shape_in_tokens(db: Database)
         "by_kind",
         "by_day",
         "top_documents",
+        "reading_today",  # Changed on purpose (#478): pages today and the limit, never money
     }
+    assert report["reading_today"] == {"pages": 0, "limit": None}
     assert (report["from"], report["to"]) == ("2026-10-01", "2026-10-20")
     assert set(report["totals"]) == TOTALS
     assert (report["totals"]["calls"], report["totals"]["input_tokens"]) == (3, 3000)

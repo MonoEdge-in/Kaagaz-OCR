@@ -50,6 +50,9 @@ spellings written again, never deleted by the app (a key goes with its value).
 
 Page layout (0056, #383, #382): a page's blocks and its tables' cells, deleted and inserted by
 the replacing save, never updated.
+
+The reading pause (0066, #478): the live counter, read, added and only its counts and alert time
+written again, never deleted by the app (it goes with its organisation).
 """
 
 import re
@@ -147,6 +150,9 @@ FROM_0061 = {"email_links": (True, True, False, False)}
 # last-used columns may change (a column grant).
 FROM_0062 = {"user_identities": (True, True, False, True)}
 UPDATES_0062 = {"user_identities": {"status", "approved_at", "approved_by", "last_used_at"}}
+# The reading pause (0066, #478): a day's counter is added and counted up (a column grant).
+FROM_0066 = {"reading_days": (True, True, False, False)}
+UPDATES_0066 = {"reading_days": {"pages", "cost_usd", "alerted_at"}}
 UPDATES_0030 = {
     "word_changes": {"applied", "undone_at", "undone_by"},
     "ensemble_runs": {
@@ -238,6 +244,8 @@ OWNER_RIGHTS = {
     ),
     "kaagaz_accuracy_check_beat": ("boolean", EMPTY_PATH),
     "kaagaz_accuracy_check_finish": ("boolean", EMPTY_PATH),
+    # 0066 (#478): the release sweep's organisations with a held document, ids only.
+    "kaagaz_customer_ids_held": ("SETOF uuid", EMPTY_PATH),
 }
 # The platform operator's (0015): only kaagaz_operator may run these, never the app.
 OPERATOR = "kaagaz_operator"
@@ -335,6 +343,7 @@ OPERATOR_RIGHTS = {
         " scan_resolution text, careful_thinking text, careful_resolution text,"
         " page_max_output_tokens integer,"
         " scan_reader text, mistral_model text,"  # Changed on purpose (#473, 0065): who reads the pages
+        " daily_page_limit integer,"  # Changed on purpose (#478, 0066): the reading pause
         " ensemble boolean,"
         " ai_budget_usd numeric)",  # 0064 (#463): the scan cost settings
         EMPTY_PATH,
@@ -346,14 +355,17 @@ OPERATOR_RIGHTS = {
         " scan_resolution text, careful_thinking text, careful_resolution text,"
         " page_max_output_tokens integer,"
         " scan_reader text, mistral_model text,"  # Changed on purpose (#473, 0065)
+        " daily_page_limit integer,"  # Changed on purpose (#478, 0066)
         " orgs_inheriting_scan_models bigint, orgs_inheriting_chat_models bigint,"
         " orgs_inheriting_scan_thinking bigint, orgs_inheriting_chat_levels bigint,"
         " orgs_inheriting_dynamic bigint, orgs_inheriting_scan_resolution bigint,"
         " orgs_inheriting_careful_thinking bigint, orgs_inheriting_careful_resolution bigint,"
         " orgs_inheriting_page_max_output_tokens bigint, orgs_inheriting_scan_reader bigint,"
-        " orgs_inheriting_mistral_model bigint)",
+        " orgs_inheriting_mistral_model bigint, orgs_inheriting_daily_page_limit bigint)",
         EMPTY_PATH,
     ),
+    # 0066 (#478): one organisation's reading pause counter on one day (numbers only).
+    "kaagaz_op_reading_today": ("TABLE(pages integer, cost_usd numeric)", EMPTY_PATH),
     "kaagaz_op_set_ai_defaults": ("text", EMPTY_PATH),
     # 0064 (#463): the estimate's measured cost, sums and counts only (no customer column).
     "kaagaz_op_scan_cost": (
@@ -528,6 +540,7 @@ def test_every_customer_table_has_row_level_security_and_the_customer_only_polic
         | set(FROM_0056)
         | set(FROM_0061)
         | set(FROM_0062)
+        | set(FROM_0066)
     )
 
     with db.system() as conn:
@@ -597,6 +610,7 @@ def test_every_customer_table_is_granted_to_the_app_role(db: Database) -> None:
         | FROM_0056
         | FROM_0061
         | FROM_0062
+        | FROM_0066
     ).items():
         assert granted[table] == expected, table
 
@@ -663,6 +677,11 @@ def test_the_app_may_update_only_the_approval_and_last_use_of_a_connected_accoun
     """0062: never a connection's provider, issuer, subject, user or customer, so an approved
     connection can't be moved to another person or outside account."""
     assert {table: _updatable(db, table) for table in UPDATES_0062} == UPDATES_0062
+
+
+def test_the_app_may_update_only_the_counts_of_a_reading_day(db: Database) -> None:
+    """0066: never a counter's organisation or day, so pages can't be moved to another day."""
+    assert {table: _updatable(db, table) for table in UPDATES_0066} == UPDATES_0066
 
 
 def test_the_app_may_update_only_the_spellings_of_a_value_key(db: Database) -> None:

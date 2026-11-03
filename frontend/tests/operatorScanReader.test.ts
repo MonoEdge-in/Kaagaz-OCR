@@ -51,6 +51,7 @@ const values = (overrides: Partial<AiValues> = {}): AiValues => ({
   dynamic: null,
   scan_reader: null,
   mistral_model: null,
+  daily_page_limit: null, // Changed on purpose (#478): the daily page limit
   ...overrides,
 });
 const NOT_STOPPED: MistralStatus = { stopped: false, code: null, since: null, documents_waiting: 0 };
@@ -85,6 +86,7 @@ const COUNTS: AiDefaults["orgs_inheriting"] = {
   dynamic: 5,
   scan_reader: 3,
   mistral_model: 2,
+  daily_page_limit: 1, // Changed on purpose (#478)
 };
 
 const fields = (

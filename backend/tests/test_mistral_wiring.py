@@ -417,6 +417,7 @@ def test_cached_hit_no_record_page() -> None:
         0.0,
     )
     assert (row.thinking, row.resolution) == ("none", "page")
+    assert kept.live == []  # #478: a cached page is no page read
 
 
 def test_ledger_fixed_cost_none_page_pair() -> None:
@@ -430,6 +431,8 @@ def test_ledger_fixed_cost_none_page_pair() -> None:
     assert (four.input_tokens, four.output_tokens, four.reasoning_tokens) == (0, 0, 0)
     assert (four.thinking, four.resolution, four.kind) == ("none", "page", "scan")
     assert four.cost_usd == pytest.approx(2 * 0.004) and three.cost_usd == pytest.approx(0.002)
+    # #478: each Mistral page is on the reading pause's live counter at once, with its price.
+    assert [(pages, round(usd, 6)) for pages, usd in kept.live] == [(1, 2 * 0.004), (1, 0.002)]
 
 
 def test_bad_reply_billed_then_reader_refused() -> None:

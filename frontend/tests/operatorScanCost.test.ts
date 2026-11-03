@@ -89,6 +89,7 @@ const values = (overrides: Partial<AiValues> = {}): AiValues => ({
   dynamic: null,
   scan_reader: null, // Changed on purpose (#473): who reads the pages, and the Mistral model
   mistral_model: null,
+  daily_page_limit: null, // Changed on purpose (#478): the daily page limit
   ...overrides,
 });
 const ENV: AiEnv = {
@@ -120,6 +121,7 @@ const COUNTS: AiDefaults["orgs_inheriting"] = {
   dynamic: 5,
   scan_reader: 5, // Changed on purpose (#473)
   mistral_model: 5,
+  daily_page_limit: 1, // Changed on purpose (#478)
 };
 const catalogue: OperatorModel[] = [];
 
