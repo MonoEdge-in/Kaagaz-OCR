@@ -21,8 +21,10 @@
 #     signatures. A container over its limit is killed and restarted
 #     (restart: unless-stopped); a worker's job then goes back to the queue.
 #
-# The server's .env sets KAAGAZ_DOMAIN, ACME_EMAIL and SEAWEEDFS_S3_CONFIG (the
-# path of its s3.json); compose stops with the name of any that is missing.
+# The server's .env sets KAAGAZ_DOMAIN, ACME_EMAIL, SEAWEEDFS_S3_CONFIG (the
+# path of its s3.json), STORAGE_ADMIN_ACCESS_KEY and STORAGE_ADMIN_SECRET_KEY
+# (s3.json's admin identity, migrate's alone); compose stops with the name of
+# any that is missing.
 
 x-logging: &logging
   driver: json-file
@@ -57,8 +59,12 @@ services:
     mem_limit: 4g
 
   # One-shot: it runs once per deploy and exits, so it gets no restart policy.
+  # The storage admin key from the server's .env, never the laptop's (#477).
   migrate:
     logging: *logging
+    environment:
+      STORAGE_ACCESS_KEY: ${STORAGE_ADMIN_ACCESS_KEY:?set STORAGE_ADMIN_ACCESS_KEY in .env}
+      STORAGE_SECRET_KEY: ${STORAGE_ADMIN_SECRET_KEY:?set STORAGE_ADMIN_SECRET_KEY in .env}
 
   api:
     ports: !reset []
@@ -92,6 +98,8 @@ services:
     # caddy:2 (Apache-2.0), pinned to its multi-arch index digest on 4 Oct 2026:
     # Caddy 2.11.6.
     image: caddy:2@sha256:f2a1290d0463aad60660d4ec134943f183ee2a5f6c3eb7bf32dd984f2f020772
+    networks:
+      - edge # api and frontend only (docker-compose.yml, #477)
     ports:
       - "80:80"
       - "443:443"

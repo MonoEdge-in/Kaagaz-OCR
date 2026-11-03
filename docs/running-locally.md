@@ -152,7 +152,9 @@ python -c "from rapidocr import LangRec, ModelType, OCRVersion, RapidOCR; RapidO
 Without it, those pages stay as the default model read them, and the log says
 `ocr_model_missing`.
 
-The worker makes the storage bucket on its first start if it is missing.
+The app's storage key may not create the bucket (#477), so make it once, on the
+first start, with the admin key of `infra/seaweedfs/s3.json`:
+`STORAGE_ACCESS_KEY=kaagaz-local-admin STORAGE_SECRET_KEY=kaagaz-local-admin-secret-laptop-only python -c "from kaagaz.adapters.storage import S3Storage; from kaagaz.settings import Settings; S3Storage(Settings.from_env()).ensure_bucket()"`.
 Ctrl+C stops it after the job in hand. At most once an hour it also deletes
 for good what has been in Trash longer than `TRASH_DAYS` days (30). With the
 model on, every 10 minutes it gives up to 64 pieces their missing meaning vectors.
@@ -249,7 +251,8 @@ for passwords):
 | `SESSION_SECRET` | Random. Changing it signs everyone out |
 | `TOTP_ENCRYPTION_KEY` | Random. If it is lost, every admin's 2FA must be reset |
 | `POSTGRES_PASSWORD`, and the same password in `DATABASE_URL` | Random hex. Postgres takes it only when its volume is first made |
-| `STORAGE_ACCESS_KEY`, `STORAGE_SECRET_KEY` | Random. Must equal the keys in `s3.json` |
+| `STORAGE_ACCESS_KEY`, `STORAGE_SECRET_KEY` | Random. Must equal the app identity's keys in `s3.json`, whose actions are `Read:`, `Write:` and `List:<STORAGE_BUCKET>` only (#477) |
+| `STORAGE_ADMIN_ACCESS_KEY`, `STORAGE_ADMIN_SECRET_KEY` | Random. `s3.json`'s second identity, with `["Admin"]`; only migrate gets it, to create the bucket |
 | `COOKIE_SECURE=true`, `MODEL_ENABLED=true`, `OCR_ENGINE=gemini`, `OCR_DPI=300`, `OCR_TIMEOUT_SECONDS=120`, and `OPENROUTER_API_KEY` | As shown; the key is the OpenRouter key with its own credit limit (docs/architecture.md, Decisions) |
 | `KAAGAZ_DOMAIN`, `ACME_EMAIL`, `SEAWEEDFS_S3_CONFIG=/home/ubuntu/kaagaz-secrets/s3.json` | Read by `docker-compose.prod.yml`, which stops with the name of any that is missing |
 
@@ -355,6 +358,37 @@ while 0043 to 0045 were already applied, so `upgrade` failed with
 `DuplicateTable`. For each migration after the stamped one, check that the
 tables it creates exist (`SELECT to_regclass('public.<table>')`), then stamp
 the last one that is fully there.
+
+**The closed lines and the storage keys (#477), by hand at a quiet time.** The
+release that adds the `data`, `scan` and `edge` networks moves postgres and
+seaweedfs to `data` in deploy step 2 (`run migrate` recreates them), while the
+old api and worker are still on the old network: the site is down until step 3,
+a minute or two. Release the website health check and Node 24 first, each
+checked on its own. Then, as `ubuntu`:
+
+1. Pause the deploys: `sudo systemctl stop kaagaz-deploy.timer`.
+2. Keep the server on: `sudo touch /etc/kaagaz/no-idle-stop`.
+3. The keys, before the code. In `~/kaagaz-secrets/s3.json` keep the app
+   identity's keys and set its `actions` to `["Read:<STORAGE_BUCKET>",
+   "Write:<STORAGE_BUCKET>", "List:<STORAGE_BUCKET>"]`; add a second identity
+   with new random keys and `["Admin"]`, and put those keys in `.env` as
+   `STORAGE_ADMIN_ACCESS_KEY` and `STORAGE_ADMIN_SECRET_KEY` (secrets table
+   above). Without them compose stops, naming the missing one, and changes nothing.
+4. A backup: `~/kaagaz/infra/ec2/pgdump.sh`.
+5. Once `sudo ~/kaagaz/infra/ec2/idle-stop.sh --dry-run` shows both queues
+   empty, stop the workers: `dc stop worker`.
+6. With the release on `production`, deploy: `sudo systemctl start kaagaz-deploy.service`;
+   `journalctl -u kaagaz-deploy -n 20` ends `<commit> deployed`. Check: `dc ps`
+   shows every service healthy, `docker network ls` lists `kaagaz-ocr_data`,
+   `kaagaz-ocr_scan` and `kaagaz-ocr_edge`, and an upload reaches Ready and a
+   question is answered.
+7. `docker network rm kaagaz-ocr_default`, `sudo rm /etc/kaagaz/no-idle-stop`,
+   and `sudo systemctl start kaagaz-deploy.timer`.
+
+The undo is a revert commit of that release on `production` (by pull request),
+deployed with steps 1, 2, 5 and 6: `deploy.sh --rollback` only swaps images and
+never moves a container back to the old network. The narrowed `s3.json` stays:
+the release before it works with it (its migrate only finds the bucket).
 
 **Releases** (EC2 PRD section 6).
 

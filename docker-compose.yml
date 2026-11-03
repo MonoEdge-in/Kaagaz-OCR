@@ -22,7 +22,7 @@ x-backend: &backend
       # The commit the image is built from, shown by /api/health (#246 O1).
       KAAGAZ_COMMIT: ${KAAGAZ_TAG:-local}
   env_file: .env
-  environment:
+  environment: &backend-environment
     # .env keeps localhost for running on the laptop; inside Docker the
     # services reach each other by service name.
     DATABASE_URL: postgresql://${POSTGRES_USER:-kaagaz}:${POSTGRES_PASSWORD:-kaagaz}@postgres:5432/${POSTGRES_DB:-kaagaz}
@@ -39,6 +39,8 @@ x-backend: &backend
 services:
   postgres:
     image: pgvector/pgvector:0.8.7-pg17
+    networks:
+      - data
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-kaagaz}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kaagaz}
@@ -54,10 +56,14 @@ services:
       retries: 20
 
   # File storage with the S3 API (Amazon S3 in AWS). One process runs the
-  # master, volume server, filer and S3 gateway. The access key is in
-  # infra/seaweedfs/s3.json and must match STORAGE_ACCESS_KEY in .env.
+  # master, volume server, filer and S3 gateway. The keys are in
+  # infra/seaweedfs/s3.json (#477, 3 Nov 2026): the app's (STORAGE_ACCESS_KEY in
+  # .env) may read, write and list its own bucket only; the admin key
+  # (STORAGE_ADMIN_ACCESS_KEY) is migrate's alone, to create the bucket.
   seaweedfs:
     image: chrislusf/seaweedfs:4.48
+    networks:
+      - data
     command: server -dir=/data -ip.bind=0.0.0.0 -s3 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json
     ports:
       - "8333:8333"
@@ -76,6 +82,8 @@ services:
   # failure bin kaagaz-jobs-failed, set up by infra/elasticmq/elasticmq.conf.
   elasticmq:
     image: softwaremill/elasticmq-native:1.7.1
+    networks:
+      - data
     ports:
       - "9324:9324"
     volumes:
@@ -92,6 +100,8 @@ services:
   # what the long start period allows for.
   clamav:
     image: clamav/clamav:1.5.4
+    networks:
+      - scan
     # Strict scanning. The image writes each CLAMD_CONF_<Option> into clamd.conf
     # at start-up. Deny by default: a file clamd cannot fully look inside (too
     # big, too deep, encrypted) is reported, never passed as OK, and the scan
@@ -129,6 +139,13 @@ services:
   # One-shot: database migrations, then the storage bucket, then it exits.
   migrate:
     <<: *backend
+    networks:
+      - data
+    environment:
+      <<: *backend-environment
+      # Only migrate creates the bucket, so only it gets the storage admin key (#477).
+      STORAGE_ACCESS_KEY: ${STORAGE_ADMIN_ACCESS_KEY:-kaagaz-local-admin}
+      STORAGE_SECRET_KEY: ${STORAGE_ADMIN_SECRET_KEY:-kaagaz-local-admin-secret-laptop-only}
     command:
       - sh
       - -c
@@ -146,6 +163,9 @@ services:
   api:
     <<: *backend
     command: ["uvicorn", "kaagaz.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    networks:
+      - data
+      - edge
     ports:
       - "8000:8000"
     healthcheck:
@@ -167,6 +187,9 @@ services:
   worker:
     <<: *backend
     command: ["python", "-m", "kaagaz.worker_main"]
+    networks:
+      - data
+      - scan
     # A bug ends the worker on purpose (kaagaz/worker_main.py); this brings it
     # back, and the job returns to the queue.
     restart: unless-stopped
@@ -205,6 +228,8 @@ services:
         # Google Analytics on the public pages (#457 phase 4), from .env; empty, none.
         NEXT_PUBLIC_GA_ID: ${NEXT_PUBLIC_GA_ID:-}
     image: kaagaz-frontend:${KAAGAZ_TAG:-local}
+    networks:
+      - edge
     ports:
       - "3000:3000"
     healthcheck:
@@ -218,6 +243,16 @@ services:
     depends_on:
       api:
         condition: service_healthy
+
+# Three closed lines between the app's parts (#477, 3 Nov 2026): a container reaches only
+# the services on a network it shares. data: postgres, seaweedfs, elasticmq and the backend
+# containers; scan: clamav and the worker; edge: the website, the API and Caddy
+# (docker-compose.prod.yml). So the website cannot reach the database, storage or queue.
+# None is internal: the API and the worker call OpenRouter, and clamav fetches signatures.
+networks:
+  data:
+  scan:
+  edge:
 
 volumes:
   postgres-data:

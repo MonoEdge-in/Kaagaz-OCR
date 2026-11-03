@@ -106,7 +106,8 @@ jobs:
           dir="$RUNNER_TEMP/compose-prod"
           mkdir -p "$dir"
           printf '%s\n' KAAGAZ_DOMAIN=kaagaz.example.test ACME_EMAIL=admin@example.test \
-            SEAWEEDFS_S3_CONFIG=/home/ubuntu/kaagaz-secrets/s3.json > "$dir/.env"
+            SEAWEEDFS_S3_CONFIG=/home/ubuntu/kaagaz-secrets/s3.json \
+            STORAGE_ADMIN_ACCESS_KEY=made-up STORAGE_ADMIN_SECRET_KEY=made-up > "$dir/.env"
           docker compose version
           docker compose --project-directory "$dir" -f docker-compose.yml -f docker-compose.prod.yml \
             config --format json > "$dir/merged.json"
