@@ -25,6 +25,8 @@ NOT_BACKEND = {
     # migrate's storage admin key, read by docker-compose.yml only (#477).
     "STORAGE_ADMIN_ACCESS_KEY",
     "STORAGE_ADMIN_SECRET_KEY",
+    # the app's login, which docker-compose.yml makes api's and worker's DATABASE_URL (#479).
+    "APP_DATABASE_URL",
 }
 # The settings with no default on 27 Oct 2026: business limits, retry counts, lease times and
 # model names are Vrushit's (kaagaz/settings.py). Never add to this list: give the new

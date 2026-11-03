@@ -4,9 +4,10 @@
 mode; ``kaagaz_ops`` (the API's super admin part) only into ``kaagaz_operator``. Neither
 inherits a right, so a transaction that forgot ``SET LOCAL ROLE`` reads nothing. Neither may
 switch into the owner or the other mode, run a program on the server, read its files or make
-a temporary table. The app may only add to an audit log, and every SECURITY DEFINER function
-has the empty search path and is not open to the public. Each login gets a password made up
-here for the session (the migration sets none); it is removed again at the end.
+a table (temporary or in ``public``) or a function. The app may only add to an audit log, and
+every SECURITY DEFINER function has the empty search path and is not open to the public. Each
+login gets a password made up here for the session (the migration sets none); it is removed
+again at the end.
 """
 
 import secrets
@@ -43,6 +44,8 @@ SERVER = (
     "SELECT pg_read_file('postgresql.conf')",
     "SELECT pg_ls_dir('.')",
     "CREATE TEMP TABLE scratch (x int)",
+    "CREATE TABLE public.scratch (x int)",
+    "CREATE FUNCTION public.scratch() RETURNS int LANGUAGE sql AS 'SELECT 1'",
 )
 
 
@@ -105,10 +108,27 @@ def test_neither_login_switches_into_the_owner_or_the_other_mode(logins: dict[st
 
 
 @pytest.mark.parametrize("statement", SERVER)
-def test_no_program_no_server_files_and_no_temporary_table(logins: dict[str, str], statement: str) -> None:
+def test_no_program_no_server_files_and_no_new_table_or_function(
+    logins: dict[str, str], statement: str
+) -> None:
     assert _state(logins[API], statement) == REFUSED
     assert _state(logins[API], f"SET ROLE {APP_ROLE}", statement) == REFUSED
     assert _state(logins[OPS], f"SET ROLE {OPERATOR}", statement) == REFUSED
+
+
+def test_each_login_can_switch_into_only_its_mode(db: Database) -> None:
+    """Every role a login may SET ROLE to, through any chain of grants: itself and its mode."""
+    with db.engine.begin() as conn:
+        reach = {
+            login: set(
+                conn.execute(
+                    text("SELECT rolname FROM pg_roles WHERE pg_has_role(:login, oid, 'SET')"),
+                    {"login": login},
+                ).scalars()
+            )
+            for login in (API, OPS)
+        }
+    assert reach == {API: {API, APP_ROLE}, OPS: {OPS, OPERATOR}}
 
 
 def test_each_login_is_limited_and_holds_one_mode(db: Database) -> None:
@@ -183,10 +203,12 @@ def test_the_app_only_adds_to_the_audit_logs(db: Database) -> None:
             ),
             {"r": APP_ROLE},
         ).all()
-    # audit_log: the organisation's, added to by the app; platform_audit: the operator
-    # functions' (SECURITY DEFINER) and the CLI's alone.
+    # audit_log: the organisation's, added to by the app; audit_log_kept (0068): a deleted
+    # organisation's, the owner's alone (the worker's sweep is SECURITY DEFINER);
+    # platform_audit: the operator functions' (SECURITY DEFINER) and the CLI's alone.
     assert [tuple(row) for row in rights] == [
         ("audit_log", True, False, False, False),
+        ("audit_log_kept", False, False, False, False),
         ("platform_audit", False, False, False, False),
     ]
 

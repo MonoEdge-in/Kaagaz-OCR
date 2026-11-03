@@ -193,11 +193,10 @@ class Settings:
     # that is not a superuser, does not own the tables and has no BYPASSRLS, so
     # row level security always applies (docs/architecture.md).
     database_url: str = field(repr=False)  # it can hold a password
-    # The limited logins (#479, 0067): the API's and the workers' (``kaagaz_api``, which can
-    # only switch into db_app_role) and the API's super admin engine's (``kaagaz_ops``, only
-    # into kaagaz_operator). Each is DATABASE_URL while unset, so nothing changes until
-    # they are set; DATABASE_URL stays the owner's, for the migrations and the CLI.
-    app_database_url: str = field(repr=False)
+    # The API's super admin engine's limited login (#479, 0067: ``kaagaz_ops``, which can only
+    # switch into kaagaz_operator); DATABASE_URL while unset, so nothing changes until it is
+    # set. DATABASE_URL itself is the app's login (``kaagaz_api``) in Compose's api and worker
+    # once .env sets APP_DATABASE_URL, and the owner's in migrate and until then.
     ops_database_url: str = field(repr=False)
     db_app_role: str
 
@@ -634,7 +633,6 @@ class Settings:
             raise SettingsError("QUEUE_EXPRESS_URL must name a queue other than QUEUE_URL")
         return cls(
             database_url=env.text("DATABASE_URL"),
-            app_database_url=env.optional("APP_DATABASE_URL") or env.text("DATABASE_URL"),
             ops_database_url=env.optional("OPS_DATABASE_URL") or env.text("DATABASE_URL"),
             db_app_role=env.text("DB_APP_ROLE"),
             storage_endpoint_url=env.optional("STORAGE_ENDPOINT_URL"),

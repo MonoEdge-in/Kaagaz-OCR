@@ -14,7 +14,6 @@ TEST_DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
 _BASE: dict[str, Any] = {
     "database_url": TEST_DATABASE_URL or "postgresql://unused@localhost/unused",
-    "app_database_url": TEST_DATABASE_URL or "postgresql://unused@localhost/unused",
     "ops_database_url": TEST_DATABASE_URL or "postgresql://unused@localhost/unused",
     "db_app_role": "kaagaz_app",
     "storage_endpoint_url": "http://localhost:8333",

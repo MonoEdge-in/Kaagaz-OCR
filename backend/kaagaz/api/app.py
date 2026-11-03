@@ -83,13 +83,13 @@ def create_app(
         "idle_in_transaction_timeout_seconds": settings.db_idle_in_transaction_timeout_seconds,
     }
     if db is None:
-        db = Database(make_engine(settings.app_database_url, **timeouts), settings.db_app_role)
+        db = Database(make_engine(settings.database_url, **timeouts), settings.db_app_role)
     database = db
     # The operator's own way in (super admin PR 2): only /api/operator asks for it. Its own
     # login, kaagaz_ops, once OPS_DATABASE_URL differs from the app's (#479); until then, and
     # with a test's ``db``, the app's engine, as before.
     operator_engine = database.engine
-    if owns_db and settings.ops_database_url != settings.app_database_url:
+    if owns_db and settings.ops_database_url != settings.database_url:
         operator_engine = make_engine(settings.ops_database_url, **timeouts)
     operator_db = OperatorDatabase(operator_engine)
     now = clock or _utc_now
@@ -109,7 +109,7 @@ def create_app(
         yield
         if owns_db:
             database.engine.dispose()
-            operator_db.engine.dispose()  # on release day the same engine: twice is harmless
+            operator_engine.dispose()  # on release day the same engine: twice is harmless
 
     app = FastAPI(
         title="Kaagaz",

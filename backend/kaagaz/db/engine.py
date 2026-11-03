@@ -210,10 +210,6 @@ class OperatorDatabase:
     def __init__(self, engine: Engine) -> None:
         self._engine = engine
 
-    @property
-    def engine(self) -> Engine:
-        return self._engine
-
     @contextmanager
     def operator(self) -> Iterator[Connection]:
         """One transaction as ``kaagaz_operator``. Commits on success, rolls back on error."""
