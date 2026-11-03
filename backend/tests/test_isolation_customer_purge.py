@@ -414,5 +414,6 @@ def test_a_deleted_organisations_audit_rows_are_seen_by_no_role_and_go_after_365
     b_kept = _owner(db, _KEPT, {"c": b})
     assert forget_kept_audit(db, lambda: _now() - timedelta(days=1)) == 0  # not due on the worker's clock
     assert forget_kept_audit(db, _now) >= 2
+    assert forget_kept_audit(db, lambda: _now() + timedelta(days=400)) == 0  # running ahead: the database's
     assert _owner(db, _KEPT, {"c": a}) == [(0,)]
     assert _owner(db, _KEPT, {"c": b}) == b_kept  # deleted today: kept
