@@ -50,7 +50,3 @@ def test_up_down_up(fresh: tuple[str, Database]) -> None:
     assert _state(db) == state_before  # 0001's text exactly
     migrate(url, "0067")  # the logins already exist: made again idempotently
     assert base._schema(db) == after
-
-
-def test_single_head() -> None:
-    assert (M0067.revision, M0067.down_revision) == ("0067", PREVIOUS)

@@ -48,12 +48,16 @@ describe("the super admin's switch", () => {
     const html = renderToStaticMarkup(createElement(OrgAdminTwoStepDialog, { org: ORG, onClose: () => {}, onDone: () => {} }));
     expect(html).toContain("Two-step for Sharma Traders&#x27;s admins");
     expect(html).toContain(ADMIN_TWO_STEP_HELP.replaceAll("'", "&#x27;"));
+    expect(ADMIN_TWO_STEP_HELP).toBe(
+      "Every admin of this organisation must sign in with a password and a 6-digit code. An admin who turned it off sets it up before they can do anything else, and no admin can turn it off.",
+    );
   });
 
   it("asks first with a fresh code, in plain words each way", () => {
     expect(adminTwoStepConfirm(ORG, true)).toMatchObject({
       title: "Require two-step sign-in for Sharma Traders's admins?",
-      effect: expect.stringContaining("sets it up before they can use the admin screens. Members are not affected."),
+      // Every route refuses them until then (current_user's 403 mfa_enrol_required), not only the admin screens.
+      effect: "An admin of Sharma Traders without two-step sign-in must set it up before they can use Kaagaz again. Members are not affected.",
       action: "Require it",
       danger: false,
       stepUp: true,

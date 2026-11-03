@@ -13,7 +13,7 @@ from sqlalchemy import text
 
 from kaagaz.api import totp
 from kaagaz.db.engine import Database
-from tests.test_api_support import CSRF, PASSWORD, Api, TestClient, wrong_code
+from tests.test_api_support import CSRF, PASSWORD, Api, TestClient, call, route_calls, wrong_code
 from tests.test_operator_auth_db import _Operator, _owner
 from tests.test_operator_orgs_db import ORGS, _platform, _signed_in
 
@@ -111,6 +111,44 @@ def test_while_on_an_admin_who_turned_it_off_sets_it_up_and_other_organisations_
     _, off_again = _sign_in(api, a_email)
     assert off_again.status_code == 200, off_again.text  # off again: as the admin left it
     assert _owner(db, "SELECT totp_off_at IS NOT NULL FROM users WHERE id = :u", {"u": a_admin}) == [(True,)]
+
+
+def test_every_admin_route_refuses_until_set_up(db: Database) -> None:
+    """Walks the app's routes, so a future /api/admin route on another dependency is caught."""
+    api = Api(db)
+    operator, client = _signed_in(api)
+    a, _ = api.customer("Org A every route")
+    _, email = _turned_off_admin(api, a)
+    a_client, signed_in = _sign_in(api, email)
+    assert signed_in.status_code == 200, signed_in.text
+    assert _set(api, operator, client, a, True).status_code == 200
+    routes = route_calls(api.app, "/api/admin/")
+    assert len(routes) > 10, routes
+    for method, path in routes:
+        reply = call(a_client, method, path)
+        assert (reply.status_code, reply.json()["error"]["code"]) == (403, "mfa_enrol_required"), (
+            method,
+            path,
+        )
+
+
+def test_while_on_the_admin_screen_shows_no_admin_as_turned_off(db: Database) -> None:
+    """The users list and a one-user reply follow sign-in's rule: off counts only while not required."""
+    api = Api(db)
+    operator, client = _signed_in(api)
+    a, _ = api.customer("Org A users list")
+    off_id, _ = _turned_off_admin(api, a)
+    admin = api.admin_sign_in(a)
+
+    def listed() -> bool:
+        items = admin.client.get("/api/admin/users").json()["items"]
+        return bool(next(item for item in items if item["id"] == off_id)["two_step_turned_off"])
+
+    assert listed() is True
+    assert _set(api, operator, client, a, True).status_code == 200
+    assert listed() is False
+    unlocked = admin.client.post(f"/api/admin/users/{off_id}/unlock", headers=CSRF)
+    assert (unlocked.status_code, unlocked.json()["two_step_turned_off"]) == (200, False)
 
 
 def test_while_on_an_admin_cant_turn_their_own_two_step_off(db: Database) -> None:

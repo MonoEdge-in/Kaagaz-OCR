@@ -2,7 +2,8 @@
 
 // Two-step for admins (#481, Tushar, 3 Nov 2026; 0068): one organisation's switch, opened from
 // its Manage menu. Off by default. While on, every admin of that organisation must use two-step
-// sign-in: one who turned it off sets it up at their next sign-in, and none can turn it off.
+// sign-in: one who turned it off sets it up before anything else (every route refuses them
+// until then), and none can turn it off.
 // Like a feature switch: a real checkbox with the switch role, and every flip asks first in
 // ConfirmDialog with a fresh code (step-up). Super admin only.
 
@@ -21,14 +22,14 @@ import styles from "./Operator.module.css";
 const SWITCH_ID = "admin-two-step-switch";
 const HELP_ID = "admin-two-step-help";
 export const ADMIN_TWO_STEP_HELP =
-  "Every admin of this organisation must sign in with a password and a 6-digit code. An admin who turned it off sets it up at their next sign-in, and no admin can turn it off.";
+  "Every admin of this organisation must sign in with a password and a 6-digit code. An admin who turned it off sets it up before they can do anything else, and no admin can turn it off.";
 
 /** Turning it on or off for one organisation: always asked first, always with a fresh code. */
 export function adminTwoStepConfirm(org: Organisation, required: boolean): Confirm {
   return {
     title: `${required ? "Require" : "Stop requiring"} two-step sign-in for ${org.name}'s admins?`,
     effect: required
-      ? `An admin of ${org.name} without two-step sign-in sets it up before they can use the admin screens. Members are not affected.`
+      ? `An admin of ${org.name} without two-step sign-in must set it up before they can use Kaagaz again. Members are not affected.`
       : `${org.name}'s admins can turn their own two-step sign-in off again. Anyone who has it on keeps it.`,
     action: required ? "Require it" : "Stop requiring it",
     done: `Two-step sign-in is ${required ? "required" : "no longer required"} for ${org.name}'s admins.`,

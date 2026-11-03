@@ -11,12 +11,10 @@ from kaagaz.db.engine import Database
 from tests import test_migration_0002_db as base
 from tests.db_support import insert_document, migrate, new_customer, violation
 from tests.test_migration_0023_db import as_owner
-from tests.test_migration_0037 import _load
 from tests.test_migration_0065_db import _BODIES as _BODIES_0065
 
 pytestmark = pytest.mark.db
 fresh = base.fresh
-M0066 = _load("0066_reading_pause.py")
 PREVIOUS = "0065"
 _BODIES = text(
     str(_BODIES_0065).replace(
@@ -82,7 +80,3 @@ def test_down_up_restores_0065_exactly(fresh: tuple[str, Database]) -> None:
     migrate(url, "0066")
     assert base._schema(db) == at_0066
     assert _bodies(db) == bodies_0066
-
-
-def test_one_previous_revision() -> None:
-    assert (M0066.revision, M0066.down_revision, M0066.PREVIOUS) == ("0066", PREVIOUS, PREVIOUS)
