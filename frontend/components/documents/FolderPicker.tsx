@@ -14,10 +14,10 @@ import { Icon } from "@/components/ui/Icon/Icon";
 import { formatNumber } from "@/lib/format";
 import { CHILD_CAP, TOP_LIST, folderPath, pathLabel, searchFolders, shortPathLabel, visibleNodes } from "./folderTree";
 import type { FolderNode, FolderTree } from "./folderTree";
-import { INDENT_LEVELS, indent } from "./FolderNav";
+import { INDENT_LEVELS, TreeLevel, indent } from "./FolderNav";
 import styles from "./Library.module.css";
 
-export interface FolderPickerProps {
+interface FolderPickerProps {
   tree: FolderTree;
   /** The radio group's name, shared with the caller's own choices. */
   name: string;
@@ -129,7 +129,7 @@ export function FolderPicker({ tree, name, choice, onChoose, disabled, note, ope
                 node,
                 <>
                   {node.folder.name}
-                  {node.depth > INDENT_LEVELS && <span className={styles.treeLevel}>Level {node.depth}</span>}
+                  <TreeLevel depth={node.depth} />
                 </>,
                 node.depth > INDENT_LEVELS ? folderPath(tree, node.folder.id).map((folder) => folder.name).join(" / ") : undefined,
               )}

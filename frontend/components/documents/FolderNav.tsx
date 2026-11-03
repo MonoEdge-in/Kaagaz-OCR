@@ -208,6 +208,12 @@ export const INDENT_LEVELS = 8;
 /** A tree row's indent: one step a level, none past INDENT_LEVELS. */
 export const indent = (depth: number) => ({ "--depth": Math.min(depth - 1, INDENT_LEVELS) }) as CSSProperties;
 
+/** A row's level from 2: in words past INDENT_LEVELS, else said to a screen reader only. */
+export function TreeLevel({ depth }: { depth: number }) {
+  if (depth > INDENT_LEVELS) return <span className={styles.treeLevel}>{`Level ${depth}`}</span>;
+  return depth > 1 ? <span className="visually-hidden">{`, Level ${depth}`}</span> : null;
+}
+
 function FolderItem({
   row,
   library,
@@ -250,7 +256,7 @@ function FolderItem({
       >
         <TreeIcon name={isDepartment(node.folder) ? "department" : "folder"} size="sm" className={styles.treeIcon} />
         {node.folder.name}
-        {node.depth > INDENT_LEVELS && <span className={styles.treeLevel}>Level {node.depth}</span>}
+        <TreeLevel depth={node.depth} />
       </Link>
     </li>
   );

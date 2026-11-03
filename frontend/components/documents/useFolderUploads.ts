@@ -4,8 +4,9 @@
 // (components/shell/Uploads.tsx), so an upload keeps going while the person moves between
 // screens. State is counts only (folderUpload.ts); the picked files, the files not sent and the
 // Stop marks are in refs, never copied per event. After a reload, the server's folder uploads
-// with files still waiting come back as "Choose “A” again" (the list has no reading counts, so
-// one only being read is not brought back). One finished in this tab is followed until it is read.
+// with files still waiting, or listed part way, come back as "Choose “A” again", which plans and
+// lists again with the same id and place when needed (the list has no reading counts, so one
+// only being read is not brought back). One finished in this tab is followed until it is read.
 
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import {
@@ -21,12 +22,21 @@ import {
 import { POLL_STEPS_MS } from "@/lib/poll";
 import type { UploadLimits, UploadReading } from "@/lib/types";
 import { buildManifest } from "./folderPick";
-import { EMPTY_FOLDER_UPLOADS, folderUploadsReducer, sendWaiting, startFolderUpload } from "./folderUpload";
+import {
+  EMPTY_FOLDER_UPLOADS,
+  ITEMS_PAGE,
+  folderUploadsReducer,
+  restoredUpload,
+  sendWaiting,
+  startFolderUpload,
+  withNotSent,
+  wrongFolderText,
+} from "./folderUpload";
 import type { FolderEvent, FolderSource, FolderTarget, FolderUploadApi } from "./folderUpload";
 import type { NotSentRow } from "./FolderUploadRow";
 
-/** The files not sent shown on a row; the rest are counted. */
-const NOT_SENT_SHOWN = 20;
+type NotSentShown = { rows: NotSentRow[]; total: number };
+const NONE_NOT_SENT: NotSentShown = { rows: [], total: 0 };
 
 export function useFolderUploads({
   userId,
@@ -47,7 +57,7 @@ export function useFolderUploads({
   const starts = useRef(new Map<string, { target: FolderTarget; merge: boolean }>()); // to list again
   // What the rows show, copied from the refs after each change: at most NOT_SENT_SHOWN rows each.
   const [held, setHeld] = useState<ReadonlySet<string>>(new Set());
-  const [notSentShown, setNotSentShown] = useState<Readonly<Record<string, { rows: NotSentRow[]; total: number }>>>({});
+  const [notSentShown, setNotSentShown] = useState<Readonly<Record<string, NotSentShown>>>({});
   const [pollRound, setPollRound] = useState(0);
   // The folder upload's own pace: 90% of what the server takes, so it is never refused for it.
   const perMinute = limits.folder_upload?.calls_per_minute ?? UPLOAD_CALLS_PER_MINUTE;
@@ -56,9 +66,7 @@ export function useFolderUploads({
 
   const api: FolderUploadApi = {
     plan: planFolderUpload,
-    register: async (id, user, items) => {
-      await registerFolderItems(id, user, items);
-    },
+    register: registerFolderItems,
     items: listFolderItems,
     send: (file, item, onProgress) => uploadFolderItem(file, item.id, userId, onProgress, turn, reading),
     summary: getFolderUpload,
@@ -69,9 +77,12 @@ export function useFolderUploads({
     if (!rows) notSent.current.set(id, (rows = new Map()));
     return rows;
   };
+  // After a Retry or Continue takes rows away: the first rows again (each event only adds, in emit).
   const showNotSent = (id: string) => {
     const rows = rowsOf(id);
-    setNotSentShown((shown) => ({ ...shown, [id]: { rows: [...rows.values()].slice(0, NOT_SENT_SHOWN), total: rows.size } }));
+    let shown = NONE_NOT_SENT;
+    for (const row of rows.values()) shown = withNotSent(shown, row, rows.size);
+    setNotSentShown((before) => ({ ...before, [id]: shown }));
   };
   const hold = (id: string, source: FolderSource | null) => {
     if (source) sources.current.set(id, source);
@@ -81,8 +92,12 @@ export function useFolderUploads({
 
   function emit(event: FolderEvent) {
     if (event.type === "notSent") {
-      rowsOf(event.id).set(event.itemId, { item: event.item, message: event.message, retry: event.retry });
-      showNotSent(event.id);
+      const rows = rowsOf(event.id);
+      const fresh = !rows.has(event.itemId);
+      const row = { item: event.item, message: event.message, retry: event.retry };
+      rows.set(event.itemId, row);
+      const total = rows.size;
+      if (fresh) setNotSentShown((shown) => ({ ...shown, [event.id]: withNotSent(shown[event.id] ?? NONE_NOT_SENT, row, total) }));
     }
     if (event.type === "phase" && event.phase === "sending") listed.current.add(event.id);
     if (event.type === "sent" && event.outcome !== "failed") onStored();
@@ -105,11 +120,9 @@ export function useFolderUploads({
   /** Send what is still waiting, with the files this tab holds or the folder picked again. */
   function resume(id: string, picked?: FolderSource) {
     const view = state[id];
-    // After a reload the row has Kaagaz's name, "A (2)" when kept separate: "A" is that folder.
-    const same = (name: string) => view?.rootName === name || view?.rootName.match(/^(.*) \(\d+\)$/)?.[1] === name;
-    if (picked && view && !same(picked.picked.rootName)) {
-      const message = `This is “${picked.picked.rootName}”. Choose “${view.rootName}” to continue.`;
-      dispatch({ type: "phase", id, phase: view.phase, message });
+    const wrong = picked && view ? wrongFolderText(view.rootName, picked.picked.rootName) : null;
+    if (wrong && view) {
+      dispatch({ type: "phase", id, phase: view.phase, message: wrong });
       return;
     }
     // Listed part way: the re-plan needs the first plan's folders first, in their order.
@@ -121,7 +134,6 @@ export function useFolderUploads({
     if (!source) return;
     stops.current.delete(id);
     const rows = rowsOf(id);
-    dispatch({ type: "retrying", id, count: rows.size });
     rows.clear();
     showNotSent(id);
     // Listing stopped part way in this tab: start again with the same id, which finds the same
@@ -140,7 +152,6 @@ export function useFolderUploads({
     const chosen = [...rows.values()].filter((row) => row.retry && (!itemIds || itemIds.includes(row.item.id)));
     if (!source || chosen.length === 0) return;
     for (const row of chosen) rows.delete(row.item.id);
-    dispatch({ type: "retrying", id, count: chosen.length });
     showNotSent(id);
     stops.current.delete(id);
     void sendWaiting(api, { id, userId, source, only: chosen.map((row) => row.item), atOnce }, emit, stopped(id));
@@ -157,17 +168,18 @@ export function useFolderUploads({
     dispatch({ type: "remove", id });
   }
 
-  // After a reload: the folder uploads with files still waiting, or still being read.
+  // After a reload: the folder uploads with files still waiting, or listed part way.
   useEffect(() => {
     let cancelled = false;
     listFolderUploads().then(
       ({ items }) => {
         if (cancelled) return;
         for (const summary of items) {
-          if (summary.waiting === 0) continue;
-          dispatch({ type: "start", id: summary.id, rootName: summary.root_name, total: summary.file_count });
-          dispatch({ type: "counts", id: summary.id, summary });
-          dispatch({ type: "phase", id: summary.id, phase: "needs_pick" });
+          const restored = restoredUpload(summary);
+          if (!restored) continue;
+          starts.current.set(summary.id, restored.again);
+          if (restored.listed) listed.current.add(summary.id);
+          for (const event of restored.events) dispatch(event);
         }
       },
       () => undefined, // nothing to bring back; the server keeps every item
@@ -206,7 +218,7 @@ export function useFolderUploads({
     resume,
     retry,
     clear,
-    loadItems: (id: string, view: "attention" | "duplicate", after: number) => listFolderItems(id, view, after, 500),
+    loadItems: (id: string, view: "attention" | "duplicate", after: number) => listFolderItems(id, view, after, ITEMS_PAGE),
     sending: views.some((view) => view.phase === "sending" || view.phase === "registering" || view.phase === "planning"),
   };
 }

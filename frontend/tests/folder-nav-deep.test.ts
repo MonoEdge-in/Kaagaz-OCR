@@ -6,6 +6,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { FolderCrumbs, FolderNav } from "@/components/documents/FolderNav";
+import { FolderPicker } from "@/components/documents/FolderPicker";
 import { buildTree } from "@/components/documents/folderTree";
 import type { FolderTree } from "@/components/documents/folderTree";
 import { ALL_DOCUMENTS } from "@/components/documents/libraryQuery";
@@ -54,7 +55,18 @@ describe("the folder tree, deep and wide", () => {
     expect(html).toContain("--depth:8");
     expect(html).not.toContain("--depth:9");
     expect(html).toMatch(/L30<span[^>]*>Level 30<\/span>/);
-    expect(html).not.toContain("Level 8<");
+    expect(html).not.toMatch(/<span class="(?!visually-hidden)[^"]*">Level 8</); // said, not shown
+  });
+
+  it("says each level past the first to a screen reader, in the tree and in the folder picker", () => {
+    const picker = renderToStaticMarkup(
+      createElement(FolderPicker, { tree: buildTree(chain(3)), name: "p", choice: "L3", onChoose: () => undefined }),
+    );
+    for (const html of [nav(buildTree(chain(3)), "L3"), picker]) {
+      expect(html).toMatch(/L2<span class="visually-hidden">, Level 2<\/span>/);
+      expect(html).toMatch(/L3<span class="visually-hidden">, Level 3<\/span>/);
+      expect(html).not.toContain("Level 1<");
+    }
   });
 
   it("shows 200 of one folder's folders, with Show all for the rest, and offers a search", () => {

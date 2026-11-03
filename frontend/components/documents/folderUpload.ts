@@ -11,11 +11,10 @@
 //   file: the lists of what needs attention are read from the server, a page at a time.
 
 import { failureWords } from "@/components/operator/platform";
-import { ApiError } from "@/lib/api";
+import { ApiError, rateLimitWait } from "@/lib/api";
 import { formatNumber } from "@/lib/format";
 import { documentWords, failureFix } from "@/lib/status";
 import type {
-  FolderItemFailure,
   FolderItemView,
   FolderItemsPage,
   FolderUploadItem,
@@ -28,12 +27,15 @@ import type {
 } from "@/lib/types";
 import { pathKey } from "./folderPick";
 import type { Manifest, Picked } from "./folderPick";
-import { FALLBACK_UPLOAD_LIMITS, limitFor, sessionChangedMessage, uploadErrorText, uploadKind } from "./logic";
+import type { NotSentRow } from "./FolderUploadRow";
+import { limitFor, sessionChangedMessage, uploadErrorText, uploadKind } from "./logic";
 import { createSlots } from "./uploadQueue";
 
-export const FOLDER_UPLOADS_AT_ONCE = 4;
-export const REGISTER_PAGE = 1000;
+const FOLDER_UPLOADS_AT_ONCE = 4;
+const REGISTER_PAGE = 1000;
 export const ITEMS_PAGE = 500;
+/** The files not sent shown on a row; the rest are counted. */
+const NOT_SENT_SHOWN = 20;
 
 /** The lib/api.ts calls, given in, so tests run against a fake server. */
 export interface FolderUploadApi {
@@ -53,7 +55,7 @@ export interface FolderSource {
 
 export type FolderTarget = { kind: "department" } | { kind: "folder"; parentId: string | null };
 
-export type FolderPhase = "planning" | "registering" | "sending" | "done" | "stopped" | "needs_pick" | "refused";
+type FolderPhase = "planning" | "registering" | "sending" | "done" | "stopped" | "needs_pick" | "refused";
 
 export type FolderEvent =
   | { type: "start"; id: string; rootName: string; total: number }
@@ -63,18 +65,25 @@ export type FolderEvent =
   | { type: "sending"; id: string; itemId: string; name: string; fraction: number }
   | { type: "sent"; id: string; itemId: string; outcome: "stored" | "duplicate" | "failed" }
   | { type: "notSent"; id: string; itemId: string; name: string; message: string; retry: boolean; item: FolderUploadItem }
-  | { type: "retrying"; id: string; count: number }
   | { type: "remove"; id: string };
 
 /** The server's item failures: it recorded the item failed, so sending it again can't help. */
 const ITEM_FAILURES = new Set(["too_large", "unsupported_type", "empty_file", "folder_gone", "item_refused"]);
 
-/** Why the browser refuses a file before sending it, as the server's failure code; undefined: it may go. */
-export function refusedReason(file: { name: string; size: number }, limits: UploadLimits): FolderItemFailure | undefined {
-  const kind = uploadKind(file.name);
-  if (kind === null) return "unsupported_type";
-  if (file.size === 0) return "empty_file";
-  return file.size > limitFor(kind, limits) ? "too_large" : undefined;
+/** A kind of file Kaagaz can't take, refused before it is sent; the server judges size and emptiness. */
+export const refusedReason = (file: { name: string }): NewFolderItem["refused"] =>
+  uploadKind(file.name) === null ? "unsupported_type" : undefined;
+
+/** The plan, asked again after the server's Retry-After while another plan of the organisation is built. */
+async function planWhenFree(api: FolderUploadApi, body: FolderUploadPlanBody): Promise<FolderUploadPlan> {
+  for (;;) {
+    try {
+      return await api.plan(body);
+    } catch (caught) {
+      if (!(caught instanceof ApiError && caught.code === "plan_busy")) throw caught;
+      await new Promise((resolve) => setTimeout(resolve, rateLimitWait(caught, 2000) ?? 2000));
+    }
+  }
 }
 
 async function keyIndex(source: FolderSource): Promise<Map<string, number>> {
@@ -98,7 +107,7 @@ export async function startFolderUpload(
   emit({ type: "phase", id, phase: "planning" });
   let plan: FolderUploadPlan;
   try {
-    plan = await api.plan({
+    plan = await planWhenFree(api, {
       id,
       user_id: userId,
       target: target.kind,
@@ -123,7 +132,7 @@ export async function startFolderUpload(
         const file = picked.files[at]!;
         const key = await pathKey(picked.paths[at]!);
         keys.set(key, at);
-        const refused = refusedReason(file, args.limits ?? FALLBACK_UPLOAD_LIMITS);
+        const refused = refusedReason(file);
         page.push({
           path_key: key,
           name: file.name.normalize("NFC"),
@@ -215,7 +224,7 @@ const canRetry = (caught: unknown) =>
 
 // --- the state the tray shows ---------------------------------------------------------
 
-export interface SendingRow {
+interface SendingRow {
   itemId: string;
   name: string;
   fraction: number;
@@ -223,17 +232,15 @@ export interface SendingRow {
 
 export interface FolderUploadView {
   id: string;
-  rootName: string;
+  rootName: string; // the picked folder's own name, "A", never Kaagaz's "A (2)"
   rootFolderId: string | null;
   total: number;
   stored: number;
   duplicates: number;
   failed: number; // refused, here or by the server
-  notSent: number; // not sent from this tab (its list is kept beside, in a ref)
   reading: number;
   ready: number;
   problem: number; // stored, but its reading failed or was refused
-  unlisted: number; // declared at the start but never registered (listing stopped part way)
   sending: SendingRow[]; // at most FOLDER_UPLOADS_AT_ONCE
   phase: FolderPhase;
   message: string | null;
@@ -244,7 +251,8 @@ export interface FolderUploadView {
 export const EMPTY_FOLDER_UPLOADS: Readonly<Record<string, FolderUploadView>> = {};
 
 const uploadedOf = (view: FolderUploadView) => view.stored + view.duplicates;
-export const attentionOf = (view: FolderUploadView) => view.failed + view.notSent + view.problem;
+/** What needs attention, as the server's "attention" list holds it: the files not sent are listed apart. */
+export const attentionOf = (view: FolderUploadView) => view.failed + view.problem;
 
 /** The tray's line: "Folder “A”: 1,240 of 5,000 uploaded, 3 need attention". */
 export function folderLine(view: FolderUploadView): string {
@@ -291,11 +299,9 @@ export function folderUploadsReducer(
       stored: 0,
       duplicates: 0,
       failed: 0,
-      notSent: 0,
       reading: 0,
       ready: 0,
       problem: 0,
-      unlisted: 0,
       sending: [],
       phase: "planning",
       message: null,
@@ -334,7 +340,6 @@ export function folderUploadsReducer(
         reading: summary.reading ?? view.reading,
         ready: summary.ready ?? view.ready,
         problem: summary.problem ?? view.problem,
-        unlisted: Math.max(0, summary.file_count - summary.waiting - summary.stored - summary.duplicate - summary.failed),
       };
       break;
     }
@@ -354,25 +359,48 @@ export function folderUploadsReducer(
       };
       break;
     case "notSent":
-      next = { ...view, sending: without(event.itemId), notSent: view.notSent + 1 };
-      break;
-    case "retrying":
-      next = { ...view, notSent: Math.max(0, view.notSent - event.count) };
+      next = { ...view, sending: without(event.itemId) };
       break;
   }
   return { ...state, [event.id]: withSpoken(next) };
 }
 
-/** A view for a folder upload of an earlier visit, from the server's counts. */
-export function viewOfSummary(summary: FolderUploadSummary): FolderUploadView {
-  const start = folderUploadsReducer(EMPTY_FOLDER_UPLOADS, {
-    type: "start",
-    id: summary.id,
-    rootName: summary.root_name,
-    total: summary.file_count,
-  });
-  const counted = folderUploadsReducer(start, { type: "counts", id: summary.id, summary });
-  return folderUploadsReducer(counted, { type: "phase", id: summary.id, phase: summary.waiting > 0 ? "needs_pick" : "done" })[summary.id]!;
+/**
+ * A folder upload of an earlier visit to bring back as "Choose “A” again": files still waiting,
+ * or a listing that stopped part way (listed: false, so the folder picked again is planned and
+ * listed again with the same id and place). Null when nothing is left to send.
+ */
+export function restoredUpload(
+  summary: FolderUploadSummary,
+): { events: FolderEvent[]; listed: boolean; again: { target: FolderTarget; merge: boolean } } | null {
+  const listed = summary.registered >= summary.file_count;
+  if (summary.waiting === 0 && listed) return null;
+  const { id } = summary;
+  return {
+    events: [
+      { type: "start", id, rootName: summary.source_name, total: summary.file_count },
+      { type: "counts", id, summary },
+      { type: "phase", id, phase: "needs_pick" },
+    ],
+    listed,
+    again: {
+      target: summary.target === "department" ? { kind: "department" } : { kind: "folder", parentId: summary.parent_folder_id },
+      merge: summary.merge,
+    },
+  };
+}
+
+/** Said when the folder picked to continue is another one; null when it is the same. */
+export const wrongFolderText = (rootName: string, pickedName: string) =>
+  pickedName === rootName ? null : `This is “${pickedName}”. Choose “${rootName}” to continue.`;
+
+/** The files not sent a row shows: the first NOT_SENT_SHOWN, kept as they come, and how many in all. */
+export function withNotSent(
+  shown: { rows: NotSentRow[]; total: number },
+  row: NotSentRow,
+  total: number,
+): { rows: NotSentRow[]; total: number } {
+  return { rows: shown.rows.length < NOT_SENT_SHOWN ? [...shown.rows, row] : shown.rows, total };
 }
 
 const MB = 1024 * 1024;
@@ -390,6 +418,8 @@ export function itemProblemText(item: FolderUploadItem, limits: UploadLimits): s
       return "This file is empty.";
     case "folder_gone":
       return "The folder this file was meant for was deleted after the upload started.";
+    case "bad_name":
+      return "Kaagaz can’t keep this file’s name: it has a hidden character, or another file in its folder has the same name. Rename it, then upload it again.";
     case null:
       break;
   }

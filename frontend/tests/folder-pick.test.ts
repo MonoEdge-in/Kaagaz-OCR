@@ -10,6 +10,7 @@ import {
   fromFileList,
   isSkipped,
   nameProblem,
+  noFolderPaths,
   pathKey,
   walkDrop,
 } from "@/components/documents/folderPick";
@@ -129,6 +130,20 @@ describe("the manifest", () => {
     expect(nameProblem("Bills​")).toBe("hidden");
     expect(nameProblem("..")).toBe("hidden");
     expect(nameProblem("Bills 2026")).toBeNull();
+  });
+
+  it("checks a name as the server does: Devanagari joiners pass; slashes, U+061C and hidden kinds don't", () => {
+    expect(nameProblem("क्\u200Dष बिल")).toBeNull(); // ZWJ
+    expect(nameProblem("क्\u200Cष")).toBeNull(); // ZWNJ
+    for (const bad of ["a/b", "a\\b", "a\u061Cb", "a\tb", "a\u2028b", "a\u2029b", "a\uE000b", "a\u0378b", "a\uD800b", "a\uFEFFb"]) {
+      expect(nameProblem(bad), JSON.stringify(bad)).toBe("hidden");
+    }
+  });
+
+  it("knows a pick without folder paths: a phone's picker gives files only", () => {
+    expect(noFolderPaths([new File(["x"], "a.pdf")])).toBe(true);
+    expect(noFolderPaths([picked("A/a.pdf")])).toBe(false);
+    expect(noFolderPaths([])).toBe(false);
   });
 
   it("re-planned from the same folder picked again, keeps the first plan's folders first, in order, and new ones after", () => {

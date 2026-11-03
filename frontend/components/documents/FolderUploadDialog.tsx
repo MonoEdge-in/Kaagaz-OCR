@@ -17,16 +17,16 @@ import { ActionDialog } from "./ActionDialog";
 import { visibleName } from "./folderPick";
 import type { Manifest } from "./folderPick";
 import { FolderPicker } from "./FolderPicker";
+import { MAX_FOLDER_DEPTH } from "./folderTree";
 import type { FolderTree } from "./folderTree";
 import type { FolderSource, FolderTarget } from "./folderUpload";
 import styles from "./Library.module.css";
 
-const MAX_DEPTH = 100;
 const plural = (count: number, one: string, many: string) => `${formatNumber(count)} ${count === 1 ? one : many}`;
 
 /** Why this folder can't be uploaded here, in plain words; null when it can. */
 export function dialogProblem(manifest: Manifest, targetDepth: number, limits: FolderUploadLimits | undefined): string | null {
-  const most = limits?.max_depth ?? MAX_DEPTH;
+  const most = limits?.max_depth ?? MAX_FOLDER_DEPTH;
   const deep = targetDepth + manifest.height;
   if (deep > most) {
     return `This folder goes ${deep} levels deep here. Kaagaz keeps at most ${most} levels. Choose a place nearer the top.`;
@@ -35,7 +35,7 @@ export function dialogProblem(manifest: Manifest, targetDepth: number, limits: F
     const { name, problem } = manifest.badName;
     return problem === "long"
       ? `A folder name is longer than 100 characters: “${name}”. Rename it, then choose the folder again.`
-      : `A folder name has a hidden character in it: “${visibleName(name)}”. Rename it, then choose the folder again.`;
+      : `A folder name has a character Kaagaz can’t keep: “${visibleName(name)}”. Rename it, then choose the folder again.`;
   }
   if (!limits) return null;
   if (manifest.fileCount > limits.max_files) {
@@ -50,7 +50,7 @@ export function dialogProblem(manifest: Manifest, targetDepth: number, limits: F
   return null;
 }
 
-export interface Clash {
+interface Clash {
   merge: boolean; // false: a plain folder where a department goes, never merged into
   existing: string;
   separate: string; // the name Keep separate gives it
@@ -84,10 +84,10 @@ export function summaryLines(source: FolderSource): { counts: string; skipped: s
   };
 }
 
-export const EMPTY_FOLDERS_NOTE =
+const EMPTY_FOLDERS_NOTE =
   "This browser can’t see empty folders, so they won’t be made. Drag the folder here instead to keep them.";
 
-export interface FolderUploadDialogProps {
+interface FolderUploadDialogProps {
   source: FolderSource;
   tree: FolderTree;
   folderId: string | null; // the folder being viewed: where it goes at first
@@ -135,16 +135,16 @@ export function FolderUploadDialog({ source, tree, folderId, admin, limits, onSt
         )}
         {!source.picked.seesEmptyFolders && <p className="hint">{EMPTY_FOLDERS_NOTE}</p>}
 
-        <fieldset className={styles.fieldset}>
-          <legend>Where it goes</legend>
-          <ul className={styles.choices}>
-            <li>
-              <label className={styles.check}>
-                <input type="radio" name={`${id}-where`} checked={where === "folder"} onChange={() => setWhere("folder")} />
-                Inside a folder
-              </label>
-            </li>
-            {admin && (
+        {admin && (
+          <fieldset className={styles.fieldset}>
+            <legend>Where it goes</legend>
+            <ul className={styles.choices}>
+              <li>
+                <label className={styles.check}>
+                  <input type="radio" name={`${id}-where`} checked={where === "folder"} onChange={() => setWhere("folder")} />
+                  Inside a folder
+                </label>
+              </li>
               <li>
                 <label className={styles.check}>
                   <input
@@ -156,9 +156,9 @@ export function FolderUploadDialog({ source, tree, folderId, admin, limits, onSt
                   As a new department
                 </label>
               </li>
-            )}
-          </ul>
-        </fieldset>
+            </ul>
+          </fieldset>
+        )}
 
         {where === "folder" && (
           <fieldset className={styles.fieldset}>
@@ -229,15 +229,15 @@ export function FolderReadingDialog({
 }: {
   name: string;
   found: number;
-  failed?: boolean; // the browser couldn't read it (moved, or no permission)
+  failed?: boolean | string; // the browser couldn't read it (moved, or no permission), or these words
   onClose(): void;
 }) {
   return (
-    <ActionDialog title={`Upload “${name}”`} onClose={onClose}>
+    <ActionDialog title={name ? `Upload “${name}”` : "Upload a folder"} onClose={onClose}>
       <div className={styles.dialogForm}>
         {failed ? (
           <p className="error-text" role="alert">
-            Kaagaz couldn’t read this folder. Try again, or choose it with Upload a folder.
+            {failed === true ? "Kaagaz couldn’t read this folder. Try again, or choose it with Upload a folder." : failed}
           </p>
         ) : (
           <>

@@ -8,7 +8,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { describeAction } from "@/components/admin/logic";
 import { activityWords } from "@/components/activity/words";
-import { buildManifest, fromFileList } from "@/components/documents/folderPick";
+import { NO_FOLDER_PICKER, buildManifest, fromFileList } from "@/components/documents/folderPick";
 import type { Manifest } from "@/components/documents/folderPick";
 import { FolderReadingDialog, FolderUploadDialog, clashOf, dialogProblem, summaryLines } from "@/components/documents/FolderUploadDialog";
 import { FolderUploadRow } from "@/components/documents/FolderUploadRow";
@@ -60,7 +60,7 @@ describe("what stops a folder upload before anything is sent", () => {
       `A folder name is longer than 100 characters: “${long}”. Rename it, then choose the folder again.`,
     );
     expect(dialogProblem(manifest({ badName: { name: "Bills​", problem: "hidden" } }), 0, LIMITS)).toBe(
-      "A folder name has a hidden character in it: “Bills”. Rename it, then choose the folder again.",
+      "A folder name has a character Kaagaz can’t keep: “Bills”. Rename it, then choose the folder again.",
     );
   });
 
@@ -137,7 +137,9 @@ describe("the dialog", () => {
   it("offers As a new department to an admin only", () => {
     expect(dialog(true)).toContain("As a new department");
     expect(dialog(false)).not.toContain("As a new department");
-    expect(dialog(false)).toContain("Inside a folder");
+    expect(dialog(false)).toContain("Put “A” inside");
+    expect(dialog(false)).not.toContain("Where it goes");
+    expect(dialog(true)).toContain("Where it goes");
   });
 });
 
@@ -178,6 +180,55 @@ describe("the tray's row for a folder upload", () => {
     expect(row("stopped", true)).toContain("Continue upload");
     expect(row("stopped", false)).toContain("Choose “A” again");
   });
+
+  const settled = (counts: { failed?: number; problem?: number; duplicate?: number }, notSent = 0) => {
+    let state = folderUploadsReducer(EMPTY_FOLDER_UPLOADS, { type: "start", id: "u", rootName: "A", total: 10 });
+    const summary = {
+      id: "u", root_folder_id: "f0", root_name: "A", source_name: "A", target: "folder" as const, parent_folder_id: null,
+      merge: true, created_at: "", file_count: 10, total_bytes: 0, skipped_count: 0, registered: 10, waiting: 0,
+      stored: 10 - (counts.failed ?? 0) - (counts.duplicate ?? 0), duplicate: counts.duplicate ?? 0, failed: counts.failed ?? 0,
+      reading: 0, ready: 0, problem: counts.problem ?? 0,
+    };
+    state = folderUploadsReducer(state, { type: "counts", id: "u", summary });
+    state = folderUploadsReducer(state, { type: "phase", id: "u", phase: "done" });
+    return renderToStaticMarkup(
+      createElement(FolderUploadRow, {
+        view: state.u!,
+        held: true,
+        notSent: { rows: [], total: notSent },
+        tree: buildTree([]),
+        limits: { pdf_bytes: 1, image_bytes: 1, sheet_bytes: 1, max_pages: 1, readers: [] },
+        actions: {
+          stop: () => undefined,
+          resume: () => undefined,
+          chooseAgain: () => undefined,
+          retry: () => undefined,
+          retryAll: () => undefined,
+          clear: () => undefined,
+          loadItems: async () => ({ items: [], next_after: null }),
+        },
+      }),
+    );
+  };
+
+  it("gives one count for what needs attention, on its line and on its list", () => {
+    const html = settled({ failed: 1, problem: 1 }, 3);
+    expect(html).toContain("2 need attention");
+    expect(html).toContain("Needs attention (2)");
+  });
+
+  it("says every file is in its folder only when none needs attention, none was already in Kaagaz, and all were sent", () => {
+    expect(settled({})).toContain("Every file is in its folder.");
+    expect(settled({ duplicate: 1 })).not.toContain("Every file is in its folder.");
+    expect(settled({ problem: 1 })).not.toContain("Every file is in its folder.");
+    expect(settled({}, 1)).not.toContain("Every file is in its folder.");
+  });
+
+  it("offers to move a file already in Kaagaz here, in those words", () => {
+    const source = readFileSync(join(__dirname, "..", "components/documents/FolderUploadRow.tsx"), "utf8");
+    expect(source).toContain("Move it here");
+    expect(source).not.toContain("Also put it here");
+  });
 });
 
 describe("reading a dropped folder", () => {
@@ -186,6 +237,16 @@ describe("reading a dropped folder", () => {
     expect(html).toContain("Kaagaz couldn’t read this folder. Try again, or choose it with Upload a folder.");
     expect(html).toContain('role="alert"');
     expect(html).not.toContain("Reading the folder");
+  });
+
+  it("says a browser that gives no folder paths (a phone) can't pick folders", () => {
+    const html = renderToStaticMarkup(
+      createElement(FolderReadingDialog, { name: "", found: 0, failed: NO_FOLDER_PICKER, onClose: () => undefined }),
+    );
+    expect(html).toContain("Upload a folder");
+    expect(html).toContain("This browser can’t pick folders. Use a computer.");
+    const shell = readFileSync(join(__dirname, "..", "components/shell/Uploads.tsx"), "utf8");
+    expect(shell).toMatch(/if \(noFolderPaths\(files\)\)[\s\S]*?failed: NO_FOLDER_PICKER/);
   });
 });
 
