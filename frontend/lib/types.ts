@@ -545,6 +545,102 @@ export interface UploadLimits {
   sheet_bytes: number;
   max_pages: number; // for a PDF's pages and a TIFF's frames
   readers: UploadReader[]; // the scan readers an upload may choose, the server's default first
+  // #484: this organisation's folder upload limits; left out by an older server (no folder upload).
+  folder_upload?: FolderUploadLimits;
+  // #484: "Let Kaagaz sort files" is offered (auto-filing is on for this person).
+  sort_available?: boolean;
+}
+
+/** The most one folder upload may hold here (the organisation's, else the platform's, else the
+ * server's), and how many sends a minute the server takes from this tab. */
+export interface FolderUploadLimits {
+  max_files: number;
+  max_bytes: number;
+  max_folders: number;
+  max_depth: number; // 100
+  calls_per_minute: number;
+}
+
+/** POST /folder-uploads: the folders to make, parents first (entry 0 the root), and the counts. */
+export interface FolderUploadPlanBody {
+  id: string; // made by the browser
+  user_id: string;
+  target: "department" | "folder";
+  parent_folder_id: string | null; // "folder": the folder it goes in, null for the top level
+  merge: boolean; // false: "Keep separate", the root becomes "A (2)"
+  folders: { name: string; parent: number | null }[];
+  file_count: number;
+  total_bytes: number;
+  skipped_count: number;
+}
+
+/** The plan's reply: folder_ids[i] is the Kaagaz folder for manifest folder i. */
+export interface FolderUploadPlan {
+  id: string;
+  root_folder_id: string;
+  root_name: string;
+  folder_ids: string[];
+  created: number;
+  merged: number;
+}
+
+/** One file to register: its id within the upload, its folder, and why the browser refused it. */
+export interface NewFolderItem {
+  path_key: string; // SHA-256 hex of its NFC path, root first
+  name: string;
+  folder_id: string;
+  size: number;
+  refused?: FolderItemFailure;
+}
+
+export type FolderItemFailure = "too_large" | "unsupported_type" | "empty_file" | "folder_gone";
+export type FolderItemView = "waiting" | "attention" | "duplicate" | "all";
+
+/** One file of a folder upload, as the server keeps it; its folder never changes. */
+export interface FolderUploadItem {
+  id: string;
+  seq: number;
+  path_key: string;
+  name: string;
+  folder_id: string;
+  size: number;
+  state: "waiting" | "stored" | "duplicate" | "failed";
+  failure_code: FolderItemFailure | null;
+  document_id: string | null;
+  // The stored (or matched) document; status_message is safe to show as is.
+  document: {
+    status: DocumentStatus;
+    failure_code: string | null;
+    status_message: string;
+    folder_id: string | null;
+    in_trash: boolean;
+  } | null;
+}
+
+/** GET /folder-uploads/{id}/items: a page, and where the next starts (null: the last page). */
+export interface FolderItemsPage {
+  items: FolderUploadItem[];
+  next_after: number | null;
+}
+
+/** GET /folder-uploads/{id}: one folder upload's counts, by state, and of its documents. */
+export interface FolderUploadSummary {
+  id: string;
+  root_folder_id: string | null;
+  root_name: string; // the Kaagaz folder, "A (2)" after Keep separate
+  source_name: string; // the folder on the computer, "A"
+  target: "department" | "folder";
+  created_at: string;
+  file_count: number;
+  total_bytes: number;
+  skipped_count: number;
+  waiting: number;
+  stored: number;
+  duplicate: number;
+  failed: number;
+  reading: number; // stored, still being checked or read
+  ready: number;
+  problem: number; // stored, but its reading failed or was refused
 }
 
 /** What an upload or a whole document's Read again asks for (feature 26); nothing: the default. */
