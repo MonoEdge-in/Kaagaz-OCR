@@ -84,6 +84,20 @@ describe("sending one file of a folder upload", () => {
     expect(server.starts[0]).not.toHaveProperty("batch_id");
   });
 
+  it("takes the resumable start's upload reply for an item already in, sending nothing more", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      calls.push(url);
+      const body = url.endsWith("/candidates") ? { candidates: [] } : { ...UPLOADED, item: { id: "item-9", state: "stored" } };
+      return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+    const parts = fakePosts([]);
+    const big = new File([new Uint8Array(8 * 1024 * 1024 + 1)], "big.pdf");
+    await expect(uploadFolderItem(big, "item-9", "u1", () => undefined, free)).resolves.toMatchObject({ document: { id: "d1" } });
+    expect(calls).toEqual(["/api/documents/upload-sessions/candidates", "/api/documents/upload-sessions"]);
+    expect(parts).toHaveLength(0);
+  });
+
   it("waits its turn: a bucket of 2 a minute lets 2 go at once and the third a half minute later", async () => {
     vi.useFakeTimers();
     const turn = createTurn(2);

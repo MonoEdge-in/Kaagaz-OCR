@@ -587,11 +587,13 @@ async function resumableUpload(
     if (matches) { resumeId = candidate.id; savedParts = candidate.parts; break; }
   }
   const session = await retryWhileOffline(
-    () => request<{ id: string; part_size: number; part_count: number }>(
+    () => request<{ id: string; part_size: number; part_count: number } | UploadResult>(
       "POST", "/documents/upload-sessions", { ...identified, resume_session_id: resumeId },
     ),
     onWaiting,
   );
+  // A folder upload's item already in: the server answers with the upload itself (#484).
+  if ("document" in session) return session;
   let sent = 0;
   for (let number = 1; number <= session.part_count; number++) {
     const start = (number - 1) * session.part_size;
