@@ -742,7 +742,7 @@ export function AiFields(props: {
                 problem={errors.daily_page_limit ? <FieldError field="daily_page_limit" errors={errors} /> : null}
                 problemId={`${fieldId("daily_page_limit")}-error`}
               />
-              {today && <p className="hint">{pagesTodayText(today)}</p>}
+              {today && <p className="hint">{pagesTodayText(today, saved.daily_page_limit ?? defaults.daily_page_limit)}</p>}
             </div>
             <CostPanel
               platform={platform}
@@ -850,7 +850,7 @@ export function AiFields(props: {
                 aria-describedby={describedBy("budget", errors, rupees ? "ai-budget-hint ai-budget-inr" : "ai-budget-hint")}
               />
               <span id="ai-budget-hint" className="hint">
-                Seen only here. When it&apos;s reached, reading stops until next month or until you raise it. Ask keeps
+                Seen only here. When it&apos;s reached, reading pauses until next month or until you raise it. Ask keeps
                 working. Leave it empty for no budget.
               </span>
               {rupees && (

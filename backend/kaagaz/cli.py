@@ -118,7 +118,8 @@
   bucket in ap-south-1, in parts, with the machine's own AWS role. It reads no settings and no
   database, so pgdump.sh runs it beside the app on the host network.
 * ``disk-alert --used PERCENT``: emails OPS_ALERT_EMAIL from EMAIL_FROM through SES that the
-  server's disk is that full (#480; infra/ec2/disk-alert.sh decides when, once a day at most).
+  server's disk is that full (#480; infra/ec2/disk-alert.sh decides when, once a day at most), by
+  the operations alerts' one rule (kaagaz.ops_alert); an email not sent fails the command.
 
 Why passwords are never flags: a flag lands in the shell history and the
 process list. They come from ``KAAGAZ_ADMIN_PASSWORD`` (``KAAGAZ_DEMO_PASSWORD``
@@ -148,8 +149,8 @@ import boto3
 from boto3.s3.transfer import TransferConfig
 from sqlalchemy import Connection, RowMapping, text
 
-from kaagaz import verify_models
-from kaagaz.adapters.email import Mailer, SesMailer
+from kaagaz import ops_alert, verify_models
+from kaagaz.adapters.email import Mailer
 from kaagaz.ai.client import ModelClient, ModelOutputError, ModelUnavailable, build_model_client
 from kaagaz.ai.openrouter import OpenRouterClient
 from kaagaz.ai.usage import usage_scope
@@ -1245,17 +1246,20 @@ def _backup_upload(bucket_client: Any, bucket: str, key: str, source: IO[bytes])
 
 
 def _disk_alert(settings: Settings, mailer: Mailer | None, used: int) -> None:
-    if settings.ops_alert_email is None:
-        raise CliError("set OPS_ALERT_EMAIL in .env: the address the server's alerts go to")
-    if settings.email_from is None:
-        raise CliError("set EMAIL_FROM in .env: the SES address the alert is sent from")
-    (mailer or SesMailer(settings.ses_region, settings.email_from)).send(
-        to=settings.ops_alert_email,
-        subject=f"Kaagaz server: the disk is {used}% full",
-        text=f"The Kaagaz server's disk is {used}% full. This alert is sent at most once a day.\n\n"
+    problem = ops_alert.missing(settings)
+    if problem is not None:
+        raise CliError(problem)
+    sent = ops_alert.send_ops_alert(
+        settings,
+        f"Kaagaz server: the disk is {used}% full",
+        f"The Kaagaz server's disk is {used}% full. This alert is sent at most once a day.\n\n"
         "Free some space before it fills, or the database and the uploads stop. "
         "`docker system df` on the server shows what uses it.\n",
+        purpose="disk_alert",
+        mailer=mailer,
     )
+    if not sent:  # a failed command: disk-alert.sh notes no day and tries again next hour
+        raise CliError("the disk alert was not sent: the log says why")
 
 
 def _file_backup(command: str, files: FileBackup, source: IO[bytes], out: IO[bytes]) -> str:

@@ -57,10 +57,12 @@ READER_STOPPED = (
 )
 _KEY_WAITS = frozenset(f"{name}_unavailable" for name in KEY_PROBLEMS)  # #473: Mistral's too
 # #478 (Tushar, 3 Nov 2026): the organisation's reading pause held it; never a sum of money.
+# Review, 3 Nov 2026: the super admin is told, not the organisation's admin.
 PAUSED_FOR_TODAY = (
-    "Reading is paused for today. Your admin has been told. This file will be read next morning."
+    "Reading is paused for today. Your organisation has read its pages for the day."
+    " This file will be read tomorrow morning."
 )
-PAUSED_BUDGET = "Reading is paused. Your admin has been told."
+PAUSED_BUDGET = "Reading is paused for now. The Kaagaz team has been told. It will continue on its own."
 _PAUSE_WORDS = {CODES[DAILY_LIMIT]: PAUSED_FOR_TODAY, CODES[BUDGET]: PAUSED_BUDGET}
 
 

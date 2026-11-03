@@ -9,7 +9,9 @@ like EmbedMissing, between jobs) queues those documents for a read again, oldest
   marks it (``mark_for_upgrade``: the family lock, back to ``received``, audited as
   ``document.read_upgrade`` with no actor) and queues it in the main lane, in one
   transaction, so a queue that is down changes nothing. Never the express lane: the
-  sweep never pushes ahead of a customer's own upload.
+  sweep never pushes ahead of a customer's own upload. An organisation whose reading is
+  paused (#478, kaagaz/jobs/reading_pause.py) is passed over, so a ready document is never
+  turned into a held one (review, 3 Nov 2026).
 * One document every UPGRADE_EVERY (3 minutes: 20 an hour) while the reader's gate is
   ``working``. While it is ``failing`` or ``down``, one every PROBE_EVERY (15 minutes):
   that read is the probe that finds the reader back. With a key problem it sends none,
@@ -21,22 +23,25 @@ like EmbedMissing, between jobs) queues those documents for a read again, oldest
   EmbedMissing. Logs hold the document's ids and a code only.
 
 Cost per pass: one statement for the C customers, then one status lookup and one
-``oldest_read_locally`` per customer, then 3 statements and one send for the one marked.
+``oldest_read_locally`` per customer, and the pause's ``state`` for one that has a document,
+then 3 statements and one send for the one marked.
 """
 
 import logging
 from collections.abc import Callable
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.exc import SQLAlchemyError
 
 from kaagaz.ai.openrouter import KEY_PROBLEM, WORKING
+from kaagaz.db import reading_days
 from kaagaz.db.customers import is_active
 from kaagaz.db.documents import mark_for_upgrade, oldest_read_locally
 from kaagaz.db.engine import Database
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import Job, JobQueue
 from kaagaz.jobs.fair_share import SweepLock, no_lock
+from kaagaz.jobs.reading_pause import pause_reason
 from kaagaz.jobs.worker import RunsJobs
 from kaagaz.search.indexing import customer_ids
 
@@ -51,14 +56,17 @@ PROBE_EVERY = timedelta(minutes=15)
 def upgrade_oldest(db: Database, queue: JobQueue) -> Job | None:
     """Mark the oldest ready document with a locally read page, of any active customer,
     for a read again and queue it in the main lane; its job, or None when there is none
-    (or it was taken by "read again" in the moment since). Database and queue errors
-    propagate: the caller logs them."""
+    (or it was taken by "read again" in the moment since). A paused organisation's are passed
+    over. Database and queue errors propagate: the caller logs them."""
     with db.system() as conn:
         customers = customer_ids(conn)
+    day = reading_days.india_day(datetime.now(UTC))  # the live counter's day (kaagaz.ai.usage)
     oldest: tuple[datetime, str, str] | None = None
     for customer in customers:
         with db.customer(customer) as conn:
             found = oldest_read_locally(conn, customer) if is_active(conn, customer) else None
+            if found is not None and pause_reason(reading_days.state(conn, customer, day)) is not None:
+                found = None
         if found is not None and (oldest is None or (found[1], customer, found[0]) < oldest):
             oldest = (found[1], customer, found[0])
     if oldest is None:

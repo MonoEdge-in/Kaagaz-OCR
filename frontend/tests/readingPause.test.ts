@@ -100,7 +100,10 @@ describe("the daily page limit field", () => {
     expect(fieldOf(inherited)).toContain('placeholder="Platform default (2,000 pages)"');
     expect(inherited).toContain(`id="${fieldId("daily_page_limit")}-origin" class=`);
     expect(inherited).toContain(DAILY_PAGES_HINT.replace("'", "&#x27;"));
-    expect(inherited).toContain("Pages read today: 1,240 ($0.42).");
+    expect(inherited).toContain("Pages read today: 1,240 of 2,000 ($0.42)."); // the limit in effect (#478 review)
+    expect(fields({ today: { pages: 1240, cost_usd: 0.42 } })).toContain("Pages read today: 1,240 ($0.42).");
+    expect(inherited).toContain("When it&#x27;s reached, reading pauses until next month"); // pauses, never "stops"
+    expect(inherited).not.toContain("reading stops");
     const id = fieldId("daily_page_limit");
     expect(fieldOf(inherited)).toContain(`aria-describedby="${id}-origin ${id}-hint"`); // read with its marks
 
@@ -135,6 +138,8 @@ describe("the daily page limit field", () => {
     expect(follows(own).scan).toBe("all"); // not a scan setting
     expect(defaultsImpact(values(), own, COUNTS).lead).toBe("This save changes, for 6 organisations still on platform defaults:");
     expect(pagesTodayText({ pages: 3, cost_usd: null })).toBe("Pages read today: 3.");
+    expect(pagesTodayText({ pages: 1240, cost_usd: 0.42 }, 2000)).toBe("Pages read today: 1,240 of 2,000 ($0.42).");
+    expect(pagesTodayText({ pages: 3, cost_usd: null }, null)).toBe("Pages read today: 3.");
   });
 });
 
@@ -143,5 +148,12 @@ describe("the org admin's pages today", () => {
     expect(pagesTodayLine({ reading_today: { pages: 1240, limit: 2000 } })).toBe("Pages read today: 1,240 of 2,000.");
     expect(pagesTodayLine({ reading_today: { pages: 1240, limit: null } })).toBeNull();
     expect(pagesTodayLine({})).toBeNull();
+  });
+
+  it("says reading is paused until tomorrow morning once the limit is reached (#478 review)", () => {
+    const paused = "Reading is paused until tomorrow morning.";
+    expect(pagesTodayLine({ reading_today: { pages: 2000, limit: 2000 } })).toBe(`Pages read today: 2,000 of 2,000. ${paused}`);
+    expect(pagesTodayLine({ reading_today: { pages: 2003, limit: 2000 } })).toBe(`Pages read today: 2,003 of 2,000. ${paused}`);
+    expect(pagesTodayLine({ reading_today: { pages: 1999, limit: 2000 } })).not.toContain("paused");
   });
 });

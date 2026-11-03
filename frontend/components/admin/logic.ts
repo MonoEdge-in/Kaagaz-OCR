@@ -847,11 +847,13 @@ export function usageState(report: UsageReport | null, error: string | null): Us
 }
 
 /** #478 (Tushar, 3 Nov 2026): "Pages read today: 1,240 of 2,000." while a daily page limit is
- * in effect (the India day); null without one. Never money. */
+ * in effect (the India day), and that reading is paused once it is reached; null without one.
+ * Never money. */
 export function pagesTodayLine(report: Pick<UsageReport, "reading_today">): string | null {
   const today = report.reading_today;
   if (!today || today.limit === null) return null;
-  return `Pages read today: ${formatNumber(today.pages)} of ${formatNumber(today.limit)}.`;
+  const line = `Pages read today: ${formatNumber(today.pages)} of ${formatNumber(today.limit)}.`;
+  return today.pages >= today.limit ? `${line} Reading is paused until tomorrow morning.` : line; // #478 review
 }
 
 /** "$12.40 of $50.00 this month", or that there is no budget. */

@@ -459,8 +459,8 @@ class Settings:
     ses_region: str = "ap-south-1"
     app_url: str | None = None
     # The super admin's address for operations alerts, sent from EMAIL_FROM: an organisation's
-    # reading paused (#478, while EMAIL_ENABLED is on) and the server's disk alert (#480,
-    # infra/ec2/disk-alert.sh, with EMAIL_ENABLED on or off). Optional: unset, none is sent.
+    # reading paused (#478) and the server's disk alert (#480, infra/ec2/disk-alert.sh), both
+    # with EMAIL_ENABLED on or off (kaagaz/ops_alert.py). Optional: unset, none is sent.
     ops_alert_email: str | None = None
     # Sign in with Google (#457 phase 1). Off unless GOOGLE_SIGNIN_ENABLED=true; on, the
     # client id, secret and redirect URI are required. The redirect URI is https (http only

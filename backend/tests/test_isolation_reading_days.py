@@ -36,7 +36,10 @@ def test_one_organisations_counter_and_holds_never_reach_another(db: Database) -
         assert conn.execute(text("SELECT customer_id FROM reading_days")).all() == []  # A's row unseen
         theirs = reading_days.state(conn, b, day)
         assert theirs.pages_today == 0  # A's pages never count for B
-        assert reading_days.release(conn, a) == []  # B's connection ends none of A's holds
+        # Changed on purpose (#478 review): the release finds the documents, then ends each hold.
+        assert reading_days.waiting(conn, a, 10) == []  # B's connection finds none of A's holds
+        reading_days.unhold(conn, a, waiting)  # nor ends one
+        reading_days.end_stale_holds(conn, a)
         reading_days.count(conn, b, day, pages=0, cost_usd=0.0)
         assert (
             conn.execute(text("SELECT count(*) FROM documents WHERE reading_held IS NOT NULL")).scalar() == 0

@@ -844,7 +844,8 @@ def get_usage(
     given, in tokens: the ledger's costs are left out (Tushar, 15 Oct 2026). ``ai_enabled``
     is false in keyless mode (no AI scan reader, or MODEL_ENABLED off): the screen says AI
     is off on this server. ``reading_today`` (#478): the pages AI read today (the India day) and
-    the daily page limit in effect (null: none), never money. Two queries."""
+    the daily page limit in effect (null: none), never money, in one cheap query (no month's
+    sums). Two queries."""
     customer_id = user.customer_id
     day_from, day_to, start, end = _usage_window(context, first, to)
     with context.db.customer(customer_id) as conn:
@@ -856,14 +857,14 @@ def get_usage(
             timezone=context.settings.timezone,
             user_id=None if user_id is None else str(user_id),
         )
-        today = reading_days.state(conn, customer_id, reading_days.india_day(context.clock()))
+        pages, limit = reading_days.today(conn, customer_id, reading_days.india_day(context.clock()))
     return {
         "totals": without_money(report.pop("totals")),
         **{part: [without_money(group) for group in groups] for part, groups in report.items()},
         "from": day_from.isoformat(),
         "to": day_to.isoformat(),
         "ai_enabled": ai_enabled(context.settings),
-        "reading_today": {"pages": today.pages_today, "limit": today.page_limit},
+        "reading_today": {"pages": pages, "limit": limit},
     }
 
 
