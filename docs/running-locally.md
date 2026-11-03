@@ -302,7 +302,9 @@ or migration is tried again on the next run. After a good deploy it removes buil
 with under 20 GB free on `/` it logs `low disk: ...` and does the same first;
 `docker system df` shows what is left. `kaagaz-pgdump.timer` writes `~/backups/kaagaz-YYYYMMDD.dump` (mode
 600, the last 7 kept) at 20:00 UTC (01:30 IST), or at the next boot if the
-server was stopped then. Data Lifecycle Manager takes a daily EBS snapshot at
+server was stopped then; with `BACKUP_BUCKET` and `BACKUP_CERT` set it also
+copies an encrypted backup off the server (section 6, "Backups off the
+server"). Data Lifecycle Manager takes a daily EBS snapshot at
 20:30 UTC (02:00 IST), keeping 7. Restore from a snapshot (the whole disk) or
 a dump (section 6). Logs: `dc logs --since 1h <service>`.
 
@@ -888,3 +890,55 @@ docker compose -p kaagaz-drill up -d
 4. Clean up: `docker compose -p kaagaz-drill down -v`, `rm -r ../kaagaz-backup`, then `docker compose up -d` brings back the main stack.
 
 For a real restore on a new laptop, run the same commands without `-p kaagaz-drill`, and skip step 4: otherwise a later plain `docker compose up` starts an empty stack, and step 4 deletes the restored data.
+
+### Backups off the server (#476)
+
+Each night, after its local dump, `infra/ec2/pgdump.sh` streams three parts into an S3 bucket in ap-south-1 under `<YYYYMMDD>/`: `kaagaz.dump.cms` (that dump), `roles.sql.cms` (the logins, `pg_dumpall --roles-only --no-role-passwords`) and `files.tar.cms` (every stored file, read through the S3 API by `kaagaz.cli backup-files`, so SeaweedFS keeps running). Each is encrypted on the server with `openssl cms -encrypt -aes256` to a certificate whose private key never touches the server; nothing encrypted is written to its disk. `<YYYYMMDD>/done` goes last, only when all three are in. The upload runs `kaagaz.cli backup-upload` in the backend image on the host network, with the server's own role: no AWS key on the server. Without `BACKUP_BUCKET` and `BACKUP_CERT` in `.env` it stops after the local dump. The run holds the deploy lock, so no deploy or idle stop cuts it. `journalctl -u kaagaz-pgdump -n 20` ends `copied the backup of <day> off the server`; the monitor (below) alerts when no `done` is under 26 hours old.
+
+**Once, by Vrushit** (AWS account admin; `<BUCKET>`, `<ACCOUNT>` and `<INSTANCE_ROLE>`, the server's role, are yours):
+
+1. The key pair, on an offline machine. It asks for a passphrase; keep `kaagaz-backup-key.pem` and the passphrase in the password manager and one offline copy, never on the server: without it no backup can be read.
+   `openssl req -x509 -newkey rsa:4096 -days 3650 -subj "/CN=kaagaz-backup" -keyout kaagaz-backup-key.pem -out kaagaz-backup-cert.pem`.
+   Copy only `kaagaz-backup-cert.pem` to the server as `/home/ubuntu/kaagaz-secrets/backup-cert.pem`.
+2. The KMS key and the bucket: Object Lock in compliance mode, 30 days (nobody, root included, deletes a backup early), SSE-KMS, no public access, and old backups gone after 35 days:
+   ```
+   aws kms create-key --region ap-south-1 --description "Kaagaz backups" --query KeyMetadata.Arn --output text
+   aws s3api create-bucket --region ap-south-1 --bucket <BUCKET> --create-bucket-configuration LocationConstraint=ap-south-1 --object-lock-enabled-for-bucket
+   aws s3api put-object-lock-configuration --bucket <BUCKET> --object-lock-configuration '{"ObjectLockEnabled":"Enabled","Rule":{"DefaultRetention":{"Mode":"COMPLIANCE","Days":30}}}'
+   aws s3api put-bucket-encryption --bucket <BUCKET> --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"aws:kms","KMSMasterKeyID":"<KEY_ARN>"},"BucketKeyEnabled":true}]}'
+   aws s3api put-public-access-block --bucket <BUCKET> --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+   aws s3api put-bucket-lifecycle-configuration --bucket <BUCKET> --lifecycle-configuration '{"Rules":[{"ID":"kaagaz-35-days","Status":"Enabled","Filter":{},"Expiration":{"Days":35},"NoncurrentVersionExpiration":{"NoncurrentDays":1},"AbortIncompleteMultipartUpload":{"DaysAfterInitiation":2}}]}'
+   ```
+3. Write-only for the server: this inline policy on `<INSTANCE_ROLE>` (`aws iam put-role-policy --role-name <INSTANCE_ROLE> --policy-name kaagaz-backup-write --policy-document file://backup-write.json`). It may add backups and nothing else: no read, no list, no delete. `kms:Decrypt` is what S3 needs to finish a multipart upload with this key; without `s3:GetObject` it reads nothing.
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [
+       {"Sid": "AddBackupsOnly", "Effect": "Allow", "Action": ["s3:PutObject", "s3:AbortMultipartUpload"], "Resource": "arn:aws:s3:::<BUCKET>/*"},
+       {"Sid": "EncryptWithTheBackupKey", "Effect": "Allow", "Action": ["kms:GenerateDataKey", "kms:Decrypt"], "Resource": "<KEY_ARN>"}
+     ]
+   }
+   ```
+   The restore drill and a real restore need `s3:GetObject` and `s3:ListBucket` on the bucket and `kms:Decrypt` on the key: an admin's own sign-in, never the server's role.
+4. In the server's `.env`: `BACKUP_BUCKET=<BUCKET>` and `BACKUP_CERT=/home/ubuntu/kaagaz-secrets/backup-cert.pem`. Run `~/kaagaz/infra/ec2/pgdump.sh` once; `aws s3 ls s3://<BUCKET>/<YYYYMMDD>/` lists the four objects.
+5. The second region: the daily snapshot copied to Hyderabad (ap-south-2, an opt-in region) and kept 7 days there, and a Recycle Bin rule in each region, so a deleted snapshot can be brought back for 7 days (the rule itself locked for 7):
+   ```
+   aws account enable-region --region-name ap-south-2
+   aws dlm get-lifecycle-policies --region ap-south-1 --query 'Policies[].[PolicyId,Description]'
+   aws dlm get-lifecycle-policy --region ap-south-1 --policy-id <POLICY_ID> --query Policy.PolicyDetails > dlm-details.json
+   ```
+   In `dlm-details.json`, add to `Schedules[0]`: `"CrossRegionCopyRules": [{"Target": "ap-south-2", "Encrypted": true, "CopyTags": true, "RetainRule": {"Interval": 7, "IntervalUnit": "DAYS"}}]` (encrypted with ap-south-2's default EBS key). Then:
+   ```
+   aws dlm update-lifecycle-policy --region ap-south-1 --policy-id <POLICY_ID> --policy-details file://dlm-details.json
+   aws rbin create-rule --region ap-south-1 --resource-type EBS_SNAPSHOT --description "Kaagaz: deleted snapshots kept 7 days" --retention-period RetentionPeriodValue=7,RetentionPeriodUnit=DAYS --lock-configuration 'UnlockDelay={UnlockDelayValue=7,UnlockDelayUnit=DAYS}'
+   aws rbin create-rule --region ap-south-2 --resource-type EBS_SNAPSHOT --description "Kaagaz: deleted snapshots kept 7 days" --retention-period RetentionPeriodValue=7,RetentionPeriodUnit=DAYS --lock-configuration 'UnlockDelay={UnlockDelayValue=7,UnlockDelayUnit=DAYS}'
+   ```
+   The next day, `aws ec2 describe-snapshots --region ap-south-2 --owner-ids self` shows the copy.
+
+**The restore drill, monthly and after any change to the database logins.** On a Linux or macOS laptop or a throwaway machine (not Git Bash: it rewrites the paths), never the production server, with Docker, the aws CLI signed in as above, and the private key: from a checkout, `docker compose build migrate` (it makes `kaagaz-backend:local`), then
+
+```
+infra/ec2/restore-drill.sh <BUCKET> <YYYYMMDD of last night> /path/to/kaagaz-backup-key.pem
+```
+
+It downloads and decrypts the three parts into a private temporary folder, restores the logins, the database and the files into a throwaway `pgvector/pgvector:0.8.7-pg17` and `chrislusf/seaweedfs:4.48` on their own network, then checks one document through the customer filter (as `kaagaz_app`, its customer set): its row, its original and its first page image. It ends `DRILL PASS <day>` and removes everything it made. Post its output (ids and counts only) with the date as a comment on #476; a failure is fixed before anything else.

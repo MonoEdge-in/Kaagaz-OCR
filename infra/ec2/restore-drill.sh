@@ -65,15 +65,20 @@ for part in kaagaz.dump roles.sql files.tar; do
 done
 echo "downloaded and decrypted the backup of $day"
 
-# 2. The throwaway database and file store.
+# 2. The throwaway database and file store. Its superuser has the server's
+# superuser's name (roles.sql's first SUPERUSER), so the grants that one made
+# restore as made. No database of that name yet: pg_restore --create makes it.
+superuser="$(awk '$1 == "ALTER" && $2 == "ROLE" && $4 == "WITH" && $5 == "SUPERUSER" { print $3; exit }' \
+  "$work/roles.sql")"
+superuser="${superuser:-kaagaz}"
 docker network create "$NETWORK" >/dev/null
-docker run -d --name "$DB" --network "$NETWORK" \
+docker run -d --name "$DB" --network "$NETWORK" -e POSTGRES_USER="$superuser" -e POSTGRES_DB=postgres \
   -e POSTGRES_PASSWORD="$(openssl rand -hex 24)" "$DB_IMAGE" >/dev/null
 docker run -d --name "$FILES" --network "$NETWORK" \
   -v "$PWD/infra/seaweedfs/s3.json:/etc/seaweedfs/s3.json:ro" "$FILES_IMAGE" \
   server -dir=/data -ip.bind=0.0.0.0 -s3 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json >/dev/null
 for _ in $(seq 60); do
-  if docker exec "$DB" pg_isready -q -U postgres >/dev/null 2>&1 &&
+  if docker exec "$DB" pg_isready -q -U "$superuser" -d postgres >/dev/null 2>&1 &&
     docker exec "$FILES" wget -q -O /dev/null http://127.0.0.1:8333/healthz >/dev/null 2>&1; then
     break
   fi
@@ -81,12 +86,11 @@ for _ in $(seq 60); do
 done
 
 # 3. Logins first, so the restored tables keep their owner and grants. The
-# throwaway's own superuser is postgres; a role that already exists is reported
-# and skipped.
-docker exec -i "$DB" psql -q -U postgres -d postgres <"$work/roles.sql" >/dev/null
+# superuser's own CREATE ROLE is reported as already there, and skipped.
+docker exec -i "$DB" psql -q -U "$superuser" -d postgres <"$work/roles.sql" >/dev/null
 docker cp "$work/kaagaz.dump" "$DB:/tmp/kaagaz.dump" >/dev/null
 db_name="$(docker exec "$DB" pg_restore -l /tmp/kaagaz.dump | sed -n 's/^;[[:space:]]*dbname: //p')"
-docker exec "$DB" pg_restore -U postgres -d postgres --create --exit-on-error /tmp/kaagaz.dump
+docker exec "$DB" pg_restore -U "$superuser" -d postgres --create --exit-on-error /tmp/kaagaz.dump
 docker run --rm -i --network "$NETWORK" --env-file .env.example \
   -e SESSION_SECRET="$(openssl rand -hex 32)" -e TOTP_ENCRYPTION_KEY="$(openssl rand -hex 32)" \
   -e STORAGE_ENDPOINT_URL="http://$FILES:8333" -e STORAGE_BUCKET="$DRILL_BUCKET" \
@@ -101,7 +105,7 @@ if [[ -z "$original" ]]; then
   exit 1
 fi
 IFS=/ read -r _ customer _ document _ <<<"$original"
-found="$(docker exec -i "$DB" psql -q -tA -U postgres -d "$db_name" -v ON_ERROR_STOP=1 \
+found="$(docker exec -i "$DB" psql -q -tA -U "$superuser" -d "$db_name" -v ON_ERROR_STOP=1 \
   -v customer="$customer" -v document="$document" <<'SQL'
 BEGIN;
 SET LOCAL ROLE kaagaz_app;

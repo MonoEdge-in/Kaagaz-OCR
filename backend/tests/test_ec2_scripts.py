@@ -348,12 +348,69 @@ def test_pgdump_never_runs_or_prints_the_env_file() -> None:
     assert not re.search(r"^ *(source|\.|eval) ", script, re.MULTILINE)
     assert "done <.env\n" in script  # read line by line as text
     assert 'pg_user="$(env_value POSTGRES_USER)"' in script and 'pg_db="$(env_value POSTGRES_DB)"' in script
+    assert 'bucket="$(env_value BACKUP_BUCKET)"' in script and 'cert="$(env_value BACKUP_CERT)"' in script
     printed = re.findall(r"^ *(?:echo|printf) .*", script, re.MULTILINE)
     assert printed == [
         "  printf '%s' \"$value\"",  # env_value's result, caught by $(...) and never shown
+        '  echo "a deploy held $LOCK_FILE for ${LOCK_WAIT_SECONDS}s; no dump saved" >&2',
         '  echo "pg_dump wrote nothing; no dump saved" >&2',
         'echo "saved $dump"',
+        '  echo "BACKUP_BUCKET or BACKUP_CERT is not set in .env; nothing copied off the server" >&2',
+        'printf \'%s\\n\' "$day" | send "done"',  # the day, never a setting
+        'echo "copied the backup of $day off the server"',
     ]
+
+
+def test_pgdump_copies_three_encrypted_parts_off_the_server_then_done() -> None:
+    """#476: the dump, the logins and every stored file, each encrypted to BACKUP_CERT
+    (openssl cms, the private key offline) and streamed to the bucket; done goes last."""
+    script = text("pgdump.sh")
+    # The whole run holds the deploy lock, so no deploy or idle stop cuts it.
+    assert "\nLOCK_FILE=/tmp/kaagaz-deploy.lock\n" in script
+    assert script.index('exec 9>"$LOCK_FILE"') < script.index('if ! flock -w "$LOCK_WAIT_SECONDS" 9; then')
+    assert code(script).index("flock -w") < code(script).index("docker ")
+    # Without both settings, the local dump only, as before (nothing changes on release day).
+    off = script.index('if [[ -z "$bucket" || -z "$cert" ]]; then')
+    assert script.index('echo "saved $dump"') < off < script.index("seal kaagaz.dump.cms")
+    assert '  openssl cms -encrypt -binary -aes256 -stream -outform DER "$cert" | send "$1"\n' in script
+    assert (
+        "  docker run --rm -i --network host kaagaz-backend:local \\\n"
+        '    python -m kaagaz.cli backup-upload --bucket "$bucket" --key "$day/$1"\n'
+    ) in script
+    steps = [
+        'seal kaagaz.dump.cms <"$dump"',
+        f"{DC} exec -T postgres \\\n"
+        '  pg_dumpall -U "$pg_user" --roles-only --no-role-passwords | seal roles.sql.cms',
+        f"{DC} run --rm -T --no-deps worker \\\n  python -m kaagaz.cli backup-files | seal files.tar.cms",
+        'printf \'%s\\n\' "$day" | send "done"',
+    ]
+    places = [script.index(step) for step in steps]
+    assert places == sorted(places)
+    assert "--no-deps worker" in script  # a plain run would start migrate (deploy.sh, 24 Oct 2026)
+
+
+def test_the_restore_drill_restores_into_throwaways_and_checks_through_the_customer_filter() -> None:
+    """#476: the versions compose runs, roles before the dump, files into an empty bucket, and
+    the check as the app role with one customer set (CLAUDE.md: no query without the filter)."""
+    script = text("restore-drill.sh")
+    assert script.startswith("#!/usr/bin/env bash\n") and "\nset -euo pipefail\n" in script
+    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    for image in ("pgvector/pgvector:0.8.7-pg17", "chrislusf/seaweedfs:4.48"):
+        assert f"image: {image}\n" in compose and f"={image}\n" in script
+    assert "\ntrap cleanup EXIT\n" in script and 'rm -rf "$work"' in script
+    assert 'aws s3 cp --quiet "s3://$bucket/$day/done" "$work/done"' in script
+    assert script.index("/done") < script.index("for part in kaagaz.dump roles.sql files.tar; do")
+    assert 'openssl cms -decrypt -binary -inform DER -inkey "$key" -out "$work/$part"' in script
+    roles = script.index('psql -q -U "$superuser" -d postgres <"$work/roles.sql"')
+    restore = script.index('pg_restore -U "$superuser" -d postgres --create --exit-on-error /tmp/kaagaz.dump')
+    files = script.index("python -m kaagaz.cli restore-files <")
+    assert roles < restore < files
+    assert "--no-owner" not in script and "--no-acl" not in script  # owner and grants as they were
+    check = script[script.index("<<'SQL'\n") : script.index("\nSQL\n")]
+    assert check.index("SET LOCAL ROLE kaagaz_app;") < check.index("set_config('kaagaz.customer_id'")
+    assert check.index("set_config('kaagaz.customer_id'") < check.index("FROM documents")
+    assert "-p " not in code(script)  # no host port: the throwaways meet on their own network
+    assert script.rstrip().endswith('echo "DRILL PASS $day"')
 
 
 def test_the_units_run_as_ubuntu_on_the_prd_schedule() -> None:
