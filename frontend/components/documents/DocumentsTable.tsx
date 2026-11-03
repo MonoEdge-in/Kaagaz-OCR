@@ -59,7 +59,7 @@ import type { DocumentSummary, Me, Tag } from "@/lib/types";
 import { ActionDialog } from "./ActionDialog";
 import { EditDialog, MoveDialog, RowMenu } from "./DocumentActions";
 import { DOCUMENT_DRAG } from "./FolderNav";
-import { pathLabel } from "./folderTree";
+import { pathLabel, shortPathLabel } from "./folderTree";
 import type { FolderTree } from "./folderTree";
 import { BusyLabel } from "./BusyLabel";
 import { movableItems } from "./library";
@@ -804,6 +804,8 @@ const DocumentRow = memo(function DocumentRow({
     .filter(Boolean)
     .join(" · ");
   const folderPath = !inTrash && document.folder_id && tree.byId.has(document.folder_id) ? pathLabel(tree, document.folder_id) : null;
+  // #484: deep down the row shows "A / … / Y / Z"; the whole path is in the row's title.
+  const folderShort = folderPath && document.folder_id ? shortPathLabel(tree, document.folder_id) : null;
   // The facts line under the name, whole, for its title.
   const factsLine = [
     document.sensitivity && labelName(document.sensitivity),
@@ -917,7 +919,7 @@ const DocumentRow = memo(function DocumentRow({
           )}
           {/* Where it is filed, so a move shows in All documents too (16 Oct 2026); on the facts'
               line, not a line of its own, so a row stays short (issue 371). */}
-          {folderPath && <span className={styles.inFolder}>In {folderPath}</span>}
+          {folderShort && <span className={styles.inFolder}>In {folderShort}</span>}
         </span>
         {tagList(styles.factTags)}
         {document.newer_version && (

@@ -55,8 +55,8 @@ import { usePoll } from "@/lib/usePoll";
 import type { DocumentList, DocumentSearch, DocumentSummary, Folder, Person, Tag } from "@/lib/types";
 import { DocumentsTable, listScrollKey } from "./DocumentsTable";
 import { FolderActions } from "./FolderActions";
-import { FolderNav } from "./FolderNav";
-import { buildTree, folderPath } from "./folderTree";
+import { FolderCrumbs, FolderNav } from "./FolderNav";
+import { buildTree } from "./folderTree";
 import { InsideSearchResults } from "./InsideResults";
 import {
   DEFAULT_SEARCH_MODE,
@@ -454,7 +454,6 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
           : "All documents"));
   // Nothing is uploaded into Trash, and it has no folder to change.
   const canUpload = !folderGone && !library.trash;
-  const above = current ? folderPath(tree, current.folder.id).slice(0, -1) : [];
   const withSubfolders = includeSubfoldersHref(library, current?.children.length ?? 0);
 
   // Only an empty list shows this button, in its empty state; the page header never does
@@ -551,27 +550,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
         <section className={libraryStyles.main} aria-labelledby="place-heading">
           <div className={libraryStyles.placeHead}>
             <div className={libraryStyles.place}>
-              {current && (
-                <nav aria-label="Folder path" className={libraryStyles.crumbs}>
-                  <ol>
-                    <li>
-                      <Link
-                        href={libraryHref({ ...library, folderId: null, subfolders: false })}
-                        scroll={false}
-                      >
-                        All documents
-                      </Link>
-                    </li>
-                    {above.map((folder) => (
-                      <li key={folder.id}>
-                        <Link href={libraryHref({ ...library, folderId: folder.id })} scroll={false}>
-                          {folder.name}
-                        </Link>
-                      </li>
-                    ))}
-                  </ol>
-                </nav>
-              )}
+              {current && <FolderCrumbs tree={tree} library={library} folderId={current.folder.id} />}
               <h2
                 id="place-heading"
                 ref={headingRef}

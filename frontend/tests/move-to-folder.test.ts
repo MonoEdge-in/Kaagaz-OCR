@@ -15,6 +15,7 @@ vi.mock("@/lib/session", () => ({ useSession: () => ({ refresh: () => undefined 
 const { MoveForm } = await import("@/components/documents/DocumentActions");
 const { DocumentsTable } = await import("@/components/documents/DocumentsTable");
 const { NameChips } = await import("@/components/documents/FolderActions");
+const { FolderPicker } = await import("@/components/documents/FolderPicker");
 const { buildTree } = await import("@/components/documents/folderTree");
 const { folderNameSuggestions, menuEntries, moveSuggestion, movableItems, movedMessage, typeFolderName } =
   await import("@/components/documents/library");
@@ -91,15 +92,48 @@ describe("the row menu", () => {
 });
 
 describe("the Move dialog", () => {
-  it("lists All documents and every folder in tree order, nested ones indented, and New folder…", () => {
+  // Changed on purpose (#484, folders up to 100 levels): the places are a tree that opens one
+  // folder at a time, as the Documents tree does, so a tree of thousands stays one short list.
+  it("lists All documents, the top-level folders, a button to open one that holds more, and New folder…", () => {
     const html = moveForm([doc({ doc_type: "other" })]);
-    const order = ["All documents (no folder)", "Invoices", "Suppliers", "2026", "New folder…"].map((w) =>
-      html.indexOf(w),
-    );
+    const order = ["All documents (no folder)", "Invoices", "Suppliers", "New folder…"].map((w) => html.indexOf(w));
     expect(order.every((at) => at >= 0)).toBe(true);
     expect(order).toEqual([...order].sort((a, b) => a - b));
-    expect(html).toMatch(/padding-inline-start:calc\(2 \* var\(--space-4\)\)[^]*?2026/);
-    expect(html.match(/type="radio"/g)).toHaveLength(5);
+    expect(html).toContain('aria-label="Show folders in Suppliers"');
+    expect(html).not.toContain("2026");
+    expect(html.match(/type="radio"/g)).toHaveLength(4);
+  });
+
+  it("opens the way to where the documents are now, the nested folder indented", () => {
+    const html = moveForm([doc({ folder_id: "f-26", doc_type: "other" })]);
+    expect(html).toMatch(/--depth:1[^]*?2026/);
+    expect(html).toContain('aria-label="Hide folders in Suppliers"');
+  });
+
+  it("draws one level of a 5,050-folder tree, with Find a folder", () => {
+    const big = buildTree(
+      Array.from({ length: 50 }, (_, top) => [
+        folder(`T${top}`, `Top ${top}`),
+        ...Array.from({ length: 100 }, (_, child) => folder(`T${top}-${child}`, `Child ${child}`, `T${top}`)),
+      ]).flat(),
+    );
+    const html = moveForm([doc({ doc_type: "other" })], big);
+    expect(html.match(/type="radio"/g)).toHaveLength(52); // All documents, 50 folders, New folder…
+    expect(html).toContain("Find a folder");
+  });
+
+  it("never lets a disabled place be chosen", () => {
+    const html = renderToStaticMarkup(
+      createElement(FolderPicker, {
+        tree: TREE,
+        name: "to",
+        choice: null,
+        onChoose: () => undefined,
+        disabled: (node) => node.folder.id === "f-sup",
+      }),
+    );
+    expect(radio(html, "Suppliers").disabled).toBe(true);
+    expect(radio(html, "Invoices").disabled).toBe(false);
   });
 
   it("marks where the document is now Current and disables it; the others can be chosen", () => {

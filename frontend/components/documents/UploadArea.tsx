@@ -77,7 +77,7 @@ import {
 } from "./batchTray";
 import type { StoredBatch } from "./batchTray";
 import { BusyLabel } from "./BusyLabel";
-import { pathLabel } from "./folderTree";
+import { shortPathLabel } from "./folderTree";
 import type { FolderTree } from "./folderTree";
 import { ALL_DOCUMENTS, libraryHref } from "./libraryQuery";
 import {
@@ -795,7 +795,7 @@ function UploadRow({
           <AutofileNote
             document={document}
             name={entry.name}
-            filed={document.folder_id ? filedText(pathLabel(tree, document.folder_id)) : ""}
+            filed={document.folder_id ? filedText(shortPathLabel(tree, document.folder_id)) : ""}
             folderHref={document.folder_id ? libraryHref({ ...ALL_DOCUMENTS, folderId: document.folder_id }) : null}
             onUndone={onUndone}
           />

@@ -1,14 +1,19 @@
 import { describe, expect, it } from "vitest";
 import {
+  CHILD_CAP,
   MAX_FOLDER_DEPTH,
   buildTree,
   canAddSubfolder,
+  collapseCrumbs,
   folderPath,
   inTreeOrder,
   pathLabel,
+  searchFolders,
+  shortPathLabel,
   validMoveTargets,
+  visibleNodes,
 } from "@/components/documents/folderTree";
-import type { FolderNode } from "@/components/documents/folderTree";
+import type { FolderNode, VisibleRow } from "@/components/documents/folderTree";
 import type { Folder } from "@/lib/types";
 
 const folder = (id: string, name: string, parent_id: string | null = null): Folder => ({
@@ -93,17 +98,21 @@ describe("folderPath", () => {
   });
 });
 
+// Changed on purpose (#484, Tushar 3 Nov 2026): folders nest up to 100 levels, Google Drive's
+// own maximum, so an uploaded folder keeps its whole structure.
+/** A chain of `levels` folders, L1 at the top, each inside the one before. */
+const chain = (levels: number, prefix = "L") =>
+  Array.from({ length: levels }, (_, index) =>
+    folder(`${prefix}${index + 1}`, `${prefix}${index + 1}`, index === 0 ? null : `${prefix}${index}`),
+  );
+
 describe("validMoveTargets", () => {
-  // A > A1 > A11; B > B1 > B11 > B111 > B1111 (5 deep); C.
+  // A > A1 > A11 (3 levels); L1 > … > L98; C.
   const tree = buildTree([
     folder("A", "A"),
     folder("A1", "A1", "A"),
     folder("A11", "A11", "A1"),
-    folder("B", "B"),
-    folder("B1", "B1", "B"),
-    folder("B11", "B11", "B1"),
-    folder("B111", "B111", "B11"),
-    folder("B1111", "B1111", "B111"),
+    ...chain(98),
     folder("C", "C"),
   ]);
 
@@ -114,33 +123,114 @@ describe("validMoveTargets", () => {
     expect(targets).not.toContain("A11");
   });
 
-  it("leaves out targets that would make the tree deeper than 5 levels", () => {
-    expect(MAX_FOLDER_DEPTH).toBe(5);
-    // A holds 3 levels, so it fits only under a folder at depth 1 or 2.
-    expect(names(validMoveTargets(tree, "A"))).toEqual(["B", "B1", "C"]);
-    // B1 holds 4 levels, so only under a top-level folder.
-    expect(names(validMoveTargets(tree, "B1"))).toEqual(["A", "B", "C"]);
+  it("keeps a 3-level folder within 100 levels", () => {
+    expect(MAX_FOLDER_DEPTH).toBe(100);
+    // A holds 3 levels, so it fits under L1 to L97, never under L98.
+    const targets = names(validMoveTargets(tree, "A"));
+    expect(targets).toContain("L97");
+    expect(targets).not.toContain("L98");
+    expect(targets).toContain("C");
   });
 
-  it("lists every other folder for a single folder, in tree order, except the 5th level", () => {
-    expect(names(validMoveTargets(tree, "A11"))).toEqual([
-      "A",
-      "A1",
-      "B",
-      "B1",
-      "B11",
-      "B111",
-      "C",
-    ]);
+  it("lets a single folder go under any folder above the 100th level, in tree order", () => {
+    expect(names(validMoveTargets(tree, "A11")).slice(0, 4)).toEqual(["A", "A1", "C", "L1"]);
+    expect(names(validMoveTargets(tree, "A11"))).toContain("L98");
   });
 
   it("has no targets for a folder that is not there", () => {
     expect(validMoveTargets(tree, "nope")).toEqual([]);
   });
 
-  it("allows a new folder only above the 5th level", () => {
-    expect(canAddSubfolder(tree, null)).toBe(true);
-    expect(canAddSubfolder(tree, "B111")).toBe(true);
-    expect(canAddSubfolder(tree, "B1111")).toBe(false);
+  it("allows a new folder at level 99, never inside level 100", () => {
+    const deep = buildTree(chain(100));
+    expect(canAddSubfolder(deep, null)).toBe(true);
+    expect(canAddSubfolder(deep, "L99")).toBe(true);
+    expect(canAddSubfolder(deep, "L100")).toBe(false);
+  });
+});
+
+describe("visibleNodes", () => {
+  // 50 top-level folders with 100 each: 5,050 folders.
+  const big = buildTree(
+    Array.from({ length: 50 }, (_, top) => [
+      folder(`T${top}`, `Top ${top}`),
+      ...Array.from({ length: 100 }, (_, child) => folder(`T${top}-${child}`, `Child ${child}`, `T${top}`)),
+    ]).flat(),
+  );
+  const folderRows = (rows: VisibleRow[]) => rows.flatMap((row) => (row.kind === "folder" ? [row] : []));
+
+  it("shows only the top level when nothing is open", () => {
+    const shown = folderRows(visibleNodes(big.roots, new Set(), null));
+    expect(shown).toHaveLength(50);
+    expect(shown.every((each) => !each.open && each.hasChildren)).toBe(true);
+  });
+
+  it("opens the folders above the one shown, and that folder itself", () => {
+    const tree = buildTree(chain(30));
+    const shown = folderRows(visibleNodes(tree.roots, new Set(), tree.byId.get("L10") ?? null));
+    expect(shown.map((each) => each.node.folder.name)).toEqual(chain(11).map((each) => each.name));
+    expect(shown[9]?.open).toBe(true); // L10 shows what is inside it
+    expect(shown[10]?.open).toBe(false);
+  });
+
+  it("opens a folder the person opened, and keeps a closed one closed", () => {
+    const shown = folderRows(visibleNodes(big.roots, new Set(["T3"]), null));
+    expect(shown).toHaveLength(150);
+    expect(shown[3]?.open).toBe(true);
+    expect(shown[4]?.node.folder.id).toBe("T3-0");
+  });
+
+  it("shows at most 200 of one folder's folders, then Show all for the rest", () => {
+    const wide = buildTree([folder("W", "Wide"), ...Array.from({ length: 450 }, (_, n) => folder(`W${n}`, `F${n}`, "W"))]);
+    const capped = visibleNodes(wide.roots, new Set(["W"]), null);
+    expect(CHILD_CAP).toBe(200);
+    expect(folderRows(capped)).toHaveLength(1 + CHILD_CAP);
+    expect(capped.at(-1)).toMatchObject({ kind: "more", hidden: 250 });
+    const all = visibleNodes(wide.roots, new Set(["W"]), null, new Set(["W"]));
+    expect(all).toHaveLength(451);
+    expect(all.some((row) => row.kind === "more")).toBe(false);
+  });
+});
+
+describe("collapseCrumbs", () => {
+  it("keeps the first and the last two of 30 and hides 27", () => {
+    const { head, hidden, tail } = collapseCrumbs(Array.from({ length: 30 }, (_, n) => n));
+    expect(head).toEqual([0]);
+    expect(hidden).toHaveLength(27);
+    expect(tail).toEqual([28, 29]);
+  });
+
+  it("hides nothing in a short path", () => {
+    expect(collapseCrumbs([1, 2, 3, 4])).toEqual({ head: [1, 2, 3, 4], hidden: [], tail: [] });
+  });
+});
+
+describe("shortPathLabel", () => {
+  const tree = buildTree(chain(40));
+
+  it("reads 'L1 / … / L39 / L40' 40 levels deep", () => {
+    expect(shortPathLabel(tree, "L40")).toBe("L1 / … / L39 / L40");
+  });
+
+  it("is the whole path when it is short", () => {
+    expect(shortPathLabel(tree, "L3")).toBe("L1 / L2 / L3");
+    expect(shortPathLabel(tree, "nope")).toBe("");
+  });
+});
+
+describe("searchFolders", () => {
+  const tree = buildTree([
+    folder("s", "Suppliers"),
+    ...Array.from({ length: 80 }, (_, n) => folder(`b${n}`, `Bills ${n}`, "s")),
+  ]);
+
+  it("finds names that hold the words, in any letter case, in tree order", () => {
+    expect(names(searchFolders(tree, "SUPP"))).toEqual(["Suppliers"]);
+    expect(names(searchFolders(tree, "bills 7"))[0]).toBe("Bills 7");
+  });
+
+  it("stops at 50, and finds nothing for an empty search", () => {
+    expect(searchFolders(tree, "bills")).toHaveLength(50);
+    expect(searchFolders(tree, "  ")).toEqual([]);
   });
 });

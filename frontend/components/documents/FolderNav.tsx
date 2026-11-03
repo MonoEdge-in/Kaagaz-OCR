@@ -8,15 +8,22 @@
 // documents screen renders it in both places. UI audit D12 (16 Oct 2026): a document's
 // name dragged from the list onto a folder (or All documents: the top level) moves it
 // there (`onDropDocument`); the folder under it is marked while it hovers.
+// Deep trees (#484, folders up to 100 levels): each list is drawn flat (visibleNodes), only
+// the open folders' folders, at most CHILD_CAP of one folder's with "Show all" for the rest.
+// A folder opens with its button, and the path to the folder shown is always open. Each row
+// says its level (aria-level); the indent stops after 8 levels and the level is then in words.
+// Past CHILD_CAP folders in all, "Find a folder" searches them by name.
 
 import Link from "next/link";
-import { useState } from "react";
-import type { DragEvent } from "react";
+import { useId, useState } from "react";
+import type { CSSProperties, DragEvent } from "react";
 import { departmentsOf, isDepartment } from "@/components/files/departments";
 import { FILES_TEXT } from "@/components/files/words";
 import { Icon } from "@/components/ui/Icon";
+import { formatNumber } from "@/lib/format";
 import { Icon as TreeIcon } from "@/components/ui/Icon/Icon";
-import type { FolderNode, FolderTree } from "./folderTree";
+import { CHILD_CAP, TOP_LIST, collapseCrumbs, folderPath, searchFolders, shortPathLabel, visibleNodes } from "./folderTree";
+import type { FolderNode, FolderTree, VisibleRow } from "./folderTree";
 import { NO_DEPARTMENT, libraryHref } from "./libraryQuery";
 import type { LibraryState } from "./libraryQuery";
 import styles from "./Library.module.css";
@@ -72,11 +79,45 @@ export function FolderNav({ tree, library, loading, error, onRetry, onNavigate, 
   // It is a place like a folder, so going anywhere else in the tree leaves it.
   const inOther = library.departmentId === NO_DEPARTMENT && library.folderId === null && !library.trash;
   const away = library.departmentId === NO_DEPARTMENT ? { ...library, departmentId: null } : library;
-  const item = (node: FolderNode) => (
-    <FolderItem key={node.folder.id} node={node} library={away} onNavigate={onNavigate} onDrop={onDropDocument} />
-  );
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
+  const [showAll, setShowAll] = useState<ReadonlySet<string>>(new Set());
+  const current = library.folderId === null ? null : (tree.byId.get(library.folderId) ?? null);
+  const toggle = (id: string, open: boolean) =>
+    setExpanded((before) => {
+      const next = new Set(before);
+      if (open) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  const rows = (nodes: readonly FolderNode[]) =>
+    visibleNodes(nodes, expanded, current, showAll).map((row) =>
+      row.kind === "folder" ? (
+        <FolderItem
+          key={row.node.folder.id}
+          row={row}
+          library={away}
+          onNavigate={onNavigate}
+          onDrop={onDropDocument}
+          onToggle={toggle}
+        />
+      ) : (
+        <li key={`more-${row.parent?.folder.id ?? TOP_LIST}`} className={styles.treeRow} style={indent(row.depth)}>
+          <span className={styles.treeToggle} aria-hidden="true" />
+          <button
+            type="button"
+            className={`btn btn-quiet ${styles.treeMore}`}
+            onClick={() => setShowAll((before) => new Set(before).add(row.parent?.folder.id ?? TOP_LIST))}
+          >
+            {row.parent
+              ? `Show all ${formatNumber(row.parent.children.length)} folders in ${row.parent.folder.name}`
+              : `Show all ${formatNumber(row.hidden + CHILD_CAP)} folders`}
+          </button>
+        </li>
+      ),
+    );
   return (
     <div className={styles.treeWrap}>
+      {tree.byId.size > CHILD_CAP && <FindFolder tree={tree} library={away} onNavigate={onNavigate} />}
       <ul className={styles.tree}>
         <li>
           <Link
@@ -98,12 +139,12 @@ export function FolderNav({ tree, library, loading, error, onRetry, onNavigate, 
               {FILES_TEXT.departments}
             </span>
             <ul className={styles.tree} aria-labelledby="tree-departments">
-              {departments.map(item)}
+              {rows(departments)}
             </ul>
           </li>
         )}
         {departments.length === 0 ? (
-          others.map(item)
+          rows(others)
         ) : (
           <li className={styles.treeGroup}>
             <Link
@@ -122,7 +163,7 @@ export function FolderNav({ tree, library, loading, error, onRetry, onNavigate, 
                   {FILES_TEXT.notInDepartment}
                 </span>
                 <ul className={styles.tree} aria-labelledby="tree-outside">
-                  {others.map(item)}
+                  {rows(others)}
                 </ul>
               </>
             )}
@@ -161,21 +202,43 @@ export function FolderNav({ tree, library, loading, error, onRetry, onNavigate, 
   );
 }
 
+/** The indent stops growing after this many levels; deeper rows say their level in words. */
+export const INDENT_LEVELS = 8;
+
+/** A tree row's indent: one step a level, none past INDENT_LEVELS. */
+export const indent = (depth: number) => ({ "--depth": Math.min(depth - 1, INDENT_LEVELS) }) as CSSProperties;
+
 function FolderItem({
-  node,
+  row,
   library,
   onNavigate,
   onDrop,
+  onToggle,
 }: {
-  node: FolderNode;
+  row: Extract<VisibleRow, { kind: "folder" }>;
   library: LibraryState;
   onNavigate(placeName: string): void;
   onDrop: FolderNavProps["onDropDocument"];
+  onToggle(id: string, open: boolean): void;
 }) {
+  const { node, open, hasChildren } = row;
   const here = library.folderId === node.folder.id;
   const target = useDropTarget(node.folder.id, node.folder.name, onDrop);
   return (
-    <li>
+    <li className={styles.treeRow} style={indent(node.depth)} aria-level={node.depth}>
+      {hasChildren ? (
+        <button
+          type="button"
+          className={styles.treeToggle}
+          aria-expanded={open}
+          aria-label={`${open ? "Hide" : "Show"} folders in ${node.folder.name}`}
+          onClick={() => onToggle(node.folder.id, !open)}
+        >
+          <TreeIcon name={open ? "chev-down" : "chev-right"} size="sm" />
+        </button>
+      ) : (
+        <span className={styles.treeToggle} aria-hidden="true" />
+      )}
       <Link
         href={libraryHref({ ...library, folderId: node.folder.id, trash: false })}
         scroll={false}
@@ -187,14 +250,97 @@ function FolderItem({
       >
         <TreeIcon name={isDepartment(node.folder) ? "department" : "folder"} size="sm" className={styles.treeIcon} />
         {node.folder.name}
+        {node.depth > INDENT_LEVELS && <span className={styles.treeLevel}>Level {node.depth}</span>}
       </Link>
-      {node.children.length > 0 && (
-        <ul className={styles.subtree}>
-          {node.children.map((child) => (
-            <FolderItem key={child.folder.id} node={child} library={library} onNavigate={onNavigate} onDrop={onDrop} />
+    </li>
+  );
+}
+
+/** "Find a folder": past CHILD_CAP folders, up to 50 whose names hold the words, each with its path. */
+function FindFolder({
+  tree,
+  library,
+  onNavigate,
+}: {
+  tree: FolderTree;
+  library: LibraryState;
+  onNavigate(placeName: string): void;
+}) {
+  const id = useId();
+  const [words, setWords] = useState("");
+  const found = searchFolders(tree, words);
+  return (
+    <div className={styles.treeFind}>
+      <label htmlFor={id} className="visually-hidden">
+        Find a folder
+      </label>
+      <input
+        id={id}
+        className="input"
+        type="search"
+        placeholder="Find a folder"
+        value={words}
+        autoComplete="off"
+        onChange={(event) => setWords(event.target.value)}
+      />
+      {words.trim() !== "" && (
+        <ul className={styles.tree} aria-label="Folders found">
+          {found.length === 0 && <li className={`muted ${styles.note}`}>No folder has that name.</li>}
+          {found.map((node) => (
+            <li key={node.folder.id}>
+              <Link
+                href={libraryHref({ ...library, folderId: node.folder.id, trash: false })}
+                scroll={false}
+                className={styles.treeLink}
+                title={folderPath(tree, node.folder.id)
+                  .map((folder) => folder.name)
+                  .join(" / ")}
+                onClick={() => onNavigate(node.folder.name)}
+              >
+                {shortPathLabel(tree, node.folder.id)}
+              </Link>
+            </li>
           ))}
         </ul>
       )}
+    </div>
+  );
+}
+
+/**
+ * The folder path above the place heading: All documents, then the folders above this one.
+ * Deep down (#484) only the first and the last two show; the ones between fold into
+ * "Show 26 more folders", which opens to list them as links.
+ */
+export function FolderCrumbs({ tree, library, folderId }: { tree: FolderTree; library: LibraryState; folderId: string }) {
+  const above = folderPath(tree, folderId).slice(0, -1);
+  const { head, hidden, tail } = collapseCrumbs(above);
+  const crumb = (folder: { id: string; name: string }) => (
+    <li key={folder.id}>
+      <Link href={libraryHref({ ...library, folderId: folder.id })} scroll={false}>
+        {folder.name}
+      </Link>
     </li>
+  );
+  return (
+    <nav aria-label="Folder path" className={styles.crumbs}>
+      <ol>
+        <li>
+          <Link href={libraryHref({ ...library, folderId: null, subfolders: false })} scroll={false}>
+            All documents
+          </Link>
+        </li>
+        {head.map(crumb)}
+        {hidden.length > 0 && (
+          <li>
+            <details className={styles.crumbsMore}>
+              <summary>Show {hidden.length} more folders</summary>
+              <ol>{hidden.map(crumb)}</ol>
+            </details>
+          </li>
+        )}
+        {tail.map(crumb)}
+      </ol>
+    </nav>
   );
 }
