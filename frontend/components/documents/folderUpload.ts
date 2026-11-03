@@ -60,7 +60,7 @@ export type FolderEvent =
   | { type: "counts"; id: string; summary: FolderUploadSummary }
   | { type: "sending"; id: string; itemId: string; name: string; fraction: number }
   | { type: "sent"; id: string; itemId: string; outcome: "stored" | "duplicate" | "failed" }
-  | { type: "notSent"; id: string; itemId: string; name: string; message: string; retry: boolean }
+  | { type: "notSent"; id: string; itemId: string; name: string; message: string; retry: boolean; item: FolderUploadItem }
   | { type: "retrying"; id: string; count: number }
   | { type: "remove"; id: string };
 
@@ -143,10 +143,10 @@ export async function startFolderUpload(
 
 const online = () => typeof navigator === "undefined" || navigator.onLine !== false;
 
-/** Send every item still waiting, each to its own item, matched to the pick by path_key. */
+/** Send every item still waiting (or only these, for Retry), each to its own item, matched to the pick by path_key. */
 export async function sendWaiting(
   api: FolderUploadApi,
-  args: { id: string; userId: string; source: FolderSource },
+  args: { id: string; userId: string; source: FolderSource; only?: readonly FolderUploadItem[] },
   emit: (event: FolderEvent) => void,
   stopped: () => boolean,
 ): Promise<void> {
@@ -163,7 +163,7 @@ export async function sendWaiting(
     const at = keys.get(item.path_key);
     const file = at === undefined ? undefined : source.picked.files[at];
     const notSent = (message: string, retry: boolean) =>
-      emit({ type: "notSent", id, itemId: item.id, name: item.name, message, retry });
+      emit({ type: "notSent", id, itemId: item.id, name: item.name, message, retry, item });
     if (!file) return notSent(`This file isn’t in the folder you chose. Choose “${root}” again with all its files.`, false);
     if (file.size !== item.size) {
       return notSent(`This file changed after you chose the folder. Choose “${root}” again to send it as it is now.`, false);
@@ -191,7 +191,8 @@ export async function sendWaiting(
   }
 
   try {
-    for (let after = -1; !halted(); ) {
+    if (args.only) await Promise.all(args.only.map((item) => slots(() => sendOne(item))));
+    for (let after = -1; !args.only && !halted(); ) {
       const page = await api.items(id, "waiting", after, ITEMS_PAGE);
       await Promise.all(page.items.map((item) => slots(() => sendOne(item))));
       if (page.next_after === null) break;
@@ -229,6 +230,7 @@ export interface FolderUploadView {
   reading: number;
   ready: number;
   problem: number; // stored, but its reading failed or was refused
+  unlisted: number; // declared at the start but never registered (listing stopped part way)
   sending: SendingRow[]; // at most FOLDER_UPLOADS_AT_ONCE
   phase: FolderPhase;
   message: string | null;
@@ -290,6 +292,7 @@ export function folderUploadsReducer(
       reading: 0,
       ready: 0,
       problem: 0,
+      unlisted: 0,
       sending: [],
       phase: "planning",
       message: null,
@@ -327,6 +330,7 @@ export function folderUploadsReducer(
         reading: summary.reading,
         ready: summary.ready,
         problem: summary.problem,
+        unlisted: Math.max(0, summary.file_count - summary.waiting - summary.stored - summary.duplicate - summary.failed),
       };
       break;
     }

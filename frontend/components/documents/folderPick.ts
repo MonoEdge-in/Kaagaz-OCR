@@ -39,6 +39,9 @@ export function nameProblem(name: string): "long" | "hidden" | null {
   return [...name].length > FOLDER_NAME_MAX ? "long" : null;
 }
 
+/** The name without its hidden characters, to show in a message. */
+export const visibleName = (name: string) => name.replace(new RegExp(HIDDEN_CHARACTERS.source, "gu"), "");
+
 export interface Picked {
   rootName: string;
   files: File[]; // kept by the caller in a ref, never in React state

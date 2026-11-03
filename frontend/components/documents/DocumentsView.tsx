@@ -110,6 +110,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
   const inputRef = useRef<HTMLInputElement>(null);
   // "Upload new version": its own file input, and the document it is for.
   const versionInputRef = useRef<HTMLInputElement>(null);
+  const sortInputRef = useRef<HTMLInputElement>(null);
   const versionOf = useRef<DocumentSummary | null>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const viewKey = libraryHref(library);
@@ -152,7 +153,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
   // undone: the words once Undo worked ("Moved back.", "Restored from Trash.").
   const [toast, setToast] = useState<{ message: string; undo: () => Promise<void>; undone: string } | null>(null);
   // The shell's one upload queue and tray (D-12); this screen adds files into the folder shown.
-  const { uploads, setTrayOpen } = useSharedUploads(() => setReload((n) => n + 1));
+  const { uploads, setTrayOpen, folders: folderPicking } = useSharedUploads(() => setReload((n) => n + 1));
   const filtered = isFiltered(library);
   // File management: the people for the Owner filter, List or Grid (per person, F5), the
   // department picked for uploads outside any folder (F2), and the file waiting for its note (V9).
@@ -304,6 +305,17 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
   const department = departmentChoice === undefined ? lastDepartment(departments) : departmentChoice;
 
   const openPicker = () => inputRef.current?.click();
+  // #484: a whole folder (picked or dropped) keeps its structure, inside the folder shown at first.
+  const dropFolders = (entries: FileSystemDirectoryEntry[]) => folderPicking.drop(entries, library.folderId);
+  // Option 2, "Let Kaagaz sort them": loose files only, with no folder and no department, so
+  // auto-filing reads each one and files it, making the folders it needs.
+  function onChooseToSort(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files ?? []);
+    event.target.value = "";
+    if (files.length === 0) return;
+    setTrayOpen(true);
+    void uploads.addFiles(files);
+  }
   const addFiles = (files: File[]) => {
     setTrayOpen(true);
     void uploads.addFiles(files, uploadInto, uploadInto === undefined ? (department ?? undefined) : undefined);
@@ -486,6 +498,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
       variant="page"
       limits={uploads.limits}
       onFiles={addFiles}
+      onFolders={dropFolders}
       enabled={canUpload && view !== "empty"}
       className={`page ${libraryStyles.libraryPage}`}
     >
@@ -508,6 +521,19 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
         accept={ACCEPT_ATTRIBUTE}
         tabIndex={-1}
         onChange={onChoose}
+      />
+      <label htmlFor="sort-input" className="visually-hidden">
+        Files for Kaagaz to sort
+      </label>
+      <input
+        ref={sortInputRef}
+        id="sort-input"
+        className="visually-hidden"
+        type="file"
+        multiple
+        accept={ACCEPT_ATTRIBUTE}
+        tabIndex={-1}
+        onChange={onChooseToSort}
       />
       <label htmlFor="version-input" className="visually-hidden">
         File for the new version
@@ -589,6 +615,15 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
                 {library.folderId === null && (
                   <DepartmentPicker departments={departments} value={department} onChange={pickDepartment} />
                 )}
+                {/* #484: a whole folder, or loose files for Kaagaz to sort; Read with stays last. */}
+                <button type="button" className="btn btn-quiet" onClick={() => folderPicking.pick(library.folderId)}>
+                  Upload a folder
+                </button>
+                {uploads.limits.sort_available && (
+                  <button type="button" className="btn btn-quiet" onClick={() => sortInputRef.current?.click()}>
+                    Let Kaagaz sort files
+                  </button>
+                )}
                 {readerSelect}
               </div>
             )}
@@ -634,6 +669,7 @@ export function DocumentsView({ library, startQ = "" }: { library: LibraryState;
                   variant="full"
                   limits={uploads.limits}
                   onFiles={addFiles}
+                  onFolders={dropFolders}
                 >
                   <EmptyState
                     icon="file"
