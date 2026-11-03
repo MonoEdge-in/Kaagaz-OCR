@@ -31,10 +31,10 @@ from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.names import DOCUMENT_NAME_MAX, FOLDER_NAME_MAX, upload_name
 from kaagaz.api.routers.documents import _same_user, _upload_policy
-from kaagaz.api.views import iso
+from kaagaz.api.views import folder_upload_item, iso
 from kaagaz.db import audit
 from kaagaz.db import folder_upload_items as items_sql
-from kaagaz.db.folder_upload_items import ItemRow, NewItem, Summary
+from kaagaz.db.folder_upload_items import NewItem, Summary
 from kaagaz.db.folder_uploads import (
     GIB,
     MOST_FILES,
@@ -235,7 +235,7 @@ def register_items(upload_id: uuid.UUID, body: RegisterBody, user: User, context
         except items_sql.ItemsRefused as refused:
             status = {"not_found": 404, "bad_request": 400}.get(refused.code, 409)
             raise ApiError(status, refused.code, _words(refused.code, limits) or None) from None
-    return {"items": [item_json(row) for row in rows]}
+    return {"items": [folder_upload_item(row) for row in rows]}
 
 
 @router.get("/folder-uploads")
@@ -273,32 +273,8 @@ def list_folder_upload_items(
             conn, customer_id, str(upload_id), view=view, after_seq=after, limit=limit
         )
     return {
-        "items": [item_json(row) for row in rows],
+        "items": [folder_upload_item(row) for row in rows],
         "next_after": rows[-1].seq if len(rows) == limit else None,
-    }
-
-
-def item_json(row: ItemRow) -> dict[str, Any]:
-    """``FolderUploadItem``: the item, and its document's state (null with none, or one deleted)."""
-    document = None
-    if row.document_status is not None:
-        document = {
-            "status": row.document_status,
-            "failure_code": row.document_failure_code,
-            "folder_id": row.document_folder_id,
-            "in_trash": row.in_trash,
-        }
-    return {
-        "id": row.id,
-        "seq": row.seq,
-        "path_key": row.path_key,
-        "name": row.name,
-        "folder_id": row.folder_id,
-        "size": row.size,
-        "state": row.state,
-        "failure_code": row.failure_code,
-        "document_id": row.document_id,
-        "document": document,
     }
 
 

@@ -125,6 +125,18 @@ _CREATE = (
     "INSERT INTO folders (customer_id, parent_id, name, created_by, autofile_key, kind)"
     " VALUES (:c, :p, :name, :u, :k, :kind) RETURNING id"
 )
+# The organisation's switch, or its grant and an "on" level for it or the uploader (:by), on
+# ``customers``: the insert's rule for a new upload (``PgDocuments.add_if_absent``) and
+# ``applies``', so the two can't differ.
+APPLIES = (
+    "(autofile_on OR (autofile_granted AND EXISTS (SELECT 1 FROM ai_task_settings s"
+    " WHERE s.customer_id = :c AND s.task = 'autofile' AND s.level = 'on'"
+    " AND (s.user_id IS NULL OR s.user_id = :by))))"
+)
+_APPLIES = (
+    "SELECT " + APPLIES + " AS pending,"  # noqa: S608 - a fixed fragment, APPLIES
+    " autofile_on, autofile_granted, CAST(:by AS uuid) AS uploaded_by FROM customers WHERE id = :c"
+)
 _DEPARTMENTS = (
     "SELECT id, name FROM folders"
     " WHERE customer_id = :c AND parent_id IS NULL AND kind = 'department' ORDER BY lower(name), id"
@@ -239,6 +251,13 @@ def file_document(conn: Connection, customer_id: str, document_id: str) -> str |
         details={"folder_id": folder},
     )
     return FILED
+
+
+def applies(conn: Connection, customer_id: str, user_id: str) -> bool:
+    """Would this user's upload with no folder be filed by its type ("Let Kaagaz sort them",
+    #484)? The insert's rule marks it pending and ``_filing_on`` files it. Three statements."""
+    row = conn.execute(text(_APPLIES), {"c": customer_id, "by": user_id}).mappings().one()
+    return bool(row["pending"]) and _filing_on(conn, customer_id, row)
 
 
 def _filing_on(conn: Connection, customer_id: str, state: RowMapping) -> bool:

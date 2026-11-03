@@ -112,13 +112,15 @@ class UploadService:
         folder_id: str | None = None,
         ocr_choice: str | None = None,
         batch_id: str | None = None,
+        keep_place: bool = False,
     ) -> UploadResult:
         """``display_name`` must already be cleaned by the caller (the API).
         ``folder_id`` files a new document there (None: the top level); a
         duplicate stays where it is. ``ocr_choice`` is the scan reader the API
         checked (None: Auto); a duplicate keeps the one it was read with.
         ``batch_id`` is the drop the API checked (PRD 5 Q1; None: in none); a
-        duplicate stays in its own."""
+        duplicate stays in its own. ``keep_place`` (a folder upload's file, #484): it is never
+        auto-filed out of ``folder_id``."""
         return self._accept(
             customer_id,
             stream,
@@ -128,6 +130,7 @@ class UploadService:
             ocr_choice=ocr_choice,
             batch_id=batch_id,
             add=self._repository.add_if_absent,
+            keep_place=keep_place,
         )
 
     def accept_version(
@@ -174,6 +177,7 @@ class UploadService:
         ocr_choice: str | None,
         batch_id: str | None,
         add: Callable[[DocumentRecord], tuple[DocumentRecord, bool]],
+        keep_place: bool = False,
     ) -> UploadResult:
         """The steps in the module docstring; ``add`` records the new document."""
         if not isinstance(customer_id, str) or not customer_id:
@@ -208,6 +212,7 @@ class UploadService:
                 folder_id=folder_id,
                 ocr_choice=ocr_choice,
                 batch_id=batch_id,
+                keep_place=keep_place,
             )
             # The server's own count picks the lane; it leaves the file at its start.
             express = self._express_max_pages > 0 and goes_express(
