@@ -260,6 +260,29 @@ Keep an offline copy of `.env` and `s3.json` in a password manager. The EBS
 snapshots hold the secrets too, so never share or copy a snapshot out. The Wake
 Lambda's `INSTANCE_ID` and `WAKE_TOKEN` live only in the Lambda console.
 
+**Rotating the keys, every 90 days (#481)**, and at once if one may have leaked
+(a key once sat in git: `open_router_key_replacement.txt`, removed on 3 Nov 2026, so
+rotate the OpenRouter key now). Write each date in the password manager's entry.
+A changed `.env` value reaches the containers with `dc up -d --no-deps api worker`
+(compose recreates them); then update the offline copy.
+
+| Secret | How | Who notices |
+|---|---|---|
+| `OPENROUTER_API_KEY` | A new key on openrouter.ai with the same credit limit and data settings, into `.env`, restart; `dc run --rm worker python -m kaagaz.cli verify-models` says PASS; then delete the old key | Nobody |
+| `MISTRAL_API_KEY` | The same on console.mistral.ai; check zero data retention still covers the account before `MISTRAL_ZDR_APPROVED` stays true | Nobody |
+| `SESSION_SECRET` | `openssl rand -base64 48`, at a quiet time, restart | Everyone, operators too, is signed out, and unexpired emailed links signed with it (confirm your email) stop working: say so first |
+| `TOTP_ENCRYPTION_KEY` | Not the same as `SESSION_SECRET`. Nothing re-encrypts the stored two-step secrets yet, so a new key leaves every one unreadable: after it, run `reset-admin-2fa --email` for each admin and `reset-operator-2fa --email` for each operator (at a terminal), and each enrols again. Until a re-seal command exists (proposed in #481: open each secret with the old key, seal it with the new, one transaction per organisation), rotate this one only on suspicion | Every admin and operator enrols again |
+| `POSTGRES_PASSWORD` and `DATABASE_URL` | Postgres reads `POSTGRES_PASSWORD` only when its volume is new, so set it in the database first, through stdin (never a flag; `read -rs NEW` takes it unseen): `printf "ALTER ROLE kaagaz PASSWORD '%s';\n" "$NEW" \| dc exec -T postgres psql -q -U kaagaz -d kaagaz`, then both lines of `.env`, restart. After #479, the same for each login | Nobody (a few seconds) |
+| `STORAGE_ACCESS_KEY`, `STORAGE_SECRET_KEY`, and the `STORAGE_ADMIN_` pair | Add a second entry to the identity's `credentials` in `s3.json`, `dc up -d --no-deps --force-recreate seaweedfs`, the new pair into `.env`, restart; then remove the old entry and recreate seaweedfs again | Nobody (seconds of storage restart) |
+| `GOOGLE_CLIENT_SECRET` | Google Cloud console, the OAuth client: add a secret (two may be active), into `.env`, restart, sign in with Google once, then disable the old one | Nobody |
+| SES (`EMAIL_FROM`) | No key: the server's role sends, and AWS rotates its credentials itself. Check its policy allows `ses:SendEmail` from `EMAIL_FROM` only, and that no SMTP user exists | Nobody |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | Laptop-only stand-ins for ElasticMQ; never set on the server (its role is used) | Nobody |
+
+Outside `.env`: `WAKE_TOKEN` (`openssl rand -hex 24` in the Lambda console; the old
+link then gives 404, so send people the new one), and the backup key pair (section 6,
+"Backups off the server"): a new pair only if the private key may have leaked, keeping
+the old key 35 days to read the backups made before.
+
 **The server, once.** Through Session Manager, as `ubuntu` (`sudo -iu ubuntu`):
 
 1. The host checks of "The host, once" above: `docker compose version` 2.24.4
