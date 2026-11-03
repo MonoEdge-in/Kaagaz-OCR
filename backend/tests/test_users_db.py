@@ -49,6 +49,7 @@ ADMIN_COLUMNS = {
     "must_change_password",
     "session_version",
     "delete_forever_allowed_at",
+    "two_step_required",  # 0068, #481
 }
 
 # --- helpers ---------------------------------------------------------------------------
