@@ -584,6 +584,12 @@ The demo users are `admin@`, `reviewer@` and `member@` on `sharma-traders.exampl
 - Check (screen): Documents shows name, status chip, type, size, uploaded and by; chips move from Checking to Reading to Ready by themselves (a request every 3 seconds while anything is in progress); search and paging work; Delete asks "Delete this document for everyone?".
 - Tests: `test_api_documents.py`; `frontend/tests/shell-documents.test.ts`, `format.test.ts`.
 
+**14b. Upload a whole folder (#484)**
+- Check (API): `POST $API/folder-uploads` with the folder list, then `POST $API/folder-uploads/<id>/items` (pages of 1,000), then each file to `POST $API/documents?folder_upload_item_id=<item>`; `GET $API/folder-uploads/<id>` for progress.
+- Expect: the same folders, at any depth up to 100; each file in its own folder, never auto-filed; a retry or a second send of an item stores nothing new; a deleted folder gives `folder_gone`, never the top level. Limits: `GET/PUT /api/operator/folder-upload-limits` (a fresh code).
+- Tests: `test_api_folder_uploads.py`, `test_api_folder_upload_files.py`, `test_folder_uploads_plan_db.py`, `test_isolation_*folder_uploads.py`.
+- Load test (not in CI, hours; the laptop stack without `OPENROUTER_API_KEY`): `LOADTEST_PASSWORD=... PROBE_PASSWORD=... .venv/Scripts/python.exe -m scripts.load_folder_upload --email <member> --password-env LOADTEST_PASSWORD --probe-email <member of another organisation> --probe-password-env PROBE_PASSWORD`. It prints PASS or FAIL for each bar.
+
 **15. Document viewer**
 - Check (screen): open a PDF, click a value in "Values found"; open p.csv.
 - Expect: the viewer jumps to the value's page and draws a highlight box on it; zoom works from 50% to 300%. A spreadsheet shows a cell grid with the value's cell highlighted, 200 rows at a time. Page images and cells come from `/documents/<id>/pages/<n>/image` and `/cells`.
