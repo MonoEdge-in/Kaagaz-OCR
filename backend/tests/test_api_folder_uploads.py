@@ -90,6 +90,7 @@ def test_a_plan_makes_the_folders_in_order_and_audits_counts_and_ids_only(db: Da
         "folders_merged": 0,
         "skipped": 1,
         "target": "folder",
+        "only_new": False,
     }
 
 

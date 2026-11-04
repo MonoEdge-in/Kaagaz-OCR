@@ -94,3 +94,17 @@ def test_limits_stay_inside_their_ceilings_and_an_org_row_names_one(db: Database
     with pytest.raises(DBAPIError):
         _owner(db, "UPDATE platform_ai_settings SET folder_upload_max_gb = 21", {})
     _owner(db, row, {"c": customer, "f": 200_000, "g": 20, "d": 50_000})
+
+
+def test_an_uploads_counted_files_start_at_0_and_are_never_negative(db: Database) -> None:
+    """ "Add new files only" (0071 in place): ``items_counted``, the files registered that
+    weren't already in Kaagaz."""
+    customer, user = new_customer(db)
+    with db.customer(customer) as conn:
+        folder = insert_folder(conn, customer, user, "A")
+    upload = new_folder_upload(db, customer, user, folder_ids=[folder])
+    counted = text("SELECT items_counted FROM folder_uploads WHERE id = :u")
+    with db.customer(customer) as conn:
+        assert conn.execute(counted, {"u": upload}).scalar_one() == 0
+    with pytest.raises(DBAPIError), db.customer(customer) as conn:
+        conn.execute(text("UPDATE folder_uploads SET items_counted = -1 WHERE id = :u"), {"u": upload})

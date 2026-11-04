@@ -61,6 +61,8 @@ switch that requires two-step sign-in for an organisation's admins (#481).
 Folder upload (0071, #484, NEEDS VRUSHIT'S APPROVAL): an upload, its folders and its items the
 app reads, adds and updates, never deletes (they go with the customer); an organisation's own
 limits it reads in four columns only, written by the operator's two functions (step-up).
+"Add new files only" (#484, 0071 in place): the upload counts the files it sends
+(``items_counted``); the browser's SHA-256 of a file is never kept, on the upload or its items.
 """
 
 import re
@@ -790,6 +792,32 @@ def test_the_app_may_update_only_the_upload_limit_and_the_auto_filing_switch_of_
         "autofile_on",
         "auto_approve_connections",
     }
+
+
+def _columns(db: Database, table: str) -> set[str]:
+    with db.system() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT attname::text FROM pg_attribute WHERE attrelid = CAST(:t AS regclass)"
+                " AND attnum > 0 AND NOT attisdropped"
+            ),
+            {"t": table},
+        ).scalars()
+        return set(rows)
+
+
+def test_a_folder_upload_keeps_counts_and_never_the_browsers_hash_of_a_file(db: Database) -> None:
+    """0071 (#484, "Add new files only"): ``items_counted``, the files registered that weren't
+    already in, is what the limit is checked against; no column keeps a file's SHA-256."""
+    assert _columns(db, "folder_uploads") == {
+        "id", "customer_id", "user_id", "target", "parent_folder_id", "root_folder_id", "source_name",
+        "root_name", "merge", "file_count", "total_bytes", "skipped_count", "folders_created",
+        "items_registered", "items_counted", "bytes_registered", "created_at", "updated_at",
+    }  # fmt: skip
+    assert _columns(db, "folder_upload_items") == {
+        "id", "customer_id", "folder_upload_id", "seq", "path_key", "name", "folder_id", "size_bytes",
+        "batch_id", "state", "failure_code", "document_id", "updated_at",
+    }  # fmt: skip
 
 
 _FOREIGN_KEYS = text(

@@ -6,8 +6,9 @@ or a "Continue upload" after a reload lands in the folder recorded here, never a
 
 * ``folder_uploads``: one upload, keyed (customer_id, id): the id is the browser's, so a
   reused id never clashes across customers. Where it went, the counts it declared and the
-  counts it registered (``items_registered``, ``bytes_registered``: the limits are checked
-  against these, never against a declared number alone).
+  counts it registered (``items_registered``: every file; ``items_counted`` and
+  ``bytes_registered``: those not already in Kaagaz, "Add new files only"). The limits are
+  checked against these, never against a declared number alone.
 * ``folder_upload_folders``: each folder of the plan by its path in the picked folder
   (``path_key``, SHA-256 of it) with its index in the last plan (``idx``) and the folder it
   became, so a re-plan reuses the same folder by path, whatever order the browser lists it
@@ -175,8 +176,10 @@ COMMENTS = {
             "total_bytes": "Bytes the browser said those files hold.",
             "skipped_count": "Hidden and system files skipped, never sent.",
             "folders_created": "Folders this upload made (merged ones not counted), across every plan.",
-            "items_registered": "Files registered so far; never above the limit.",
-            "bytes_registered": "Bytes of the files registered so far; never above the limit.",
+            "items_registered": "Files registered so far, those already in Kaagaz too; never above file_count.",
+            "items_counted": "Files registered so far that weren't already in Kaagaz; never above the limit.",
+            "bytes_registered": "Bytes of the files registered so far that weren't already in Kaagaz;"
+            " never above the limit.",
             "created_at": "When it was planned first.",
             "updated_at": "When it was planned or registered last.",
         },
@@ -259,6 +262,7 @@ UPGRADE = [
         skipped_count integer NOT NULL CHECK (skipped_count >= 0),
         folders_created integer NOT NULL DEFAULT 0 CHECK (folders_created >= 0),
         items_registered integer NOT NULL DEFAULT 0 CHECK (items_registered >= 0),
+        items_counted integer NOT NULL DEFAULT 0 CHECK (items_counted >= 0),
         bytes_registered bigint NOT NULL DEFAULT 0 CHECK (bytes_registered >= 0),
         created_at timestamptz NOT NULL DEFAULT now(),
         updated_at timestamptz NOT NULL DEFAULT now(),
