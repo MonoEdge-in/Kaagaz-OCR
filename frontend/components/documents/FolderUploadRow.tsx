@@ -54,6 +54,9 @@ export function FolderUploadRow({
 }) {
   const uploaded = view.stored + view.duplicates;
   const sending = view.phase === "sending";
+  // "Add new files only", while listing: the bar shows the files checked, and Stop stops it.
+  const checked = view.phase === "registering" ? view.checked : null;
+  const meter = checked ?? uploaded;
   const retryable = notSent.rows.some((row) => row.retry);
   const settled = view.phase === "done" || view.phase === "refused";
   const reading = readingLine(view);
@@ -69,9 +72,9 @@ export function FolderUploadRow({
           <progress
             className={styles.readMeter}
             max={view.total}
-            value={uploaded}
-            aria-label={`Files of “${view.rootName}” uploaded`}
-            aria-valuetext={`${formatNumber(uploaded)} of ${formatNumber(view.total)}`}
+            value={meter}
+            aria-label={`Files of “${view.rootName}” ${checked === null ? "uploaded" : "checked"}`}
+            aria-valuetext={`${formatNumber(meter)} of ${formatNumber(view.total)}`}
           />
         </div>
       )}
@@ -87,7 +90,7 @@ export function FolderUploadRow({
         </ul>
       )}
       <div className={styles.uploadsActions}>
-        {sending && (
+        {(sending || checked !== null) && (
           <button type="button" className="btn" onClick={actions.stop}>
             Stop
           </button>

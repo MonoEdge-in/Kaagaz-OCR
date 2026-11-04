@@ -200,8 +200,17 @@ export function buildManifest(pick: Picked, earlier?: Manifest): Manifest {
   return { folders, fileFolder, fileCount: pick.paths.length, totalBytes, height, badName };
 }
 
+const hex = (digest: ArrayBuffer) => Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+
 /** A file's id within its upload: the SHA-256 (hex) of its NFC path, root first. */
 export async function pathKey(path: string): Promise<string> {
-  const bytes = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(path.normalize("NFC"))));
-  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return hex(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(path.normalize("NFC"))));
+}
+
+/**
+ * The SHA-256 (hex) of a file's bytes, for "Add new files only". The caller hashes one file at a
+ * time and awaits each, so only one file's bytes are ever held (at most the upload limit).
+ */
+export async function fileSha256(file: File): Promise<string> {
+  return hex(await crypto.subtle.digest("SHA-256", await file.arrayBuffer()));
 }

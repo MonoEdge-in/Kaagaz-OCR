@@ -54,6 +54,7 @@ import type {
   FolderUploadItem,
   FolderUploadPlan,
   FolderUploadPlanBody,
+  FolderUploadPrevious,
   FolderUploadSummary,
   NewFolderItem,
   InsightsReply,
@@ -719,6 +720,9 @@ export const registerFolderItems = (id: string, userId: string, items: NewFolder
 export const getFolderUpload = (id: string) => request<FolderUploadSummary>("GET", folderUpload(id));
 /** This person's folder uploads of the last days, newest first. */
 export const listFolderUploads = () => request<{ items: FolderUploadSummary[] }>("GET", "/folder-uploads");
+/** This person's latest upload of a folder named `sourceName` whose folder is still there, or null. */
+export const getPreviousFolderUpload = (sourceName: string) =>
+  request<{ previous: FolderUploadPrevious | null }>("GET", `/folder-uploads/previous${query({ source_name: sourceName })}`);
 /** One page of a folder upload's items in seq order, after `after` (-1: from the start). */
 export const listFolderItems = (id: string, view: FolderItemView, after: number, limit: number) =>
   request<FolderItemsPage>("GET", `${folderUpload(id)}/items${query({ view, after, limit })}`);

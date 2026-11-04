@@ -10,11 +10,18 @@ import { describeAction } from "@/components/admin/logic";
 import { activityWords } from "@/components/activity/words";
 import { NO_FOLDER_PICKER, buildManifest, fromFileList } from "@/components/documents/folderPick";
 import type { Manifest } from "@/components/documents/folderPick";
-import { FolderReadingDialog, FolderUploadDialog, clashOf, dialogProblem, summaryLines } from "@/components/documents/FolderUploadDialog";
+import {
+  FolderReadingDialog,
+  FolderUploadDialog,
+  clashOf,
+  dialogProblem,
+  startChoice,
+  summaryLines,
+} from "@/components/documents/FolderUploadDialog";
 import { FolderUploadRow } from "@/components/documents/FolderUploadRow";
 import { buildTree } from "@/components/documents/folderTree";
 import { EMPTY_FOLDER_UPLOADS, folderUploadsReducer } from "@/components/documents/folderUpload";
-import type { FolderUploadItem, FolderUploadLimits, Folder } from "@/lib/types";
+import type { FolderUploadItem, FolderUploadLimits, FolderUploadPrevious, Folder } from "@/lib/types";
 
 const PAUSED =
   "Reading is paused. Your organisation has reached its daily page limit. This file will be read on its own when the limit resets, or sooner if it is raised.";
@@ -148,6 +155,79 @@ describe("the dialog", () => {
   });
 });
 
+describe("adding new files only", () => {
+  const pick = fromFileList([picked("A/B/one.pdf", 1024), picked("A/two.pdf", 1024)]);
+  if (!pick) throw new Error("empty");
+  const source = { picked: pick, manifest: buildManifest(pick) };
+  const HINT =
+    "Kaagaz checks each file on this computer and sends only the ones it doesn’t have. Files already in Kaagaz stay where they are.";
+  const dialog = (folders: Folder[], previous: FolderUploadPrevious | null = null, admin = false) =>
+    renderToStaticMarkup(
+      createElement(FolderUploadDialog, {
+        source,
+        tree: buildTree(folders),
+        folderId: null,
+        admin,
+        limits: LIMITS,
+        previous,
+        onStart: () => undefined,
+        onClose: () => undefined,
+      }),
+    );
+  const previous = (over: Partial<FolderUploadPrevious>): FolderUploadPrevious => ({
+    id: "f0",
+    target: "folder",
+    parent_folder_id: null,
+    root_folder_id: "a",
+    created_at: "2026-11-03T10:00:00Z",
+    ...over,
+  });
+
+  it("is offered, on, only when adding to a folder of the same name already there", () => {
+    const html = dialog([folder("a", "A")]);
+    expect(html).toMatch(/<input type="checkbox"[^>]*checked=""[^>]*\/>Add new files only/);
+    expect(html).toContain(HINT);
+    expect(html).toContain("Kaagaz will check 2 files and send only the new ones.");
+    expect(dialog([])).not.toContain("Add new files only");
+    expect(dialog([])).toContain("Kaagaz will read 2 files.");
+    // What Start sends: only new needs a folder to add to.
+    const clash = { merge: true, existing: "A", separate: "A (2)" };
+    expect(startChoice(clash, true, true)).toEqual({ merge: true, onlyNew: true });
+    expect(startChoice(clash, true, false)).toEqual({ merge: true, onlyNew: false });
+    expect(startChoice(clash, false, true)).toEqual({ merge: false, onlyNew: false }); // Keep separate
+    expect(startChoice({ ...clash, merge: false }, true, true)).toEqual({ merge: false, onlyNew: false }); // a plain folder, as a department
+    expect(startChoice(null, true, true)).toEqual({ merge: true, onlyNew: false }); // nothing there yet
+  });
+
+  it("preselects the place of this person's last upload of the folder, and says when it was", () => {
+    const folders = [folder("acc", "Accounts", null, "department"), folder("a", "A", "acc")];
+    const html = dialog(folders, previous({ parent_folder_id: "acc" }));
+    expect(html).toContain("You uploaded “A” here on 3 Nov 2026.");
+    expect(html).toContain("Add new files only");
+    expect(html).toContain(HINT);
+    expect(dialog(folders)).not.toContain("Add new files only"); // the top level has no “A”
+    expect(dialog(folders)).not.toContain("You uploaded");
+    // Its place was deleted since: the folder being viewed, as before.
+    expect(dialog(folders, previous({ parent_folder_id: "gone" }))).not.toContain("You uploaded");
+    // As a new department, for an admin.
+    const department = [folder("a", "A", null, "department")];
+    const asDepartment = dialog(department, previous({ target: "department" }), true);
+    expect(asDepartment).toMatch(/type="radio"[^>]*checked=""[^>]*\/>As a new department/);
+    expect(asDepartment).toContain("You uploaded “A” here on 3 Nov 2026.");
+    expect(asDepartment).toContain("Add new files only");
+  });
+
+  it("leaves out the file and size limits, which count only the new files, never the folders or depth", () => {
+    expect(dialogProblem(manifest({ fileCount: 60000 }), 0, LIMITS, true)).toBeNull();
+    expect(dialogProblem(manifest({ totalBytes: 7.2 * 1024 ** 3 }), 0, LIMITS, true)).toBeNull();
+    const many = Array.from({ length: 10001 }, (_, n) => ({ name: `F${n}`, parent: n === 0 ? null : 0 }));
+    expect(dialogProblem(manifest({ folders: many }), 0, LIMITS, true)).toBe(
+      "A folder upload can make at most 10,000 folders. This one has 10,001.",
+    );
+    expect(dialogProblem(manifest({ height: 6 }), 95, LIMITS, true)).toContain("101 levels deep");
+  });
+});
+
 describe("the tray's row for a folder upload", () => {
   const row = (phase: "sending" | "needs_pick" | "stopped", held = true) => {
     let state = folderUploadsReducer(EMPTY_FOLDER_UPLOADS, { type: "start", id: "u", rootName: "A", total: 5000 });
@@ -177,6 +257,34 @@ describe("the tray's row for a folder upload", () => {
     const html = row("sending");
     expect(html).toContain('aria-valuetext="1,240 of 5,000"');
     expect(html).toContain("Folder “A”: 1,240 of 5,000 uploaded");
+    expect(html).toContain(">Stop<");
+  });
+
+  it("shows the files checked on its bar, and Stop, while checking for files already in Kaagaz", () => {
+    let state = folderUploadsReducer(EMPTY_FOLDER_UPLOADS, { type: "start", id: "u", rootName: "A", total: 5000 });
+    state = folderUploadsReducer(state, { type: "phase", id: "u", phase: "registering" });
+    state = folderUploadsReducer(state, { type: "checked", id: "u", done: 1240 });
+    const html = renderToStaticMarkup(
+      createElement(FolderUploadRow, {
+        view: state.u!,
+        held: true,
+        notSent: { rows: [], total: 0 },
+        tree: buildTree([]),
+        limits: { pdf_bytes: 1, image_bytes: 1, sheet_bytes: 1, max_pages: 1, readers: [] },
+        actions: {
+          stop: () => undefined,
+          resume: () => undefined,
+          chooseAgain: () => undefined,
+          retry: () => undefined,
+          retryAll: () => undefined,
+          clear: () => undefined,
+          loadItems: async () => ({ items: [], next_after: null }),
+        },
+      }),
+    );
+    expect(html).toContain("Folder “A”: checking your files: 1,240 of 5,000");
+    expect(html).toContain('aria-label="Files of “A” checked"');
+    expect(html).toContain('aria-valuetext="1,240 of 5,000"');
     expect(html).toContain(">Stop<");
   });
 
@@ -299,5 +407,12 @@ describe("where a folder upload starts", () => {
     const shell = read("components/shell/Uploads.tsx");
     expect(shell).toContain("element.webkitdirectory = true");
     expect(shell).toContain("<FolderUploadRow");
+  });
+
+  it("asks for the last upload of a folder of that name before showing the dialog, and starts with only new", () => {
+    const shell = read("components/shell/Uploads.tsx");
+    expect(shell).toMatch(/getPreviousFolderUpload\(source\.picked\.rootName\)[\s\S]*?kind: "ready", source, folderId, previous/);
+    expect(shell).toContain("previous={pending.previous}");
+    expect(shell).toContain("folderUploads.start(pending.source, target, merge, onlyNew)");
   });
 });

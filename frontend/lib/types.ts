@@ -608,6 +608,7 @@ export interface FolderUploadPlanBody {
   file_count: number;
   total_bytes: number;
   skipped_count: number;
+  only_new?: boolean; // "Add new files only": the counts are checked against the ceilings, not the organisation's limits
 }
 
 /** The plan's reply: folder_ids[i] is the Kaagaz folder for manifest folder i. */
@@ -627,6 +628,7 @@ export interface NewFolderItem {
   folder_id: string;
   size: number;
   refused?: "unsupported_type"; // the server judges size, emptiness and names itself
+  sha256?: string; // "Add new files only": the SHA-256 (hex) of its bytes; a match comes back "duplicate", never sent
 }
 
 export type FolderItemFailure = "too_large" | "unsupported_type" | "empty_file" | "folder_gone" | "bad_name";
@@ -650,6 +652,15 @@ export interface FolderUploadItem {
     folder_id: string | null;
     in_trash: boolean;
   } | null;
+}
+
+/** GET /folder-uploads/previous: this person's latest upload of a folder of that name whose folder is still there. */
+export interface FolderUploadPrevious {
+  id: string;
+  target: "department" | "folder";
+  parent_folder_id: string | null;
+  root_folder_id: string;
+  created_at: string;
 }
 
 /** GET /folder-uploads/{id}/items: a page, and where the next starts (null: the last page). */
