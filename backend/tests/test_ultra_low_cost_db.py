@@ -37,6 +37,7 @@ NEEDS_GEMINI = {
     "code": "ulc_needs_gemini",
     "message": "Ultra low cost needs a Gemini model with a known price that can read with minimal thinking.",
 }
+NO_PRICE = "Its price isn't known yet. Refresh the model list."
 _LEDGER = (
     "INSERT INTO model_usage (customer_id, document_id, kind, model, cached, calls, pages, input_tokens,"
     " output_tokens, reasoning_tokens, cost_usd, cost_estimated, limit_hits, created_at)"
@@ -112,11 +113,23 @@ def test_it_needs_a_gemini_with_a_price_that_takes_minimal(db: Database, platfor
         body = {**ORG_BODY, "scan_models": [lead], "scan_default": lead, "scan_reader": "ultra_low_cost"}
         reply = _save(api, operator, client, path, body)
         assert reply.status_code == expected, reply.text
-        if expected == 409:
-            assert reply.json()["error"] == NEEDS_GEMINI
+        if expected == 409:  # the default scan model's reason, after the rule
+            name = next(
+                m["name"] for m in client.get("/api/operator/models").json()["items"] if m["id"] == lead
+            )
+            why = "It can't read with minimal thinking." if lead == no_minimal else NO_PRICE
+            message = f"{NEEDS_GEMINI['message']} The default scan model ({name}): {why}"
+            assert reply.json()["error"] == {**NEEDS_GEMINI, "message": message}
             assert client.get(path).json()["own"]["scan_reader"] is None  # nothing saved
     got = client.get(path).json()["own"]
     assert (got["scan_reader"], got["ulc_ceiling_paise"]) == ("ultra_low_cost", None)
+    # The catalogue says which can lead it, and why not, so the operator can choose.
+    listed = {m["id"]: m for m in client.get("/api/operator/models").json()["items"]}
+    assert [(listed[m]["ulc_ready"], listed[m]["ulc_why"]) for m in (no_minimal, unknown_call, minimal)] == [
+        (False, "It can't read with minimal thinking."),
+        (False, NO_PRICE),
+        (True, None),
+    ]
     # No Gemini of its own and OCR_MODEL not in the catalogue: refused, on the platform too.
     for where, body in ((path, ORG_BODY), ("/api/operator/ai-defaults", PLATFORM_BODY)):
         reply = _save(api, operator, client, where, {**body, "scan_reader": "ultra_low_cost"})

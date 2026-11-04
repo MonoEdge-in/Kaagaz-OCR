@@ -134,6 +134,27 @@ def test_a_known_price_a_call_that_is_not_0_still_leads() -> None:
     assert models.resolve_scan(conn.conn(), CUSTOMER, DOCUMENT, settings=GEMINI).lead.model == LEAD
 
 
+@pytest.mark.parametrize(
+    ("lead", "why"),
+    [
+        (row(LEAD, efforts=("minimal", "low"), price=(0.3, 2.5)), None),
+        (row("anthropic/claude-sonnet-5.5", efforts=("minimal",)), "Not a Gemini model."),
+        (
+            row(LEAD, efforts=("minimal",), price=(0, 2.5)),
+            "Its price isn't known yet. Refresh the model list.",
+        ),
+        (
+            row(LEAD, efforts=("minimal",), price=(0.3, 2.5), per_call=(0.0, None)),
+            "Its price isn't known yet. Refresh the model list.",
+        ),
+        (row(LEAD, efforts=("low", "high"), price=(0.3, 2.5)), "It can't read with minimal thinking."),
+    ],
+)
+def test_why_a_model_cant_lead_it_is_one_plain_reason(lead: dict[str, Any], why: str | None) -> None:
+    """The operator sees why a model can't be Ultra low cost's: the first of Gemini, price, minimal."""
+    assert models.ulc_why(lead) == why
+
+
 def test_ensemble_is_refused_like_mistral() -> None:
     conn = FakeConn(scan=ROWS, settings={**ULC, "ensemble": True}, document=_document("single", None, None))
     with pytest.raises(AiNotAllowed) as refused:

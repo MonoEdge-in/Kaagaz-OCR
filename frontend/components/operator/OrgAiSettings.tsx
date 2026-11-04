@@ -105,6 +105,8 @@ import {
   ULC_CEILING_PAISE,
   ULC_HIDDEN,
   ULC_HINT,
+  ULC_MODEL_LABEL,
+  ULC_NO_MODEL,
   VENDOR_NOT_ALLOWED,
   accuracyWords,
   aiBody,
@@ -149,12 +151,15 @@ import {
   savedText,
   scanModelsDiffer,
   scanSettings,
+  shownErrors,
   statusText,
   toggled,
   toggledLevel,
   tokensTooLow,
   tokensUnderAverage,
   tokensWords,
+  ulcModelPicked,
+  ulcModelText,
   ulcWords,
   withCost,
 } from "./models";
@@ -178,6 +183,9 @@ export function refusalOf(caught: unknown): { field: AiField | "code"; message: 
   if (!(caught instanceof ApiError)) return { field: "form", message };
   return { field: STEP_UP_CODES.has(caught.code) ? "code" : refusalField(caught.code), message };
 }
+
+/** Is a field's control in the form now (a hidden one's problem is said on the form's line). */
+export const onPage = (field: AiField) => document.getElementById(fieldId(field)) !== null;
 
 /** The first field with a problem, in the form's order, for the focus. */
 export function firstProblem(errors: AiErrors): AiField | null {
@@ -245,7 +253,7 @@ export function OrgAiSettings({ org, onClose, onSaved }: { org: Organisation; on
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (busy || !loaded || !draft || unchanged) return;
-    const found = aiErrors(draft, false, readerOf(draft, loaded.reply.defaults, loaded.reply.env, false));
+    const found = shownErrors(aiErrors(draft, false, readerOf(draft, loaded.reply.defaults, loaded.reply.env, false)), onPage);
     const badCode = codeError(code);
     setErrors(found);
     setCodeProblem(badCode);
@@ -580,6 +588,10 @@ export function AiFields(props: {
   const mistralModel = env.mistral_models.find((each) => each.id === mistralModelOf(draft, defaults, env, platform));
   const waiting = !platform && !env.mistral_ready && readerOf(saved, defaults, env, false) === "mistral";
   const readerId = fieldId("scan_reader");
+  const scanOffered = offered(catalogue, "scan", saved.scan_models);
+  // #488: the model ultra low cost reads with is the default scan model: the draft's own, or "" while it follows.
+  const ulcModel = draft.scan_models.length > 0 ? (draft.scan_default ?? "") : "";
+  const ulcNone = !scanOffered.some((model) => model.ulc_ready);
   return (
     <>
       <SectionBox title="Scanning" section="scan" {...section}>
@@ -659,6 +671,40 @@ export function AiFields(props: {
                   problemId={`${ceilingId}-error`}
                 />
               )}
+              {ulc && (
+                <div className="field">
+                  <label htmlFor="ai-ulc-model" className="label">
+                    {ULC_MODEL_LABEL}
+                  </label>
+                  <select
+                    id="ai-ulc-model"
+                    className="input"
+                    value={ulcModel}
+                    aria-describedby={ulcNone ? "ai-ulc-model-none" : undefined}
+                    onChange={(event) => event.target.value && onChange(ulcModelPicked(draft, event.target.value))}
+                  >
+                    {ulcModel === "" && (
+                      <option value="">
+                        {draft.scan_models.length > 0
+                          ? "Choose a model"
+                          : platform
+                            ? `The server's model (${env.scan_model})`
+                            : `Platform default (${from("scan_models")})`}
+                      </option>
+                    )}
+                    {scanOffered.map((model) => (
+                      <option key={model.id} value={model.id} disabled={!model.ulc_ready}>
+                        {ulcModelText(model)}
+                      </option>
+                    ))}
+                  </select>
+                  {ulcNone && (
+                    <span id="ai-ulc-model-none" className="hint">
+                      {ULC_NO_MODEL}
+                    </span>
+                  )}
+                </div>
+              )}
               {mistral ? (
                 <p className="hint">{GEMINI_HIDDEN}</p>
               ) : (
@@ -668,7 +714,7 @@ export function AiFields(props: {
                     area="scan"
                     title="Models its scans may be read with"
                     none={platform ? `None ticked: the server's model (${env.scan_model}).` : `None ticked: from platform defaults, ${from("scan_models")}.`}
-                    models={offered(catalogue, "scan", saved.scan_models)}
+                    models={scanOffered}
                     draft={draft}
                     errors={errors}
                     onChange={onChange}

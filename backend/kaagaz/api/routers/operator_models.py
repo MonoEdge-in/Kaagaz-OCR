@@ -875,11 +875,16 @@ def _needs_gemini(
         default = platform["scan_default"]
     with db.operator() as conn:
         catalogue = {row["id"]: row for row in models_sql.list_models(conn, operator.operator_id)}
-    lead = catalogue.get(default or "")
+    chosen = catalogue.get(default or "")
+    lead = chosen
     if lead is None or not models.ulc_priced(lead):
         lead = catalogue.get(settings.ocr_model)
     if lead is None or not models.ulc_priced(lead) or MINIMAL not in lead["efforts"]:
-        raise ApiError(*_REFUSALS["ulc_needs_gemini"])
+        status, code, message = _REFUSALS["ulc_needs_gemini"]
+        why = None if chosen is None else models.ulc_why(chosen)
+        if chosen is not None and why is not None:  # the default scan model's reason
+            message = f"{message} The default scan model ({chosen['name']}): {why}"
+        raise ApiError(status, code, message)
 
 
 def _share(part: int, whole: int) -> float | None:
@@ -1385,6 +1390,9 @@ def _model(row: RowMapping, settings: Settings) -> dict[str, Any]:
         # S1: a maker outside OPENROUTER_MODEL_VENDORS is never used, even when enabled
         # (google and anthropic by default, Tushar 15 Oct 2026).
         "vendor_allowed": vendor(row["id"]) in settings.openrouter_model_vendors,
+        # #488: can it lead Ultra low cost, and the one reason it can't (null: it can).
+        "ulc_ready": models.ulc_why(row) is None,
+        "ulc_why": models.ulc_why(row),
     }
 
 

@@ -585,6 +585,18 @@ def ulc_priced(row: Mapping[Any, Any]) -> bool:
     )
 
 
+def ulc_why(row: Mapping[Any, Any]) -> str | None:
+    """#488: why ``row`` (a catalogue row) can't lead Ultra low cost, one plain reason for the
+    operator; None when it can (a Gemini with a known price that takes minimal thinking)."""
+    if vendor(row["id"]) != ULC_VENDOR:
+        return "Not a Gemini model."
+    if not ulc_priced(row):
+        return "Its price isn't known yet. Refresh the model list."
+    if MINIMAL not in row["efforts"]:
+        return "It can't read with minimal thinking."
+    return None
+
+
 def ulc_ceiling(paise: int | None) -> UlcCeiling:
     """#488: the ceiling of one read of a page, ``paise`` (None: ULC_DEFAULT_PAISE) in dollars."""
     chosen = ULC_DEFAULT_PAISE if paise is None else paise

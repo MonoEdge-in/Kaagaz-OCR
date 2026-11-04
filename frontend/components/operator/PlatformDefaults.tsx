@@ -24,9 +24,22 @@ import { getAiDefaults, postScanCost, putAiDefaults } from "@/lib/api";
 import type { AiDefaults, OperatorModel } from "@/lib/types";
 import { LoadFailed } from "./LoadFailed";
 import { canCloseDialog, countText, operatorErrorMessage } from "./logic";
-import { CEILING_LABEL, COST_SAVING, KEEP_OWN, aiBody, aiErrors, costAsk, defaultsImpact, draftOf, inheritedText, readerOf, withCost } from "./models";
+import {
+  CEILING_LABEL,
+  COST_SAVING,
+  KEEP_OWN,
+  aiBody,
+  aiErrors,
+  costAsk,
+  defaultsImpact,
+  draftOf,
+  inheritedText,
+  readerOf,
+  shownErrors,
+  withCost,
+} from "./models";
 import type { AiDraft, AiErrors } from "./models";
-import { AiFields, CODE_ID, MistralStopped, fieldId, firstProblem, refusalOf } from "./OrgAiSettings";
+import { AiFields, CODE_ID, MistralStopped, fieldId, firstProblem, onPage, refusalOf } from "./OrgAiSettings";
 import admin from "@/components/admin/Admin.module.css";
 import styles from "./Operator.module.css";
 
@@ -161,7 +174,7 @@ function DefaultsDialog(props: {
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (busy) return;
-    const found = aiErrors(draft, true, readerOf(draft, reply.defaults, reply.env, true));
+    const found = shownErrors(aiErrors(draft, true, readerOf(draft, reply.defaults, reply.env, true)), onPage);
     const badCode = codeError(code);
     setErrors(found);
     setCodeProblem(badCode);

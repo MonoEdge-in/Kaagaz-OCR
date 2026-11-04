@@ -212,11 +212,12 @@ def test_a_price_is_per_million_and_must_fit_the_column() -> None:
     assert candidate(too_much, efforts=EFFORTS, today=TODAY) is None
 
 
-def test_a_price_a_request_and_an_image_are_dollars_and_unknown_when_left_out_or_bad() -> None:
+def test_a_price_a_request_and_an_image_are_dollars_free_when_left_out_and_unknown_when_bad() -> None:
     """#488 review (R3): pricing.request and pricing.image are dollars a call (a string, as
-    OpenRouter sends them, or a number). The fixture's lists send neither, and nothing says one
-    left out is free, so one left out or not a finite number at least 0 is None (not known); the
-    model stays a candidate."""
+    OpenRouter sends them, or a number). Changed on purpose (#488, 4 Nov 2026): OpenRouter leaves
+    them out of a priced model that charges none (every Gemini on the test server), so one left out
+    is 0; one sent that is not a finite number at least 0 is None (not known). Either way the model
+    stays a candidate."""
     tokens = {"prompt": "0.0000003", "completion": "0.0000025"}
     model = candidate(
         _with(pricing={**tokens, "request": "0.0001", "image": 0.001238}), efforts=EFFORTS, today=TODAY
@@ -224,8 +225,15 @@ def test_a_price_a_request_and_an_image_are_dollars_and_unknown_when_left_out_or
     assert model is not None and (model.price_request_usd, model.price_image_usd) == (0.0001, 0.001238)
     free = candidate(_with(pricing={**tokens, "request": "0", "image": "0"}), efforts=EFFORTS, today=TODAY)
     assert free is not None and (free.price_request_usd, free.price_image_usd) == (0.0, 0.0)
+    left_out = candidate(_with(pricing=tokens), efforts=EFFORTS, today=TODAY)
+    assert left_out is not None and (left_out.price_request_usd, left_out.price_image_usd) == (0.0, 0.0)
+    image_only = candidate(_with(pricing={**tokens, "image": "0.0000003"}), efforts=EFFORTS, today=TODAY)
+    assert image_only is not None and (image_only.price_request_usd, image_only.price_image_usd) == (
+        0.0,
+        3e-7,
+    )
     for bad in (None, "NaN", "Infinity", "-0.01", True, "a dollar", [1]):
-        given = {} if bad is None else {"request": bad, "image": bad}
+        given = {"request": bad, "image": bad}
         model = candidate(_with(pricing={**tokens, **given}), efforts=EFFORTS, today=TODAY)
         assert model is not None and (model.price_request_usd, model.price_image_usd) == (None, None), bad
     assert GOOD["pricing"].keys() == {"prompt", "completion"}  # OpenRouter's lists as faked: neither
