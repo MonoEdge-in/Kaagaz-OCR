@@ -157,7 +157,8 @@ FROM_0061 = {"email_links": (True, True, False, False)}
 # Connected accounts (0062, #457 phase 1): read, added and deleted; only the approval and
 # last-used columns may change (a column grant).
 FROM_0062 = {"user_identities": (True, True, False, True)}
-UPDATES_0062 = {"user_identities": {"status", "approved_at", "approved_by", "last_used_at"}}
+# Changed on purpose (#507, 0072): Google's hd, refreshed at each sign-in.
+UPDATES_0062 = {"user_identities": {"status", "approved_at", "approved_by", "last_used_at", "hosted_domain"}}
 # The reading pause (0066, #478): a day's counter is added and counted up (a column grant).
 FROM_0066 = {"reading_days": (True, True, False, False)}
 UPDATES_0066 = {"reading_days": {"pages", "cost_usd", "alerted_at"}}
@@ -786,6 +787,10 @@ def test_the_app_may_update_only_the_upload_limit_and_the_auto_filing_switch_of_
         "max_upload_mb",
         "autofile_on",
         "auto_approve_connections",
+        # Changed on purpose (#507, 0072): the org admin's Google rules.
+        "google_roles",
+        "google_only_roles",
+        "google_domains",
     }
 
 

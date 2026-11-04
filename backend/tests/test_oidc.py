@@ -195,3 +195,60 @@ def test_errors_never_carry_token_or_email(monkeypatch: pytest.MonkeyPatch) -> N
         _identity(token)
     assert str(refused.value) == "wrong_nonce"
     assert refused.value.args == ("wrong_nonce",)
+
+
+# --- the organisation's domains (#507) ---------------------------------------------------------
+
+
+def test_hd_is_read_in_lower_case_and_only_as_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    use_google(monkeypatch)
+    work = _identity(sign(claims_for("s", "a@sharmatraders.com", NONCE, NOW, hd=" SharmaTraders.COM ")))
+    personal = _identity(sign(claims_for("s", "a@gmail.com", NONCE, NOW)))
+    odd = _identity(sign(claims_for("s", "a@x.com", NONCE, NOW, hd=["x.com"])))
+    assert (work.hosted_domain, personal.hosted_domain, odd.hosted_domain) == (
+        "sharmatraders.com",
+        None,
+        None,
+    )
+
+
+def _who(email: str | None, hd: str | None, verified: bool = True) -> oidc.Identity:
+    return oidc.Identity(
+        provider="google",
+        issuer="https://accounts.google.com",
+        subject="s",
+        email=email,
+        email_verified=verified,
+        hosted_domain=hd,
+    )
+
+
+DOMAINS = ("sharmatraders.com", "sharma.in")
+
+
+@pytest.mark.parametrize(
+    ("who", "domains", "passes"),
+    [
+        (_who("ramesh@gmail.com", None), (), True),  # no domains: any account
+        (_who(None, None, False), (), True),
+        (_who("ramesh@sharmatraders.com", "sharmatraders.com"), DOMAINS, True),
+        (_who("ramesh@sharma.in", "sharma.in"), DOMAINS, True),
+        (_who("ramesh@sharmatraders.com", "sharmatraders.com"), ("SharmaTraders.com",), True),  # case
+        (_who("ramesh@sharmatraders.com", None), DOMAINS, False),  # no hd: a personal account
+        (_who("ramesh@sharmatraders.com", "sharmatraders.com", False), DOMAINS, False),  # unverified
+        (_who("ramesh@gmail.com", "sharmatraders.com"), DOMAINS, False),  # the email's domain outside
+        (_who("ramesh@sharmatraders.com", "evil.com"), DOMAINS, False),  # hd outside
+        (_who(None, "sharmatraders.com"), DOMAINS, False),  # hd alone is never enough
+        (_who("ramesh@sharmatraders.com.evil.com", "sharmatraders.com"), DOMAINS, False),
+    ],
+)
+def test_domain_ok_needs_hd_and_the_verified_emails_domain(
+    who: oidc.Identity, domains: tuple[str, ...], passes: bool
+) -> None:
+    assert oidc.domain_ok(who, domains) is passes
+
+
+def test_email_domain() -> None:
+    assert oidc.email_domain("Ramesh@SharmaTraders.com") == "sharmatraders.com"
+    assert oidc.email_domain(None) is None
+    assert oidc.email_domain("no-at-sign") is None

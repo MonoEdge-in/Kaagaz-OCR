@@ -32,7 +32,7 @@ def test_another_customers_connections_cannot_be_read_approved_or_removed(db: Da
         assert identities.remove(conn, customer_a, identity_id) is None
         assert identities.remove(conn, customer_b, identity_id) is None
         assert identities.remove_all(conn, customer_a, member_a) == 0
-        identities.touch_used(conn, customer_a, identity_id, NOW)
+        identities.touch_used(conn, customer_a, identity_id, NOW, hosted_domain=None)
     with pytest.raises(DBAPIError), db.customer(customer_b) as conn:  # WITH CHECK: not A's row
         identities.add(
             conn,

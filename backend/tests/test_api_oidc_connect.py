@@ -296,7 +296,8 @@ def test_audit_identity_linked_has_no_email_or_sub(db: Database, google: FakeGoo
             "auth.identity_linked",
             "user",
             member.user_id,
-            {"provider": "google", "identity_id": identity_id, "status": "pending"},
+            # Changed on purpose (#507): the email's domain, never the email itself.
+            {"provider": "google", "identity_id": identity_id, "status": "pending", "domain": "gmail.com"},
         )
     ]
     assert subject not in str(api.audit_rows(member.customer_id))
@@ -384,7 +385,8 @@ def test_remove_needs_password_and_keeps_password_sign_in_working(db: Database, 
     assert api.admin_login(elsewhere, member.email).status_code == 200
     removed = member.client.post(path, json={"password": PASSWORD}, headers=CSRF)
     assert removed.status_code == 200, removed.text
-    assert removed.json() == {"providers": ["google"], "identities": []}
+    rules = {"google_only": False, "domains": []}  # Changed on purpose (#507): the rules for Ways to sign in
+    assert removed.json() == {"providers": ["google"], "identities": [], "rules": rules}
     assert _mine(api, member) == []
     assert member.client.get("/api/auth/me").status_code == 200  # this browser stays in
     assert elsewhere.get("/api/auth/me").status_code == 401  # every other one is signed out

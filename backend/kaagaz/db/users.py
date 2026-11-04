@@ -83,6 +83,13 @@ class AttemptRow:
     customer_active: bool
     # A sign-up waiting for an operator's approval (0061): refused with its own 403.
     customer_pending: bool = False
+    # Google sign-in (#507, ``_GOOGLE_COLUMNS``): the organisation's switch, else the platform's;
+    # the role may use Google; the role uses Google only; a passing link; the domains.
+    google_on: bool = True
+    google_allowed: bool = True
+    google_only: bool = False
+    google_linked: bool = False
+    google_domains: tuple[str, ...] = ()
 
 
 def login_lookup(conn: Connection, email: str) -> LoginRow | None:
@@ -210,17 +217,39 @@ def peek_attempt(conn: Connection, customer_id: str, user_id: str, *, now: datet
     return None if row is None else _attempt(row)
 
 
+# Google sign-in for the user ``u`` (#507). ``google_on``: the organisation's own switch, else the
+# platform's (the GOOGLE_SIGNIN_ENABLED master switch is the caller's). ``google_linked``: a
+# passing link, approved and, while the organisation lists domains, both its ``hd`` and its
+# email's domain listed. Read by the sign-ins (``_ATTEMPT_COLUMNS``) and every request
+# (``session_user``).
+_GOOGLE_COLUMNS = (
+    " COALESCE((SELECT gc.google_signin FROM customers gc WHERE gc.id = u.customer_id),"
+    " (SELECT gp.google_signin FROM platform_ai_settings gp LIMIT 1), true) AS google_on,"
+    " EXISTS (SELECT 1 FROM customers gc WHERE gc.id = u.customer_id"
+    " AND u.role = ANY (gc.google_roles)) AS google_allowed,"
+    " EXISTS (SELECT 1 FROM customers gc WHERE gc.id = u.customer_id"
+    " AND u.role = ANY (gc.google_only_roles)) AS google_only,"
+    " EXISTS (SELECT 1 FROM user_identities gi JOIN customers gc ON gc.id = gi.customer_id"
+    " WHERE gi.customer_id = u.customer_id AND gi.user_id = u.id AND gi.provider = 'google'"
+    " AND gi.status = 'approved' AND (cardinality(gc.google_domains) = 0"
+    " OR (gi.hosted_domain = ANY (SELECT lower(d) FROM unnest(gc.google_domains) d)"
+    " AND substring(gi.email_at_link from '@([^@]*)$')"
+    " = ANY (SELECT lower(d) FROM unnest(gc.google_domains) d)))) AS google_linked,"
+    " COALESCE((SELECT gc.google_domains FROM customers gc WHERE gc.id = u.customer_id),"
+    " '{}') AS google_domains"
+)
+
 # What a sign-in needs, with whether the customer is active or a pending sign-up (0014, 0061).
 # "Turned off" counts only while the organisation does not require two-step for admins (0068).
 _ATTEMPT_COLUMNS = (
-    " u.id, u.customer_id, u.password_hash, u.role, u.disabled, u.session_version,"
+    " u.id, u.customer_id, u.password_hash, u.role, u.disabled, u.session_version,"  # noqa: S608 - fixed fragments
     " u.must_change_password, u.totp_secret_enc, u.totp_enabled_at, u.totp_last_step,"
     " CASE WHEN EXISTS (SELECT 1 FROM customers c WHERE c.id = u.customer_id"
     " AND c.admin_two_step_required) THEN NULL ELSE u.totp_off_at END AS totp_off_at,"
     " u.failed_logins, EXISTS (SELECT 1 FROM customers c"
     " WHERE c.id = u.customer_id AND c.status = 'active') AS customer_active,"
     " EXISTS (SELECT 1 FROM customers c"
-    " WHERE c.id = u.customer_id AND c.status = 'pending') AS customer_pending"
+    " WHERE c.id = u.customer_id AND c.status = 'pending') AS customer_pending," + _GOOGLE_COLUMNS
 )
 
 
@@ -251,6 +280,11 @@ def _attempt(row: RowMapping) -> AttemptRow:
         failed_logins=int(row["failed_logins"]),
         customer_active=bool(row["customer_active"]),
         customer_pending=bool(row["customer_pending"]),
+        google_on=bool(row["google_on"]),
+        google_allowed=bool(row["google_allowed"]),
+        google_only=bool(row["google_only"]),
+        google_linked=bool(row["google_linked"]),
+        google_domains=tuple(row["google_domains"]),
     )
 
 
@@ -442,11 +476,12 @@ def session_user(conn: Connection, customer_id: str, user_id: str) -> RowMapping
     With the idle timeout (0040) in the same query: ``idle_hours``, the organisation's else
     the platform's (None: no idle limit), and ``seen_at``, the later of ``last_seen_at`` and
     ``last_login_at``. ``two_step_required``: the organisation requires two-step sign-in for its
-    admins (0068, #481); while it does, an admin's "turned off" does not count."""
+    admins (0068, #481); while it does, an admin's "turned off" does not count. The Google
+    columns (#507, ``_GOOGLE_COLUMNS``): the limited session and Ways to sign in read them."""
     return (
         conn.execute(
             text(
-                "SELECT u.id, u.email, u.display_name, u.role, u.disabled,"
+                "SELECT u.id, u.email, u.display_name, u.role, u.disabled,"  # noqa: S608 - fixed fragments, _GOOGLE_COLUMNS
                 " u.session_version, u.must_change_password, u.totp_enabled_at IS NOT NULL AS totp_enabled,"
                 " u.totp_off_at IS NOT NULL AND NOT c.admin_two_step_required AS two_step_turned_off,"
                 " c.admin_two_step_required AS two_step_required,"
@@ -454,8 +489,9 @@ def session_user(conn: Connection, customer_id: str, user_id: str) -> RowMapping
                 " u.email_verified_at IS NOT NULL AS email_confirmed,"
                 " c.id AS customer_id, c.name AS customer_name,"
                 " GREATEST(u.last_seen_at, u.last_login_at) AS seen_at,"
-                " COALESCE(s.idle_hours, p.session_idle_hours) AS idle_hours"
-                " FROM users u JOIN customers c ON c.id = u.customer_id"
+                " COALESCE(s.idle_hours, p.session_idle_hours) AS idle_hours,"
+                + _GOOGLE_COLUMNS
+                + " FROM users u JOIN customers c ON c.id = u.customer_id"
                 " LEFT JOIN org_session_settings s ON s.customer_id = c.id"
                 " LEFT JOIN platform_ai_settings p ON true"
                 " WHERE u.customer_id = :c AND u.id = :u AND c.status = 'active'"

@@ -14,7 +14,7 @@ from sqlalchemy import Connection, RowMapping
 
 from kaagaz.answering.clarify import without_resume
 from kaagaz.answering.hard_to_read import FlaggedPage, not_found_note
-from kaagaz.api.auth import CurrentUser
+from kaagaz.api.auth import CurrentUser, needs_google_link
 from kaagaz.db import audit
 from kaagaz.db import ensemble as ensemble_sql
 from kaagaz.db.folder_upload_items import ItemRow
@@ -898,7 +898,8 @@ def me_json(
     "Google connected on 30 Oct." banner's ``{provider, linked_at}`` (#457 phase 1; only
     /auth/me and /auth/session read them, every other reply leaves the list empty).
     ``providers``: those switched on (``oidc.enabled_providers``), so Account shows "Ways to
-    sign in" only while one is."""
+    sign in" only while one is. ``google_link_required`` (#507): the limited session, whose
+    password lets the user only connect Google."""
     return {
         "user": {
             "id": user.user_id,
@@ -912,6 +913,7 @@ def me_json(
             "two_step_required": user.two_step_required and user.role == "admin",
             "can_delete_forever": user.delete_forever_allowed and user.role != "admin",  # the grant
             "email_confirmed": user.email_confirmed or not email_on,
+            "google_link_required": needs_google_link(user, "google" in providers),
         },
         "customer": {"id": user.customer_id, "name": user.customer_name},
         "session": {"scope": user.scope},
