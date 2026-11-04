@@ -105,8 +105,10 @@ def test_it_needs_a_gemini_with_a_price_that_takes_minimal(db: Database, platfor
     customer = api.customer("ULC Gemini")[0]
     path = f"/api/operator/orgs/{customer}/ai"
     no_minimal = scan_model(db, ("low", "high"))
+    unknown_call = scan_model(db)  # #488 review (R3): no price a call known (no catalogue refresh yet)
+    as_owner(db, "UPDATE model_catalog SET price_image_usd = NULL WHERE id = :m", {"m": unknown_call})
     minimal = scan_model(db)
-    for lead, expected in ((no_minimal, 409), (minimal, 200)):
+    for lead, expected in ((no_minimal, 409), (unknown_call, 409), (minimal, 200)):
         body = {**ORG_BODY, "scan_models": [lead], "scan_default": lead, "scan_reader": "ultra_low_cost"}
         reply = _save(api, operator, client, path, body)
         assert reply.status_code == expected, reply.text

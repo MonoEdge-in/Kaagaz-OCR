@@ -6,10 +6,13 @@ page's header, exact boxes); the decoder is lenient and never drops text: a row 
 keeps its text and is left unpinned, a row it can't parse at all becomes text only, unpinned."""
 
 import random
+import re
+from pathlib import Path
 from typing import Any
 
 import pytest
 
+from kaagaz.reading import compact
 from kaagaz.reading.compact import (
     COMPACT_SCHEMA,
     INSTRUCTION_COMPACT,
@@ -159,7 +162,8 @@ def test_488_a_row_with_a_bad_box_keeps_its_text_and_is_left_unpinned() -> None:
         "\np 400 1200 420 900 off the page\np 500 100 520 900 last"
     )
     decoded = decode_compact(r)
-    assert texts(r) == ["first", "upside down", "off the page", "last"]
+    # #488 review (R6): everything after the kind is its text, so a number a short box took is kept.
+    assert texts(r) == ["first", "300 100 290 900 upside down", "400 1200 420 900 off the page", "last"]
     assert decoded.unpinned == frozenset({1, 2})
     boxes = [item["box_2d"] for item in decoded.result["lines"]]
     assert boxes[1][0] >= 120 and boxes[1][2] <= 500  # between its neighbours
@@ -203,6 +207,34 @@ def test_488_a_missing_header_is_a_fair_page_and_its_first_row_is_kept() -> None
     decoded = decode_compact("p 10 10 30 990 Total 500")
     assert decoded.result["page"] == {"quality": "fair", "handwritten": False, "scripts": [], "issues": []}
     assert texts("p 10 10 30 990 Total 500") == ["Total 500"]
+
+
+def test_488_a_box_of_three_numbers_never_takes_a_number_from_the_text() -> None:
+    # #488 review (R6): "2024" is the text's, not the box's: the box is bad, the row keeps it all.
+    decoded = decode_compact("g 0 l -\np 10 20 30 2024 Annual report")
+    assert texts("g 0 l -\np 10 20 30 2024 Annual report") == ["10 20 30 2024 Annual report"]
+    assert decoded.unpinned == frozenset({0})
+
+
+@pytest.mark.parametrize(
+    "r",
+    ["", "\n", "p 10 10 30 990 Total 500\np 40 10 60 990 B", "g 0 l\np 10 10 30 990 a header short a field"],
+)
+def test_488_a_reply_with_no_valid_header_is_all_unpinned_and_says_so(r: str) -> None:
+    # #488 review (R7): no header (none, or one missing a field) is a reply that did not follow the
+    # layout: every row is kept as text, none is pinned, and the reader never caches it.
+    decoded = decode_compact(r)
+    assert not decoded.headed
+    assert decoded.unpinned == frozenset(range(len(decoded.result["lines"])))
+    assert decode_compact("g 0 l -\np 10 10 30 990 A").headed
+    assert decode_compact("g 0 - -").headed  # a blank page with its header is a reply
+
+
+def test_488_the_module_spells_the_bidi_controls_as_escapes() -> None:
+    # #488 review (R9): no literal bidi control in the source (it would reorder what a reader sees).
+    source = Path(compact.__file__).read_text(encoding="utf-8")
+    assert re.search("[\u202a-\u202e\u2066-\u2069]", source) is None
+    assert texts("g 0 l -\np 10 10 30 990 a\u202eb\u2066c\u2069") == ["abc"]
 
 
 def test_488_unknown_scripts_and_issues_are_left_out_of_the_header() -> None:

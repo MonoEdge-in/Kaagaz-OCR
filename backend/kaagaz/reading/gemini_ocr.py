@@ -169,20 +169,28 @@ call made for the read is held under the page's ceiling by a ``PageBudget`` at t
 catalogue prices (``DocumentPages.ulc_prices``, taken once for the document), which the client
 enforces: each call's output limit is what is left after its input, the input estimated as the
 largest first call's input seen in the document (ULC_SEEN_MARGIN more), else the catalogue's
-tokens a page in (ULC_CATALOG_MARGIN more), else ULC_INPUT_TOKENS; the one repair and a billed
-mid-reply error's retry are sent only when still affordable. Never halves, Careful, crops,
-Cost saving's words, a low read alongside, routing, region re-reads or Ensemble: a page read
-again is read whole, the same way. A page that can't be read within its ceiling (a lead that
-can't think minimal: THINKING_FALLBACK; no known price, an output limit below MIN_CAP_TOKENS, a
-reply cut off at its cap, a repair or retry it can't afford: COST_CEILING, each one limit hit
-on its ``ulc_scan`` ledger row, ``usage.record_unsent_hit`` when nothing was sent; a failure
-after a call was billed) is read locally as reader_refused, never cached and never left to wait (a
-wait would read it again past its ceiling); only a failure before anything was billed is the
-outage it always was. The decoded reply is checked and pinned as a g3 one, and cached under
-"c1+ulc<paise>" (``_ulc_key``) unless a row's box was made up (the decoder's unpinned rows stay
-unpinned, so they go to review; a cached read would pin them). A page billed past its ceiling
-anyway (its input above the estimate, a reported cost above the price) is logged at error as
-ULC_BREACHED, with ids and numbers only.
+tokens a page in (ULC_CATALOG_MARGIN more), never below ULC_INPUT_TOKENS (#488 review: the
+catalogue's was measured on the g3 prompt); a token is taken to cost at least what the
+document's replies were billed for one (``PageBudget`` rates, kept across its pages); a call
+that may have been billed but says no usage is charged its worst case; the one repair and a
+billed mid-reply error's retry are sent only when still affordable. Never halves, Careful,
+crops, Cost saving's words, a low read alongside, routing, region re-reads or Ensemble: a page
+read again is read whole, the same way. A page that can't be read within its ceiling (a lead
+that can't think minimal: THINKING_FALLBACK; no known price, a price a call that is unknown
+(``UlcPrices.per_call_usd`` None: a catalogue refresh fills it; a known one is paid from every
+call's ceiling, ``PageBudget``), an output limit below MIN_CAP_TOKENS, a reply cut off at its
+cap, a repair or retry it can't afford: COST_CEILING, each one limit hit on its ``ulc_scan``
+ledger row, ``usage.record_unsent_hit`` when nothing was sent; a failure after a call was
+billed) is read locally as reader_refused and never left to wait (a wait would read it again past its
+ceiling); once a call was billed for it, its key holds a ULC_MARK row, so the document read on
+after a wait never sends it again (only "Read again" on it does: a new read). Only a failure
+before anything was billed is the outage it always was. Every refusal before a call comes
+before the page's boxes are looked for. The decoded reply is checked and pinned as a g3 one,
+and cached under "c1+ulc<paise>" (``_ulc_key``) when it had its header line; its rows whose box
+the decoder made up (the page's width, x0 0 and x1 1000) stay unpinned, from the cache too, so
+they go to review. A page billed past its ceiling anyway (its input above the estimate, a
+reported cost above the price, the first time) is logged at error as ULC_BREACHED, with ids and
+numbers only.
 
 Nothing here logs page text: warnings carry a code only. The page is data: the
 instruction tells the model to copy any instruction written on it, never follow it.
@@ -200,6 +208,7 @@ import functools
 import hashlib
 import io
 import itertools
+import json
 import logging
 import math
 import re
@@ -212,6 +221,7 @@ from typing import Any, Protocol, cast
 
 from PIL import Image, ImageDraw
 
+from kaagaz.ai.client import estimate_tokens
 from kaagaz.ai.openrouter import (
     COST_CEILING,
     OpenRouterClient,
@@ -325,11 +335,17 @@ QUICKEST_THINKING = frozenset({"minimal", LOW_THINKING, NO_THINKING})
 ULC_THINKING = "minimal"
 THINKING_FALLBACK = "thinking_fallback"
 # #488: a page's input estimate: the largest first-call input seen in the document, this much
-# more; else the catalogue's tokens a page in, this much more; else ULC_INPUT_TOKENS.
+# more; else the catalogue's tokens a page in, this much more, never below ULC_INPUT_TOKENS
+# (set below INSTRUCTION, which it is measured against).
 ULC_SEEN_MARGIN = 1.05
 ULC_CATALOG_MARGIN = 1.15
-ULC_INPUT_TOKENS = 3000
+# #488 review: what one g3 page read took in on the test server (scratchpad brief, 4 Nov 2026:
+# about 2,519 input tokens a page), its instruction, its image and the request's wrapping.
+G3_PAGE_INPUT_TOKENS = 2519
 ULC_BREACHED = "ulc_ceiling_breached"  # the code logged for a page billed past its ceiling
+# #488 review: the one key of the cache row a page read locally once a call was billed for it
+# holds (its value the code), so the same read never sends it again.
+ULC_MARK = "ulc_refused"
 # A share of a ceiling's dollars that is float noise, never a breach.
 _ULC_NOISE = 1e-9
 # G3: the kinds the model may give a line (all in spans.BLOCK_KINDS).
@@ -391,6 +407,19 @@ goes on at the top of the next page; false on every other line.
 any of it is handwritten, "scripts" names the scripts it is written in, and "issues" \
 lists each problem you see on it. A page with no text has no lines.
 """
+# #488 review: the least a compact read's call is taken to take in before any page of the
+# document was: the compact instruction and schema (``estimate_tokens``) plus the image and the
+# wrapping (a g3 page's measured input less its own instruction, its schema left in for margin),
+# ULC_CATALOG_MARGIN more. 2,982 tokens with c1.
+ULC_INPUT_TOKENS = math.ceil(
+    ULC_CATALOG_MARGIN
+    * (
+        estimate_tokens(INSTRUCTION_COMPACT)
+        + estimate_tokens(json.dumps(COMPACT_SCHEMA))
+        + G3_PAGE_INPUT_TOKENS
+        - estimate_tokens(INSTRUCTION)
+    )
+)
 
 # G3, strict-portable (model choice, council 11 Oct 2026): every object closed with
 # additionalProperties false (OpenAI's strict mode needs it) and no numeric or length bounds
@@ -639,6 +668,7 @@ class GeminiEngine:
         self._read_with = self._model  # the last document's model, for ``version``
         self._prompt = GEMINI_OCR_PROMPT_VERSION  # and its prompt (#488: c1 under Ultra low cost)
         self._ulc_seen = 0  # #488: the open document's largest first-call input, in tokens
+        self._ulc_rates = (0.0, 0.0)  # #488 review: and the most its replies were billed a token
         self._mistral = mistral
 
     @classmethod
@@ -675,7 +705,7 @@ class GeminiEngine:
                 raise RuntimeError("the Gemini reader is already reading a document")
             self._pages = pages
             self._region_pages = 0
-            self._ulc_seen = 0
+            self._ulc_seen, self._ulc_rates = 0, (0.0, 0.0)
             self._prompt = GEMINI_OCR_PROMPT_VERSION if pages.ulc is None else COMPACT_PROMPT_VERSION
             if pages.scan_reader == MISTRAL:  # #473 review: the run names the model that read it
                 self._read_with = read_by(pages.mistral_model)
@@ -917,25 +947,30 @@ class GeminiEngine:
 
     def _ulc(self, image: Image.Image, page_no: int, pages: DocumentPages, ceiling: UlcCeiling) -> PageRead:
         """#488: the page read under Ultra low cost (see the module notes): from the page cache
-        under ``_ulc_key`` unless it is read again, else one compact read held under
-        ``ceiling``; billed as ULC_SCAN either way. Its boxes are found alongside the call."""
+        under ``_ulc_key`` unless it is read again (its rows whose box the decoder made up, the
+        page's width, left unpinned as on its first read; a ULC_MARK row read locally again,
+        nothing sent), else one compact read held under ``ceiling``; billed as ULC_SCAN."""
         model, sha = pages.model or self._model, pixels_sha256(image)
         resolution = self._resolution(pages)
         key = self._ulc_key(pages, sha, page_no, model, ceiling)
-        with billed_as(ULC_SCAN), ThreadPoolExecutor(1) as finder:
-            boxes = finder.submit(self._pool.find_boxes, image)
+        with billed_as(ULC_SCAN):
             hit = None if page_no in pages.read_again else pages.cache.get(key)
+            if hit is not None and isinstance(hit[0].get(ULC_MARK), str):
+                return self._read_locally(image, page_no, READER_REFUSED, hit[0][ULC_MARK])
             reply = _cached(hit)
             if hit is not None and reply is not None:
                 record_call(model, None, 0, 0, 0, 0.0, cached=True)  # SP1: a cached page costs 0
+                made_up = {
+                    i for i, line in enumerate(reply.lines) if line.box[1] == 0 and line.box[3] == BOX_SCALE
+                }
                 return dataclasses.replace(
-                    self._page(reply, image, page_no, model, cached=True, boxes=boxes),
+                    self._page(reply, image, page_no, model, cached=True, unpinned=made_up),
                     read_thinking=ULC_THINKING,
                     read_resolution=resolution,
                     read_pass=FIRST_PASS,
                     read_output_tokens=hit[2],
                 )
-            return self._ulc_read(image, page_no, pages, ceiling, model, key, boxes)
+            return self._ulc_read(image, page_no, pages, ceiling, model, key)
 
     def _ulc_read(
         self,
@@ -945,68 +980,79 @@ class GeminiEngine:
         ceiling: UlcCeiling,
         model: str,
         key: PageKey,
-        boxes: "Future[list[PixelBox]]",
     ) -> PageRead:
-        """The one compact read (#488), or the local reader with reader_refused when it can't
-        be made or finished within the ceiling (module notes); cached only when every line has
-        the model's box, so a cached read pins as this one did."""
+        """The one compact read (#488), its boxes found alongside, or the local reader with
+        reader_refused when it can't be made or finished within the ceiling (module notes); every
+        refusal before anything is sent comes before the boxes are looked for. Cached when the
+        reply had its header; a page read locally once a call was billed for it is marked
+        (``_ulc_refused``)."""
         again, resolution = page_no in pages.read_again, self._resolution(pages)
         taken = pages.levels.get(model)
         if model in pages.plain or (taken is not None and ULC_THINKING not in taken):
             return self._read_locally(image, page_no, READER_REFUSED, THINKING_FALLBACK)
         prices = pages.ulc_prices
-        if prices is None or prices.price_out_usd_per_m <= 0:  # no known price: nothing can hold
+        # No known price, or no known price a call (#488 review): no output limit can hold it.
+        if prices is None or prices.price_out_usd_per_m <= 0 or prices.per_call_usd is None:
             record_unsent_hit(model, thinking=ULC_THINKING, resolution=resolution)
             return self._read_locally(image, page_no, READER_REFUSED, COST_CEILING)
         if self._left() < MIN_CALL_SECONDS:
             return self._read_locally(image, page_no, READER_REFUSED, DOCUMENT_BUDGET)
+        with self._lock:
+            rates = self._ulc_rates
         budget = PageBudget(
             ceiling.usd,
             prices.price_in_usd_per_m / 1e6,
             prices.price_out_usd_per_m / 1e6,
             self._ulc_estimate(prices),
+            rates=rates,
+            per_call=prices.per_call_usd,
         )
+        if budget.cap() is None:  # not even MIN_CAP_TOKENS affordable: nothing is sent
+            record_unsent_hit(model, thinking=ULC_THINKING, resolution=resolution)
+            return self._read_locally(image, page_no, READER_REFUSED, COST_CEILING)
         started = self._client.now()
-        try:
-            with _page_counted(model, ULC_THINKING, resolution):
-                got = self._client.read_page(
-                    png=png_of(image),
-                    instruction=INSTRUCTION_COMPACT,
-                    schema=COMPACT_SCHEMA,
-                    media_resolution=resolution,
-                    thinking_level=ULC_THINKING,
-                    deadline=self._page_deadline(),
-                    model=model,
-                    provider=pages.provider,
-                    budget=budget,
-                )
-        except ModelUnavailable as error:
-            tokens = (error.input_tokens, error.output_tokens)
-            if budget.spent > 0:  # paid for already: a wait would read it again past its ceiling
-                return self._read_locally(image, page_no, READER_REFUSED, error.code, tokens=tokens)
-            return self._outage(image, page_no, model, error.code, started, tokens=tokens)
-        except ModelOutputError as error:  # cut off at its cap (no halves), refused, unaffordable
-            if error.code == COST_CEILING and budget.page_input is None:  # nothing was sent
-                record_unsent_hit(model, thinking=ULC_THINKING, resolution=resolution)
-            code = COST_CEILING if error.code == TRUNCATED else error.code
-            tokens = (error.input_tokens, error.output_tokens)
-            return self._read_locally(image, page_no, READER_REFUSED, code, tokens=tokens)
-        except ProviderNotAllowed:
-            return self._read_locally(image, page_no, READER_REFUSED, PROVIDER_NOT_ALLOWED)
-        finally:
-            self._ulc_after(budget, ceiling, pages, page_no)
-        decoded = decode_compact(got.value["r"])
-        tokens = (got.input_tokens, got.output_tokens)
-        try:
-            reply = checked(decoded.result)  # only a reply past the page's caps fails here
-        except ModelOutputError as error:
-            return self._read_locally(image, page_no, READER_REFUSED, error.code, tokens=tokens)
-        with self._lock:
-            self._down_since.pop(model, None)
-            self._last_failure.pop(model, None)
-        if not decoded.unpinned:
-            pages.cache.put(key, as_result(reply), *tokens)
-        read = self._page(reply, image, page_no, model, tokens=tokens, boxes=boxes, unpinned=decoded.unpinned)
+        with ThreadPoolExecutor(1) as finder:
+            boxes = finder.submit(self._pool.find_boxes, image)
+            try:
+                with _page_counted(model, ULC_THINKING, resolution):
+                    got = self._client.read_page(
+                        png=png_of(image),
+                        instruction=INSTRUCTION_COMPACT,
+                        schema=COMPACT_SCHEMA,
+                        media_resolution=resolution,
+                        thinking_level=ULC_THINKING,
+                        deadline=self._page_deadline(),
+                        model=model,
+                        provider=pages.provider,
+                        budget=budget,
+                    )
+            except ModelUnavailable as error:
+                tokens = (error.input_tokens, error.output_tokens)
+                if budget.spent > 0:  # paid for already: a wait would read it again past its ceiling
+                    return self._ulc_refused(image, page_no, pages, key, budget, error.code, tokens)
+                return self._outage(image, page_no, model, error.code, started, tokens=tokens)
+            except ModelOutputError as error:  # cut off at its cap (no halves), refused, unaffordable
+                code = COST_CEILING if error.code == TRUNCATED else error.code
+                tokens = (error.input_tokens, error.output_tokens)
+                return self._ulc_refused(image, page_no, pages, key, budget, code, tokens)
+            except ProviderNotAllowed:
+                return self._read_locally(image, page_no, READER_REFUSED, PROVIDER_NOT_ALLOWED)
+            finally:
+                self._ulc_after(budget, ceiling, pages, page_no)
+            decoded = decode_compact(got.value["r"])
+            tokens = (got.input_tokens, got.output_tokens)
+            try:
+                reply = checked(decoded.result)  # only a reply past the page's caps fails here
+            except ModelOutputError as error:
+                return self._ulc_refused(image, page_no, pages, key, budget, error.code, tokens)
+            with self._lock:
+                self._down_since.pop(model, None)
+                self._last_failure.pop(model, None)
+            if decoded.headed:  # a made-up box stays unpinned from the cache too (``_ulc``)
+                pages.cache.put(key, as_result(reply), *tokens)
+            read = self._page(
+                reply, image, page_no, model, tokens=tokens, boxes=boxes, unpinned=decoded.unpinned
+            )
         return dataclasses.replace(
             read,
             read_thinking=ULC_THINKING,
@@ -1014,6 +1060,24 @@ class GeminiEngine:
             read_pass=AGAIN_PASS if again else FIRST_PASS,
             read_output_tokens=None if again else got.output_tokens,
         )
+
+    def _ulc_refused(
+        self,
+        image: Image.Image,
+        page_no: int,
+        pages: DocumentPages,
+        key: PageKey,
+        budget: PageBudget,
+        code: str,
+        tokens: tuple[int, int],
+    ) -> PageRead:
+        """#488: the page read locally as reader_refused with ``code``. Once a call was billed for
+        it, its key holds a ULC_MARK row, so this read never sends it again (the document read
+        on after a wait, or after "Read again" on another page); "Read again" on the page itself
+        is a new read, and its read replaces the mark."""
+        if budget.spent > 0:
+            pages.cache.put(key, {ULC_MARK: code}, *tokens)
+        return self._read_locally(image, page_no, READER_REFUSED, code, tokens=tokens)
 
     def _ulc_key(
         self, pages: DocumentPages, sha: str, page_no: int, model: str, ceiling: UlcCeiling
@@ -1033,16 +1097,20 @@ class GeminiEngine:
         if seen:
             return math.ceil(seen * ULC_SEEN_MARGIN)
         if prices.tokens_per_page_in:
-            return math.ceil(prices.tokens_per_page_in * ULC_CATALOG_MARGIN)
+            return max(math.ceil(prices.tokens_per_page_in * ULC_CATALOG_MARGIN), ULC_INPUT_TOKENS)
         return ULC_INPUT_TOKENS
 
     def _ulc_after(self, budget: PageBudget, ceiling: UlcCeiling, pages: DocumentPages, page_no: int) -> None:
-        """#488: the page's input, for the next pages' estimate; and a page billed past its
-        ceiling (its input above the estimate, or a reported cost above the catalogue's price)
-        logged as ULC_BREACHED with the ids and the numbers only."""
-        if budget.page_input is not None:
-            with self._lock:
+        """#488: the page's input and what its replies were billed a token, for the next pages
+        of the document; and a page billed past its ceiling (its input above the estimate, or a
+        reported cost above the price) logged as ULC_BREACHED with the ids and the numbers only."""
+        with self._lock:
+            if budget.page_input is not None:
                 self._ulc_seen = max(self._ulc_seen, budget.page_input)
+            self._ulc_rates = (
+                max(self._ulc_rates[0], budget.rate_in),
+                max(self._ulc_rates[1], budget.rate_out),
+            )
         if budget.spent > ceiling.usd * (1 + _ULC_NOISE):
             _log.error(
                 "page %d billed %.6f USD, past its ceiling of %.6f USD",

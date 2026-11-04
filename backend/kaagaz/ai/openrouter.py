@@ -83,9 +83,13 @@ at (#463).
 * #488 (Ultra low cost): a page read with a ``PageBudget`` is never sent past it. Each call's
   ``max_completion_tokens`` is what the money left buys after its input (``PageBudget.cap``),
   every billed reply is charged the larger of its ``usage.cost`` and its tokens at the
-  catalogue's prices, a billed mid-reply error is retried only with a limit still affordable,
-  and the repair only when its input and a limit of MIN_CAP_TOKENS are; otherwise
-  ``ModelOutputError("cost_ceiling")``, counted as a limit hit, nothing sent.
+  catalogue's prices (or above them, once a reply was billed above them: #488 review), a billed
+  mid-reply error is retried only with a limit still affordable, and the repair only when its
+  input and a limit of MIN_CAP_TOKENS are; otherwise ``ModelOutputError("cost_ceiling")``,
+  counted as a limit hit, nothing sent. A call that may have been billed with no usage to say
+  how much (a reply with none, a 200 that is not JSON, a connection lost once the request was
+  sent; never one that failed while connecting or sending) is charged its worst case, its input
+  estimate and its whole output limit, so nothing is sent after it that the ceiling can't pay.
 * JSON that does not follow the schema, or that the caller's ``validate`` refuses (a
   ``read_page`` reply that breaks what the schema can't say): one repair retry, then
   ``ModelOutputError("invalid_output")``. One repair at most, whichever check failed.
@@ -314,49 +318,92 @@ class PageBudget:
     """#488 (Ultra low cost): the money left for one read of a page, held over every call made
     for it. ``usd_left`` starts at the page's ceiling; ``price_in`` and ``price_out`` are the
     lead's catalogue prices in dollars a token; ``input_estimate`` the tokens a call with the
-    page takes in, at most (the reader's estimate). Before each call ``cap`` gives its output
-    limit: what is left after its input at ``price_in``, at ``price_out``, so the call can never
-    cost more than is left (None, below MIN_CAP_TOKENS: nothing is sent). Each billed reply is
-    charged the larger of its reported cost and its tokens at the prices (``charge``), so a
-    cost the reply leaves out is still counted. One page's calls are made one after another, so
-    there is no lock. O(1) each."""
+    page takes in, at most (the reader's estimate); ``per_call`` what every call costs besides its
+    tokens (OpenRouter's pricing.request and pricing.image; #488 review). Each token is taken to
+    cost ``rate_in`` and ``rate_out``: the prices, or more (``rates``, what the document's replies
+    were billed so far; #488 review). Before each call ``cap`` gives its output limit: what is
+    left after its price a call and its input, at the rates, so the call can never cost more than
+    is left (None, below MIN_CAP_TOKENS: nothing is sent). Each billed reply is charged the larger
+    of its reported cost and its price a call and tokens at the rates (``charge``), so a cost the
+    reply leaves out is still counted; a cost above its price a call and tokens at the prices
+    raises the rates. A call that may have been billed but says no usage (none in the reply, a 200
+    that is not JSON, a connection lost after the send) is charged its worst case: its price a
+    call, its input estimate and its whole output limit (``charge_unknown``). One page's calls
+    are made one after another, so there is no lock. O(1) each."""
 
-    def __init__(self, usd: float, price_in: float, price_out: float, input_estimate: int) -> None:
+    def __init__(
+        self,
+        usd: float,
+        price_in: float,
+        price_out: float,
+        input_estimate: int,
+        *,
+        rates: tuple[float, float] = (0.0, 0.0),
+        per_call: float = 0.0,
+    ) -> None:
         self.usd = usd
         self.usd_left = usd
+        self.per_call = per_call
         self.price_in = price_in
         self.price_out = price_out
+        self.rate_in, self.rate_out = max(price_in, rates[0]), max(price_out, rates[1])
         self.input_estimate = input_estimate
         self.input_tokens = 0
         self.output_tokens = 0
-        self.page_input: int | None = None  # the first billed call's input tokens: the page's own
+        self.page_input: int | None = None  # the first call's input tokens it said: the page's own
 
     @property
     def spent(self) -> float:
         return self.usd - self.usd_left
 
+    def page_tokens(self) -> int:
+        """A call with the page's input, at most: the estimate, or what its first call took in."""
+        return max(self.input_estimate, self.page_input or 0)
+
+    def worst(self, input_tokens: int | None, cap: int) -> float:
+        """The most a call taking in ``input_tokens`` (None: ``page_tokens``) with output limit
+        ``cap`` can cost: its price a call, and its tokens at the rates."""
+        tokens_in = self.page_tokens() if input_tokens is None else input_tokens
+        return self.per_call + tokens_in * self.rate_in + cap * self.rate_out
+
     def cap(self, input_tokens: int | None = None) -> int | None:
-        """The output limit of a call that takes in ``input_tokens`` (None: the page's, the
-        larger of the estimate and what its first call took in), at most PAGE_MAX_OUTPUT_TOKENS;
-        None when it is below MIN_CAP_TOKENS."""
-        tokens_in = max(self.input_estimate, self.page_input or 0) if input_tokens is None else input_tokens
-        if self.price_out <= 0:
+        """The output limit of a call that takes in ``input_tokens`` (None: ``page_tokens``), at
+        most PAGE_MAX_OUTPUT_TOKENS; None when it is below MIN_CAP_TOKENS."""
+        if self.rate_out <= 0:
             return None
         cap = min(
-            PAGE_MAX_OUTPUT_TOKENS, math.floor((self.usd_left - tokens_in * self.price_in) / self.price_out)
+            PAGE_MAX_OUTPUT_TOKENS, math.floor((self.usd_left - self.worst(input_tokens, 0)) / self.rate_out)
         )
-        while cap >= MIN_CAP_TOKENS and tokens_in * self.price_in + cap * self.price_out > self.usd_left:
+        while cap >= MIN_CAP_TOKENS and self.worst(input_tokens, cap) > self.usd_left:
             cap -= 1  # a float's last bit never lets a call past what is left
         return cap if cap >= MIN_CAP_TOKENS else None
 
     def charge(self, input_tokens: int, output_tokens: int, cost: float | None) -> None:
-        """One billed reply: the larger of ``cost`` (the reply's usage.cost) and its tokens at
-        the prices, taken off what is left."""
-        self.usd_left -= max(cost or 0.0, input_tokens * self.price_in + output_tokens * self.price_out)
+        """One billed reply that says its tokens: the larger of ``cost`` (its usage.cost) and its
+        price a call and tokens at the rates, taken off what is left. A cost above its price a call
+        and tokens at the prices is then put on each kind of token in turn (on its tokens, or, with
+        none, as the same share of the price), so the rates are at least what the provider charges
+        for either."""
+        self.usd_left -= max(cost or 0.0, self.worst(input_tokens, output_tokens))
+        tokens = input_tokens * self.price_in + output_tokens * self.price_out
+        if cost is not None and tokens > 0 and cost > self.per_call + tokens:
+            over, scale = cost - self.per_call - tokens, (cost - self.per_call) / tokens
+            self.rate_in = max(
+                self.rate_in, self.price_in + over / input_tokens if input_tokens else self.price_in * scale
+            )
+            self.rate_out = max(
+                self.rate_out,
+                self.price_out + over / output_tokens if output_tokens else self.price_out * scale,
+            )
         self.input_tokens += input_tokens
         self.output_tokens += output_tokens
         if self.page_input is None:
             self.page_input = input_tokens
+
+    def charge_unknown(self, worst: float) -> None:
+        """One call that may have been billed with no usage to say how much: ``worst``, what it
+        could cost at most (``worst()`` before it was sent), taken off what is left."""
+        self.usd_left -= worst
 
 
 @dataclass(frozen=True, slots=True)
@@ -540,6 +587,15 @@ def reply_usage(reply: Mapping[str, Any]) -> tuple[int, int]:
     return _whole(usage.get("prompt_tokens")), _whole(usage.get("completion_tokens"))
 
 
+def _says_usage(reply: Mapping[str, Any]) -> bool:
+    """#488 review: the reply says both its token counts (``reply_usage`` reads 0 for one left out)."""
+    usage = _usage(reply)
+    return all(
+        isinstance(usage.get(name), int) and not isinstance(usage.get(name), bool)
+        for name in ("prompt_tokens", "completion_tokens")
+    )
+
+
 def reasoning_tokens(reply: Mapping[str, Any]) -> int:
     """The thinking tokens of one reply (completion_tokens_details.reasoning_tokens), or 0."""
     details = _usage(reply).get("completion_tokens_details")
@@ -717,13 +773,21 @@ def _read_until(response: Any, ends: float, limit: int) -> bytes | None:
 
 @dataclass(slots=True)
 class _Reply:
-    """One HTTP exchange: status 0 means no reply (``failure`` says why)."""
+    """One HTTP exchange: status 0 means no reply (``failure`` says why; ``sent`` False when the
+    request never all reached the server: it failed while connecting or sending)."""
 
     status: int
     headers: "Message[str, str] | None"
     body: dict[str, Any] | None
     failure: str = ""
     codes: _ErrorCodes = _ErrorCodes()
+    sent: bool = True
+
+    @property
+    def maybe_billed(self) -> bool:
+        """#488 review: no usage to read, but a provider may have billed it: a 2xx whose body
+        could not be read, or no reply to a request that was sent."""
+        return (200 <= self.status < 300 and self.body is None) or (self.status == 0 and self.sent)
 
 
 # status(): the worst state wins.
@@ -1214,7 +1278,8 @@ class OpenRouterClient:
             value, problem = _valid_reply(content, schema, validate)
             if value is None:
                 repair = REPAIR.format(problem=problem)
-                said = reply_usage(reply)[0] + len(content.encode("utf-8")) + len(repair.encode("utf-8"))
+                page = max(reply_usage(reply)[0], budget.page_tokens())  # #488 review: never 0 unsaid
+                said = page + len(content.encode("utf-8")) + len(repair.encode("utf-8"))
                 tokens_in = math.ceil(REPAIR_INPUT_MARGIN * said)
                 cap = budget.cap(tokens_in)
                 if cap is None:
@@ -1317,10 +1382,13 @@ class OpenRouterClient:
         a page read's (thinking, picture detail), for the ledger (#463). #488: each billed reply
         is charged to ``budget``, and a retry is sent with the output limit it still affords,
         or not at all (``cost_ceiling``, a limit hit): never past the page's ceiling; ``tokens_in``
-        the request's input at most (None: the page's, ``PageBudget.cap``)."""
+        the request's input at most (None: the page's, ``PageBudget.cap``). #488 review: a call
+        that may have been billed with no usage to say so (``_Reply.maybe_billed``, a reply with
+        none) is charged its worst case."""
         gate = self.gate
         model = str(body["model"])
         attempt = 0
+        worst = 0.0
         while True:
             if budget is not None and attempt:
                 cap = budget.cap(tokens_in)
@@ -1329,6 +1397,8 @@ class OpenRouterClient:
                         usage.record_limit_hit(model, thinking=sent[0], resolution=sent[1])
                     raise ModelOutputError(COST_CEILING)
                 body = {**body, "max_completion_tokens": min(cap, int(body["max_completion_tokens"]))}
+            if budget is not None:
+                worst = budget.worst(tokens_in, int(body["max_completion_tokens"]))
             gate.admit(model)
             start = gate.take_slot(deadline, model)
             ahead = start - gate.clock()
@@ -1342,6 +1412,8 @@ class OpenRouterClient:
                 gate.release_probe(model)
                 raise ModelUnavailable("timeout")
             reply = self._send(path, body, remaining)
+            if budget is not None and reply.maybe_billed:
+                budget.charge_unknown(worst)
             code: str | None
             if 200 <= reply.status < 300:
                 if reply.body is None:
@@ -1349,10 +1421,10 @@ class OpenRouterClient:
                     raise ModelUnavailable(reply.failure or "bad_response")
                 if not failed_mid_reply(reply.body):
                     gate.record(model, failed=False)
-                    self._count(reply.body, model, sent, budget)
+                    self._count(reply.body, model, sent, budget, worst)
                     return reply.body
                 self._count(
-                    reply.body, model, sent, budget
+                    reply.body, model, sent, budget, worst
                 )  # a reply that failed part way may still be billed
                 code = "server_error"
             elif reply.status in _KEY_STATUSES:
@@ -1400,15 +1472,20 @@ class OpenRouterClient:
         model: str,
         sent: tuple[str, str] | None = None,
         budget: PageBudget | None = None,
+        worst: float = 0.0,
     ) -> None:
         """Count one billed reply (G9): this client's totals, and the current usage scope's
         ledger (SP1, ``kaagaz.ai.usage``) under the model asked for and the provider the
-        reply names, if it looks like a name; #488: and charge it to ``budget``. Every billed
-        reply comes here: a blocked, cut off or repaired one too."""
+        reply names, if it looks like a name; #488: and charge it to ``budget`` (``worst``, the
+        most the call could cost, when the reply does not say its tokens). Every billed reply
+        comes here: a blocked, cut off or repaired one too."""
         input_tokens, output_tokens = reply_usage(reply)
         cost = reply_cost(reply)
         if budget is not None:
-            budget.charge(input_tokens, output_tokens, cost)
+            if _says_usage(reply):
+                budget.charge(input_tokens, output_tokens, cost)
+            else:
+                budget.charge_unknown(max(cost or 0.0, worst))
         named = reply.get("provider")
         provider_name = named if isinstance(named, str) and _PROVIDER_NAME.fullmatch(named) else None
         thinking, resolution = sent or (None, None)
@@ -1454,8 +1531,9 @@ class OpenRouterClient:
         except urllib.error.HTTPError as error:
             return _Reply(error.code, error.headers, None, codes=_error_codes(error))
         except urllib.error.URLError as error:
+            # urllib raises it only while connecting or sending: the request never all arrived.
             failure = "timeout" if isinstance(error.reason, TimeoutError) else "unreachable"
-            return _Reply(0, None, None, failure)
+            return _Reply(0, None, None, failure, sent=False)
         except TimeoutError:
             return _Reply(0, None, None, "timeout")
         except (OSError, HTTPException):
