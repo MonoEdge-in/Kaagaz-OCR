@@ -55,7 +55,8 @@ export interface FolderSource {
 
 export type FolderTarget = { kind: "department" } | { kind: "folder"; parentId: string | null };
 
-type FolderPhase = "planning" | "registering" | "sending" | "done" | "stopped" | "needs_pick" | "refused";
+// stopping: Stop was pressed; the files being sent finish, then it is stopped.
+type FolderPhase = "planning" | "registering" | "sending" | "stopping" | "done" | "stopped" | "needs_pick" | "refused";
 
 export type FolderEvent =
   | { type: "start"; id: string; rootName: string; total: number }
@@ -320,9 +321,13 @@ export function folderUploadsReducer(
   const without = (itemId: string) => view.sending.filter((row) => row.itemId !== itemId);
   let next: FolderUploadView;
   switch (event.type) {
-    case "phase":
-      next = { ...view, phase: event.phase, message: event.message ?? null, sending: event.phase === "sending" ? view.sending : [] };
+    case "phase": {
+      // Stop pressed just as the run ended changes nothing: the row is not left stopping.
+      if (event.phase === "stopping" && !["planning", "registering", "sending"].includes(view.phase)) return state;
+      const keep = event.phase === "sending" || event.phase === "stopping";
+      next = { ...view, phase: event.phase, message: event.message ?? null, sending: keep ? view.sending : [] };
       break;
+    }
     case "planned":
       next = { ...view, rootFolderId: event.rootFolderId };
       break;

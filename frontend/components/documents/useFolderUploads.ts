@@ -113,8 +113,10 @@ export function useFolderUploads({
     void startFolderUpload(api, { id, userId, source, target, merge, limits }, emit, stopped(id));
   }
 
+  /** The files being sent finish; the row says so meanwhile (production QA, 5 Nov 2026). */
   function stop(id: string) {
     stops.current.add(id);
+    dispatch({ type: "phase", id, phase: "stopping" });
   }
 
   /** Send what is still waiting, with the files this tab holds or the folder picked again. */
