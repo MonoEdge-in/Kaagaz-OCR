@@ -18,6 +18,8 @@
 // "Signs in with" column, and "Remove connected accounts" in a row's menu, asked first. The
 // section hides only on the server's 404 (no provider on); any other failure says so, with Try
 // again. Approving one another admin already decided (404) reloads the list.
+// #507: "Needs to connect Google" beside how someone signs in, while their role uses Google only
+// and they have no Google account that passes; Reset password says it disconnects Google too.
 //
 // A reset password comes back once, in the reply. It is shown in a card above
 // the list, with Copy, until Done or until the tab is left; it is never stored.
@@ -68,12 +70,14 @@ import {
   allowForeverQuestion,
   decideLabel,
   firstInvalidField,
+  GOOGLE_NEEDED,
   foreverControl,
   generatePassword,
   newUserDraft,
   newUserFromDraft,
   pendingLine,
   removeConnectionsQuestion,
+  resetPasswordQuestion,
   signsInWith,
   twoStepNote,
   userActions,
@@ -260,11 +264,10 @@ export function UsersPanel({
  * so does allowing Delete forever (UI audit AD2: every action that takes something away). */
 type Confirming = "disable" | "password" | "2fa" | "forever" | "connections";
 
-const CONFIRM_TEXT: Record<Confirming, (name: string, providers: readonly string[]) => string> = {
+const CONFIRM_TEXT: Record<Confirming, (name: string, providers: readonly string[], ways?: readonly string[]) => string> = {
   connections: (name, providers) => removeConnectionsQuestion(name, providers),
   disable: (name) => `Disable ${name}'s account? They are signed out and can't sign in until it is enabled again.`,
-  password: (name) =>
-    `Reset ${name}'s password? They are signed out everywhere and must choose a new one.`,
+  password: (name, _providers, ways) => resetPasswordQuestion(name, ways),
   "2fa": (name) =>
     `Reset ${name}'s two-step code? They are signed out, and can sign in with their password, then set up a new code.`,
   forever: allowForeverQuestion,
@@ -426,7 +429,14 @@ function UserRow({
         </span>
       </td>
       <td role="cell" data-label="Signs in with">
-        {signsInWith(user.signs_in_with)}
+        <span className={styles.statusList}>
+          {signsInWith(user.signs_in_with)}
+          {user.google_needed && (
+            <span className="status-chip" data-tone="working">
+              {GOOGLE_NEEDED}
+            </span>
+          )}
+        </span>
       </td>
       <td role="cell" data-label="Added" className="tabular">
         <span className={styles.date}>{formatDate(user.created_at)}</span>
@@ -438,7 +448,7 @@ function UserRow({
         </span>
         {confirming && (
           <ActionDialog title={user.display_name} onClose={() => setConfirming(null)} canClose={() => !busy}>
-            <p>{CONFIRM_TEXT[confirming](user.display_name, providers)}</p>
+            <p>{CONFIRM_TEXT[confirming](user.display_name, providers, user.signs_in_with)}</p>
             {/* [Cancel] [Yes, ...]: the action last; Cancel has focus, so Enter never acts by accident. */}
             <div className="actions">
               <button type="button" className="btn" data-autofocus disabled={busy} onClick={() => setConfirming(null)}>

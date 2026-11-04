@@ -2,13 +2,15 @@
 // the notice after coming back from Google (?connected=, ?waiting=, ?error=), whether Connect
 // asks for the code, the disconnect question and the app's "Google connected" banner.
 
-import { BUSY } from "@/app/login/providerMessages";
+import { BUSY, DOMAIN_REFUSED } from "@/app/login/providerMessages";
 import { errorWords } from "@/lib/errorWords";
 import { formatDate } from "@/lib/format";
 import type { ConnectedIdentity, Me } from "@/lib/types";
 
 export const TITLE = "Ways to sign in";
 export const WAITING = "Waiting for your admin's approval";
+/** #507: the banner of a session that may only connect Google (me.google_link_required). */
+export const LINK_REQUIRED = "Your organisation asks you to sign in with Google. Connect your Google account to continue.";
 
 const NAMES: Record<string, string> = { google: "Google" };
 
@@ -55,6 +57,10 @@ const ERRORS: Record<string, string> = {
   cancelled: "Google sign-in was cancelled.",
   expired: "That sign-in expired. Try again.",
   busy: BUSY,
+  // #507: the organisation's rules, checked again when Google comes back.
+  google_off: "Google sign-in is off for your organisation.",
+  role_refused: "Your organisation doesn't use Google sign-in for your role.",
+  domain_refused: DOMAIN_REFUSED,
 };
 
 /** What the page says on its way back from Google; ``email``: the connected account's. */
@@ -66,6 +72,21 @@ export function pageNotice(params: Record<string, string | undefined>, email?: s
   if (params.waiting) return { kind: "done", text: "Sent to your admin for approval." };
   if (params.error) return { kind: "error", text: ERRORS[params.error] ?? "Connecting Google didn't work. Try again." };
   return null;
+}
+
+/** "a.com", "a.com or b.in", "a.com, b.in or c.org". */
+function domainsText(domains: readonly string[]): string {
+  return domains.length < 2 ? domains.join("") : `${domains.slice(0, -1).join(", ")} or ${domains[domains.length - 1]}`;
+}
+
+/** The organisation's rules for this person (#507), under the list; null when there are none.
+ * ``limited``: the banner already says Google is asked for, so only the domains are added. */
+export function rulesText(rules: { google_only: boolean; domains: string[] } | undefined, limited: boolean): string | null {
+  if (!rules) return null;
+  const parts: string[] = [];
+  if (rules.google_only && !limited) parts.push("Your organisation asks you to sign in with Google.");
+  if (rules.domains.length > 0) parts.push(`Use a Google account from ${domainsText(rules.domains)}.`);
+  return parts.length > 0 ? parts.join(" ") : null;
 }
 
 /** Connect asks for the 6-digit code from anyone with two-step sign-in on (always an admin). */

@@ -16,6 +16,8 @@
 // #457: while the person's email is not confirmed, EmailBanner sits at the top of <main>;
 // an account connected in the last 14 days, ConnectedBanner (phase 1).
 // Issue 468: above them, while the browser has no connection, OfflineBanner.
+// #507: a session that may only connect Google (lib/session.tsx keeps it on Ways to sign in)
+// says why, LinkRequiredBanner.
 
 import Form from "next/form";
 import Link from "next/link";
@@ -26,7 +28,7 @@ import { MAX_SEARCH_LENGTH } from "@/components/documents/insideSearch";
 import { Drawer } from "@/components/ui/Drawer";
 import { Icon } from "@/components/ui/Icon";
 import { IconButton } from "@/components/ui/IconButton";
-import { ConnectedBanner } from "@/components/account/ConnectedBanner";
+import { ConnectedBanner, LinkRequiredBanner } from "@/components/account/ConnectedBanner";
 import { canReview } from "@/components/review/review";
 import { listReview } from "@/lib/api";
 import { useSession } from "@/lib/session";
@@ -182,6 +184,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         >
           <OfflineBanner />
           {!me.user.email_confirmed && <EmailBanner email={me.user.email} />}
+          {me.google_link_required && <LinkRequiredBanner />}
           <ConnectedBanner items={me.recent_connections ?? NONE} />
           <StatusBarSlot value={statusBar}>
             <UploadsProvider>{children}</UploadsProvider>

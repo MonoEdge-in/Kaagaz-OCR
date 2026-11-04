@@ -11,6 +11,15 @@ export const LOCKED =
   "Too many tries were made on this account, so it is locked for a while. Try again later, or ask your admin to unlock it.";
 export const UNKNOWN = "Google sign-in didn't work. Try again.";
 export const BUSY = "Too many people are signing in right now. Try again in a few minutes.";
+// #507: the organisation's own rules for Google sign-in.
+export const GOOGLE_OFF = "Google sign-in is off for your organisation. Sign in with your email and password.";
+export const ROLE_REFUSED =
+  "Your organisation doesn't use Google sign-in for your role. Sign in with your email and password.";
+export const DOMAIN_REFUSED = "That Google account isn't from your organisation's domain. Choose your work account.";
+export const WAITING =
+  "Your Google account is waiting for your admin to approve it. Until then, sign in with your email and password.";
+/** A right password for a role that signs in with Google only (403 password_refused). */
+export const PASSWORD_REFUSED = "Your organisation asks you to sign in with Google. Use Continue with Google.";
 
 /** The banner for a failed provider sign-in; ``email``: the notice's, for ``not_connected``. */
 export function oidcErrorMessage(code: string, email?: string): string {
@@ -29,6 +38,14 @@ export function oidcErrorMessage(code: string, email?: string): string {
       return LOCKED;
     case "busy":
       return BUSY;
+    case "google_off":
+      return GOOGLE_OFF;
+    case "role_refused":
+      return ROLE_REFUSED;
+    case "domain_refused":
+      return DOMAIN_REFUSED;
+    case "waiting":
+      return WAITING;
     default:
       return UNKNOWN;
   }

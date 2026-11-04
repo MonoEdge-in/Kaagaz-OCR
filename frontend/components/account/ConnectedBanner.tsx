@@ -9,7 +9,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import { IconButton } from "@/components/ui/IconButton";
-import { bannerText } from "./signInWays";
+import { LINK_REQUIRED, bannerText } from "./signInWays";
 import styles from "./WaysToSignIn.module.css";
 
 type Recent = { provider: string; linked_at: string };
@@ -49,5 +49,16 @@ export function ConnectedBanner({ items }: { items: readonly Recent[] }) {
         </div>
       ))}
     </>
+  );
+}
+
+/** #507: a session that may only connect Google first (me.google_link_required), at the top of
+ * Ways to sign in, where the app sends the person. Never dismissed: it ends with the first
+ * Google account that passes the organisation's rules. */
+export function LinkRequiredBanner() {
+  return (
+    <div className={styles.banner} role="status">
+      <p className={styles.bannerText}>{LINK_REQUIRED}</p>
+    </div>
   );
 }
