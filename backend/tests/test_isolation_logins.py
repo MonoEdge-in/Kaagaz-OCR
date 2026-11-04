@@ -38,7 +38,8 @@ from kaagaz.search.indexing import embed_missing
 from kaagaz.search.story_vectors import embed_missing_stories
 from tests.db_support import APP_ROLE, database_url, insert_document, new_customer
 from tests.settings_factory import make_settings
-from tests.test_api_support import Api, ApiFakeQueue, ApiFakeStorage, FakeAnswers, TestClient
+from tests.test_api_folder_uploads import TREE, item, plan, register
+from tests.test_api_support import CSRF, PDF_BYTES, Api, ApiFakeQueue, ApiFakeStorage, FakeAnswers, TestClient
 from tests.test_indexing_db import FakeModel
 from tests.test_isolation_customer_purge import KeyStorage
 
@@ -248,6 +249,33 @@ def test_the_app_works_under_its_own_login(logins: dict[str, str]) -> None:
     finally:
         app_engine.dispose()
         ops_engine.dispose()
+
+
+def test_a_folder_upload_plans_registers_and_sends_under_the_app_login(logins: dict[str, str]) -> None:
+    """#484 under #479: the folder upload needs no owner right. Plan (the plan lock, the tree lock,
+    the limits), register a page of items and send a file to its item, all on ``kaagaz_api``; the
+    file lands in its folder and the progress says so."""
+    engine = make_engine(logins[API])
+    try:
+        api = Api(Database(engine, APP_ROLE))
+        signed = api.new_signed("member")
+        planned = plan(signed, TREE, file_count=1, total_bytes=len(PDF_BYTES))
+        assert planned.status_code == 200, planned.text
+        upload, deepest = planned.json()["id"], planned.json()["folder_ids"][2]
+        registered = register(signed, upload, [item("A/B/C/bill.pdf", deepest, len(PDF_BYTES))])
+        assert registered.status_code == 200, registered.text
+        (one,) = registered.json()["items"]
+        sent = signed.client.post(
+            f"/api/documents?folder_upload_item_id={one['id']}",
+            files={"file": ("bill.pdf", PDF_BYTES, "application/pdf")},
+            headers=CSRF,
+        )
+        assert sent.status_code == 201, sent.text
+        assert sent.json()["document"]["folder_id"] == deepest
+        progress = signed.client.get(f"/api/folder-uploads/{upload}").json()
+        assert (progress["stored"], progress["waiting"], progress["reading"]) == (1, 0, 1)
+    finally:
+        engine.dispose()
 
 
 def test_an_owner_command_is_refused_under_the_app_login(db: Database, logins: dict[str, str]) -> None:
