@@ -9,7 +9,8 @@ batches and duplicates stay exactly as for any upload.
   into a folder (no per-folder rights: any signed-in user may change folders); "As a new
   department" is an admin's. Every folder and file name follows ``names.upload_name``. Audited
   once (``folder.upload``, counts and ids only) on the first plan and on a re-plan that made
-  folders. One upload sends at a time per organisation (409 ``upload_in_progress``) and one plan
+  folders. One user's uploads send at a time per organisation (409 ``upload_in_progress``, until
+  the other has been quiet for 30 minutes) and one plan
   is built at a time (429 ``plan_busy``, ``Retry-After: 2``).
 * ``POST /folder-uploads/{id}/items``: a page of at most 1,000 files; each gets its folder and
   batch now (``db/folder_upload_items.py``). A file with an unsafe name is registered failed
@@ -105,7 +106,7 @@ def _words(code: str, limits: FolderUploadLimits) -> str:
         "plan_changed": "This upload was started with a different folder or place. Start a new upload.",
         "folder_too_deep": f"This folder would go deeper than {MAX_DEPTH} levels here.",
         "upload_in_progress": "Another folder upload is still sending in this organisation."
-        " Wait for it to finish, or stop it.",
+        " Try again in a few minutes.",
     }.get(code, "")
 
 

@@ -243,9 +243,10 @@ def test_a_new_upload_waits_while_another_of_the_organisation_still_has_files_wa
     assert _error(plan(colleague)) == (
         409,
         "upload_in_progress",
-        "Another folder upload is still sending in this organisation. Wait for it to finish, or stop it.",
+        "Another folder upload is still sending in this organisation. Try again in a few minutes.",
     )
     assert plan(signed, id=first["id"]).status_code == 200  # a re-plan of the same upload
+    assert plan(signed).status_code == 200  # the same user's new upload (production QA P1)
     assert plan(api.new_signed()).status_code == 200  # another organisation
     _owner(
         db,
@@ -254,6 +255,29 @@ def test_a_new_upload_waits_while_another_of_the_organisation_still_has_files_wa
         {"u": first["id"]},
     )
     assert plan(colleague).status_code == 200  # nothing waits any more
+
+
+def test_an_upload_quiet_for_30_minutes_no_longer_blocks_the_organisation(db: Database) -> None:
+    """Production QA P1: a stopped or abandoned upload's waiting files blocked every new folder
+    upload of the organisation for ever. Only one active in the last 30 minutes blocks now."""
+    api = Api(db)
+    signed = api.new_signed()
+    colleague = api.sign_in(signed.customer_id)
+    first = plan(signed).json()
+    register(signed, first["id"], [item("A/one.pdf", first["folder_ids"][0])])
+    assert _error(plan(colleague))[1] == "upload_in_progress"
+    upload_at = "UPDATE folder_uploads SET updated_at = now() - CAST(:ago AS interval) WHERE id = :u"
+    items_at = (
+        "UPDATE folder_upload_items SET updated_at = now() - CAST(:ago AS interval)"
+        " WHERE folder_upload_id = :u"
+    )
+    _owner(db, upload_at, {"u": first["id"], "ago": "29 minutes"})
+    _owner(db, items_at, {"u": first["id"], "ago": "29 minutes"})
+    assert _error(plan(colleague))[1] == "upload_in_progress"  # still active 29 minutes ago
+    _owner(db, upload_at, {"u": first["id"], "ago": "31 minutes"})
+    assert _error(plan(colleague))[1] == "upload_in_progress"  # a file of it moved 29 minutes ago
+    _owner(db, items_at, {"u": first["id"], "ago": "31 minutes"})
+    assert plan(colleague).status_code == 200
 
 
 def test_a_plan_while_another_of_the_organisation_is_being_built_is_429_plan_busy(db: Database) -> None:
