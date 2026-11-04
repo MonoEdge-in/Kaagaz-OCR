@@ -10,7 +10,8 @@
 // Organisations (searched by its name, the search focused), or Health or Models.
 // Feature switches (spec 17 Oct 2026) holds the platform switches and the test model;
 // while a test model runs, its banner sits above the tabs on every tab. Timeout setup (0040)
-// holds the sign-in idle timeout, Speed (0053) the platform's speed controls.
+// holds the sign-in idle timeout, Speed (0053) the platform's speed controls, Folder uploads
+// (#484) the most one folder upload may hold.
 
 import { useEffect, useState } from "react";
 import { Tabs, tabId, tabSelectId } from "@/components/admin/Tabs";
@@ -19,6 +20,7 @@ import type { TestModel } from "@/lib/types";
 import { ActivityView } from "./ActivityView";
 import { AnswerWeeksView } from "./AnswerWeeks";
 import { FeatureSwitchesView, TestModelBanner } from "./FeatureSwitches";
+import { FolderUploadLimitsView } from "./FolderUploadLimits";
 import { HealthView } from "./HealthView";
 import { ModelBoard } from "./ModelBoard";
 import { ModelsView } from "./ModelsView";
@@ -39,6 +41,7 @@ export const OPERATOR_TABS = [
   { id: "spend", label: "AI spend" },
   { id: "activity", label: "Activity" },
   { id: "health", label: "Health" },
+  { id: "folders", label: "Folder uploads" },
   { id: "features", label: "Feature switches" },
   { id: "timeout", label: "Timeout setup" },
   { id: "speed", label: "Speed" },
@@ -111,6 +114,7 @@ export function OperatorConsole() {
         {active === "spend" && <SpendView />}
         {active === "activity" && <ActivityView />}
         {active === "health" && <HealthView />}
+        {active === "folders" && <FolderUploadLimitsView />}
         {active === "features" && <FeatureSwitchesView testModel={testModel} onTestModel={reloadTestModel} />}
         {active === "timeout" && <SessionTimeoutView />}
         {active === "speed" && <SpeedView />}

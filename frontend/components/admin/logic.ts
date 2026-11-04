@@ -670,6 +670,7 @@ const ACTION_WORDS: Record<string, string> = {
   "folder.rename": "Renamed a folder",
   "folder.move": "Moved a folder",
   "folder.delete": "Deleted a folder",
+  "folder.upload": "Uploaded a folder", // #484: counts and ids only, never a name
   "tag.create": "Added a tag",
   "tag.delete": "Deleted a tag",
   "user_word.added": "Added a word to My words",

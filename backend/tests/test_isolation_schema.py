@@ -57,6 +57,10 @@ written again, never deleted by the app (it goes with its organisation).
 Audit keeping (0068, #482): a deleted organisation's audit rows, granted to no role (only the
 owner reads them); the worker's sweep that removes them after 365 days; and the operator's
 switch that requires two-step sign-in for an organisation's admins (#481).
+
+Folder upload (0071, #484, NEEDS VRUSHIT'S APPROVAL): an upload, its folders and its items the
+app reads, adds and updates, never deletes (they go with the customer); an organisation's own
+limits it reads in four columns only, written by the operator's two functions (step-up).
 """
 
 import re
@@ -159,6 +163,13 @@ FROM_0066 = {"reading_days": (True, True, False, False)}
 UPDATES_0066 = {"reading_days": {"pages", "cost_usd", "alerted_at"}}
 # Audit keeping (0068, #482): a deleted organisation's audit rows, no right for the app at all.
 FROM_0068 = {"audit_log_kept": (False, False, False, False)}
+# Folder upload (0071): never deleted by the app; the limits are a column grant, the operator writes.
+FROM_0071 = {
+    "folder_uploads": (True, True, True, False),
+    "folder_upload_folders": (True, True, True, False),
+    "folder_upload_items": (True, True, True, False),
+    "org_upload_limits": (False, False, False, False),
+}
 UPDATES_0030 = {
     "word_changes": {"applied", "undone_at", "undone_by"},
     "ensemble_runs": {
@@ -484,6 +495,12 @@ OPERATOR_RIGHTS = {
     # 0068 (#481): two-step sign-in required for an organisation's admins, and its write (step-up).
     "kaagaz_op_admin_two_step": ("boolean", EMPTY_PATH),
     "kaagaz_op_set_admin_two_step": ("text", EMPTY_PATH),
+    "kaagaz_op_folder_upload_limits": (  # 0071
+        "TABLE(org_max_files integer, org_max_gb integer, org_max_folders integer,"
+        " platform_max_files integer, platform_max_gb integer, platform_max_folders integer)",
+        EMPTY_PATH,
+    ),
+    "kaagaz_op_set_folder_upload_limits": ("text", EMPTY_PATH),
     # 0046: operator-only read/write for customer and user RPM overrides.
     "kaagaz_op_model_rates": (
         "TABLE(org_rpm integer, user_id uuid, email text, user_rpm integer)",
@@ -563,6 +580,7 @@ def test_every_customer_table_has_row_level_security_and_the_customer_only_polic
         | set(FROM_0062)
         | set(FROM_0066)
         | set(FROM_0068)
+        | set(FROM_0071)
     )
 
     with db.system() as conn:
@@ -610,7 +628,8 @@ def test_every_customer_table_is_granted_to_the_app_role(db: Database) -> None:
         # its feature switches too.
         # Changed on purpose (0040): and its sign-in idle timeout.
         # Changed on purpose (#482, 0068): and a deleted organisation's kept audit rows.
-        if table not in FROM_0023 | FROM_0026 | FROM_0039 | FROM_0040 | FROM_0043 | FROM_0068:
+        # Changed on purpose (#484, 0071): and an organisation's folder upload limits.
+        if table not in FROM_0023 | FROM_0026 | FROM_0039 | FROM_0040 | FROM_0043 | FROM_0068 | FROM_0071:
             assert (select, insert) == (True, True), table
     for table in FROM_0002:
         assert granted[table] == (True, True, True, True), table
@@ -635,6 +654,7 @@ def test_every_customer_table_is_granted_to_the_app_role(db: Database) -> None:
         | FROM_0062
         | FROM_0066
         | FROM_0068
+        | FROM_0071
     ).items():
         assert granted[table] == expected, table
 
@@ -798,6 +818,7 @@ def test_every_foreign_key_between_customer_tables_matches_the_customer_on_both_
         | set(FROM_0056)
         | set(FROM_0061)
         | set(FROM_0062)
+        | {"folder_upload_folders", "folder_upload_items"}  # 0071
         | {"pages", "model_usage", "documents"}  # documents.owner_id (0041)
     )
     for name, _table, _parent, columns, parent_columns in between:

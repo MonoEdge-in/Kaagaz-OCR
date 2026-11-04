@@ -1,7 +1,7 @@
-"""Folders: a tree at most 5 levels deep, per customer (PRD 1 F1, WP1.2).
+"""Folders: a tree at most 100 levels deep, per customer (PRD 1 F1, WP1.2; #484, was 5).
 
 Every create, move and delete takes the customer's tree lock first, so two
-requests can never together make a cycle or a tree deeper than 5. The
+requests can never together make a cycle or a tree deeper than 100. The
 concurrency tests force the order with ``wait_until_blocked``: they never
 depend on timing.
 """
@@ -15,6 +15,7 @@ from sqlalchemy import Connection, text
 
 from kaagaz.db.engine import Database
 from kaagaz.db.folders import (
+    MAX_DEPTH,
     FolderCycle,
     FolderError,
     FolderNameTaken,
@@ -74,19 +75,20 @@ def test_create_returns_the_row_and_lists_it_by_name(db: Database) -> None:
         assert [folder.name for folder in list_folders(conn, customer)] == ["Bills", "March", "tax"]
 
 
-def test_create_at_depth_six_is_refused(db: Database) -> None:
+# Changed on purpose (#484, 3 Nov 2026): the deepest is 100, was 5.
+def test_create_at_depth_101_is_refused(db: Database) -> None:
     customer, admin = new_customer(db)
     with db.customer(customer) as conn:
-        chain = _chain(conn, customer, admin, 5, prefix="L")
+        chain = _chain(conn, customer, admin, MAX_DEPTH, prefix="L")
 
     with pytest.raises(FolderTooDeep) as refused, db.customer(customer) as conn:
-        create_folder(conn, customer, name="Six", parent_id=chain[4].id, created_by=admin)
+        create_folder(conn, customer, name="101", parent_id=chain[-1].id, created_by=admin)
     assert refused.value.code == "folder_too_deep"
 
     with db.customer(customer) as conn:
-        fifth = create_folder(conn, customer, name="Also five", parent_id=chain[3].id, created_by=admin)
-        assert fifth.parent_id == chain[3].id
-        assert len(list_folders(conn, customer)) == 6
+        deepest = create_folder(conn, customer, name="Also 100", parent_id=chain[-2].id, created_by=admin)
+        assert deepest.parent_id == chain[-2].id
+        assert len(list_folders(conn, customer)) == MAX_DEPTH + 1
 
 
 def test_create_under_a_missing_or_other_customers_parent_is_not_found(db: Database) -> None:
@@ -141,37 +143,47 @@ def test_rename_changes_only_the_name(db: Database) -> None:
 # --- move -----------------------------------------------------------------------
 
 
-def test_a_leaf_moves_under_depth_four_but_not_under_depth_five(db: Database) -> None:
+# Changed on purpose (#484, 3 Nov 2026): under depth 99, not 100 (was 4 and 5).
+def test_a_leaf_moves_under_depth_99_but_not_under_depth_100(db: Database) -> None:
     customer, admin = new_customer(db)
     with db.customer(customer) as conn:
-        chain = _chain(conn, customer, admin, 5, prefix="L")
+        chain = _chain(conn, customer, admin, MAX_DEPTH, prefix="L")
         leaf = create_folder(conn, customer, name="Leaf", parent_id=None, created_by=admin)
 
     with pytest.raises(FolderTooDeep), db.customer(customer) as conn:
-        move_folder(conn, customer, leaf.id, parent_id=chain[4].id)
+        move_folder(conn, customer, leaf.id, parent_id=chain[-1].id)
     assert _parents(db, customer)[leaf.id] is None
 
     with db.customer(customer) as conn:
-        moved = move_folder(conn, customer, leaf.id, parent_id=chain[3].id)
-    assert moved.parent_id == chain[3].id
-    assert _parents(db, customer)[leaf.id] == chain[3].id
+        moved = move_folder(conn, customer, leaf.id, parent_id=chain[-2].id)
+    assert moved.parent_id == chain[-2].id
+    assert _parents(db, customer)[leaf.id] == chain[-2].id
 
 
-def test_a_two_level_subtree_moves_under_depth_three_but_not_under_depth_four(db: Database) -> None:
+# Changed on purpose (#484, 3 Nov 2026): under depth 98, not 99 (was 3 and 4).
+def test_a_two_level_subtree_moves_under_depth_98_but_not_under_depth_99(db: Database) -> None:
     customer, admin = new_customer(db)
     with db.customer(customer) as conn:
-        chain = _chain(conn, customer, admin, 5, prefix="L")
+        chain = _chain(conn, customer, admin, MAX_DEPTH, prefix="L")
         top = create_folder(conn, customer, name="Subtree", parent_id=None, created_by=admin)
         below = create_folder(conn, customer, name="Below", parent_id=top.id, created_by=admin)
 
     with pytest.raises(FolderTooDeep), db.customer(customer) as conn:
-        move_folder(conn, customer, top.id, parent_id=chain[3].id)
+        move_folder(conn, customer, top.id, parent_id=chain[-2].id)
     assert _parents(db, customer)[top.id] is None
 
     with db.customer(customer) as conn:
-        move_folder(conn, customer, top.id, parent_id=chain[2].id)
+        move_folder(conn, customer, top.id, parent_id=chain[-3].id)
     parents = _parents(db, customer)
-    assert (parents[top.id], parents[below.id]) == (chain[2].id, top.id)
+    assert (parents[top.id], parents[below.id]) == (chain[-3].id, top.id)
+
+
+def test_descendant_ids_and_path_reach_100_levels(db: Database) -> None:
+    customer, admin = new_customer(db)
+    with db.customer(customer) as conn:
+        chain = _chain(conn, customer, admin, MAX_DEPTH, prefix="D")
+        assert folder_path(conn, customer, chain[-1].id) == chain
+        assert descendant_ids(conn, customer, chain[0].id) == [folder.id for folder in chain]
 
 
 def test_a_move_into_itself_its_child_or_its_grandchild_is_a_cycle(db: Database) -> None:
@@ -358,7 +370,7 @@ def test_parallel_same_name_creates_give_one_folder_and_one_name_taken(db: Datab
 def test_a_create_inside_a_folder_being_moved_deeper_is_too_deep(db: Database) -> None:
     customer, admin = new_customer(db)
     with db.customer(customer) as conn:
-        chain = _chain(conn, customer, admin, 4, prefix="L")
+        chain = _chain(conn, customer, admin, MAX_DEPTH - 1, prefix="L")  # Changed on purpose (#484)
         lone = create_folder(conn, customer, name="Lone", parent_id=None, created_by=admin)
     session = _session_name()
 
@@ -369,7 +381,7 @@ def test_a_create_inside_a_folder_being_moved_deeper_is_too_deep(db: Database) -
 
     with ThreadPoolExecutor(max_workers=1) as pool:
         with db.customer(customer) as conn:
-            move_folder(conn, customer, lone.id, parent_id=chain[3].id)  # Lone is now at depth 5
+            move_folder(conn, customer, lone.id, parent_id=chain[-1].id)  # Lone is now at depth 100
             later = pool.submit(create_inside_lone)
             wait_until_blocked(db, application_name=session)
         with pytest.raises(FolderTooDeep):

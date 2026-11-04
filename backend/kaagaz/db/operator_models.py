@@ -43,6 +43,8 @@ audit rows.
 * ``session_timeout`` and ``set_session_timeout`` (0040): the sign-in idle timeout, the
   platform's and one organisation's.
 * ``speed`` and ``set_speed`` (0053): the platform's speed controls.
+* ``folder_upload_limits`` and ``set_folder_upload_limits`` (0071, #484): the folder upload
+  limits (files, GB, folders), the platform's and one organisation's.
 * ``current_test_model``, ``set_test_model`` and ``clear_test_model`` (0038): the platform
   test model, one model for every organisation's scanning and answering, and its undo.
 
@@ -338,6 +340,32 @@ def set_session_timeout(
     ``missing``, ``deleting``, ``step_up`` or ``signed_out``."""
     params = {"o": operator_id, "c": customer_id, "h": hours, "step": step}
     statement = text("SELECT kaagaz_op_set_session_timeout(:o, :c, :h, :step)")
+    return str(conn.execute(statement, params).scalar_one())
+
+
+def folder_upload_limits(conn: Connection, operator_id: str, customer_id: str | None) -> RowMapping | None:
+    """The folder upload limits (0071): org_max_* (None without a customer) and platform_max_*,
+    each None for "not set". None for an unknown organisation or an operator who is not enabled."""
+    params = {"o": operator_id, "c": customer_id}
+    statement = text("SELECT * FROM kaagaz_op_folder_upload_limits(:o, :c)")
+    return conn.execute(statement, params).mappings().first()
+
+
+def set_folder_upload_limits(
+    conn: Connection,
+    operator_id: str,
+    customer_id: str | None,
+    max_files: int | None,
+    max_gb: int | None,
+    max_folders: int | None,
+    *,
+    step: int,
+) -> str:
+    """Set the platform's folder upload limits (no customer) or one organisation's (all None:
+    follow the platform), ``step`` of a fresh code required; audited. ``done``, ``unchanged``,
+    ``missing``, ``deleting``, ``step_up`` or ``signed_out``."""
+    params = {"o": operator_id, "c": customer_id, "f": max_files, "g": max_gb, "d": max_folders, "step": step}
+    statement = text("SELECT kaagaz_op_set_folder_upload_limits(:o, :c, :f, :g, :d, :step)")
     return str(conn.execute(statement, params).scalar_one())
 
 

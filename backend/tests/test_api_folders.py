@@ -100,13 +100,14 @@ def test_create_under_an_unknown_parent_is_404(db: Database) -> None:
     assert signed.client.get("/api/folders").json() == {"items": []}
 
 
-def test_a_sixth_level_is_409_folder_too_deep(db: Database) -> None:
+# Changed on purpose (#484, 3 Nov 2026): the 101st level, was the 6th.
+def test_a_101st_level_is_409_folder_too_deep(db: Database) -> None:
     api = Api(db)
     signed = api.new_signed()
-    levels = _chain(api, signed, 5)
-    reply = _create(signed, "L6", parent_id=levels[-1])
+    levels = _chain(api, signed, 100)
+    reply = _create(signed, "L101", parent_id=levels[-1])
     assert reply.status_code == 409
-    assert _error(reply) == {"code": "folder_too_deep", "message": "Folders can be at most 5 levels deep."}
+    assert _error(reply) == {"code": "folder_too_deep", "message": "Folders can be at most 100 levels deep."}
 
 
 # --- rename and move --------------------------------------------------------------------
@@ -154,11 +155,12 @@ def test_a_move_into_itself_or_its_own_folder_is_409_folder_cycle(db: Database) 
     assert signed.client.get("/api/folders").json()["items"][0]["parent_id"] is None
 
 
-def test_a_move_that_goes_past_five_levels_is_409_folder_too_deep(db: Database) -> None:
+# Changed on purpose (#484, 3 Nov 2026): past 100 levels, was 5.
+def test_a_move_that_goes_past_100_levels_is_409_folder_too_deep(db: Database) -> None:
     api = Api(db)
     signed = api.new_signed()
-    deep = _chain(api, signed, 4)
-    subtree = _chain(api, signed, 2, prefix="S")  # under level 4 it would need levels 5 and 6
+    deep = _chain(api, signed, 99)
+    subtree = _chain(api, signed, 2, prefix="S")  # under level 99 it would need levels 100 and 101
     reply = _patch(signed, subtree[0], {"parent_id": deep[-1]})
     assert reply.status_code == 409
     assert _error(reply)["code"] == "folder_too_deep"

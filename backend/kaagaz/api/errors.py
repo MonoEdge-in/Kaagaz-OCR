@@ -44,7 +44,7 @@ MESSAGES = {
     "method_not_allowed": "This action is not available here.",
     "conflict": "That already exists.",
     "folder_cycle": "A folder can't go inside itself or one of its own folders.",
-    "folder_too_deep": "Folders can be at most 5 levels deep.",
+    "folder_too_deep": "Folders can be at most 100 levels deep.",
     "folder_not_empty": "This folder isn't empty. Move or delete what is inside it first.",
     "not_needs_review": "This value doesn't need review any more.",
     "not_in_trash": "Only a document in Trash can be deleted forever.",

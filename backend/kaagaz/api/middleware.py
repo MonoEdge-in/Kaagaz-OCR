@@ -12,7 +12,12 @@ Why:
   parts, finish) have their own bucket of the same size, ``{key}:upload``, so a bulk
   upload and the screens' reads never use up each other's (Vrushit UAT, 25 Oct 2026:
   the batch tray's polling used up the budget and 805 calls were refused, uploads
-  among them). A refusal's ``Retry-After`` is the honest wait for the next token
+  among them). A folder upload's file (``POST /api/documents?folder_upload_item_id=``, #484,
+  council 3 Nov 2026) has a bucket of its own, ``{key}:folder``, of
+  FOLDER_UPLOAD_CALLS_PER_MINUTE: one call a file, so 50,000 files go in hours, not days;
+  planning, registering and progress stay on the general bucket. The route checks the item
+  before it reads the body, so a made-up id gets a 404, never an upload. A refusal's
+  ``Retry-After`` is the honest wait for the next token
   (about a second at 120 a minute), not a flat minute, and each refusal is logged at
   WARNING with the path, the ids and the bucket. PROVISIONAL: behind the Next.js proxy every visitor who is
   not signed in shares the proxy's address; trusting ``X-Forwarded-For`` is a
@@ -54,6 +59,8 @@ limit_log = logging.getLogger("kaagaz.api.rate_limit")
 
 # A file's upload calls, counted in their own bucket (see the module notes).
 UPLOAD_PATH = "/api/documents/upload-sessions"
+# A folder upload's file (#484): this path, POST, with this query parameter.
+FOLDER_FILE_PATH, FOLDER_ITEM = "/api/documents", "folder_upload_item_id"
 error_log = logging.getLogger("kaagaz.api.errors")
 
 
@@ -121,9 +128,10 @@ class RateLimiter:
 
 
 class RequestMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app: ASGIApp, *, limiter: RateLimiter) -> None:
+    def __init__(self, app: ASGIApp, *, limiter: RateLimiter, folder_limiter: RateLimiter) -> None:
         super().__init__(app)
         self._limiter = limiter
+        self._folder_limiter = folder_limiter
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         started = time.perf_counter()
@@ -139,12 +147,15 @@ class RequestMiddleware(BaseHTTPMiddleware):
             key = f"user:{user_id}" if user_id else f"ip:{request.client.host if request.client else '-'}"
         path = request.url.path
         upload = path == UPLOAD_PATH or path.startswith(UPLOAD_PATH + "/")
-        if upload:
-            key += ":upload"
-        if self._limiter.allow(key):
+        folder = request.method == "POST" and path == FOLDER_FILE_PATH and FOLDER_ITEM in request.query_params
+        bucket = "folder" if folder else "upload" if upload else "general"
+        if bucket != "general":
+            key += f":{bucket}"
+        limiter = self._folder_limiter if folder else self._limiter
+        if limiter.allow(key):
             response = await call_next(request)
         else:
-            wait = self._limiter.retry_after(key)
+            wait = limiter.retry_after(key)
             response = error_response(429, "rate_limited", headers={"Retry-After": str(wait)})
             limit_log.warning(
                 json.dumps(
@@ -153,7 +164,7 @@ class RequestMiddleware(BaseHTTPMiddleware):
                         "request_id": request_id,
                         "method": request.method,
                         "path": path,
-                        "bucket": "upload" if upload else "general",
+                        "bucket": bucket,
                         "retry_after": wait,
                         "user_id": user_id,
                         "operator_id": operator_id,

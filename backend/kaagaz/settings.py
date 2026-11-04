@@ -475,6 +475,13 @@ class Settings:
     # Mistral (council 2 Nov 2026); off unless MISTRAL_ZDR_APPROVED=true.
     mistral_api_key: str | None = field(default=None, repr=False)
     mistral_zdr_approved: bool = False
+    # Folder upload (#484, council 3 Nov 2026): a folder upload's file sends have their own rate
+    # bucket, folder_upload_calls_per_minute a user; this API process takes at most
+    # folder_upload_files_at_once_per_org of one organisation's files at once and
+    # folder_upload_files_at_once of every organisation's (429 past either). Optional.
+    folder_upload_calls_per_minute: int = 600
+    folder_upload_files_at_once_per_org: int = 4
+    folder_upload_files_at_once: int = 8
 
     @property
     def mistral_ready(self) -> bool:
@@ -703,6 +710,9 @@ class Settings:
             db_idle_in_transaction_timeout_seconds=env.at_least(
                 "DB_IDLE_IN_TRANSACTION_TIMEOUT_SECONDS", 0, default=900
             ),
+            folder_upload_calls_per_minute=env.positive_or("FOLDER_UPLOAD_CALLS_PER_MINUTE", 600),
+            folder_upload_files_at_once_per_org=env.positive_or("FOLDER_UPLOAD_FILES_AT_ONCE_PER_ORG", 4),
+            folder_upload_files_at_once=env.positive_or("FOLDER_UPLOAD_FILES_AT_ONCE", 8),
             cpu_workers=env.positive("CPU_WORKERS"),
             max_check_crops=env.positive("MAX_CHECK_CROPS"),
             model_rpm=env.between("MODEL_RPM", 1, 1200),
