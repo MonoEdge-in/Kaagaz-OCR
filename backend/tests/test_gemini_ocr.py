@@ -25,7 +25,7 @@ from unittest import mock
 
 from PIL import Image
 
-from kaagaz.ai.openrouter import PageReply
+from kaagaz.ai.openrouter import PageBudget, PageReply
 from kaagaz.ai.replies import ModelOutputError, ModelUnavailable
 from kaagaz.db.page_reads import PageKey
 from kaagaz.ingestion.errors import BackendUnavailable
@@ -172,6 +172,7 @@ class FakeClient:
         model: str | None = None,
         provider: str | None = None,
         validate: Callable[[dict[str, Any]], str | None] | None = None,
+        budget: PageBudget | None = None,  # Changed on purpose (#488): Ultra low cost's, unused here
     ) -> PageReply:
         image = Image.open(io.BytesIO(png))
         image.load()

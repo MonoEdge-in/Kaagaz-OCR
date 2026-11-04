@@ -58,6 +58,8 @@ DEFAULT_PROVIDER = "google-vertex"
 # OCR_MODEL and MODEL_CHAT when unset (Tushar, 16 Oct 2026): with no super admin setting,
 # Gemini 3.8 Flash scans and answers; embeddings keep MODEL_EMBED.
 DEFAULT_MODEL = "google/gemini-3.8-flash"
+# #488 (Ultra low cost): OCR_PAGE_CEILING_PAISE's lowest and highest, a page's read in paise.
+ULC_CEILING_PAISE = (20, 55)
 # The model vendors (the part of a model id before "/") the operator may allow, a ceiling
 # apart from the providers (features 25-27, council 15 Oct 2026, S1). Tushar decided on 15
 # Oct 2026 that Sonnet 5.5 is allowed by default, so the default is google and anthropic;
@@ -416,6 +418,12 @@ class Settings:
     folder_upload_calls_per_minute: int = 600
     folder_upload_files_at_once_per_org: int = 4
     folder_upload_files_at_once: int = 8
+    # Ultra low cost (#488, production, no migration): with ocr_ultra_low_cost (off unless set
+    # to true; needs OCR_ENGINE=gemini) every scanned page is read in the compact reply at minimal
+    # thinking, and no read of a page is billed past ocr_page_ceiling_paise (20-55; 55 when unset;
+    # INR_PER_USD in kaagaz.reading.ocr). Off: every page is read exactly as before.
+    ocr_ultra_low_cost: bool = False
+    ocr_page_ceiling_paise: int = 55
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "Settings":
@@ -555,6 +563,10 @@ class Settings:
             )
         if openrouter_api_key is not None and _API_KEY.fullmatch(openrouter_api_key) is None:
             raise SettingsError("OPENROUTER_API_KEY must be printable ASCII with no spaces")
+        ultra_low_cost = env.optional("OCR_ULTRA_LOW_COST") is not None and env.boolean("OCR_ULTRA_LOW_COST")
+        if ultra_low_cost and ocr_engine != "gemini":
+            raise SettingsError("OCR_ULTRA_LOW_COST=true needs OCR_ENGINE=gemini: no model reads the pages")
+        page_ceiling_paise = env.between_or("OCR_PAGE_CEILING_PAISE", *ULC_CEILING_PAISE, default=55)
         queue_url = env.text("QUEUE_URL")
         queue_express_url = (
             None if env.optional("QUEUE_EXPRESS_URL") is None else env.url("QUEUE_EXPRESS_URL")
@@ -611,6 +623,8 @@ class Settings:
             ocr_page_concurrency=env.positive("OCR_PAGE_CONCURRENCY"),
             careful_early_max_pages=env.at_least("CAREFUL_EARLY_MAX_PAGES", 0, default=0),
             ocr_seconds_per_page=env.positive_or("OCR_SECONDS_PER_PAGE", 60),
+            ocr_ultra_low_cost=ultra_low_cost,
+            ocr_page_ceiling_paise=page_ceiling_paise,
             cost_saving_hard_lines_max=env.between_or("COST_SAVING_HARD_LINES_MAX", 1, 60, default=12),
             cost_saving_hard_share=env.number_in("COST_SAVING_HARD_SHARE", 0.05, 1.0, default=0.4),
             cost_saving_crop_pad=env.number_in("COST_SAVING_CROP_PAD", 0.1, 2.0, default=0.5),
