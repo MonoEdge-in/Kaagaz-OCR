@@ -22,6 +22,7 @@ from kaagaz.ingestion.ports import BlobNotFound
 from kaagaz.jobs.purge import forget_kept_audit, purge_customer, purge_deleted_customers
 from tests import test_migration_0002_db as m0002
 from tests.db_support import insert_document, insert_folder, insert_tag, migrate, tag_document
+from tests.folder_upload_support import new_folder_upload, path_key
 from tests.test_api_support import CSRF, Api, TestClient, wrong_code
 from tests.test_document_stories_db import put
 from tests.test_operator_auth_db import _Operator, _owner
@@ -144,8 +145,8 @@ def _snapshot(db: Database, customer_id: str) -> dict[str, str]:
 
 def _organisation(api: Api, storage: KeyStorage, label: str) -> tuple[str, str, list[str]]:
     """An organisation with a row in every kind of table a customer fills (its daily page limit,
-    the day's counter and a held document too), and files under both prefixes: (id, name, its
-    documents)."""
+    the day's counter, a held document and a folder upload too), and files under both prefixes:
+    (id, name, its documents)."""
     name = f"Org {label} {uuid.uuid4().hex[:8]}"
     customer, admin = api.customer(name)
     member, _ = api.add_user(customer, "member")
@@ -204,6 +205,25 @@ def _organisation(api: Api, storage: KeyStorage, label: str) -> tuple[str, str, 
         "INSERT INTO customer_ai_settings (customer_id, daily_page_limit) VALUES (:c, 10)",
         {"c": customer},
     )
+    # #484 (0071): a folder upload with its folder and an item, and the organisation's own limits.
+    upload = new_folder_upload(api.db, customer, member, folder_ids=[folder])
+    with api.db.customer(customer) as conn:
+        conn.execute(
+            text(
+                "INSERT INTO folder_upload_items (customer_id, folder_upload_id, seq, path_key, name,"
+                " folder_id, size_bytes, batch_id, state, document_id)"
+                " VALUES (:c, :u, 0, :k, 'bill.pdf', :f, 10, :b, 'stored', :d)"
+            ),
+            {
+                "c": customer,
+                "u": upload,
+                "k": path_key("A/bill.pdf"),
+                "f": folder,
+                "b": str(uuid.uuid4()),
+                "d": first,
+            },
+        )
+    _owner(api.db, "INSERT INTO org_upload_limits (customer_id, max_files) VALUES (:c, 7)", {"c": customer})
     put(api.db, customer, admin, first, f"The papers of {label}")
     documents = [first, second, trashed, held]
     for document in documents:

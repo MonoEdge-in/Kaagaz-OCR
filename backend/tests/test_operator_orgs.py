@@ -64,6 +64,8 @@ ORG_ROUTES = {
     # Changed on purpose (#481, 0068): whether its admins must have two-step sign-in.
     ("GET", f"{ORGS}/{ANY_ID}/admin-two-step"),
     ("PUT", f"{ORGS}/{ANY_ID}/admin-two-step"),
+    ("GET", f"{ORGS}/{ANY_ID}/folder-upload-limits"),  # #484
+    ("PUT", f"{ORGS}/{ANY_ID}/folder-upload-limits"),
     # Changed on purpose (#212, 21 Oct 2026): one organisation's model call rates.
     ("GET", f"{ORGS}/{ANY_ID}/model-rates"),
     ("PUT", f"{ORGS}/{ANY_ID}/model-rates"),

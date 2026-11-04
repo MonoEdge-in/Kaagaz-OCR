@@ -36,6 +36,8 @@ class DocumentRecord:
     ocr_choice: str | None = None
     # PRD 5 Q1: the drop it was uploaded in (the browser's id for it); None: in none.
     batch_id: str | None = None
+    # Folder upload (#484): it stays in folder_id, never auto-filed, even in a department.
+    keep_place: bool = False
 
 
 @dataclass(frozen=True, slots=True)

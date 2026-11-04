@@ -3,7 +3,7 @@
 // What can be done with the folder being viewed: New folder (inside it, or at
 // the top level from All documents), Rename, Move and Delete. Each opens a
 // small form in place; errors stay next to it. The server has the last word:
-// a taken name, a move into itself, more than 5 levels or a folder that is not
+// a taken name, a move into itself, more than 100 levels or a folder that is not
 // empty come back as 409 and are shown as it words them. The screen gives this
 // a new key for each folder, so an open form never outlives its folder.
 // UI audit D12 (16 Oct 2026): the folder column header's "+" is the one New folder (Tushar, 16 Oct
@@ -18,6 +18,7 @@ import { createFolder, deleteFolder, updateFolder } from "@/lib/api";
 import { BusyLabel } from "./BusyLabel";
 import { MAX_FOLDER_DEPTH, canAddSubfolder, pathLabel, validMoveTargets } from "./folderTree";
 import type { FolderNode, FolderTree } from "./folderTree";
+import { FolderPicker } from "./FolderPicker";
 import { folderNameProblem, libraryErrorText } from "./library";
 import styles from "./Library.module.css";
 
@@ -143,7 +144,7 @@ export function FolderActions({ tree, current, onChanged, askNew = 0, suggestion
 
   const here = current ? current.folder.name : null;
   const fits = canAddSubfolder(tree, current?.folder.id ?? null);
-  const targets = mode === "move" && current ? validMoveTargets(tree, current.folder.id) : [];
+  const targets = new Set(mode === "move" && current ? validMoveTargets(tree, current.folder.id).map((node) => node.folder.id) : []);
   const invalid = error ? { "aria-invalid": true, "aria-describedby": errorId } : {};
 
   let body = null;
@@ -178,25 +179,33 @@ export function FolderActions({ tree, current, onChanged, askNew = 0, suggestion
     );
   } else if (mode === "move") {
     body = (
-      <div className="field">
-        <label htmlFor={fieldId}>Move “{here}” to</label>
-        <select
-          ref={focusOnMount}
-          id={fieldId}
-          className="input"
-          value={target}
-          onChange={(event) => setTarget(event.target.value)}
-          {...invalid}
-        >
-          <option value="">Top level</option>
-          {targets.map((node) => (
-            <option key={node.folder.id} value={node.folder.id}>
-              {pathLabel(tree, node.folder.id)}
-            </option>
-          ))}
-        </select>
-        <p className="hint">Only places that keep folders within {MAX_FOLDER_DEPTH} levels are listed.</p>
-      </div>
+      // #484: a tree that opens one folder at a time (FolderPicker), never one list of every folder.
+      <fieldset className={styles.fieldset} {...invalid}>
+        <legend>Move “{here}” to</legend>
+        <ul className={styles.folderChoices}>
+          <li>
+            <label className={styles.check}>
+              <input
+                ref={focusOnMount}
+                type="radio"
+                name={fieldId}
+                value=""
+                checked={target === ""}
+                onChange={() => setTarget("")}
+              />
+              Top level
+            </label>
+          </li>
+          <FolderPicker
+            tree={tree}
+            name={fieldId}
+            choice={target || null}
+            onChoose={setTarget}
+            disabled={(node) => !targets.has(node.folder.id)}
+          />
+        </ul>
+        <p className="hint">Places that would make folders deeper than {MAX_FOLDER_DEPTH} levels can’t be chosen.</p>
+      </fieldset>
     );
   } else if (mode === "delete") {
     body = <p>Delete the folder “{here}”? Only an empty folder can be deleted.</p>;

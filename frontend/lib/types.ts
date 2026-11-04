@@ -580,6 +580,108 @@ export interface UploadLimits {
   sheet_bytes: number;
   max_pages: number; // for a PDF's pages and a TIFF's frames
   readers: UploadReader[]; // the scan readers an upload may choose, the server's default first
+  // #484: this organisation's folder upload limits; left out by an older server (no folder upload).
+  folder_upload?: FolderUploadLimits;
+  // #484: "Let Kaagaz sort files" is offered (auto-filing is on for this person).
+  sort_available?: boolean;
+}
+
+/** The most one folder upload may hold here (the organisation's, else the platform's, else the
+ * server's), how many sends a minute the server takes from this tab, and how many at once. */
+export interface FolderUploadLimits {
+  max_files: number;
+  max_bytes: number;
+  max_folders: number;
+  max_depth: number; // 100
+  calls_per_minute: number;
+  files_at_once: number; // the organisation's sends at once; the browser sends at most 4
+}
+
+/** POST /folder-uploads: the folders to make, parents first (entry 0 the root), and the counts. */
+export interface FolderUploadPlanBody {
+  id: string; // made by the browser
+  user_id: string;
+  target: "department" | "folder";
+  parent_folder_id: string | null; // "folder": the folder it goes in, null for the top level
+  merge: boolean; // false: "Keep separate", the root becomes "A (2)"
+  folders: { name: string; parent: number | null }[];
+  file_count: number;
+  total_bytes: number;
+  skipped_count: number;
+}
+
+/** The plan's reply: folder_ids[i] is the Kaagaz folder for manifest folder i. */
+export interface FolderUploadPlan {
+  id: string;
+  root_folder_id: string;
+  root_name: string;
+  folder_ids: string[];
+  created: number;
+  merged: number;
+}
+
+/** One file to register: its id within the upload, its folder, and why the browser refused it. */
+export interface NewFolderItem {
+  path_key: string; // SHA-256 hex of its NFC path, root first
+  name: string;
+  folder_id: string;
+  size: number;
+  refused?: "unsupported_type"; // the server judges size, emptiness and names itself
+}
+
+export type FolderItemFailure = "too_large" | "unsupported_type" | "empty_file" | "folder_gone" | "bad_name";
+export type FolderItemView = "waiting" | "attention" | "duplicate" | "all";
+
+/** One file of a folder upload, as the server keeps it; its folder never changes. */
+export interface FolderUploadItem {
+  id: string;
+  seq: number;
+  path_key: string;
+  name: string;
+  folder_id: string;
+  size: number;
+  state: "waiting" | "stored" | "duplicate" | "failed";
+  failure_code: FolderItemFailure | null;
+  document_id: string | null;
+  // The stored (or matched) document; null with none, or one deleted for good.
+  document: {
+    status: DocumentStatus;
+    failure_code: string | null;
+    folder_id: string | null;
+    in_trash: boolean;
+  } | null;
+}
+
+/** GET /folder-uploads/{id}/items: a page, and where the next starts (null: the last page). */
+export interface FolderItemsPage {
+  items: FolderUploadItem[];
+  next_after: number | null;
+}
+
+/** GET /folder-uploads/{id}: one folder upload's counts, by state, and of its documents. In the
+ * list (GET /folder-uploads) reading, ready, problem and held are null. */
+export interface FolderUploadSummary {
+  id: string;
+  root_folder_id: string | null;
+  root_name: string; // the Kaagaz folder, "A (2)" after Keep separate
+  source_name: string; // the picked folder's own name, "A"
+  target: "department" | "folder";
+  parent_folder_id: string | null;
+  merge: boolean;
+  created_at: string;
+  file_count: number;
+  total_bytes: number;
+  skipped_count: number;
+  registered: number; // items listed so far
+  waiting: number;
+  stored: number;
+  duplicate: number;
+  failed: number;
+  reading: number | null; // stored, still being checked or read
+  ready: number | null;
+  problem: number | null; // stored, but its reading failed or was refused
+  held: number | null; // stored, waiting for the reading pause (#478), not counted in reading
+  held_message: string | null; // the pause's own words while any is held, as a held document's
 }
 
 /** What an upload or a whole document's Read again asks for (feature 26); nothing: the default. */
@@ -1872,6 +1974,23 @@ export interface SessionTimeout {
   hours: number | null;
   platform_hours?: number | null;
   default_hours: number;
+}
+
+/** The three folder upload limits (#484): null means "not set here" (follow the platform, or
+ * the platform's default). Most total size is in whole GB. */
+export type FolderLimitName = "max_files" | "max_gb" | "max_folders";
+export type FolderLimits = Record<FolderLimitName, number | null>;
+
+/** GET /operator/folder-upload-limits: the platform's own values and the defaults below them. */
+export interface PlatformFolderLimits extends FolderLimits {
+  defaults: Record<FolderLimitName, number>;
+}
+
+/** GET /operator/orgs/{id}/folder-upload-limits: the organisation's own, the platform's, the defaults. */
+export interface OrgFolderLimits {
+  own: FolderLimits;
+  platform: FolderLimits;
+  defaults: Record<FolderLimitName, number>;
 }
 
 /** GET /operator/speed (package S, 0053): each speed control's saved value (null: the server's

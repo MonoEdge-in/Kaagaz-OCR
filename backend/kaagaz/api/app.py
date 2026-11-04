@@ -45,6 +45,7 @@ from kaagaz.api.routers import (
     documents,
     email,
     ensemble,
+    folder_uploads,
     folders,
     health,
     oidc,
@@ -144,7 +145,11 @@ def create_app(
     app.state.kaagaz = context
     app.state.kaagaz_operator = operator_db
     errors.install(app)
-    app.add_middleware(RequestMiddleware, limiter=RateLimiter(settings.rate_limit_per_minute))
+    app.add_middleware(
+        RequestMiddleware,
+        limiter=RateLimiter(settings.rate_limit_per_minute),
+        folder_limiter=RateLimiter(settings.folder_upload_calls_per_minute),
+    )
     app.add_middleware(ErrorMiddleware)  # added last, so it is the outermost
     for router in (
         health.router,
@@ -157,6 +162,7 @@ def create_app(
         batches.router,
         dashboard.router,
         folders.router,
+        folder_uploads.router,
         tags.router,
         chat.router,
         ai_settings.router,
