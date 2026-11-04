@@ -153,8 +153,8 @@ _ENDS_A_DICTIONARY_PART = frozenset({b"stream", b"endobj", b"obj"})
 #   size: every seek drops its buffer and fills a whole one again (PSBaseParser.BUFSIZ), and
 #   a stream object takes four (its header, the "stream" line, the "endstream" line, then
 #   the token after), its data aside. Two buffers were granted until 4 Nov 2026, so a 10 KB
-#   golden file of 20 one-line pages read ~74x its size and an ordinary upload (a sale deed
-#   on the test server) was refused as unscannable. The ceiling is unchanged, so a hostile
+#   golden file of 20 one-line pages read ~74x its size and was refused as unscannable (the
+#   likely cause of a sale deed refused on the test server). The ceiling is unchanged, so a hostile
 #   file can still read at most _READ_FACTOR x its size + _MAX_GRANT_BYTES in all;
 # * everything pdfminer decompresses during the check (Flate, LZW, run length) adds up
 #   to at most _MAX_DECODED_BYTES; a CCITT fax stream is never decoded here (no index or
