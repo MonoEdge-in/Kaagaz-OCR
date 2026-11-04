@@ -9,8 +9,9 @@ are kept under a lock). A call with no scope open is not recorded (verify-models
 
 ``billed_as(kind)`` bills the calls made inside as another kind of the same work (features
 25-27, council 15 Oct 2026, C8): Dynamic's ``careful`` re-reads, Ensemble's
-``ensemble_scan`` page reads and ``ensemble_chat`` drafts, so the operator sees them apart
-from ``scan`` and ``chat``. It is a ContextVar too, so it reaches threads started with
+``ensemble_scan`` page reads and ``ensemble_chat`` drafts, and #488's ``ulc_scan`` (a page read
+under Ultra low cost, its limit hits on its row), so the operator sees them apart from ``scan``
+and ``chat``. It is a ContextVar too, so it reaches threads started with
 ``copy_context().run`` inside it.
 
 When the scope ends, with or without an error (the calls were billed either way), its
@@ -50,6 +51,9 @@ from kaagaz.ingestion.errors import BackendUnavailable
 # #463: an operator's accuracy check. Every call inside its scope is billed as it, Careful's
 # too (``UsageScope.add``), and it never counts in an organisation's budget (db.usage, 0064).
 ACCURACY_CHECK = "accuracy_check"
+# #488: a page read under Ultra low cost (``gemini_ocr``), first read or read again, billed apart
+# from scan and upgrade so the operator sees what a ceiling-held page really costs.
+ULC_SCAN = "ulc_scan"
 # The kinds of work a ledger row is billed as (0023's CHECK allows ^[a-z_]{1,32}$).
 KINDS = (
     "scan",
@@ -67,9 +71,10 @@ KINDS = (
     "ensemble_chat",
     "land",  # PRD 6 D2 and D3: the land windows, on upload and in the land-facts re-read
     ACCURACY_CHECK,
+    ULC_SCAN,
 )
 # #463: the kinds whose calls read a page and record their thinking level and picture detail.
-PAGE_READ_KINDS = frozenset({"scan", "careful", "upgrade", "ensemble_scan"})
+PAGE_READ_KINDS = frozenset({"scan", "careful", "upgrade", "ensemble_scan", ULC_SCAN})
 
 _log = logging.getLogger(__name__)
 
@@ -262,6 +267,22 @@ def record_limit_hit(model: str, *, thinking: str, resolution: str) -> None:
     scope = _CURRENT.get()
     if scope is not None:
         scope.hit_limit(model, kind=_BILLED_AS.get(), thinking=thinking, resolution=resolution)
+
+
+def record_unsent_hit(model: str, *, thinking: str, resolution: str) -> None:
+    """#488: a page read by the local reader to stay within its ceiling before any call was
+    sent (Ultra low cost: no output limit of MIN_CAP_TOKENS affordable, or no known price) is a
+    limit hit and a page on its ledger row all the same, so the share of pages Kaagaz's own
+    reader read is whole. It goes on as a call of 0 tokens at cost 0: 0023's CHECK keeps no row
+    with no call. Nothing when no scope is open."""
+    scope = _CURRENT.get()
+    if scope is None:
+        return
+    kind = _BILLED_AS.get()
+    scope.add(model, None, 0, 0, 0, 0.0, kind=kind, thinking=thinking, resolution=resolution)
+    scope.hit_limit(model, kind=kind, thinking=thinking, resolution=resolution)
+    if scope.count_page(model, kind=kind, thinking=thinking, resolution=resolution):
+        scope.count_live(pages=1)  # #478: a page of the day, costing nothing
 
 
 def record_page(model: str, *, thinking: str, resolution: str) -> None:

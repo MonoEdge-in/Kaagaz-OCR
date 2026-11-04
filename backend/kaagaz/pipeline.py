@@ -162,6 +162,9 @@ The Gemini reader (PRD 5), when the processor is given its parts:
   (the last two logged at error), asked first (``mistral_ready``, review 2 Nov 2026) so a
   document waits before its pages are drawn; its run's model is "mistral/<id>"
   (``run.model``), and it never gets Dynamic's Careful or memo (Careful is Gemini).
+* #488: a document read under Ultra low cost (``Reading.ulc``, its ceiling) has it passed on in
+  ``DocumentPages.ulc``, with its lead's catalogue prices taken once at the job's start
+  (``JobReading.ulc_prices``), so the reader holds each page under the ceiling at one price.
 * With OCR_ENGINE=rapidocr and no model there is no checker, no page counted as
   the model's and no model call: everything is as before.
 
@@ -298,6 +301,7 @@ from kaagaz.reading.ocr import (
     PageCache,
     PageRead,
     Region,
+    UlcPrices,
     careful_pages,
     careful_plan,
     careful_reasons,
@@ -724,13 +728,15 @@ class JobReading:
     mode, Careful, Ensemble's other models, the thinking level and why anything fell back);
     None with no model, or from a caller that knows the model only. ``pages_at_once`` is the
     super admin's pages of one document read at once (package S, 0053), read at the job's
-    start; None: OCR_PAGE_CONCURRENCY."""
+    start; None: OCR_PAGE_CONCURRENCY. ``ulc_prices`` (#488): for a document read under Ultra
+    low cost, its lead's catalogue prices, taken once at the job's start (None: no row)."""
 
     user_id: str | None
     model: str | None = None
     provider: str | None = None
     reading: "Reading | None" = None
     pages_at_once: int | None = None
+    ulc_prices: UlcPrices | None = None
 
 
 class ReadingAdmission(Protocol):
@@ -832,6 +838,7 @@ class _Run:
     # checker reads the values of a page any of them read, C5), Dynamic's first reads by
     # (page, pixels), and what the run adds to run_config.reading (escalated, cap_hit, ...).
     reading: "Reading | None" = None
+    ulc_prices: UlcPrices | None = None  # #488: JobReading.ulc_prices
     models: frozenset[str] = frozenset()
     memo: dict[tuple[int, str], PageRead] | None = None
     reading_notes: dict[str, Any] = field(default_factory=dict)
@@ -1047,7 +1054,7 @@ class DocumentProcessor:
             run.user_id = reading.user_id
             if reading.model is not None:
                 run.model, run.provider = reading.model, reading.provider
-            run.reading = reading.reading
+            run.reading, run.ulc_prices = reading.reading, reading.ulc_prices
         if run.reading is not None and run.reading.scan_reader == MISTRAL:  # #473: Mistral reads it
             if self._mistral_ready is not None:
                 self._mistral_ready()  # review, 2 Nov 2026: wait now, before any page is drawn
@@ -1646,6 +1653,8 @@ class DocumentProcessor:
             levels={} if reading is None else reading.accepted(),
             scan_reader=OPENROUTER if reading is None else reading.scan_reader,  # #473: who reads
             mistral_model=DEFAULT_MISTRAL_MODEL if reading is None else reading.mistral_model,
+            ulc=None if reading is None else reading.ulc,  # #488: Ultra low cost, held to its ceiling
+            ulc_prices=run.ulc_prices,
         )
         return meter.document(pages)
 
@@ -2292,6 +2301,11 @@ def build_processor(
     if gemini or model is not None:
         requested_by = text("SELECT read_requested_by FROM documents WHERE customer_id = :c AND id = :d")
         pages_at_once_sql = text("SELECT pages_at_once FROM platform_ai_settings")
+        # #488: Ultra low cost's lead prices, once a document (a price change never moves its pages).
+        prices_sql = text(
+            "SELECT price_in_usd_per_m, price_out_usd_per_m, tokens_per_page_in"
+            " FROM model_catalog WHERE id = :m"
+        )
 
         def read_job(customer_id: str, document_id: str) -> JobReading:
             with unavailable(), db.customer(customer_id) as conn:
@@ -2302,8 +2316,23 @@ def build_processor(
                 # Features 25-27 (S2): the worker's own check of the mode and every model, now.
                 scan = models.resolve_scan(conn, customer_id, document_id, settings=settings)
                 at_once = conn.execute(pages_at_once_sql).scalar_one()  # package S, 0053
+                price = None
+                if scan.ulc is not None:
+                    price = conn.execute(prices_sql, {"m": scan.lead.model}).mappings().one_or_none()
+            prices = None
+            if price is not None:
+                prices = UlcPrices(
+                    float(price["price_in_usd_per_m"]),
+                    float(price["price_out_usd_per_m"]),
+                    price["tokens_per_page_in"],
+                )
             return JobReading(
-                user_id, scan.lead.model, scan.lead.provider, reading=scan, pages_at_once=at_once
+                user_id,
+                scan.lead.model,
+                scan.lead.provider,
+                reading=scan,
+                pages_at_once=at_once,
+                ulc_prices=prices,
             )
 
         job_reading = read_job

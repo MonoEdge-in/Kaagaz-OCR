@@ -68,7 +68,7 @@ from sqlalchemy import Connection, RowMapping, text
 from kaagaz.answering.draft import ANSWER_PROMPT_HASH
 from kaagaz.db import ai_settings
 from kaagaz.reading.mistral_ocr import DEFAULT_MISTRAL_MODEL, MISTRAL, OPENROUTER
-from kaagaz.reading.ocr import GEMINI, READER_PROMPT_VERSION
+from kaagaz.reading.ocr import GEMINI, READER_PROMPT_VERSION, UlcCeiling
 from kaagaz.settings import DEFAULT_PROVIDER, NO_THINKING, Settings
 
 # MC3: the days of ledger a page's estimate averages over.
@@ -217,6 +217,7 @@ class Reading:
     page_max_output_tokens: int | None = None
     scan_reader: str = OPENROUTER
     mistral_model: str = DEFAULT_MISTRAL_MODEL
+    ulc: UlcCeiling | None = None  # #488: Ultra low cost's ceiling (builder B fills it)
 
     @property
     def reader(self) -> str:
