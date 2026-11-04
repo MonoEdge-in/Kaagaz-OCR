@@ -2,6 +2,9 @@
 // tested in node (tests/folder-upload.test.ts) against a fake API.
 // - Start: plan the folders (the server makes them all at once), register every file as an
 //   item with its folder, REGISTER_PAGE at a time, then send what is waiting.
+// - Add new files only: while listing, hash each file Kaagaz could take, one at a time (only one
+//   file's bytes are held), and register it with its sha256; the server answers a file it already
+//   has as "duplicate", so it is never sent. Says how many are checked every CHECKED_EVERY files.
 // - Send (also Continue upload): page the server's waiting items in seq order, match each to
 //   the picked files by path_key, and send the server's files_at_once (at most
 //   FOLDER_UPLOADS_AT_ONCE) at a time to that item, so a retry always lands in the folder the
@@ -25,7 +28,7 @@ import type {
   UploadLimits,
   UploadResult,
 } from "@/lib/types";
-import { pathKey } from "./folderPick";
+import { fileSha256, pathKey } from "./folderPick";
 import type { Manifest, Picked } from "./folderPick";
 import type { NotSentRow } from "./FolderUploadRow";
 import { limitFor, sessionChangedMessage, uploadErrorText, uploadKind } from "./logic";
@@ -33,6 +36,8 @@ import { createSlots } from "./uploadQueue";
 
 const FOLDER_UPLOADS_AT_ONCE = 4;
 const REGISTER_PAGE = 1000;
+/** How often "checking your files: N of M" moves on. */
+const CHECKED_EVERY = 50;
 export const ITEMS_PAGE = 500;
 /** The files not sent shown on a row; the rest are counted. */
 const NOT_SENT_SHOWN = 20;
@@ -61,6 +66,7 @@ export type FolderEvent =
   | { type: "start"; id: string; rootName: string; total: number }
   | { type: "phase"; id: string; phase: FolderPhase; message?: string }
   | { type: "planned"; id: string; rootFolderId: string }
+  | { type: "checked"; id: string; done: number }
   | { type: "counts"; id: string; summary: FolderUploadSummary }
   | { type: "sending"; id: string; itemId: string; name: string; fraction: number }
   | { type: "sent"; id: string; itemId: string; outcome: "stored" | "duplicate" | "failed" }
@@ -86,6 +92,18 @@ async function planWhenFree(api: FolderUploadApi, body: FolderUploadPlanBody): P
   }
 }
 
+/** The SHA-256 of a file Kaagaz could take, for "Add new files only". Undefined for a refused kind, an
+ * empty file, one over its limit, or one the browser can't read: those are registered and sent as today. */
+async function contentHash(file: File, limits: UploadLimits | undefined): Promise<string | undefined> {
+  const kind = uploadKind(file.name);
+  if (kind === null || file.size === 0 || file.size > limitFor(kind, limits)) return undefined;
+  try {
+    return await fileSha256(file);
+  } catch {
+    return undefined;
+  }
+}
+
 async function keyIndex(source: FolderSource): Promise<Map<string, number>> {
   if (source.keys) return source.keys;
   const keys = new Map<string, number>();
@@ -94,14 +112,22 @@ async function keyIndex(source: FolderSource): Promise<Map<string, number>> {
   return keys;
 }
 
-/** Plan, register, then send. `stopped` is asked before each file is sent (Stop). */
+/** Plan, register, then send. `stopped` is asked before each file is checked or sent (Stop). */
 export async function startFolderUpload(
   api: FolderUploadApi,
-  args: { id: string; userId: string; source: FolderSource; target: FolderTarget; merge: boolean; limits?: UploadLimits },
+  args: {
+    id: string;
+    userId: string;
+    source: FolderSource;
+    target: FolderTarget;
+    merge: boolean;
+    onlyNew?: boolean;
+    limits?: UploadLimits;
+  },
   emit: (event: FolderEvent) => void,
   stopped: () => boolean,
 ): Promise<void> {
-  const { id, userId, source, target, merge } = args;
+  const { id, userId, source, target, merge, onlyNew = false } = args;
   const { picked, manifest } = source;
   emit({ type: "start", id, rootName: picked.rootName, total: manifest.fileCount });
   emit({ type: "phase", id, phase: "planning" });
@@ -117,6 +143,7 @@ export async function startFolderUpload(
       file_count: manifest.fileCount,
       total_bytes: manifest.totalBytes,
       skipped_count: picked.skippedCount,
+      only_new: onlyNew,
     });
   } catch (caught) {
     emit({ type: "phase", id, phase: "refused", message: uploadErrorText(caught, online()) });
@@ -124,21 +151,32 @@ export async function startFolderUpload(
   }
   emit({ type: "planned", id, rootFolderId: plan.root_folder_id });
   emit({ type: "phase", id, phase: "registering" });
+  if (onlyNew) emit({ type: "checked", id, done: 0 });
   const keys = new Map<string, number>();
   try {
     for (let start = 0; start < manifest.fileCount; start += REGISTER_PAGE) {
       const page: NewFolderItem[] = [];
       for (let at = start; at < Math.min(start + REGISTER_PAGE, manifest.fileCount); at++) {
+        // Stopped while checking: the pages registered stay; Continue plans the same id again.
+        if (onlyNew && stopped()) {
+          emit({ type: "phase", id, phase: "stopped" });
+          return;
+        }
         const file = picked.files[at]!;
         const key = await pathKey(picked.paths[at]!);
         keys.set(key, at);
         const refused = refusedReason(file);
+        // One file at a time, awaited: never all at once.
+        const sha256 = onlyNew ? await contentHash(file, args.limits) : undefined;
+        const done = at + 1;
+        if (onlyNew && (done % CHECKED_EVERY === 0 || done === manifest.fileCount)) emit({ type: "checked", id, done });
         page.push({
           path_key: key,
           name: file.name.normalize("NFC"),
           folder_id: plan.folder_ids[manifest.fileFolder[at]!]!,
           size: file.size,
           ...(refused ? { refused } : {}),
+          ...(sha256 ? { sha256 } : {}),
         });
       }
       await api.register(id, userId, page);
@@ -149,6 +187,8 @@ export async function startFolderUpload(
     return;
   }
   source.keys = keys;
+  // How many were already in Kaagaz, said while the rest are sent; sending counts again at the end.
+  if (onlyNew) await api.summary(id).then((summary) => emit({ type: "counts", id, summary }), () => undefined);
   await sendWaiting(api, { id, userId, source, atOnce: args.limits?.folder_upload?.files_at_once }, emit, stopped);
 }
 
@@ -235,6 +275,7 @@ export interface FolderUploadView {
   rootName: string; // the picked folder's own name, "A", never Kaagaz's "A (2)"
   rootFolderId: string | null;
   total: number;
+  checked: number | null; // files checked for "Add new files only" while listing; null when not checking
   stored: number;
   duplicates: number;
   failed: number; // refused, here or by the server
@@ -262,15 +303,19 @@ export const attentionOf = (view: FolderUploadView) => view.failed + view.proble
 export function folderLine(view: FolderUploadView): string {
   const name = `Folder “${view.rootName}”`;
   if (view.phase === "planning") return `${name}: making its folders…`;
-  if (view.phase === "registering") return `${name}: listing its files…`;
+  if (view.phase === "registering") {
+    if (view.checked === null) return `${name}: listing its files…`;
+    return `${name}: checking your files: ${formatNumber(view.checked)} of ${formatNumber(view.total)}`;
+  }
   if (view.phase === "refused") return `${name} was not uploaded.`;
   const counts = `${formatNumber(uploadedOf(view))} of ${formatNumber(view.total)} uploaded`;
   const left = notSentYetOf(view);
   const notYet = left === 0 ? "" : `, ${formatNumber(left)} not sent yet`;
-  if (view.phase === "needs_pick") return `${name}: ${counts}${notYet}. Choose “${view.rootName}” again to send them.`;
+  const already = view.duplicates === 0 ? "" : `, ${formatNumber(view.duplicates)} already in Kaagaz`;
+  if (view.phase === "needs_pick") return `${name}: ${counts}${already}${notYet}. Choose “${view.rootName}” again to send them.`;
   const attention = attentionOf(view);
   const needs = attention === 0 ? "" : `, ${formatNumber(attention)} ${attention === 1 ? "needs" : "need"} attention`;
-  return `${name}: ${view.phase === "stopped" ? `stopped at ${counts}${notYet}` : counts}${needs}`;
+  return `${name}: ${view.phase === "stopped" ? `stopped at ${counts}${already}${notYet}` : `${counts}${already}`}${needs}`;
 }
 
 /** The status bar's line, said politely: "Uploading folder “A”: 1,000 of 5,000 uploaded" while it sends. */
@@ -288,8 +333,8 @@ export function readingLine(view: FolderUploadView): string | null {
 }
 
 function withSpoken(view: FolderUploadView): FolderUploadView {
-  const tenth = view.total === 0 ? 0 : Math.floor((uploadedOf(view) * 10) / view.total);
-  const at = `${view.phase}:${tenth}`;
+  const tenth = (count: number) => (view.total === 0 ? 0 : Math.floor((count * 10) / view.total));
+  const at = `${view.phase}:${tenth(uploadedOf(view))}:${view.checked === null ? "" : tenth(view.checked)}`;
   return at === view.spokenAt ? view : { ...view, spoken: spokenLine(view), spokenAt: at };
 }
 
@@ -304,6 +349,7 @@ export function folderUploadsReducer(
       rootName: event.rootName,
       rootFolderId: null,
       total: event.total,
+      checked: null,
       stored: 0,
       duplicates: 0,
       failed: 0,
@@ -335,6 +381,9 @@ export function folderUploadsReducer(
       break;
     case "planned":
       next = { ...view, rootFolderId: event.rootFolderId };
+      break;
+    case "checked":
+      next = { ...view, checked: event.done };
       break;
     case "counts": {
       const { summary } = event;
@@ -384,7 +433,7 @@ export function folderUploadsReducer(
  */
 export function restoredUpload(
   summary: FolderUploadSummary,
-): { events: FolderEvent[]; listed: boolean; again: { target: FolderTarget; merge: boolean } } | null {
+): { events: FolderEvent[]; listed: boolean; again: { target: FolderTarget; merge: boolean; onlyNew: boolean } } | null {
   const listed = summary.registered >= summary.file_count;
   if (summary.waiting === 0 && listed) return null;
   const { id } = summary;
@@ -398,6 +447,7 @@ export function restoredUpload(
     again: {
       target: summary.target === "department" ? { kind: "department" } : { kind: "folder", parentId: summary.parent_folder_id },
       merge: summary.merge,
+      onlyNew: summary.merge, // added to a folder already there: listed again, it checks again
     },
   };
 }

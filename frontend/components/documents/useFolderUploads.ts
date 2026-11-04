@@ -54,7 +54,7 @@ export function useFolderUploads({
   const stops = useRef(new Set<string>());
   const notSent = useRef(new Map<string, Map<string, NotSentRow>>());
   const listed = useRef(new Set<string>()); // registration finished in this tab
-  const starts = useRef(new Map<string, { target: FolderTarget; merge: boolean }>()); // to list again
+  const starts = useRef(new Map<string, { target: FolderTarget; merge: boolean; onlyNew: boolean }>()); // to list again
   // What the rows show, copied from the refs after each change: at most NOT_SENT_SHOWN rows each.
   const [held, setHeld] = useState<ReadonlySet<string>>(new Set());
   const [notSentShown, setNotSentShown] = useState<Readonly<Record<string, NotSentShown>>>({});
@@ -106,11 +106,11 @@ export function useFolderUploads({
 
   const stopped = (id: string) => () => stops.current.has(id);
 
-  function start(source: FolderSource, target: FolderTarget, merge: boolean) {
+  function start(source: FolderSource, target: FolderTarget, merge: boolean, onlyNew: boolean) {
     const id = crypto.randomUUID();
     hold(id, source);
-    starts.current.set(id, { target, merge });
-    void startFolderUpload(api, { id, userId, source, target, merge, limits }, emit, stopped(id));
+    starts.current.set(id, { target, merge, onlyNew });
+    void startFolderUpload(api, { id, userId, source, target, merge, onlyNew, limits }, emit, stopped(id));
   }
 
   function stop(id: string) {
