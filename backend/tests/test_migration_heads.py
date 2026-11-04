@@ -27,8 +27,19 @@ def test_each_migration_has_its_own_revision_id_and_its_file_starts_with_it() ->
     assert [name for name, revision in revisions.items() if not name.startswith(f"{revision}_")] == []
 
 
-def test_alembic_finds_one_head() -> None:
+def _scripts() -> ScriptDirectory:
     config = Config()
     config.set_main_option("script_location", str(BACKEND / "migrations"))
-    scripts = ScriptDirectory.from_config(config)
-    assert scripts.get_heads() == [max(_revision(path) for path in VERSIONS.glob("*.py"))]
+    return ScriptDirectory.from_config(config)
+
+
+def test_alembic_finds_one_head() -> None:
+    assert _scripts().get_heads() == [max(_revision(path) for path in VERSIONS.glob("*.py"))]
+
+
+def test_productions_0061c_is_a_branch_off_0061b_that_0071_merges() -> None:
+    """Production ran production-with-folder-upload's 0061c (#484, 4 Nov 2026), so Alembic must
+    find it; 0071 merges it with 0070, so the line still has one head."""
+    scripts = _scripts()
+    assert scripts.get_revision("0061c").down_revision == "0061b"
+    assert scripts.get_revision("0071").down_revision == ("0070", "0061c")

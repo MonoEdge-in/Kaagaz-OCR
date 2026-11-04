@@ -2,7 +2,11 @@
 again, in one alembic run each, with a row in every table and column added after 0065 (the
 reading pause's counter, a held document, the two-step rule, the platform's daily limit, a kept
 audit row). The schema and every kaagaz function's body are the same each time round, and a held
-document stays received on the way down. Every later migration joins the chain on its own."""
+document stays received on the way down. Every later migration joins the chain on its own.
+
+Changed on purpose (#484, 4 Nov 2026): production's 0061c (folder upload) is a branch off 0061b
+that 0071 merges, so a downgrade to 0065 leaves it, its tables and their rows: 0065's state is
+taken with 0061c applied, and a folder upload made at head is still there at 0065."""
 
 from typing import Any
 
@@ -11,7 +15,8 @@ from sqlalchemy import text
 
 from kaagaz.db.engine import Database
 from tests import test_migration_0002_db as base
-from tests.db_support import insert_document, migrate, new_customer
+from tests.db_support import insert_document, insert_folder, migrate, new_customer
+from tests.folder_upload_support import new_folder_upload
 from tests.test_migration_0023_db import as_owner
 
 pytestmark = pytest.mark.db
@@ -31,10 +36,14 @@ def _state(db: Database) -> tuple[dict[str, list[tuple[Any, ...]]], list[tuple[A
 def test_head_down_to_0065_and_up_again_with_rows(fresh: tuple[str, Database]) -> None:
     url, db = fresh
     migrate(url, "0065")
+    migrate(url, "0061c")
     at_0065 = _state(db)
     migrate(url, "head")
     at_head = _state(db)
-    customer, _ = new_customer(db)
+    customer, user = new_customer(db)
+    with db.customer(customer) as conn:
+        folder = insert_folder(conn, customer, user, "A")
+    upload = new_folder_upload(db, customer, user, folder_ids=[folder])
     with db.customer(customer) as conn:
         held = insert_document(conn, customer, status="received")
         conn.execute(
@@ -62,5 +71,6 @@ def test_head_down_to_0065_and_up_again_with_rows(fresh: tuple[str, Database]) -
     base._downgrade(url, "0065")
     assert _state(db) == at_0065
     assert as_owner(db, "SELECT status FROM documents WHERE id = :d", {"d": held}) == [("received",)]
+    assert as_owner(db, "SELECT count(*) FROM folder_uploads WHERE id = :u", {"u": upload}) == [(1,)]
     migrate(url, "head")
     assert _state(db) == at_head

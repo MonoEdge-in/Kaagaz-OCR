@@ -16,6 +16,8 @@ import subprocess
 import sys
 
 import pytest
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import text
 
 from kaagaz.db.engine import Database
@@ -43,8 +45,20 @@ def _alembic(url: str, *args: str, **extra_env: str) -> subprocess.CompletedProc
 
 
 def _version(database: Database) -> str:
+    # Changed on purpose (#484, 4 Nov 2026): below 0071, a merge, the table holds two rows.
     with database.engine.connect() as conn:
-        return str(conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one())
+        return " ".join(sorted(conn.execute(text("SELECT version_num FROM alembic_version")).scalars()))
+
+
+def _below_head() -> str:
+    """The revision under head (the first, when head merges two: alembic calls ``downgrade -1``
+    from a merge an ambiguous walk, so the tests name it; #484, 0071 merges 0070 and 0061c)."""
+    config = Config()
+    config.set_main_option("script_location", str(BACKEND / "migrations"))
+    scripts = ScriptDirectory.from_config(config)
+    (head,) = scripts.get_heads()
+    below = scripts.get_revision(head).down_revision
+    return str(below[0] if isinstance(below, tuple) else below)
 
 
 def _set_version(database: Database, revision: str) -> None:
@@ -90,7 +104,7 @@ def test_a_downgrade_is_refused_without_the_switch_and_changes_nothing(fresh: tu
     migrate(url)
     head = _version(database)
     for switch in ({}, {"KAAGAZ_ALLOW_DOWNGRADE": "0"}, {"KAAGAZ_ALLOW_DOWNGRADE": "yes"}):
-        refused = _alembic(url, "downgrade", "-1", **switch)
+        refused = _alembic(url, "downgrade", _below_head(), **switch)
         assert refused.returncode != 0
         assert "refusing to downgrade" in refused.stderr and "KAAGAZ_ALLOW_DOWNGRADE=1" in refused.stderr
         assert _version(database) == head
@@ -100,7 +114,7 @@ def test_a_downgrade_runs_with_the_switch(fresh: tuple[str, Database]) -> None: 
     url, database = fresh
     migrate(url)
     head = _version(database)
-    done = _alembic(url, "downgrade", "-1", KAAGAZ_ALLOW_DOWNGRADE="1")
+    done = _alembic(url, "downgrade", _below_head(), KAAGAZ_ALLOW_DOWNGRADE="1")
     assert done.returncode == 0, done.stderr
     assert _version(database) < head
     assert _alembic(url, "upgrade", "head").returncode == 0  # an upgrade never needs it
@@ -114,4 +128,5 @@ def test_a_command_with_no_target_runs_as_before(fresh: tuple[str, Database]) ->
     migrate(url)
     done = _alembic(url, "current")
     assert done.returncode == 0, done.stderr
-    assert done.stdout.split() == [_version(database), "(head)"]
+    # Changed on purpose (#484): 0071 merges 0061c, so alembic adds "(mergepoint)".
+    assert done.stdout.replace(" (mergepoint)", "").split() == [_version(database), "(head)"]

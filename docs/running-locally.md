@@ -386,6 +386,16 @@ while 0043 to 0045 were already applied, so `upgrade` failed with
 tables it creates exist (`SELECT to_regclass('public.<table>')`), then stamp
 the last one that is fully there.
 
+**Production that ran production-with-folder-upload (0061c)** (#484). Its database is at
+`0061c`, a branch off 0061b that Testing-Env also carries, byte for byte. Releasing
+Testing-Env just migrates: `alembic upgrade head` runs 0061 to 0070 with the folder tables
+already there, then 0071, which merges the two lines and only adds what Testing-Env has more
+(`folder_uploads.items_counted`, set to `items_registered` for uploads already made, and three
+column comments). The uploads and limits stay. Nothing is done by hand: no `alembic stamp`.
+The test server (at 0070, no folder tables) gets 0061c, then 0071, and the same schema.
+A downgrade across 0071 names its target (`alembic downgrade 0070`, which keeps 0061c and its
+tables): alembic refuses `downgrade -1` from a merge as an ambiguous walk.
+
 **Limited database logins** (#479, migration 0067, Vrushit's approval). 0067 makes
 `kaagaz_api` (api and worker) and `kaagaz_ops` (api's super admin part) with no password,
 so nothing changes on release day: the app keeps the owner's login until `.env` names the
