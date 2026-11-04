@@ -297,7 +297,7 @@ def test_a_database_it_cannot_reach_is_said_as_such_never_as_a_login_to_fix(
     nowhere = "postgresql://kaagaz:unused@127.0.0.1:1/kaagaz"
     with caplog.at_level(logging.ERROR), pytest.raises(RuntimeError, match="cannot reach the database"):
         _start_api(nowhere, nowhere)
-    said = [record.getMessage() for record in caplog.records if getattr(record, "code", None) == "database_unreachable"]
+    said = [r.getMessage() for r in caplog.records if getattr(r, "code", None) == "database_unreachable"]
     assert len(said) == 1 and "OPS_DATABASE_URL" not in said[0]
 
 
