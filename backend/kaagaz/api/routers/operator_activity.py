@@ -20,7 +20,8 @@ router); only ``OperatorDatabase`` here, and each read is one ``kaagaz_op_*`` fu
   ``queues``: the jobs waiting in each lane, null when the queue does not answer. Status
   only: never an error body, a key or a customer. #246 O1 adds ``release``: the commit
   this API runs (``/health``'s). The deployer's own records (last attempt, last good) are
-  files on the server outside every container, so they are not here.
+  files on the server outside every container, so they are not here. QA U2 adds
+  ``mistral_status``: whether Mistral stopped, as ``/operator/ai-defaults`` gives it.
 """
 
 import base64
@@ -36,8 +37,10 @@ from kaagaz.api.auth import OperatorSession, current_operator
 from kaagaz.api.context import AppContext, get_context, get_operator_db
 from kaagaz.api.errors import ApiError
 from kaagaz.api.routers.health import running_commit
+from kaagaz.api.routers.operator_models import _mistral_status
 from kaagaz.api.views import iso
 from kaagaz.db import operator_activity as activity_sql
+from kaagaz.db import operator_models as models_sql
 from kaagaz.db import operators as operators_sql
 from kaagaz.db import reader_status as reader_sql
 from kaagaz.db.engine import OperatorDatabase
@@ -90,7 +93,8 @@ def get_health(operator: OperatorSession, db: OperatorDb, context: Context) -> d
         rows = activity_sql.health(conn, operator.operator_id)
         purges = activity_sql.purges(conn, operator.operator_id)
         readers = reader_sql.read(conn, operator.operator_id)
-    if purges is None:  # disabled meanwhile
+        mistral = models_sql.mistral_status(conn, operator.operator_id)
+    if purges is None or mistral is None:  # disabled meanwhile
         raise ApiError(401, "not_signed_in")
     now = context.clock()
     by_status: Counter[str] = Counter()
@@ -116,6 +120,7 @@ def get_health(operator: OperatorSession, db: OperatorDb, context: Context) -> d
         "reader": [_reader(row) for row in readers],
         "queues": _queues(context),
         "release": {"commit": running_commit()},
+        "mistral_status": _mistral_status(mistral),
     }
 
 

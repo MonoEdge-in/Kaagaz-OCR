@@ -8,6 +8,7 @@ counter (the same every run). The truth is an exact scan of the same column.
 
 import hashlib
 import math
+import os
 from collections.abc import Iterator
 from dataclasses import dataclass
 
@@ -65,7 +66,7 @@ def _unit(values: list[float]) -> list[float]:
 @pytest.fixture(scope="module")
 def clusters() -> Iterator[Clusters]:
     main = make_url(database_url())
-    name = f"{main.database}_recall"
+    name = f"{main.database}_recall_{os.getpid()}"  # this run's own (QA W5)
     url = main.set(database=name).render_as_string(hide_password=False)
     m0002._recreate(database_url(), name, create=True)
     database = make_database(url)

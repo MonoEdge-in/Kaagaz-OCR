@@ -345,3 +345,37 @@ def test_status_counts_waiting_mistral_documents(db: Database) -> None:
     assert newest["documents_waiting"] - before == 3 and newest["code"] == "mistral_setup"
     assert datetime.fromisoformat(after["since"]) <= now - timedelta(minutes=5)
     assert customer not in str(after)  # counts and codes only
+
+
+@pytest.mark.db
+def test_a_waiting_document_in_the_trash_is_not_counted_and_health_says_the_same(db: Database) -> None:
+    """QA P9 (0069): a document in the Trash waits on nothing; QA U2: the Health tab's
+    ``mistral_status`` is the AI settings' own."""
+    api = Api(db, settings=READY)
+    _, client = _signed_in(api)
+
+    def both() -> tuple[dict[str, Any], dict[str, Any]]:
+        health = client.get("/api/operator/health")
+        defaults = client.get("/api/operator/ai-defaults")
+        assert (health.status_code, defaults.status_code) == (200, 200)
+        return health.json()["mistral_status"], defaults.json()["env"]["mistral_status"]
+
+    before, _ = both()
+    customer, user = new_customer(db)
+    with db.customer(customer) as conn:
+        kept = insert_document(conn, customer)
+        binned = insert_document(conn, customer, deleted_at=datetime.now(UTC), deleted_by=user)
+    started = datetime.now(UTC) - timedelta(minutes=3)
+    for document in (kept, binned):
+        params = {
+            "c": customer,
+            "d": document,
+            "s": started,
+            "f": started + timedelta(seconds=5),
+            "st": "failed",
+            "e": "mistral_unavailable",
+        }
+        as_owner(db, _RUN, params)
+    health, defaults = both()
+    assert health == defaults
+    assert health["documents_waiting"] - before["documents_waiting"] == 1  # the one out of the Trash

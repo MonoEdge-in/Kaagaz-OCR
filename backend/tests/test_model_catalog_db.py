@@ -40,6 +40,13 @@ def _refresh(db: Database, fake: OpenRouterFake) -> catalog.Refreshed:
 def test_a_refresh_saves_the_candidates_and_a_model_no_longer_listed_stays_ineligible(
     db: Database, fake: OpenRouterFake
 ) -> None:
+    # QA T2: the shared PRO row as a first refresh finds it, whatever ran before (this test's
+    # own verify-models pass below, or another test's).
+    _owner(
+        db,
+        "UPDATE model_catalog SET verified_prompt_version = NULL, verified_at = NULL WHERE id = :m",
+        {"m": PRO},
+    )
     done = _refresh(db, fake)
     # Changed on purpose (features 25-27, 15 Oct 2026): answer-only candidates are saved too,
     # and the fixture has Gemini 3.8 Flash.

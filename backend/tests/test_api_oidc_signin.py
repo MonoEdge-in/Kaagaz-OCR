@@ -16,6 +16,7 @@ import pytest
 from sqlalchemy import text
 
 from kaagaz.api import auth as auth_module
+from kaagaz.api import totp
 from kaagaz.api.auth import NOTICE_COOKIE, OIDC_COOKIE, PENDING_COOKIE, SESSION_COOKIE
 from kaagaz.api.middleware import RateLimiter
 from kaagaz.api.routers import oidc as oidc_router
@@ -25,6 +26,7 @@ from tests.oidc_fake import ISSUER, FakeGoogle, google_settings, use_google
 from tests.settings_factory import make_settings
 from tests.test_api_support import ANY_ID, CSRF, PASSWORD, Api, TestClient, wrong_code
 from tests.test_operator_auth_db import _owner
+from tests.test_operator_orgs_db import ORGS, _signed_in
 
 pytestmark = pytest.mark.db
 
@@ -246,6 +248,32 @@ def test_google_sign_in_of_a_turned_off_admin_is_password_first_while_required(
 
     assert _error(_sign_in_at_google(api, google, client, subject)) == "password_first"
     assert not client.cookies.get(SESSION_COOKIE) and not client.cookies.get(PENDING_COOKIE)
+
+
+def test_a_google_session_of_a_turned_off_admin_ends_when_two_step_is_required(
+    db: Database, google: FakeGoogle
+) -> None:
+    # QA missing test f (0069): the super admin's switch signs the Google session out at once,
+    # and Google alone opens no new one: the admin sets the code up at a password sign-in.
+    api = _api(db)
+    operator, operator_client = _signed_in(api)
+    customer_id, admin_id = api.customer()
+    with db.customer(customer_id) as conn:
+        conn.execute(
+            text("UPDATE users SET totp_off_at = :t WHERE id = :u"), {"t": api.clock(), "u": admin_id}
+        )
+    subject = _connect(api, customer_id, admin_id)
+    client = api.client()
+    assert _sign_in_at_google(api, google, client, subject).headers["location"] == "/documents"
+    assert client.get("/api/admin/users").status_code == 200
+
+    api.clock.advance(totp.STEP_SECONDS)
+    body = {"required": True, "code": api.code(operator.secret)}
+    switched = operator_client.put(f"{ORGS}/{customer_id}/admin-two-step", json=body, headers=CSRF)
+    assert switched.status_code == 200, switched.text
+    late = client.get("/api/admin/users")
+    assert (late.status_code, late.json()["error"]["code"]) == (401, "not_signed_in")
+    assert _error(_sign_in_at_google(api, google, api.client(), subject)) == "password_first"
 
 
 def test_password_first_counts_nothing(db: Database, google: FakeGoogle) -> None:

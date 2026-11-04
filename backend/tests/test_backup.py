@@ -8,6 +8,8 @@ chain these commands with pg_dump and openssl: tests/test_ec2_scripts.py reads t
 
 import hashlib
 import io
+import json
+import logging
 import tarfile
 from datetime import UTC, datetime
 from typing import IO, Any
@@ -16,7 +18,7 @@ import boto3
 import pytest
 from botocore import UNSIGNED
 from botocore.config import Config
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, NoCredentialsError
 from botocore.response import StreamingBody
 from botocore.stub import Stubber
 
@@ -24,8 +26,11 @@ from kaagaz import cli
 from kaagaz.adapters.email import MemoryMailer, SentEmail
 from kaagaz.adapters.storage import S3Storage
 from kaagaz.cli import main
+from kaagaz.db.reading_days import State
 from kaagaz.ingestion.errors import BackendUnavailable
+from kaagaz.jobs.reading_pause import DAILY_LIMIT, pause_alert
 from kaagaz.settings import Settings
+from kaagaz.worker_main import JsonFormatter
 from tests.settings_factory import make_settings
 from tests.test_settings import shipped
 
@@ -323,6 +328,21 @@ def test_disk_alert_emails_the_ops_address_once() -> None:
     assert out.getvalue() == "disk alert sent\n"  # the address is never printed
 
 
+def test_disk_alert_starts_with_the_logins_blanked_as_disk_alert_sh_runs_it() -> None:
+    """QA W3: infra/ec2/disk-alert.sh blanks the owner's password and the storage admin key, and
+    gives a DATABASE_URL that names no login: the command reads no database."""
+    env = shipped(
+        POSTGRES_PASSWORD="",
+        STORAGE_ADMIN_SECRET_KEY="",
+        DATABASE_URL="none",
+        OPS_ALERT_EMAIL="ops@example.com",
+        EMAIL_FROM="no-reply@example.com",
+    )
+    mailer, out = MemoryMailer(), io.StringIO()
+    assert main(["disk-alert", "--used", "85"], environ=env, mailer=mailer, out=out) == 0
+    assert out.getvalue() == "disk alert sent\n" and len(mailer.sent) == 1
+
+
 @pytest.mark.parametrize(
     ("changes", "named"),
     [({"ops_alert_email": None}, "OPS_ALERT_EMAIL"), ({"email_from": None}, "EMAIL_FROM")],
@@ -351,6 +371,29 @@ def test_a_disk_alert_that_fails_says_so_and_is_tried_again_next_hour(
     out = io.StringIO()
     assert main(["disk-alert", "--used", "85"], settings=alerting(), mailer=Refused(), out=out) == 2
     assert out.getvalue() == "" and "not sent" in capsys.readouterr().err
+
+
+def test_a_failed_pause_alert_logs_one_clear_ops_alert_failed_line(caplog: pytest.LogCaptureFixture) -> None:
+    """QA W2: a worker that cannot reach the server's role (a bridge network with the instance
+    metadata hop limit at 1) has no credentials. One line says so, as the worker prints it: its
+    code, the purpose and why, never the address."""
+
+    class NoRole(MemoryMailer):
+        def send(self, *, to: str, subject: str, text: str) -> None:
+            raise NoCredentialsError()
+
+    alert = pause_alert(alerting(), NoRole())
+    assert alert is not None
+    with caplog.at_level(logging.INFO):
+        assert alert(DAILY_LIMIT, State("Sharma Traders", 10, 10, None, None, None)) is False
+    [record] = caplog.records
+    printed = json.loads(JsonFormatter().format(record))
+    assert (record.levelno, printed["code"]) == (logging.ERROR, "ops_alert_failed")
+    assert (
+        printed["message"]
+        == '{"event":"ops_alert_failed","purpose":"reading_paused","error":"NoCredentialsError"}'
+    )
+    assert "ops@example.com" not in caplog.text
 
 
 def test_ops_alert_email_is_read_and_optional() -> None:

@@ -398,7 +398,8 @@ production at a quiet time:
 2. In `.env`: `APP_DATABASE_URL=postgresql://kaagaz_api:<its password>@postgres:5432/<POSTGRES_DB>`
    and `OPS_DATABASE_URL=postgresql://kaagaz_ops:<its password>@postgres:5432/<POSTGRES_DB>`.
    `docker-compose.yml` gives api and worker the first as `DATABASE_URL`, only api the
-   second, only migrate the owner's, and none of them `POSTGRES_PASSWORD`.
+   second, only migrate the owner's, and none of them `POSTGRES_PASSWORD`. Set both together:
+   with the first alone, api stops at start-up with one `operator_login_failed` line.
 3. `dc up -d --no-deps api worker`. Check: `dc exec api printenv POSTGRES_PASSWORD` prints an
    empty line; `dc exec postgres psql -U <POSTGRES_USER> -d <POSTGRES_DB> -c "SELECT usename,
    count(*) FROM pg_stat_activity WHERE datname = current_database() GROUP BY 1"` shows
@@ -490,7 +491,7 @@ afterwards. Two things start the server:
   instance, `ec2:DescribeInstances` and CloudWatch Logs. After a start the site
   opens in about 3 minutes.
 
-**Alerts (#480).** Two pieces, both email:
+**Alerts (#480).** Three pieces, all email:
 
 * The monitor: the Lambda `kaagaz-monitor` (Python 3.12, `infra/aws/monitor/handler.py`),
   every 5 minutes. Once the server has run 10 minutes it checks `/api/health` and `/` over
@@ -532,6 +533,14 @@ afterwards. Two things start the server:
   Check: `docker run --rm --network host --env-file .env kaagaz-backend:local python -m kaagaz.cli disk-alert --used 81`
   prints `disk alert sent` and the email arrives; on a test box, `fallocate -l <GB>G ~/fill` past 80%
   then `sudo systemctl start kaagaz-disk.service` sends it, and `rm ~/fill`.
+* The reading pause (#478): the worker emails `OPS_ALERT_EMAIL` through SES with the server's
+  role (no AWS key on the server), from Compose's bridge network, so the role is reached only
+  with the instance metadata hop limit at 2 (the api's people emails too). Check:
+  `dc exec worker python -c "import boto3;print(boto3.Session().get_credentials())"` prints a
+  credentials object, not `None`. If `None`, from a laptop signed in as an admin:
+  `aws ec2 modify-instance-metadata-options --instance-id <INSTANCE_ID> --http-put-response-hop-limit 2 --http-endpoint enabled`,
+  then `dc restart api worker`. A send that fails logs one `ops_alert_failed` line with SES's
+  code or the error's type (`NoCredentialsError`: the role was not reached).
 
 **Go-live checks** (EC2 PRD section 10). Report each one with its command and
 its output; until then it is NOT RUN.
