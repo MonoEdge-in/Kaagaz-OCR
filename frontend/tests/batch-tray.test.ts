@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { BatchTray } from "@/components/documents/UploadArea";
+import { BatchTray, CANT_CHECK_TEXT } from "@/components/documents/UploadArea";
 import {
   KEEP_MS,
   MAX_FILES_PER_BATCH,
@@ -158,6 +158,12 @@ describe("each file's place in the tray", () => {
     const at = rows.map((item) => html.indexOf(`>${item.key}.pdf<`));
     expect(at.every((place) => place > -1)).toBe(true);
     expect([...at].sort((a, b) => a - b)).toEqual(at);
+  });
+
+  it("says it can't check right now while the batches don't answer, and not otherwise", () => {
+    const tray = (checkFailing: boolean) => renderToStaticMarkup(createElement(BatchTray, { ...TRAY, entries: rows, checkFailing }));
+    expect(tray(true)).toContain(CANT_CHECK_TEXT);
+    expect(tray(false)).not.toContain(CANT_CHECK_TEXT);
   });
 
   it("sums the drop up in one line", () => {
