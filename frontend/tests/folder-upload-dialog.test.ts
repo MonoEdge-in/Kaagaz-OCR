@@ -176,6 +176,33 @@ describe("the tray's row for a folder upload", () => {
     expect(html).toContain(">Stop<");
   });
 
+  it("says on a file being sent that it waits for the connection", () => {
+    let state = folderUploadsReducer(EMPTY_FOLDER_UPLOADS, { type: "start", id: "u", rootName: "A", total: 2 });
+    state = folderUploadsReducer(state, { type: "phase", id: "u", phase: "sending" });
+    state = folderUploadsReducer(state, { type: "sending", id: "u", itemId: "i1", name: "a.pdf", fraction: 0, waiting: "connection" });
+    state = folderUploadsReducer(state, { type: "sending", id: "u", itemId: "i2", name: "b.pdf", fraction: 0 });
+    const html = renderToStaticMarkup(
+      createElement(FolderUploadRow, {
+        view: state.u!,
+        held: true,
+        notSent: { rows: [], total: 0 },
+        tree: buildTree([]),
+        limits: { pdf_bytes: 1, image_bytes: 1, sheet_bytes: 1, max_pages: 1, readers: [] },
+        actions: {
+          stop: () => undefined,
+          resume: () => undefined,
+          chooseAgain: () => undefined,
+          retry: () => undefined,
+          retryAll: () => undefined,
+          clear: () => undefined,
+          loadItems: async () => ({ items: [], next_after: null }),
+        },
+      }),
+    );
+    expect(html).toContain("a.pdf: Waiting for connection");
+    expect(html).toContain("Sending b.pdf");
+  });
+
   it("offers Stop while it makes its folders and lists its files too", () => {
     expect(row("planning")).toContain(">Stop<");
     expect(row("registering")).toContain(">Stop<");

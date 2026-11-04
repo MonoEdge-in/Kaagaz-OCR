@@ -168,6 +168,32 @@ describe("a folder upload's run", () => {
     expect(planned.map((event) => (event.type === "phase" ? event.phase : event.type))).toEqual(["start", "planning", "planned", "stopped"]);
   });
 
+  it("says a file waits for the connection, or for the server, while it waits, then that it sends again", async () => {
+    const pick = pickOf(["A/a.pdf"]);
+    const server = fakeServer();
+    const send = server.api.send;
+    server.api.send = async (file, item, onProgress, onWaiting) => {
+      onWaiting?.(true, "connection");
+      onWaiting?.(false);
+      onWaiting?.(true, "server");
+      onWaiting?.(false);
+      return send(file, item, onProgress);
+    };
+    const events: FolderEvent[] = [];
+    await startFolderUpload(
+      server.api,
+      { id: "w1", userId: "me", source: { picked: pick, manifest: buildManifest(pick) }, target: { kind: "folder", parentId: null }, merge: true },
+      run(events),
+      never,
+    );
+    const sending = events.flatMap((event) => (event.type === "sending" ? [event.waiting ?? null] : []));
+    expect(sending).toEqual([null, "connection", null, "server", null]);
+    let state = EMPTY_FOLDER_UPLOADS;
+    const upTo = events.findIndex((event) => event.type === "sending" && event.waiting === "connection");
+    for (const event of events.slice(0, upTo + 1)) state = folderUploadsReducer(state, event);
+    expect(state.w1?.sending).toEqual([{ itemId: "i0", name: "a.pdf", fraction: 0, waiting: "connection" }]);
+  });
+
   it("registers only a kind Kaagaz can't take as refused; the server judges size and emptiness", async () => {
     const pick = fromFileList([picked("A/notes.docx"), picked("A/bill.pdf"), picked("A/zero.pdf", 0)]);
     if (!pick) throw new Error("empty");
