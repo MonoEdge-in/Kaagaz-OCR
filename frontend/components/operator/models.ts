@@ -185,6 +185,13 @@ export const ULC_HINT =
 /** In place of the fields ultra low cost sets itself: the draft keeps their values. */
 export const ULC_HIDDEN = "Thinking, the output limit and pages read again are set by ultra low cost. They come back if you switch.";
 export const ENSEMBLE_NOT_WITH_ULC = "Ensemble isn't used while ultra low cost reads the pages.";
+// Its model (#488, 4 Nov 2026): the default scan model reads, so choosing one sets (and ticks) it.
+export const ULC_MODEL_LABEL = "Model for ultra low cost";
+export const ULC_NO_MODEL = "No model can be used yet. Ask for the model list to be refreshed (refresh-models).";
+/** An option of the ultra low cost model: its name, and why it can't be chosen when it can't. */
+export const ulcModelText = (model: OperatorModel) => (model.ulc_ready ? model.name : `${model.name} (not available: ${model.ulc_why})`);
+/** Ultra low cost reads with ``id``: it is ticked and made the default scan model. */
+export const ulcModelPicked = (draft: AiDraft, id: string): AiDraft => ({ ...toggled(draft, "scan", id, true), scan_default: id });
 // The ceiling (#488): the most one read of a page may cost, ₹0.20 to ₹0.40, sent in paise.
 export const CEILING_LABEL = "Most a page may cost";
 export const CEILING_HINT =
@@ -468,6 +475,14 @@ export function aiErrors(draft: AiDraft, platform: boolean, reader: ScanReader):
   if (!platform && parseBudget(draft.budget) === undefined)
     errors.budget = "Enter dollars above 0, with at most 2 decimals, or leave it empty.";
   return errors;
+}
+
+/** The form's problems as said: one whose field isn't on the page (hidden while another reader
+ * reads, or a model no longer listed) is said on the form's own line too, so Save never stops
+ * without a word. `onPage`: is that field's control in the form now. */
+export function shownErrors(errors: AiErrors, onPage: (field: AiField) => boolean): AiErrors {
+  const hidden = (Object.keys(errors) as AiField[]).find((field) => field !== "form" && !onPage(field));
+  return hidden && !errors.form ? { ...errors, form: errors[hidden] } : errors;
 }
 
 /** What is saved; call it only when aiErrors finds none. Empty lists send no default; no

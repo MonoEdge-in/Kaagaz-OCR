@@ -75,11 +75,12 @@ def test_a_refresh_saves_the_candidates_and_a_model_no_longer_listed_stays_ineli
     assert tuple(_owner(db, _ROW, {"m": SONNET})[0])[2] is False
 
 
-def test_a_refresh_saves_a_price_a_request_and_an_image_and_null_once_they_are_not_listed(
+def test_a_refresh_saves_a_price_a_request_and_an_image_and_0_once_they_are_not_listed(
     db: Database, fake: OpenRouterFake
 ) -> None:
     """#488 review (R3): the refresh writes pricing.request and pricing.image as they are listed
-    now: a price left out is not known (NULL), never an old one kept."""
+    now, never an old one kept. Changed on purpose (#488, 4 Nov 2026): one left out of a listed
+    price is 0 (OpenRouter leaves out a charge it doesn't make), not NULL."""
     priced: dict[str, Any] = copy.deepcopy(FIXTURE["models"])
     priced["data"][0]["pricing"] |= {"request": "0", "image": "0.001238"}
     assert priced["data"][0]["id"] == PRO
@@ -94,7 +95,7 @@ def test_a_refresh_saves_a_price_a_request_and_an_image_and_null_once_they_are_n
     assert (request, float(image)) == (0, 0.001238)
     fake.responder = listed
     _refresh(db, fake)
-    assert [tuple(row) for row in _owner(db, query, {"m": PRO})] == [(None, None)]
+    assert [tuple(row) for row in _owner(db, query, {"m": PRO})] == [(0, 0)]
 
 
 def test_a_refresh_that_cannot_read_a_list_changes_nothing(db: Database, fake: OpenRouterFake) -> None:

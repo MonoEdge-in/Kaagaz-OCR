@@ -81,6 +81,8 @@ const model = (overrides: Partial<OperatorModel> = {}): OperatorModel => ({
   chat_eligible: true,
   chat_verified: true,
   vendor_allowed: true,
+  ulc_ready: false,
+  ulc_why: "It can't read with minimal thinking.",
   ...overrides,
 });
 

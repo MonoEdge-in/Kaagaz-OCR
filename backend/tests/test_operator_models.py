@@ -86,6 +86,8 @@ CATALOGUE_ROW = {
     "answer_questions_costed": 38,
     "answer_cost_usd": Decimal("0.190000"),
     "answer_cost_unknown_calls": 3,
+    "price_request_usd": Decimal("0"),  # #488: its price a request and an image
+    "price_image_usd": Decimal("0"),
 }
 # Changed on purpose (#463, 31 Oct 2026): the rows, bodies and env carry the scan cost settings.
 # kaagaz_op_org_ai's row: the organisation's own scan models, the rest from the defaults.
@@ -367,6 +369,9 @@ def test_the_catalogue_says_verified_for_the_current_prompts_only(
         "chat_eligible": True,
         "chat_verified": True,
         "vendor_allowed": True,
+        # #488: can it lead Ultra low cost, and why not.
+        "ulc_ready": False,
+        "ulc_why": "It can't read with minimal thinking.",
     }
     stale = {
         **CATALOGUE_ROW,

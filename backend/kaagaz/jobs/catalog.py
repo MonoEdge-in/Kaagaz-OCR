@@ -172,9 +172,10 @@ def _price_per_m(value: object) -> float | None:
 
 
 def _price_per_call(value: object) -> float | None:
-    """OpenRouter's USD a request or an image (a string or a number), or None when it is left
-    out or not a finite number at least 0: not known. Nothing in OpenRouter's lists as Kaagaz
-    reads them says one left out is free, so it is never taken as 0 (#488 review)."""
+    """OpenRouter's USD a request or an image (a string or a number), or None when it is not a
+    finite number at least 0: not known. The caller passes 0 for one left out of a model's
+    pricing: OpenRouter leaves out a charge it doesn't make (#488, 4 Nov 2026: every Gemini on
+    the test server had no pricing.request, so none could read with Ultra low cost)."""
     if isinstance(value, bool) or not isinstance(value, str | int | float):
         return None
     try:
@@ -257,8 +258,8 @@ def candidate(item: object, *, efforts: frozenset[str], today: date) -> CatalogM
         expires_on=expires_on,
         eligible=scan,
         chat_eligible=chat,
-        price_request_usd=_price_per_call(pricing.get("request")),
-        price_image_usd=_price_per_call(pricing.get("image")),
+        price_request_usd=_price_per_call(pricing.get("request", 0)),  # left out: not charged
+        price_image_usd=_price_per_call(pricing.get("image", 0)),
     )
 
 

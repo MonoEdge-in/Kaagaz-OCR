@@ -46,7 +46,7 @@ import { DefaultsSummary } from "@/components/operator/PlatformDefaults";
 import { orgDraftOf, mineDraftOf } from "@/lib/aiSettings";
 import { ApiError, postAccuracyCheck, postScanCost, putAiDefaults, putOrgAi } from "@/lib/api";
 import type { AiDraft } from "@/components/operator/models";
-import type { AiDefaults, AiEnv, AiSettings, AiTaskSetting, AiValues, ScanCost, UlcCost } from "@/lib/types";
+import type { AiDefaults, AiEnv, AiSettings, AiTaskSetting, AiValues, OperatorModel, ScanCost, UlcCost } from "@/lib/types";
 
 const ROOT = join(__dirname, "..");
 const read = (path: string) => readFileSync(join(ROOT, path), "utf8");
@@ -103,13 +103,15 @@ const COUNTS: AiDefaults["orgs_inheriting"] = {
 const ULC = values({ scan_reader: "ultra_low_cost" });
 const GEMINI_REPLY = { defaults: values(), env: ENV };
 
-const fields = (props: { platform?: boolean; own?: AiValues; defaults?: AiValues; draft?: AiDraft; errors?: Record<string, string> } = {}) => {
+const fields = (
+  props: { platform?: boolean; own?: AiValues; defaults?: AiValues; draft?: AiDraft; errors?: Record<string, string>; catalogue?: OperatorModel[] } = {},
+) => {
   const own = props.own ?? values();
   return renderToStaticMarkup(
     createElement(AiFields, {
       platform: props.platform ?? false,
       customerId: props.platform ? null : "org-1",
-      catalogue: [],
+      catalogue: props.catalogue ?? [],
       saved: own,
       defaults: props.defaults ?? values(),
       env: ENV,
@@ -527,5 +529,92 @@ describe("ultra low cost: never on an organisation admin's or member's screen", 
     for (const path of outside) {
       expect(read(path).replace(kindKey, ""), path).not.toMatch(/ultra[ _]low|ulc_|ULC_|ceiling_paise/i);
     }
+  });
+});
+
+// #488, 4 Nov 2026: the super admin couldn't choose ultra low cost's model or see why one can't.
+const scanModel = (id: string, name: string, why: string | null): OperatorModel => ({
+  id,
+  name,
+  price_in_usd_per_m: 0.3,
+  price_out_usd_per_m: 2.5,
+  providers: ["google-vertex"],
+  efforts: ["minimal", "low"],
+  expires_on: null,
+  eligible: true,
+  seen_at: "2026-11-04T00:00:00Z",
+  verified: true,
+  verified_at: "2026-11-04T00:00:00Z",
+  tokens_per_page_in: 1300,
+  tokens_per_page_out: 300,
+  ledger_tokens_in: null,
+  ledger_tokens_out: null,
+  scan_pages: 0,
+  scan_pages_costed: 0,
+  scan_cost_usd: null,
+  scan_cost_unknown_calls: 0,
+  answer_questions: 0,
+  answer_questions_costed: 0,
+  answer_cost_usd: null,
+  answer_cost_unknown_calls: 0,
+  enabled_at: "2026-11-04T00:00:00Z",
+  chat_eligible: false,
+  chat_verified: false,
+  vendor_allowed: true,
+  ulc_ready: why === null,
+  ulc_why: why,
+});
+const LITE = scanModel("google/gemini-3.5-flash-lite", "Gemini 3.5 Flash Lite", null);
+const PRO = scanModel("google/gemini-3.1-pro", "Gemini 3.1 Pro", "It can't read with minimal thinking.");
+const CLAUDE = scanModel("anthropic/claude-sonnet-5.5", "Claude Sonnet 5.5", "Not a Gemini model.");
+
+describe("ultra low cost: its model", () => {
+  it("offers the scan models while it reads, each not ready one off with its reason", () => {
+    const catalogue = [LITE, PRO, CLAUDE];
+    expect(fields({ catalogue })).not.toContain(models.ULC_MODEL_LABEL); // not while Gemini reads
+    for (const platform of [false, true]) {
+      const html = fields({ platform, own: ULC, catalogue });
+      expect(html).toContain(`<label for="ai-ulc-model" class="label">${models.ULC_MODEL_LABEL}</label>`);
+      expect(optionsOf(html, "ai-ulc-model")).toEqual([
+        platform ? "The server&#x27;s model (m/env-scan)" : "Platform default (the server&#x27;s model (m/env-scan))",
+        "Gemini 3.5 Flash Lite",
+        "Gemini 3.1 Pro (not available: It can&#x27;t read with minimal thinking.)",
+        "Claude Sonnet 5.5 (not available: Not a Gemini model.)",
+      ]);
+      expect(html).toContain('<option value="google/gemini-3.1-pro" disabled="">');
+      expect(html).toContain('<option value="google/gemini-3.5-flash-lite">');
+      expect(html).not.toContain(models.ULC_NO_MODEL);
+    }
+    // Its own default is the one shown, with no empty choice.
+    const own = fields({ own: { ...ULC, scan_models: [LITE.id], scan_default: LITE.id }, catalogue });
+    expect(optionsOf(own, "ai-ulc-model")[0]).toBe("Gemini 3.5 Flash Lite");
+  });
+
+  it("says plainly when no model can be used yet", () => {
+    expect(models.ULC_NO_MODEL).toBe("No model can be used yet. Ask for the model list to be refreshed (refresh-models).");
+    const html = fields({ own: ULC, catalogue: [PRO, CLAUDE] });
+    expect(html).toContain(`<span id="ai-ulc-model-none" class="hint">${models.ULC_NO_MODEL}</span>`);
+    expect(describedByOf(html, "select", "ai-ulc-model")).toBe("ai-ulc-model-none");
+  });
+
+  it("choosing one makes it the default scan model and ticks it", () => {
+    const draft = draftOf(values({ scan_reader: "ultra_low_cost", scan_models: [PRO.id], scan_default: PRO.id }));
+    expect(models.ulcModelPicked(draft, LITE.id)).toMatchObject({ scan_models: [PRO.id, LITE.id], scan_default: LITE.id });
+    expect(models.ulcModelPicked(draftOf(ULC), LITE.id)).toMatchObject({ scan_models: [LITE.id], scan_default: LITE.id });
+  });
+});
+
+describe("Save never stops without a word", () => {
+  it("says a hidden field's problem on the form's line", () => {
+    const errors = { scan_default: "Choose the default scanning model from the ticked models." };
+    expect(models.shownErrors(errors, () => true)).toEqual(errors);
+    expect(models.shownErrors(errors, () => false)).toEqual({ ...errors, form: errors.scan_default });
+    expect(models.shownErrors({ ...errors, form: "Kept" }, () => false).form).toBe("Kept");
+    expect(models.shownErrors({}, () => false)).toEqual({});
+  });
+
+  it("is how both saves check the form", () => {
+    for (const path of ["components/operator/OrgAiSettings.tsx", "components/operator/PlatformDefaults.tsx"])
+      expect(read(path)).toMatch(/const found = shownErrors\(aiErrors\(/);
   });
 });
