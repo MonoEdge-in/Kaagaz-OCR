@@ -79,7 +79,11 @@ def _refused() -> Iterator[None]:
 def _name(name: str | None) -> str:
     cleaned = clean_name(name or "", max_length=FOLDER_NAME_MAX)
     if cleaned is None:
-        raise ApiError(400, "bad_request", f"Enter a folder name of 1 to {FOLDER_NAME_MAX} characters.")
+        raise ApiError(
+            400,
+            "bad_request",
+            f"Enter a folder name of 1 to {FOLDER_NAME_MAX} characters, with no hidden characters.",
+        )
     return cleaned
 
 

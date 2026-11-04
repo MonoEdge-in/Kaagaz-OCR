@@ -142,7 +142,7 @@ from starlette.datastructures import FormData, UploadFile
 from kaagaz.api.auth import CanDeleteForever, CurrentUser, Reviewer, User
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
-from kaagaz.api.names import CONTROL_CHARACTERS, DOCUMENT_NAME_MAX, clean_document_name
+from kaagaz.api.names import CONTROL_CHARACTERS, DOCUMENT_NAME_MAX, clean_document_name, mark_hidden
 from kaagaz.api.readers import SINGLE, ReadingChoice, check_reading, check_shape, offer
 from kaagaz.api.upload_guard import check_upload_request
 from kaagaz.api.views import (
@@ -264,10 +264,11 @@ _REJECT_STATUS = {
 
 
 def display_name(filename: str | None) -> str:
-    """The name shown for an upload: path stripped, control characters removed,
-    at most 255 characters, "document" if nothing is left."""
+    """The name shown for an upload: path stripped, control characters removed, a character
+    that can hide or reorder what is shown as U+FFFD (``names.mark_hidden``), at most 255
+    characters, "document" if nothing is left."""
     name = (filename or "").replace("\\", "/").rsplit("/", 1)[-1]
-    name = CONTROL_CHARACTERS.sub("", name).strip()[:DOCUMENT_NAME_MAX].strip()
+    name = mark_hidden(CONTROL_CHARACTERS.sub("", name)).strip()[:DOCUMENT_NAME_MAX].strip()
     return name or "document"
 
 
@@ -1475,7 +1476,11 @@ def update_document(
     if "display_name" in given:
         name = clean_document_name(body.display_name or "")
         if name is None:
-            raise ApiError(400, "bad_request", f"Enter a name of 1 to {DOCUMENT_NAME_MAX} characters.")
+            raise ApiError(
+                400,
+                "bad_request",
+                f"Enter a name of 1 to {DOCUMENT_NAME_MAX} characters, with no hidden characters.",
+            )
     customer_id, target = user.customer_id, str(document_id)
     folder_id = None if body.folder_id is None else str(body.folder_id)
     try:

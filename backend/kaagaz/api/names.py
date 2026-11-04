@@ -22,8 +22,12 @@ CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f]")
 
 def clean_name(name: str, *, max_length: int) -> str | None:
     """``name`` without control characters and trimmed; None when that leaves
-    nothing or more than ``max_length`` characters. O(len(name))."""
+    nothing or more than ``max_length`` characters, or when it holds a character that can
+    hide or reorder what is shown (the folder upload's rule below, production QA S5; "/" and
+    "\\" stay, a typed name is no path). O(len(name))."""
     cleaned = CONTROL_CHARACTERS.sub("", name).strip()
+    if any(map(_hidden, cleaned)):
+        return None
     return cleaned if 1 <= len(cleaned) <= max_length else None
 
 
@@ -41,8 +45,18 @@ def clean_document_name(name: str) -> str | None:
 _UNSAFE_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
 
 
+def _hidden(char: str) -> bool:
+    return unicodedata.category(char) in _UNSAFE_CATEGORIES and char not in "\u200c\u200d"
+
+
 def _unsafe(char: str) -> bool:
-    return char in "/\\" or (unicodedata.category(char) in _UNSAFE_CATEGORIES and char not in "\u200c\u200d")
+    return char in "/\\" or _hidden(char)
+
+
+def mark_hidden(name: str) -> str:
+    """``name`` with each character that can hide or reorder what is shown (above) as U+FFFD:
+    an uploaded file's name, which is shown, not refused (production QA S5). O(len(name))."""
+    return "".join("\ufffd" if _hidden(char) else char for char in name)
 
 
 def upload_name(name: str, *, max_length: int) -> str | None:
