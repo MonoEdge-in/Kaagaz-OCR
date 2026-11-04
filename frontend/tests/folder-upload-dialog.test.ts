@@ -176,6 +176,11 @@ describe("the tray's row for a folder upload", () => {
     expect(html).toContain(">Stop<");
   });
 
+  it("offers Stop while it makes its folders and lists its files too", () => {
+    expect(row("planning")).toContain(">Stop<");
+    expect(row("registering")).toContain(">Stop<");
+  });
+
   it("after a reload names the folder to choose again; stopped here, it continues with the files it holds", () => {
     expect(row("needs_pick", false)).toContain("Choose “A” again");
     expect(row("stopped", true)).toContain("Continue upload");

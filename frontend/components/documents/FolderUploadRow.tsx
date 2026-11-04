@@ -88,7 +88,7 @@ export function FolderUploadRow({
         </ul>
       )}
       <div className={styles.uploadsActions}>
-        {sending && (
+        {(sending || view.phase === "planning" || view.phase === "registering") && (
           <button type="button" className="btn" onClick={actions.stop}>
             Stop
           </button>

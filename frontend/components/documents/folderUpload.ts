@@ -95,7 +95,8 @@ async function keyIndex(source: FolderSource): Promise<Map<string, number>> {
   return keys;
 }
 
-/** Plan, register, then send. `stopped` is asked before each file is sent (Stop). */
+/** Plan, register, then send. `stopped` (Stop) is asked after the plan, before each page of
+ * the listing, and before each file is sent; Continue upload lists again with the same id. */
 export async function startFolderUpload(
   api: FolderUploadApi,
   args: { id: string; userId: string; source: FolderSource; target: FolderTarget; merge: boolean; limits?: UploadLimits },
@@ -124,10 +125,12 @@ export async function startFolderUpload(
     return;
   }
   emit({ type: "planned", id, rootFolderId: plan.root_folder_id });
+  if (stopped()) return emit({ type: "phase", id, phase: "stopped" });
   emit({ type: "phase", id, phase: "registering" });
   const keys = new Map<string, number>();
   try {
     for (let start = 0; start < manifest.fileCount; start += REGISTER_PAGE) {
+      if (stopped()) return emit({ type: "phase", id, phase: "stopped" });
       const page: NewFolderItem[] = [];
       for (let at = start; at < Math.min(start + REGISTER_PAGE, manifest.fileCount); at++) {
         const file = picked.files[at]!;
