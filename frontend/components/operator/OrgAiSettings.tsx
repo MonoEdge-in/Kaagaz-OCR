@@ -62,6 +62,7 @@ import type {
   OperatorModel,
   Organisation,
   OrgAiReply,
+  ScanReader,
 } from "@/lib/types";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { canCloseDialog, countText, operatorErrorMessage } from "./logic";
@@ -126,6 +127,7 @@ import {
   inheritedText,
   inrText,
   levelNote,
+  limitShown,
   mistralModelOf,
   mistralModelText,
   mistralName,
@@ -242,8 +244,8 @@ export function OrgAiSettings({ org, onClose, onSaved }: { org: Organisation; on
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (busy || !draft || unchanged) return;
-    const found = aiErrors(draft, false);
+    if (busy || !loaded || !draft || unchanged) return;
+    const found = aiErrors(draft, false, readerOf(draft, loaded.reply.defaults, loaded.reply.env, false));
     const badCode = codeError(code);
     setErrors(found);
     setCodeProblem(badCode);
@@ -309,7 +311,7 @@ export function OrgAiSettings({ org, onClose, onSaved }: { org: Organisation; on
         {loaded && draft && (
           <form ref={focusFirst} className={styles.dialogForm} onSubmit={submit} noValidate>
             <MistralStopped env={loaded.reply.env} />
-            <p role="status">{statusText(aiBody(draft))}</p>
+            <p role="status">{statusText(aiBody(draft), readerOf({ scan_reader: null }, loaded.reply.defaults, loaded.reply.env, false))}</p>
             <div>
               <button
                 type="button"
@@ -500,12 +502,13 @@ function SectionBox(props: {
   section: Section;
   platform: boolean;
   draft: AiDraft;
+  followed: ScanReader; // the reader it follows when it names none
   busy: boolean;
   onChange(draft: AiDraft): void;
   children: ReactNode;
 }) {
-  const { title, section, platform, draft, busy, onChange, children } = props;
-  const same = sameAsDefault(draft, section);
+  const { title, section, platform, draft, followed, busy, onChange, children } = props;
+  const same = sameAsDefault(draft, section, followed);
   return (
     <fieldset className={styles.area} disabled={busy}>
       <legend>
@@ -564,7 +567,7 @@ export function AiFields(props: {
     options: values.map((value) => ({ value, words: words[value] })),
     onPick: (value: string) => onChange({ ...draft, [field]: value || null }),
   });
-  const section = { platform, draft, busy, onChange };
+  const section = { platform, draft, followed: readerOf({ scan_reader: null }, defaults, env, platform), busy, onChange };
   const rupees = inrText(parseBudget(draft.budget));
   const scanTicked = catalogue.filter((model) => draft.scan_models.includes(model.id));
   const scanNoLevels = scanTicked.length > 0 && scanTicked.every(hasNoLevels);
@@ -642,7 +645,7 @@ export function AiFields(props: {
                       max="0.40"
                       step="0.01"
                       placeholder={
-                        platform ? `No ceiling set (${ceilingText(ULC_CEILING_PAISE)})` : `Platform default (${from("ulc_ceiling_paise")})`
+                        platform ? `The server's setting (${ceilingText(ULC_CEILING_PAISE)})` : `Platform default (${from("ulc_ceiling_paise")})`
                       }
                       value={draft.ulc_ceiling}
                       // The wheel scrolls the dialog, never the number: the box lets go of the focus first.
@@ -775,6 +778,7 @@ export function AiFields(props: {
               saved={saved}
               draft={draft}
               level={draft.scan_thinking ?? (platform ? null : defaults.scan_thinking) ?? env.scan_thinking}
+              reader={reader}
               ulcCeiling={ulc ? ceilingOf(draft, defaults, platform) : null}
               check={check}
             />
@@ -1044,16 +1048,26 @@ function CostPanel(props: {
   saved: AiValues;
   draft: AiDraft;
   level: string; // the first read's thinking level asked: the draft's, else the one it follows
+  reader: ScanReader; // the one that really reads (readerOf)
   ulcCeiling: number | null; // in paise, while ultra low cost reads
   check?: { latest: AccuracyCheck | null; onCheck(): void };
 }) {
-  const { platform, customerId, saved, draft, level, ulcCeiling, check } = props;
+  const { platform, customerId, saved, draft, level, reader, ulcCeiling, check } = props;
   const draftAsk = scanSettings(aiBody(draft));
-  const { scan_thinking, scan_resolution, careful_thinking, careful_resolution, page_max_output_tokens, dynamic, scan_reader, mistral_model } =
-    draftAsk;
+  const {
+    scan_thinking,
+    scan_resolution,
+    careful_thinking,
+    careful_resolution,
+    page_max_output_tokens,
+    dynamic,
+    scan_reader,
+    mistral_model,
+    ulc_ceiling_paise,
+  } = draftAsk;
   const differs = !sameSettings(saved, draftAsk);
   const limit = parseTokens(draft.page_max_output_tokens);
-  const badLimit = limit === undefined; // never priced as the limit it would follow
+  const badLimit = limitShown(reader) && limit === undefined; // never priced as the limit it would follow; a hidden one isn't asked
   const finished = check?.latest?.finished_at ?? null; // a finished check: ask again for its result
   const [savedCost, setSavedCost] = useState<CostReply>(null);
   const [draftCost, setDraftCost] = useState<CostReply>(null);
@@ -1073,6 +1087,7 @@ function CostPanel(props: {
               dynamic,
               scan_reader,
               mistral_model,
+              ulc_ceiling_paise,
             }),
             postScanCost,
             setDraftCost,
@@ -1091,6 +1106,7 @@ function CostPanel(props: {
       dynamic,
       scan_reader,
       mistral_model,
+      ulc_ceiling_paise,
     ],
   );
   const shown = differs ? draftCost : savedCost;
@@ -1107,7 +1123,7 @@ function CostPanel(props: {
   const running = checkRunning(check?.latest ?? null);
   const tooLow = reply !== null && tokensTooLow(reply, limit ?? null);
   const underAverage = reply !== null && tokensUnderAverage(reply, limit ?? null);
-  const blocked = Object.keys(aiErrors(draft, platform)).length > 0; // a check reads the draft as it would save
+  const blocked = Object.keys(aiErrors(draft, platform, reader)).length > 0; // a check reads the draft as it would save
   return (
     <div className={styles.costColumn}>
       <section className={styles.costPanel} aria-labelledby="ai-cost-heading">

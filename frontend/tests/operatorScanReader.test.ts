@@ -136,13 +136,13 @@ describe("who reads the pages: the save", () => {
     const own = values({ scan_reader: "mistral", mistral_model: "mistral-ocr-2512" });
     expect(aiBody(draftOf(own))).toEqual(own);
     expect(aiBody(draftOf(values()))).toEqual(values());
-    expect(follows(values({ scan_reader: "openrouter" })).scan).toBe("some");
-    expect(follows(values({ mistral_model: "mistral-ocr-4-1" })).scan).toBe("some");
+    expect(follows(values({ scan_reader: "openrouter" }), "openrouter").scan).toBe("some");
+    expect(follows(values({ mistral_model: "mistral-ocr-4-1" }), "openrouter").scan).toBe("some");
     // Reading with Gemini itself, it needs no Mistral model to have its own settings.
     const gemini = values({ scan_models: ["m/one"], scan_thinking: "high", scan_resolution: "low", careful_thinking: "high" });
     const allOwn = { ...gemini, careful_resolution: "high", page_max_output_tokens: 8192, dynamic: false } as const;
-    expect(follows(values({ ...allOwn, scan_reader: "openrouter" })).scan).toBe("none");
-    expect(follows(values({ ...allOwn, scan_reader: "mistral" })).scan).toBe("some");
+    expect(follows(values({ ...allOwn, scan_reader: "openrouter" }), "openrouter").scan).toBe("none");
+    expect(follows(values({ ...allOwn, scan_reader: "mistral" }), "openrouter").scan).toBe("some");
   });
 
   it("picking gemini nulls mistral_model", () => {

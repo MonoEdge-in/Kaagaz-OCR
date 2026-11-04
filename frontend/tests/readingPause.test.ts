@@ -157,8 +157,8 @@ describe("the daily page limit field", () => {
     expect(parseDailyPages(" 2000 ")).toBe(2000);
     for (const bad of ["0", "1000001", "1.5", "-3", "lots"]) expect(parseDailyPages(bad)).toBeUndefined();
     const draft = { ...draftOf(values()), daily_page_limit: "0" };
-    expect(aiErrors(draft, false).daily_page_limit).toBe(DAILY_PAGES_RANGE);
-    expect(firstProblem(aiErrors(draft, false))).toBe("daily_page_limit");
+    expect(aiErrors(draft, false, "openrouter").daily_page_limit).toBe(DAILY_PAGES_RANGE);
+    expect(firstProblem(aiErrors(draft, false, "openrouter"))).toBe("daily_page_limit");
     expect(refusalField("pages_out_of_range")).toBe("daily_page_limit");
   });
 
@@ -168,7 +168,7 @@ describe("the daily page limit field", () => {
     const before = draftOf(values());
     expect(changesText(before, { ...before, daily_page_limit: "2000" }, [])).toEqual(["Daily page limit: 2,000 pages"]);
     expect(followDefaults(draftOf(own)).daily_page_limit).toBe("2000"); // like the budget, its own
-    expect(follows(own).scan).toBe("all"); // not a scan setting
+    expect(follows(own, "openrouter").scan).toBe("all"); // not a scan setting
     expect(defaultsImpact(values(), own, COUNTS).lead).toBe("This save changes, for 6 organisations still on platform defaults:");
     expect(pagesTodayText({ pages: 3, cost_usd: null })).toBe("Pages read today: 3.");
     expect(pagesTodayText({ pages: 1240, cost_usd: 0.42 }, 2000)).toBe("Pages read today: 1,240 of 2,000 ($0.42).");

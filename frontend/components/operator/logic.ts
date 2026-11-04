@@ -121,7 +121,7 @@ export const CONFLICT = "That change is not possible now. Reload the list and tr
 export const TOKENS_RANGE = "Choose a number from 1,024 to 65,536.";
 export const DAILY_PAGES_RANGE = "Choose a daily page limit from 1 to 1,000,000 pages, or leave it empty."; // #478
 // #488: the server's words for ceiling_out_of_range, said by the field's own check too.
-export const CEILING_RANGE = "Choose a most a page may cost from ₹0.20 to ₹0.40, or leave it empty.";
+export const CEILING_RANGE = "Choose from ₹0.20 to ₹0.40 a page, or leave it empty.";
 
 /** The server's error codes in plain words (the server sends most refusals as
  * 409 "conflict" with its own sentence, which is used then). */
