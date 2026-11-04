@@ -1,7 +1,8 @@
 // Production QA (5 Nov 2026): an upload call that never answers (a server restart mid-request)
 // left the row waiting for ever with no word. A part gives up after 2 minutes idle and a JSON call
 // of the upload after its own bound, and each is then sent again as after a lost connection,
-// the row saying "Waiting for connection" meanwhile.
+// the row saying "Waiting for connection" meanwhile. And a `complete` asked again after its
+// reply was lost gets the stored file back from the server (T1), never an error.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { uploadDocument } from "@/lib/api";
@@ -10,8 +11,8 @@ import { settle } from "./fake-clock";
 const SESSION = { id: "s1", part_size: 8 * 1024 * 1024, part_count: 1 };
 const DOCUMENT = { id: "d1", display_name: "deed.pdf", status: "received" };
 
-/** A stand-in API. `hangComplete`: the first `complete` never answers. `hangPart`: nor does the first part. */
-function stubApi(options: { hangPart?: boolean; hangComplete?: boolean }) {
+/** A stand-in API. `hangComplete`/`loseComplete`: what the first `complete` does. `hangPart`: the first part never answers. */
+function stubApi(options: { hangPart?: boolean; hangComplete?: boolean; loseComplete?: boolean }) {
   const asked: string[] = [];
   vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
     const path = url.split("?")[0] ?? url;
@@ -23,6 +24,7 @@ function stubApi(options: { hangPart?: boolean; hangComplete?: boolean }) {
         init?.signal?.addEventListener("abort", () => reject(new DOMException("The operation was aborted.", "AbortError"))),
       );
     }
+    if (path.endsWith("/complete") && completes === 1 && options.loseComplete) throw new TypeError("Failed to fetch");
     const body = path.endsWith("/candidates")
       ? { candidates: [] }
       : path.endsWith("/complete")
@@ -100,5 +102,14 @@ describe("an upload call that never answers", () => {
       [true, "connection"],
       [false, undefined],
     ]);
+  });
+});
+
+describe("a complete asked again after its reply was lost (T1)", () => {
+  it("ends with the stored file, never an error", async () => {
+    const api = stubApi({ loseComplete: true });
+    const { done } = await upload();
+    expect(done).toBe(true);
+    expect(api.asked.filter((path) => path.endsWith("/complete"))).toHaveLength(2);
   });
 });
