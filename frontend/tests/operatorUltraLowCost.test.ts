@@ -11,7 +11,8 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AiSettingsForm } from "@/components/admin/AiSettingsPanel";
-import { CEILING_RANGE, REFUSALS } from "@/components/operator/logic";
+import { CEILING_RANGE, REFUSALS, TOKENS_RANGE } from "@/components/operator/logic";
+import * as models from "@/components/operator/models";
 import {
   CEILING_HINT,
   ENSEMBLE_NOT_WITH_ULC,
@@ -34,6 +35,8 @@ import {
   pickedReader,
   readerOf,
   resetSection,
+  sameSettings,
+  scanSettings,
   statusText,
   ulcWords,
   withCost,
@@ -41,7 +44,7 @@ import {
 import { AiFields, fieldId, firstProblem, refusalOf } from "@/components/operator/OrgAiSettings";
 import { DefaultsSummary } from "@/components/operator/PlatformDefaults";
 import { orgDraftOf, mineDraftOf } from "@/lib/aiSettings";
-import { ApiError, postScanCost, putAiDefaults, putOrgAi } from "@/lib/api";
+import { ApiError, postAccuracyCheck, postScanCost, putAiDefaults, putOrgAi } from "@/lib/api";
 import type { AiDraft } from "@/components/operator/models";
 import type { AiDefaults, AiEnv, AiSettings, AiTaskSetting, AiValues, ScanCost, UlcCost } from "@/lib/types";
 
@@ -228,6 +231,18 @@ describe("ultra low cost: the fields it sets itself", () => {
     expect(fields()).not.toContain("ai-ensemble-ulc");
   });
 
+  it("never stops a save at a hidden output limit, nor says its range in the panel (#488 review)", () => {
+    const typed = { ...draftOf(ULC), page_max_output_tokens: "100" };
+    expect(aiErrors(typed, false, "ultra_low_cost")).toEqual({});
+    expect(aiErrors({ ...typed, scan_reader: "mistral" as const }, false, "mistral")).toEqual({});
+    expect(aiErrors(typed, false, "openrouter")).toEqual({ page_max_output_tokens: TOKENS_RANGE });
+    const html = fields({ own: ULC, draft: typed });
+    expect(html).not.toContain('id="ai-page-max-output-tokens"');
+    expect(html).not.toContain(TOKENS_RANGE);
+    expect(html).toContain("Working out the cost…");
+    expect(fields({ draft: { ...draftOf(values()), page_max_output_tokens: "100" } })).toContain(TOKENS_RANGE);
+  });
+
   it("hides the tokens part of the panel, which talks of the hidden limit", () => {
     expect(fields({ own: ULC })).not.toMatch(/<h3[^>]*>Tokens a page<\/h3>/);
     expect(fields()).toMatch(/<h3[^>]*>Tokens a page<\/h3>/);
@@ -259,7 +274,8 @@ describe("ultra low cost: the ceiling field", () => {
     expect(inputOf(fields({ defaults: values({ scan_reader: "ultra_low_cost", ulc_ceiling_paise: 25 }) }), ID)).toContain(
       'placeholder="Platform default (₹0.25)"',
     );
-    expect(inputOf(fields({ platform: true, own: ULC }), ID)).toContain('placeholder="No ceiling set (₹0.40)"');
+    // The #488 review: the platform's says the server's setting, like the other fields.
+    expect(inputOf(fields({ platform: true, own: ULC }), ID)).toContain('placeholder="The server&#x27;s setting (₹0.40)"');
     expect(inheritedText("ulc_ceiling_paise", values(), ENV, [])).toBe("₹0.40");
   });
 
@@ -286,15 +302,19 @@ describe("ultra low cost: the ceiling field", () => {
   });
 
   it("checks the range before Save, next to the field, and focuses it first", () => {
-    expect(CEILING_RANGE).toBe("Choose a most a page may cost from ₹0.20 to ₹0.40, or leave it empty.");
-    const errors = aiErrors({ ...draftOf(ULC), ulc_ceiling: "0.5" }, false);
+    expect(CEILING_RANGE).toBe("Choose from ₹0.20 to ₹0.40 a page, or leave it empty."); // the server's words (#488 review)
+    const errors = aiErrors({ ...draftOf(ULC), ulc_ceiling: "0.5" }, false, "ultra_low_cost");
     expect(errors).toEqual({ ulc_ceiling_paise: CEILING_RANGE });
-    expect(aiErrors({ ...draftOf(ULC), ulc_ceiling: "0.5" }, true)).toEqual({ ulc_ceiling_paise: CEILING_RANGE, chat_levels: "Tick at least one thinking level." });
+    expect(aiErrors({ ...draftOf(ULC), ulc_ceiling: "0.5" }, true, "ultra_low_cost")).toEqual({ ulc_ceiling_paise: CEILING_RANGE, chat_levels: "Tick at least one thinking level." });
     expect(firstProblem({ ulc_ceiling_paise: CEILING_RANGE, scan_models: "x" })).toBe("ulc_ceiling_paise");
     const html = fields({ own: ULC, draft: { ...draftOf(ULC), ulc_ceiling: "0.5" }, errors });
     expect(html).toContain(`<span id="${ID}-error" class="error-text" role="alert">${CEILING_RANGE}</span>`);
     expect(inputOf(html, ID)).toContain('aria-invalid="true"');
     expect(describedByOf(html, "input", ID)).toBe(`${ID}-error ${ID}-origin ${ID}-hint`);
+  });
+
+  it("says the range once, from logic (#488 review)", () => {
+    expect(models).not.toHaveProperty("CEILING_RANGE");
   });
 
   it("the panel's ceiling is the draft's own, else the one it follows, else ₹0.40", () => {
@@ -307,7 +327,7 @@ describe("ultra low cost: the ceiling field", () => {
 
 describe("ultra low cost: the server's refusals", () => {
   it("says the ceiling's range next to the field, in the server's words", () => {
-    const caught = new ApiError(400, "ceiling_out_of_range", "Choose a most a page may cost from ₹0.20 to ₹0.40, or leave it empty.");
+    const caught = new ApiError(400, "ceiling_out_of_range", "Choose from ₹0.20 to ₹0.40 a page, or leave it empty.");
     expect(REFUSALS.ceiling_out_of_range).toBe(caught.message);
     expect(refusalOf(caught)).toEqual({ field: "ulc_ceiling_paise", message: caught.message });
   });
@@ -324,8 +344,11 @@ describe("ultra low cost: the server's refusals", () => {
 
 describe("ultra low cost: follow, reset, status and the save bar", () => {
   it("counts the ceiling as a scan setting only while ultra low cost reads", () => {
-    expect(follows(values({ ulc_ceiling_paise: 30 })).scan).toBe("some");
-    expect(follows(values({ scan_reader: "ultra_low_cost", ulc_ceiling_paise: 30 })).scan).toBe("some");
+    expect(follows(values({ scan_reader: "ultra_low_cost", ulc_ceiling_paise: 30 }), "openrouter").scan).toBe("some");
+    // The #488 review: following a reader, a ceiling counts only when that reader is ultra low cost.
+    expect(follows(values({ ulc_ceiling_paise: 30 }), "ultra_low_cost").scan).toBe("some");
+    expect(follows(values({ ulc_ceiling_paise: 30 }), "openrouter").scan).toBe("all");
+    expect(follows(values({ ulc_ceiling_paise: 30 }), "mistral").scan).toBe("all");
     // Reading with Gemini or Mistral itself, it needs no ceiling to have its own settings.
     const gemini: Partial<AiValues> = {
       scan_models: ["m/one"],
@@ -336,12 +359,12 @@ describe("ultra low cost: follow, reset, status and the save bar", () => {
       page_max_output_tokens: 8192,
       dynamic: false,
     };
-    expect(follows(values({ ...gemini, scan_reader: "openrouter" })).scan).toBe("none");
-    expect(follows(values({ ...gemini, scan_reader: "mistral", mistral_model: "mistral-ocr-4-1" })).scan).toBe("none");
+    expect(follows(values({ ...gemini, scan_reader: "openrouter" }), "openrouter").scan).toBe("none");
+    expect(follows(values({ ...gemini, scan_reader: "mistral", mistral_model: "mistral-ocr-4-1" }), "openrouter").scan).toBe("none");
     // Under ultra low cost a Mistral model left over doesn't count; the ceiling does.
-    expect(follows(values({ ...gemini, scan_reader: "ultra_low_cost" })).scan).toBe("some");
-    expect(follows(values({ ...gemini, scan_reader: "ultra_low_cost", ulc_ceiling_paise: 30 })).scan).toBe("none");
-    expect(statusText(values({ scan_reader: "ultra_low_cost", ulc_ceiling_paise: 30 }))).toBe(
+    expect(follows(values({ ...gemini, scan_reader: "ultra_low_cost" }), "openrouter").scan).toBe("some");
+    expect(follows(values({ ...gemini, scan_reader: "ultra_low_cost", ulc_ceiling_paise: 30 }), "openrouter").scan).toBe("none");
+    expect(statusText(values({ scan_reader: "ultra_low_cost", ulc_ceiling_paise: 30 }), "openrouter")).toBe(
       "Scanning: partly own settings · Answering: platform defaults",
     );
   });
@@ -379,7 +402,7 @@ describe("ultra low cost: follow, reset, status and the save bar", () => {
     expect(summary(values())).not.toContain(">Most a page may cost<");
   });
 
-  it("saves the ceiling with the settings, but never asks the cost with it", async () => {
+  it("saves the ceiling with the settings, and asks the cost and the check with it", async () => {
     const sent: { url: string; body: unknown }[] = [];
     vi.stubGlobal("fetch", async (url: string, init: RequestInit = {}) => {
       sent.push({ url, body: init.body ? JSON.parse(String(init.body)) : undefined });
@@ -389,11 +412,20 @@ describe("ultra low cost: follow, reset, status and the save bar", () => {
     await putAiDefaults(own, "123456");
     await putOrgAi("org-1", { ...own, ensemble: false, ai_budget_usd: null }, "654321");
     await postScanCost(costAsk("org-1", own));
+    await postAccuracyCheck("org-1", { ...scanSettings(aiBody({ ...draftOf(own), ulc_ceiling: "0.25" })), pages: 20 }, "123456");
+    await postScanCost(costAsk("org-1", ULC));
     expect(sent[0]?.body).toMatchObject({ scan_reader: "ultra_low_cost", ulc_ceiling_paise: 30 });
     expect(sent[1]?.body).toMatchObject({ scan_reader: "ultra_low_cost", ulc_ceiling_paise: 30 });
-    // The cost's question is the reader's settings; the server knows the ceiling it saved.
-    expect(sent[2]?.body).toMatchObject({ scan_reader: "ultra_low_cost" });
-    expect(sent[2]?.body).not.toHaveProperty("ulc_ceiling_paise");
+    // Changed on purpose (#488 review): the cost and the check are asked at the draft's ceiling;
+    // none (null) is the organisation's own, else the platform's (the server's side).
+    expect(sent[2]?.body).toMatchObject({ scan_reader: "ultra_low_cost", ulc_ceiling_paise: 30 });
+    expect(sent[3]?.body).toMatchObject({ scan_reader: "ultra_low_cost", ulc_ceiling_paise: 25, pages: 20 });
+    expect(sent[4]?.body).toHaveProperty("ulc_ceiling_paise", null);
+    // A changed ceiling is a changed cost question: the draft is asked again.
+    expect(sameSettings(own, { ...own, ulc_ceiling_paise: 25 })).toBe(false);
+    const flat = read("components/operator/OrgAiSettings.tsx").replace(/\s+/g, " ");
+    expect(flat).toMatch(/costAsk\(customerId, \{[^}]*mistral_model, ulc_ceiling_paise,? \}\)/);
+    expect(flat).toMatch(/\[ customerId, differs, badLimit, finished,[^\]]*mistral_model, ulc_ceiling_paise,? \]/);
   });
   afterEach(() => vi.unstubAllGlobals());
 });
@@ -406,7 +438,7 @@ describe("ultra low cost: the Cost per page panel", () => {
       lines: [
         "Measured: about ₹0.31 a page on 1,240 pages in the last 30 days.",
         "Highest for one document: ₹0.38 a page.",
-        "Read by Kaagaz's own reader to stay within the limit: 3% of pages.",
+        "Read by Kaagaz's own reader to stay within the most a page may cost: 3% of pages.",
       ],
     });
     expect(ulcWords(reply(ulc({ top_usd_per_page: null })), 25).lines.some((line) => line.startsWith("Highest"))).toBe(false);

@@ -191,7 +191,6 @@ export const CEILING_HINT =
   "From ₹0.20 to ₹0.40. A page that would cost more is read by Kaagaz's own reader instead and marked for a check.";
 export const ULC_CEILING_PAISE = 40; // the server's when nothing is set
 const [MIN_CEILING_PAISE, MAX_CEILING_PAISE] = [20, 40];
-export { CEILING_RANGE };
 export const MISTRAL_NOT_SET_UP = "Mistral OCR (not set up on this server)";
 export const MISTRAL_MISSING: Record<"key" | "zdr", string> = {
   key: "Mistral can't be chosen yet: the server has no Mistral key.",
@@ -308,11 +307,12 @@ export function draftOf(values: AiValues, extra: { ensemble: boolean; ai_budget_
  * platform default: off and no budget stand for it. */
 export type Section = "scan" | "chat" | "ensemble" | "budget";
 
-/** Does a section of the draft follow the platform default ("Same as platform default")? */
-export function sameAsDefault(draft: AiDraft, section: Section): boolean {
+/** Does a section of the draft follow the platform default ("Same as platform default")?
+ * `followed`: the reader it follows when it names none. */
+export function sameAsDefault(draft: AiDraft, section: Section, followed: ScanReader): boolean {
   if (section === "ensemble") return !draft.ensemble;
   if (section === "budget") return draft.budget.trim() === "";
-  return follows(aiBody(draft))[section] === "all";
+  return follows(aiBody(draft), followed)[section] === "all";
 }
 
 /** "Reset section": that section back to the platform default, the others as they are. */
@@ -380,6 +380,9 @@ export const TOKENS_HINT =
   "The most the AI may write and think for one page. Too low, and long pages get cut off and read again in two halves, which costs more.";
 export { TOKENS_RANGE }; // the same words as the server's refusal (logic.ts)
 
+/** Is the output limit shown? Mistral hides it with the Gemini fields; ultra low cost sets it. */
+export const limitShown = (reader: ScanReader) => reader === "openrouter";
+
 /** The most output tokens a page as a number, null to follow, or undefined when it is not one. */
 export function parseTokens(text: string): number | null | undefined {
   const trimmed = text.trim();
@@ -444,14 +447,16 @@ export type AiField =
   | "form";
 export type AiErrors = Partial<Record<AiField, string>>;
 
-/** The form's own checks, before a code is asked for or anything is sent. */
-export function aiErrors(draft: AiDraft, platform: boolean): AiErrors {
+/** The form's own checks, before a code is asked for or anything is sent. `reader`: the one
+ * that really reads (readerOf); the output limit is checked only while it is shown, with Gemini
+ * (the #488 review: a hidden one never stops a save). */
+export function aiErrors(draft: AiDraft, platform: boolean, reader: ScanReader): AiErrors {
   const errors: AiErrors = {};
   if (draft.scan_models.length > 0 && (draft.scan_default === null || !draft.scan_models.includes(draft.scan_default)))
     errors.scan_default = "Choose the default scanning model from the ticked models.";
   if (draft.chat_models.length > 0 && (draft.chat_default === null || !draft.chat_models.includes(draft.chat_default)))
     errors.chat_default = "Choose the default answering model from the ticked models.";
-  if (parseTokens(draft.page_max_output_tokens) === undefined) errors.page_max_output_tokens = TOKENS_RANGE;
+  if (limitShown(reader) && parseTokens(draft.page_max_output_tokens) === undefined) errors.page_max_output_tokens = TOKENS_RANGE;
   if (parseDailyPages(draft.daily_page_limit) === undefined) errors.daily_page_limit = DAILY_PAGES_RANGE;
   if (parseCeiling(draft.ulc_ceiling) === undefined) errors.ulc_ceiling_paise = CEILING_RANGE;
   if (platform && draft.chat_levels.length === 0) errors.chat_levels = "Tick at least one thinking level.";
@@ -497,8 +502,8 @@ export function offered(catalogue: OperatorModel[], area: Area, saved: string[])
 
 /** Does an organisation's own value follow the platform defaults? Per area: scanning is
  * its models, scan level, picture detail, pages read again and Dynamic; answering its
- * models and levels. */
-export function follows(own: AiValues): { scan: "all" | "some" | "none"; chat: "all" | "some" | "none" } {
+ * models and levels. `followed`: the reader it follows when it names none. */
+export function follows(own: AiValues, followed: ScanReader): { scan: "all" | "some" | "none"; chat: "all" | "some" | "none" } {
   const part = (inherited: boolean[]) =>
     inherited.every(Boolean) ? "all" : inherited.some(Boolean) ? "some" : "none";
   return {
@@ -512,18 +517,18 @@ export function follows(own: AiValues): { scan: "all" | "some" | "none"; chat: "
       own.dynamic === null,
       own.scan_reader === null,
       // #473: the Mistral model counts unless the organisation reads with another reader itself;
-      // #488: the ceiling the same way.
+      // #488 review: the ceiling only while ultra low cost really reads, its own or followed.
       ...(own.scan_reader === "openrouter" || own.scan_reader === "ultra_low_cost" ? [] : [own.mistral_model === null]),
-      ...(own.scan_reader === "openrouter" || own.scan_reader === "mistral" ? [] : [own.ulc_ceiling_paise === null]),
+      ...((own.scan_reader ?? followed) === "ultra_low_cost" ? [own.ulc_ceiling_paise === null] : []),
     ]),
     chat: part([own.chat_models.length === 0, own.chat_levels === null]),
   };
 }
 
 /** "Scanning: platform defaults · Answering: own settings" (C12). */
-export function statusText(own: AiValues): string {
+export function statusText(own: AiValues, followed: ScanReader): string {
   const words = { all: "platform defaults", some: "partly own settings", none: "own settings" };
-  const area = follows(own);
+  const area = follows(own, followed);
   return `Scanning: ${words[area.scan]} · Answering: ${words[area.chat]}`;
 }
 
@@ -799,7 +804,8 @@ export const costAsk = (customerId: string | null, values: ScanAsk): ScanCostAsk
 });
 
 // The settings a cost or an accuracy check is asked for: the four scan settings, the most
-// output tokens a page, Cost saving, and who reads the pages with which Mistral model (#473).
+// output tokens a page, Cost saving, who reads the pages with which Mistral model (#473), and the
+// most a page may cost (#488 review; null: the organisation's own, else the platform's).
 // The scan models are never asked: the cost is the saved models'.
 const SCAN_ASK = [
   "scan_thinking",
@@ -810,6 +816,7 @@ const SCAN_ASK = [
   "dynamic",
   "scan_reader",
   "mistral_model",
+  "ulc_ceiling_paise",
 ] as const;
 export type ScanAsk = Pick<AiValues, (typeof SCAN_ASK)[number]>;
 
@@ -823,6 +830,7 @@ export const scanSettings = (values: ScanAsk): ScanAsk => ({
   dynamic: values.dynamic,
   scan_reader: values.scan_reader,
   mistral_model: values.mistral_model,
+  ulc_ceiling_paise: values.ulc_ceiling_paise,
 });
 
 /** Do two sets of scan settings ask the same cost? */
@@ -926,7 +934,7 @@ export function ulcWords(reply: CostReply, ceilingPaise: number): CostWords {
     `Measured: about ${rupeeText(seen.usd_per_page)} a page on ${countText(seen.pages, "page", "pages")} in the last ${reply.days} days.`,
   ];
   if (seen.top_usd_per_page !== null) lines.push(`Highest for one document: ${rupeeText(seen.top_usd_per_page)} a page.`);
-  lines.push(`Read by Kaagaz's own reader to stay within the limit: ${percent(seen.limit_hits / seen.pages)} of pages.`);
+  lines.push(`Read by Kaagaz's own reader to stay within the most a page may cost: ${percent(seen.limit_hits / seen.pages)} of pages.`);
   return { figure, dollars: null, lines };
 }
 

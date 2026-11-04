@@ -1458,7 +1458,8 @@ export interface AiDefaults {
 }
 
 /** POST /operator/scan-cost (#463): the scan settings and `dynamic` to price;
- * null is what a save would inherit. customer_id null: the platform defaults. */
+ * null is what a save would inherit (the ceiling's: the organisation's own, else the
+ * platform's). customer_id null: the platform defaults. */
 export type ScanCostAsk = { customer_id: string | null } & Pick<
   AiValues,
   | "scan_thinking"
@@ -1469,6 +1470,7 @@ export type ScanCostAsk = { customer_id: string | null } & Pick<
   | "dynamic"
   | "scan_reader"
   | "mistral_model"
+  | "ulc_ceiling_paise"
 >;
 
 /** One kind of page read, as measured in the last `days`: usd_per_page null when no page
