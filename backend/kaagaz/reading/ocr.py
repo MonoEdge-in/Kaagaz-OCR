@@ -140,9 +140,10 @@ CAREFUL_ISSUES = frozenset(
 HARD_LINES_MAX = 12
 HARD_SHARE = 0.4
 PATH_WORDS, PATH_PAGE = "path_words", "path_page"
-# Handwriting stays page wide (Tushar's accuracy first, 16 Oct 2026): a quick read of a
-# handwritten page can be sure of every word and still be wrong (7/12 extracts).
-PAGE_WIDE = frozenset({*(CAREFUL_ISSUES - {ILLEGIBLE_WORDS}), "quality_poor", "handwritten"})
+# Hard handwriting is page wide through the reader's handwriting_hard issue. The page's
+# ``handwritten`` flag is no reason at all (production QA B1, 5 Nov 2026): it is set for any
+# handwriting, one signature on a printed page enough, and re-read most pages whole.
+PAGE_WIDE = frozenset({*(CAREFUL_ISSUES - {ILLEGIBLE_WORDS}), "quality_poor"})
 # #385: a region of a page asked to be read again, as page fractions (x0, y0, x1, y1).
 Region = tuple[float, float, float, float]
 
@@ -336,14 +337,12 @@ def hard_lines(read: PageRead) -> list[int]:
 def careful_reasons(read: PageRead, *, lead: str, again: bool = False) -> list[str]:
     """Why one page may be worth a careful read (``careful_plan`` decides, for ``careful_pages``
     and page by page while a Dynamic document is read, fast scan, council 16 Oct 2026): an
-    issue in CAREFUL_ISSUES, handwriting, a fair or poor grade, unsure words, or at least
+    issue in CAREFUL_ISSUES (handwriting_hard among them), a fair or poor grade, unsure words, or at least
     CROWDED_LINES lines; none when ``lead`` did not read it or it was asked to be read again
     (``again``: F5 reads it harder already). O(issues)."""
     if read.read_by != lead or again:
         return []
     reasons = sorted(CAREFUL_ISSUES.intersection(read.issues))
-    if read.handwritten:
-        reasons.append("handwritten")
     if read.quality in ("fair", "poor"):
         reasons.append(f"quality_{read.quality}")
     if read.unsure_words:
