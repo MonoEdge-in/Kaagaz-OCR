@@ -29,6 +29,12 @@ export type AppGate = "set_password" | "set_two_step" | "connect_google" | "app"
 /** Account, Ways to sign in. */
 export const WAYS_PATH = "/settings/sign-in";
 
+/** The app's links, search and Upload show: not in the limited session (#507 review), where the
+ * server refuses them all and only Ways to sign in and the account menu remain. */
+export function appChrome(me: Me): boolean {
+  return me.user.google_link_required !== true;
+}
+
 export function appGate(me: Me): AppGate {
   if (mustChangePassword(me)) return "set_password";
   const needsTwoStep = me.user.totp_enabled !== true && me.user.two_step_turned_off !== true;

@@ -157,8 +157,18 @@ FROM_0061 = {"email_links": (True, True, False, False)}
 # Connected accounts (0062, #457 phase 1): read, added and deleted; only the approval and
 # last-used columns may change (a column grant).
 FROM_0062 = {"user_identities": (True, True, False, True)}
-# Changed on purpose (#507, 0072): Google's hd claim, refreshed at each sign-in.
-UPDATES_0062 = {"user_identities": {"status", "approved_at", "approved_by", "last_used_at", "hosted_domain"}}
+# Changed on purpose (#507, 0072): Google's hd claim, refreshed at each sign-in, and its email,
+# kept with hd when a Google sign-in is refused for the domains (#507 review).
+UPDATES_0062 = {
+    "user_identities": {
+        "status",
+        "approved_at",
+        "approved_by",
+        "last_used_at",
+        "hosted_domain",
+        "email_at_link",
+    }
+}
 # The reading pause (0066, #478): a day's counter is added and counted up (a column grant).
 FROM_0066 = {"reading_days": (True, True, False, False)}
 UPDATES_0066 = {"reading_days": {"pages", "cost_usd", "alerted_at"}}

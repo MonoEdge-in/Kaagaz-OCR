@@ -376,14 +376,21 @@ def test_the_password_signs_in_when_the_rule_does_not_hold(
     assert reply.status_code == 200, reply.text
     limited = why in ("link_outside_domains", "waiting_link")
     assert reply.json()["user"]["google_link_required"] is limited
+    assert reply.json()["user"]["google_unchecked"] is False  # its hd is known: checked
 
 
 def _hosted_domain(api: Api, customer_id: str, user_id: str) -> str | None:
+    return _stored(api, customer_id, user_id)[0]
+
+
+def _stored(api: Api, customer_id: str, user_id: str) -> tuple[str | None, str | None]:
+    """The link's stored ``hd`` and email."""
     with api.db.customer(customer_id) as conn:
-        stored = conn.execute(
-            text("SELECT hosted_domain FROM user_identities WHERE user_id = :u"), {"u": user_id}
-        )
-        return stored.scalar()
+        row = conn.execute(
+            text("SELECT hosted_domain, email_at_link FROM user_identities WHERE user_id = :u"),
+            {"u": user_id},
+        ).one()
+    return row[0], row[1]
 
 
 def _connect(api: Api, google: FakeGoogle, signed: Signed, subject: str, **claims: Any) -> str:
@@ -465,6 +472,77 @@ def test_an_admin_still_setting_up_two_step_can_enrol(db: Database, google: Fake
     assert _code(again) == (403, "password_refused")  # enrolled: Google from now on
 
 
+UNCHECKED = "Sign in with Google once so Kaagaz can check its domain."
+
+
+def test_a_link_from_before_0072_is_checked_at_the_next_google_sign_in(
+    db: Database, google: FakeGoogle
+) -> None:
+    """#507 review: a link made before 0072 has no ``hd`` yet ("not checked yet"). No dead end:
+    the password opens the limited session, which says to sign in with Google once (connecting
+    again would be ``has_provider``); Google's sign-in passes the domains and keeps ``hd``."""
+    api = _api(db)
+    customer_id, _ = api.customer()
+    member_id, email = api.add_user(customer_id, "member")
+    _rules(api, customer_id, only=["member"], domains=[DOMAIN])
+    subject = _link(api, customer_id, member_id, hd=None)
+
+    password = _login(api.client(), email)
+    assert password.status_code == 200, password.text
+    user = password.json()["user"]
+    assert (user["google_link_required"], user["google_unchecked"]) == (True, True)
+
+    assert _google(api, google, subject).headers["location"] == "/documents"
+    assert _hosted_domain(api, customer_id, member_id) == DOMAIN
+    assert _code(_login(api.client(), email)) == (403, "password_refused")
+
+
+def test_a_waiting_link_from_before_0072_is_checked_at_google_then_approved(
+    db: Database, google: FakeGoogle
+) -> None:
+    """Approval says ``domain_unchecked``; the person's Google sign-in (still ``waiting``) keeps
+    Google's ``hd``, so the approval then goes through."""
+    api = _api(db)
+    admin = api.new_admin()
+    member_id, _ = api.add_user(admin.customer_id, "member")
+    _rules(api, admin.customer_id, domains=[DOMAIN])
+    subject = _link(api, admin.customer_id, member_id, hd=None, approved=False)
+    [waiting] = admin.client.get("/api/admin/identities").json()["items"]
+    path = f"/api/admin/identities/{waiting['id']}/approve"
+
+    refused = admin.client.post(path, headers=CSRF)
+    assert _code(refused) == (409, "domain_unchecked")
+    assert refused.json()["error"]["message"] == UNCHECKED
+
+    assert _error(_google(api, google, subject)) == "waiting"
+    assert _hosted_domain(api, admin.customer_id, member_id) == DOMAIN
+    assert admin.client.post(path, headers=CSRF).status_code == 200
+
+
+def test_a_refused_google_sign_in_keeps_googles_answer_for_the_password(
+    db: Database, google: FakeGoogle
+) -> None:
+    """#507 review: the stored link and Google disagree (the work account moved to a domain not
+    listed). ``domain_refused`` keeps Google's ``hd`` and email, only when Google verified the
+    email, so the password then opens the limited session instead of ``password_refused``."""
+    api = _api(db)
+    customer_id, _ = api.customer()
+    member_id, email = api.add_user(customer_id, "member")
+    _rules(api, customer_id, only=["member"], domains=[DOMAIN])
+    subject = _link(api, customer_id, member_id)
+    assert _code(_login(api.client(), email)) == (403, "password_refused")
+
+    unverified = _google(api, google, subject, "ramesh@moved.in", hd="moved.in", email_verified=False)
+    assert _error(unverified) == "domain_refused"
+    assert _stored(api, customer_id, member_id) == (DOMAIN, f"ramesh@{DOMAIN}")  # not verified: as it was
+
+    assert _error(_google(api, google, subject, "Ramesh@Moved.in", hd="moved.in")) == "domain_refused"
+    assert _stored(api, customer_id, member_id) == ("moved.in", "ramesh@moved.in")
+    password = _login(api.client(), email)
+    assert password.status_code == 200, password.text
+    assert password.json()["user"]["google_link_required"] is True
+
+
 # --- the limited session (plan section 3) -------------------------------------------------------
 
 
@@ -510,13 +588,14 @@ def test_the_limited_session_blocks_every_data_route(db: Database, google: FakeG
         ("GET", "/api/auth/identities"),
         ("POST", f"/api/auth/identities/{ANY_ID}/remove"),
     }
-    # Every route of the app (logout last), and those whose dependencies hold current_user.
+    # Every route of the app (the two sign-outs last), and those whose dependencies hold current_user.
     on_current_user = _routes_on_current_user(api.app) - set(EMAIL_ROUTES)  # 404 while email is off
+    sign_outs = {("POST", "/api/auth/logout"), ("POST", "/api/auth/logout-everywhere")}
     calls = sorted(
         {
             (method, path.replace("{provider}", "google"))
             for method, path in route_calls(api.app)
-            if (method, path) not in EMAIL_ROUTES and (method, path) != ("POST", "/api/auth/logout")
+            if (method, path) not in EMAIL_ROUTES and (method, path) not in sign_outs
         }
     )
     gated = []
@@ -539,10 +618,17 @@ def test_the_limited_session_blocks_every_data_route(db: Database, google: FakeG
     # Exactly the routes that use current_user, and no other, answer the limited session's 403.
     assert set(gated) == on_current_user and len(gated) > 50
     assert ("GET", "/api/documents") in gated and ("GET", "/api/admin/users") in gated
-    assert ("POST", "/api/auth/logout-everywhere") in gated and ("POST", "/api/auth/2fa/start") in gated
+    assert ("POST", "/api/auth/2fa/start") in gated
+    assert ("POST", "/api/auth/logout-everywhere") not in on_current_user  # #507 review: allowed
 
     assert limited.client.get("/api/auth/session").json()["me"]["user"]["google_link_required"] is True
     assert limited.client.post("/api/auth/logout", headers=CSRF).status_code == 204
+    assert _login(limited.client, limited.email).status_code == 200
+    elsewhere = Signed(api.client(), limited.customer_id, limited.user_id, limited.email)
+    assert _login(elsewhere.client, limited.email).status_code == 200
+    assert limited.client.post("/api/auth/logout-everywhere", headers=CSRF).status_code == 204
+    assert elsewhere.client.get("/api/auth/me").status_code == 401  # every browser is signed out
+    assert limited.client.get("/api/auth/me").status_code == 401
 
 
 def test_the_limited_session_connects_google_and_the_gate_lifts(db: Database, google: FakeGoogle) -> None:

@@ -397,6 +397,7 @@ def test_login_sets_the_cookie_and_me_works(db: Database) -> None:
             "can_delete_forever": False,
             "email_confirmed": True,  # Changed on purpose (#457): true while email is off, no banner
             "google_link_required": False,  # Changed on purpose (#507): the limited session
+            "google_unchecked": False,  # Changed on purpose (#507 review): a link not checked yet
         },
         "customer": {"id": customer_id, "name": "Sharma Traders"},
         "session": {"scope": "app"},

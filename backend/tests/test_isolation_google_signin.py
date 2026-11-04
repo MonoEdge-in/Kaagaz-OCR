@@ -45,6 +45,11 @@ OUTSIDE = (
     "Your own Google account isn't from these domains, so you'd be locked out. Add its domain, or"
     " connect one that is."
 )
+PENDING = (
+    "Your Google account is waiting for another admin to approve it. Then you can make Google the"
+    " only way in for admins."
+)
+UNCHECKED = "Sign in with Google once so Kaagaz can check its domain."
 
 
 def _google_api(db: Database) -> Api:
@@ -290,13 +295,7 @@ def test_the_settings_show_the_rules_and_refuse_bad_ones(db: Database) -> None:
     api = _google_api(db)
     admin = api.new_admin("Org rules")
     google = admin.client.get("/api/admin/settings").json()["google"]
-    assert google == {
-        "available": True,
-        "allowed_roles": ROLES,
-        "only_roles": [],
-        "domains": [],
-        "my_link_ok": False,
-    }
+    assert google == {"available": True, "allowed_roles": ROLES, "only_roles": [], "domains": []}
     personal = "Gmail and other personal email domains can't be used. Enter your company's own domain."
     cases = [
         ((["admin", "reviewer"], ["member"], []), ONLY_NOT_ALLOWED),
@@ -323,7 +322,6 @@ def test_the_settings_show_the_rules_and_refuse_bad_ones(db: Database) -> None:
         "allowed_roles": ["reviewer", "member"],
         "only_roles": ["member"],
         "domains": ["sharmatraders.com", "sharma.in"],
-        "my_link_ok": False,
     }
     assert _org_rows(api, admin.customer_id, "settings.google") == [
         (
@@ -367,26 +365,32 @@ def test_google_only_for_admins_needs_the_savers_own_passing_link(db: Database) 
     pending = _link(
         api, customer, admin.user_id, approved=False, hosted="sharmatraders.com", email="me@sharmatraders.com"
     )
-    assert _error(_rules(admin, ROLES, ["admin"], [])) == (
-        409,
-        "google_lockout",
-        NO_LINK,
-    )  # waiting is no way in
+    # Waiting is no way in, and says so (#507 review).
+    assert _error(_rules(admin, ROLES, ["admin"], [])) == (409, "google_lockout", PENDING)
     with db.customer(customer) as conn:
         identities.remove(conn, customer, pending)
+    # A link from before 0072 (no hd yet) inside the domains: not checked yet, never "outside".
+    unchecked = _link(api, customer, admin.user_id, email="me@sharmatraders.com")
+    assert _error(_rules(admin, ROLES, ["admin"], ["sharmatraders.com"])) == (
+        409,
+        "google_lockout",
+        UNCHECKED,
+    )
+    with db.customer(customer) as conn:
+        identities.remove(conn, customer, unchecked)
     _link(api, customer, admin.user_id, hosted="other.com", email="me@other.com")
     refused = _rules(admin, ROLES, ["admin"], ["sharmatraders.com"])
     assert _error(refused) == (409, "google_lockout", OUTSIDE)
     assert _owner(
         db, "SELECT google_only_roles, google_domains FROM customers WHERE id = :c", {"c": customer}
     ) == [([], [])]  # nothing saved
-    assert _org_rows(api, customer, "settings.google") == [
-        ("settings.google_rules_refused", "customer", customer, {"reason": "no_link"}),
-        ("settings.google_rules_refused", "customer", customer, {"reason": "no_link"}),
-        ("settings.google_rules_refused", "customer", customer, {"reason": "outside_domains"}),
+    assert [row[3]["reason"] for row in _org_rows(api, customer, "settings.google")] == [
+        "no_link",
+        "link_pending",
+        "domain_unchecked",
+        "outside_domains",
     ]
     assert _rules(admin, ROLES, ["admin"], ["other.com"]).status_code == 200  # its domain: passes
-    assert admin.client.get("/api/admin/settings").json()["google"]["my_link_ok"] is True
     assert _in(admin)  # the saver stays signed in
 
 
@@ -494,27 +498,61 @@ def test_the_people_list_says_who_signs_in_how_and_who_needs_to_connect(db: Data
     customer = admin.customer_id
     needs, connected = api.sign_in(customer, "member"), api.sign_in(customer, "member")
     reviewer, outside = api.sign_in(customer, "reviewer"), api.sign_in(customer, "member")
+    unchecked = api.sign_in(customer, "member")
     _link(api, customer, connected.user_id, hosted="sharma.in", email="c@sharma.in")
     _link(api, customer, reviewer.user_id, hosted="sharma.in", email="r@sharma.in")
     _link(api, customer, outside.user_id)  # a Gmail account, outside the domains
+    _link(api, customer, unchecked.user_id, email="u@sharma.in")  # from before 0072: no hd yet
     _owner(
         db,
         "UPDATE customers SET google_only_roles = '{member}', google_domains = '{sharma.in}' WHERE id = :c",
         {"c": customer},
     )
 
-    def said(signed: Signed) -> tuple[list[str], bool]:
+    def said(signed: Signed) -> tuple[list[str], bool, bool]:
         item = _listed(admin)[signed.user_id]
-        return item["signs_in_with"], item["google_needed"]
+        return item["signs_in_with"], item["google_needed"], item["google_unchecked"]
 
-    assert said(needs) == (["password"], True)
-    assert said(connected) == (["google"], False)
-    assert said(reviewer) == (["password", "google"], False)
-    assert said(outside) == (["password"], True)
-    assert said(admin) == (["password"], False)
+    assert said(needs) == (["password"], True, False)
+    assert said(connected) == (["google"], False, False)
+    assert said(reviewer) == (["password", "google"], False, False)
+    assert said(outside) == (["password"], True, False)
+    assert said(unchecked) == (["password"], True, True)  # "Sign in with Google once…"
+    assert said(admin) == (["password"], False, False)
     _owner(db, "UPDATE customers SET google_signin = false WHERE id = :c", {"c": customer})
-    assert said(connected) == (["password"], False)  # off: everyone signs in with their password
-    assert said(needs) == (["password"], False)
+    assert said(connected) == (["password"], False, False)  # off: everyone signs in with their password
+    assert said(needs) == (["password"], False, False)
+
+
+def test_replies_that_change_a_person_carry_the_google_tag(db: Database) -> None:
+    """#507 review: the screen merges each reply into its row, so a reply that can change the tag
+    carries it (role change, Remove connected accounts, Reset password)."""
+    api = _google_api(db)
+    admin = api.new_admin("Org tag")
+    customer = admin.customer_id
+    member = api.sign_in(customer, "member")
+    _link(api, customer, member.user_id, hosted="sharma.in", email="m@sharma.in")
+    _owner(
+        db,
+        "UPDATE customers SET google_only_roles = '{member}', google_domains = '{sharma.in}' WHERE id = :c",
+        {"c": customer},
+    )
+    tag = ("signs_in_with", "google_needed", "google_unchecked")
+
+    def change(role: str) -> dict[str, Any]:
+        reply = admin.client.patch(f"/api/admin/users/{member.user_id}", json={"role": role}, headers=CSRF)
+        assert reply.status_code == 200, reply.text
+        changed: dict[str, Any] = reply.json()
+        return changed
+
+    assert [change("reviewer")[key] for key in tag] == [["password", "google"], False, False]
+    assert [change("member")[key] for key in tag] == [["google"], False, False]
+    removed = admin.client.post(f"/api/admin/users/{member.user_id}/remove-connections", headers=CSRF)
+    assert removed.status_code == 200, removed.text
+    assert [removed.json()[key] for key in tag] == [["password"], True, False]
+    reset = admin.client.post(f"/api/admin/users/{member.user_id}/reset-password", headers=CSRF)
+    assert reset.status_code == 200, reset.text
+    assert [reset.json()["user"][key] for key in tag] == [["password"], True, False]
 
 
 def test_the_invite_says_to_connect_google_while_it_is_on(db: Database) -> None:

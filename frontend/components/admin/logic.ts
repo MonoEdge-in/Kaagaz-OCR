@@ -4,7 +4,7 @@
 
 import { sessionScope } from "@/components/shell/gate";
 import { roleName } from "@/components/shell/nav";
-import { providersText } from "@/components/account/signInWays";
+import { DOMAIN_UNCHECKED, providersText } from "@/components/account/signInWays";
 import type { MineDraft, OrgDraft } from "@/lib/aiSettings";
 import { ApiError } from "@/lib/api";
 import type { Draft } from "@/lib/drafts";
@@ -312,6 +312,14 @@ export function signsInWith(ways: readonly string[] | undefined): string {
 /** #507: the tag beside how they sign in, while their role signs in with Google only and they
  * have no Google account that passes (AdminUser.google_needed). */
 export const GOOGLE_NEEDED = "Needs to connect Google";
+
+/** The tag's words: their connected account's domain is not checked yet (#507 review,
+ * AdminUser.google_unchecked: the limited session's words), else "Needs to connect Google";
+ * null: no tag. */
+export function googleTag(user: AdminUser): string | null {
+  if (user.google_unchecked === true) return DOMAIN_UNCHECKED;
+  return user.google_needed === true ? GOOGLE_NEEDED : null;
+}
 export const RESET_DISCONNECTS = "This also disconnects their Google account.";
 
 /** #507, Add a user: the hint under the role while Google sign-in is on for it (as the invite

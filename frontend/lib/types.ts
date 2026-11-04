@@ -52,6 +52,9 @@ export interface Me {
     // account that passes its rules yet: every route but Ways to sign in replies 403
     // google_link_required, so the app sends them there (lib/session.tsx).
     google_link_required?: boolean;
+    // #507 review: in that session, the connected account is from before its domain could be
+    // checked, so the banner asks for one Google sign-in instead of a new connection.
+    google_unchecked?: boolean;
   };
   customer: { id: string; name: string };
   session: { scope: SessionScope };
@@ -1135,6 +1138,8 @@ export interface AdminUser {
   signs_in_with?: string[];
   // #507: their role signs in with Google only and they have no connected account that passes.
   google_needed?: boolean;
+  // #507 review: and their connected account's domain is not checked yet (one Google sign-in does).
+  google_unchecked?: boolean;
 }
 
 /** POST /admin/users: the new user; with email on (#457), whether the invite email went. */
@@ -1167,13 +1172,12 @@ export interface CustomerSettings {
 }
 
 /** The admin's Google sign-in rules (#507). available: Google sign-in is on for the organisation
- * (the super admin's switch); my_link_ok: the admin's own Google account passes the saved rules. */
+ * (the super admin's switch). */
 export interface GoogleRules {
   available: boolean;
   allowed_roles: Role[];
   only_roles: Role[];
   domains: string[];
-  my_link_ok: boolean;
 }
 
 /** PATCH /admin/settings' google: it replaces all three. */

@@ -12,6 +12,10 @@
   domains, a link without one never passes, and the password sign-in, the limited session, the
   lock-out guard and approval (the stored link) agree with Google's own sign-in and connect (the
   claims now). This module is the one rule; ``kaagaz.db.users`` and ``kaagaz.api`` call it.
+* **Not checked yet** (``unchecked``, #507 review): a link made before 0072 has no ``hd``. While
+  its email is inside the domains, it is "not checked yet" rather than outside: Google's next
+  sign-in stores ``hd``, and the guard, approval, the limited session and the people list say so.
+* ``hd`` arrives in lower case (``kaagaz.api.oidc``, the one place); the domains are stored so.
 
 Every function takes a connection from ``Database.customer(customer_id)`` and also filters on
 ``customer_id`` (two locks). Each is one statement: O(log n), or O(connections of this customer)
@@ -66,13 +70,20 @@ def domain_ok(
         return True
     if not email_verified or hosted_domain is None:
         return False
-    return hosted_domain.lower() in allowed and email_domain(email_at_link) in allowed
+    return hosted_domain in allowed and email_domain(email_at_link) in allowed
+
+
+def unchecked(domains: Iterable[str], hosted_domain: str | None, email_at_link: str | None) -> bool:
+    """A stored link with no ``hd`` yet (from before 0072) whose email is inside the domains: not
+    checked yet, until Google's next sign-in stores ``hd``."""
+    allowed = {domain.lower() for domain in domains}
+    return hosted_domain is None and email_domain(email_at_link) in allowed
 
 
 def kept_hosted_domain(hosted_domain: str | None, email_verified: bool) -> str | None:
-    """The ``hd`` a link stores (at connect and at each sign-in): Google's, lower case, only
-    with a verified email; else None, which no domain rule lets in."""
-    return hosted_domain.lower() if hosted_domain is not None and email_verified else None
+    """The ``hd`` a link stores (at connect and at each sign-in): Google's, only with a verified
+    email; else None, which no domain rule lets in."""
+    return hosted_domain if email_verified else None
 
 
 def passing_link(
@@ -107,6 +118,9 @@ class Link:
 
     def passes(self, domains: Iterable[str]) -> bool:
         return passing_link(self.status, domains, self.hosted_domain, self.email_at_link)
+
+    def unchecked(self, domains: Iterable[str]) -> bool:
+        return unchecked(domains, self.hosted_domain, self.email_at_link)
 
 
 def rules(conn: Connection, customer_id: str) -> Rules | None:

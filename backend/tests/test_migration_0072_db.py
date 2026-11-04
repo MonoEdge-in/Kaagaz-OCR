@@ -27,6 +27,7 @@ NEW_COLUMNS = {
     ("user_identities", "hosted_domain", "text", False, None),
 }
 _RULES = "SELECT google_signin, google_roles, google_only_roles, google_domains FROM customers WHERE id = :c"
+_EMAIL_WRITABLE = "SELECT has_column_privilege(:r, 'user_identities', 'email_at_link', 'UPDATE')"
 
 
 def _connected(db: Database, customer: str, user: str) -> None:
@@ -63,6 +64,7 @@ def test_0072_up_down_up_with_rows_and_defaults_that_change_nothing(fresh: tuple
     assert as_owner(db, _RULES, {"c": customer}) == [(None, ["admin", "reviewer", "member"], [], [])]
     assert as_owner(db, "SELECT google_signin FROM platform_ai_settings", {}) == [(True,)]
     assert as_owner(db, "SELECT hosted_domain, status FROM user_identities", {}) == [(None, "approved")]
+    assert as_owner(db, _EMAIL_WRITABLE, {"r": M0072.APP_ROLE}) == [(True,)]  # #507 review
 
     _owner(
         db,
@@ -75,6 +77,7 @@ def test_0072_up_down_up_with_rows_and_defaults_that_change_nothing(fresh: tuple
     base._downgrade(url, PREVIOUS)
     assert base._schema(db) == before
     assert as_owner(db, "SELECT status FROM user_identities", {}) == [("approved",)]  # the connection stays
+    assert as_owner(db, _EMAIL_WRITABLE, {"r": M0072.APP_ROLE}) == [(False,)]  # as 0071's grant
     migrate(url, M0072.revision)
     assert base._schema(db) == after
     assert as_owner(db, _RULES, {"c": customer}) == [(None, ["admin", "reviewer", "member"], [], [])]

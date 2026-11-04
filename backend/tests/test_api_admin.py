@@ -25,6 +25,8 @@ from tests.test_runs_db import totals
 # Money in a response: a key or a text that names it, or a currency sign (Tushar, 15 Oct 2026).
 MONEY = re.compile(r"usd|price|budget|cost|[$₹]", re.IGNORECASE)
 
+# How a person signs in and the Google tag (#457 phase 1, #507): only in replies that know them.
+GOOGLE_TAG = {"signs_in_with", "google_needed", "google_unchecked"}
 ADMIN_USER_FIELDS = {
     "id",
     "email",
@@ -484,8 +486,9 @@ def test_the_user_list_shows_lock_2fa_and_password_status(db: Database) -> None:
     items = {item["id"]: item for item in admin.client.get("/api/admin/users").json()["items"]}
 
     # Changed on purpose (#457 phase 1): the list says how each person signs in.
-    # Changed on purpose (#507): and whether their role needs a Google account connected.
-    assert all(set(item) == ADMIN_USER_FIELDS | {"signs_in_with", "google_needed"} for item in items.values())
+    # Changed on purpose (#507): and whether their role needs a Google account connected, or
+    # (#507 review) its domain checked.
+    assert all(set(item) == ADMIN_USER_FIELDS | GOOGLE_TAG for item in items.values())
     assert items[member_id]["locked_until"] == (api.clock() + timedelta(minutes=15)).isoformat()
     assert items[member_id]["totp_enabled"] is False
     assert items[admin.user_id]["totp_enabled"] is True
@@ -524,8 +527,9 @@ def test_reset_password_gives_a_temporary_password_and_ends_sessions(db: Databas
 
     assert reply.status_code == 200, reply.text
     body = reply.json()
-    # Changed on purpose (#457 phase 1): a reset clears connected accounts, and says so.
-    assert set(body["user"]) == ADMIN_USER_FIELDS | {"signs_in_with"}
+    # Changed on purpose (#457 phase 1): a reset clears connected accounts, and says so; and
+    # (#507 review) the Google tag that may change with them.
+    assert set(body["user"]) == ADMIN_USER_FIELDS | GOOGLE_TAG
     assert body["user"]["must_change_password"] is True
     assert len(body["temporary_password"]) == 16
     assert member.client.get("/api/auth/me").status_code == 401

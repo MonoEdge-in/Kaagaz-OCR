@@ -44,7 +44,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import Connection, RowMapping, text
 from sqlalchemy.exc import IntegrityError
 
-from kaagaz.db.google_rules import passing_link
+from kaagaz.db.google_rules import passing_link, unchecked
 from kaagaz.db.sqlstate import UNIQUE_VIOLATION, sqlstate
 
 
@@ -291,6 +291,13 @@ def google_linked(row: RowMapping) -> bool:
     ``google_domains`` (one per user: 0062's unique (customer, user, provider))."""
     link = row["google_link"]
     return link is not None and passing_link(link[0], row["google_domains"], link[1], link[2])
+
+
+def google_unchecked(row: RowMapping) -> bool:
+    """An approved Google link whose domain is not checked yet (#507 review,
+    ``google_rules.unchecked``): Google's next sign-in checks it."""
+    link = row["google_link"]
+    return link is not None and link[0] == "approved" and unchecked(row["google_domains"], link[1], link[2])
 
 
 def enrol_still_open(conn: Connection, customer_id: str, user_id: str, session_version: int) -> bool:

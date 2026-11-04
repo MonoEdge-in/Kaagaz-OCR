@@ -9,7 +9,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import { IconButton } from "@/components/ui/IconButton";
-import { LINK_REQUIRED, bannerText } from "./signInWays";
+import { DOMAIN_UNCHECKED, LINK_REQUIRED, bannerText } from "./signInWays";
 import styles from "./WaysToSignIn.module.css";
 
 type Recent = { provider: string; linked_at: string };
@@ -54,11 +54,12 @@ export function ConnectedBanner({ items }: { items: readonly Recent[] }) {
 
 /** #507: a session that may only connect Google first (me.user.google_link_required), at the top of
  * Ways to sign in, where the app sends the person. Never dismissed: it ends with the first
- * Google account that passes the organisation's rules. */
-export function LinkRequiredBanner() {
+ * Google account that passes the organisation's rules. `unchecked` (#507 review): the connected
+ * account's domain is not checked yet, so it asks for one Google sign-in instead. */
+export function LinkRequiredBanner({ unchecked }: { unchecked: boolean }) {
   return (
     <div className={styles.banner} role="status">
-      <p className={styles.bannerText}>{LINK_REQUIRED}</p>
+      <p className={styles.bannerText}>{unchecked ? DOMAIN_UNCHECKED : LINK_REQUIRED}</p>
     </div>
   );
 }

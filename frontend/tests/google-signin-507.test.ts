@@ -18,7 +18,7 @@ import {
 } from "@/app/login/providerMessages";
 import { ProviderButtons } from "@/app/login/ProviderButtons";
 import { signInErrorMessage } from "@/app/login/signIn";
-import { LINK_REQUIRED, pageNotice, rulesText } from "@/components/account/signInWays";
+import { DOMAIN_UNCHECKED, LINK_REQUIRED, pageNotice, rulesText } from "@/components/account/signInWays";
 import { LinkRequiredBanner } from "@/components/account/ConnectedBanner";
 import {
   DOMAINS_HINT,
@@ -46,6 +46,7 @@ import {
   RESET_DISCONNECTS,
   addUserGoogleHint,
   describeAction,
+  googleTag,
   resetPasswordQuestion,
   whoText,
 } from "@/components/admin/logic";
@@ -55,11 +56,12 @@ import {
   OrgGoogleSignInDialog,
   PlatformGoogleSignIn,
   choiceLabels,
+  inForceText,
   orgGoogleConfirm,
   platformGoogleConfirm,
 } from "@/components/operator/GoogleSignIn";
 import { MENU_HELP } from "@/components/operator/OrganisationsView";
-import { WAYS_PATH, appGate } from "@/components/shell/gate";
+import { WAYS_PATH, appChrome, appGate } from "@/components/shell/gate";
 import {
   ApiError,
   getOrgGoogleSignIn,
@@ -68,7 +70,7 @@ import {
   setOrgGoogleSignIn,
   updateSettings,
 } from "@/lib/api";
-import type { GoogleRules, Me, Organisation } from "@/lib/types";
+import type { AdminUser, GoogleRules, Me, OrgGoogleSignIn, Organisation } from "@/lib/types";
 
 const read = (path: string) => readFileSync(join(__dirname, "..", path), "utf8");
 const ORG = { id: "org-1", name: "Sharma Traders" } as Organisation;
@@ -150,13 +152,34 @@ describe("Ways to sign in", () => {
 
   it("shows the limited session's banner in the plan's words", () => {
     expect(LINK_REQUIRED).toBe("Your organisation asks you to sign in with Google. Connect your Google account to continue.");
-    const banner = renderToStaticMarkup(createElement(LinkRequiredBanner));
+    const banner = renderToStaticMarkup(createElement(LinkRequiredBanner, { unchecked: false }));
     expect(banner).toContain('role="status"');
     expect(banner).toContain(LINK_REQUIRED);
     const shell = read("components/shell/AppShell.tsx");
-    expect(shell).toContain("{me.user.google_link_required && <LinkRequiredBanner />}");
+    expect(shell).toContain(
+      "{me.user.google_link_required && <LinkRequiredBanner unchecked={me.user.google_unchecked === true} />}",
+    );
     const page = read("components/account/WaysToSignIn.tsx");
     expect(page).toContain("rulesText(ways.rules, me.user.google_link_required === true)");
+  });
+});
+
+describe("a Google account connected before its domain could be checked (#507 review)", () => {
+  it("asks for one Google sign-in, not a new connection, in the review's words", () => {
+    expect(DOMAIN_UNCHECKED).toBe("Sign in with Google once so Kaagaz can check its domain.");
+    const banner = renderToStaticMarkup(createElement(LinkRequiredBanner, { unchecked: true }));
+    expect(banner).toContain(DOMAIN_UNCHECKED);
+    expect(banner).not.toContain(LINK_REQUIRED);
+  });
+
+  it("tags the person in People with the same words", () => {
+    const person = (extra: Partial<AdminUser>) => ({ ...extra }) as AdminUser;
+    expect(googleTag(person({ google_needed: true, google_unchecked: true }))).toBe(DOMAIN_UNCHECKED);
+    expect(googleTag(person({ google_needed: true, google_unchecked: false }))).toBe(GOOGLE_NEEDED);
+    expect(googleTag(person({ google_needed: true }))).toBe(GOOGLE_NEEDED);
+    expect(googleTag(person({ google_needed: false }))).toBeNull();
+    expect(googleTag(person({}))).toBeNull();
+    expect(read("components/admin/UsersPanel.tsx")).toContain("const tag = googleTag(user);");
   });
 });
 
@@ -190,6 +213,17 @@ describe("the limited session (a Google-only person with no passing account)", (
     expect(appGate(me({ role: "admin" }, true))).toBe("set_two_step");
   });
 
+  it("shows no app links, search or Upload: only Ways to sign in and the account menu (#507 review)", () => {
+    expect(appChrome(me({}, true))).toBe(false);
+    expect(appChrome(me({}, false))).toBe(true);
+    expect(appChrome(me())).toBe(true);
+    const shell = read("components/shell/AppShell.tsx");
+    expect(shell).toContain("const chrome = appChrome(me);");
+    expect(shell).toContain("const links = chrome ? navLinks(me.user.role, sessionScope(me)) : [];");
+    expect(shell.match(/\{chrome && \(/g)?.length).toBe(3); // the menu button, search and Upload, the tab bar
+    expect(shell).toContain("<AccountMenu me={me} onChanged={refresh} />");
+  });
+
   it("never shows another screen: the app sends the person there first", () => {
     const session = read("lib/session.tsx");
     expect(session).toContain('if (gate !== "connect_google" || pathname === WAYS_PATH) return;');
@@ -221,7 +255,6 @@ describe("the admin's Ways to sign in", () => {
     allowed_roles: ["admin", "reviewer", "member"],
     only_roles: [],
     domains: [],
-    my_link_ok: false,
   };
 
   it("reads domains typed with commas, spaces or new lines, in lower case, once each", () => {
@@ -347,7 +380,7 @@ describe("the admin's Ways to sign in", () => {
 describe("People", () => {
   it("tags who still needs to connect Google, and says a reset disconnects Google", () => {
     expect(GOOGLE_NEEDED).toBe("Needs to connect Google");
-    expect(read("components/admin/UsersPanel.tsx")).toContain("{user.google_needed && (");
+    expect(read("components/admin/UsersPanel.tsx")).toContain("{tag && (");
     expect(RESET_DISCONNECTS).toBe("This also disconnects their Google account.");
     expect(resetPasswordQuestion("Asha", ["password", "google"])).toBe(
       "Reset Asha's password? They are signed out everywhere and must choose a new one. This also disconnects their Google account.",
@@ -378,7 +411,6 @@ describe("Add a user (plan section 5)", () => {
     allowed_roles: ["admin", "member"],
     only_roles: [],
     domains: [],
-    my_link_ok: false,
   };
 
   it("says how a new person signs in with Google only while Google is on for the chosen role", () => {
@@ -421,8 +453,36 @@ describe("the super admin's Google sign-in", () => {
     expect(source).toContain("value.domains");
   });
 
+  const value = (on: boolean | null, platformOn: boolean, effective?: boolean): OrgGoogleSignIn => ({
+    on,
+    platform_on: platformOn,
+    effective: effective ?? (on ?? platformOn),
+    google_only_roles: [],
+    domains: [],
+  });
+
+  it("shows the value in force, and says when the server has Google sign-in off (#507 review)", () => {
+    expect(inForceText(value(true, false))).toBe("In force: On.");
+    expect(inForceText(value(null, false))).toBe("In force: Off.");
+    expect(inForceText(value(null, true, false))).toBe("In force: Off. Google sign-in is off on this server.");
+    expect(inForceText(value(false, true, false))).toBe("In force: Off.");
+    expect(read("components/operator/GoogleSignIn.tsx")).toContain("{inForceText(value)}");
+  });
+
+  it("says people are signed out only when the value in force changes (#507 review)", () => {
+    const signedOut = /signed out/;
+    expect(orgGoogleConfirm(ORG, false, value(true, false)).effect).toMatch(signedOut); // On to Off
+    expect(orgGoogleConfirm(ORG, false, value(null, false)).effect).not.toMatch(signedOut); // Off stays Off
+    expect(orgGoogleConfirm(ORG, true, value(null, true)).effect).not.toMatch(signedOut); // On stays On
+    expect(orgGoogleConfirm(ORG, true, value(false, true)).effect).toMatch(signedOut); // Off to On
+    expect(orgGoogleConfirm(ORG, null, value(true, true)).effect).not.toMatch(signedOut);
+    expect(orgGoogleConfirm(ORG, null, value(false, true)).effect).toMatch(signedOut);
+    // The server's switch off: the organisation's value still changes, and its sign-out still happens.
+    expect(orgGoogleConfirm(ORG, false, value(true, true, false)).effect).toMatch(signedOut);
+  });
+
   it("asks first, with a fresh code, before every change", () => {
-    const off = orgGoogleConfirm(ORG, false, true);
+    const off = orgGoogleConfirm(ORG, false, value(null, true));
     expect(off).toMatchObject({
       title: "Turn Google sign-in off for Sharma Traders?",
       action: "Turn off",
@@ -431,13 +491,13 @@ describe("the super admin's Google sign-in", () => {
       stepUp: true,
     });
     expect(off.effect).toContain("Connected accounts are kept.");
-    expect(orgGoogleConfirm(ORG, true, false)).toMatchObject({
+    expect(orgGoogleConfirm(ORG, true, value(null, false))).toMatchObject({
       title: "Turn Google sign-in on for Sharma Traders?",
       action: "Turn on",
       danger: false,
       stepUp: true,
     });
-    expect(orgGoogleConfirm(ORG, null, true)).toMatchObject({
+    expect(orgGoogleConfirm(ORG, null, value(false, true))).toMatchObject({
       title: "Make Sharma Traders follow the platform for Google sign-in?",
       done: "Sharma Traders follows the platform for Google sign-in (On).",
       stepUp: true,

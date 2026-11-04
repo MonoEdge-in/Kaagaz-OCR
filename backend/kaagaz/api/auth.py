@@ -49,7 +49,7 @@ Why each piece (FULL-BUILD-SPEC section 3, PRD 1 A1 to A7):
 * **The limited session** (#507): last, a "Google only" user with no passing Google link
   (``needs_google_link``) gets 403 ``google_link_required`` everywhere except the routes above
   and those using ``current_user_allow_google_link`` (connect, its callback, Ways to sign in's
-  list and remove). Their password signs them in only to connect Google.
+  list and remove, and sign out everywhere). Their password signs them in only to connect Google.
 * **CSRF**: every request that is not GET, HEAD or OPTIONS must carry
   ``X-Requested-With: kaagaz``. A cross-site form cannot add a header, and a
   cross-site script cannot either without CORS, which the API never allows.
@@ -729,12 +729,14 @@ class CurrentUser:
     seen_at: datetime | None = None  # the session's last use or sign-in, the idle clock
     email_confirmed: bool = False  # the user proved their e-mail with a link (0061)
     # Google sign-in (#507, ``users._GOOGLE_COLUMNS``): the organisation's switch, else the
-    # platform's; the role may use Google; uses it only; a passing link; the domains.
+    # platform's; the role may use Google; uses it only; a passing link; the domains; an approved
+    # link whose domain is not checked yet (``users.google_unchecked``).
     google_on: bool = True
     google_allowed: bool = True
     google_only: bool = False
     google_linked: bool = False
     google_domains: tuple[str, ...] = ()
+    google_unchecked: bool = False
 
 
 GOOGLE_LINK_REQUIRED = (
@@ -807,7 +809,7 @@ def current_user(request: Request) -> CurrentUser:
 
 def current_user_allow_google_link(request: Request) -> CurrentUser:
     """``current_user`` without the limited session's gate (#507). Only for connecting Google
-    (its start and callback) and Ways to sign in's list and remove."""
+    (its start and callback), Ways to sign in's list and remove, and sign out everywhere."""
     user = _signed_in(request)
     if user.must_change_password:
         raise ApiError(403, "password_change_required")
@@ -876,6 +878,7 @@ def load_user(db: Database, customer_id: str, user_id: str, *, scope: str) -> Cu
         google_only=bool(row["google_only"]),
         google_linked=users_sql.google_linked(row),
         google_domains=tuple(row["google_domains"]),
+        google_unchecked=users_sql.google_unchecked(row),
     )
 
 

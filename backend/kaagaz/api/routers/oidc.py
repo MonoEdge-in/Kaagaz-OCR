@@ -21,7 +21,10 @@ provider's own routes: while that one is off), before anything else is read.
   ``domain_refused``; the connection still waits for an admin: ``waiting``. Each is audited
   ``auth.login_failed`` {reason, via, and the email's domain for ``domain_refused``}. The
   connection is marked used, with Google's ``hd`` now (kept only with a verified email,
-  ``google_rules.kept_hosted_domain``), only once every check passed.
+  ``google_rules.kept_hosted_domain``), only once every check passed. On ``domain_refused`` and
+  ``waiting`` it keeps Google's ``hd`` and email now, only when Google verified the email (#507
+  review): the stored link then says what Google says, so the password opens the limited session
+  instead of ``password_refused``, and a link from before 0072 (no ``hd`` yet) can be approved.
   Without two-step sign-in a member or reviewer gets an app session and goes to ``next``,
   audited ``auth.login`` ``{"via": "google"}``. Anyone with codes on gets the 5-minute second
   step cookie and /login?step=code; an admin who turned two-step off themselves (0061b) gets
@@ -45,11 +48,12 @@ provider's own routes: while that one is off), before anything else is read.
   ``domain_refused`` again (#507), each audited ``auth.identity_link_refused`` {provider,
   reason, domain?}. It keeps Google's ``hd`` (only with a verified email). It is approved at
   once for an admin's own, with the organisation's auto-approval on, or when Google's verified
-  email is the user's own (any case); else it waits for an admin, who is emailed. Audited
-  ``auth.identity_linked`` {provider, identity_id, status, domain?}; the session version is
-  raised and this browser re-signed;
-  a security notice is emailed. Back to /settings/sign-in?connected=google, ?waiting=google
-  or ?error=<code>.
+  email is the user's own (any case); else it waits for an admin, who is emailed. None of the
+  three approves it at once within REAPPROVAL_DAYS of an ``auth.identity_reapproval`` of the user
+  (#507 review: a promotion's re-approval can't be skipped by cancelling and connecting again).
+  Audited ``auth.identity_linked`` {provider, identity_id, status, domain?}; the session version
+  is raised and this browser re-signed; a security notice is emailed. Back to
+  /settings/sign-in?connected=google, ?waiting=google or ?error=<code>.
 * ``GET /auth/identities``: Ways to sign in's ``{providers, identities, rules}``: the providers
   switched on, the user's own connections, and the organisation's rules for them (#507):
   ``{google_only, domains}``. ``POST /auth/identities/{id}/remove``
@@ -114,7 +118,7 @@ from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.middleware import RateLimiter
 from kaagaz.api.oidc import Identity, OidcError, Provider
-from kaagaz.api.routers.admin import MAX_PASSWORD
+from kaagaz.api.routers.admin import GOOGLE_OFF, MAX_PASSWORD, ROLE_REFUSED, tell_admins
 from kaagaz.api.routers.auth import (
     MAX_CODE,
     _audit_failure,
@@ -163,8 +167,8 @@ WAYS = "/settings/sign-in"  # Account, Ways to sign in
 _NEXT = re.compile(r"/[A-Za-z0-9_-][A-Za-z0-9/_-]{0,199}(\?[A-Za-z0-9=&_-]{1,200})?")
 # The OidcError codes the sign-in page explains as "That sign-in expired. Try again."
 _EXPIRED = frozenset({"expired", "wrong_nonce", "bad_token"})
-GOOGLE_OFF = "Google sign-in is off for your organisation."
-ROLE_REFUSED = "Your organisation doesn't use Google sign-in for your role."
+# #507 review: after a promotion's re-approval, a new connection waits for another admin this long.
+REAPPROVAL_DAYS = 30
 
 
 class ConnectBody(BaseModel):
@@ -468,7 +472,13 @@ def _sign_in(
         _google_refused(*who, "google_off")
     if not attempt.google_allowed:
         _google_refused(*who, "role_refused")
-    if not _domain_ok(identity, attempt.google_domains):
+    passes = _domain_ok(identity, attempt.google_domains)
+    if (not passes or found.status != "approved") and identity.email_verified:
+        with context.db.customer(found.customer_id) as conn:  # Google's answer now (#507 review)
+            identities.keep_claims(
+                conn, found.customer_id, found.id, hosted_domain=identity.hosted_domain, email=identity.email
+            )
+    if not passes:
         _google_refused(*who, "domain_refused", google_rules.email_domain(identity.email))
     if found.status != "approved":
         _google_refused(*who, "waiting")
@@ -566,6 +576,9 @@ def _connect(
     with context.db.customer(customer_id) as conn:
         mine = identities.for_user(conn, customer_id, user_id)
         organisation = admin_sql.get_settings(conn, customer_id)
+        reapproval = audit.recent(
+            conn, customer_id, action="auth.identity_reapproval", target_id=user_id, days=REAPPROVAL_DAYS
+        )
     if any(row["provider"] == provider.name for row in mine):
         raise _Refused("has_provider")
     with context.db.system() as conn:
@@ -577,7 +590,7 @@ def _connect(
         provider.name == "google" and identity.email_verified and identity.email == user.email.lower()
     )
     auto = organisation is not None and bool(organisation["auto_approve_connections"])
-    approved = user.role == "admin" or auto or same_person
+    approved = not reapproval and (user.role == "admin" or auto or same_person)
     try:
         with context.db.customer(customer_id) as conn:
             # In the insert's own transaction: the email is another user's sign-in email (never says whose).
@@ -617,7 +630,7 @@ def _connect(
     purpose, notice = ("identity_linked", emails.google_connected)
     if not approved:
         purpose, notice = ("identity_waiting", emails.google_waiting)
-        emails.after(background, "approval_waiting", _tell_admins, context, customer_id, user.customer_name)
+        emails.after(background, "approval_waiting", tell_admins, context, customer_id, user.customer_name)
     emails.after(background, purpose, emails.notify, context, customer_id, user_id, purpose, notice)
     return response
 
@@ -630,14 +643,3 @@ def _keep_signed_in(request: Request, context: AppContext, response: Response, v
     if claims is not None:
         renewed = dataclasses.replace(claims, session_version=version)
         set_session_cookie(response, renewed, context.settings, now=now)
-
-
-def _tell_admins(context: AppContext, customer_id: str, organisation: str) -> None:
-    """Waiting for your approval, to each admin, while email is on."""
-    if not emails.email_on(context):
-        return
-    with context.db.customer(customer_id) as conn:
-        admins = users_sql.admin_contacts(conn, customer_id)
-    link = f"{context.settings.app_url}/admin"
-    for email, name in admins:
-        emails.send(context, email, "approval_waiting", emails.connection_waiting(name, organisation, link))

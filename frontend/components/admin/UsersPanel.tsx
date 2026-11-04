@@ -19,7 +19,7 @@
 // section hides only on the server's 404 (no provider on); any other failure says so, with Try
 // again. Approving one another admin already decided (404) reloads the list.
 // #507: "Needs to connect Google" beside how someone signs in, while their role uses Google only
-// and they have no Google account that passes; Reset password says it disconnects Google too.
+// and they have no Google account that passes (googleTag: or that its domain is not checked yet); Reset password says it disconnects Google too.
 // Add a user says, under the role, that the person connects Google after choosing a password,
 // while Google sign-in is on for that role (the rules from Settings, read when the form opens).
 //
@@ -74,7 +74,7 @@ import {
   allowForeverQuestion,
   decideLabel,
   firstInvalidField,
-  GOOGLE_NEEDED,
+  googleTag,
   foreverControl,
   generatePassword,
   newUserDraft,
@@ -390,6 +390,7 @@ function UserRow({
       ? [{ label: "Disable", description: USER_MENU_HELP.disable, onSelect: () => setConfirming("disable"), destructive: true }]
       : []),
   ];
+  const tag = googleTag(user);
   return (
     <tr role="row">
       <td role="cell" className={styles.userCell}>
@@ -436,9 +437,9 @@ function UserRow({
       <td role="cell" data-label="Signs in with">
         <span className={styles.statusList}>
           {signsInWith(user.signs_in_with)}
-          {user.google_needed && (
+          {tag && (
             <span className="status-chip" data-tone="working">
-              {GOOGLE_NEEDED}
+              {tag}
             </span>
           )}
         </span>

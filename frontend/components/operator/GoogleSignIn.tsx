@@ -4,8 +4,10 @@
 // (OrgGoogleSignInDialog): follow the platform, On or Off, with what Off does; its admin's own
 // rules (the "Google only" roles and the company domains) shown read-only beside it. The
 // platform's default sits on the Timeout setup tab (PlatformGoogleSignIn). Every change asks
-// first in ConfirmDialog with a fresh code (step-up): it signs out the people who use Google
-// there. Off is the way back in for an organisation whose admins locked themselves out.
+// first in ConfirmDialog with a fresh code (step-up); it says the people who use Google there are
+// signed out only when the value in force changes, as the server does (#507 review). The dialog
+// shows the value in force, the server's switch included. Off is the way back in for an
+// organisation whose admins locked themselves out.
 
 import { useEffect, useState } from "react";
 import { ActionDialog } from "@/components/documents/ActionDialog";
@@ -50,14 +52,25 @@ export function rolesText(roles: readonly Role[]): string {
   return names.length > 0 ? names.join(", ") : "None";
 }
 
-/** One organisation's change: always asked first, always with a fresh code. */
-export function orgGoogleConfirm(org: Organisation, on: boolean | null, platformOn: boolean): Confirm {
+/** "In force: On.", or Off, the server's switch included: its own words when that is what turns it off. */
+export function inForceText(value: OrgGoogleSignIn): string {
+  const chosen = value.on ?? value.platform_on;
+  if (chosen && !value.effective) return "In force: Off. Google sign-in is off on this server.";
+  return `In force: ${onOff(value.effective)}.`;
+}
+
+/** One organisation's change: always asked first, always with a fresh code. Its people are signed
+ * out only when the organisation's value in force changes (the server's rule, its switch aside). */
+export function orgGoogleConfirm(org: Organisation, on: boolean | null, value: OrgGoogleSignIn): Confirm {
   const base = { stepUp: true, focusId: SAVE_ID, run: (code: string) => setOrgGoogleSignIn(org.id, on, code) };
+  const platformOn = value.platform_on;
+  const changes = (on ?? platformOn) !== (value.on ?? platformOn);
+  const signedOut = (words: string) => (changes ? ` ${words}` : "");
   if (on === null) {
     return {
       ...base,
       title: `Make ${org.name} follow the platform for Google sign-in?`,
-      effect: `${org.name} follows the platform's setting, now ${onOff(platformOn)}. If that turns Google sign-in on or off here, anyone with a connected Google account is signed out.`,
+      effect: `${org.name} follows the platform's setting, now ${onOff(platformOn)}.${signedOut("Anyone with a connected Google account is signed out.")}`,
       action: "Save",
       done: `${org.name} follows the platform for Google sign-in (${onOff(platformOn)}).`,
       danger: !platformOn,
@@ -67,7 +80,7 @@ export function orgGoogleConfirm(org: Organisation, on: boolean | null, platform
     ? {
         ...base,
         title: `Turn Google sign-in on for ${org.name}?`,
-        effect: `${org.name}'s people can sign in with Google, as its admin chose. Anyone with a connected Google account is signed out, and signs in again.`,
+        effect: `${org.name}'s people can sign in with Google, as its admin chose.${signedOut("Anyone with a connected Google account is signed out, and signs in again.")}`,
         action: "Turn on",
         done: `Google sign-in is on for ${org.name}.`,
         danger: false,
@@ -75,7 +88,7 @@ export function orgGoogleConfirm(org: Organisation, on: boolean | null, platform
     : {
         ...base,
         title: `Turn Google sign-in off for ${org.name}?`,
-        effect: `Everyone at ${org.name} signs in with their password, even where admins chose Google only. Connected accounts are kept. People signed in with Google are signed out.`,
+        effect: `Everyone at ${org.name} signs in with their password, even where admins chose Google only. Connected accounts are kept.${signedOut("People signed in with Google are signed out.")}`,
         action: "Turn off",
         done: `Google sign-in is off for ${org.name}.`,
         danger: true,
@@ -124,6 +137,7 @@ function ChoiceForm({ value, onSave }: { value: OrgGoogleSignIn; onSave(on: bool
           {OFF_HINT}
         </p>
       </fieldset>
+      <p className="hint">{inForceText(value)}</p>
       <p className="hint">Google only, set by its admin: {rolesText(value.google_only_roles)}.</p>
       <p className="hint">Company domains: {value.domains.length > 0 ? value.domains.join(", ") : "any"}.</p>
       <div>
@@ -171,7 +185,7 @@ export function OrgGoogleSignInDialog({ org, onClose, onDone }: { org: Organisat
             <ChoiceForm
               key={String(value.on)}
               value={value}
-              onSave={(on) => setChanging(orgGoogleConfirm(org, on, value.platform_on))}
+              onSave={(on) => setChanging(orgGoogleConfirm(org, on, value))}
             />
           )}
           <Toast message={done} onClose={() => setDone(null)} />

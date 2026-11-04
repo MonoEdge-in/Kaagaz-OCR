@@ -14,6 +14,9 @@ APPROVAL: schema and security configuration.
 * ``user_identities.hosted_domain``: Google's ``hd`` claim (lower case) when the account was
   connected or last signed in, kept only when Google verified the email (so a stored link passes
   the domains exactly when Google's own sign-in would); the app may update it (a column grant).
+  The app may also update ``email_at_link`` (#507 review): a Google sign-in refused for the
+  domains keeps Google's verified ``hd`` and email, so the password then opens the limited
+  session. The downgrade revokes that grant (the column stays).
 * ``kaagaz_op_google_signin`` (read: the organisation's own value, the platform's, and the
   organisation's "Google only" roles and domains) and ``kaagaz_op_set_google_signin`` (a fresh
   code, step-up): the operator's own functions, as 0040's. When the value in force changes,
@@ -190,7 +193,7 @@ UPGRADE = [
     f"GRANT UPDATE ({', '.join(RULES)}) ON customers TO {APP_ROLE}",
     "ALTER TABLE user_identities ADD COLUMN hosted_domain text NULL"
     " CONSTRAINT user_identities_hosted_domain_check CHECK (length(hosted_domain) BETWEEN 1 AND 253)",
-    f"GRANT UPDATE (hosted_domain) ON user_identities TO {APP_ROLE}",
+    f"GRANT UPDATE (hosted_domain, email_at_link) ON user_identities TO {APP_ROLE}",
     *[f"COMMENT ON COLUMN {column} IS {_literal(text)}" for column, text in COLUMN_COMMENTS.items()],
     *[
         statement
@@ -206,6 +209,7 @@ UPGRADE = [
 
 DOWNGRADE = [
     *[f"DROP FUNCTION IF EXISTS public.{signature}" for signature in FUNCTIONS],
+    f"REVOKE UPDATE (email_at_link) ON user_identities FROM {APP_ROLE}",
     "ALTER TABLE user_identities DROP COLUMN IF EXISTS hosted_domain",
     "ALTER TABLE customers DROP CONSTRAINT IF EXISTS customers_google_only_roles_check,"
     " DROP COLUMN IF EXISTS google_domains, DROP COLUMN IF EXISTS google_only_roles,"

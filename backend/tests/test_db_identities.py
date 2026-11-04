@@ -216,7 +216,8 @@ def test_email_belongs_to_other(db: Database) -> None:
 
 
 def test_hosted_domain_is_kept_on_add_and_refreshed_by_touch_used(db: Database) -> None:
-    """#507: the Google Workspace domain (``hd``) of the account, lower case; a sign-in refreshes it."""
+    """#507: the Google Workspace domain (``hd``) of the account (lower case already, from
+    ``kaagaz.api.oidc``); a sign-in refreshes it."""
     customer_id, user_id = new_customer(db)
     with db.customer(customer_id) as conn:
         identity_id = identities.add(
@@ -230,7 +231,7 @@ def test_hosted_domain_is_kept_on_add_and_refreshed_by_touch_used(db: Database) 
             approved=True,
             approved_by=None,
             now=NOW,
-            hosted_domain="SharmaTraders.com",
+            hosted_domain="sharmatraders.com",
         )
         stored = text("SELECT hosted_domain FROM user_identities WHERE id = :i")
         assert conn.execute(stored, {"i": identity_id}).scalar() == "sharmatraders.com"

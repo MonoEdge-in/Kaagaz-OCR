@@ -95,6 +95,21 @@ def record(
     )
 
 
+def recent(conn: Connection, customer_id: str, *, action: str, target_id: str, days: int) -> bool:
+    """A row of ``action`` about ``target_id`` in the last ``days`` (#507 review: a promotion's
+    re-approval). On audit_log_listing: O(this customer's rows in those days), for rare callers."""
+    return (
+        conn.execute(
+            text(
+                "SELECT 1 FROM audit_log WHERE customer_id = :c AND action = :a AND target_id = :t"
+                " AND created_at > now() - make_interval(days => :d) LIMIT 1"
+            ),
+            {"c": customer_id, "a": action, "t": target_id, "d": days},
+        ).first()
+        is not None
+    )
+
+
 def record_view(
     conn: Connection, customer_id: str, *, actor_user_id: str, document_id: str, via: str | None = None
 ) -> bool:

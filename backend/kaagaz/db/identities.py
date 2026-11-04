@@ -14,7 +14,9 @@ one connection of each provider: ``add`` turns either unique violation into
 ``IdentityTaken`` (``has_provider`` says which, by the key's constraint name), so two people
 connecting one account at the same moment get one winner and one refusal, never a 500.
 The email is stored in lower case, as a label only, and so is Google's ``hd`` (``hosted_domain``,
-#507): the organisation's domain rule reads both; a sign-in refreshes it (``touch_used``).
+#507, lower case from ``kaagaz.api.oidc``): the organisation's domain rule reads both; a sign-in
+refreshes ``hd`` (``touch_used``), and a Google sign-in refused for the domains, or still waiting,
+keeps Google's current ``hd`` and email (``keep_claims``, #507 review).
 
 Each call is one indexed statement: O(log n), except ``pending`` and ``providers_by_user``,
 which are O(connections of this customer).
@@ -108,7 +110,7 @@ def add(
                 "now": now,
                 "approved_at": now if approved else None,
                 "by": approved_by if approved else None,
-                "hd": None if hosted_domain is None else hosted_domain.lower(),
+                "hd": hosted_domain,
             },
         ).scalar_one()
     except IntegrityError as error:
@@ -212,11 +214,26 @@ def touch_used(
             "UPDATE user_identities SET last_used_at = :now, hosted_domain = :hd"
             " WHERE customer_id = :c AND id = :i"
         ),
+        {"c": customer_id, "i": identity_id, "now": now, "hd": hosted_domain},
+    )
+
+
+def keep_claims(
+    conn: Connection, customer_id: str, identity_id: str, *, hosted_domain: str | None, email: str | None
+) -> None:
+    """Google's ``hd`` and email now (#507 review), for a connection whose Google sign-in was refused
+    for the domains or still waits, so the stored link says what Google says. The caller passes
+    them only when Google verified the email."""
+    conn.execute(
+        text(
+            "UPDATE user_identities SET hosted_domain = :hd, email_at_link = :e"
+            " WHERE customer_id = :c AND id = :i"
+        ),
         {
             "c": customer_id,
             "i": identity_id,
-            "now": now,
-            "hd": None if hosted_domain is None else hosted_domain.lower(),
+            "hd": hosted_domain,
+            "e": None if email is None else email.lower(),
         },
     )
 

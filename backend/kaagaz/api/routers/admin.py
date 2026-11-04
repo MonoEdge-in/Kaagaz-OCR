@@ -61,13 +61,17 @@ replaced at once, in one transaction, audited ``settings.google_rules``). A save
 people with an approved connection of each role whose rules changed (every role when the domains
 did); the saver stays signed in. Making admins "Google only" needs the saver's own connection to
 pass the new domains, else 409 ``google_lockout`` (audited ``settings.google_rules_refused`` in its
-own transaction). Approving a connection refuses one's own (403 ``own_connection``), an
-organisation that is off (409 ``google_off``), a role that may not use Google (``role_refused``)
-and an account outside the domains (``domain_refused``). Promotion to admin puts the person's
-approved connections back to waiting (audited ``auth.identity_reapproval``; the admins are
-emailed), so another admin approves them again. The people list says ``google_needed`` (their
-role uses Google only, and no connection of theirs passes), and the invite says to connect Google
-while the new person's role uses it.
+own transaction) with its reason: ``no_link``, ``link_pending`` (it waits for another admin),
+``domain_unchecked`` (from before 0072: sign in with Google once) or ``outside_domains``.
+Approving a connection refuses one's own (403 ``own_connection``), an organisation that is off
+(409 ``google_off``), a role that may not use Google (``role_refused``), an account whose domain
+is not checked yet (``domain_unchecked``) and one outside the domains (``domain_refused``).
+Promotion to admin puts the person's approved connections back to waiting (audited
+``auth.identity_reapproval``; the admins are emailed), so another admin approves them again (a new
+connection within 30 days waits too, ``routers/oidc.py``). The people list says ``google_needed``
+(their role uses Google only, and no connection of theirs passes) and ``google_unchecked``, and so
+does every reply that may change them (a role change, Remove connected accounts, Reset password);
+the invite says to connect Google while the new person's role uses it.
 
 Why auto-filing is a setting here (feature 28, council 15 Oct 2026): the platform operator
 grants it, then the admin switches it on or off (``autofile_on``) in the same form as the
@@ -124,8 +128,11 @@ _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 RoleName = Literal["member", "reviewer", "admin"]
 PASSWORD_ONLY = ["password"]  # every account keeps its Kaagaz password (#457)
 ALREADY_BELONGS = "This Google account already belongs to a Kaagaz user."
-# #507: the org admin's Google rules, refused in plain words.
+# #507: the org admin's Google rules, refused in plain words (GOOGLE_OFF and ROLE_REFUSED: also
+# routers/oidc.py's).
 GOOGLE_OFF = "Google sign-in is off for your organisation."
+ROLE_REFUSED = "Your organisation doesn't use Google sign-in for this role."
+DOMAIN_UNCHECKED = "Sign in with Google once so Kaagaz can check its domain."
 ONLY_NOT_ALLOWED = "A role that uses Google only must also be allowed to use Google."
 BAD_DOMAIN = "Enter a domain like sharmatraders.com."
 PERSONAL_DOMAIN = "Gmail and other personal email domains can't be used. Enter your company's own domain."
@@ -133,6 +140,9 @@ TOO_MANY_DOMAINS = f"Add at most {google_rules.MAX_DOMAINS} domains."
 LOCKOUT = {
     "no_link": "Connect your own Google account first, in Account, Ways to sign in. Then you can make"
     " Google the only way in for admins.",
+    "link_pending": "Your Google account is waiting for another admin to approve it. Then you can make"
+    " Google the only way in for admins.",
+    "domain_unchecked": DOMAIN_UNCHECKED,
     "outside_domains": "Your own Google account isn't from these domains, so you'd be locked out. Add its"
     " domain, or connect one that is.",
 }
@@ -214,9 +224,10 @@ def _google_on(conn: Connection, context: AppContext, customer_id: str) -> googl
 def _people(
     conn: Connection, context: AppContext, customer_id: str, rows: Iterable[RowMapping]
 ) -> list[dict[str, Any]]:
-    """``admin_user`` with how each signs in and ``google_needed`` (#507): Google counts only while
-    it is on, for an allowed role, with a connection that passes the domains; a "Google only" role
-    with one no longer signs in with the password. One read of the rules and the connections."""
+    """``admin_user`` with how each signs in, ``google_needed`` and ``google_unchecked`` (#507):
+    Google counts only while it is on, for an allowed role, with a connection that passes the
+    domains; a "Google only" role with one no longer signs in with the password. One read of the
+    rules and the connections."""
     rules = _google_on(conn, context, customer_id)
     links: dict[str, list[google_rules.Link]] = {}
     for link in google_rules.links(conn, customer_id) if rules is not None else []:
@@ -233,7 +244,15 @@ def _people(
         )
         only = rules is not None and role in rules.only_roles
         ways = ([] if only and passes else PASSWORD_ONLY) + (["google"] if passes else [])
-        people.append(admin_user(row, now=now, signs_in_with=ways, google_needed=only and not passes))
+        needed = only and not passes
+        unchecked = (
+            needed
+            and rules is not None
+            and any(link.status == "approved" and link.unchecked(rules.domains) for link in mine)
+        )
+        people.append(
+            admin_user(row, now=now, signs_in_with=ways, google_needed=needed, google_unchecked=unchecked)
+        )
     return people
 
 
@@ -336,22 +355,23 @@ def update_user(
         reapproved = google_rules.reapprove(conn, user.customer_id, target) if promoted else []
         for identity in reapproved:
             _audit_identity(conn, user, "auth.identity_reapproval", {**identity, "user_id": target})
+        [reply] = _people(conn, context, user.customer_id, [row])  # the role may change the tag
     if reapproved:
         emails.after(
             background,
             "approval_waiting",
-            _tell_admins,
+            tell_admins,
             context,
             user.customer_id,
             user.customer_name,
             row["email"],
         )
-    return admin_user(row, now=context.clock())
+    return reply
 
 
-def _tell_admins(context: AppContext, customer_id: str, organisation: str, but: str) -> None:
-    """Waiting for your approval, to each admin but ``but`` (the e-mail of the one promoted), while
-    email is on."""
+def tell_admins(context: AppContext, customer_id: str, organisation: str, but: str | None = None) -> None:
+    """Waiting for your approval, to each admin but ``but`` (the e-mail of one promoted), while
+    email is on. Also ``routers/oidc.py``'s, for a connection that waits."""
     if not email_on(context):
         return
     with context.db.customer(customer_id) as conn:
@@ -396,7 +416,7 @@ def reset_password(user_id: uuid.UUID, user: AdminSession, context: Context) -> 
         _audit_user(conn, user, "user.reset_password", target)
         identities.remove_all(conn, user.customer_id, target)  # #457: resetting a user clears them
         links_sql.void_all(conn, user.customer_id, target, now=context.clock())
-    reply = admin_user(row, now=context.clock(), signs_in_with=PASSWORD_ONLY)
+        [reply] = _people(conn, context, user.customer_id, [row])  # no connection now: the tag may change
     return {"user": reply, "temporary_password": temporary}
 
 
@@ -532,9 +552,9 @@ def _approvable(conn: Connection, context: AppContext, customer_id: str, identit
     if rules is None:
         raise ApiError(409, "google_off", GOOGLE_OFF)
     if link.role not in rules.allowed_roles:
-        raise ApiError(
-            409, "role_refused", "Your organisation doesn't use Google sign-in for this person's role."
-        )
+        raise ApiError(409, "role_refused", ROLE_REFUSED)
+    if link.unchecked(rules.domains):  # from before 0072: their Google sign-in checks it (#507 review)
+        raise ApiError(409, "domain_unchecked", DOMAIN_UNCHECKED)
     if not google_rules.domain_ok(rules.domains, link.hosted_domain, link.email_at_link):
         raise ApiError(409, "domain_refused", "This Google account isn't from your organisation's domains.")
 
@@ -583,11 +603,12 @@ def remove_connections(
                 details={"count": count},
             )
         row = next(row for row in users_sql.list_users(conn, user.customer_id) if str(row["id"]) == target)
+        [reply] = _people(conn, context, user.customer_id, [row])  # no connection now: the tag may change
     if count:
         who = (context, user.customer_id, target)
         notice = emails.google_disconnected
         emails.after(background, "identity_unlinked", emails.notify, *who, "identity_unlinked", notice)
-    return admin_user(row, now=context.clock(), signs_in_with=PASSWORD_ONLY)
+    return reply
 
 
 def _audit_identity(
@@ -632,21 +653,19 @@ def _settings_json(row: RowMapping, context: AppContext, google: dict[str, Any] 
 
 
 def _google_json(conn: Connection, context: AppContext, user: CurrentUser) -> dict[str, Any] | None:
-    """#507's ``google``: whether Google sign-in is on for the organisation (``available``), its
-    rules, and whether the admin's own connection passes them. None (left out) while the server's
-    Google sign-in is off, as ``auto_approve_connections``."""
+    """#507's ``google``: whether Google sign-in is on for the organisation (``available``) and its
+    rules. None (left out) while the server's Google sign-in is off, as
+    ``auto_approve_connections``."""
     if not oidc.enabled(context.settings, "google"):
         return None
     rules = google_rules.rules(conn, user.customer_id)
     if rules is None:
         return None
-    mine = google_rules.links(conn, user.customer_id, user_id=user.user_id)
     return {
         "available": rules.on,
         "allowed_roles": list(rules.allowed_roles),
         "only_roles": list(rules.only_roles),
         "domains": list(rules.domains),
-        "my_link_ok": any(link.passes(rules.domains) for link in mine),
     }
 
 
@@ -686,7 +705,8 @@ def _save_google(
     conn: Connection, context: AppContext, user: CurrentUser, wanted: tuple[list[str], list[str], list[str]]
 ) -> None:
     """Replace the rules (in the caller's transaction): 409 while Google is off, ``_Lockout`` when
-    admins would be "Google only" and the saver's own connection doesn't pass the new domains.
+    admins would be "Google only" and the saver has no approved connection that passes the new
+    domains (why: none, one waiting, one not checked yet, or one outside).
     Signs out the people with an approved connection of each role whose rules changed (every role
     when the domains did), the saver kept. Nothing changed: nothing written, nothing audited."""
     allowed, only, domains = wanted
@@ -694,15 +714,13 @@ def _save_google(
     if rules is None:
         raise ApiError(409, "google_off", GOOGLE_OFF)
     if "admin" in only:
-        approved = [
-            link
-            for link in google_rules.links(conn, user.customer_id, user_id=user.user_id)
-            if link.status == "approved"
-        ]
+        mine = google_rules.links(conn, user.customer_id, user_id=user.user_id)
+        approved = [link for link in mine if link.status == "approved"]
         if not approved:
-            raise _Lockout("no_link")
+            raise _Lockout("link_pending" if mine else "no_link")
         if not any(link.passes(domains) for link in approved):
-            raise _Lockout("outside_domains")
+            unchecked = any(link.unchecked(domains) for link in approved)
+            raise _Lockout("domain_unchecked" if unchecked else "outside_domains")
     if (tuple(allowed), tuple(only), tuple(domains)) == (
         rules.allowed_roles,
         rules.only_roles,

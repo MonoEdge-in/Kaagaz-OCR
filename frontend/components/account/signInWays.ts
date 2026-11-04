@@ -11,6 +11,10 @@ export const TITLE = "Ways to sign in";
 export const WAITING = "Waiting for your admin's approval";
 /** #507: the banner of a session that may only connect Google (me.user.google_link_required). */
 export const LINK_REQUIRED = "Your organisation asks you to sign in with Google. Connect your Google account to continue.";
+/** #507 review: the same session, when the connected Google account is from before its domain could
+ * be checked (me.user.google_unchecked): connecting again is refused, one Google sign-in checks it.
+ * People's tag for that person says the same. */
+export const DOMAIN_UNCHECKED = "Sign in with Google once so Kaagaz can check its domain.";
 
 const NAMES: Record<string, string> = { google: "Google" };
 

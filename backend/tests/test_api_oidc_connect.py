@@ -17,7 +17,7 @@ from kaagaz.api.middleware import RateLimiter
 from kaagaz.api.routers import oidc as oidc_router
 from kaagaz.db import identities
 from kaagaz.db.engine import Database
-from tests.oidc_fake import FakeGoogle, google_settings, use_google
+from tests.oidc_fake import ISSUER, FakeGoogle, google_settings, use_google
 from tests.settings_factory import make_settings
 from tests.test_api_email import BrokenMailer, FailingMailer
 from tests.test_api_support import ANY_ID, CSRF, PASSWORD, Api, Signed, TestClient, wrong_code
@@ -195,6 +195,62 @@ def test_admin_own_connection_is_approved(db: Database, google: FakeGoogle) -> N
     reply = _connect(api, google, admin, code=_admin_code(api, admin))
     assert _landed(reply) == {"connected": "google"}
     assert _mine(api, admin) == [("google", "ramesh.k@gmail.com", "approved")]
+
+
+def test_a_new_admin_cant_skip_the_reapproval_by_connecting_again(db: Database, google: FakeGoogle) -> None:
+    """#507 review: promotion puts the connection back to waiting. Cancelling it and connecting
+    again is not approved at once (an admin's own, the same email, auto-approval) for 30 days
+    after the ``auth.identity_reapproval``: another admin approves it."""
+    api = _api(db)
+    first = api.new_admin()
+    customer = first.customer_id
+    member = api.enrol_user(customer, "member")
+    with db.customer(customer) as conn:
+        identities.add(
+            conn,
+            customer,
+            member.user_id,
+            provider="google",
+            issuer=ISSUER,
+            subject=_subject(),
+            email=member.email,
+            approved=True,
+            approved_by=None,
+            now=api.clock(),
+        )
+        conn.execute(
+            text("UPDATE customers SET auto_approve_connections = true WHERE id = :c"), {"c": customer}
+        )
+    promoted = first.client.patch(f"/api/admin/users/{member.user_id}", json={"role": "admin"}, headers=CSRF)
+    assert promoted.status_code == 200, promoted.text
+    client = api.client()
+    assert api.admin_login(client, member.email, code=api.code(member.secret)).status_code == 200
+    signed = Signed(client, customer, member.user_id, member.email, "admin", member.secret)
+    [waiting] = client.get("/api/auth/identities").json()["identities"]
+    cancelled = client.post(f"/api/auth/identities/{waiting['id']}/remove", json={}, headers=CSRF)
+    assert cancelled.status_code == 200, cancelled.text
+
+    reply = _connect(api, google, signed, member.email, code=_admin_code(api, signed))
+    assert _landed(reply) == {"waiting": "google"}
+    assert _mine(api, signed) == [("google", member.email, "pending")]
+    [again] = first.client.get("/api/admin/identities").json()["items"]
+    assert first.client.post(f"/api/admin/identities/{again['id']}/approve", headers=CSRF).status_code == 200
+
+    with db.engine.begin() as conn:  # 31 days pass (the owner: the app can't change the log)
+        conn.execute(
+            text(
+                "UPDATE audit_log SET created_at = created_at - interval '31 days'"
+                " WHERE customer_id = :c AND action = 'auth.identity_reapproval'"
+            ),
+            {"c": customer},
+        )
+    [mine] = client.get("/api/auth/identities").json()["identities"]
+    body = {"password": PASSWORD}
+    assert (
+        client.post(f"/api/auth/identities/{mine['id']}/remove", json=body, headers=CSRF).status_code == 200
+    )
+    reply = _connect(api, google, signed, member.email, code=_admin_code(api, signed))
+    assert _landed(reply) == {"connected": "google"}
 
 
 # --- one outside account, one Kaagaz user -------------------------------------------------------

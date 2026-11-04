@@ -899,7 +899,9 @@ def me_json(
     /auth/me and /auth/session read them, every other reply leaves the list empty).
     ``providers``: those switched on (``oidc.enabled_providers``), so Account shows "Ways to
     sign in" only while one is. ``google_link_required`` (#507): the limited session, whose
-    password lets the user only connect Google."""
+    password lets the user only connect Google; ``google_unchecked`` (#507 review): in it, their
+    connected Google account is from before its domain was checked, so they sign in with Google
+    once instead."""
     return {
         "user": {
             "id": user.user_id,
@@ -914,6 +916,7 @@ def me_json(
             "can_delete_forever": user.delete_forever_allowed and user.role != "admin",  # the grant
             "email_confirmed": user.email_confirmed or not email_on,
             "google_link_required": needs_google_link(user, "google" in providers),
+            "google_unchecked": needs_google_link(user, "google" in providers) and user.google_unchecked,
         },
         "customer": {"id": user.customer_id, "name": user.customer_name},
         "session": {"scope": user.scope},
@@ -928,16 +931,22 @@ def admin_user(
     now: datetime,
     signs_in_with: Sequence[str] | None = None,
     google_needed: bool | None = None,
+    google_unchecked: bool = False,
 ) -> dict[str, Any]:
     """``AdminUser``. ``locked_until`` is null once the lock has passed, so the
     screen never shows a lock that no longer holds. ``signs_in_with`` (#457 phase 1:
     "password" and each approved provider) only where the reply knows it: the list, and the
     replies that removed connections; the screen keeps what it had otherwise. ``google_needed``
-    (#507: their role uses Google only and they have no connection that passes) likewise."""
+    (#507: their role uses Google only and they have no connection that passes) likewise, with
+    ``google_unchecked`` (#507 review: their connection's domain is not checked yet)."""
     locked_until: datetime | None = row["locked_until"]
     return {
         **({} if signs_in_with is None else {"signs_in_with": list(signs_in_with)}),
-        **({} if google_needed is None else {"google_needed": google_needed}),
+        **(
+            {}
+            if google_needed is None
+            else {"google_needed": google_needed, "google_unchecked": google_unchecked}
+        ),
         "id": str(row["id"]),
         "email": row["email"],
         "display_name": row["display_name"],

@@ -47,7 +47,8 @@
 * ``POST /auth/confirm-password`` {password}: only for a member or reviewer an
   admin allowed to delete forever; the password, counted like a sign-in, then a
   5-minute confirm cookie (kaagaz/api/auth.py) for Delete forever. 204.
-* ``POST /auth/logout``, ``POST /auth/logout-everywhere``, ``GET /auth/me``.
+* ``POST /auth/logout``, ``POST /auth/logout-everywhere`` (the limited session too, #507
+  review), ``GET /auth/me``.
 * ``GET /auth/session`` (issue 378): the app's first look, 200 either way: ``{signed_in:
   false, providers}`` with no session (one ``/auth/me`` would refuse with 401; ``providers``:
   those switched on, #457), else ``{signed_in: true, me}``, the same checks and reply as
@@ -120,6 +121,7 @@ from kaagaz.api.auth import (
     CurrentUser,
     SessionClaims,
     User,
+    UserAllowGoogleLink,
     UserAllowPasswordChange,
     clear_session_cookie,
     current_user_allow_password_change,
@@ -452,7 +454,7 @@ def logout(user: UserAllowPasswordChange, context: Context) -> Response:
 
 
 @router.post("/auth/logout-everywhere", status_code=204)
-def logout_everywhere(user: User, context: Context) -> Response:
+def logout_everywhere(user: UserAllowGoogleLink, context: Context) -> Response:  # also the limited session
     with context.db.customer(user.customer_id) as conn:
         users_sql.bump_session_version(conn, user.customer_id, user.user_id)
         _record(conn, user.customer_id, "auth.logout_everywhere", actor=user.user_id, target=user.user_id)
