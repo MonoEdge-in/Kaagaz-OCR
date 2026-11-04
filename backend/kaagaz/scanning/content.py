@@ -148,8 +148,14 @@ _ENDS_A_DICTIONARY_PART = frozenset({b"stream", b"endobj", b"obj"})
 #   len // _BYTES_PER_OBJECT + _SPARE_OBJECT_IDS is not walked past that: the repair walk
 #   (O(file size)) looks at every object the file can actually hold instead;
 # * pdfminer may read the file's bytes at most _READ_FACTOR times over, plus
-#   _READ_PER_OBJECT (two of its 4 KiB buffers) for each object it is asked for, those
-#   grants adding up to at most _MAX_GRANT_BYTES;
+#   _READ_PER_OBJECT for each object it is asked for, those grants adding up to at most
+#   _MAX_GRANT_BYTES. A grant is what pdfminer re-reads around one object whatever its
+#   size: every seek drops its buffer and fills a whole one again (PSBaseParser.BUFSIZ), and
+#   a stream object takes four (its header, the "stream" line, the "endstream" line, then
+#   the token after), its data aside. Two buffers were granted until 4 Nov 2026, so a 10 KB
+#   golden file of 20 one-line pages read ~74x its size and was refused as unscannable (the
+#   likely cause of a sale deed refused on the test server). The ceiling is unchanged, so a hostile
+#   file can still read at most _READ_FACTOR x its size + _MAX_GRANT_BYTES in all;
 # * everything pdfminer decompresses during the check (Flate, LZW, run length) adds up
 #   to at most _MAX_DECODED_BYTES; a CCITT fax stream is never decoded here (no index or
 #   object stream uses one);
@@ -158,7 +164,7 @@ _ENDS_A_DICTIONARY_PART = frozenset({b"stream", b"endobj", b"obj"})
 _BYTES_PER_OBJECT = 8
 _SPARE_OBJECT_IDS = 1000
 _READ_FACTOR = 4
-_READ_PER_OBJECT = 8192
+_READ_PER_OBJECT = 4 * PSBaseParser.BUFSIZ  # 16 KiB
 _MAX_GRANT_BYTES = 16 * 1024 * 1024
 _MAX_DECODED_BYTES = 64 * 1024 * 1024
 _DEADLINE_SECONDS = 20.0

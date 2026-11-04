@@ -16,3 +16,8 @@ shellingham==1.5.4  # ISC
 toml==0.10.2
 tqdm==4.70.1  # MPL-2.0 AND MIT
 typer==0.27.2
+
+# pdfminer.six, already a dependency (PDF content inspection, kaagaz/scanning/content.py),
+# pinned to the version the content check's read budget was measured on (4 Nov 2026): a
+# new pdfminer can read a file differently and refuse ordinary PDFs as unscannable.
+pdfminer.six==20260107
