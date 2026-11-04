@@ -522,6 +522,10 @@ describe("ultra low cost: never on an organisation admin's or member's screen", 
       (path) => !path.startsWith("components/operator/") && path !== "lib/types.ts",
     );
     expect(outside.length).toBeGreaterThan(50);
-    for (const path of outside) expect(read(path), path).not.toMatch(/ultra[ _]low|ulc_|ULC_|ceiling_paise/i);
+    // The ledger's kind name may be a key of the usage words; what it shows is pinned in admin-usage.test.ts.
+    const kindKey = /^\s*ulc_scan: "Reading scanned pages",.*$/m;
+    for (const path of outside) {
+      expect(read(path).replace(kindKey, ""), path).not.toMatch(/ultra[ _]low|ulc_|ULC_|ceiling_paise/i);
+    }
   });
 });
