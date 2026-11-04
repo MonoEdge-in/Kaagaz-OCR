@@ -14,6 +14,7 @@ import { FolderReadingDialog, FolderUploadDialog, clashOf, dialogProblem, summar
 import { FolderUploadRow } from "@/components/documents/FolderUploadRow";
 import { buildTree } from "@/components/documents/folderTree";
 import { EMPTY_FOLDER_UPLOADS, folderUploadsReducer } from "@/components/documents/folderUpload";
+import type { NotSentRow } from "@/components/documents/FolderUploadRow";
 import type { FolderUploadLimits, Folder } from "@/lib/types";
 
 const LIMITS: FolderUploadLimits = {
@@ -144,7 +145,7 @@ describe("the dialog", () => {
 });
 
 describe("the tray's row for a folder upload", () => {
-  const row = (phase: "planning" | "registering" | "sending" | "stopping" | "needs_pick" | "stopped", held = true) => {
+  const row = (phase: "planning" | "registering" | "sending" | "stopping" | "needs_pick" | "stopped", held = true, notSent: { rows: NotSentRow[]; total: number } = { rows: [], total: 0 }) => {
     let state = folderUploadsReducer(EMPTY_FOLDER_UPLOADS, { type: "start", id: "u", rootName: "A", total: 5000 });
     if (phase === "stopping") state = folderUploadsReducer(state, { type: "phase", id: "u", phase: "sending" });
     state = folderUploadsReducer(state, { type: "phase", id: "u", phase });
@@ -153,7 +154,7 @@ describe("the tray's row for a folder upload", () => {
       createElement(FolderUploadRow, {
         view: state.u!,
         held,
-        notSent: { rows: [], total: 0 },
+        notSent,
         tree: buildTree([]),
         limits: { pdf_bytes: 1, image_bytes: 1, sheet_bytes: 1, max_pages: 1, readers: [] },
         actions: {
@@ -173,7 +174,7 @@ describe("the tray's row for a folder upload", () => {
     const html = row("sending");
     expect(html).toContain('aria-valuetext="1,240 of 5,000"');
     expect(html).toContain("Folder “A”: 1,240 of 5,000 uploaded");
-    expect(html).toContain(">Stop<");
+    expect(html).toContain(">Stop<span"); // changed on purpose (production QA): Stop names the folder
   });
 
   it("says on a file being sent that it waits for the connection", () => {
@@ -204,8 +205,17 @@ describe("the tray's row for a folder upload", () => {
   });
 
   it("offers Stop while it makes its folders and lists its files too", () => {
-    expect(row("planning")).toContain(">Stop<");
-    expect(row("registering")).toContain(">Stop<");
+    expect(row("planning")).toContain(">Stop<span");
+    expect(row("registering")).toContain(">Stop<span");
+  });
+
+  it("names the folder on each of its buttons for a screen reader", () => {
+    const named = '<span class="visually-hidden"> folder “A”</span>';
+    expect(row("sending")).toContain(`Stop${named}`);
+    expect(row("stopping")).toContain(`Stopping after the files being sent…${named}`);
+    expect(row("stopped", true)).toContain(`Continue upload${named}`);
+    const item = { id: "i1", seq: 0, path_key: "k", name: "a.pdf", folder_id: "f0", size: 1, state: "waiting" as const, failure_code: null, document_id: null, document: null };
+    expect(row("stopped", true, { rows: [{ item, message: "Not sent.", retry: true }], total: 1 })).toContain(`Retry all failed${named}`);
   });
 
   it("after a reload names the folder to choose again; stopped here, it continues with the files it holds", () => {
@@ -223,8 +233,8 @@ describe("the tray's row for a folder upload", () => {
 
   it("says it is stopping after Stop, with no Stop or Retry, until the files being sent are in", () => {
     const html = row("stopping");
-    expect(html).toContain("<button type=\"button\" class=\"btn\" disabled=\"\">Stopping after the files being sent…</button>");
-    expect(html).not.toContain(">Stop<");
+    expect(html).toContain("<button type=\"button\" class=\"btn\" disabled=\"\">Stopping after the files being sent…");
+    expect(html).not.toContain(">Stop<span");
     expect(html).not.toContain("Retry");
     expect(html).not.toContain("Clear<span");
   });
