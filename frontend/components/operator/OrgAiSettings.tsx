@@ -654,7 +654,7 @@ export function AiFields(props: {
                       type="number"
                       inputMode="decimal"
                       min="0.20"
-                      max="0.40"
+                      max="0.55"
                       step="0.01"
                       placeholder={
                         platform ? `The server's setting (${ceilingText(ULC_CEILING_PAISE)})` : `Platform default (${from("ulc_ceiling_paise")})`

@@ -160,7 +160,7 @@ document's ``version`` names the Mistral model. The page cache, the ledger and a
 are the client's (``MistralClient.read_page``); this module never imports it, so the two never
 import each other.
 
-**Ultra low cost** (#488, Tushar, 4 Nov 2026: a page never costs more than ₹0.20 to ₹0.40). A
+**Ultra low cost** (#488, Tushar, 4 Nov 2026: a page never costs more than ₹0.20 to ₹0.55). A
 document whose ``DocumentPages.ulc`` is set has each page read once by its model in the compact
 reply (``kaagaz.reading.compact``: INSTRUCTION_COMPACT, COMPACT_SCHEMA; a g3 reply spends about
 88% of its paid output on JSON), always at ULC_THINKING (minimal: never NO_THINKING, which leaves

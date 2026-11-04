@@ -192,12 +192,12 @@ export const ULC_NO_MODEL = "No model can be used yet. Ask for the model list to
 export const ulcModelText = (model: OperatorModel) => (model.ulc_ready ? model.name : `${model.name} (not available: ${model.ulc_why})`);
 /** Ultra low cost reads with ``id``: it is ticked and made the default scan model. */
 export const ulcModelPicked = (draft: AiDraft, id: string): AiDraft => ({ ...toggled(draft, "scan", id, true), scan_default: id });
-// The ceiling (#488): the most one read of a page may cost, ₹0.20 to ₹0.40, sent in paise.
+// The ceiling (#488): the most one read of a page may cost, ₹0.20 to ₹0.55 (0073), sent in paise.
 export const CEILING_LABEL = "Most a page may cost";
 export const CEILING_HINT =
-  "From ₹0.20 to ₹0.40. A page that would cost more is read by Kaagaz's own reader instead and marked for a check.";
+  "From ₹0.20 to ₹0.55. A page that would cost more is read by Kaagaz's own reader instead and marked for a check.";
 export const ULC_CEILING_PAISE = 40; // the server's when nothing is set
-const [MIN_CEILING_PAISE, MAX_CEILING_PAISE] = [20, 40];
+const [MIN_CEILING_PAISE, MAX_CEILING_PAISE] = [20, 55]; // the server's ULC_CEILING_PAISE
 export const MISTRAL_NOT_SET_UP = "Mistral OCR (not set up on this server)";
 export const MISTRAL_MISSING: Record<"key" | "zdr", string> = {
   key: "Mistral can't be chosen yet: the server has no Mistral key.",
@@ -414,7 +414,7 @@ export function parseDailyPages(text: string): number | null | undefined {
   return value >= 1 && value <= MAX_PAGES_A_DAY ? value : undefined;
 }
 
-/** The ceiling in paise (#488), null to follow, or undefined when it is not ₹0.20 to ₹0.40. */
+/** The ceiling in paise (#488), null to follow, or undefined when it is not ₹0.20 to ₹0.55. */
 export function parseCeiling(text: string): number | null | undefined {
   const trimmed = text.trim();
   if (trimmed === "") return null;

@@ -581,7 +581,7 @@ def as_page_engine(engine: OcrEngine) -> PageEngine:
 @dataclass(frozen=True, slots=True)
 class UlcCeiling:
     """#488: the most one read of a page may cost under Ultra low cost: ``paise`` as the super
-    admin set it (20 to 40), and the same in US dollars (``usd``, at INR_PER_USD), which every
+    admin set it (20 to 55), and the same in US dollars (``usd``, at INR_PER_USD), which every
     call made for the read is held under. "Read again" is a new read, with its own ceiling.
     ``kaagaz.db.models.ulc_ceiling`` makes one."""
 

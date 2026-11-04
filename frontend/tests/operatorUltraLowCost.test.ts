@@ -262,10 +262,10 @@ describe("ultra low cost: the ceiling field", () => {
     expect(html.indexOf(`id="${ID}"`)).toBeGreaterThan(html.indexOf('id="ai-scan-reader"'));
     expect(html.indexOf(`id="${ID}"`)).toBeLessThan(html.search(/<h3[^>]*>First read<\/h3>/));
     const input = inputOf(html, ID);
-    for (const part of ['type="number"', 'inputMode="decimal"', 'min="0.20"', 'max="0.40"', 'step="0.01"', 'placeholder="Platform default (₹0.40)"'])
+    for (const part of ['type="number"', 'inputMode="decimal"', 'min="0.20"', 'max="0.55"', 'step="0.01"', 'placeholder="Platform default (₹0.40)"'])
       expect(input, part).toContain(part);
     expect(CEILING_HINT).toBe(
-      "From ₹0.20 to ₹0.40. A page that would cost more is read by Kaagaz's own reader instead and marked for a check.",
+      "From ₹0.20 to ₹0.55. A page that would cost more is read by Kaagaz's own reader instead and marked for a check.",
     );
     expect(html).toContain(`<span id="${ID}-hint" class="hint">${escaped(CEILING_HINT)}</span>`);
     expect(describedByOf(html, "input", ID)).toBe(`${ID}-origin ${ID}-hint`);
@@ -295,8 +295,8 @@ describe("ultra low cost: the ceiling field", () => {
   });
 
   it("is typed in rupees and sent in paise, empty following", () => {
-    expect([parseCeiling(""), parseCeiling(" 0.30 "), parseCeiling("0.2"), parseCeiling("0.40"), parseCeiling(".25")]).toEqual([null, 30, 20, 40, 25]);
-    for (const bad of ["0.19", "0.41", "1", "abc", "0.255", "-0.3"]) expect(parseCeiling(bad), bad).toBeUndefined();
+    expect([parseCeiling(""), parseCeiling(" 0.30 "), parseCeiling("0.2"), parseCeiling("0.40"), parseCeiling(".25"), parseCeiling("0.55")]).toEqual([null, 30, 20, 40, 25, 55]);
+    for (const bad of ["0.19", "0.56", "1", "abc", "0.255", "-0.3"]) expect(parseCeiling(bad), bad).toBeUndefined();
     const own = values({ scan_reader: "ultra_low_cost", ulc_ceiling_paise: 35 });
     expect(aiBody(draftOf(own))).toEqual(own);
     expect(aiBody({ ...draftOf(ULC), ulc_ceiling: "0.2" }).ulc_ceiling_paise).toBe(20);
@@ -304,12 +304,12 @@ describe("ultra low cost: the ceiling field", () => {
   });
 
   it("checks the range before Save, next to the field, and focuses it first", () => {
-    expect(CEILING_RANGE).toBe("Choose from ₹0.20 to ₹0.40 a page, or leave it empty."); // the server's words (#488 review)
-    const errors = aiErrors({ ...draftOf(ULC), ulc_ceiling: "0.5" }, false, "ultra_low_cost");
+    expect(CEILING_RANGE).toBe("Choose from ₹0.20 to ₹0.55 a page, or leave it empty."); // the server's words (#488 review)
+    const errors = aiErrors({ ...draftOf(ULC), ulc_ceiling: "0.56" }, false, "ultra_low_cost");
     expect(errors).toEqual({ ulc_ceiling_paise: CEILING_RANGE });
-    expect(aiErrors({ ...draftOf(ULC), ulc_ceiling: "0.5" }, true, "ultra_low_cost")).toEqual({ ulc_ceiling_paise: CEILING_RANGE, chat_levels: "Tick at least one thinking level." });
+    expect(aiErrors({ ...draftOf(ULC), ulc_ceiling: "0.56" }, true, "ultra_low_cost")).toEqual({ ulc_ceiling_paise: CEILING_RANGE, chat_levels: "Tick at least one thinking level." });
     expect(firstProblem({ ulc_ceiling_paise: CEILING_RANGE, scan_models: "x" })).toBe("ulc_ceiling_paise");
-    const html = fields({ own: ULC, draft: { ...draftOf(ULC), ulc_ceiling: "0.5" }, errors });
+    const html = fields({ own: ULC, draft: { ...draftOf(ULC), ulc_ceiling: "0.56" }, errors });
     expect(html).toContain(`<span id="${ID}-error" class="error-text" role="alert">${CEILING_RANGE}</span>`);
     expect(inputOf(html, ID)).toContain('aria-invalid="true"');
     expect(describedByOf(html, "input", ID)).toBe(`${ID}-error ${ID}-origin ${ID}-hint`);
@@ -329,7 +329,7 @@ describe("ultra low cost: the ceiling field", () => {
 
 describe("ultra low cost: the server's refusals", () => {
   it("says the ceiling's range next to the field, in the server's words", () => {
-    const caught = new ApiError(400, "ceiling_out_of_range", "Choose from ₹0.20 to ₹0.40 a page, or leave it empty.");
+    const caught = new ApiError(400, "ceiling_out_of_range", "Choose from ₹0.20 to ₹0.55 a page, or leave it empty.");
     expect(REFUSALS.ceiling_out_of_range).toBe(caught.message);
     expect(refusalOf(caught)).toEqual({ field: "ulc_ceiling_paise", message: caught.message });
   });

@@ -46,7 +46,7 @@ well, else the code's (OPENROUTER, DEFAULT_MISTRAL_MODEL), and ride on the ``Rea
 Mistral organisation never gets Ensemble (``resolve_ensemble``): what is chosen is what reads.
 
 Ultra low cost (#488, Tushar, 4 Nov 2026; 0070): a third ``scan_reader``, ULTRA_LOW_COST, with
-its ceiling a page (``ulc_ceiling_paise``, 20 to 40; None: ULC_DEFAULT_PAISE), inheriting as the
+its ceiling a page (``ulc_ceiling_paise``, 20 to 55 (0073); None: ULC_DEFAULT_PAISE), inheriting as the
 rest. While it reads, ``resolve_scan`` and ``scope_reading`` give ``_ulc_reading``'s ``Reading``:
 single, the default Gemini model with a known price as lead (else OCR_MODEL), minimal thinking,
 the ceiling in dollars (``Reading.ulc``) and the note ``ultra_low_cost``, whatever the document
@@ -102,7 +102,7 @@ SCAN_COST_FIELDS = (
 )
 # #488 (0070): Ultra low cost, the third scan reader, and its ceiling a page in paise.
 ULTRA_LOW_COST = "ultra_low_cost"
-ULC_CEILING_PAISE = (20, 40)  # the lowest and the highest (0070's CHECK)
+ULC_CEILING_PAISE = (20, 55)  # the lowest and the highest (0073's CHECK; 0070: 20 to 40)
 ULC_DEFAULT_PAISE = 40  # None saved anywhere
 # shortcut: a fixed rate; make it a platform setting if the rupee moves.
 INR_PER_USD = 88  # frontend/components/operator/models.ts INR_PER_USD

@@ -31,7 +31,7 @@ NOT_IN_CATALOGUE = make_settings(ocr_model="google/not-in-the-catalogue")  # OCR
 PLATFORM_BODY = {**FOLLOWS_DEFAULTS, "chat_levels": ["low"], "chat_default_level": "low", "dynamic": False}
 CEILING = {
     "code": "ceiling_out_of_range",
-    "message": "Choose from ₹0.20 to ₹0.40 a page, or leave it empty.",
+    "message": "Choose from ₹0.20 to ₹0.55 a page, or leave it empty.",  # Changed on purpose (#488, 0073)
 }
 NEEDS_GEMINI = {
     "code": "ulc_needs_gemini",
@@ -72,7 +72,7 @@ def _document(db: Database, customer: str) -> str:
 # --- the saves ----------------------------------------------------------------------------
 
 
-def test_a_ceiling_outside_20_to_40_paise_is_refused_before_a_code_is_used(
+def test_a_ceiling_outside_20_to_55_paise_is_refused_before_a_code_is_used(
     db: Database, platform: str
 ) -> None:
     api = Api(db)
@@ -82,7 +82,7 @@ def test_a_ceiling_outside_20_to_40_paise_is_refused_before_a_code_is_used(
         (f"/api/operator/orgs/{customer}/ai", ORG_BODY),
         ("/api/operator/ai-defaults", PLATFORM_BODY),
     ):
-        for bad in (0, 19, 41, 4000):
+        for bad in (0, 19, 56, 4000):  # Changed on purpose (#488, 0073): up to 55
             refused = client.put(
                 path, json={**body, "ulc_ceiling_paise": bad, "code": "000000"}, headers=CSRF
             )
@@ -98,6 +98,11 @@ def test_a_ceiling_outside_20_to_40_paise_is_refused_before_a_code_is_used(
     assert saved.status_code == 200, saved.text  # a ceiling may be kept while Gemini reads
     got = client.get(f"/api/operator/orgs/{customer}/ai").json()
     assert (got["own"]["ulc_ceiling_paise"], got["defaults"]["ulc_ceiling_paise"]) == (25, None)
+    # #488 (0073): the highest, 55 paise, is taken.
+    highest = {**ORG_BODY, "ulc_ceiling_paise": 55}
+    saved = _save(api, operator, client, f"/api/operator/orgs/{customer}/ai", highest)
+    assert saved.status_code == 200, saved.text
+    assert client.get(f"/api/operator/orgs/{customer}/ai").json()["own"]["ulc_ceiling_paise"] == 55
 
 
 def test_it_needs_a_gemini_with_a_price_that_takes_minimal(db: Database, platform: str) -> None:
@@ -243,7 +248,7 @@ def test_the_estimate_shows_the_ceiling_and_what_it_measured(db: Database, platf
     }
     off = {**saved, "scan_reader": "openrouter"}  # the draft switches it off
     assert client.post("/api/operator/scan-cost", json=off, headers=CSRF).json()["ulc"] is None
-    bad = client.post("/api/operator/scan-cost", json={**draft, "ulc_ceiling_paise": 41}, headers=CSRF)
+    bad = client.post("/api/operator/scan-cost", json={**draft, "ulc_ceiling_paise": 56}, headers=CSRF)
     assert (bad.status_code, bad.json()["error"]) == (400, CEILING)
 
 

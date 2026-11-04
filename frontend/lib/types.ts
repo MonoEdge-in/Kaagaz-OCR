@@ -1519,7 +1519,7 @@ export interface AiValues {
   scan_reader: ScanReader | null; // #473
   mistral_model: MistralModelId | null;
   daily_page_limit: number | null; // #478: pages AI may read in one India day; the platform's null: no limit
-  ulc_ceiling_paise: number | null; // #488: the most a page may cost under ultra low cost, 20 to 40; null follows (40)
+  ulc_ceiling_paise: number | null; // #488: the most a page may cost under ultra low cost, 20 to 55; null follows (40)
 }
 
 /** What the server uses when the platform defaults name no model or scan setting, and
