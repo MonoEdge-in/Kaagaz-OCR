@@ -470,6 +470,7 @@ def test_the_disk_alert_emails_over_80_percent_at_most_once_a_day() -> None:
     send = (
         "if ! docker run --rm --network host --env-file .env \\\n"
         "  -e POSTGRES_PASSWORD= -e STORAGE_ADMIN_SECRET_KEY= -e DATABASE_URL=none \\\n"
+        "  -e APP_DATABASE_URL= -e OPS_DATABASE_URL= \\\n"
         '  kaagaz-backend:local python -m kaagaz.cli disk-alert --used "$used"; then\n'
         '  echo "DISK ${used}% USED and the alert email was NOT sent: the lines above say why" >&2\n'
         "  exit 1\n"
