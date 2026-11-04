@@ -455,6 +455,16 @@ deployed with steps 1, 2, 5 and 6: `deploy.sh --rollback` only swaps images and
 never moves a container back to the old network. The narrowed `s3.json` stays:
 the release before it works with it (its migrate only finds the bucket).
 
+**By hand, on a server that runs another branch** (the test server on Testing-Env, whose deploy timer stays off, 4 Nov 2026). Steps 1 to 5 as above, then, with `dc` as before:
+
+1. **Get the code.** `git fetch origin <branch>` and `git checkout -B <branch> origin/<branch>`.
+2. **Build.** `dc build migrate frontend`. Run it with `nohup … &` if the session may time out.
+3. **Move the data services onto the new networks first.** `dc up -d --no-deps postgres seaweedfs elasticmq clamav`.
+4. **Migrate.** `dc run --rm migrate`.
+5. **Start the app.** `dc up -d --no-deps --force-recreate api worker frontend caddy`.
+
+Starting the app before step 3 leaves api on the new `data` network and postgres on the old one. Api then stops at start-up with `database_unreachable`.
+
 **Releases** (EC2 PRD section 6).
 
 * `production` started at `7c6b72d` (#97). It changes only through pull
