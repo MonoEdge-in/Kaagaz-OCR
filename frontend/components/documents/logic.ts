@@ -320,6 +320,8 @@ export function uploadErrorText(caught: unknown, online: boolean): string {
     // A failed row: it does not resume by itself (a paused one is the "offline" state instead).
     return "Not uploaded: no internet connection. Choose the file again when you're back online.";
   }
+  // A 502, 503 or 504 after the retries: the server was restarting (production QA, 5 Nov 2026).
+  if (caught instanceof ApiError && [502, 503, 504].includes(caught.status)) return "The server was restarting. Retry.";
   return caught instanceof ApiError ? caught.message : "Upload failed. Check your connection, then try again.";
 }
 

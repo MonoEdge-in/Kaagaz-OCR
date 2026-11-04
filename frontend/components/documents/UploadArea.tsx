@@ -685,6 +685,8 @@ export function BatchTray({
         // File management V5: the files of this drop that look like new versions, and Review.
         const versions = suggestionsText(view?.version_suggestion_count ?? view?.version_suggestions?.length ?? 0);
         const found = view?.version_suggestions?.[0];
+        // A server restart fails a drop's files one by one: one button sends them all again.
+        const notSent = rows.filter((entry) => entry.state.kind === "error" && entry.state.retry);
         const first = found ? { document_id: found.document.id, display_name: found.document.name } : undefined;
         return (
           <div key={id} className={styles.batch}>
@@ -704,6 +706,14 @@ export function BatchTray({
               </p>
             )}
             {busy && <BatchBar view={view} rows={rows} />}
+            {notSent.length > 1 && (
+              <div className={styles.uploadsActions}>
+                <button type="button" className="btn" onClick={() => notSent.forEach((entry) => onRetry(entry.key))}>
+                  <Icon name="refresh" />
+                  Retry all not sent
+                </button>
+              </div>
+            )}
             <ul className={styles.uploads}>{rows.map(row)}</ul>
           </div>
         );

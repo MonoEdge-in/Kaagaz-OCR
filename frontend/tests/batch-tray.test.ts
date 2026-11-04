@@ -166,6 +166,15 @@ describe("each file's place in the tray", () => {
     expect(tray(false)).not.toContain(CANT_CHECK_TEXT);
   });
 
+  it("offers Retry all not sent on a drop with two or more files not sent, and not with one", () => {
+    const notSent = (key: string) => row(key, { kind: "error", message: "The server was restarting. Retry.", retry: true });
+    const tray = (entries: UploadEntry[]) => renderToStaticMarkup(createElement(BatchTray, { ...TRAY, entries }));
+    expect(tray([notSent("a"), notSent("b"), row("ready", done(doc("r")))])).toContain(">Retry all not sent<");
+    expect(tray([notSent("a"), row("ready", done(doc("r")))])).not.toContain("Retry all not sent");
+    // A file refused for itself (retry: false) is not counted: sending it again would not help.
+    expect(tray([notSent("a"), row("big", { kind: "error", message: "Too big." })])).not.toContain("Retry all not sent");
+  });
+
   it("sums the drop up in one line", () => {
     const counts = trayCounts(rows);
     expect(counts).toEqual({
