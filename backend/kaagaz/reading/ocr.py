@@ -582,26 +582,27 @@ def as_page_engine(engine: OcrEngine) -> PageEngine:
 class UlcCeiling:
     """#488: the most one read of a page may cost under Ultra low cost: ``paise`` as the super
     admin set it (20 to 40), and the same in US dollars (``usd``, at INR_PER_USD), which every
-    call made for the read is held under. "Read again" is a new read, with its own ceiling."""
+    call made for the read is held under. "Read again" is a new read, with its own ceiling.
+    ``kaagaz.db.models.ulc_ceiling`` makes one."""
 
     usd: float
     paise: int
-
-    @classmethod
-    def of(cls, paise: int) -> "UlcCeiling":
-        """The ceiling of ``paise`` paise. O(1)."""
-        return cls(usd=paise / 100 / INR_PER_USD, paise=paise)
 
 
 @dataclass(frozen=True, slots=True)
 class UlcPrices:
     """#488: the lead model's ``model_catalog`` prices (dollars a million tokens in and out) and
     its tokens a page in (None: not measured), taken once for the document, so a price change
-    mid-document never moves a page's output limit under it."""
+    mid-document never moves a page's output limit under it. ``per_call_usd`` (#488 review): its
+    prices that are not a token's, a call (OpenRouter's pricing.request and pricing.image), None
+    when not known; no output limit holds a page under its ceiling unless they are 0, so the
+    reader refuses the lead otherwise. model_catalog does not keep them yet, so the worker's are
+    None."""
 
     price_in_usd_per_m: float
     price_out_usd_per_m: float
     tokens_per_page_in: int | None = None
+    per_call_usd: float | None = None
 
 
 class PageCache(Protocol):

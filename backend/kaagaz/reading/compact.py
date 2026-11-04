@@ -22,14 +22,18 @@ The grammar of ``r``, one item a line:
 
 ``decode_compact`` gives the PAGE_SCHEMA JSON the page cache keeps (``gemini_ocr.as_result``'s
 shape), so ``checked``, the cache, pinning and everything downstream are as for a g3 read. It
-is lenient and **never drops text**: a row with a bad box keeps its kind and text, gets a box
-between its neighbours, and is listed in ``Decoded.unpinned`` (the reader leaves it unpinned, so
-its values go to review); a row it can't parse at all (no known kind, a box that is not four
-numbers) is kept whole as text, kind other, unpinned. Only what is not text is left out: a row
-with no text, controls (as ``checked`` drops them), an unknown script or issue code, an unsure
-word not in its line. ``encode_compact`` turns a cached g3 read into ``r``, for the offline proof
-(``cli measure-compact``) that the format loses nothing; it writes boxes exactly as cached, and a
-line break inside a line's text (never in a model's reply) as a space, its one loss.
+is lenient and **never drops text**: a row with a bad box keeps its kind, and everything after
+the kind as its text (#488 review: a box of three numbers never takes the text's first number);
+it gets a box the page's width between its neighbours (x0 0, x1 1000), and is listed in
+``Decoded.unpinned`` (the reader leaves it unpinned, so its values go to review); a row it can't
+parse at all (no known kind, a box that is not four numbers) is kept whole as text, kind other,
+unpinned. A reply with no valid header line (none, or one short of a field) did not follow the
+layout: ``Decoded.headed`` is False and every row is unpinned (the reader never caches it). Only
+what is not text is left out: a row with no text, controls (as ``checked`` drops them), an
+unknown script or issue code, an unsure word not in its line. ``encode_compact`` turns a cached
+g3 read into ``r``, for the offline proof (``cli measure-compact``) that the format loses
+nothing; it writes boxes exactly as cached, and a line break inside a line's text (never in a
+model's reply) as a space, its one loss.
 
 This module imports neither the reader nor the model client, so the offline proof runs without
 them. Nothing here logs. O(size of the reply) both ways.
@@ -81,7 +85,7 @@ _CELL = re.compile(r"c([A-Za-z0-9_-]{1,32})\.(\d{1,4})\.(\d{1,4})(h)?(?:\*(\d{1,
 _UNSURE = "? "
 _CONTINUES = ">"
 # As ``gemini_ocr`` drops them from a reply's text: C0 and C1 controls and the bidi overrides.
-_CONTROL = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f‪-‮⁦-⁩]")
+_CONTROL = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]")
 _ESCAPED = re.compile(r"\\([\\;])")
 _SPLIT = re.compile(r"(?<!\\)(?:\\\\)*;")
 
@@ -128,10 +132,12 @@ beside other text, is never in one block, and never in one line.
 class Decoded:
     """A compact reply decoded: ``result`` the page as PAGE_SCHEMA JSON (the page cache's
     shape, orders from 0 in reading order), ``unpinned`` the indexes of its lines whose box was
-    made up (a bad box, or a row kept whole as text), to be left unpinned."""
+    made up (a bad box, or a row kept whole as text), or all of them when the reply had no valid
+    header (``headed`` False), to be left unpinned."""
 
     result: dict[str, Any]
     unpinned: frozenset[int]
+    headed: bool
 
 
 @dataclass(slots=True)
@@ -149,7 +155,7 @@ def decode_compact(r: str) -> Decoded:
     an error, and never a word of text left out. O(len(r))."""
     rows: list[_Row] = []
     lines = r.split("\n")
-    header = _NO_HEADER
+    header: _Header | None = None
     first = next((index for index, raw in enumerate(lines) if raw.strip()), None)
     if first is not None and (found := _HEADER.fullmatch(lines[first].rstrip("\r"))) is not None:
         header = _header(found)
@@ -233,10 +239,12 @@ def _row(raw: str, block: int) -> _Row | None:
         text, box = _CONTROL.sub("", raw), None
         kind = _OTHER
     else:
-        text = _CONTROL.sub("", found.group(6) or "")
         y0, x0, y1, x1 = (float(found.group(index)) for index in range(2, 6))
         good = 0 <= y0 < y1 <= 1000 and 0 <= x0 < x1 <= 1000
         box = (y0, x0, y1, x1) if good else None
+        # A bad box may be three numbers and the text's first one: all after the kind is text.
+        said = (found.group(6) or "") if good else raw[len(found.group(1)) :].lstrip(" ")
+        text = _CONTROL.sub("", said)
     if not text.strip():
         return None
     return _Row(kind, text, box, table, block, [])
@@ -278,14 +286,16 @@ def _split(said: str) -> list[str]:
     return words
 
 
-def _decoded(rows: list[_Row], header: _Header, continues: bool) -> Decoded:
-    """The rows as PAGE_SCHEMA JSON: a row with no box gets one between its neighbours'."""
-    quality, handwritten, scripts, issues = header
+def _decoded(rows: list[_Row], header: _Header | None, continues: bool) -> Decoded:
+    """The rows as PAGE_SCHEMA JSON: a row with no box gets one between its neighbours'; with no
+    header (None), a fair page whose rows are all unpinned."""
+    quality, handwritten, scripts, issues = _NO_HEADER if header is None else header
     lines, unpinned = [], set()
     for index, row in enumerate(rows):
         box = row.box
-        if box is None:
+        if box is None or header is None:
             unpinned.add(index)
+        if box is None:
             box = _between(rows, index)
         lines.append(
             {
@@ -300,7 +310,7 @@ def _decoded(rows: list[_Row], header: _Header, continues: bool) -> Decoded:
             }
         )
     page = {"quality": quality, "handwritten": handwritten, "scripts": list(scripts), "issues": list(issues)}
-    return Decoded({"page": page, "lines": lines}, frozenset(unpinned))
+    return Decoded({"page": page, "lines": lines}, frozenset(unpinned), header is not None)
 
 
 def _between(rows: list[_Row], index: int) -> tuple[float, float, float, float]:

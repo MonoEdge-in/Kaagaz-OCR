@@ -2320,7 +2320,7 @@ def build_processor(
                 if scan.ulc is not None:
                     price = conn.execute(prices_sql, {"m": scan.lead.model}).mappings().one_or_none()
             prices = None
-            if price is not None:
+            if price is not None:  # per_call_usd stays unknown: model_catalog keeps none (#488 review)
                 prices = UlcPrices(
                     float(price["price_in_usd_per_m"]),
                     float(price["price_out_usd_per_m"]),

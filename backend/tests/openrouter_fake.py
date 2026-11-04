@@ -37,7 +37,8 @@ class Reply:
     """One scripted reply. ``body``: an object (sent as JSON) or raw bytes. ``delay``:
     seconds to wait before answering (cut short when the fake shuts down). ``trickle``: the
     headers go at once, then a space every ``trickle`` seconds for ``delay`` seconds, then
-    the body (a reply kept alive while a model thinks)."""
+    the body (a reply kept alive while a model thinks). ``status`` 0: the connection is closed
+    once the request is read, with no reply at all (#488 review: dropped after the send)."""
 
     status: int = 200
     body: object = None
@@ -127,6 +128,9 @@ def _handler(fake: OpenRouterFake) -> type[BaseHTTPRequestHandler]:
                 with fake._lock:
                     fake.requests.append(request)
                 reply = fake._answer(request)
+                if reply.status == 0:
+                    self.close_connection = True
+                    return
                 if reply.delay and not reply.trickle:
                     fake.release.wait(reply.delay)
                 payload = reply.body if isinstance(reply.body, bytes) else json.dumps(reply.body).encode()
