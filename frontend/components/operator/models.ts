@@ -26,7 +26,7 @@ import type {
   UsageTotals,
 } from "@/lib/types";
 import { ApiError } from "@/lib/api";
-import { DAILY_PAGES_RANGE, REFUSALS, TOKENS_RANGE, countText, operatorErrorMessage } from "./logic";
+import { CEILING_RANGE, DAILY_PAGES_RANGE, REFUSALS, TOKENS_RANGE, countText, operatorErrorMessage } from "./logic";
 
 // numeric(12,2): the largest budget the server's column holds.
 export const MAX_BUDGET = 9_999_999_999.99;
@@ -169,10 +169,29 @@ export const DYNAMIC_HINT = "Reads clear pages quickly and spends extra effort o
 // in effect is saved off, and the save says so calmly (0037).
 export const ENSEMBLE_OFF = "Ensemble is off: it needs a second scanning model.";
 
-// Who reads the pages (#473, Tushar, 2 Nov 2026): Gemini through OpenRouter or Mistral OCR.
-export const READERS: ScanReader[] = ["openrouter", "mistral"];
+// Who reads the pages (#473, Tushar, 2 Nov 2026): Gemini through OpenRouter or Mistral OCR; or
+// (#488, council 4 Nov 2026) ultra low cost, Gemini read as briefly as possible under a ceiling.
+export const READERS: ScanReader[] = ["openrouter", "mistral", "ultra_low_cost"];
 // The server reads with Gemini when the platform names no reader.
-export const READER_WORDS: Record<ScanReader, string> = { openrouter: "Gemini", mistral: "Mistral OCR" };
+export const READER_WORDS: Record<ScanReader, string> = {
+  openrouter: "Gemini",
+  mistral: "Mistral OCR",
+  ultra_low_cost: "Ultra low cost (Gemini)",
+};
+// Inside other words ("Platform default (…)"): no brackets in brackets.
+const READER_SHORT: Record<ScanReader, string> = { ...READER_WORDS, ultra_low_cost: "Ultra low cost" };
+export const ULC_HINT =
+  "Each page is read as briefly as possible and never costs more than the most you set. Hard handwriting may read less well.";
+/** In place of the fields ultra low cost sets itself: the draft keeps their values. */
+export const ULC_HIDDEN = "Thinking, the output limit and pages read again are set by ultra low cost. They come back if you switch.";
+export const ENSEMBLE_NOT_WITH_ULC = "Ensemble isn't used while ultra low cost reads the pages.";
+// The ceiling (#488): the most one read of a page may cost, ₹0.20 to ₹0.40, sent in paise.
+export const CEILING_LABEL = "Most a page may cost";
+export const CEILING_HINT =
+  "From ₹0.20 to ₹0.40. A page that would cost more is read by Kaagaz's own reader instead and marked for a check.";
+export const ULC_CEILING_PAISE = 40; // the server's when nothing is set
+const [MIN_CEILING_PAISE, MAX_CEILING_PAISE] = [20, 40];
+export { CEILING_RANGE };
 export const MISTRAL_NOT_SET_UP = "Mistral OCR (not set up on this server)";
 export const MISTRAL_MISSING: Record<"key" | "zdr", string> = {
   key: "Mistral can't be chosen yet: the server has no Mistral key.",
@@ -203,10 +222,16 @@ export const readerOf = (draft: Pick<AiDraft, "scan_reader">, defaults: AiValues
 export const mistralModelOf = (draft: Pick<AiDraft, "mistral_model">, defaults: AiValues, env: AiEnv, platform: boolean): MistralModelId =>
   draft.mistral_model ?? (platform ? null : defaults.mistral_model) ?? env.mistral_model;
 
-/** Pick a reader ("" follows); the Mistral model is let go of unless Mistral then reads. */
+/** Pick a reader ("" follows); the Mistral model is let go of unless Mistral then reads, and the
+ * ceiling unless ultra low cost then reads (#488). */
 export function pickedReader(draft: AiDraft, value: string, defaults: AiValues, env: AiEnv, platform: boolean): AiDraft {
   const next = { ...draft, scan_reader: (value || null) as ScanReader | null };
-  return readerOf(next, defaults, env, platform) === "mistral" ? next : { ...next, mistral_model: null };
+  const reader = readerOf(next, defaults, env, platform);
+  return {
+    ...next,
+    mistral_model: reader === "mistral" ? next.mistral_model : null,
+    ulc_ceiling: reader === "ultra_low_cost" ? next.ulc_ceiling : "",
+  };
 }
 
 /** The banner's lines while Mistral is stopped; null while it reads. The count is every
@@ -251,6 +276,7 @@ export interface AiDraft {
   dynamic: boolean | null;
   scan_reader: ScanReader | null; // #473
   mistral_model: MistralModelId | null;
+  ulc_ceiling: string; // #488: rupees as typed ("0.30"); empty follows
   ensemble: boolean; // an organisation's own; never a platform default
   budget: string; // US dollars as typed; empty: no budget (organisation only)
 }
@@ -272,6 +298,7 @@ export function draftOf(values: AiValues, extra: { ensemble: boolean; ai_budget_
     dynamic: values.dynamic,
     scan_reader: values.scan_reader,
     mistral_model: values.mistral_model,
+    ulc_ceiling: values.ulc_ceiling_paise === null ? "" : (values.ulc_ceiling_paise / 100).toFixed(2),
     ensemble: extra.ensemble,
     budget: extra.ai_budget_usd === null ? "" : String(extra.ai_budget_usd),
   };
@@ -304,6 +331,7 @@ export function resetSection(draft: AiDraft, section: Section): AiDraft {
         dynamic: null,
         scan_reader: null,
         mistral_model: null,
+        ulc_ceiling: "",
       };
     case "chat":
       return { ...draft, chat_models: [], chat_default: null, chat_levels: [], chat_default_level: null };
@@ -376,6 +404,22 @@ export function parseDailyPages(text: string): number | null | undefined {
   return value >= 1 && value <= MAX_PAGES_A_DAY ? value : undefined;
 }
 
+/** The ceiling in paise (#488), null to follow, or undefined when it is not ₹0.20 to ₹0.40. */
+export function parseCeiling(text: string): number | null | undefined {
+  const trimmed = text.trim();
+  if (trimmed === "") return null;
+  if (!/^\d{0,2}(\.\d{1,2})?$/.test(trimmed)) return undefined;
+  const value = Math.round(Number(trimmed) * 100);
+  return value >= MIN_CEILING_PAISE && value <= MAX_CEILING_PAISE ? value : undefined;
+}
+
+/** "₹0.40", from paise. */
+export const ceilingText = (inPaise: number) => paise.format(inPaise / 100);
+
+/** The ceiling a scan really has: the draft's own, else the one it follows, else the server's. */
+export const ceilingOf = (draft: Pick<AiDraft, "ulc_ceiling">, defaults: AiValues, platform: boolean): number =>
+  parseCeiling(draft.ulc_ceiling) ?? (platform ? null : defaults.ulc_ceiling_paise) ?? ULC_CEILING_PAISE;
+
 /** "Pages read today: 1,240 of 2,000 ($0.42)." for the operator, the India day's counter, against
  * the limit in effect when there is one (#478 review, 3 Nov 2026), and that reading is paused once
  * it is reached (QA C4). */
@@ -387,6 +431,7 @@ export const pagesTodayText = (today: { pages: number; cost_usd: number | null }
 /** Where a problem is shown: next to its field. "form" is the form's own line. */
 export type AiField =
   | "scan_reader"
+  | "ulc_ceiling_paise"
   | "mistral_model"
   | "scan_models"
   | "scan_default"
@@ -408,6 +453,7 @@ export function aiErrors(draft: AiDraft, platform: boolean): AiErrors {
     errors.chat_default = "Choose the default answering model from the ticked models.";
   if (parseTokens(draft.page_max_output_tokens) === undefined) errors.page_max_output_tokens = TOKENS_RANGE;
   if (parseDailyPages(draft.daily_page_limit) === undefined) errors.daily_page_limit = DAILY_PAGES_RANGE;
+  if (parseCeiling(draft.ulc_ceiling) === undefined) errors.ulc_ceiling_paise = CEILING_RANGE;
   if (platform && draft.chat_levels.length === 0) errors.chat_levels = "Tick at least one thinking level.";
   else if (
     draft.chat_levels.length > 0 &&
@@ -439,6 +485,7 @@ export function aiBody(draft: AiDraft): AiValues {
     scan_reader: draft.scan_reader,
     mistral_model: draft.mistral_model,
     daily_page_limit: parseDailyPages(draft.daily_page_limit) ?? null,
+    ulc_ceiling_paise: parseCeiling(draft.ulc_ceiling) ?? null,
   };
 }
 
@@ -464,8 +511,10 @@ export function follows(own: AiValues): { scan: "all" | "some" | "none"; chat: "
       own.page_max_output_tokens === null,
       own.dynamic === null,
       own.scan_reader === null,
-      // #473: the Mistral model counts unless the organisation reads with Gemini itself.
-      ...(own.scan_reader === "openrouter" ? [] : [own.mistral_model === null]),
+      // #473: the Mistral model counts unless the organisation reads with another reader itself;
+      // #488: the ceiling the same way.
+      ...(own.scan_reader === "openrouter" || own.scan_reader === "ultra_low_cost" ? [] : [own.mistral_model === null]),
+      ...(own.scan_reader === "openrouter" || own.scan_reader === "mistral" ? [] : [own.ulc_ceiling_paise === null]),
     ]),
     chat: part([own.chat_models.length === 0, own.chat_levels === null]),
   };
@@ -495,6 +544,7 @@ export function inheritedText(
     | ReaderSetting
     | "page_max_output_tokens"
     | "daily_page_limit"
+    | "ulc_ceiling_paise"
     | "chat_levels"
     | "dynamic",
   defaults: AiValues,
@@ -519,6 +569,8 @@ export function inheritedText(
       return formatNumber(defaults.page_max_output_tokens ?? env.page_max_output_tokens);
     case "daily_page_limit":
       return defaults.daily_page_limit === null ? "no limit" : `${formatNumber(defaults.daily_page_limit)} pages`;
+    case "ulc_ceiling_paise":
+      return ceilingText(defaults.ulc_ceiling_paise ?? ULC_CEILING_PAISE);
     case "chat_levels":
       return levelText(defaults);
     case "dynamic":
@@ -538,7 +590,7 @@ export function settingWords(
   values: Pick<AiValues, ScanSetting | ReaderSetting>,
   models: MistralModel[] = [], // the server's Mistral models, for their names
 ): string | null {
-  if (field === "scan_reader") return values.scan_reader === null ? null : READER_WORDS[values.scan_reader];
+  if (field === "scan_reader") return values.scan_reader === null ? null : READER_SHORT[values.scan_reader];
   if (field === "mistral_model") return values.mistral_model === null ? null : mistralName(values.mistral_model, models);
   if (field === "scan_resolution" || field === "careful_resolution") {
     const value = values[field];
@@ -593,6 +645,12 @@ const DEFAULT_AREAS: {
     now: (v: AiValues, _catalogue: OperatorModel[], models: MistralModel[]) => settingWords(area, v, models) ?? "platform default",
   })),
   {
+    area: "ulc_ceiling_paise", // #488
+    label: CEILING_LABEL.toLowerCase(),
+    changed: (a, b) => a.ulc_ceiling_paise !== b.ulc_ceiling_paise,
+    now: (v) => (v.ulc_ceiling_paise === null ? "platform default" : ceilingText(v.ulc_ceiling_paise)),
+  },
+  {
     area: "page_max_output_tokens",
     label: "most output tokens a page",
     changed: (a, b) => a.page_max_output_tokens !== b.page_max_output_tokens,
@@ -630,7 +688,8 @@ const budgetWords = (text: string) => {
 };
 
 /** The save bar's list (board 9): what saving the draft changes, in words; empty: nothing.
- * With the organisation's reply, the Mistral model is left out while Gemini reads after the save. */
+ * With the organisation's reply, the Mistral model is left out unless Mistral reads after the save,
+ * and the ceiling unless ultra low cost does (#488). */
 export function changesText(
   saved: AiDraft,
   draft: AiDraft,
@@ -638,8 +697,11 @@ export function changesText(
   reply?: Pick<OrgAiReply, "defaults" | "env">,
 ): string[] {
   const [before, after] = [aiBody(saved), aiBody(draft)];
-  const gemini = reply !== undefined && readerOf(draft, reply.defaults, reply.env, false) === "openrouter";
-  const changes = DEFAULT_AREAS.filter((each) => each.changed(before, after) && !(gemini && each.area === "mistral_model")).map(
+  const reader = reply === undefined ? null : readerOf(draft, reply.defaults, reply.env, false);
+  const leftOut = (area: string) =>
+    reader !== null &&
+    ((area === "mistral_model" && reader !== "mistral") || (area === "ulc_ceiling_paise" && reader !== "ultra_low_cost"));
+  const changes = DEFAULT_AREAS.filter((each) => each.changed(before, after) && !leftOut(each.area)).map(
     (each) => `${capital(each.label)}: ${each.now(after, catalogue, reply?.env.mistral_models ?? [])}`,
   );
   if (saved.ensemble !== draft.ensemble) changes.push(`Ensemble: ${draft.ensemble ? "on" : "off"}`);
@@ -693,7 +755,10 @@ export function refusalField(code: string): AiField {
     case "pages_out_of_range": // #478
       return "daily_page_limit";
     case "mistral_not_set_up": // #473
+    case "ulc_needs_gemini": // #488
       return "scan_reader";
+    case "ceiling_out_of_range": // #488
+      return "ulc_ceiling_paise";
     default: // unavailable, default_not_allowed, level_not_supported: either area
       return "form";
   }
@@ -814,8 +879,9 @@ export interface CostWords {
 export const MISTRAL_FIXED = "Mistral's list price, the same for every page.";
 export const MISTRAL_BY_PAGE = "Mistral charges by the page, not by tokens.";
 
-/** The cost a page: Mistral's fixed price (#473), else the measured one. */
-const pagePrice = (reply: ScanCost) => (reply.fixed_price ? reply.fixed_usd_per_page : reply.usd_per_page);
+/** The cost a page: Mistral's fixed price (#473), what ultra low cost measured (#488), else the measured one. */
+const pagePrice = (reply: ScanCost) =>
+  reply.fixed_price ? reply.fixed_usd_per_page : reply.ulc ? reply.ulc.usd_per_page : reply.usd_per_page;
 
 export function costWords(reply: CostReply): CostWords {
   if (reply === null) return { figure: null, dollars: null, lines: [COST_WORKING] };
@@ -846,6 +912,22 @@ export function costWords(reply: CostReply): CostWords {
         : `Read again: ${percent(again.share)} of pages, ${perPage.format(again.usd_per_page)} each.`,
     );
   return { figure: `About ${rupeeText(total)} a page`, dollars: `${perPage.format(total)} a page`, lines };
+}
+
+/** The panel's words while ultra low cost reads (#488): the ceiling large, then what it measured,
+ * the dearest document, and the pages read locally to stay within the ceiling. */
+export function ulcWords(reply: CostReply, ceilingPaise: number): CostWords {
+  if (reply === null || reply === "failed") return costWords(reply);
+  const figure = `At most ${ceilingText(ceilingPaise)} a page`;
+  const seen = reply.ulc;
+  if (!seen || seen.pages === 0 || seen.usd_per_page === null)
+    return { figure, dollars: null, lines: [`Not measured yet: no page was read with ultra low cost in the last ${reply.days} days.`] };
+  const lines = [
+    `Measured: about ${rupeeText(seen.usd_per_page)} a page on ${countText(seen.pages, "page", "pages")} in the last ${reply.days} days.`,
+  ];
+  if (seen.top_usd_per_page !== null) lines.push(`Highest for one document: ${rupeeText(seen.top_usd_per_page)} a page.`);
+  lines.push(`Read by Kaagaz's own reader to stay within the limit: ${percent(seen.limit_hits / seen.pages)} of pages.`);
+  return { figure, dollars: null, lines };
 }
 
 /** The Tokens a page part of the panel: input, output with the 99th percentile, and the
@@ -884,6 +966,7 @@ export function tokensUnderAverage(reply: ScanCost, draftLimit: number | null): 
 /** Does the cost leave out the pages read again (Cost saving on, but their cost or share
  * not measured)? */
 const reReadLeftOut = (reply: ScanCost) =>
+  !reply.ulc &&
   reply.re_read !== null && (reply.re_read.usd_per_page === null || reply.re_read.share === null);
 
 /** While the draft differs from what is saved and both are measured in full: "Now ₹0.31 →

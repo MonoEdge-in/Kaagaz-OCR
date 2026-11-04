@@ -264,6 +264,7 @@ const values = (overrides: Partial<AiValues> = {}): AiValues => ({
   scan_reader: null, // Changed on purpose (#473): who reads the pages, and the Mistral model
   mistral_model: null,
   daily_page_limit: null, // Changed on purpose (#478): the daily page limit
+  ulc_ceiling_paise: null, // Changed on purpose (#488): the most a page may cost under ultra low cost
   ...overrides,
 });
 const ENV: AiEnv = {
@@ -302,6 +303,7 @@ const COUNTS: AiDefaults["orgs_inheriting"] = {
   scan_reader: 5, // Changed on purpose (#473)
   mistral_model: 5,
   daily_page_limit: 1, // Changed on purpose (#478)
+  ulc_ceiling_paise: 1, // Changed on purpose (#488)
 };
 const catalogue = [
   model({ id: "m/one", name: "One", enabled_at: "2026-10-11T00:00:00Z", chat_verified: false }),

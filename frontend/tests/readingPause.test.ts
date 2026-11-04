@@ -44,6 +44,7 @@ const values = (overrides: Partial<AiValues> = {}): AiValues => ({
   scan_reader: null,
   mistral_model: null,
   daily_page_limit: null,
+  ulc_ceiling_paise: null, // Changed on purpose (#488): the most a page may cost under ultra low cost
   ...overrides,
 });
 const ENV: AiEnv = {
@@ -74,6 +75,7 @@ const COUNTS: AiDefaults["orgs_inheriting"] = {
   scan_reader: 1,
   mistral_model: 1,
   daily_page_limit: 6,
+  ulc_ceiling_paise: 6, // Changed on purpose (#488)
 };
 
 const fields = (props: { platform?: boolean; own?: AiValues; defaults?: AiValues; today?: { pages: number; cost_usd: number | null } }) =>

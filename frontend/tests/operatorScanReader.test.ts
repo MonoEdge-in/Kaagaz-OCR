@@ -52,6 +52,7 @@ const values = (overrides: Partial<AiValues> = {}): AiValues => ({
   scan_reader: null,
   mistral_model: null,
   daily_page_limit: null, // Changed on purpose (#478): the daily page limit
+  ulc_ceiling_paise: null, // Changed on purpose (#488): the most a page may cost under ultra low cost
   ...overrides,
 });
 const NOT_STOPPED: MistralStatus = { stopped: false, code: null, since: null, documents_waiting: 0 };
@@ -87,6 +88,7 @@ const COUNTS: AiDefaults["orgs_inheriting"] = {
   scan_reader: 3,
   mistral_model: 2,
   daily_page_limit: 1, // Changed on purpose (#478)
+  ulc_ceiling_paise: 1, // Changed on purpose (#488)
 };
 
 const fields = (
@@ -221,7 +223,8 @@ describe("who reads the pages: the field", () => {
     expect(org.indexOf('id="ai-scan-reader"')).toBeLessThan(org.search(/<h3[^>]*>First read<\/h3>/));
     expect(org).toContain('<label for="ai-scan-reader" class="label">Who reads the pages</label>');
     // Changed on purpose (#473): plain "Gemini", with no nested brackets.
-    expect(optionsOf(org, "ai-scan-reader")).toEqual(["Platform default (Gemini)", "Gemini", "Mistral OCR"]);
+    // Changed on purpose (#488): ultra low cost is the third reader.
+    expect(optionsOf(org, "ai-scan-reader")).toEqual(["Platform default (Gemini)", "Gemini", "Mistral OCR", "Ultra low cost (Gemini)"]);
     expect(optionsOf(fields({ defaults: MISTRAL }), "ai-scan-reader")[0]).toBe("Platform default (Mistral OCR)");
     expect(optionsOf(fields({ platform: true }), "ai-scan-reader")[0]).toBe("The server&#x27;s reader (Gemini)");
     expect(org).toMatch(/<span id="ai-scan-reader-origin"[^>]*>Platform default<\/span>/);

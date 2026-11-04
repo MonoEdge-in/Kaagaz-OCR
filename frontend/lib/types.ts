@@ -1363,8 +1363,9 @@ export type AiLevel = "low" | "medium" | "high";
 export type ScanLevel = "minimal" | AiLevel;
 /** How much picture detail a page is sent with (#463). */
 export type Resolution = "low" | "high";
-/** Who reads scanned pages (#473): Gemini through OpenRouter, or Mistral OCR. */
-export type ScanReader = "openrouter" | "mistral";
+/** Who reads scanned pages (#473): Gemini through OpenRouter, or Mistral OCR; or (#488) Gemini
+ * read as briefly as possible under a ceiling on what one page may cost. */
+export type ScanReader = "openrouter" | "mistral" | "ultra_low_cost";
 export type MistralModelId = "mistral-ocr-4-1" | "mistral-ocr-2512";
 /** A Mistral OCR model (#473); has_blocks: it says where each line is on the page. */
 export interface MistralModel {
@@ -1402,6 +1403,7 @@ export interface AiValues {
   scan_reader: ScanReader | null; // #473
   mistral_model: MistralModelId | null;
   daily_page_limit: number | null; // #478: pages AI may read in one India day; the platform's null: no limit
+  ulc_ceiling_paise: number | null; // #488: the most a page may cost under ultra low cost, 20 to 40; null follows (40)
 }
 
 /** What the server uses when the platform defaults name no model or scan setting, and
@@ -1449,7 +1451,8 @@ export interface AiDefaults {
     | "dynamic"
     | "scan_reader"
     | "mistral_model"
-    | "daily_page_limit",
+    | "daily_page_limit"
+    | "ulc_ceiling_paise",
     number
   >;
 }
@@ -1504,6 +1507,18 @@ export interface ScanCost {
   // #473: Mistral charges a fixed price a page, not by tokens.
   fixed_price: boolean;
   fixed_usd_per_page: number | null;
+  ulc?: UlcCost | null; // #488: only while ultra low cost reads
+}
+
+/** What ultra low cost measured in the last `days` (#488): the ceiling, the pages it read, their
+ * cost a page and the dearest document's, and the pages read locally to stay within the ceiling. */
+export interface UlcCost {
+  ceiling_paise: number;
+  ceiling_usd: number;
+  pages: number;
+  usd_per_page: number | null;
+  top_usd_per_page: number | null;
+  limit_hits: number;
 }
 
 /** One organisation's accuracy check (#463): recent pages read at its settings and at max
