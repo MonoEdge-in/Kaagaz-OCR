@@ -353,6 +353,7 @@ OPERATOR_RIGHTS = {
         " page_max_output_tokens integer,"
         " scan_reader text, mistral_model text,"  # Changed on purpose (#473, 0065): who reads the pages
         " daily_page_limit integer,"  # Changed on purpose (#478, 0066): the reading pause
+        " ulc_ceiling_paise smallint,"  # Changed on purpose (#488, 0070): Ultra low cost's ceiling
         " ensemble boolean,"
         " ai_budget_usd numeric)",  # 0064 (#463): the scan cost settings
         EMPTY_PATH,
@@ -365,12 +366,14 @@ OPERATOR_RIGHTS = {
         " page_max_output_tokens integer,"
         " scan_reader text, mistral_model text,"  # Changed on purpose (#473, 0065)
         " daily_page_limit integer,"  # Changed on purpose (#478, 0066)
+        " ulc_ceiling_paise smallint,"  # Changed on purpose (#488, 0070)
         " orgs_inheriting_scan_models bigint, orgs_inheriting_chat_models bigint,"
         " orgs_inheriting_scan_thinking bigint, orgs_inheriting_chat_levels bigint,"
         " orgs_inheriting_dynamic bigint, orgs_inheriting_scan_resolution bigint,"
         " orgs_inheriting_careful_thinking bigint, orgs_inheriting_careful_resolution bigint,"
         " orgs_inheriting_page_max_output_tokens bigint, orgs_inheriting_scan_reader bigint,"
-        " orgs_inheriting_mistral_model bigint, orgs_inheriting_daily_page_limit bigint)",
+        " orgs_inheriting_mistral_model bigint, orgs_inheriting_daily_page_limit bigint,"
+        " orgs_inheriting_ulc_ceiling_paise bigint)",  # Changed on purpose (#488, 0070)
         EMPTY_PATH,
     ),
     # 0066 (#478): one organisation's reading pause counter on one day (numbers only).
@@ -393,6 +396,12 @@ OPERATOR_RIGHTS = {
         " dynamic boolean, max_pages integer, pages_checked integer,"  # Changed on purpose (#463 review)
         " pages_failed integer, word_match double precision, numbers_match double precision,"
         " cost_usd numeric, started_at timestamp with time zone, finished_at timestamp with time zone)",
+        EMPTY_PATH,
+    ),
+    # 0070 (#488): what Ultra low cost really cost for one model (sums and counts only, no
+    # customer column).
+    "kaagaz_op_ulc_cost": (
+        "TABLE(pages bigint, cost_usd numeric, limit_hits bigint, top_usd_per_page numeric)",
         EMPTY_PATH,
     ),
     # 0065 (#473): whether Mistral stopped reading pages, every organisation's together (a code,

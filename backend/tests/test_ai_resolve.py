@@ -38,6 +38,7 @@ INHERIT = {
     "page_max_output_tokens": None,
     "scan_reader": None,  # Changed on purpose (#473): who reads the pages, inherited
     "mistral_model": None,
+    "ulc_ceiling_paise": None,  # Changed on purpose (#488): Ultra low cost's ceiling
 }
 
 

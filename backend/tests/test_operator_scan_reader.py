@@ -79,7 +79,8 @@ def test_config_records_reader() -> None:
 
 
 def test_the_bodies_offer_exactly_the_readers_and_models() -> None:
-    assert set(get_args(router.ScanReader)) == {OPENROUTER, MISTRAL}
+    # Changed on purpose (#488): Ultra low cost is the third reader.
+    assert set(get_args(router.ScanReader)) == {OPENROUTER, MISTRAL, "ultra_low_cost"}
     assert set(get_args(router.MistralModelId)) == set(MISTRAL_OCR_MODELS)
 
 

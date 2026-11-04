@@ -16,6 +16,10 @@ imports a reader module (the reader plug socket). ``GET /api/upload-limits`` off
   15 Oct 2026: org admins and members never see cost). Auto alone in keyless mode and for
   an organisation with no usable model, so nothing can be chosen.
 
+While Ultra low cost reads the organisation's pages (#488, Tushar, 4 Nov 2026), "Standard" alone
+is offered: it reads every page the same way whatever is asked. A stale pick (Automatic, or a
+Careful model still usable) is accepted and read as Ultra low cost (``db.models.resolve_scan``).
+
 Ensemble is offered only after the scan (Tushar, 16 Oct 2026; ``kaagaz/api/routers/ensemble.py``).
 
 ``check_reading`` checks what an upload, a version or a Read again asks for (``read_mode``,
@@ -133,6 +137,9 @@ def offer(conn: Connection, customer_id: str, settings: Settings) -> list[dict[s
     if not rows:
         return readers(rows, settings)
     allowed = models_sql.effective_settings(conn, customer_id)
+    if allowed.get("scan_reader") == models_sql.ULTRA_LOW_COST:  # #488: one way of reading, Standard
+        standard = models_sql.pick_tiers(rows)[0]
+        return [_tier(standard, STANDARD, STANDARD_HINT, default=standard["is_default_scan"])]
     return readers(rows, settings, dynamic=bool(allowed["dynamic"]))
 
 
@@ -184,16 +191,13 @@ def check_reading(
         _refuse("model_not_allowed")
     if mode == SINGLE:
         return ReadingChoice(SINGLE, model, note=note)
-    dynamic = _allowed(conn, customer_id, rows, "dynamic")
-    if mode == DYNAMIC and not dynamic:
+    allowed = models_sql.effective_settings(conn, customer_id) if rows else None
+    dynamic = allowed is not None and bool(allowed["dynamic"])
+    # #488: a stale Automatic is accepted while Ultra low cost reads (it reads every page its way).
+    stale = allowed is not None and allowed.get("scan_reader") == models_sql.ULTRA_LOW_COST
+    if mode == DYNAMIC and not dynamic and not stale:
         _refuse("dynamic_not_allowed")
-    return ReadingChoice(DYNAMIC if dynamic else SINGLE, model, note=note)
-
-
-def _allowed(conn: Connection, customer_id: str, rows: Sequence[RowMapping], switch: str) -> bool:
-    """The organisation's effective ``switch`` (dynamic); False with no usable model,
-    without asking."""
-    return bool(rows) and bool(models_sql.effective_settings(conn, customer_id)[switch])
+    return ReadingChoice(DYNAMIC if dynamic or (stale and mode == DYNAMIC) else SINGLE, model, note=note)
 
 
 def _refuse(code: str) -> NoReturn:

@@ -45,6 +45,15 @@ through OpenRouter, or mistral, Mistral OCR) and ``mistral_model`` inherit field
 well, else the code's (OPENROUTER, DEFAULT_MISTRAL_MODEL), and ride on the ``Reading``. A
 Mistral organisation never gets Ensemble (``resolve_ensemble``): what is chosen is what reads.
 
+Ultra low cost (#488, Tushar, 4 Nov 2026; 0070): a third ``scan_reader``, ULTRA_LOW_COST, with
+its ceiling a page (``ulc_ceiling_paise``, 20 to 40; None: ULC_DEFAULT_PAISE), inheriting as the
+rest. While it reads, ``resolve_scan`` and ``scope_reading`` give ``_ulc_reading``'s ``Reading``:
+single, the default Gemini model with a known price as lead (else OCR_MODEL), minimal thinking,
+the ceiling in dollars (``Reading.ulc``) and the note ``ultra_low_cost``, whatever the document
+asked for ("Read with", Dynamic, Careful, Save, High and Max); the local reader only stays the
+local reader only. Ensemble is refused (``resolve_ensemble``). Any other reader never reads the
+ceiling, so no organisation that did not choose it reads differently.
+
 The ledger columns (``ledger_tokens_in``/``_out``) are the average tokens a scanned page
 took in the organisation's own ledger of the last LEDGER_DAYS days (MC3); prices never
 leave the server (Tushar, 15 Oct 2026: org admins and members never see cost).
@@ -68,7 +77,7 @@ from sqlalchemy import Connection, RowMapping, text
 from kaagaz.answering.draft import ANSWER_PROMPT_HASH
 from kaagaz.db import ai_settings
 from kaagaz.reading.mistral_ocr import DEFAULT_MISTRAL_MODEL, MISTRAL, OPENROUTER
-from kaagaz.reading.ocr import GEMINI, READER_PROMPT_VERSION
+from kaagaz.reading.ocr import GEMINI, READER_PROMPT_VERSION, UlcCeiling
 from kaagaz.settings import DEFAULT_PROVIDER, NO_THINKING, Settings
 
 # MC3: the days of ledger a page's estimate averages over.
@@ -91,6 +100,13 @@ SCAN_COST_FIELDS = (
     "careful_resolution",
     "page_max_output_tokens",
 )
+# #488 (0070): Ultra low cost, the third scan reader, and its ceiling a page in paise.
+ULTRA_LOW_COST = "ultra_low_cost"
+ULC_CEILING_PAISE = (20, 40)  # the lowest and the highest (0070's CHECK)
+ULC_DEFAULT_PAISE = 40  # None saved anywhere
+# shortcut: a fixed rate; make it a platform setting if the rupee moves.
+INR_PER_USD = 88  # frontend/components/operator/models.ts INR_PER_USD
+ULC_VENDOR = "google"  # a Gemini model
 
 # The organisation's own models of an area, else the platform's (only when it has none of
 # its own), each with the catalogue row and the average tokens of its scan calls (not
@@ -144,6 +160,7 @@ _SETTINGS = text(
     " COALESCE(s.page_max_output_tokens, p.page_max_output_tokens) AS page_max_output_tokens,"
     " COALESCE(s.scan_reader, p.scan_reader) AS scan_reader,"  # #473
     " COALESCE(s.mistral_model, p.mistral_model) AS mistral_model,"
+    " COALESCE(s.ulc_ceiling_paise, p.ulc_ceiling_paise) AS ulc_ceiling_paise,"  # #488
     " COALESCE(s.dynamic, p.dynamic) AND COALESCE(w.cost_saving, true) AS dynamic,"
     " COALESCE(w.cost_saving, true) AS cost_saving,"
     " COALESCE(s.ensemble, false) AND COALESCE(w.ensemble, true) AS ensemble"
@@ -202,7 +219,8 @@ class Reading:
     after inheritance; None, the env's (OCR_MEDIA_RESOLUTION, OCR_RETRY_*); and
     ``page_max_output_tokens``, a page read's output limit (None: PAGE_MAX_OUTPUT_TOKENS). #473:
     ``scan_reader`` who reads the pages (openrouter or mistral; not ``reader``, the choice above)
-    and ``mistral_model``, the organisation's after inheritance, else the code's."""
+    and ``mistral_model``, the organisation's after inheritance, else the code's. #488: ``ulc``, Ultra
+    low cost's ceiling for one read of a page (None: another reader)."""
 
     mode: str
     lead: Agent
@@ -217,6 +235,7 @@ class Reading:
     page_max_output_tokens: int | None = None
     scan_reader: str = OPENROUTER
     mistral_model: str = DEFAULT_MISTRAL_MODEL
+    ulc: UlcCeiling | None = None
 
     @property
     def reader(self) -> str:
@@ -247,6 +266,8 @@ class Reading:
             "notes": list(self.notes),
             "scan_reader": self.scan_reader,  # #473
             "mistral_model": self.mistral_model,
+            # #488: only while Ultra low cost reads, so every other run's config is as before.
+            **({} if self.ulc is None else {"ulc": {"paise": self.ulc.paise, "usd": self.ulc.usd}}),
         }
 
 
@@ -451,6 +472,8 @@ def resolve_scan(
         level = task.effective if task.chosen else None
     if level == "none":  # the local reader only, even for an explicit "Read with"
         return Reading("local", lead, thinking=thinking, notes=notes, **levels)
+    if allowed["scan_reader"] == ULTRA_LOW_COST:  # #488: its own reading, whatever was asked
+        return _ulc_reading(rows, allowed, settings=settings)
     if level is not None and read_model is None:  # no explicit "Read with": the level decides
         mode = "dynamic" if level in ("save", "low") else "single"
         if level in ("high", "max"):
@@ -531,6 +554,8 @@ def scope_reading(rows: Sequence[RowMapping], allowed: Mapping[Any, Any], *, set
     no task level, from ``rows`` (``usable_models``) and ``allowed`` (``effective_settings``'
     keys, a draft's levels over them): the default model as lead (else OCR_MODEL), dynamic
     with Careful while Dynamic is on, else single; ``resolve_scan``'s rules. No statement."""
+    if allowed["scan_reader"] == ULTRA_LOW_COST:  # #488
+        return _ulc_reading(rows, allowed, settings=settings)
     lead_row = next((row for row in rows if row["is_default_scan"]), None)
     lead = (
         _agent(lead_row, settings)
@@ -543,6 +568,43 @@ def scope_reading(rows: Sequence[RowMapping], allowed: Mapping[Any, Any], *, set
     thinking, notes = _dynamic_first(thinking, notes, lead_row)
     careful = _careful(rows, lead, settings)
     return Reading("dynamic", lead, careful=careful, thinking=thinking, notes=notes, **_levels(allowed))
+
+
+def ulc_priced(row: Mapping[Any, Any]) -> bool:
+    """#488: ``row`` (a catalogue row) is a Gemini model with a known price in and out."""
+    return (
+        vendor(row["id"]) == ULC_VENDOR
+        and float(row["price_in_usd_per_m"]) > 0
+        and float(row["price_out_usd_per_m"]) > 0
+    )
+
+
+def ulc_ceiling(paise: int | None) -> UlcCeiling:
+    """#488: the ceiling of one read of a page, ``paise`` (None: ULC_DEFAULT_PAISE) in dollars."""
+    chosen = ULC_DEFAULT_PAISE if paise is None else paise
+    return UlcCeiling(usd=chosen / 100 / INR_PER_USD, paise=chosen)
+
+
+def _ulc_reading(rows: Sequence[RowMapping], allowed: Mapping[Any, Any], *, settings: Settings) -> Reading:
+    """#488: Ultra low cost's ``Reading``, shared by ``resolve_scan`` and ``scope_reading``: single,
+    the lead the default scan model when it is a Gemini with a known price (``ulc_priced``), else
+    OCR_MODEL (its price is the reader's to look up), minimal thinking, the ceiling, the note
+    ``ultra_low_cost``; no Careful and no routing. The API refuses a lead that can't read with
+    minimal thinking (409 ``ulc_needs_gemini``). No statement."""
+    default = next((row for row in rows if row["is_default_scan"]), None)
+    lead = (
+        _agent(default, settings)
+        if default is not None and ulc_priced(default)
+        else Agent(settings.ocr_model, DEFAULT_PROVIDER, settings.ocr_model)
+    )
+    return Reading(
+        "single",
+        lead,
+        thinking=MINIMAL,
+        notes=(ULTRA_LOW_COST,),
+        ulc=ulc_ceiling(allowed["ulc_ceiling_paise"]),
+        **_levels(allowed),
+    )
 
 
 def max_thinking(row: Mapping[Any, Any] | None) -> str:
@@ -566,12 +628,13 @@ def resolve_ensemble(conn: Connection, customer_id: str, document_id: str, *, se
     first two usable scan models that are not the lead (the default first, then by name).
     Raises ``AiNotAllowed("ensemble_not_allowed")`` when the organisation's Ensemble grant is
     off, scans are not read by a model (OCR_ENGINE is not gemini), Mistral reads its pages
-    (#473: never Gemini for a Mistral organisation), or no other model is
-    usable. The API checks it before a run and the job again when it starts (S2)."""
+    (#473: never Gemini for a Mistral organisation), Ultra low cost reads them (#488: never past its
+    ceiling), or no other model is usable. The API checks it before a run and the job again when it
+    starts (S2)."""
     if settings.ocr_engine != GEMINI:
         raise AiNotAllowed("ensemble_not_allowed")
     allowed = effective_settings(conn, customer_id)  # #463 review: read once
-    if not allowed["ensemble"] or allowed["scan_reader"] == MISTRAL:
+    if not allowed["ensemble"] or allowed["scan_reader"] in (MISTRAL, ULTRA_LOW_COST):
         raise AiNotAllowed("ensemble_not_allowed")
     scan = resolve_scan(conn, customer_id, document_id, settings=settings, allowed=allowed)
     rows = usable_models(conn, customer_id, settings=settings)

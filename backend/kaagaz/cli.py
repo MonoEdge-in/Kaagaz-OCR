@@ -106,6 +106,15 @@
   spent (all measured), and the tokens saved (estimated: a whole-page Careful read's tokens
   less what the page spent). Per-page tokens are recorded only since 16 Oct 2026, so the
   token lines count only the runs read since, and it says how many. Numbers only.
+* ``measure-compact [--days N]`` (#488, Tushar, 4 Nov 2026): the offline proof of Ultra low cost's
+  compact reply, for the server. It makes no AI call: over every organisation's cached g3 page
+  reads (``page_reads``, READER_PROMPT_VERSION and its "+<level>" keys) of the last N days (30),
+  each read as its own organisation, each reply is encoded to the compact ``r`` and decoded
+  back (``reading.compact``) and compared (``same_reply``: ignoring the lines' order, blocks as
+  groupings). It prints the pages, the share decoded without a loss, the average and 95th
+  percentile characters of the compact and of the original replies (compact JSON), and an output
+  token estimate from the cache's own output tokens a character (an upper bound: hidden thinking
+  is billed as output too). Numbers only, never a word of a page.
 * ``prune-folders [--customer-id ID] [--apply]``: the empty folders Kaagaz made (auto-filing's
   department, type, property, party and year folders with nothing in them, ``folders.prune_empty``'s
   rules), listed by each customer's count; ``--apply`` deletes them and then their parents left
@@ -136,6 +145,7 @@ import functools
 import getpass
 import hashlib
 import json
+import math
 import os
 import sys
 import time
@@ -176,6 +186,7 @@ from kaagaz.jobs import catalog, land_facts
 from kaagaz.jobs.purge import CustomerStorage, purge_customer
 from kaagaz.preparing.page_checks import BlankMeasure, measure_blank
 from kaagaz.preparing.pages import PreparedPages, prepare_pages
+from kaagaz.reading.compact import decode_compact, encode_compact
 from kaagaz.reading.ocr import (
     PATH_PAGE,
     PATH_WORDS,
@@ -324,6 +335,11 @@ def _parser() -> argparse.ArgumentParser:
     times = commands.add_parser("scan-times", help="how long the last documents took, step by step")
     times.add_argument("--customer-id", help="one customer only (default: every customer)")
     times.add_argument("--last", type=int, default=5, help="the last N ready runs (default 5)")
+
+    compact = commands.add_parser(
+        "measure-compact", help="the compact reply's loss and size over the cached page reads (no AI call)"
+    )
+    compact.add_argument("--days", type=int, default=30, help="the last N days of cached reads (default 30)")
 
     prune = commands.add_parser("prune-folders", help="the empty folders Kaagaz made; --apply deletes them")
     prune.add_argument("--customer-id", help="one customer only (default: every customer)")
@@ -664,6 +680,118 @@ def _land_facts(
         db, chat, settings, customers, max_usd=args.max_usd, out=out, storage=storage, checker=checker,
         sample=args.sample,
     )  # fmt: skip
+
+
+# measure-compact: one organisation's cached g3 page reads of the last days (the reply, its tokens).
+_COMPACT_PAGES = text(
+    "SELECT result, output_tokens FROM page_reads WHERE customer_id = :c"
+    " AND (prompt_version = :v OR prompt_version LIKE :level)"
+    " AND created_at >= now() - make_interval(days => :days)"
+)
+
+
+def _measure_compact(db: Database, days: int, out: TextIO) -> None:
+    """``measure-compact`` (module notes): every organisation's cached g3 reads, each in its own
+    ``db.customer()``, then the numbers (``compact_lines``). O(pages x reply size)."""
+    if days < 1:
+        raise CliError("--days must be at least 1")
+    with db.system() as conn:
+        customers = indexing.customer_ids(conn)
+    sizes: list[tuple[bool, int, int, int]] = []  # (lossless, compact chars, original chars, tokens)
+    params = {"v": READER_PROMPT_VERSION, "level": f"{READER_PROMPT_VERSION}+%", "days": days}
+    for customer in customers:
+        with db.customer(customer) as conn:
+            rows = conn.execute(_COMPACT_PAGES, {**params, "c": customer}).all()
+        for result, tokens in rows:
+            lossless, compact = compact_round_trip(dict(result), encode_compact, decode_compact)
+            original = len(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+            sizes.append((lossless, compact, original, int(tokens or 0)))
+    out.write("\n".join(compact_lines(days, sizes)) + "\n")
+
+
+def compact_lines(days: int, sizes: Sequence[tuple[bool, int, int, int]]) -> list[str]:
+    """The printed lines: numbers only. A page that could not be encoded counts 0 compact
+    characters (and is not lossless). O(n log n)."""
+    lines = [
+        f"measure-compact: the cached g3 page reads of the last {days} days, numbers only",
+        f"pages {len(sizes)}",
+    ]
+    if not sizes:
+        return lines
+    pages = len(sizes)
+    kept = sum(1 for lossless, *_ in sizes if lossless)
+    compact = [size[1] for size in sizes]
+    original = [size[2] for size in sizes]
+    ratio = sum(size[3] for size in sizes) / max(1, sum(original))
+    return [
+        *lines,
+        f"lossless {kept / pages:.1%} ({kept} of {pages})",
+        f"characters a page: original {sum(original) / pages:.0f} average, {_p95(original)} p95;"
+        f" compact {sum(compact) / pages:.0f} average, {_p95(compact)} p95"
+        f" ({sum(compact) / max(1, sum(original)):.0%} of the original)",
+        f"output tokens a page, at the cache's own {ratio:.2f} a character: original"
+        f" {sum(original) / pages * ratio:.0f}, compact {sum(compact) / pages * ratio:.0f}",
+    ]
+
+
+def _p95(values: Sequence[int]) -> int:
+    """The 95th percentile, nearest rank."""
+    ordered = sorted(values)
+    return ordered[max(0, math.ceil(0.95 * len(ordered)) - 1)]
+
+
+def compact_round_trip(
+    result: dict[str, Any],
+    encode: Callable[[dict[str, Any]], str],
+    decode: Callable[[str], dict[str, Any]],
+) -> tuple[bool, int]:
+    """(decoded without a loss, the compact reply's characters) of one cached reply; a reply the
+    pair can't encode is (False, 0), one it can't decode back (False, its characters)."""
+    try:
+        compact = encode(result)
+    except Exception:  # noqa: BLE001 - one page the encoder can't take is counted, never stops the run
+        return False, 0
+    try:
+        return same_reply(result, decode(compact)), len(compact)
+    except Exception:  # noqa: BLE001 - as above, for the decoder
+        return False, len(compact)
+
+
+def same_reply(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
+    """Two replies say the same: the page's header (scripts and issues as sets), the lines as a
+    multiset ignoring their order and block numbers, the blocks as groupings of lines, and
+    whether the page continues on the next. O(lines log lines)."""
+
+    def header(reply: Mapping[str, Any]) -> tuple[Any, ...]:
+        page = reply.get("page") or {}
+        return (
+            page.get("quality"),
+            page.get("handwritten"),
+            frozenset(page.get("scripts") or ()),
+            frozenset(page.get("issues") or ()),
+        )
+
+    def line(one: Mapping[str, Any]) -> str:
+        table = one.get("table")
+        return json.dumps(
+            [one.get("kind"), one.get("text"), one.get("box_2d"), sorted(one.get("unsure") or []), table],
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+
+    def shape(reply: Mapping[str, Any]) -> tuple[Any, ...]:
+        lines = list(reply.get("lines") or [])
+        blocks: dict[Any, list[str]] = {}
+        for one in lines:
+            blocks.setdefault(one.get("block"), []).append(line(one))
+        return (
+            header(reply),
+            Counter(line(one) for one in lines),
+            Counter(tuple(sorted(members)) for members in blocks.values()),
+            any(one.get("continues_on_next_page") for one in lines),
+        )
+
+    return shape(a) == shape(b)
 
 
 def _prune_folders(db: Database, customer_id: str | None, apply: bool, out: TextIO) -> None:
@@ -1393,6 +1521,8 @@ def main(
             _land_facts(db, args, settings or Settings.from_env(env), model, storage, stdout)
         elif args.command == "scan-times":
             _scan_times(db, args.customer_id, args.last, stdout)
+        elif args.command == "measure-compact":  # no model: it reads the cache and prints numbers
+            _measure_compact(db, args.days, stdout)
         elif args.command == "prune-folders":
             _prune_folders(db, args.customer_id, args.apply, stdout)
         elif args.command == "cost-saving":

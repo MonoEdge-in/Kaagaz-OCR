@@ -978,3 +978,13 @@ def _find_word(text: str, word: str, cursor: int) -> int | None:
 
 def _clamped(confidence: float | None) -> float | None:
     return None if confidence is None else min(1.0, max(0.0, confidence))
+
+
+# shortcut: builder B's stand-in (#488), with builder A's exact name and fields; the merge takes
+# builder A's real one in this module.
+@dataclass(frozen=True, slots=True)
+class UlcCeiling:
+    """Ultra low cost's most one read of a page may cost: ``usd`` (``paise`` at INR_PER_USD)."""
+
+    usd: float
+    paise: int

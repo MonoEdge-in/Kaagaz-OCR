@@ -392,7 +392,10 @@ class NoDirectReaderCallsTest(unittest.TestCase):
     # Mistral's readers and models, and the worker its wait names, so these constants of the
     # Mistral reader may be imported from anywhere; its client and page reading may not (they
     # stay behind the socket, gemini_ocr).
+    # Changed on purpose (#488, 4 Nov 2026): ``cli measure-compact`` runs the compact reply's
+    # encoder and decoder offline (pure functions, no client, no page read).
     CONSTANTS: ClassVar[dict[str, set[str]]] = {
+        "kaagaz.reading.compact": {"encode_compact", "decode_compact"},
         "kaagaz.reading.mistral_ocr": {
             "MISTRAL",
             "OPENROUTER",
@@ -404,7 +407,7 @@ class NoDirectReaderCallsTest(unittest.TestCase):
             "MISTRAL_RESOLUTION",
             "MistralModel",
             "read_by",
-        }
+        },
     }
 
     def reader_modules(self) -> set[str]:

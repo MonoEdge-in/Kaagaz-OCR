@@ -28,6 +28,9 @@ audit rows.
   day (the reading pause's counter). Numbers only.
 * ``mistral_status`` (#473, 0065): whether Mistral stopped reading pages, from the runs that
   waited on it (no worker memory). Codes and counts only.
+* ``ulc_cost`` (#488, 0070): what Ultra low cost really cost for one model: its pages, their
+  reported cost, the pages read locally to stay within the ceiling and the highest cost a page of
+  one document. Numbers only.
 * ``scan_cost`` (#463, 0064): the measured cost of a page at one first read's and one
   Careful re-read's (model, thinking, picture detail), the scope's share read again, and its
   pages read at the first read's and at max settings, and the clean ones.
@@ -67,20 +70,20 @@ _RECORD_CHAT = text(
     "UPDATE model_catalog SET chat_verified_prompt = :prompt, chat_verified_at = now() WHERE id = :model"
 )
 # An AiChoice's parameters (sm to dyn) are in the functions' order (0064: sr, ct, cr, pm after st;
-# #473, 0065: rd and mm after the step).
+# #473, 0065: rd and mm after the step; #478, 0066: dpl; #488, 0070: ulc last).
 _SET_ORG_AI = text(
     "SELECT outcome, result_id FROM kaagaz_op_set_org_ai(:o, :c, CAST(:sm AS text[]), CAST(:sd AS text),"
     " CAST(:cm AS text[]), CAST(:cd AS text), CAST(:st AS text), CAST(:sr AS text), CAST(:ct AS text),"
     " CAST(:cr AS text), CAST(:pm AS integer), CAST(:cl AS text[]), CAST(:cdl AS text),"
     " CAST(:dyn AS boolean), :ensemble,"
     " CAST(:budget AS numeric), :scan, :chat, :step, CAST(:rd AS text), CAST(:mm AS text),"
-    " CAST(:dpl AS integer))"
+    " CAST(:dpl AS integer), CAST(:ulc AS integer))"
 )
 _SET_AI_DEFAULTS = text(
     "SELECT kaagaz_op_set_ai_defaults(:o, CAST(:sm AS text[]), CAST(:sd AS text), CAST(:cm AS text[]),"
     " CAST(:cd AS text), CAST(:st AS text), CAST(:sr AS text), CAST(:ct AS text), CAST(:cr AS text),"
     " CAST(:pm AS integer), CAST(:cl AS text[]), CAST(:cdl AS text), CAST(:dyn AS boolean), :scan, :chat,"
-    " :step, CAST(:rd AS text), CAST(:mm AS text), CAST(:dpl AS integer))"
+    " :step, CAST(:rd AS text), CAST(:mm AS text), CAST(:dpl AS integer), CAST(:ulc AS integer))"
 )
 _SCAN_COST = text(
     "SELECT * FROM kaagaz_op_scan_cost(:o, CAST(:c AS uuid), :m, :t, :r, CAST(:cm AS text),"
@@ -94,6 +97,7 @@ _CHECK = text(
     "SELECT * FROM kaagaz_op_accuracy_check(:o, :c, CAST(:m AS text), CAST(:st AS text), CAST(:sr AS text),"
     " CAST(:ct AS text), CAST(:cr AS text), CAST(:pm AS integer), CAST(:dyn AS boolean))"
 )
+_ULC_COST = text("SELECT * FROM kaagaz_op_ulc_cost(:o, CAST(:c AS uuid), :m)")
 _MODEL_RATES = text("SELECT * FROM kaagaz_op_model_rates(:o, :c)")
 _SET_MODEL_RATE = text("SELECT kaagaz_op_set_model_rate(:o, :c, :u, :rpm, :step)")
 
@@ -110,7 +114,9 @@ class AiChoice:
     openrouter or mistral) and the Mistral model; for the platform, None is openrouter and
     DEFAULT_MISTRAL_MODEL. Whether Mistral is set up is the API's check, not the database's.
     #478 (0066): the daily page limit (pages AI may read in one India day); for the platform,
-    None is no limit."""
+    None is no limit. #488 (0070): Ultra low cost's ceiling, the most one read of a page may cost,
+    in paise (20 to 40; ``scan_reader`` ultra_low_cost reads with it); for the platform, None is
+    ULC_DEFAULT_PAISE."""
 
     scan_models: Sequence[str] = ()
     scan_default: str | None = None
@@ -127,6 +133,7 @@ class AiChoice:
     scan_reader: str | None = None
     mistral_model: str | None = None
     daily_page_limit: int | None = None
+    ulc_ceiling_paise: int | None = None
 
     def params(self) -> dict[str, object]:
         return {
@@ -145,6 +152,7 @@ class AiChoice:
             "rd": self.scan_reader,
             "mm": self.mistral_model,
             "dpl": self.daily_page_limit,
+            "ulc": self.ulc_ceiling_paise,
         }
 
 
@@ -184,7 +192,7 @@ def org_ai(conn: Connection, operator_id: str, customer_id: str) -> RowMapping |
     """One organisation's own settings (scan_models, scan_default, chat_models,
     chat_default, scan_thinking, chat_levels, chat_default_level, dynamic, scan_resolution,
     careful_thinking, careful_resolution, page_max_output_tokens, scan_reader, mistral_model,
-    daily_page_limit, ensemble) and ai_budget_usd; an empty list or a
+    daily_page_limit, ulc_ceiling_paise, ensemble) and ai_budget_usd; an empty list or a
     NULL field inherits. None when there is no such organisation (or the operator is not enabled)."""
     return (
         conn.execute(text("SELECT * FROM kaagaz_op_org_ai(:o, :c)"), {"o": operator_id, "c": customer_id})
@@ -228,7 +236,7 @@ def ai_defaults(conn: Connection, operator_id: str) -> RowMapping | None:
     """The platform defaults (as ``org_ai``, without ensemble and budget) and
     orgs_inheriting_{scan_models, chat_models, scan_thinking, chat_levels, dynamic,
     scan_resolution, careful_thinking, careful_resolution, page_max_output_tokens, scan_reader,
-    mistral_model, daily_page_limit}: the
+    mistral_model, daily_page_limit, ulc_ceiling_paise}: the
     organisations (not being deleted) a change of that area reaches. None for an operator
     who is not enabled."""
     return (
@@ -269,6 +277,14 @@ def mistral_status(conn: Connection, operator_id: str) -> RowMapping | None:
         .mappings()
         .first()
     )
+
+
+def ulc_cost(conn: Connection, operator_id: str, customer_id: str | None, model: str) -> RowMapping | None:
+    """#488 (0070): pages, cost_usd (None with none), limit_hits and top_usd_per_page (the highest
+    cost a page of one document; None with none) of ``model``'s Ultra low cost reads over the last
+    30 days, ``customer_id``'s (None: every organisation's), reported costs only. None for an
+    operator who is not enabled."""
+    return conn.execute(_ULC_COST, {"o": operator_id, "c": customer_id, "m": model}).mappings().first()
 
 
 def feature_switches(conn: Connection, operator_id: str) -> Sequence[RowMapping]:

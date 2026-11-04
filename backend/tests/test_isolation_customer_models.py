@@ -288,6 +288,7 @@ def test_an_organisations_models_and_budget_are_replaced_and_audited_in_both_log
                 "scan_reader": None,  # Changed on purpose (#473, 0065): the operator's log only
                 "mistral_model": None,
                 "daily_page_limit": None,  # Changed on purpose (#478)
+                "ulc_ceiling_paise": None,  # Changed on purpose (#488)
                 "budget_usd": 12.5,
             },
         )
