@@ -749,6 +749,16 @@ class ReadingAdmission(Protocol):
     ) -> contextlib.AbstractContextManager[object]: ...
 
 
+class ReadingAdmission(Protocol):
+    """``kaagaz.jobs.reading_pause.ReadingPause.admit`` (#478): the document may be read inside,
+    or its organisation is paused and it raises ReadingPaused (the document held). ``ai_pages``
+    False: a spreadsheet, never held by the daily page limit."""
+
+    def __call__(
+        self, customer_id: str, document_id: str, *, ai_pages: bool = True
+    ) -> contextlib.AbstractContextManager[object]: ...
+
+
 class UsageScopes(Protocol):
     """``kaagaz.ai.usage.usage_scope`` on the database (SP1): the model calls made inside
     are billed to this customer, user, kind and document, saved when it ends."""
