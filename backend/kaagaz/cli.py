@@ -703,7 +703,9 @@ def _measure_compact(db: Database, days: int, out: TextIO) -> None:
         with db.customer(customer) as conn:
             rows = conn.execute(_COMPACT_PAGES, {**params, "c": customer}).all()
         for result, tokens in rows:
-            lossless, compact = compact_round_trip(dict(result), encode_compact, decode_compact)
+            lossless, compact = compact_round_trip(
+                dict(result), encode_compact, lambda r: decode_compact(r).result
+            )
             original = len(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
             sizes.append((lossless, compact, original, int(tokens or 0)))
     out.write("\n".join(compact_lines(days, sizes)) + "\n")

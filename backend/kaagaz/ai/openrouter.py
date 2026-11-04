@@ -80,6 +80,12 @@ at (#463).
   (``input_tokens``, ``output_tokens``: this reply's usage, plus the first reply's when a
   repair was asked for), so a blocked, cut off or invalid reply is still counted (G9).
 * Any other finish reason, or none: ``ModelOutputError("invalid_output")``.
+* #488 (Ultra low cost): a page read with a ``PageBudget`` is never sent past it. Each call's
+  ``max_completion_tokens`` is what the money left buys after its input (``PageBudget.cap``),
+  every billed reply is charged the larger of its ``usage.cost`` and its tokens at the
+  catalogue's prices, a billed mid-reply error is retried only with a limit still affordable,
+  and the repair only when its input and a limit of MIN_CAP_TOKENS are; otherwise
+  ``ModelOutputError("cost_ceiling")``, counted as a limit hit, nothing sent.
 * JSON that does not follow the schema, or that the caller's ``validate`` refuses (a
   ``read_page`` reply that breaks what the schema can't say): one repair retry, then
   ``ModelOutputError("invalid_output")``. One repair at most, whichever check failed.
@@ -206,6 +212,13 @@ SCHEMA_NAME = "page"
 # endpoint; at high thinking a dense handwritten page passed 32768, and its halves then ran
 # out of the page's time. Only the tokens generated are billed.
 PAGE_MAX_OUTPUT_TOKENS = 65536
+# #488 (Ultra low cost): a page read with a ``PageBudget`` is never sent with an output limit
+# below this (a page's compact reply needs more), and its code when it would be.
+MIN_CAP_TOKENS = 256
+COST_CEILING = "cost_ceiling"
+# #488: a repair turn takes in the page again, the first reply and the problem: their tokens at
+# most their UTF-8 bytes, with this share more for the turns' own wrapping.
+REPAIR_INPUT_MARGIN = 1.05
 # chat_json thinks at this effort: the card, the invoice windows, answers
 # and the follow-up rewrite want a short exact reply. gemini-3.1-pro-preview has no
 # "minimal" level (Google's thinking page), so "low" is the least it accepts. An answer's
@@ -295,6 +308,55 @@ class PageReply:
     input_tokens: int
     output_tokens: int
     finish_reason: str
+
+
+class PageBudget:
+    """#488 (Ultra low cost): the money left for one read of a page, held over every call made
+    for it. ``usd_left`` starts at the page's ceiling; ``price_in`` and ``price_out`` are the
+    lead's catalogue prices in dollars a token; ``input_estimate`` the tokens a call with the
+    page takes in, at most (the reader's estimate). Before each call ``cap`` gives its output
+    limit: what is left after its input at ``price_in``, at ``price_out``, so the call can never
+    cost more than is left (None, below MIN_CAP_TOKENS: nothing is sent). Each billed reply is
+    charged the larger of its reported cost and its tokens at the prices (``charge``), so a
+    cost the reply leaves out is still counted. One page's calls are made one after another, so
+    there is no lock. O(1) each."""
+
+    def __init__(self, usd: float, price_in: float, price_out: float, input_estimate: int) -> None:
+        self.usd = usd
+        self.usd_left = usd
+        self.price_in = price_in
+        self.price_out = price_out
+        self.input_estimate = input_estimate
+        self.input_tokens = 0
+        self.output_tokens = 0
+        self.page_input: int | None = None  # the first billed call's input tokens: the page's own
+
+    @property
+    def spent(self) -> float:
+        return self.usd - self.usd_left
+
+    def cap(self, input_tokens: int | None = None) -> int | None:
+        """The output limit of a call that takes in ``input_tokens`` (None: the page's, the
+        larger of the estimate and what its first call took in), at most PAGE_MAX_OUTPUT_TOKENS;
+        None when it is below MIN_CAP_TOKENS."""
+        tokens_in = max(self.input_estimate, self.page_input or 0) if input_tokens is None else input_tokens
+        if self.price_out <= 0:
+            return None
+        cap = min(
+            PAGE_MAX_OUTPUT_TOKENS, math.floor((self.usd_left - tokens_in * self.price_in) / self.price_out)
+        )
+        while cap >= MIN_CAP_TOKENS and tokens_in * self.price_in + cap * self.price_out > self.usd_left:
+            cap -= 1  # a float's last bit never lets a call past what is left
+        return cap if cap >= MIN_CAP_TOKENS else None
+
+    def charge(self, input_tokens: int, output_tokens: int, cost: float | None) -> None:
+        """One billed reply: the larger of ``cost`` (the reply's usage.cost) and its tokens at
+        the prices, taken off what is left."""
+        self.usd_left -= max(cost or 0.0, input_tokens * self.price_in + output_tokens * self.price_out)
+        self.input_tokens += input_tokens
+        self.output_tokens += output_tokens
+        if self.page_input is None:
+            self.page_input = input_tokens
 
 
 @dataclass(frozen=True, slots=True)
@@ -1077,6 +1139,7 @@ class OpenRouterClient:
         provider: str | None = None,
         validate: Callable[[dict[str, Any]], str | None] | None = None,
         max_output_tokens: int | None = None,
+        budget: PageBudget | None = None,
     ) -> PageReply:
         """One page read by ``model`` through ``provider`` (None: OCR_MODEL through
         DEFAULT_PROVIDER, as before model choice) as a JSON object following ``schema``,
@@ -1087,10 +1150,17 @@ class OpenRouterClient:
         repair, with the page again; the tokens of both calls are counted. ``max_output_tokens``
         (#463: the organisation's limit; None: PAGE_MAX_OUTPUT_TOKENS) is sent as
         max_completion_tokens; a reply that reaches it raises ``output_truncated`` as before,
-        counted on the ledger as a limit hit."""
+        counted on the ledger as a limit hit. #488: with a ``budget`` (Ultra low cost) every
+        call is held under it (``_read_within``)."""
         if model is not None and not valid_model_id(model):
             raise ValueError("a model ID must be an OpenRouter author/slug with no :variant")
         self._check_provider(DEFAULT_PROVIDER if provider is None else provider)
+        limit = PAGE_MAX_OUTPUT_TOKENS if max_output_tokens is None else max_output_tokens
+        if budget is not None:
+            cap = budget.cap()
+            if cap is None:
+                raise ModelOutputError(COST_CEILING)  # nothing sent
+            limit = min(limit, cap)
         body = page_request(
             model=self.ocr_model if model is None else model,
             png=png,
@@ -1098,10 +1168,12 @@ class OpenRouterClient:
             schema=schema,
             media_resolution=media_resolution,
             thinking=thinking_level,
-            max_output_tokens=PAGE_MAX_OUTPUT_TOKENS if max_output_tokens is None else max_output_tokens,
+            max_output_tokens=limit,
             provider_slug=DEFAULT_PROVIDER if provider is None else provider,
         )
         sent = (thinking_level, media_resolution)  # #463: the ledger's settings of a page read
+        if budget is not None:
+            return self._read_within(body, schema, validate, deadline, sent, budget)
         reply = self._call(CHAT_PATH, body, deadline, sent=sent)
         input_tokens, output_tokens = reply_usage(reply)
         content, finish = _page_text(reply, (0, 0), str(body["model"]), sent)
@@ -1119,6 +1191,50 @@ class OpenRouterClient:
                     "invalid_output", input_tokens=input_tokens, output_tokens=output_tokens
                 )
         return PageReply(value, input_tokens, output_tokens, finish)
+
+    def _read_within(
+        self,
+        body: dict[str, Any],
+        schema: Mapping[str, Any],
+        validate: Callable[[dict[str, Any]], str | None] | None,
+        deadline: float,
+        sent: tuple[str, str],
+        budget: PageBudget,
+    ) -> PageReply:
+        """#488: ``read_page`` held under ``budget``: each billed reply is charged to it (a
+        mid-reply error too, retried only with an output limit it still affords, ``_call``);
+        the one repair is sent only when the budget affords its input (the page, the reply and
+        the problem, at most their bytes, REPAIR_INPUT_MARGIN more) and an output limit of at
+        least MIN_CAP_TOKENS, else ``ModelOutputError("cost_ceiling")``, counted on the ledger
+        as a limit hit. The reply's tokens, and any error's, are every billed call's."""
+        model = str(body["model"])
+        try:
+            reply = self._call(CHAT_PATH, body, deadline, sent=sent, budget=budget)
+            content, finish = _page_text(reply, (0, 0), model, sent)
+            value, problem = _valid_reply(content, schema, validate)
+            if value is None:
+                repair = REPAIR.format(problem=problem)
+                said = reply_usage(reply)[0] + len(content.encode("utf-8")) + len(repair.encode("utf-8"))
+                tokens_in = math.ceil(REPAIR_INPUT_MARGIN * said)
+                cap = budget.cap(tokens_in)
+                if cap is None:
+                    usage.record_limit_hit(model, thinking=sent[0], resolution=sent[1])
+                    raise ModelOutputError(COST_CEILING)
+                body["messages"].append({"role": "assistant", "content": content})
+                body["messages"].append({"role": "user", "content": repair})
+                body["max_completion_tokens"] = cap
+                reply = self._call(CHAT_PATH, body, deadline, sent=sent, budget=budget, tokens_in=tokens_in)
+                content, finish = _page_text(reply, (0, 0), model, sent)
+                value, _ = _valid_reply(content, schema, validate)
+                if value is None:
+                    raise ModelOutputError("invalid_output")
+        except ModelOutputError as error:
+            tokens = {"input_tokens": budget.input_tokens, "output_tokens": budget.output_tokens}
+            raise ModelOutputError(error.code, **tokens) from None
+        except ModelUnavailable as error:
+            tokens = {"input_tokens": budget.input_tokens, "output_tokens": budget.output_tokens}
+            raise ModelUnavailable(error.code, **tokens) from None
+        return PageReply(value, budget.input_tokens, budget.output_tokens, finish)
 
     def _check_provider(self, slug: str) -> None:
         """``ProviderNotAllowed`` unless ``slug`` is in OPENROUTER_PROVIDERS: nothing is sent."""
@@ -1187,15 +1303,32 @@ class OpenRouterClient:
         return vector
 
     def _call(
-        self, path: str, body: Mapping[str, Any], deadline: float, *, sent: tuple[str, str] | None = None
+        self,
+        path: str,
+        body: Mapping[str, Any],
+        deadline: float,
+        *,
+        sent: tuple[str, str] | None = None,
+        budget: PageBudget | None = None,
+        tokens_in: int | None = None,
     ) -> dict[str, Any]:
         """One request with the latch, the body's model's breaker, the limiter and retries
         (G6, G9). Returns the reply object of a 200; raises a coded error otherwise. ``sent``:
-        a page read's (thinking, picture detail), for the ledger (#463)."""
+        a page read's (thinking, picture detail), for the ledger (#463). #488: each billed reply
+        is charged to ``budget``, and a retry is sent with the output limit it still affords,
+        or not at all (``cost_ceiling``, a limit hit): never past the page's ceiling; ``tokens_in``
+        the request's input at most (None: the page's, ``PageBudget.cap``)."""
         gate = self.gate
         model = str(body["model"])
         attempt = 0
         while True:
+            if budget is not None and attempt:
+                cap = budget.cap(tokens_in)
+                if cap is None:
+                    if sent is not None:
+                        usage.record_limit_hit(model, thinking=sent[0], resolution=sent[1])
+                    raise ModelOutputError(COST_CEILING)
+                body = {**body, "max_completion_tokens": min(cap, int(body["max_completion_tokens"]))}
             gate.admit(model)
             start = gate.take_slot(deadline, model)
             ahead = start - gate.clock()
@@ -1216,9 +1349,11 @@ class OpenRouterClient:
                     raise ModelUnavailable(reply.failure or "bad_response")
                 if not failed_mid_reply(reply.body):
                     gate.record(model, failed=False)
-                    self._count(reply.body, model, sent)
+                    self._count(reply.body, model, sent, budget)
                     return reply.body
-                self._count(reply.body, model, sent)  # a reply that failed part way may still be billed
+                self._count(
+                    reply.body, model, sent, budget
+                )  # a reply that failed part way may still be billed
                 code = "server_error"
             elif reply.status in _KEY_STATUSES:
                 if reply.status == 403 and (
@@ -1259,13 +1394,21 @@ class OpenRouterClient:
             gate.sleep(wait)
             attempt += 1
 
-    def _count(self, reply: Mapping[str, Any], model: str, sent: tuple[str, str] | None = None) -> None:
+    def _count(
+        self,
+        reply: Mapping[str, Any],
+        model: str,
+        sent: tuple[str, str] | None = None,
+        budget: PageBudget | None = None,
+    ) -> None:
         """Count one billed reply (G9): this client's totals, and the current usage scope's
         ledger (SP1, ``kaagaz.ai.usage``) under the model asked for and the provider the
-        reply names, if it looks like a name. Every billed reply comes here: a blocked, cut
-        off or repaired one too."""
+        reply names, if it looks like a name; #488: and charge it to ``budget``. Every billed
+        reply comes here: a blocked, cut off or repaired one too."""
         input_tokens, output_tokens = reply_usage(reply)
         cost = reply_cost(reply)
+        if budget is not None:
+            budget.charge(input_tokens, output_tokens, cost)
         named = reply.get("provider")
         provider_name = named if isinstance(named, str) and _PROVIDER_NAME.fullmatch(named) else None
         thinking, resolution = sent or (None, None)

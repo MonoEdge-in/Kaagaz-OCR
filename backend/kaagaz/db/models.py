@@ -235,7 +235,7 @@ class Reading:
     page_max_output_tokens: int | None = None
     scan_reader: str = OPENROUTER
     mistral_model: str = DEFAULT_MISTRAL_MODEL
-    ulc: UlcCeiling | None = None
+    ulc: UlcCeiling | None = None  # #488: Ultra low cost's ceiling (builder B fills it)
 
     @property
     def reader(self) -> str:

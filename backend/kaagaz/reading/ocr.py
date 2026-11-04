@@ -105,6 +105,13 @@ GEMINI = "gemini"
 # without loading the reader, and the API may import it. g2: the strict-portable PAGE_SCHEMA.
 # g3 (#383, #382): each line's block, the kind "note", and a table cell's col_span.
 READER_PROMPT_VERSION = "g3"
+# #488 (Ultra low cost, Tushar, 4 Nov 2026): the compact reply's prompt version
+# (``kaagaz/reading/compact.py``: INSTRUCTION_COMPACT, COMPACT_SCHEMA). A page read under Ultra low
+# cost is cached under "c1+ulc<paise>", so it is never taken for a g3 read, nor a g3 read for it.
+COMPACT_PROMPT_VERSION = "c1"
+# #488: rupees to the dollar, the rate the operator's screens show (frontend
+# components/operator/models.ts INR_PER_USD), so a ceiling in paise is a ceiling in dollars.
+INR_PER_USD = 88  # shortcut: a fixed rate; make it a platform setting if the rupee moves
 # PRD 5 RT2: pages.read_by for a page the local reader read.
 LOCAL_READ_BY = "rapidocr"
 # PRD 5 F3: the span qualities that mark one word of a line, not the line.
@@ -571,6 +578,32 @@ def as_page_engine(engine: OcrEngine) -> PageEngine:
     return engine if isinstance(engine, PageEngine) else _LinesAsPages(engine)
 
 
+@dataclass(frozen=True, slots=True)
+class UlcCeiling:
+    """#488: the most one read of a page may cost under Ultra low cost: ``paise`` as the super
+    admin set it (20 to 40), and the same in US dollars (``usd``, at INR_PER_USD), which every
+    call made for the read is held under. "Read again" is a new read, with its own ceiling."""
+
+    usd: float
+    paise: int
+
+    @classmethod
+    def of(cls, paise: int) -> "UlcCeiling":
+        """The ceiling of ``paise`` paise. O(1)."""
+        return cls(usd=paise / 100 / INR_PER_USD, paise=paise)
+
+
+@dataclass(frozen=True, slots=True)
+class UlcPrices:
+    """#488: the lead model's ``model_catalog`` prices (dollars a million tokens in and out) and
+    its tokens a page in (None: not measured), taken once for the document, so a price change
+    mid-document never moves a page's output limit under it."""
+
+    price_in_usd_per_m: float
+    price_out_usd_per_m: float
+    tokens_per_page_in: int | None = None
+
+
 class PageCache(Protocol):
     """The page cache (PRD 5 G7): ``kaagaz.db.page_reads.PgPageReads`` in the product."""
 
@@ -617,7 +650,12 @@ class DocumentPages:
 
     #473 (Tushar, 2 Nov 2026; ``kaagaz.db.models.Reading``): ``scan_reader`` who reads the pages
     a model would read, openrouter (the fields above) or mistral (Mistral OCR's ``mistral_model``
-    in place of every model call: never Gemini, Careful or Ensemble)."""
+    in place of every model call: never Gemini, Careful or Ensemble).
+
+    #488 (Ultra low cost, ``kaagaz.db.models.Reading.ulc``): with ``ulc`` set, each page is one
+    compact read by ``model`` at minimal thinking, every call held under the ceiling at
+    ``ulc_prices`` (None: no known price, so nothing is sent); never Careful, Ensemble, routing,
+    regions or halves (``gemini_ocr``'s module notes). None: everything above, as before."""
 
     customer_id: str
     document_id: str
@@ -653,6 +691,8 @@ class DocumentPages:
     levels: Mapping[str, frozenset[str]] = dataclasses.field(default_factory=dict)
     scan_reader: str = OPENROUTER
     mistral_model: str = DEFAULT_MISTRAL_MODEL
+    ulc: UlcCeiling | None = None
+    ulc_prices: UlcPrices | None = None
 
 
 @runtime_checkable
@@ -978,13 +1018,3 @@ def _find_word(text: str, word: str, cursor: int) -> int | None:
 
 def _clamped(confidence: float | None) -> float | None:
     return None if confidence is None else min(1.0, max(0.0, confidence))
-
-
-# shortcut: builder B's stand-in (#488), with builder A's exact name and fields; the merge takes
-# builder A's real one in this module.
-@dataclass(frozen=True, slots=True)
-class UlcCeiling:
-    """Ultra low cost's most one read of a page may cost: ``usd`` (``paise`` at INR_PER_USD)."""
-
-    usd: float
-    paise: int
