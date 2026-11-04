@@ -1,8 +1,9 @@
 // The one place the app calls the backend. Every call goes to /api (forwarded to
 // FastAPI by next.config.ts), sends the session cookie, and turns an error reply
 // into an ApiError with the backend's short code. A reply saying the session
-// has ended (401 not_signed_in) is also told to the session provider, which
-// sends the browser to sign in (lib/session.tsx).
+// has ended (401 not_signed_in), or that an admin must set up two-step first (403
+// mfa_enrol_required, QA 4 Nov 2026), is also told to the session provider, which
+// sends the browser to sign in (lib/session.tsx), where the set-up is offered.
 
 import type { DocumentSearchParams } from "@/components/documents/insideSearch";
 import type { DocumentListParams } from "@/components/documents/libraryQuery";
@@ -128,7 +129,8 @@ export function onSessionEnded(listener: (() => void) | null): void {
 }
 
 function noticeSessionEnd(error: ApiError): ApiError {
-  if (error.status === 401 && error.code === "not_signed_in") sessionEnded?.();
+  const ended = error.status === 401 && error.code === "not_signed_in";
+  if (ended || (error.status === 403 && error.code === "mfa_enrol_required")) sessionEnded?.();
   return error;
 }
 

@@ -27,6 +27,9 @@ NOT_BACKEND = {
     "STORAGE_ADMIN_SECRET_KEY",
     # the app's login, which docker-compose.yml makes api's and worker's DATABASE_URL (#479).
     "APP_DATABASE_URL",
+    # the off-server backup's bucket and certificate, read by infra/ec2/pgdump.sh only (#476).
+    "BACKUP_BUCKET",
+    "BACKUP_CERT",
 }
 # The settings with no default on 27 Oct 2026: business limits, retry counts, lease times and
 # model names are Vrushit's (kaagaz/settings.py). Never add to this list: give the new
@@ -134,3 +137,15 @@ def test_only_the_frozen_list_stops_start_up_when_missing() -> None:
         f"give {new} a safe default in kaagaz/settings.py: an older server .env must still start"
     )
     assert sorted(REQUIRED - required) == []  # one got a default: take it off the list too
+
+
+def test_every_setting_the_server_scripts_read_is_in_env_example() -> None:
+    """QA W4: pgdump.sh reads .env with ``env_value NAME``; each name is listed, with a comment."""
+    scripts = (BACKEND.parent / "infra" / "ec2").glob("*.sh")
+    read = {
+        name
+        for script in scripts
+        for name in re.findall(r"env_value ([A-Z][A-Z0-9_]*)", script.read_text(encoding="utf-8"))
+    }
+    assert read >= {"BACKUP_BUCKET", "BACKUP_CERT"}  # the pattern still finds them
+    assert sorted(read - _listed()) == []

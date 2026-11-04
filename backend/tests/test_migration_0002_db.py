@@ -1,9 +1,10 @@
 """Migration 0002 on a fresh database: the backfill, the downgrade, and upgrading again.
 
-The fresh database is DATABASE_URL's database name plus ``_fresh``, dropped and
-created again for each test (for example ``kaagaz_test_fresh`` for
-``kaagaz_test``). Rows are written and read through the app role with the
-customer set, like every other test; only the migrations run as the owner.
+The fresh database is DATABASE_URL's database name plus ``_fresh_`` and this run's
+process id, dropped and created again for each test (for example ``kaagaz_test_fresh_4242``
+for ``kaagaz_test``), so two runs on one server never drop each other's (QA W5). Rows are
+written and read through the app role with the customer set, like every other test; only the
+migrations run as the owner.
 """
 
 import os
@@ -84,7 +85,7 @@ def _recreate(maintenance_url: str, name: str, *, create: bool) -> None:
 def fresh() -> Iterator[tuple[str, Database]]:
     """An empty database next to DATABASE_URL's, and a Database on it."""
     main = make_url(database_url())
-    name = f"{main.database}_fresh"
+    name = f"{main.database}_fresh_{os.getpid()}"
     url = main.set(database=name).render_as_string(hide_password=False)
     _recreate(database_url(), name, create=True)
     database = make_database(url)
@@ -154,6 +155,12 @@ def _schema(database: Database) -> dict[str, list[tuple[Any, ...]]]:
 
 def _names(schema: dict[str, list[tuple[Any, ...]]], part: str, position: int = 0) -> set[str]:
     return {str(row[position]) for row in schema[part]}
+
+
+def test_the_fresh_database_is_this_runs_own(fresh: tuple[str, Database]) -> None:
+    """QA W5/T3: two test runs on one server never drop each other's fresh database."""
+    url, _ = fresh
+    assert make_url(url).database == f"{make_url(database_url()).database}_fresh_{os.getpid()}"
 
 
 def test_upgrade_makes_every_existing_document_its_own_first_version(fresh: tuple[str, Database]) -> None:

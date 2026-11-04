@@ -11,6 +11,10 @@ route to anyone who asks, and the frontend does not need them.
 
 ``configure_logging(level)`` is the API process's log setup, which
 ``kaagaz.api.main`` calls once.
+
+At start-up (uvicorn's lifespan, never with a test's ``db``) the operator's login is tried once
+(``check_operator_login``, QA W1): one that cannot switch into kaagaz_operator stops the API with
+one plain log line, instead of a console that fails while /api/health stays green.
 """
 
 import logging
@@ -20,6 +24,8 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
 from fastapi import Depends, FastAPI
+from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 
 from kaagaz.adapters.email import Mailer
 from kaagaz.ai.client import ModelClient
@@ -57,7 +63,15 @@ from kaagaz.api.routers import (
     words,
 )
 from kaagaz.db.engine import Database, OperatorDatabase, make_engine
+from kaagaz.db.sqlstate import sqlstate
 from kaagaz.settings import Settings
+
+_log = logging.getLogger("kaagaz.api")
+
+OPERATOR_LOGIN_FAILED = (
+    "the super admin's database login cannot be used: set OPS_DATABASE_URL to kaagaz_ops's login"
+    " whenever APP_DATABASE_URL is set (docs/running-locally.md, Limited database logins)"
+)
 
 
 def _utc_now() -> datetime:
@@ -106,10 +120,14 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        yield
-        if owns_db:
-            database.engine.dispose()
-            operator_engine.dispose()  # on release day the same engine: twice is harmless
+        try:
+            if owns_db:
+                check_operator_login(operator_db)
+            yield
+        finally:  # a refused start too: its connections are closed, never left to the collector
+            if owns_db:
+                database.engine.dispose()
+                operator_engine.dispose()  # on release day the same engine: twice is harmless
 
     app = FastAPI(
         title="Kaagaz",
@@ -156,6 +174,25 @@ def create_app(
     ):
         app.include_router(router, prefix="/api")
     return app
+
+
+def check_operator_login(operator_db: OperatorDatabase) -> None:
+    """One ``SELECT 1`` as kaagaz_operator. On failure, one plain log line (the SQLSTATE or the
+    error's type, never its message), then RuntimeError, which stops uvicorn's start-up. On the
+    server the usual failure is OPS_DATABASE_URL unset while APP_DATABASE_URL is set: Settings
+    then gives the operator part the app's login, which may switch into kaagaz_app alone."""
+    try:
+        with operator_db.operator() as conn:
+            conn.execute(text("SELECT 1"))
+    except SQLAlchemyError as error:
+        why = sqlstate(error) if isinstance(error, DBAPIError) else None
+        _log.critical(
+            "%s (%s)",
+            OPERATOR_LOGIN_FAILED,
+            why or type(error).__name__,
+            extra={"code": "operator_login_failed"},
+        )
+        raise RuntimeError(OPERATOR_LOGIN_FAILED) from None
 
 
 def configure_logging(level: str) -> None:

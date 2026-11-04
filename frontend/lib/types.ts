@@ -1229,6 +1229,8 @@ export interface PlatformHealth {
   // #246 O1: the commit the API's image was built from ("local": built by hand). The
   // deployer's last attempt and last good release stay in files on the server.
   release?: { commit: string };
+  // QA C2 (4 Nov 2026): whether Mistral has stopped reading pages, as the AI settings say it.
+  mistral_status?: MistralStatus;
 }
 
 export type ReaderState = "working" | "failing" | "down" | "key_problem";

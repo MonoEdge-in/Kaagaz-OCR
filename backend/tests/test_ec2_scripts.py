@@ -466,9 +466,12 @@ def test_the_disk_alert_emails_over_80_percent_at_most_once_a_day() -> None:
     assert script.startswith("#!/usr/bin/env bash\n") and "\nset -euo pipefail\n" in script
     assert "\nLIMIT_PERCENT=80\n" in script and "\nSENT_FILE=/home/ubuntu/.kaagaz-disk-alert\n" in script
     assert "used=\"$(df --output=pcent / | tail -n 1 | tr -dc '0-9')\"" in script
+    # QA W3: .env holds the owner's login and the storage admin key; this container needs neither.
     send = (
-        "if ! docker run --rm --network host --env-file .env kaagaz-backend:local \\\n"
-        '  python -m kaagaz.cli disk-alert --used "$used"; then\n'
+        "if ! docker run --rm --network host --env-file .env \\\n"
+        "  -e POSTGRES_PASSWORD= -e STORAGE_ADMIN_SECRET_KEY= -e DATABASE_URL=none \\\n"
+        "  -e APP_DATABASE_URL= -e OPS_DATABASE_URL= \\\n"
+        '  kaagaz-backend:local python -m kaagaz.cli disk-alert --used "$used"; then\n'
         '  echo "DISK ${used}% USED and the alert email was NOT sent: the lines above say why" >&2\n'
         "  exit 1\n"
     )

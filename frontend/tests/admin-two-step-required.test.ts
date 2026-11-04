@@ -46,7 +46,8 @@ describe("the super admin's switch", () => {
     expect(view.indexOf('org.status === "deleting"')).toBeLessThan(view.indexOf('label: "Two-step for admins"'));
     expect(MENU_HELP.twoStep).toBe("Require every admin here to sign in with a code from their phone.");
     const html = renderToStaticMarkup(createElement(OrgAdminTwoStepDialog, { org: ORG, onClose: () => {}, onDone: () => {} }));
-    expect(html).toContain("Two-step for Sharma Traders&#x27;s admins");
+    // Changed on purpose (QA U14, 4 Nov 2026): "admins of" reads right for any name, one ending in s too.
+    expect(html).toContain("Two-step sign-in for admins of Sharma Traders");
     expect(html).toContain(ADMIN_TWO_STEP_HELP.replaceAll("'", "&#x27;"));
     expect(ADMIN_TWO_STEP_HELP).toBe(
       "Every admin of this organisation must sign in with a password and a 6-digit code. An admin who turned it off sets it up before they can do anything else, and no admin can turn it off.",
@@ -55,7 +56,7 @@ describe("the super admin's switch", () => {
 
   it("asks first with a fresh code, in plain words each way", () => {
     expect(adminTwoStepConfirm(ORG, true)).toMatchObject({
-      title: "Require two-step sign-in for Sharma Traders's admins?",
+      title: "Require two-step sign-in for admins of Sharma Traders?",
       // Every route refuses them until then (current_user's 403 mfa_enrol_required), not only the admin screens.
       effect: "An admin of Sharma Traders without two-step sign-in must set it up before they can use Kaagaz again. Members are not affected.",
       action: "Require it",
@@ -63,9 +64,10 @@ describe("the super admin's switch", () => {
       stepUp: true,
     });
     expect(adminTwoStepConfirm(ORG, false)).toMatchObject({
-      title: "Stop requiring two-step sign-in for Sharma Traders's admins?",
+      title: "Stop requiring two-step sign-in for admins of Sharma Traders?",
+      effect: "Admins of Sharma Traders can turn their own two-step sign-in off again. Anyone who has it on keeps it.",
       action: "Stop requiring it",
-      done: "Two-step sign-in is no longer required for Sharma Traders's admins.",
+      done: "Two-step sign-in is no longer required for admins of Sharma Traders.",
       danger: true,
       stepUp: true,
     });
@@ -107,5 +109,8 @@ describe("the activity words", () => {
     expect(describeAction("org.admin_two_step_on")).toBe("Two-step sign-in required for admins");
     expect(describeAction("org.admin_two_step_off")).toBe("Two-step sign-in no longer required for admins");
     expect(whoText({ action: "org.admin_two_step_on", actor_name: null, details: {} })).toBe("Kaagaz");
+    // QA P2 (4 Nov 2026): a held file released after a reading pause; Kaagaz does it by itself.
+    expect(describeAction("document.reading_released")).toBe("Reading started again after a pause");
+    expect(whoText({ action: "document.reading_released", actor_name: null, details: {} })).toBe("Kaagaz");
   });
 });

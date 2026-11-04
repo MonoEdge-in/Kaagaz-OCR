@@ -310,7 +310,8 @@ def test_the_disk_alert_records_the_day_only_once_sent_and_says_loudly_when_not(
         [BASH, str(script)], cwd=tmp_path, capture_output=True, text=True, check=False, timeout=120
     )
     assert (tmp_path / "ran").read_text(encoding="utf-8") == (
-        "run --rm --network host --env-file .env kaagaz-backend:local"
+        "run --rm --network host --env-file .env -e POSTGRES_PASSWORD= -e STORAGE_ADMIN_SECRET_KEY="
+        " -e DATABASE_URL=none -e APP_DATABASE_URL= -e OPS_DATABASE_URL= kaagaz-backend:local"
         " python -m kaagaz.cli disk-alert --used 91\n"
     )
     if sends:

@@ -169,11 +169,9 @@ export function adminConfirm(orgId: string, admin: OrgAdmin, change: AdminAction
     case "reset-2fa":
       return {
         title: `Reset two-step for ${name}?`,
-        effect:
-          "Their two-step sign-in is turned off and they are signed out. They sign in with their password " +
-          "alone, then can turn two-step on again in Admin, Settings.",
+        effect: "Their two-step code is cleared and they are signed out. They set up a new code the next time they sign in.",
         action: "Reset two-step",
-        done: `Two-step is off for ${name}.`,
+        done: `Two-step reset for ${name}.`,
         danger: true,
         stepUp: true,
         run,
