@@ -736,6 +736,11 @@ const ACTION_WORDS: Record<string, string> = {
   "version.undone": "Undid a version link",
   "version.make_current": "Made a version current",
   "audit.export": "Exported the activity",
+  // #482 and #481 (3 Nov 2026): reads logged since, and the super admin's two-step rule.
+  "search.run": "Searched inside documents",
+  "usage.export": "Exported the AI usage",
+  "org.admin_two_step_on": "Two-step sign-in required for admins",
+  "org.admin_two_step_off": "Two-step sign-in no longer required for admins",
 };
 
 /** The audit action in words; an action this screen does not know is shown as is. */
@@ -745,7 +750,13 @@ export function describeAction(action: string, details: Record<string, unknown> 
 }
 
 // What Kaagaz did by itself (feature 28) has no person: the Who column says "Kaagaz".
-const BY_KAAGAZ = new Set(["document.autofile", "org.autofile_grant", "org.autofile_revoke"]);
+const BY_KAAGAZ = new Set([
+  "document.autofile",
+  "org.autofile_grant",
+  "org.autofile_revoke",
+  "org.admin_two_step_on", // #481: the super admin's, as auto-filing's grant
+  "org.admin_two_step_off",
+]);
 // Issue 375: with no person at all (actor_id null), these come from Kaagaz's own set-up
 // commands (backend kaagaz/cli.py create-user and reset-admin-2fa), never from a screen.
 const SET_UP_BY_KAAGAZ = new Set(["user.create", "user.reset_totp", "auth.totp_reset"]);
@@ -833,6 +844,16 @@ export function usageState(report: UsageReport | null, error: string | null): Us
   if (report === null) return { kind: "loading" };
   if (report.totals.calls > 0) return { kind: "ready", report };
   return report.ai_enabled === false ? { kind: "off" } : { kind: "empty" };
+}
+
+/** #478 (Tushar, 3 Nov 2026): "Pages read today: 1,240 of 2,000." while a daily page limit is
+ * in effect (the India day), and that reading is paused once it is reached; null without one.
+ * Never money. */
+export function pagesTodayLine(report: Pick<UsageReport, "reading_today">): string | null {
+  const today = report.reading_today;
+  if (!today || today.limit === null) return null;
+  const line = `Pages read today: ${formatNumber(today.pages)} of ${formatNumber(today.limit)}.`;
+  return today.pages >= today.limit ? `${line} Reading is paused until tomorrow morning.` : line; // #478 review
 }
 
 /** "$12.40 of $50.00 this month", or that there is no budget. */

@@ -68,6 +68,11 @@ until it is told to stop:
   again with one more try counted, or failed as ``stuck_no_job`` with no try left, at most
   20 every 10 minutes, under the sweep lock (``ReviveStuck``, kaagaz/jobs/revive.py,
   stuck reading, 16 Oct 2026).
+* Documents held by an organisation's reading pause (#478) are queued again once it ends (a new
+  India day, a raised limit or budget), looked at every 5 minutes under the sweep lock
+  (``ReleaseHeld``, kaagaz/jobs/reading_pause.py); the first turn after a start does it. With
+  OPS_ALERT_EMAIL and EMAIL_FROM (kaagaz/ops_alert.py), the super admin is emailed when one
+  pauses; without them, the start logs a warning that these alerts are off.
 * Before a job runs, ``admission`` (PRD 5 Q5) hands it back to the queue, with no
   attempt counted: for KEY_PROBLEM_DEFER_SECONDS (300) while the reader's gate
   has a key problem, and for 30 s when its customer already has
@@ -130,11 +135,13 @@ from kaagaz.jobs.fair_share import (
 from kaagaz.jobs.ports import LeaseLost, QueueSetupError, WorkQueue
 from kaagaz.jobs.purge import (
     CustomerStorage,
+    forget_kept_audit,
     purge_deleted_customers,
     purge_expired,
     purge_upload_sessions,
     sweep_purged_customers,
 )
+from kaagaz.jobs.reading_pause import ReleaseHeld, pause_alert, release_held
 from kaagaz.jobs.revive import ReviveStuck, revive_stuck
 from kaagaz.jobs.upgrade import UpgradeLocalReads, upgrade_oldest
 from kaagaz.jobs.worker import (
@@ -673,11 +680,13 @@ def fingerprint_missing(db: Database, limit: int = FINGERPRINT_PASS) -> int:
 
 def _purge(db: Database, storage: CustomerStorage, trash_days: int) -> int:
     """The hourly turn: old Trash (its count is returned and logged by PurgeHourly), then
-    the organisations whose deletion is due, and their second sweep a day later (logged here)."""
+    the organisations whose deletion is due, their second sweep a day later, and their kept
+    audit rows 365 days later (0068, #482; logged here)."""
     families = purge_expired(db, storage, _utc_now, trash_days)
     logger.info("abandoned uploads removed: %d", purge_upload_sessions(db, storage, _utc_now))
     logger.info("deleted organisations: %d families", purge_deleted_customers(db, storage, _utc_now))
     logger.info("purged organisations swept again: %d", sweep_purged_customers(db, storage, _utc_now))
+    logger.info("kept audit rows of deleted organisations removed: %d", forget_kept_audit(db, _utc_now))
     return families
 
 
@@ -836,7 +845,8 @@ def _serve(settings: Settings) -> None:
     from kaagaz.reading.wiring import build_ocr_engine
 
     # The worker's PostgreSQL timeouts (#246 A1): long, so a big document's save or a sweep is
-    # never cut, but a stuck statement, lock wait or open transaction still ends.
+    # never cut, but a stuck statement, lock wait or open transaction still ends. DATABASE_URL is
+    # the app's login in Compose (#479); a worker never builds the operator's engine.
     engine = make_engine(
         settings.database_url,
         statement_timeout_seconds=settings.db_worker_statement_timeout_seconds,
@@ -850,7 +860,10 @@ def _serve(settings: Settings) -> None:
     check_queue_redrive(max_receives, settings.job_max_attempts)
     scanner = build_scanner(settings)
     model = worker_model(settings, db)
-    processor = build_processor(settings=settings, db=db, storage=storage, scanner=scanner, model=model)
+    alert = pause_alert(settings)  # #478: the super admin's email when an organisation's reading pauses
+    processor = build_processor(
+        settings=settings, db=db, storage=storage, scanner=scanner, model=model, alert=alert
+    )
     # Ensemble after the scan reads with a scan reader of its own (the same gate and pool).
     reader = build_ocr_engine(settings, db=db) if settings.ocr_engine == GEMINI else None
     ensemble = EnsembleRuns(db, storage, reader, settings=settings, clock=_utc_now)
@@ -927,7 +940,9 @@ def _serve(settings: Settings) -> None:
         stale_seconds=settings.queue_lease_seconds * settings.job_max_attempts,
         max_attempts=settings.job_max_attempts,
     )
-    worker = ReviveStuck(catalog, revive, lambda: gate.status()[0], _utc_now, lock=lock)
+    revived = ReviveStuck(catalog, revive, lambda: gate.status()[0], _utc_now, lock=lock)
+    release = functools.partial(release_held, db, queue.enqueue)
+    worker = ReleaseHeld(revived, lambda: release(now=_utc_now()), _utc_now, lock=lock)
     run_until_stopped(worker, stop, pause_seconds=settings.queue_wait_seconds, beat=worker_heartbeat.beat)
     reports.join(READER_REPORT_SECONDS)  # stop is set: at most the report in flight is left
     db.engine.dispose()

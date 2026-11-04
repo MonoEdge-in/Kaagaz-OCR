@@ -287,6 +287,7 @@ def test_an_organisations_models_and_budget_are_replaced_and_audited_in_both_log
                 "page_max_output_tokens": None,
                 "scan_reader": None,  # Changed on purpose (#473, 0065): the operator's log only
                 "mistral_model": None,
+                "daily_page_limit": None,  # Changed on purpose (#478)
                 "budget_usd": 12.5,
             },
         )

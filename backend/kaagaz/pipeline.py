@@ -178,6 +178,12 @@ Model choice and AI spend (council 11 Oct 2026), when the processor is given the
   windows, the map and the embeddings each run in their own nested scope of that kind.
   The page threads keep the scope (``reading.socket`` copies the context).
 * Keyless (OCR_ENGINE=rapidocr, MODEL_ENABLED=false): neither, no query and no ledger.
+* ``reading_pause`` (#478, Tushar, 3 Nov 2026; ``kaagaz.jobs.reading_pause``): asked once the job
+  knows its reading, before any page is drawn. A paused organisation's document raises
+  ``ReadingPaused`` (never a reader outage: nothing is read locally): the run ends with its code
+  (``paused_daily_limit`` or ``paused_budget``), the list shows it waiting, and the job is acked:
+  the document is held in the database until the release sweep queues it again. A document let
+  in is read to its end.
 
 Dynamic and Ensemble reading (features 26 and 27, council 15 Oct 2026): ``job_reading``
 gives the document's whole ``Reading`` (``kaagaz.db.models.resolve_scan``, checked again
@@ -269,6 +275,8 @@ from kaagaz.ingestion import sniff
 from kaagaz.ingestion.errors import BackendUnavailable
 from kaagaz.ingestion.ports import BlobStorage, DocumentRecord, Job
 from kaagaz.jobs.ports import LeaseLost
+from kaagaz.jobs.reading_pause import CODES as PAUSE_CODES
+from kaagaz.jobs.reading_pause import ReadingPaused
 from kaagaz.jobs.worker import KEY_PROBLEMS, Heartbeat, JobFailed, Superseded
 from kaagaz.preparing.page_checks import PageCheck
 from kaagaz.reading.mistral_ocr import (
@@ -328,6 +336,7 @@ if TYPE_CHECKING:
     from kaagaz.ai.client import ModelClient
     from kaagaz.db.engine import Database
     from kaagaz.db.models import Reading
+    from kaagaz.jobs.reading_pause import Alert
     from kaagaz.settings import Settings
 
 _log = logging.getLogger(__name__)
@@ -367,6 +376,7 @@ _READER_WAITS = frozenset(
         "gemini_key_unavailable",
         "ocr_unavailable",
         *(f"{name}_unavailable" for name in (MISTRAL, MISTRAL_KEY, MISTRAL_SETUP)),
+        *PAUSE_CODES.values(),  # #478: held by the reading pause, read once it ends
     }
 )
 # V1: a line with any Devanagari character is read by the Devanagari recogniser.
@@ -719,6 +729,13 @@ class JobReading:
     pages_at_once: int | None = None
 
 
+class ReadingAdmission(Protocol):
+    """``kaagaz.jobs.reading_pause.ReadingPause.admit`` (#478): the document may be read inside,
+    or its organisation is paused and it raises ReadingPaused (the document held)."""
+
+    def __call__(self, customer_id: str, document_id: str) -> contextlib.AbstractContextManager[object]: ...
+
+
 class UsageScopes(Protocol):
     """``kaagaz.ai.usage.usage_scope`` on the database (SP1): the model calls made inside
     are billed to this customer, user, kind and document, saved when it ends."""
@@ -861,6 +878,7 @@ class DocumentProcessor:
         index_seconds: float | None = None,
         land_on: Callable[[str], bool] | None = None,
         mistral_ready: Callable[[], None] | None = None,
+        reading_pause: ReadingAdmission | None = None,
     ) -> None:
         """``embed(customer_id, document_id, on_batch=...)`` gives the saved pieces their vectors;
         failing with one of ``model_errors`` is logged and skipped, never a failed document.
@@ -903,7 +921,8 @@ class DocumentProcessor:
         0052), asked once a job that has a chat model; None (tests with fakes) asks nothing.
         ``mistral_ready()`` (#473, ``GeminiEngine.mistral_ready``) is asked at the start of a job
         whose ``Reading`` is on Mistral, and raises BackendUnavailable while Mistral can't read
-        here, before anything is drawn; None asks nothing."""
+        here, before anything is drawn; None asks nothing. ``reading_pause(customer_id,
+        document_id)`` (#478) holds the reading, or raises ReadingPaused; None pauses nothing."""
         if runs is not None and (clock is None or timer is None):
             raise ValueError("runs need a clock and a timer")
         if max_check_crops < 0:
@@ -947,6 +966,7 @@ class DocumentProcessor:
         self._cost_saving = cost_saving
         self._index_seconds = index_seconds
         self._mistral_ready = mistral_ready
+        self._reading_pause = reading_pause
 
     def __call__(self, job: Job, heartbeat: Heartbeat) -> None:
         record = self._documents.get(job.customer_id, job.document_id)
@@ -995,6 +1015,11 @@ class DocumentProcessor:
             self._clear_progress(job, run, code)  # while the run is still open
             self._close_run(job, run, "failed", code)
             raise
+        except ReadingPaused as paused:
+            settled = True
+            # #478: held in the database (never the queue); the release sweep queues it again.
+            self._clear_progress(job, run, paused.code)
+            self._close_run(job, run, "failed", paused.code)
         finally:
             if not settled:
                 # Anything else is a crash: it is not caught here and goes on up to the
@@ -1024,7 +1049,16 @@ class DocumentProcessor:
         run.models = frozenset(
             model for model in (run.model, *(agent.model for agent in extra if agent is not None)) if model
         )
-        with self._billed(job, run, "scan" if run.user_id is not None else "upgrade"), pages_at_once(at_once):
+        admitted = (
+            contextlib.nullcontext()
+            if self._reading_pause is None
+            else self._reading_pause(job.customer_id, job.document_id)  # #478: or ReadingPaused
+        )
+        with (
+            admitted,
+            self._billed(job, run, "scan" if run.user_id is not None else "upgrade"),
+            pages_at_once(at_once),
+        ):
             self._read_and_save(job, record, heartbeat, run)
 
     def _read_and_save(self, job: Job, record: DocumentRecord, heartbeat: Heartbeat, run: _Run) -> None:
@@ -2195,9 +2229,11 @@ def build_processor(
     storage: ProcessorStorage,
     scanner: Scanner,
     model: "ModelClient | None",
+    alert: "Alert | None" = None,
 ) -> DocumentProcessor:
     """The production processor. The concrete parts are imported here only, so the
-    processor itself depends on the ports above and is tested with fakes."""
+    processor itself depends on the ports above and is tested with fakes. ``alert`` (#478)
+    emails the super admin when an organisation's reading pauses."""
     from sqlalchemy import text
 
     from kaagaz.ai.client import ModelOutputError, ModelUnavailable
@@ -2208,6 +2244,7 @@ def build_processor(
     from kaagaz.db.page_reads import PgPageReads
     from kaagaz.db.pipeline_store import PgPipelineStore
     from kaagaz.db.runs import PgRuns
+    from kaagaz.jobs.reading_pause import ReadingPause
     from kaagaz.preparing.pages import prepare_pages, sheet_pages
     from kaagaz.reading.ocr import GEMINI, MeteredOcrEngine
     from kaagaz.reading.rapid_pool import shared_pool
@@ -2310,6 +2347,8 @@ def build_processor(
         # #473: the Gemini reader's own check that Mistral can read (RapidOCR has none).
         mistral_ready=getattr(engine, "mistral_ready", None),
         land_on=land_on if model is not None else None,
+        # #478: only where AI reads or answers (keyless: nothing to pause, no query a job).
+        reading_pause=None if job_reading is None else ReadingPause(db, clock=_utc_now, alert=alert).admit,
     )
 
 

@@ -393,6 +393,7 @@ def test_login_sets_the_cookie_and_me_works(db: Database) -> None:
             "must_change_password": False,
             "totp_enabled": False,
             "two_step_turned_off": False,
+            "two_step_required": False,  # Changed on purpose (#481, 0068): an admin's only
             "can_delete_forever": False,
             "email_confirmed": True,  # Changed on purpose (#457): true while email is off, no banner
         },

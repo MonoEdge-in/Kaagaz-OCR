@@ -193,6 +193,11 @@ class Settings:
     # that is not a superuser, does not own the tables and has no BYPASSRLS, so
     # row level security always applies (docs/architecture.md).
     database_url: str = field(repr=False)  # it can hold a password
+    # The API's super admin engine's limited login (#479, 0067: ``kaagaz_ops``, which can only
+    # switch into kaagaz_operator); DATABASE_URL while unset, so nothing changes until it is
+    # set. DATABASE_URL itself is the app's login (``kaagaz_api``) in Compose's api and worker
+    # once .env sets APP_DATABASE_URL, and the owner's in migrate and until then.
+    ops_database_url: str = field(repr=False)
     db_app_role: str
 
     # File storage (S3 API: SeaweedFS on the laptop, Amazon S3 in AWS).
@@ -453,6 +458,10 @@ class Settings:
     email_from: str | None = None
     ses_region: str = "ap-south-1"
     app_url: str | None = None
+    # The super admin's address for operations alerts, sent from EMAIL_FROM: an organisation's
+    # reading paused (#478) and the server's disk alert (#480, infra/ec2/disk-alert.sh), both
+    # with EMAIL_ENABLED on or off (kaagaz/ops_alert.py). Optional: unset, none is sent.
+    ops_alert_email: str | None = None
     # Sign in with Google (#457 phase 1). Off unless GOOGLE_SIGNIN_ENABLED=true; on, the
     # client id, secret and redirect URI are required. The redirect URI is https (http only
     # on a loopback host) and ends /api/auth/oidc/google/callback.
@@ -624,6 +633,7 @@ class Settings:
             raise SettingsError("QUEUE_EXPRESS_URL must name a queue other than QUEUE_URL")
         return cls(
             database_url=env.text("DATABASE_URL"),
+            ops_database_url=env.optional("OPS_DATABASE_URL") or env.text("DATABASE_URL"),
             db_app_role=env.text("DB_APP_ROLE"),
             storage_endpoint_url=env.optional("STORAGE_ENDPOINT_URL"),
             storage_region=env.text("STORAGE_REGION"),
@@ -758,6 +768,7 @@ class Settings:
             email_from=env.text("EMAIL_FROM") if email_enabled else env.optional("EMAIL_FROM"),
             ses_region=env.optional("SES_REGION") or "ap-south-1",
             app_url=_app_url(env.text("APP_URL")) if email_enabled else env.optional("APP_URL"),
+            ops_alert_email=env.optional("OPS_ALERT_EMAIL"),
             google_signin_enabled=google_on,
             google_client_id=env.text("GOOGLE_CLIENT_ID") if google_on else env.optional("GOOGLE_CLIENT_ID"),
             google_client_secret=env.text("GOOGLE_CLIENT_SECRET")

@@ -110,6 +110,18 @@
   department, type, property, party and year folders with nothing in them, ``folders.prune_empty``'s
   rules), listed by each customer's count; ``--apply`` deletes them and then their parents left
   empty, each audited. Folders people made are never listed. Ids and counts only.
+* ``backup-files`` and ``restore-files`` (#476, 3 Nov 2026): every stored file, every
+  customer's, as one tar on stdout, read through the S3 API (``S3Storage.write_tar``), for the
+  nightly backup (infra/ec2/pgdump.sh); and that tar from stdin back into an EMPTY bucket, made
+  first if missing (the restore drill, infra/ec2/restore-drill.sh). The file count goes to stderr;
+  a backup of no files fails (code 2).
+* ``backup-upload --bucket NAME --key KEY``: stdin, already encrypted, to the off-server backup
+  bucket in ap-south-1, in parts, never over an object already there, with the machine's own AWS
+  role; prints its size and sha256. It reads no settings and no database, so pgdump.sh runs it
+  beside the app on the host network.
+* ``disk-alert --used PERCENT``: emails OPS_ALERT_EMAIL from EMAIL_FROM through SES that the
+  server's disk is that full (#480; infra/ec2/disk-alert.sh decides when, once a day at most), by
+  the operations alerts' one rule (kaagaz.ops_alert); an email not sent fails the command.
 
 Why passwords are never flags: a flag lands in the shell history and the
 process list. They come from ``KAAGAZ_ADMIN_PASSWORD`` (``KAAGAZ_DEMO_PASSWORD``
@@ -122,6 +134,7 @@ terminal instead of logging): ids and e-mails only, never a password.
 import argparse
 import functools
 import getpass
+import hashlib
 import json
 import os
 import sys
@@ -133,11 +146,13 @@ from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, TextIO
+from typing import IO, Any, Protocol, TextIO
 
+import boto3
 from sqlalchemy import Connection, RowMapping, text
 
-from kaagaz import verify_models
+from kaagaz import ops_alert, verify_models
+from kaagaz.adapters.email import Mailer
 from kaagaz.ai.client import ModelClient, ModelOutputError, ModelUnavailable, build_model_client
 from kaagaz.ai.openrouter import OpenRouterClient
 from kaagaz.ai.usage import usage_scope
@@ -210,10 +225,26 @@ CUSTOMER_STATUS = {
 SECRET_COMMANDS = ("create-operator", "reset-operator-2fa")
 # cost-saving: the limits a run's config names (``reader_config``), after "cost_saving_".
 LIMIT_NAMES = ("hard_lines_max", "hard_share", "crop_pad")
+# backup-upload (#476): the off-server backup bucket's region, and its upload parts: 32 MB, one
+# at a time, so S3's 10,000 parts hold up to 320 GB in about 32 MB of memory.
+BACKUP_REGION = "ap-south-1"
+BACKUP_PART_BYTES = 32 * 1024 * 1024
+# The commands that read the settings but no database.
+NO_DATABASE = ("backup-files", "restore-files", "disk-alert")
 
 
 class CliError(Exception):
     """Stops the command with a short message and exit code 2."""
+
+
+class FileBackup(Protocol):
+    """What backup-files and restore-files need of storage (``S3Storage``)."""
+
+    def ensure_bucket(self) -> None: ...
+
+    def write_tar(self, out: IO[bytes]) -> int: ...
+
+    def read_tar(self, source: IO[bytes]) -> int: ...
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -301,6 +332,14 @@ def _parser() -> argparse.ArgumentParser:
     saving = commands.add_parser("cost-saving", help="what Cost saving read and saved in the last runs")
     saving.add_argument("--customer-id", "--customer", help="one customer only (default: every customer)")
     saving.add_argument("--last", type=int, default=50, help="the last N ready runs (default 50)")
+
+    commands.add_parser("backup-files", help="every stored file as one tar on stdout (the backup)")
+    commands.add_parser("restore-files", help="a backup-files tar from stdin into an empty bucket")
+    upload = commands.add_parser("backup-upload", help="stdin to the off-server backup bucket")
+    upload.add_argument("--bucket", required=True)
+    upload.add_argument("--key", required=True)
+    disk = commands.add_parser("disk-alert", help="email OPS_ALERT_EMAIL that the disk is this full")
+    disk.add_argument("--used", type=int, required=True, help="the percent of the disk in use")
     return parser
 
 
@@ -455,8 +494,9 @@ def _owner(db: Database) -> Iterator[Connection]:
     ``kaagaz_app`` may not do, so no code on the customer side can: a customer's
     status (0014), create-customer's and every command's ``platform_audit`` row and
     the operator commands (0015). Every statement names its one customer or operator.
-    PROVISIONAL: it needs DATABASE_URL to log in as the owner, as it does today
-    (change plan, open question 8)."""
+    It needs DATABASE_URL to log in as the owner: on the server only migrate has that
+    login, so these commands run there (``dc run --rm migrate python -m kaagaz.cli ...``);
+    in api, which logs in as ``kaagaz_api`` (#479), PostgreSQL refuses them."""
     with db.engine.begin() as conn:
         yield conn
 
@@ -1195,6 +1235,69 @@ def _edits(a: Sequence[str], b: Sequence[str]) -> int:
     return previous[-1]
 
 
+def _backup_upload(client: Any, bucket: str, key: str, source: IO[bytes]) -> str:
+    """``source`` to ``bucket``/``key`` as it is read (it need not fit on the disk), never over
+    an object already there: If-None-Match, which the bucket's policy requires (boto3's managed
+    upload cannot send it). Returns its size and sha256, done's line for the part (pgdump.sh)."""
+    target = {"Bucket": bucket, "Key": key}
+    chunk = source.read(BACKUP_PART_BYTES)
+    if len(chunk) < BACKUP_PART_BYTES:  # all of it in one request
+        client.put_object(Body=chunk, IfNoneMatch="*", **target)
+        return f"{len(chunk)} {hashlib.sha256(chunk).hexdigest()}"
+    digest, size = hashlib.sha256(), 0
+    parts: list[dict[str, Any]] = []
+    # CRC32 on every part, as boto3's own upload does (Object Lock needs a checksum).
+    upload_id = client.create_multipart_upload(ChecksumAlgorithm="CRC32", **target)["UploadId"]
+    try:
+        while chunk:
+            digest.update(chunk)
+            size += len(chunk)
+            number = len(parts) + 1
+            sent = client.upload_part(
+                Body=chunk, PartNumber=number, UploadId=upload_id, ChecksumAlgorithm="CRC32", **target
+            )
+            parts.append({"PartNumber": number, "ETag": sent["ETag"], "ChecksumCRC32": sent["ChecksumCRC32"]})
+            chunk = source.read(BACKUP_PART_BYTES)
+        client.complete_multipart_upload(
+            UploadId=upload_id, MultipartUpload={"Parts": parts}, IfNoneMatch="*", **target
+        )
+    except BaseException:
+        client.abort_multipart_upload(UploadId=upload_id, **target)
+        raise
+    return f"{size} {digest.hexdigest()}"
+
+
+def _disk_alert(settings: Settings, mailer: Mailer | None, used: int) -> None:
+    problem = ops_alert.missing(settings)
+    if problem is not None:
+        raise CliError(problem)
+    sent = ops_alert.send_ops_alert(
+        settings,
+        f"Kaagaz server: the disk is {used}% full",
+        f"The Kaagaz server's disk is {used}% full. This alert is sent at most once a day.\n\n"
+        "Free some space before it fills, or the database and the uploads stop. "
+        "`docker system df` on the server shows what uses it.\n",
+        purpose="disk_alert",
+        mailer=mailer,
+    )
+    if not sent:  # a failed command: disk-alert.sh notes no day and tries again next hour
+        raise CliError("the disk alert was not sent: the log says why")
+
+
+def _file_backup(command: str, files: FileBackup, source: IO[bytes], out: IO[bytes]) -> str:
+    """backup-files or restore-files; the line for stderr (stdout may be the tar)."""
+    if command == "backup-files":
+        count = files.write_tar(out)
+        if count == 0:  # a storage that reads as empty is broken, not backed up (#476)
+            raise CliError("backup-files: the storage bucket gave no files, so nothing was backed up")
+        return f"backup-files: {count} files"
+    files.ensure_bucket()
+    try:
+        return f"restore-files: {files.read_tar(source)} files"
+    except ValueError as error:
+        raise CliError(str(error)) from None
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -1206,15 +1309,23 @@ def main(
     model: ModelClient | None = None,
     settings: Settings | None = None,
     storage: CustomerStorage | None = None,
+    file_store: FileBackup | None = None,
+    binary_in: IO[bytes] | None = None,
+    binary_out: IO[bytes] | None = None,
+    backup_bucket: Any = None,
+    mailer: Mailer | None = None,
 ) -> int:
     """Run one command. Tests pass ``db``, ``environ``, ``out``, ``ask``, ``timer``,
-    ``model``, ``settings`` and ``storage``."""
+    ``model``, ``settings``, ``storage``, ``file_store``, ``binary_in`` and ``binary_out``
+    (stdin and stdout as bytes), ``backup_bucket`` (its S3 client) and ``mailer``."""
     args = _parser().parse_args(argv)
     env = os.environ if environ is None else environ
     stdout = sys.stdout if out is None else out
     try:
         if args.command in SECRET_COMMANDS and ask is getpass.getpass and not sys.stdin.isatty():
-            raise CliError("run it at a terminal (docker compose exec WITHOUT -T): it shows a secret")
+            raise CliError(
+                "run it at a terminal (docker compose run --rm migrate, WITHOUT -T): it shows a secret"
+            )
         if args.command == "measure":  # before any database is built: it never uses one
             chosen = env if args.engine is None else {**env, "OCR_ENGINE": args.engine}
             _measure(Settings.from_env(chosen), args.file, args.truth, stdout, timer=timer)
@@ -1239,6 +1350,26 @@ def main(
                 chat=args.chat,
                 record_chat=record_chat,
             )
+        if args.command == "backup-upload":  # no settings either: it runs on the host network
+            source = sys.stdin.buffer if binary_in is None else binary_in
+            # No keys: boto3 finds the machine's own role.
+            client = backup_bucket or boto3.client("s3", region_name=BACKUP_REGION)
+            stdout.write(_backup_upload(client, args.bucket, args.key, source) + "\n")
+            return 0
+        if args.command in NO_DATABASE:
+            checked = settings or Settings.from_env(env)
+            if args.command == "disk-alert":
+                _disk_alert(checked, mailer, args.used)
+                stdout.write("disk alert sent\n")  # never the address
+                return 0
+            if file_store is None:
+                from kaagaz.adapters.storage import S3Storage
+
+                file_store = S3Storage(checked)
+            source = sys.stdin.buffer if binary_in is None else binary_in
+            line = _file_backup(args.command, file_store, source, binary_out or sys.stdout.buffer)
+            sys.stderr.write(line + "\n")
+            return 0
         if db is None:
             settings = settings or Settings.from_env(env)
             db = Database(make_engine(settings.database_url), settings.db_app_role)

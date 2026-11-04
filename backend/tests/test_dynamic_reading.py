@@ -23,6 +23,7 @@ from PIL import Image
 from kaagaz.ai import usage
 from kaagaz.ai.openrouter import PageReply
 from kaagaz.ai.replies import ModelOutputError, ModelUnavailable
+from kaagaz.db import reading_days
 from kaagaz.db.engine import Database
 from kaagaz.db.models import Agent, Reading
 from kaagaz.db.usage import UsageRow
@@ -154,10 +155,12 @@ def dynamic_pages(
 
 
 class _Ledger:
-    """A database whose usage saves are kept in memory."""
+    """A database whose usage saves are kept in memory. Changed on purpose (#478): and the
+    reading pause's live counts, (pages, dollars) each."""
 
     def __init__(self) -> None:
         self.rows: list[UsageRow] = []
+        self.live: list[tuple[int, float]] = []
 
     @contextmanager
     def customer(self, customer_id: str) -> Iterator["_Ledger"]:
@@ -172,8 +175,12 @@ def ledger() -> Iterator[_Ledger]:
     def insert(conn: _Ledger, rows: list[UsageRow]) -> None:
         conn.rows.extend(rows)
 
+    def count(conn: _Ledger, customer_id: str, day: object, *, pages: int, cost_usd: float) -> None:
+        conn.live.append((pages, cost_usd))
+
     with (
         mock.patch.object(usage, "insert_usage", insert),
+        mock.patch.object(reading_days, "count", count),
         usage.usage_scope(cast(Database, kept), customer_id=CUSTOMER, user_id=None, kind="scan"),
     ):
         yield kept

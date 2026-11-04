@@ -220,9 +220,11 @@ REPROCESS_COOLDOWN_MINUTES = 10
 # frees. Asked for: its upload, or its last read again (the audit rows "read again" already
 # counts, on the index audit_log_family), whichever is later. Never ``updated_at``: every try,
 # step and hand-back moves it, so a document that keeps waiting would never get old enough.
+# Never one held by a reading pause (#478 review, 3 Nov 2026): it waits on purpose, and the
+# release sweep queues it.
 RETRY_STUCK_HOURS = 6
 STUCK = (
-    "CASE WHEN d.status IN ('received', 'clean') THEN GREATEST(d.created_at,"  # noqa: S608 - a fixed number
+    "CASE WHEN d.status IN ('received', 'clean') AND d.reading_held IS NULL THEN GREATEST(d.created_at,"  # noqa: S608 - a fixed number
     " (SELECT max(a.created_at) FROM audit_log a WHERE a.customer_id = d.customer_id"
     " AND a.family_id = d.family_id AND a.target_id = d.id::text"
     " AND a.action IN ('document.reprocess', 'document.read_upgrade')))"
@@ -412,25 +414,26 @@ def mark_for_upgrade(conn: Connection, customer_id: str, document_id: str) -> bo
 
 # --- the stuck-document sweep (stuck reading, 16 Oct 2026, kaagaz/jobs/revive.py) ---------
 
-# In progress, out of Trash, and nothing written on it for :stale seconds, on the database's
-# clock (the touch trigger sets updated_at at every change: each try, each progress step).
+# In progress, out of Trash, not held by a reading pause (#478), and nothing written on it for
+# :stale seconds, on the database's clock (the touch trigger sets updated_at at every change:
+# each try, each progress step).
 # Each statement below repeats it, so a change is made in all three.
 _STUCK_FIND = (
     "SELECT id, attempts FROM documents"
     " WHERE customer_id = :c AND status IN ('received', 'clean') AND deleted_at IS NULL"
-    " AND updated_at < now() - make_interval(secs => :stale)"
+    " AND reading_held IS NULL AND updated_at < now() - make_interval(secs => :stale)"
     " ORDER BY updated_at, id LIMIT :n"
 )
 _STUCK_REQUEUE = (
     "UPDATE documents SET attempts = attempts + 1, max_attempts = :max, progress = NULL"
     " WHERE id = :d AND customer_id = :c AND status IN ('received', 'clean') AND deleted_at IS NULL"
-    " AND updated_at < now() - make_interval(secs => :stale)"
+    " AND reading_held IS NULL AND updated_at < now() - make_interval(secs => :stale)"
     " AND attempts < :max RETURNING attempts"
 )
 _STUCK_FAIL = (
     "UPDATE documents SET status = 'failed', failure_code = :code"
     " WHERE id = :d AND customer_id = :c AND status IN ('received', 'clean') AND deleted_at IS NULL"
-    " AND updated_at < now() - make_interval(secs => :stale)"
+    " AND reading_held IS NULL AND updated_at < now() - make_interval(secs => :stale)"
     " AND attempts >= :max RETURNING id"
 )
 STUCK_NO_JOB = "stuck_no_job"

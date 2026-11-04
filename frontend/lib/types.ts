@@ -45,6 +45,7 @@ export interface Me {
     must_change_password: boolean;
     totp_enabled: boolean; // two-step sign-in is on (required for an admin unless they turned it off)
     two_step_turned_off: boolean; // an admin turned their own two-step off (Tushar, 30 Oct 2026)
+    two_step_required?: boolean; // the super admin requires it for this organisation's admins (#481)
     can_delete_forever: boolean; // an admin allowed this member or reviewer (never an admin)
     email_confirmed: boolean; // false: the "Confirm your email" banner (#457; true while email is off)
   };
@@ -1317,6 +1318,8 @@ export interface UsageReport {
   by_day: UsageByDay[];
   top_documents: UsageTopDocument[]; // at most 10, the costliest first
   ai_enabled?: boolean; // false: keyless mode (no OpenRouter key, MODEL_ENABLED=false), no model is called
+  // #478: pages AI read today (India day) and the daily page limit in effect (null: none); never money.
+  reading_today?: { pages: number; limit: number | null };
 }
 
 /** One catalogue model (GET /operator/models), from OpenRouter's live list. */
@@ -1396,6 +1399,7 @@ export interface AiValues {
   dynamic: boolean | null;
   scan_reader: ScanReader | null; // #473
   mistral_model: MistralModelId | null;
+  daily_page_limit: number | null; // #478: pages AI may read in one India day; the platform's null: no limit
 }
 
 /** What the server uses when the platform defaults name no model or scan setting, and
@@ -1424,6 +1428,7 @@ export interface OrgAiReply {
   ensemble: boolean;
   max_agents: number; // the most models that read or answer together
   ai_budget_usd: number | null;
+  reading_today: { pages: number; cost_usd: number | null }; // #478: today's counter (India day)
 }
 
 /** GET /operator/ai-defaults: the defaults and how many organisations follow each area. */
@@ -1441,7 +1446,8 @@ export interface AiDefaults {
     | "chat_levels"
     | "dynamic"
     | "scan_reader"
-    | "mistral_model",
+    | "mistral_model"
+    | "daily_page_limit",
     number
   >;
 }

@@ -76,16 +76,22 @@ def create_app(
     mailer: Mailer | None = None,
 ) -> FastAPI:
     owns_db = db is None
+    # The API's PostgreSQL timeouts (#246 A1): a request never waits minutes on the database.
+    timeouts = {
+        "statement_timeout_seconds": settings.db_statement_timeout_seconds,
+        "lock_timeout_seconds": settings.db_lock_timeout_seconds,
+        "idle_in_transaction_timeout_seconds": settings.db_idle_in_transaction_timeout_seconds,
+    }
     if db is None:
-        # The API's PostgreSQL timeouts (#246 A1): a request never waits minutes on the database.
-        engine = make_engine(
-            settings.database_url,
-            statement_timeout_seconds=settings.db_statement_timeout_seconds,
-            lock_timeout_seconds=settings.db_lock_timeout_seconds,
-            idle_in_transaction_timeout_seconds=settings.db_idle_in_transaction_timeout_seconds,
-        )
-        db = Database(engine, settings.db_app_role)
+        db = Database(make_engine(settings.database_url, **timeouts), settings.db_app_role)
     database = db
+    # The operator's own way in (super admin PR 2): only /api/operator asks for it. Its own
+    # login, kaagaz_ops, once OPS_DATABASE_URL differs from the app's (#479); until then, and
+    # with a test's ``db``, the app's engine, as before.
+    operator_engine = database.engine
+    if owns_db and settings.ops_database_url != settings.database_url:
+        operator_engine = make_engine(settings.ops_database_url, **timeouts)
+    operator_db = OperatorDatabase(operator_engine)
     now = clock or _utc_now
     context = AppContext(
         settings=settings,
@@ -103,6 +109,7 @@ def create_app(
         yield
         if owns_db:
             database.engine.dispose()
+            operator_engine.dispose()  # on release day the same engine: twice is harmless
 
     app = FastAPI(
         title="Kaagaz",
@@ -113,8 +120,7 @@ def create_app(
         dependencies=[Depends(csrf_guard)],
     )
     app.state.kaagaz = context
-    # The operator's own way in (super admin PR 2): only /api/operator asks for it.
-    app.state.kaagaz_operator = OperatorDatabase(database.engine)
+    app.state.kaagaz_operator = operator_db
     errors.install(app)
     app.add_middleware(RequestMiddleware, limiter=RateLimiter(settings.rate_limit_per_minute))
     app.add_middleware(ErrorMiddleware)  # added last, so it is the outermost

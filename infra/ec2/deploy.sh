@@ -9,8 +9,9 @@
 #      image. The running containers still keep serving.
 #   3. Only then it points kaagaz-backend:local and kaagaz-frontend:local (the
 #      images compose runs) at the new images, starts them and waits for api
-#      to be healthy.
-#   4. If api is not healthy in time, it points :local back at the previous
+#      and frontend to be healthy (frontend too since #477, 3 Nov 2026: a broken
+#      website was once reported deployed).
+#   4. If either is not healthy in time, it points :local back at the previous
 #      images and starts those again.
 # A failed build or migration changes no container and is tried again on the
 # next run. A release that was rolled back is held: not tried again, while the
@@ -38,7 +39,7 @@
 set -euo pipefail
 
 KAAGAZ_DIR=/home/ubuntu/kaagaz
-# The commit whose images are live, written only once api is healthy on them.
+# The commit whose images are live, written only once the app is healthy on them.
 DEPLOYED_FILE=/home/ubuntu/.kaagaz-deployed
 # Two lines: the commit whose images are live, then the one to roll back to.
 # This is what :local must point at.
@@ -58,7 +59,8 @@ INFRA=(postgres seaweedfs elasticmq clamav caddy)
 APPS=(api worker frontend)
 BUILD_CACHE_KEEP=168h
 MIN_FREE_GB=20
-# api's healthcheck (docker-compose.yml) gives up after about 140 s.
+# api's healthcheck (docker-compose.yml) gives up after about 140 s, frontend's
+# after about 80 s.
 HEALTH_TIMEOUT_SECONDS=180
 
 rollback=false
@@ -71,11 +73,12 @@ case "${1:-}" in
     ;;
 esac
 
-# Held for the whole run. If another deploy still holds it, leave quietly.
+# Held for the whole run. If another deploy or the nightly backup (pgdump.sh)
+# still holds it, leave quietly.
 exec 9>"$LOCK_FILE"
 if ! flock -n 9; then
   if [[ "$rollback" == true ]]; then
-    echo "a deploy is running; try --rollback again in a few minutes" >&2
+    echo "a deploy or the nightly backup holds $LOCK_FILE (journalctl -u kaagaz-deploy -u kaagaz-pgdump -n 5); try --rollback again when it ends" >&2
     exit 1
   fi
   exit 0
@@ -100,7 +103,7 @@ tag_images() {
 }
 
 # Records commit $1 as live and $2 as the one to roll back to. Called only once
-# api is healthy on $1.
+# the app is healthy on $1.
 save_state() {
   printf '%s\n%s\n' "$1" "$2" >"$IMAGES_FILE.tmp"
   mv -f "$IMAGES_FILE.tmp" "$IMAGES_FILE"
@@ -108,15 +111,16 @@ save_state() {
   mv -f "$DEPLOYED_FILE.tmp" "$DEPLOYED_FILE"
 }
 
-api_healthy() {
+# Whether service $1's container reports healthy.
+healthy() {
   local id
-  id="$(docker compose "${COMPOSE[@]}" ps -q api)" || return 1
+  id="$(docker compose "${COMPOSE[@]}" ps -q "$1")" || return 1
   [[ -n "$id" && "$(docker inspect -f '{{.State.Health.Status}}' "$id" 2>/dev/null)" == healthy ]]
 }
 
-wait_for_api() {
+wait_for_app() {
   local waited=0
-  until api_healthy; do
+  until healthy api && healthy frontend; do
     if ((waited >= HEALTH_TIMEOUT_SECONDS)); then
       return 1
     fi
@@ -127,7 +131,7 @@ wait_for_api() {
 
 # Starts the app on the images of commit $1 again.
 roll_back_to() {
-  tag_images "$1" local && docker compose "${COMPOSE[@]}" up -d --no-deps "${APPS[@]}" && wait_for_api
+  tag_images "$1" local && docker compose "${COMPOSE[@]}" up -d --no-deps "${APPS[@]}" && wait_for_app
 }
 
 # When the checkout's Caddyfile differs from CADDY_FILE, hands it to Caddy on
@@ -176,7 +180,7 @@ if [[ "$rollback" == true ]]; then
     exit 1
   fi
   if ! roll_back_to "$previous"; then
-    echo "api is not healthy on $previous within ${HEALTH_TIMEOUT_SECONDS}s; see docker compose ps -a" >&2
+    echo "api or frontend is not healthy on $previous within ${HEALTH_TIMEOUT_SECONDS}s; see docker compose ps -a" >&2
     report "$current" failed
     exit 1
   fi
@@ -217,7 +221,7 @@ if [[ "$target" != "$deployed" && "$target" != "$rolled_back" ]]; then
   # The first deploy with this script: if api is healthy, name the running
   # images after the deployed commit, so there is something to roll back to.
   if [[ -z "$current" ]]; then
-    if [[ -n "$deployed" ]] && api_healthy && tag_images local "$deployed"; then
+    if [[ -n "$deployed" ]] && healthy api && tag_images local "$deployed"; then
       current="$deployed"
       save_state "$current" ""
     else
@@ -238,7 +242,7 @@ if [[ "$target" != "$deployed" && "$target" != "$rolled_back" ]]; then
   # 3. Switch: compose runs :local, now the new images, then the health check.
   # No --remove-orphans: a service the release before needs is never removed.
   if tag_images "$target" local && docker compose "${COMPOSE[@]}" up -d --no-deps "${INFRA[@]}" "${APPS[@]}" &&
-    wait_for_api; then
+    wait_for_app; then
     if [[ "$current" != "$target" ]]; then
       previous="$current"
     fi
@@ -250,7 +254,7 @@ if [[ "$target" != "$deployed" && "$target" != "$rolled_back" ]]; then
   fi
   # 4. Not healthy in time: hold the commit first, so even if this run is cut
   # short the next one puts :local back on the live images, then roll back.
-  echo "api is not healthy on $target within ${HEALTH_TIMEOUT_SECONDS}s" >&2
+  echo "api or frontend is not healthy on $target within ${HEALTH_TIMEOUT_SECONDS}s" >&2
   printf '%s\n' "$target" >"$ROLLED_BACK_FILE"
   if [[ -n "$current" ]] && roll_back_to "$current"; then
     report "$target" "rolled back to $current"

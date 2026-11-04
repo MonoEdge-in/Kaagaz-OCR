@@ -528,7 +528,7 @@ async function digest(blob: Blob): Promise<string> {
 }
 
 function waitForNetwork(delay: number): Promise<void> {
-  // No navigator (Node 20, where CI runs the tests) reads as online; a browser always has one.
+  // No navigator.onLine (Node, where CI runs the tests) reads as online; a browser always has one.
   const online = typeof navigator === "undefined" || navigator.onLine !== false;
   if (online) return new Promise((resolve) => setTimeout(resolve, delay));
   return new Promise((resolve) => window.addEventListener("online", () => resolve(), { once: true }));
@@ -1061,6 +1061,13 @@ export const getSessionTimeout = (orgId?: string) => request<SessionTimeout>("GE
 /** Set it, with a fresh code (step-up); null: the default, or follow the platform. */
 export const setSessionTimeout = (hours: number | null, code: string, orgId?: string) =>
   request<SessionTimeout>("PUT", timeoutPath(orgId), { hours, code });
+
+/** Operator: whether one organisation's admins must have two-step sign-in (#481, 0068); off by default. */
+const adminTwoStepPath = (orgId: string) => `/operator/orgs/${encodeURIComponent(orgId)}/admin-two-step`;
+export const getAdminTwoStep = (orgId: string) => request<{ required: boolean }>("GET", adminTwoStepPath(orgId));
+/** Require it or stop requiring it, with a fresh code (step-up). */
+export const setAdminTwoStep = (orgId: string, required: boolean, code: string) =>
+  request<{ required: boolean }>("PUT", adminTwoStepPath(orgId), { required, code });
 
 /** Operator: the speed controls (package S, 0053); saving needs a fresh code, null: the server's setting. */
 export const getSpeed = () => request<Speed>("GET", "/operator/speed");

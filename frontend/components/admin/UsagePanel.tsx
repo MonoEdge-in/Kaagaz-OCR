@@ -21,6 +21,7 @@ import { formatDate, formatDateTime, formatNumber } from "@/lib/format";
 import type { AdminUser, UsageReport, UsageTokens } from "@/lib/types";
 import {
   USAGE_PERIODS,
+  pagesTodayLine,
   usageKindText,
   usageRange,
   usageState,
@@ -284,8 +285,10 @@ export function UsageReportView({ state, onRetry }: { state: UsageState; onRetry
   const total = usageTokens(report.totals);
   const days = periodDays(report.from, report.to).length;
   const active = activeDays(report);
+  const pagesToday = pagesTodayLine(report);
   return (
     <>
+      {pagesToday && <p>{pagesToday}</p>}
       <dl className={styles.tiles}>
         <div className={`${styles.tile} ${styles.usageTile}`}>
           <dt className={styles.usageTileHead}>

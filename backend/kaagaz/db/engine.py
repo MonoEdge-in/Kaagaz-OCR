@@ -5,6 +5,8 @@ Every transaction starts the same way (CLAUDE.md never-do 1):
 1. ``SET LOCAL ROLE <db_app_role>``: a role that is not a superuser, does not
    own the tables and has no BYPASSRLS, so row level security always applies,
    even when the connection logged in as the owner (as in CI and on the laptop).
+   On the server the API and the workers log in as ``kaagaz_api`` (#479, 0067),
+   which holds no right until this switch, so a transaction without it reads nothing.
 2. ``set_config('kaagaz.customer_id', <customer>, true)``: the current customer
    for this transaction only. Every table's policy compares its ``customer_id``
    with it, so a forgotten ``WHERE`` still returns nothing from another customer.

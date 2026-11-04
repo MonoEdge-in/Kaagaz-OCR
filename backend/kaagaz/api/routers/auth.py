@@ -27,7 +27,10 @@
   which). Every other browser is signed out, this one is re-signed; audited
   ``auth.totp_off``, a security notice. 409 when it is off. An admin's stays off until they
   turn it on again (0061b, Tushar, 30 Oct 2026): they sign in with the password alone, and
-  Delete forever and deleting a tag still need it on (``require_admin_with_two_step``). A
+  Delete forever and deleting a tag still need it on (``require_admin_with_two_step``). While
+  the super admin requires two-step for the organisation's admins (0068, #481), an admin's
+  turning off is 409 ``two_step_required`` before anything is checked, and one already off
+  sets it up at the next sign-in (``users.session_user``, ``_ATTEMPT_COLUMNS``). A
   reset of the code (another admin, the operator, the CLI) is not "turned off": an admin
   sets one up at the next sign-in. A member's or reviewer's lost code: an admin resets it
   (``routers/admin.py``).
@@ -155,6 +158,7 @@ CODE_REQUIRED = "Enter the 6-digit code from your authenticator app."
 WRONG_CODE = "That code is not right. Wait for the next code and try again."
 ORG_PENDING = "Your organisation is waiting for approval."
 UNREADABLE = "Your two-step code can't be checked right now. Ask your admin to reset it."
+TWO_STEP_REQUIRED = "Your organisation requires two-step sign-in for admins, so it stays on."
 RECENT_DAYS = 14  # how long the app's "Google connected" banner shows (#457 phase 1)
 # Sign-ups an hour (PROVISIONAL). Behind the Next.js proxy every visitor shares the proxy's
 # address (kaagaz/api/middleware.py), so in production this is one cap for the whole site,
@@ -361,9 +365,12 @@ def turn_off_two_step(
     body: TurnOffBody, user: User, request: Request, background: BackgroundTasks, context: Context
 ) -> JSONResponse:
     """Anyone, with the password and a code. An admin's stays off until they turn it on
-    again (0061b, Tushar, 30 Oct 2026)."""
+    again (0061b, Tushar, 30 Oct 2026); never while the organisation requires it (0068, #481:
+    should it be required a moment after this check, the admin sets it up at the next request)."""
     if not user.totp_enabled:
         raise ApiError(409, "conflict", "Two-step sign-in is already off.")
+    if user.role == "admin" and user.two_step_required:
+        raise ApiError(409, "two_step_required", TWO_STEP_REQUIRED)
     now = context.clock()
     _prove(context, user, body.password, body.code)
     with context.db.customer(user.customer_id) as conn:

@@ -35,6 +35,11 @@ A storage error rolls that family back and ends that organisation's turn (the ne
 on, the database down ends the run); the next run resumes; the last two steps repeat safely.
 A day after each purge, ``sweep_purged_customers`` empties both prefixes once more (a
 page image a running job wrote meanwhile) and records ``org.swept`` (0019, PR 4b).
+
+Before the prefixes are emptied, every resumable upload still open is aborted (#482, 3 Nov
+2026): its parts are no object yet, so the prefix delete can't see them. The finish keeps the
+organisation's audit rows (``audit_log_kept``, 0068); ``forget_kept_audit``, in the same
+hourly turn, removes them 365 days after the deletion (Tushar, 3 Nov 2026).
 """
 
 import logging
@@ -178,11 +183,28 @@ def purge_customer(
             if removed is None:  # not due, cancelled or gone: nothing more to do
                 return families, False
             if not removed:
+                _abort_uploads(db, storage, customer_id)
                 storage.delete_customer(customer_id)
                 with db.system() as conn:
                     return families, customer_purge.finish_delete(conn, customer_id)
             families += 1
     return families, False
+
+
+def _abort_uploads(db: Database, storage: CustomerStorage, customer_id: str) -> None:
+    """Abort every resumable upload of the customer (#482): open parts are no object, so
+    ``delete_customer`` would leave them. Its rows go with the customers row. O(s) storage calls."""
+    with db.customer(customer_id) as conn:
+        uploads = upload_sessions_sql.of_customer(conn, customer_id)
+    for key, upload_id in uploads:
+        storage.abort_resumable(key, upload_id)
+
+
+def forget_kept_audit(db: Database, clock: Callable[[], datetime]) -> int:
+    """Remove the kept audit rows of organisations deleted 365 days or more before ``clock()``
+    (0068, #482); how many. One set-based statement."""
+    with unavailable(), db.system() as conn:
+        return customer_purge.forget_kept_audit(conn, now=clock())
 
 
 def sweep_purged_customers(db: Database, storage: CustomerStorage, clock: Callable[[], datetime]) -> int:

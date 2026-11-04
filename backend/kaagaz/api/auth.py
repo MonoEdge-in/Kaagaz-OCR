@@ -720,6 +720,7 @@ class CurrentUser:
     totp_enabled: bool  # two-step sign-in is on (required for an admin, unless turned off)
     delete_forever_allowed: bool  # an admin allowed Delete forever (ignored for an admin)
     two_step_turned_off: bool = False  # the admin turned it off themselves (0061b)
+    two_step_required: bool = False  # the organisation requires it for admins (0068, #481)
     idle_hours: int | None = None  # the idle timeout in effect (0040); None: no idle limit
     seen_at: datetime | None = None  # the session's last use or sign-in, the idle clock
     email_confirmed: bool = False  # the user proved their e-mail with a link (0061)
@@ -834,6 +835,7 @@ def load_user(db: Database, customer_id: str, user_id: str, *, scope: str) -> Cu
         totp_enabled=bool(row["totp_enabled"]),
         delete_forever_allowed=bool(row["delete_forever_allowed"]),
         two_step_turned_off=bool(row["two_step_turned_off"]),
+        two_step_required=bool(row["two_step_required"]),
         idle_hours=row["idle_hours"],
         seen_at=row["seen_at"],
         email_confirmed=bool(row["email_confirmed"]),

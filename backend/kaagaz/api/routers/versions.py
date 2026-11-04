@@ -31,7 +31,7 @@ from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
 from kaagaz.api.routers.documents import clean_note
 from kaagaz.api.views import document_summary
-from kaagaz.db import listing, trash
+from kaagaz.db import audit, listing, trash
 from kaagaz.db import tags as tags_sql
 from kaagaz.db import versions as versions_sql
 
@@ -143,6 +143,8 @@ def compare(
         if any(row is not None and row["deleted_at"] is not None for row in rows):
             raise ApiError(409, "in_trash", _IN_TRASH)
         texts = [versions_sql.page_texts(conn, customer_id, each) for each in (left, right)]
+        for each in sorted({left, right}):  # #482: a view of each, in one order (the view locks)
+            audit.record_view(conn, customer_id, actor_user_id=user.user_id, document_id=each, via="compare")
     # The diff runs after the transaction, so no pooled connection waits on it.
     found = versions.compare(*texts, max_pages=context.settings.max_pages)
     return {"left_id": left, "right_id": right, **found}

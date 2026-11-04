@@ -21,6 +21,7 @@ from kaagaz.db.folders import FolderRow
 from kaagaz.db.listing import CLEAR_COPY_LINES, CLEAR_COPY_TEXT, MAX_READING_LINES, MAX_READING_TEXT
 from kaagaz.db.tags import TagRow
 from kaagaz.eta import time_left
+from kaagaz.jobs.reading_pause import BUDGET, CODES, DAILY_LIMIT
 from kaagaz.jobs.worker import KEY_PROBLEMS
 from kaagaz.reading.page_quality import ILLEGIBLE_WORDS, READERS_DISAGREE, UNPINNED, fix, says
 from kaagaz.scanning.gate import CUSTOMER_MESSAGES
@@ -55,6 +56,14 @@ READER_STOPPED = (
     "Reading is stopped until the Kaagaz team fixes the reading service. It starts again after that."
 )
 _KEY_WAITS = frozenset(f"{name}_unavailable" for name in KEY_PROBLEMS)  # #473: Mistral's too
+# #478 (Tushar, 3 Nov 2026): the organisation's reading pause held it; never a sum of money.
+# Review, 3 Nov 2026: the super admin is told, not the organisation's admin.
+PAUSED_FOR_TODAY = (
+    "Reading is paused for today. Your organisation has read its pages for the day."
+    " This file will be read tomorrow morning."
+)
+PAUSED_BUDGET = "Reading is paused for now. The Kaagaz team has been told. It will continue on its own."
+_PAUSE_WORDS = {CODES[DAILY_LIMIT]: PAUSED_FOR_TODAY, CODES[BUDGET]: PAUSED_BUDGET}
 
 
 def files_ahead_message(count: int) -> str:
@@ -93,7 +102,7 @@ def status_message(
     how many are ahead. A ready document with ``pages_unreadable`` pages still flagged
     says so (council 16 Oct 2026: such a document is ready, not failed, since e01b937d).
     ``waiting_code`` is the last run's code while it waits: a key problem is READER_STOPPED
-    (issue 407)."""
+    (issue 407), a reading pause (#478) PAUSED_FOR_TODAY or PAUSED_BUDGET."""
     if status == "rejected":
         return CUSTOMER_MESSAGES.get(failure_code or "", "This file was not processed.")
     if status == "failed" and failure_code == "too_many_pages":
@@ -121,7 +130,9 @@ def status_message(
         return f"Ready. {pages} to check."
     message = _STATUS_MESSAGES.get(status, "")
     if status in _IN_PROGRESS and progress is not None and progress.get("step") == _WAITING_STEP:
-        message = READER_STOPPED if waiting_code in _KEY_WAITS else READER_WAITING
+        message = _PAUSE_WORDS.get(waiting_code or "") or (
+            READER_STOPPED if waiting_code in _KEY_WAITS else READER_WAITING
+        )
     elif status in _IN_PROGRESS and progress is not None:
         message = progress_message(progress) or message
     elif status in _IN_PROGRESS and batch_ahead > 0:
@@ -861,6 +872,8 @@ def me_json(
             "must_change_password": user.must_change_password,
             "totp_enabled": user.totp_enabled,
             "two_step_turned_off": user.two_step_turned_off,  # by the admin; sign-in is the password
+            # The organisation requires it for admins (0068, #481): Account offers no Turn off.
+            "two_step_required": user.two_step_required and user.role == "admin",
             "can_delete_forever": user.delete_forever_allowed and user.role != "admin",  # the grant
             "email_confirmed": user.email_confirmed or not email_on,
         },
@@ -889,7 +902,7 @@ def admin_user(
         "created_at": iso(row["created_at"]),
         "locked_until": iso(locked_until) if locked_until is not None and locked_until > now else None,
         "totp_enabled": row["totp_enabled_at"] is not None,
-        "two_step_turned_off": row["totp_off_at"] is not None,
+        "two_step_turned_off": row["totp_off_at"] is not None and not row["two_step_required"],
         "must_change_password": bool(row["must_change_password"]),
         "can_delete_forever": row["delete_forever_allowed_at"] is not None and row["role"] != "admin",
     }

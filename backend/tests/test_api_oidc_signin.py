@@ -24,6 +24,7 @@ from kaagaz.db.engine import Database
 from tests.oidc_fake import ISSUER, FakeGoogle, google_settings, use_google
 from tests.settings_factory import make_settings
 from tests.test_api_support import ANY_ID, CSRF, PASSWORD, Api, TestClient, wrong_code
+from tests.test_operator_auth_db import _owner
 
 pytestmark = pytest.mark.db
 
@@ -226,6 +227,25 @@ def test_admin_who_turned_two_step_off_signs_in_with_google_alone(db: Database, 
     assert (me["session"]["scope"], me["user"]["two_step_turned_off"]) == ("admin", True)
     assert client.get("/api/admin/users").status_code == 200
     assert ("auth.login", "user", admin_id, {"via": "google"}) in api.audit_rows(customer_id)
+
+
+def test_google_sign_in_of_a_turned_off_admin_is_password_first_while_required(
+    db: Database, google: FakeGoogle
+) -> None:
+    # #481 (0068): while the super admin requires two-step for admins, "turned off" no longer
+    # counts, so Google alone opens no session: the admin sets the code up at a password sign-in.
+    api = _api(db)
+    customer_id, admin_id = api.customer()
+    with db.customer(customer_id) as conn:
+        conn.execute(
+            text("UPDATE users SET totp_off_at = :t WHERE id = :u"), {"t": api.clock(), "u": admin_id}
+        )
+    _owner(db, "UPDATE customers SET admin_two_step_required = true WHERE id = :c", {"c": customer_id})
+    subject = _connect(api, customer_id, admin_id)
+    client = api.client()
+
+    assert _error(_sign_in_at_google(api, google, client, subject)) == "password_first"
+    assert not client.cookies.get(SESSION_COOKIE) and not client.cookies.get(PENDING_COOKIE)
 
 
 def test_password_first_counts_nothing(db: Database, google: FakeGoogle) -> None:

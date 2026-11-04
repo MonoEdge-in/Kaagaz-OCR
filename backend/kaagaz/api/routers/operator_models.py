@@ -18,8 +18,8 @@ writes its own audit rows.
   organisations follow each area now.
 * ``GET`` and ``PUT /operator/orgs/{id}/ai`` (PUT with a fresh code): one organisation's
   own AI settings (an empty list or a null field follows the platform defaults), its
-  Ensemble switch and its monthly budget in dollars (warn only; the operator's alone,
-  never in the organisation's own log or screens). Any number of scanning models (0037):
+  Ensemble switch and its monthly budget in dollars (the operator's alone, never in the
+  organisation's own log or screens; #478: reaching it pauses reading). Any number of scanning models (0037):
   Ensemble asked with fewer than two in effect is saved off and the PUT says
   ``ensemble_off``.
 * The scan cost settings (#463, Tushar, 31 Oct 2026; 0064): both AI settings carry
@@ -66,6 +66,13 @@ writes its own audit rows.
   check's model is "mistral/<id>" at Mistral's one setting (none, page; review, 2 Nov 2026), so
   its job reads "your settings" with Mistral; it takes no Gemini level test, and is refused
   (409 ``mistral_not_set_up``) while Mistral is not set up here.
+* The reading pause (#478, Tushar, 3 Nov 2026; 0066): both AI settings carry
+  ``daily_page_limit``, the pages AI may read for an organisation in one India day, 1 to
+  MAX_PAGES_A_DAY (400 ``pages_out_of_range``), null to inherit (the platform's null: no
+  limit); the defaults count the organisations inheriting it. When an organisation's budget
+  is set, reaching it pauses reading too (no other switch); Ask keeps working. ``GET
+  .../orgs/{id}/ai`` adds ``reading_today``: its pages read today and their dollars (the
+  India day).
 * ``GET /operator/usage?from&to``: tokens and dollars per organisation and model, days in
   TIMEZONE with both ends included (this month so far when left out), at most
   ``MAX_DAYS``. Never a user or a document: the function has no column for either.
@@ -123,6 +130,7 @@ from kaagaz.db.engine import OperatorDatabase
 from kaagaz.db.models import LEDGER_DAYS, MAX_AGENTS, SCAN_COST_FIELDS, vendor
 from kaagaz.db.operator_models import AiChoice
 from kaagaz.db.operator_orgs import Outcome
+from kaagaz.db.reading_days import india_day
 from kaagaz.ingestion.ports import Job
 from kaagaz.jobs import accuracy
 from kaagaz.reading.mistral_ocr import (
@@ -147,6 +155,7 @@ MAX_ORG_MODELS = 64
 # numeric(12,2): the largest budget the column holds.
 MAX_BUDGET = Decimal("9999999999.99")
 TOKENS_LOW = 1024  # #463: the least output limit a page read may have
+MAX_PAGES_A_DAY = 1_000_000  # #478: the most a daily page limit may be (0066's CHECK)
 # The outcomes kaagaz.db.operator_orgs' _check does not know, and their replies (C10).
 _REFUSALS = {
     "invalid": (400, "bad_request", "The RPM value is outside the allowed limit."),
@@ -195,6 +204,11 @@ _REFUSALS = {
         "limit_out_of_range",
         f"Choose an output limit from {TOKENS_LOW} to {PAGE_MAX_OUTPUT_TOKENS} tokens.",
     ),
+    "pages_out_of_range": (
+        400,
+        "pages_out_of_range",
+        f"Choose a daily page limit from 1 to {MAX_PAGES_A_DAY:,} pages, or leave it empty.",
+    ),
     # #473: Mistral chosen on a server without its key or zero data retention confirmed.
     "mistral_not_set_up": (409, "mistral_not_set_up", "Mistral isn't set up on this server yet."),
 }
@@ -208,6 +222,8 @@ ScanReader = Literal["openrouter", "mistral"]
 MistralModelId = Literal["mistral-ocr-4-1", "mistral-ocr-2512"]
 # #463: a page read's output limit, in tokens (TOKENS_LOW to openrouter.PAGE_MAX_OUTPUT_TOKENS).
 OutputTokens = Annotated[int, Field(strict=True)]
+# #478: a daily page limit (1 to MAX_PAGES_A_DAY, checked by ``_choice``).
+DailyPages = Annotated[int, Field(strict=True)]
 # #463: the estimate's organisation with nothing of its own, so its connection sees the platform
 # defaults alone (row level security shows no organisation this id).
 NO_ORGANISATION = str(uuid.UUID(int=0))
@@ -240,6 +256,7 @@ class OrgAiBody(BaseModel):
     page_max_output_tokens: OutputTokens | None
     scan_reader: ScanReader | None  # #473
     mistral_model: MistralModelId | None
+    daily_page_limit: DailyPages | None  # #478
     chat_levels: Levels | None
     chat_default_level: Level | None
     dynamic: bool | None
@@ -334,6 +351,7 @@ class DefaultsBody(BaseModel):
     page_max_output_tokens: OutputTokens | None
     scan_reader: ScanReader | None  # #473: null, openrouter
     mistral_model: MistralModelId | None  # null, DEFAULT_MISTRAL_MODEL
+    daily_page_limit: DailyPages | None  # #478: null, no limit
     chat_levels: Levels
     chat_default_level: Level
     dynamic: bool
@@ -445,6 +463,7 @@ def get_ai_defaults(operator: OperatorSession, db: OperatorDb, context: Context)
                 "page_max_output_tokens",
                 "scan_reader",  # #473
                 "mistral_model",
+                "daily_page_limit",  # #478
             )
         },
     }
@@ -481,12 +500,16 @@ def get_org_ai(
     customer_id: uuid.UUID, operator: OperatorSession, db: OperatorDb, context: Context
 ) -> dict[str, Any]:
     """The organisation's own settings, the platform defaults it follows where it has none,
-    its Ensemble switch, the most models that work together, and its budget."""
+    its Ensemble switch, the most models that work together, its budget, and (#478) its pages read
+    today and their dollars."""
     with db.operator() as conn:
         own = models_sql.org_ai(conn, operator.operator_id, str(customer_id))
         defaults = models_sql.ai_defaults(conn, operator.operator_id)
         status = models_sql.mistral_status(conn, operator.operator_id)
-    if own is None or defaults is None or status is None:
+        today = models_sql.reading_today(
+            conn, operator.operator_id, str(customer_id), india_day(context.clock())
+        )
+    if own is None or defaults is None or status is None or today is None:
         raise ApiError(404, "not_found")
     return {
         "own": _ai(own),
@@ -495,6 +518,7 @@ def get_org_ai(
         "ensemble": bool(own["ensemble"]),
         "max_agents": MAX_AGENTS,
         "ai_budget_usd": _number(own["ai_budget_usd"]),
+        "reading_today": {"pages": int(today["pages"]), "cost_usd": _number(today["cost_usd"])},
     }
 
 
@@ -1121,6 +1145,8 @@ def _choice(body: OrgAiBody | DefaultsBody, settings: Settings, saved: Callable[
     if not all(valid_model_id(model) for model in named if model is not None):
         raise ApiError(400, "bad_request", "A model is not an OpenRouter model ID.")
     _limit(body.page_max_output_tokens)
+    if body.daily_page_limit is not None and not 1 <= body.daily_page_limit <= MAX_PAGES_A_DAY:
+        raise ApiError(*_REFUSALS["pages_out_of_range"])  # #478, before a code is used up
     if body.scan_reader == MISTRAL and not settings.mistral_ready and saved() != MISTRAL:
         raise ApiError(*_REFUSALS["mistral_not_set_up"])
     return AiChoice(
@@ -1138,6 +1164,7 @@ def _choice(body: OrgAiBody | DefaultsBody, settings: Settings, saved: Callable[
         page_max_output_tokens=body.page_max_output_tokens,
         scan_reader=body.scan_reader,
         mistral_model=body.mistral_model,
+        daily_page_limit=body.daily_page_limit,
     )
 
 
@@ -1155,6 +1182,7 @@ def _ai(row: RowMapping) -> dict[str, Any]:
         "page_max_output_tokens": row["page_max_output_tokens"],
         "scan_reader": row["scan_reader"],  # #473
         "mistral_model": row["mistral_model"],
+        "daily_page_limit": row["daily_page_limit"],  # #478
         "chat_levels": None if row["chat_levels"] is None else list(row["chat_levels"]),
         "chat_default_level": row["chat_default_level"],
         "dynamic": row["dynamic"],

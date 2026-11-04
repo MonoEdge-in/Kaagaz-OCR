@@ -82,6 +82,24 @@ def set_org_autofile(conn: Connection, operator_id: str, customer_id: str, *, gr
     )
 
 
+def admin_two_step(conn: Connection, operator_id: str, customer_id: str) -> bool | None:
+    """Whether one customer requires two-step sign-in for its admins (0068, #481). None for an
+    unknown customer or an operator who is not enabled. O(log n)."""
+    params = {"o": operator_id, "c": customer_id}
+    found = conn.execute(text("SELECT kaagaz_op_admin_two_step(:o, :c)"), params).scalar()
+    return None if found is None else bool(found)
+
+
+def set_admin_two_step(
+    conn: Connection, operator_id: str, customer_id: str, *, required: bool, step: int
+) -> Outcome:
+    """Require two-step sign-in for one customer's admins, or stop (``step`` of a fresh code
+    required). Audited in both logs when it changes. O(log n)."""
+    params = {"o": operator_id, "c": customer_id, "r": required, "step": step}
+    code = conn.execute(text("SELECT kaagaz_op_set_admin_two_step(:o, :c, :r, :step)"), params).scalar_one()
+    return Outcome(str(code), customer_id)
+
+
 def schedule_delete(conn: Connection, operator_id: str, customer_id: str, *, name: str, step: int) -> Outcome:
     """Schedule the deletion of one disabled customer whose name is ``name`` exactly
     (``step`` of a fresh code required): removed for good after the grace period (0018)."""

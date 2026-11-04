@@ -117,6 +117,11 @@ export function DefaultsSummary({ reply, catalogue }: { reply: AiDefaults; catal
       count: counts.page_max_output_tokens,
     },
     { label: COST_SAVING, value: inheritedText("dynamic", defaults, env, catalogue), count: counts.dynamic },
+    {
+      label: "Daily page limit", // #478
+      value: defaults.daily_page_limit === null ? "No limit" : inheritedText("daily_page_limit", defaults, env, catalogue),
+      count: counts.daily_page_limit,
+    },
     { label: "Answering models", value: inheritedText("chat_models", defaults, env, catalogue), count: counts.chat_models },
     { label: "Answering levels", value: inheritedText("chat_levels", defaults, env, catalogue), count: counts.chat_levels },
   ];

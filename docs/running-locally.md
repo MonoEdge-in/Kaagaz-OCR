@@ -152,7 +152,9 @@ python -c "from rapidocr import LangRec, ModelType, OCRVersion, RapidOCR; RapidO
 Without it, those pages stay as the default model read them, and the log says
 `ocr_model_missing`.
 
-The worker makes the storage bucket on its first start if it is missing.
+The app's storage key may not create the bucket (#477), so make it once, on the
+first start, with the admin key of `infra/seaweedfs/s3.json`:
+`STORAGE_ACCESS_KEY=kaagaz-local-admin STORAGE_SECRET_KEY=kaagaz-local-admin-secret-laptop-only python -c "from kaagaz.adapters.storage import S3Storage; from kaagaz.settings import Settings; S3Storage(Settings.from_env()).ensure_bucket()"`.
 Ctrl+C stops it after the job in hand. At most once an hour it also deletes
 for good what has been in Trash longer than `TRASH_DAYS` days (30). With the
 model on, every 10 minutes it gives up to 64 pieces their missing meaning vectors.
@@ -160,7 +162,7 @@ model on, every 10 minutes it gives up to 64 pieces their missing meaning vector
 And the web app, from `frontend/`:
 
 ```
-npm ci                                 # once, Node 20 or later
+npm ci                                 # once, Node 24 (as frontend/Dockerfile)
 npm run dev                            # http://localhost:3000
 ```
 
@@ -249,13 +251,37 @@ for passwords):
 | `SESSION_SECRET` | Random. Changing it signs everyone out |
 | `TOTP_ENCRYPTION_KEY` | Random. If it is lost, every admin's 2FA must be reset |
 | `POSTGRES_PASSWORD`, and the same password in `DATABASE_URL` | Random hex. Postgres takes it only when its volume is first made |
-| `STORAGE_ACCESS_KEY`, `STORAGE_SECRET_KEY` | Random. Must equal the keys in `s3.json` |
+| `STORAGE_ACCESS_KEY`, `STORAGE_SECRET_KEY` | Random. Must equal the app identity's keys in `s3.json`, whose actions are `Read:`, `Write:` and `List:<STORAGE_BUCKET>` only (#477) |
+| `STORAGE_ADMIN_ACCESS_KEY`, `STORAGE_ADMIN_SECRET_KEY` | Random. `s3.json`'s second identity, with `["Admin"]`; only migrate gets it, to create the bucket |
 | `COOKIE_SECURE=true`, `MODEL_ENABLED=true`, `OCR_ENGINE=gemini`, `OCR_DPI=300`, `OCR_TIMEOUT_SECONDS=120`, and `OPENROUTER_API_KEY` | As shown; the key is the OpenRouter key with its own credit limit (docs/architecture.md, Decisions) |
 | `KAAGAZ_DOMAIN`, `ACME_EMAIL`, `SEAWEEDFS_S3_CONFIG=/home/ubuntu/kaagaz-secrets/s3.json` | Read by `docker-compose.prod.yml`, which stops with the name of any that is missing |
 
 Keep an offline copy of `.env` and `s3.json` in a password manager. The EBS
 snapshots hold the secrets too, so never share or copy a snapshot out. The Wake
 Lambda's `INSTANCE_ID` and `WAKE_TOKEN` live only in the Lambda console.
+
+**Rotating the keys, every 90 days (#481)**, and at once if one may have leaked
+(a key once sat in git: `open_router_key_replacement.txt`, removed on 3 Nov 2026, so
+rotate the OpenRouter key now). Write each date in the password manager's entry.
+A changed `.env` value reaches the containers with `dc up -d --no-deps api worker`
+(compose recreates them); then update the offline copy.
+
+| Secret | How | Who notices |
+|---|---|---|
+| `OPENROUTER_API_KEY` | A new key on openrouter.ai with the same credit limit and data settings, into `.env`, restart; `dc run --rm worker python -m kaagaz.cli verify-models` says PASS; then delete the old key | Nobody |
+| `MISTRAL_API_KEY` | The same on console.mistral.ai; check zero data retention still covers the account before `MISTRAL_ZDR_APPROVED` stays true | Nobody |
+| `SESSION_SECRET` | `openssl rand -base64 48`, at a quiet time, restart | Everyone, operators too, is signed out, and unexpired emailed links signed with it (confirm your email) stop working: say so first |
+| `TOTP_ENCRYPTION_KEY` | Not the same as `SESSION_SECRET`. Nothing re-encrypts the stored two-step secrets yet, so a new key leaves every one unreadable: after it, run `reset-admin-2fa --email` for each admin and `reset-operator-2fa --email` for each operator (at a terminal), and each enrols again. Until a re-seal command exists (proposed in #481: open each secret with the old key, seal it with the new, one transaction per organisation), rotate this one only on suspicion | Every admin and operator enrols again |
+| `POSTGRES_PASSWORD` and `DATABASE_URL` | Postgres reads `POSTGRES_PASSWORD` only when its volume is new, so set it in the database first, through stdin (never a flag; `read -rs NEW` takes it unseen): `printf "ALTER ROLE kaagaz PASSWORD '%s';\n" "$NEW" \| dc exec -T postgres psql -q -U kaagaz -d kaagaz`, then both lines of `.env`, restart. After #479, the same for each login | Nobody (a few seconds) |
+| `STORAGE_ACCESS_KEY`, `STORAGE_SECRET_KEY`, and the `STORAGE_ADMIN_` pair | Add a second entry to the identity's `credentials` in `s3.json`, `dc up -d --no-deps --force-recreate seaweedfs`, the new pair into `.env`, restart; then remove the old entry and recreate seaweedfs again | Nobody (seconds of storage restart) |
+| `GOOGLE_CLIENT_SECRET` | Google Cloud console, the OAuth client: add a secret (two may be active), into `.env`, restart, sign in with Google once, then disable the old one | Nobody |
+| SES (`EMAIL_FROM`) | No key: the server's role sends, and AWS rotates its credentials itself. Check its policy allows `ses:SendEmail` from `EMAIL_FROM` only, and that no SMTP user exists | Nobody |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | Laptop-only stand-ins for ElasticMQ; never set on the server (its role is used) | Nobody |
+
+Outside `.env`: `WAKE_TOKEN` (`openssl rand -hex 24` in the Lambda console; the old
+link then gives 404, so send people the new one), and the backup key pair (section 6,
+"Backups off the server"): a new pair only if the private key may have leaked, keeping
+the old key 35 days to read the backups made before.
 
 **The server, once.** Through Session Manager, as `ubuntu` (`sudo -iu ubuntu`):
 
@@ -273,7 +299,7 @@ Lambda's `INSTANCE_ID` and `WAKE_TOKEN` live only in the Lambda console.
    ```
    sudo mkdir -p /etc/kaagaz && sudo touch /etc/kaagaz/no-idle-stop
    sudo cp ~/kaagaz/infra/ec2/*.service ~/kaagaz/infra/ec2/*.timer /etc/systemd/system/
-   sudo systemctl daemon-reload && sudo systemctl enable --now kaagaz-deploy.timer kaagaz-pgdump.timer kaagaz-idle.timer
+   sudo systemctl daemon-reload && sudo systemctl enable --now kaagaz-deploy.timer kaagaz-pgdump.timer kaagaz-idle.timer kaagaz-disk.timer
    ```
 
 5. The first deploy (several minutes):
@@ -281,7 +307,7 @@ Lambda's `INSTANCE_ID` and `WAKE_TOKEN` live only in the Lambda console.
 6. The models, once:
    `dc run --rm worker python -m kaagaz.cli verify-models` says PASS on every line.
 7. The first customer and admin:
-   `dc exec api python -m kaagaz.cli create-customer --name "<Company>" --admin-email <email> --admin-name "<Name>"`
+   `dc run --rm migrate python -m kaagaz.cli create-customer --name "<Company>" --admin-email <email> --admin-name "<Name>"`
    (it asks for the admin's password at a hidden prompt). The admin signs in at
    `https://<DOMAIN>/login` and sets up two-step sign-in there (every admin must have it).
 
@@ -299,7 +325,9 @@ or migration is tried again on the next run. After a good deploy it removes buil
 with under 20 GB free on `/` it logs `low disk: ...` and does the same first;
 `docker system df` shows what is left. `kaagaz-pgdump.timer` writes `~/backups/kaagaz-YYYYMMDD.dump` (mode
 600, the last 7 kept) at 20:00 UTC (01:30 IST), or at the next boot if the
-server was stopped then. Data Lifecycle Manager takes a daily EBS snapshot at
+server was stopped then; with `BACKUP_BUCKET` and `BACKUP_CERT` set it also
+copies an encrypted backup off the server (section 6, "Backups off the
+server"). Data Lifecycle Manager takes a daily EBS snapshot at
 20:30 UTC (02:00 IST), keeping 7. Restore from a snapshot (the whole disk) or
 a dump (section 6). Logs: `dc logs --since 1h <service>`.
 
@@ -313,7 +341,8 @@ and the site keeps serving the old release until step 3:
    no container and logs `migrate failed; site still on <commit>`.
 3. Point `kaagaz-backend:local` and `kaagaz-frontend:local` (what `dc` runs) at
    the new images, start every service but `migrate` with `--no-deps`, and wait
-   up to 3 minutes for api to be healthy.
+   up to 3 minutes for api and frontend to be healthy (frontend since #477;
+   its check fetches `/login` with node, as the slim image has no curl).
 4. If it is not, point `:local` back at the previous images and start those
    (`<commit> rolled back to <previous>`). That commit is held: the timer logs
    `<commit> held` and never tries it again; the next commit on `production`
@@ -322,7 +351,7 @@ and the site keeps serving the old release until step 3:
 `~/.kaagaz-images` holds the live commit, then the one to roll back to, and is
 what `:local` must point at: every timer run puts `:local` back on the live
 images (undoing a hand `dc build`) before starting anything that is down.
-`~/.kaagaz-deployed` holds the live commit too, written only once api is
+`~/.kaagaz-deployed` holds the live commit too, written only once api and frontend are
 healthy, and `~/.kaagaz-rolled-back` the held commit. The live and previous
 images are kept; older commit images are removed after a good deploy. On the
 first deploy with this flow, if api is healthy, the running `:local` images are
@@ -330,9 +359,11 @@ named after the commit in `~/.kaagaz-deployed`; otherwise the log says there is
 no previous release to roll back to yet.
 
 To roll back by hand, as `ubuntu`: `~/kaagaz/infra/ec2/deploy.sh --rollback`.
-It starts the previous images, waits for api to be healthy, holds the commit
+It starts the previous images, waits for api and frontend to be healthy, holds the commit
 the checkout is on, and prints `<commit> rolled back to <previous>`; run it
-again to go forward. It never runs a downgrade migration, so the older code runs
+again to go forward. While a deploy or the nightly backup holds the lock it
+refuses and says so; `journalctl -u kaagaz-pgdump -n 5` shows whether the backup
+is still running. It never runs a downgrade migration, so the older code runs
 on the newer schema: this is safe only while migrations only add columns and
 tables (ADR 0052, M1). A rollback also uses the checkout's compose files and
 Caddyfile, those of the newest commit, so every release must keep them working
@@ -354,6 +385,74 @@ while 0043 to 0045 were already applied, so `upgrade` failed with
 `DuplicateTable`. For each migration after the stamped one, check that the
 tables it creates exist (`SELECT to_regclass('public.<table>')`), then stamp
 the last one that is fully there.
+
+**Limited database logins** (#479, migration 0067, Vrushit's approval). 0067 makes
+`kaagaz_api` (api and worker) and `kaagaz_ops` (api's super admin part) with no password,
+so nothing changes on release day: the app keeps the owner's login until `.env` names the
+new ones. Test server first for a few days, then a full restore drill (section 6), then
+production at a quiet time:
+
+1. Each password, random (`openssl rand -hex 24`), typed at the prompt, never on a command
+   line: `dc exec postgres psql -U <POSTGRES_USER> -d <POSTGRES_DB>`, then
+   `\password kaagaz_api` and `\password kaagaz_ops`.
+2. In `.env`: `APP_DATABASE_URL=postgresql://kaagaz_api:<its password>@postgres:5432/<POSTGRES_DB>`
+   and `OPS_DATABASE_URL=postgresql://kaagaz_ops:<its password>@postgres:5432/<POSTGRES_DB>`.
+   `docker-compose.yml` gives api and worker the first as `DATABASE_URL`, only api the
+   second, only migrate the owner's, and none of them `POSTGRES_PASSWORD`.
+3. `dc up -d --no-deps api worker`. Check: `dc exec api printenv POSTGRES_PASSWORD` prints an
+   empty line; `dc exec postgres psql -U <POSTGRES_USER> -d <POSTGRES_DB> -c "SELECT usename,
+   count(*) FROM pg_stat_activity WHERE datname = current_database() GROUP BY 1"` shows
+   `kaagaz_api` (and `kaagaz_ops` once the console is used); sign in, open a document, ask a
+   question, upload one, and open the operator console.
+4. From then on the owner-only commands run in migrate, the one container with the owner's
+   login: `dc run --rm migrate python -m kaagaz.cli <command>` for `create-customer`,
+   `seed-demo`, `disable-customer`, `enable-customer`, `purge-customer`, `create-operator`,
+   `reset-operator-2fa`, `unlock-operator` and `verify-models --record`. In api, PostgreSQL
+   refuses them.
+5. `kaagaz_api` may hold 80 connections: api, 3 workers and one CLI run, 15 each. Before
+   `WORKER_REPLICAS` goes above 3, `ALTER ROLE kaagaz_api CONNECTION LIMIT <15 x (replicas + 2)>`.
+
+**The undo:** delete the two lines from `.env` and `dc up -d --no-deps api worker`; the app
+logs in as the owner again. The logins stay and do nothing.
+
+**The closed lines and the storage keys (#477), by hand at a quiet time.** The
+release that adds the `data`, `scan` and `edge` networks moves postgres and
+seaweedfs to `data` in deploy step 2 (`run migrate` recreates them), while the
+old api and worker are still on the old network: the site is down until step 3,
+a minute or two. The same release also brings the website health check and
+Node 24, so a failure in step 6 may be any of the three: follow these steps for
+it, on the test server first, then on production. As `ubuntu`:
+
+1. Pause the deploys: `sudo systemctl stop kaagaz-deploy.timer`.
+2. Keep the server on: `sudo touch /etc/kaagaz/no-idle-stop`.
+3. The keys, before the code is pulled. In `~/kaagaz-secrets/s3.json` keep the app
+   identity's keys and set its `actions` to `["Read:<STORAGE_BUCKET>",
+   "Write:<STORAGE_BUCKET>", "List:<STORAGE_BUCKET>"]`; add a second identity
+   with new random keys and `["Admin"]`, and put those keys in `.env` as
+   `STORAGE_ADMIN_ACCESS_KEY` and `STORAGE_ADMIN_SECRET_KEY` (secrets table
+   above). Then `dc up -d --no-deps --force-recreate seaweedfs` and check the
+   site still uploads and opens a document: the running release uses the app key
+   only. Without the admin pair, the deploy's migrate stops with `set
+   STORAGE_ADMIN_ACCESS_KEY and STORAGE_ADMIN_SECRET_KEY in .env` and changes nothing.
+4. A backup: `~/kaagaz/infra/ec2/pgdump.sh`.
+5. Once `sudo ~/kaagaz/infra/ec2/idle-stop.sh --dry-run` shows both queues
+   empty, stop the workers: `dc stop worker`.
+6. With the release on the branch the server deploys, deploy:
+   `sudo systemctl start kaagaz-deploy.service`;
+   `journalctl -u kaagaz-deploy -n 20` ends `<commit> deployed`. Check: `dc ps`
+   shows every service healthy, `docker network ls` lists `kaagaz-ocr_data`,
+   `kaagaz-ocr_scan` and `kaagaz-ocr_edge`, and an upload reaches Ready and a
+   question is answered. If it ends `failed` or `rolled back to <commit>`
+   instead, some services may still be on the old network: put every one on the
+   new lines with `dc up -d --no-deps api worker frontend caddy`, then read
+   `journalctl -u kaagaz-deploy -n 50` and `dc logs --tail 50 api frontend`.
+7. `docker network rm kaagaz-ocr_default`, `sudo rm /etc/kaagaz/no-idle-stop`,
+   and `sudo systemctl start kaagaz-deploy.timer`.
+
+The undo is a revert commit of that release on `production` (by pull request),
+deployed with steps 1, 2, 5 and 6: `deploy.sh --rollback` only swaps images and
+never moves a container back to the old network. The narrowed `s3.json` stays:
+the release before it works with it (its migrate only finds the bucket).
 
 **Releases** (EC2 PRD section 6).
 
@@ -390,6 +489,49 @@ afterwards. Two things start the server:
   404 and no AWS call. Its role allows only `ec2:StartInstances` on this
   instance, `ec2:DescribeInstances` and CloudWatch Logs. After a start the site
   opens in about 3 minutes.
+
+**Alerts (#480).** Two pieces, both email:
+
+* The monitor: the Lambda `kaagaz-monitor` (Python 3.12, `infra/aws/monitor/handler.py`),
+  every 5 minutes. Once the server has run 10 minutes it checks `/api/health` and `/` over
+  HTTPS and that the certificate has 14 days or more left; once it has run an hour, that the
+  newest backup run's `done` is under 26 hours old; on weekdays from 09:45 to 10:00 IST, that the
+  schedule started it. A check failing twice in a row sends one email through SNS, naming
+  the check and why (an HTTP status or an error name); a pass sends one more. The counts are
+  one SSM parameter, `/kaagaz/monitor/failures` (free; a CloudWatch alarm per check would
+  cost money and could not say why). Set up once, by Vrushit, in ap-south-1:
+  ```
+  aws sns create-topic --name kaagaz-alerts --query TopicArn --output text
+  aws sns subscribe --topic-arn <TOPIC_ARN> --protocol email --notification-endpoint <address>   # then confirm the email's link
+  aws iam create-role --role-name kaagaz-monitor --assume-role-policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"lambda.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
+  aws iam attach-role-policy --role-name kaagaz-monitor --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+  aws iam put-role-policy --role-name kaagaz-monitor --policy-name kaagaz-monitor --policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"ec2:DescribeInstances","Resource":"*"},{"Effect":"Allow","Action":"s3:ListBucket","Resource":"arn:aws:s3:::<BUCKET>"},{"Effect":"Allow","Action":["ssm:GetParameter","ssm:PutParameter"],"Resource":"arn:aws:ssm:ap-south-1:<ACCOUNT>:parameter/kaagaz/monitor/failures"},{"Effect":"Allow","Action":"sns:Publish","Resource":"<TOPIC_ARN>"}]}'
+  (cd infra/aws/monitor && python -m zipfile -c /tmp/monitor.zip handler.py)
+  aws lambda create-function --function-name kaagaz-monitor --runtime python3.12 --handler handler.handler --timeout 60 --role arn:aws:iam::<ACCOUNT>:role/kaagaz-monitor --zip-file fileb:///tmp/monitor.zip --environment 'Variables={INSTANCE_ID=<INSTANCE_ID>,SITE_DOMAIN=<DOMAIN>,BACKUP_BUCKET=<BUCKET>,TOPIC_ARN=<TOPIC_ARN>}'
+  aws lambda put-function-concurrency --function-name kaagaz-monitor --reserved-concurrent-executions 1
+  aws lambda put-function-event-invoke-config --function-name kaagaz-monitor --maximum-retry-attempts 0 --destination-config 'OnFailure={Destination=<TOPIC_ARN>}'
+  aws events put-rule --name kaagaz-monitor --schedule-expression 'rate(5 minutes)' --query RuleArn --output text
+  aws lambda add-permission --function-name kaagaz-monitor --statement-id kaagaz-monitor-schedule --action lambda:InvokeFunction --principal events.amazonaws.com --source-arn <RULE_ARN>
+  aws events put-targets --rule kaagaz-monitor --targets Id=monitor,Arn=<FUNCTION_ARN>
+  ```
+  The failure destination emails when the monitor itself fails to run. Check:
+  `aws lambda invoke --function-name kaagaz-monitor out.json` writes `{"alerted": false}`;
+  on the test server, `dc stop frontend` for 10 minutes brings one email, and
+  `dc up -d --no-deps frontend` a second. A new version: zip again and
+  `aws lambda update-function-code --function-name kaagaz-monitor --zip-file fileb:///tmp/monitor.zip`.
+* The disk: `kaagaz-disk.timer` runs `infra/ec2/disk-alert.sh` hourly; over 80% used on `/`
+  it emails `OPS_ALERT_EMAIL` (set it in `.env`) from `EMAIL_FROM` through SES, at most once a
+  day (`~/.kaagaz-disk-alert` holds the day). No CloudWatch agent. It runs the backend image
+  on the host network with `.env` (`docker run --env-file`, which keeps quotes, so write
+  `OPS_ALERT_EMAIL` and `EMAIL_FROM` unquoted), so it reaches the server's role with the
+  instance metadata hop limit left at 1. When the email cannot go, the journal says
+  `DISK <n>% USED and the alert email was NOT sent` under the reason, and
+  `systemctl --failed` lists `kaagaz-disk.service`.
+  While SES is in its sandbox, the address must be verified too. Install:
+  `sudo cp ~/kaagaz/infra/ec2/kaagaz-disk.* /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now kaagaz-disk.timer`.
+  Check: `docker run --rm --network host --env-file .env kaagaz-backend:local python -m kaagaz.cli disk-alert --used 81`
+  prints `disk alert sent` and the email arrives; on a test box, `fallocate -l <GB>G ~/fill` past 80%
+  then `sudo systemctl start kaagaz-disk.service` sends it, and `rm ~/fill`.
 
 **Go-live checks** (EC2 PRD section 10). Report each one with its command and
 its output; until then it is NOT RUN.
@@ -473,6 +615,17 @@ npx tsc --noEmit
 npx eslint .
 npx vitest run
 ```
+
+**When CI's `npm audit` fails (#481).** `npm audit --omit=dev --audit-level=high` fails a pull
+request on a high or critical advisory in the website's own libraries. First `npm audit fix`, or
+a newer version of the library that brings it in; if only a nested library has the fix, pin that
+version under `overrides` in `frontend/package.json`. When no fixed version exists yet, and the
+advisory's code is not reachable from the website, a pull request may lower that CI step to
+`--audit-level=critical`, with a comment above it naming the advisory (its GHSA id), why it does
+not reach the app, the date, and a recheck date at most 14 days on; Vrushit reviews it. While it
+is lowered, run `npm audit --omit=dev` by hand on every frontend change, as other high findings
+no longer fail CI. On the recheck date, or as soon as a fix ships, the step goes back to `high`.
+If the code is reachable, the library is removed or replaced instead.
 
 ## 5. Features, in order, and how to validate each
 
@@ -829,16 +982,17 @@ docker compose cp seaweedfs:/data ../kaagaz-backup/backup-files
 docker compose up -d
 ```
 
-**Restore**, the reverse, into a fresh stack: a new laptop with the same `.env`, or this one under another project name, which gets its own empty volumes (`docker compose stop` the main stack first to free its ports). The containers are created but not started, so the files go in before SeaweedFS first runs; the copy is owned by root, so the `chown` hands it back to the image's `seaweed` user. `pg_dump` leaves out roles, so the app role is made first, as migration 0001 makes it:
+**Restore**, the reverse, into a fresh stack: a new laptop with the same `.env`, or this one under another project name, which gets its own empty volumes (`docker compose stop` the main stack first to free its ports). The containers are created but not started, so the files go in before SeaweedFS first runs; the copy is owned by root, so the `chown` hands it back to the image's `seaweed` user. `pg_dump` leaves out roles, so the app and operator roles are made first, as migrations 0001 and 0015 make them, and 0067's two logins and its refusal of temporary tables after (#479; set their passwords as in "Limited database logins" if the drill's `.env` names them):
 
 ```
 docker compose -p kaagaz-drill create --build
 docker compose -p kaagaz-drill cp ../kaagaz-backup/backup-files/. seaweedfs:/data
 docker compose -p kaagaz-drill run --rm --no-deps --entrypoint chown seaweedfs -R seaweed:seaweed /data
 docker compose -p kaagaz-drill up -d postgres
-docker compose -p kaagaz-drill exec -T postgres psql -U kaagaz -d kaagaz -c "CREATE ROLE kaagaz_app NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE" -c "GRANT kaagaz_app TO kaagaz"
+docker compose -p kaagaz-drill exec -T postgres psql -U kaagaz -d kaagaz -c "CREATE ROLE kaagaz_app NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE" -c "GRANT kaagaz_app TO kaagaz" -c "CREATE ROLE kaagaz_operator NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE" -c "GRANT kaagaz_operator TO kaagaz"
 docker compose -p kaagaz-drill cp ../kaagaz-backup/kaagaz.dump postgres:/tmp/kaagaz.dump
 docker compose -p kaagaz-drill exec -T postgres pg_restore -U kaagaz -d kaagaz --exit-on-error /tmp/kaagaz.dump
+docker compose -p kaagaz-drill exec -T postgres psql -U kaagaz -d kaagaz -c "CREATE ROLE kaagaz_api LOGIN NOINHERIT CONNECTION LIMIT 80" -c "CREATE ROLE kaagaz_ops LOGIN NOINHERIT CONNECTION LIMIT 15" -c "GRANT kaagaz_app TO kaagaz_api WITH INHERIT FALSE, SET TRUE" -c "GRANT kaagaz_operator TO kaagaz_ops WITH INHERIT FALSE, SET TRUE" -c "REVOKE TEMPORARY ON DATABASE kaagaz FROM PUBLIC"
 docker compose -p kaagaz-drill exec -T postgres rm /tmp/kaagaz.dump
 docker compose -p kaagaz-drill up -d
 ```
@@ -853,3 +1007,66 @@ docker compose -p kaagaz-drill up -d
 4. Clean up: `docker compose -p kaagaz-drill down -v`, `rm -r ../kaagaz-backup`, then `docker compose up -d` brings back the main stack.
 
 For a real restore on a new laptop, run the same commands without `-p kaagaz-drill`, and skip step 4: otherwise a later plain `docker compose up` starts an empty stack, and step 4 deletes the restored data.
+
+### Backups off the server (#476)
+
+Each night, after its local dump, `infra/ec2/pgdump.sh` streams three parts into an S3 bucket in ap-south-1, under a folder of its own for each run, `<run>/` (`YYYYMMDDTHHMMSSZ`, so a second run never writes over the first): `kaagaz.dump` (that dump), `roles.sql` (the logins, `pg_dumpall --roles-only --no-role-passwords`) and `files.tar` (every stored file, read through the S3 API by `kaagaz.cli backup-files`, so SeaweedFS keeps running; a read of no files fails the run). Each part is encrypted on the server as it streams, with `openssl enc -aes-256-ctr` and its own random 256-bit key, and goes up as `<part>.enc`; only that key is sealed with `openssl cms` to a certificate whose private key never touches the server, as `<part>.key.cms`. (`openssl cms -decrypt` holds its whole input in memory: 400 MB took 1.07 GB, so a large part sealed with it could not be restored.) Nothing encrypted is written to the disk. `<run>/done` goes last, only when every part is in: one line per part (its object, size and sha256), then `files <count>`. The upload runs `kaagaz.cli backup-upload` in the backend image on the host network, with the server's own role (no AWS key on the server), and never over an object already there. Without `BACKUP_BUCKET` and `BACKUP_CERT` in `.env` it stops after the local dump. The run holds the deploy lock, so no deploy or idle stop cuts it. `journalctl -u kaagaz-pgdump -n 20` ends `copied backup <run> off the server (<count> files)`; the monitor (section 2c, "Alerts") emails when no `done` is under 26 hours old.
+
+**Once, by Vrushit** (AWS account admin; `<BUCKET>`, `<ACCOUNT>` and `<INSTANCE_ROLE>`, the server's role, are yours):
+
+1. The key pair, on an offline machine. It asks for a passphrase; keep `kaagaz-backup-key.pem` and the passphrase in the password manager and one offline copy, never on the server: without it no backup can be read.
+   `openssl req -x509 -newkey rsa:4096 -days 3650 -subj "/CN=kaagaz-backup" -keyout kaagaz-backup-key.pem -out kaagaz-backup-cert.pem`.
+   Copy only `kaagaz-backup-cert.pem` to the server as `/home/ubuntu/kaagaz-secrets/backup-cert.pem`.
+2. The KMS key and the bucket: Object Lock in compliance mode, 30 days (nobody, root included, deletes a backup early), SSE-KMS, no public access, and old backups gone after 35 days:
+   ```
+   aws kms create-key --region ap-south-1 --description "Kaagaz backups" --query KeyMetadata.Arn --output text
+   aws s3api create-bucket --region ap-south-1 --bucket <BUCKET> --create-bucket-configuration LocationConstraint=ap-south-1 --object-lock-enabled-for-bucket
+   aws s3api put-object-lock-configuration --bucket <BUCKET> --object-lock-configuration '{"ObjectLockEnabled":"Enabled","Rule":{"DefaultRetention":{"Mode":"COMPLIANCE","Days":30}}}'
+   aws s3api put-bucket-encryption --bucket <BUCKET> --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"aws:kms","KMSMasterKeyID":"<KEY_ARN>"},"BucketKeyEnabled":true}]}'
+   aws s3api put-public-access-block --bucket <BUCKET> --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+   aws s3api put-bucket-lifecycle-configuration --bucket <BUCKET> --lifecycle-configuration '{"Rules":[{"ID":"kaagaz-35-days","Status":"Enabled","Filter":{},"Expiration":{"Days":35},"NoncurrentVersionExpiration":{"NoncurrentDays":1},"AbortIncompleteMultipartUpload":{"DaysAfterInitiation":2}}]}'
+   ```
+3. Write-only for the server: this inline policy on `<INSTANCE_ROLE>` (`aws iam put-role-policy --role-name <INSTANCE_ROLE> --policy-name kaagaz-backup-write --policy-document file://backup-write.json`). It may add backups and nothing else: no read, no list, no delete. `kms:Decrypt` is what S3 needs to finish a multipart upload with this key; without `s3:GetObject` it reads nothing.
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [
+       {"Sid": "AddBackupsOnly", "Effect": "Allow", "Action": ["s3:PutObject", "s3:AbortMultipartUpload"], "Resource": "arn:aws:s3:::<BUCKET>/*"},
+       {"Sid": "EncryptWithTheBackupKey", "Effect": "Allow", "Action": ["kms:GenerateDataKey", "kms:Decrypt"], "Resource": "<KEY_ARN>"}
+     ]
+   }
+   ```
+   And write-once, on the bucket (`aws s3api put-bucket-policy --bucket <BUCKET> --policy file://backup-write-once.json`): a new object only, never one over an existing key, whoever writes. `kaagaz.cli backup-upload` sends `If-None-Match: *` on every object it makes; `s3:ObjectCreationOperation` leaves the parts of a multipart upload alone, as only its last step creates the object.
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [
+       {"Sid": "WriteOnce", "Effect": "Deny", "Principal": "*", "Action": "s3:PutObject", "Resource": "arn:aws:s3:::<BUCKET>/*",
+        "Condition": {"StringNotEquals": {"s3:if-none-match": "*"}, "Bool": {"s3:ObjectCreationOperation": "true"}}}
+     ]
+   }
+   ```
+   The restore drill and a real restore need `s3:GetObject` and `s3:ListBucket` on the bucket and `kms:Decrypt` on the key: an admin's own sign-in, never the server's role, which can neither read nor list the bucket.
+4. In the server's `.env`: `BACKUP_BUCKET=<BUCKET>` and `BACKUP_CERT=/home/ubuntu/kaagaz-secrets/backup-cert.pem`. Run `~/kaagaz/infra/ec2/pgdump.sh` once; then, signed in as an admin on a laptop (the server's role cannot list), `aws s3 ls s3://<BUCKET>/` shows the run's folder and `aws s3 ls s3://<BUCKET>/<run>/` its seven objects. A new server with no uploads yet fails here, as a read of no files is taken for a broken store: upload one document first.
+5. The second region: the daily snapshot copied to Hyderabad (ap-south-2, an opt-in region) and kept 7 days there, and a Recycle Bin rule in each region, so a deleted snapshot can be brought back for 7 days (the rule itself locked for 7):
+   ```
+   aws account enable-region --region-name ap-south-2
+   aws dlm get-lifecycle-policies --region ap-south-1 --query 'Policies[].[PolicyId,Description]'
+   aws dlm get-lifecycle-policy --region ap-south-1 --policy-id <POLICY_ID> --query Policy.PolicyDetails > dlm-details.json
+   ```
+   In `dlm-details.json`, add to `Schedules[0]`: `"CrossRegionCopyRules": [{"Target": "ap-south-2", "Encrypted": true, "CopyTags": true, "RetainRule": {"Interval": 7, "IntervalUnit": "DAYS"}}]` (encrypted with ap-south-2's default EBS key). Then:
+   ```
+   aws dlm update-lifecycle-policy --region ap-south-1 --policy-id <POLICY_ID> --policy-details file://dlm-details.json
+   aws rbin create-rule --region ap-south-1 --resource-type EBS_SNAPSHOT --description "Kaagaz: deleted snapshots kept 7 days" --retention-period RetentionPeriodValue=7,RetentionPeriodUnit=DAYS --lock-configuration 'UnlockDelay={UnlockDelayValue=7,UnlockDelayUnit=DAYS}'
+   aws rbin create-rule --region ap-south-2 --resource-type EBS_SNAPSHOT --description "Kaagaz: deleted snapshots kept 7 days" --retention-period RetentionPeriodValue=7,RetentionPeriodUnit=DAYS --lock-configuration 'UnlockDelay={UnlockDelayValue=7,UnlockDelayUnit=DAYS}'
+   ```
+   The next day, `aws ec2 describe-snapshots --region ap-south-2 --owner-ids self` shows the copy.
+
+**The restore drill, monthly and after any change to the database logins.** On a Linux or macOS laptop or a throwaway machine (not Git Bash: it rewrites the paths), never the production server, with Docker, the aws CLI signed in as above, and the private key: from a checkout, `docker compose build migrate` (it makes `kaagaz-backend:local`), then
+
+```
+aws s3 ls s3://<BUCKET>/                      # the runs; take last night's, YYYYMMDDTHHMMSSZ
+infra/ec2/restore-drill.sh <BUCKET> <run> /path/to/kaagaz-backup-key.pem
+```
+
+It reads `<run>/done`, opens each part's sealed key (openssl asks for the passphrase, once per part), streams the part down and decrypts it as it reads, so memory stays small at any size, and checks its size and sha256 against `done`; the plain copies go into a private temporary folder. It then restores the logins (any SQL error stops it), the database and the files into a throwaway `pgvector/pgvector:0.8.7-pg17` and `chrislusf/seaweedfs:4.48` on their own network, then checks one document through the customer filter (as `kaagaz_app`, its customer set): its row, its original and its first page image. It ends `DRILL PASS <run>` and removes everything it made; anything else ends `DRILL FAIL: <why>`. Post its output (ids and counts only) with the date as a comment on #476; a failure is fixed before anything else.
