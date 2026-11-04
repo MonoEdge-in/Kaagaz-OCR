@@ -9,7 +9,8 @@
 // has loaded. Disconnect asks first, with the password; cancelling a request that still waits
 // needs no password. Every account keeps its Kaagaz password, so nobody is locked out. A
 // missing or wrong password or code shows on its field, which takes focus. The words are
-// signInWays.ts's.
+// signInWays.ts's. #507: under the list, the organisation's rules for this person (Google only,
+// the company domains); a session that may only connect Google is sent here (lib/session.tsx).
 
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
@@ -31,6 +32,7 @@ import {
   passwordRow,
   providerName,
   rowText,
+  rulesText,
   waysLoadText,
 } from "./signInWays";
 import styles from "./WaysToSignIn.module.css";
@@ -74,6 +76,7 @@ export function WaysToSignIn({ params }: { params: Record<string, string | undef
     };
   }, [attempt]);
 
+  const rules = ways ? rulesText(ways.rules, me.google_link_required === true) : null;
   const connected = params.connected ? ways?.identities.find((row) => row.provider === params.connected) : undefined;
   const notice = said
     ? { kind: "done" as const, text: said }
@@ -115,6 +118,7 @@ export function WaysToSignIn({ params }: { params: Record<string, string | undef
           );
         })}
       </ul>
+      {rules && <p className="hint">{rules}</p>}
       {failure && (
         <div className={styles.loadFailed}>
           <p className="hint" role="status">

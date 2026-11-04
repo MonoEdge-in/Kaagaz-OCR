@@ -29,6 +29,7 @@ import { OrgNumbersView } from "./OrgNumbers";
 import { OverviewView } from "./OverviewView";
 import { QualityView } from "./QualityView";
 import { SessionTimeoutView } from "./SessionTimeout";
+import { PlatformGoogleSignIn } from "./GoogleSignIn";
 import { SpeedView } from "./SpeedControls";
 import { SpendView } from "./SpendView";
 import css from "./Insights.module.css";
@@ -116,7 +117,12 @@ export function OperatorConsole() {
         {active === "health" && <HealthView />}
         {active === "folders" && <FolderUploadLimitsView />}
         {active === "features" && <FeatureSwitchesView testModel={testModel} onTestModel={reloadTestModel} />}
-        {active === "timeout" && <SessionTimeoutView />}
+        {active === "timeout" && (
+          <>
+            <SessionTimeoutView />
+            <PlatformGoogleSignIn />
+          </>
+        )}
         {active === "speed" && <SpeedView />}
       </Tabs>
     </div>

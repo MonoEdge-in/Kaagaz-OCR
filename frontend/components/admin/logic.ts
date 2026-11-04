@@ -308,6 +308,17 @@ export function signsInWith(ways: readonly string[] | undefined): string {
   return (ways ?? ["password"]).map((way) => WAY_NAMES[way] ?? way).join(", ");
 }
 
+/** #507: the tag beside how they sign in, while their role signs in with Google only and they
+ * have no Google account that passes (AdminUser.google_needed). */
+export const GOOGLE_NEEDED = "Needs to connect Google";
+export const RESET_DISCONNECTS = "This also disconnects their Google account.";
+
+/** Asked before Reset password; it also removes their connected accounts (#507). */
+export function resetPasswordQuestion(name: string, ways: readonly string[] | undefined): string {
+  const question = `Reset ${name}'s password? They are signed out everywhere and must choose a new one.`;
+  return (ways ?? []).some((way) => way !== "password") ? `${question} ${RESET_DISCONNECTS}` : question;
+}
+
 const askedDay = new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "short", timeZone: "Asia/Kolkata" });
 
 /** A waiting connection in one line: "Ramesh Kumar · Google · ramesh.k@gmail.com · asked 30 Oct". */
