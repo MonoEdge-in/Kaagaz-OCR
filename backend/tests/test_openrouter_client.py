@@ -42,7 +42,7 @@ from kaagaz.ai.openrouter import (
 from kaagaz.db.engine import Database
 from kaagaz.ingestion.ports import Job
 from kaagaz.settings import NO_THINKING, Settings
-from kaagaz.worker_main import admission, report_reader_state, worker_model
+from kaagaz.worker_main import JsonFormatter, admission, report_reader_state, worker_model
 from tests import openrouter_fake
 from tests.openrouter_fake import (
     KEY,
@@ -533,6 +533,53 @@ def test_407_a_model_one_organisation_chose_never_reports_a_key_problem(
     with pytest.raises(ModelUnavailable):
         _read(client, model=FLASH)
     assert client.status() == client.gate.health() == ("working", None)
+
+
+def _lines(caplog: pytest.LogCaptureFixture, message: str) -> list[dict[str, Any]]:
+    """Each ``message`` line as the server's log writes it (only its safe fields)."""
+    formatter = JsonFormatter()
+    return [json.loads(formatter.format(r)) for r in caplog.records if r.getMessage() == message]
+
+
+def test_l2_the_readers_404_names_its_model_and_says_reading_model_unusable_once(
+    fake: OpenRouterFake, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Production QA L2: "reading model unusable" was logged 27 times with no model id, so
+    nobody could tell which model to fix. Each 404 now names its model; the reader's error is
+    logged once (until the reader answers again). Nothing waits: no backoff, one request each."""
+    caplog.set_level(logging.WARNING, logger="kaagaz.ai.openrouter")
+    fake.script("completions", error_reply(404), error_reply(404), error_reply(404))
+    clock = Clock()
+    client = _client(fake.url, clock)
+    for _ in range(3):
+        with pytest.raises(ModelUnavailable) as caught:
+            _read(client)
+        assert caught.value.code == "model_not_found"
+    assert [(line["level"], line["code"], line["model"]) for line in _lines(caplog, "model not found")] == [
+        ("WARNING", "model_not_found", PRO)
+    ] * 3
+    assert [(line["level"], line["model"]) for line in _lines(caplog, "reading model unusable")] == [
+        ("ERROR", PRO)
+    ]
+    assert SECRET not in caplog.text
+    assert (clock.backoffs(), len(fake.requests)) == ([], 3)
+    assert client.gate.health()[0] == "key_problem"
+
+
+def test_l2_a_chat_404_on_the_readers_model_id_is_not_a_reading_problem(
+    fake: OpenRouterFake, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Only ``read_page`` reports the reader unusable: a chat call naming the same model id
+    (MODEL_CHAT == OCR_MODEL) logs its own 404 with the model, and Health is not changed."""
+    caplog.set_level(logging.WARNING, logger="kaagaz.ai.openrouter")
+    fake.script("completions", error_reply(404))
+    client = _client(fake.url, Clock(), model_chat=PRO)
+    with pytest.raises(ModelUnavailable) as caught:
+        client.chat_json(system="s", user="u", schema=SCHEMA)
+    assert caught.value.code == "model_not_found"
+    assert [line["model"] for line in _lines(caplog, "model not found")] == [PRO]
+    assert _lines(caplog, "reading model unusable") == []
+    assert client.gate.health() == ("working", None)
 
 
 def test_any_other_status_is_an_http_error(fake: OpenRouterFake) -> None:
