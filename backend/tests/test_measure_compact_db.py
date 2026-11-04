@@ -1,10 +1,10 @@
 """``cli measure-compact`` (#488, Tushar, 4 Nov 2026): the offline proof of the compact reply over
 the cached g3 page reads of the last N days, every organisation's (each read as itself): each is
-encoded to the compact ``r`` and decoded back (builder A's ``encode_compact``/``decode_compact``,
-a fake pair here), compared ignoring order and the block numbers (blocks as groupings), and the
-pages, the lossless share, the characters and an output token estimate are printed. Numbers only:
-never a word of a page. No AI call: the command has no model. On a fresh database, so the pages
-counted are this test's alone."""
+encoded to the compact ``r`` and decoded back (``reading.compact``'s ``encode_compact`` and
+``decode_compact``: a fake pair, then the real one on realistic replies), compared ignoring order
+and the block numbers (blocks as groupings), and the pages, the lossless share, the characters
+and an output token estimate are printed. Numbers only: never a word of a page. No AI call: the
+command has no model. On a fresh database, so the pages counted are this test's alone."""
 
 import io
 import json
@@ -16,9 +16,12 @@ from sqlalchemy import text
 
 from kaagaz import cli
 from kaagaz.db.engine import Database
+from kaagaz.reading.compact import Decoded
 from tests import test_migration_0002_db as base
 from tests.db_support import insert_document, migrate, new_customer
+from tests.test_gemini_ocr import line
 from tests.test_migration_0023_db import as_owner
+from tests.test_reading_compact import PAGE, cell, result
 
 pytestmark = pytest.mark.db
 fresh = base.fresh
@@ -26,6 +29,19 @@ SECRET = "SECRET-WORD-123"  # a page's words: never printed
 _PUT = text(
     "INSERT INTO page_reads (customer_id, document_id, page_no, image_sha256, model, prompt_version, result,"
     " input_tokens, output_tokens) VALUES (:c, :d, :p, :sha, 'google/x', :v, CAST(:r AS jsonb), 2500, :out)"
+)
+INVOICE = result(  # an invoice, its boxes as a model gives them (some not whole numbers)
+    line("Sharma Traders", (30, 80, 60.5, 600), order=0, kind="title", block=0),
+    line("GSTIN 27AAACO1234", (65, 80, 80, 500), order=1, kind="header", block=0, unsure=("27AAACO1234",)),
+    cell("Item", (200, 80, 220, 500), 0, 0, header=True, order=2, block=1, table_id="items"),
+    cell("Amount", (200, 500, 220, 900), 0, 1, header=True, order=3, block=1, table_id="items"),
+    cell("Cement 50 bags", (225, 80, 245, 500), 1, 0, order=4, block=1, table_id="items"),
+    cell("₹12,450", (225, 500, 245, 900), 1, 1, order=5, block=1, table_id="items", unsure=("₹12,450",)),
+    cell("Total ₹12,450", (250, 80, 270, 900), 2, 0, span=2, order=6, block=1, table_id="items"),
+    line("Paid by UPI [?]", (300, 80, 320, 700), order=7, kind="list_item", block=2),
+    line("Thank you", (960, 300, 975.25, 700), order=8, kind="footer", block=3),
+    quality="good",
+    scripts=("latin",),
 )
 
 
@@ -66,6 +82,11 @@ def _decode(compact: str) -> dict[str, Any]:
     return {"page": raw["p"], "lines": lines}
 
 
+def _decoded(compact: str) -> Decoded:
+    """``_decode`` as the real decoder gives it (the CLI takes its ``result``)."""
+    return Decoded(_decode(compact), frozenset())
+
+
 def _chars(result: dict[str, Any]) -> int:
     return len(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
 
@@ -76,7 +97,7 @@ def test_it_prints_the_lossless_share_characters_and_tokens_and_never_a_word(
     url, db = fresh
     migrate(url, "head")
     monkeypatch.setattr(cli, "encode_compact", _encode)
-    monkeypatch.setattr(cli, "decode_compact", _decode)
+    monkeypatch.setattr(cli, "decode_compact", _decoded)
     pages = {
         "a": _result(_line(1, SECRET, 1), _line(2, "दुसरी ओळ", 1), _line(3, "Third", 2)),
         "b": _result(_line(1, "LOSE this", 1, unsure=["this"])),  # not lossless
@@ -162,7 +183,7 @@ def test_with_no_page_and_a_bad_day_count(
     url, db = fresh
     migrate(url, "head")
     monkeypatch.setattr(cli, "encode_compact", _encode)
-    monkeypatch.setattr(cli, "decode_compact", _decode)
+    monkeypatch.setattr(cli, "decode_compact", _decoded)
     out = io.StringIO()
     assert cli.main(["measure-compact"], db=db, out=out) == 0
     assert out.getvalue().splitlines() == [
@@ -183,3 +204,24 @@ def test_a_page_the_pair_cannot_encode_or_decode_is_counted_not_lossless() -> No
     moved = _result(_line(1, "x", 1), _line(2, "y", 1))
     split = _result(_line(1, "x", 1), _line(2, "y", 2))  # the same lines, in two blocks
     assert not cli.same_reply(moved, split) and cli.same_reply(moved, _decode(_encode(moved)))
+
+
+def test_the_real_pair_is_lossless_on_realistic_replies(fresh: tuple[str, Database]) -> None:
+    """The real encoder and decoder over g3 reads as the reader caches them (``checked`` then
+    ``as_result``): a land record with a table (header cells, a merged one), unsure words, a
+    ";" inside one, blocks, a stamp, a note, a footer and a page that goes on; an invoice; a blank
+    page. Every one comes back the same."""
+    url, db = fresh
+    migrate(url, "head")
+    pages = [PAGE, INVOICE, result()]
+    customer = new_customer(db)[0]
+    with db.customer(customer) as conn:
+        doc = insert_document(conn, customer)
+        for n, page in enumerate(pages, 1):
+            params = {"c": customer, "d": doc, "p": n, "sha": "c" * 64, "v": "g3", "out": 900}
+            conn.execute(_PUT, {**params, "r": json.dumps(page, ensure_ascii=False)})
+    out = io.StringIO()
+    assert cli.main(["measure-compact"], db=db, out=out) == 0
+    printed = out.getvalue().splitlines()
+    assert printed[1:3] == ["pages 3", "lossless 100.0% (3 of 3)"]
+    assert all(word not in out.getvalue() for word in ("उतारा", "Patil", "Sharma", "12,450"))

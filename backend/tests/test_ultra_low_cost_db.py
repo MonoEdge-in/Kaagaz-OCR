@@ -3,12 +3,16 @@ the reader and the ceiling (400 ``ceiling_out_of_range`` and 409 ``ulc_needs_gem
 code is used), an organisation that chose it reads with it and one that did not reads as before,
 ``kaagaz_op_ulc_cost`` measures what it really cost (OpenRouter's reported cost of the
 ``ulc_scan`` ledger rows, never cached, every limit hit counted), the estimate shows it, and the
-catalogue's real cost counts its pages. Every test that saves the platform defaults puts them back
+catalogue's real cost counts its pages, and so do the Overview, the model board and the test model's
+cost (0070's SPEND). Every test that saves the platform defaults puts them back
 (the ``platform`` fixture)."""
+
+from decimal import Decimal
 
 import pytest
 from sqlalchemy import text
 
+from kaagaz.db import operator_insights as insights
 from kaagaz.db import operator_models as ops
 from kaagaz.db.engine import Database, OperatorDatabase
 from tests.db_support import insert_document, new_customer
@@ -16,6 +20,7 @@ from tests.settings_factory import make_settings
 from tests.test_api_support import CSRF, Api
 from tests.test_isolation_ai_settings import platform, set_org
 from tests.test_migration_0023_db import as_owner
+from tests.test_operator_insights_db import at, of, one, read, usage, window_day
 from tests.test_operator_models_db import FOLLOWS_DEFAULTS, _save, _signed_in
 from tests.test_scan_cost_settings_db import reading_of, scan_model
 
@@ -234,3 +239,35 @@ def test_the_catalogues_real_cost_counts_its_pages(db: Database, platform: str) 
     with OperatorDatabase(db.engine).operator() as conn:
         [listed] = [row for row in ops.list_models(conn, platform) if row["id"] == lead]
     assert (listed["scan_pages"], float(listed["scan_cost_usd"])) == (3, 0.009)
+
+
+def test_the_overview_the_model_board_and_the_test_models_cost_count_its_pages(
+    db: Database, platform: str
+) -> None:
+    day, lead, customer = window_day(), scan_model(db), new_customer(db)[0]
+    usage(db, customer, at(day), "ulc_scan", lead, 4, "0.012")
+    usage(db, customer, at(day), "ulc_scan", lead, 2, "0", cached=True)
+    [daily] = of(read(db, platform, insights.daily, day, day, "UTC"), customer)
+    assert (daily["pages_read"], daily["pages_read_costed"], daily["pages_reread"]) == (4, 4, 0)
+    assert (daily["scan_pages"], daily["cached_pages"], daily["scan_unknown_calls"]) == (4, 2, 0)
+    spend = ("cost_scan_usd", "cost_documents_usd", "cost_scan_real_usd", "cost_real_usd")
+    assert [daily[name] for name in spend] == [Decimal("0.012")] * 4
+    board = one(read(db, platform, insights.model_board, day, day, "UTC"), "model", lead)
+    assert (board["scan_calls"], board["cached_scan_calls"], board["scan_cost_usd"]) == (
+        6,
+        2,
+        Decimal("0.012"),
+    )
+    as_owner(
+        db,
+        "INSERT INTO platform_model_override (id, scan_model, started_at) VALUES (true, :m, :t)"
+        " ON CONFLICT (id) DO UPDATE SET scan_model = EXCLUDED.scan_model, chat_model = NULL,"
+        " started_at = EXCLUDED.started_at",
+        {"m": lead, "t": at(day, -1)},
+    )
+    try:
+        with OperatorDatabase(db.engine).operator() as conn:
+            tested = ops.current_test_model(conn, platform)
+    finally:
+        as_owner(db, "DELETE FROM platform_model_override")
+    assert tested is not None and (tested["pages"], tested["cost_usd"]) == (4, Decimal("0.012"))

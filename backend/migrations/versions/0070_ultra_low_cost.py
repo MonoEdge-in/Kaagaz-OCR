@@ -24,11 +24,18 @@ more than a ceiling a page.
 * ``kaagaz_op_models`` (0033): its pages read and their real cost count ``ulc_scan`` as a page
   read too; the live text is 0033's, changed in place (CREATE OR REPLACE keeps the owner, grants
   and comment).
+* The operator's other spend figures count ``ulc_scan`` as a page read too (``SPEND``):
+  ``kaagaz_op_daily`` (the Overview: a first read, a scanned page, scan and document spend),
+  ``kaagaz_op_test_model`` (the test model's pages and cost) and ``kaagaz_op_model_board`` (a
+  model's scan calls and cost). Each live body is read back from the catalogue and each kind list
+  replaced exactly the times it holds it, or the migration stops (0049's and 0069a's way); CREATE
+  OR REPLACE keeps the owner, grants, comment, SECURITY DEFINER and empty search path.
 
 The downgrade puts Ultra low cost back to NULL (Gemini, as every organisation read before: no
-reader is lost to a CHECK), drops the new function and index, puts 0033's and 0066's functions
-and 0065's CHECKs and comments back exactly, then drops the columns. Lost on downgrade: the
-choice of Ultra low cost and the ceilings (the ledger's ``ulc_scan`` rows stay).
+reader is lost to a CHECK), undoes SPEND's rewrites, drops the new function and index, puts
+0033's and 0066's functions and 0065's CHECKs and comments back exactly, then drops the
+columns. Lost on downgrade: the choice of Ultra low cost and the ceilings (the ledger's
+``ulc_scan`` rows stay).
 
 Revision ID: 0070
 Revises: 0069a (paused runs)
@@ -220,6 +227,48 @@ MODELS_NEW = _changed(
 )
 _REPLACE = ("CREATE FUNCTION", "CREATE OR REPLACE FUNCTION")  # in place: grants and comment stay
 
+# The operator's spend figures count an Ultra low cost read as the page read it is: the Overview
+# (0034's daily, last changed by 0069a) as a first read, a scanned page and document work; the
+# test model's pages and cost (0038); the model board's scan calls and cost (0024, last changed
+# by 0069a). {function: [((old, new), times)]}, each made in the live body read back from the
+# catalogue, exactly that many times or the migration stops (0049's and 0069a's way).
+_FIRST_READS = ("'scan', 'upgrade'", f"'scan', 'upgrade', '{ULC_KIND}'")  # also 0034's other lists
+_SCANS = "'scan', 'upgrade', 'careful', 'ensemble_scan'"  # 0038's SCAN_KINDS
+SPEND = {
+    "kaagaz_op_daily(uuid, date, date, text)": [
+        (_FIRST_READS, 5),
+        (("u.kind = 'scan'", f"u.kind IN ('scan', '{ULC_KIND}')"), 3),
+    ],
+    "kaagaz_op_test_model(uuid)": [((_SCANS, f"{_SCANS}, '{ULC_KIND}'"), 2)],
+    "kaagaz_op_model_board(uuid, date, date, text)": [
+        (("x.kind = 'scan'", f"x.kind IN ('scan', '{ULC_KIND}')"), 3),
+    ],
+}
+_REWRITE = """
+DO $body$
+DECLARE
+    v_def text := pg_get_functiondef('public.{function}'::regprocedure);
+BEGIN
+    IF coalesce(array_length(string_to_array(v_def, $k${old}$k$), 1), 0) <> {parts} THEN
+        RAISE EXCEPTION '{function} does not count its page reads as 0070 expects';
+    END IF;
+    EXECUTE replace(v_def, $k${old}$k$, $k${new}$k$);
+END
+$body$
+"""
+
+
+def _spend(*, back: bool) -> list[str]:
+    """SPEND's rewrites (``back``: undone, in the reverse order)."""
+    steps = [(function, change, times) for function, changes in SPEND.items() for change, times in changes]
+    if back:
+        steps = [(function, (new, old), times) for function, (old, new), times in reversed(steps)]
+    return [
+        _REWRITE.format(function=function, old=old, new=new, parts=times + 1)
+        for function, (old, new), times in steps
+    ]
+
+
 # {table.column: comment} (0007's rule: every column has one).
 COMMENTS = {
     **{
@@ -275,9 +324,11 @@ UPGRADE = [
     " time (the operator''s Ultra low cost cost).'",
     *_create(ULC_COST, ULC_COST_SQL, ULC_COST_COMMENT),
     _changed(MODELS_NEW, [_REPLACE]),
+    *_spend(back=False),
 ]
 
 DOWNGRADE = [
+    *_spend(back=True),
     _changed(_0033.NEW, [_REPLACE]),
     f"DROP FUNCTION public.{ULC_COST}",
     "DROP INDEX model_usage_ulc_reads",

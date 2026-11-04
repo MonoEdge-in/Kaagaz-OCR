@@ -32,7 +32,9 @@
   (review, 2 Nov 2026): no page is quietly skipped for it.
 * #488: a check started on an Ultra low cost draft names its model "ulc/<paise>/<model>"
   (``ulc_model``, as Mistral's "mistral/<id>"), and "your settings" are read by Ultra low cost at
-  that ceiling; the max side stays the same model at max settings.
+  that ceiling, at its lead's catalogue prices taken once for the check (``models.ulc_prices``,
+  passed in ``DocumentPages`` as the pipeline passes them); the max side stays the same model at
+  max settings.
 * Every call is billed to the organisation as ``accuracy_check`` (Careful's too:
   ``kaagaz.ai.usage``), never its budget; ``cost_usd`` is OpenRouter's reported cost of the
   check's calls, null when one came without it.
@@ -66,7 +68,14 @@ from kaagaz.reading.mistral_ocr import (
     OPENROUTER,
     read_by,
 )
-from kaagaz.reading.ocr import DocumentPages, OcrEngine, PageRead, as_page_engine, reading_document
+from kaagaz.reading.ocr import (
+    DocumentPages,
+    OcrEngine,
+    PageRead,
+    UlcPrices,
+    as_page_engine,
+    reading_document,
+)
 from kaagaz.settings import Settings
 
 logger = logging.getLogger("kaagaz.worker")
@@ -160,11 +169,12 @@ class AccuracyChecks:
             rows = models.usable_models(conn, customer_id, settings=self._settings)
             allowed = dict(models.effective_settings(conn, customer_id))
             picked = conn.execute(_PAGES, {"c": customer_id, "n": claimed["max_pages"]}).all()
+            ulc = ulc_parts(claimed["model"])
+            prices = None if ulc is None else models.ulc_prices(conn, ulc[1])
         asked = {name: claimed[name] for name in (*models.SCAN_COST_FIELDS, "dynamic")}
         # #473: the reader the check was started on, from its model ("mistral/<id>": Mistral; #488:
         # "ulc/<paise>/<model>": Ultra low cost at that ceiling).
         mistral = next((model for model in MISTRAL_OCR_MODELS if read_by(model) == claimed["model"]), None)
-        ulc = ulc_parts(claimed["model"])
         reader: dict[str, Any] = {"scan_reader": OPENROUTER}
         if mistral is not None:
             reader = {"scan_reader": MISTRAL, "mistral_model": mistral}
@@ -196,7 +206,9 @@ class AccuracyChecks:
                 at = (customer_id, str(document_id), int(page_no))
                 try:
                     draft_read = (
-                        None if image is None else _read(engine, draft, *at, image, settings=self._settings)
+                        None
+                        if image is None
+                        else _read(engine, draft, *at, image, settings=self._settings, ulc_prices=prices)
                     )
                     max_read = (
                         None
@@ -298,12 +310,14 @@ def _read(
     image: Image.Image,
     *,
     settings: Settings,
+    ulc_prices: UlcPrices | None = None,
 ) -> PageRead | None:
     """The page as ``reading`` reads it through the scan reader, or None when a model of it did
     not read it (an outage, a refusal, the local reader) or not at the first read's settings
     ``reading`` asks (#463 review: a low read alongside is never taken for the max read). A key
-    problem goes up, and so does any for a ``reading`` on Mistral (#473 review)."""
-    pages = document_pages(reading, customer_id, document_id)
+    problem goes up, and so does any for a ``reading`` on Mistral (#473 review). ``ulc_prices``:
+    Ultra low cost's (#488)."""
+    pages = document_pages(reading, customer_id, document_id, ulc_prices)
     try:
         with reading_document(engine, pages):
             read = as_page_engine(engine).read_page(image, page_no=page_no)
@@ -320,11 +334,13 @@ def _read(
     return read
 
 
-def document_pages(reading: models.Reading, customer_id: str, document_id: str) -> DocumentPages:
+def document_pages(
+    reading: models.Reading, customer_id: str, document_id: str, ulc_prices: UlcPrices | None = None
+) -> DocumentPages:
     """One page's ``DocumentPages`` for ``reading``, as the pipeline gives a one-page document
     (``pipeline._reading_document``): Dynamic's Careful on the page's own thread
     (``inline_careful``) when it has one; no cache and nothing read again; its reader and
-    Mistral model (#473)."""
+    Mistral model (#473); Ultra low cost's ceiling and ``ulc_prices`` (#488)."""
     careful = reading.careful
     return DocumentPages(
         customer_id=customer_id,
@@ -348,4 +364,6 @@ def document_pages(reading: models.Reading, customer_id: str, document_id: str) 
         ),
         scan_reader=reading.scan_reader,
         mistral_model=reading.mistral_model,
+        ulc=reading.ulc,
+        ulc_prices=ulc_prices,
     )

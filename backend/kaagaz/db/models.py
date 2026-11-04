@@ -77,7 +77,7 @@ from sqlalchemy import Connection, RowMapping, text
 from kaagaz.answering.draft import ANSWER_PROMPT_HASH
 from kaagaz.db import ai_settings
 from kaagaz.reading.mistral_ocr import DEFAULT_MISTRAL_MODEL, MISTRAL, OPENROUTER
-from kaagaz.reading.ocr import GEMINI, READER_PROMPT_VERSION, UlcCeiling
+from kaagaz.reading.ocr import GEMINI, READER_PROMPT_VERSION, UlcCeiling, UlcPrices
 from kaagaz.settings import DEFAULT_PROVIDER, NO_THINKING, Settings
 
 # MC3: the days of ledger a page's estimate averages over.
@@ -112,7 +112,9 @@ ULC_VENDOR = "google"  # a Gemini model
 # its own), each with the catalogue row and the average tokens of its scan calls (not
 # cached) in the organisation's ledger of the last LEDGER_DAYS days; NULL with none. The
 # area's rules (eligible, enabled, verified) are in SQL; the provider and the vendor in
-# Python (``_provider``). The default first, then by name.
+# Python (``_provider``). The default first, then by name. #488: scan calls only, never
+# ulc_scan: its compact reply at minimal thinking is far shorter, so it would make the estimate
+# of a normal read look cheaper than it is (Ultra low cost has its own, kaagaz_op_ulc_cost).
 _AREA = """
     WITH test AS (
         SELECT t.{area}_model AS model, true AS is_default FROM platform_model_override t
@@ -583,6 +585,22 @@ def ulc_ceiling(paise: int | None) -> UlcCeiling:
     """#488: the ceiling of one read of a page, ``paise`` (None: ULC_DEFAULT_PAISE) in dollars."""
     chosen = ULC_DEFAULT_PAISE if paise is None else paise
     return UlcCeiling(usd=chosen / 100 / INR_PER_USD, paise=chosen)
+
+
+_ULC_PRICES = text(
+    "SELECT price_in_usd_per_m, price_out_usd_per_m, tokens_per_page_in FROM model_catalog WHERE id = :m"
+)
+
+
+def ulc_prices(conn: Connection, model: str) -> UlcPrices | None:
+    """#488: Ultra low cost's ``model`` prices from its catalogue row, taken once a document by
+    the pipeline and once a check by the accuracy check (None: no row, so nothing is sent)."""
+    row = conn.execute(_ULC_PRICES, {"m": model}).mappings().one_or_none()
+    if row is None:
+        return None
+    return UlcPrices(
+        float(row["price_in_usd_per_m"]), float(row["price_out_usd_per_m"]), row["tokens_per_page_in"]
+    )
 
 
 def _ulc_reading(rows: Sequence[RowMapping], allowed: Mapping[Any, Any], *, settings: Settings) -> Reading:

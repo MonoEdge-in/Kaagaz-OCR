@@ -2301,11 +2301,6 @@ def build_processor(
     if gemini or model is not None:
         requested_by = text("SELECT read_requested_by FROM documents WHERE customer_id = :c AND id = :d")
         pages_at_once_sql = text("SELECT pages_at_once FROM platform_ai_settings")
-        # #488: Ultra low cost's lead prices, once a document (a price change never moves its pages).
-        prices_sql = text(
-            "SELECT price_in_usd_per_m, price_out_usd_per_m, tokens_per_page_in"
-            " FROM model_catalog WHERE id = :m"
-        )
 
         def read_job(customer_id: str, document_id: str) -> JobReading:
             with unavailable(), db.customer(customer_id) as conn:
@@ -2316,16 +2311,8 @@ def build_processor(
                 # Features 25-27 (S2): the worker's own check of the mode and every model, now.
                 scan = models.resolve_scan(conn, customer_id, document_id, settings=settings)
                 at_once = conn.execute(pages_at_once_sql).scalar_one()  # package S, 0053
-                price = None
-                if scan.ulc is not None:
-                    price = conn.execute(prices_sql, {"m": scan.lead.model}).mappings().one_or_none()
-            prices = None
-            if price is not None:
-                prices = UlcPrices(
-                    float(price["price_in_usd_per_m"]),
-                    float(price["price_out_usd_per_m"]),
-                    price["tokens_per_page_in"],
-                )
+                # #488: Ultra low cost's lead prices, once a document (a price change never moves its pages).
+                prices = None if scan.ulc is None else models.ulc_prices(conn, scan.lead.model)
             return JobReading(
                 user_id,
                 scan.lead.model,

@@ -89,7 +89,7 @@ _COUNTS = ("calls", "cached_calls", "input_tokens", "output_tokens", "reasoning_
 # The period's rows grouped six ways in one read: the total, and by user, model, kind, day
 # (in TIMEZONE) and document. A row with no document counts as a deleted document only
 # when it was document work (scan, upgrade, card, invoice, land, map, or Dynamic's and Ensemble's
-# extra page reads, careful and ensemble_scan, 0026) with no conversation:
+# extra page reads, careful and ensemble_scan, 0026; #488's ulc_scan) with no conversation:
 # chat, search, stories and the missing-vector pass had none to lose.
 # ponytail: an embed row of a deleted document is left out of the deleted bucket, since
 # the missing-vector pass writes embed rows with no document too; a kind of its own if needed.
@@ -99,7 +99,8 @@ _REPORT = text(
     "WITH r AS ("
     " SELECT u.user_id, u.model, u.kind, CAST(timezone(:tz, u.created_at) AS date) AS day, u.document_id,"
     " (u.document_id IS NOT NULL OR (u.conversation_id IS NULL AND u.kind IN"
-    " ('scan', 'upgrade', 'card', 'invoice', 'land', 'map', 'careful', 'ensemble_scan'))) AS of_document,"
+    " ('scan', 'upgrade', 'card', 'invoice', 'land', 'map', 'careful', 'ensemble_scan', 'ulc_scan')))"
+    " AS of_document,"
     " u.cached, u.calls, u.input_tokens, u.output_tokens, u.reasoning_tokens, u.cost_usd, u.cost_estimated"
     " FROM model_usage u"
     " WHERE u.customer_id = :c AND u.kind <> 'accuracy_check'"

@@ -395,7 +395,8 @@ class DefaultsBody(BaseModel):
 class ScanSettingsBody(BaseModel):
     """#463: a draft's scan settings (SCAN_COST_FIELDS) and Cost saving (#463 review), each
     null for what the save would inherit (an organisation's: the platform's, else the
-    server's; the platform's: the server's, its Dynamic its saved one)."""
+    server's; the platform's: the server's, its Dynamic its saved one); #488 review: each left
+    out is the organisation's (or the platform's) own effective value."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -628,14 +629,24 @@ def _plan(
         rows = models.usable_models(conn, scope, settings=settings)
         allowed = models.effective_settings(conn, scope)
         platform = allowed if customer is None else models.effective_settings(conn, NO_ORGANISATION)
-    # What the save would inherit: an organisation's the platform's; the platform's the server's.
+    # A field sent null is what the save would inherit: an organisation's the platform's; the
+    # platform's the server's. #488 review: one left out is the scope's own (its effective value).
+    given = draft_fields.model_fields_set
     draft: dict[str, Any] = {
-        name: getattr(draft_fields, name) or (platform[name] if customer is not None else None)
+        name: allowed[name]
+        if name not in given
+        else getattr(draft_fields, name) or (platform[name] if customer is not None else None)
         # #473: the reader too; #488: and Ultra low cost's ceiling.
         for name in (*SCAN_COST_FIELDS, "scan_reader", "mistral_model", "ulc_ceiling_paise")
     }
     # #463 review: the draft's Cost saving (null: the platform's), never past the switches.
-    dynamic = platform["dynamic"] if draft_fields.dynamic is None else draft_fields.dynamic
+    dynamic = (
+        allowed["dynamic"]
+        if "dynamic" not in given
+        else platform["dynamic"]
+        if draft_fields.dynamic is None
+        else draft_fields.dynamic
+    )
     draft["dynamic"] = bool(dynamic and allowed["cost_saving"])
     reading = models.scope_reading(rows, {**allowed, **draft}, settings=settings)
     lead = reading.lead.model

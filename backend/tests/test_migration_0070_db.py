@@ -3,7 +3,9 @@
 comes with it, NULL for every existing row, so no organisation's reading changes on release
 day; the operator's four AI functions save, check, audit and count it (never the
 organisation's own log); ``kaagaz_op_ulc_cost`` and the catalogue's page reads count the
-``ulc_scan`` ledger kind; up, down (Ultra low cost back to NULL) and up again, with rows."""
+``ulc_scan`` ledger kind, and so do the Overview, the model board and the test model's cost, each
+live body changed only by its kind lists (SPEND); up, down (Ultra low cost back to NULL) and up
+again, with rows."""
 
 import pytest
 from sqlalchemy import text
@@ -32,6 +34,16 @@ ULC = ops.AiChoice(scan_reader="ultra_low_cost", ulc_ceiling_paise=30)
 PLATFORM_ULC = ops.AiChoice(
     chat_levels=["low"], chat_default_level="low", dynamic=False, scan_reader="ultra_low_cost"
 )
+_DEFINITION = text(
+    "SELECT pg_get_functiondef(p.oid), pg_get_userbyid(p.proowner), obj_description(p.oid, 'pg_proc'),"
+    " coalesce(p.proacl::text, '') FROM pg_proc p WHERE p.oid = CAST(:f AS regprocedure)"
+)
+
+
+def _spend(db: Database) -> dict[str, tuple[str, ...]]:
+    """SPEND's functions: (definition, owner, comment, grants)."""
+    with db.system() as conn:
+        return {each: tuple(conn.execute(_DEFINITION, {"f": f"public.{each}"}).one()) for each in M0070.SPEND}
 
 
 def _bodies(db: Database) -> list[tuple[str, ...]]:
@@ -153,9 +165,16 @@ def test_head_down_to_0069a_puts_ultra_low_cost_back_to_null_and_up_again(
 ) -> None:
     url, db = fresh
     migrate(url, "0069a")
-    at_0069a, bodies_0069a = base._schema(db), _bodies(db)
+    at_0069a, bodies_0069a, spend_0069a = base._schema(db), _bodies(db), _spend(db)
     migrate(url, "0070")
-    at_0070, bodies_0070 = base._schema(db), _bodies(db)
+    at_0070, bodies_0070, spend_0070 = base._schema(db), _bodies(db), _spend(db)
+    for function, changes in M0070.SPEND.items():  # only the kind lists change, nothing else
+        body, *rest = spend_0069a[function]
+        for (old, new), times in changes:
+            assert body.count(old) == times, function
+            body = body.replace(old, new)
+        assert spend_0070[function] == (body, *rest)
+        assert "ulc_scan" in body and "SECURITY DEFINER" in body and "SET search_path TO ''" in body
     assert "kaagaz_op_ulc_cost" in [row[0] for row in bodies_0070]
     for name, body, comment, acl in bodies_0070:  # the house pattern: definer, empty path, one role
         assert "SECURITY DEFINER" in body and "SET search_path TO ''" in body, name
@@ -184,6 +203,7 @@ def test_head_down_to_0069a_puts_ultra_low_cost_back_to_null_and_up_again(
     base._downgrade(url, "0069a")
     assert base._schema(db) == at_0069a
     assert _bodies(db) == bodies_0069a  # restored exactly, comments and grants too
+    assert _spend(db) == spend_0069a
     assert as_owner(
         db, "SELECT scan_reader FROM customer_ai_settings WHERE customer_id = :c", {"c": customer}
     ) == [(None,)]  # back to Gemini, as every organisation read before
@@ -192,3 +212,4 @@ def test_head_down_to_0069a_puts_ultra_low_cost_back_to_null_and_up_again(
     migrate(url, "0070")
     assert base._schema(db) == at_0070
     assert _bodies(db) == bodies_0070
+    assert _spend(db) == spend_0070
