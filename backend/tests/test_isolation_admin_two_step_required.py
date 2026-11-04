@@ -4,6 +4,8 @@
   organisation; audited in ``platform_audit`` and that organisation's own log.
 * While on, that organisation's admin who turned two-step off themselves (0061b) is sent to
   set it up at sign-in, can't use the admin screens meanwhile, and an admin can't turn it off.
+* Turning it on signs that organisation's admins without two-step out in the same transaction
+  (QA U1, 0069): the next call is 401, and the next sign-in offers the set-up.
 * Another organisation is untouched: its admin keeps signing in on the password alone.
 """
 
@@ -13,6 +15,7 @@ from sqlalchemy import text
 
 from kaagaz.api import totp
 from kaagaz.db.engine import Database
+from tests.test_api_admin_sign_in import _secret_from
 from tests.test_api_support import CSRF, PASSWORD, Api, TestClient, call, route_calls, wrong_code
 from tests.test_operator_auth_db import _Operator, _owner
 from tests.test_operator_orgs_db import ORGS, _platform, _signed_in
@@ -95,10 +98,8 @@ def test_while_on_an_admin_who_turned_it_off_sets_it_up_and_other_organisations_
     assert a_client.get("/api/admin/stats").status_code == 200
 
     assert _set(api, operator, client, a, True).status_code == 200
-    refused = a_client.get("/api/admin/stats")  # the session in hand: no admin screen until set up
-    assert (refused.status_code, refused.json()["error"]["code"]) == (403, "mfa_enrol_required")
-    me = a_client.get("/api/auth/me").json()["user"]
-    assert (me["two_step_turned_off"], me["two_step_required"]) == (False, True)  # the screen's gate
+    refused = a_client.get("/api/admin/stats")  # the session in hand: signed out (QA U1, 0069)
+    assert (refused.status_code, refused.json()["error"]["code"]) == (401, "not_signed_in")
     _, again = _sign_in(api, a_email)
     assert (again.status_code, again.json()["error"]["code"]) == (403, "mfa_enrol_required")
     assert set(again.json()["error"]["details"]) >= {"enrol_token", "secret", "otpauth_uri"}
@@ -114,14 +115,17 @@ def test_while_on_an_admin_who_turned_it_off_sets_it_up_and_other_organisations_
 
 
 def test_every_admin_route_refuses_until_set_up(db: Database) -> None:
-    """Walks the app's routes, so a future /api/admin route on another dependency is caught."""
+    """Walks the app's routes, so a future /api/admin route on another dependency is caught.
+    The switch signs such a session out (0069); the gate behind it is checked here on a session
+    that outlives it, the column set as the table owner."""
     api = Api(db)
-    operator, client = _signed_in(api)
     a, _ = api.customer("Org A every route")
     _, email = _turned_off_admin(api, a)
     a_client, signed_in = _sign_in(api, email)
     assert signed_in.status_code == 200, signed_in.text
-    assert _set(api, operator, client, a, True).status_code == 200
+    _owner(db, "UPDATE customers SET admin_two_step_required = true WHERE id = :c", {"c": a})
+    me = a_client.get("/api/auth/me").json()["user"]
+    assert (me["two_step_turned_off"], me["two_step_required"]) == (False, True)  # the screen's gate
     routes = route_calls(api.app, "/api/admin/")
     assert len(routes) > 10, routes
     for method, path in routes:
@@ -174,3 +178,37 @@ def test_while_on_an_admin_cant_turn_their_own_two_step_off(db: Database) -> Non
     off = {"password": PASSWORD, "code": api.code(member.secret)}
     assert member_client.post("/api/auth/2fa/off", json=off, headers=CSRF).status_code == 200
     assert member_client.get("/api/auth/me").json()["user"]["two_step_required"] is False
+
+
+def test_turning_it_on_signs_out_the_admins_without_two_step_who_then_set_it_up(db: Database) -> None:
+    """QA U1/P8 (0069): in the switch's own transaction, that organisation's admins without
+    two-step are signed out; an admin with it, a member and another organisation are not. The
+    signed-out admin's next sign-in offers the set-up, which works."""
+    api = Api(db)
+    operator, client = _signed_in(api)
+    a, _ = api.customer("Org A signed out")
+    b, _ = api.customer("Org B signed out")
+    _, a_email = _turned_off_admin(api, a)
+    _, b_email = _turned_off_admin(api, b)
+    a_client, a_in = _sign_in(api, a_email)
+    b_client, b_in = _sign_in(api, b_email)
+    assert (a_in.status_code, b_in.status_code) == (200, 200)
+    enrolled = api.admin_sign_in(a)
+    member = api.sign_in(a, "member")
+
+    assert _set(api, operator, client, a, True).status_code == 200
+    gone = a_client.get("/api/admin/stats")
+    assert (gone.status_code, gone.json()["error"]["code"]) == (401, "not_signed_in")
+    assert enrolled.client.get("/api/admin/stats").status_code == 200  # two-step on: kept
+    assert member.client.get("/api/auth/me").status_code == 200
+    assert b_client.get("/api/admin/stats").status_code == 200  # another organisation: kept
+
+    fresh_client, offer = _sign_in(api, a_email)
+    assert (offer.status_code, offer.json()["error"]["code"]) == (403, "mfa_enrol_required")
+    details = offer.json()["error"]["details"]
+    api.clock.advance(totp.STEP_SECONDS)
+    body = {"enrol_token": details["enrol_token"], "code": api.code(_secret_from(details["secret"]))}
+    assert fresh_client.post("/api/auth/admin/enrol", json=body, headers=CSRF).status_code == 200
+    assert fresh_client.get("/api/admin/stats").status_code == 200
+    assert _set(api, operator, client, a, True).status_code == 200  # unchanged: nobody signed out
+    assert fresh_client.get("/api/admin/stats").status_code == 200

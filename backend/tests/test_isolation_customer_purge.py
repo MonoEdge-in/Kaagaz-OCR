@@ -143,8 +143,9 @@ def _snapshot(db: Database, customer_id: str) -> dict[str, str]:
 
 
 def _organisation(api: Api, storage: KeyStorage, label: str) -> tuple[str, str, list[str]]:
-    """An organisation with a row in every kind of table a customer fills, and files under
-    both prefixes: (id, name, its documents)."""
+    """An organisation with a row in every kind of table a customer fills (its daily page limit,
+    the day's counter and a held document too), and files under both prefixes: (id, name, its
+    documents)."""
     name = f"Org {label} {uuid.uuid4().hex[:8]}"
     customer, admin = api.customer(name)
     member, _ = api.add_user(customer, "member")
@@ -156,6 +157,7 @@ def _organisation(api: Api, storage: KeyStorage, label: str) -> tuple[str, str, 
         first = insert_document(conn, customer, folder_id=folder, uploaded_by=member)
         second = insert_document(conn, customer, family_id=first, version_no=2, is_current=False)
         trashed = insert_document(conn, customer, deleted_at=_now(), deleted_by=member)
+        held = insert_document(conn, customer, status="received")  # stored, waiting to be read
         tag_document(conn, customer, first, tag)
         for statement in (
             "INSERT INTO conversations (customer_id, user_id, title) VALUES (:c, :u, 'Q')",
@@ -180,6 +182,10 @@ def _organisation(api: Api, storage: KeyStorage, label: str) -> tuple[str, str, 
             " now() + interval '7 days')",
             "INSERT INTO audit_log (customer_id, actor_user_id, action, target_type, target_id)"
             " VALUES (:c, :u, 'document.view', 'document', :d)",
+            # #478: the day's counter and a document held at the daily limit.
+            "INSERT INTO reading_days (customer_id, day, pages, cost_usd, alerted_at)"
+            " VALUES (:c, current_date, 10, 0.5, now())",
+            "UPDATE documents SET reading_held = 'daily_limit' WHERE customer_id = :c AND id = :held",
         ):
             conn.execute(
                 text(statement),
@@ -190,10 +196,16 @@ def _organisation(api: Api, storage: KeyStorage, label: str) -> tuple[str, str, 
                     "s": session,
                     "k": upload,
                     "upload_id": f"upload-{customer}",
+                    "held": held,
                 },
             )
+    _owner(
+        api.db,
+        "INSERT INTO customer_ai_settings (customer_id, daily_page_limit) VALUES (:c, 10)",
+        {"c": customer},
+    )
     put(api.db, customer, admin, first, f"The papers of {label}")
-    documents = [first, second, trashed]
+    documents = [first, second, trashed, held]
     for document in documents:
         storage.put(customer, document, io.BytesIO(f"{label} {document}".encode()))
         storage.objects[page_image_key(customer, document, 1)] = b"page " + label.encode()
@@ -323,9 +335,13 @@ def test_after_the_grace_period_everything_of_a_goes_and_b_stays_byte_for_byte(d
     _schedule(api, operator, client, a, a_name)
     a_before, b_before = _snapshot(db, a), (_snapshot(db, b), storage.listing(b))
     assert all(value != "0:" for table, value in a_before.items() if table in NO_ACTION_TO_USERS)
+    # QA missing test b: the reading pause's rows (#478) go with the organisation too.
+    assert a_before["reading_days"] != "0:" and a_before["customer_ai_settings"] != "0:"
+    held = "SELECT count(*) FROM documents WHERE customer_id = :c AND reading_held IS NOT NULL"
+    assert _owner(db, held, {"c": a}) == [(1,)]
 
     purge_deleted_customers(db, storage, _now)  # within the grace period: nothing of A
-    assert (_snapshot(db, a), len(storage.listing(a))) == (a_before, 8)
+    assert (_snapshot(db, a), len(storage.listing(a))) == (a_before, 10)
 
     _owner(db, DUE, {"c": a})
     audit_before = _owner(db, _AUDIT.format(table="audit_log"), {"c": a})

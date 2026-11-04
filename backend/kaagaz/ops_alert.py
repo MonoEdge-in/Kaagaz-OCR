@@ -4,10 +4,13 @@
 One rule for both: an alert is sent to OPS_ALERT_EMAIL from EMAIL_FROM through the SES mailer
 when both are set, whether EMAIL_ENABLED is on or off. EMAIL_ENABLED is for the emails people get
 (their links need APP_URL); an alert has no link, and the server's own alerts should not wait on
-people's emails being switched on. A failure is logged by its code and purpose only (never the
-address) and never raised: the caller is told by ``send_ops_alert``'s answer.
+people's emails being switched on. A failure is logged once, as ``ops_alert_failed`` with its
+purpose and SES's code or the error's type (never the address), and never raised: the caller is
+told by ``send_ops_alert``'s answer. ``NoCredentialsError`` there is a container that cannot reach
+the server's role (docs/running-locally.md, "Alerts").
 """
 
+import json
 import logging
 
 from botocore.exceptions import BotoCoreError, ClientError
@@ -39,9 +42,8 @@ def send_ops_alert(
         (mailer or SesMailer(settings.ses_region, sender)).send(to=to, subject=subject, text=text)
     except (BotoCoreError, ClientError) as error:
         code = error.response.get("Error", {}).get("Code") if isinstance(error, ClientError) else None
-        _log.error(
-            "email failed",
-            extra={"event": "email_failed", "purpose": purpose, "error": code or type(error).__name__},
-        )
+        failed = {"event": "ops_alert_failed", "purpose": purpose, "error": code or type(error).__name__}
+        # In the message too: the log's JSON lines print ``code`` but not ``purpose`` or ``error``.
+        _log.error(json.dumps(failed, separators=(",", ":")), extra={**failed, "code": "ops_alert_failed"})
         return False
     return True

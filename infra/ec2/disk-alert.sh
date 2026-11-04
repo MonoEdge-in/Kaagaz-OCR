@@ -9,6 +9,8 @@
 # pgdump.sh's backup-upload does, so boto3 reaches the server's own role with
 # the instance metadata hop limit left at 1. --env-file hands it .env as Docker
 # reads it: each value exactly as written, so quotes there stay in the value.
+# It reads no database and no bucket, so the owner's password and the storage
+# admin key are blanked, and DATABASE_URL (the settings need one) names no login.
 # When the email cannot go (OPS_ALERT_EMAIL or EMAIL_FROM unset, SES refused,
 # or the disk too full to start a container), it says so in the journal and
 # the unit fails, so `systemctl --failed` lists it.
@@ -29,8 +31,9 @@ if [[ -f "$SENT_FILE" && "$(cat "$SENT_FILE")" == "$day" ]]; then
   exit 0
 fi
 cd "$KAAGAZ_DIR"
-if ! docker run --rm --network host --env-file .env kaagaz-backend:local \
-  python -m kaagaz.cli disk-alert --used "$used"; then
+if ! docker run --rm --network host --env-file .env \
+  -e POSTGRES_PASSWORD= -e STORAGE_ADMIN_SECRET_KEY= -e DATABASE_URL=none \
+  kaagaz-backend:local python -m kaagaz.cli disk-alert --used "$used"; then
   echo "DISK ${used}% USED and the alert email was NOT sent: the lines above say why" >&2
   exit 1
 fi

@@ -10,9 +10,11 @@ login gets a password made up here for the session (the migration sets none); it
 again at the end.
 """
 
+import logging
 import secrets
 import uuid
 from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
 
 import psycopg
 import pytest
@@ -21,12 +23,24 @@ from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
 
+from kaagaz import worker_main
+from kaagaz.api.app import create_app
 from kaagaz.cli import main
 from kaagaz.db.engine import Database, OperatorDatabase, make_engine
 from kaagaz.db.sqlstate import sqlstate
-from kaagaz.jobs.fair_share import first_free_lock
-from tests.db_support import APP_ROLE, database_url, new_customer
-from tests.test_api_support import Api
+from kaagaz.ingestion.ports import Job
+from kaagaz.jobs.catalog import last_refreshed
+from kaagaz.jobs.fair_share import first_free_lock, sweep_lock
+from kaagaz.jobs.reading_pause import release_held
+from kaagaz.jobs.revive import revive_stuck
+from kaagaz.jobs.upgrade import upgrade_oldest
+from kaagaz.search.indexing import embed_missing
+from kaagaz.search.story_vectors import embed_missing_stories
+from tests.db_support import APP_ROLE, database_url, insert_document, new_customer
+from tests.settings_factory import make_settings
+from tests.test_api_support import Api, ApiFakeQueue, ApiFakeStorage, FakeAnswers, TestClient
+from tests.test_indexing_db import FakeModel
+from tests.test_isolation_customer_purge import KeyStorage
 
 pytestmark = pytest.mark.db
 
@@ -248,3 +262,74 @@ def test_an_owner_command_is_refused_under_the_app_login(db: Database, logins: d
     assert sqlstate(refused.value) == REFUSED
     with db.customer(customer) as conn:
         assert conn.execute(text("SELECT status FROM customers")).scalar_one() == "active"  # unchanged
+
+
+def _start_api(database_url: str, ops_database_url: str) -> None:
+    """Start the API as uvicorn does (its lifespan), with these two logins, and stop it."""
+    settings = make_settings(database_url=database_url, ops_database_url=ops_database_url)
+    app = create_app(settings, storage=ApiFakeStorage(), queue=ApiFakeQueue(), answers=FakeAnswers())
+    with TestClient(app):
+        pass
+
+
+def test_the_api_refuses_to_start_when_its_operator_login_cannot_switch(
+    db: Database, logins: dict[str, str], caplog: pytest.LogCaptureFixture
+) -> None:
+    """QA W1: APP_DATABASE_URL set and OPS_DATABASE_URL not leaves the operator part on the app's
+    login, which cannot switch into kaagaz_operator. The API stops at start-up with one plain
+    line, instead of a console that fails while /api/health stays green."""
+    with caplog.at_level(logging.ERROR), pytest.raises(RuntimeError, match="OPS_DATABASE_URL"):
+        _start_api(logins[API], logins[API])
+    said = [record for record in caplog.records if getattr(record, "code", None) == "operator_login_failed"]
+    assert len(said) == 1 and said[0].getMessage().endswith(f"Limited database logins) ({REFUSED})")
+    with db.engine.begin() as conn:  # the refused start closed its connections
+        opened = "SELECT count(*) FROM pg_stat_activity WHERE usename = :login"
+        assert conn.execute(text(opened), {"login": API}).scalar_one() == 0
+    _start_api(logins[API], logins[OPS])  # both logins set: it starts
+    _start_api(_owner_url(), _owner_url())  # release day, the owner's for both: it starts
+
+
+class _Queue:
+    """The upgrade sweep's queue: the jobs it was given."""
+
+    def __init__(self) -> None:
+        self.jobs: list[Job] = []
+
+    def enqueue(self, job: Job, *, express: bool = False) -> None:
+        self.jobs.append(job)
+
+
+def test_the_worker_sweeps_run_under_the_app_login(db: Database, logins: dict[str, str]) -> None:
+    """QA missing test e: every sweep the worker runs between jobs (worker_main._serve) works on
+    the app's login alone: the hourly purge (Trash, deleted organisations, kept audit rows), the
+    fingerprints, the vectors, the upgrade, the stuck documents, the reading pause's release, the
+    catalogue's last refresh and the sweep lock. A held document is released and an old Trash
+    family purged, so their writes ran too."""
+    customer, user = new_customer(db)
+    with db.customer(customer) as conn:
+        held = insert_document(conn, customer, status="received")
+        conn.execute(text("UPDATE documents SET reading_held = 'daily_limit' WHERE id = :d"), {"d": held})
+        binned = insert_document(
+            conn, customer, deleted_at=datetime.now(UTC) - timedelta(days=60), deleted_by=user
+        )
+    engine = make_engine(logins[API])
+    try:
+        app_db = Database(engine, APP_ROLE)
+        assert worker_main._purge(app_db, KeyStorage(), 30) >= 1
+        worker_main.fingerprint_missing(app_db)
+        embed_missing(app_db, FakeModel(), None, limit=1)
+        embed_missing_stories(app_db, FakeModel(), limit=1)
+        upgrade_oldest(app_db, _Queue())
+        # Only this test's organisation is looked at: every other one is "busy".
+        revive_stuck(app_db, lambda job, tries: None, customer.__ne__, stale_seconds=3600, max_attempts=5)
+        released: list[Job] = []
+        release_held(app_db, released.append, now=datetime.now(UTC))
+        last_refreshed(app_db)
+        with sweep_lock(engine)(f"test:{uuid.uuid4()}") as mine:
+            assert mine
+    finally:
+        engine.dispose()
+    assert Job(customer, held) in released
+    with db.customer(customer) as conn:
+        left = conn.execute(text("SELECT id FROM documents WHERE id = :d"), {"d": binned}).all()
+    assert left == []
