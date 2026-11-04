@@ -20,6 +20,8 @@
 // again. Approving one another admin already decided (404) reloads the list.
 // #507: "Needs to connect Google" beside how someone signs in, while their role uses Google only
 // and they have no Google account that passes; Reset password says it disconnects Google too.
+// Add a user says, under the role, that the person connects Google after choosing a password,
+// while Google sign-in is on for that role (the rules from Settings, read when the form opens).
 //
 // A reset password comes back once, in the reply. It is shown in a card above
 // the list, with Copy, until Done or until the tab is left; it is never stored.
@@ -39,6 +41,7 @@ import {
   approveConnection,
   createUser,
   declineConnection,
+  getSettings,
   listUsers,
   pendingConnections,
   removeConnections,
@@ -51,7 +54,7 @@ import {
 import { DRAFT_KEPT, clearDraft, readDraft, saveDraftSoon } from "@/lib/drafts";
 import { errorWords } from "@/lib/errorWords";
 import { formatDate } from "@/lib/format";
-import type { AddedUser, AdminUser, PendingConnection, Role } from "@/lib/types";
+import type { AddedUser, AdminUser, GoogleRules, PendingConnection, Role } from "@/lib/types";
 import table from "@/components/documents/Table.module.css";
 import { CopyButton } from "./CopyButton";
 import { MoreRows, useRowCap } from "./RowCap";
@@ -66,6 +69,7 @@ import {
   MIN_PASSWORD_LENGTH,
   NEW_USER_FIELD_IDS,
   addedNotice,
+  addUserGoogleHint,
   ROLES,
   allowForeverQuestion,
   decideLabel,
@@ -246,6 +250,7 @@ export function UsersPanel({
       {adding && (
         <AddUserPanel
           userId={currentUserId}
+          google={providers.includes("google")}
           onClose={() => setAdding(false)}
           onAdded={(user) => {
             setUsers((current) => (current ? [...current, user] : [user]));
@@ -631,10 +636,12 @@ const UNSAVED_QUESTION = "Close without adding? What you typed here will be lost
  */
 function AddUserPanel({
   userId,
+  google,
   onClose,
   onAdded,
 }: {
   userId: string; // #468: the draft (email, name, role) is this admin's only
+  google: boolean; // Google sign-in is switched on (Me's providers): its rules are read
   onClose: () => void;
   onAdded: (user: AddedUser) => void;
 }) {
@@ -653,6 +660,10 @@ function AddUserPanel({
   const [serverError, setServerError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [masked, setMasked] = useState(true);
+  // #507: the organisation's Google rules, for the hint under the role; none until read (or if
+  // reading fails: the hint is only a hint).
+  const [googleRules, setGoogleRules] = useState<GoogleRules | undefined>(undefined);
+  const googleHint = addUserGoogleHint(googleRules, input.role);
   const unsaved = input.email !== "" || input.display_name !== "" || input.password !== "";
   const askClose = () => {
     if (!busy && closeAllowed(unsaved, () => window.confirm(UNSAVED_QUESTION))) {
@@ -664,6 +675,20 @@ function AddUserPanel({
   useEffect(() => {
     saveDraftSoon(userId, ADD_USER_DRAFT, newUserDraft(input));
   }, [userId, input]);
+
+  useEffect(() => {
+    if (!google) return;
+    let live = true;
+    getSettings().then(
+      (settings) => {
+        if (live) setGoogleRules(settings.google);
+      },
+      () => undefined,
+    );
+    return () => {
+      live = false;
+    };
+  }, [google]);
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -757,6 +782,7 @@ function AddUserPanel({
             <select
               id="new-user-role"
               className="input"
+              aria-describedby={googleHint ? "new-user-google-hint" : undefined}
               value={input.role}
               onChange={(event) => {
                 const role = ROLES.find((option) => option === event.target.value);
@@ -769,6 +795,11 @@ function AddUserPanel({
                 </option>
               ))}
             </select>
+            {googleHint && (
+              <span id="new-user-google-hint" className="hint">
+                {googleHint}
+              </span>
+            )}
           </div>
           {/* AD3: the password across the panel, Generate and Copy under it. */}
           <div className={styles.passwordBlock}>

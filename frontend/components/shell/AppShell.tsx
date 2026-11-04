@@ -184,7 +184,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         >
           <OfflineBanner />
           {!me.user.email_confirmed && <EmailBanner email={me.user.email} />}
-          {me.google_link_required && <LinkRequiredBanner />}
+          {me.user.google_link_required && <LinkRequiredBanner />}
           <ConnectedBanner items={me.recent_connections ?? NONE} />
           <StatusBarSlot value={statusBar}>
             <UploadsProvider>{children}</UploadsProvider>

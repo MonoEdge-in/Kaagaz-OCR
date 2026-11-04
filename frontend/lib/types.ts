@@ -48,6 +48,10 @@ export interface Me {
     two_step_required?: boolean; // the super admin requires it for this organisation's admins (#481)
     can_delete_forever: boolean; // an admin allowed this member or reviewer (never an admin)
     email_confirmed: boolean; // false: the "Confirm your email" banner (#457; true while email is off)
+    // #507: the organisation asks this person to sign in with Google and they have no connected
+    // account that passes its rules yet: every route but Ways to sign in replies 403
+    // google_link_required, so the app sends them there (lib/session.tsx).
+    google_link_required?: boolean;
   };
   customer: { id: string; name: string };
   session: { scope: SessionScope };
@@ -57,10 +61,6 @@ export interface Me {
   // Ways to sign in (#457 phase 1): approved connections made in the last 14 days, for the
   // app's "Google connected on 30 Oct." banner. Empty while no provider is on (always sent).
   recent_connections?: { provider: string; linked_at: string }[];
-  // #507: the organisation asks this person to sign in with Google and they have no connected
-  // account that passes its rules yet: every route but Ways to sign in replies 403
-  // google_link_required, so the app sends them there (lib/session.tsx).
-  google_link_required?: boolean;
 }
 
 /** One connected account of the signed-in user (GET /auth/identities). */

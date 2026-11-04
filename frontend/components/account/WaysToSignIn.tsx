@@ -76,7 +76,7 @@ export function WaysToSignIn({ params }: { params: Record<string, string | undef
     };
   }, [attempt]);
 
-  const rules = ways ? rulesText(ways.rules, me.google_link_required === true) : null;
+  const rules = ways ? rulesText(ways.rules, me.user.google_link_required === true) : null;
   const connected = params.connected ? ways?.identities.find((row) => row.provider === params.connected) : undefined;
   const notice = said
     ? { kind: "done" as const, text: said }

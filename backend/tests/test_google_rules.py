@@ -3,7 +3,14 @@ trusted alone, the email must be verified, and letter case does not count."""
 
 import pytest
 
-from kaagaz.db.google_rules import domain_ok, email_domain, ordered, passing_link, personal
+from kaagaz.db.google_rules import (
+    domain_ok,
+    email_domain,
+    kept_hosted_domain,
+    ordered,
+    passing_link,
+    personal,
+)
 
 DOMAINS = ("sharmatraders.com", "sharma.in")
 
@@ -41,6 +48,17 @@ def test_a_passing_link_is_approved_and_inside_the_domains() -> None:
     assert not passing_link("pending", (), None, "ramesh@gmail.com")
     assert passing_link("approved", DOMAINS, "sharmatraders.com", "ramesh@sharmatraders.com")
     assert not passing_link("approved", DOMAINS, None, "ramesh@sharmatraders.com")
+
+
+def test_a_link_keeps_hd_only_with_a_verified_email() -> None:
+    """So the stored link passes exactly when Google's claims would: an unverified email's link
+    keeps no ``hd`` and, while the organisation lists domains, never passes."""
+    assert kept_hosted_domain("SharmaTraders.com", True) == "sharmatraders.com"
+    assert kept_hosted_domain("sharmatraders.com", False) is None
+    assert kept_hosted_domain(None, True) is None
+    stored = kept_hosted_domain("sharmatraders.com", False)
+    assert not passing_link("approved", DOMAINS, stored, "ramesh@sharmatraders.com")
+    assert not domain_ok(DOMAINS, "sharmatraders.com", "ramesh@sharmatraders.com", email_verified=False)
 
 
 def test_personal_domains_and_the_helpers() -> None:

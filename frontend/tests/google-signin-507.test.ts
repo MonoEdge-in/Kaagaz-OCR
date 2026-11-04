@@ -40,7 +40,15 @@ import {
   setAllowed,
   setOnly,
 } from "@/components/admin/googleRules";
-import { GOOGLE_NEEDED, RESET_DISCONNECTS, resetPasswordQuestion } from "@/components/admin/logic";
+import {
+  ADD_USER_GOOGLE_HINT,
+  GOOGLE_NEEDED,
+  RESET_DISCONNECTS,
+  addUserGoogleHint,
+  describeAction,
+  resetPasswordQuestion,
+  whoText,
+} from "@/components/admin/logic";
 import { GoogleRulesFields } from "@/components/admin/SettingsPanel";
 import {
   OFF_HINT,
@@ -146,9 +154,9 @@ describe("Ways to sign in", () => {
     expect(banner).toContain('role="status"');
     expect(banner).toContain(LINK_REQUIRED);
     const shell = read("components/shell/AppShell.tsx");
-    expect(shell).toContain("{me.google_link_required && <LinkRequiredBanner />}");
+    expect(shell).toContain("{me.user.google_link_required && <LinkRequiredBanner />}");
     const page = read("components/account/WaysToSignIn.tsx");
-    expect(page).toContain("rulesText(ways.rules, me.google_link_required === true)");
+    expect(page).toContain("rulesText(ways.rules, me.user.google_link_required === true)");
   });
 });
 
@@ -165,11 +173,12 @@ describe("the limited session (a Google-only person with no passing account)", (
       can_delete_forever: false,
       email_confirmed: true,
       ...extra,
+      // Inside user, as the server sends it (backend api/views.py me_json).
+      ...(required === undefined ? {} : { google_link_required: required }),
     },
     customer: { id: "c1", name: "Sharma Traders" },
     session: { scope: "app" },
     providers: ["google"],
-    ...(required === undefined ? {} : { google_link_required: required }),
   });
 
   it("is sent to Ways to sign in; a new password and two-step set-up come first", () => {
@@ -347,6 +356,46 @@ describe("People", () => {
       "Reset Asha's password? They are signed out everywhere and must choose a new one.",
     );
     expect(resetPasswordQuestion("Asha", undefined)).toBe(resetPasswordQuestion("Asha", ["password"]));
+  });
+});
+
+describe("the activity log's words for #507's actions", () => {
+  it("names each in plain words, and the super admin's switch as Kaagaz's", () => {
+    expect(describeAction("settings.google_rules")).toBe("Changed the Google sign-in rules");
+    expect(describeAction("settings.google_rules_refused")).toBe(
+      "Google sign-in rules not saved: they would have locked you out",
+    );
+    expect(describeAction("auth.identity_link_refused")).toBe("A Google account couldn't be connected");
+    expect(describeAction("auth.identity_reapproval")).toBe("A Google account waits for approval again");
+    expect(describeAction("org.google_signin_set")).toBe("Google sign-in changed for the organisation");
+    expect(whoText({ action: "org.google_signin_set", actor_name: null, details: {} })).toBe("Kaagaz");
+  });
+});
+
+describe("Add a user (plan section 5)", () => {
+  const rules: GoogleRules = {
+    available: true,
+    allowed_roles: ["admin", "member"],
+    only_roles: [],
+    domains: [],
+    my_link_ok: false,
+  };
+
+  it("says how a new person signs in with Google only while Google is on for the chosen role", () => {
+    expect(ADD_USER_GOOGLE_HINT).toBe(
+      "Your organisation signs in with Google for this role. After they choose a password, they connect their Google account.",
+    );
+    expect(addUserGoogleHint(rules, "member")).toBe(ADD_USER_GOOGLE_HINT);
+    expect(addUserGoogleHint(rules, "admin")).toBe(ADD_USER_GOOGLE_HINT);
+    expect(addUserGoogleHint(rules, "reviewer")).toBeNull(); // not allowed for this role
+    expect(addUserGoogleHint({ ...rules, available: false }, "member")).toBeNull(); // the super admin turned it off
+    expect(addUserGoogleHint(undefined, "member")).toBeNull(); // the server's Google sign-in is off
+  });
+
+  it("reads the rules from Settings and shows the hint under the role", () => {
+    const panel = read("components/admin/UsersPanel.tsx");
+    expect(panel).toContain("addUserGoogleHint(googleRules, input.role)");
+    expect(panel).toContain("getSettings()");
   });
 });
 

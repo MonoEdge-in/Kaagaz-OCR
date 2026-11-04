@@ -7,7 +7,11 @@
   verified email AND its ``hd`` claim AND the email's own domain must all be in the list; ``hd``
   alone is never trusted. Letter case does not count (the list is stored in lower case).
 * **A passing link** (``passing_link``): approved, and the domain rule holds for its stored
-  ``hosted_domain`` and ``email_at_link``.
+  ``hosted_domain`` and ``email_at_link``. A link keeps ``hd`` only when Google verified the
+  email (``kept_hosted_domain``), so a stored ``hosted_domain`` stands for "verified": with
+  domains, a link without one never passes, and the password sign-in, the limited session, the
+  lock-out guard and approval (the stored link) agree with Google's own sign-in and connect (the
+  claims now). This module is the one rule; ``kaagaz.db.users`` and ``kaagaz.api`` call it.
 
 Every function takes a connection from ``Database.customer(customer_id)`` and also filters on
 ``customer_id`` (two locks). Each is one statement: O(log n), or O(connections of this customer)
@@ -63,6 +67,12 @@ def domain_ok(
     if not email_verified or hosted_domain is None:
         return False
     return hosted_domain.lower() in allowed and email_domain(email_at_link) in allowed
+
+
+def kept_hosted_domain(hosted_domain: str | None, email_verified: bool) -> str | None:
+    """The ``hd`` a link stores (at connect and at each sign-in): Google's, lower case, only
+    with a verified email; else None, which no domain rule lets in."""
+    return hosted_domain.lower() if hosted_domain is not None and email_verified else None
 
 
 def passing_link(

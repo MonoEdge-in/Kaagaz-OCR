@@ -8,6 +8,7 @@ import pytest
 from kaagaz.api import oidc
 from kaagaz.api.auth import _b64url
 from kaagaz.api.oidc import OidcError
+from kaagaz.db import google_rules
 from tests import oidc_fake
 from tests.oidc_fake import CLIENT_ID, FakeGoogle, claims_for, sign, use_google
 
@@ -245,10 +246,12 @@ DOMAINS = ("sharmatraders.com", "sharma.in")
 def test_domain_ok_needs_hd_and_the_verified_emails_domain(
     who: oidc.Identity, domains: tuple[str, ...], passes: bool
 ) -> None:
-    assert oidc.domain_ok(who, domains) is passes
+    """Google's claims now, through the one rule every path uses (``google_rules``)."""
+    verified = who.email_verified
+    assert google_rules.domain_ok(domains, who.hosted_domain, who.email, email_verified=verified) is passes
 
 
 def test_email_domain() -> None:
-    assert oidc.email_domain("Ramesh@SharmaTraders.com") == "sharmatraders.com"
-    assert oidc.email_domain(None) is None
-    assert oidc.email_domain("no-at-sign") is None
+    assert google_rules.email_domain("Ramesh@SharmaTraders.com") == "sharmatraders.com"
+    assert google_rules.email_domain(None) is None
+    assert google_rules.email_domain("no-at-sign") is None

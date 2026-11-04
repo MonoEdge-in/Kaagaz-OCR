@@ -18,8 +18,8 @@
   identity key (provider, issuer in its stored form, ``sub``) and the email, in lower case,
   as a label, with whether the provider verified it, and Google's ``hd`` (the Workspace
   domain), in lower case.
-* **The organisation's domains** (#507, ``domain_ok``): none, any account; else Google's
-  verified email AND ``hd`` must both be one of them, never ``hd`` alone.
+* **The organisation's domains** (#507): the rule is ``kaagaz.db.google_rules.domain_ok``,
+  the one every path uses; ``hd`` is only read here.
 * **Keys and replies** come through the model client's opener (no proxy from the
   environment, no redirects), within TIMEOUT_SECONDS and MAX_REPLY_BYTES; the key list is
   kept CACHE_SECONDS. Every URL opened is one of the fixed https endpoints.
@@ -34,7 +34,6 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
@@ -100,26 +99,6 @@ class Identity:
     email: str | None  # a label only, lower case
     email_verified: bool
     hosted_domain: str | None = None  # Google's "hd", lower case: a Workspace account's domain
-
-
-def email_domain(email: str | None) -> str | None:
-    """The part after the last "@", lower case; None without one."""
-    if email is None or "@" not in email:
-        return None
-    return email.rpartition("@")[2].strip().lower() or None
-
-
-def domain_ok(identity: Identity, domains: Iterable[str]) -> bool:
-    """The organisation's domain rule (#507): no domains, any account. Else Google verified the
-    email, and both ``hd`` and the email's domain are one of them; ``hd`` alone never counts."""
-    allowed = {domain.strip().lower() for domain in domains}
-    if not allowed:
-        return True
-    return (
-        identity.email_verified
-        and identity.hosted_domain in allowed
-        and email_domain(identity.email) in allowed
-    )
 
 
 def _client(settings: Settings, name: str) -> tuple[bool, str | None, str | None, str | None]:

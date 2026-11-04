@@ -7,7 +7,6 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
-from kaagaz.db import identities
 from kaagaz.db.engine import Database
 from tests import test_migration_0002_db as base
 from tests.db_support import migrate, new_customer
@@ -31,18 +30,17 @@ _RULES = "SELECT google_signin, google_roles, google_only_roles, google_domains 
 
 
 def _connected(db: Database, customer: str, user: str) -> None:
+    """A connection as 0071's schema holds it (no hosted_domain yet), so plain SQL, not
+    ``identities.add``, which writes 0072's column."""
     with db.customer(customer) as conn:
-        identities.add(
-            conn,
-            customer,
-            user,
-            provider="google",
-            issuer="https://accounts.google.com",
-            subject="made-up-sub-0072",
-            email="ramesh@sharmatraders.com",
-            approved=True,
-            approved_by=None,
-            now=conn.execute(text("SELECT now()")).scalar_one(),
+        conn.execute(
+            text(
+                "INSERT INTO user_identities (customer_id, user_id, provider, issuer, subject,"
+                " email_at_link, status, linked_at, approved_at)"
+                " VALUES (:c, :u, 'google', 'https://accounts.google.com', 'made-up-sub-0072',"
+                " 'ramesh@sharmatraders.com', 'approved', now(), now())"
+            ),
+            {"c": customer, "u": user},
         )
 
 

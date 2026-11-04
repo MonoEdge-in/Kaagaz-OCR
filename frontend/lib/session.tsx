@@ -16,7 +16,7 @@
 // app opens once the new password is saved. An admin without two-step sign-in
 // (MFA required, 16 Oct 2026; a session from before, or just after a temporary
 // password) is signed out and sent to the sign-in, which sets it up.
-// #507: a session that may only connect Google (me.google_link_required) sees only Ways to sign
+// #507: a session that may only connect Google (me.user.google_link_required) sees only Ways to sign
 // in: any other page sends the browser there, and so does a 403 google_link_required from any
 // reply (who is signed in is asked again first, the server decides).
 
@@ -170,7 +170,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   // #507: a reply refused with 403 google_link_required: ask who is signed in again, and the gate
   // below sends the browser to Ways to sign in. Once Me says so already, there is nothing to ask.
-  const linkRequired = session?.me.google_link_required === true;
+  const linkRequired = session?.me.user.google_link_required === true;
   useEffect(() => {
     onGoogleLinkRequired(linkRequired ? null : refresh);
     return () => onGoogleLinkRequired(null);

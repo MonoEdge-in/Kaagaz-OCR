@@ -33,7 +33,7 @@ export function appGate(me: Me): AppGate {
   if (mustChangePassword(me)) return "set_password";
   const needsTwoStep = me.user.totp_enabled !== true && me.user.two_step_turned_off !== true;
   if (me.user.role === "admin" && needsTwoStep) return "set_two_step";
-  return me.google_link_required === true ? "connect_google" : "app";
+  return me.user.google_link_required === true ? "connect_google" : "app";
 }
 
 /**

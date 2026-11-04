@@ -12,7 +12,8 @@ APPROVAL: schema and security configuration.
   account is connected, none by default; always inside ``google_roles``) and ``google_domains``
   (the company domains a Google account must be from, at most 10; none: any).
 * ``user_identities.hosted_domain``: Google's ``hd`` claim (lower case) when the account was
-  connected or last signed in; the app may update it (a column grant).
+  connected or last signed in, kept only when Google verified the email (so a stored link passes
+  the domains exactly when Google's own sign-in would); the app may update it (a column grant).
 * ``kaagaz_op_google_signin`` (read: the organisation's own value, the platform's, and the
   organisation's "Google only" roles and domains) and ``kaagaz_op_set_google_signin`` (a fresh
   code, step-up): the operator's own functions, as 0040's. When the value in force changes,
@@ -170,7 +171,8 @@ COLUMN_COMMENTS = {
     "customers.google_domains": f"The company domains (lower case) a Google account must be from, at"
     f" most {MAX_DOMAINS}; empty: any.",
     "user_identities.hosted_domain": "Google's hd claim (lower case) when the account was connected or"
-    " last signed in; NULL: none (a personal account).",
+    " last signed in, kept only when Google verified the email; NULL: none (a personal account or an"
+    " unverified email), which never passes an organisation's domains.",
 }
 
 UPGRADE = [

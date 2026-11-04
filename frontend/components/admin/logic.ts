@@ -19,6 +19,7 @@ import type {
   AuditEntry,
   CustomerSettings,
   DocumentStatus,
+  GoogleRules,
   Me,
   MemberNumbers,
   MemberPeriod,
@@ -312,6 +313,16 @@ export function signsInWith(ways: readonly string[] | undefined): string {
  * have no Google account that passes (AdminUser.google_needed). */
 export const GOOGLE_NEEDED = "Needs to connect Google";
 export const RESET_DISCONNECTS = "This also disconnects their Google account.";
+
+/** #507, Add a user: the hint under the role while Google sign-in is on for it (as the invite
+ * email's line: the server's Google sign-in, the super admin's, and the role allowed). */
+export const ADD_USER_GOOGLE_HINT =
+  "Your organisation signs in with Google for this role. After they choose a password, they connect their Google account.";
+
+/** The hint for this role; null while Google is off (``google`` left out: the server's switch). */
+export function addUserGoogleHint(google: GoogleRules | undefined, role: Role): string | null {
+  return google?.available === true && google.allowed_roles.includes(role) ? ADD_USER_GOOGLE_HINT : null;
+}
 
 /** Asked before Reset password; it also removes their connected accounts (#507). */
 export function resetPasswordQuestion(name: string, ways: readonly string[] | undefined): string {
@@ -721,6 +732,12 @@ const ACTION_WORDS: Record<string, string> = {
   "auth.identity_approved": "Approved a Google account",
   "auth.identity_declined": "Declined a Google account",
   "auth.identity_unlinked": "Disconnected a Google account",
+  // #507: Google sign-in by organisation and role.
+  "auth.identity_link_refused": "A Google account couldn't be connected",
+  "auth.identity_reapproval": "A Google account waits for approval again",
+  "settings.google_rules": "Changed the Google sign-in rules",
+  "settings.google_rules_refused": "Google sign-in rules not saved: they would have locked you out",
+  "org.google_signin_set": "Google sign-in changed for the organisation",
   "settings.auto_approve_on": "Turned on automatic approval of sign-in connections",
   "settings.auto_approve_off": "Turned off automatic approval of sign-in connections",
   "user.unlock": "Unlocked a user",
@@ -769,6 +786,7 @@ const BY_KAAGAZ = new Set([
   "org.autofile_revoke",
   "org.admin_two_step_on", // #481: the super admin's, as auto-filing's grant
   "org.admin_two_step_off",
+  "org.google_signin_set", // #507: the super admin's switch
   "document.reading_released", // QA P2: the release sweep's, after a reading pause
 ]);
 // Issue 375: with no person at all (actor_id null), these come from Kaagaz's own set-up

@@ -17,10 +17,11 @@ provider's own routes: while that one is off), before anything else is read.
   is, without counting (Google proved this step), in this order (#507): ``peek_attempt``:
   ``locked``; a disabled user or organisation is ``refused``; the organisation's Google is off
   (its own switch, else the platform's): ``google_off``; the role may not use Google:
-  ``role_refused``; the account is outside the organisation's domains (``oidc.domain_ok``):
+  ``role_refused``; the account is outside the organisation's domains (``google_rules.domain_ok``):
   ``domain_refused``; the connection still waits for an admin: ``waiting``. Each is audited
   ``auth.login_failed`` {reason, via, and the email's domain for ``domain_refused``}. The
-  connection is marked used, with Google's ``hd`` now, only once every check passed.
+  connection is marked used, with Google's ``hd`` now (kept only with a verified email,
+  ``google_rules.kept_hosted_domain``), only once every check passed.
   Without two-step sign-in a member or reviewer gets an app session and goes to ``next``,
   audited ``auth.login`` ``{"via": "google"}``. Anyone with codes on gets the 5-minute second
   step cookie and /login?step=code; an admin who turned two-step off themselves (0061b) gets
@@ -42,11 +43,11 @@ provider's own routes: while that one is off), before anything else is read.
   account is connected to anyone, or its email is another user's sign-in email in any
   organisation; the reply names no one). Before those, ``google_off``, ``role_refused`` and
   ``domain_refused`` again (#507), each audited ``auth.identity_link_refused`` {provider,
-  reason, domain?}. It keeps Google's ``hd``. It is approved at once for an admin's own, with the
-  organisation's auto-approval on, or when Google's verified email is the user's own (any
-  case); else it waits for an admin, who is emailed. Audited ``auth.identity_linked``
-  {provider, identity_id, status, domain?}; the session version is raised and this browser
-  re-signed;
+  reason, domain?}. It keeps Google's ``hd`` (only with a verified email). It is approved at
+  once for an admin's own, with the organisation's auto-approval on, or when Google's verified
+  email is the user's own (any case); else it waits for an admin, who is emailed. Audited
+  ``auth.identity_linked`` {provider, identity_id, status, domain?}; the session version is
+  raised and this browser re-signed;
   a security notice is emailed. Back to /settings/sign-in?connected=google, ?waiting=google
   or ?error=<code>.
 * ``GET /auth/identities``: Ways to sign in's ``{providers, identities, rules}``: the providers
@@ -132,7 +133,7 @@ from kaagaz.api.twostep import refused as _refused
 from kaagaz.api.twostep import unix
 from kaagaz.api.views import iso
 from kaagaz.db import admin as admin_sql
-from kaagaz.db import audit, identities
+from kaagaz.db import audit, google_rules, identities
 from kaagaz.db import users as users_sql
 
 router = APIRouter()
@@ -467,14 +468,15 @@ def _sign_in(
         _google_refused(*who, "google_off")
     if not attempt.google_allowed:
         _google_refused(*who, "role_refused")
-    if not oidc.domain_ok(identity, attempt.google_domains):
-        _google_refused(*who, "domain_refused", oidc.email_domain(identity.email))
+    if not _domain_ok(identity, attempt.google_domains):
+        _google_refused(*who, "domain_refused", google_rules.email_domain(identity.email))
     if found.status != "approved":
         _google_refused(*who, "waiting")
     if attempt.totp_enabled_at is None and attempt.role == "admin" and attempt.totp_off_at is None:
         _google_refused(*who, "password_first")  # an admin sets up the code at a password sign-in first
     with context.db.customer(found.customer_id) as conn:  # a sign-in that passed every check
-        identities.touch_used(conn, found.customer_id, found.id, now, hosted_domain=identity.hosted_domain)
+        hosted = google_rules.kept_hosted_domain(identity.hosted_domain, identity.email_verified)
+        identities.touch_used(conn, found.customer_id, found.id, now, hosted_domain=hosted)
     if attempt.totp_enabled_at is not None:
         pending = PendingClaims(
             provider=provider.name,
@@ -501,6 +503,14 @@ def _sign_in(
     response = RedirectResponse(flow.next_path, status_code=303)
     set_session_cookie(response, claims, context.settings, now=unix(now))
     return response
+
+
+def _domain_ok(identity: Identity, domains: tuple[str, ...]) -> bool:
+    """The organisation's domain rule (``google_rules.domain_ok``, the one rule) for Google's
+    claims now."""
+    return google_rules.domain_ok(
+        domains, identity.hosted_domain, identity.email, email_verified=identity.email_verified
+    )
 
 
 def _google_refused(
@@ -549,9 +559,10 @@ def _connect(
         _link_refused(context, user, provider, "google_off")
     if not user.google_allowed:
         _link_refused(context, user, provider, "role_refused")
-    if not oidc.domain_ok(identity, user.google_domains):
-        _link_refused(context, user, provider, "domain_refused", oidc.email_domain(identity.email))
+    if not _domain_ok(identity, user.google_domains):
+        _link_refused(context, user, provider, "domain_refused", google_rules.email_domain(identity.email))
     customer_id, user_id = user.customer_id, user.user_id
+    hosted = google_rules.kept_hosted_domain(identity.hosted_domain, identity.email_verified)
     with context.db.customer(customer_id) as conn:
         mine = identities.for_user(conn, customer_id, user_id)
         organisation = admin_sql.get_settings(conn, customer_id)
@@ -585,7 +596,7 @@ def _connect(
                 approved=approved,
                 approved_by=None,
                 now=context.clock(),
-                hosted_domain=identity.hosted_domain,
+                hosted_domain=hosted,
             )
             version = users_sql.bump_session_version(conn, customer_id, user_id)
             status = "approved" if approved else "pending"
@@ -594,7 +605,7 @@ def _connect(
                 "identity_id": identity_id,
                 "status": status,
             }
-            domain = oidc.email_domain(identity.email)
+            domain = google_rules.email_domain(identity.email)
             if domain is not None:
                 details["domain"] = domain
             _record(conn, customer_id, "auth.identity_linked", actor=user_id, target=user_id, details=details)

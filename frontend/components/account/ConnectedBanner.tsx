@@ -52,7 +52,7 @@ export function ConnectedBanner({ items }: { items: readonly Recent[] }) {
   );
 }
 
-/** #507: a session that may only connect Google first (me.google_link_required), at the top of
+/** #507: a session that may only connect Google first (me.user.google_link_required), at the top of
  * Ways to sign in, where the app sends the person. Never dismissed: it ends with the first
  * Google account that passes the organisation's rules. */
 export function LinkRequiredBanner() {

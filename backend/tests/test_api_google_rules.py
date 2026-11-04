@@ -378,6 +378,71 @@ def test_the_password_signs_in_when_the_rule_does_not_hold(
     assert reply.json()["user"]["google_link_required"] is limited
 
 
+def _hosted_domain(api: Api, customer_id: str, user_id: str) -> str | None:
+    with api.db.customer(customer_id) as conn:
+        stored = conn.execute(
+            text("SELECT hosted_domain FROM user_identities WHERE user_id = :u"), {"u": user_id}
+        )
+        return stored.scalar()
+
+
+def _connect(api: Api, google: FakeGoogle, signed: Signed, subject: str, **claims: Any) -> str:
+    """Connect a Google account from Ways to sign in; where the callback lands."""
+    started = signed.client.post("/api/auth/oidc/google/connect", json={"password": PASSWORD}, headers=CSRF)
+    assert started.status_code == 200, started.text
+    query = google.sign_in(started.json()["url"], subject, f"ramesh@{DOMAIN}", _now(api), **claims)
+    landed = signed.client.get("/api/auth/oidc/google/callback", params=query, follow_redirects=False)
+    return str(landed.headers["location"])
+
+
+def test_domains_set_after_linking_leave_the_password_until_a_link_passes(
+    db: Database, google: FakeGoogle
+) -> None:
+    """The stored link and Google agree (the reported gap): an ``hd`` is kept only with a
+    verified email, so a link made before the domains, with an email Google didn't verify,
+    passes neither. The password opens the limited session (never ``password_refused``), Google
+    says ``domain_refused``, and a verified account connected from there ends it. No dead end."""
+    api = _api(db)
+    admin = api.new_admin()
+    member = api.sign_in(admin.customer_id, "member")
+    unverified = f"made-up-sub-{uuid.uuid4().hex}"
+    landed = _connect(api, google, member, unverified, hd=DOMAIN, email_verified=False)
+    assert landed == f"{WAYS}?waiting=google"
+    [waiting] = admin.client.get("/api/admin/identities").json()["items"]
+    approved = admin.client.post(f"/api/admin/identities/{waiting['id']}/approve", headers=CSRF)
+    assert approved.status_code == 200, approved.text  # no domains yet: any account
+    assert _hosted_domain(api, admin.customer_id, member.user_id) is None
+    signed_in = _google(api, google, unverified, f"ramesh@{DOMAIN}", email_verified=False)
+    assert signed_in.headers["location"] == "/documents"
+    assert _hosted_domain(api, admin.customer_id, member.user_id) is None  # a sign-in keeps the rule
+
+    _rules(api, admin.customer_id, only=["member"], domains=[DOMAIN])
+
+    client = api.client()
+    password = _login(client, member.email)
+    assert password.status_code == 200, password.text  # not password_refused
+    assert password.json()["user"]["google_link_required"] is True
+    assert _code(client.get("/api/documents")) == (403, LINK_REQUIRED)
+    refused = _google(api, google, unverified, f"ramesh@{DOMAIN}", email_verified=False)
+    assert _error(refused) == "domain_refused"
+
+    # The way out, from the limited session: disconnect, connect the verified work account.
+    limited = Signed(client, admin.customer_id, member.user_id, member.email)
+    [identity] = client.get("/api/auth/identities").json()["identities"]
+    removed = client.post(
+        f"/api/auth/identities/{identity['id']}/remove", json={"password": PASSWORD}, headers=CSRF
+    )
+    assert removed.status_code == 200, removed.text
+    verified = f"made-up-sub-{uuid.uuid4().hex}"
+    assert _connect(api, google, limited, verified, hd=DOMAIN) == f"{WAYS}?waiting=google"
+    [waiting] = admin.client.get("/api/admin/identities").json()["items"]
+    approved = admin.client.post(f"/api/admin/identities/{waiting['id']}/approve", headers=CSRF)
+    assert approved.status_code == 200, approved.text
+    assert _hosted_domain(api, admin.customer_id, member.user_id) == DOMAIN
+    assert _code(_login(api.client(), member.email)) == (403, "password_refused")
+    assert _google(api, google, verified).headers["location"] == "/documents"
+
+
 def test_an_admin_still_setting_up_two_step_can_enrol(db: Database, google: FakeGoogle) -> None:
     """Else ``password_first`` at Google and ``password_refused`` here would be a dead end."""
     api = _api(db)

@@ -874,7 +874,7 @@ def load_user(db: Database, customer_id: str, user_id: str, *, scope: str) -> Cu
         google_on=bool(row["google_on"]),
         google_allowed=bool(row["google_allowed"]),
         google_only=bool(row["google_only"]),
-        google_linked=bool(row["google_linked"]),
+        google_linked=users_sql.google_linked(row),
         google_domains=tuple(row["google_domains"]),
     )
 

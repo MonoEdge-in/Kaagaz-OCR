@@ -9,7 +9,7 @@ import type { ConnectedIdentity, Me } from "@/lib/types";
 
 export const TITLE = "Ways to sign in";
 export const WAITING = "Waiting for your admin's approval";
-/** #507: the banner of a session that may only connect Google (me.google_link_required). */
+/** #507: the banner of a session that may only connect Google (me.user.google_link_required). */
 export const LINK_REQUIRED = "Your organisation asks you to sign in with Google. Connect your Google account to continue.";
 
 const NAMES: Record<string, string> = { google: "Google" };

@@ -44,6 +44,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import Connection, RowMapping, text
 from sqlalchemy.exc import IntegrityError
 
+from kaagaz.db.google_rules import passing_link
 from kaagaz.db.sqlstate import UNIQUE_VIOLATION, sqlstate
 
 
@@ -218,10 +219,10 @@ def peek_attempt(conn: Connection, customer_id: str, user_id: str, *, now: datet
 
 
 # Google sign-in for the user ``u`` (#507). ``google_on``: the organisation's own switch, else the
-# platform's (the GOOGLE_SIGNIN_ENABLED master switch is the caller's). ``google_linked``: a
-# passing link, approved and, while the organisation lists domains, both its ``hd`` and its
-# email's domain listed. Read by the sign-ins (``_ATTEMPT_COLUMNS``) and every request
-# (``session_user``).
+# platform's (the GOOGLE_SIGNIN_ENABLED master switch is the caller's). ``google_link``: the
+# user's one Google connection (status, hosted_domain, email_at_link; NULL: none), which
+# ``google_linked`` judges with ``google_rules.passing_link``, the rule every path uses. Read by
+# the sign-ins (``_ATTEMPT_COLUMNS``) and every request (``session_user``).
 _GOOGLE_COLUMNS = (
     " COALESCE((SELECT gc.google_signin FROM customers gc WHERE gc.id = u.customer_id),"
     " (SELECT gp.google_signin FROM platform_ai_settings gp LIMIT 1), true) AS google_on,"
@@ -229,12 +230,9 @@ _GOOGLE_COLUMNS = (
     " AND u.role = ANY (gc.google_roles)) AS google_allowed,"
     " EXISTS (SELECT 1 FROM customers gc WHERE gc.id = u.customer_id"
     " AND u.role = ANY (gc.google_only_roles)) AS google_only,"
-    " EXISTS (SELECT 1 FROM user_identities gi JOIN customers gc ON gc.id = gi.customer_id"
-    " WHERE gi.customer_id = u.customer_id AND gi.user_id = u.id AND gi.provider = 'google'"
-    " AND gi.status = 'approved' AND (cardinality(gc.google_domains) = 0"
-    " OR (gi.hosted_domain = ANY (SELECT lower(d) FROM unnest(gc.google_domains) d)"
-    " AND substring(gi.email_at_link from '@([^@]*)$')"
-    " = ANY (SELECT lower(d) FROM unnest(gc.google_domains) d)))) AS google_linked,"
+    " (SELECT ARRAY[gi.status, gi.hosted_domain, gi.email_at_link] FROM user_identities gi"
+    " WHERE gi.customer_id = u.customer_id AND gi.user_id = u.id AND gi.provider = 'google')"
+    " AS google_link,"
     " COALESCE((SELECT gc.google_domains FROM customers gc WHERE gc.id = u.customer_id),"
     " '{}') AS google_domains"
 )
@@ -283,9 +281,16 @@ def _attempt(row: RowMapping) -> AttemptRow:
         google_on=bool(row["google_on"]),
         google_allowed=bool(row["google_allowed"]),
         google_only=bool(row["google_only"]),
-        google_linked=bool(row["google_linked"]),
+        google_linked=google_linked(row),
         google_domains=tuple(row["google_domains"]),
     )
+
+
+def google_linked(row: RowMapping) -> bool:
+    """A passing Google link (#507), from ``_GOOGLE_COLUMNS``' ``google_link`` and
+    ``google_domains`` (one per user: 0062's unique (customer, user, provider))."""
+    link = row["google_link"]
+    return link is not None and passing_link(link[0], row["google_domains"], link[1], link[2])
 
 
 def enrol_still_open(conn: Connection, customer_id: str, user_id: str, session_version: int) -> bool:
