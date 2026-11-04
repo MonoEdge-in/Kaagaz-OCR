@@ -49,7 +49,7 @@ from kaagaz.answering.words_text import (
 from kaagaz.api.auth import CurrentUser, Reviewer, User, require_feature
 from kaagaz.api.context import AppContext, get_context
 from kaagaz.api.errors import ApiError
-from kaagaz.api.routers.documents import _same_user
+from kaagaz.api.routers.documents import same_user
 from kaagaz.db import audit, listing
 from kaagaz.db import organization_words as organization_words_sql
 from kaagaz.db import user_words as words_sql
@@ -243,7 +243,7 @@ def list_my_words(user: User, context: Context) -> dict[str, Any]:
 def add_my_word(body: NewWordBody, user: User, context: Context, response: Response) -> dict[str, Any]:
     """201 created; 200 already there, or replaced; 409 ``word_has_meaning`` to ask
     first. O(k log D) for the k documents, plus ``add_word``'s O(log W + m)."""
-    _same_user(body.user_id, user, SESSION_CHANGED)
+    same_user(body.user_id, user, SESSION_CHANGED)
     word, built_in = _word_text(body.word)
     meaning = _meaning_text(body.meaning)
     documents = list(dict.fromkeys(str(document_id) for document_id in body.document_ids))
@@ -327,7 +327,7 @@ def add_my_word(body: NewWordBody, user: User, context: Context, response: Respo
 @router.patch("/me/words/{word_id}")
 def change_my_word(word_id: uuid.UUID, body: WordChangeBody, user: User, context: Context) -> dict[str, Any]:
     """Change the word, its meaning or both. 404 for a word that is not this user's."""
-    _same_user(body.user_id, user, SESSION_CHANGED)
+    same_user(body.user_id, user, SESSION_CHANGED)
     if body.word is None and body.meaning is None:
         raise ApiError(400, "bad_request", "Change the word or its meaning.")
     word, built_in = (None, False) if body.word is None else _word_text(body.word)
@@ -354,7 +354,7 @@ def delete_my_word(
     word_id: uuid.UUID, user: User, context: Context, user_id: Annotated[str | None, Query()] = None
 ) -> Response:
     """Delete one word of this user, and its spots. 404 for a word that is not this user's."""
-    _same_user(user_id, user, SESSION_CHANGED)
+    same_user(user_id, user, SESSION_CHANGED)
     with context.db.user(user.customer_id, user.user_id) as conn:
         if not words_sql.delete_word(conn, user.customer_id, user.user_id, str(word_id)):
             raise ApiError(404, "not_found")
@@ -375,7 +375,7 @@ def list_organization_words(user: User, context: Context) -> dict[str, Any]:
 def decide_organization_word(
     suggestion_id: uuid.UUID, body: OrganizationWordDecision, user: Reviewer, context: Context
 ) -> dict[str, Any]:
-    _same_user(body.user_id, user, SESSION_CHANGED)
+    same_user(body.user_id, user, SESSION_CHANGED)
     status: Literal["approved", "rejected"] = "approved" if body.decision == "approve" else "rejected"
     with context.db.user(user.customer_id, user.user_id) as conn:
         row = organization_words_sql.decide(

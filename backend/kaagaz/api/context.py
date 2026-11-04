@@ -6,13 +6,14 @@ reads globals.
 """
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from fastapi import Request
 
 from kaagaz.ai.client import ModelClient
 from kaagaz.api.ports import Answers, ApiQueue, ApiStorage
+from kaagaz.api.upload_guard import SendSlots
 from kaagaz.db.engine import Database, OperatorDatabase
 from kaagaz.settings import Settings
 
@@ -27,6 +28,8 @@ class AppContext:
     clock: Callable[[], datetime]
     # The model GET /api/search embeds questions with; None with the model off.
     model: ModelClient | None = None
+    # Folder upload (#484): the files this process is taking at once (upload_guard.SendSlots).
+    sends: SendSlots = field(default_factory=SendSlots)
 
 
 def get_operator_db(request: Request) -> OperatorDatabase:

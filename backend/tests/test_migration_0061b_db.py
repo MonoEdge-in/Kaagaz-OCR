@@ -38,7 +38,8 @@ def test_0061b_up_down_up(fresh: tuple[str, Database]) -> None:
     customer_id, user_id = new_customer(db)  # an admin from before 0061b
     assert at_0060[0].count(M0061B.OLD) == 1
 
-    migrate(url, "head")
+    # Changed on purpose (#484, 3 Nov 2026): up to 0061b itself, not head; 0061c follows it.
+    migrate(url, M0061B.revision)
     after = base._schema(db)
     added = [row for row in after["columns"] if row[:2] == ("users", "totp_off_at")]
     assert added == [("users", "totp_off_at", "timestamp with time zone", False, None)]
@@ -56,6 +57,6 @@ def test_0061b_up_down_up(fresh: tuple[str, Database]) -> None:
     base._downgrade(url, M0061B.down_revision)
     assert base._schema(db) == before
     assert _definition(db) == at_0060
-    migrate(url, "head")
+    migrate(url, M0061B.revision)
     assert base._schema(db) == after
     assert _definition(db) == at_head

@@ -744,22 +744,22 @@ class PgDocuments:
                 "version": record.version_no,
                 "ocr": record.ocr_choice,
                 "batch": record.batch_id,
+                "keep": record.keep_place,
             }
             try:
                 inserted = conn.execute(
                     text(
-                        "INSERT INTO documents (id, customer_id, display_name, sha256, size_bytes,"
+                        "INSERT INTO documents (id, customer_id, display_name, sha256, size_bytes,"  # noqa: S608 - a fixed fragment, APPLIES
                         " detected_type, uploaded_by, read_requested_by, folder_id, family_id, version_no,"
                         " ocr_choice, batch_id, owner_id, autofile) VALUES (:d, :c, :name, :h, :size, :type,"
                         " :by, :by, :folder, :family, :version, :ocr, :batch, :by,"
-                        # File management F2: no folder, or a department (filed inside it, F3).
+                        # File management F2: no folder, or a department (filed inside it, F3);
+                        # never a folder upload's file (#484, keep_place).
+                        " CASE WHEN CAST(:keep AS boolean) THEN NULL ELSE"
                         " (SELECT 'pending' FROM customers WHERE id = :c"
                         " AND (CAST(:folder AS uuid) IS NULL OR EXISTS (SELECT 1 FROM folders"
                         " WHERE customer_id = :c AND id = CAST(:folder AS uuid) AND kind = 'department'))"
-                        " AND (autofile_on"
-                        " OR (autofile_granted AND EXISTS (SELECT 1 FROM ai_task_settings s"
-                        " WHERE s.customer_id = :c AND s.task = 'autofile' AND s.level = 'on'"
-                        " AND (s.user_id IS NULL OR s.user_id = :by))))))"
+                        " AND " + autofile.APPLIES + ") END)"
                         " ON CONFLICT (customer_id, sha256) DO NOTHING RETURNING id"
                     ),
                     params,

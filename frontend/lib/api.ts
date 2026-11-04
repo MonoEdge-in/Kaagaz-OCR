@@ -45,6 +45,14 @@ import type {
   FeatureSwitch,
   FlagState,
   Folder,
+  FolderItemView,
+  FolderItemsPage,
+  FolderLimits,
+  FolderUploadItem,
+  FolderUploadPlan,
+  FolderUploadPlanBody,
+  FolderUploadSummary,
+  NewFolderItem,
   InsightsReply,
   Me,
   MemberPeriod,
@@ -60,6 +68,7 @@ import type {
   OrgAdmin,
   OrgAiReply,
   OrgFeatureSwitch,
+  OrgFolderLimits,
   Organisation,
   OrgModelRates,
   OrgNumbersReply,
@@ -69,6 +78,7 @@ import type {
   DocumentWords,
   PasswordReset,
   PlatformEvent,
+  PlatformFolderLimits,
   PlatformHealth,
   LearnedDocument,
   QualityReply,
@@ -429,6 +439,7 @@ export function uploadVersion(
 type ResumableStart = {
   file_name: string; file_size: number; fingerprint: string; user_id: string; folder_id?: string; department_id?: string;
   batch_id?: string; read_mode?: string; read_model?: string; version_document_id?: string; version_note?: string;
+  folder_upload_item_id?: string; // #484: the server takes the folder and batch from the item
 };
 const UPLOAD_PART_BYTES = 8 * 1024 * 1024;
 
@@ -461,24 +472,28 @@ const SERVER_RETRIES = 4;
  * and the uploads wait their turn here instead (Vrushit UAT, 25 Oct 2026).
  */
 export const UPLOAD_CALLS_PER_MINUTE = 80;
-let uploadTokens = UPLOAD_CALLS_PER_MINUTE;
-let uploadTokensAt: number | null = null;
 
-/** Wait for this tab's next upload call (a token bucket, shared by every file). */
-async function uploadTurn(): Promise<void> {
-  for (;;) {
-    const now = Date.now();
-    const elapsed = uploadTokensAt === null ? 0 : Math.max(0, now - uploadTokensAt); // the clock may be set back
-    const refilled = (elapsed * UPLOAD_CALLS_PER_MINUTE) / 60_000;
-    uploadTokens = Math.min(UPLOAD_CALLS_PER_MINUTE, uploadTokens + refilled);
-    uploadTokensAt = now;
-    if (uploadTokens >= 1) {
-      uploadTokens -= 1;
-      return;
+/** A token bucket: a burst of perMinute calls, then perMinute a minute; each call waits its turn. */
+export function createTurn(perMinute: number): () => Promise<void> {
+  let tokens = perMinute;
+  let tokensAt: number | null = null;
+  return async () => {
+    for (;;) {
+      const now = Date.now();
+      const elapsed = tokensAt === null ? 0 : Math.max(0, now - tokensAt); // the clock may be set back
+      tokens = Math.min(perMinute, tokens + (elapsed * perMinute) / 60_000);
+      tokensAt = now;
+      if (tokens >= 1) {
+        tokens -= 1;
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, ((1 - tokens) * 60_000) / perMinute));
     }
-    await new Promise((resolve) => setTimeout(resolve, ((1 - uploadTokens) * 60_000) / UPLOAD_CALLS_PER_MINUTE));
-  }
+  };
 }
+
+/** Wait for this tab's next upload call (shared by every file). */
+const uploadTurn = createTurn(UPLOAD_CALLS_PER_MINUTE);
 
 /**
  * Each upload call waits its turn (uploadTurn). Waits out a lost connection, however long; a
@@ -486,11 +501,15 @@ async function uploadTurn(): Promise<void> {
  * row "waiting" for ever. A 429 is the server's pace, not a failure: the call waits the
  * Retry-After it gave, without counting a try or saying the connection is lost, and goes again.
  */
-async function retryWhileOffline<T>(work: () => Promise<T>, onWaiting?: UploadWaiting): Promise<T> {
+async function retryWhileOffline<T>(
+  work: () => Promise<T>,
+  onWaiting?: UploadWaiting,
+  turn: () => Promise<void> = uploadTurn,
+): Promise<T> {
   let delay = 1000;
   let serverTries = 0;
   for (;;) {
-    await uploadTurn();
+    await turn();
     try { return await work(); }
     catch (error) {
       const paced = rateLimitWait(error, delay);
@@ -568,11 +587,13 @@ async function resumableUpload(
     if (matches) { resumeId = candidate.id; savedParts = candidate.parts; break; }
   }
   const session = await retryWhileOffline(
-    () => request<{ id: string; part_size: number; part_count: number }>(
+    () => request<{ id: string; part_size: number; part_count: number } | UploadResult>(
       "POST", "/documents/upload-sessions", { ...identified, resume_session_id: resumeId },
     ),
     onWaiting,
   );
+  // A folder upload's item already in: the server answers with the upload itself (#484).
+  if ("document" in session) return session;
   let sent = 0;
   for (let number = 1; number <= session.part_count; number++) {
     const start = (number - 1) * session.part_size;
@@ -592,6 +613,93 @@ async function resumableUpload(
   return retryWhileOffline(
     () => request<UploadResult>("POST", `/documents/upload-sessions/${session.id}/complete`, {}),
     onWaiting,
+  );
+}
+
+// --- folder uploads (#484) ------------------------------------------------------
+// The browser plans the folders, registers every file as an item with its folder, then sends
+// each file to its item: the server records the folder per item, so a retry, or a Continue
+// after a reload, lands in the same folder. Plan, register and the lists use the normal limits.
+
+const folderUpload = (id: string) => `/folder-uploads/${encodeURIComponent(id)}`;
+
+/** Make (or, for the same id, find again) the folders; folder_ids follow the manifest. */
+export const planFolderUpload = (body: FolderUploadPlanBody) => request<FolderUploadPlan>("POST", "/folder-uploads", body);
+/** Register up to 1,000 files; a path_key registered before gives back its item unchanged. */
+export const registerFolderItems = (id: string, userId: string, items: NewFolderItem[]) =>
+  request<{ items: FolderUploadItem[] }>("POST", `${folderUpload(id)}/items`, { user_id: userId, items });
+export const getFolderUpload = (id: string) => request<FolderUploadSummary>("GET", folderUpload(id));
+/** This person's folder uploads of the last days, newest first. */
+export const listFolderUploads = () => request<{ items: FolderUploadSummary[] }>("GET", "/folder-uploads");
+/** One page of a folder upload's items in seq order, after `after` (-1: from the start). */
+export const listFolderItems = (id: string, view: FolderItemView, after: number, limit: number) =>
+  request<FolderItemsPage>("GET", `${folderUpload(id)}/items${query({ view, after, limit })}`);
+
+/** One multipart POST with upload progress (XHR); the reply is JSON. */
+function postFile(path: string, form: FormData, onProgress: (fraction: number) => void): Promise<UploadResult> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `/api${path}`);
+    xhr.withCredentials = true;
+    xhr.setRequestHeader("X-Requested-With", "kaagaz");
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable && event.total > 0) onProgress(event.loaded / event.total);
+    };
+    xhr.onload = async () => {
+      if (xhr.status === 0) {
+        reject(new ApiError(0, "network", "Could not reach the server."));
+        return;
+      }
+      const reply = new Response(xhr.responseText, {
+        status: xhr.status,
+        headers: { "Content-Type": "application/json", "Retry-After": xhr.getResponseHeader("Retry-After") ?? "" },
+      });
+      if (xhr.status >= 200 && xhr.status < 300) resolve((await reply.json()) as UploadResult);
+      else reject(noticeSessionEnd(await errorFrom(reply)));
+    };
+    xhr.onerror = () => reject(new TypeError("Network error"));
+    xhr.onabort = () => reject(new TypeError("Upload interrupted"));
+    xhr.send(form);
+  });
+}
+
+/**
+ * Send one file of a folder upload to its item. Up to 8 MiB it is one call to
+ * POST /documents?folder_upload_item_id= (in the query, so the server's rate limit gives it the
+ * folder upload's bucket) at the folder upload's own pace (`turn`); a bigger file takes the
+ * resumable path at the upload pace. Neither names a folder or a batch: the server takes both
+ * from the item. A lost connection, a failing server (5xx) and a 429's Retry-After are waited out
+ * as for any upload (retryWhileOffline), always for the same item.
+ */
+export function uploadFolderItem(
+  file: File,
+  itemId: string,
+  userId: string,
+  onProgress: (fraction: number) => void,
+  turn: () => Promise<void>,
+  reading?: UploadReading,
+  onWaiting?: UploadWaiting,
+): Promise<UploadResult> {
+  if (file.size > UPLOAD_PART_BYTES) {
+    return resumableUpload(
+      file,
+      { file_name: file.name, file_size: file.size, user_id: userId, folder_upload_item_id: itemId, ...readingBody(reading) },
+      onProgress,
+      undefined,
+      onWaiting,
+    );
+  }
+  return retryWhileOffline(
+    () => {
+      const form = new FormData();
+      form.append("file", file, file.name);
+      form.append("user_id", userId);
+      if (reading?.read_mode) form.append("read_mode", reading.read_mode);
+      if (reading?.read_model) form.append("read_model", reading.read_model);
+      return postFile(`/documents${query({ folder_upload_item_id: itemId })}`, form, onProgress);
+    },
+    onWaiting,
+    turn,
   );
 }
 
@@ -947,6 +1055,16 @@ export const getSessionTimeout = (orgId?: string) => request<SessionTimeout>("GE
 /** Set it, with a fresh code (step-up); null: the default, or follow the platform. */
 export const setSessionTimeout = (hours: number | null, code: string, orgId?: string) =>
   request<SessionTimeout>("PUT", timeoutPath(orgId), { hours, code });
+
+/** Operator: the folder upload limits (#484), the platform's or one organisation's; saving needs a fresh code. */
+const folderLimitsPath = (orgId?: string) =>
+  orgId ? `/operator/orgs/${encodeURIComponent(orgId)}/folder-upload-limits` : "/operator/folder-upload-limits";
+export const getFolderUploadLimits = () => request<PlatformFolderLimits>("GET", folderLimitsPath());
+export const setFolderUploadLimits = (limits: FolderLimits, code: string) =>
+  request<PlatformFolderLimits>("PUT", folderLimitsPath(), { ...limits, code });
+export const getOrgFolderUploadLimits = (orgId: string) => request<OrgFolderLimits>("GET", folderLimitsPath(orgId));
+export const setOrgFolderUploadLimits = (orgId: string, limits: FolderLimits, code: string) =>
+  request<OrgFolderLimits>("PUT", folderLimitsPath(orgId), { ...limits, code });
 
 /** Operator: the speed controls (package S, 0053); saving needs a fresh code, null: the server's setting. */
 export const getSpeed = () => request<Speed>("GET", "/operator/speed");

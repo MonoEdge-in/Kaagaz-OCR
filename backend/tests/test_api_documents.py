@@ -599,7 +599,10 @@ def test_upload_limits_are_the_type_limits_lowered_by_the_customers_own(db: Data
     assert reply.status_code == 200
     max_pages = api.settings.max_pages
     readers = ocr.ocr_choices(api.settings)
-    assert reply.json() == {
+    # Changed on purpose (#484): the folder upload's limits and sort_available come too
+    # (test_api_folder_upload_files checks them).
+    folder = {key: reply.json().pop(key, None) for key in ("folder_upload", "sort_available")}
+    assert {key: value for key, value in reply.json().items() if key not in folder} == {
         "pdf_bytes": 5 * MB,
         "image_bytes": 2 * MB,
         "sheet_bytes": MB,
@@ -610,7 +613,7 @@ def test_upload_limits_are_the_type_limits_lowered_by_the_customers_own(db: Data
     with db.customer(signed.customer_id) as conn:
         conn.execute(text("UPDATE customers SET max_upload_mb = 4"))
     lowered = signed.client.get("/api/upload-limits").json()
-    assert lowered == {
+    assert {key: value for key, value in lowered.items() if key not in folder} == {
         "pdf_bytes": 4 * MB,
         "image_bytes": 2 * MB,
         "sheet_bytes": MB,
