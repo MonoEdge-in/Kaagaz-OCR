@@ -393,7 +393,9 @@ already there, then 0071, which only merges the two lines, then 0072, which adds
 Testing-Env has more (`folder_uploads.items_counted`, set to `items_registered` for uploads
 already made, and three column comments). The uploads and limits stay. Nothing is done by hand:
 no `alembic stamp`. The test server is at 0071 as #509 merged it (the same folder tables, run
-after 0070), so it gets 0072 alone, and the same schema; a fresh database gets 0061c, 0071, 0072.
+after 0070), so it gets 0072 and what follows, and the same schema; a fresh database gets 0061c,
+0071, 0072. After 0072 come 0073 (Ultra low cost up to 55 paise a page, #488) and 0074 (Google
+sign-in by organisation and role, #507), the same on every server.
 A downgrade across 0071 names its target (`alembic downgrade 0070`, which keeps 0061c and its
 tables): alembic refuses `downgrade -1` from a merge as an ambiguous walk.
 

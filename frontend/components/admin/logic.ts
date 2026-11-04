@@ -4,7 +4,7 @@
 
 import { sessionScope } from "@/components/shell/gate";
 import { roleName } from "@/components/shell/nav";
-import { providersText } from "@/components/account/signInWays";
+import { DOMAIN_UNCHECKED, providersText } from "@/components/account/signInWays";
 import type { MineDraft, OrgDraft } from "@/lib/aiSettings";
 import { ApiError } from "@/lib/api";
 import type { Draft } from "@/lib/drafts";
@@ -19,6 +19,7 @@ import type {
   AuditEntry,
   CustomerSettings,
   DocumentStatus,
+  GoogleRules,
   Me,
   MemberNumbers,
   MemberPeriod,
@@ -306,6 +307,35 @@ export function decideLabel(row: PendingConnection, approve: boolean): string {
 /** "Password, Google": how this person signs in (every account keeps its password). */
 export function signsInWith(ways: readonly string[] | undefined): string {
   return (ways ?? ["password"]).map((way) => WAY_NAMES[way] ?? way).join(", ");
+}
+
+/** #507: the tag beside how they sign in, while their role signs in with Google only and they
+ * have no Google account that passes (AdminUser.google_needed). */
+export const GOOGLE_NEEDED = "Needs to connect Google";
+
+/** The tag's words: their connected account's domain is not checked yet (#507 review,
+ * AdminUser.google_unchecked: the limited session's words), else "Needs to connect Google";
+ * null: no tag. */
+export function googleTag(user: AdminUser): string | null {
+  if (user.google_unchecked === true) return DOMAIN_UNCHECKED;
+  return user.google_needed === true ? GOOGLE_NEEDED : null;
+}
+export const RESET_DISCONNECTS = "This also disconnects their Google account.";
+
+/** #507, Add a user: the hint under the role while Google sign-in is on for it (as the invite
+ * email's line: the server's Google sign-in, the super admin's, and the role allowed). */
+export const ADD_USER_GOOGLE_HINT =
+  "Your organisation signs in with Google for this role. After they choose a password, they connect their Google account.";
+
+/** The hint for this role; null while Google is off (``google`` left out: the server's switch). */
+export function addUserGoogleHint(google: GoogleRules | undefined, role: Role): string | null {
+  return google?.available === true && google.allowed_roles.includes(role) ? ADD_USER_GOOGLE_HINT : null;
+}
+
+/** Asked before Reset password; it also removes their connected accounts (#507). */
+export function resetPasswordQuestion(name: string, ways: readonly string[] | undefined): string {
+  const question = `Reset ${name}'s password? They are signed out everywhere and must choose a new one.`;
+  return (ways ?? []).some((way) => way !== "password") ? `${question} ${RESET_DISCONNECTS}` : question;
 }
 
 const askedDay = new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "short", timeZone: "Asia/Kolkata" });
@@ -711,6 +741,12 @@ const ACTION_WORDS: Record<string, string> = {
   "auth.identity_approved": "Approved a Google account",
   "auth.identity_declined": "Declined a Google account",
   "auth.identity_unlinked": "Disconnected a Google account",
+  // #507: Google sign-in by organisation and role.
+  "auth.identity_link_refused": "A Google account couldn't be connected",
+  "auth.identity_reapproval": "A Google account waits for approval again",
+  "settings.google_rules": "Changed the Google sign-in rules",
+  "settings.google_rules_refused": "Google sign-in rules not saved: they would have locked you out",
+  "org.google_signin_set": "Google sign-in changed for the organisation",
   "settings.auto_approve_on": "Turned on automatic approval of sign-in connections",
   "settings.auto_approve_off": "Turned off automatic approval of sign-in connections",
   "user.unlock": "Unlocked a user",
@@ -759,6 +795,7 @@ const BY_KAAGAZ = new Set([
   "org.autofile_revoke",
   "org.admin_two_step_on", // #481: the super admin's, as auto-filing's grant
   "org.admin_two_step_off",
+  "org.google_signin_set", // #507: the super admin's switch
   "document.reading_released", // QA P2: the release sweep's, after a reading pause
 ]);
 // Issue 375: with no person at all (actor_id null), these come from Kaagaz's own set-up

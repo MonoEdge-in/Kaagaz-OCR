@@ -16,7 +16,10 @@
   is given or ``aud`` names others; ``exp`` not passed and ``iat`` not ahead, each within
   LEEWAY_SECONDS of the clock; and ``nonce`` the one this browser was given. It gives the
   identity key (provider, issuer in its stored form, ``sub``) and the email, in lower case,
-  as a label, with whether the provider verified it.
+  as a label, with whether the provider verified it, and Google's ``hd`` (the Workspace
+  domain), in lower case.
+* **The organisation's domains** (#507): the rule is ``kaagaz.db.google_rules.domain_ok``,
+  the one every path uses; ``hd`` is only read here.
 * **Keys and replies** come through the model client's opener (no proxy from the
   environment, no redirects), within TIMEOUT_SECONDS and MAX_REPLY_BYTES; the key list is
   kept CACHE_SECONDS. Every URL opened is one of the fixed https endpoints.
@@ -95,6 +98,7 @@ class Identity:
     subject: str
     email: str | None  # a label only, lower case
     email_verified: bool
+    hosted_domain: str | None = None  # Google's "hd", lower case: a Workspace account's domain
 
 
 def _client(settings: Settings, name: str) -> tuple[bool, str | None, str | None, str | None]:
@@ -203,12 +207,14 @@ def verified_identity(
         raise OidcError("bad_token")
     email = claims.get("email")
     email = email.strip().lower() if isinstance(email, str) and email.strip() else None
+    hosted = claims.get("hd")
     return Identity(
         provider=provider.name,
         issuer=provider.issuer,
         subject=subject,
         email=email,
         email_verified=email is not None and claims.get("email_verified") is True,
+        hosted_domain=hosted.strip().lower() if isinstance(hosted, str) and hosted.strip() else None,
     )
 
 

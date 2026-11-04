@@ -52,3 +52,12 @@ def test_0071_is_the_merge_alone_and_0072_adds_after_it() -> None:
     assert scripts.get_revision("0072").down_revision == "0071"
     merge = (VERSIONS / "0071_folder_upload.py").read_text(encoding="utf-8")
     assert "op.execute" not in merge and "items_counted" not in merge.split('"""')[-1]
+
+
+def test_googles_0074_comes_after_0073() -> None:
+    """#507's Google sign-in was 0072 on its own branch; with folder upload's 0072 and Ultra low
+    cost's 0073 first (5 Nov 2026), it is 0074, the head."""
+    scripts = _scripts()
+    assert scripts.get_revision("0073").down_revision == "0072"
+    assert scripts.get_revision("0074").down_revision == "0073"
+    assert scripts.get_heads() == ["0074"]

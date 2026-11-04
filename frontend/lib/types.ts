@@ -48,6 +48,13 @@ export interface Me {
     two_step_required?: boolean; // the super admin requires it for this organisation's admins (#481)
     can_delete_forever: boolean; // an admin allowed this member or reviewer (never an admin)
     email_confirmed: boolean; // false: the "Confirm your email" banner (#457; true while email is off)
+    // #507: the organisation asks this person to sign in with Google and they have no connected
+    // account that passes its rules yet: every route but Ways to sign in replies 403
+    // google_link_required, so the app sends them there (lib/session.tsx).
+    google_link_required?: boolean;
+    // #507 review: in that session, the connected account is from before its domain could be
+    // checked, so the banner asks for one Google sign-in instead of a new connection.
+    google_unchecked?: boolean;
   };
   customer: { id: string; name: string };
   session: { scope: SessionScope };
@@ -73,6 +80,9 @@ export interface ConnectedIdentity {
 export interface WaysToSignIn {
   providers: string[];
   identities: ConnectedIdentity[];
+  // #507: the organisation's rules for this person: Google only for their role, and the
+  // company domains a Google account must be from (empty: any).
+  rules?: { google_only: boolean; domains: string[] };
 }
 
 /** Admin, People, Connections to approve (GET /admin/identities). */
@@ -1137,6 +1147,10 @@ export interface AdminUser {
   // #457 phase 1: "password" and each approved provider. Only the list and the replies that
   // removed connections send it; a row keeps what it had otherwise.
   signs_in_with?: string[];
+  // #507: their role signs in with Google only and they have no connected account that passes.
+  google_needed?: boolean;
+  // #507 review: and their connected account's domain is not checked yet (one Google sign-in does).
+  google_unchecked?: boolean;
 }
 
 /** POST /admin/users: the new user; with email on (#457), whether the invite email went. */
@@ -1164,6 +1178,29 @@ export interface CustomerSettings {
   autofile: { granted: boolean; on: boolean };
   // #457 phase 1: "Approve new sign-in connections automatically"; left out while no provider is on.
   auto_approve_connections?: boolean;
+  // #507: Ways to sign in, per role; left out while Google sign-in is off for the product.
+  google?: GoogleRules;
+}
+
+/** The admin's Google sign-in rules (#507). available: Google sign-in is on for the organisation
+ * (the super admin's switch). */
+export interface GoogleRules {
+  available: boolean;
+  allowed_roles: Role[];
+  only_roles: Role[];
+  domains: string[];
+}
+
+/** PATCH /admin/settings' google: it replaces all three. */
+export type GoogleRulesChange = Pick<GoogleRules, "allowed_roles" | "only_roles" | "domains">;
+
+/** Operator: one organisation's Google sign-in (#507). on: null follows the platform. */
+export interface OrgGoogleSignIn {
+  on: boolean | null;
+  platform_on: boolean;
+  effective: boolean;
+  google_only_roles: Role[];
+  domains: string[];
 }
 
 export interface AuditEntry {

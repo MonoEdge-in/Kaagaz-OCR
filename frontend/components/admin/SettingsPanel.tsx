@@ -10,9 +10,15 @@
 // (the settings reply leaves it out otherwise).
 // #468: unsaved changes are kept in this tab for the same admin (lib/drafts.ts) and come back over
 // the saved settings; onUnsaved tells AdminView, which asks before another tab opens.
+// #507: "Ways to sign in": per role "Google allowed" and "Google only", and the company domains,
+// checked first (googleRules.ts) and saved by the same Save (all three, only when changed). A
+// refusal about them (the lock-out among them) shows there and takes focus. While the super
+// admin has Google sign-in off for the organisation, it says so instead; nothing shows while
+// Google sign-in is off for the product (the reply leaves it out).
 
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
+import { flushSync } from "react-dom";
 import libraryStyles from "@/components/documents/Library.module.css";
 import { LoadFailed } from "@/components/operator/LoadFailed";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
@@ -20,7 +26,22 @@ import { getSettings, setAutoApprove, updateSettings } from "@/lib/api";
 import { clearDraft, readDraft, saveDraftSoon } from "@/lib/drafts";
 import { errorWords } from "@/lib/errorWords";
 import { useSession } from "@/lib/session";
-import type { CustomerSettings } from "@/lib/types";
+import type { CustomerSettings, GoogleRules } from "@/lib/types";
+import {
+  DOMAINS_HINT,
+  DOMAINS_LABEL,
+  GOOGLE_OFF_TEXT,
+  GOOGLE_ONLY_HINT,
+  ROLE_CHOICES,
+  googleForm,
+  googleRefusal,
+  googleRulesChange,
+  googleRulesChanged,
+  googleRulesProblem,
+  setAllowed,
+  setOnly,
+} from "./googleRules";
+import type { GoogleForm, GoogleProblem } from "./googleRules";
 import {
   AUTO_APPROVE_LABEL,
   AUTO_APPROVE_NOTE,
@@ -49,6 +70,8 @@ export function SettingsPanel({
   const [settings, setSettings] = useState<CustomerSettings | null>(null);
   const [text, setText] = useState("");
   const [autofileOn, setAutofileOn] = useState(false);
+  const [google, setGoogle] = useState<GoogleForm | null>(null);
+  const [googleProblem, setGoogleProblem] = useState<GoogleProblem | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
@@ -64,6 +87,7 @@ export function SettingsPanel({
         const form = settingsFromDraft(readDraft(userId, SETTINGS_DRAFT), result);
         setText(form.text);
         setAutofileOn(form.autofileOn);
+        setGoogle(result.google ? googleForm(result.google) : null);
       },
       (caught: unknown) => {
         if (!cancelled) {
@@ -87,22 +111,44 @@ export function SettingsPanel({
       return;
     }
     setError(null);
+    const rules = google !== null && rulesChanged ? google : null;
+    const problem = rules ? googleRulesProblem(rules) : null;
+    if (problem) {
+      showGoogleProblem(problem);
+      return;
+    }
+    setGoogleProblem(null);
     setBusy(true);
     try {
-      const result = await updateSettings(parsed.value, settings.autofile.granted ? autofileOn : undefined);
+      const result = await updateSettings(
+        parsed.value,
+        settings.autofile.granted ? autofileOn : undefined,
+        rules ? googleRulesChange(rules) : undefined,
+      );
       setSettings(result);
       setText(result.max_upload_mb === null ? "" : String(result.max_upload_mb));
       setAutofileOn(result.autofile.on);
+      setGoogle(result.google ? googleForm(result.google) : null);
       clearDraft(userId, SETTINGS_DRAFT);
       setSaved("Saved.");
     } catch (caught) {
-      setError(settingsErrorText(caught));
+      const refused = rules ? googleRefusal(caught) : null;
+      if (refused) showGoogleProblem(refused);
+      else setError(settingsErrorText(caught));
     } finally {
       setBusy(false);
     }
   }
 
-  const changed = settings !== null && settingsChanged(settings, text, autofileOn);
+  /** Committed first, so the field is described when it gets focus. */
+  function showGoogleProblem(problem: GoogleProblem) {
+    flushSync(() => setGoogleProblem(problem));
+    document.getElementById(problem.field === "domains" ? GOOGLE_DOMAINS_ID : GOOGLE_ROLES_ERROR_ID)?.focus();
+  }
+
+  const rulesChanged =
+    settings?.google?.available === true && google !== null && googleRulesChanged(settings.google, google);
+  const changed = settings !== null && (settingsChanged(settings, text, autofileOn) || rulesChanged);
 
   useEffect(() => {
     if (!settings) return; // not loaded yet: a kept draft is still to be read
@@ -167,6 +213,18 @@ export function SettingsPanel({
               )}
             </div>
           </fieldset>
+          {settings.google && google && (
+            <GoogleRulesFields
+              rules={settings.google}
+              form={google}
+              problem={googleProblem}
+              onChange={(next) => {
+                setGoogle(next);
+                setGoogleProblem(null);
+                setSaved(null);
+              }}
+            />
+          )}
           <AutoApproveSwitch settings={settings} providers={providers} onSaved={setSettings} />
           {settings.autofile.granted && (
             <fieldset className={styles.settingsGroup}>
@@ -194,6 +252,97 @@ export function SettingsPanel({
         </form>
       )}
     </section>
+  );
+}
+
+const GOOGLE_DOMAINS_ID = "google-domains";
+const GOOGLE_ROLES_ERROR_ID = "google-roles-error";
+const GOOGLE_ONLY_HINT_ID = "google-only-hint";
+
+/** Ways to sign in (#507): each role's "Google allowed" and "Google only" (only while allowed),
+ * then the company domains; or, while the super admin has it off, a line saying so. */
+export function GoogleRulesFields({
+  rules,
+  form,
+  problem,
+  onChange,
+}: {
+  rules: GoogleRules;
+  form: GoogleForm;
+  problem: GoogleProblem | null;
+  onChange(next: GoogleForm): void;
+}) {
+  const domainsWrong = problem?.field === "domains";
+  return (
+    <fieldset className={styles.settingsGroup}>
+      <legend className={styles.settingsLegend}>Ways to sign in</legend>
+      {!rules.available ? (
+        <p className="hint">{GOOGLE_OFF_TEXT}</p>
+      ) : (
+        <>
+          {ROLE_CHOICES.map(({ role, label }) => {
+            const allowed = form.allowed.includes(role);
+            return (
+              <fieldset key={role} className={styles.googleRole}>
+                <legend className={styles.googleRoleName}>{label}</legend>
+                <label className={libraryStyles.check}>
+                  <input
+                    id={`google-allowed-${role}`}
+                    type="checkbox"
+                    checked={allowed}
+                    onChange={(event) => onChange(setAllowed(form, role, event.target.checked))}
+                  />
+                  Google allowed
+                </label>
+                <label className={libraryStyles.check}>
+                  <input
+                    id={`google-only-${role}`}
+                    type="checkbox"
+                    checked={form.only.includes(role)}
+                    disabled={!allowed}
+                    aria-describedby={GOOGLE_ONLY_HINT_ID}
+                    onChange={(event) => onChange(setOnly(form, role, event.target.checked))}
+                  />
+                  Google only
+                </label>
+              </fieldset>
+            );
+          })}
+          <span id={GOOGLE_ONLY_HINT_ID} className="hint">
+            {GOOGLE_ONLY_HINT}
+          </span>
+          {problem?.field === "roles" && (
+            <span id={GOOGLE_ROLES_ERROR_ID} className="error-text" role="alert" tabIndex={-1}>
+              {problem.message}
+            </span>
+          )}
+          <div className="field">
+            <label htmlFor={GOOGLE_DOMAINS_ID}>{DOMAINS_LABEL}</label>
+            <input
+              id={GOOGLE_DOMAINS_ID}
+              className="input"
+              type="text"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+              placeholder="sharmatraders.com"
+              value={form.domains}
+              onChange={(event) => onChange({ ...form, domains: event.target.value })}
+              aria-invalid={domainsWrong ? true : undefined}
+              aria-describedby={domainsWrong ? "google-domains-hint google-domains-error" : "google-domains-hint"}
+            />
+            <span id="google-domains-hint" className="hint">
+              {DOMAINS_HINT}
+            </span>
+            {domainsWrong && (
+              <span id="google-domains-error" className="error-text" role="alert">
+                {problem.message}
+              </span>
+            )}
+          </div>
+        </>
+      )}
+    </fieldset>
   );
 }
 

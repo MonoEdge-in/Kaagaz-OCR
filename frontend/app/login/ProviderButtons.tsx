@@ -5,7 +5,7 @@
 // moves once it shows: signInOptions.ts), then the divider "or use your email". Each is a plain link to the API's start (a GET
 // that goes on to the provider), so no provider script ever loads; the logo is inline. A
 // failed provider sign-in comes back as ?oidc_error=<code> and is said here in plain words (a
-// cancelled one as a calm notice, not an alert); "isn't connected" asks the server for its
+// cancelled one, or one waiting for the admin's approval (#507), as a calm notice, not an alert); "isn't connected" asks the server for its
 // email (it never comes in the address). Never on
 // the operator's sign-in page.
 
@@ -45,14 +45,15 @@ export function ProviderButtons({
   }, [error]);
 
   const buttons = providerButtons(providers, next);
+  const calm = error === "cancelled" || error === "waiting";
   return (
     <>
-      {message && error === "cancelled" && (
+      {message && calm && (
         <p role="status" className={styles.notice}>
           {message}
         </p>
       )}
-      {message && error !== "cancelled" && (
+      {message && !calm && (
         <div className={styles.banner} role="alert">
           <Icon name="alert" />
           {message}

@@ -20,13 +20,26 @@ export function mustChangePassword(me: Me): boolean {
  * server refuses everything else, so the browser signs out and the sign-in sets it up.
  * Not an admin who turned their own off (Tushar, 30 Oct 2026): it stays off until they
  * turn it on from the Account menu. Only true counts as turned off.
+ * "connect_google" (#507): the organisation asks this person to sign in with Google and they
+ * have no Google account that passes its rules yet; the server refuses every route but Ways to
+ * sign in (WAYS_PATH), so the app shows only that page. Only true counts.
  */
-export type AppGate = "set_password" | "set_two_step" | "app";
+export type AppGate = "set_password" | "set_two_step" | "connect_google" | "app";
+
+/** Account, Ways to sign in. */
+export const WAYS_PATH = "/settings/sign-in";
+
+/** The app's links, search and Upload show: not in the limited session (#507 review), where the
+ * server refuses them all and only Ways to sign in and the account menu remain. */
+export function appChrome(me: Me): boolean {
+  return me.user.google_link_required !== true;
+}
 
 export function appGate(me: Me): AppGate {
   if (mustChangePassword(me)) return "set_password";
   const needsTwoStep = me.user.totp_enabled !== true && me.user.two_step_turned_off !== true;
-  return me.user.role === "admin" && needsTwoStep ? "set_two_step" : "app";
+  if (me.user.role === "admin" && needsTwoStep) return "set_two_step";
+  return me.user.google_link_required === true ? "connect_google" : "app";
 }
 
 /**

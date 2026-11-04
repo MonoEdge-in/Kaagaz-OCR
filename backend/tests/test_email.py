@@ -129,7 +129,8 @@ TEMPLATES = (
     emails.connection_waiting,
 )
 # What an email may be told: never a document, its name or content, never an id.
-ALLOWED_ARGUMENTS = {"name", "organisation", "link"}
+# Changed on purpose (#507): the invite's Google line is a yes or no.
+ALLOWED_ARGUMENTS = {"name", "organisation", "link", "google"}
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
 
@@ -143,6 +144,7 @@ def test_no_email_can_be_given_a_document_and_none_holds_an_id(
         "name": "Ramesh",
         "organisation": "Sharma Traders",
         "link": "https://kaagaz.example.com/x#t=abc",
+        "google": True,
     }
     subject, text = template(**{key: values[key] for key in parameters})
     assert subject and text
@@ -171,7 +173,12 @@ def test_a_security_notice_has_no_link() -> None:
 def test_an_email_to_an_address_not_yet_proven_is_never_given_a_name() -> None:
     """Confirm, invite and reset go to an address nobody has proven yet, so a name someone
     typed (at sign-up, say, with another person's address) never rides on them (#457 review)."""
-    for template in (emails.confirm_email, emails.invite, emails.reset_password):
+    templates: tuple[Callable[..., tuple[str, str]], ...] = (
+        emails.confirm_email,
+        emails.invite,
+        emails.reset_password,
+    )
+    for template in templates:
         assert "name" not in inspect.signature(template).parameters, template.__name__
         _, text = template(
             **{"organisation": "Sharma Traders", "link": "https://kaagaz.example.com/x#t=abc"}

@@ -68,7 +68,7 @@ def test_up_down_lowers_a_ceiling_above_40_to_40_and_up_again(fresh: tuple[str, 
         db, "UPDATE customer_ai_settings SET ulc_ceiling_paise = 30 WHERE customer_id = :c", {"c": customer}
     )
     as_owner(db, _PLATFORM, {"p": None})
-    migrate(url, "head")
+    migrate(url, "0073")  # Changed on purpose (#507): head is 0074 (Google sign-in) now
     assert _state(db) == at_0073
     assert _saves(db) == saves_0073
     assert as_owner(db, _CEILINGS, {"c": customer}) == [(30, None)]  # a ceiling within 40 is kept
